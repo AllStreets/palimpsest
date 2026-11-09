@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { LABEL, plist } from '../engine/launchd.js';
+import { realRunner, setRunner } from '../engine/exec.js';
+import { install, LABEL, plist } from '../engine/launchd.js';
 
 test('plist contains label, KeepAlive and the PATH', () => {
   const xml = plist({
@@ -37,4 +41,50 @@ test('plist contains label, KeepAlive and the PATH', () => {
     xml,
     /<key>StandardErrorPath<\/key>\s*<string>\/Users\/connorevans\/Library\/Application Support\/Palimpsest\/logs\/engine\.log<\/string>/,
   );
+});
+
+test('install waits for a booted-out agent to finish unloading before bootstrapping it again', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'palimpsest-launchd-test-'));
+  const previous = { HOME: process.env.HOME, PALIMPSEST_HOME: process.env.PALIMPSEST_HOME };
+  process.env.HOME = dir;
+  process.env.PALIMPSEST_HOME = join(dir, 'data');
+  t.after(() => {
+    setRunner(realRunner);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // launchctl bootout returns before the old agent has finished unloading:
+  // the service still prints for a while, and bootstrapping it then fails
+  // with "Bootstrap failed: 5: Input/output error" (seen on the real machine).
+  let printsUntilGone = 3;
+  const calls: string[] = [];
+  setRunner(async (cmd, args) => {
+    assert.equal(cmd, 'launchctl');
+    calls.push(args[0]);
+    if (args[0] === 'bootout') return { stdout: '', stderr: '', code: 0 };
+    if (args[0] === 'print') {
+      if (printsUntilGone > 0) {
+        printsUntilGone -= 1;
+        return { stdout: 'state = running', stderr: '', code: 0 };
+      }
+      return { stdout: '', stderr: 'Could not find service', code: 113 };
+    }
+    if (args[0] === 'bootstrap') {
+      return printsUntilGone > 0
+        ? { stdout: '', stderr: 'Bootstrap failed: 5: Input/output error', code: 5 }
+        : { stdout: '', stderr: '', code: 0 };
+    }
+    throw new Error(`unexpected launchctl ${args.join(' ')}`);
+  });
+
+  await install();
+
+  assert.equal(calls[0], 'bootout');
+  assert.equal(calls.at(-1), 'bootstrap');
+  assert.equal(calls.filter((c) => c === 'bootstrap').length, 1);
+  assert.equal(printsUntilGone, 0);
 });

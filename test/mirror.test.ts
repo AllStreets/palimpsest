@@ -159,3 +159,41 @@ test('syncMirror classifies a clone failure as a readable, specific GhError', as
     return true;
   });
 });
+
+test('readLog sizes a true merge commit by its diff against the first parent', async () => {
+  // A PR floor's size is its merge commit's lines, so a real two-parent merge
+  // must count what the PR brought into the branch, not zero.
+  const srcDir = join(tempDir, 'merge-src');
+  const mirrorDir = join(tempDir, 'merge.git');
+  const git = (...args: string[]) => realRunner('git', ['-C', srcDir, ...args]);
+
+  await realRunner('git', ['init', '--quiet', '--initial-branch=main', srcDir]);
+  await git('config', 'user.email', 'a@b.com');
+  await git('config', 'user.name', 'A');
+  await realRunner('sh', ['-c', `printf 'a\\n' > "${join(srcDir, 'base.txt')}"`]);
+  await git('add', 'base.txt');
+  await git('commit', '--quiet', '-m', 'base');
+  await git('checkout', '--quiet', '-b', 'feature');
+  await realRunner('sh', ['-c', `printf '1\\n2\\n3\\n' > "${join(srcDir, 'feature.txt')}"`]);
+  await git('add', 'feature.txt');
+  await git('commit', '--quiet', '-m', 'feature work');
+  await git('checkout', '--quiet', 'main');
+  await realRunner('sh', ['-c', `printf 'x\\n' > "${join(srcDir, 'main.txt')}"`]);
+  await git('add', 'main.txt');
+  await git('commit', '--quiet', '-m', 'main moves on');
+  const merge = await git('merge', '--quiet', '--no-ff', '-m', 'Merge pull request #1', 'feature');
+  assert.equal(merge.code, 0);
+  const clone = await realRunner('git', ['clone', '--quiet', '--bare', srcDir, mirrorDir]);
+  assert.equal(clone.code, 0);
+
+  const commits = await readLog(mirrorDir, 'main');
+
+  assert.deepEqual(
+    commits.map((c) => [c.subject, c.lines]),
+    [
+      ['base', 1],
+      ['main moves on', 1],
+      ['Merge pull request #1', 3],
+    ],
+  );
+});

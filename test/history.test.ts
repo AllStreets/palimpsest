@@ -35,7 +35,6 @@ test('no commits gives no floors', () => {
     number: 1,
     title: 'Ignored',
     mergedAt: iso(START),
-    lines: 10,
     mergeSha: 'deadbeef',
     url: 'https://github.com/AllStreets/palimpsest/pull/1',
   };
@@ -52,13 +51,12 @@ test('PR merge commit becomes a PR floor', () => {
     author: 'Author One',
     subject: 'Merge pull request #42',
     body: 'some merge body',
-    lines: 3,
+    lines: 123,
   });
   const pr: PR = {
     number: 42,
     title: 'Add the thing',
     mergedAt: iso(START + HOUR),
-    lines: 123,
     mergeSha: mergeCommit.sha,
     url: 'https://github.com/AllStreets/palimpsest/pull/42',
   };
@@ -70,7 +68,8 @@ test('PR merge commit becomes a PR floor', () => {
   assert.equal(floor.kind, 'pr');
   assert.deepEqual(floor.refs, ['#42']);
   assert.equal(floor.title, 'Add the thing');
-  assert.equal(floor.lines, 123);
+  assert.equal(floor.lines, 123); // the merge commit's first-parent diff, as the mirror counts it
+  assert.equal(floor.size, 'medium');
   assert.equal(floor.url, pr.url);
   assert.equal(floor.at, pr.mergedAt);
   assert.equal(floor.id, `${REPO}#${floor.refs[0]}`);
@@ -84,7 +83,6 @@ test('a PR whose mergeSha matches no commit in the list is ignored', () => {
     number: 7,
     title: 'Merged elsewhere',
     mergedAt: iso(START + HOUR),
-    lines: 50,
     mergeSha: 'does-not-exist',
     url: 'https://github.com/AllStreets/palimpsest/pull/7',
   };
@@ -160,7 +158,6 @@ test('Claude trailer marks the floor', () => {
     number: 9,
     title: 'Claude-assisted PR',
     mergedAt: iso(START + 14 * HOUR),
-    lines: 20,
     mergeSha: mergeCommit.sha,
     url: 'https://github.com/AllStreets/palimpsest/pull/9',
   };
@@ -250,13 +247,12 @@ test('merging a PR floor with an adjacent commits floor follows the merge rule',
     author: 'Author B',
     subject: 'merge pr',
     body: 'plain merge, no trailer',
-    lines: 1,
+    lines: 5,
   });
   const pr: PR = {
     number: 55,
     title: 'The PR title',
     mergedAt: iso(START + 10 * HOUR),
-    lines: 5,
     mergeSha: mergeCommit.sha,
     url: 'https://github.com/AllStreets/palimpsest/pull/55',
   };

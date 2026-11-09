@@ -45,7 +45,12 @@ function clusterFloor(repo: string, cluster: Commit[]): Floor {
   };
 }
 
-/** Builds the 'pr' floor for a PR whose mergeSha matched `mergeCommit`. */
+/**
+ * Builds the 'pr' floor for a PR whose mergeSha matched `mergeCommit`. Its
+ * size is the merge commit's first-parent diff: for a merge or a squash,
+ * everything the PR brought into the branch. (A rebase merge's other commits
+ * stand on the first-parent line themselves and become their own floors.)
+ */
 function prFloor(repo: string, pr: PR, mergeCommit: Commit): Floor {
   const refs = [`#${pr.number}`];
 
@@ -57,8 +62,8 @@ function prFloor(repo: string, pr: PR, mergeCommit: Commit): Floor {
     title: pr.title,
     at: pr.mergedAt,
     era: 'stone',
-    size: sizeFor(pr.lines),
-    lines: pr.lines,
+    size: sizeFor(mergeCommit.lines),
+    lines: mergeCommit.lines,
     claude: CLAUDE_TRAILER.test(mergeCommit.body),
     founding: true,
     url: pr.url,

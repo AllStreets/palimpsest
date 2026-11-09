@@ -58,7 +58,11 @@ test('availableRepos maps gh json', async () => {
   ]);
 });
 
-test('mergedPRs sums additions and deletions', async () => {
+// additions/deletions are not requested: GitHub computes them per PR, and on a
+// repo with a few hundred merged PRs (AllStreets/ONEXUS-Agents, 312) the
+// GraphQL query fails every time with "HTTP 502: 502 Bad Gateway". A PR
+// floor's size comes from its merge commit's diff in the mirror instead.
+test('mergedPRs asks gh only for what GitHub can list cheaply', async () => {
   setRunner(async (cmd, args) => {
     assert.equal(cmd, 'gh');
     assert.deepEqual(args, [
@@ -71,15 +75,13 @@ test('mergedPRs sums additions and deletions', async () => {
       '--limit',
       '2000',
       '--json',
-      'number,title,mergedAt,additions,deletions,mergeCommit,url',
+      'number,title,mergedAt,mergeCommit,url',
     ]);
     const rows = [
       {
         number: 12,
         title: 'Add widget polish',
         mergedAt: '2026-01-02T03:04:05Z',
-        additions: 40,
-        deletions: 10,
         mergeCommit: { oid: 'abc123' },
         url: 'https://github.com/acme/widgets/pull/12',
       },
@@ -87,8 +89,6 @@ test('mergedPRs sums additions and deletions', async () => {
         number: 13,
         title: 'Remove dead code',
         mergedAt: '2026-01-03T03:04:05Z',
-        additions: 0,
-        deletions: 5,
         mergeCommit: null,
         url: 'https://github.com/acme/widgets/pull/13',
       },
@@ -103,7 +103,6 @@ test('mergedPRs sums additions and deletions', async () => {
       number: 12,
       title: 'Add widget polish',
       mergedAt: '2026-01-02T03:04:05Z',
-      lines: 50,
       mergeSha: 'abc123',
       url: 'https://github.com/acme/widgets/pull/12',
     },
@@ -111,7 +110,6 @@ test('mergedPRs sums additions and deletions', async () => {
       number: 13,
       title: 'Remove dead code',
       mergedAt: '2026-01-03T03:04:05Z',
-      lines: 5,
       mergeSha: null,
       url: 'https://github.com/acme/widgets/pull/13',
     },

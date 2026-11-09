@@ -20,7 +20,6 @@ export interface PR {
   number: number;
   title: string;
   mergedAt: string;
-  lines: number;
   mergeSha: string | null;
   url: string;
 }
@@ -37,8 +36,6 @@ interface PrListRow {
   number: number;
   title: string;
   mergedAt: string;
-  additions: number;
-  deletions: number;
   mergeCommit: { oid: string } | null;
   url: string;
 }
@@ -143,7 +140,12 @@ export async function repoMeta(
   return mapRepoRow(row);
 }
 
-/** Merged PRs for a repo, newest-list-order as gh returns them, with lines = additions + deletions. */
+/**
+ * Merged PRs for a repo, in the order gh returns them (newest first).
+ * additions/deletions are deliberately not requested: GitHub computes them
+ * per PR, and with a few hundred merged PRs the GraphQL query fails every
+ * time with a 502. A PR floor is sized from its merge commit's diff instead.
+ */
 export async function mergedPRs(fullName: string): Promise<PR[]> {
   const result = await runGh([
     'pr',
@@ -155,14 +157,13 @@ export async function mergedPRs(fullName: string): Promise<PR[]> {
     '--limit',
     '2000',
     '--json',
-    'number,title,mergedAt,additions,deletions,mergeCommit,url',
+    'number,title,mergedAt,mergeCommit,url',
   ]);
   const rows = JSON.parse(result.stdout) as PrListRow[];
   return rows.map((row) => ({
     number: row.number,
     title: row.title,
     mergedAt: row.mergedAt,
-    lines: row.additions + row.deletions,
     mergeSha: row.mergeCommit?.oid ?? null,
     url: row.url,
   }));

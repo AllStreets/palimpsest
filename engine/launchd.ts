@@ -91,6 +91,25 @@ function gui(): string {
   return `gui/${process.getuid?.() ?? 0}`;
 }
 
+const UNLOAD_POLL_MS = 100;
+const UNLOAD_TIMEOUT_MS = 10_000;
+
+/**
+ * Resolves once `launchctl print` no longer finds the agent, or after
+ * UNLOAD_TIMEOUT_MS. `launchctl bootout` can return while the old agent is
+ * still unloading, and bootstrapping it in that window fails with
+ * "Bootstrap failed: 5: Input/output error", leaving no engine running.
+ */
+async function waitUntilUnloaded(): Promise<void> {
+  const runner = getRunner();
+  const deadline = Date.now() + UNLOAD_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const result = await runner('launchctl', ['print', `${gui()}/${LABEL}`]).catch(() => ({ code: 1 }));
+    if (result.code !== 0) return;
+    await new Promise((resolve) => setTimeout(resolve, UNLOAD_POLL_MS));
+  }
+}
+
 /**
  * Writes the launchd plist to `~/Library/LaunchAgents/com.palimpsest.engine.plist`
  * and loads it with `launchctl bootstrap`. Idempotent: an agent already
@@ -110,6 +129,7 @@ export async function install(): Promise<void> {
 
   const runner = getRunner();
   await runner('launchctl', ['bootout', `${gui()}/${LABEL}`]).catch(() => undefined);
+  await waitUntilUnloaded();
 
   const result = await runner('launchctl', ['bootstrap', gui(), plistPath()]);
   if (result.code !== 0) {
