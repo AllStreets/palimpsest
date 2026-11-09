@@ -1,0 +1,31 @@
+{
+  "name": "palimpsest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "node --no-warnings --import tsx --test 'test/**/*.test.ts'",
+    "typecheck": "tsc --noEmit -p .",
+    "engine": "tsx engine/main.ts",
+    "dev": "concurrently -k \"tsx watch engine/main.ts\" \"vite\"",
+    "build": "vite build",
+    "ui-test": "tsx tools/ui-test.ts",
+    "app": "vite build && tauri build"
+  },
+  "dependencies": {
+    "three": "^0.187.0",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.187.0",
+    "concurrently": "^10.0.7",
+    "playwright": "^1.65.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  }
+}
