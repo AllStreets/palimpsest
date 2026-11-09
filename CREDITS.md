@@ -18,28 +18,21 @@ The sky, fog, facade windows, street grid, lamps and skyline are procedural, wri
 
 The Palimpsest towers (`app/src/city/tower/`) are modelled in code, written for Palimpsest: the five roots (Beaux-Arts colonnade with fluted Ionic columns, Roman arcades, Gothic buttresses, lancets and rose window, the pagoda base with its flared tile eaves, the Chicago rusticated base), the five floor eras, the datum line, the interior-mapped window glass and the rose window's stained glass. No third-party models are used; the scanned textures above supply the stone, brick and metal surfaces.
 
+The analyzing-site scaffold (`app/src/city/scaffold.ts`) is modelled in code, written for Palimpsest.
+
 ## Type
 
-Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. All under the [SIL Open Font License 1.1](https://openfontlicense.org).
+Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. The app's splash (`src-tauri/splash/`) shows before the engine can serve anything, so it carries its own copies of the same files in `src-tauri/splash/fonts/`. All under the [SIL Open Font License 1.1](https://openfontlicense.org).
 
 | Files | Typeface | Designer | Used for |
 |---|---|---|---|
-| `newsreader*.woff2` | [Newsreader](https://fonts.google.com/specimen/Newsreader) | Production Type | Repo names, era headings |
+| `newsreader.woff2`, `newsreader-italic.woff2` | [Newsreader](https://fonts.google.com/specimen/Newsreader) | Production Type | Repo names, era headings |
 | `plex-sans.woff2` | [IBM Plex Sans](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Interface text |
 | `plex-mono-400.woff2` | [IBM Plex Mono](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Commit and PR refs |
+| `docs/brand/fonts/Cinzel*.ttf` | [Cinzel](https://github.com/NDISCOVER/Cinzel) | Natanael Gama, The Cinzel Project Authors | The letterforms of the 3D wordmark and the P of the app mark (license text in `docs/brand/fonts/OFL-Cinzel.txt`) |
 
-The analyzing-site scaffold (`app/src/city/scaffold.ts`) is modelled in code, written for Palimpsest.
+## Brand and media
 
-## App icon
+The wordmark, the app mark and the app icon set are own work, rendered in Blender by scripts written for Palimpsest (`docs/brand/wordmark.py`, `docs/brand/logo.py`, `docs/brand/icons.py`). They reuse the Poly Haven sandstone, brick and rust scans listed above. The icons in `src-tauri/icons/` are copies of `docs/brand/icons/`.
 
-The app icon set in `src-tauri/icons/` is own work, copied from `docs/brand/icons/` on the `brand` branch. The mark is the wordmark's P standing as a tower at dusk, modelled and rendered in Blender by scripts written for Palimpsest (`docs/brand/logo.py`, `docs/brand/icons.py`). The P is set in [Cinzel](https://github.com/NDISCOVER/Cinzel) by Natanael Gama (The Cinzel Project Authors), under the [SIL Open Font License 1.1](https://openfontlicense.org).
-
-## Splash type
-
-The app's splash (`src-tauri/splash/`) carries its own copies of the fonts above in `src-tauri/splash/fonts/`, since it shows before the engine can serve anything. All under the [SIL Open Font License 1.1](https://openfontlicense.org).
-
-| Files | Typeface | Designer |
-|---|---|---|
-| `newsreader.woff2`, `newsreader-italic.woff2` | [Newsreader](https://fonts.google.com/specimen/Newsreader) | Production Type |
-| `plex-sans.woff2` | [IBM Plex Sans](https://github.com/IBM/plex) | Mike Abbink, Bold Monday |
-| `plex-mono-400.woff2` | [IBM Plex Mono](https://github.com/IBM/plex) | Mike Abbink, Bold Monday |
+The README's hero, stills and clips in `docs/media/` are captured from the app itself by `tools/capture.ts`, from the fictional repos that `tools/sample.ts` writes. No real repo appears in them.
