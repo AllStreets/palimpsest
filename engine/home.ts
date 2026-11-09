@@ -12,9 +12,15 @@ export interface Paths {
   dist: string;
 }
 
+/** Where the data lives when PALIMPSEST_HOME is not set: ~/Library/Application Support/Palimpsest. */
+export function defaultHome(): string {
+  return join(homedir(), 'Library', 'Application Support', 'Palimpsest');
+}
+
 /** The data home. Honours PALIMPSEST_HOME, read fresh on every call. */
 export function home(): string {
-  return process.env.PALIMPSEST_HOME ?? join(homedir(), 'Library', 'Application Support', 'Palimpsest');
+  // An empty value (PALIMPSEST_HOME="") means unset, never the current folder.
+  return process.env.PALIMPSEST_HOME || defaultHome();
 }
 
 /**
