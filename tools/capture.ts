@@ -1,22 +1,29 @@
 /**
  * README and profile media, captured frame by frame from the real app.
  *
- * Starts its own engine in-process on port 4789 with a temp data home (never
- * the real engine on 4770), seeds fictional repos, opens the built UI in
- * Chromium on the GPU at 2x density, and drives the camera through the app's
- * own debug handle (`window.__palimpsest.view`). Every frame is set
- * explicitly and rendered before its screenshot, so the clips never drop or
- * repeat a frame. Frames are downscaled and encoded with ffmpeg.
+ * Starts its own engine in-process on port 4789 with a temp data home and a
+ * temp claude settings file (never the real engine on 4770, never the real
+ * data home), seeds the sample city from tools/sample.ts, answers every gh
+ * and git call with the sample's stand-in, opens the built UI in Chromium on
+ * the GPU at 2x density, and drives the camera through the app's own debug
+ * handle (`window.__palimpsest.view`). Every frame is set explicitly and
+ * rendered before its screenshot, so the clips never drop or repeat a frame.
+ * Frames are downscaled and encoded with ffmpeg.
  *
  *   npm run build
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
- * Shots: hero, stills, flyover, rise, probe (default: hero stills flyover rise).
+ * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
+ * settings, flyover, rise, probe. With no shots named, all but probe run.
+ * The city-only shots hide the running head and the name plates; overview,
+ * inspector, repos and settings show the app as it is.
  * Options (env): CAPTURE_FPS=30, CAPTURE_DPR=2, CAPTURE_KEEP=1 keeps the raw frames,
- * PROBE='[[eye],[target]]' for one quick still in the probe shot.
+ * CAPTURE_OUT=<dir> writes somewhere other than docs/media (for probing),
+ * PROBE='[[[eye],[target]], ...]' for quick stills in the probe shot, PROBE_CHROME=1
+ * keeps the running head and plates in them.
  *
- * Output goes to docs/media/. Re-run it whenever the city changes (construction,
- * the inspector), and add a shot here for each new thing worth showing.
+ * Re-run it whenever the city changes, and add a shot here for each new
+ * thing worth showing.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -28,11 +35,13 @@ import { chromium } from 'playwright';
 import type { Page } from 'playwright';
 
 import { layoutTower } from '../shared/tower-layout.js';
-import type { District, Repo, RootStyle, TowerSpec } from '../shared/types.js';
+import type { District } from '../shared/types.js';
+import { sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
-const MEDIA = join(ROOT, 'docs', 'media');
+// CAPTURE_OUT sends everything elsewhere, for framing probes that should not touch docs/media.
+const MEDIA = process.env.CAPTURE_OUT ?? join(ROOT, 'docs', 'media');
 const PORT = 4789;
 const FFMPEG = existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg';
 const FPS = Number(process.env.CAPTURE_FPS ?? 30);
@@ -41,71 +50,6 @@ const DPR = Number(process.env.CAPTURE_DPR ?? 2);
 const VIEWPORT = { width: 1600, height: 1000 };
 
 type V3 = [number, number, number];
-
-// ---------------------------------------------------------------- seeding
-
-interface SeedRepo {
-  fullName: string;
-  root: RootStyle;
-  slot: number;
-  commits: number;
-}
-
-// Fictional repos only. Media must never show anyone's real or private repos.
-const SEED: SeedRepo[] = [
-  { fullName: 'tidewater/harbor-ledger', root: 'beauxarts', slot: 0, commits: 52 },
-  { fullName: 'kestrel/fieldnotes', root: 'chicago', slot: 1, commits: 30 },
-  { fullName: 'lantern/assay-kit', root: 'gothic', slot: 2, commits: 44 },
-  { fullName: 'ferro/quarry', root: 'roman', slot: 3, commits: 22 },
-  { fullName: 'hoshi/kumo', root: 'pagoda', slot: 4, commits: 38 },
-  { fullName: 'marlow/tidepool', root: 'chicago', slot: 5, commits: 64 },
-  { fullName: 'orrery/almanac', root: 'beauxarts', slot: 6, commits: 18 },
-  { fullName: 'saltmarsh/ferry', root: 'gothic', slot: 7, commits: 34 },
-];
-
-async function seed(): Promise<void> {
-  const { openDb } = await import('../engine/db.js');
-  const { foundingFloors } = await import('../engine/history.js');
-  const db = openDb();
-  const start = Date.parse('2024-03-01T09:00:00Z');
-  for (const s of SEED) {
-    const commits = Array.from({ length: s.commits }, (_, i) => ({
-      sha: `${s.slot}${i.toString(16).padStart(39, '0')}`,
-      at: new Date(start + i * 31 * 3600_000 + s.slot * 7200_000).toISOString(),
-      author: i % 3 === 0 ? 'Ada' : i % 3 === 1 ? 'Ben' : 'Cy',
-      subject: `Change ${i + 1}`,
-      body: i > s.commits * 0.7 || i % 9 === 4 ? 'Co-Authored-By: Claude <noreply@anthropic.com>' : '',
-      lines: 40 + ((i * 53 + s.slot * 17) % 520),
-    }));
-    const floors = foundingFloors(s.fullName, commits, []);
-    const at = new Date(start + s.slot * 1000).toISOString();
-    const repo: Repo = {
-      fullName: s.fullName,
-      private: false,
-      defaultBranch: 'main',
-      language: 'TypeScript',
-      description: 'sample',
-      connected: true,
-      pushMode: false,
-      root: s.root,
-      slot: s.slot,
-      status: 'ready',
-      error: null,
-      connectedAt: at,
-      analyzedAt: at,
-    };
-    const tower: TowerSpec = {
-      id: `${s.fullName}#founding`,
-      repo: s.fullName,
-      kind: 'founding',
-      root: s.root,
-      floors,
-      datumIndex: floors.length,
-    };
-    db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(s.fullName, JSON.stringify(repo));
-    db.prepare('INSERT INTO towers (repo, json) VALUES (?, ?)').run(s.fullName, JSON.stringify(tower));
-  }
-}
 
 // ---------------------------------------------------------------- camera helpers
 
@@ -142,14 +86,14 @@ function mb(path: string): string {
 }
 
 /**
- * From 2x PNG frames: a full-quality 1600x1000 H.264 MP4 (yuv420p), an animated
- * AVIF at 1280x800 for the README, an 800x500 AVIF with a WebP fallback for the
- * GitHub profile card, and a 560x350 GIF fallback.
+ * From 2x PNG frames: a 1600x1000 H.264 MP4 (yuv420p), an animated AVIF at
+ * 1280x800 for the README, an 800x500 AVIF with a WebP fallback for the
+ * GitHub profile card, and a 480x300 GIF fallback.
  */
 function encode(dir: string, name: string): void {
   const input = ['-framerate', String(FPS), '-i', join(dir, 'f%04d.png')];
   const mp4 = join(MEDIA, `${name}.mp4`);
-  ff([...input, '-vf', 'scale=1600:1000:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', '17', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]);
+  ff([...input, '-vf', 'scale=1600:1000:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', '21', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]);
   const avif = join(MEDIA, `${name}.avif`);
   ff([...input, '-vf', 'scale=1280:800:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', '30', '-g', '120', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]);
   // The GitHub profile card: 800x500. AVIF first (a moving camera is cheap in AV1), WebP as its fallback.
@@ -162,12 +106,12 @@ function encode(dir: string, name: string): void {
   const frames = readdirSync(small).filter((f) => f.endsWith('.png')).sort();
   const webp = join(MEDIA, `${name}-card.webp`);
   // Keyframes every 15 frames so dark gradients never keep stale blocks.
-  execFileSync('img2webp', ['-loop', '0', '-lossy', '-q', '72', '-m', '6', '-kmax', '15', '-d', String(Math.round(1000 / 15)), ...frames.map((f) => join(small, f)), '-o', webp], {
+  execFileSync('img2webp', ['-loop', '0', '-lossy', '-q', '62', '-m', '6', '-kmax', '15', '-d', String(Math.round(1000 / 15)), ...frames.map((f) => join(small, f)), '-o', webp], {
     stdio: 'inherit',
   });
   const gif = join(MEDIA, `${name}.gif`);
-  // A moving camera changes every pixel, so the GIF fallback is kept small: 560x350, 10 fps, 96 colours.
-  ff(['-i', mp4, '-vf', 'fps=10,scale=560:350:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle', '-loop', '0', gif]);
+  // A moving camera changes every pixel, so the GIF fallback is kept small: 480x300, 10 fps, 96 colours.
+  ff(['-i', mp4, '-vf', 'fps=10,scale=480:300:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle', '-loop', '0', gif]);
   console.log(`  ${name}: mp4 ${mb(mp4)}, avif ${mb(avif)}, card avif ${mb(cardAvif)}, card webp ${mb(webp)}, gif ${mb(gif)}`);
 }
 
@@ -190,14 +134,50 @@ async function still(page: Page, name: string, eye: V3, target: V3): Promise<voi
   await frame(page, eye, target);
   await page.waitForTimeout(300);
   await frame(page, eye, target);
+  await save(page, name, 86);
+}
+
+/**
+ * Screenshots the page at 2x and writes the WebP the README shows. Only the
+ * hero keeps its full-size PNG as well (for the profile and the release
+ * page); the other PNGs are removed once their WebP is written.
+ */
+async function save(page: Page, name: string, quality: number): Promise<void> {
   const path = join(MEDIA, `${name}.png`);
+  const webp = join(MEDIA, `${name}.webp`);
   await page.screenshot({ path });
-  // The README shows these at about 1000 px wide; keep the 2x original as is, and a 1600 px JPEG-quality PNG is too big, so also write a WebP.
-  execFileSync('cwebp', ['-q', '86', '-m', '6', path, '-o', join(MEDIA, `${name}.webp`)], { stdio: 'ignore' });
-  console.log(`  ${name}.png ${mb(path)}, .webp ${mb(join(MEDIA, `${name}.webp`))}`);
+  execFileSync('cwebp', ['-q', String(quality), '-m', '6', path, '-o', webp], { stdio: 'ignore' });
+  console.log(`  ${name}.png ${mb(path)}, .webp ${mb(webp)}`);
+  if (name !== 'hero' && !name.startsWith('probe')) rmSync(path);
 }
 
 // ---------------------------------------------------------------- shots
+
+/** A still of the page as it stands, UI and all. Interface text gets a higher WebP quality than the city. */
+async function shoot(page: Page, name: string): Promise<void> {
+  await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+  await save(page, name, 92);
+}
+
+/** Hides the running head and the name plates, for the shots that show only the city. */
+async function chrome(page: Page, on: boolean): Promise<void> {
+  await page.evaluate((show) => {
+    let style = document.getElementById('capture-chrome');
+    if (!style) {
+      style = document.createElement('style');
+      style.id = 'capture-chrome';
+      document.head.append(style);
+    }
+    style.textContent = show ? '' : '.runhead, .plates { display: none !important; }';
+  }, on);
+}
+
+/** Opens a screen from the running head, as a click would, and waits for it to settle. */
+async function openScreen(page: Page, route: 'city' | 'repos' | 'settings', ready: string): Promise<void> {
+  await page.locator(`.runhead a[data-route="${route}"]`).click();
+  await page.waitForSelector(ready, { timeout: 10_000 });
+  await page.waitForTimeout(1200);
+}
 
 function shots(city: District[]): Record<string, (page: Page) => Promise<void>> {
   const by = (repo: string): District => {
@@ -205,66 +185,113 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     if (!d) throw new Error(`no district ${repo}`);
     return d;
   };
-  const cx = city.reduce((a, d) => a + d.origin.x, 0) / city.length;
-  const cz = city.reduce((a, d) => a + d.origin.z, 0) / city.length;
-  const hero = by('marlow/tidepool');
-  const heroLay = layoutTower(hero.tower);
+  const tall = by('tidewater/harbor-ledger');
+  const tallLay = layoutTower(tall.tower);
+  const gothic = by('lantern/assay-kit');
+  const gothicLay = layoutTower(gothic.tower);
+  const pagoda = by('hoshi/kumo');
+  const pagodaLay = layoutTower(pagoda.tower);
 
   return {
     async probe(page) {
-      // One still per [eye, target] pair, written to docs/media/probe-N.png for framing new shots.
+      // One still per [eye, target] pair, written to probe-N.png for framing new shots.
+      // PROBE_CHROME=1 keeps the running head and plates.
+      await chrome(page, !!process.env.PROBE_CHROME);
       const views = JSON.parse(process.env.PROBE ?? '[[[600,160,700],[0,80,0]]]') as [V3, V3][];
       for (const [i, [eye, target]] of views.entries()) await still(page, `probe-${i}`, eye, target);
     },
 
     async hero(page) {
-      // Low over the river of streets, looking across the founding towers into the dusk.
-      await still(page, 'hero', [820, 50, 90], [-60, 140, -30]);
+      // The whole sample city at dusk from above the rooftops, the sunlit faces turned to the eye.
+      await chrome(page, false);
+      await still(page, 'hero', HERO.eye, HERO.target);
     },
 
     async stills(page) {
-      const o = hero.origin;
-      await still(page, 'tower', [o.x + heroLay.top * 1.25, heroLay.top * 0.2, o.z + heroLay.top * 1.55], [o.x, heroLay.top * 0.52, o.z]);
-      const root = by('lantern/assay-kit');
-      const rl = layoutTower(root.tower);
-      await still(page, 'root', [root.origin.x + 46, 7, root.origin.z + 58], [root.origin.x, rl.rootHeight * 0.55, root.origin.z]);
-      const top = by('tidewater/harbor-ledger');
-      const tl = layoutTower(top.tower);
-      await still(page, 'datum', [top.origin.x + 70, tl.datumY + 4, top.origin.z + 88], [top.origin.x, tl.datumY - 10, top.origin.z]);
+      await chrome(page, false);
+      // One whole tower, root to crown: the pagoda, lit by the low sun, the rest of the skyline behind it.
+      const k = pagoda.origin;
+      await still(page, 'tower', [k.x - 480, 30, k.z + 120], [k.x, pagodaLay.top * 0.5, k.z]);
+      const o = gothic.origin;
+      await still(page, 'root', [o.x - 58, 6, o.z + 66], [o.x, gothicLay.rootHeight * 0.55, o.z]);
+      const t = tall.origin;
+      // From just below the top, so the datum band and the crown stand against the sky.
+      await still(page, 'datum', [t.x - 90, tallLay.datumY - 27, t.z + 80], [t.x, tallLay.datumY - 17, t.z]);
+    },
+
+    async overview(page) {
+      // The app as it opens: the city, the running head and every district's name plate.
+      await chrome(page, true);
+      await still(page, 'overview', OVERVIEW.eye, OVERVIEW.target);
+    },
+
+    async inspector(page) {
+      // Click a tower, then a floor in the list: the camera flies to it and the floor is marked.
+      await chrome(page, true);
+      await frame(page, OVERVIEW.eye, OVERVIEW.target);
+      await page.evaluate((r) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(r), gothic.repo);
+      await page.waitForSelector('.inspector.open', { timeout: 5000 });
+      await page.waitForTimeout(2500);
+      const rows = await page.locator('.insp-floor').count();
+      await page.locator('.insp-floor').nth(Math.floor(rows * 0.22)).click();
+      await page.waitForTimeout(3000);
+      await shoot(page, 'inspector');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(800);
+    },
+
+    async repos(page) {
+      await chrome(page, true);
+      await frame(page, SCREENS.eye, SCREENS.target);
+      await openScreen(page, 'repos', '.sheet.repos .repo-row');
+      await shoot(page, 'repos');
+      await openScreen(page, 'city', '.runhead');
+    },
+
+    async settings(page) {
+      await chrome(page, true);
+      await frame(page, SCREENS.eye, SCREENS.target);
+      await openScreen(page, 'settings', '.sheet.settings .usage-five');
+      // Installed, as it is once you use it: the hook writes only to this run's temp claude settings file.
+      await page.locator('.hook-install').click();
+      await page.waitForFunction(() => /installed/i.test(document.querySelector('.hook-state')?.textContent ?? '') && !/not/i.test(document.querySelector('.hook-state')?.textContent ?? ''), null, { timeout: 5000 });
+      await page.waitForTimeout(600);
+      await shoot(page, 'settings');
+      await openScreen(page, 'city', '.runhead');
     },
 
     async flyover(page) {
-      // A slow, low arc across the skyline into the dusk, the towers backlit by the sun.
+      // A slow arc across the skyline, the low sun drifting across the frame behind the towers.
+      await chrome(page, false);
       await record(page, {
         name: 'flyover',
         seconds: 14,
         at(t) {
           const k = easeSine(t);
-          const a = lerp(0.08, 0.72, k);
-          const r = lerp(930, 800, k);
-          const eye: V3 = [Math.cos(a) * r, lerp(70, 48, k), Math.sin(a) * r];
-          const target: V3 = [lerp(-60, -40, k), lerp(140, 130, k), lerp(-40, -60, k)];
+          const a = lerp(FLY.a0, FLY.a1, k);
+          const r = lerp(FLY.r0, FLY.r1, k);
+          const eye: V3 = [FLY.cx + Math.cos(a) * r, lerp(FLY.y0, FLY.y1, k), FLY.cz + Math.sin(a) * r];
+          const target: V3 = [FLY.cx, lerp(FLY.ty0, FLY.ty1, k), FLY.cz];
           return { eye, target };
         },
       });
     },
 
     async rise(page) {
-      // Up one tower from its root to the bronze datum line, slowly circling it.
-      const d = by('tidewater/harbor-ledger');
-      const lay = layoutTower(d.tower);
-      const { x, z } = d.origin;
+      // Up the tallest tower from its root to the bronze datum line, slowly circling it.
+      await chrome(page, false);
+      const { x, z } = tall.origin;
       await record(page, {
         name: 'rise',
-        seconds: 13,
+        seconds: 14,
         at(t) {
-          // Move for the first 88% of the take, then hold on the datum line.
-          const k = ease(Math.min(1, t / 0.88));
-          const y = lerp(lay.rootHeight * 0.45, lay.datumY - 8, k);
-          const a = lerp(0.55, 1.05, k);
-          const r = lerp(70, 92, k);
-          const eye: V3 = [x + Math.cos(a) * r, Math.max(2, y + lerp(-3, 7, k)), z + Math.sin(a) * r];
-          const target: V3 = [x, y, z];
+          // Move for the first 86% of the take, then hold on the datum line.
+          const k = easeSine(Math.min(1, t / 0.86));
+          const y = lerp(tallLay.rootHeight * 0.5, tallLay.datumY - 12, k);
+          const a = lerp(2.0, 2.75, k);
+          const r = lerp(72, 120, k);
+          const eye: V3 = [x + Math.cos(a) * r, Math.max(2, y + lerp(-4, 10, k)), z + Math.sin(a) * r];
+          const target: V3 = [x, y + lerp(6, 0, k), z];
           return { eye, target };
         },
       });
@@ -272,11 +299,17 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
   };
 }
 
+/** Framings tuned by eye in the quality rounds (see the probe shot). */
+const HERO: { eye: V3; target: V3 } = { eye: [700, 70, 700], target: [0, 170, 80] };
+const OVERVIEW: { eye: V3; target: V3 } = { eye: [760, 150, 700], target: [40, 130, -40] };
+const SCREENS: { eye: V3; target: V3 } = { eye: [-760, 70, 560], target: [-300, 150, 40] };
+const FLY = { cx: 0, cz: 80, a0: 0.42, a1: 1.12, r0: 980, r1: 840, y0: 110, y1: 72, ty0: 175, ty1: 160 };
+
 // ---------------------------------------------------------------- main
 
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) throw new Error('dist/index.html missing: run npm run build first');
-  const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hero', 'stills', 'flyover', 'rise'];
+  const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hero', 'stills', 'overview', 'inspector', 'repos', 'settings', 'flyover', 'rise'];
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-capture-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
   process.env.PALIMPSEST_DIST = DIST;
@@ -284,7 +317,10 @@ async function main(): Promise<void> {
   writeFileSync(claudeSettingsPath, '{}\n');
   mkdirSync(MEDIA, { recursive: true });
 
-  await seed();
+  await seedSample();
+  // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
+  const { setRunner } = await import('../engine/exec.js');
+  setRunner(sampleGh());
   const { startServer } = await import('../engine/server.js');
   const server = await startServer({ port: PORT, claudeSettingsPath });
   const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
