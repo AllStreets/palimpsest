@@ -54,3 +54,10 @@ test('floor dates read as month, day, year', () => {
   assert.equal(floorDate('2025-03-04T10:00:00Z'), 'Mar 4, 2025');
   assert.equal(floorDate('not a date'), '');
 });
+
+test('a PR url from another repo or host is not trusted', () => {
+  const other = floorLink(floor({ kind: 'pr', refs: ['#42'], url: 'https://example.com/acme/site/pull/42' }));
+  assert.equal(other.href, 'https://github.com/acme/site/pull/42');
+  const sibling = floorLink(floor({ kind: 'pr', refs: ['#42'], url: 'https://github.com/acme/site-fork/pull/42' }));
+  assert.equal(sibling.href, 'https://github.com/acme/site/pull/42');
+});

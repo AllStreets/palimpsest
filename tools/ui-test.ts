@@ -297,6 +297,20 @@ async function inspectorChecks(page: Page): Promise<void> {
   check(Math.hypot(post[0] - pre[0], post[1] - pre[1], post[2] - pre[2]) > 0.5, 'Enter flies to the selected floor');
   await page.screenshot({ path: join(SHOTS, 'inspector-keyboard.png') });
 
+  // A refresh for another repo must leave keyboard focus in the list: arrows still move the selection.
+  const { emit } = await import('../engine/events.js');
+  const focusedBefore = await debug(page, (x) => x.highlight);
+  emit('repo.analyzed', { repo: { fullName: SEED[1].fullName } });
+  await page.waitForTimeout(1200);
+  const inPanel = await page.evaluate(() => !!document.activeElement?.closest('.inspector'));
+  check(inPanel, 'focus stays in the inspector across a refresh for another repo');
+  await page.keyboard.press('ArrowDown');
+  const afterRefresh = await debug(page, (x) => x.highlight);
+  check(
+    afterRefresh !== null && afterRefresh.floorId !== focusedBefore?.floorId,
+    `arrow keys still move the selection after a refresh (got ${afterRefresh?.floorId ?? 'nothing'})`,
+  );
+
   // The highlight from further out, to judge whether it reads at distance.
   await setView(page, [d.origin.x + BEARING.x * 420, 90, d.origin.z + BEARING.z * 420], [d.origin.x, lay.top * 0.5, d.origin.z]);
   await page.screenshot({ path: join(SHOTS, 'inspector-far.png') });

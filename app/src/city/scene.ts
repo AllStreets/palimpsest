@@ -117,6 +117,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   // Counted per frame across the whole post chain, not per render call.
   renderer.info.autoReset = false;
+  // Focusable by script only, so closing a panel can hand focus back to the city.
+  renderer.domElement.tabIndex = -1;
   canvasHost.appendChild(renderer.domElement);
   configureMaterials(renderer);
 
@@ -397,7 +399,6 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   renderer.domElement.addEventListener('pointerdown', onPointerDown);
   renderer.domElement.addEventListener('pointerup', onPointerUp);
 
-  // ---------------------------------------------------------------- loop
   // ---------------------------------------------------------------- inset for a side panel
   let insetTarget = 0;
   let inset = 0;
@@ -452,6 +453,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let resolveReady: () => void = () => {};
   const ready = new Promise<void>((resolve) => (resolveReady = resolve));
   void texturesSettled().then(() => {
+    // The cached shadow map was drawn before the textures arrived (alpha-tested parts included): draw it again.
+    sun.shadow.needsUpdate = true;
     framesAfterLoad = 0;
   });
 

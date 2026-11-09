@@ -54,6 +54,7 @@ export function createPlates(
   const at = new THREE.Vector3();
   const ndc = new THREE.Vector3();
   const toward = new THREE.Vector3();
+  const ray = new THREE.Vector3();
 
   function anchor(p: Plate, out: THREE.Vector3): THREE.Vector3 {
     toward.set(camera.position.x - p.origin.x, 0, camera.position.z - p.origin.z);
@@ -109,7 +110,7 @@ export function createPlates(
         const behind = ndc.z > 1 || ndc.z < -1;
         const fade = 1 - THREE.MathUtils.smoothstep(dist, FADE_START, FADE_END);
         if (testOcclusion && !behind) {
-          raycaster.set(camera.position, at.clone().sub(camera.position).normalize());
+          raycaster.set(camera.position, ray.copy(at).sub(camera.position).normalize());
           raycaster.far = dist - 2;
           l.hidden = raycaster.intersectObjects(targets, false).length > 0;
         }

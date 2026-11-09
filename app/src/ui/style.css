@@ -357,3 +357,8 @@
     transition: none;
   }
 }
+
+/* The canvas takes focus back from a closed panel; the city itself needs no ring. */
+#city canvas:focus {
+  outline: none;
+}

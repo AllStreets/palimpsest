@@ -43,7 +43,9 @@ export function floorLink(floor: Floor): FloorLink {
   const pr = /^#(\d+)$/.exec(ref);
   const range = /^([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})$/i.exec(ref);
   if (pr) {
-    href = floor.url && floor.url.endsWith(`/pull/${pr[1]}`) ? floor.url : `${base}/pull/${pr[1]}`;
+    // The floor's own url is used only when it is this PR on this repo's GitHub page.
+    const own = floor.url && floor.url.startsWith(`${base}/`) && floor.url.endsWith(`/pull/${pr[1]}`);
+    href = own ? floor.url : `${base}/pull/${pr[1]}`;
   } else if (range) {
     href = `${base}/compare/${range[1]}...${range[2]}`;
   } else if (/^[0-9a-f]{7,40}$/i.test(ref)) {
@@ -104,6 +106,7 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
   let district: District | null = null;
   let selected: string | null = null;
   let rows: HTMLElement[] = [];
+  let opener: HTMLElement | null = null;
 
   const rowFor = (id: string | null): HTMLElement | undefined => rows.find((r) => r.dataset.floor === (id ? encodeURIComponent(id) : ''));
 
@@ -281,6 +284,10 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
   const api: Inspector = {
     open(d, floorId = null) {
       const reopening = district?.repo === d.repo;
+      // Remember where focus came from (a plate, say), unless it is already inside the panel.
+      const active = document.activeElement as HTMLElement | null;
+      if (active && active !== document.body && !panel.contains(active)) opener = active;
+      else if (!district) opener = null;
       district = d;
       render(d);
       panel.hidden = false;
@@ -293,21 +300,34 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
     },
     update(d) {
       if (!district || district.repo !== d.repo) return;
+      // A refresh for another repo hands back the same district: leave the list (and the focus in it) alone.
+      if (JSON.stringify(d) === JSON.stringify(district)) return;
       const keep = selected && d.tower.floors.some((f) => f.id === selected) ? selected : null;
       const scroll = panel.querySelector('.insp-floors')?.scrollTop ?? 0;
+      const hadFocus = panel.contains(document.activeElement);
       district = d;
       render(d);
       panel.querySelector('.insp-floors')?.scrollTo({ top: scroll });
-      select(keep);
+      select(keep, { focus: hadFocus && keep !== null });
+      if (hadFocus && !panel.contains(document.activeElement)) {
+        (rows[0] ?? panel.querySelector<HTMLElement>('.insp-close'))?.focus({ preventScroll: true });
+      }
     },
     close() {
       if (!district) return;
       district = null;
       selected = null;
       rows = [];
+      const hadFocus = panel.contains(document.activeElement);
       panel.classList.remove('open');
       panel.hidden = true;
       h.onClose();
+      // Focus goes back to what opened the inspector, or to the city.
+      if (hadFocus || document.activeElement === document.body) {
+        const back = opener?.isConnected ? opener : document.querySelector<HTMLElement>('#city canvas');
+        back?.focus({ preventScroll: true });
+      }
+      opener = null;
     },
     get repo() {
       return district?.repo ?? null;
