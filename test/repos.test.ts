@@ -518,3 +518,16 @@ test('disconnecting during an analysis stays disconnected when the analysis fini
   assert.equal((e.data as { repo: { connected: boolean } }).repo.connected, false);
   assert.deepEqual(city(), []);
 });
+
+test('connect refuses a malformed owner/name without storing a row or calling gh', async () => {
+  let calls = 0;
+  setRunner(async () => {
+    calls += 1;
+    return { stdout: '', stderr: '', code: 0 };
+  });
+  for (const name of ['acme', 'acme/widgets/extra', '-acme/widgets', 'acme/-w', 'acme/w x', 'acme/..', 'acme/.', '/widgets', 'acme/']) {
+    await assert.rejects(connect(name), /owner\/name/, name);
+  }
+  assert.deepEqual(listRepos(), []);
+  assert.equal(calls, 0);
+});

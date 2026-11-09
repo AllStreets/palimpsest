@@ -12,7 +12,7 @@ import { emit, subscribe } from './events.js';
 import { availableRepos, GhError } from './github.js';
 import { paths } from './home.js';
 import { record } from './ledger.js';
-import { analyze, city, connect, disconnect, listRepos, patchRepo } from './repos.js';
+import { analyze, BAD_NAME, city, connect, disconnect, isValidFullName, listRepos, patchRepo } from './repos.js';
 import { getSettings, patchSettings } from './settings.js';
 import { installHook, isStale, latestReading, uninstallHook } from './usage.js';
 
@@ -297,6 +297,7 @@ async function handleApi(
     if (repoMatch) {
       const fullName = `${repoMatch[1]}/${repoMatch[2]}`;
       const action = repoMatch[3];
+      if (!isValidFullName(fullName)) throw new HttpError(400, { error: BAD_NAME });
 
       if (action === 'connect' && method === 'POST') {
         sendJson(res, 200, await connect(fullName));

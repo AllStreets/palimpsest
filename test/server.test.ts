@@ -387,3 +387,44 @@ test('startServer with no port listens on PALIMPSEST_PORT', async () => {
     else process.env.PALIMPSEST_PORT = previous;
   }
 });
+
+test('repo routes reject a malformed owner/name with 400 before any gh call or stored row', async () => {
+  let calls = 0;
+  setRunner(async () => {
+    calls += 1;
+    return { stdout: '', stderr: '', code: 0 };
+  });
+  await withServer(async (server) => {
+    // A literal '..' never arrives: URL parsing folds it away before the request is sent (repos.test.ts covers it).
+    const bad = ['-evil/widgets', 'acme/-widgets', 'acme/wid%20gets', 'acme/wid%3Bgets', 'ac%24me/widgets', 'acme/.hidden%60x'];
+    for (const path of bad) {
+      for (const action of ['connect', 'analyze', 'disconnect']) {
+        const r = await fetch(url(server, `/api/repos/${path}/${action}`), { method: 'POST', headers: { 'x-palimpsest': '1' } });
+        assert.equal(r.status, 400, `${action} ${path}`);
+        const body = (await r.json()) as { error: string };
+        assert.match(body.error, /owner\/name/);
+      }
+      const p = await fetch(url(server, `/api/repos/${path}`), {
+        method: 'PATCH',
+        headers: { 'x-palimpsest': '1', 'content-type': 'application/json' },
+        body: JSON.stringify({ pushMode: true }),
+      });
+      assert.equal(p.status, 400, `PATCH ${path}`);
+    }
+    const repos = (await (await fetch(url(server, '/api/repos'))).json()) as unknown[];
+    assert.deepEqual(repos, []);
+  });
+  assert.equal(calls, 0, 'no gh or git call for a malformed name');
+});
+
+test('a well formed owner/name with dots, dashes and underscores is accepted', async () => {
+  setRunner(fixtureRunner('my-org/my_repo.js'));
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/api/repos/my-org/my_repo.js/connect'), { method: 'POST', headers: { 'x-palimpsest': '1' } });
+    assert.equal(r.status, 200);
+    await waitUntil(async () => {
+      const repos = (await (await fetch(url(server, '/api/repos'))).json()) as Array<{ status: string }>;
+      return repos[0]?.status === 'ready';
+    });
+  });
+});

@@ -19,6 +19,22 @@ function fnv1a32(str: string): number {
   return hash >>> 0;
 }
 
+/** One owner or name segment as GitHub allows it: letters, digits, '.', '_' and '-', never a leading '-'. */
+const SEGMENT = /^(?!-)[A-Za-z0-9_.-]+$/;
+
+/** The message for a name that is not owner/name. */
+export const BAD_NAME = 'Expected owner/name, each made of letters, digits, ".", "_" or "-", not starting with "-".';
+
+/**
+ * True when `fullName` is exactly owner/name with each segment safe to hand
+ * to gh and git as an argument and to use in a mirror's file name ('.' and
+ * '..' are refused, as are a leading '-' that gh would read as a flag).
+ */
+export function isValidFullName(fullName: string): boolean {
+  const parts = fullName.split('/');
+  return parts.length === 2 && parts.every((p) => SEGMENT.test(p) && p !== '.' && p !== '..');
+}
+
 /** A root architectural style for `fullName`, stable across calls (same name, same style). */
 export function pickRoot(fullName: string): RootStyle {
   return ROOTS[fnv1a32(fullName) % ROOTS.length];
@@ -143,6 +159,7 @@ function nextSlot(): number {
  * reconnecting repo keeps the slot it already had.
  */
 export async function connect(fullName: string): Promise<Repo> {
+  if (!isValidFullName(fullName)) throw new Error(BAD_NAME);
   const existing = loadRepo(fullName);
   if (existing && existing.status === 'analyzing') {
     // The analysis already running serves this connect too; only the toggle
