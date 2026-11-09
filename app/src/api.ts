@@ -1,4 +1,4 @@
-import type { District, Repo, Settings, UsageReading } from '../../shared/types';
+import type { District, Repo, Settings, UsageReading } from '../../shared/types.js';
 
 /** A failed engine call: the HTTP status plus the engine's readable message. */
 export class ApiError extends Error {
@@ -26,7 +26,12 @@ export interface UsageState {
   hookInstalled: boolean;
 }
 
-/** An event from GET /api/events: a repo's connect, analysis steps, result, patch or disconnect, or the kill switch. */
+/**
+ * An event from GET /api/events: a repo's connect, analysis steps, result,
+ * patch or disconnect, or the kill switch. One more comes from the client
+ * itself: `engine.reconnected`, when the stream comes back after dropping,
+ * since anything sent while it was down was missed.
+ */
 export interface EngineEvent {
   type: string;
   data: unknown;
@@ -91,6 +96,16 @@ export const api = {
   /** Subscribes to the engine's event stream. Returns a function that closes it. */
   events(onEvent: (e: EngineEvent) => void): () => void {
     const source = new EventSource('/api/events');
+    // EventSource reconnects by itself after an error; events sent meanwhile are lost, so say so once it is back.
+    let dropped = false;
+    source.onerror = () => {
+      dropped = true;
+    };
+    source.onopen = () => {
+      if (!dropped) return;
+      dropped = false;
+      onEvent({ type: 'engine.reconnected', data: null });
+    };
     for (const type of EVENT_TYPES) {
       source.addEventListener(type, (msg) => {
         onEvent({ type, data: JSON.parse((msg as MessageEvent<string>).data) as unknown });

@@ -186,11 +186,19 @@ async function main(): Promise<void> {
     else if (open) inspector.update(open);
   };
 
+  /** Takes the stored repos as they are now: which are analyzing (keeping a step already known) and which are connected. */
+  const takeRepos = (list: Repo[]): void => {
+    const steps = new Map([...analyzing].map(([repo, a]) => [repo, a.step]));
+    analyzing.clear();
+    for (const r of list) if (r.connected && r.status === 'analyzing') analyzing.set(r.fullName, { slot: r.slot, step: steps.get(r.fullName) ?? '' });
+    connectedRepos.clear();
+    for (const r of list) if (r.connected) connectedRepos.add(r.fullName);
+    runhead.setConnected(connectedRepos.size);
+  };
+
   try {
     const [loaded, repos] = await Promise.all([api.city(), api.repos().catch(() => [] as Repo[])]);
-    for (const r of repos) if (r.connected && r.status === 'analyzing') analyzing.set(r.fullName, { slot: r.slot, step: '' });
-    for (const r of repos) if (r.connected) connectedRepos.add(r.fullName);
-    runhead.setConnected(connectedRepos.size);
+    takeRepos(repos);
     show(loaded);
   } catch (err) {
     console.warn('could not load the city from the engine', err);
@@ -204,6 +212,17 @@ async function main(): Promise<void> {
     }),
   );
   api.events((e) => {
+    if (e.type === 'engine.reconnected') {
+      // Events sent while the stream was down are lost: read the repos, the city and the kill switch afresh.
+      void api.repos().then((list) => {
+        takeRepos(list);
+        showSites();
+      }, () => {});
+      void api.health().then((h) => runhead.setStopped(h.stopped), () => {});
+      refresh();
+      for (const fn of listeners) fn(e);
+      return;
+    }
     const repo = (e.data as { repo?: Repo } | null)?.repo;
     if (e.type === 'repo.analyzing' && repo?.fullName) {
       analyzing.set(repo.fullName, { slot: repo.slot, step: (e.data as { step?: string }).step ?? '' });

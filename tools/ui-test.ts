@@ -626,6 +626,36 @@ async function settingsChecks(page: Page, claudeSettingsPath: string): Promise<v
   check(!(await page.locator('.sheet.settings').isVisible()), 'Escape leaves Settings for the city');
 }
 
+// ---------------------------------------------------------------- the engine restarting
+
+/**
+ * The engine stops and starts again while the city is open. A repo is
+ * disconnected while it is down, so its event never reaches the page: once
+ * the event stream is back, the city and the running head must show it gone
+ * anyway, from a fresh read.
+ */
+async function reconnectChecks(page: Page, restart: (whileDown: () => Promise<void>) => Promise<void>): Promise<void> {
+  await page.locator('.runhead a[data-route="city"]').click();
+  const target = SAMPLE[0].fullName;
+  const n = await debug(page, (d) => d.districts);
+  const head = async () => ((await page.locator('.runhead-count').textContent()) ?? '').trim();
+  const countBefore = await head();
+  abortingRequests = true;
+  await restart(async () => {
+    const { disconnect } = await import('../engine/repos.js');
+    disconnect(target);
+  });
+  const caughtUp = await page
+    .waitForFunction((k) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === k, n - 1, { timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  abortingRequests = false;
+  check(caughtUp, 'after the engine restarts, the city drops a repo disconnected while it was down');
+  const countAfter = await head();
+  check(countBefore !== '' && Number(countAfter) === Number(countBefore) - 1, `and the running head counts it out (${countBefore} then ${countAfter})`);
+  await page.evaluate((t) => fetch(`/api/repos/${t}/connect`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), target);
+}
+
 // ---------------------------------------------------------------- main
 
 async function main(): Promise<void> {
@@ -644,7 +674,13 @@ async function main(): Promise<void> {
   // Slow enough that each analysis step is visible, and never the network.
   setRunner(sampleGh(450));
   const { startServer } = await import('../engine/server.js');
-  const server = await startServer({ port: PORT, claudeSettingsPath });
+  let server = await startServer({ port: PORT, claudeSettingsPath });
+  const restart = async (whileDown: () => Promise<void>): Promise<void> => {
+    await server.close();
+    await whileDown();
+    await new Promise((r) => setTimeout(r, 500));
+    server = await startServer({ port: PORT, claudeSettingsPath });
+  };
 
   const browser = await chromium.launch({
     args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'],
@@ -653,7 +689,7 @@ async function main(): Promise<void> {
     const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: Number(process.env.UI_DPR ?? 1) });
     const consoleErrors: string[] = [];
     page.on('console', (m) => {
-      if (m.type() === 'error' && !(abortingRequests && /net::ERR_FAILED/.test(m.text()))) consoleErrors.push(m.text());
+      if (m.type() === 'error' && !(abortingRequests && /net::ERR_(FAILED|CONNECTION_REFUSED)/.test(m.text()))) consoleErrors.push(m.text());
     });
     page.on('pageerror', (e) => consoleErrors.push(String(e)));
 
@@ -732,6 +768,7 @@ async function main(): Promise<void> {
       await disconnectWhileInspecting(page);
       await reposChecks(page);
       await settingsChecks(page, claudeSettingsPath);
+      await reconnectChecks(page, restart);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);

@@ -136,10 +136,7 @@ export function createRepos(
 
   async function load(): Promise<void> {
     notice.replaceChildren(el('p', 'repos-waiting', 'Asking GitHub for your repos'));
-    const [repos, districts] = await Promise.all([api.repos().catch(() => [] as Repo[]), api.city().catch(() => [] as District[])]);
-    stored.clear();
-    for (const r of repos) stored.set(r.fullName, r);
-    readFloors(districts);
+    await loadStored();
     render();
     try {
       available = await api.available();
@@ -150,12 +147,25 @@ export function createRepos(
     render();
   }
 
+  /** The engine's own record of the repos and their floor counts, read afresh. */
+  async function loadStored(): Promise<void> {
+    const [repos, districts] = await Promise.all([api.repos().catch(() => [] as Repo[]), api.city().catch(() => [] as District[])]);
+    stored.clear();
+    for (const r of repos) stored.set(r.fullName, r);
+    readFloors(districts);
+  }
+
   function readFloors(districts: District[]): void {
     floors.clear();
     for (const d of districts) floors.set(d.repo, d.tower.floors.length);
   }
 
   function onEvent(e: EngineEvent): void {
+    if (e.type === 'engine.reconnected') {
+      // The stream was down, so events may have been missed: take the engine's record as it is now.
+      void loadStored().then(render);
+      return;
+    }
     const data = e.data as { repo?: Repo; step?: string; error?: string } | null;
     const repo = data?.repo;
     if (!repo?.fullName || !e.type.startsWith('repo.')) return;
