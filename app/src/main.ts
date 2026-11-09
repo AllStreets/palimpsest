@@ -4,6 +4,7 @@ import type { District } from '../../shared/types';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import { createCity, type PickHit } from './city/scene';
+import { towerCenterpiece } from './city/tower/look';
 import { onRoute } from './router';
 
 interface DebugHandle {
@@ -11,6 +12,7 @@ interface DebugHandle {
   districts: number;
   lastPick: PickHit | null;
   view(eye: number[], target: number[]): void;
+  stats(): { calls: number; triangles: number };
 }
 
 declare global {
@@ -30,13 +32,14 @@ async function main(): Promise<void> {
     (s) => s.quality,
     () => 'high' as const,
   );
-  const city = createCity(host, { quality });
+  const city = createCity(host, { quality, makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality) });
 
   const debug: DebugHandle = {
     ready: false,
     districts: 0,
     lastPick: null,
     view: (e, t) => city.view(new THREE.Vector3(e[0], e[1], e[2]), new THREE.Vector3(t[0], t[1], t[2])),
+    stats: () => city.stats(),
   };
   window.__palimpsest = debug;
   // Task 9 opens the inspector here; for now a pick is only recorded.

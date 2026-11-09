@@ -5,7 +5,9 @@
  * city renders without console errors. Saves screenshots to shots/.
  *
  * Run after `npm run build`: `npm run ui-test`. Optional: UI_DPR=2 renders
- * at retina density, UI_QUALITY=medium switches the quality setting first.
+ * at retina density, UI_QUALITY=medium switches the quality setting first,
+ * UI_TOWER_SHOTS=all adds close shots of every root and era for the quality
+ * rounds.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,7 +18,8 @@ import { inflateSync } from 'node:zlib';
 import { chromium } from 'playwright';
 import type { Page } from 'playwright';
 
-import type { Repo, RootStyle, TowerSpec } from '../shared/types.js';
+import { layoutTower } from '../shared/tower-layout.js';
+import type { District, Era, Repo, RootStyle, TowerSpec } from '../shared/types.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -40,9 +43,14 @@ interface SeedRepo {
 }
 
 // Fictional repos only: screenshots must never show his private data.
+// Every root, every era (each history runs stone to sci-fi), Claude floors late in each, and one empty repo.
 const SEED: SeedRepo[] = [
-  { fullName: 'tidewater/harbor-ledger', root: 'beauxarts', slot: 0, commits: 140 },
-  { fullName: 'kestrel/fieldnotes', root: 'chicago', slot: 1, commits: 60 },
+  { fullName: 'tidewater/harbor-ledger', root: 'beauxarts', slot: 0, commits: 46 },
+  { fullName: 'kestrel/fieldnotes', root: 'chicago', slot: 1, commits: 34 },
+  { fullName: 'lantern/assay-kit', root: 'gothic', slot: 2, commits: 40 },
+  { fullName: 'ferro/quarry', root: 'roman', slot: 3, commits: 28 },
+  { fullName: 'hoshi/kumo', root: 'pagoda', slot: 4, commits: 38 },
+  { fullName: 'alder/blank-slate', root: 'roman', slot: 5, commits: 0 },
 ];
 
 async function seed(): Promise<void> {
@@ -58,7 +66,7 @@ async function seed(): Promise<void> {
       at: new Date(start + i * 26 * 3600_000).toISOString(),
       author: i % 3 === 0 ? 'Ada' : 'Ben',
       subject: `Change ${i + 1}`,
-      body: i > s.commits * 0.7 ? 'Co-Authored-By: Claude <noreply@anthropic.com>' : '',
+      body: i > s.commits * 0.7 || i % 9 === 4 ? 'Co-Authored-By: Claude <noreply@anthropic.com>' : '',
       lines: 20 + ((i * 37) % 300),
     }));
     const floors = foundingFloors(s.fullName, commits, []);
@@ -121,6 +129,38 @@ const VIEWS: View[] = [
   ['city-street', [118, 2.2, 52], [118, 14, -260]],
   ['city-skyline-mid', [560, 140, 620], [80, 40, 40]],
 ];
+
+// Tower views, relative to a district origin: a bearing that turns the sunlit faces toward the eye.
+const BEARING = { x: 0.63, z: 0.78 };
+
+function towerViews(d: District, all: boolean): View[] {
+  const root = d.tower.root;
+  const lay = layoutTower(d.tower);
+  const { x, z } = d.origin;
+  const at = (dist: number, eyeY: number, ty: number, turn = 0): [[number, number, number], [number, number, number]] => {
+    const c = Math.cos(turn);
+    const s = Math.sin(turn);
+    const bx = BEARING.x * c - BEARING.z * s;
+    const bz = BEARING.x * s + BEARING.z * c;
+    return [[x + bx * dist, eyeY, z + bz * dist], [x, ty, z]];
+  };
+  const views: View[] = [[`tower-${root}`, ...at(Math.max(140, lay.top * 1.9), 22, lay.top * 0.47)]];
+  if (!all) return views;
+  views.push([`tower-${root}-root`, ...at(75, 6, lay.rootHeight * 0.5)]);
+  views.push([`tower-${root}-root-close`, ...at(34, 3, lay.rootHeight * 0.38, 0.35)]);
+  // Close on each era's run of floors.
+  const runs = new Map<Era, { y0: number; y1: number }>();
+  for (const l of lay.floors) {
+    const r = runs.get(l.floor.era);
+    if (r) r.y1 = l.y0 + l.h;
+    else runs.set(l.floor.era, { y0: l.y0, y1: l.y0 + l.h });
+  }
+  for (const [era, r] of runs) {
+    const mid = (r.y0 + r.y1) / 2;
+    views.push([`tower-${root}-era-${era}`, ...at(70, mid + 6, mid)]);
+  }
+  return views;
+}
 
 async function setView(page: Page, eye: number[], target: number[]): Promise<void> {
   await page.evaluate(([e, t]) => {
@@ -195,6 +235,28 @@ async function main(): Promise<void> {
     }
 
     if (ready) {
+      const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+      const all = process.env.UI_TOWER_SHOTS === 'all';
+      const seen = new Set<string>();
+      for (const d of city) {
+        // One set of shots per root style, from the first tower with floors.
+        if (d.tower.floors.length === 0 || seen.has(d.tower.root)) continue;
+        seen.add(d.tower.root);
+        for (const [name, eye, target] of towerViews(d, all)) {
+          await setView(page, eye, target);
+          await page.screenshot({ path: join(SHOTS, `${name}.png`) });
+        }
+      }
+      check(seen.size === 5, `towers stand for all five roots (got ${[...seen].join(', ')})`);
+      const empty = city.find((d) => d.tower.floors.length === 0);
+      if (empty) {
+        const [, eye, target] = towerViews(empty, true)[1];
+        await setView(page, eye, target);
+        await page.screenshot({ path: join(SHOTS, 'tower-empty.png') });
+      }
+    }
+
+    if (ready) {
       // Picking: look straight at the first district's plinth and click the middle of the screen.
       const o = await page.evaluate(() => fetch('/api/city').then((r) => r.json()).then((d) => d[0].origin));
       await setView(page, [o.x + 40, 18, o.z + 40], [o.x, 2, o.z]);
@@ -219,6 +281,29 @@ async function main(): Promise<void> {
         requestAnimationFrame(tick);
       })`)) as { fps: number; gpu: string };
       console.log(`info  ${perf.fps.toFixed(0)} fps at ${VIEWPORT.width}x${VIEWPORT.height} on ${perf.gpu}`);
+
+      // Every tower in view: the overview from the opening bearing.
+      const fps = (): Promise<number> =>
+        page.evaluate(`new Promise((resolve) => {
+          let frames = 0;
+          const t0 = performance.now();
+          function tick() {
+            frames++;
+            if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
+            else resolve((frames * 1000) / (performance.now() - t0));
+          }
+          requestAnimationFrame(tick);
+        })`) as Promise<number>;
+      const ds = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+      const cx = ds.reduce((a, d) => a + d.origin.x, 0) / ds.length;
+      const cz = ds.reduce((a, d) => a + d.origin.z, 0) / ds.length;
+      await setView(page, [cx + BEARING.x * 900, 300, cz + BEARING.z * 900], [cx, 70, cz]);
+      await page.screenshot({ path: join(SHOTS, 'towers-all.png') });
+      const all6 = await fps();
+      const stats = await page.evaluate(
+        () => (window as unknown as { __palimpsest: { stats(): { calls: number; triangles: number } } }).__palimpsest.stats(),
+      );
+      console.log(`info  six towers in view: ${all6.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles per frame`);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);

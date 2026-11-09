@@ -40,6 +40,8 @@ export interface City {
   ready: Promise<void>;
   /** Jumps the camera to an eye and target (tests and debugging). */
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
+  /** Draw calls and triangles in the last whole frame, every pass included. */
+  stats(): { calls: number; triangles: number };
 }
 
 /** The plain plinth every district shows until towers exist. */
@@ -83,6 +85,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   renderer.toneMappingExposure = 0.85;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // Counted per frame across the whole post chain, not per render call.
+  renderer.info.autoReset = false;
   canvasHost.appendChild(renderer.domElement);
   configureMaterials(renderer);
 
@@ -224,13 +228,17 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     framesAfterLoad = 0;
   });
 
+  const lastFrame = { calls: 0, triangles: 0 };
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.05);
     rig.update(dt);
     sky.dome.position.copy(camera.position);
     followShadow();
+    renderer.info.reset();
     post.render();
+    lastFrame.calls = renderer.info.render.calls;
+    lastFrame.triangles = renderer.info.render.triangles;
     if (framesAfterLoad >= 0 && ++framesAfterLoad === 3) resolveReady();
   });
 
@@ -244,6 +252,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     },
     ready,
     view: (eye, target) => rig.view(eye, target),
+    stats: () => ({ ...lastFrame }),
     dispose() {
       renderer.setAnimationLoop(null);
       observer.disconnect();

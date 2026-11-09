@@ -15,3 +15,5 @@ Scanned PBR textures from [Poly Haven](https://polyhaven.com), all CC0 (public d
 ## Own work
 
 The sky, fog, facade windows, street grid, lamps and skyline are procedural, written for Palimpsest.
+
+The Palimpsest towers (`app/src/city/tower/`) are modelled in code, written for Palimpsest: the five roots (Beaux-Arts colonnade with fluted Ionic columns, Roman arcades, Gothic buttresses, lancets and rose window, the pagoda base with its flared tile eaves, the Chicago rusticated base), the five floor eras, the datum line, the interior-mapped window glass and the rose window's stained glass. No third-party models are used; the scanned textures above supply the stone, brick and metal surfaces.
