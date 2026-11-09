@@ -45,6 +45,25 @@ const MIME: Record<string, string> = {
 
 const HEARTBEAT_MS = 15_000;
 
+/** The engine's usual port. */
+export const DEFAULT_PORT = 4770;
+
+/**
+ * The port to listen on: PALIMPSEST_PORT when set (so a second engine, such
+ * as one serving the sample city, can run beside the installed one), else
+ * 4770. A value that is not a whole port number is an error, never a
+ * silent fall back.
+ */
+export function enginePort(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PALIMPSEST_PORT;
+  if (raw === undefined || raw === '') return DEFAULT_PORT;
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw) || n < 1 || n > 65535) {
+    throw new Error(`PALIMPSEST_PORT must be a port number from 1 to 65535, got "${raw}"`);
+  }
+  return n;
+}
+
 export interface StartServerOptions {
   port?: number;
   claudeSettingsPath?: string;
@@ -377,7 +396,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
  * temp path instead, since the usage-hook routes write through it.
  */
 export async function startServer(opts: StartServerOptions = {}): Promise<StartedServer> {
-  const requestedPort = opts.port ?? 4770;
+  const requestedPort = opts.port ?? enginePort();
   const claudeSettingsPath = opts.claudeSettingsPath ?? join(homedir(), '.claude', 'settings.json');
   const sseClients = new Set<ServerResponse>();
 

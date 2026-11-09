@@ -5,8 +5,9 @@
  *
  *   npx tsx tools/sample.ts <dir>
  *
- * writes a complete PALIMPSEST_HOME at <dir>. Point an engine at it with
- * PALIMPSEST_HOME=<dir> (on a port other than 4770). The repos have varied
+ * writes a complete PALIMPSEST_HOME at <dir>. Serve it beside the installed
+ * engine with PALIMPSEST_HOME=<dir> PALIMPSEST_PORT=4790 npm run engine.
+ * The repos have varied
  * ages and sizes, use all five roots, and include a stretch co-authored by
  * Claude and one empty repo. Floors are built by the engine's own
  * foundingFloors from generated commits and merged PRs, exactly as a real

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 
 import { realRunner, setRunner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
-import { startServer } from '../engine/server.js';
+import { enginePort, startServer } from '../engine/server.js';
 import type { StartedServer } from '../engine/server.js';
 
 let tempDir: string;
@@ -358,4 +358,32 @@ test('POST /api/stop creates and removes the stop file and records both in the l
     const kinds = entries().map((e) => e.kind).filter((k) => k.startsWith('engine.'));
     assert.deepEqual(kinds, ['engine.stopped', 'engine.resumed']);
   });
+});
+
+test('enginePort is 4770 unless PALIMPSEST_PORT names another port', () => {
+  assert.equal(enginePort({}), 4770);
+  assert.equal(enginePort({ PALIMPSEST_PORT: '4790' }), 4790);
+  assert.equal(enginePort({ PALIMPSEST_PORT: '' }), 4770);
+  for (const bad of ['abc', '0', '70000', '47.5', '-1']) {
+    assert.throws(() => enginePort({ PALIMPSEST_PORT: bad }), /PALIMPSEST_PORT/, bad);
+  }
+});
+
+test('startServer with no port listens on PALIMPSEST_PORT', async () => {
+  const previous = process.env.PALIMPSEST_PORT;
+  // A free port, found by asking the system for one and letting it go.
+  const probe = await startServer({ port: 0, claudeSettingsPath: settingsPath });
+  const free = probe.port;
+  await probe.close();
+  process.env.PALIMPSEST_PORT = String(free);
+  try {
+    const s = await startServer({ claudeSettingsPath: settingsPath });
+    assert.equal(s.port, free);
+    const res = await fetch(`http://127.0.0.1:${free}/api/health`);
+    assert.equal(res.status, 200);
+    await s.close();
+  } finally {
+    if (previous === undefined) delete process.env.PALIMPSEST_PORT;
+    else process.env.PALIMPSEST_PORT = previous;
+  }
 });
