@@ -239,8 +239,8 @@ On connect (and on demand):
 Each phase ends with something real he can use, held to the bar before he sees it.
 
 1. **Foundation and the first standing city.** Repo connection with toggles, history analysis and founding towers, the photoreal city with districts, the Tauri shell, Settings with the Claude usage hook. He opens a city that is already standing.
-2. **The market.** Jobs, firms, bids, sandboxed worktree runs through `claude -p` and Ollama, the inspection guild, PR and push modes, the ledger, live construction driven by real runs, commuting.
-3. **Analysis and the brief.** README versus reality, proposals as jobs, the actionable daily brief.
+2. **The market.** Jobs, firms, bids, sandboxed worktree runs through `claude -p` and Ollama, the inspection guild, PR and push modes, the ledger, live construction driven by real runs, commuting, the exterior elevator ride (18).
+3. **Analysis and the brief.** README versus reality, proposals as jobs, the actionable daily brief, play tailored to him (18), and the call on interior rides.
 4. **The school.** Beagle as a library with its fixes, repo-based arenas, LoRA graduates, the five nets and the master net, earned autonomy.
 5. **Polish and launch.** Logo, README with screenshots, video and diagrams, the sample dataset, performance pass.
 
@@ -267,3 +267,10 @@ Datum line; eras driven by ability for earned floors and by timeline for history
 - **Unattended Claude use (Connor).** Yes, capped. Claude jobs may run overnight or while he is away within a separate night cap (default 20% of the weekly window, set in Settings). Local models carry the bulk of overnight work. Daytime caps in 7.3 still apply.
 - **3D asset sources (Connor).** Built in code, modelled in Blender through scripts, CC0 libraries (Poly Haven and similar), and CC-BY models with attribution. Every third-party asset is recorded in `CREDITS.md` (name, author, license, link, where it is used). Most of the city should be Palimpsest's own work at a high bar. Third-party work is also studied as reference: how good modellers handle silhouette, bevels, trim sheets and material breakup, so our own assets improve. No paid assets.
 
+
+## 18. Play and the view (asked by Connor, 2026-11-09)
+
+- **The view grows with the city.** How far the camera can fly out, the home framing, the fog distance and the far plane scale with the tallest tower, so a 120 floor tower is never cropped and a small city is never lost in haze. Lands in the Phase 1 polish pass.
+- **Elevator rides, exterior first.** A glass car or construction hoist climbs the outside of a tower; the camera rides it, each floor passing with its change, date and agent, slowing at the datum, scar floors and Claude floors, ending on the roof with the city below. In Phase 2 the hoist is the same one the crane crews use, so a ride on a tower under construction ends at the live work. Phase 2.
+- **Interior rides, undecided.** He has not decided. My call: only once a floor has something to show inside (its diff, the agent's plan, the inspection), which arrives with Phase 3's analysis; until then an interior would be empty rooms. Decide at the start of Phase 3.
+- **Play tailored to him, not generic gamification.** No points, badges or streak counters. Milestones become physical in the city from his own history and habits: a tower passing the city's skyline gets a lit spire, a repo revived after months gets scaffolding lights, a first PR from a new firm gets a ribbon on its floor, tours that walk through his week. Designed with him at the start of Phase 3, fed by the brief and the master net's model of what he cares about.
