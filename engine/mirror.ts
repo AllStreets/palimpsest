@@ -73,13 +73,28 @@ export async function readLog(dir: string, branch: string): Promise<Commit[]> {
   );
 
   if (result.code !== 0) {
-    // "does not have any commits [yet]" (HEAD on an unborn branch) and
-    // "unknown revision" (a named branch that has no ref yet because the
-    // repo has no commits at all) both describe the same empty-repo case,
-    // which must never surface as an error, per global constraint #1.
-    if (/does not have any commits|unknown revision/.test(result.stderr)) {
+    // "does not have any commits [yet]" is git's message for HEAD on an
+    // unborn branch: the repo truly has no commits, per global constraint #1
+    // that must never surface as an error.
+    if (/does not have any commits/.test(result.stderr)) {
       return [];
     }
+
+    // "unknown revision" means the literal branch name doesn't resolve to a
+    // ref. That's the same empty-repo case when the mirror has no refs at
+    // all (a repo with zero commits can't have a branch ref either), but it
+    // is a real error when the repo has commits under some other ref and
+    // `branch` is simply wrong (e.g. a renamed default branch) — that must
+    // not be swallowed as "empty". Disambiguate by checking whether any ref
+    // exists at all.
+    if (/unknown revision/.test(result.stderr)) {
+      const refs = await runner('git', ['-C', dir, 'for-each-ref', '--count=1'], { timeoutMs: TIMEOUT_MS });
+      if (refs.code === 0 && refs.stdout.trim() === '') {
+        return [];
+      }
+      throw new Error(`branch '${branch}' not found in ${dir}: ${result.stderr.trim()}`);
+    }
+
     throw new Error(`git log failed for ${branch} in ${dir}: ${result.stderr.trim()}`);
   }
 

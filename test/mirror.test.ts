@@ -72,6 +72,40 @@ test('readLog returns [] for an empty repo', async () => {
   assert.deepEqual(commits, []);
 });
 
+test('readLog returns [] for an empty repo via a literal branch name', async () => {
+  // No commits means no refs/heads/<branch> exists at all, so git reports
+  // "unknown revision" for a literal branch name (unlike HEAD, which git
+  // special-cases with "does not have any commits"). Both must mean empty.
+  const dir = join(tempDir, 'empty-literal.git');
+  const init = await realRunner('git', ['init', '--quiet', '--bare', dir]);
+  assert.equal(init.code, 0);
+
+  const commits = await readLog(dir, 'main');
+
+  assert.deepEqual(commits, []);
+});
+
+test('readLog rejects naming the branch when it is wrong on a non-empty repo', async () => {
+  const srcDir = join(tempDir, 'src');
+  const mirrorDir = join(tempDir, 'nonempty.git');
+
+  await realRunner('git', ['init', '--quiet', srcDir]);
+  await realRunner('git', ['-C', srcDir, 'config', 'user.email', 'a@b.com']);
+  await realRunner('git', ['-C', srcDir, 'config', 'user.name', 'A']);
+  const write = await realRunner('sh', ['-c', `echo hi > "${join(srcDir, 'f.txt')}"`]);
+  assert.equal(write.code, 0);
+  await realRunner('git', ['-C', srcDir, 'add', 'f.txt']);
+  await realRunner('git', ['-C', srcDir, 'commit', '--quiet', '-m', 'one']);
+  const clone = await realRunner('git', ['clone', '--quiet', '--bare', srcDir, mirrorDir]);
+  assert.equal(clone.code, 0);
+
+  await assert.rejects(readLog(mirrorDir, 'no-such-branch'), (err) => {
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /no-such-branch/);
+    return true;
+  });
+});
+
 test('syncMirror clones with gh when the mirror does not exist', async () => {
   const calls: Array<{ cmd: string; args: string[] }> = [];
   setRunner(async (cmd, args) => {
