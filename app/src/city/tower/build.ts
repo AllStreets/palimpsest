@@ -56,7 +56,7 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
 
   let width = FLOOR_WIDTH;
   let inRun = 0;
-  let datumPlan = { cx: 0, cz: 0, half: ROOT_TOP_HALF[spec.root] - 0.4, octagon: false, ry: 0 };
+  let datumPlan = { cx: 0, cz: 0, half: ROOT_TOP_HALF[spec.root] - 0.4, ry: 0 };
   layout.floors.forEach(({ floor, y0, h }, i) => {
     const prev = layout.floors[i - 1]?.floor.era;
     const next = layout.floors[i + 1]?.floor.era;
@@ -70,14 +70,12 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
       runStart: prev !== floor.era,
       runEnd: next !== floor.era,
       top: i === layout.floors.length - 1,
+      datum: i === spec.datumIndex - 1,
       rand: rng(floor.id),
     });
     pickables.set(proxy(shape.cx, y0 + h / 2, shape.cz, shape.half * 2, h, ry), floor.id);
     if (i === spec.datumIndex - 1) {
-      datumPlan =
-        floor.era === 'scifi'
-          ? { ...shape, half: shape.half - 0.05, octagon: true, ry: 0 }
-          : { cx: 0, cz: 0, half: width / 2 + (floor.era === 'titanium' ? 0.35 : 0.12), octagon: false, ry };
+      datumPlan = { cx: shape.cx, cz: shape.cz, half: shape.datumHalf, ry };
     }
     width *= TAPER;
   });
@@ -96,7 +94,10 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
     dispose() {
       group.traverse((o) => {
         const m = o as THREE.Mesh;
-        if (m.isMesh && m.geometry !== proxyGeo) m.geometry.dispose();
+        if (!m.isMesh || m.geometry === proxyGeo) return;
+        m.geometry.dispose();
+        // Frees the instance matrix and colour buffers on the GPU.
+        if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
       });
       proxyGeo.dispose();
     },

@@ -81,17 +81,37 @@ function floodlit<T extends THREE.MeshStandardMaterial>(m: T, key: string, stren
   return m;
 }
 
-/** A scanned metal plate's normal and roughness under a flat tint: brushed titanium, cast bronze. */
-function metal(color: number, rough: number, normal: number, physical: boolean): THREE.MeshStandardMaterial {
-  const params = {
+/** A scanned metal plate's normal and roughness under a flat tint: cast bronze. */
+function metal(color: number, rough: number, normal: number): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
     color,
     metalness: 1,
     roughness: rough,
     normalMap: texture('metal_nor.jpg'),
     roughnessMap: texture('metal_arm.jpg'),
     normalScale: new THREE.Vector2(normal, normal),
-  };
-  return physical ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: 0.25, clearcoatRoughness: 0.18 }) : new THREE.MeshStandardMaterial(params);
+  });
+}
+
+/**
+ * Brushed metal: anisotropic highlights stretched along the grain (vertical
+ * on walls and fins), the scanned plate's normal and roughness breaking up
+ * the surface, reflecting the dusk sky's PMREM like the rest of the city.
+ */
+function brushed(color: number, rough: number, aniso: number): THREE.MeshPhysicalMaterial {
+  return new THREE.MeshPhysicalMaterial({
+    color,
+    metalness: 1,
+    roughness: rough,
+    roughnessMap: texture('metal_arm.jpg'),
+    normalMap: texture('metal_nor.jpg'),
+    normalScale: new THREE.Vector2(0.12, 0.12),
+    anisotropy: aniso,
+    anisotropyRotation: Math.PI / 2,
+    envMapIntensity: 1.25,
+    clearcoat: 0.15,
+    clearcoatRoughness: 0.25,
+  });
 }
 
 /**
@@ -268,8 +288,9 @@ export function towerMaterials(): TowerMaterials {
     limestone: stone(0xe2ded6, 'limestone', 0.8, 0.85),
     granite: stone(0x8a8886, 'granite', 1.3, 0.9),
     brick: lib.brick,
-    bronze: metal(0x6b4a2e, 0.42, 0.35, false),
-    titanium: metal(0x9ea3ab, 0.2, 0.2, true),
+    bronze: metal(0x6b4a2e, 0.42, 0.35),
+    titanium: brushed(0x868b93, 0.2, 0.45),
+    graphite: brushed(0x303338, 0.3, 0.4),
     steel: lib.darkMetal,
     slab: lib.concrete,
     window: windowMaterial(),
@@ -277,7 +298,8 @@ export function towerMaterials(): TowerMaterials {
     roofTile: new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.38, metalness: 0.1, envMapIntensity: 1.2 }),
     timber: floodlit(new THREE.MeshStandardMaterial({ color: 0x7a2416, roughness: 0.48 }), 'timber', 0.8),
     plaster: floodlit(new THREE.MeshStandardMaterial({ color: 0xe6dfd2, roughness: 0.92 }), 'plaster', 0.7),
-    lightLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.85, 0.95, 1.1).multiplyScalar(2.2) }),
+    // Warm white (about 3000 K), at a level that reads as a lit reveal rather than neon.
+    lightLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.86, 0.68).multiplyScalar(1.05) }),
     accent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.62, 0.3).multiplyScalar(1.2) }),
     pick: new THREE.MeshBasicMaterial({ visible: false }),
   };

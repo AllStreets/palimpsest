@@ -177,7 +177,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const rect = renderer.domElement.getBoundingClientRect();
     pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     raycaster.setFromCamera(pointer, camera);
-    const hits = raycaster.intersectObject(districtGroup, true);
+    // Only the pickable parts (tower pick proxies, plinth meshes) are tested, not every piece of tower geometry.
+    const targets = centerpieces.flatMap(({ piece }) => [...piece.pickables.keys()]);
+    const hits = raycaster.intersectObjects(targets, false);
     for (const h of hits) {
       for (const { repo, piece } of centerpieces) {
         let o: THREE.Object3D | null = h.object;

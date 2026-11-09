@@ -5,6 +5,7 @@ import {
   face,
   Kit,
   M,
+  ME,
   type MatKey,
   PANE_FULL,
   PANE_SASH,
@@ -26,14 +27,17 @@ export interface FloorContext {
   runEnd: boolean;
   /** The tower's top floor. */
   top: boolean;
+  /** The last floor below the datum line: its run-end cap is left off so the datum band reads clean. */
+  datum: boolean;
   rand: () => number;
 }
 
-/** What a floor builder reports back: its plan centre and half-width, for the pick proxy. */
+/** What a floor builder reports back: its plan centre and half-width (for the pick proxy), and where a datum band at its top would sit clear of its facade. */
 export interface FloorShape {
   cx: number;
   cz: number;
   half: number;
+  datumHalf: number;
 }
 
 /**
@@ -47,8 +51,8 @@ const LIGHTING: Record<Era, { lit: number; warm: number }> = {
   stone: { lit: 0.5, warm: 0.92 },
   brick: { lit: 0.55, warm: 0.85 },
   glass: { lit: 0.8, warm: 0.55 },
-  titanium: { lit: 0.75, warm: 0.3 },
-  scifi: { lit: 0.85, warm: 0.15 },
+  titanium: { lit: 0.55, warm: 0.15 },
+  scifi: { lit: 0.88, warm: 0.5 },
 };
 
 /** Per-window light: whole floors go dark now and then; the rest light by chance, warm or cool. */
@@ -67,14 +71,18 @@ function lighter(era: Era, rand: () => number): (style: number) => THREE.Color {
   };
 }
 
-/** The thin warm accent at the slab edge of a floor Claude co-authored. */
-function claudeAccent(k: Kit, floor: Floor, half: number, y: number): void {
+/**
+ * The thin warm accent at the slab edge of a floor Claude co-authored: a
+ * strip `tall` metres high standing `proud` metres clear of the face at
+ * `half`, so it reads as its own line rather than hiding in a moulding.
+ */
+function claudeAccent(k: Kit, floor: Floor, half: number, y: number, proud = 0.1, tall = 0.1): void {
   if (!floor.claude) return;
   k.add('accent', squareSweep(half, [
     [-0.05, y],
-    [0.015, y],
-    [0.015, y + 0.07],
-    [-0.05, y + 0.07],
+    [proud, y],
+    [proud, y + tall],
+    [-0.05, y + tall],
   ]));
 }
 
@@ -159,9 +167,10 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
     k.add(s.trim, squareSweep(half, [[-0.05, 0], [0.1, 0], [0.1, 0.22], [0.04, 0.3], [-0.05, 0.3]]));
   }
 
-  claudeAccent(k, floor, half + (s.wall === 'brick' ? 0.06 : 0.1), 0.08);
+  // On the string course's upper face (stone) or just above the soldier course (brick), standing clear of both.
+  claudeAccent(k, floor, half, s.wall === 'brick' ? 0.32 : 0.3, 0.12, 0.1);
 
-  if (c.runEnd) {
+  if (c.runEnd && !c.datum) {
     // A cornice closes the run: bed moulding, corona, cymatium, all inside the floor's height.
     const y0 = h - 0.95;
     k.add(s.trim, squareSweep(half, [
@@ -177,7 +186,7 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
       [-0.1, h],
     ]));
   }
-  return { cx: 0, cz: 0, half: half + 0.3 };
+  return { cx: 0, cz: 0, half: half + 0.3, datumHalf: half + 0.12 };
 }
 
 const stone: EraBuilder = (k, w, h, f, c) =>
@@ -210,86 +219,159 @@ const glass: EraBuilder = (k, w, h, f, c) => {
       k.inst('mullion', 'bronze', unitBox, F.clone().multiply(M(u, h / 2, 0.14, 0, 0.1, h, 0.3)));
     }
   }
-  claudeAccent(k, f, half + 0.18, sb - 0.12);
-  if (c.runEnd) {
+  claudeAccent(k, f, half, sb - 0.14, 0.32, 0.1);
+  if (c.runEnd && !c.datum) {
     k.add('bronze', squareSweep(half, [[-0.2, h - 0.6], [0.3, h - 0.6], [0.3, h], [-0.2, h]]));
   }
-  return { cx: 0, cz: 0, half: half + 0.3 };
+  return { cx: 0, cz: 0, half: half + 0.3, datumHalf: half + 0.3 };
 };
 
 // ---------------------------------------------------------------- titanium
 
-/** Titanium: deep blade fins angled to catch the sky, a titanium slab edge, recessed glass; the run twists as it rises. */
+/** A blade fin: an elliptical section 0.24 m thick and 1.3 m deep, 1 m tall and centred, so its curved faces sweep the sky's gradient. */
+function blade(): THREE.BufferGeometry {
+  const g = new THREE.CylinderGeometry(1, 1, 1, 28, 1);
+  g.scale(0.12, 1, 0.65);
+  g.deleteAttribute('normal');
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * Titanium: dark brushed blade fins with a curved section, angled a few
+ * degrees either way so neighbours take different slices of the dusk sky,
+ * a rounded titanium slab nose, and deep-set dark glass; the run twists as
+ * it rises.
+ */
 const titanium: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
   const n = bays(w, 2.0);
   const pitch = w / n;
-  const edge = 0.5;
+  const edge = 0.55;
   const light = lighter(f.era, c.rand);
   k.box('slab', w - 1.2, h, w - 1.2, M(0, h / 2, 0));
-  k.add('titanium', squareSweep(half, [[-0.6, 0], [0.32, 0], [0.4, 0.06], [0.4, edge - 0.06], [0.32, edge], [-0.6, edge]]));
+  // A bull-nosed slab edge: the curve carries a gradient of reflected sky.
+  const nose: Array<[number, number]> = [[-0.6, 0]];
+  for (let i = 0; i <= 10; i++) {
+    const a = -Math.PI / 2 + (Math.PI * i) / 10;
+    nose.push([0.18 + 0.24 * Math.cos(a), edge / 2 + (edge / 2) * Math.sin(a)]);
+  }
+  nose.push([-0.6, edge]);
+  k.add('titanium', squareSweep(half, nose));
   for (let side = 0; side < 4; side++) {
     const F = face(side, half);
     for (let i = 0; i < n; i++) {
       const u = -half + pitch * (i + 0.5);
-      k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(u, (edge + h) / 2, -0.35, 0, pitch, h - edge, 1)), light(PANE_FULL), false);
+      k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(u, (edge + h) / 2, -0.4, 0, pitch, h - edge, 1)), light(PANE_FULL), false);
     }
     for (let i = 1; i < n; i++) {
       const u = -half + pitch * i;
-      // Fins alternate a few degrees either way, so neighbours take different slices of the sky.
-      const a = (i % 2 === 0 ? 1 : -1) * 0.16;
-      k.inst('fin', 'titanium', unitBox, F.clone().multiply(M(u, (edge + h) / 2, 0.3, a, 0.2, h - edge, 1.25)));
+      const a = (i % 2 === 0 ? 1 : -1) * 0.14;
+      k.inst('blade', 'titanium', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32, a, 1, h - edge, 1)));
     }
-    // Corner fins, set square.
-    k.inst('fin', 'titanium', unitBox, F.clone().multiply(M(half - 0.1, (edge + h) / 2, 0.3, 0, 0.2, h - edge, 1.25)));
+    k.inst('blade', 'titanium', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32, 0, 1, h - edge, 1)));
   }
-  claudeAccent(k, f, half + 0.41, edge - 0.2);
-  if (c.runEnd) {
-    k.add('titanium', squareSweep(half, [[-0.6, h - 0.45], [0.55, h - 0.45], [0.55, h], [-0.6, h]]));
+  claudeAccent(k, f, half + 0.42, edge / 2 - 0.05, 0.1, 0.1);
+  if (c.runEnd && !c.datum) {
+    k.add('titanium', squareSweep(half, [[-0.6, h - 0.45], [0.75, h - 0.45], [0.8, h - 0.4], [0.8, h], [-0.6, h]]));
   }
-  return { cx: 0, cz: 0, half: half + 1 };
+  return { cx: 0, cz: 0, half: half + 1, datumHalf: half + 1.0 };
 };
 
 // ---------------------------------------------------------------- sci-fi
 
-/** Sci-fi: octagonal glass floors on titanium plates, stacked in cantilevered blocks of three, each plate edged with a line of light. */
-const scifi: EraBuilder = (k, w, h, f, c) => {
-  const block = Math.floor(c.inRun / 3);
-  const shift = 2.6;
-  const OFF: Array<[number, number]> = [[shift, 0], [0, shift], [-shift, 0], [0, -shift]];
-  const [ox, oz] = c.inRun < 3 ? [0, 0] : OFF[block % 4];
-  const base = k.base.clone();
-  k.base = base.clone().multiply(M(ox, 0, oz));
+/** An axis-aligned box from two corners, in the kit's current frame. */
+function slabBox(k: Kit, mat: MatKey, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): void {
+  k.box(mat, x1 - x0, y1 - y0, z1 - z0, M((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2));
+}
 
-  const flat = w / 2 - 0.4; // centre to face of the glass
-  const R = flat / Math.cos(Math.PI / 8);
-  const plate = 0.5;
+/** A thin rectangular ring of `mat` (lines `t` wide) round the rectangle [x0,x1] x [z0,z1]. */
+function ring(k: Kit, mat: MatKey, x0: number, x1: number, z0: number, z1: number, y0: number, y1: number, t: number): void {
+  slabBox(k, mat, x0, x1, y0, y1, z1 - t, z1);
+  slabBox(k, mat, x0, x1, y0, y1, z0, z0 + t);
+  slabBox(k, mat, x1 - t, x1, y0, y1, z0 + t, z1 - t);
+  slabBox(k, mat, x0, x0 + t, y0, y1, z0 + t, z1 - t);
+}
+
+/**
+ * Sci-fi: a glass core inside a graphite diagrid exoskeleton, on deep
+ * titanium slabs that cantilever past the frame. Slabs run in blocks of
+ * three, each block throwing a deep terrace out on a different side, so the
+ * stack reads as cantilevered trays. Light is part of the build: a warm line
+ * in the reveal between the slab's two fascia bands and a downlight line
+ * set in each soffit. The top floor opens into a crown: the diagrid rises
+ * free round a small glass pavilion under a thin canopy.
+ */
+const scifi: EraBuilder = (k, w, h, f, c) => {
+  const half = w / 2;
+  const core = Math.max(4, half - 2.2);
+  const deep = Math.floor(c.inRun / 3) % 4;
+  // Outward reach of the slab past the glass on each side: +z, +x, -z, -x.
+  const ext = [0, 1, 2, 3].map((s) => (s === deep ? 3.6 : 1.5));
+  const x0 = -(core + ext[3]);
+  const x1 = core + ext[1];
+  const z0 = -(core + ext[2]);
+  const z1 = core + ext[0];
+  const slab = 0.95;
+
+  // Slab: two titanium fascia bands with a recessed light reveal between them, a concrete core.
+  slabBox(k, 'titanium', x0, x1, 0, 0.42, z0, z1);
+  slabBox(k, 'slab', x0 + 0.12, x1 - 0.12, 0.42, 0.52, z0 + 0.12, z1 - 0.12);
+  ring(k, 'lightLine', x0 + 0.1, x1 - 0.1, z0 + 0.1, z1 - 0.1, 0.45, 0.49, 0.04);
+  slabBox(k, 'titanium', x0, x1, 0.52, slab, z0, z1);
+  // Downlight line set into the soffit, a little in from the edge.
+  if (!c.runStart) ring(k, 'lightLine', x0 + 0.45, x1 - 0.45, z0 + 0.45, z1 - 0.45, -0.025, 0, 0.06);
+  if (f.claude) ring(k, 'accent', x0 - 0.03, x1 + 0.03, z0 - 0.03, z1 + 0.03, slab, slab + 0.08, 0.1);
+
   const light = lighter(f.era, c.rand);
-  const octa = (r: number, hh: number, open = false): THREE.BufferGeometry => {
-    const g = new THREE.CylinderGeometry(r, r, hh, 8, 1, open);
-    g.rotateY(Math.PI / 8);
-    return g;
-  };
-  k.add('slab', octa(R - 0.5, h - plate), M(0, plate + (h - plate) / 2, 0));
-  k.add('titanium', octa(R + 0.75, plate), M(0, plate / 2, 0));
-  k.add('lightLine', octa(R + 0.77, 0.05, true), M(0, 0.07, 0));
-  const faceW = 2 * R * Math.sin(Math.PI / 8);
-  for (let s = 0; s < 8; s++) {
-    const F = M(0, 0, 0, (s * Math.PI) / 4).multiply(M(0, 0, flat));
-    const panes = 3;
-    for (let i = 0; i < panes; i++) {
-      const u = -faceW / 2 + (faceW / panes) * (i + 0.5);
-      k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(u, (plate + h) / 2, 0, 0, faceW / panes, h - plate, 1)), light(PANE_FULL), false);
+  const top = c.top ? h - 0.5 : h;
+  // The glass: the full core on ordinary floors, a small pavilion on the crown.
+  const glassHalf = c.top ? core * 0.55 : core;
+  k.box('slab', glassHalf * 2 - 0.8, top - slab, glassHalf * 2 - 0.8, M(0, (slab + top) / 2, 0));
+  const nb = Math.max(2, Math.round((glassHalf * 2) / 1.7));
+  const bw = (glassHalf * 2) / nb;
+  for (let side = 0; side < 4; side++) {
+    const F = face(side, glassHalf);
+    for (let i = 0; i < nb; i++) {
+      k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(-glassHalf + bw * (i + 0.5), (slab + top) / 2, 0, 0, bw, top - slab, 1)), light(PANE_FULL), false);
     }
-    // A titanium rib at each corner of the octagon.
-    const corner = M(0, 0, 0, (s * Math.PI) / 4 + Math.PI / 8).multiply(M(0, (plate + h) / 2, R + 0.05));
-    k.inst('rib', 'titanium', unitBox, corner.multiply(M(0, 0, 0, 0, 0.3, h - plate, 0.3)));
+    for (let i = 0; i <= nb; i++) {
+      k.inst('sf:mullion', 'graphite', unitBox, F.clone().multiply(M(-glassHalf + bw * i, (slab + top) / 2, 0.06, 0, 0.07, top - slab, 0.14)));
+    }
   }
-  if (f.claude) {
-    k.add('accent', octa(R + 0.78, 0.07, true), M(0, plate - 0.12, 0));
+
+  // Diagrid exoskeleton, 0.6 m outside the glass line: each floor's nodes sit half a module along from the floor
+  // below's, so the members form diamonds two storeys tall.
+  const frame = core + 0.6;
+  const modules = Math.max(2, Math.round((frame * 2) / 5));
+  const p = (frame * 2) / modules;
+  const off = (c.inRun % 2) * (p / 2);
+  const rise = top - slab;
+  for (let side = 0; side < 4; side++) {
+    const F = face(side, frame);
+    for (let j = -1; j <= modules + 1; j++) {
+      const u = -frame + off + j * p;
+      if (u < -frame - 1e-6 || u > frame + 1e-6) continue;
+      for (const dir of [-1, 1]) {
+        const u1 = u + dir * (p / 2);
+        if (u1 < -frame - 1e-6 || u1 > frame + 1e-6) continue;
+        const dx = u1 - u;
+        const len = Math.hypot(dx, rise);
+        k.inst('sf:diagrid', 'graphite', unitBox, F.clone().multiply(ME((u + u1) / 2, slab + rise / 2, 0, 0, 0, -Math.atan2(dx, rise), 0.34, len, 0.46)));
+      }
+    }
+    // Corner mast where two faces of the frame meet.
+    k.inst('sf:mast', 'graphite', unitBox, F.clone().multiply(M(frame, slab + rise / 2, 0, 0, 0.6, rise, 0.6)));
   }
-  k.base = base;
-  return { cx: ox, cz: oz, half: R + 0.8 };
+
+  if (c.top) {
+    // Crown canopy over the frame, with its own soffit downlight.
+    const ch = frame + 0.25;
+    slabBox(k, 'titanium', -ch, ch, h - 0.5, h, -ch, ch);
+    ring(k, 'lightLine', -ch + 0.35, ch - 0.35, -ch + 0.35, ch - 0.35, h - 0.525, h - 0.5, 0.06);
+  }
+  const reach = Math.max(...ext) + core;
+  return { cx: 0, cz: 0, half: reach + 0.1, datumHalf: c.top ? frame + 0.25 : core };
 };
 
 export const ERA_BUILDERS: Record<Era, EraBuilder> = { stone, brick, glass, titanium, scifi };

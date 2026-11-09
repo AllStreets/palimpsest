@@ -22,6 +22,8 @@ export interface TowerMaterials {
   titanium: THREE.Material;
   /** Dark painted steel: frames, reveals, roof edges. */
   steel: THREE.Material;
+  /** Dark graphite metal: the sci-fi exoskeleton. */
+  graphite: THREE.Material;
   /** Concrete slab edges and soffits. */
   slab: THREE.Material;
   /** Glazing over a lit room (interior-mapped in the browser). Reads per-instance colour as data. */

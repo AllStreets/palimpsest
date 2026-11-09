@@ -17,7 +17,7 @@ const RESERVE_RADIUS = 90;
 /** Plain materials: no textures, no DOM, so the tower builds in Node. */
 function plainMaterials(): TowerMaterials {
   const keys: Array<keyof TowerMaterials> = [
-    'sand', 'travertine', 'gothic', 'limestone', 'granite', 'brick', 'bronze', 'titanium', 'steel', 'slab',
+    'sand', 'travertine', 'gothic', 'limestone', 'granite', 'brick', 'bronze', 'titanium', 'steel', 'graphite', 'slab',
     'window', 'stained', 'roofTile', 'timber', 'plaster', 'lightLine', 'accent', 'pick',
   ];
   return Object.fromEntries(keys.map((k) => [k, new THREE.MeshStandardMaterial()])) as unknown as TowerMaterials;
@@ -46,7 +46,18 @@ function spec(root: RootStyle, per = 3): TowerSpec {
   return { id: `acme/widgets#founding`, repo: 'acme/widgets', kind: 'founding', root, floors, datumIndex: floors.length };
 }
 
+/** Bounds of what renders: invisible pick proxies are left out, so a short structure cannot pass on its proxies alone. */
 function bounds(o: THREE.Object3D): THREE.Box3 {
+  o.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  o.traverseVisible((c) => {
+    if ((c as THREE.Mesh).isMesh) box.expandByObject(c, false);
+  });
+  return box;
+}
+
+/** Bounds of one object regardless of visibility (pick proxies). */
+function proxyBounds(o: THREE.Object3D): THREE.Box3 {
   o.updateMatrixWorld(true);
   return new THREE.Box3().setFromObject(o);
 }
@@ -70,7 +81,7 @@ test('one pickable per floor', () => {
   const laid = new Map(layoutTower(s).floors.map((l) => [l.floor.id, l]));
   for (const [proxy, id] of t.pickables) {
     const l = laid.get(id)!;
-    const b = bounds(proxy);
+    const b = proxyBounds(proxy);
     assert.ok(Math.abs(b.min.y - l.y0) < 1e-6 && Math.abs(b.max.y - (l.y0 + l.h)) < 1e-6, `proxy for ${id} spans its floor`);
   }
 });
@@ -107,7 +118,22 @@ test('the root alone stands at its own height for every style', () => {
   for (const root of ROOTS) {
     const s = spec(root, 1);
     const t = buildTower(s, 'medium', plainMaterials());
-    const rootBox = bounds(t.rootPick);
+    const rootBox = proxyBounds(t.rootPick);
     assert.ok(Math.abs(rootBox.max.y - ROOT_HEIGHT[root]) < 1e-6, `${root} root proxy tops out at ${ROOT_HEIGHT[root]}`);
   }
+});
+
+test('dispose frees instanced buffers as well as geometry', () => {
+  const t = buildTower(spec('gothic', 2), 'high', plainMaterials());
+  let instanced = 0;
+  let freed = 0;
+  t.group.traverse((o) => {
+    if ((o as THREE.InstancedMesh).isInstancedMesh) {
+      instanced++;
+      o.addEventListener('dispose', () => freed++);
+    }
+  });
+  t.dispose();
+  assert.ok(instanced > 0);
+  assert.equal(freed, instanced);
 });
