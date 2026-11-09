@@ -6,6 +6,12 @@ import { classifyGhFailure, classifySpawnError } from './github.js';
 import { paths } from './home.js';
 
 const TIMEOUT_MS = 120_000;
+/**
+ * A first clone downloads the whole history, which for a large repo on a slow
+ * link can take minutes (221 MB took 106 s on his connection), so it gets far
+ * longer than the incremental fetch and log calls.
+ */
+export const CLONE_TIMEOUT_MS = 600_000;
 
 // Record separator / unit separator used to delimit fields in the git log
 // format string below, chosen because they never occur in normal commit text.
@@ -52,7 +58,7 @@ export async function syncMirror(fullName: string): Promise<string> {
 
   let result: { stdout: string; stderr: string; code: number };
   try {
-    result = await runner('gh', ['repo', 'clone', fullName, dir, '--', '--bare'], { timeoutMs: TIMEOUT_MS });
+    result = await runner('gh', ['repo', 'clone', fullName, dir, '--', '--bare'], { timeoutMs: CLONE_TIMEOUT_MS });
   } catch (err) {
     throw classifySpawnError(err);
   }

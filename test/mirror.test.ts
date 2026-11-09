@@ -7,7 +7,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { realRunner, setRunner } from '../engine/exec.js';
 import { GhError } from '../engine/github.js';
 import { paths } from '../engine/home.js';
-import { parseLog, readLog, syncMirror } from '../engine/mirror.js';
+import { CLONE_TIMEOUT_MS, parseLog, readLog, syncMirror } from '../engine/mirror.js';
 
 let tempDir: string;
 let previousHome: string | undefined;
@@ -196,4 +196,19 @@ test('readLog sizes a true merge commit by its diff against the first parent', a
       ['Merge pull request #1', 3],
     ],
   );
+});
+
+test('syncMirror gives a first clone ten minutes, not the two allowed other commands', async () => {
+  // A cold clone of a 221 MB repo took 106 s on a real link, close to the old
+  // 120 s limit; a slower link would have timed it out on every retry.
+  const timeouts: Array<number | undefined> = [];
+  setRunner(async (_cmd, _args, opts) => {
+    timeouts.push(opts?.timeoutMs);
+    return { stdout: '', stderr: '', code: 0 };
+  });
+
+  await syncMirror('AllStreets/palimpsest');
+
+  assert.equal(CLONE_TIMEOUT_MS, 600_000);
+  assert.deepEqual(timeouts, [CLONE_TIMEOUT_MS]);
 });
