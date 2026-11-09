@@ -23,6 +23,58 @@ export function ago(ms: number, now = Date.now()): string {
   return `${plural(Math.floor(h / 24), 'day')} ago`;
 }
 
+export interface LatestWins<T> {
+  /** Records `v` as what the user wants; sends it now, or when the request in flight settles. */
+  set(v: T): void;
+  readonly busy: boolean;
+  /** What the user last asked for, while a request is in flight. */
+  readonly want: T | undefined;
+}
+
+/**
+ * One request at a time for one control, and the user's last choice always
+ * wins: a change made while a request is in flight is not sent alongside
+ * it (so requests never cross), but is sent once it settles if it still
+ * differs from what was sent. `onBusy` marks the control while it waits.
+ */
+export function latestWins<T>(send: (v: T) => Promise<void>, onBusy: (busy: boolean) => void): LatestWins<T> {
+  let busy = false;
+  let want: T | undefined;
+  let sent: T | undefined;
+  const run = async (): Promise<void> => {
+    busy = true;
+    onBusy(true);
+    try {
+      while (want !== sent) {
+        sent = want;
+        await send(sent as T).catch(() => {});
+      }
+    } finally {
+      busy = false;
+      sent = undefined;
+      onBusy(false);
+    }
+  };
+  return {
+    set(v) {
+      want = v;
+      if (!busy) void run();
+    },
+    get busy() {
+      return busy;
+    },
+    get want() {
+      return busy ? want : undefined;
+    },
+  };
+}
+
+/** Marks a control as waiting on the engine: aria-busy, and a quieter look in CSS. */
+export function markBusy(el: HTMLElement, busy: boolean): void {
+  if (busy) el.setAttribute('aria-busy', 'true');
+  else el.removeAttribute('aria-busy');
+}
+
 export interface Switch {
   el: HTMLButtonElement;
   on: boolean;

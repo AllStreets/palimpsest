@@ -31,6 +31,8 @@ const PORT = 4779;
 const VIEWPORT = { width: 1600, height: 940 };
 
 const failures: string[] = [];
+/** True while a check aborts requests on purpose: the browser's own "Failed to load resource" line is then expected. */
+let abortingRequests = false;
 function check(ok: boolean, what: string): void {
   console.log(`${ok ? 'ok  ' : 'FAIL'}  ${what}`);
   if (!ok) failures.push(what);
@@ -536,6 +538,23 @@ async function reposChecks(page: Page): Promise<void> {
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(SHOTS, 'repos-states.png') });
 
+  // Rapid on, off, on while the first connect is in flight: the last choice wins.
+  const quick = 'quill/marginalia';
+  const sw = page.locator(`${rowSel(quick)} [role="switch"].connect`);
+  await sw.click();
+  await sw.click();
+  await sw.click();
+  const quickSeen = new Set<string>();
+  const quickReady = await waitStatus(page, quick, 'ready', quickSeen);
+  const quickRepo = ((await page.evaluate(() => fetch('/api/repos').then((r) => r.json()))) as Repo[]).find((r) => r.fullName === quick);
+  check(quickReady && quickRepo?.connected === true, `a rapid on, off, on ends connected and ready (${[...quickSeen].join(' > ')})`);
+  check((await sw.getAttribute('aria-checked')) === 'true', 'and the switch shows on');
+
+  // The running head and the facts line count the same thing.
+  const head = (await page.locator('.runhead-count').textContent())?.trim();
+  const facts = (await page.locator('.sheet.repos .sheet-facts').textContent()) ?? '';
+  check(facts.startsWith(`${head} of`), `the running head count matches the facts line (${head}; ${facts.split('.')[0]})`);
+
   // Push mode by keyboard: focus the switch, Space flips it, and it persists.
   const push = page.locator(`${rowSel('marlow/tidepool-notes')} [role="switch"].push`);
   await push.focus();
@@ -644,9 +663,17 @@ async function settingsChecks(page: Page, claudeSettingsPath: string): Promise<v
 
   // Caps: typed, stored.
   const day = page.locator('input.cap-day');
+  let capPatches = 0;
+  const countPatch = (r: { method(): string; url(): string }) => {
+    if (r.method() === 'PATCH' && r.url().endsWith('/api/settings')) capPatches++;
+  };
+  page.on('request', countPatch);
   await day.fill('40');
   await day.press('Enter');
+  await day.blur();
   await page.waitForTimeout(400);
+  page.off('request', countPatch);
+  check(capPatches === 1, `Enter then leaving the field sends one PATCH (${capPatches})`);
   let st = (await page.evaluate(() => fetch('/api/settings').then((r) => r.json()))) as { dayCapPct: number; quality: string };
   check(st.dayCapPct === 40, `the day cap is stored (${st.dayCapPct})`);
   await day.focus();
@@ -689,6 +716,19 @@ async function settingsChecks(page: Page, claudeSettingsPath: string): Promise<v
   await page.waitForTimeout(400);
   await page.screenshot({ path: join(SHOTS, 'settings-1280.png') });
   await page.setViewportSize(VIEWPORT);
+
+  // The engine not answering: no empty fields, no buttons, a plain sentence.
+  await page.locator('.runhead a[data-route="city"]').click();
+  abortingRequests = true;
+  await page.route('**/api/settings', (r) => r.abort());
+  await page.locator('.runhead a[data-route="settings"]').click();
+  await page.waitForTimeout(600);
+  check(/did not answer/.test((await page.locator('.hook-state').textContent()) ?? ''), 'settings that fail to load say the engine did not answer');
+  check(!(await page.locator('.hook-install').isVisible()) && !(await page.locator('.hook-remove').isVisible()), 'and show neither hook button');
+  check(!(await page.locator('input.cap-day').isVisible()), 'and no empty cap fields');
+  await page.screenshot({ path: join(SHOTS, 'settings-down.png') });
+  await page.unroute('**/api/settings');
+  abortingRequests = false;
   await page.locator('#settings-title').focus();
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
@@ -721,7 +761,7 @@ async function main(): Promise<void> {
     const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: Number(process.env.UI_DPR ?? 1) });
     const consoleErrors: string[] = [];
     page.on('console', (m) => {
-      if (m.type() === 'error') consoleErrors.push(m.text());
+      if (m.type() === 'error' && !(abortingRequests && /net::ERR_FAILED/.test(m.text()))) consoleErrors.push(m.text());
     });
     page.on('pageerror', (e) => consoleErrors.push(String(e)));
 

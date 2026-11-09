@@ -465,3 +465,56 @@ test('patching the root restyles the standing tower', async () => {
   assert.equal(city()[0].tower.root, other);
   assert.equal(city()[0].tower.floors.length, 1);
 });
+
+/** A Runner whose `gh repo view` waits for `gate`, so a test can act while the first analysis is mid-flight. */
+function gatedRunner(fullName: string, gate: Promise<void>) {
+  return async (cmd: string, args: string[]) => {
+    if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') {
+      await gate;
+      return { stdout: JSON.stringify(repoViewRow(fullName)), stderr: '', code: 0 };
+    }
+    if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'clone') return { stdout: '', stderr: '', code: 0 };
+    if (cmd === 'git' && args.includes('log')) return { stdout: rawLog([]), stderr: '', code: 0 };
+    if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'list') return { stdout: '[]', stderr: '', code: 0 };
+    throw new Error(`unexpected command ${cmd} ${args.join(' ')}`);
+  };
+}
+
+test('on, off, on during an analysis ends connected (connect reconnects an analyzing repo)', async () => {
+  const fullName = 'acme/widgets';
+  let release: () => void = () => {};
+  setRunner(gatedRunner(fullName, new Promise<void>((r) => (release = r))));
+  const connectedEvents: Event[] = [];
+  const unsubscribe = subscribe((e) => {
+    if (e.type === 'repo.connected') connectedEvents.push(e);
+  });
+
+  await connect(fullName);
+  disconnect(fullName);
+  const again = await connect(fullName);
+  unsubscribe();
+  assert.equal(again.connected, true, 'the last connect must not be dropped while the first analysis runs');
+  assert.equal(listRepos()[0].connected, true);
+  assert.equal(connectedEvents.length, 2, 'the reconnect is announced');
+
+  const analyzed = waitForEvent('repo.analyzed');
+  release();
+  await analyzed;
+  assert.equal(listRepos()[0].connected, true);
+  assert.equal(city().length, 1);
+});
+
+test('disconnecting during an analysis stays disconnected when the analysis finishes', async () => {
+  const fullName = 'acme/widgets';
+  let release: () => void = () => {};
+  setRunner(gatedRunner(fullName, new Promise<void>((r) => (release = r))));
+
+  await connect(fullName);
+  disconnect(fullName);
+  const analyzed = waitForEvent('repo.analyzed');
+  release();
+  const e = await analyzed;
+  assert.equal(listRepos()[0].connected, false, 'the finished analysis must not reconnect the repo');
+  assert.equal((e.data as { repo: { connected: boolean } }).repo.connected, false);
+  assert.deepEqual(city(), []);
+});

@@ -1,6 +1,6 @@
 import type { Settings, UsageWindow } from '../../../shared/types';
 import { api, type EngineEvent, type UsageState } from '../api';
-import { ago, button, checkRadio, createSheet, createSwitch, el, rovingRadios, textButton } from './controls';
+import { ago, button, checkRadio, createSheet, createSwitch, el, latestWins, markBusy, rovingRadios, textButton } from './controls';
 
 export interface SettingsScreen {
   show(): void;
@@ -84,6 +84,9 @@ export function createSettings(
   claude.main.append(hookState, hookNote, hookError);
   const install = button('hook-install', 'Install', () => void setHook(true));
   const remove = button('hook-remove', 'Remove', () => void setHook(false));
+  // Neither button shows until the engine says which state the hook is in.
+  install.hidden = true;
+  remove.hidden = true;
   claude.side.append(install, remove);
 
   const later = row(providers, 'Later', 'with the market');
@@ -147,14 +150,15 @@ export function createSettings(
   // ---------------------------------------------------------------- caps
 
   const caps = section('Caps', 'caps');
-  const capFields: Record<'dayCapPct' | 'nightCapPct', { setSaved(v: number): void }> = {
+  const capFields: Record<'dayCapPct' | 'nightCapPct', { setSaved(v: number): void; hide(): void }> = {
     dayCapPct: capRow('By day', 'cap-day', 'dayCapPct'),
     nightCapPct: capRow('By night', 'cap-night', 'nightCapPct'),
   };
-  caps.append(el('p', 'set-foot', 'The most of each usage window the city may spend. Stored now, enforced when the market opens.'));
+  const capsDown = el('p', 'set-foot');
+  caps.append(capsDown, el('p', 'set-foot', 'The most of each usage window the city may spend. Stored now, enforced when the market opens.'));
 
   /** A cap field: type a number and press Enter (or leave it), or step by 5 with the arrow keys. */
-  function capRow(label: string, cls: string, key: 'dayCapPct' | 'nightCapPct'): { setSaved(v: number): void } {
+  function capRow(label: string, cls: string, key: 'dayCapPct' | 'nightCapPct'): { setSaved(v: number): void; hide(): void } {
     const r = row(caps, label);
     const field = el('label', 'cap-field');
     const input = el('input', `cap ${cls}`);
@@ -165,28 +169,31 @@ export function createSettings(
     field.append(input, el('span', 'cap-unit', '%'));
     r.main.append(field, el('span', 'cap-of', 'of each window'));
     let saved = 0;
-    const commit = async (value: number): Promise<void> => {
+    // One PATCH at a time, the last value typed winning; a value already saved or already on its way is not sent again.
+    const sync = latestWins<number>(
+      async (v) => {
+        saved = (await api.patchSettings({ [key]: v }))[key];
+      },
+      (busy) => {
+        if (!busy) input.value = String(saved);
+      },
+    );
+    const commit = (value: number): void => {
       const v = Math.max(0, Math.min(100, Math.round(value)));
       input.value = String(v);
-      if (v === saved) return;
-      try {
-        const s = await api.patchSettings({ [key]: v });
-        saved = s[key];
-        input.value = String(saved);
-      } catch {
-        input.value = String(saved);
-      }
+      if (sync.busy ? v === sync.want : v === saved) return;
+      sync.set(v);
     };
     input.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault();
         const now = Number(input.value) || 0;
-        void commit(e.key === 'ArrowUp' ? Math.floor(now / 5) * 5 + 5 : Math.ceil(now / 5) * 5 - 5);
+        commit(e.key === 'ArrowUp' ? Math.floor(now / 5) * 5 + 5 : Math.ceil(now / 5) * 5 - 5);
       } else if (e.key === 'Enter') {
         e.preventDefault();
         const n = Number(input.value);
         if (input.value.trim() === '' || !Number.isFinite(n)) input.value = String(saved);
-        else void commit(n);
+        else commit(n);
       } else if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
@@ -197,12 +204,17 @@ export function createSettings(
     input.addEventListener('blur', () => {
       const n = Number(input.value);
       if (input.value.trim() === '' || !Number.isFinite(n)) input.value = String(saved);
-      else void commit(n);
+      else commit(n);
     });
+    field.hidden = true;
     return {
       setSaved(v) {
         saved = v;
         input.value = String(v);
+        field.hidden = false;
+      },
+      hide() {
+        field.hidden = true;
       },
     };
   }
@@ -263,11 +275,13 @@ export function createSettings(
     stopState,
     el('p', 'set-note', 'Writes a stop file in the data folder. From the market on, nothing starts while it is there. Turn it off to remove the file.'),
   );
-  const kill = createSwitch('kill', 'Stop everything', (on) => void setStopped(on));
+  const kill = createSwitch('kill', 'Stop everything', (on) => killSync.set(on));
+  const killSync = latestWins<boolean>(setStopped, (busy) => markBusy(kill.el, busy));
   stopRow.side.append(kill.el);
 
   function fillStop(stopped: boolean): void {
-    kill.set(stopped);
+    // While a request is in flight the switch keeps showing what the user last asked for.
+    kill.set(killSync.want ?? stopped);
     stopRow.row.classList.toggle('stopped', stopped);
     stopState.textContent = stopped ? 'Stopped. The stop file is in place.' : 'Running';
     opts.onStopped(stopped);
@@ -332,9 +346,22 @@ export function createSettings(
       capFields.nightCapPct.setSaved(s.nightCapPct);
       checkRadio(qGroup, qGroup.querySelector<HTMLElement>(`[data-quality="${s.quality}"]`));
       fillQualityNote(s.quality);
-    }
+      qGroup.hidden = false;
+      capsDown.replaceChildren();
+    } else fillUnavailable();
     fillUsage(u);
     if (h) fillStop(h.stopped);
+  }
+
+  /** Settings could not be read: say so where the values would be, rather than show empty fields. */
+  function fillUnavailable(): void {
+    hookState.replaceChildren(el('span', 'set-error', 'The engine did not answer.'));
+    install.hidden = true;
+    remove.hidden = true;
+    for (const main of [capsDown, qNote]) main.replaceChildren(el('span', 'set-error', 'The engine did not answer.'));
+    qGroup.hidden = true;
+    capFields.dayCapPct.hide();
+    capFields.nightCapPct.hide();
   }
 
   function onEvent(e: EngineEvent): void {

@@ -80,6 +80,8 @@ async function main(): Promise<void> {
   window.__palimpsest = debug;
 
   let districts: District[] = [];
+  /** Connected repos, as the Repos screen counts them (analyzing and failed ones included), for the running head. */
+  const connectedRepos = new Set<string>();
   /** Repos whose first analysis is running, with the step it reached. */
   const analyzing = new Map<string, { slot: number; step: string; done?: boolean }>();
   const byRepo = (repo: string): District | undefined => districts.find((d) => d.repo === repo);
@@ -176,7 +178,6 @@ async function main(): Promise<void> {
     debug.districts = next.length;
     // A repo whose tower has arrived is no longer a site, however its events were ordered.
     for (const d of next) analyzing.delete(d.repo);
-    runhead.setConnected(next.length);
     // A finished analysis whose repo has no district (disconnected meanwhile) leaves no scaffold behind.
     for (const [repo, a] of analyzing) if (a.done) analyzing.delete(repo);
     showSites();
@@ -188,6 +189,8 @@ async function main(): Promise<void> {
   try {
     const [loaded, repos] = await Promise.all([api.city(), api.repos().catch(() => [] as Repo[])]);
     for (const r of repos) if (r.connected && r.status === 'analyzing') analyzing.set(r.fullName, { slot: r.slot, step: '' });
+    for (const r of repos) if (r.connected) connectedRepos.add(r.fullName);
+    runhead.setConnected(connectedRepos.size);
     show(loaded);
   } catch (err) {
     console.warn('could not load the city from the engine', err);
@@ -213,6 +216,12 @@ async function main(): Promise<void> {
       // The scaffold stays until the refresh below brings the tower, so the site is never briefly empty.
       const a = analyzing.get(repo.fullName);
       if (a) a.done = true;
+    }
+    // Every repo event carries the repo as stored when it was sent, toggles included.
+    if (repo?.fullName && typeof repo.connected === 'boolean') {
+      if (repo.connected) connectedRepos.add(repo.fullName);
+      else connectedRepos.delete(repo.fullName);
+      runhead.setConnected(connectedRepos.size);
     }
     if (e.type === 'engine.stopped' || e.type === 'engine.resumed') runhead.setStopped(e.type === 'engine.stopped');
     if (REFRESH_ON.has(e.type)) refresh();

@@ -145,7 +145,13 @@ function nextSlot(): number {
 export async function connect(fullName: string): Promise<Repo> {
   const existing = loadRepo(fullName);
   if (existing && existing.status === 'analyzing') {
-    return existing;
+    // The analysis already running serves this connect too; only the toggle
+    // needs restoring when it was turned off meanwhile (on, off, on).
+    if (existing.connected) return existing;
+    const reconnected = saveRepo({ ...existing, connected: true });
+    record('repo.connected', { repo: fullName });
+    emit('repo.connected', { repo: reconnected });
+    return reconnected;
   }
 
   const now = new Date().toISOString();
@@ -192,31 +198,33 @@ export async function analyze(fullName: string): Promise<void> {
       throw new Error(`analyze: ${fullName} has not been connected`);
     }
 
-    emit('repo.analyzing', { repo, step: 'mirror' });
+    // Each step event carries the repo as stored now, so a toggle changed mid-analysis is never reported stale.
+    emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'mirror' });
     const meta = await repoMeta(fullName);
-    repo = saveRepo({ ...repo, ...meta });
+    // Re-read before each write: the toggles (connected, pushMode, root) may have changed while gh ran.
+    repo = saveRepo({ ...(loadRepo(fullName) ?? repo), ...meta });
     const dir = await syncMirror(fullName);
 
-    emit('repo.analyzing', { repo, step: 'log' });
+    emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'log' });
     const commits = await readLog(dir, repo.defaultBranch);
 
-    emit('repo.analyzing', { repo, step: 'prs' });
+    emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'prs' });
     const prs = await mergedPRs(fullName);
 
-    emit('repo.analyzing', { repo, step: 'floors' });
+    emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'floors' });
     const floors = foundingFloors(fullName, commits, prs);
 
     const tower: TowerSpec = {
       id: `${fullName}#founding`,
       repo: fullName,
       kind: 'founding',
-      root: repo.root,
+      root: loadRepo(fullName)?.root ?? repo.root,
       floors,
       datumIndex: floors.length,
     };
     saveTower(tower);
 
-    repo = saveRepo({ ...repo, status: 'ready', error: null, analyzedAt: new Date().toISOString() });
+    repo = saveRepo({ ...(loadRepo(fullName) ?? repo), status: 'ready', error: null, analyzedAt: new Date().toISOString() });
     emit('repo.analyzed', { repo });
     record('repo.analyzed', { repo: fullName, floors: floors.length });
   } catch (err) {

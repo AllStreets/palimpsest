@@ -209,6 +209,18 @@ body[data-route='city'] .runhead-count {
   transform: translateX(15px);
   background: linear-gradient(#e7c9a0, #a97a49);
 }
+/* Waiting on the engine: the knob dims and the cursor says so; a further click is kept and sent after. */
+.slide[aria-busy='true'],
+.root-picker[aria-busy='true'] {
+  cursor: progress;
+}
+.slide[aria-busy='true'] .slide-knob {
+  opacity: 0.6;
+}
+.root-picker[aria-busy='true'] .root-choice {
+  cursor: progress;
+  opacity: 0.7;
+}
 .slide:focus-visible {
   outline: 1px solid var(--focus);
   outline-offset: 3px;
@@ -634,6 +646,12 @@ body[data-route='city'] .runhead-count {
   font-size: 13px;
   line-height: 1.5;
   color: var(--ink-2);
+}
+.set-foot:empty,
+.quality-picker[hidden],
+.cap-field[hidden],
+.cap-field[hidden] + .cap-of {
+  display: none;
 }
 .set-path {
   white-space: nowrap;

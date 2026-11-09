@@ -1,6 +1,19 @@
 import type { District, Repo, RootStyle } from '../../../shared/types';
 import { api, type AvailableRepo, type EngineEvent } from '../api';
-import { button, checkRadio, createSheet, createSwitch, el, plural, rovingRadios, type Switch, textButton } from './controls';
+import {
+  button,
+  checkRadio,
+  createSheet,
+  createSwitch,
+  el,
+  latestWins,
+  type LatestWins,
+  markBusy,
+  plural,
+  rovingRadios,
+  type Switch,
+  textButton,
+} from './controls';
 import { ROOT_NAMES } from './inspector';
 
 const ROOTS: RootStyle[] = ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago'];
@@ -52,6 +65,10 @@ interface Row {
   fullName: string;
   el: HTMLElement;
   connect: Switch;
+  /** One request at a time per control, the user's last choice winning: connect, push mode, root. */
+  connectSync: LatestWins<boolean>;
+  pushSync: LatestWins<boolean> | null;
+  rootSync: LatestWins<RootStyle> | null;
   /** The status line: what the analysis says (rebuilt only when it changes), then Disconnect at the right. */
   status: HTMLElement;
   statusBody: HTMLElement;
@@ -146,14 +163,17 @@ export function createRepos(
     const known = stored.get(repo.fullName);
     if (e.type === 'repo.analyzing') {
       // The step event carries the repo as analysis found it; keep what this screen already knows of its toggles.
-      stored.set(repo.fullName, { ...(known ?? repo), ...repo, status: 'analyzing', connected: known?.connected ?? true });
+      stored.set(repo.fullName, { ...(known ?? repo), status: 'analyzing', error: null });
       steps.set(repo.fullName, data?.step ?? '');
     } else if (e.type === 'repo.error') {
       stored.set(repo.fullName, { ...repo, status: 'error', error: data?.error ?? repo.error });
     } else if (e.type === 'repo.analyzed') {
       // Ready and its floor count arrive together: the row never says a bare "Ready" first.
+      // A disconnect or patch may land while the city is fetched: the toggles come from the latest
+      // state this screen holds, only the analysis result from the event.
       void api.city().then(readFloors, () => {}).finally(() => {
-        stored.set(repo.fullName, repo);
+        const latest = stored.get(repo.fullName) ?? repo;
+        stored.set(repo.fullName, { ...latest, status: repo.status, error: repo.error, analyzedAt: repo.analyzedAt });
         render();
       });
       return;
@@ -215,7 +235,7 @@ export function createRepos(
     const [owner, name] = fullName.split('/');
     const li = el('li', 'repo-row');
     li.dataset.repo = fullName;
-    const connect = createSwitch('connect', `Connect ${fullName}`, (on) => void setConnected(fullName, on));
+    const connect = createSwitch('connect', `Connect ${fullName}`, (on) => row.connectSync.set(on));
 
     const head = el('div', 'repo-head');
     const title = el('span', 'repo-name', name ?? fullName);
@@ -231,7 +251,10 @@ export function createRepos(
     const statusBody = el('p', 'repo-status-body');
     statusBody.setAttribute('aria-live', 'polite');
     status.append(statusBody);
-    const disconnect = textButton('repo-disconnect', 'Disconnect', () => void setConnected(fullName, false));
+    const disconnect = textButton('repo-disconnect', 'Disconnect', () => {
+      row.connect.set(false);
+      row.connectSync.set(false);
+    });
     disconnect.setAttribute('aria-label', `Disconnect ${fullName}`);
     const desc = el('p', 'repo-desc', meta.description ?? '');
     if (!meta.description) desc.hidden = true;
@@ -241,6 +264,15 @@ export function createRepos(
       fullName,
       el: li,
       connect,
+      connectSync: latestWins<boolean>(
+        (on) => setConnected(fullName, on),
+        (busy) => {
+          markBusy(connect.el, busy);
+          if (!busy) render();
+        },
+      ),
+      pushSync: null,
+      rootSync: null,
       status,
       statusBody,
       statusKey: '',
@@ -279,13 +311,27 @@ export function createRepos(
       const r = b.dataset.root as RootStyle;
       checkRadio(group, b);
       rootName.textContent = ROOT_NAMES[r];
-      if (stored.get(row.fullName)?.root !== r) void patch(row.fullName, { root: r });
+      row.rootSync?.set(r);
     };
     rovingRadios(group, choose);
     rootWrap.append(rootLabel, group, rootName);
 
     const pushWrap = el('div', 'repo-push');
-    const push = createSwitch('push', `Push mode for ${row.fullName}`, (on) => void patch(row.fullName, { pushMode: on }));
+    const push = createSwitch('push', `Push mode for ${row.fullName}`, (on) => row.pushSync?.set(on));
+    row.pushSync = latestWins<boolean>(
+      (on) => patch(row.fullName, { pushMode: on }),
+      (busy) => {
+        markBusy(push.el, busy);
+        if (!busy) render();
+      },
+    );
+    row.rootSync = latestWins<RootStyle>(
+      (r) => (stored.get(row.fullName)?.root === r ? Promise.resolve() : patch(row.fullName, { root: r })),
+      (busy) => {
+        markBusy(group, busy);
+        if (!busy) render();
+      },
+    );
     const pushText = el('span', 'repo-push-text');
     pushText.append(el('span', 'repo-ctl-label', 'Push mode'), el('span', 'repo-push-note', 'takes effect when the market opens'));
     pushText.addEventListener('click', () => push.el.click());
@@ -359,16 +405,19 @@ export function createRepos(
         const row = rowFor(fullName, all.get(fullName)!);
         const repo = stored.get(fullName);
         const on = !!repo?.connected;
-        row.connect.set(on);
+        // While a request is in flight the switch shows what the user asked for, not the stale stored state.
+        row.connect.set(row.connectSync.want ?? on);
         row.el.classList.toggle('on', on);
         if (on) {
           const c = controlsFor(row);
           if (c.parentElement !== row.el) row.el.append(c);
-          row.push?.set(repo.pushMode);
-          const chosen = row.roots?.querySelector<HTMLElement>(`[data-root="${repo.root}"]`) ?? null;
-          if (row.roots) checkRadio(row.roots, chosen);
+          row.push?.set(row.pushSync?.want ?? repo.pushMode);
+          const root = row.rootSync?.want ?? repo.root;
+          const chosen = row.roots?.querySelector<HTMLElement>(`[data-root="${root}"]`) ?? null;
+          // Re-checking moves the tab stop; leave a radio the user is on alone.
+          if (row.roots && chosen?.getAttribute('aria-checked') !== 'true') checkRadio(row.roots, chosen);
           const nameEl = row.controls?.querySelector('.root-name');
-          if (nameEl) nameEl.textContent = ROOT_NAMES[repo.root];
+          if (nameEl) nameEl.textContent = ROOT_NAMES[root];
         } else if (row.controls?.parentElement === row.el) {
           row.controls.remove();
         }
