@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Palimpsest</title>
+<link rel="stylesheet" href="splash.css" />
+<script src="splash.js" defer></script>
+</head>
+<body data-state="waking">
+  <main class="sheet">
+    <h1 class="name">Palimpsest</h1>
+
+    <section class="waking" aria-live="polite">
+      <div class="line" role="progressbar" aria-label="Looking for the engine"><span class="fill"></span></div>
+      <p class="note" id="waking-note">Looking for the engine</p>
+    </section>
+
+    <section class="down" aria-labelledby="down-title access-title">
+      <div class="ask ask-down">
+        <h2 id="down-title">The engine is not running</h2>
+        <p class="why">Palimpsest draws your city from a small engine that runs in the background on this Mac. Starting it installs it as a launch agent, so from then on it starts with your Mac.</p>
+        <div class="act">
+          <button class="btn" id="start" type="button">Start the engine</button>
+          <span class="note" id="start-note" aria-live="polite"></span>
+        </div>
+      </div>
+      <div class="ask ask-access">
+        <h2 id="access-title">macOS is keeping this app out of <span id="folder">Downloads</span></h2>
+        <p class="why" id="access-why">The engine runs from the Palimpsest source in your Downloads folder, and this app is not allowed to open it yet. Turn on Downloads for Palimpsest in System Settings, then start the engine again, or run the By hand line below in Terminal.</p>
+        <div class="act">
+          <button class="btn" id="settings" type="button">Open System Settings</button>
+          <button class="btn quiet" id="retry" type="button">Start the engine again</button>
+          <span class="note" id="retry-note" aria-live="polite"></span>
+        </div>
+      </div>
+      <p class="error" id="error" role="alert" hidden></p>
+      <div class="line rule" role="progressbar" aria-label="Starting the engine"><span class="fill"></span></div>
+      <dl class="ledger">
+        <div class="setting"><dt>Setting</dt><dd id="setting-path">Privacy &amp; Security › Files and Folders › Palimpsest › Downloads</dd></div>
+        <div><dt>Address</dt><dd class="ref">127.0.0.1:4770</dd></div>
+        <div><dt>Log</dt><dd class="ref">~/Library/Application Support/Palimpsest/logs/engine.log</dd></div>
+        <div><dt>By hand</dt><dd class="ref">node bin/palimpsest.mjs engine install</dd></div>
+      </dl>
+    </section>
+  </main>
+</body>
+</html>

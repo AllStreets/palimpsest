@@ -29,3 +29,17 @@ Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. 
 | `plex-mono-400.woff2` | [IBM Plex Mono](https://github.com/IBM/plex) | Mike Abbink, Bold Monday | Commit and PR refs |
 
 The analyzing-site scaffold (`app/src/city/scaffold.ts`) is modelled in code, written for Palimpsest.
+
+## App icon
+
+The app icon set in `src-tauri/icons/` is own work, copied from `docs/brand/icons/` on the `brand` branch. The mark is the wordmark's P standing as a tower at dusk, modelled and rendered in Blender by scripts written for Palimpsest (`docs/brand/logo.py`, `docs/brand/icons.py`). The P is set in [Cinzel](https://github.com/NDISCOVER/Cinzel) by Natanael Gama (The Cinzel Project Authors), under the [SIL Open Font License 1.1](https://openfontlicense.org).
+
+## Splash type
+
+The app's splash (`src-tauri/splash/`) carries its own copies of the fonts above in `src-tauri/splash/fonts/`, since it shows before the engine can serve anything. All under the [SIL Open Font License 1.1](https://openfontlicense.org).
+
+| Files | Typeface | Designer |
+|---|---|---|
+| `newsreader.woff2`, `newsreader-italic.woff2` | [Newsreader](https://fonts.google.com/specimen/Newsreader) | Production Type |
+| `plex-sans.woff2` | [IBM Plex Sans](https://github.com/IBM/plex) | Mike Abbink, Bold Monday |
+| `plex-mono-400.woff2` | [IBM Plex Mono](https://github.com/IBM/plex) | Mike Abbink, Bold Monday |

@@ -1,0 +1,169 @@
+/* The splash and the engine-down state. Same type, ink and hairlines as the city's sheets
+   (app/src/ui/style.css, screens.css), on the dusk sky the city opens under. */
+@font-face { font-family: 'Newsreader'; src: url('fonts/newsreader.woff2') format('woff2'); font-style: normal; font-weight: 400 500; }
+@font-face { font-family: 'Newsreader'; src: url('fonts/newsreader-italic.woff2') format('woff2'); font-style: italic; font-weight: 400; }
+@font-face { font-family: 'IBM Plex Sans'; src: url('fonts/plex-sans.woff2') format('woff2'); font-style: normal; font-weight: 400 500; }
+@font-face { font-family: 'IBM Plex Mono'; src: url('fonts/plex-mono-400.woff2') format('woff2'); font-style: normal; font-weight: 400; }
+
+:root {
+  /* sky.ts zenith and mid band, through the renderer's ACES tone mapping at exposure 0.85 */
+  --zenith: #1f2b4e;
+  --mid: #4a507c;
+  --ink: #ece6da;
+  --ink-2: #b9b1a4;
+  --ink-3: #847e74;
+  --rule: rgba(236, 230, 218, 0.12);
+  --rule-strong: rgba(236, 230, 218, 0.24);
+  --err: #df8a72;
+  --focus: rgba(236, 230, 218, 0.62);
+  --serif: 'Newsreader', 'Iowan Old Style', Georgia, serif;
+  --sans: 'IBM Plex Sans', -apple-system, system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  /* Looking up at the city's sky: the zenith overhead, easing toward the violet mid band, with the last of the afterglow at the very foot. */
+  background: var(--zenith) linear-gradient(to bottom, var(--zenith) 0%, var(--zenith) 46%, #2b3359 74%, #3b3f68 92%, #4a4466 100%);
+  color: var(--ink);
+  font: 400 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  cursor: default;
+  user-select: none;
+}
+
+.sheet {
+  position: absolute;
+  left: 50%;
+  /* Anchored by its top, so the name stays put when the engine-down state grows beneath it. */
+  top: max(64px, calc(38vh - 60px));
+  width: min(560px, calc(100vw - 96px));
+  transform: translateX(-50%);
+}
+
+.name {
+  font: italic 400 56px/1 var(--serif);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------- waking */
+
+.waking { margin-top: 30px; }
+.line {
+  position: relative;
+  height: 1px;
+  background: var(--rule);
+  overflow: hidden;
+}
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: rgba(236, 230, 218, 0.55);
+}
+.note {
+  margin-top: 12px;
+  font: italic 400 16px/1.4 var(--serif);
+  color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------- engine down */
+
+.down { display: none; margin-top: 34px; }
+body:is([data-state='down'], [data-state='access']) .waking { display: none; }
+body:is([data-state='down'], [data-state='access']) .down { display: block; }
+
+/* The down state asks to start the engine; the access state asks for the folder first. */
+.ask-access { display: none; }
+body[data-state='access'] .ask-down { display: none; }
+body[data-state='access'] .ask-access { display: block; }
+.ledger .setting { display: none; }
+body[data-state='access'] .ledger .setting { display: grid; }
+.ledger dd:not(.ref) { font-size: 13.5px; color: var(--ink); }
+
+.down h2 {
+  font: 400 26px/1.2 var(--serif);
+  color: var(--ink);
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--rule-strong);
+}
+.why {
+  margin-top: 16px;
+  max-width: 50ch;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.act {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+.act .note { margin-top: 0; font-size: 15px; }
+
+/* A square-cornered action, set like a printed form's stamp box (screens.css .btn). */
+.btn {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid rgba(236, 230, 218, 0.3);
+  border-radius: 2px;
+  background: linear-gradient(rgba(236, 230, 218, 0.08), rgba(236, 230, 218, 0.03));
+  font: 400 13.5px var(--sans);
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { border-color: rgba(236, 230, 218, 0.5); background: linear-gradient(rgba(236, 230, 218, 0.11), rgba(236, 230, 218, 0.05)); }
+.btn:active { background: rgba(236, 230, 218, 0.03); }
+.btn:disabled { color: var(--ink-3); border-color: rgba(236, 230, 218, 0.16); cursor: default; }
+.btn:focus-visible { outline: 1px solid var(--focus); outline-offset: 3px; }
+
+/* The second choice beside a stamp box: the same size, no box. */
+.btn.quiet { border-color: transparent; background: none; color: var(--ink-2); padding: 0 6px; }
+.btn.quiet:hover { color: var(--ink); background: none; border-color: transparent; text-decoration: underline; text-underline-offset: 4px; text-decoration-color: var(--rule-strong); }
+.btn.quiet:disabled { color: var(--ink-3); text-decoration: none; }
+
+/* The ledger's top rule doubles as the progress line while the engine starts. */
+.down .rule { margin-top: 30px; }
+
+.error {
+  margin-top: 14px;
+  max-width: 60ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--err);
+  white-space: pre-wrap;
+  user-select: text;
+}
+.error[hidden] { display: none; }
+
+.ledger { margin: 0; }
+.ledger div {
+  display: grid;
+  align-items: baseline;
+  grid-template-columns: 96px 1fr;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.ledger dt { font-size: 13px; color: var(--ink-3); }
+.ref {
+  font: 400 12.5px/1.6 var(--mono);
+  color: var(--ink-2);
+  user-select: text;
+  cursor: text;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill { transition: none !important; }
+}
