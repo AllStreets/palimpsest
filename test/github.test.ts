@@ -1,0 +1,169 @@
+import assert from 'node:assert/strict';
+import { afterEach, test } from 'node:test';
+
+import { realRunner, setRunner } from '../engine/exec.js';
+import { availableRepos, GhError, mergedPRs } from '../engine/github.js';
+
+afterEach(() => {
+  setRunner(realRunner);
+});
+
+test('availableRepos maps gh json', async () => {
+  setRunner(async (cmd, args) => {
+    assert.equal(cmd, 'gh');
+    assert.deepEqual(args, [
+      'repo',
+      'list',
+      '--limit',
+      '500',
+      '--json',
+      'nameWithOwner,isPrivate,description,primaryLanguage,defaultBranchRef',
+    ]);
+    const rows = [
+      {
+        nameWithOwner: 'acme/widgets',
+        isPrivate: true,
+        description: 'Widgets for acme',
+        primaryLanguage: null,
+        defaultBranchRef: null,
+      },
+      {
+        nameWithOwner: 'acme/gadgets',
+        isPrivate: false,
+        description: null,
+        primaryLanguage: { name: 'TypeScript' },
+        defaultBranchRef: { name: 'trunk' },
+      },
+    ];
+    return { stdout: JSON.stringify(rows), stderr: '', code: 0 };
+  });
+
+  const repos = await availableRepos();
+
+  assert.deepEqual(repos, [
+    {
+      fullName: 'acme/widgets',
+      private: true,
+      description: 'Widgets for acme',
+      language: null,
+      defaultBranch: 'main',
+    },
+    {
+      fullName: 'acme/gadgets',
+      private: false,
+      description: null,
+      language: 'TypeScript',
+      defaultBranch: 'trunk',
+    },
+  ]);
+});
+
+test('mergedPRs sums additions and deletions', async () => {
+  setRunner(async (cmd, args) => {
+    assert.equal(cmd, 'gh');
+    assert.deepEqual(args, [
+      'pr',
+      'list',
+      '-R',
+      'acme/widgets',
+      '--state',
+      'merged',
+      '--limit',
+      '2000',
+      '--json',
+      'number,title,mergedAt,additions,deletions,mergeCommit,url',
+    ]);
+    const rows = [
+      {
+        number: 12,
+        title: 'Add widget polish',
+        mergedAt: '2026-01-02T03:04:05Z',
+        additions: 40,
+        deletions: 10,
+        mergeCommit: { oid: 'abc123' },
+        url: 'https://github.com/acme/widgets/pull/12',
+      },
+      {
+        number: 13,
+        title: 'Remove dead code',
+        mergedAt: '2026-01-03T03:04:05Z',
+        additions: 0,
+        deletions: 5,
+        mergeCommit: null,
+        url: 'https://github.com/acme/widgets/pull/13',
+      },
+    ];
+    return { stdout: JSON.stringify(rows), stderr: '', code: 0 };
+  });
+
+  const prs = await mergedPRs('acme/widgets');
+
+  assert.deepEqual(prs, [
+    {
+      number: 12,
+      title: 'Add widget polish',
+      mergedAt: '2026-01-02T03:04:05Z',
+      lines: 50,
+      mergeSha: 'abc123',
+      url: 'https://github.com/acme/widgets/pull/12',
+    },
+    {
+      number: 13,
+      title: 'Remove dead code',
+      mergedAt: '2026-01-03T03:04:05Z',
+      lines: 5,
+      mergeSha: null,
+      url: 'https://github.com/acme/widgets/pull/13',
+    },
+  ]);
+});
+
+test('GhError kind missing when gh is not installed', async () => {
+  setRunner(async () => {
+    const err = new Error('spawn gh ENOENT') as Error & { code: string };
+    err.code = 'ENOENT';
+    throw err;
+  });
+
+  await assert.rejects(availableRepos(), (err) => {
+    assert.ok(err instanceof GhError);
+    assert.equal(err.kind, 'missing');
+    assert.match(err.message, /gh auth login/);
+    return true;
+  });
+});
+
+test('GhError kind auth when gh auth fails', async () => {
+  setRunner(async (cmd, args) => {
+    if (args[0] === 'auth') {
+      return { stdout: '', stderr: 'not logged in', code: 1 };
+    }
+    return { stdout: '', stderr: 'some repo list failure', code: 1 };
+  });
+
+  await assert.rejects(availableRepos(), (err) => {
+    assert.ok(err instanceof GhError);
+    assert.equal(err.kind, 'auth');
+    assert.match(err.message, /gh auth login/);
+    return true;
+  });
+});
+
+test('GhError kind notfound when gh cannot resolve the repo', async () => {
+  setRunner(async (cmd, args) => {
+    if (args[0] === 'auth') {
+      return { stdout: '', stderr: '', code: 0 };
+    }
+    return {
+      stdout: '',
+      stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/ghost'. (repository)",
+      code: 1,
+    };
+  });
+
+  await assert.rejects(mergedPRs('acme/ghost'), (err) => {
+    assert.ok(err instanceof GhError);
+    assert.equal(err.kind, 'notfound');
+    return true;
+  });
+});
