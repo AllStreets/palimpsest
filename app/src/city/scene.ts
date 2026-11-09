@@ -4,8 +4,10 @@ import type { District } from '../../../shared/types';
 import { createCameraRig } from './camera';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
+import { createPlates, type Plate } from './labels';
 import { configureMaterials, texturesSettled } from './materials';
 import { createPost } from './post';
+import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
 
 export interface PickHit {
@@ -29,10 +31,36 @@ export interface CityOptions {
   makeDistrictCenterpiece?: CenterpieceFactory;
 }
 
+/** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
+export interface Site {
+  repo: string;
+  origin: { x: number; z: number };
+}
+
+/** Where a floor or a whole tower stands in the world, for framing the camera on it. */
+export interface Frame {
+  center: THREE.Vector3;
+  width: number;
+  height: number;
+}
+
 export interface City {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
-  setDistricts(d: District[]): void;
+  /** Shows these districts. Only districts that changed are rebuilt; returns how many were built. */
+  setDistricts(d: District[]): number;
+  /** Shows a scaffold at each site. */
+  setSites(sites: Site[]): void;
+  /** Sets the street-level name plates. */
+  setPlates(plates: Plate[]): void;
+  /** Marks one floor of a district's tower, or clears the mark with null. Survives the district being rebuilt. */
+  highlightFloor(repo: string, floorId: string | null): void;
+  floorFrame(repo: string, floorId: string): Frame | null;
+  towerFrame(repo: string): Frame | null;
+  /** Keeps the view centred in the part of the window not covered by a panel this wide on the right. */
+  setInset(px: number): void;
+  /** Compiles every material for the current scene so later frames never stall on a shader compile. */
+  precompile(): Promise<void>;
   flyTo(target: THREE.Vector3, distance: number): void;
   onPick(fn: (hit: PickHit) => void): void;
   dispose(): void;
@@ -63,6 +91,8 @@ export function plinthCenterpiece(): Centerpiece {
 /** Fog density: thick enough to swallow the city's far edge into the horizon colour. */
 const FOG_DENSITY = 0.00055;
 const SHADOW_HALF = 320;
+/** Below this eye height the skyline hides name plates behind it. */
+const STREET_EYE = 80;
 
 /**
  * The city at dusk: the sky dome and the environment lit from it, horizon
@@ -110,6 +140,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   sun.shadow.normalBias = 0.6;
   Object.assign(sun.shadow.camera, { left: -SHADOW_HALF, right: SHADOW_HALF, top: SHADOW_HALF, bottom: -SHADOW_HALF, near: 10, far: 1600 });
   sun.shadow.camera.updateProjectionMatrix();
+  sun.shadow.autoUpdate = false;
+  sun.shadow.needsUpdate = true;
   scene.add(sun, sun.target);
   scene.add(new THREE.HemisphereLight(0x8fa3c8, 0x2e241c, 0.35));
   const sunOffset = SUN_DIRECTION.clone().multiplyScalar(800);
@@ -126,7 +158,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const districtGroup = new THREE.Group();
   districtGroup.name = 'districts';
   scene.add(districtGroup);
-  let centerpieces: Array<{ repo: string; piece: Centerpiece }> = [];
+  let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece }> = [];
+  let scaffolds = new Map<string, Scaffold>();
+  let districtOrigins: Array<{ x: number; z: number }> = [];
+  let siteOrigins: Array<{ x: number; z: number }> = [];
   let framed = false;
 
   function frameOverview(districts: District[]): void {
@@ -141,25 +176,192 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     rig.view(target.clone().addScaledVector(bearing, dist), target);
   }
 
-  function setDistricts(districts: District[]): void {
-    for (const { piece } of centerpieces) {
-      districtGroup.remove(piece.object);
-      piece.dispose?.();
-    }
+  function updatePlazas(): void {
+    // A site under scaffold is cleared and paved like any district.
+    const plazas = [...districtOrigins, ...siteOrigins];
+    grid.setPlazas(plazas);
+    ground.setPlazas(plazas);
+    // Towers, scaffolds and the skyline around them may all have changed.
+    sun.shadow.needsUpdate = true;
+  }
+
+  function setDistricts(districts: District[]): number {
+    // A district whose data is unchanged keeps its built tower; only new or changed ones are built.
+    const old = new Map(centerpieces.map((c) => [c.repo, c]));
+    let built = 0;
     centerpieces = districts.map((d) => {
+      const key = JSON.stringify(d);
+      const kept = old.get(d.repo);
+      if (kept && kept.key === key) {
+        old.delete(d.repo);
+        return kept;
+      }
       const piece = makeCenterpiece(d);
       piece.object.position.set(d.origin.x, 0, d.origin.z);
       piece.object.userData.repo = d.repo;
       districtGroup.add(piece.object);
-      return { repo: d.repo, piece };
+      built++;
+      return { repo: d.repo, key, piece };
     });
-    const plazas = districts.map((d) => ({ x: d.origin.x, z: d.origin.z }));
-    grid.setPlazas(plazas);
-    ground.setPlazas(plazas);
+    for (const { piece } of old.values()) {
+      districtGroup.remove(piece.object);
+      piece.dispose?.();
+    }
+    districtOrigins = districts.map((d) => ({ x: d.origin.x, z: d.origin.z }));
+    updatePlazas();
+    if (highlighted) applyHighlight();
     if (!framed) {
       frameOverview(districts);
       framed = true;
     }
+    return built;
+  }
+
+  function setSites(sites: Site[]): void {
+    const next = new Map<string, Scaffold>();
+    for (const s of sites) {
+      let sc = scaffolds.get(s.repo);
+      if (sc) scaffolds.delete(s.repo);
+      else {
+        sc = makeScaffold();
+        districtGroup.add(sc.object);
+      }
+      sc.object.position.set(s.origin.x, 0, s.origin.z);
+      next.set(s.repo, sc);
+    }
+    for (const sc of scaffolds.values()) {
+      districtGroup.remove(sc.object);
+      sc.dispose();
+    }
+    scaffolds = next;
+    siteOrigins = sites.map((s) => ({ ...s.origin }));
+    updatePlazas();
+  }
+
+  // ---------------------------------------------------------------- floors: framing and the highlight
+  const pieceOf = (repo: string): Centerpiece | null => centerpieces.find((c) => c.repo === repo)?.piece ?? null;
+
+  function floorProxy(repo: string, floorId: string): THREE.Object3D | null {
+    const piece = pieceOf(repo);
+    if (!piece) return null;
+    for (const [o, id] of piece.pickables) if (id === floorId) return o;
+    return null;
+  }
+
+  function floorFrame(repo: string, floorId: string): Frame | null {
+    const p = floorProxy(repo, floorId);
+    if (!p) return null;
+    p.updateWorldMatrix(true, false);
+    return { center: p.getWorldPosition(new THREE.Vector3()), width: p.scale.x, height: p.scale.y };
+  }
+
+  function towerFrame(repo: string): Frame | null {
+    const piece = pieceOf(repo);
+    if (!piece) return null;
+    piece.object.updateWorldMatrix(true, false);
+    const box = new THREE.Box3();
+    for (const o of piece.pickables.keys()) {
+      o.updateWorldMatrix(true, false);
+      // Proxies are unit boxes: their world box is the floor's slice.
+      box.union(new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)).applyMatrix4(o.matrixWorld));
+    }
+    if (box.isEmpty()) return null;
+    const size = box.getSize(new THREE.Vector3());
+    return { center: box.getCenter(new THREE.Vector3()), width: Math.max(size.x, size.z), height: size.y };
+  }
+
+  let highlighted: { repo: string; floorId: string } | null = null;
+  let mark: THREE.Group | null = null;
+  const markMaterials = {
+    // Pale warm white, under the bloom threshold: it reads as a lit edge, never as neon.
+    edge: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.95, 0.82, 0.62) }),
+    // A faint warm wash on the slice itself, as if that floor were caught in a little more light.
+    wash: new THREE.MeshBasicMaterial({
+      color: new THREE.Color(1.0, 0.78, 0.5),
+      transparent: true,
+      opacity: 0.1,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+  };
+  const markBox = new THREE.BoxGeometry(1, 1, 1);
+
+  function clearMark(): void {
+    mark?.removeFromParent();
+    mark = null;
+  }
+
+  /**
+   * A thin band round the top and bottom edges of the floor's slice and down
+   * its four corners, plus a faint wash. The band keeps about the same width
+   * on screen at any distance: a hairline up close, still legible from across
+   * the city.
+   */
+  function applyHighlight(): void {
+    clearMark();
+    if (!highlighted) return;
+    const p = floorProxy(highlighted.repo, highlighted.floorId);
+    if (!p?.parent) return;
+    const w = p.scale.x;
+    const h = p.scale.y;
+    const half = w / 2 + 0.35;
+    const g = new THREE.Group();
+    g.name = 'floor-highlight';
+    g.position.copy(p.position);
+    g.rotation.copy(p.rotation);
+    const parts: Array<(t: number) => void> = [];
+    const add = (mat: THREE.Material, place: (m: THREE.Mesh, t: number) => void): void => {
+      const m = new THREE.Mesh(markBox, mat);
+      g.add(m);
+      parts.push((t) => place(m, t));
+    };
+    for (const top of [-1, 1]) {
+      for (let side = 0; side < 4; side++) {
+        const along = side % 2 === 0;
+        const sign = side < 2 ? 1 : -1;
+        add(markMaterials.edge, (m, t) => {
+          const y = top * (h / 2 - t / 2);
+          if (along) {
+            m.position.set(0, y, sign * half);
+            m.scale.set(half * 2 + t, t, t * 0.5);
+          } else {
+            m.position.set(sign * half, y, 0);
+            m.scale.set(t * 0.5, t, half * 2 + t);
+          }
+        });
+      }
+    }
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        add(markMaterials.edge, (m, t) => {
+          m.position.set(sx * half, 0, sz * half);
+          m.scale.set(t * 0.6, h, t * 0.6);
+        });
+      }
+    }
+    add(markMaterials.wash, (m) => {
+      m.position.set(0, 0, 0);
+      m.scale.set(half * 2 - 0.1, h * 0.98, half * 2 - 0.1);
+    });
+    g.userData.fit = (t: number) => parts.forEach((f) => f(t));
+    p.parent.add(g);
+    mark = g;
+    fitMark();
+  }
+
+  const markAt = new THREE.Vector3();
+  /** About two and a half pixels of band at the mark's distance, within sane limits. */
+  function fitMark(): void {
+    if (!mark) return;
+    mark.updateWorldMatrix(true, false);
+    const d = mark.getWorldPosition(markAt).distanceTo(camera.position);
+    const px = (2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / Math.max(1, height());
+    (mark.userData.fit as (t: number) => void)(THREE.MathUtils.clamp(px * 2.5, 0.06, 1.4));
+  }
+
+  function highlightFloor(repo: string, floorId: string | null): void {
+    highlighted = floorId ? { repo, floorId } : null;
+    applyHighlight();
   }
 
   // ---------------------------------------------------------------- picking
@@ -196,17 +398,35 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   renderer.domElement.addEventListener('pointerup', onPointerUp);
 
   // ---------------------------------------------------------------- loop
+  // ---------------------------------------------------------------- inset for a side panel
+  let insetTarget = 0;
+  let inset = 0;
+  function applyInset(): void {
+    if (inset < 0.5) camera.clearViewOffset();
+    // Shifting the view window right by half the panel puts the view's centre in the middle of what is left uncovered.
+    else camera.setViewOffset(width(), height(), inset / 2, 0, width(), height());
+  }
+
   const resize = (): void => {
     renderer.setSize(width(), height());
     rig.setAspect(width() / height());
+    applyInset();
     post.setSize(width(), height());
   };
+
+  // Towers always hide the plates behind them. The skyline does too from street level, where a name seen
+  // through a wall would be wrong; from above the plates read as a map's annotations and stay.
+  const plates = createPlates(canvasHost, camera, () => [
+    ...centerpieces.flatMap(({ piece }) => [...piece.pickables.keys()]),
+    ...(camera.position.y < STREET_EYE ? grid.blockers : []),
+  ]);
   const observer = new ResizeObserver(resize);
   observer.observe(canvasHost);
 
   const lightView = new THREE.Matrix4();
   const lightViewInverse = new THREE.Matrix4();
   const snapped = new THREE.Vector3();
+  const shadowAt = new THREE.Vector3(NaN, NaN, NaN);
   function followShadow(): void {
     // Snap the shadow box centre to whole texels in light space.
     sun.position.copy(rig.controls.target).add(sunOffset);
@@ -221,6 +441,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     snapped.applyMatrix4(lightView);
     sun.target.position.copy(snapped);
     sun.position.copy(snapped).add(sunOffset);
+    // The city stands still: the shadow map is redrawn only when its box moves or what stands in it changes.
+    if (!snapped.equals(shadowAt)) {
+      shadowAt.copy(snapped);
+      sun.shadow.needsUpdate = true;
+    }
   }
 
   let framesAfterLoad = -1;
@@ -234,7 +459,13 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
     const dt = Math.min(clock.getDelta(), 0.05);
+    if (inset !== insetTarget) {
+      inset = Math.abs(insetTarget - inset) < 0.5 ? insetTarget : THREE.MathUtils.damp(inset, insetTarget, 7, dt);
+      applyInset();
+    }
     rig.update(dt);
+    fitMark();
+    plates.update();
     sky.dome.position.copy(camera.position);
     followShadow();
     renderer.info.reset();
@@ -248,6 +479,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     scene,
     camera,
     setDistricts,
+    setSites,
+    setPlates: (p) => plates.set(p),
+    highlightFloor,
+    floorFrame,
+    towerFrame,
+    setInset(px) {
+      insetTarget = Math.max(0, Math.min(px, width() * 0.6));
+    },
+    precompile: () => renderer.compileAsync(scene, camera).then(() => undefined),
     flyTo: (target, distance) => rig.flyTo(target, distance),
     onPick(fn) {
       pickListeners.push(fn);
@@ -262,6 +502,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       for (const { piece } of centerpieces) piece.dispose?.();
       centerpieces = [];
+      for (const sc of scaffolds.values()) sc.dispose();
+      scaffolds.clear();
+      plates.dispose();
+      markBox.dispose();
+      markMaterials.edge.dispose();
+      markMaterials.wash.dispose();
       rig.dispose();
       post.dispose();
       grid.dispose();

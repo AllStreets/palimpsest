@@ -39,6 +39,8 @@ export interface Plaza {
 
 export interface Grid {
   group: THREE.Group;
+  /** The building bodies, for line-of-sight tests (name plates hide behind them). */
+  blockers: THREE.Object3D[];
   /** Rebuilds the skyline and lamps around these plazas (the civic plaza at the origin is always kept). */
   setPlazas(plazas: Plaza[]): void;
   dispose(): void;
@@ -431,6 +433,7 @@ export function createGrid(quality: 'high' | 'medium'): Grid {
 
   return {
     group,
+    blockers: [...Object.values(walls), far].map((b) => b.mesh),
     setPlazas: build,
     dispose() {
       for (const g of [box, tankGeo, capGeo, poleGeo, bollardGeo]) g.dispose();

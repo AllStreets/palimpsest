@@ -62,7 +62,8 @@ async function seed(): Promise<void> {
 
   for (const s of SEED) {
     const commits = Array.from({ length: s.commits }, (_, i) => ({
-      sha: `${s.slot}${i.toString(16).padStart(39, '0')}`,
+      // The index leads, so every short sha (and so every floor id) is distinct.
+      sha: `${s.slot}${i.toString(16).padStart(6, '0')}`.padEnd(40, 'a'),
       at: new Date(start + i * 26 * 3600_000).toISOString(),
       author: i % 3 === 0 ? 'Ada' : 'Ben',
       subject: `Change ${i + 1}`,
@@ -170,6 +171,222 @@ async function setView(page: Page, eye: number[], target: number[]): Promise<voi
   await page.waitForTimeout(900);
 }
 
+// ---------------------------------------------------------------- debug handle
+
+interface Debug {
+  ready: boolean;
+  districts: number;
+  sites: number;
+  builds: number;
+  highlight: { repo: string; floorId: string } | null;
+  camera(): number[];
+  precompile(): Promise<void>;
+  stats(): { calls: number; triangles: number };
+}
+
+function debug<T>(page: Page, read: (d: Debug) => T): Promise<T> {
+  return page.evaluate(`(${read.toString()})(window.__palimpsest)`) as Promise<T>;
+}
+
+const cityOf = (page: Page): Promise<District[]> =>
+  page.evaluate(() => fetch('/api/city').then((r) => r.json())) as Promise<District[]>;
+
+// ---------------------------------------------------------------- fps
+
+/**
+ * Steady-state frame rate: every shader is compiled first (renderer.compile
+ * through the debug handle) and the view settles, so a first-sight compile
+ * never counts against the steady state.
+ */
+async function measureFps(page: Page): Promise<void> {
+  await page.keyboard.press('Escape');
+  // A string, so tsx's name-keeping helpers never reach the page.
+  const fps = (): Promise<number> =>
+    page.evaluate(`new Promise((resolve) => {
+      let frames = 0;
+      const t0 = performance.now();
+      function tick() {
+        frames++;
+        if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
+        else resolve((frames * 1000) / (performance.now() - t0));
+      }
+      requestAnimationFrame(tick);
+    })`) as Promise<number>;
+  const settled = async (eye: number[], target: number[]): Promise<number> => {
+    await setView(page, eye, target);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(1500);
+    return fps();
+  };
+  const gpu = (await page.evaluate(`(() => {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    return info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : 'unknown';
+  })()`)) as string;
+  const ratio = (await page.evaluate('Math.min(devicePixelRatio, 1.75)')) as number;
+
+  const ds = await cityOf(page);
+  const cx = ds.reduce((a, d) => a + d.origin.x, 0) / ds.length;
+  const cz = ds.reduce((a, d) => a + d.origin.z, 0) / ds.length;
+  const overview = await settled([cx + BEARING.x * 900, 300, cz + BEARING.z * 900], [cx, 70, cz]);
+  await page.screenshot({ path: join(SHOTS, 'towers-all.png') });
+  const stats = await debug(page, (d) => d.stats());
+  const d0 = ds.find((d) => d.tower.floors.length > 0) ?? ds[0];
+  const top = layoutTower(d0.tower).top;
+  const close = await settled(
+    [d0.origin.x + BEARING.x * 120, top * 0.45, d0.origin.z + BEARING.z * 120],
+    [d0.origin.x, top * 0.5, d0.origin.z],
+  );
+  const closeStats = await debug(page, (d) => d.stats());
+  console.log(`info  ${gpu}, ${VIEWPORT.width}x${VIEWPORT.height} at pixel ratio ${ratio}`);
+  console.log(`info  steady overview: ${overview.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+  console.log(`info  steady close tower: ${close.toFixed(0)} fps, ${closeStats.calls} draw calls, ${(closeStats.triangles / 1e6).toFixed(2)}M triangles`);
+}
+
+// ---------------------------------------------------------------- inspector
+
+async function inspectorChecks(page: Page): Promise<void> {
+  const ds = await cityOf(page);
+  const d = ds.find((x) => x.tower.floors.length > 0);
+  if (!d) {
+    check(false, 'a district with floors exists for the inspector');
+    return;
+  }
+  // Look square at the middle of the first tower and click it.
+  const lay = layoutTower(d.tower);
+  const target: [number, number, number] = [d.origin.x, lay.top * 0.55, d.origin.z];
+  const dist = lay.top * 2.4;
+  await setView(page, [d.origin.x + BEARING.x * dist, lay.top * 0.5, d.origin.z + BEARING.z * dist], target);
+  await page.mouse.click(VIEWPORT.width / 2, VIEWPORT.height / 2);
+  const opened = await page
+    .waitForSelector('.inspector.open', { timeout: 3000 })
+    .then(() => true)
+    .catch(() => false);
+  check(opened, 'clicking a tower opens the inspector');
+  if (!opened) return;
+  await page.waitForTimeout(1200);
+  const rows = await page.locator('.insp-floor').count();
+  check(rows === d.tower.floors.length, `the inspector lists every floor (${rows} of ${d.tower.floors.length})`);
+  const name = await page.locator('.insp-name').textContent();
+  check(name === d.repo.split('/')[1], `the inspector names the repo (got ${name})`);
+  await page.screenshot({ path: join(SHOTS, 'inspector-open.png') });
+
+  // Click a row a third of the way down: the camera flies to it and the floor is marked.
+  const before = await debug(page, (x) => x.camera());
+  const pick = Math.floor(rows / 3);
+  await page.locator('.insp-floor').nth(pick).click();
+  await page.waitForTimeout(2200);
+  const after = await debug(page, (x) => x.camera());
+  const moved = Math.hypot(after[0] - before[0], after[1] - before[1], after[2] - before[2]);
+  check(moved > 1, `clicking a floor row moves the camera (${moved.toFixed(1)} m)`);
+  const floorId = d.tower.floors[d.tower.floors.length - 1 - pick].id;
+  const hl = await debug(page, (x) => x.highlight);
+  check(hl?.floorId === floorId, `the clicked floor is highlighted (got ${hl?.floorId ?? 'nothing'})`);
+  await page.screenshot({ path: join(SHOTS, 'inspector-floor.png') });
+
+  // Keyboard: arrows move the selection down the list, Enter flies, Escape closes.
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  const next = await debug(page, (x) => x.highlight);
+  const want = d.tower.floors[d.tower.floors.length - 3 - pick].id;
+  check(next?.floorId === want, `arrow keys move between floors (got ${next?.floorId ?? 'nothing'})`);
+  const pre = await debug(page, (x) => x.camera());
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(2000);
+  const post = await debug(page, (x) => x.camera());
+  check(Math.hypot(post[0] - pre[0], post[1] - pre[1], post[2] - pre[2]) > 0.5, 'Enter flies to the selected floor');
+  await page.screenshot({ path: join(SHOTS, 'inspector-keyboard.png') });
+
+  // The highlight from further out, to judge whether it reads at distance.
+  await setView(page, [d.origin.x + BEARING.x * 420, 90, d.origin.z + BEARING.z * 420], [d.origin.x, lay.top * 0.5, d.origin.z]);
+  await page.screenshot({ path: join(SHOTS, 'inspector-far.png') });
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: join(SHOTS, 'inspector-1280.png') });
+  await page.setViewportSize(VIEWPORT);
+  await page.waitForTimeout(500);
+
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  check(!(await page.locator('.inspector').isVisible()), 'Escape closes the inspector');
+  check((await debug(page, (x) => x.highlight)) === null, 'closing clears the floor highlight');
+}
+
+// ---------------------------------------------------------------- an analyzing site
+
+async function siteChecks(page: Page): Promise<void> {
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const { foundingFloors } = await import('../engine/history.js');
+  const { districtOrigin } = await import('../shared/district-layout.js');
+  const db = openDb();
+  const fullName = 'wren/new-site';
+  const slot = SEED.length;
+  const now = new Date().toISOString();
+  const repo: Repo = {
+    fullName,
+    private: false,
+    defaultBranch: 'main',
+    language: 'TypeScript',
+    description: 'fixture',
+    connected: true,
+    pushMode: false,
+    root: 'chicago',
+    slot,
+    status: 'analyzing',
+    error: null,
+    connectedAt: now,
+    analyzedAt: null,
+  };
+  db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(fullName, JSON.stringify(repo));
+  emit('repo.analyzing', { repo, step: 'log' });
+  const shown = await page
+    .waitForFunction(() => (window as unknown as { __palimpsest: { sites: number } }).__palimpsest.sites === 1, null, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  check(shown, 'an analyzing repo shows a scaffold at its site');
+  const o = districtOrigin(slot);
+  await setView(page, [o.x + BEARING.x * 95, 16, o.z + BEARING.z * 95], [o.x, 9, o.z]);
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: join(SHOTS, 'site-analyzing.png') });
+  await setView(page, [o.x + BEARING.x * 380, 120, o.z + BEARING.z * 380], [o.x, 10, o.z]);
+  await page.screenshot({ path: join(SHOTS, 'site-analyzing-far.png') });
+
+  // The analysis finishes: that district alone is built and the scaffold comes down.
+  const buildsBefore = await debug(page, (x) => x.builds);
+  const commits = Array.from({ length: 22 }, (_, i) => ({
+    sha: `${slot}${i.toString(16).padStart(6, '0')}`.padEnd(40, 'a'),
+    at: new Date(Date.parse('2025-06-01T09:00:00Z') + i * 30 * 3600_000).toISOString(),
+    author: 'Ada',
+    subject: `Site change ${i + 1}`,
+    body: '',
+    lines: 40 + i * 11,
+  }));
+  const floors = foundingFloors(fullName, commits, []);
+  const tower: TowerSpec = { id: `${fullName}#founding`, repo: fullName, kind: 'founding', root: 'chicago', floors, datumIndex: floors.length };
+  db.prepare('INSERT INTO towers (repo, json) VALUES (?, ?)').run(fullName, JSON.stringify(tower));
+  const ready: Repo = { ...repo, status: 'ready', analyzedAt: new Date().toISOString() };
+  db.prepare('UPDATE repos SET json = ? WHERE full_name = ?').run(JSON.stringify(ready), fullName);
+  emit('repo.analyzed', { repo: ready });
+  const done = await page
+    .waitForFunction(
+      (n) => {
+        const d = (window as unknown as { __palimpsest: { districts: number; sites: number } }).__palimpsest;
+        return d.districts === n && d.sites === 0;
+      },
+      SEED.length + 1,
+      { timeout: 8000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  check(done, 'repo.analyzed replaces the scaffold with the tower');
+  const buildsAfter = await debug(page, (x) => x.builds);
+  check(buildsAfter - buildsBefore === 1, `repo.analyzed rebuilds only that district (built ${buildsAfter - buildsBefore})`);
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: join(SHOTS, 'site-built.png') });
+}
+
 // ---------------------------------------------------------------- main
 
 async function main(): Promise<void> {
@@ -267,44 +484,9 @@ async function main(): Promise<void> {
       );
       check(pick?.repo === SEED[0].fullName, `clicking a plinth picks its district (got ${pick?.repo ?? 'nothing'})`);
 
-      // A string, so tsx's name-keeping helpers never reach the page.
-      const perf = (await page.evaluate(`new Promise((resolve) => {
-        const gl = document.createElement('canvas').getContext('webgl2');
-        const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
-        const gpu = info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : 'unknown';
-        let frames = 0;
-        const t0 = performance.now();
-        function tick() {
-          frames++;
-          if (performance.now() - t0 < 2000) requestAnimationFrame(tick);
-          else resolve({ fps: (frames * 1000) / (performance.now() - t0), gpu });
-        }
-        requestAnimationFrame(tick);
-      })`)) as { fps: number; gpu: string };
-      console.log(`info  ${perf.fps.toFixed(0)} fps at ${VIEWPORT.width}x${VIEWPORT.height} on ${perf.gpu}`);
-
-      // Every tower in view: the overview from the opening bearing.
-      const fps = (): Promise<number> =>
-        page.evaluate(`new Promise((resolve) => {
-          let frames = 0;
-          const t0 = performance.now();
-          function tick() {
-            frames++;
-            if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
-            else resolve((frames * 1000) / (performance.now() - t0));
-          }
-          requestAnimationFrame(tick);
-        })`) as Promise<number>;
-      const ds = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
-      const cx = ds.reduce((a, d) => a + d.origin.x, 0) / ds.length;
-      const cz = ds.reduce((a, d) => a + d.origin.z, 0) / ds.length;
-      await setView(page, [cx + BEARING.x * 900, 300, cz + BEARING.z * 900], [cx, 70, cz]);
-      await page.screenshot({ path: join(SHOTS, 'towers-all.png') });
-      const all6 = await fps();
-      const stats = await page.evaluate(
-        () => (window as unknown as { __palimpsest: { stats(): { calls: number; triangles: number } } }).__palimpsest.stats(),
-      );
-      console.log(`info  six towers in view: ${all6.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles per frame`);
+      await measureFps(page);
+      await inspectorChecks(page);
+      await siteChecks(page);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);
