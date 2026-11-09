@@ -120,6 +120,7 @@ interface Debug {
   camera(): number[];
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
+  plots(): { plazas: number; buildings: number };
 }
 
 function debug<T>(page: Page, read: (d: Debug) => T): Promise<T> {
@@ -513,6 +514,98 @@ async function disconnectWhileInspecting(page: Page): Promise<void> {
   await page.evaluate((t) => fetch(`/api/repos/${t}/connect`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), target);
 }
 
+// ---------------------------------------------------------------- plots given back to the city
+
+const post = (page: Page, path: string): Promise<unknown> =>
+  page.evaluate((p) => fetch(p, { method: 'POST', headers: { 'x-palimpsest': '1' } }).then((r) => r.json()), path);
+
+const plotsNow = (page: Page): Promise<{ plazas: number; buildings: number; sites: number; districts: number }> =>
+  debug(page, (d) => ({ ...d.plots(), sites: d.sites, districts: d.districts }));
+
+/** Waits until the page's plots match `want`, or gives up after `timeoutMs`. */
+async function waitPlots(page: Page, want: (p: { plazas: number; buildings: number; sites: number; districts: number }) => boolean, timeoutMs = 8000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (want(await plotsNow(page))) return true;
+    await page.waitForTimeout(50);
+  }
+  return false;
+}
+
+/** A high oblique view of a slot's plot and the blocks round it. */
+async function plotView(page: Page, slot: number): Promise<void> {
+  const { districtOrigin } = await import('../shared/district-layout.js');
+  const o = districtOrigin(slot);
+  await setView(page, [o.x + BEARING.x * 300, 150, o.z + BEARING.z * 300], [o.x, 0, o.z]);
+}
+
+const repoRow = async (page: Page, fullName: string): Promise<Repo | undefined> =>
+  ((await page.evaluate(() => fetch('/api/repos').then((r) => r.json()))) as Repo[]).find((r) => r.fullName === fullName);
+
+/**
+ * A repo that is not connected leaves no plaza: a connect stopped before any
+ * tower, and a district disconnected, both give the plot back to the same
+ * ambient blocks, live; reconnecting clears the plot again.
+ */
+async function freedPlotChecks(page: Page): Promise<void> {
+  const base = await plotsNow(page);
+
+  // A connect stopped while it analyzes: the scaffold comes down and stays down while the analysis runs on.
+  const stopped = 'orrery/star-catalogue';
+  const { slot } = (await post(page, `/api/repos/${stopped}/connect`)) as Repo;
+  const raised = await waitPlots(page, (p) => p.sites === base.sites + 1 && p.plazas === base.plazas + 1, 5000);
+  check(raised, 'connecting raises a scaffold on a paved plot');
+  await plotView(page, slot);
+  await page.screenshot({ path: join(SHOTS, 'plot-stopped-before.png') });
+  await post(page, `/api/repos/${stopped}/disconnect`);
+  const cleared = await waitPlots(page, (p) => p.sites === base.sites && p.plazas === base.plazas, 3000);
+  let worst = await plotsNow(page);
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline && (await repoRow(page, stopped))?.status === 'analyzing') {
+    const now = await plotsNow(page);
+    if (now.sites > worst.sites || now.plazas > worst.plazas) worst = now;
+    await page.waitForTimeout(40);
+  }
+  await page.waitForTimeout(800);
+  const after = await plotsNow(page);
+  if (after.sites > worst.sites || after.plazas > worst.plazas) worst = after;
+  const row = await repoRow(page, stopped);
+  check(row?.connected === false && row.status !== 'analyzing', `the stopped connect finished its analysis and stays off (${row?.connected}, ${row?.status})`);
+  check(
+    cleared && worst.sites === base.sites && worst.plazas === base.plazas,
+    `a stopped connect leaves no scaffold or plaza while its analysis runs on (sites ${worst.sites} of ${base.sites}, plazas ${worst.plazas} of ${base.plazas})`,
+  );
+  check(after.buildings === base.buildings, `and its plot holds the same ambient blocks as before (${after.buildings} of ${base.buildings})`);
+  await plotView(page, slot);
+  await page.screenshot({ path: join(SHOTS, 'plot-stopped-after.png') });
+
+  // A standing district disconnected: its plaza goes and the blocks that stood there before return, without a reload.
+  const target = SAMPLE[1].fullName;
+  const d = (await cityOf(page)).find((x) => x.repo === target);
+  if (!d) {
+    check(false, `${target} stands before the disconnect check`);
+    return;
+  }
+  const withIt = await plotsNow(page);
+  await plotView(page, d.index);
+  await page.screenshot({ path: join(SHOTS, 'plot-district-before.png') });
+  await post(page, `/api/repos/${target}/disconnect`);
+  const freed = await waitPlots(page, (p) => p.plazas === withIt.plazas - 1 && p.districts === withIt.districts - 1);
+  const without = await plotsNow(page);
+  check(freed, `disconnecting a district removes its plaza (${withIt.plazas} then ${without.plazas})`);
+  check(without.buildings > withIt.buildings, `and fills its plot with ambient blocks (${withIt.buildings} then ${without.buildings} buildings)`);
+  await plotView(page, d.index);
+  await page.screenshot({ path: join(SHOTS, 'plot-district-after.png') });
+
+  // Reconnecting clears the plot again: the tower it kept returns to the same place.
+  await post(page, `/api/repos/${target}/connect`);
+  const back = await waitPlots(page, (p) => p.plazas === withIt.plazas && p.districts === withIt.districts && p.buildings === withIt.buildings, 15_000);
+  check(back, 'reconnecting clears the plot for the district again, with the same blocks round it');
+  const returned = (await cityOf(page)).find((x) => x.repo === target);
+  check(returned?.index === d.index, `and the district returns to its slot (${returned?.index} of ${d.index})`);
+  for (let i = 0; i < 300 && (await repoRow(page, target))?.status === 'analyzing'; i++) await page.waitForTimeout(50);
+}
+
 // ---------------------------------------------------------------- settings
 
 function reading(atMs: number, five: number, week: number): string {
@@ -814,6 +907,7 @@ async function main(): Promise<void> {
       await siteChecks(page);
       await disconnectWhileInspecting(page);
       await reposChecks(page);
+      await freedPlotChecks(page);
       await settingsChecks(page, claudeSettingsPath);
       await reconnectChecks(page, restart);
     }

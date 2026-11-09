@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 
 import type { District } from '../../../shared/types';
-import { ROOT_HEIGHT } from '../../../shared/tower-layout';
 import { createCameraRig } from './camera';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
 import { createPlates, type Plate } from './labels';
 import { configureMaterials, texturesSettled } from './materials';
+import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { createPost } from './post';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
@@ -33,10 +33,7 @@ export interface CityOptions {
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
-export interface Site {
-  repo: string;
-  origin: { x: number; z: number };
-}
+export type Site = SiteSpot;
 
 /** Where a floor or a whole tower stands in the world, for framing the camera on it. */
 export interface Frame {
@@ -48,10 +45,12 @@ export interface Frame {
 export interface City {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
-  /** Shows these districts. Only districts that changed are rebuilt; returns how many were built. */
-  setDistricts(d: District[]): number;
-  /** Shows a scaffold at each site. */
-  setSites(sites: Site[]): void;
+  /**
+   * Shows the occupied plots: a tower for each district (only districts that
+   * changed are rebuilt), a scaffold at each site, and the ambient city round
+   * exactly those plots. Every other plot is the city's. Returns how many towers were built.
+   */
+  setPlots(occ: Occupancy): number;
   /** Sets the street-level name plates. */
   setPlates(plates: Plate[]): void;
   /** Marks one floor of a district's tower, or clears the mark with null. Survives the district being rebuilt. */
@@ -71,6 +70,8 @@ export interface City {
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
   /** Draw calls and triangles in the last whole frame, every pass included. */
   stats(): { calls: number; triangles: number };
+  /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
+  plots(): { plazas: number; buildings: number };
 }
 
 /** The plain plinth every district shows until towers exist. */
@@ -163,8 +164,6 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(districtGroup);
   let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece }> = [];
   let scaffolds = new Map<string, Scaffold>();
-  let districtOrigins: Array<{ x: number; z: number; rootHeight: number }> = [];
-  let siteOrigins: Array<{ x: number; z: number }> = [];
   let framed = false;
 
   function frameOverview(districts: District[]): void {
@@ -179,16 +178,16 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     rig.view(target.clone().addScaledVector(bearing, dist), target);
   }
 
-  function updatePlazas(): void {
-    // A site under scaffold is cleared and paved like any district.
-    const plazas = [...districtOrigins, ...siteOrigins];
+  function updatePlazas(occ: Occupancy): void {
+    // Only occupied plots are paved and cleared: a district, or a site under scaffold.
+    const plazas = plazasOf(occ);
     grid.setPlazas(plazas);
     ground.setPlazas(plazas);
     // Towers, scaffolds and the skyline around them may all have changed.
     sun.shadow.needsUpdate = true;
   }
 
-  function setDistricts(districts: District[]): number {
+  function placeDistricts(districts: District[]): number {
     // A district whose data is unchanged keeps its built tower; only new or changed ones are built.
     const old = new Map(centerpieces.map((c) => [c.repo, c]));
     let built = 0;
@@ -210,8 +209,6 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
-    districtOrigins = districts.map((d) => ({ x: d.origin.x, z: d.origin.z, rootHeight: ROOT_HEIGHT[d.tower.root] }));
-    updatePlazas();
     if (highlighted) applyHighlight();
     if (!framed) {
       frameOverview(districts);
@@ -220,7 +217,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     return built;
   }
 
-  function setSites(sites: Site[]): void {
+  function placeSites(sites: Site[]): void {
     const next = new Map<string, Scaffold>();
     for (const s of sites) {
       let sc = scaffolds.get(s.repo);
@@ -237,8 +234,19 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       sc.dispose();
     }
     scaffolds = next;
-    siteOrigins = sites.map((s) => ({ ...s.origin }));
-    updatePlazas();
+  }
+
+  let lastPlazas = '';
+  function setPlots(occ: Occupancy): number {
+    const built = placeDistricts(occ.districts);
+    placeSites(occ.sites);
+    // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
+    const key = JSON.stringify(plazasOf(occ));
+    if (key !== lastPlazas) {
+      lastPlazas = key;
+      updatePlazas(occ);
+    } else sun.shadow.needsUpdate = true;
+    return built;
   }
 
   // ---------------------------------------------------------------- floors: framing and the highlight
@@ -482,8 +490,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   return {
     scene,
     camera,
-    setDistricts,
-    setSites,
+    setPlots,
     setPlates: (p) => plates.set(p),
     highlightFloor,
     floorFrame,
@@ -499,6 +506,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ready,
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
+    plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     dispose() {
       renderer.setAnimationLoop(null);
       observer.disconnect();

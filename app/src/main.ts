@@ -3,12 +3,12 @@ import * as THREE from 'three';
 import './ui/style.css';
 import './ui/screens.css';
 
-import { districtOrigin } from '../../shared/district-layout';
 import type { District, Repo } from '../../shared/types';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
-import { createCity, type PickHit, type Site } from './city/scene';
+import { occupancy, type RepoState } from './city/occupancy.js';
+import { createCity, type PickHit } from './city/scene';
 import { towerCenterpiece } from './city/tower/look';
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
@@ -32,6 +32,8 @@ interface DebugHandle {
   camera(): number[];
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
+  /** Plazas paved (the civic plaza included) and ambient buildings standing. */
+  plots(): { plazas: number; buildings: number };
 }
 
 declare global {
@@ -76,15 +78,23 @@ async function main(): Promise<void> {
     camera: () => city.camera.position.toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
+    plots: () => city.plots(),
   };
   window.__palimpsest = debug;
 
+  /** The towers the engine last served. */
+  let served: District[] = [];
+  /** The districts standing now: served towers whose repos are still connected. */
   let districts: District[] = [];
-  /** Connected repos, as the Repos screen counts them (analyzing and failed ones included), for the running head. */
-  const connectedRepos = new Set<string>();
-  /** Repos whose first analysis is running, with the step it reached. */
-  const analyzing = new Map<string, { slot: number; step: string; done?: boolean }>();
+  /**
+   * Every repo the page knows, connected or not, as last stored, with the
+   * analysis step it reached. `done` holds a finished first analysis's
+   * scaffold up until the refresh that brings its tower.
+   */
+  const known = new Map<string, RepoState & { step: string; done?: boolean }>();
   const byRepo = (repo: string): District | undefined => districts.find((d) => d.repo === repo);
+  /** The step a repo's analysis last reported. */
+  const analyzingStep = (repo: string): string => known.get(repo)?.step ?? '';
 
   // ---------------------------------------------------------------- navigation and screens
   const runhead = createRunhead(document.body);
@@ -139,8 +149,20 @@ async function main(): Promise<void> {
   });
 
   // ---------------------------------------------------------------- districts, sites and plates
-  function showPlates(): void {
-    const plates: Plate[] = districts.map((d) => {
+  /**
+   * Places everything from the one occupied set: towers, scaffolds, the
+   * plazas and the blocks round them, and the plates. A repo that is not
+   * connected (off, disconnected, or a connect stopped before any tower)
+   * gives its plot back to the ambient city; its slot stays its own.
+   */
+  function place(): void {
+    const occ = occupancy(known.values(), served);
+    districts = occ.districts;
+    debug.builds += city.setPlots(occ);
+    debug.districts = occ.districts.length;
+    debug.sites = occ.sites.length;
+
+    const plates: Plate[] = occ.districts.map((d) => {
       const [owner, name] = d.repo.split('/');
       const n = d.tower.floors.length;
       return {
@@ -151,49 +173,49 @@ async function main(): Promise<void> {
         onActivate: () => inspect(d.repo, null),
       };
     });
-    for (const s of sitesNow()) {
+    for (const s of occ.sites) {
       const [, name] = s.repo.split('/');
-      plates.push({ key: s.repo, origin: s.origin, name: name ?? s.repo, sub: STEP_TEXT[analyzing.get(s.repo)?.step ?? ''] ?? 'Surveying the site' });
+      plates.push({ key: s.repo, origin: s.origin, name: name ?? s.repo, sub: STEP_TEXT[analyzingStep(s.repo)] ?? 'Surveying the site' });
     }
     city.setPlates(plates);
-  }
 
-  /** A scaffold stands only where a repo is analyzing for the first time: a district that already has a tower keeps it. */
-  function sitesNow(): Site[] {
-    return [...analyzing]
-      .filter(([repo]) => !byRepo(repo))
-      .map(([repo, a]) => ({ repo, origin: districtOrigin(a.slot) }));
-  }
-
-  function showSites(): void {
-    const sites = sitesNow();
-    city.setSites(sites);
-    debug.sites = sites.length;
-    showPlates();
-  }
-
-  const show = (next: District[]): void => {
-    districts = next;
-    debug.builds += city.setDistricts(next);
-    debug.districts = next.length;
-    // A repo whose tower has arrived is no longer a site, however its events were ordered.
-    for (const d of next) analyzing.delete(d.repo);
-    // A finished analysis whose repo has no district (disconnected meanwhile) leaves no scaffold behind.
-    for (const [repo, a] of analyzing) if (a.done) analyzing.delete(repo);
-    showSites();
     const open = inspector.repo ? byRepo(inspector.repo) : undefined;
     if (inspector.repo && !open) inspector.close();
     else if (open) inspector.update(open);
+  }
+
+  const show = (next: District[]): void => {
+    served = next;
+    // A finished first analysis stops holding its scaffold once the refresh after it lands, tower or not.
+    for (const r of known.values()) {
+      if (r.done) {
+        r.status = 'ready';
+        r.done = false;
+      }
+    }
+    place();
   };
 
-  /** Takes the stored repos as they are now: which are analyzing (keeping a step already known) and which are connected. */
+  const countConnected = (): void => runhead.setConnected([...known.values()].filter((r) => r.connected).length);
+
+  /** Takes a repo as stored now, keeping the step its analysis reached. */
+  const takeRepo = (r: Repo, step?: string): void => {
+    const was = known.get(r.fullName);
+    known.set(r.fullName, {
+      fullName: r.fullName,
+      slot: r.slot,
+      connected: r.connected,
+      status: r.status,
+      step: step ?? (r.status === 'analyzing' ? (was?.step ?? '') : ''),
+    });
+  };
+
+  /** Takes the stored repos as they are now: which are connected, and which are analyzing. */
   const takeRepos = (list: Repo[]): void => {
-    const steps = new Map([...analyzing].map(([repo, a]) => [repo, a.step]));
-    analyzing.clear();
-    for (const r of list) if (r.connected && r.status === 'analyzing') analyzing.set(r.fullName, { slot: r.slot, step: steps.get(r.fullName) ?? '' });
-    connectedRepos.clear();
-    for (const r of list) if (r.connected) connectedRepos.add(r.fullName);
-    runhead.setConnected(connectedRepos.size);
+    const steps = new Map([...known].map(([repo, k]) => [repo, k.step]));
+    known.clear();
+    for (const r of list) takeRepo(r, r.status === 'analyzing' ? steps.get(r.fullName) : undefined);
+    countConnected();
   };
 
   try {
@@ -216,31 +238,27 @@ async function main(): Promise<void> {
       // Events sent while the stream was down are lost: read the repos, the city and the kill switch afresh.
       void api.repos().then((list) => {
         takeRepos(list);
-        showSites();
+        place();
       }, () => {});
       void api.health().then((h) => runhead.setStopped(h.stopped), () => {});
       refresh();
       for (const fn of listeners) fn(e);
       return;
     }
+    // Every repo event carries the repo as stored when it was sent, toggles included: a step reported by an
+    // analysis that runs on after its repo was turned off says connected: false, and so raises nothing.
     const repo = (e.data as { repo?: Repo } | null)?.repo;
-    if (e.type === 'repo.analyzing' && repo?.fullName) {
-      analyzing.set(repo.fullName, { slot: repo.slot, step: (e.data as { step?: string }).step ?? '' });
-      showSites();
-    } else if ((e.type === 'repo.error' || e.type === 'repo.disconnected') && repo?.fullName) {
-      // An error shows nothing new in the city: the scaffold comes down, the Repos screen carries the message.
-      analyzing.delete(repo.fullName);
-      showSites();
-    } else if (e.type === 'repo.analyzed' && repo?.fullName) {
-      // The scaffold stays until the refresh below brings the tower, so the site is never briefly empty.
-      const a = analyzing.get(repo.fullName);
-      if (a) a.done = true;
-    }
-    // Every repo event carries the repo as stored when it was sent, toggles included.
     if (repo?.fullName && typeof repo.connected === 'boolean') {
-      if (repo.connected) connectedRepos.add(repo.fullName);
-      else connectedRepos.delete(repo.fullName);
-      runhead.setConnected(connectedRepos.size);
+      const step = e.type === 'repo.analyzing' ? ((e.data as { step?: string }).step ?? '') : undefined;
+      takeRepo(repo, step);
+      const k = known.get(repo.fullName);
+      // The scaffold stays until the refresh below brings the tower, so the site is never briefly empty.
+      if (k && e.type === 'repo.analyzed' && k.connected) {
+        k.status = 'analyzing';
+        k.done = true;
+      }
+      countConnected();
+      place();
     }
     if (e.type === 'engine.stopped' || e.type === 'engine.resumed') runhead.setStopped(e.type === 'engine.stopped');
     if (REFRESH_ON.has(e.type)) refresh();

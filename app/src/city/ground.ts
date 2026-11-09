@@ -27,6 +27,8 @@ const PLINTH_FOOT = 34;
 export interface Ground {
   mesh: THREE.Mesh;
   setPlazas(plazas: Plaza[]): void;
+  /** Plazas the ground paves now, the civic plaza included (tests and debugging). */
+  plazas(): number;
   dispose(): void;
 }
 
@@ -204,6 +206,7 @@ export function createGround(): Ground {
       all.forEach((p, i) => uniforms.uPlazas.value[i].set(p.x, p.z));
       uniforms.uPlazaCount.value = all.length;
     },
+    plazas: () => uniforms.uPlazaCount.value,
     dispose() {
       geo.dispose();
       mat.dispose();

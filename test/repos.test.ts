@@ -509,14 +509,24 @@ test('disconnecting during an analysis stays disconnected when the analysis fini
   let release: () => void = () => {};
   setRunner(gatedRunner(fullName, new Promise<void>((r) => (release = r))));
 
-  await connect(fullName);
+  const slot = (await connect(fullName)).slot;
   disconnect(fullName);
+  // Every step the stopped analysis still reports says the repo is off, so the city raises no scaffold for it.
+  const steps: Array<{ connected: boolean }> = [];
+  const off = subscribe((e) => {
+    if (e.type === 'repo.analyzing') steps.push((e.data as { repo: { connected: boolean } }).repo);
+  });
   const analyzed = waitForEvent('repo.analyzed');
   release();
   const e = await analyzed;
+  off();
   assert.equal(listRepos()[0].connected, false, 'the finished analysis must not reconnect the repo');
   assert.equal((e.data as { repo: { connected: boolean } }).repo.connected, false);
+  assert.ok(steps.length > 0 && steps.every((r) => r.connected === false), `steps after the stop carry connected: false (${steps.length})`);
   assert.deepEqual(city(), []);
+  // The slot stays the repo's: reconnecting returns it to the same plot.
+  assert.equal((await connect(fullName)).slot, slot);
+  await waitForEvent('repo.analyzed');
 });
 
 test('connect refuses a malformed owner/name without storing a row or calling gh', async () => {
