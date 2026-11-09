@@ -212,14 +212,14 @@ fn main() {
         .invoke_handler(tauri::generate_handler![engine_healthy, open_city, install_engine, open_folder_access, engine_command])
         .setup(|app| {
             let handle = app.handle().clone();
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Palimpsest")
-                // Opens zoomed to the screen's visible frame (menu bar and Dock stay, no fullscreen Space).
-                // Un-zoomed, it returns to a centred size that fits a 13 inch screen.
+                // Un-zoomed, the window returns to a centred size that fits a 13 inch screen.
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(1000.0, 640.0)
                 .center()
-                .maximized(true)
+                // Shown only once zoomed (below), so it never flashes at the un-zoomed size.
+                .visible(false)
                 .theme(Some(Theme::Dark))
                 .background_color(ZENITH)
                 // target=_blank links leave the app for the default browser, never a second webview.
@@ -230,6 +230,10 @@ fn main() {
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            // Opens zoomed to the screen's visible frame: menu bar and Dock stay, no fullscreen Space.
+            // Zoomed after build, because the builder places a centred window after any zoom it was asked for.
+            window.maximize()?;
+            window.show()?;
             Ok(())
         })
         .run(tauri::generate_context!())
