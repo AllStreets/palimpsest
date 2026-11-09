@@ -66,7 +66,8 @@ async function seed(): Promise<void> {
       at: new Date(start + i * 26 * 3600_000).toISOString(),
       author: i % 3 === 0 ? 'Ada' : 'Ben',
       subject: `Change ${i + 1}`,
-      body: i > s.commits * 0.7 || i % 9 === 4 ? 'Co-Authored-By: Claude <noreply@anthropic.com>' : '',
+      // Late floors alternate, so every era shot shows Claude and non-Claude floors side by side.
+      body: (i > s.commits * 0.7 && i % 2 === 0) || i % 9 === 4 ? 'Co-Authored-By: Claude <noreply@anthropic.com>' : '',
       lines: 20 + ((i * 37) % 300),
     }));
     const floors = foundingFloors(s.fullName, commits, []);

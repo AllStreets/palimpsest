@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 import { layoutTower } from '../../../../shared/tower-layout.js';
 import type { TowerSpec } from '../../../../shared/types.js';
-import { addDatum } from './datum.js';
+import { addDatum, type DatumPlan } from './datum.js';
 import { ERA_BUILDERS, type FloorShape, TITANIUM_TWIST } from './eras.js';
 import { Kit, M, rng, type TowerMaterials } from './kit.js';
 import { ROOT_BUILDERS, ROOT_TOP_HALF } from './roots.js';
@@ -56,7 +56,7 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
 
   let width = FLOOR_WIDTH;
   let inRun = 0;
-  let datumPlan = { cx: 0, cz: 0, half: ROOT_TOP_HALF[spec.root] - 0.4, ry: 0 };
+  let datumPlan: DatumPlan = { cx: 0, cz: 0, half: ROOT_TOP_HALF[spec.root] - 0.4, ry: 0 };
   layout.floors.forEach(({ floor, y0, h }, i) => {
     const prev = layout.floors[i - 1]?.floor.era;
     const next = layout.floors[i + 1]?.floor.era;
@@ -75,7 +75,7 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
     });
     pickables.set(proxy(shape.cx, y0 + h / 2, shape.cz, shape.half * 2, h, ry), floor.id);
     if (i === spec.datumIndex - 1) {
-      datumPlan = { cx: shape.cx, cz: shape.cz, half: shape.datumHalf, ry };
+      datumPlan = { cx: shape.cx, cz: shape.cz, half: shape.datumHalf, ry, rect: shape.datumRect };
     }
     width *= TAPER;
   });

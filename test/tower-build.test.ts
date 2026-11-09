@@ -137,3 +137,13 @@ test('dispose frees instanced buffers as well as geometry', () => {
   assert.ok(instanced > 0);
   assert.equal(freed, instanced);
 });
+
+test('a datum partway up any era builds and stays inside the tower', () => {
+  for (const era of ERAS) {
+    const floors = Array.from({ length: 6 }, (_, i) => floor(i, era, i % 2 === 0));
+    const s: TowerSpec = { id: 'acme/mid#founding', repo: 'acme/mid', kind: 'founding', root: 'chicago', floors, datumIndex: 3 };
+    const t = buildTower(s, 'high', plainMaterials());
+    const box = bounds(t.group);
+    assert.ok(Math.abs(box.max.y - t.top) < 1e-3, `${era}: top ${box.max.y} vs ${t.top}`);
+  }
+});

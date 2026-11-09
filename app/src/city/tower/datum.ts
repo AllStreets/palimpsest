@@ -11,8 +11,28 @@ export const DATUM_HEIGHT = 0.42;
  * titanium run). The floor under it leaves off its run-end cap so the band
  * is never buried.
  */
-export function addDatum(k: Kit, datumY: number, plan: { cx: number; cz: number; half: number; ry: number }): void {
+export interface DatumPlan {
+  cx: number;
+  cz: number;
+  half: number;
+  ry: number;
+  /** A rectangle ([x0, x1, z0, z1]) to follow instead of the square: a sci-fi floor's slab edge. */
+  rect?: [number, number, number, number];
+}
+
+export function addDatum(k: Kit, datumY: number, plan: DatumPlan): void {
   const y0 = datumY - DATUM_HEIGHT;
+  if (plan.rect) {
+    // Four bronze bars on the slab edge's line, mitred by overlap at the corners.
+    const [x0, x1, z0, z1] = plan.rect;
+    const t = 0.12;
+    const y = y0 + DATUM_HEIGHT / 2;
+    k.box('bronze', x1 - x0 + 2 * t, DATUM_HEIGHT, t, M((x0 + x1) / 2, y, z1 + t / 2));
+    k.box('bronze', x1 - x0 + 2 * t, DATUM_HEIGHT, t, M((x0 + x1) / 2, y, z0 - t / 2));
+    k.box('bronze', t, DATUM_HEIGHT, z1 - z0, M(x1 + t / 2, y, (z0 + z1) / 2));
+    k.box('bronze', t, DATUM_HEIGHT, z1 - z0, M(x0 - t / 2, y, (z0 + z1) / 2));
+    return;
+  }
   // A flat fillet between two small chamfers, so the band catches a line of light top and bottom.
   k.add(
     'bronze',

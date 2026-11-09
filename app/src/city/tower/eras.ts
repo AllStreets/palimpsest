@@ -38,6 +38,8 @@ export interface FloorShape {
   cz: number;
   half: number;
   datumHalf: number;
+  /** When set, the datum band follows this rectangle ([x0, x1, z0, z1], at the floor's slab edge) instead of a square. */
+  datumRect?: [number, number, number, number];
 }
 
 /**
@@ -52,7 +54,7 @@ const LIGHTING: Record<Era, { lit: number; warm: number }> = {
   brick: { lit: 0.55, warm: 0.85 },
   glass: { lit: 0.8, warm: 0.55 },
   titanium: { lit: 0.55, warm: 0.15 },
-  scifi: { lit: 0.88, warm: 0.5 },
+  scifi: { lit: 0.92, warm: 0.5 },
 };
 
 /** Per-window light: whole floors go dark now and then; the rest light by chance, warm or cool. */
@@ -228,13 +230,20 @@ const glass: EraBuilder = (k, w, h, f, c) => {
 
 // ---------------------------------------------------------------- titanium
 
-/** A blade fin: an elliptical section 0.24 m thick and 1.3 m deep, 1 m tall and centred, so its curved faces sweep the sky's gradient. */
+/** A blade fin: an elliptical section 0.5 m thick and 1.3 m deep, 1 m tall and centred; its faces curve enough to sweep the sky's gradient. */
 function blade(): THREE.BufferGeometry {
   const g = new THREE.CylinderGeometry(1, 1, 1, 28, 1);
-  g.scale(0.12, 1, 0.65);
+  g.scale(0.25, 1, 0.65);
   g.deleteAttribute('normal');
   g.computeVertexNormals();
   return g;
+}
+
+/** Titanium cladding varies panel to panel (rolling batch, oxide film): a small tone and hue shift per fin. */
+function panelTone(rand: () => number): THREE.Color {
+  const v = 0.78 + 0.3 * rand();
+  const hue = (rand() - 0.5) * 0.08;
+  return new THREE.Color(v * (1 + hue), v, v * (1 - hue));
 }
 
 /**
@@ -250,14 +259,8 @@ const titanium: EraBuilder = (k, w, h, f, c) => {
   const edge = 0.55;
   const light = lighter(f.era, c.rand);
   k.box('slab', w - 1.2, h, w - 1.2, M(0, h / 2, 0));
-  // A bull-nosed slab edge: the curve carries a gradient of reflected sky.
-  const nose: Array<[number, number]> = [[-0.6, 0]];
-  for (let i = 0; i <= 10; i++) {
-    const a = -Math.PI / 2 + (Math.PI * i) / 10;
-    nose.push([0.18 + 0.24 * Math.cos(a), edge / 2 + (edge / 2) * Math.sin(a)]);
-  }
-  nose.push([-0.6, edge]);
-  k.add('titanium', squareSweep(half, nose));
+  // A dark graphite slab edge with small chamfers: it frames each floor without becoming a lit strip.
+  k.add('graphite', squareSweep(half, [[-0.6, 0], [0.3, 0], [0.38, 0.07], [0.38, edge - 0.07], [0.3, edge], [-0.6, edge]]));
   for (let side = 0; side < 4; side++) {
     const F = face(side, half);
     for (let i = 0; i < n; i++) {
@@ -267,13 +270,13 @@ const titanium: EraBuilder = (k, w, h, f, c) => {
     for (let i = 1; i < n; i++) {
       const u = -half + pitch * i;
       const a = (i % 2 === 0 ? 1 : -1) * 0.14;
-      k.inst('blade', 'titanium', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32, a, 1, h - edge, 1)));
+      k.inst('blade', 'titanium', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32, a, 1, h - edge, 1)), panelTone(c.rand));
     }
-    k.inst('blade', 'titanium', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32, 0, 1, h - edge, 1)));
+    k.inst('blade', 'titanium', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32, 0, 1, h - edge, 1)), panelTone(c.rand));
   }
-  claudeAccent(k, f, half + 0.42, edge / 2 - 0.05, 0.1, 0.1);
+  claudeAccent(k, f, half + 0.38, edge / 2 - 0.05, 0.1, 0.1);
   if (c.runEnd && !c.datum) {
-    k.add('titanium', squareSweep(half, [[-0.6, h - 0.45], [0.75, h - 0.45], [0.8, h - 0.4], [0.8, h], [-0.6, h]]));
+    k.add('graphite', squareSweep(half, [[-0.6, h - 0.45], [0.75, h - 0.45], [0.8, h - 0.4], [0.8, h], [-0.6, h]]));
   }
   return { cx: 0, cz: 0, half: half + 1, datumHalf: half + 1.0 };
 };
@@ -371,7 +374,8 @@ const scifi: EraBuilder = (k, w, h, f, c) => {
     ring(k, 'lightLine', -ch + 0.35, ch - 0.35, -ch + 0.35, ch - 0.35, h - 0.525, h - 0.5, 0.06);
   }
   const reach = Math.max(...ext) + core;
-  return { cx: 0, cz: 0, half: reach + 0.1, datumHalf: c.top ? frame + 0.25 : core };
+  // On an ordinary floor the datum runs along the slab edge, clear of the diagrid; on the crown it wraps the canopy.
+  return { cx: 0, cz: 0, half: reach + 0.1, datumHalf: frame + 0.25, datumRect: c.top ? undefined : [x0, x1, z0, z1] };
 };
 
 export const ERA_BUILDERS: Record<Era, EraBuilder> = { stone, brick, glass, titanium, scifi };

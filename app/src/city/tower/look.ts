@@ -93,25 +93,117 @@ function metal(color: number, rough: number, normal: number): THREE.MeshStandard
   });
 }
 
+let grain: { normal: THREE.Texture; rough: THREE.Texture } | null = null;
+
 /**
- * Brushed metal: anisotropic highlights stretched along the grain (vertical
- * on walls and fins), the scanned plate's normal and roughness breaking up
- * the surface, reflecting the dusk sky's PMREM like the rest of the city.
+ * A brushed grain, drawn once: fine streaks running the length of the
+ * texture's v axis (up the fins), as a normal map (the slope across the
+ * streaks) and a roughness map (polished and dull streaks side by side).
  */
-function brushed(color: number, rough: number, aniso: number): THREE.MeshPhysicalMaterial {
-  return new THREE.MeshPhysicalMaterial({
+function brushedGrain(): { normal: THREE.Texture; rough: THREE.Texture } {
+  if (grain) return grain;
+  const W = 512;
+  const H = 64;
+  let seed = 11;
+  const rnd = (): number => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  // Height across the streaks: fine scratches over a few broader bands.
+  const height = new Float32Array(W);
+  for (let x = 0; x < W; x++) height[x] = rnd() * 0.6;
+  for (let pass = 0; pass < 2; pass++) {
+    for (let x = 0; x < W; x++) height[x] = (height[x] + height[(x + 1) % W] * 0.5 + height[(x + W - 1) % W] * 0.5) / 2;
+  }
+  for (let b = 0; b < 24; b++) {
+    const c = Math.floor(rnd() * W);
+    const wdt = 2 + rnd() * 10;
+    const amp = (rnd() - 0.5) * 0.5;
+    for (let x = 0; x < W; x++) {
+      const d = Math.min(Math.abs(x - c), W - Math.abs(x - c));
+      height[x] += amp * Math.exp(-(d * d) / (wdt * wdt));
+    }
+  }
+  const make = (fill: (x: number, y: number) => [number, number, number]): THREE.CanvasTexture => {
+    const cv = document.createElement('canvas');
+    cv.width = W;
+    cv.height = H;
+    const g = cv.getContext('2d');
+    if (g) {
+      const img = g.createImageData(W, H);
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const [r, gg, b] = fill(x, y);
+          const i = (y * W + x) * 4;
+          img.data[i] = r;
+          img.data[i + 1] = gg;
+          img.data[i + 2] = b;
+          img.data[i + 3] = 255;
+        }
+      }
+      g.putImageData(img, 0, 0);
+    }
+    const t = new THREE.CanvasTexture(cv);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(5, 1);
+    t.anisotropy = 8;
+    return t;
+  };
+  const normal = make((x) => {
+    const slope = (height[(x + 1) % W] - height[(x + W - 1) % W]) * 4;
+    const nx = -slope / Math.hypot(slope, 1);
+    const nz = 1 / Math.hypot(slope, 1);
+    return [Math.round((nx * 0.5 + 0.5) * 255), 128, Math.round((nz * 0.5 + 0.5) * 255)];
+  });
+  const rough = make((x, y) => {
+    const v = 0.45 + 0.55 * Math.min(1, Math.max(0, height[x] + 0.25 + 0.05 * Math.sin(y * 0.4 + x)));
+    const c = Math.round(v * 255);
+    return [c, c, c];
+  });
+  grain = { normal, rough };
+  return grain;
+}
+
+/**
+ * Brushed metal: a fine streaked grain in the normal and roughness maps,
+ * highlights stretched along the grain by anisotropy, no paint-like
+ * clearcoat, and enough reflection weight that the dusk sky's PMREM shows
+ * as a gradient across every curved surface.
+ */
+function brushed(color: number, rough: number, aniso: number, env: number, key: string): THREE.MeshPhysicalMaterial {
+  const g = brushedGrain();
+  const m = new THREE.MeshPhysicalMaterial({
     color,
     metalness: 1,
     roughness: rough,
-    roughnessMap: texture('metal_arm.jpg'),
-    normalMap: texture('metal_nor.jpg'),
-    normalScale: new THREE.Vector2(0.12, 0.12),
+    roughnessMap: g.rough,
+    normalMap: g.normal,
+    normalScale: new THREE.Vector2(0.6, 0.6),
     anisotropy: aniso,
     anisotropyRotation: Math.PI / 2,
-    envMapIntensity: 1.25,
-    clearcoat: 0.15,
-    clearcoatRoughness: 0.25,
+    envMapIntensity: env,
   });
+  // three's anisotropic path divides by zero where a face's UVs give no tangent, or where the
+  // bitangent lines up with the view; one NaN pixel then spreads through the bloom chain to the
+  // whole frame. Fall back to a tangent from the normal, and keep the bent normal finite.
+  m.customProgramCacheKey = () => `palimpsest-brushed-${key}`;
+  m.onBeforeCompile = (sh) => {
+    const anisoFix = `material.anisotropyB = tbn[ 1 ] * anisotropyV.x - tbn[ 0 ] * anisotropyV.y;
+      if ( dot( material.anisotropyT, material.anisotropyT ) < 1e-8 || dot( material.anisotropyB, material.anisotropyB ) < 1e-8 ) {
+        vec3 upRef = abs( normal.y ) < 0.99 ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 );
+        material.anisotropyB = normalize( cross( normal, upRef ) );
+        material.anisotropyT = cross( material.anisotropyB, normal );
+      }`;
+    const lights = THREE.ShaderChunk.lights_physical_fragment.replace(
+      'material.anisotropyB = tbn[ 1 ] * anisotropyV.x - tbn[ 0 ] * anisotropyV.y;',
+      anisoFix,
+    );
+    const env = THREE.ShaderChunk.envmap_physical_pars_fragment.replaceAll(
+      'bentNormal = normalize( cross( bentNormal, bitangent ) );',
+      'bentNormal = normalize( cross( bentNormal, bitangent ) + normal * 1e-4 );',
+    );
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <lights_physical_fragment>', lights)
+      .replace('#include <envmap_physical_pars_fragment>', env);
+  };
+  return m;
 }
 
 /**
@@ -199,7 +291,7 @@ const ROOM_GLSL = /* glsl */ `
       room = lc * (0.12 + fitting * 0.75);
     } else if (t == ty) {
       // Floor: pools under the fittings, darker toward the window.
-      room = lc * (0.08 + 0.12 * smoothstep(0.5, 3.0, -p.z));
+      room = lc * (0.16 + 0.16 * smoothstep(0.5, 3.0, -p.z));
     }
     room *= exp(-max(-p.z, 0.0) * 0.06);
     // Blinds drawn partway on some windows: slatted fabric, lit from behind.
@@ -289,8 +381,8 @@ export function towerMaterials(): TowerMaterials {
     granite: stone(0x8a8886, 'granite', 1.3, 0.9),
     brick: lib.brick,
     bronze: metal(0x6b4a2e, 0.42, 0.35),
-    titanium: brushed(0x868b93, 0.2, 0.45),
-    graphite: brushed(0x303338, 0.3, 0.4),
+    titanium: brushed(0xa9afb7, 0.13, 0.6, 2.2, 'titanium'),
+    graphite: brushed(0x2e3136, 0.42, 0.4, 1.4, 'graphite'),
     steel: lib.darkMetal,
     slab: lib.concrete,
     window: windowMaterial(),
@@ -298,9 +390,10 @@ export function towerMaterials(): TowerMaterials {
     roofTile: new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.38, metalness: 0.1, envMapIntensity: 1.2 }),
     timber: floodlit(new THREE.MeshStandardMaterial({ color: 0x7a2416, roughness: 0.48 }), 'timber', 0.8),
     plaster: floodlit(new THREE.MeshStandardMaterial({ color: 0xe6dfd2, roughness: 0.92 }), 'plaster', 0.7),
-    // Warm white (about 3000 K), at a level that reads as a lit reveal rather than neon.
-    lightLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.86, 0.68).multiplyScalar(1.05) }),
-    accent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.62, 0.3).multiplyScalar(1.2) }),
+    // Neutral white (about 4500 K), at a level that reads as a lit reveal rather than neon.
+    lightLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.88, 0.93, 1.0).multiplyScalar(1.0) }),
+    // Saturated amber, a hue the architecture never uses, so a Claude floor reads apart from any light line.
+    accent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) }),
     pick: new THREE.MeshBasicMaterial({ visible: false }),
   };
   return library;
