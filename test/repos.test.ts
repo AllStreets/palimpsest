@@ -343,3 +343,82 @@ test('district origins are stable across a sibling disconnect and reconnect (slo
   assert.deepEqual(originFor('acme/a', afterReconnect), aOrigin, "a's origin must not move when b reconnects");
   assert.deepEqual(originFor('acme/c', afterReconnect), cOrigin, "c's origin must not move when b reconnects");
 });
+
+test('legacy repo rows without a slot are backfilled with distinct, finite slots', async () => {
+  // Simulates two rows written before Repo gained `slot`: inserted directly
+  // into the repos/towers tables, bypassing connect()/saveRepo() entirely,
+  // so their JSON genuinely has no `slot` key at all (not merely `undefined`
+  // via a typed object, which TypeScript wouldn't let us construct).
+  const db = openDb();
+
+  const legacyTower = (repo: string) => ({
+    id: `${repo}#founding`,
+    repo,
+    kind: 'founding',
+    root: 'roman',
+    floors: [],
+    datumIndex: 0,
+  });
+
+  const legacyRepo = (fullName: string, connectedAt: string) => ({
+    fullName,
+    private: false,
+    defaultBranch: 'main',
+    language: null,
+    description: null,
+    connected: true,
+    pushMode: false,
+    root: 'roman',
+    // no `slot` key: the exact shape a pre-migration row would have had.
+    status: 'ready',
+    error: null,
+    connectedAt,
+    analyzedAt: connectedAt,
+  });
+
+  db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(
+    'legacy/one',
+    JSON.stringify(legacyRepo('legacy/one', '2026-01-01T00:00:00.000Z')),
+  );
+  db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(
+    'legacy/two',
+    JSON.stringify(legacyRepo('legacy/two', '2026-01-02T00:00:00.000Z')),
+  );
+  db.prepare('INSERT INTO towers (repo, json) VALUES (?, ?)').run(
+    'legacy/one',
+    JSON.stringify(legacyTower('legacy/one')),
+  );
+  db.prepare('INSERT INTO towers (repo, json) VALUES (?, ?)').run(
+    'legacy/two',
+    JSON.stringify(legacyTower('legacy/two')),
+  );
+
+  // Connecting a brand-new repo must not get stuck computing NaN from the
+  // legacy rows' missing slots, and must itself land on a distinct slot.
+  setRunner(fixtureRunner('acme/three', []));
+  const analyzed = waitForEvent('repo.analyzed');
+  await connect('acme/three');
+  await analyzed;
+
+  const repos = listRepos();
+  assert.equal(repos.length, 3);
+
+  for (const repo of repos) {
+    assert.ok(Number.isFinite(repo.slot), `${repo.fullName}'s slot (${repo.slot}) must be finite`);
+    assert.ok(Number.isInteger(repo.slot), `${repo.fullName}'s slot (${repo.slot}) must be an integer`);
+  }
+
+  const slots = repos.map((r) => r.slot);
+  assert.equal(new Set(slots).size, slots.length, 'every slot must be distinct');
+
+  // Backfilled in connectedAt order: legacy/one connected before legacy/two.
+  const one = repos.find((r) => r.fullName === 'legacy/one')!;
+  const two = repos.find((r) => r.fullName === 'legacy/two')!;
+  assert.ok(one.slot < two.slot, 'legacy/one (connected first) must get the earlier slot');
+
+  const districts = city();
+  assert.equal(districts.length, 3);
+  for (const d of districts) {
+    assert.notDeepEqual(d.origin, { x: 0, z: 0 }, `${d.repo}'s district must not sit at the civic plaza`);
+  }
+});

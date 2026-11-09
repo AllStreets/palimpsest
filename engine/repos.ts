@@ -24,12 +24,57 @@ export function pickRoot(fullName: string): RootStyle {
   return ROOTS[fnv1a32(fullName) % ROOTS.length];
 }
 
+/** True for a usable slot: a finite number, never NaN/undefined/Infinity. */
+function hasValidSlot(repo: Repo): boolean {
+  return typeof repo.slot === 'number' && Number.isFinite(repo.slot);
+}
+
+/**
+ * Backfills a slot onto every row in `repos` that lacks a finite numeric one
+ * (rows written before `Repo` gained the field), persisting the fix, and
+ * returns the full list with every row now slot-complete. Rows needing a
+ * slot are assigned the next unused one each, in `connectedAt` order, never
+ * disturbing a row that already has a valid slot.
+ */
+function ensureSlots(repos: Repo[]): Repo[] {
+  const missing = repos.filter((r) => !hasValidSlot(r));
+  if (missing.length === 0) return repos;
+
+  let next = repos.reduce((max, r) => (hasValidSlot(r) ? Math.max(max, r.slot) : max), -1) + 1;
+
+  const bySlot = new Map<string, number>();
+  const missingByConnectedAt = [...missing].sort((a, b) => {
+    const at = a.connectedAt ? Date.parse(a.connectedAt) : 0;
+    const bt = b.connectedAt ? Date.parse(b.connectedAt) : 0;
+    return at - bt;
+  });
+  for (const r of missingByConnectedAt) {
+    bySlot.set(r.fullName, next);
+    next += 1;
+  }
+
+  return repos.map((r) => {
+    const slot = bySlot.get(r.fullName);
+    if (slot === undefined) return r;
+    const fixed = { ...r, slot };
+    saveRepo(fixed);
+    return fixed;
+  });
+}
+
 function loadRepo(fullName: string): Repo | null {
   const db = openDb();
   const row = db.prepare('SELECT json FROM repos WHERE full_name = ?').get(fullName) as
     | { json: string }
     | undefined;
-  return row ? (JSON.parse(row.json) as Repo) : null;
+  if (!row) return null;
+  const repo = JSON.parse(row.json) as Repo;
+  if (hasValidSlot(repo)) return repo;
+  // This row predates the slot field (or another process wrote it without
+  // one). Assigning it a slot in isolation would ignore any other row that
+  // also needs one, so backfill every row that needs one in one pass, in
+  // connectedAt order, via listRepos(), then return this row's fixed copy.
+  return listRepos().find((r) => r.fullName === fullName) ?? repo;
 }
 
 function saveRepo(repo: Repo): Repo {
@@ -57,7 +102,7 @@ function saveTower(tower: TowerSpec): void {
 export function listRepos(): Repo[] {
   const db = openDb();
   const rows = db.prepare('SELECT json FROM repos').all() as Array<{ json: string }>;
-  const repos = rows.map((row) => JSON.parse(row.json) as Repo);
+  const repos = ensureSlots(rows.map((row) => JSON.parse(row.json) as Repo));
   return repos.sort((a, b) => {
     const at = a.connectedAt ? Date.parse(a.connectedAt) : 0;
     const bt = b.connectedAt ? Date.parse(b.connectedAt) : 0;
@@ -77,11 +122,16 @@ function readableMessage(err: unknown): string {
  * once, at a repo's first connect, and is never reused, so a repo's district
  * position is stable for the repo's whole lifetime in the city regardless of
  * how many other repos connect, disconnect or reconnect around it.
+ *
+ * listRepos() already backfills any row missing a finite slot before this
+ * runs, so in practice every row here has one; the Number.isFinite guard is
+ * a second, cheap line of defense against ever folding a NaN/undefined
+ * slot into the max (which would poison every later slot with NaN).
  */
 function nextSlot(): number {
   const repos = listRepos();
   if (repos.length === 0) return 0;
-  return repos.reduce((max, r) => Math.max(max, r.slot), -1) + 1;
+  return repos.reduce((max, r) => (Number.isFinite(r.slot) ? Math.max(max, r.slot) : max), -1) + 1;
 }
 
 /**
