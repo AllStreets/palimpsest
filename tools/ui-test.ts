@@ -15,11 +15,11 @@
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inflateSync } from 'node:zlib';
 
 import { chromium } from 'playwright';
-import type { Page } from 'playwright';
+import type { Browser, Page } from 'playwright';
 
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District, Era, Repo, TowerSpec } from '../shared/types.js';
@@ -626,6 +626,52 @@ async function settingsChecks(page: Page, claudeSettingsPath: string): Promise<v
   check(!(await page.locator('.sheet.settings').isVisible()), 'Escape leaves Settings for the city');
 }
 
+// ---------------------------------------------------------------- the splash
+
+/**
+ * The Mac app's splash, opened from its files with Tauri's invoke stood in.
+ * When the engine answers but the window cannot be swapped for the city, the
+ * splash must not freeze on its hairline: it shows the engine-down state with
+ * the reason and a working Start button, both at launch and after Start.
+ */
+async function splashChecks(browser: Browser): Promise<void> {
+  const splash = pathToFileURL(join(ROOT, 'src-tauri', 'splash', 'index.html')).href;
+  for (const [when, healthyAtLaunch] of [['at launch', true], ['after Start', false]] as const) {
+    const page = await browser.newPage({ viewport: { width: 900, height: 640 } });
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    // A string, not a function: tsx would wrap a function in helpers the page does not have.
+    await page.addInitScript(`
+      let installed = false;
+      window.__TAURI__ = {
+        core: {
+          invoke: async (cmd) => {
+            if (cmd === 'engine_healthy') return ${healthyAtLaunch} || installed;
+            if (cmd === 'engine_command') return 'node ~/palimpsest/bin/palimpsest.mjs engine install';
+            if (cmd === 'install_engine') { installed = true; return null; }
+            if (cmd === 'open_city') throw 'the window is gone';
+            throw new Error('unexpected ' + cmd);
+          },
+        },
+      };
+    `);
+    await page.goto(splash);
+    if (!healthyAtLaunch) {
+      await page.waitForFunction(() => document.body.dataset.state === 'down', null, { timeout: 8000 });
+      await page.locator('#start').click();
+    }
+    const shown = await page
+      .waitForFunction(() => document.body.dataset.state === 'down' && !document.getElementById('error')!.hidden, null, { timeout: 8000 })
+      .then(() => true)
+      .catch(() => false);
+    const text = (await page.locator('#error').textContent()) ?? '';
+    check(shown && /could not open the city/i.test(text) && /window is gone/.test(text), `splash ${when}: a failed open shows the engine-down state with the reason (${text || 'nothing shown'})`);
+    check(!(await page.locator('#start').isDisabled()), `splash ${when}: Start the engine works again`);
+    check(errors.length === 0, `splash ${when}: no unhandled errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
+    await page.close();
+  }
+}
+
 // ---------------------------------------------------------------- the engine restarting
 
 /**
@@ -686,6 +732,7 @@ async function main(): Promise<void> {
     args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader'],
   });
   try {
+    await splashChecks(browser);
     const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: Number(process.env.UI_DPR ?? 1) });
     const consoleErrors: string[] = [];
     page.on('console', (m) => {

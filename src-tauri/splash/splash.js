@@ -37,14 +37,20 @@ function sweep(selector, ms) {
   }
 }
 
-/** Finishes the hairline quickly, then hands the window to the city. */
+/** Finishes the hairline quickly, then hands the window to the city. If that fails, says why rather than freezing. */
 async function openCity() {
   for (const f of document.querySelectorAll('.fill')) {
     f.style.transition = 'width 220ms ease-out';
     f.style.width = '100%';
   }
   await sleep(240);
-  await invoke('open_city');
+  try {
+    await invoke('open_city');
+  } catch (err) {
+    body.dataset.state = 'down';
+    settle();
+    showError(`The engine is running, but the window could not open the city: ${err && err.message ? err.message : String(err)}`);
+  }
 }
 
 /** Polls the engine's health until it answers or `ms` runs out. */
