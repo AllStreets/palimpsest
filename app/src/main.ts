@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import type { District } from '../../shared/types';
 import { api } from './api';
+import { coalesced } from './coalesce';
 import { createCity, type PickHit } from './city/scene';
 import { onRoute } from './router';
 
@@ -56,15 +57,14 @@ async function main(): Promise<void> {
   }
   show(districts);
 
-  let refreshing: Promise<void> | null = null;
+  // Events that land while a refresh is in flight are not dropped: one more refresh follows it.
+  const refresh = coalesced(() =>
+    api.city().then(show, (err) => {
+      console.warn('city refresh failed', err);
+    }),
+  );
   api.events((e) => {
-    if (!REFRESH_ON.has(e.type) || refreshing) return;
-    refreshing = api
-      .city()
-      .then(show, (err) => console.warn('city refresh failed', err))
-      .finally(() => {
-        refreshing = null;
-      });
+    if (REFRESH_ON.has(e.type)) refresh();
   });
 
   // Repos and Settings (Task 10) draw over the city, which keeps running underneath.

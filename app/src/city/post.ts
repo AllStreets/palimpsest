@@ -59,7 +59,7 @@ export function createPost(
   const target = new THREE.WebGLRenderTarget(size.x * ratio, size.y * ratio, {
     type: THREE.HalfFloatType,
     // At retina density the pixels themselves antialias; multisampling there costs a quarter of the frame rate.
-    samples: quality === 'high' && ratio < 2 ? 4 : 0,
+    samples: quality === 'high' && ratio < 1.5 ? 4 : 0,
   });
   const composer = new EffectComposer(renderer, target);
   composer.setPixelRatio(ratio);

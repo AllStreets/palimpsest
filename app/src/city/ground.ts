@@ -1,6 +1,17 @@
 import * as THREE from 'three';
 
-import { BLOCK, LAMP_EDGE, LAMP_OFFSETS, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, type Plaza } from './grid';
+import {
+  BLOCK,
+  BOLLARD_RING,
+  BOLLARDS,
+  LAMP_EDGE,
+  LAMP_OFFSETS,
+  PITCH,
+  PLAZA_LAMP_RING,
+  PLAZA_LAMPS,
+  PLAZA_RADIUS,
+  type Plaza,
+} from './grid';
 import { materials, texture, worldBox } from './materials';
 
 /** Most plazas the ground shader tracks at once (the civic plaza plus districts). */
@@ -10,6 +21,8 @@ const GROUND_SIZE = 16000;
 const PAVE_TILE = 4;
 /** Lamp heads reach this far over the road from the pole. */
 const LAMP_REACH = 1.3;
+/** The plinth's base course, in metres (its steps add 4 m each side). */
+const PLINTH_FOOT = 34;
 
 export interface Ground {
   mesh: THREE.Mesh;
@@ -69,17 +82,26 @@ export function createGround(): Ground {
         const float PLAZA_R = ${PLAZA_RADIUS.toFixed(1)};
         const float RING_R = ${PLAZA_LAMP_RING.toFixed(1)};
         const float RING_N = ${PLAZA_LAMPS.toFixed(1)};
+        const float BOLLARD_R = ${BOLLARD_RING.toFixed(1)};
+        const float BOLLARD_N = ${BOLLARDS.toFixed(1)};
+        const float PLINTH_HALF = ${(PLINTH_FOOT / 2 + 4).toFixed(1)};
         const float OFFS[4] = float[4](${lampOffsets});
         float gHash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
-        // Distance to the nearest plaza centre, and that centre.
-        float nearestPlaza(vec2 p, out vec2 c) {
-          float best = 1e9; c = vec2(1e6);
+        // Distance to the nearest plaza centre, that centre, and whether it is a district (index 0 is the civic plaza).
+        float nearestPlaza(vec2 p, out vec2 c, out bool district) {
+          float best = 1e9; c = vec2(1e6); district = false;
           for (int i = 0; i < ${MAX_PLAZAS}; i++) {
             if (i >= uPlazaCount) break;
             float d = distance(p, uPlazas[i]);
-            if (d < best) { best = d; c = uPlazas[i]; }
+            if (d < best) { best = d; c = uPlazas[i]; district = i > 0; }
           }
           return best;
+        }
+        // Nearest of n lights evenly spaced on a ring of radius r (offset by half a step when half is 0.5).
+        vec2 ringLight(vec2 d, float r, float n, float half_) {
+          float st = 6.28318530718 / n;
+          float a = (floor(atan(d.y, d.x) / st - half_ + 0.5) + half_) * st;
+          return d - vec2(cos(a), sin(a)) * r;
         }
         float gNoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
           return mix(mix(gHash(i), gHash(i+vec2(1,0)), f.x), mix(gHash(i+vec2(0,1)), gHash(i+vec2(1,1)), f.x), f.y); }
@@ -99,7 +121,8 @@ export function createGround(): Ground {
         vec2 cellId = floor((gp + PITCH * 0.5) / PITCH);
         vec2 lc = gp - cellId * PITCH;                 // position within this block's cell, block centred
         vec2 plazaC;
-        float plazaD = nearestPlaza(gp, plazaC);
+        bool district;
+        float plazaD = nearestPlaza(gp, plazaC, district);
         float plaza = 1.0 - smoothstep(PLAZA_R - 2.0, PLAZA_R, plazaD);
         float edge = max(abs(lc.x), abs(lc.y));
         float road = smoothstep(HALF_BLOCK + 3.9, HALF_BLOCK + 4.1, edge) * (1.0 - plaza);
@@ -122,6 +145,9 @@ export function createGround(): Ground {
         // Plaza ring: a band of lighter dressed stone at the plaza's edge.
         float ring = smoothstep(PLAZA_R - 4.0, PLAZA_R - 3.6, plazaD) * (1.0 - smoothstep(PLAZA_R - 1.2, PLAZA_R - 0.8, plazaD));
         diffuseColor.rgb *= 1.0 + ring * 0.18;
+        // Inside the plaza: warmer, paler dressed paving laid in concentric courses.
+        float course = 1.0 - 0.3 * (1.0 - smoothstep(0.02, 0.06, abs(fract(plazaD / 6.0) - 0.5) - 0.44));
+        diffuseColor.rgb *= mix(vec3(1.0), vec3(1.28, 1.2, 1.08) * course, plaza * (1.0 - ring));
         roughnessFactor = mix(roughnessFactor, 0.74 + grain, road);`,
       )
       .replace(
@@ -150,6 +176,17 @@ export function createGround(): Ground {
             vec2 lp = vec2(cos(a), sin(a)) * RING_R;
             light += 0.8 * pool(d - lp);
           }
+          // District plazas: floodlight spill at the plinth's foot and lit bollards around it.
+          // The plaza floor holds a broad, low wash from all of it together, brightest toward the plinth.
+          if (district) light += 0.55 * (1.0 - smoothstep(18.0, PLAZA_R - 4.0, plazaD));
+          if (district && plazaD < BOLLARD_R + 10.0) {
+            vec2 d = gp - plazaC;
+            vec2 q = abs(d);
+            float foot = max(q.x, q.y);
+            light += 2.2 * exp(-pow(max(foot - PLINTH_HALF, 0.0), 2.0) / 9.0) * step(PLINTH_HALF - 0.5, foot);
+            vec2 b = ringLight(d, BOLLARD_R, BOLLARD_N, 0.5);
+            light += 1.6 * exp(-dot(b, b) / 5.0);
+          }
           totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.56, 0.22) * light * 2.6;
         }`,
       );
@@ -176,22 +213,61 @@ export function createGround(): Ground {
 
 /**
  * A plain dressed-stone plinth reserving a district's place: three steps, a
- * rusticated base and a cornice. Towers stand on this footprint from Task 8.
+ * base and a cornice, washed with warm floodlight from the ground (the
+ * plaza's floor shows the matching spill). Towers stand on this footprint
+ * from Task 8.
  */
 export function makePlinth(): THREE.Group {
-  const M = materials();
+  const mat = floodlitStone();
   const g = new THREE.Group();
-  const FOOT = 34;
+  const FOOT = PLINTH_FOOT;
   for (let s = 0; s < 3; s++) {
-    const step = worldBox(FOOT + 8 - s * 2, 0.45, FOOT + 8 - s * 2, M.sand, 2.5);
+    const step = worldBox(FOOT + 8 - s * 2, 0.45, FOOT + 8 - s * 2, mat, 2.5);
     step.position.y = 0.225 + s * 0.45;
     g.add(step);
   }
-  const base = worldBox(FOOT, 2.6, FOOT, M.sand, 2.2);
+  const base = worldBox(FOOT, 2.6, FOOT, mat, 2.2);
   base.position.y = 1.35 + 1.3;
   g.add(base);
-  const cornice = worldBox(FOOT + 1.4, 0.7, FOOT + 1.4, M.sand, 2.2);
+  const cornice = worldBox(FOOT + 1.4, 0.7, FOOT + 1.4, mat, 2.2);
   cornice.position.y = 1.35 + 2.6 + 0.35;
   g.add(cornice);
   return g;
+}
+
+let floodlit: THREE.MeshStandardMaterial | null = null;
+
+/**
+ * The sandstone scan lit as if by floodlights at the plinth's foot: warm
+ * light on the sides falling off with height, a little on the top. Light
+ * here is albedo-weighted, so the stone's own texture carries it.
+ */
+function floodlitStone(): THREE.MeshStandardMaterial {
+  if (floodlit) return floodlit;
+  const sand = materials().sand;
+  const m = new THREE.MeshStandardMaterial({
+    map: sand.map,
+    normalMap: sand.normalMap,
+    aoMap: sand.aoMap,
+    roughnessMap: sand.roughnessMap,
+    color: 0xf3e9da,
+    roughness: 1,
+  });
+  m.customProgramCacheKey = () => 'palimpsest-floodlit-stone';
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vFlP; varying vec3 vFlN;')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvFlP = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvFlN = normalize(mat3(modelMatrix) * objectNormal);');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vFlP; varying vec3 vFlN;')
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        float side = 1.0 - abs(vFlN.y);
+        float wash = side * (0.35 + 0.9 * exp(-vFlP.y / 2.2)) + (1.0 - side) * 0.25;
+        totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.7, 0.42) * wash * 1.1;`,
+      );
+  };
+  floodlit = m;
+  return m;
 }

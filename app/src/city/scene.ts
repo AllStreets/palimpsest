@@ -76,7 +76,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const height = (): number => Math.max(1, canvasHost.clientHeight);
 
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, quality === 'high' ? 2 : 1));
+  // 1.75 on retina keeps 60 fps at full window size on the M5 Pro; the difference from 2 is not visible through the post chain.
+  renderer.setPixelRatio(Math.min(devicePixelRatio, quality === 'high' ? 1.75 : 1));
   renderer.setSize(width(), height());
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 0.85;
@@ -198,6 +199,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   observer.observe(canvasHost);
 
   const lightView = new THREE.Matrix4();
+  const lightViewInverse = new THREE.Matrix4();
   const snapped = new THREE.Vector3();
   function followShadow(): void {
     // Snap the shadow box centre to whole texels in light space.
@@ -206,8 +208,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     sun.updateMatrixWorld();
     sun.target.updateMatrixWorld();
     lightView.lookAt(sun.position, sun.target.position, THREE.Object3D.DEFAULT_UP);
-    const inv = lightView.clone().invert();
-    snapped.copy(rig.controls.target).applyMatrix4(inv);
+    lightViewInverse.copy(lightView).invert();
+    snapped.copy(rig.controls.target).applyMatrix4(lightViewInverse);
     snapped.x = Math.round(snapped.x / texel) * texel;
     snapped.y = Math.round(snapped.y / texel) * texel;
     snapped.applyMatrix4(lightView);

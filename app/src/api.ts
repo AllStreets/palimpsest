@@ -40,12 +40,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (body !== undefined) headers['content-type'] = 'application/json';
   const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await res.text();
-  const data = text ? (JSON.parse(text) as unknown) : null;
   if (!res.ok) {
-    const err = (data ?? {}) as { error?: string; kind?: string };
+    // Error bodies are usually JSON from the engine, but a proxy or crash can send plain text.
+    let err: { error?: string; kind?: string } = {};
+    try {
+      err = (text ? JSON.parse(text) : {}) as typeof err;
+    } catch {
+      err = { error: text.trim() || undefined };
+    }
     throw new ApiError(res.status, err.error ?? `${method} ${path} failed with ${res.status}`, err.kind ?? null);
   }
-  return data as T;
+  return (text ? JSON.parse(text) : null) as T;
 }
 
 function repoPath(fullName: string, action?: string): string {
