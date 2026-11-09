@@ -19,6 +19,8 @@ export interface TowerMaterials {
   granite: THREE.Material;
   brick: THREE.Material;
   bronze: THREE.Material;
+  /** Polished bronze: the datum band, bright enough to read against stone and dark steel alike. */
+  datum: THREE.Material;
   titanium: THREE.Material;
   /** Dark painted steel: frames, reveals, roof edges. */
   steel: THREE.Material;
@@ -55,6 +57,7 @@ const TILE: Partial<Record<MatKey, number>> = {
   granite: 2.0,
   brick: 1.5,
   bronze: 2,
+  datum: 2,
   titanium: 3,
   steel: 2,
   slab: 3,

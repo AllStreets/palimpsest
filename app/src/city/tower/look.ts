@@ -381,6 +381,8 @@ export function towerMaterials(): TowerMaterials {
     granite: stone(0x8a8886, 'granite', 1.3, 0.9),
     brick: lib.brick,
     bronze: metal(0x6b4a2e, 0.42, 0.35),
+    // Polished, lighter than the mullion bronze: it takes the sun on one side and the warm horizon on the other.
+    datum: metal(0xd9c26e, 0.34, 0.2),
     titanium: brushed(0xa9afb7, 0.13, 0.6, 2.2, 'titanium'),
     graphite: brushed(0x2e3136, 0.42, 0.4, 1.4, 'graphite'),
     steel: lib.darkMetal,

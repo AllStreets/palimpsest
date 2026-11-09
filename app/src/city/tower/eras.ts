@@ -38,8 +38,6 @@ export interface FloorShape {
   cz: number;
   half: number;
   datumHalf: number;
-  /** When set, the datum band follows this rectangle ([x0, x1, z0, z1], at the floor's slab edge) instead of a square. */
-  datumRect?: [number, number, number, number];
 }
 
 /**
@@ -374,8 +372,10 @@ const scifi: EraBuilder = (k, w, h, f, c) => {
     ring(k, 'lightLine', -ch + 0.35, ch - 0.35, -ch + 0.35, ch - 0.35, h - 0.525, h - 0.5, 0.06);
   }
   const reach = Math.max(...ext) + core;
-  // On an ordinary floor the datum runs along the slab edge, clear of the diagrid; on the crown it wraps the canopy.
-  return { cx: 0, cz: 0, half: reach + 0.1, datumHalf: frame + 0.25, datumRect: c.top ? undefined : [x0, x1, z0, z1] };
+  // The datum wraps the diagrid just clear of its members. Every slab reaches at least 1.5 m past the core, so
+  // a band here always tucks under the slab of the floor above (whichever side that floor throws its terrace),
+  // and on the crown it sits under the canopy.
+  return { cx: 0, cz: 0, half: reach + 0.1, datumHalf: frame + 0.25 };
 };
 
 export const ERA_BUILDERS: Record<Era, EraBuilder> = { stone, brick, glass, titanium, scifi };

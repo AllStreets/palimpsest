@@ -75,7 +75,7 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
     });
     pickables.set(proxy(shape.cx, y0 + h / 2, shape.cz, shape.half * 2, h, ry), floor.id);
     if (i === spec.datumIndex - 1) {
-      datumPlan = { cx: shape.cx, cz: shape.cz, half: shape.datumHalf, ry, rect: shape.datumRect };
+      datumPlan = { cx: shape.cx, cz: shape.cz, half: shape.datumHalf, ry };
     }
     width *= TAPER;
   });

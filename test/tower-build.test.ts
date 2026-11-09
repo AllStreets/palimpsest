@@ -17,7 +17,7 @@ const RESERVE_RADIUS = 90;
 /** Plain materials: no textures, no DOM, so the tower builds in Node. */
 function plainMaterials(): TowerMaterials {
   const keys: Array<keyof TowerMaterials> = [
-    'sand', 'travertine', 'gothic', 'limestone', 'granite', 'brick', 'bronze', 'titanium', 'steel', 'graphite', 'slab',
+    'sand', 'travertine', 'gothic', 'limestone', 'granite', 'brick', 'bronze', 'datum', 'titanium', 'steel', 'graphite', 'slab',
     'window', 'stained', 'roofTile', 'timber', 'plaster', 'lightLine', 'accent', 'pick',
   ];
   return Object.fromEntries(keys.map((k) => [k, new THREE.MeshStandardMaterial()])) as unknown as TowerMaterials;
@@ -145,5 +145,41 @@ test('a datum partway up any era builds and stays inside the tower', () => {
     const t = buildTower(s, 'high', plainMaterials());
     const box = bounds(t.group);
     assert.ok(Math.abs(box.max.y - t.top) < 1e-3, `${era}: top ${box.max.y} vs ${t.top}`);
+  }
+});
+
+/** World positions of every vertex drawn in `mat`, merged meshes only. */
+function vertsOf(o: THREE.Object3D, mat: THREE.Material): THREE.Vector3[] {
+  o.updateMatrixWorld(true);
+  const out: THREE.Vector3[] = [];
+  o.traverse((c) => {
+    const m = c as THREE.Mesh;
+    if (!m.isMesh || (c as THREE.InstancedMesh).isInstancedMesh || m.material !== mat) return;
+    const pos = m.geometry.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) out.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld));
+  });
+  return out;
+}
+
+test('a sci-fi datum below more floors never reaches past the slab above it', () => {
+  // Terraces turn side every three floors, so try every datum height in a run of nine.
+  for (let datumIndex = 1; datumIndex < 9; datumIndex++) {
+    const floors = Array.from({ length: 10 }, (_, i) => floor(i, 'scifi'));
+    const s: TowerSpec = { id: 'acme/mid#founding', repo: 'acme/mid', kind: 'founding', root: 'chicago', floors, datumIndex };
+    const mats = plainMaterials();
+    const t = buildTower(s, 'high', mats);
+    const lay = layoutTower(s);
+    const band = vertsOf(t.group, mats.datum);
+    assert.ok(band.length > 0, 'the datum band is drawn');
+    // The slab of the floor directly above: titanium in the first metre over the datum line.
+    const slab = vertsOf(t.group, mats.titanium).filter((v) => v.y > lay.datumY - 1e-3 && v.y < lay.datumY + 0.96);
+    assert.ok(slab.length > 0, 'the floor above has a slab');
+    const sx0 = Math.min(...slab.map((v) => v.x));
+    const sx1 = Math.max(...slab.map((v) => v.x));
+    const sz0 = Math.min(...slab.map((v) => v.z));
+    const sz1 = Math.max(...slab.map((v) => v.z));
+    for (const v of band) {
+      assert.ok(v.x >= sx0 - 1e-3 && v.x <= sx1 + 1e-3 && v.z >= sz0 - 1e-3 && v.z <= sz1 + 1e-3, `datum ${datumIndex}: band at (${v.x.toFixed(2)}, ${v.z.toFixed(2)}) is past the slab above [${sx0.toFixed(2)}..${sx1.toFixed(2)}] x [${sz0.toFixed(2)}..${sz1.toFixed(2)}]`);
+    }
   }
 });

@@ -1,7 +1,9 @@
 import { Kit, M, squareSweep } from './kit.js';
 
-/** The datum band's height; it hangs below `datumY` so it never rises past the floor it caps. */
-export const DATUM_HEIGHT = 0.42;
+/** The datum band's height; it hangs below `datumY` so it never rises past the floor it caps. Tall enough to read from a street away. */
+export const DATUM_HEIGHT = 1.1;
+/** How far the band stands proud of the half-width it wraps. */
+const PROUD = 0.3;
 
 /**
  * The datum line: a thin bronze band where the repo joined the city. Below
@@ -16,32 +18,19 @@ export interface DatumPlan {
   cz: number;
   half: number;
   ry: number;
-  /** A rectangle ([x0, x1, z0, z1]) to follow instead of the square: a sci-fi floor's slab edge. */
-  rect?: [number, number, number, number];
 }
 
 export function addDatum(k: Kit, datumY: number, plan: DatumPlan): void {
   const y0 = datumY - DATUM_HEIGHT;
-  if (plan.rect) {
-    // Four bronze bars on the slab edge's line, mitred by overlap at the corners.
-    const [x0, x1, z0, z1] = plan.rect;
-    const t = 0.12;
-    const y = y0 + DATUM_HEIGHT / 2;
-    k.box('bronze', x1 - x0 + 2 * t, DATUM_HEIGHT, t, M((x0 + x1) / 2, y, z1 + t / 2));
-    k.box('bronze', x1 - x0 + 2 * t, DATUM_HEIGHT, t, M((x0 + x1) / 2, y, z0 - t / 2));
-    k.box('bronze', t, DATUM_HEIGHT, z1 - z0, M(x1 + t / 2, y, (z0 + z1) / 2));
-    k.box('bronze', t, DATUM_HEIGHT, z1 - z0, M(x0 - t / 2, y, (z0 + z1) / 2));
-    return;
-  }
-  // A flat fillet between two small chamfers, so the band catches a line of light top and bottom.
+  // A flat polished face between two chamfers, so the band catches a line of light top and bottom.
   k.add(
-    'bronze',
+    'datum',
     squareSweep(plan.half, [
       [-0.2, y0],
-      [0.06, y0],
-      [0.12, y0 + 0.06],
-      [0.12, y0 + DATUM_HEIGHT - 0.06],
-      [0.06, y0 + DATUM_HEIGHT],
+      [PROUD - 0.12, y0],
+      [PROUD, y0 + 0.12],
+      [PROUD, y0 + DATUM_HEIGHT - 0.12],
+      [PROUD - 0.12, y0 + DATUM_HEIGHT],
       [-0.2, y0 + DATUM_HEIGHT],
     ]),
     M(plan.cx, 0, plan.cz, plan.ry),
