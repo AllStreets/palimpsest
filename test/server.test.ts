@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -508,4 +509,54 @@ test('PALIMPSEST_CLAUDE_SETTINGS chooses the Claude settings file the hook route
     await server.close();
   }
   assert.equal(existsSync(userSettings), false);
+});
+
+/** A raw request, so the Host and Origin headers can be set as a browser on another site would send them. */
+function rawRequest(
+  server: StartedServer,
+  path: string,
+  headers: Record<string, string>,
+  method = 'GET',
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolveReq, rejectReq) => {
+    const req = httpRequest({ host: '127.0.0.1', port: server.port, path, method, headers }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c: string) => (body += c));
+      res.on('end', () => resolveReq({ status: res.statusCode ?? 0, body }));
+    });
+    req.on('error', rejectReq);
+    req.end();
+  });
+}
+
+test('a request naming another host is refused, so a rebound DNS name cannot reach the engine', async () => {
+  await withServer(async (server) => {
+    for (const host of [`evil.example:${server.port}`, 'evil.example', `127.0.0.1:${server.port + 1}`, `localhost.evil.example:${server.port}`]) {
+      for (const path of ['/api/health', '/api/repos', '/']) {
+        const r = await rawRequest(server, path, { host });
+        assert.equal(r.status, 403, `${host} ${path}`);
+      }
+    }
+    for (const host of [`127.0.0.1:${server.port}`, `localhost:${server.port}`]) {
+      const r = await rawRequest(server, '/api/health', { host });
+      assert.equal(r.status, 200, host);
+    }
+  });
+});
+
+test('a request from another site\'s page is refused; the engine\'s own page and the dev server are let through', async () => {
+  await withServer(async (server) => {
+    const host = `127.0.0.1:${server.port}`;
+    for (const origin of ['http://evil.example', `http://evil.example:${server.port}`, 'null', 'http://localhost:4772']) {
+      const get = await rawRequest(server, '/api/health', { host, origin });
+      assert.equal(get.status, 403, `GET from ${origin}`);
+      const post = await rawRequest(server, '/api/stop', { host, origin, 'x-palimpsest': '1', 'content-type': 'application/json' }, 'POST');
+      assert.equal(post.status, 403, `POST from ${origin}`);
+    }
+    for (const origin of [`http://127.0.0.1:${server.port}`, `http://localhost:${server.port}`, 'http://localhost:4771', 'http://127.0.0.1:4771']) {
+      const r = await rawRequest(server, '/api/health', { host, origin });
+      assert.equal(r.status, 200, origin);
+    }
+  });
 });

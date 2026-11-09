@@ -2,7 +2,6 @@ import { createReadStream, existsSync, readFileSync, rmSync, statSync, writeFile
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { homedir } from 'node:os';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,6 +45,26 @@ const MIME: Record<string, string> = {
 };
 
 const HEARTBEAT_MS = 15_000;
+
+/** The Vite dev server's port: its page calls the engine through the dev proxy. */
+const DEV_PORT = 4771;
+
+/**
+ * True when the request was addressed to this engine by its own name and,
+ * when a page sent it, came from the engine's own page or the dev server's.
+ * A page on any other site, even one whose DNS name has been rebound to
+ * 127.0.0.1, names its own host and origin and is refused, so it can neither
+ * read the engine's answers nor make it act.
+ */
+function fromOwnPage(req: IncomingMessage, port: number): boolean {
+  const own = [`127.0.0.1:${port}`, `localhost:${port}`];
+  const host = req.headers.host?.toLowerCase();
+  if (!host || !own.includes(host)) return false;
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  const allowed = [...own, `127.0.0.1:${DEV_PORT}`, `localhost:${DEV_PORT}`].map((h) => `http://${h}`);
+  return allowed.includes(origin.toLowerCase());
+}
 
 /** The engine's usual port. */
 export const DEFAULT_PORT = 4770;
@@ -415,9 +434,14 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Starte
   if (isSampleHome() && getRunner() === realRunner) setRunner(sampleGh());
   const sseClients = new Set<ServerResponse>();
 
+  let listeningPort = requestedPort;
   const server = createServer((req, res) => {
     void (async () => {
       try {
+        if (!fromOwnPage(req, listeningPort)) {
+          sendJson(res, 403, { error: 'This engine only answers its own page on 127.0.0.1 or localhost.' });
+          return;
+        }
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         const pathname = decodeURIComponent(url.pathname);
         const method = req.method ?? 'GET';
@@ -448,6 +472,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Starte
   });
 
   const actualPort = (server.address() as AddressInfo).port;
+  listeningPort = actualPort;
 
   return {
     port: actualPort,

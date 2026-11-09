@@ -10,7 +10,9 @@ export default defineConfig({
   server: {
     port: 4771,
     strictPort: true,
-    proxy: { '/api': 'http://127.0.0.1:4770' },
+    // changeOrigin sends the engine's own Host, which its rebinding check requires; the page's
+    // Origin (this dev server) stays as it is and the engine lets it through.
+    proxy: { '/api': { target: 'http://127.0.0.1:4770', changeOrigin: true } },
   },
   build: {
     outDir: resolve(here, 'dist'),
