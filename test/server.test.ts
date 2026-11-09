@@ -1,0 +1,330 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, test } from 'node:test';
+
+import { realRunner, setRunner } from '../engine/exec.js';
+import { paths } from '../engine/home.js';
+import { startServer } from '../engine/server.js';
+import type { StartedServer } from '../engine/server.js';
+
+let tempDir: string;
+let distDir: string;
+let previousHome: string | undefined;
+let previousDist: string | undefined;
+let settingsPath: string;
+
+beforeEach(() => {
+  previousHome = process.env.PALIMPSEST_HOME;
+  previousDist = process.env.PALIMPSEST_DIST;
+  tempDir = mkdtempSync(join(tmpdir(), 'palimpsest-server-test-'));
+  distDir = join(tempDir, 'dist-missing'); // does not exist by default
+  process.env.PALIMPSEST_HOME = join(tempDir, 'home');
+  process.env.PALIMPSEST_DIST = distDir;
+  settingsPath = join(tempDir, 'claude-settings.json');
+});
+
+afterEach(() => {
+  setRunner(realRunner);
+  if (previousHome === undefined) {
+    delete process.env.PALIMPSEST_HOME;
+  } else {
+    process.env.PALIMPSEST_HOME = previousHome;
+  }
+  if (previousDist === undefined) {
+    delete process.env.PALIMPSEST_DIST;
+  } else {
+    process.env.PALIMPSEST_DIST = previousDist;
+  }
+  rmSync(tempDir, { recursive: true, force: true });
+});
+
+async function withServer(fn: (server: StartedServer) => Promise<void>): Promise<void> {
+  const server = await startServer({ port: 0, claudeSettingsPath: settingsPath });
+  try {
+    await fn(server);
+  } finally {
+    await server.close();
+  }
+}
+
+function url(server: StartedServer, path: string): string {
+  return `http://127.0.0.1:${server.port}${path}`;
+}
+
+function repoViewRow(fullName: string) {
+  return {
+    nameWithOwner: fullName,
+    isPrivate: false,
+    description: 'fixture',
+    primaryLanguage: { name: 'TypeScript' },
+    defaultBranchRef: { name: 'main' },
+  };
+}
+
+const RS = '\x1e';
+const US = '\x1f';
+
+/** A fake Runner serving one successful analyze() run for `fullName`, with no commits and no PRs. */
+function fixtureRunner(fullName: string) {
+  return async (cmd: string, args: string[]) => {
+    if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') {
+      return { stdout: JSON.stringify(repoViewRow(fullName)), stderr: '', code: 0 };
+    }
+    if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'clone') {
+      return { stdout: '', stderr: '', code: 0 };
+    }
+    if (cmd === 'git' && args.includes('log')) {
+      return { stdout: '', stderr: '', code: 0 };
+    }
+    if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'list') {
+      return { stdout: '[]', stderr: '', code: 0 };
+    }
+    throw new Error(`fixtureRunner: unexpected command ${cmd} ${args.join(' ')}`);
+  };
+}
+
+/** Polls `check` until it returns true or `timeoutMs` elapses. */
+async function waitUntil(check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error('waitUntil: timed out');
+}
+
+test('health reports stopped when the stop file exists', async () => {
+  await withServer(async (server) => {
+    const before = await fetch(url(server, '/api/health'));
+    assert.equal(before.status, 200);
+    const beforeBody = (await before.json()) as { ok: boolean; stopped: boolean; version: string };
+    assert.equal(beforeBody.ok, true);
+    assert.equal(beforeBody.stopped, false);
+    assert.equal(typeof beforeBody.version, 'string');
+
+    writeFileSync(paths().stop, '');
+
+    const after = await fetch(url(server, '/api/health'));
+    const afterBody = (await after.json()) as { stopped: boolean };
+    assert.equal(afterBody.stopped, true);
+  });
+});
+
+test('writes without the header are refused', async () => {
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/api/repos/acme/widgets/connect'), { method: 'POST' });
+    assert.equal(r.status, 403);
+    const body = (await r.json()) as { error: string };
+    assert.ok(body.error);
+  });
+});
+
+test('writes with the header succeed (repos list unaffected by the guard)', async () => {
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/api/settings'), {
+      method: 'PATCH',
+      headers: { 'x-palimpsest': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ quality: 'medium' }),
+    });
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { quality: string };
+    assert.equal(body.quality, 'medium');
+  });
+});
+
+test('PATCH /api/settings rejects an invalid quality with 400', async () => {
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/api/settings'), {
+      method: 'PATCH',
+      headers: { 'x-palimpsest': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ quality: 'ultra' }),
+    });
+    assert.equal(r.status, 400);
+  });
+});
+
+test('PATCH /api/repos/:owner/:name rejects an invalid root with 400', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName));
+  await withServer(async (server) => {
+    const connectRes = await fetch(url(server, `/api/repos/${fullName}/connect`), {
+      method: 'POST',
+      headers: { 'x-palimpsest': '1' },
+    });
+    assert.equal(connectRes.status, 200);
+    await waitUntil(async () => {
+      const r = await fetch(url(server, '/api/repos'));
+      const repos = (await r.json()) as Array<{ status: string }>;
+      return repos.length === 1 && repos[0].status === 'ready';
+    });
+
+    const r = await fetch(url(server, `/api/repos/${fullName}`), {
+      method: 'PATCH',
+      headers: { 'x-palimpsest': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ root: 'brutalist' }),
+    });
+    assert.equal(r.status, 400);
+  });
+});
+
+test('PATCH on an unknown repo returns 404', async () => {
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/api/repos/acme/ghost'), {
+      method: 'PATCH',
+      headers: { 'x-palimpsest': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ pushMode: true }),
+    });
+    assert.equal(r.status, 404);
+  });
+});
+
+test('connect then city returns a district', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName));
+
+  await withServer(async (server) => {
+    const r = await fetch(url(server, `/api/repos/${fullName}/connect`), {
+      method: 'POST',
+      headers: { 'x-palimpsest': '1' },
+    });
+    assert.equal(r.status, 200);
+    const connected = (await r.json()) as { status: string; connected: boolean };
+    assert.equal(connected.connected, true);
+
+    await waitUntil(async () => {
+      const cityRes = await fetch(url(server, '/api/city'));
+      const districts = (await cityRes.json()) as Array<{ repo: string }>;
+      return districts.length === 1 && districts[0].repo === fullName;
+    });
+
+    const cityRes = await fetch(url(server, '/api/city'));
+    const districts = (await cityRes.json()) as Array<{ repo: string }>;
+    assert.equal(districts.length, 1);
+    assert.equal(districts[0].repo, fullName);
+  });
+});
+
+test('gh missing returns 502 with kind missing', async () => {
+  setRunner(async () => {
+    const err = new Error('spawn gh ENOENT') as Error & { code?: string };
+    err.code = 'ENOENT';
+    throw err;
+  });
+
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/api/repos/available'));
+    assert.equal(r.status, 502);
+    const body = (await r.json()) as { error: string; kind: string };
+    assert.equal(body.kind, 'missing');
+    assert.ok(body.error);
+  });
+});
+
+test('SSE delivers repo.analyzed', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName));
+
+  await withServer(async (server) => {
+    const sse = await fetch(url(server, '/api/events'));
+    assert.equal(sse.status, 200);
+    const reader = sse.body!.getReader();
+    const decoder = new TextDecoder();
+
+    const gotAnalyzed = (async () => {
+      let buffer = '';
+      while (!buffer.includes('event: repo.analyzed')) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('SSE stream ended before repo.analyzed arrived');
+        buffer += decoder.decode(value);
+      }
+      return buffer;
+    })();
+
+    const connectRes = await fetch(url(server, `/api/repos/${fullName}/connect`), {
+      method: 'POST',
+      headers: { 'x-palimpsest': '1' },
+    });
+    assert.equal(connectRes.status, 200);
+
+    const buffer = await Promise.race([
+      gotAnalyzed,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out waiting for SSE event')), 5000)),
+    ]);
+    assert.match(buffer, /event: repo\.analyzed/);
+    assert.match(buffer, new RegExp(`"fullName":"${fullName.replace('/', '\\/')}"`));
+
+    await reader.cancel();
+  });
+});
+
+test('unknown path serves index.html', async () => {
+  // Build a fake dist with a marker index.html so the SPA fallback is observable.
+  const fs = await import('node:fs');
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(join(distDir, 'index.html'), '<!doctype html><title>palimpsest-fallback-marker</title>');
+
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/some/unknown/client/route'));
+    assert.equal(r.status, 200);
+    const text = await r.text();
+    assert.match(text, /palimpsest-fallback-marker/);
+  });
+});
+
+test('missing dist returns a plain-text 503 for non-API paths', async () => {
+  // distDir is never created in this test, so paths().dist does not exist.
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/'));
+    assert.equal(r.status, 503);
+    const text = await r.text();
+    assert.match(text, /UI not built/);
+    assert.match(r.headers.get('content-type') ?? '', /text\/plain/);
+  });
+});
+
+test('static serving rejects path traversal outside dist', async () => {
+  const fs = await import('node:fs');
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(join(distDir, 'index.html'), '<!doctype html><title>palimpsest-fallback-marker</title>');
+  const secretPath = join(tempDir, 'secret.txt');
+  fs.writeFileSync(secretPath, 'top secret');
+
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/../secret.txt'));
+    // Browsers/fetch normalize '..' before sending, so hit the raw path via a request that keeps it encoded.
+    const r2 = await fetch(url(server, '/%2e%2e/secret.txt'));
+    for (const res of [r, r2]) {
+      const text = await res.text();
+      assert.ok(!text.includes('top secret'), 'must never serve a file outside dist');
+    }
+  });
+});
+
+test('usage hook routes never touch the real claude settings path', async () => {
+  const original = '{"theme":"dark"}';
+  writeFileSync(settingsPath, original);
+
+  await withServer(async (server) => {
+    const install = await fetch(url(server, '/api/usage/hook/install'), {
+      method: 'POST',
+      headers: { 'x-palimpsest': '1' },
+    });
+    assert.equal(install.status, 200);
+
+    const usage = await fetch(url(server, '/api/usage'));
+    const usageBody = (await usage.json()) as { hookInstalled: boolean };
+    assert.equal(usageBody.hookInstalled, true);
+
+    const uninstall = await fetch(url(server, '/api/usage/hook/uninstall'), {
+      method: 'POST',
+      headers: { 'x-palimpsest': '1' },
+    });
+    assert.equal(uninstall.status, 200);
+  });
+
+  const fs = await import('node:fs');
+  const finalContent = fs.readFileSync(settingsPath, 'utf8');
+  assert.equal(JSON.parse(finalContent).theme, 'dark');
+});

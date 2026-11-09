@@ -183,6 +183,12 @@ export function installHook(claudeSettingsPath: string = join(homedir(), '.claud
  * still ours, restores the backup byte for byte; otherwise (something else
  * changed `statusLine` since install) only resets `statusLine` to the saved
  * previous value, leaving the rest of the file untouched.
+ *
+ * A no-op (the file is never read or written) unless `Settings.hookInstalled`
+ * is true or the file's current `statusLine` already points at our hook:
+ * with neither true, there is nothing of ours to remove, and touching the
+ * file would risk overwriting an unrelated custom `statusLine` with a stale
+ * `previousStatusLine` left over from some earlier, unrelated install.
  */
 export function uninstallHook(claudeSettingsPath: string = join(homedir(), '.claude', 'settings.json')): void {
   const usageDir = paths().usage;
@@ -193,6 +199,10 @@ export function uninstallHook(claudeSettingsPath: string = join(homedir(), '.cla
   const parsed: unknown = JSON.parse(raw.trim() === '' ? '{}' : raw);
   const currentStatusLine = readStatusLine(parsed);
   const stillOurs = currentStatusLine?.type === 'command' && currentStatusLine.command === ourCommand;
+
+  if (!getSettings().hookInstalled && !stillOurs) {
+    return;
+  }
 
   if (stillOurs && existsSync(backupPath)) {
     copyFileSync(backupPath, claudeSettingsPath);

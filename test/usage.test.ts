@@ -207,6 +207,24 @@ test('installing twice over a custom statusline chains to the original both time
   assert.equal(getSettings().hookInstalled, false);
 });
 
+test('uninstall with no prior install leaves a custom statusLine byte for byte unchanged', () => {
+  const settingsPath = join(tempDir, 'claude-settings.json');
+  const original =
+    JSON.stringify(
+      { theme: 'dark', statusLine: { type: 'command', command: 'bash custom.sh' }, other: [1, 2, 3] },
+      null,
+      2,
+    ) + '\n';
+  writeFileSync(settingsPath, original);
+
+  // installHook was never called: hookInstalled is false and statusLine is not ours.
+  uninstallHook(settingsPath);
+
+  const after = readFileSync(settingsPath, 'utf8');
+  assert.equal(after, original);
+  assert.equal(getSettings().hookInstalled, false);
+});
+
 test('stale after five hours', () => {
   const now = Date.now();
   const fresh = { at: now - 60_000, fiveHour: null, sevenDay: null };
