@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import type { District } from '../../../../shared/types';
 import { materials, texture } from '../materials';
+import { ANISO_PATCH_OK, patchAnisotropy } from './aniso-patch';
 import type { Centerpiece } from '../scene';
 import { buildTower } from './build';
 import type { TowerMaterials } from './kit';
@@ -176,33 +177,18 @@ function brushed(color: number, rough: number, aniso: number, env: number, key: 
     roughnessMap: g.rough,
     normalMap: g.normal,
     normalScale: new THREE.Vector2(0.6, 0.6),
-    anisotropy: aniso,
+    // Without the patch below (three's shader text changed), anisotropy would risk NaN pixels: draw without it.
+    anisotropy: ANISO_PATCH_OK ? aniso : 0,
     anisotropyRotation: Math.PI / 2,
     envMapIntensity: env,
   });
-  // three's anisotropic path divides by zero where a face's UVs give no tangent, or where the
-  // bitangent lines up with the view; one NaN pixel then spreads through the bloom chain to the
-  // whole frame. Fall back to a tangent from the normal, and keep the bent normal finite.
-  m.customProgramCacheKey = () => `palimpsest-brushed-${key}`;
-  m.onBeforeCompile = (sh) => {
-    const anisoFix = `material.anisotropyB = tbn[ 1 ] * anisotropyV.x - tbn[ 0 ] * anisotropyV.y;
-      if ( dot( material.anisotropyT, material.anisotropyT ) < 1e-8 || dot( material.anisotropyB, material.anisotropyB ) < 1e-8 ) {
-        vec3 upRef = abs( normal.y ) < 0.99 ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 );
-        material.anisotropyB = normalize( cross( normal, upRef ) );
-        material.anisotropyT = cross( material.anisotropyB, normal );
-      }`;
-    const lights = THREE.ShaderChunk.lights_physical_fragment.replace(
-      'material.anisotropyB = tbn[ 1 ] * anisotropyV.x - tbn[ 0 ] * anisotropyV.y;',
-      anisoFix,
-    );
-    const env = THREE.ShaderChunk.envmap_physical_pars_fragment.replaceAll(
-      'bentNormal = normalize( cross( bentNormal, bitangent ) );',
-      'bentNormal = normalize( cross( bentNormal, bitangent ) + normal * 1e-4 );',
-    );
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <lights_physical_fragment>', lights)
-      .replace('#include <envmap_physical_pars_fragment>', env);
-  };
+  // See aniso-patch.ts: keeps three's anisotropic path from producing NaN pixels.
+  if (ANISO_PATCH_OK) {
+    m.customProgramCacheKey = () => `palimpsest-brushed-${key}`;
+    m.onBeforeCompile = (sh) => {
+      sh.fragmentShader = patchAnisotropy(sh.fragmentShader);
+    };
+  }
   return m;
 }
 
