@@ -176,6 +176,37 @@ test('uninstall when statusLine was changed by something else only resets status
   assert.equal(getSettings().hookInstalled, false);
 });
 
+test('installing twice over a custom statusline chains to the original both times, and uninstall restores byte for byte', () => {
+  const settingsPath = join(tempDir, 'claude-settings.json');
+  const original =
+    JSON.stringify(
+      { theme: 'dark', statusLine: { type: 'command', command: 'bash original.sh' }, other: [1, 2, 3] },
+      null,
+      2,
+    ) + '\n';
+  writeFileSync(settingsPath, original);
+
+  installHook(settingsPath);
+  const scriptAfterFirst = readFileSync(join(tempDir, 'usage', 'statusline.sh'), 'utf8');
+  assert.match(scriptAfterFirst, /bash original\.sh/);
+  assert.deepEqual(getSettings().previousStatusLine, { type: 'command', command: 'bash original.sh' });
+
+  // Re-installing (idempotent) must not re-capture its own installed state
+  // as the backup or as previousStatusLine; it must still chain to the
+  // real original.
+  installHook(settingsPath);
+  const scriptAfterSecond = readFileSync(join(tempDir, 'usage', 'statusline.sh'), 'utf8');
+  assert.match(scriptAfterSecond, /bash original\.sh/);
+  assert.deepEqual(getSettings().previousStatusLine, { type: 'command', command: 'bash original.sh' });
+  assert.equal(getSettings().hookInstalled, true);
+
+  uninstallHook(settingsPath);
+
+  const restored = readFileSync(settingsPath, 'utf8');
+  assert.equal(restored, original);
+  assert.equal(getSettings().hookInstalled, false);
+});
+
 test('stale after five hours', () => {
   const now = Date.now();
   const fresh = { at: now - 60_000, fiveHour: null, sevenDay: null };

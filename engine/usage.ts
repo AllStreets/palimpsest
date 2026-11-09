@@ -131,11 +131,16 @@ export function hookScript(previousCommand: string | null): string {
 
 /**
  * Installs the usage hook into the real Claude Code settings file (or
- * `claudeSettingsPath`, for tests): backs it up byte for byte to
- * `<usage>/settings.json.bak`, saves the current `statusLine` value as
- * `Settings.previousStatusLine`, writes and chains the generated script
- * (never to itself, if the current statusLine is already ours), points
- * `statusLine` at it, and records `usage.hook.installed`.
+ * `claudeSettingsPath`, for tests). Idempotent: if the file's current
+ * `statusLine` already points at our hook script, this only rewrites the
+ * script (so it picks up any path changes) and re-affirms `hookInstalled`
+ * — it does not take a new backup or touch `Settings.previousStatusLine`,
+ * since a fresh backup at that point would just capture our own installed
+ * state and overwrite the real original. Otherwise it backs the file up
+ * byte for byte to `<usage>/settings.json.bak`, saves the current
+ * `statusLine` value as `Settings.previousStatusLine`, and writes a script
+ * chained to it. Either way it points `statusLine` at the script and
+ * records `usage.hook.installed`.
  */
 export function installHook(claudeSettingsPath: string = join(homedir(), '.claude', 'settings.json')): void {
   const usageDir = paths().usage;
@@ -146,16 +151,21 @@ export function installHook(claudeSettingsPath: string = join(homedir(), '.claud
   const raw = existsSync(claudeSettingsPath) ? readFileSync(claudeSettingsPath, 'utf8') : '{}';
   const parsed: unknown = JSON.parse(raw.trim() === '' ? '{}' : raw);
   const currentStatusLine = readStatusLine(parsed);
-
-  if (existsSync(claudeSettingsPath)) {
-    copyFileSync(claudeSettingsPath, backupPath);
-  } else {
-    writeFileSync(backupPath, raw);
-  }
-  patchSettings({ previousStatusLine: currentStatusLine ?? null });
-
   const alreadyOurs = currentStatusLine?.type === 'command' && currentStatusLine.command === ourCommand;
-  const previousCommand = alreadyOurs ? null : previousCommandFrom(currentStatusLine);
+
+  let previousCommand: string | null;
+
+  if (alreadyOurs) {
+    previousCommand = previousCommandFrom(getSettings().previousStatusLine as StatusLineValue | null);
+  } else {
+    if (existsSync(claudeSettingsPath)) {
+      copyFileSync(claudeSettingsPath, backupPath);
+    } else {
+      writeFileSync(backupPath, raw);
+    }
+    patchSettings({ previousStatusLine: currentStatusLine ?? null });
+    previousCommand = previousCommandFrom(currentStatusLine);
+  }
 
   writeFileSync(scriptPath, hookScript(previousCommand));
   chmodSync(scriptPath, 0o755);
