@@ -212,3 +212,96 @@ test('eras follow the timeline', () => {
     ['stone', 'brick', 'glass', 'titanium', 'scifi'],
   );
 });
+
+test('caps 50,000 commits to 120 floors in under 2 seconds with lines preserved', () => {
+  const commits: Commit[] = [];
+  for (let i = 0; i < 50_000; i++) {
+    commits.push(
+      commit({
+        sha: `sha${String(i).padStart(6, '0')}`,
+        at: iso(START + i * 7 * HOUR),
+        author: 'Author One',
+        subject: `commit ${i}`,
+        lines: 1,
+      }),
+    );
+  }
+
+  const startedAt = Date.now();
+  const floors = foundingFloors(REPO, commits, []);
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(floors.length, 120);
+  const totalLines = floors.reduce((sum, floor) => sum + floor.lines, 0);
+  assert.equal(totalLines, 50_000);
+  assert.ok(elapsedMs < 2000, `expected under 2000ms, took ${elapsedMs}ms`);
+});
+
+test('merging a PR floor with an adjacent commits floor follows the merge rule', () => {
+  const claudeTrailer = 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>';
+
+  // floorA: a large commits floor (lines=1000), never the smallest pair.
+  const cA = commit({ sha: 'aaaaaaa1', at: iso(START), author: 'Author A', subject: 'floor A', lines: 1000 });
+
+  // floorPR: a small PR floor (lines=5, no Claude trailer on the merge commit).
+  const mergeCommit = commit({
+    sha: 'bbbbbbb2',
+    at: iso(START + 10 * HOUR),
+    author: 'Author B',
+    subject: 'merge pr',
+    body: 'plain merge, no trailer',
+    lines: 1,
+  });
+  const pr: PR = {
+    number: 55,
+    title: 'The PR title',
+    mergedAt: iso(START + 10 * HOUR),
+    lines: 5,
+    mergeSha: mergeCommit.sha,
+    url: 'https://github.com/AllStreets/palimpsest/pull/55',
+  };
+
+  // floorB: a small commits floor (lines=3) with the Claude trailer, so the
+  // merge's claude OR must come from this side, not the PR side.
+  const cB = commit({
+    sha: 'ccccccc3',
+    at: iso(START + 20 * HOUR),
+    author: 'Author C',
+    subject: 'floor B',
+    body: `fixed a thing\n\n${claudeTrailer}`,
+    lines: 3,
+  });
+
+  // 118 more large, well-separated commits floors (lines=1000, combined=2000
+  // for every adjacent pair among them) so (floorPR, floorB), combined=8, is
+  // unambiguously the smallest pair and the only merge the cap performs
+  // (121 floors in, one merge, 120 out).
+  const padding: Commit[] = [];
+  for (let i = 0; i < 118; i++) {
+    padding.push(
+      commit({
+        sha: `ddddddd${String(i).padStart(3, '0')}`,
+        at: iso(START + (30 + i * 10) * HOUR),
+        author: 'Author D',
+        subject: `padding ${i}`,
+        lines: 1000,
+      }),
+    );
+  }
+
+  const floors = foundingFloors(REPO, [cA, mergeCommit, cB, ...padding], [pr]);
+
+  assert.equal(floors.length, 120);
+
+  const merged = floors.find((floor) => floor.refs.length > 1);
+  assert.ok(merged, 'expected exactly one merged floor');
+  assert.deepEqual(merged!.refs, ['#55', 'ccccccc']);
+  assert.equal(merged!.title, 'The PR title'); // title of the earlier (the PR floor)
+  assert.equal(merged!.at, cB.at); // at of the later
+  assert.equal(merged!.claude, true); // OR: false (PR side) || true (commits side)
+  assert.equal(merged!.kind, 'pr'); // 'pr' since either side is
+  assert.equal(merged!.url, pr.url); // the PR's url, since the earlier (PR) side is non-null
+  assert.equal(merged!.id, `${REPO}#${merged!.refs[0]}`); // id from the first ref
+  assert.equal(merged!.lines, 8);
+  assert.equal(merged!.size, 'small'); // size recomputed from the combined 8 lines
+});

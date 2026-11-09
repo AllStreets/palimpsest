@@ -138,30 +138,164 @@ function mergeFloors(repo: string, earlier: Floor, later: Floor): Floor {
   };
 }
 
-/**
- * Repeatedly merges the adjacent pair with the smallest combined lines until
- * at most MAX_FOUNDING_FLOORS remain. Ties keep the earliest pair, matched by
- * a strict less-than comparison that never displaces an earlier best.
- */
-function capFloors(repo: string, floors: Floor[]): Floor[] {
-  let result = floors;
+interface FloorNode {
+  floor: Floor;
+  /**
+   * The original index (before any merging) of the leftmost floor this node
+   * now represents. Relative order among surviving nodes is never disturbed
+   * by merging (two adjacent nodes are replaced in place by one), so this is
+   * exactly the tiebreaker a left-to-right scan would use: the smallest
+   * originalPos among equally-combined pairs is the earliest pair.
+   */
+  originalPos: number;
+  alive: boolean;
+  prev: FloorNode | null;
+  next: FloorNode | null;
+}
 
-  while (result.length > MAX_FOUNDING_FLOORS) {
-    let bestIndex = 0;
-    let bestCombined = Infinity;
+interface PairEntry {
+  combined: number;
+  originalPos: number;
+  left: FloorNode;
+  right: FloorNode;
+}
 
-    for (let i = 0; i < result.length - 1; i++) {
-      const combined = result[i].lines + result[i + 1].lines;
-      if (combined < bestCombined) {
-        bestCombined = combined;
-        bestIndex = i;
+/** Binary min-heap over PairEntry, ordered by (combined, originalPos). */
+class PairHeap {
+  private items: PairEntry[] = [];
+
+  get size(): number {
+    return this.items.length;
+  }
+
+  push(entry: PairEntry): void {
+    this.items.push(entry);
+    let i = this.items.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (this.isLess(this.items[i], this.items[parent])) {
+        [this.items[i], this.items[parent]] = [this.items[parent], this.items[i]];
+        i = parent;
+      } else {
+        break;
+      }
+    }
+  }
+
+  pop(): PairEntry | undefined {
+    const top = this.items[0];
+    if (top === undefined) return undefined;
+
+    const last = this.items.pop()!;
+    if (this.items.length > 0) {
+      this.items[0] = last;
+      let i = 0;
+      const n = this.items.length;
+      while (true) {
+        const l = i * 2 + 1;
+        const r = i * 2 + 2;
+        let smallest = i;
+        if (l < n && this.isLess(this.items[l], this.items[smallest])) smallest = l;
+        if (r < n && this.isLess(this.items[r], this.items[smallest])) smallest = r;
+        if (smallest === i) break;
+        [this.items[i], this.items[smallest]] = [this.items[smallest], this.items[i]];
+        i = smallest;
       }
     }
 
-    const merged = mergeFloors(repo, result[bestIndex], result[bestIndex + 1]);
-    result = [...result.slice(0, bestIndex), merged, ...result.slice(bestIndex + 2)];
+    return top;
   }
 
+  private isLess(a: PairEntry, b: PairEntry): boolean {
+    if (a.combined !== b.combined) return a.combined < b.combined;
+    return a.originalPos < b.originalPos;
+  }
+}
+
+/**
+ * Repeatedly merges the adjacent pair with the smallest combined lines until
+ * at most MAX_FOUNDING_FLOORS remain. Ties keep the earliest pair.
+ *
+ * O(n log n): floors live in a doubly linked list so a merge touches O(1)
+ * nodes, and a min-heap of adjacent-pair sums (keyed by combined lines, then
+ * the left node's original position, matching the earliest-pair tiebreak)
+ * finds the next merge in O(log n). Pairs invalidated by an earlier merge are
+ * never removed from the heap; they are detected lazily on pop (a pair is
+ * valid only while both its nodes are still alive and still each other's
+ * immediate neighbour) and simply discarded, so no stale merge is ever acted
+ * on and total heap traffic stays O(n).
+ */
+function capFloors(repo: string, floors: Floor[]): Floor[] {
+  if (floors.length <= MAX_FOUNDING_FLOORS) {
+    return floors;
+  }
+
+  const nodes: FloorNode[] = floors.map((floor, originalPos) => ({
+    floor,
+    originalPos,
+    alive: true,
+    prev: null,
+    next: null,
+  }));
+  for (let i = 0; i < nodes.length; i++) {
+    nodes[i].prev = i > 0 ? nodes[i - 1] : null;
+    nodes[i].next = i < nodes.length - 1 ? nodes[i + 1] : null;
+  }
+
+  const heap = new PairHeap();
+  const pushPair = (left: FloorNode, right: FloorNode) => {
+    heap.push({
+      combined: left.floor.lines + right.floor.lines,
+      originalPos: left.originalPos,
+      left,
+      right,
+    });
+  };
+  for (let i = 0; i < nodes.length - 1; i++) {
+    pushPair(nodes[i], nodes[i + 1]);
+  }
+
+  let head = nodes[0];
+  let count = nodes.length;
+
+  while (count > MAX_FOUNDING_FLOORS) {
+    let entry = heap.pop();
+    while (entry && (!entry.left.alive || !entry.right.alive || entry.left.next !== entry.right)) {
+      entry = heap.pop();
+    }
+    if (!entry) break; // unreachable while count > 1, guarded for safety only
+
+    const { left, right } = entry;
+    const merged: FloorNode = {
+      floor: mergeFloors(repo, left.floor, right.floor),
+      originalPos: left.originalPos,
+      alive: true,
+      prev: left.prev,
+      next: right.next,
+    };
+
+    left.alive = false;
+    right.alive = false;
+
+    if (merged.prev) {
+      merged.prev.next = merged;
+    } else {
+      head = merged;
+    }
+    if (merged.next) {
+      merged.next.prev = merged;
+    }
+
+    if (merged.prev) pushPair(merged.prev, merged);
+    if (merged.next) pushPair(merged, merged.next);
+
+    count -= 1;
+  }
+
+  const result: Floor[] = [];
+  for (let node: FloorNode | null = head; node; node = node.next) {
+    result.push(node.floor);
+  }
   return result;
 }
 
