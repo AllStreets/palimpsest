@@ -11,6 +11,7 @@ export interface Repo {
   connected: boolean;
   pushMode: boolean;
   root: RootStyle;
+  slot: number;
   status: 'idle' | 'analyzing' | 'ready' | 'error';
   error: string | null;
   connectedAt: string | null;

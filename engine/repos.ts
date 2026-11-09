@@ -72,11 +72,25 @@ function readableMessage(err: unknown): string {
 }
 
 /**
+ * The next unused slot: one past the highest slot assigned so far across
+ * every stored repo (connected or not), starting at 0. A slot is assigned
+ * once, at a repo's first connect, and is never reused, so a repo's district
+ * position is stable for the repo's whole lifetime in the city regardless of
+ * how many other repos connect, disconnect or reconnect around it.
+ */
+function nextSlot(): number {
+  const repos = listRepos();
+  if (repos.length === 0) return 0;
+  return repos.reduce((max, r) => Math.max(max, r.slot), -1) + 1;
+}
+
+/**
  * Stores `fullName` as connected and starts analysis without awaiting it.
  * A repo already analyzing (its first connect still in flight) is returned
  * unchanged, without starting a second analysis. Otherwise (new repo, or
  * reconnecting a previously disconnected one) a fresh analysis starts,
- * refreshing its tower.
+ * refreshing its tower. A new repo is assigned the next unused slot; a
+ * reconnecting repo keeps the slot it already had.
  */
 export async function connect(fullName: string): Promise<Repo> {
   const existing = loadRepo(fullName);
@@ -96,6 +110,7 @@ export async function connect(fullName: string): Promise<Repo> {
         connected: true,
         pushMode: false,
         root: pickRoot(fullName),
+        slot: nextSlot(),
         status: 'analyzing',
         error: null,
         connectedAt: now,
@@ -104,7 +119,12 @@ export async function connect(fullName: string): Promise<Repo> {
 
   saveRepo(repo);
   record('repo.connected', { repo: fullName });
-  void analyze(fullName);
+  void analyze(fullName).catch((err) => {
+    // analyze() guards its own body and should never reject; this is a last
+    // resort so a truly unexpected failure never becomes an unhandled
+    // rejection, since this call is intentionally fire-and-forget.
+    console.error(`analyze(${fullName}) rejected unexpectedly:`, err);
+  });
   return repo;
 }
 
@@ -150,12 +170,20 @@ export async function analyze(fullName: string): Promise<void> {
     record('repo.analyzed', { repo: fullName, floors: floors.length });
   } catch (err) {
     const message = err instanceof GhError ? err.message : readableMessage(err);
-    const repo = loadRepo(fullName);
-    if (repo) {
-      const updated = saveRepo({ ...repo, status: 'error', error: message });
-      emit('repo.error', { repo: updated, error: message });
+    // Guarded: loadRepo/saveRepo/emit/record can themselves throw (a closed
+    // db handle, a bad write), and this is already the error path. Letting
+    // that escape would leave the repo stuck at 'analyzing' forever and
+    // reject analyze()'s own promise, which is called without awaiting it.
+    try {
+      const repo = loadRepo(fullName);
+      if (repo) {
+        const updated = saveRepo({ ...repo, status: 'error', error: message });
+        emit('repo.error', { repo: updated, error: message });
+      }
+      record('repo.error', { repo: fullName, error: message });
+    } catch (innerErr) {
+      console.error(`analyze(${fullName}): failed to record error state '${message}':`, innerErr);
     }
-    record('repo.error', { repo: fullName, error: message });
   }
 }
 
@@ -179,21 +207,23 @@ export function patchRepo(fullName: string, p: Partial<Pick<Repo, 'pushMode' | '
 }
 
 /**
- * The connected districts, in connectedAt order. A repo's position (and so
- * its origin) is its index among all connected repos in that order, not
- * among only those with a tower, so a district's place on the grid never
- * shifts once another repo finishes its first analysis. A repo still
+ * The connected districts, ordered by slot. A repo's position (and so its
+ * origin) is its own `slot`, assigned once at first connect and never
+ * reused: disconnecting or reconnecting a sibling repo never moves it, and
+ * reconnecting the repo itself restores its original origin. A repo still
  * analyzing for the first time has no tower yet and so no district.
  */
 export function city(): District[] {
-  const connected = listRepos().filter((r) => r.connected);
+  const connected = listRepos()
+    .filter((r) => r.connected)
+    .sort((a, b) => a.slot - b.slot);
   const districts: District[] = [];
 
-  connected.forEach((repo, index) => {
+  for (const repo of connected) {
     const tower = loadTower(repo.fullName);
-    if (!tower) return;
-    districts.push({ repo: repo.fullName, index, origin: districtOrigin(index), tower });
-  });
+    if (!tower) continue;
+    districts.push({ repo: repo.fullName, index: repo.slot, origin: districtOrigin(repo.slot), tower });
+  }
 
   return districts;
 }
