@@ -4,12 +4,15 @@
  * fictional districts, opens the built UI in Chromium and checks that the
  * city renders without console errors. Saves screenshots to shots/.
  *
+ * The Repos and Settings checks fake every gh/git call in-process (setRunner),
+ * and the usage hook buttons write only to a temp claude settings file.
+ *
  * Run after `npm run build`: `npm run ui-test`. Optional: UI_DPR=2 renders
  * at retina density, UI_QUALITY=medium switches the quality setting first,
  * UI_TOWER_SHOTS=all adds close shots of every root and era for the quality
  * rounds.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -401,6 +404,297 @@ async function siteChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'site-built.png') });
 }
 
+
+// ---------------------------------------------------------------- a fake GitHub
+
+/** Repos the fake gh can see: the seeded districts plus a few that are not in the city yet. All fictional. */
+const AVAILABLE = [
+  ...SEED.map((s) => ({ fullName: s.fullName, private: false, description: 'A seeded district', language: 'TypeScript' })),
+  { fullName: 'marlow/tidepool-notes', private: false, description: 'Field notes from the tide pools, kept as markdown', language: 'Markdown' },
+  { fullName: 'marlow/locked-vault', private: true, description: 'Private records the CLI cannot read', language: 'Rust' },
+  { fullName: 'orrery/brass-gears', private: true, description: 'Gear trains for a desk orrery', language: 'Python' },
+  { fullName: 'orrery/star-catalogue', private: false, description: null, language: 'Go' },
+  { fullName: 'quill/marginalia', private: false, description: 'Notes in the margins of old manuals', language: 'TypeScript' },
+];
+const UNREADABLE = 'marlow/locked-vault';
+const RS = '\x1e';
+const US = '\x1f';
+
+/** A gh/git stand-in: slow enough that each analysis step is visible, never touching the network. */
+async function fakeGh(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+  await new Promise((r) => setTimeout(r, 450));
+  const row = (fullName: string) => {
+    const a = AVAILABLE.find((x) => x.fullName === fullName);
+    return {
+      nameWithOwner: fullName,
+      isPrivate: a?.private ?? false,
+      description: a?.description ?? null,
+      primaryLanguage: a?.language ? { name: a.language } : null,
+      defaultBranchRef: { name: 'main' },
+    };
+  };
+  const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
+  if (cmd === 'gh' && args[0] === 'auth') return ok('');
+  if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'list') return ok(JSON.stringify(AVAILABLE.map((a) => row(a.fullName))));
+  if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') {
+    if (args[2] === UNREADABLE) return { stdout: '', stderr: `GraphQL: Could not resolve to a Repository with the name '${UNREADABLE}'.`, code: 1 };
+    return ok(JSON.stringify(row(args[2])));
+  }
+  if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'clone') return ok('');
+  if (cmd === 'git' && args.includes('log')) {
+    const log = Array.from({ length: 18 }, (_, i) => {
+      const sha = `9${i.toString(16).padStart(6, '0')}`.padEnd(40, 'b');
+      const at = new Date(Date.parse('2025-09-01T10:00:00Z') + i * 40 * 3600_000).toISOString();
+      return `${RS}${sha}${US}${at}${US}Ada${US}Tide note ${i + 1}${US}${US}\n\n${30 + i * 13}\t0\tnotes.md\n`;
+    }).join('');
+    return ok(log);
+  }
+  if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'list') return ok('[]');
+  throw new Error(`fakeGh: unexpected command ${cmd} ${args.join(' ')}`);
+}
+
+// ---------------------------------------------------------------- repos
+
+const rowSel = (fullName: string): string => `.repo-row[data-repo="${fullName}"]`;
+
+async function waitStatus(page: Page, fullName: string, want: string, seen: Set<string>, timeoutMs = 15_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const st = await page.locator(rowSel(fullName)).getAttribute('data-status').catch(() => null);
+    if (st) seen.add(st);
+    if (st === want) return true;
+    await page.waitForTimeout(60);
+  }
+  return false;
+}
+
+async function reposChecks(page: Page): Promise<void> {
+  await page.locator('.runhead a[data-route="repos"]').click();
+  const shown = await page
+    .waitForSelector(`${rowSel('marlow/tidepool-notes')}`, { timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  check(shown, 'the Repos screen lists every repo gh can see');
+  if (!shown) return;
+  let listed = 0;
+  for (const a of AVAILABLE) listed += await page.locator(rowSel(a.fullName)).count();
+  check(listed === AVAILABLE.length, `every available repo has one row (${listed} of ${AVAILABLE.length})`);
+  // A connected repo gh no longer lists (the site from the scaffold check) still stands under "In the city".
+  check((await page.locator(rowSel('wren/new-site')).count()) === 1, 'a connected repo outside the gh list is still listed');
+  check(
+    (await page.locator(`${rowSel('orrery/brass-gears')} .repo-private`).textContent())?.trim() === 'private',
+    'a private repo carries the word private',
+  );
+  check((await page.locator(`${rowSel('quill/marginalia')} .repo-private`).count()) === 0, 'a public repo carries no private marker');
+  check(
+    (await page.locator(`${rowSel('quill/marginalia')} [role="switch"].connect`).getAttribute('aria-checked')) === 'false',
+    'an unconnected repo is off by default',
+  );
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: join(SHOTS, 'repos.png') });
+
+  // Search: "/" focuses the field, typing narrows the list.
+  await page.keyboard.press('/');
+  check(await page.locator('.repos-search').evaluate((e) => e === document.activeElement), '"/" focuses the search');
+  await page.keyboard.type('orrery');
+  await page.waitForTimeout(150);
+  const visible = await page.locator('.repo-row:visible').count();
+  check(visible === 2, `search narrows the list (${visible} rows for "orrery")`);
+  await page.screenshot({ path: join(SHOTS, 'repos-search.png') });
+  await page.keyboard.press('Escape');
+  check((await page.locator('.repos-search').inputValue()) === '', 'Escape clears the search first');
+  check((await page.locator('.sheet.repos').isVisible()), 'and leaves the screen open');
+
+  // Connect: off to analyzing to ready, by SSE.
+  const before = await debug(page, (d) => d.districts);
+  const seen = new Set<string>();
+  await page.locator(`${rowSel('marlow/tidepool-notes')} [role="switch"].connect`).click();
+  const analyzing = await waitStatus(page, 'marlow/tidepool-notes', 'analyzing', seen, 4000);
+  check(analyzing, 'connecting shows the analysis under way');
+  await page.waitForTimeout(500);
+  const step = (await page.locator(`${rowSel('marlow/tidepool-notes')} .repo-status`).textContent()) ?? '';
+  check(/Cloning|Reading|Laying|Surveying/.test(step), `the analyzing row names its step (${step.trim()})`);
+  await page.screenshot({ path: join(SHOTS, 'repos-analyzing.png') });
+  const ready = await waitStatus(page, 'marlow/tidepool-notes', 'ready', seen);
+  check(ready && seen.has('analyzing'), `the status passes through analyzing to ready (${[...seen].join(' > ')})`);
+  const readyText = (await page.locator(`${rowSel('marlow/tidepool-notes')} .repo-status`).textContent()) ?? '';
+  check(/18 floors/.test(readyText), `ready shows the floor count (${readyText.trim()})`);
+  const grew = await page
+    .waitForFunction((n) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === n, before + 1, { timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  check(grew, 'the new district stands in the city');
+
+  // An unreadable repo: a readable error and a Retry.
+  const errSeen = new Set<string>();
+  await page.locator(`${rowSel(UNREADABLE)} [role="switch"].connect`).click();
+  const failed = await waitStatus(page, UNREADABLE, 'error', errSeen);
+  check(failed, 'an unreadable repo ends in an error, not a hang');
+  const msg = (await page.locator(`${rowSel(UNREADABLE)} .repo-error`).textContent()) ?? '';
+  check(/could not find this repo/i.test(msg), `the error reads plainly (${msg.trim().slice(0, 60)})`);
+  check(await page.locator(`${rowSel(UNREADABLE)} .repo-retry`).isVisible(), 'the error offers Retry');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: join(SHOTS, 'repos-states.png') });
+
+  // Push mode by keyboard: focus the switch, Space flips it, and it persists.
+  const push = page.locator(`${rowSel('marlow/tidepool-notes')} [role="switch"].push`);
+  await push.focus();
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(400);
+  const repos = (await page.evaluate(() => fetch('/api/repos').then((r) => r.json()))) as Repo[];
+  check(repos.find((r) => r.fullName === 'marlow/tidepool-notes')?.pushMode === true, 'Space on the push mode switch stores push mode');
+  await page.screenshot({ path: join(SHOTS, 'repos-focus.png') });
+
+  // Root style: pick another root, the tower is restyled.
+  const target = SEED[0].fullName;
+  await page.locator(`${rowSel(target)} [role="radio"][data-root="pagoda"]`).click();
+  const restyled = await page
+    .waitForFunction(
+      (t) => fetch('/api/city').then((r) => r.json()).then((ds: Array<{ repo: string; tower: { root: string } }>) => ds.find((d) => d.repo === t)?.tower.root === 'pagoda'),
+      target,
+      { timeout: 4000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  check(restyled, 'picking a root restyles the tower');
+  await page.locator(`${rowSel(target)} [role="radio"][data-root="beauxarts"]`).click();
+
+  // Disconnect from the screen: the district leaves the city.
+  const n = await debug(page, (d) => d.districts);
+  await page.locator(`${rowSel('marlow/tidepool-notes')} .repo-disconnect`).click();
+  const left = await page
+    .waitForFunction((k) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === k, n - 1, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  check(left, 'disconnecting removes the district from the city');
+  check(
+    (await page.locator(`${rowSel('marlow/tidepool-notes')} [role="switch"].connect`).getAttribute('aria-checked')) === 'false',
+    'the disconnected repo shows as off',
+  );
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(SHOTS, 'repos-1280.png') });
+  await page.setViewportSize(VIEWPORT);
+
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  check(!(await page.locator('.sheet.repos').isVisible()), 'Escape returns to the city');
+}
+
+/** Disconnecting a repo while the inspector is open on it closes the inspector and removes the district. */
+async function disconnectWhileInspecting(page: Page): Promise<void> {
+  const target = SEED[2].fullName;
+  await page.evaluate((t) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(t), target);
+  const open = await page.waitForSelector('.inspector.open', { timeout: 3000 }).then(() => true).catch(() => false);
+  check(open, 'the inspector opens on the repo about to be disconnected');
+  const n = await debug(page, (d) => d.districts);
+  await page.evaluate(
+    (t) => fetch(`/api/repos/${t}/disconnect`, { method: 'POST', headers: { 'x-palimpsest': '1' } }),
+    target,
+  );
+  const gone = await page
+    .waitForFunction((k) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === k, n - 1, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  check(gone, 'repo.disconnected removes its district');
+  await page.waitForTimeout(300);
+  check(!(await page.locator('.inspector').isVisible()), 'and closes the inspector open on it');
+  await page.evaluate((t) => fetch(`/api/repos/${t}/connect`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), target);
+}
+
+// ---------------------------------------------------------------- settings
+
+function reading(atMs: number, five: number, week: number): string {
+  const s = Math.floor(atMs / 1000);
+  return `${JSON.stringify({ at: s, rate_limits: { five_hour: { used_percentage: five, resets_at: s + 2 * 3600 + 600 }, seven_day: { used_percentage: week, resets_at: s + 4 * 86400 } } })}\n`;
+}
+
+async function settingsChecks(page: Page, claudeSettingsPath: string): Promise<void> {
+  const { paths } = await import('../engine/home.js');
+  const readings = join(paths().usage, 'readings.jsonl');
+  writeFileSync(readings, reading(Date.now() - 7 * 3600_000, 62, 18));
+
+  await page.locator('.runhead a[data-route="settings"]').click();
+  const shown = await page.waitForSelector('.sheet.settings .usage-five', { timeout: 5000 }).then(() => true).catch(() => false);
+  check(shown, 'the Settings screen opens from the running head');
+  if (!shown) return;
+  await page.waitForTimeout(400);
+  const five = (await page.locator('.usage-five .usage-pct').textContent())?.trim();
+  const week = (await page.locator('.usage-week .usage-pct').textContent())?.trim();
+  check(five === '62%' && week === '18%', `usage shows the seeded percentages (${five}, ${week})`);
+  check(await page.locator('.usage-stale').isVisible(), 'an old reading carries the stale warning');
+  check(/reset/i.test((await page.locator('.usage-five').textContent()) ?? ''), 'each window shows when it resets');
+  check(/window reset/.test((await page.locator('.usage-five .usage-reset').textContent()) ?? ''), 'a reset already past reads as past');
+  await page.screenshot({ path: join(SHOTS, 'settings.png') });
+  await page.screenshot({ path: join(SHOTS, 'settings-full.png'), fullPage: false });
+
+  // The usage hook, against the temp claude settings file only.
+  const original = readFileSync(claudeSettingsPath, 'utf8');
+  check(/not installed/i.test((await page.locator('.hook-state').textContent()) ?? ''), 'the hook reads as not installed');
+  await page.locator('.hook-install').click();
+  await page.waitForFunction(() => /installed/i.test(document.querySelector('.hook-state')?.textContent ?? '') && !/not/i.test(document.querySelector('.hook-state')?.textContent ?? ''), null, { timeout: 4000 }).catch(() => {});
+  const installed = readFileSync(claudeSettingsPath, 'utf8');
+  check(/statusLine/.test(installed), 'Install writes the hook into the (temp) claude settings');
+  check(!/not/i.test((await page.locator('.hook-state').textContent()) ?? ''), 'the hook then reads as installed');
+  await page.screenshot({ path: join(SHOTS, 'settings-hook.png') });
+  await page.locator('.hook-remove').click();
+  await page.waitForFunction(() => /not installed/i.test(document.querySelector('.hook-state')?.textContent ?? ''), null, { timeout: 4000 }).catch(() => {});
+  check(readFileSync(claudeSettingsPath, 'utf8') === original, 'Remove restores the claude settings byte for byte');
+
+  // Caps: typed, stored.
+  const day = page.locator('input.cap-day');
+  await day.fill('40');
+  await day.press('Enter');
+  await page.waitForTimeout(400);
+  let st = (await page.evaluate(() => fetch('/api/settings').then((r) => r.json()))) as { dayCapPct: number; quality: string };
+  check(st.dayCapPct === 40, `the day cap is stored (${st.dayCapPct})`);
+  await day.focus();
+  await page.keyboard.press('ArrowUp');
+  await page.waitForTimeout(400);
+  st = (await page.evaluate(() => fetch('/api/settings').then((r) => r.json()))) as { dayCapPct: number; quality: string };
+  check(st.dayCapPct === 45, `ArrowUp steps the cap by 5 (${st.dayCapPct})`);
+  await day.fill('50');
+  await day.press('Enter');
+
+  // Quality.
+  await page.locator('[role="radio"][data-quality="medium"]').click();
+  await page.waitForTimeout(400);
+  st = (await page.evaluate(() => fetch('/api/settings').then((r) => r.json()))) as { dayCapPct: number; quality: string };
+  check(st.quality === 'medium', 'quality is stored');
+  await page.locator('[role="radio"][data-quality="high"]').click();
+
+  // The kill switch.
+  await page.locator('[role="switch"].kill').click();
+  await page.waitForTimeout(500);
+  check(existsSync(paths().stop), 'the kill switch writes the stop file');
+  check(/stopped/i.test((await page.locator('.runhead').textContent()) ?? ''), 'the running head says the city is stopped');
+  await page.locator('[role="switch"].kill').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(SHOTS, 'settings-stopped.png') });
+  await page.locator('[role="switch"].kill').click();
+  await page.waitForTimeout(500);
+  check(!existsSync(paths().stop), 'turning it off removes the stop file');
+  await page.locator('.settings-privacy').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: join(SHOTS, 'settings-privacy.png') });
+
+  // A fresh reading: no warning.
+  appendFileSync(readings, reading(Date.now() - 10 * 60_000, 23, 19));
+  await page.locator('.runhead a[data-route="city"]').click();
+  await page.locator('.runhead a[data-route="settings"]').click();
+  await page.waitForTimeout(600);
+  check((await page.locator('.usage-five .usage-pct').textContent())?.trim() === '23%', 'a new reading shows on reopening');
+  check(!(await page.locator('.usage-stale').isVisible()), 'a fresh reading carries no stale warning');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: join(SHOTS, 'settings-1280.png') });
+  await page.setViewportSize(VIEWPORT);
+  await page.locator('#settings-title').focus();
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  check(!(await page.locator('.sheet.settings').isVisible()), 'Escape leaves Settings for the city');
+}
+
 // ---------------------------------------------------------------- main
 
 async function main(): Promise<void> {
@@ -415,6 +709,8 @@ async function main(): Promise<void> {
   mkdirSync(SHOTS, { recursive: true });
 
   await seed();
+  const { setRunner } = await import('../engine/exec.js');
+  setRunner(fakeGh);
   const { startServer } = await import('../engine/server.js');
   const server = await startServer({ port: PORT, claudeSettingsPath });
 
@@ -501,6 +797,9 @@ async function main(): Promise<void> {
       await measureFps(page);
       await inspectorChecks(page);
       await siteChecks(page);
+      await disconnectWhileInspecting(page);
+      await reposChecks(page);
+      await settingsChecks(page, claudeSettingsPath);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);

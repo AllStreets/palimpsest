@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import './ui/style.css';
+import './ui/screens.css';
 
 import { districtOrigin } from '../../shared/district-layout';
 import type { District, Repo } from '../../shared/types';
@@ -9,8 +10,12 @@ import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
 import { createCity, type PickHit, type Site } from './city/scene';
 import { towerCenterpiece } from './city/tower/look';
-import { onRoute } from './router';
+import type { EngineEvent } from './api';
+import { navigate, onRoute } from './router';
 import { createInspector } from './ui/inspector';
+import { createRepos } from './ui/repos';
+import { createRunhead } from './ui/runhead';
+import { createSettings } from './ui/settings';
 
 interface DebugHandle {
   ready: boolean;
@@ -20,6 +25,8 @@ interface DebugHandle {
   /** Districts built since load: a refresh rebuilds only what changed. */
   builds: number;
   lastPick: PickHit | null;
+  /** Opens the inspector on a repo's tower, as clicking its plate does. */
+  inspect(repo: string): void;
   highlight: { repo: string; floorId: string } | null;
   view(eye: number[], target: number[]): void;
   camera(): number[];
@@ -33,7 +40,8 @@ declare global {
   }
 }
 
-const REFRESH_ON = new Set(['repo.analyzed', 'repo.error']);
+/** Events that change what stands in the city: a new tower, a failed one, a restyle, or a district leaving. */
+const REFRESH_ON = new Set(['repo.connected', 'repo.analyzed', 'repo.error', 'repo.patched', 'repo.disconnected']);
 
 /** What the plate under an analyzing site says for each step of the engine's analysis. */
 const STEP_TEXT: Record<string, string> = {
@@ -62,6 +70,7 @@ async function main(): Promise<void> {
     sites: 0,
     builds: 0,
     lastPick: null,
+    inspect: (repo) => inspect(repo, null),
     highlight: null,
     view: (e, t) => city.view(new THREE.Vector3(e[0], e[1], e[2]), new THREE.Vector3(t[0], t[1], t[2])),
     camera: () => city.camera.position.toArray(),
@@ -74,6 +83,19 @@ async function main(): Promise<void> {
   /** Repos whose first analysis is running, with the step it reached. */
   const analyzing = new Map<string, { slot: number; step: string; done?: boolean }>();
   const byRepo = (repo: string): District | undefined => districts.find((d) => d.repo === repo);
+
+  // ---------------------------------------------------------------- navigation and screens
+  const runhead = createRunhead(document.body);
+  /** Screens listen to the one event stream while they are open. */
+  const listeners = new Set<(e: EngineEvent) => void>();
+  const listen = (fn: (e: EngineEvent) => void): (() => void) => {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  };
+  const toCity = (): void => navigate('city');
+  const repos = createRepos(document.body, { listen, onDismiss: toCity });
+  const settings = createSettings(document.body, { listen, onDismiss: toCity, onStopped: (s) => runhead.setStopped(s) });
+  void api.health().then((h) => runhead.setStopped(h.stopped), () => {});
 
   // ---------------------------------------------------------------- the inspector
   const inspector = createInspector(document.body, {
@@ -154,6 +176,7 @@ async function main(): Promise<void> {
     debug.districts = next.length;
     // A repo whose tower has arrived is no longer a site, however its events were ordered.
     for (const d of next) analyzing.delete(d.repo);
+    runhead.setConnected(next.length);
     // A finished analysis whose repo has no district (disconnected meanwhile) leaves no scaffold behind.
     for (const [repo, a] of analyzing) if (a.done) analyzing.delete(repo);
     showSites();
@@ -182,7 +205,7 @@ async function main(): Promise<void> {
     if (e.type === 'repo.analyzing' && repo?.fullName) {
       analyzing.set(repo.fullName, { slot: repo.slot, step: (e.data as { step?: string }).step ?? '' });
       showSites();
-    } else if (e.type === 'repo.error' && repo?.fullName) {
+    } else if ((e.type === 'repo.error' || e.type === 'repo.disconnected') && repo?.fullName) {
       // An error shows nothing new in the city: the scaffold comes down, the Repos screen carries the message.
       analyzing.delete(repo.fullName);
       showSites();
@@ -191,13 +214,32 @@ async function main(): Promise<void> {
       const a = analyzing.get(repo.fullName);
       if (a) a.done = true;
     }
+    if (e.type === 'engine.stopped' || e.type === 'engine.resumed') runhead.setStopped(e.type === 'engine.stopped');
     if (REFRESH_ON.has(e.type)) refresh();
+    for (const fn of listeners) fn(e);
   });
 
-  // Repos and Settings (Task 10) draw over the city, which keeps running underneath.
+  // Escape on a sheet returns to the city, unless a field used it first (clearing a search, undoing a cap).
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !e.defaultPrevented && document.body.dataset.route !== 'city') {
+      e.preventDefault();
+      toCity();
+    }
+  });
+
+  // Repos and Settings draw over the city, which keeps running beside them.
+  let lastRoute = 'city';
   onRoute((route) => {
     document.body.dataset.route = route;
+    runhead.setRoute(route);
     if (route !== 'city') inspector.close();
+    if (route === 'repos') repos.show();
+    else repos.hide();
+    if (route === 'settings') settings.show();
+    else settings.hide();
+    // Back in the city, focus returns to it rather than to a sheet that has gone.
+    if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
+    lastRoute = route;
   });
 
   await city.ready;

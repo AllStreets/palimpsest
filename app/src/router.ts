@@ -13,8 +13,13 @@ export function currentRoute(): Route {
   return ROUTES[location.hash] ?? 'city';
 }
 
+/** The hash for a route, for links and for navigate(). */
+export function routeHref(route: Route): string {
+  return route === 'city' ? '#/' : `#/${route}`;
+}
+
 export function navigate(route: Route): void {
-  location.hash = route === 'city' ? '#/' : `#/${route}`;
+  location.hash = routeHref(route);
 }
 
 /** Calls `fn` now and on every route change. Returns a function that stops listening. */

@@ -169,6 +169,7 @@ export async function connect(fullName: string): Promise<Repo> {
 
   saveRepo(repo);
   record('repo.connected', { repo: fullName });
+  emit('repo.connected', { repo });
   void analyze(fullName).catch((err) => {
     // analyze() guards its own body and should never reject; this is a last
     // resort so a truly unexpected failure never becomes an unhandled
@@ -237,22 +238,35 @@ export async function analyze(fullName: string): Promise<void> {
   }
 }
 
-/** Marks `fullName` as disconnected. Its tower is kept so reconnecting can skip straight to a fresh analysis. */
+/**
+ * Marks `fullName` as disconnected and emits `repo.disconnected`. Its tower
+ * is kept so reconnecting can skip straight to a fresh analysis.
+ */
 export function disconnect(fullName: string): void {
   const repo = loadRepo(fullName);
   if (!repo) return;
-  saveRepo({ ...repo, connected: false });
+  const updated = saveRepo({ ...repo, connected: false });
   record('repo.disconnected', { repo: fullName });
+  emit('repo.disconnected', { repo: updated });
 }
 
-/** Merges `p` into the stored repo's pushMode/root. */
+/**
+ * Merges `p` into the stored repo's pushMode/root and emits `repo.patched`.
+ * A new root restyles the standing tower too (the floors are unchanged), so
+ * the city shows the choice at once rather than at the next analysis.
+ */
 export function patchRepo(fullName: string, p: Partial<Pick<Repo, 'pushMode' | 'root'>>): Repo {
   const repo = loadRepo(fullName);
   if (!repo) {
     throw new Error(`patchRepo: ${fullName} has not been connected`);
   }
   const updated = saveRepo({ ...repo, ...p });
+  if (p.root) {
+    const tower = loadTower(fullName);
+    if (tower && tower.root !== p.root) saveTower({ ...tower, root: p.root });
+  }
   record('repo.patched', { repo: fullName, patch: p });
+  emit('repo.patched', { repo: updated });
   return updated;
 }
 

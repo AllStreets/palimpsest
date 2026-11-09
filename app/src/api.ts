@@ -26,13 +26,22 @@ export interface UsageState {
   hookInstalled: boolean;
 }
 
-/** An event from GET /api/events: `repo.analyzing`, `repo.analyzed`, `repo.error` and later kinds. */
+/** An event from GET /api/events: a repo's connect, analysis steps, result, patch or disconnect, or the kill switch. */
 export interface EngineEvent {
   type: string;
   data: unknown;
 }
 
-const EVENT_TYPES = ['repo.analyzing', 'repo.analyzed', 'repo.error'];
+const EVENT_TYPES = [
+  'repo.connected',
+  'repo.analyzing',
+  'repo.analyzed',
+  'repo.error',
+  'repo.patched',
+  'repo.disconnected',
+  'engine.stopped',
+  'engine.resumed',
+];
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
@@ -68,6 +77,8 @@ export const api = {
   usage: () => request<UsageState>('GET', '/api/usage'),
   installHook: () => request<{ hookInstalled: boolean }>('POST', '/api/usage/hook/install'),
   uninstallHook: () => request<{ hookInstalled: boolean }>('POST', '/api/usage/hook/uninstall'),
+  /** The kill switch: creates (on) or removes (off) the engine's stop file. */
+  stop: (on: boolean) => request<{ stopped: boolean }>('POST', '/api/stop', { on }),
   settings: () => request<Settings>('GET', '/api/settings'),
   patchSettings: (patch: Partial<Pick<Settings, 'quality' | 'dayCapPct' | 'nightCapPct'>>) =>
     request<Settings>('PATCH', '/api/settings', patch),

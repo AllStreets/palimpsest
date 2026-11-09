@@ -328,3 +328,34 @@ test('usage hook routes never touch the real claude settings path', async () => 
   const finalContent = fs.readFileSync(settingsPath, 'utf8');
   assert.equal(JSON.parse(finalContent).theme, 'dark');
 });
+
+test('POST /api/stop creates and removes the stop file and records both in the ledger', async () => {
+  const { entries } = await import('../engine/ledger.js');
+  const { existsSync } = await import('node:fs');
+  await withServer(async (server) => {
+    const post = (body: unknown, headers: Record<string, string> = { 'x-palimpsest': '1', 'content-type': 'application/json' }) =>
+      fetch(url(server, '/api/stop'), { method: 'POST', headers, body: JSON.stringify(body) });
+
+    assert.equal((await post({ on: true }, { 'content-type': 'application/json' })).status, 403);
+    assert.equal(existsSync(paths().stop), false);
+    assert.equal((await post({ on: 'yes' })).status, 400);
+    assert.equal((await post({})).status, 400);
+
+    const on = await post({ on: true });
+    assert.equal(on.status, 200);
+    assert.deepEqual(await on.json(), { stopped: true });
+    assert.equal(existsSync(paths().stop), true);
+    const health = (await (await fetch(url(server, '/api/health'))).json()) as { stopped: boolean };
+    assert.equal(health.stopped, true);
+
+    // Stopping twice is harmless and records nothing new.
+    assert.equal((await post({ on: true })).status, 200);
+
+    const off = await post({ on: false });
+    assert.deepEqual(await off.json(), { stopped: false });
+    assert.equal(existsSync(paths().stop), false);
+
+    const kinds = entries().map((e) => e.kind).filter((k) => k.startsWith('engine.'));
+    assert.deepEqual(kinds, ['engine.stopped', 'engine.resumed']);
+  });
+});

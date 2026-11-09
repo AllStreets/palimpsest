@@ -422,3 +422,46 @@ test('legacy repo rows without a slot are backfilled with distinct, finite slots
     assert.notDeepEqual(d.origin, { x: 0, z: 0 }, `${d.repo}'s district must not sit at the civic plaza`);
   }
 });
+
+test('connect, patch and disconnect each emit an event carrying the repo', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, []));
+  const seen: Event[] = [];
+  const unsubscribe = subscribe((e) => {
+    if (e.type === 'repo.connected' || e.type === 'repo.patched' || e.type === 'repo.disconnected') seen.push(e);
+  });
+
+  const analyzed = waitForEvent('repo.analyzed');
+  await connect(fullName);
+  await analyzed;
+  patchRepo(fullName, { pushMode: true });
+  disconnect(fullName);
+  unsubscribe();
+
+  assert.deepEqual(
+    seen.map((e) => e.type),
+    ['repo.connected', 'repo.patched', 'repo.disconnected'],
+  );
+  for (const e of seen) {
+    assert.equal((e.data as { repo: { fullName: string } }).repo.fullName, fullName);
+  }
+  assert.equal((seen[1].data as { repo: { pushMode: boolean } }).repo.pushMode, true);
+  assert.equal((seen[2].data as { repo: { connected: boolean } }).repo.connected, false);
+});
+
+test('patching the root restyles the standing tower', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(
+    fixtureRunner(fullName, [
+      { sha: 'a1b2c3d', at: '2026-01-01T00:00:00.000Z', author: 'Author One', subject: 'first commit', body: '', lines: 10 },
+    ]),
+  );
+  const analyzed = waitForEvent('repo.analyzed');
+  await connect(fullName);
+  await analyzed;
+
+  const other = pickRoot(fullName) === 'pagoda' ? 'gothic' : 'pagoda';
+  patchRepo(fullName, { root: other });
+  assert.equal(city()[0].tower.root, other);
+  assert.equal(city()[0].tower.floors.length, 1);
+});

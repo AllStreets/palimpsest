@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -8,9 +8,10 @@ import { fileURLToPath } from 'node:url';
 
 import type { Repo, RootStyle, Settings } from '../shared/types.js';
 import type { Event } from './events.js';
-import { subscribe } from './events.js';
+import { emit, subscribe } from './events.js';
 import { availableRepos, GhError } from './github.js';
 import { paths } from './home.js';
+import { record } from './ledger.js';
 import { analyze, city, connect, disconnect, listRepos, patchRepo } from './repos.js';
 import { getSettings, patchSettings } from './settings.js';
 import { installHook, isStale, latestReading, uninstallHook } from './usage.js';
@@ -142,6 +143,23 @@ function repoExists(fullName: string): boolean {
   return listRepos().some((r) => r.fullName === fullName);
 }
 
+/**
+ * The kill switch: creates or removes the stop file. A change is recorded in
+ * the ledger (`engine.stopped` / `engine.resumed`) and emitted; setting the
+ * state it is already in changes nothing. Returns whether the engine is now stopped.
+ */
+function setStopped(on: boolean): boolean {
+  const stop = paths().stop;
+  const was = existsSync(stop);
+  if (on === was) return on;
+  if (on) writeFileSync(stop, `Stopped from Settings at ${new Date().toISOString()}\n`);
+  else rmSync(stop, { force: true });
+  const kind = on ? 'engine.stopped' : 'engine.resumed';
+  record(kind, {});
+  emit(kind, { stopped: on });
+  return on;
+}
+
 /** Sends one SSE event frame. */
 function writeSseEvent(res: ServerResponse, e: Event): void {
   res.write(`event: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`);
@@ -188,6 +206,14 @@ async function handleApi(
   try {
     if (pathname === '/api/health' && method === 'GET') {
       sendJson(res, 200, { ok: true, version: VERSION, stopped: existsSync(paths().stop) });
+      return;
+    }
+
+    if (pathname === '/api/stop' && method === 'POST') {
+      const body = await readJsonBody(req);
+      const on = (body as { on?: unknown } | null)?.on;
+      if (typeof on !== 'boolean') throw new HttpError(400, { error: 'expected { on: boolean }' });
+      sendJson(res, 200, { stopped: setStopped(on) });
       return;
     }
 
