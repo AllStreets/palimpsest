@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { facadeMaterial, type FacadeFamily } from './facade';
+import { ambientCap, cappedHeight, RESERVE_RADIUS, type CollarPlaza } from './collar';
 import { materials } from './materials';
 
 /** One city block's buildable square, in metres. */
@@ -13,18 +14,8 @@ export const PITCH = BLOCK + STREET;
 export const LAMP_EDGE = BLOCK / 2 + 2;
 /** Lamp positions along a block edge, from the block centre. */
 export const LAMP_OFFSETS = [-24, -8, 8, 24];
-/** Ambient buildings keep this far from a district origin or the civic plaza. */
-export const RESERVE_RADIUS = 90;
 /** Inside this radius the street grid gives way to an open paved plaza with no street lamps. */
 export const PLAZA_RADIUS = 72;
-/**
- * Around each plaza the ambient city stays low, rising with distance, so a
- * district's tower reads as the landmark it is: at the plaza's edge buildings
- * top out at COLLAR_BASE metres, gaining COLLAR_RISE metres per metre out to COLLAR_REACH.
- */
-export const COLLAR_BASE = 26;
-export const COLLAR_RISE = 0.45;
-export const COLLAR_REACH = 320;
 /** Lanterns ring each plaza at this radius. */
 export const PLAZA_LAMP_RING = 66;
 export const PLAZA_LAMPS = 24;
@@ -32,10 +23,8 @@ export const PLAZA_LAMPS = 24;
 export const BOLLARD_RING = 36;
 export const BOLLARDS = 20;
 
-export interface Plaza {
-  x: number;
-  z: number;
-}
+/** A plaza: a district (with its root's height, so the blocks round it stay under the root), a site, or the civic plaza. */
+export type Plaza = CollarPlaza;
 
 export interface Grid {
   group: THREE.Group;
@@ -356,8 +345,7 @@ export function createGrid(quality: 'high' | 'medium'): Grid {
 
         for (const lot of blockLots(i, j)) {
           if (all.some((p) => rectNear(lot.x, lot.z, lot.w, lot.d, p.x, p.z, RESERVE_RADIUS))) continue;
-          const gap = Math.min(...all.map((p) => Math.hypot(lot.x - p.x, lot.z - p.z)));
-          const h = gap < COLLAR_REACH ? Math.min(lot.h, floorsTo(COLLAR_BASE + (gap - RESERVE_RADIUS) * COLLAR_RISE)) : lot.h;
+          const h = cappedHeight(lot.h, ambientCap(lot.x, lot.z, all));
           const tiers = h > 150 ? 3 : h > 90 ? 2 : 1;
           const split = tiers === 3 ? [0.5, 0.3, 0.2] : tiers === 2 ? [0.62, 0.38] : [1];
           const wall = walls[lot.family];

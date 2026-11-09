@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import type { District } from '../../../shared/types';
+import { ROOT_HEIGHT } from '../../../shared/tower-layout';
 import { createCameraRig } from './camera';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
@@ -162,7 +163,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(districtGroup);
   let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece }> = [];
   let scaffolds = new Map<string, Scaffold>();
-  let districtOrigins: Array<{ x: number; z: number }> = [];
+  let districtOrigins: Array<{ x: number; z: number; rootHeight: number }> = [];
   let siteOrigins: Array<{ x: number; z: number }> = [];
   let framed = false;
 
@@ -209,7 +210,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
-    districtOrigins = districts.map((d) => ({ x: d.origin.x, z: d.origin.z }));
+    districtOrigins = districts.map((d) => ({ x: d.origin.x, z: d.origin.z, rootHeight: ROOT_HEIGHT[d.tower.root] }));
     updatePlazas();
     if (highlighted) applyHighlight();
     if (!framed) {
