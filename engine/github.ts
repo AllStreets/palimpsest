@@ -25,7 +25,7 @@ export interface PR {
   url: string;
 }
 
-interface RepoListRow {
+interface RepoRow {
   nameWithOwner: string;
   isPrivate: boolean;
   description: string | null;
@@ -43,11 +43,47 @@ interface PrListRow {
   url: string;
 }
 
+/** Classifies a thrown spawn error (e.g. the runner rejecting because the binary itself is missing) into a GhError. */
+export function classifySpawnError(err: unknown): GhError {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === 'ENOENT') {
+    return new GhError(
+      'missing',
+      'GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run `gh auth login`.',
+    );
+  }
+  return new GhError('other', err instanceof Error ? err.message : String(err));
+}
+
 /**
- * Runs a gh subcommand and returns its result, or throws a classified GhError:
- * 'missing' when the gh binary itself is not installed (ENOENT), 'notfound'
- * when gh reports the repo doesn't resolve, 'auth' when `gh auth status`
- * also fails, 'other' otherwise.
+ * Classifies a failed (non-zero exit) command result into a GhError: 'notfound'
+ * when the repo doesn't resolve or isn't readable, 'auth' when `gh auth status`
+ * also fails, 'other' otherwise. Shared by every gh call here and by mirror.ts's
+ * git/gh calls, so a logged-out session or an unreadable private repo always
+ * surfaces the same kind and a readable message, whichever command hit it.
+ */
+export async function classifyGhFailure(
+  result: { stdout: string; stderr: string; code: number },
+  commandLabel: string,
+): Promise<GhError> {
+  if (/Could not resolve to a Repository/.test(result.stderr) || /Repository not found/i.test(result.stderr)) {
+    return new GhError('notfound', `Repository not found: ${result.stderr.trim()}`);
+  }
+
+  const runner = getRunner();
+  const auth = await runner('gh', ['auth', 'status'], { timeoutMs: TIMEOUT_MS }).catch(
+    () => ({ stdout: '', stderr: '', code: 1 }),
+  );
+  if (auth.code !== 0) {
+    return new GhError('auth', 'Not logged in to the GitHub CLI. Run `gh auth login`, then try again.');
+  }
+
+  return new GhError('other', result.stderr.trim() || `${commandLabel} exited with code ${result.code}`);
+}
+
+/**
+ * Runs a gh subcommand and returns its result, or throws a classified GhError
+ * (see classifySpawnError / classifyGhFailure).
  */
 async function runGh(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
   const runner = getRunner();
@@ -55,32 +91,14 @@ async function runGh(args: string[]): Promise<{ stdout: string; stderr: string; 
   try {
     result = await runner('gh', args, { timeoutMs: TIMEOUT_MS });
   } catch (err) {
-    const code = (err as { code?: unknown }).code;
-    if (code === 'ENOENT') {
-      throw new GhError(
-        'missing',
-        'GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run `gh auth login`.',
-      );
-    }
-    throw new GhError('other', err instanceof Error ? err.message : String(err));
+    throw classifySpawnError(err);
   }
 
   if (result.code === 0) {
     return result;
   }
 
-  if (result.stderr.includes('Could not resolve to a Repository')) {
-    throw new GhError('notfound', `Repository not found: ${result.stderr.trim()}`);
-  }
-
-  const auth = await runner('gh', ['auth', 'status'], { timeoutMs: TIMEOUT_MS }).catch(
-    () => ({ stdout: '', stderr: '', code: 1 }),
-  );
-  if (auth.code !== 0) {
-    throw new GhError('auth', 'Not logged in to the GitHub CLI. Run `gh auth login`, then try again.');
-  }
-
-  throw new GhError('other', result.stderr.trim() || `gh ${args.join(' ')} exited with code ${result.code}`);
+  throw await classifyGhFailure(result, `gh ${args.join(' ')}`);
 }
 
 /** Repos the authenticated gh user can see, mapped to the subset of Repo fields gh gives us. */
@@ -95,14 +113,34 @@ export async function availableRepos(): Promise<
     '--json',
     'nameWithOwner,isPrivate,description,primaryLanguage,defaultBranchRef',
   ]);
-  const rows = JSON.parse(result.stdout) as RepoListRow[];
-  return rows.map((row) => ({
+  const rows = JSON.parse(result.stdout) as RepoRow[];
+  return rows.map(mapRepoRow);
+}
+
+/** Maps a single gh repo row (from `repo list` or `repo view`) to our Repo subset. */
+function mapRepoRow(row: RepoRow): Pick<Repo, 'fullName' | 'private' | 'description' | 'language' | 'defaultBranch'> {
+  return {
     fullName: row.nameWithOwner,
     private: row.isPrivate,
     description: row.description ?? null,
     language: row.primaryLanguage?.name ?? null,
     defaultBranch: row.defaultBranchRef?.name ?? 'main',
-  }));
+  };
+}
+
+/** A single repo's current metadata, same mapping and error classification as availableRepos. */
+export async function repoMeta(
+  fullName: string,
+): Promise<Pick<Repo, 'fullName' | 'private' | 'description' | 'language' | 'defaultBranch'>> {
+  const result = await runGh([
+    'repo',
+    'view',
+    fullName,
+    '--json',
+    'nameWithOwner,isPrivate,description,primaryLanguage,defaultBranchRef',
+  ]);
+  const row = JSON.parse(result.stdout) as RepoRow;
+  return mapRepoRow(row);
 }
 
 /** Merged PRs for a repo, newest-list-order as gh returns them, with lines = additions + deletions. */

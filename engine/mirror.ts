@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { getRunner } from './exec.js';
+import { classifyGhFailure, classifySpawnError } from './github.js';
 import { paths } from './home.js';
 
 const TIMEOUT_MS = 120_000;
@@ -35,18 +36,28 @@ export async function syncMirror(fullName: string): Promise<string> {
   const runner = getRunner();
 
   if (existsSync(dir)) {
-    const result = await runner('git', ['-C', dir, 'fetch', 'origin', '+refs/heads/*:refs/heads/*', '--prune'], {
-      timeoutMs: TIMEOUT_MS,
-    });
+    let result: { stdout: string; stderr: string; code: number };
+    try {
+      result = await runner('git', ['-C', dir, 'fetch', 'origin', '+refs/heads/*:refs/heads/*', '--prune'], {
+        timeoutMs: TIMEOUT_MS,
+      });
+    } catch (err) {
+      throw classifySpawnError(err);
+    }
     if (result.code !== 0) {
-      throw new Error(`git fetch failed for ${fullName}: ${result.stderr.trim()}`);
+      throw await classifyGhFailure(result, `git fetch for ${fullName}`);
     }
     return dir;
   }
 
-  const result = await runner('gh', ['repo', 'clone', fullName, dir, '--', '--bare'], { timeoutMs: TIMEOUT_MS });
+  let result: { stdout: string; stderr: string; code: number };
+  try {
+    result = await runner('gh', ['repo', 'clone', fullName, dir, '--', '--bare'], { timeoutMs: TIMEOUT_MS });
+  } catch (err) {
+    throw classifySpawnError(err);
+  }
   if (result.code !== 0) {
-    throw new Error(`gh repo clone failed for ${fullName}: ${result.stderr.trim()}`);
+    throw await classifyGhFailure(result, `gh repo clone for ${fullName}`);
   }
   return dir;
 }

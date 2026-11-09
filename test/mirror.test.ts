@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { realRunner, setRunner } from '../engine/exec.js';
+import { GhError } from '../engine/github.js';
 import { paths } from '../engine/home.js';
 import { parseLog, readLog, syncMirror } from '../engine/mirror.js';
 
@@ -137,4 +138,24 @@ test('syncMirror fetches with git when the mirror already exists', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cmd, 'git');
   assert.deepEqual(calls[0].args, ['-C', dir, 'fetch', 'origin', '+refs/heads/*:refs/heads/*', '--prune']);
+});
+
+test('syncMirror classifies a clone failure as a readable, specific GhError', async () => {
+  setRunner(async (cmd, args) => {
+    if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'clone') {
+      return {
+        stdout: '',
+        stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/ghost'. (repository)",
+        code: 1,
+      };
+    }
+    throw new Error(`unexpected command ${cmd} ${args.join(' ')}`);
+  });
+
+  await assert.rejects(syncMirror('acme/ghost'), (err) => {
+    assert.ok(err instanceof GhError);
+    assert.equal(err.kind, 'notfound');
+    assert.match(err.message, /acme\/ghost/);
+    return true;
+  });
 });
