@@ -163,6 +163,7 @@ body[data-state='access'] .ledger .setting { display: grid; }
   cursor: text;
   overflow-wrap: anywhere;
 }
+.ref .keep { white-space: nowrap; }
 
 @media (prefers-reduced-motion: reduce) {
   .fill { transition: none !important; }

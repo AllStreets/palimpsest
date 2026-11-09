@@ -82,11 +82,27 @@ enum InstallError {
     Failed { message: String },
 }
 
-/// macOS answers "Operation not permitted" (EPERM, errno 1) when privacy settings hold a folder
-/// back from an app; an ordinary permissions problem is "Permission denied" (EACCES) instead.
+/// macOS answers EPERM (errno 1) when privacy settings hold a folder back from an app, and node
+/// names it by its code. launchctl also says "Operation not permitted" for its own unrelated
+/// failures (and never "EPERM"), so only node's code counts, and never on a launchctl line.
 fn says_not_permitted(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    lower.contains("operation not permitted") || text.contains("EPERM")
+    text.lines().any(|line| line.contains("EPERM") && !line.to_lowercase().contains("launchctl"))
+}
+
+/// The line a person can paste into Terminal to start the engine by hand, from any folder.
+/// A repo under the home folder is written with `~`, which Terminal expands, to keep it short.
+fn by_hand_command(repo: &Path, home: &Path) -> String {
+    let at = match repo.strip_prefix(home) {
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => repo.display().to_string(),
+    };
+    format!("node {at}/bin/palimpsest.mjs engine install")
+}
+
+/// The by-hand start command with this Mac's repo path, for the splash's ledger.
+#[tauri::command]
+fn engine_command() -> String {
+    by_hand_command(&repo(), Path::new(&std::env::var("HOME").unwrap_or_default()))
 }
 
 /// The folder a person would look for in Files and Folders: Downloads, Documents or Desktop when
@@ -175,7 +191,7 @@ fn open_folder_access(app: AppHandle) -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![engine_healthy, open_city, install_engine, open_folder_access])
+        .invoke_handler(tauri::generate_handler![engine_healthy, open_city, install_engine, open_folder_access, engine_command])
         .setup(|app| {
             let handle = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -219,12 +235,49 @@ mod tests {
     }
 
     #[test]
-    fn operation_not_permitted_text_is_a_folder_access_refusal() {
-        let stderr = "Error: uv_cwd: Operation not permitted";
+    fn eperm_from_nodes_working_folder_is_a_folder_access_refusal() {
+        let stderr = "Error: EPERM: process.cwd failed with error operation not permitted";
         assert_eq!(
             classify_install(false, stderr, "exit status: 1", "Documents"),
             Err(InstallError::FolderAccess { folder: "Documents".into() })
         );
+    }
+
+    #[test]
+    fn launchctl_saying_not_permitted_is_an_ordinary_failure() {
+        let stderr = "launchctl bootstrap failed: Bootstrap failed: 1: Operation not permitted";
+        assert_eq!(
+            classify_install(false, stderr, "exit status: 1", "Downloads"),
+            Err(InstallError::Failed { message: stderr.into() })
+        );
+        let stderr = "launchctl bootstrap failed: EPERM";
+        assert_eq!(
+            classify_install(false, stderr, "exit status: 1", "Downloads"),
+            Err(InstallError::Failed { message: stderr.into() })
+        );
+    }
+
+    #[test]
+    fn the_by_hand_command_names_the_script_by_its_full_path() {
+        let home = Path::new("/Users/c");
+        assert_eq!(
+            by_hand_command(Path::new("/Users/c/Downloads/palimpsest"), home),
+            "node ~/Downloads/palimpsest/bin/palimpsest.mjs engine install"
+        );
+        assert_eq!(
+            by_hand_command(Path::new("/Volumes/Work/palimpsest"), home),
+            "node /Volumes/Work/palimpsest/bin/palimpsest.mjs engine install"
+        );
+        assert_eq!(
+            by_hand_command(Path::new("/Users/c/code/palimpsest"), Path::new("")),
+            "node /Users/c/code/palimpsest/bin/palimpsest.mjs engine install"
+        );
+    }
+
+    #[test]
+    fn the_baked_repo_path_has_no_parent_step() {
+        assert!(!repo().display().to_string().contains(".."));
+        assert!(repo().join("bin").join("palimpsest.mjs").is_file());
     }
 
     #[test]

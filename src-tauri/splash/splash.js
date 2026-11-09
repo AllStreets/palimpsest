@@ -111,6 +111,19 @@ async function start() {
 }
 
 startBtn.addEventListener('click', start);
+// The by-hand line with this Mac's repo path, so it works from any folder in Terminal.
+invoke('engine_command')
+  .then((cmd) => {
+    // Keep "engine install" together, so a wrapped line breaks after the script's path.
+    const dd = document.getElementById('by-hand');
+    const tail = ' engine install';
+    if (!cmd.endsWith(tail)) return void (dd.textContent = cmd);
+    const keep = document.createElement('span');
+    keep.className = 'keep';
+    keep.textContent = tail.trim();
+    dd.replaceChildren(cmd.slice(0, -tail.length) + ' ', keep);
+  })
+  .catch(() => {});
 retryBtn.addEventListener('click', start);
 settingsBtn.addEventListener('click', () => {
   invoke('open_folder_access').catch((err) => showError(String(err)));
