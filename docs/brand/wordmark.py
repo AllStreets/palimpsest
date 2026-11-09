@@ -50,6 +50,7 @@ WIDTH = int(arg('--width', '2600'))
 FONT = os.path.abspath(arg('--font', os.path.join(HERE, 'fonts', 'Cinzel-800.ttf')))
 SAVE_BLEND = arg('--save-blend', '')
 WORD = arg('--word', 'PALIMPSEST')
+BUILD_ONLY = '--build-only' in sys.argv
 
 # Letter proportions: Roman capitals drawn taller than the font, like shafts.
 STRETCH = 1.32
@@ -551,6 +552,9 @@ card.data.shape = 'RECTANGLE'
 card.data.size = 18
 card.data.size_y = 2.5
 card.visible_camera = False
+
+if BUILD_ONLY:
+    raise SystemExit  # logo.py takes over from here
 
 # ------------------------------------------------------------------ camera
 
