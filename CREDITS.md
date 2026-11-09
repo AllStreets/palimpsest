@@ -17,3 +17,11 @@ Scanned PBR textures from [Poly Haven](https://polyhaven.com), all CC0 (public d
 The sky, fog, facade windows, street grid, lamps and skyline are procedural, written for Palimpsest.
 
 The Palimpsest towers (`app/src/city/tower/`) are modelled in code, written for Palimpsest: the five roots (Beaux-Arts colonnade with fluted Ionic columns, Roman arcades, Gothic buttresses, lancets and rose window, the pagoda base with its flared tile eaves, the Chicago rusticated base), the five floor eras, the datum line, the interior-mapped window glass and the rose window's stained glass. No third-party models are used; the scanned textures above supply the stone, brick and metal surfaces.
+
+## Brand
+
+| Files | Asset | Author | License | Used for |
+|---|---|---|---|---|
+| `docs/brand/fonts/Cinzel*.ttf` | [Cinzel](https://github.com/NDISCOVER/Cinzel) | Natanael Gama, The Cinzel Project Authors | SIL Open Font License 1.1 (`docs/brand/fonts/OFL-Cinzel.txt`) | The letterforms of the 3D wordmark and the P of the app mark |
+
+The wordmark, app mark and icon set are rendered in Blender from `docs/brand/wordmark.py` and `docs/brand/logo.py`, written for Palimpsest. They reuse the Poly Haven sandstone, brick and rust scans listed above. The README's hero, stills and clips are captured from the app itself by `tools/capture.ts`, from fictional sample repos.
