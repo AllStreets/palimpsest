@@ -214,9 +214,12 @@ fn main() {
             let handle = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Palimpsest")
-                .inner_size(1600.0, 1000.0)
+                // Opens zoomed to the screen's visible frame (menu bar and Dock stay, no fullscreen Space).
+                // Un-zoomed, it returns to a centred size that fits a 13 inch screen.
+                .inner_size(1280.0, 800.0)
                 .min_inner_size(1000.0, 640.0)
                 .center()
+                .maximized(true)
                 .theme(Some(Theme::Dark))
                 .background_color(ZENITH)
                 // target=_blank links leave the app for the default browser, never a second webview.
