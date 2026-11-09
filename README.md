@@ -130,7 +130,7 @@ To show your Claude plan usage in the city, install the statusline hook from Set
 node bin/palimpsest.mjs usage install
 ```
 
-Your data lives in `~/Library/Application Support/Palimpsest`. Set `PALIMPSEST_HOME` to put it somewhere else.
+Your data lives in `~/Library/Application Support/Palimpsest`. Set `PALIMPSEST_HOME` to put it somewhere else. An engine on another folder leaves your Claude settings alone, unless you also set `PALIMPSEST_CLAUDE_SETTINGS` to the settings file the usage hook should use.
 
 To look around without connecting anything of yours, write the sample city into a folder of its own. Then run a second engine on that folder, on its own port, beside the one you installed:
 
@@ -140,7 +140,7 @@ npm run build
 PALIMPSEST_HOME=/tmp/palimpsest-sample PALIMPSEST_PORT=4790 npm run engine
 ```
 
-The sample city is then at http://127.0.0.1:4790. Ctrl+C stops that engine and leaves yours running.
+The sample city is then at http://127.0.0.1:4790. The folder is marked as a sample, so that engine answers from a stand-in for GitHub and keeps the usage hook inside the folder. It never calls GitHub or changes your Claude settings. Ctrl+C stops that engine and leaves yours running.
 
 ## Privacy
 

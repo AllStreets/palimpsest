@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { realRunner, setRunner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
+import { SAMPLE_MARKER } from '../engine/sample.js';
 import { enginePort, startServer } from '../engine/server.js';
 import type { StartedServer } from '../engine/server.js';
 
@@ -14,10 +15,15 @@ let distDir: string;
 let previousHome: string | undefined;
 let previousDist: string | undefined;
 let settingsPath: string;
+let previousUserHome: string | undefined;
+let previousClaudeSettings: string | undefined;
 
 beforeEach(() => {
   previousHome = process.env.PALIMPSEST_HOME;
   previousDist = process.env.PALIMPSEST_DIST;
+  previousUserHome = process.env.HOME;
+  previousClaudeSettings = process.env.PALIMPSEST_CLAUDE_SETTINGS;
+  delete process.env.PALIMPSEST_CLAUDE_SETTINGS;
   tempDir = mkdtempSync(join(tmpdir(), 'palimpsest-server-test-'));
   distDir = join(tempDir, 'dist-missing'); // does not exist by default
   process.env.PALIMPSEST_HOME = join(tempDir, 'home');
@@ -27,6 +33,9 @@ beforeEach(() => {
 
 afterEach(() => {
   setRunner(realRunner);
+  process.env.HOME = previousUserHome;
+  if (previousClaudeSettings === undefined) delete process.env.PALIMPSEST_CLAUDE_SETTINGS;
+  else process.env.PALIMPSEST_CLAUDE_SETTINGS = previousClaudeSettings;
   if (previousHome === undefined) {
     delete process.env.PALIMPSEST_HOME;
   } else {
@@ -427,4 +436,76 @@ test('a well formed owner/name with dots, dashes and underscores is accepted', a
       return repos[0]?.status === 'ready';
     });
   });
+});
+
+/**
+ * Points the user's home (os.homedir()) at a fresh temp folder for tests that
+ * start the engine without an explicit Claude settings path, so even a broken
+ * build can never reach the real ~/.claude/settings.json. Returns the path the
+ * real-home settings file would have there.
+ */
+function fakeUserHome(): string {
+  const fake = join(tempDir, 'user-home');
+  mkdirSync(fake, { recursive: true });
+  process.env.HOME = fake;
+  return join(fake, '.claude', 'settings.json');
+}
+
+function post(server: StartedServer, path: string): Promise<Response> {
+  return fetch(url(server, path), { method: 'POST', headers: { 'x-palimpsest': '1' } });
+}
+
+test('an engine on a sample home answers GitHub from the sample and keeps the hook inside the sample home', async () => {
+  const userSettings = fakeUserHome();
+  const sampleHome = join(tempDir, 'sample');
+  mkdirSync(sampleHome, { recursive: true });
+  writeFileSync(join(sampleHome, SAMPLE_MARKER), '{}\n');
+  process.env.PALIMPSEST_HOME = sampleHome;
+
+  const server = await startServer({ port: 0 });
+  try {
+    const available = (await (await fetch(url(server, '/api/repos/available'))).json()) as Array<{ fullName: string }>;
+    assert.ok(available.some((r) => r.fullName === 'tidewater/harbor-ledger'), 'the sample stand-in answers, not gh');
+
+    assert.equal((await post(server, '/api/usage/hook/install')).status, 200);
+    const inSample = JSON.parse(readFileSync(join(sampleHome, 'claude-settings.json'), 'utf8')) as { statusLine: { command: string } };
+    assert.match(inSample.statusLine.command, /statusline\.sh/);
+    assert.equal((await post(server, '/api/usage/hook/uninstall')).status, 200);
+  } finally {
+    await server.close();
+  }
+  assert.equal(existsSync(userSettings), false, 'the user\'s own Claude settings are never written');
+});
+
+test('hook routes answer 409 on a non-default home with no Claude settings path given', async () => {
+  const userSettings = fakeUserHome();
+  const server = await startServer({ port: 0 });
+  try {
+    for (const path of ['/api/usage/hook/install', '/api/usage/hook/uninstall']) {
+      const r = await post(server, path);
+      assert.equal(r.status, 409, path);
+      const body = (await r.json()) as { error: string };
+      assert.match(body.error, /PALIMPSEST_CLAUDE_SETTINGS/);
+    }
+  } finally {
+    await server.close();
+  }
+  assert.equal(existsSync(userSettings), false);
+});
+
+test('PALIMPSEST_CLAUDE_SETTINGS chooses the Claude settings file the hook routes write', async () => {
+  const userSettings = fakeUserHome();
+  const chosen = join(tempDir, 'chosen-settings.json');
+  writeFileSync(chosen, '{"theme":"dark"}');
+  process.env.PALIMPSEST_CLAUDE_SETTINGS = chosen;
+  const server = await startServer({ port: 0 });
+  try {
+    assert.equal((await post(server, '/api/usage/hook/install')).status, 200);
+    assert.match(readFileSync(chosen, 'utf8'), /statusline\.sh/);
+    assert.equal((await post(server, '/api/usage/hook/uninstall')).status, 200);
+    assert.equal(readFileSync(chosen, 'utf8'), '{"theme":"dark"}');
+  } finally {
+    await server.close();
+  }
+  assert.equal(existsSync(userSettings), false);
 });

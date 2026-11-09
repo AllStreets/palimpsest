@@ -14,7 +14,9 @@ import { paths } from './home.js';
 import { record } from './ledger.js';
 import { analyze, BAD_NAME, city, connect, disconnect, isValidFullName, listRepos, patchRepo } from './repos.js';
 import { getSettings, patchSettings } from './settings.js';
-import { installHook, isStale, latestReading, uninstallHook } from './usage.js';
+import { realRunner, getRunner, setRunner } from './exec.js';
+import { isSampleHome, sampleGh } from './sample.js';
+import { claudeSettingsTarget, installHook, isStale, latestReading, NO_CLAUDE_SETTINGS, uninstallHook } from './usage.js';
 
 const engineDir = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(engineDir, '..', 'package.json'), 'utf8')) as { version: string };
@@ -66,6 +68,7 @@ export function enginePort(env: NodeJS.ProcessEnv = process.env): number {
 
 export interface StartServerOptions {
   port?: number;
+  /** The Claude settings file the hook routes change. Without it, see claudeSettingsTarget(). */
   claudeSettingsPath?: string;
 }
 
@@ -158,6 +161,13 @@ function validateRepoPatch(body: unknown): Partial<Pick<Repo, 'pushMode' | 'root
   return patch;
 }
 
+/** The Claude settings file the hook routes may change: the one given, else claudeSettingsTarget(), else a 409. */
+function hookTarget(given: string | undefined): string {
+  const target = given ?? claudeSettingsTarget();
+  if (target === null) throw new HttpError(409, { error: NO_CLAUDE_SETTINGS });
+  return target;
+}
+
 function repoExists(fullName: string): boolean {
   return listRepos().some((r) => r.fullName === fullName);
 }
@@ -219,7 +229,7 @@ async function handleApi(
   res: ServerResponse,
   pathname: string,
   method: string,
-  claudeSettingsPath: string,
+  claudeSettingsPath: string | undefined,
   sseClients: Set<ServerResponse>,
 ): Promise<void> {
   try {
@@ -262,13 +272,13 @@ async function handleApi(
     }
 
     if (pathname === '/api/usage/hook/install' && method === 'POST') {
-      installHook(claudeSettingsPath);
+      installHook(hookTarget(claudeSettingsPath));
       sendJson(res, 200, { hookInstalled: true });
       return;
     }
 
     if (pathname === '/api/usage/hook/uninstall' && method === 'POST') {
-      uninstallHook(claudeSettingsPath);
+      uninstallHook(hookTarget(claudeSettingsPath));
       sendJson(res, 200, { hookInstalled: false });
       return;
     }
@@ -392,13 +402,17 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
 }
 
 /**
- * Starts the engine's HTTP/SSE server on 127.0.0.1. `claudeSettingsPath`
- * defaults to the real `~/.claude/settings.json`; tests must always pass a
- * temp path instead, since the usage-hook routes write through it.
+ * Starts the engine's HTTP/SSE server on 127.0.0.1. Without
+ * `claudeSettingsPath` the hook routes use claudeSettingsTarget(): the real
+ * `~/.claude/settings.json` only for an engine on the default data home, and
+ * a 409 on any other home unless PALIMPSEST_CLAUDE_SETTINGS names a file.
+ * Tests pass a temp path. An engine on a sample home (tools/sample.ts)
+ * answers gh and git from the sample stand-in unless a test installed its own.
  */
 export async function startServer(opts: StartServerOptions = {}): Promise<StartedServer> {
   const requestedPort = opts.port ?? enginePort();
-  const claudeSettingsPath = opts.claudeSettingsPath ?? join(homedir(), '.claude', 'settings.json');
+  const claudeSettingsPath = opts.claudeSettingsPath;
+  if (isSampleHome() && getRunner() === realRunner) setRunner(sampleGh());
   const sseClients = new Set<ServerResponse>();
 
   const server = createServer((req, res) => {

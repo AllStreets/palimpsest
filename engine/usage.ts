@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import type { UsageReading, UsageWindow } from '../shared/types.js';
-import { paths } from './home.js';
+import { defaultHome, home, paths } from './home.js';
 import { record } from './ledger.js';
+import { isSampleHome, sampleClaudeSettingsPath } from './sample.js';
 import { getSettings, patchSettings } from './settings.js';
 
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
@@ -29,6 +30,24 @@ interface RawRateLimits {
 interface RawRecord {
   at: number;
   rate_limits?: RawRateLimits;
+}
+
+/** Why the hook will not touch any Claude settings file from this engine, when it will not. */
+export const NO_CLAUDE_SETTINGS =
+  'This engine keeps its data outside the default folder, so it will not change your Claude settings. Set PALIMPSEST_CLAUDE_SETTINGS to the settings file it should use.';
+
+/**
+ * The Claude Code settings file the usage hook may change, or null when none
+ * safely can be: a sample home's own stand-in file, else the file
+ * PALIMPSEST_CLAUDE_SETTINGS names, else the real ~/.claude/settings.json,
+ * but only for an engine on the default data home. An engine on any other
+ * home (a test, a second engine) never reaches the real file by default.
+ */
+export function claudeSettingsTarget(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (isSampleHome()) return sampleClaudeSettingsPath();
+  if (env.PALIMPSEST_CLAUDE_SETTINGS) return resolve(env.PALIMPSEST_CLAUDE_SETTINGS);
+  if (resolve(home()) !== resolve(defaultHome())) return null;
+  return join(homedir(), '.claude', 'settings.json');
 }
 
 /** Shell-quotes `s` for embedding as a single-quoted POSIX sh literal. */

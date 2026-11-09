@@ -43,22 +43,25 @@ async function engineCommand(sub) {
 }
 
 async function usageCommand(sub) {
-  switch (sub) {
-    case 'install': {
-      const { installHook } = await import('../engine/usage.ts');
-      installHook();
-      console.log('Usage hook installed into ~/.claude/settings.json.');
-      return;
-    }
-    case 'uninstall': {
-      const { uninstallHook } = await import('../engine/usage.ts');
-      uninstallHook();
-      console.log('Usage hook uninstalled from ~/.claude/settings.json.');
-      return;
-    }
-    default:
-      usage();
-      process.exitCode = 1;
+  if (sub !== 'install' && sub !== 'uninstall') {
+    usage();
+    process.exitCode = 1;
+    return;
+  }
+  const { claudeSettingsTarget, installHook, NO_CLAUDE_SETTINGS, uninstallHook } = await import('../engine/usage.ts');
+  // The same rule as the engine's hook routes: the real settings file only for the default data home.
+  const target = claudeSettingsTarget();
+  if (target === null) {
+    console.error(NO_CLAUDE_SETTINGS);
+    process.exitCode = 1;
+    return;
+  }
+  if (sub === 'install') {
+    installHook(target);
+    console.log(`Usage hook installed into ${target}.`);
+  } else {
+    uninstallHook(target);
+    console.log(`Usage hook uninstalled from ${target}.`);
   }
 }
 
