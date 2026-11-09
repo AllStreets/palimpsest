@@ -1,7 +1,7 @@
 /**
  * End-to-end UI check. Starts its own engine in-process on port 4779 with a
- * temp data home (never the real engine on 4770), seeds a couple of
- * fictional districts, opens the built UI in Chromium and checks that the
+ * temp data home (never the real engine on 4770), seeds the sample city
+ * (tools/sample.ts), opens the built UI in Chromium and checks that the
  * city renders without console errors. Saves screenshots to shots/.
  *
  * The Repos and Settings checks fake every gh/git call in-process (setRunner),
@@ -22,7 +22,8 @@ import { chromium } from 'playwright';
 import type { Page } from 'playwright';
 
 import { layoutTower } from '../shared/tower-layout.js';
-import type { District, Era, Repo, RootStyle, TowerSpec } from '../shared/types.js';
+import type { District, Era, Repo, TowerSpec } from '../shared/types.js';
+import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -36,74 +37,6 @@ let abortingRequests = false;
 function check(ok: boolean, what: string): void {
   console.log(`${ok ? 'ok  ' : 'FAIL'}  ${what}`);
   if (!ok) failures.push(what);
-}
-
-// ---------------------------------------------------------------- seeding
-
-interface SeedRepo {
-  fullName: string;
-  root: RootStyle;
-  slot: number;
-  commits: number;
-}
-
-// Fictional repos only: screenshots must never show his private data.
-// Every root, every era (each history runs stone to sci-fi), Claude floors late in each, and one empty repo.
-const SEED: SeedRepo[] = [
-  { fullName: 'tidewater/harbor-ledger', root: 'beauxarts', slot: 0, commits: 46 },
-  { fullName: 'kestrel/fieldnotes', root: 'chicago', slot: 1, commits: 34 },
-  { fullName: 'lantern/assay-kit', root: 'gothic', slot: 2, commits: 40 },
-  { fullName: 'ferro/quarry', root: 'roman', slot: 3, commits: 28 },
-  { fullName: 'hoshi/kumo', root: 'pagoda', slot: 4, commits: 38 },
-  { fullName: 'alder/blank-slate', root: 'roman', slot: 5, commits: 0 },
-];
-
-async function seed(): Promise<void> {
-  // Imported after PALIMPSEST_HOME is set so the db lands in the temp home.
-  const { openDb } = await import('../engine/db.js');
-  const { foundingFloors } = await import('../engine/history.js');
-  const db = openDb();
-  const start = Date.parse('2025-02-01T09:00:00Z');
-
-  for (const s of SEED) {
-    const commits = Array.from({ length: s.commits }, (_, i) => ({
-      // The index leads, so every short sha (and so every floor id) is distinct.
-      sha: `${s.slot}${i.toString(16).padStart(6, '0')}`.padEnd(40, 'a'),
-      at: new Date(start + i * 26 * 3600_000).toISOString(),
-      author: i % 3 === 0 ? 'Ada' : 'Ben',
-      subject: `Change ${i + 1}`,
-      // Late floors alternate, so every era shot shows Claude and non-Claude floors side by side.
-      body: (i > s.commits * 0.7 && i % 2 === 0) || i % 9 === 4 ? 'Co-Authored-By: Claude <noreply@anthropic.com>' : '',
-      lines: 20 + ((i * 37) % 300),
-    }));
-    const floors = foundingFloors(s.fullName, commits, []);
-    const at = new Date(start + s.slot * 1000).toISOString();
-    const repo: Repo = {
-      fullName: s.fullName,
-      private: false,
-      defaultBranch: 'main',
-      language: 'TypeScript',
-      description: 'fixture',
-      connected: true,
-      pushMode: false,
-      root: s.root,
-      slot: s.slot,
-      status: 'ready',
-      error: null,
-      connectedAt: at,
-      analyzedAt: at,
-    };
-    const tower: TowerSpec = {
-      id: `${s.fullName}#founding`,
-      repo: s.fullName,
-      kind: 'founding',
-      root: s.root,
-      floors,
-      datumIndex: floors.length,
-    };
-    db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(s.fullName, JSON.stringify(repo));
-    db.prepare('INSERT INTO towers (repo, json) VALUES (?, ?)').run(s.fullName, JSON.stringify(tower));
-  }
 }
 
 // ---------------------------------------------------------------- pixels
@@ -305,7 +238,7 @@ async function inspectorChecks(page: Page): Promise<void> {
   // A refresh for another repo must leave keyboard focus in the list: arrows still move the selection.
   const { emit } = await import('../engine/events.js');
   const focusedBefore = await debug(page, (x) => x.highlight);
-  emit('repo.analyzed', { repo: { fullName: SEED[1].fullName } });
+  emit('repo.analyzed', { repo: { fullName: SAMPLE[1].fullName } });
   await page.waitForTimeout(1200);
   const inPanel = await page.evaluate(() => !!document.activeElement?.closest('.inspector'));
   check(inPanel, 'focus stays in the inspector across a refresh for another repo');
@@ -341,7 +274,7 @@ async function siteChecks(page: Page): Promise<void> {
   const { districtOrigin } = await import('../shared/district-layout.js');
   const db = openDb();
   const fullName = 'wren/new-site';
-  const slot = SEED.length;
+  const slot = SAMPLE.length;
   const now = new Date().toISOString();
   const repo: Repo = {
     fullName,
@@ -394,7 +327,7 @@ async function siteChecks(page: Page): Promise<void> {
         const d = (window as unknown as { __palimpsest: { districts: number; sites: number } }).__palimpsest;
         return d.districts === n && d.sites === 0;
       },
-      SEED.length + 1,
+      SAMPLE.length + 1,
       { timeout: 8000 },
     )
     .then(() => true)
@@ -409,51 +342,9 @@ async function siteChecks(page: Page): Promise<void> {
 
 // ---------------------------------------------------------------- a fake GitHub
 
-/** Repos the fake gh can see: the seeded districts plus a few that are not in the city yet. All fictional. */
-const AVAILABLE = [
-  ...SEED.map((s) => ({ fullName: s.fullName, private: false, description: 'A seeded district', language: 'TypeScript' })),
-  { fullName: 'marlow/tidepool-notes', private: false, description: 'Field notes from the tide pools, kept as markdown', language: 'Markdown' },
-  { fullName: 'marlow/locked-vault', private: true, description: 'Private records the CLI cannot read', language: 'Rust' },
-  { fullName: 'orrery/brass-gears', private: true, description: 'Gear trains for a desk orrery', language: 'Python' },
-  { fullName: 'orrery/star-catalogue', private: false, description: null, language: 'Go' },
-  { fullName: 'quill/marginalia', private: false, description: 'Notes in the margins of old manuals', language: 'TypeScript' },
-];
-const UNREADABLE = 'marlow/locked-vault';
-const RS = '\x1e';
-const US = '\x1f';
-
-/** A gh/git stand-in: slow enough that each analysis step is visible, never touching the network. */
-async function fakeGh(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  await new Promise((r) => setTimeout(r, 450));
-  const row = (fullName: string) => {
-    const a = AVAILABLE.find((x) => x.fullName === fullName);
-    return {
-      nameWithOwner: fullName,
-      isPrivate: a?.private ?? false,
-      description: a?.description ?? null,
-      primaryLanguage: a?.language ? { name: a.language } : null,
-      defaultBranchRef: { name: 'main' },
-    };
-  };
-  const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
-  if (cmd === 'gh' && args[0] === 'auth') return ok('');
-  if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'list') return ok(JSON.stringify(AVAILABLE.map((a) => row(a.fullName))));
-  if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') {
-    if (args[2] === UNREADABLE) return { stdout: '', stderr: `GraphQL: Could not resolve to a Repository with the name '${UNREADABLE}'.`, code: 1 };
-    return ok(JSON.stringify(row(args[2])));
-  }
-  if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'clone') return ok('');
-  if (cmd === 'git' && args.includes('log')) {
-    const log = Array.from({ length: 18 }, (_, i) => {
-      const sha = `9${i.toString(16).padStart(6, '0')}`.padEnd(40, 'b');
-      const at = new Date(Date.parse('2025-09-01T10:00:00Z') + i * 40 * 3600_000).toISOString();
-      return `${RS}${sha}${US}${at}${US}Ada${US}Tide note ${i + 1}${US}${US}\n\n${30 + i * 13}\t0\tnotes.md\n`;
-    }).join('');
-    return ok(log);
-  }
-  if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'list') return ok('[]');
-  throw new Error(`fakeGh: unexpected command ${cmd} ${args.join(' ')}`);
-}
+/** Repos the fake gh can see: the sample districts plus a few that are not in the city yet. All fictional. */
+const AVAILABLE = [...SAMPLE.map((s) => ({ fullName: s.fullName })), ...SAMPLE_OTHERS];
+const UNREADABLE = SAMPLE_UNREADABLE;
 
 // ---------------------------------------------------------------- repos
 
@@ -565,7 +456,7 @@ async function reposChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'repos-focus.png') });
 
   // Root style: pick another root, the tower is restyled.
-  const target = SEED[0].fullName;
+  const target = SAMPLE[0].fullName;
   await page.locator(`${rowSel(target)} [role="radio"][data-root="pagoda"]`).click();
   const restyled = await page
     .waitForFunction(
@@ -603,7 +494,7 @@ async function reposChecks(page: Page): Promise<void> {
 
 /** Disconnecting a repo while the inspector is open on it closes the inspector and removes the district. */
 async function disconnectWhileInspecting(page: Page): Promise<void> {
-  const target = SEED[2].fullName;
+  const target = SAMPLE[2].fullName;
   await page.evaluate((t) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(t), target);
   const open = await page.waitForSelector('.inspector.open', { timeout: 3000 }).then(() => true).catch(() => false);
   check(open, 'the inspector opens on the repo about to be disconnected');
@@ -748,9 +639,10 @@ async function main(): Promise<void> {
   writeFileSync(claudeSettingsPath, '{}\n');
   mkdirSync(SHOTS, { recursive: true });
 
-  await seed();
+  await seedSample();
   const { setRunner } = await import('../engine/exec.js');
-  setRunner(fakeGh);
+  // Slow enough that each analysis step is visible, and never the network.
+  setRunner(sampleGh(450));
   const { startServer } = await import('../engine/server.js');
   const server = await startServer({ port: PORT, claudeSettingsPath });
 
@@ -791,7 +683,7 @@ async function main(): Promise<void> {
     const districts = await page.evaluate(
       () => (window as unknown as { __palimpsest?: { districts: number } }).__palimpsest?.districts ?? -1,
     );
-    check(districts === SEED.length, `city shows ${SEED.length} districts (got ${districts})`);
+    check(districts === SAMPLE.length, `city shows ${SAMPLE.length} districts (got ${districts})`);
 
     await page.screenshot({ path: join(SHOTS, 'city-overview.png') });
 
@@ -832,7 +724,7 @@ async function main(): Promise<void> {
       const pick = await page.evaluate(
         () => (window as unknown as { __palimpsest: { lastPick: { repo: string } | null } }).__palimpsest.lastPick,
       );
-      check(pick?.repo === SEED[0].fullName, `clicking a plinth picks its district (got ${pick?.repo ?? 'nothing'})`);
+      check(pick?.repo === SAMPLE[0].fullName, `clicking a plinth picks its district (got ${pick?.repo ?? 'nothing'})`);
 
       await measureFps(page);
       await inspectorChecks(page);
