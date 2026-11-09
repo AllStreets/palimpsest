@@ -34,15 +34,20 @@ fn repo() -> PathBuf {
 }
 
 /// True when the engine answers its health check, not merely when something holds the port.
+/// The check blocks for up to 800ms, so it runs off the main thread, which keeps the window live.
 #[tauri::command]
-fn engine_healthy() -> bool {
-    ureq::get(&format!("{}api/health", base()))
-        .timeout(Duration::from_millis(800))
-        .call()
-        .ok()
-        .and_then(|r| r.into_string().ok())
-        .map(|body| body.contains("\"ok\":true"))
-        .unwrap_or(false)
+async fn engine_healthy() -> bool {
+    tauri::async_runtime::spawn_blocking(|| {
+        ureq::get(&format!("{}api/health", base()))
+            .timeout(Duration::from_millis(800))
+            .call()
+            .ok()
+            .and_then(|r| r.into_string().ok())
+            .map(|body| body.contains("\"ok\":true"))
+            .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Swaps the splash for the city.
@@ -89,14 +94,27 @@ fn says_not_permitted(text: &str) -> bool {
     text.lines().any(|line| line.contains("EPERM") && !line.to_lowercase().contains("launchctl"))
 }
 
+/// `s` as one word for the shell: as it is when every character is plain, otherwise in single
+/// quotes, so spaces, quotes and characters like `$` or `;` reach node as part of the path.
+fn sh_quote(s: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "/._-+,@%:".contains(c);
+    if !s.is_empty() && s.chars().all(plain) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
 /// The line a person can paste into Terminal to start the engine by hand, from any folder.
-/// A repo under the home folder is written with `~`, which Terminal expands, to keep it short.
+/// A repo under the home folder is written with `~`, which Terminal expands, to keep it short;
+/// the `~/` stays outside any quotes so it still expands.
 fn by_hand_command(repo: &Path, home: &Path) -> String {
-    let at = match repo.strip_prefix(home) {
-        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
-        _ => repo.display().to_string(),
+    let script = repo.join("bin").join("palimpsest.mjs");
+    let at = match script.strip_prefix(home) {
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", sh_quote(&rest.display().to_string())),
+        _ => sh_quote(&script.display().to_string()),
     };
-    format!("node {at}/bin/palimpsest.mjs engine install")
+    format!("node {at} engine install")
 }
 
 /// The by-hand start command with this Mac's repo path, for the splash's ledger.
@@ -271,6 +289,31 @@ mod tests {
         assert_eq!(
             by_hand_command(Path::new("/Users/c/code/palimpsest"), Path::new("")),
             "node /Users/c/code/palimpsest/bin/palimpsest.mjs engine install"
+        );
+    }
+
+    #[test]
+    fn the_by_hand_command_quotes_a_path_the_shell_would_split_or_read() {
+        let home = Path::new("/Users/c");
+        assert_eq!(
+            by_hand_command(Path::new("/Users/c/My Code/palimpsest"), home),
+            "node ~/'My Code/palimpsest/bin/palimpsest.mjs' engine install"
+        );
+        assert_eq!(
+            by_hand_command(Path::new("/Volumes/Work Disk/palimpsest"), home),
+            "node '/Volumes/Work Disk/palimpsest/bin/palimpsest.mjs' engine install"
+        );
+        assert_eq!(
+            by_hand_command(Path::new("/Users/c/Connor's/palimpsest"), home),
+            "node ~/'Connor'\\''s/palimpsest/bin/palimpsest.mjs' engine install"
+        );
+        assert_eq!(
+            by_hand_command(Path::new("/Users/c/a$b;c/palimpsest"), home),
+            "node ~/'a$b;c/palimpsest/bin/palimpsest.mjs' engine install"
+        );
+        assert_eq!(
+            by_hand_command(Path::new("/Users/c/code (old)/palimpsest"), Path::new("")),
+            "node '/Users/c/code (old)/palimpsest/bin/palimpsest.mjs' engine install"
         );
     }
 
