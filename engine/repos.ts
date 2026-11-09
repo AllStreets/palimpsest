@@ -150,10 +150,14 @@ function nextSlot(): number {
   return repos.reduce((max, r) => (Number.isFinite(r.slot) ? Math.max(max, r.slot) : max), -1) + 1;
 }
 
+/** Analyses running in this process, by repo. A second call for a repo joins the one already running. */
+const running = new Map<string, Promise<void>>();
+
 /**
  * Stores `fullName` as connected and starts analysis without awaiting it.
- * A repo already analyzing (its first connect still in flight) is returned
- * unchanged, without starting a second analysis. Otherwise (new repo, or
+ * A repo whose analysis is running in this process is returned unchanged,
+ * without starting a second analysis. A row stored as 'analyzing' with no
+ * analysis running here (the engine stopped part way) is analyzed afresh. Otherwise (new repo, or
  * reconnecting a previously disconnected one) a fresh analysis starts,
  * refreshing its tower. A new repo is assigned the next unused slot; a
  * reconnecting repo keeps the slot it already had.
@@ -161,7 +165,7 @@ function nextSlot(): number {
 export async function connect(fullName: string): Promise<Repo> {
   if (!isValidFullName(fullName)) throw new Error(BAD_NAME);
   const existing = loadRepo(fullName);
-  if (existing && existing.status === 'analyzing') {
+  if (existing && existing.status === 'analyzing' && running.has(fullName)) {
     // The analysis already running serves this connect too; only the toggle
     // needs restoring when it was turned off meanwhile (on, off, on).
     if (existing.connected) return existing;
@@ -206,9 +210,25 @@ export async function connect(fullName: string): Promise<Repo> {
  * Reads `fullName`'s metadata and history and builds its founding tower.
  * Emits `repo.analyzing` at each step, `repo.analyzed` on success, and
  * `repo.error` on failure (status set to 'error' with a readable message).
- * Safe to run concurrently for different repos.
+ * Safe to run concurrently for different repos; a call for a repo already
+ * being analyzed returns that analysis rather than starting another.
  */
-export async function analyze(fullName: string): Promise<void> {
+export function analyze(fullName: string): Promise<void> {
+  const inFlight = running.get(fullName);
+  if (inFlight) return inFlight;
+  const run: Promise<void> = runAnalysis(fullName).finally(() => {
+    if (running.get(fullName) === run) running.delete(fullName);
+  });
+  running.set(fullName, run);
+  return run;
+}
+
+/** Marks `fullName`'s analysis finished, before its last event goes out, so a connect that event prompts starts afresh. */
+function settled(fullName: string): void {
+  running.delete(fullName);
+}
+
+async function runAnalysis(fullName: string): Promise<void> {
   try {
     let repo = loadRepo(fullName);
     if (!repo) {
@@ -242,6 +262,7 @@ export async function analyze(fullName: string): Promise<void> {
     saveTower(tower);
 
     repo = saveRepo({ ...(loadRepo(fullName) ?? repo), status: 'ready', error: null, analyzedAt: new Date().toISOString() });
+    settled(fullName);
     emit('repo.analyzed', { repo });
     record('repo.analyzed', { repo: fullName, floors: floors.length });
   } catch (err) {
@@ -251,6 +272,7 @@ export async function analyze(fullName: string): Promise<void> {
     // that escape would leave the repo stuck at 'analyzing' forever and
     // reject analyze()'s own promise, which is called without awaiting it.
     try {
+      settled(fullName);
       const repo = loadRepo(fullName);
       if (repo) {
         const updated = saveRepo({ ...repo, status: 'error', error: message });
@@ -315,4 +337,21 @@ export function city(): District[] {
   }
 
   return districts;
+}
+
+/** What a repo left analyzing by an engine that stopped (crash, restart, reinstall, reboot) says. */
+export const INTERRUPTED = 'The engine stopped during analysis. Retry to analyze it again.';
+
+/**
+ * Run once as the engine starts: any repo still stored as 'analyzing' whose
+ * analysis is not running in this process was cut off when the last engine
+ * stopped. It becomes an error with a Retry, never an analysis that never ends.
+ */
+export function failInterruptedAnalyses(): void {
+  for (const repo of listRepos()) {
+    if (repo.status !== 'analyzing' || running.has(repo.fullName)) continue;
+    const updated = saveRepo({ ...repo, status: 'error', error: INTERRUPTED });
+    record('repo.error', { repo: repo.fullName, error: INTERRUPTED });
+    emit('repo.error', { repo: updated, error: INTERRUPTED });
+  }
 }

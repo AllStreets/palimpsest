@@ -1,9 +1,12 @@
 import { existsSync } from 'node:fs';
 
 import { paths } from './home.js';
+import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
 
 async function main(): Promise<void> {
+  // An analysis the last engine was running when it stopped can never finish: say so, with a Retry.
+  failInterruptedAnalyses();
   const { close, port } = await startServer();
   const stopped = existsSync(paths().stop);
   // eslint-disable-next-line no-console

@@ -9,9 +9,9 @@ import { openDb } from '../engine/db.js';
 import { subscribe } from '../engine/events.js';
 import { realRunner, setRunner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
-import { city, connect, disconnect, listRepos, patchRepo, pickRoot } from '../engine/repos.js';
+import { analyze, city, connect, disconnect, failInterruptedAnalyses, listRepos, patchRepo, pickRoot } from '../engine/repos.js';
 import type { Event } from '../engine/events.js';
-import type { District } from '../shared/types.js';
+import type { District, Repo } from '../shared/types.js';
 
 let tempDir: string;
 let previousHome: string | undefined;
@@ -530,4 +530,107 @@ test('connect refuses a malformed owner/name without storing a row or calling gh
   }
   assert.deepEqual(listRepos(), []);
   assert.equal(calls, 0);
+});
+
+/** A repo row as an engine that died mid-analysis left it: status 'analyzing', with nothing running in this process. */
+function storeOrphanedAnalyzing(fullName: string): void {
+  const repo: Repo = {
+    fullName,
+    private: false,
+    defaultBranch: 'main',
+    language: null,
+    description: null,
+    connected: true,
+    pushMode: false,
+    root: pickRoot(fullName),
+    slot: 0,
+    status: 'analyzing',
+    error: null,
+    connectedAt: '2026-11-01T10:00:00.000Z',
+    analyzedAt: null,
+  };
+  openDb().prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(fullName, JSON.stringify(repo));
+}
+
+test('on start, a repo the last engine left analyzing becomes an error the Repos screen can retry', () => {
+  storeOrphanedAnalyzing('acme/widgets');
+  storeOrphanedAnalyzing('acme/gadgets');
+
+  failInterruptedAnalyses();
+
+  for (const r of listRepos()) {
+    assert.equal(r.status, 'error', r.fullName);
+    assert.equal(r.error, 'The engine stopped during analysis. Retry to analyze it again.');
+    assert.equal(r.connected, true);
+  }
+});
+
+test('on start, an analysis running in this process is left alone', async () => {
+  const fullName = 'acme/widgets';
+  let release: () => void = () => {};
+  setRunner(gatedRunner(fullName, new Promise<void>((r) => (release = r))));
+  await connect(fullName);
+
+  failInterruptedAnalyses();
+  assert.equal(listRepos()[0].status, 'analyzing');
+
+  const analyzed = waitForEvent('repo.analyzed');
+  release();
+  await analyzed;
+  assert.equal(listRepos()[0].status, 'ready');
+});
+
+test('connect on a repo left analyzing by a stopped engine starts a fresh analysis', async () => {
+  const fullName = 'acme/widgets';
+  storeOrphanedAnalyzing(fullName);
+  let views = 0;
+  const fixture = fixtureRunner(fullName, []);
+  setRunner(async (cmd, args) => {
+    if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') views += 1;
+    return fixture(cmd, args);
+  });
+
+  const analyzed = waitForEvent('repo.analyzed');
+  const returned = await connect(fullName);
+  assert.equal(returned.status, 'analyzing');
+  await analyzed;
+  assert.equal(views, 1, 'a fresh analysis ran');
+  assert.equal(listRepos()[0].status, 'ready');
+  assert.equal(city().length, 1);
+});
+
+test('overlapping connects and analyze calls on one repo run a single analysis', async () => {
+  const fullName = 'acme/widgets';
+  let views = 0;
+  let release: () => void = () => {};
+  const gated = gatedRunner(fullName, new Promise<void>((r) => (release = r)));
+  setRunner(async (cmd, args) => {
+    if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') views += 1;
+    return gated(cmd, args);
+  });
+  let analyzedEvents = 0;
+  const unsubscribe = subscribe((e) => {
+    if (e.type === 'repo.analyzed') analyzedEvents += 1;
+  });
+
+  await connect(fullName);
+  const second = analyze(fullName);
+  const third = analyze(fullName);
+  await connect(fullName);
+  assert.equal(views, 1, 'only the first analysis reached gh');
+
+  release();
+  await Promise.all([second, third]);
+  await new Promise((r) => setTimeout(r, 20));
+  unsubscribe();
+  assert.equal(views, 1);
+  assert.equal(analyzedEvents, 1);
+  assert.equal(listRepos()[0].status, 'ready');
+
+  // Once it has finished, the next connect analyzes afresh.
+  const again = waitForEvent('repo.analyzed');
+  disconnect(fullName);
+  await connect(fullName);
+  await again;
+  assert.equal(views, 2);
 });
