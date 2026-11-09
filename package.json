@@ -8,11 +8,11 @@
   },
   "scripts": {
     "test": "node --no-warnings --import tsx --test 'test/**/*.test.ts'",
-    "typecheck": "tsc --noEmit -p .",
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p app",
     "engine": "tsx engine/main.ts",
     "dev": "concurrently -k \"tsx watch engine/main.ts\" \"vite\"",
     "build": "vite build",
-    "ui-test": "tsx tools/ui-test.ts",
+    "ui-test": "node --no-warnings --import tsx tools/ui-test.ts",
     "app": "vite build && tauri build"
   },
   "dependencies": {

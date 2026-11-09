@@ -1,0 +1,17 @@
+# Credits
+
+## Textures
+
+Scanned PBR textures from [Poly Haven](https://polyhaven.com), all CC0 (public domain). Each set is the 2k JPG with colour (`_diff`), normal (`_nor`) and packed ambient occlusion, roughness and metalness (`_arm`) maps, in `app/public/textures/`.
+
+| Files | Texture | Author | License | Used for |
+|---|---|---|---|---|
+| `sand_*` | [Sandstone Blocks 08](https://polyhaven.com/a/sandstone_blocks_08) | Poly Haven | CC0 | District plinths; classical tower roots |
+| `brick_*` | [Red Brick 03](https://polyhaven.com/a/red_brick_03) | Poly Haven | CC0 | Brick-era floors |
+| `metal_*` | [Metal Plate](https://polyhaven.com/a/metal_plate) | Poly Haven | CC0 | Brushed steel |
+| `pave_*` | [Precast Stone Paving](https://polyhaven.com/a/precast_stone_paving) | Poly Haven | CC0 | Pavements, plazas and the ground |
+| `rust_*` | [Rusty Metal 02](https://polyhaven.com/a/rusty_metal_02) | Poly Haven | CC0 | Primer on steel frames and scar floors |
+
+## Own work
+
+The sky, fog, facade windows, street grid, lamps and skyline are procedural, written for Palimpsest.
