@@ -8,7 +8,6 @@
 
 <p align="center">
   <img alt="phase 1" src="https://img.shields.io/badge/phase_1-standing_city-b98a5e?style=flat-square&labelColor=17130f" />
-  <img alt="tests" src="https://img.shields.io/badge/tests-102_passing-55697a?style=flat-square&labelColor=17130f" />
   <img alt="three.js" src="https://img.shields.io/badge/three.js-r187-6e6457?style=flat-square&labelColor=17130f" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-6e6457?style=flat-square&labelColor=17130f" />
   <img alt="engine" src="https://img.shields.io/badge/engine-Node_22_%C2%B7_SQLite-6e6457?style=flat-square&labelColor=17130f" />
@@ -16,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/hero.webp" alt="The sample city at dusk from above the rooftops. A low sun sits soft in the haze on the left. Four founding towers rise out of the ambient blocks, stone and brick at the bottom, glass and titanium higher up, and the tallest stands on the right with its crown against a violet sky." width="100%" />
+  <img src="docs/media/hero.webp" alt="The sample city at dusk from above the rooftops. A low sun sits soft in the haze on the left. Four founding towers rise from their lit plazas over the low blocks around them: a Gothic root, a pagoda base, a Chicago limestone base and a Beaux-Arts colonnade, then stone and brick floors, glass and titanium higher up, and the tallest stands on the right with its crown against a violet sky." width="100%" />
 </p>
 
 <p align="center">
@@ -29,7 +28,7 @@
 <p align="center">
   <a href="docs/media/rise.mp4"><picture>
     <source type="image/avif" srcset="docs/media/rise.avif" />
-    <img src="docs/media/rise.gif" alt="The camera rises up the tallest tower while circling it slowly: past its Beaux-Arts root, up through stone and brick floors, glass and titanium, and stops at the band at the very top." width="100%" />
+    <img src="docs/media/rise.gif" alt="The camera rises up the tallest tower while circling it slowly: past its Beaux-Arts root, up through stone and brick floors, glass and titanium, and stops at the bronze band at the very top." width="100%" />
   </picture></a>
 </p>
 
@@ -41,9 +40,9 @@ I work across a lot of repos, and their history is mostly invisible. A commit lo
 
 Palimpsest turns that history into a city. Each repo you connect becomes a district, and its history becomes a tower you can read from the street. The oldest work is at the bottom and the newest is at the top. Later, AI agent firms will bid on real issues from those same repos and open a pull request once their work passes inspection. Every change they land will raise a floor.
 
-A palimpsest is a manuscript that was scraped and written over for centuries, with every layer still readable. That's what each tower is.
+A palimpsest is a manuscript that was scraped and written over for centuries, with every layer still readable. I wanted each tower to work the same way.
 
-Everything in these pictures is the real app, rendered by its own engine. The repos in them are a sample city I made up for the purpose. None of them are mine.
+Everything in these pictures is the real app, rendered by its own engine. The repos in them are a sample city I made up for the purpose.
 
 ## Reading a tower
 
@@ -59,9 +58,9 @@ The floors are built in eras taken from the repo's own timeline. Its first month
 
 The roots are modelled in code for Palimpsest. The Gothic one has its own pinnacles, buttresses, lancets and a rose window with real stained glass.
 
-<img src="docs/media/datum.webp" alt="The top of the tallest tower against the sky: glass floors banded with thin lines of light, a stacked steel crown, and a thin band at the very top, with the city in haze far below." />
+<img src="docs/media/datum.webp" alt="The top of the tallest tower against the sky: glass floors banded with thin lines of light, a stacked steel crown, and a polished bronze band round the very top, with the city in haze far below." />
 
-The band at the very top is the datum line. It marks the height where the repo joined the city. Everything below it is founding history, built from real commits the moment the repo was connected, so a new city never starts at ground level. Everything above it will be floors earned in the market. Today every tower ends at its datum line, because the market isn't built yet.
+The bronze band at the very top is the datum line. It marks the height where the repo joined the city. Everything below it is founding history, built from real commits the moment the repo was connected, so a new city never starts at ground level. Everything above it will be floors earned in the market. Today every tower ends at its datum line, because the market isn't built yet.
 
 ## Using it
 
@@ -83,19 +82,19 @@ Settings shows your Claude plan usage from the statusline hook and the caps the 
 
 ## Where it stands
 
-I'm building it in five phases. Phase 1, the standing city, is done, on the `phase-1` branch.
+I'm building it in five phases. Phase 1, the standing city, is done.
 
 What works in Phase 1:
 
 - A local engine that runs as a launchd agent on `127.0.0.1:4770`, with its own SQLite store and an append-only ledger.
 - Connecting repos through the GitHub CLI, each one switched on separately, with a bare mirror of its history.
 - Founding towers built from that history, with floors, eras, the Claude marks and the datum line.
-- The city itself in three.js. A dusk sky lights every reflection, the fog matches the horizon, and the street grid and ambient skyline surround the five roots and the five floor eras.
+- The city itself in three.js. A dusk sky lights every reflection and the fog matches the horizon. The five roots and the five floor eras stand on lit plazas in a street grid, and the blocks around each plaza stay below its root so the root can be seen.
 - The inspector, the Repos screen and the Settings screen.
 - Reading live Claude plan usage through a statusline hook, so the city can later spend only a share of it.
 - A native Mac app, built with Tauri, in `src-tauri/`. It opens on a splash while it looks for the engine. If the engine isn't running, it offers to start it. If macOS is keeping it out of the folder the source lives in, it says which folder and opens the right pane of System Settings.
 
-There are 102 unit tests, 92 for the engine and 10 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample.
+There are 110 unit tests, 100 for the engine and the city and 10 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample.
 
 Designed, and not built yet:
 
@@ -133,13 +132,15 @@ node bin/palimpsest.mjs usage install
 
 Your data lives in `~/Library/Application Support/Palimpsest`. Set `PALIMPSEST_HOME` to put it somewhere else.
 
-To look around without connecting anything of yours, write the sample city into a folder of its own. Then, with your own engine stopped, run an engine on that folder in the foreground:
+To look around without connecting anything of yours, write the sample city into a folder of its own. Then run a second engine on that folder, on its own port, beside the one you installed:
 
 ```sh
 npx tsx tools/sample.ts /tmp/palimpsest-sample
 npm run build
-PALIMPSEST_HOME=/tmp/palimpsest-sample npm run engine
+PALIMPSEST_HOME=/tmp/palimpsest-sample PALIMPSEST_PORT=4790 npm run engine
 ```
+
+The sample city is then at http://127.0.0.1:4790. Ctrl+C stops that engine and leaves yours running.
 
 ## Privacy
 
@@ -149,7 +150,7 @@ The only network calls it makes are `gh` and `git` calls to GitHub, for the repo
 
 It never reads your Claude credentials and never offers a Claude login. Plan usage comes from a statusline hook you install yourself. Claude Code already passes your five-hour and seven-day usage to statusline scripts, and the hook writes those two numbers to Palimpsest's data folder. If you already had a statusline script, the hook keeps a backup of your settings and runs your script as before. Removing the hook puts your settings back exactly as they were.
 
-When the market is built, agents will run through your own installed Claude Code, or an API key you add, and never through anyone else's subscription.
+When the market is built, agents will run through your own installed Claude Code or an API key you add. They use your own subscription.
 
 ## How the pictures were made
 

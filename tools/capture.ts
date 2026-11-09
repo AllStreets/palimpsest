@@ -140,7 +140,8 @@ async function still(page: Page, name: string, eye: V3, target: V3): Promise<voi
 /**
  * Screenshots the page at 2x and writes the WebP the README shows. Only the
  * hero keeps its full-size PNG as well (for the profile and the release
- * page); the other PNGs are removed once their WebP is written.
+ * page); the other PNGs are removed once their WebP is written, unless
+ * CAPTURE_OUT sends the shots somewhere else for review.
  */
 async function save(page: Page, name: string, quality: number): Promise<void> {
   const path = join(MEDIA, `${name}.png`);
@@ -148,7 +149,7 @@ async function save(page: Page, name: string, quality: number): Promise<void> {
   await page.screenshot({ path });
   execFileSync('cwebp', ['-q', String(quality), '-m', '6', path, '-o', webp], { stdio: 'ignore' });
   console.log(`  ${name}.png ${mb(path)}, .webp ${mb(webp)}`);
-  if (name !== 'hero' && !name.startsWith('probe')) rmSync(path);
+  if (name !== 'hero' && !name.startsWith('probe') && !process.env.CAPTURE_OUT) rmSync(path);
 }
 
 // ---------------------------------------------------------------- shots
@@ -233,8 +234,18 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await page.waitForSelector('.inspector.open', { timeout: 5000 });
       await page.waitForTimeout(2500);
       const rows = await page.locator('.insp-floor').count();
-      await page.locator('.insp-floor').nth(Math.floor(rows * 0.22)).click();
+      const row = page.locator('.insp-floor').nth(Math.floor(rows * 0.3));
+      await row.click();
       await page.waitForTimeout(3000);
+      // Scroll the list so it starts on the era heading above the chosen floor, never on a half-cut row.
+      await row.evaluate((r) => {
+        let head = r.previousElementSibling;
+        while (head && !head.classList.contains('insp-era')) head = head.previousElementSibling;
+        let box = r.parentElement;
+        while (box && !(box.scrollHeight > box.clientHeight && /auto|scroll/.test(getComputedStyle(box).overflowY))) box = box.parentElement;
+        if (head && box) box.scrollTop += head.getBoundingClientRect().top - box.getBoundingClientRect().top;
+      });
+      await page.waitForTimeout(400);
       await shoot(page, 'inspector');
       await page.keyboard.press('Escape');
       await page.waitForTimeout(800);
@@ -301,8 +312,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
 
 /** Framings tuned by eye in the quality rounds (see the probe shot). */
 const HERO: { eye: V3; target: V3 } = { eye: [700, 70, 700], target: [0, 170, 80] };
-const OVERVIEW: { eye: V3; target: V3 } = { eye: [760, 150, 700], target: [40, 130, -40] };
-const SCREENS: { eye: V3; target: V3 } = { eye: [-760, 70, 560], target: [-300, 150, 40] };
+const OVERVIEW: { eye: V3; target: V3 } = { eye: [540, 380, 960], target: [-40, 70, 0] };
+const SCREENS: { eye: V3; target: V3 } = { eye: [-700, 90, 520], target: [160, 150, -200] };
 const FLY = { cx: 0, cz: 80, a0: 0.42, a1: 1.12, r0: 980, r1: 840, y0: 110, y1: 72, ty0: 175, ty1: 160 };
 
 // ---------------------------------------------------------------- main
