@@ -1,4 +1,5 @@
-import { chmodSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,6 +44,21 @@ function hookScriptPath(): string {
 /** The exact statusLine.command value installHook writes; used to detect our own hook. */
 function hookCommand(): string {
   return `sh ${shQuote(hookScriptPath())}`;
+}
+
+/** Where installHook keeps the SHA-256 of the settings file exactly as it wrote it. */
+function writtenHashPath(): string {
+  return join(paths().usage, 'settings.json.written.sha256');
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/** True when the settings text is still exactly what installHook last wrote: nothing else has changed it since. */
+function unchangedSinceInstall(raw: string): boolean {
+  const hashPath = writtenHashPath();
+  return existsSync(hashPath) && readFileSync(hashPath, 'utf8').trim() === sha256(raw);
 }
 
 /** Reads `settings.statusLine`, whatever shape it is, or undefined if absent. */
@@ -139,8 +155,10 @@ export function hookScript(previousCommand: string | null): string {
  * state and overwrite the real original. Otherwise it backs the file up
  * byte for byte to `<usage>/settings.json.bak`, saves the current
  * `statusLine` value as `Settings.previousStatusLine`, and writes a script
- * chained to it. Either way it points `statusLine` at the script and
- * records `usage.hook.installed`.
+ * chained to it. Either way it points `statusLine` at the script (keeping
+ * the previous statusline's other keys, such as padding), records the
+ * SHA-256 of the file as written so uninstall can tell whether anything has
+ * changed it since, and records `usage.hook.installed`.
  */
 export function installHook(claudeSettingsPath: string = join(homedir(), '.claude', 'settings.json')): void {
   const usageDir = paths().usage;
@@ -152,6 +170,9 @@ export function installHook(claudeSettingsPath: string = join(homedir(), '.claud
   const parsed: unknown = JSON.parse(raw.trim() === '' ? '{}' : raw);
   const currentStatusLine = readStatusLine(parsed);
   const alreadyOurs = currentStatusLine?.type === 'command' && currentStatusLine.command === ourCommand;
+  // A reinstall over a file someone has changed since the first install must not
+  // vouch for those changes as ours: the backup would then undo them on uninstall.
+  const ownWrite = !alreadyOurs || unchangedSinceInstall(raw);
 
   let previousCommand: string | null;
 
@@ -171,18 +192,24 @@ export function installHook(claudeSettingsPath: string = join(homedir(), '.claud
   chmodSync(scriptPath, 0o755);
 
   const base = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  const updated = { ...base, statusLine: { type: 'command', command: ourCommand } };
-  writeFileSync(claudeSettingsPath, JSON.stringify(updated, null, 2));
+  // Keep whatever else the statusline had (padding, say); only what runs changes.
+  const kept = currentStatusLine && typeof currentStatusLine === 'object' ? currentStatusLine : {};
+  const updated = { ...base, statusLine: { ...kept, type: 'command', command: ourCommand } };
+  const written = JSON.stringify(updated, null, 2);
+  writeFileSync(claudeSettingsPath, written);
+  if (ownWrite) writeFileSync(writtenHashPath(), `${sha256(written)}\n`);
+  else rmSync(writtenHashPath(), { force: true });
 
   patchSettings({ hookInstalled: true });
   record('usage.hook.installed', { claudeSettingsPath });
 }
 
 /**
- * Uninstalls the usage hook: if the settings file's current `statusLine` is
- * still ours, restores the backup byte for byte; otherwise (something else
- * changed `statusLine` since install) only resets `statusLine` to the saved
- * previous value, leaving the rest of the file untouched.
+ * Uninstalls the usage hook. When the settings file is still exactly what
+ * installHook wrote (its hash matches), restores the backup byte for byte.
+ * Otherwise something has changed the file since install, so only
+ * `statusLine` goes back to the saved previous value (removed when there was
+ * none) and every other change made since install is kept.
  *
  * A no-op (the file is never read or written) unless `Settings.hookInstalled`
  * is true or the file's current `statusLine` already points at our hook:
@@ -204,7 +231,7 @@ export function uninstallHook(claudeSettingsPath: string = join(homedir(), '.cla
     return;
   }
 
-  if (stillOurs && existsSync(backupPath)) {
+  if (stillOurs && existsSync(backupPath) && unchangedSinceInstall(raw)) {
     copyFileSync(backupPath, claudeSettingsPath);
   } else {
     const previous = getSettings().previousStatusLine as StatusLineValue | null;
@@ -218,6 +245,7 @@ export function uninstallHook(claudeSettingsPath: string = join(homedir(), '.cla
     writeFileSync(claudeSettingsPath, JSON.stringify(updated, null, 2));
   }
 
+  rmSync(writtenHashPath(), { force: true });
   patchSettings({ hookInstalled: false });
 }
 

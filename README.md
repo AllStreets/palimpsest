@@ -148,7 +148,7 @@ Palimpsest runs entirely on your Mac. There's no account to make.
 
 The only network calls it makes are `gh` and `git` calls to GitHub, for the repos you connect. Nothing is connected by default.
 
-It never reads your Claude credentials and never offers a Claude login. Plan usage comes from a statusline hook you install yourself. Claude Code already passes your five-hour and seven-day usage to statusline scripts, and the hook writes those two numbers to Palimpsest's data folder. If you already had a statusline script, the hook keeps a backup of your settings and runs your script as before. Removing the hook puts your settings back exactly as they were.
+It never reads your Claude credentials and never offers a Claude login. Plan usage comes from a statusline hook you install yourself. Claude Code already passes your five-hour and seven-day usage to statusline scripts, and the hook writes those two numbers to Palimpsest's data folder. If you already had a statusline script, the hook keeps a backup of your settings and runs your script as before. Removing the hook puts your settings back exactly as they were. If your settings changed while the hook was in, removing it only puts your old statusline back and keeps the other changes.
 
 When the market is built, agents will run through your own installed Claude Code or an API key you add. They use your own subscription.
 

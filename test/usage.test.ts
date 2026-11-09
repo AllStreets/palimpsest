@@ -235,3 +235,67 @@ test('stale after five hours', () => {
   assert.equal(isStale(old, now), true);
   assert.equal(isStale(boundary, now), false);
 });
+
+test('uninstall keeps a change made to another key since install, and puts only the statusline back', () => {
+  const settingsPath = join(tempDir, 'claude-settings.json');
+  const original =
+    JSON.stringify({ theme: 'dark', statusLine: { type: 'command', command: 'bash original.sh', padding: 2 } }, null, 2) + '\n';
+  writeFileSync(settingsPath, original);
+
+  installHook(settingsPath);
+
+  // Claude Code (or the person) changes something unrelated while the hook is installed.
+  const installed = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+  writeFileSync(settingsPath, JSON.stringify({ ...installed, model: 'opus', theme: 'light' }, null, 2));
+
+  uninstallHook(settingsPath);
+
+  const after = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+  assert.equal(after.model, 'opus', 'a key added since install survives');
+  assert.equal(after.theme, 'light', 'a key changed since install keeps its new value');
+  assert.deepEqual(after.statusLine, { type: 'command', command: 'bash original.sh', padding: 2 });
+  assert.equal(getSettings().hookInstalled, false);
+});
+
+test('uninstall after a change since install removes the statusline when there was none before', () => {
+  const settingsPath = join(tempDir, 'claude-settings.json');
+  writeFileSync(settingsPath, JSON.stringify({ theme: 'dark' }, null, 2));
+
+  installHook(settingsPath);
+  const installed = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+  writeFileSync(settingsPath, JSON.stringify({ ...installed, model: 'opus' }, null, 2));
+
+  uninstallHook(settingsPath);
+
+  const after = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+  assert.deepEqual(after, { theme: 'dark', model: 'opus' });
+});
+
+test('while installed, the hook keeps the previous statusline settings other than its command', () => {
+  const settingsPath = join(tempDir, 'claude-settings.json');
+  writeFileSync(settingsPath, JSON.stringify({ statusLine: { type: 'command', command: 'bash original.sh', padding: 0 } }));
+
+  installHook(settingsPath);
+  installHook(settingsPath);
+
+  const statusLine = (JSON.parse(readFileSync(settingsPath, 'utf8')) as { statusLine: Record<string, unknown> }).statusLine;
+  assert.equal(statusLine.type, 'command');
+  assert.match(String(statusLine.command), /^sh '.*statusline\.sh'$/);
+  assert.equal(statusLine.padding, 0);
+});
+
+test('reinstalling over a file changed since install does not let uninstall undo that change', () => {
+  const settingsPath = join(tempDir, 'claude-settings.json');
+  writeFileSync(settingsPath, JSON.stringify({ statusLine: { type: 'command', command: 'bash original.sh' } }, null, 2));
+
+  installHook(settingsPath);
+  const installed = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+  writeFileSync(settingsPath, JSON.stringify({ ...installed, model: 'opus' }, null, 2));
+  installHook(settingsPath);
+
+  uninstallHook(settingsPath);
+
+  const after = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+  assert.equal(after.model, 'opus');
+  assert.deepEqual(after.statusLine, { type: 'command', command: 'bash original.sh' });
+});
