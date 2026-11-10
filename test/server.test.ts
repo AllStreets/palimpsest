@@ -7,6 +7,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 
 import { realRunner, setRunner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
+import { resetBudget, sseClientCount } from '../engine/market/budget.js';
 import { SAMPLE_MARKER } from '../engine/sample.js';
 import { enginePort, startServer } from '../engine/server.js';
 import type { StartedServer } from '../engine/server.js';
@@ -267,6 +268,28 @@ test('SSE delivers repo.analyzed', async () => {
 
     await reader.cancel();
   });
+});
+
+test('SSE connects and disconnects update sseClientCount', async () => {
+  resetBudget();
+  await withServer(async (server) => {
+    assert.equal(sseClientCount(), 0);
+    const controller = new AbortController();
+    const sse = await fetch(url(server, '/api/events'), { signal: controller.signal });
+    assert.equal(sse.status, 200);
+    const reader = sse.body!.getReader();
+    await reader.read(); // the ': connected' comment
+    assert.equal(sseClientCount(), 1);
+
+    controller.abort();
+    await reader.cancel().catch(() => undefined);
+    const deadline = Date.now() + 5000;
+    while (sseClientCount() !== 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(sseClientCount(), 0);
+  });
+  resetBudget();
 });
 
 test('unknown path serves index.html', async () => {

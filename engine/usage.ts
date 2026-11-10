@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
+import { calibrate, DEFAULT_TOKENS_PER_PCT, weightedTokens } from '../shared/credits.js';
 import type { UsageReading, UsageWindow } from '../shared/types.js';
+import { openDb } from './db.js';
 import { defaultHome, home, paths } from './home.js';
 import { record } from './ledger.js';
 import { isSampleHome, sampleClaudeSettingsPath } from './sample.js';
@@ -315,4 +317,223 @@ export function latestReading(): UsageReading | null {
 /** True when `r` is older than 5 hours relative to `now`. */
 export function isStale(r: UsageReading, now: number = Date.now()): boolean {
   return now - r.at > FIVE_HOURS_MS;
+}
+
+// ---------------------------------------------------------------- transcripts and calibration (ruling 2)
+
+const INTERACTIVE_MS = 10 * 60 * 1000;
+/** Weekly percentage points per percent of the five-hour window, until the readings measure it. */
+export const DEFAULT_WEEK_PER_WINDOW_PCT = 0.1;
+/** Five-hour percentage points the ratio needs before the measured one replaces the assumed one. */
+const WEEK_RATIO_MIN_PCT = 5;
+
+/** Where his Claude Code session transcripts live. Tests point PALIMPSEST_CLAUDE_PROJECTS at a temp dir. */
+export function projectsDir(): string {
+  return process.env.PALIMPSEST_CLAUDE_PROJECTS ?? join(homedir(), '.claude', 'projects');
+}
+
+/** Every reading in readings.jsonl taken at or after `sinceMs`, oldest first. Unparseable lines are skipped. */
+export function readings(sinceMs: number): UsageReading[] {
+  const path = join(paths().usage, 'readings.jsonl');
+  if (!existsSync(path)) return [];
+  const out: UsageReading[] = [];
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const r = mapRecord(JSON.parse(line) as RawRecord);
+      if (Number.isFinite(r.at) && r.at >= sinceMs) out.push(r);
+    } catch {
+      // A torn line from a crash mid-write: skip it.
+    }
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/** Every .jsonl file under `dir` with its mtime, or nothing when the dir is missing. */
+function transcriptFiles(dir: string): Array<{ path: string; mtimeMs: number }> {
+  if (!existsSync(dir)) return [];
+  const out: Array<{ path: string; mtimeMs: number }> = [];
+  let names: string[];
+  try {
+    names = readdirSync(dir, { recursive: true, encoding: 'utf8' });
+  } catch {
+    return [];
+  }
+  for (const name of names) {
+    if (!name.endsWith('.jsonl')) continue;
+    const path = join(dir, name);
+    try {
+      const st = statSync(path);
+      if (st.isFile()) out.push({ path, mtimeMs: st.mtimeMs });
+    } catch {
+      // Removed while we looked.
+    }
+  }
+  return out;
+}
+
+interface TranscriptLine {
+  type?: string;
+  timestamp?: string;
+  requestId?: string;
+  message?: {
+    id?: string;
+    model?: string;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  };
+}
+
+/**
+ * His weighted Claude tokens between `fromMs` (exclusive) and `toMs`
+ * (inclusive): the `message.usage` of every assistant line in his session
+ * transcripts, one per `message.id` plus `requestId` (Claude Code writes a
+ * streamed message more than once; the largest count is kept), weighted per
+ * `message.model`. City runs never write here (ruling 10), so all of it is his.
+ * Files last modified before `fromMs` are skipped unread.
+ */
+export function transcriptTokens(fromMs: number, toMs: number, dir: string = projectsDir()): { weighted: number; messages: number } {
+  const seen = new Map<string, number>();
+  for (const file of transcriptFiles(dir)) {
+    if (file.mtimeMs < fromMs) continue;
+    let text: string;
+    try {
+      text = readFileSync(file.path, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const line of text.split('\n')) {
+      if (!line.includes('"usage"')) continue;
+      let row: TranscriptLine;
+      try {
+        row = JSON.parse(line) as TranscriptLine;
+      } catch {
+        continue;
+      }
+      if (row.type !== 'assistant' || !row.message?.usage || !row.timestamp) continue;
+      const at = Date.parse(row.timestamp);
+      if (!(at > fromMs && at <= toMs)) continue;
+      const u = row.message.usage;
+      const w = weightedTokens(
+        {
+          input: u.input_tokens ?? 0,
+          output: u.output_tokens ?? 0,
+          cacheRead: u.cache_read_input_tokens ?? 0,
+          cacheCreation: u.cache_creation_input_tokens ?? 0,
+        },
+        row.message.model ?? '',
+      );
+      const key = `${row.message.id ?? ''}\u0000${row.requestId ?? ''}`;
+      seen.set(key, Math.max(seen.get(key) ?? 0, w));
+    }
+  }
+  let weighted = 0;
+  for (const w of seen.values()) weighted += w;
+  return { weighted: Math.round(weighted * 1e6) / 1e6, messages: seen.size };
+}
+
+/** True when any transcript under `dir` was written in the last ten minutes: he is using Claude Code now (spec 17). */
+export function interactiveActive(now: number = Date.now(), dir: string = projectsDir()): boolean {
+  return transcriptFiles(dir).some((f) => now - f.mtimeMs <= INTERACTIVE_MS && f.mtimeMs - now <= INTERACTIVE_MS);
+}
+
+/** Weighted tokens the city's own Claude calls spent between `fromMs` (exclusive) and `toMs` (inclusive), from the credits table. */
+export function cityWeighted(fromMs: number, toMs: number): number {
+  const row = openDb()
+    .prepare(
+      `SELECT COALESCE(SUM(json_extract(json, '$.weightedTokens')), 0) AS w FROM credits
+       WHERE at > ? AND at <= ? AND json_extract(json, '$.model') LIKE 'claude:%'`,
+    )
+    .get(new Date(fromMs).toISOString(), new Date(toMs).toISOString()) as { w: number };
+  return row.w;
+}
+
+/** What calibration keeps under the settings key `tokensPerPct`. */
+export interface StoredCalibration {
+  value: number;
+  samples: number;
+  /** The `at` of the last reading already counted. */
+  through: number;
+  /** Sums over same-window pairs, for the weekly ratio. */
+  fiveSum: number;
+  weekSum: number;
+}
+
+const CALIBRATION_KEY = 'tokensPerPct';
+
+/** The stored calibration, or the assumed prior. Cheap: no transcript reading. */
+export function storedCalibration(): StoredCalibration {
+  const row = openDb().prepare('SELECT json FROM settings WHERE key = ?').get(CALIBRATION_KEY) as { json: string } | undefined;
+  const prior: StoredCalibration = { value: DEFAULT_TOKENS_PER_PCT, samples: 0, through: 0, fiveSum: 0, weekSum: 0 };
+  if (!row) return prior;
+  try {
+    const v = JSON.parse(row.json) as Partial<StoredCalibration>;
+    return {
+      value: typeof v.value === 'number' && v.value > 0 ? v.value : prior.value,
+      samples: v.samples ?? 0,
+      through: v.through ?? 0,
+      fiveSum: v.fiveSum ?? 0,
+      weekSum: v.weekSum ?? 0,
+    };
+  } catch {
+    return prior;
+  }
+}
+
+/** Weekly percentage points per percent of the five-hour window: measured once enough pairs exist, else assumed. */
+export function weekPerWindowPct(c: StoredCalibration = storedCalibration()): number {
+  if (c.fiveSum >= WEEK_RATIO_MIN_PCT && c.weekSum > 0) return Math.round((c.weekSum / c.fiveSum) * 1e9) / 1e9;
+  return DEFAULT_WEEK_PER_WINDOW_PCT;
+}
+
+/**
+ * Measures weighted tokens per percent of the five-hour window (ruling 2):
+ * for each pair of consecutive readings in the same window (equal
+ * `resetsAt`) whose percent rose, `observed = (his transcript tokens + the
+ * city's tokens between them) / delta`, blended into the estimate with
+ * `calibrate()`. Only pairs newer than the last run are counted, and the
+ * result is stored under the settings key `tokensPerPct`.
+ */
+export function calibration(): { tokensPerPct: number; calibrated: boolean; samples: number } {
+  const stored = storedCalibration();
+  const rs = readings(stored.through);
+  let { value, samples, through, fiveSum, weekSum } = stored;
+  let changed = false;
+  for (let i = 1; i < rs.length; i++) {
+    const a = rs[i - 1];
+    const b = rs[i];
+    if (b.at <= stored.through) continue;
+    through = Math.max(through, b.at);
+    changed = true;
+    if (!a.fiveHour || !b.fiveHour || a.fiveHour.resetsAt !== b.fiveHour.resetsAt) continue;
+    const delta = b.fiveHour.usedPercentage - a.fiveHour.usedPercentage;
+    if (!(delta > 0)) continue;
+    const tokens = transcriptTokens(a.at, b.at).weighted + cityWeighted(a.at, b.at);
+    if (tokens > 0) {
+      value = calibrate(value, tokens / delta);
+      samples += 1;
+    }
+    if (a.sevenDay && b.sevenDay && a.sevenDay.resetsAt === b.sevenDay.resetsAt) {
+      const weekDelta = b.sevenDay.usedPercentage - a.sevenDay.usedPercentage;
+      if (weekDelta >= 0) {
+        fiveSum += delta;
+        weekSum += weekDelta;
+      }
+    }
+  }
+  if (rs.length > 0 && rs[rs.length - 1].at > through) {
+    through = rs[rs.length - 1].at;
+    changed = true;
+  }
+  if (changed) {
+    const next: StoredCalibration = { value, samples, through, fiveSum, weekSum };
+    openDb()
+      .prepare('INSERT INTO settings (key, json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET json = excluded.json')
+      .run(CALIBRATION_KEY, JSON.stringify(next));
+  }
+  return { tokensPerPct: value, calibrated: samples > 0, samples };
 }

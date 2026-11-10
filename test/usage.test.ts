@@ -1,23 +1,45 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
+import { charge, resetBudget } from '../engine/market/budget.js';
 import { getSettings } from '../engine/settings.js';
-import { hookScript, installHook, isStale, latestReading, uninstallHook } from '../engine/usage.js';
+import {
+  calibration,
+  hookScript,
+  installHook,
+  isStale,
+  latestReading,
+  projectsDir,
+  readings,
+  transcriptTokens,
+  uninstallHook,
+} from '../engine/usage.js';
+import { DEFAULT_TOKENS_PER_PCT } from '../shared/credits.js';
 
 let tempDir: string;
 let previousHome: string | undefined;
+let previousProjects: string | undefined;
+let projects: string;
 
 beforeEach(() => {
   previousHome = process.env.PALIMPSEST_HOME;
+  previousProjects = process.env.PALIMPSEST_CLAUDE_PROJECTS;
   tempDir = mkdtempSync(join(tmpdir(), 'palimpsest-usage-test-'));
   process.env.PALIMPSEST_HOME = tempDir;
+  projects = join(tempDir, 'claude-projects');
+  mkdirSync(projects, { recursive: true });
+  process.env.PALIMPSEST_CLAUDE_PROJECTS = projects;
+  resetBudget();
 });
 
 afterEach(() => {
+  resetBudget();
+  if (previousProjects === undefined) delete process.env.PALIMPSEST_CLAUDE_PROJECTS;
+  else process.env.PALIMPSEST_CLAUDE_PROJECTS = previousProjects;
   if (previousHome === undefined) {
     delete process.env.PALIMPSEST_HOME;
   } else {
@@ -298,4 +320,174 @@ test('reinstalling over a file changed since install does not let uninstall undo
   const after = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
   assert.equal(after.model, 'opus');
   assert.deepEqual(after.statusLine, { type: 'command', command: 'bash original.sh' });
+});
+
+// ---------------------------------------------------------------- transcripts and calibration
+
+const T0 = Date.UTC(2026, 10, 9, 12, 0, 0);
+const HOUR = 3_600_000;
+
+interface LineOpts {
+  at: number;
+  id: string;
+  requestId: string;
+  model: string;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheCreation?: number;
+}
+
+/** One assistant line as Claude Code writes it to a session transcript. */
+function assistantLine(o: LineOpts): string {
+  return JSON.stringify({
+    type: 'assistant',
+    timestamp: new Date(o.at).toISOString(),
+    requestId: o.requestId,
+    message: {
+      id: o.id,
+      model: o.model,
+      role: 'assistant',
+      usage: {
+        input_tokens: o.input ?? 0,
+        output_tokens: o.output ?? 0,
+        cache_read_input_tokens: o.cacheRead ?? 0,
+        cache_creation_input_tokens: o.cacheCreation ?? 0,
+      },
+    },
+  });
+}
+
+function writeTranscript(name: string, lines: string[], dir = projects): void {
+  const projectDir = join(dir, '-Users-someone-code-thing');
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(join(projectDir, name), `${lines.join('\n')}\n`);
+}
+
+/** Appends readings as the hook writes them (`at` in seconds, resets_at in seconds). */
+function writeReadings(rs: Array<{ at: number; five: number; resets: number; seven?: number; sevenResets?: number }>): void {
+  const usageDir = join(tempDir, 'usage');
+  mkdirSync(usageDir, { recursive: true });
+  const text = rs
+    .map((r) =>
+      JSON.stringify({
+        at: Math.floor(r.at / 1000),
+        rate_limits: {
+          five_hour: { used_percentage: r.five, resets_at: r.resets },
+          seven_day: { used_percentage: r.seven ?? 5, resets_at: r.sevenResets ?? Math.floor(T0 / 1000) + 3 * 86_400 },
+        },
+      }),
+    )
+    .join('\n');
+  writeFileSync(join(usageDir, 'readings.jsonl'), `${text}\n`);
+}
+
+test('transcript tokens dedupe by message id and request id', () => {
+  writeTranscript('a.jsonl', [
+    assistantLine({ at: T0 + 60_000, id: 'msg_1', requestId: 'req_1', model: 'claude-opus-4-1', input: 1000 }),
+    // The same message streamed twice: counted once.
+    assistantLine({ at: T0 + 61_000, id: 'msg_1', requestId: 'req_1', model: 'claude-opus-4-1', input: 1000 }),
+    // Same message id under another request: a distinct call.
+    assistantLine({ at: T0 + 62_000, id: 'msg_1', requestId: 'req_2', model: 'claude-opus-4-1', input: 500 }),
+    // Outside the range.
+    assistantLine({ at: T0 + 2 * HOUR, id: 'msg_9', requestId: 'req_9', model: 'claude-opus-4-1', input: 9999 }),
+    JSON.stringify({ type: 'user', timestamp: new Date(T0 + 63_000).toISOString(), message: { role: 'user', content: 'hi' } }),
+    'not json at all',
+  ]);
+  const t = transcriptTokens(T0, T0 + HOUR);
+  assert.equal(t.messages, 2);
+  assert.equal(t.weighted, 1500);
+});
+
+test('readings returns every reading since a time, in order', () => {
+  const resets = Math.floor(T0 / 1000) + 3 * 3600;
+  writeReadings([
+    { at: T0, five: 10, resets },
+    { at: T0 + HOUR, five: 12, resets },
+    { at: T0 + 2 * HOUR, five: 15, resets },
+  ]);
+  const rs = readings(T0 + HOUR);
+  assert.deepEqual(
+    rs.map((r) => r.fiveHour?.usedPercentage),
+    [12, 15],
+  );
+  assert.equal(rs[0].at, T0 + HOUR);
+});
+
+test('calibration counts his transcript tokens plus city tokens between readings', () => {
+  const resets = Math.floor(T0 / 1000) + 3 * 3600;
+  writeReadings([
+    { at: T0, five: 10, resets },
+    { at: T0 + HOUR, five: 12, resets },
+    // A new window: the pair across the reset is not used.
+    { at: T0 + 2 * HOUR, five: 1, resets: resets + 5 * 3600 },
+  ]);
+  writeTranscript('s.jsonl', [
+    assistantLine({ at: T0 + 10 * 60_000, id: 'm1', requestId: 'r1', model: 'claude-opus-4-1', input: 100_000 }),
+  ]);
+  charge({
+    runId: 'run-1',
+    firmId: 'quickset',
+    model: 'claude:opus',
+    kind: 'run',
+    usage: { weightedTokens: 40_000, seconds: 60, usd: 0, credits: 0 },
+    unattended: false,
+    at: T0 + 30 * 60_000,
+  });
+
+  const c = calibration();
+  // observed = (100,000 + 40,000) / 2 = 70,000; blended 0.7 * 60,000 + 0.3 * 70,000.
+  assert.equal(c.tokensPerPct, 63_000);
+  assert.equal(c.samples, 1);
+  assert.equal(c.calibrated, true);
+
+  // Stored, and not counted twice.
+  const again = calibration();
+  assert.equal(again.tokensPerPct, 63_000);
+  assert.equal(again.samples, 1);
+  const stored = (getSettings() as unknown as Record<string, { value: number; samples: number }>).tokensPerPct;
+  assert.equal(stored.value, 63_000);
+  assert.equal(stored.samples, 1);
+});
+
+test('calibration with no readings is the assumed prior', () => {
+  const c = calibration();
+  assert.deepEqual(c, { tokensPerPct: DEFAULT_TOKENS_PER_PCT, calibrated: false, samples: 0 });
+});
+
+test('calibration weighs an opus transcript above a haiku one', () => {
+  const resets = Math.floor(T0 / 1000) + 3 * 3600;
+  const run = (model: string): number => {
+    const dir = mkdtempSync(join(tempDir, 'cal-'));
+    process.env.PALIMPSEST_HOME = dir;
+    process.env.PALIMPSEST_CLAUDE_PROJECTS = join(dir, 'projects');
+    const usageDir = join(dir, 'usage');
+    mkdirSync(usageDir, { recursive: true });
+    writeFileSync(
+      join(usageDir, 'readings.jsonl'),
+      [
+        { at: T0, five: 10 },
+        { at: T0 + HOUR, five: 12 },
+      ]
+        .map((r) => JSON.stringify({ at: r.at / 1000, rate_limits: { five_hour: { used_percentage: r.five, resets_at: resets } } }))
+        .join('\n') + '\n',
+    );
+    writeTranscript('s.jsonl', [assistantLine({ at: T0 + 60_000, id: 'm', requestId: 'r', model, input: 200_000 })], join(dir, 'projects'));
+    return calibration().tokensPerPct;
+  };
+  const opus = run('claude-opus-4-1');
+  const haiku = run('claude-haiku-4-5');
+  // Opus: observed 100,000, blended 72,000. Haiku: weighted 40,000, observed 20,000, blended 48,000.
+  assert.equal(opus, 72_000);
+  assert.equal(haiku, 48_000);
+  assert.ok(opus > haiku);
+});
+
+test('projectsDir defaults under the home directory with no literal tilde', () => {
+  delete process.env.PALIMPSEST_CLAUDE_PROJECTS;
+  const dir = projectsDir();
+  assert.equal(dir, join(homedir(), '.claude', 'projects'));
+  assert.ok(!dir.includes('~'));
+  process.env.PALIMPSEST_CLAUDE_PROJECTS = projects;
+  assert.equal(projectsDir(), projects);
 });

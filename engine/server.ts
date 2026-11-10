@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { Repo, RootStyle, Settings } from '../shared/types.js';
 import type { Event } from './events.js';
 import { emit, subscribe } from './events.js';
+import { noteSseClients } from './market/budget.js';
 import { availableRepos, GhError } from './github.js';
 import { paths } from './home.js';
 import { record } from './ledger.js';
@@ -227,11 +228,16 @@ function handleSse(req: IncomingMessage, res: ServerResponse, sseClients: Set<Se
   }, HEARTBEAT_MS);
 
   sseClients.add(res);
+  noteSseClients(sseClients.size);
 
+  let closed = false;
   const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
     clearInterval(heartbeat);
     unsubscribe();
     sseClients.delete(res);
+    noteSseClients(sseClients.size);
   };
 
   req.on('close', cleanup);

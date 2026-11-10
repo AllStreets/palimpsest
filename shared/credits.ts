@@ -41,17 +41,17 @@ export function weightedTokens(u: TokenUsage, model: string): number {
 
 /** Credits for Claude usage: weighted tokens over tokens per percent, in tenths of a percent. */
 export function claudeCredits(weighted: number, tokensPerPct: number): number {
-  return weighted / tokensPerPct / CREDIT_PCT;
+  return Math.round((weighted / tokensPerPct / CREDIT_PCT) * 1e9) / 1e9;
 }
 
 /** Credits for a local model run: seconds * (0.001 + 0.0001 * modelGB). */
 export function localCredits(seconds: number, modelGB: number): number {
-  return seconds * (0.001 + 0.0001 * modelGB);
+  return Math.round(seconds * (0.001 + 0.0001 * modelGB) * 1e9) / 1e9;
 }
 
 /** Credits for Anthropic API spend. */
 export function apiCredits(usd: number): number {
-  return usd * CREDITS_PER_USD;
+  return Math.round(usd * CREDITS_PER_USD * 1e9) / 1e9;
 }
 
 /** Blends a new tokens-per-percent observation into the previous estimate (EMA, alpha 0.3). */
