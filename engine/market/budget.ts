@@ -157,6 +157,14 @@ function spentUsd(fromMs: number, toMs: number): number {
   return round(row.u);
 }
 
+/** The credits a call's usage comes to on `model`'s pool, at the current calibration. */
+export function creditsFor(model: ModelRef, usage: Usage): number {
+  const pool = poolOf(model);
+  if (pool === 'claude') return claudeCredits(usage.weightedTokens, storedCalibration().value);
+  if (pool === 'api') return apiCredits(usage.usd);
+  return round(usage.credits);
+}
+
 /**
  * Writes one credits row for a model call the city paid for and returns its
  * credits (a positive amount spent): Claude by weighted tokens at the
@@ -173,18 +181,15 @@ export function charge(o: {
   at?: number;
   /** The lease the call ran under: its reserved estimate is replaced by this real spend. */
   lease?: Lease;
+  /** A floor on the credits written, for calls whose real usage is unknown or under-reported (bid plan calls). */
+  minCredits?: number;
 }): number {
   const at = o.at ?? Date.now();
   const leased = o.lease ? recOf.get(o.lease) : undefined;
   if (leased) leased.reserved = 0;
   const pool = poolOf(o.model);
   const tokensPerPct = storedCalibration().value;
-  const credits =
-    pool === 'claude'
-      ? claudeCredits(o.usage.weightedTokens, tokensPerPct)
-      : pool === 'api'
-        ? apiCredits(o.usage.usd)
-        : round(o.usage.credits);
+  const credits = Math.max(creditsFor(o.model, o.usage), round(o.minCredits ?? 0));
   const usd = pool === 'api' ? o.usage.usd : null;
   openDb()
     .prepare('INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, ?, ?, ?, ?, ?, ?)')
@@ -200,7 +205,8 @@ export function charge(o: {
         pool,
         kind: o.kind,
         usage: o.usage,
-        weightedTokens: pool === 'claude' ? o.usage.weightedTokens : 0,
+        // A floored charge counts as the tokens it stands for, so the window estimates see it too.
+        weightedTokens: pool === 'claude' ? Math.max(o.usage.weightedTokens, round(credits * CREDIT_PCT * tokensPerPct)) : 0,
         tokensPerPct: pool === 'claude' ? tokensPerPct : null,
         credits,
         unattended: o.unattended,

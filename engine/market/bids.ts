@@ -36,7 +36,7 @@ import { emit } from '../events.js';
 import { entries, record } from '../ledger.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
-import { acquire, charge, PLAN_ESTIMATE, unattended } from './budget.js';
+import { acquire, charge, creditsFor, PLAN_ESTIMATE, unattended } from './budget.js';
 import { firm, listAgents } from './firms.js';
 import { job as storedJob, transition } from './jobs.js';
 import type { Usage } from './provider.js';
@@ -56,6 +56,8 @@ const EXAMPLE_MAX = 600;
 const MAX_VOTES = 7;
 /** What an agent whose plan call was queued past the close is told. */
 export const NO_SLOT = 'no slot before the window closed';
+/** How long a job that drew no bid at all (nobody eligible, or everyone sat out) waits before it opens for bids again. */
+export const BID_COOL_OFF_MS = 10 * 60_000;
 
 const TIER_SIZE: Record<Tier, FloorSize> = { low: 'small', normal: 'medium', high: 'large' };
 
@@ -102,8 +104,24 @@ export function bidById(id: string): Bid | null {
 
 // ---------------------------------------------------------------- the window
 
-/** Opens the job for bids until `now + bidWindowSec`. */
+/** When the job's last round drew no bid at all, the time it may open for bids again; else null. */
+export function coolingOffUntil(jobId: string): number | null {
+  const row = openDb()
+    .prepare("SELECT json FROM ledger WHERE kind = 'job.awarded' AND json_extract(json, '$.jobId') = ? ORDER BY id DESC LIMIT 1")
+    .get(jobId) as { json: string } | undefined;
+  if (!row) return null;
+  const until = (JSON.parse(row.json) as { coolOffUntil?: unknown }).coolOffUntil;
+  return typeof until === 'string' && Number.isFinite(Date.parse(until)) ? Date.parse(until) : null;
+}
+
+/**
+ * Opens the job for bids until `now + bidWindowSec`. A job whose last round
+ * drew no bid at all stays open, unchanged, until its cool-off passes, so an
+ * empty board does not churn every tick; callers read the returned status.
+ */
 export function openBidding(j: Job, now: number = Date.now()): Job {
+  const until = coolingOffUntil(j.id);
+  if (until !== null && now < until) return storedJob(j.id) ?? j;
   const closeAt = new Date(now + getSettings().bidWindowSec * 1000).toISOString();
   return transition(j, 'bidding', { bidsCloseAt: closeAt, awardedBid: null });
 }
@@ -156,12 +174,18 @@ const finite = (x: unknown): x is number => typeof x === 'number' && Number.isFi
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const tidy = (x: number) => Math.round(x * 1e9) / 1e9;
 
-/** A plan answer checked field by field, or null when it cannot be used. */
+/**
+ * A plan answer checked field by field, or null when it cannot be used. The
+ * plan text stays untrusted model output: Task 13 must pass it into the work
+ * prompt as quoted data, never as instructions to the engine.
+ */
 function checked(a: unknown): { plan: string; price: number; confidence: number } | null {
   if (!a || typeof a !== 'object') return null;
   const { plan, price, confidence } = a as Record<string, unknown>;
   if (typeof plan !== 'string' || !finite(price) || !finite(confidence)) return null;
-  return { plan: plan.trim().slice(0, PLAN_MAX), price, confidence };
+  const text = plan.trim().slice(0, PLAN_MAX);
+  if (!text) return null;
+  return { plan: text, price, confidence };
 }
 
 /** Usage with every field a finite, non-negative number. */
@@ -228,6 +252,14 @@ export async function collectBid(j: Job, a: Agent, now: number = Date.now()): Pr
   inflight.add(key);
   try {
     return await bidOnce(cur, round, a, now);
+  } catch (err) {
+    // One agent's failure (a charge that threw, a store error) never rejects the round for the others.
+    console.error(`palimpsest: bid by ${a.id} on ${cur.id} failed: ${errText(err)}`);
+    try {
+      return sitOut(cur, round, a, `the bid failed: ${errText(err)}`, now);
+    } catch {
+      return null;
+    }
   } finally {
     inflight.delete(key);
   }
@@ -246,9 +278,13 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
   const { lease } = got;
 
   let spent: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
+  /** Plan calls started: every one is charged, so the budget guard never undercounts. */
   let calls = 0;
+  /** Credits owed: max(reported, PLAN_ESTIMATE) per call that answered, PLAN_ESTIMATE per call that threw or was aborted. */
+  let owed = 0;
   let cost = 0;
   let failure: string | null = null;
+  let chargeFailure: string | null = null;
   const answers: Array<{ plan: string; price: number; confidence: number }> = [];
   let provider;
   try {
@@ -262,23 +298,34 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
     };
     for (let k = 0; k < n; k++) {
       if (lease.signal.aborted) break;
-      const out = await provider.plan(input, lease.signal);
       calls++;
-      spent = addUsage(spent, cleanUsage((out as { usage?: unknown } | null)?.usage));
+      let out: unknown;
+      try {
+        out = await provider.plan(input, lease.signal);
+      } catch (err) {
+        owed += PLAN_ESTIMATE;
+        throw err;
+      }
+      const u = cleanUsage((out as { usage?: unknown } | null)?.usage);
+      spent = addUsage(spent, u);
+      owed += Math.max(creditsFor(a.model, u), PLAN_ESTIMATE);
       const ok = checked(out);
       if (ok) answers.push(ok);
     }
   } catch (err) {
     failure = `the plan call failed: ${errText(err)}`;
   } finally {
-    // Charge what finished, under the lease so its reservation is replaced by the real spend, then free the slot.
+    // Charge every call started, under the lease so its reservation is replaced by the spend, then free the slot.
     try {
       if (calls > 0) {
         const selfCharged = provider?.kind === 'anthropic' && chargesItself;
         cost = selfCharged
           ? tidy(spent.credits)
-          : charge({ runId: null, firmId: a.firmId, model: a.model, kind: 'bid', usage: spent, unattended: unattended(clock()), at: clock(), lease });
+          : charge({ runId: null, firmId: a.firmId, model: a.model, kind: 'bid', usage: spent, unattended: unattended(clock()), at: clock(), lease, minCredits: owed });
       }
+    } catch (err) {
+      chargeFailure = errText(err);
+      console.error(`palimpsest: charging the bid by ${a.id} on ${cur.id} failed: ${chargeFailure}`);
     } finally {
       lease.release();
     }
@@ -289,6 +336,7 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
     return sitOut(cur, round, a, `stopped mid-plan (${why})`, clock());
   }
   if (failure) return sitOut(cur, round, a, failure, clock());
+  if (chargeFailure) return sitOut(cur, round, a, `the bid could not be charged: ${chargeFailure}`, clock());
   if (answers.length === 0) return sitOut(cur, round, a, 'the plan answer was not usable', clock());
 
   // The job may have been awarded, withdrawn or reopened while the call ran; a late bid is not entered.
@@ -366,7 +414,7 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     const others = ranked.filter((b) => b !== chosen);
     if (others.length) parts.push(`Also considered: ${others.map(describe).join('; ')}.`);
   } else {
-    parts.push(bids.length ? `No bid had a positive expected value, so the job goes back on the board.` : 'No bids came in, so the job goes back on the board.');
+    parts.push(bids.length ? `No bid had a positive expected value, so the job goes back on the board.` : `No bids came in, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.`);
     if (bids.length) parts.push(`Considered: ${ranked.map(describe).join('; ')}.`);
   }
   if (satOut.length) parts.push(`Sat out: ${satOut.map((s) => `${nameOf(s.agentId)} (${s.reason})`).join('; ')}.`);
@@ -380,6 +428,8 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     chosen,
     why,
     at: new Date(now).toISOString(),
+    // Nobody eligible, or everyone sat out: wait before the next round.
+    coolOffUntil: bids.length === 0 ? new Date(now + BID_COOL_OFF_MS).toISOString() : null,
   };
   if (chosen) transition(cur, 'awarded', { awardedBid: chosen.id });
   else transition(cur, 'open', { bidsCloseAt: null, awardedBid: null });

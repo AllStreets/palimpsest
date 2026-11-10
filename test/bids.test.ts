@@ -7,8 +7,8 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { openDb } from '../engine/db.js';
 import { paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
-import { award, bidList, collectBid, collectBids, eligibleAgents, firmExamples, openBidding } from '../engine/market/bids.js';
-import { acquire, noteSseClients, resetBudget, treasury, type Lease } from '../engine/market/budget.js';
+import { award, BID_COOL_OFF_MS, bidList, collectBid, collectBids, eligibleAgents, firmExamples, openBidding } from '../engine/market/bids.js';
+import { acquire, noteSseClients, PLAN_ESTIMATE, resetBudget, treasury, type Lease } from '../engine/market/budget.js';
 import { fakeDefaults, fakeProvider, type FakeScript } from '../engine/market/fake-provider.js';
 import { job, postManualJob, settleJobEffects } from '../engine/market/jobs.js';
 import type { PlanInput, Provider, Usage } from '../engine/market/provider.js';
@@ -218,11 +218,13 @@ test('price above value is clamped to value', async () => {
   addAgent('cheap', 'beta', 'ollama:qwen');
   addAgent('junk', 'gamma', 'ollama:qwen');
   addAgent('words', 'delta', 'ollama:qwen');
+  addAgent('blank', 'epsilon', 'ollama:qwen');
   script({
     greedy: { price: 500, confidence: 1.7 },
     cheap: { price: -4, confidence: 0 },
     junk: { price: Number.NaN, confidence: 0.5 },
     words: { plan: { evil: true }, price: '12', confidence: 0.5 },
+    blank: { plan: '  \n\t ', price: 12, confidence: 0.5 },
   });
   const j = bidding();
   await collectBids(j, NOW);
@@ -234,7 +236,7 @@ test('price above value is clamped to value', async () => {
   assert.equal(cheap?.price, 1);
   assert.equal(cheap?.confidence, 0.05);
   // Answers that are not numbers or not text sit out rather than bid.
-  assert.deepEqual(satOut.map((s) => s.agentId).sort(), ['junk', 'words']);
+  assert.deepEqual(satOut.map((s) => s.agentId).sort(), ['blank', 'junk', 'words']);
   for (const s of satOut) assert.match(s.note, /^sat out: /);
 });
 
@@ -383,7 +385,8 @@ test('a hard stop aborts a plan call in flight and the agent sits out', async ()
   const { satOut } = bidList(j.id);
   assert.equal(satOut[0].agentId, 'claudia');
   assert.match(satOut[0].reason, /hard/);
-  assert.deepEqual(creditRows(), []);
+  // The aborted call is still charged its estimate, so the budget guard never undercounts.
+  assert.deepEqual(creditRows(), [{ firm_id: 'alpha', kind: 'bid', amount: PLAN_ESTIMATE }]);
 });
 
 test('a vote firm makes n plan calls and bids the median', async () => {
@@ -401,16 +404,16 @@ test('a vote firm makes n plan calls and bids the median', async () => {
   assert.equal(bid?.price, 20);
   assert.equal(bid?.confidence, 0.7);
   assert.equal(bid?.plan, 'middle plan');
-  // Three calls, one charge for all of them.
-  assert.deepEqual(creditRows(), [{ firm_id: 'sparrow', kind: 'bid', amount: 3 }]);
-  assert.equal(bid?.cost, 3);
+  // Three calls reporting one credit each, one charge for all of them, each call floored at the estimate.
+  assert.deepEqual(creditRows(), [{ firm_id: 'sparrow', kind: 'bid', amount: 3 * PLAN_ESTIMATE }]);
+  assert.equal(bid?.cost, 3 * PLAN_ESTIMATE);
 });
 
 test('bid cost is charged to the firm', async () => {
   reading();
   addAgent('claudia', 'alpha', 'claude:sonnet', { memory: { examples: 1 } });
-  // 6,000 weighted tokens at the assumed 60,000 per percent is one credit.
-  const seen = script({ claudia: { price: 20, confidence: 0.7, usage: { weightedTokens: 6000 } } });
+  // 60,000 weighted tokens at the assumed 60,000 per percent is ten credits, above the estimate.
+  const seen = script({ claudia: { price: 20, confidence: 0.7, usage: { weightedTokens: 60_000 } } });
   // A merged job of alpha's, the example its next plan call sees.
   record('job.awarded', { jobId: 'old-1', tier: 'normal', chosen: { firmId: 'alpha', confidence: 0.8 } });
   record('run.ended', { run: { jobId: 'old-1', outcome: 'merged' }, summary: 'Rebuilt the footer.' });
@@ -418,14 +421,14 @@ test('bid cost is charged to the firm', async () => {
   assert.deepEqual(firmExamples('alpha', 3), ['Fix the footer: Rebuilt the footer.']);
   const j = bidding();
   const bid = await collectBid(j, eligibleAgents(j)[0], NOW);
-  assert.equal(bid?.cost, 1);
-  assert.deepEqual(creditRows(), [{ firm_id: 'alpha', kind: 'bid', amount: 1 }]);
+  assert.equal(bid?.cost, 10);
+  assert.deepEqual(creditRows(), [{ firm_id: 'alpha', kind: 'bid', amount: 10 }]);
   assert.deepEqual(seen[0].examples, ['Fix the footer: Rebuilt the footer.']);
   assert.equal(seen[0].persona, 'claudia builds carefully.');
   assert.match(seen[0].repoSummary, /Widgets for everyone/);
   const placed = entries().filter((e) => e.kind === 'bid.placed');
   assert.equal(placed.length, 1);
-  assert.deepEqual((placed[0].data as { charged: unknown }).charged, { kind: 'bid', credits: 1, by: 'budget' });
+  assert.deepEqual((placed[0].data as { charged: unknown }).charged, { kind: 'bid', credits: 10, by: 'budget' });
 
   // An Anthropic API agent's backend charges its own calls, so the bid writes no second row.
   patchSettings({ anthropicApi: { enabled: true, dailyUsd: 5 } });
@@ -435,7 +438,7 @@ test('bid cost is charged to the firm', async () => {
   const k = bidding();
   const apiBid = await collectBid(k, eligibleAgents(k).find((a) => a.id === 'api') as Agent, NOW);
   assert.equal(apiBid?.cost, 2);
-  assert.deepEqual(creditRows(), [{ firm_id: 'alpha', kind: 'bid', amount: 1 }]);
+  assert.deepEqual(creditRows(), [{ firm_id: 'alpha', kind: 'bid', amount: 10 }]);
 });
 
 test('the award reasoning names every bid considered and every agent that sat out', async () => {
@@ -468,4 +471,95 @@ test('an EV tie goes to the lower price', async () => {
   assert.equal(b[0].ev, 10.4);
   assert.equal(b[1].ev, 10.4);
   assert.equal(award(job(j.id) as Job, NOW + 1)?.agentId, 'x');
+});
+
+test('every plan call started is charged: a cheap answer and a call that throws each cost the estimate', async () => {
+  reading();
+  addAgent('cheap', 'alpha', 'claude:sonnet');
+  addAgent('broken', 'beta', 'claude:sonnet');
+  script({
+    // 600 weighted tokens is a tenth of a credit; the estimate is the floor.
+    cheap: { price: 20, confidence: 0.7, usage: { weightedTokens: 600 } },
+    broken: () => {
+      throw new Error('claude exited 1');
+    },
+  });
+  const j = bidding();
+  await collectBids(j, NOW);
+  const rows = creditRows().sort((a, b) => a.firm_id.localeCompare(b.firm_id));
+  assert.deepEqual(rows, [
+    { firm_id: 'alpha', kind: 'bid', amount: PLAN_ESTIMATE },
+    { firm_id: 'beta', kind: 'bid', amount: PLAN_ESTIMATE },
+  ]);
+  const { bids, satOut } = bidList(j.id);
+  assert.equal(bids[0].cost, PLAN_ESTIMATE);
+  assert.equal(satOut[0].agentId, 'broken');
+  assert.match(satOut[0].reason, /claude exited 1/);
+  // The floored row counts as the tokens it stands for, so the window estimate sees it too.
+  const json = openDb().prepare("SELECT json FROM credits WHERE firm_id = 'alpha'").get() as { json: string };
+  assert.equal((JSON.parse(json.json) as { weightedTokens: number }).weightedTokens, 18_000);
+});
+
+test('a vote firm whose third call fails is charged for three calls', async () => {
+  addAgent('voter', 'sparrow', 'ollama:qwen', { workflow: { shape: 'vote', n: 3 } });
+  let k = 0;
+  script({
+    voter: () => {
+      k++;
+      if (k === 3) throw new Error('model crashed');
+      return { price: 20, confidence: 0.7 };
+    },
+  });
+  const j = bidding();
+  assert.equal(await collectBid(j, eligibleAgents(j)[0], NOW), null);
+  assert.deepEqual(creditRows(), [{ firm_id: 'sparrow', kind: 'bid', amount: 3 * PLAN_ESTIMATE }]);
+});
+
+test('a charge that throws sits that agent out and the others still bid', async () => {
+  addAgent('unlucky', 'bad', 'ollama:qwen');
+  addAgent('fine', 'good', 'ollama:qwen');
+  script({});
+  openDb().exec("CREATE TRIGGER no_bad BEFORE INSERT ON credits WHEN NEW.firm_id = 'bad' BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  const j = bidding();
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => void errors.push(args.join(' '));
+  try {
+    const bids = await collectBids(j, NOW);
+    assert.deepEqual(bids.map((b) => b.agentId), ['fine']);
+  } finally {
+    console.error = original;
+  }
+  const { satOut } = bidList(j.id);
+  assert.equal(satOut[0].agentId, 'unlucky');
+  assert.match(satOut[0].reason, /could not be charged: disk full/);
+  assert.ok(errors.some((e) => e.includes('disk full')));
+});
+
+test('a job that draws no bid cools off before it opens again', async () => {
+  // Nobody bids on high: the round is empty, the job reopens, and the next round waits for the cool-off.
+  addAgent('small-only', 'alpha', 'ollama:qwen', { bidsOn: ['low'] });
+  const j = bidding('high');
+  assert.equal(award(job(j.id) as Job, NOW + 1), null);
+  assert.equal(job(j.id)?.status, 'open');
+  assert.equal(openBidding(job(j.id) as Job, NOW + MIN).status, 'open');
+  assert.equal(openBidding(job(j.id) as Job, NOW + BID_COOL_OFF_MS - 1).status, 'open');
+  assert.equal(openBidding(job(j.id) as Job, NOW + 1 + BID_COOL_OFF_MS).status, 'bidding');
+
+  // Everyone sat out (Claude stale, no reading): the same cool-off.
+  addAgent('claudia', 'beta', 'claude:sonnet');
+  script({});
+  const k = bidding('normal');
+  await collectBids(k, NOW);
+  assert.equal(bidList(k.id).bids.length, 0);
+  assert.equal(award(job(k.id) as Job, NOW + 1), null);
+  assert.equal(openBidding(job(k.id) as Job, NOW + MIN).status, 'open');
+
+  // A round with bids but no positive EV reopens at once.
+  addAgent('dear', 'gamma', 'ollama:qwen');
+  script({ dear: { price: 60, confidence: 0.5 } });
+  const m = bidding('normal');
+  await collectBids(m, NOW);
+  assert.equal(award(job(m.id) as Job, NOW + 1), null);
+  assert.equal(openBidding(job(m.id) as Job, NOW + 2).status, 'bidding');
 });
