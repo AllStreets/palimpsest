@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { constructionState, FLOOD_TINT, floodRadiance, makeConstruction, makeConstructionField, makeHoist, netPanel, netTextures } from '../app/src/city/construction.js';
+import { constructionState, ERA_TONE, FLOOD_TINT, floodRadiance, makeConstruction, makeConstructionField, makeHoist, netPanel, netTextures, searchRadiance, workLampRadiance } from '../app/src/city/construction.js';
 import { BLOOM_THRESHOLD, EXPOSURE, FLOOD } from '../app/src/city/post.js';
 import { workProgress } from '../engine/market/runs.js';
 import type { SiteStage, SiteState } from '../shared/types.js';
@@ -322,7 +322,8 @@ test('setting a site to the state it already shows changes nothing', () => {
 test('the field uploads a lamp colour only when the lamp changes', () => {
   const field = makeConstructionField('high');
   const c = makeConstruction('high');
-  c.set(site('curing', 1), TOP, HALF, FH);
+  // A site waiting on its PR: the crane parked, its lamp steady (a merged site has no crane left by now).
+  c.set(site('waiting', 1), TOP, HALF, FH);
   c.update(1 / 60);
   field.update([c]);
   const lamp = field.group.getObjectByName('field:lamp') as THREE.BatchedMesh;
@@ -406,4 +407,172 @@ test('the steel varies member by member, so the frame reads as weathered steel',
   assert.ok(tones.size > 20, `primer tones vary beam by beam (${tones.size})`);
   c.dispose();
   field.dispose();
+});
+
+// ---------------------------------------------------------------- Task 27: inspection, the cure, teardown and the scar
+
+/** grid.ts PLAZA_RADIUS: the district plaza's paving ends here. */
+const PLAZA = 72;
+
+/** Where a ray from `at` along `dir` first meets a box, or null. */
+function rayBox(at: THREE.Vector3, dir: THREE.Vector3, box: THREE.Box3): number | null {
+  const hit = new THREE.Ray(at, dir).intersectBox(box, new THREE.Vector3());
+  return hit ? hit.distanceTo(at) : null;
+}
+
+test('inspecting places two searchlights at the plaza edge aimed at the floor', () => {
+  const c = makeConstruction('high');
+  c.set(site('framing', 0.7), TOP, HALF, FH);
+  run(c, 1);
+  assert.equal(c.searchlights().length, 0, 'no searchlights while the frame goes up');
+  c.set(site('inspecting', 0.8), TOP, HALF, FH);
+  // The crane slews to park as the frame is handed over; then only the searchlights move.
+  run(c, 20);
+  const lights = c.searchlights();
+  assert.equal(lights.length, 2, 'two guild searchlights');
+  for (const l of lights) {
+    const r = Math.hypot(l.at.x, l.at.z);
+    assert.ok(r > PLAZA - 16 && r < PLAZA - 2, `a searchlight stands at the plaza edge (${r.toFixed(1)} m out)`);
+    assert.ok(l.at.y > 0.8 && l.at.y < 2.6, `on a tripod on the paving (${l.at.y.toFixed(2)} m up)`);
+  }
+  assert.ok(lights[0].at.distanceTo(lights[1].at) > 20, 'the two stand well apart, so their beams cross');
+  for (const name of ['construction:searchlight-tripods', 'construction:searchlight-head-0', 'construction:searchlight-head-1']) part(c.object, name);
+
+  // Over a minute and a half the beams sweep the new floor and never leave it: each beam ends where it meets the
+  // floor's envelope (the netting hung just off its faces, up to its edge protection).
+  const floor = new THREE.Box3(new THREE.Vector3(-HALF - 0.6, TOP - 0.3, -HALF - 0.6), new THREE.Vector3(HALF + 0.6, TOP + FH + 1.2, HALF + 0.6));
+  const aims: Array<[THREE.Vector3, THREE.Vector3]> = [];
+  let crossed = 0;
+  let side: number | null = null;
+  for (let t = 0; t < 90; t += 0.5) {
+    assert.equal(run(c, 0.5), false, 'nothing that casts a shadow moves while they sweep');
+    const [a, b] = c.searchlights();
+    for (const l of [a, b]) {
+      const d = rayBox(l.at, l.dir, floor);
+      assert.ok(d !== null, `the beam meets the floor at ${t} s`);
+      assert.ok(Math.abs(d! - l.length) < 0.05, `and ends on it (${d!.toFixed(1)} against ${l.length.toFixed(1)})`);
+    }
+    const pa = a.at.clone().addScaledVector(a.dir, a.length);
+    const pb = b.at.clone().addScaledVector(b.dir, b.length);
+    aims.push([pa, pb]);
+    // Which way round the two spots lie along the face: it flips each time the beams cross.
+    const s = Math.sign(new THREE.Vector3().crossVectors(pb.clone().sub(pa).setY(0), new THREE.Vector3(0, 1, 0)).dot(a.at.clone().setY(0)));
+    if (side !== null && s !== 0 && s !== side) crossed++;
+    if (s !== 0) side = s;
+  }
+  const travel = Math.max(...aims.map(([p]) => p.distanceTo(aims[0][0])));
+  assert.ok(travel > HALF * 0.8, `a beam sweeps across the floor (${travel.toFixed(1)} m)`);
+  assert.ok(crossed >= 2, `the sweeps cross (${crossed} crossings)`);
+  // Slow: a spot moves at walking pace over the face, not a stage chase.
+  let fastest = 0;
+  for (let i = 1; i < aims.length; i++) fastest = Math.max(fastest, aims[i][0].distanceTo(aims[i - 1][0]) / 0.5);
+  assert.ok(fastest < 4, `the sweep is slow (${fastest.toFixed(2)} m/s at most)`);
+
+  // The beam lights the steel it falls on, within the bloom budget, falling off with the square of the distance.
+  for (const d of [20, 60, 120, 300]) assert.ok(searchRadiance(d, 0.35) < BLOOM_THRESHOLD, `steel lit by a searchlight ${d} m off stays under the bloom threshold`);
+  assert.ok(searchRadiance(120, 0.35) > 0.12, `the floor a searchlight falls on is visibly lit (${searchRadiance(120, 0.35).toFixed(2)})`);
+  assert.ok(searchRadiance(300, 0.35) < searchRadiance(120, 0.35) * 0.25, 'and dimmer by the square of the distance');
+
+  // The verdict ends the inspection: the lights go out.
+  c.set(site('curing', 0.95), TOP, HALF, FH, { era: 'glass' });
+  run(c, 0.2);
+  assert.equal(c.searchlights().length, 0, 'the searchlights go out with the verdict');
+  c.dispose();
+});
+
+test('curing ends with the floor\'s era material and no crane', () => {
+  const c = makeConstruction('high');
+  c.set(site('inspecting', 0.8), TOP, HALF, FH);
+  run(c, 1);
+  c.set(site('curing', 0.95), TOP, HALF, FH, { era: 'glass' });
+  run(c, 1.2);
+  let s = c.state()!;
+  assert.ok(s.frameTint > 0 && s.frameFade === 1, 'a second in, the frame is turning from primer to the floor\'s finish');
+  run(c, 1.2);
+  s = c.state()!;
+  assert.ok(s.frameFade > 0 && s.frameFade < 1, `then it fades into the floor (${s.frameFade.toFixed(2)})`);
+  assert.ok(s.netDrop > 0, 'the netting is coming down');
+  assert.equal(s.lamp, 'steady', 'the crane\'s lamp goes steady');
+  assert.equal(s.floods, false, 'the floods are off');
+  run(c, 2);
+  s = c.state()!;
+  assert.equal(s.frameFade, 0, 'after four seconds the frame has cured away');
+  assert.equal(s.frameTint, 1);
+  assert.equal(s.netDrop, 1);
+  const f = c.finish();
+  assert.ok(f && f.floor === 'era' && f.era === 'glass', `the floor finishes in its era's material (${JSON.stringify(f)})`);
+  assert.equal(f!.tone.getHex(), ERA_TONE.glass.getHex(), 'the frame\'s last paint is the era\'s tone');
+  const crane = part(c.object, 'construction:crane');
+  const parked = constructionState(site('waiting', 1), TOP, HALF, FH).slew;
+  run(c, 20);
+  assert.ok(Math.abs(part(c.object, 'construction:slew').rotation.y - parked) < 1e-3, 'the crane has slewed to park');
+  assert.equal(c.finish()!.windows, null, 'a shipped floor is not lit yet');
+
+  // Waiting on his review: the floor stays dark and the parked crane stays.
+  c.set(site('waiting', 1), TOP, HALF, FH, { era: 'glass' });
+  assert.equal(run(c, 60), false, 'a waiting site holds still');
+  assert.ok(crane.parent, 'the crane stays parked while the PR waits');
+  assert.equal(c.finish()!.windows, null, 'its windows stay dark');
+
+  // Merged: the windows light row by row, then the crane comes down.
+  c.set(site('curing', 1), TOP, HALF, FH, { era: 'glass' });
+  const lit: number[] = [];
+  for (let i = 0; i < 8; i++) {
+    run(c, 0.5);
+    lit.push(c.finish()!.windows ?? -1);
+  }
+  assert.ok(lit[0] > 0 && lit[0] < 1, `the windows begin to light (${lit[0]})`);
+  for (let i = 1; i < lit.length; i++) assert.ok(lit[i] >= lit[i - 1], 'row by row, never going dark again');
+  assert.ok(lit.at(-1) === 1, 'until every row is lit');
+  run(c, 8);
+  assert.equal(c.object.getObjectByName('construction:crane'), undefined, 'no crane is left');
+  assert.equal(c.state()?.crane ?? null, null);
+  assert.equal(c.finish()!.floor, 'era', 'the floor stays in its era\'s material');
+  assert.equal(c.finish()!.windows, 1, 'and lit');
+  assert.equal(run(c, 30), false, 'then nothing moves');
+  c.dispose();
+});
+
+test('scar ends with a primer floor and a work lamp', () => {
+  const c = makeConstruction('high');
+  c.set(site('inspecting', 0.8), TOP, HALF, FH);
+  run(c, 1);
+  const beams = part<THREE.InstancedMesh>(c.object, 'construction:beams');
+  const total = beams.count;
+  c.set(site('scar', 1), TOP, HALF, FH, { era: 'brick' });
+  run(c, 2);
+  let s = c.state()!;
+  assert.ok(s.netDrop > 0.9, 'the netting drops first');
+  assert.ok(s.strike > 0 && s.strike < 1, 'the skeleton is coming down');
+  assert.ok(s.crane, 'the crane is still up, lowering steel');
+  assert.equal(c.workLamp(), null, 'no work lamp while the crew strikes the site');
+  const fades = beams.userData.fade as Float32Array;
+  assert.ok(fades && fades.length >= total, 'each beam fades on its own');
+  run(c, 4.5);
+  s = c.state()!;
+  assert.equal(s.strike, 1, 'after six seconds the skeleton is down');
+  assert.equal(s.dismantle, 1, 'and the crane dismantled');
+  assert.equal(c.object.getObjectByName('construction:crane'), undefined, 'no crane is left');
+  assert.equal(c.object.getObjectByName('construction:beams'), undefined, 'no frame is left');
+  const f = c.finish();
+  assert.ok(f && f.floor === 'primer', `the site ends on the primer floor (${JSON.stringify(f)})`);
+  const lamp = c.workLamp();
+  assert.ok(lamp, 'a single work lamp is left burning');
+  assert.ok(lamp!.at.y > TOP + 0.5 && lamp!.at.y < TOP + FH, `on the scar floor (${lamp!.at.y.toFixed(2)} m)`);
+  assert.ok(Math.max(Math.abs(lamp!.at.x), Math.abs(lamp!.at.z)) < HALF + 1.2 && Math.min(Math.abs(lamp!.at.x), Math.abs(lamp!.at.z)) > HALF - 1.5, 'clamped at a bare corner');
+  assert.ok(lamp!.intensity > 0 && workLampRadiance(1, 0.3) < BLOOM_THRESHOLD, 'burning, within the bloom budget a metre off');
+  assert.equal(run(c, 3600), false, 'nothing moves for the rest of the evening');
+  assert.ok(c.workLamp(), 'and the lamp still burns an hour on');
+  c.dispose();
+
+  // A run that came down without a recorded attempt leaves nothing at all.
+  const t = makeConstruction('high');
+  t.set(site('framing', 0.6), TOP, HALF, FH);
+  run(t, 1);
+  t.set(site('teardown', 1), TOP, HALF, FH);
+  run(t, 7);
+  assert.equal(t.object.children.length, 0, 'teardown leaves no floor, no crane and no lamp');
+  assert.equal(t.workLamp(), null);
+  assert.equal(t.finish()?.floor ?? null, null);
+  t.dispose();
 });

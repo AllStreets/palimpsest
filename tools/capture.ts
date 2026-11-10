@@ -581,6 +581,98 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       }
     },
 
+    async lifecycle(page) {
+      // The rest of a run's life on its site (CAPTURE_ECONOMY=live, Task 27), every step a real event of the economy's
+      // clock: the guild's searchlights sweeping a finished frame while its inspection runs (assay-kit), that
+      // inspection failing (the clock is told to fail it) so the site is struck onto its scar and a work lamp is left
+      // burning, then the harbour run's frame curing into its floor, the PR merging, the windows lighting row by row and
+      // the crane climbing down. LIFECYCLE_ONLY=inspection stops after the searchlights.
+      type SV = { stage: string; progress: number; crane: number[]; top: number; floorHeight: number; centre: number[]; searchlights: Array<{ at: number[]; end: number[] }>; frameFade: number; strike: number; dismantle: number; windows: number | null; workLamp: number[] | null; floor: string | null; busy: boolean; panes: number; era: string | null };
+      type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): SV | null; home(): void };
+      const dbg = (): Promise<Array<{ repo: string; stage: string }>> => page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites());
+      const view = (repo: string): Promise<SV | null> => page.evaluate((r) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r), repo);
+      const step = async (ms: number): Promise<void> => {
+        economy?.tick(ms);
+        await economy?.idle();
+        await page.waitForTimeout(300);
+      };
+      const log = async (repo: string, what: string): Promise<SV> => {
+        const s = (await view(repo))!;
+        console.log(`  ${what}: ${repo} ${s?.stage} fade ${s?.frameFade.toFixed(2)} strike ${s?.strike.toFixed(2)} dismantle ${s?.dismantle.toFixed(2)} windows ${s?.windows} lamp ${!!s?.workLamp} floor ${s?.floor} ${s?.era} panes ${s?.panes} lights ${s?.searchlights.length} ${s?.searchlights.map((l) => l.end.map((v) => v.toFixed(0)).join(',')).join(' ')}`);
+        return s;
+      };
+      await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().some((s) => s.stage === 'inspecting'), null, { timeout: 15_000 });
+      const insp = (await dbg()).find((s) => s.stage === 'inspecting')!.repo;
+      const work = (await dbg()).find((s) => s.stage === 'framing')?.repo ?? null;
+      await step(1000);
+      let s = await log(insp, 'inspecting');
+      const [cx, cz] = s.centre;
+      const top = s.top;
+      // From the plaza's city side, the home view's bearing, where the guild set up.
+      const B = [0.63, 0.78];
+      await chrome(page, true);
+      await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.home());
+      await page.waitForTimeout(3500);
+      await shoot(page, 'inspection-home');
+      await chrome(page, false);
+      const lens = s.searchlights[0]?.at ?? [cx + 40, 2, cz + 40];
+      await still(page, 'inspection', [cx + B[0] * 150 - 40, Math.max(18, top * 0.25), cz + B[1] * 150 + 30], [cx, top * 0.72, cz]);
+      await still(page, 'inspection-plaza', [lens[0] + B[0] * 14 - 6, 3.2, lens[2] + B[1] * 14 + 4], [cx, top + 2, cz]);
+      await still(page, 'inspection-up', [cx + B[0] * 70 + 25, top - 70, cz + B[1] * 70 - 20], [cx, top + 1, cz]);
+      await still(page, 'inspection-close', [cx + B[0] * 34 + 6, top + 11, cz + B[1] * 34 - 6], [cx, top + s.floorHeight * 0.5, cz]);
+      await page.waitForTimeout(4000);
+      await still(page, 'inspection-close-2', [cx + B[0] * 34 + 6, top + 11, cz + B[1] * 34 - 6], [cx, top + s.floorHeight * 0.5, cz]);
+      await still(page, 'inspection-far', [cx + B[0] * 420 + 120, 60, cz + B[1] * 420 - 60], [cx, top * 0.7, cz]);
+      if (process.env.LIFECYCLE_ONLY === 'inspection') return;
+
+      // The verdict at 190 script seconds fails: the site is struck onto its scar.
+      await step(8600);
+      s = await log(insp, 'verdict');
+      const scarEye: V3 = [cx + B[0] * 40 + 8, top + 9, cz + B[1] * 40 - 4];
+      const scarAt: V3 = [cx + 2, top + s.floorHeight * 0.45, cz + 2];
+      await page.waitForTimeout(1800);
+      await log(insp, 'striking');
+      await still(page, 'scar-strike', scarEye, scarAt);
+      await page.waitForTimeout(6000);
+      s = await log(insp, 'struck');
+      await still(page, 'scar', scarEye, scarAt);
+      const wl = s.workLamp ?? [cx + 13, top + 2.6, cz + 13];
+      await still(page, 'scar-lamp', [wl[0] + 7, wl[1] + 1.2, wl[2] + 9], [wl[0] - 4, wl[1] - 0.6, wl[2] - 2]);
+      await still(page, 'scar-far', [cx + B[0] * 260 + 40, top * 0.7 + 20, cz + B[1] * 260 - 30], [cx, top - 4, cz]);
+      if (!work) return;
+
+      // The harbour run: inspected and passed at 370 script seconds, so its frame cures into the floor and its PR waits.
+      const h = (await view(work))!;
+      const [hx, hz] = h.centre;
+      const ht = h.top;
+      const cureEye: V3 = [hx + B[0] * 42 + 6, ht + 12, hz + B[1] * 42 - 6];
+      const cureAt: V3 = [hx, ht + h.floorHeight * 0.5, hz];
+      await step(9000);
+      await log(work, 'verdict');
+      await page.waitForTimeout(900);
+      await log(work, 'curing');
+      await still(page, 'cure', cureEye, cureAt);
+      await page.waitForTimeout(4500);
+      await log(work, 'cured');
+      await still(page, 'cure-done', cureEye, cureAt);
+      // Merged at 520: the windows light row by row, then the crane climbs down.
+      await step(7500);
+      await page.waitForTimeout(1600);
+      await log(work, 'lighting');
+      await still(page, 'cured-lighting', cureEye, cureAt);
+      await page.waitForTimeout(3500);
+      await log(work, 'dismantling');
+      await still(page, 'cured-dismantle', cureEye, cureAt);
+      await page.waitForTimeout(7000);
+      await log(work, 'lit');
+      await still(page, 'cured', cureEye, cureAt);
+      await still(page, 'cured-far', [hx + B[0] * 260 + 40, ht * 0.7 + 20, hz + B[1] * 260 - 30], [hx, ht - 4, hz]);
+      await chrome(page, true);
+      await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.home());
+      await page.waitForTimeout(3500);
+      await shoot(page, 'lifecycle-home');
+    },
+
     async hero(page) {
       // The whole sample city at dusk from above the rooftops, the sunlit faces turned to the eye.
       await chrome(page, false);
@@ -749,7 +841,9 @@ async function main(): Promise<void> {
     const { setMarketExtras } = await import('../engine/market/api.js');
     const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
     setMarketExtras({ sites: economySites, trips: economyTrips });
-    economy = economyClock({ now: () => Date.now(), speed: 20 });
+    // The lifecycle shot has the clock fail the inspecting repo's inspection, so a scar is struck (CAPTURE_FAIL overrides).
+    const fail = process.env.CAPTURE_FAIL ? process.env.CAPTURE_FAIL.split(',') : wanted.includes('lifecycle') ? ['lantern/assay-kit'] : [];
+    economy = economyClock({ now: () => Date.now(), speed: 20, fail });
   }
   const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   try {

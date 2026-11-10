@@ -564,6 +564,142 @@ async function constructionChecks(page: Page): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- inspection, the cure and the scar (Task 27)
+
+/**
+ * The rest of a run's life on its site, every step a real event from the
+ * economy's clock: a run under inspection is swept by two searchlights from
+ * the plaza edge (inspection.png); a PR that merges lights its floor's
+ * windows row by row and its crane comes down (cured.png); an inspection the
+ * clock is told to fail strikes the site onto its scar floor and leaves one
+ * work lamp burning (scar.png). Runs after constructionChecks.
+ */
+async function lifecycleChecks(page: Page): Promise<void> {
+  type SV = {
+    stage: string;
+    progress: number;
+    runId: string;
+    crane: number[];
+    top: number;
+    floorHeight: number;
+    centre: number[];
+    searchlights: Array<{ at: number[]; end: number[] }>;
+    frameFade: number;
+    strike: number;
+    dismantle: number;
+    floor: string | null;
+    era: string | null;
+    windows: number | null;
+    workLamp: number[] | null;
+    busy: boolean;
+    panes: number;
+  };
+  type Dbg = { liveSites(): Array<{ repo: string; stage: string; progress: number; runId: string }>; site(r: string): SV | null; home(): void };
+  const { setMarketExtras } = await import('../engine/market/api.js');
+  const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
+  setMarketExtras({ sites: economySites, trips: economyTrips });
+  const sites = (): Promise<Array<{ repo: string; stage: string; progress: number; runId: string }>> => page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites());
+  const view = (repo: string): Promise<SV | null> => page.evaluate((r) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r), repo);
+  // The repo whose inspection the clock fails: the one still working (the other passed during the construction checks).
+  const working = (await sites()).find((s) => s.stage === 'framing')?.repo ?? 'tidewater/harbor-ledger';
+  const clock = economyClock({ now: () => Date.now(), speed: 20, fail: [working] });
+  const B = [0.63, 0.78];
+  const tick = async (ms: number): Promise<void> => {
+    clock.tick(ms);
+    await clock.idle();
+    await page.waitForTimeout(350);
+  };
+  /** Ticks the clock a second at a time until a site shows `stage` (and the test's own condition), or gives up. */
+  const until = async (want: (s: { repo: string; stage: string; progress: number }) => boolean, ms = 1000, tries = 40): Promise<string | null> => {
+    for (let i = 0; i < tries; i++) {
+      const hit = (await sites()).find(want);
+      if (hit) return hit.repo;
+      await tick(ms);
+    }
+    return null;
+  };
+  try {
+    // inspection.png: the guild's two searchlights sweep the finished frame from the plaza's edge.
+    const insp = await until((s) => s.stage === 'inspecting');
+    check(!!insp, 'a site comes under inspection on the clock');
+    if (insp) {
+      const s = (await view(insp))!;
+      check(s.searchlights.length === 2, `two searchlights sweep the inspected floor (${s.searchlights.length})`);
+      const [cx, cz] = s.centre;
+      for (const l of s.searchlights) {
+        const r = Math.hypot(l.at[0] - cx, l.at[2] - cz);
+        check(r > 56 && r < 70 && l.at[1] < 3, `a searchlight stands on a tripod at the plaza edge (${r.toFixed(1)} m out, ${l.at[1].toFixed(1)} m up)`);
+        check(l.end[1] > s.top - 0.5 && l.end[1] < s.top + s.floorHeight + 1.4 && Math.hypot(l.end[0] - cx, l.end[2] - cz) < 22, `its beam ends on the new floor (${l.end.map((v) => v.toFixed(0)).join(', ')})`);
+      }
+      const a0 = s.searchlights[0].end;
+      await page.waitForTimeout(3000);
+      const a1 = (await view(insp))!.searchlights[0]?.end ?? a0;
+      check(Math.hypot(a1[0] - a0[0], a1[2] - a0[2]) > 0.5, 'the beams sweep between events');
+      await setView(page, [cx + B[0] * 70 + 25, s.top - 70, cz + B[1] * 70 - 20], [cx, s.top + 1, cz]);
+      await debug(page, (x) => x.precompile());
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: join(SHOTS, 'inspection.png') });
+      await page.waitForTimeout(1000);
+      const stats = await debug(page, (x) => x.stats());
+      const fps = await pageFps(page);
+      console.log(`info  inspection: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+      check(fps >= overviewFps - 5, `the searchlights hold the frame rate (${fps.toFixed(0)} fps)`);
+      await debug(page, (x) => (x as unknown as { home(): void }).home());
+      await page.waitForTimeout(2500);
+      const home = await debug(page, (x) => x.stats());
+      const homeFps = await pageFps(page);
+      console.log(`info  city from home under inspection: ${homeFps.toFixed(0)} fps, ${home.calls} draw calls`);
+      check(homeFps >= overviewFps - 5, `the city from home holds its frame rate under inspection (${homeFps.toFixed(0)} fps)`);
+    }
+
+    // cured.png: a PR merges: its floor's windows light row by row and its crane climbs down; nothing of the site is left.
+    const lit = await until((s) => s.stage === 'curing' && s.progress >= 1, 1000, 30);
+    check(!!lit, 'a merged site cures on the clock');
+    if (lit) {
+      await page.waitForTimeout(1200);
+      const mid = (await view(lit))!;
+      check(mid.windows !== null && mid.windows > 0, `the merged floor's windows light (${mid.windows})`);
+      await page.waitForTimeout(12_000);
+      const s = (await view(lit))!;
+      // A floor whose era draws its glazing as panes lights them row by row; one that draws none (a sci-fi skin) has none to light.
+      console.log(`info  merged floor: ${s.era}, ${s.panes} panes lit row by row`);
+      check(s.windows === 1, `every row of the floor is lit (${s.panes} panes)`);
+      check(s.crane.length === 0 && s.dismantle === 1, 'the crane has climbed down and is gone');
+      check(s.floor === 'era' && s.frameFade === 0, `the frame has cured into the floor's ${s.era} finish`);
+      const [cx, cz] = s.centre;
+      await setView(page, [cx + B[0] * 42 + 6, s.top + 12, cz + B[1] * 42 - 6], [cx, s.top + s.floorHeight * 0.5, cz]);
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: join(SHOTS, 'cured.png') });
+    }
+
+    // scar.png: the failed inspection strikes the site onto its primer floor, one work lamp left burning.
+    const scar = await until((s) => s.stage === 'scar', 1000, 40);
+    check(scar === working, `the failed inspection leaves a scar on ${working} (${scar})`);
+    if (scar) {
+      const s0 = (await view(scar))!;
+      await page.waitForTimeout(7500);
+      const s = (await view(scar))!;
+      check(s.strike === 1 && s.crane.length === 0, 'the skeleton is struck and the crane taken down');
+      check(s.floor === 'primer' && !!s.workLamp, 'the site ends on its primer floor with a work lamp burning');
+      const city = await cityOf(page);
+      const floors = city.find((d) => d.repo === scar)?.tower.floors ?? [];
+      check(floors.some((f) => f.id === `${scar}#scar-${s0.runId}` && f.earned?.state === 'scar'), 'the tower carries the scar floor');
+      const lamp = s.workLamp!;
+      check(lamp[1] > s.top && lamp[1] < s.top + s.floorHeight, `the lamp burns on the scar floor (${lamp[1].toFixed(1)} m, floor ${s.top.toFixed(1)} to ${(s.top + s.floorHeight).toFixed(1)})`);
+      const [cx, cz] = s.centre;
+      await setView(page, [cx + B[0] * 40 + 8, s.top + 9, cz + B[1] * 40 - 4], [cx + 2, s.top + s.floorHeight * 0.45, cz + 2]);
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: join(SHOTS, 'scar.png') });
+      // For the rest of the evening: no event moves it, and the lamp still burns.
+      await page.waitForTimeout(3000);
+      check(!!(await view(scar))?.workLamp, 'the work lamp is still burning with no event since');
+    }
+  } finally {
+    clock.stop();
+    setMarketExtras({});
+  }
+}
+
 // ---------------------------------------------------------------- the exchange (Task 25)
 
 /**
@@ -1502,6 +1638,7 @@ async function main(): Promise<void> {
       await quarterChecks(page);
       await exchangeChecks(page);
       await constructionChecks(page);
+      await lifecycleChecks(page);
       await silhouetteChecks(page);
     }
 

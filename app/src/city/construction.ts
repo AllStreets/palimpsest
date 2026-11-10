@@ -15,8 +15,22 @@
  *   welder's arc strikes and breaks, throwing sparks that fall, bounce on the
  *   roof or drop past the facade, and lighting the steel round it with a
  *   flickering blue-white point light.
- * - `inspecting`, `curing`, `waiting`: the frame complete and the crane
- *   parked (Task 27 adds the searchlights, the cure and the scar).
+ * - `inspecting` (Task 27): the frame complete and the crane parked, while
+ *   two inspection guild searchlights on tripods at the plaza's edge sweep
+ *   the new floor through the haze, slowly, crossing, for as long as the
+ *   inspection really runs (until its verdict changes the stage).
+ * - `curing`: the verdict passed. Over four seconds the netting is let down
+ *   the face and the frame cross-fades from primer into the finished floor's
+ *   tone and away, leaving the floor the city lays there in its era's
+ *   material; the crane parks and its lamp goes steady. A merge (`curing` at
+ *   progress 1) then lights the floor's windows row by row and the crane
+ *   climbs down its own mast; a PR left open (`waiting`) keeps the floor
+ *   dark and the crane parked.
+ * - `teardown`: the netting drops, the skeleton is struck piece by piece in
+ *   reverse erection order and the crane dismantles, over six seconds; no
+ *   floor. `scar` is the same teardown ending on the primer floor of a
+ *   failed inspection, with one work lamp left burning on its bare corner
+ *   for the rest of the evening.
  *
  * Nothing advances on a timer. Every position the frame, the crane, the
  * trolley and the hook take is a pure function of the site's stage and
@@ -43,7 +57,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-import type { SiteStage, SiteState } from '../../../shared/types.js';
+import type { Era, SiteStage, SiteState } from '../../../shared/types.js';
 import { EXPOSURE, FLICKER, FLOOD } from './post.js';
 
 // ---------------------------------------------------------------- the pure state
@@ -147,7 +161,62 @@ export interface ConstructionState {
   lamp: 'blink' | 'steady';
   /** Whether the deck's work floodlights burn: from the crane's raising to the end of inspection, switched by stage. */
   floods: boolean;
+  /** How opaque the frame stands: 1 standing, 0 cured away into the finished floor (the cure's cross-fade). */
+  frameFade: number;
+  /** How far the frame's paint has turned from primer to the finished floor's tone. */
+  frameTint: number;
+  /** How far the netting has been let down the face: 0 hung, 1 down and gone. */
+  netDrop: number;
+  /** How far the skeleton has been struck, piece by piece in reverse erection order: 0 standing, 1 gone. */
+  strike: number;
+  /** How far the crane has been dismantled (it climbs down its own mast): 0 standing, 1 gone. */
+  dismantle: number;
+  /** Whether the two guild searchlights sweep the floor (the inspection). */
+  searchlights: boolean;
+  /** The new floor's windows lighting row by row, 0 dark to 1 all lit; null while they are not this site's to light. */
+  windows: number | null;
+  /** Whether a work lamp is left burning on the floor (a scar). */
+  workLamp: boolean;
+  /** What the floor finishes as: its era's material (cured), primer (a scar), or nothing (still building, or struck). */
+  floor: 'era' | 'primer' | null;
 }
+
+/** Seconds the cure takes: the netting let down, the frame cross-faded into the finished floor. */
+export const CURE_S = 4;
+/** Seconds a teardown takes: netting, skeleton, then the crane. */
+export const STRIKE_S = 6;
+/** Seconds the windows of a merged floor take to light, row by row. */
+export const WINDOWS_S = 3.2;
+/** Seconds the crane takes to climb down off a merged floor, once its windows are lit. */
+export const DISMANTLE_S = 6;
+/** The pause between the last row lighting and the crane starting down. */
+const DISMANTLE_PAUSE = 0.6;
+
+/**
+ * Seconds since each transition began: the cure (the verdict passed), the
+ * lighting (the merge) and the strike (teardown or scar). A transition is a
+ * fixed animation started by its event, never a clock of its own: left out,
+ * it is long over (the settled state).
+ */
+export interface StageClocks {
+  cure?: number;
+  lit?: number;
+  strike?: number;
+}
+
+/** What stood when a teardown began: the frame's counts, how far it had cured, and whether the crane stood. */
+export interface Before {
+  columns: number;
+  beams: number;
+  decks: number;
+  nets: number;
+  frameFade: number;
+  netDrop: number;
+  crane: boolean;
+}
+
+const ease = (x: number): number => x * x * (3 - 2 * x);
+const smooth = (x: number, a: number, b: number): number => THREE.MathUtils.smoothstep(x, a, b);
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 /** The jib's angle so that it points from the mast at a plan point. */
@@ -159,7 +228,7 @@ const aim = (from: { x: number; z: number }, x: number, z: number): number => Ma
  * `top` is the tower's roof, `half` its top floor's half-width and
  * `floorHeight` the new floor's height.
  */
-export function constructionState(site: SiteState, top: number, half: number, floorHeight: number): ConstructionState {
+export function constructionState(site: SiteState, top: number, half: number, floorHeight: number, clocks: StageClocks = {}, before?: Before): ConstructionState {
   const lay = frameLayout(half);
   const p = clamp01(site.progress);
   const jib = Math.max(26, Math.round(half * 3 + 6));
@@ -181,10 +250,20 @@ export function constructionState(site: SiteState, top: number, half: number, fl
     weldAt: null,
     lamp: 'blink',
     floods: true,
+    frameFade: 1,
+    frameTint: 0,
+    netDrop: 0,
+    strike: 0,
+    dismantle: 0,
+    searchlights: false,
+    windows: null,
+    workLamp: false,
+    floor: null,
   };
   // Parked: the jib turned to the tower's diagonal, trolley in, hook up under the jib.
   const parked = { slew: aim(lay.mast, half, -half), trolley: 6, hook: -2.6 };
   const edgesShown = (n: number): number => lay.beams.slice(0, n).filter((b) => b.edge).length;
+  const whole = { columns: { shown: cTotal, total: cTotal }, beams: { shown: bTotal, total: bTotal }, decks: { shown: dTotal, total: dTotal } };
 
   switch (site.stage) {
     case 'crane': {
@@ -221,15 +300,198 @@ export function constructionState(site: SiteState, top: number, half: number, fl
       };
     }
     case 'inspecting':
-      return { ...base, columns: { shown: cTotal, total: cTotal }, beams: { shown: bTotal, total: bTotal }, decks: { shown: dTotal, total: dTotal }, nets: edgesShown(bTotal), ...parked };
+      return { ...base, ...whole, nets: edgesShown(bTotal), ...parked, searchlights: true };
     case 'curing':
-      return { ...base, columns: { shown: cTotal, total: cTotal }, beams: { shown: bTotal, total: bTotal }, decks: { shown: dTotal, total: dTotal }, ...parked, lamp: 'steady', floods: false };
-    case 'waiting':
-      return { ...base, ...parked, lamp: 'steady', floods: false };
+    case 'waiting': {
+      // The cure: the netting let down first, the paint turning to the floor's finish, the frame fading into it.
+      const cure = clamp01((clocks.cure ?? Infinity) / CURE_S);
+      const cured = {
+        ...base,
+        ...whole,
+        nets: edgesShown(bTotal),
+        ...parked,
+        lamp: 'steady' as const,
+        floods: false,
+        frameTint: smooth(cure, 0, 0.5),
+        frameFade: 1 - smooth(cure, 0.5, 1),
+        netDrop: smooth(cure, 0, 0.4),
+        floor: 'era' as const,
+      };
+      if (site.stage === 'waiting' || p < 1) return cured;
+      // Merged: once the cure is done the windows light row by row, then the crane climbs down its mast.
+      const since = Math.min(clocks.lit ?? Infinity, (clocks.cure ?? Infinity) - CURE_S);
+      const windows = clamp01(since / WINDOWS_S);
+      const dismantle = clamp01((since - WINDOWS_S - DISMANTLE_PAUSE) / DISMANTLE_S);
+      return { ...cured, windows, dismantle, crane: dismantle >= 1 ? null : crane, lamp: dismantle > 0 ? 'steady' : cured.lamp };
+    }
+    case 'teardown':
+    case 'scar': {
+      // The crew strikes the site: the netting is let down, the skeleton lowered piece by piece, then the crane taken down.
+      const t = clocks.strike ?? Infinity;
+      const b = before ?? { columns: 0, beams: 0, decks: 0, nets: 0, frameFade: 0, netDrop: 1, crane: false };
+      const dismantle = b.crane ? clamp01((t - 2.4) / 3.6) : 1;
+      return {
+        ...base,
+        columns: { shown: b.columns, total: cTotal },
+        beams: { shown: b.beams, total: bTotal },
+        decks: { shown: b.decks, total: dTotal },
+        nets: b.nets,
+        ...parked,
+        lamp: 'steady',
+        floods: false,
+        frameFade: b.frameFade,
+        netDrop: Math.max(b.netDrop, smooth(t, 0, 1.4)),
+        strike: clamp01((t - 0.6) / 3),
+        dismantle,
+        crane: dismantle >= 1 ? null : crane,
+        workLamp: site.stage === 'scar' && t >= STRIKE_S,
+        floor: site.stage === 'scar' ? 'primer' : null,
+      };
+    }
     default:
-      // Teardown and the scar are Task 27's: nothing stands here yet.
       return { ...base, crane: null };
   }
+}
+
+// ---------------------------------------------------------------- the inspection's searchlights
+
+/** The district plaza's paving ends at grid.ts PLAZA_RADIUS (72 m); the guild sets its tripods up just inside the lantern ring. */
+const SEARCH_RING = 61;
+/** The plaza edge faces the city's home view (view.ts BEARING), so the beams rise in front of the tower as the city is seen. */
+const SEARCH_BEARING = Math.atan2(0.78, 0.63);
+/** The two tripods stand this far either side of that bearing, so their beams cross over the floor. */
+const SEARCH_SPREAD = 0.42;
+/** The lens centre above the paving, on its tripod. */
+const SEARCH_LENS_Y = 1.72;
+/** The lens's radius, and one full sweep across the floor and back, in seconds. */
+const SEARCH_LENS_R = 0.3;
+const SEARCH_PERIOD = 44;
+
+/**
+ * A searchlight's light on the steel: a 2 kW xenon lamp of the kind used for
+ * night inspection, whose beam keeps its candela over the distance (inverse
+ * square, held level inside 90 m, where the beam has not yet formed into a
+ * spot). At that distance pale steel of albedo 0.35 comes to 0.8, under the
+ * bloom threshold; at 120 m it is about half that. Cool white, mixed far
+ * toward white, so the primer stays red and the net green.
+ */
+export const SEARCH = (() => {
+  const near = 90;
+  const albedo = 0.35;
+  const peak = Math.round((0.8 * Math.PI * near * near) / (albedo * EXPOSURE));
+  return { peak, near, color: new THREE.Color(0.93, 0.96, 1) } as const;
+})();
+
+/** How bright steel of `albedo` looks `d` metres from a searchlight in its beam, after exposure (the shader's term in JS). */
+export function searchRadiance(d: number, albedo: number): number {
+  return (SEARCH.peak / Math.max(d, SEARCH.near) ** 2) * (albedo / Math.PI) * EXPOSURE;
+}
+
+/**
+ * The guild sizes its lamps to the throw, as a crew picks a lamp for the
+ * distance: each lamp is SEARCH.peak times this, so the floor it falls on is
+ * lit about as well on a tall tower as on a short one. The light still falls
+ * off with the square of the distance from each lamp.
+ */
+export function searchThrow(length: number): number {
+  return THREE.MathUtils.clamp((length / SEARCH.near) ** 2, 1, 40);
+}
+
+export interface Searchlight {
+  /** The lens, in the site's space. */
+  at: THREE.Vector3;
+  /** Where the beam points (unit). */
+  dir: THREE.Vector3;
+  /** How far the beam runs before it meets the floor. */
+  length: number;
+  /** The beam's radius at the lens and where it meets the floor. */
+  r0: number;
+  r1: number;
+}
+
+/** Where a ray first enters a box, or null; t from 0. */
+function enterBox(o: THREE.Vector3, d: THREE.Vector3, min: THREE.Vector3, max: THREE.Vector3): number | null {
+  let t0 = 0;
+  let t1 = Infinity;
+  for (const k of ['x', 'y', 'z'] as const) {
+    if (Math.abs(d[k]) < 1e-9) {
+      if (o[k] < min[k] || o[k] > max[k]) return null;
+      continue;
+    }
+    const a = (min[k] - o[k]) / d[k];
+    const b = (max[k] - o[k]) / d[k];
+    t0 = Math.max(t0, Math.min(a, b));
+    t1 = Math.min(t1, Math.max(a, b));
+  }
+  return t0 <= t1 ? t0 : null;
+}
+
+/**
+ * The two searchlights at `clock` seconds: each stands on its tripod at the
+ * plaza edge and points at a spot that walks slowly along the two faces of
+ * the new floor that look toward the city, the two in opposite phase so the
+ * beams cross over the corner; each spot also rises and falls a little up
+ * the face. The beam ends where it meets the floor. Pure: the same clock
+ * always aims them the same way.
+ */
+export function searchAims(clock: number, top: number, half: number, floorHeight: number): Searchlight[] {
+  const out: Searchlight[] = [];
+  const env = half + 0.6;
+  const min = new THREE.Vector3(-env, top - 0.3, -env);
+  const max = new THREE.Vector3(env, top + floorHeight + NET_OVER, env);
+  // The faces toward the city: the +z face (x from -0.8 half to the corner) then the +x face (z from the corner to -0.8 half).
+  const run = 1.8 * half;
+  const along = (u: number): [number, number] => {
+    const s = u * run;
+    return s <= 0 ? [half + s, env] : [env, half - s];
+  };
+  for (let i = 0; i < 2; i++) {
+    const a = SEARCH_BEARING + (i === 0 ? -SEARCH_SPREAD : SEARCH_SPREAD);
+    const at = new THREE.Vector3(Math.cos(a) * SEARCH_RING, SEARCH_LENS_Y, Math.sin(a) * SEARCH_RING);
+    const w = (2 * Math.PI) / SEARCH_PERIOD;
+    const u = (i === 0 ? 1 : -1) * 0.8 * Math.sin(w * clock + 0.4);
+    const [x, z] = along(u);
+    const y = top + floorHeight * (0.55 + 0.22 * Math.sin((2 * Math.PI * clock) / (13 + 4 * i) + i * 1.9));
+    const dir = new THREE.Vector3(x, y, z).sub(at).normalize();
+    const length = enterBox(at, dir, min, max) ?? at.distanceTo(new THREE.Vector3(x, y, z));
+    out.push({ at, dir, length, r0: SEARCH_LENS_R, r1: Math.min(4.2, floorHeight * 0.85) });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- the cure's tones and the scar's lamp
+
+/**
+ * The tone of each era's finished wall at dusk, which the frame's paint
+ * turns to as it cures into the floor (the tower's own variant takes over as
+ * the frame fades): limestone, brick, glazing, titanium, sci-fi panel.
+ */
+export const ERA_TONE: Record<Era, THREE.Color> = {
+  stone: new THREE.Color(0xb3a58c),
+  brick: new THREE.Color(0x8e5641),
+  glass: new THREE.Color(0x4f5f6a),
+  titanium: new THREE.Color(0x8d939a),
+  scifi: new THREE.Color(0xc5ccd2),
+};
+/** Before the floor's era is known, the frame cures toward a plain concrete grey. */
+const CURE_GREY = new THREE.Color(0x8a8784);
+
+/**
+ * The work lamp left on a scar: a caged 3000 K lamp clamped to the bare
+ * corner post. Its light (one of the city's pool, post.ts FLICKER) is set so
+ * primer a metre off comes to 0.85 after exposure, under the bloom threshold,
+ * and falls off with the square of the distance.
+ */
+export const WORK_LAMP = (() => {
+  const albedo = 0.3;
+  const near = 1;
+  const peak = Math.round(((0.85 * Math.PI * near * near) / (albedo * EXPOSURE)) * 10) / 10;
+  return { peak, near, color: 0xffc48a } as const;
+})();
+
+/** How bright a surface of `albedo` looks `d` metres from the scar's work lamp, after exposure. */
+export function workLampRadiance(d: number, albedo: number): number {
+  return (WORK_LAMP.peak / Math.max(d, WORK_LAMP.near) ** 2) * (albedo / Math.PI) * EXPOSURE;
 }
 
 // ---------------------------------------------------------------- the arc's pattern, shared with the shader
@@ -768,7 +1030,7 @@ export interface Construction {
   /** Everything standing on the site, in the tower's space (the roof at `top`). */
   object: THREE.Group;
   /** Shows a site at a stage and progress over a roof at `top`, `half` wide, with a new floor `floorHeight` tall; null takes it all down. */
-  set(site: SiteState | null, top: number, half: number, floorHeight: number): boolean;
+  set(site: SiteState | null, top: number, half: number, floorHeight: number, finish?: { era?: Era | null }): boolean;
   /** Eases the crane toward the pose the last event set and runs the sparks and lamps. True while something that casts a shadow moved. */
   update(dt: number): boolean;
   /** The welding arc's light this frame, in the site's space: where it is and how bright (candela), or null when nobody welds. */
@@ -787,6 +1049,18 @@ export interface Construction {
   sparks(): { at: THREE.Vector3; deck: number; half: number; time: number } | null;
   /** Where the lit floodlights are, in the site's space (none when they are off). */
   floods(): THREE.Vector3[];
+  /** The inspection's two searchlights this frame, in the site's space (none outside an inspection). */
+  searchlights(): Searchlight[];
+  /** The scar's work lamp: its lens, where its light sits and how bright it burns (candela); null when none burns. */
+  workLamp(): { at: THREE.Vector3; light: THREE.Vector3; intensity: number } | null;
+  /** What the floor finishes as, the tone the frame cured to and how far its windows have lit (null before any site). */
+  finish(): { floor: 'era' | 'primer' | null; era: Era | null; tone: THREE.Color; windows: number | null } | null;
+  /** The state last shown (tests and the city's debug view). */
+  state(): ConstructionState | null;
+  /** True while a transition (the cure, the lighting, the strike) is still under way. */
+  busy(): boolean;
+  /** Copies the site again where it stands (its object moved). */
+  touch(): void;
   dispose(): void;
 }
 
@@ -814,6 +1088,19 @@ interface Built {
   fh: number;
   floods: THREE.Group;
   lampLevel: number;
+  /** The frame's pieces where they stand, before any is struck or let down. */
+  rest: { columns: THREE.Matrix4[]; beams: THREE.Matrix4[]; decks: THREE.Matrix4[]; nets: THREE.Matrix4[] };
+  /** The mast and its ladder, shortened as the crane climbs down. */
+  mast: THREE.Object3D[];
+  craneHeight: number;
+  search: THREE.Group;
+  heads: THREE.Group[];
+  work: THREE.Group;
+  /** The struck site's crane and frame have been taken off (a scar keeps only its lamp). */
+  struck: boolean;
+  /** Last strike and net drop laid out, so the instances move only when they change. */
+  laid: { strike: number; netDrop: number };
+  craneFade: number;
   disposables: Array<{ dispose(): void }>;
 }
 
@@ -823,6 +1110,10 @@ const PRIMER = 0x5c3024;
 const LAMP_RED = new THREE.Color(9, 0.35, 0.1);
 /** The floodlights' lenses: a warm high-pressure-sodium white, hot enough to bloom. */
 const FLOOD_LENS = new THREE.Color(7.5, 4.6, 2.2);
+/** A searchlight's lens seen down its beam: a xenon white, far over the bloom threshold. */
+const SEARCH_LENS = new THREE.Color(9, 9.6, 10.5);
+/** The scar's work lamp's lens: a warm 3000 K glow that blooms a little. */
+const WORK_LENS = new THREE.Color(5.2, 3.3, 1.7);
 const NET_GREEN = 0x3c5646;
 /** How far above the new floor's top the flood heads stand. */
 const FLOOD_RISE = 2.4;
@@ -875,8 +1166,10 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     const netMat = own(new THREE.MeshStandardMaterial({ color: NET_GREEN, roughness: 1, map: net.map, alphaMap: net.alpha, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
     const lampMat = own(new THREE.MeshBasicMaterial({ color: LAMP_RED.clone(), toneMapped: true }));
     const floodMat = own(new THREE.MeshBasicMaterial({ color: FLOOD_LENS.clone(), toneMapped: true }));
+    const searchMat = own(new THREE.MeshBasicMaterial({ color: SEARCH_LENS.clone(), toneMapped: true }));
+    const workMat = own(new THREE.MeshBasicMaterial({ color: WORK_LENS.clone(), toneMapped: true }));
     // Named by kind: the city draws every site's parts of one kind together (ConstructionField), by these names.
-    for (const [k, m] of Object.entries({ ...mats, net: netMat, lamp: lampMat, flood: floodMat })) m.name = k;
+    for (const [k, m] of Object.entries({ ...mats, net: netMat, lamp: lampMat, flood: floodMat, search: searchMat, work: workMat })) m.name = k;
 
     const mesh = (geo: THREE.BufferGeometry, mat: THREE.Material, name: string, shadow = true): THREE.Mesh => {
       own(geo);
@@ -909,7 +1202,8 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     for (const r of [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4]) {
       ballast.box(Math.cos(r) * reach * 0.82, 0.95, Math.sin(r) * reach * 0.82, 1.6, 0.9, 1.2, -r);
     }
-    crane.add(mesh(mast.build(), mats.yellow, 'construction:mast'));
+    const mastMesh = mesh(mast.build(), mats.yellow, 'construction:mast');
+    crane.add(mastMesh);
     crane.add(mesh(base.build(), mats.dark, 'construction:base'));
     crane.add(mesh(ballast.build(), mats.ballast, 'construction:base-ballast'));
     // The mast's ladder inside, as a dark rail.
@@ -1029,7 +1323,8 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     slew.add(mesh(dark.build(), mats.dark, 'construction:slew-dark'));
     slew.add(mesh(ball.build(), mats.ballast, 'construction:ballast'));
     slew.add(mesh(glass.build(), mats.glass, 'construction:cab-glass', false));
-    crane.add(mesh(ladder.build(), mats.dark, 'construction:ladder'));
+    const ladderMesh = mesh(ladder.build(), mats.dark, 'construction:ladder');
+    crane.add(ladderMesh);
 
     // trolley, hook block, ropes and the load
     const trolley = new THREE.Group();
@@ -1094,22 +1389,28 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     const colGeo = own(iSection(COL_D, 0.37, 0.025, 0.014));
     const columns = new THREE.InstancedMesh(colGeo, mats.primer, lay.columns.length);
     columns.name = 'construction:columns';
-    lay.columns.forEach(([x, z], i) => columns.setMatrixAt(i, new THREE.Matrix4().compose(v(x, top, z), new THREE.Quaternion(), v(1, fh, 1))));
+    const rest = { columns: [] as THREE.Matrix4[], beams: [] as THREE.Matrix4[], decks: [] as THREE.Matrix4[], nets: [] as THREE.Matrix4[] };
+    lay.columns.forEach(([x, z], i) => columns.setMatrixAt(i, rest.columns[i] = new THREE.Matrix4().compose(v(x, top, z), new THREE.Quaternion(), v(1, fh, 1))));
     const beamGeo = own(beamSection(BEAM_D, 0.19, 0.016, 0.01));
     const beams = new THREE.InstancedMesh(beamGeo, mats.primer, lay.beams.length);
     beams.name = 'construction:beams';
     lay.beams.forEach((b, i) => {
       const q = new THREE.Quaternion().setFromAxisAngle(UP, b.dir === 'x' ? 0 : Math.PI / 2);
-      beams.setMatrixAt(i, new THREE.Matrix4().compose(v(b.x, top + fh, b.z), q, v(b.len - COL_D, 1, 1)));
+      beams.setMatrixAt(i, rest.beams[i] = new THREE.Matrix4().compose(v(b.x, top + fh, b.z), q, v(b.len - COL_D, 1, 1)));
     });
     const deckGeo = own(deckSheet(8));
     const decks = new THREE.InstancedMesh(deckGeo, mats.deck, lay.decks.length);
     decks.name = 'construction:decks';
-    lay.decks.forEach(([x, z], i) => decks.setMatrixAt(i, new THREE.Matrix4().compose(v(x, top + fh + 0.065, z), new THREE.Quaternion(), v(lay.bay - 0.12, 1, lay.bay - 0.12))));
+    lay.decks.forEach(([x, z], i) => decks.setMatrixAt(i, rest.decks[i] = new THREE.Matrix4().compose(v(x, top + fh + 0.065, z), new THREE.Quaternion(), v(lay.bay - 0.12, 1, lay.bay - 0.12))));
     const netGeo = own(netPanel(lay.nets[0].len, fh + NET_OVER + 0.3));
     const nets = new THREE.InstancedMesh(netGeo, netMat, lay.nets.length);
     nets.name = 'construction:netting';
-    lay.nets.forEach((nt, i) => nets.setMatrixAt(i, new THREE.Matrix4().compose(v(nt.x, top - 0.3, nt.z), new THREE.Quaternion().setFromAxisAngle(UP, nt.ry), v(1, 1, 1))));
+    lay.nets.forEach((nt, i) => nets.setMatrixAt(i, rest.nets[i] = new THREE.Matrix4().compose(v(nt.x, top - 0.3, nt.z), new THREE.Quaternion().setFromAxisAngle(UP, nt.ry), v(1, 1, 1))));
+    // Each piece fades on its own (the cure, the strike): the city's batches read these as instance alpha.
+    for (const m of [columns, beams, decks, nets]) {
+      m.userData.fade = new Float32Array(m.instanceMatrix.count).fill(1);
+      m.userData.paint = 0;
+    }
     for (const m of [columns, beams, decks]) {
       m.castShadow = true;
       m.receiveShadow = true;
@@ -1152,6 +1453,95 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     floods.add(mesh(lens.build(), floodMat, 'construction:flood-lenses', false));
     floods.userData.at = floodAt;
     object.add(floods);
+
+    // The inspection guild's searchlights: two drum lamps on tripods at the plaza edge, on the side the city sees.
+    const search = new THREE.Group();
+    search.name = 'construction:searchlights';
+    const tripods = new Parts();
+    const searchHeads: THREE.Group[] = [];
+    const drumGeo = new Parts();
+    // A 2 kW xenon drum: a 0.7 m barrel, its cooling fins, the rear cap and the handle; the lens at the front (z 0).
+    drumGeo.add(new THREE.CylinderGeometry(0.36, 0.36, 0.62, 22, 1, true), new THREE.Matrix4().makeRotationX(Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(0, 0, -0.33)));
+    drumGeo.add(new THREE.CylinderGeometry(0.4, 0.4, 0.06, 22), new THREE.Matrix4().makeRotationX(Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(0, 0, -0.02)));
+    for (let k = 0; k < 5; k++) drumGeo.add(new THREE.CylinderGeometry(0.42, 0.42, 0.025, 22), new THREE.Matrix4().makeRotationX(Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(0, 0, -0.2 - k * 0.09)));
+    drumGeo.add(new THREE.CylinderGeometry(0.3, 0.36, 0.14, 22), new THREE.Matrix4().makeRotationX(Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(0, 0, -0.71)));
+    drumGeo.bar(v(0, 0.36, -0.5), v(0, 0.5, -0.36), 0.03, true);
+    drumGeo.bar(v(0, 0.5, -0.36), v(0, 0.5, -0.12), 0.03, true);
+    drumGeo.bar(v(0, 0.5, -0.12), v(0, 0.36, -0.02), 0.03, true);
+    // Trunnions either side, on the yoke's axis.
+    for (const sx of [-1, 1]) drumGeo.add(new THREE.CylinderGeometry(0.06, 0.06, 0.12, 10), new THREE.Matrix4().makeRotationZ(Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(sx * 0.42, 0, -0.33)));
+    const drum = drumGeo.build();
+    const lensGeo = own(new THREE.CircleGeometry(0.31, 24));
+    for (let i = 0; i < 2; i++) {
+      const a = SEARCH_BEARING + (i === 0 ? -SEARCH_SPREAD : SEARCH_SPREAD);
+      const x = Math.cos(a) * SEARCH_RING;
+      const z = Math.sin(a) * SEARCH_RING;
+      // Three splayed legs to a head plate, a centre post, the turntable and a yoke whose forks hold the drum.
+      for (let k = 0; k < 3; k++) {
+        const r = (k / 3) * Math.PI * 2 + a;
+        tripods.bar(v(x + Math.cos(r) * 0.95, 0.02, z + Math.sin(r) * 0.95), v(x, 0.92, z), 0.05);
+        tripods.bar(v(x + Math.cos(r) * 0.45, 0.45, z + Math.sin(r) * 0.45), v(x, 0.62, z), 0.025, true);
+      }
+      tripods.add(new THREE.CylinderGeometry(0.16, 0.16, 0.08, 16), new THREE.Matrix4().makeTranslation(x, 0.95, z));
+      tripods.bar(v(x, 0.95, z), v(x, 1.12, z), 0.12, true);
+      tripods.add(new THREE.CylinderGeometry(0.22, 0.22, 0.06, 18), new THREE.Matrix4().makeTranslation(x, 1.15, z));
+      const toward = Math.atan2(-z, -x);
+      for (const sx of [-1, 1]) {
+        const px = x + Math.cos(toward + Math.PI / 2) * sx * 0.5;
+        const pz = z + Math.sin(toward + Math.PI / 2) * sx * 0.5;
+        tripods.bar(v(x, 1.17, z), v(px, 1.2, pz), 0.05, true);
+        tripods.bar(v(px, 1.2, pz), v(px, SEARCH_LENS_Y, pz), 0.05, true);
+      }
+      // A cable reel and its lead off across the paving to the guild's van.
+      tripods.add(new THREE.CylinderGeometry(0.28, 0.28, 0.18, 16), new THREE.Matrix4().makeRotationX(Math.PI / 2).premultiply(new THREE.Matrix4().makeTranslation(x - Math.cos(a) * 1.6, 0.28, z - Math.sin(a) * 1.6)));
+      tripods.bar(v(x, 0.03, z), v(x - Math.cos(a) * 1.6, 0.03, z - Math.sin(a) * 1.6), 0.025, true);
+      const head = new THREE.Group();
+      head.name = `construction:searchlight-head-${i}`;
+      head.position.set(x, SEARCH_LENS_Y, z);
+      const d = new THREE.Mesh(drum, mats.dark);
+      d.name = `construction:searchlight-drum-${i}`;
+      d.castShadow = false;
+      d.userData.live = true;
+      const lens = new THREE.Mesh(lensGeo, searchMat);
+      lens.name = `construction:searchlight-lens-${i}`;
+      lens.userData.live = true;
+      head.add(d, lens);
+      searchHeads.push(head);
+      search.add(head);
+    }
+    own(drum);
+    search.add(mesh(tripods.build(), mats.dark, 'construction:searchlight-tripods', false));
+    search.visible = false;
+    object.add(search);
+
+    // The scar's work lamp: a caged lamp on a clamp bracket off the bare corner post that faces the city, raking the primer.
+    const work = new THREE.Group();
+    work.name = 'construction:worklamp';
+    const wy = top + fh * 0.62;
+    const wc = half - 0.1;
+    const wl = half + 0.5;
+    const bracket = new Parts();
+    bracket.bar(v(wc, wy - 0.1, wc), v(wl, wy - 0.1, wl), 0.05);
+    bracket.box(wc, wy - 0.1, wc, 0.22, 0.14, 0.22);
+    bracket.bar(v(wl, wy - 0.1, wl), v(wl, wy + 0.05, wl), 0.04);
+    const lampHead = new Parts();
+    lampHead.box(0, 0, -0.08, 0.3, 0.24, 0.16);
+    for (const hx of [-0.1, 0, 0.1]) lampHead.bar(v(hx, -0.12, 0.01), v(hx, 0.12, 0.01), 0.014, true);
+    lampHead.bar(v(-0.18, 0.13, -0.05), v(0.18, 0.13, -0.05), 0.02, true);
+    const lampAim = new THREE.Matrix4().compose(v(wl, wy + 0.12, wl), new THREE.Quaternion().setFromEuler(new THREE.Euler(0.18, -Math.PI / 2 - 0.35, 0, 'YXZ')), v(1, 1, 1));
+    const workSteel = new Parts();
+    workSteel.add(bracket.build());
+    workSteel.add(lampHead.build(), lampAim);
+    work.add(mesh(workSteel.build(), mats.dark, 'construction:worklamp-steel', false));
+    const workLens = new THREE.Mesh(own(new THREE.PlaneGeometry(0.24, 0.18)), workMat);
+    workLens.name = 'construction:worklamp-lens';
+    workLens.applyMatrix4(new THREE.Matrix4().makeTranslation(0, 0, 0.005).premultiply(lampAim));
+    work.add(workLens);
+    work.userData.at = new THREE.Vector3(0, 0, 0.005).applyMatrix4(lampAim);
+    // The light sits out in front of the face it rakes, so the nearest primer is a metre off (WORK_LAMP).
+    work.userData.light = v(half - 0.1, wy + 0.05, half + 1.1);
+    work.visible = false;
+    object.add(work);
 
     // sparks and the arc
     const { mesh: sparks, material: sparkMat } = makeSparks(sparkCount);
@@ -1206,6 +1596,15 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       fh,
       floods,
       lampLevel: 1,
+      rest,
+      mast: [mastMesh, ladderMesh],
+      craneHeight: H,
+      search,
+      heads: searchHeads,
+      work,
+      struck: false,
+      laid: { strike: -1, netDrop: -1 },
+      craneFade: 1,
       disposables,
     };
   }
@@ -1219,27 +1618,141 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     built = null;
   }
 
+  // ------------------------------------------------ transitions: the cure, the lighting and the strike
+  let clocks: StageClocks = {};
+  let before: Before | undefined;
+  let era: Era | null = null;
+  let current: ConstructionState | null = null;
+  let roof: { top: number; half: number; fh: number } | null = null;
+  const tone = new THREE.Color();
+  const tint = (): THREE.Color => tone.copy(era ? ERA_TONE[era] : CURE_GREY);
+  /** Whether a transition is still under way at these clocks. */
+  const live = (c: StageClocks): boolean => {
+    if (c.cure !== undefined && c.cure < CURE_S) return true;
+    if (c.strike !== undefined && c.strike < STRIKE_S) return true;
+    if (c.lit !== undefined && site?.stage === 'curing') {
+      const since = Math.min(c.lit, (c.cure ?? Infinity) - CURE_S);
+      if (since < WINDOWS_S + DISMANTLE_PAUSE + DISMANTLE_S) return true;
+    }
+    return false;
+  };
+  /** Nothing stands any more: no crane, no frame and no lamp. */
+  const gone = (s: ConstructionState): boolean => !s.crane && !s.workLamp && (s.frameFade <= 0 || s.strike >= 1 || s.beams.shown + s.columns.shown === 0);
+
+  /** Lays the frame's pieces out for a state: struck pieces lowered and faded, the netting let down, the paint turned. */
+  function layFrame(b: Built, s: ConstructionState): void {
+    const total = s.decks.shown + s.beams.shown + s.columns.shown;
+    // Struck in reverse erection order: the last deck sheet first, the first column last; about a third move at once.
+    const struck = (k: number): number => (total ? clamp01((s.strike - (k / total) * 0.7) / 0.3) : 1);
+    const moved = s.strike !== b.laid.strike;
+    let k = 0;
+    const m = new THREE.Matrix4();
+    for (const [mesh, rest, shown] of [
+      [b.decks, b.rest.decks, s.decks.shown],
+      [b.beams, b.rest.beams, s.beams.shown],
+      [b.columns, b.rest.columns, s.columns.shown],
+    ] as Array<[THREE.InstancedMesh, THREE.Matrix4[], number]>) {
+      const fade = mesh.userData.fade as Float32Array;
+      for (let i = shown - 1; i >= 0; i--) {
+        const l = struck(k++);
+        // Each piece is lowered off its seat into the floor, and only at the last is it gone.
+        fade[i] = s.frameFade * (1 - smooth(l, 0.8, 1));
+        if (moved) mesh.setMatrixAt(i, l > 0 ? m.makeTranslation(0, -b.fh * 0.8 * ease(l), 0).multiply(rest[i]) : rest[i]);
+      }
+      if (moved) mesh.instanceMatrix.needsUpdate = true;
+      mesh.userData.tint = { color: tint(), k: s.frameTint };
+      mesh.userData.paint++;
+      mesh.visible = shown > 0 && fade.subarray(0, shown).some((f) => f > 0);
+    }
+    // The netting is let down the face on its ropes, and taken away at the foot.
+    const nf = b.nets.userData.fade as Float32Array;
+    const drop = ease(s.netDrop) * (b.fh + 3);
+    for (let i = 0; i < s.nets; i++) {
+      nf[i] = 1 - smooth(s.netDrop, 0.55, 1);
+      if (s.netDrop !== b.laid.netDrop) b.nets.setMatrixAt(i, drop > 0 ? m.makeTranslation(0, -drop, 0).multiply(b.rest.nets[i]) : b.rest.nets[i]);
+    }
+    if (s.netDrop !== b.laid.netDrop) b.nets.instanceMatrix.needsUpdate = true;
+    b.nets.userData.paint++;
+    b.nets.visible = s.nets > 0 && s.netDrop < 1;
+    b.laid = { strike: s.strike, netDrop: s.netDrop };
+  }
+
+  /** The crane climbs down its own mast: the slewing head lowered a section at a time, the mast shortened under it, then the base taken off. */
+  function layCrane(b: Built, s: ConstructionState): void {
+    const d = s.dismantle;
+    const H = b.craneHeight;
+    const y = H - (H - 1.4) * ease(clamp01(d / 0.85));
+    b.slew.position.y = y;
+    for (const o of b.mast) o.scale.y = Math.max(0.02, y / H);
+    const fade = 1 - smooth(d, 0.85, 1);
+    if (fade === b.craneFade) return;
+    b.craneFade = fade;
+    b.crane.traverse((o) => {
+      if (!(o as THREE.Mesh).isMesh) return;
+      o.userData.fade = fade;
+      o.userData.paint = (o.userData.paint ?? 0) + 1;
+    });
+  }
+
   /** Applies the counts and switches of a state at once (the crane's pose eases in update). */
   function apply(b: Built, s: ConstructionState): void {
     b.state = s;
+    current = s;
     b.columns.count = s.columns.shown;
     b.beams.count = s.beams.shown;
     b.decks.count = s.decks.shown;
     b.nets.count = s.nets;
-    b.columns.visible = s.columns.shown > 0;
-    b.beams.visible = s.beams.shown > 0;
-    b.decks.visible = s.decks.shown > 0;
-    b.nets.visible = s.nets > 0;
+    layFrame(b, s);
     b.load.visible = s.load;
     b.floods.visible = s.floods;
     b.sparks.visible = s.weldAt !== null;
     b.arc.visible = s.weldAt !== null;
+    b.search.visible = s.searchlights;
+    b.work.visible = s.workLamp;
     if (s.weldAt) {
       weldAt.set(...s.weldAt);
       b.sparkMat.uniforms.uAt.value.copy(weldAt);
       b.arcMat.uniforms.uAt.value.copy(weldAt);
     }
+    if (!b.struck) layCrane(b, s);
     placeRopes(b);
+    if (s.searchlights) aimSearch(b);
+  }
+
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  function aimSearch(b: Built): void {
+    const aims = searchAims(clock, b.top, b.half, b.fh);
+    aims.forEach((a, i) => b.heads[i].quaternion.setFromUnitVectors(zAxis, a.dir));
+  }
+
+  /** Takes the crane and the frame off a struck scar, so only its lamp is left for the city to draw. */
+  function strikeOff(b: Built): void {
+    for (const o of [b.crane, b.columns, b.beams, b.decks, b.nets, b.floods, b.sparks, b.arc, b.search]) object.remove(o);
+    b.struck = true;
+    structure++;
+    revision++;
+  }
+
+  /** Shows the state the site's stage and clocks give now; true when what stands changed shape (the shadow map is redrawn). */
+  function show(): boolean {
+    if (!site || !roof) return false;
+    const s = constructionState(site, roof.top, roof.half, roof.fh, clocks, before);
+    current = s;
+    if (gone(s)) {
+      const had = built !== null;
+      clear();
+      return had;
+    }
+    if (!built) return false;
+    const b = built;
+    const shape = b.state.crane !== s.crane || b.state.strike !== s.strike || b.state.netDrop !== s.netDrop || b.state.dismantle !== s.dismantle;
+    apply(b, s);
+    revision++;
+    if (s.workLamp && !s.crane && !b.struck) {
+      strikeOff(b);
+      return true;
+    }
+    return shape;
   }
 
   function placeRopes(b: Built): void {
@@ -1258,64 +1771,115 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       const u = (clock % 2) / 2;
       level = 0.05 + 0.95 * THREE.MathUtils.smoothstep(u, 0, 0.04) * (1 - THREE.MathUtils.smoothstep(u, 0.22, 0.3));
     }
+    // The lamps are switched off before the crane comes down.
+    if (b.state.dismantle > 0 || b.struck) level = 0;
     b.lampLevel = level;
     b.lampMat.color.copy(LAMP_RED).multiplyScalar(level);
   }
 
+  /** The window the shadow map is last redrawn in during a transition, so it follows the strike in quarter seconds rather than every frame. */
+  let shadowStep = -1;
+
   return {
     object,
     flickerPeak: FLICKER.peak,
-    set(next, top, half, floorHeight) {
+    set(next, top, half, floorHeight, finish) {
       const key = `${top.toFixed(3)}|${half.toFixed(3)}|${floorHeight.toFixed(3)}`;
+      const nextEra = finish?.era ?? era;
       // The same stage and progress over the same roof is no change: nothing is rebuilt, recopied or redrawn.
-      if (next && site && built && built.key === key && next.stage === site.stage && next.progress === site.progress) {
+      if (next && site && built && built.key === key && next.runId === site.runId && next.stage === site.stage && next.progress === site.progress && nextEra === era) {
         site = next;
         return false;
       }
       const had = built !== null;
+      const prev = site;
       site = next;
       if (!next) {
         clear();
+        clocks = {};
+        before = undefined;
+        current = null;
+        roof = null;
+        era = null;
         return had;
       }
-      const state = constructionState(next, top, half, floorHeight);
-      if (!state.crane) {
+      // A new run on this site starts afresh; a site first seen part way through a transition shows it settled.
+      const fresh = !prev || prev.runId !== next.runId;
+      if (fresh) {
+        clocks = {};
+        before = undefined;
+        era = null;
+      }
+      era = nextEra;
+      const building = (st: SiteStage | undefined): boolean => st === 'crane' || st === 'framing' || st === 'inspecting';
+      if (!fresh && prev && prev.stage !== next.stage) {
+        // The verdict passed on a frame that stood here: the cure begins.
+        if ((next.stage === 'curing' || next.stage === 'waiting') && clocks.cure === undefined && building(prev.stage)) clocks.cure = 0;
+        // The crew strikes the site: what stood is what comes down.
+        if ((next.stage === 'teardown' || next.stage === 'scar') && clocks.strike === undefined && current) {
+          clocks.strike = 0;
+          before = { columns: current.columns.shown, beams: current.beams.shown, decks: current.decks.shown, nets: current.nets, frameFade: current.frameFade, netDrop: current.netDrop, crane: current.crane !== null };
+        }
+        // A teardown that ends in a scar carries straight on.
+        if (prev.stage === 'teardown' && next.stage === 'scar') clocks.strike ??= STRIKE_S;
+      }
+      // Merged: the windows light (and the crane comes down) once the cure is done.
+      if (!fresh && next.stage === 'curing' && next.progress >= 1 && clocks.lit === undefined) clocks.lit = 0;
+      roof = { top, half, fh: floorHeight };
+      const state = constructionState(next, top, half, floorHeight, clocks, before);
+      current = state;
+      if (gone(state) || (!state.crane && !built && !state.workLamp)) {
         clear();
         return had;
       }
       if (!built || built.key !== key) {
-        const keep = built ? { slew: built.slew.rotation.y, trolley: built.trolley.position.x, hook: built.hook.position.y } : null;
+        const keep = built && !built.struck ? { slew: built.slew.rotation.y, trolley: built.trolley.position.x, hook: built.hook.position.y } : null;
         clear();
         built = build(top, half, floorHeight, keep ? { ...state, ...keep } : state);
         built.key = key;
         structure++;
       }
       apply(built, state);
+      if (state.workLamp && !state.crane && !built.struck) strikeOff(built);
       revision++;
       return true;
     },
     update(dt) {
       clock = (clock + dt) % WRAP;
-      if (!built) return false;
+      const was = live(clocks);
+      for (const k of ['cure', 'lit', 'strike'] as const) if (clocks[k] !== undefined && Number.isFinite(clocks[k])) clocks[k]! += dt;
+      let shaped = false;
+      if (was) {
+        shaped = show();
+        // The shadow map follows a transition in quarter seconds, and once more when it settles.
+        const step = live(clocks) ? Math.floor(((clocks.strike ?? 0) + (clocks.lit ?? 0) + (clocks.cure ?? 0)) * 4) : -2;
+        if (shaped && step !== shadowStep) shadowStep = step;
+        else shaped = step === -2 && shadowStep !== -2 ? ((shadowStep = -2), true) : false;
+      }
+      if (!built) return shaped;
       const b = built;
       const s = b.state;
-      // The crane's pose eases toward where the last event put it (a slow slew, a quicker trolley, the hook between), then holds exactly.
-      const slew = approachAngle(b.slew.rotation.y, s.slew, 0.9, dt, 1e-4);
-      const trolley = approach(b.trolley.position.x, s.trolley, 1.3, dt, 2e-3);
-      const hook = approach(b.hook.position.y, s.hook, 1.1, dt, 2e-3);
-      const moved = slew !== b.slew.rotation.y || trolley !== b.trolley.position.x || hook !== b.hook.position.y;
-      if (moved) {
-        b.slew.rotation.y = slew;
-        b.trolley.position.x = trolley;
-        b.hook.position.set(trolley, hook, 0);
-        placeRopes(b);
-        revision++;
+      if (s.searchlights) aimSearch(b);
+      let moved = false;
+      if (!b.struck) {
+        // The crane's pose eases toward where the last event put it (a slow slew, a quicker trolley, the hook between), then holds exactly.
+        const slew = approachAngle(b.slew.rotation.y, s.slew, 0.9, dt, 1e-4);
+        const trolley = approach(b.trolley.position.x, s.trolley, 1.3, dt, 2e-3);
+        const hook = approach(b.hook.position.y, s.hook, 1.1, dt, 2e-3);
+        moved = slew !== b.slew.rotation.y || trolley !== b.trolley.position.x || hook !== b.hook.position.y;
+        if (moved) {
+          b.slew.rotation.y = slew;
+          b.trolley.position.x = trolley;
+          b.hook.position.set(trolley, hook, 0);
+          placeRopes(b);
+          revision++;
+        }
       }
       b.sparkMat.uniforms.uTime.value = clock;
       arcLevelNow = s.weldAt ? arcLevel(clock) : 0;
       b.arcMat.uniforms.uArc.value = arcLevelNow;
       tickLamps(b);
-      return moved;
+      return moved || shaped;
     },
     weld() {
       if (!built || !built.state.weldAt || !site) return null;
@@ -1337,19 +1901,38 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       if (!built || !built.state.floods) return [];
       return (built.floods.userData.at as THREE.Vector3[]).map((p) => p.clone());
     },
+    searchlights() {
+      if (!built || !built.state.searchlights) return [];
+      return searchAims(clock, built.top, built.half, built.fh);
+    },
+    workLamp() {
+      if (!built || !built.state.workLamp) return null;
+      return { at: (built.work.userData.at as THREE.Vector3).clone(), light: (built.work.userData.light as THREE.Vector3).clone(), intensity: WORK_LAMP.peak };
+    },
+    finish() {
+      if (!site || !current) return null;
+      return { floor: current.floor, era, tone: tint().clone(), windows: current.windows };
+    },
+    state: () => current,
+    busy: () => live(clocks),
+    touch() {
+      revision++;
+    },
     dispose() {
       clear();
       site = null;
+      clocks = {};
+      before = undefined;
+      current = null;
     },
   };
 }
-
 
 // ---------------------------------------------------------------- the city's field: every site in a few draws
 
 /** Which drawn kind a site part belongs to, by its material's name. */
 const STEEL_KINDS = new Set(['yellow', 'dark', 'ballast', 'glass', 'primer', 'deck', 'rope']);
-const LAMP_KINDS = new Set(['lamp', 'flood']);
+const LAMP_KINDS = new Set(['lamp', 'flood', 'search', 'work']);
 
 const GLARE_VERT = /* glsl */ `
   attribute vec3 iPos;
@@ -1424,6 +2007,97 @@ const FLOOD_GLARE = new THREE.Color(FLOOD.color).multiplyScalar(5.2);
 const DECK_HAZE = new THREE.Color(FLOOD.color).multiplyScalar(0.52);
 const FLOOR_HAZE = new THREE.Color(FLOOD.color).multiplyScalar(0.26);
 const MAX_FLOODS = MAX_SITES * 2;
+const MAX_SEARCH = MAX_SITES * 2;
+/** The searchlights' lenses from in front, and the work lamp's, as glare; and the warm air round the work lamp. */
+const SEARCH_GLARE = new THREE.Color(0.93, 0.97, 1).multiplyScalar(9);
+const WORK_GLARE = new THREE.Color(WORK_LAMP.color).multiplyScalar(3.2);
+const WORK_HAZE = new THREE.Color(WORK_LAMP.color).multiplyScalar(0.3);
+const SEARCH_HIT = new THREE.Color(0.93, 0.96, 1).multiplyScalar(0.24);
+
+/**
+ * A searchlight's beam through the dusk haze, as an open cone from the lens
+ * to where it meets the floor. What the eye sees is light scattered off the
+ * haze along the beam: strongest where the eye looks through the beam's
+ * middle (the cone's surface faces the eye), soft at its edges, fading as
+ * the beam spreads (its light shared over a wider section) and as the haze
+ * between the beam and the eye swallows it, with the slow grain of the air
+ * in it. Close to the eye it fades out, so a camera inside a beam is never
+ * veiled. Additive and well under the bloom threshold: only the lens blooms.
+ */
+const BEAM_VERT = /* glsl */ `
+  attribute vec3 iFrom;
+  attribute vec3 iDir;
+  attribute vec4 iShape;
+  uniform float uPixel;
+  varying vec3 vWorld;
+  varying vec3 vNormal;
+  varying vec3 vAxis;
+  varying float vT;
+  varying float vLevel;
+  varying float vSpread;
+  void main() {
+    // position.x: the angle round the beam (0 to 1), position.y: how far along it (0 to 1).
+    float len = iShape.x;
+    float rTrue = mix(iShape.y, iShape.z, position.y);
+    // Never under about a pixel and a half wide, with its light kept: from across the city a beam is still a line.
+    vec3 centre = iFrom + iDir * (len * position.y);
+    float px = distance(centre, cameraPosition) * uPixel;
+    float r = max(rTrue, px * 0.8);
+    vec3 up = abs(iDir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 u = normalize(cross(iDir, up));
+    vec3 w = cross(iDir, u);
+    float a = position.x * 6.2831853;
+    vec3 radial = u * cos(a) + w * sin(a);
+    vec3 p = iFrom + iDir * (len * position.y) + radial * r;
+    vWorld = p;
+    vNormal = radial;
+    vAxis = iDir;
+    vT = position.y;
+    vLevel = iShape.w * rTrue / r;
+    vSpread = iShape.y / rTrue;
+    gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  }
+`;
+
+const BEAM_FRAG = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uFog;
+  varying vec3 vWorld;
+  varying vec3 vNormal;
+  varying vec3 vAxis;
+  varying float vT;
+  varying float vLevel;
+  varying float vSpread;
+  float bh(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+  float bnoise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(bh(i), bh(i + vec3(1, 0, 0)), f.x), mix(bh(i + vec3(0, 1, 0)), bh(i + vec3(1, 1, 0)), f.x), f.y),
+               mix(mix(bh(i + vec3(0, 0, 1)), bh(i + vec3(1, 0, 1)), f.x), mix(bh(i + vec3(0, 1, 1)), bh(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+  }
+  void main() {
+    vec3 toEye = cameraPosition - vWorld;
+    float dist = length(toEye);
+    vec3 V = toEye / dist;
+    // The eye's ray crosses the beam on a chord: longest through its middle, nothing at its silhouette, and longer
+    // the more nearly the eye looks along the beam (held at five times side-on). Each of the two faces carries half.
+    vec3 Vp = V - normalize(vAxis) * dot(V, normalize(vAxis));
+    float sp = max(length(Vp), 0.2);
+    float core = abs(dot(normalize(vNormal), Vp)) / (sp * sp);
+    // The light spreads as the beam widens (the haze's forward scatter keeps the far beam brighter than spread alone);
+    // the eye's own haze swallows a far beam; near the eye it fades out.
+    float spread = pow(vSpread, 0.6);
+    float haze = exp(-pow(uFog * dist, 2.0));
+    float nearEye = smoothstep(5.0, 30.0, dist);
+    float ends = smoothstep(0.0, 0.012, vT) * (1.0 - smoothstep(0.975, 1.0, vT));
+    // The grain of the air the beam passes through.
+    float grain = 0.72 + 0.56 * bnoise(vWorld * 0.11);
+    float a = core * spread * haze * nearEye * ends * grain * vLevel;
+    if (a <= 0.002) discard;
+    gl_FragColor = vec4(uColor * a, 1.0);
+  }
+`;
 
 /**
  * The city's steel, lit by the sites' floodlights. The floods light only the
@@ -1433,11 +2107,27 @@ const MAX_FLOODS = MAX_SITES * 2;
  * reading as fresh plastic. Radiance stays under the bloom threshold
  * (post.ts FLOOD).
  */
-function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: { pos: { value: THREE.Vector3[] }; count: { value: number }; color: { value: THREE.Color } }, grime: boolean): T {
+interface FieldLights {
+  pos: { value: THREE.Vector3[] };
+  count: { value: number };
+  color: { value: THREE.Color };
+  searchPos: { value: THREE.Vector3[] };
+  searchDir: { value: THREE.Vector3[] };
+  searchCone: { value: THREE.Vector4[] };
+  searchCount: { value: number };
+  searchColor: { value: THREE.Color };
+}
+
+function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: FieldLights, grime: boolean): T {
   m.onBeforeCompile = (shader) => {
     shader.uniforms.uFloodPos = floods.pos;
     shader.uniforms.uFloodCount = floods.count;
     shader.uniforms.uFloodColor = floods.color;
+    shader.uniforms.uSearchPos = floods.searchPos;
+    shader.uniforms.uSearchDir = floods.searchDir;
+    shader.uniforms.uSearchCone = floods.searchCone;
+    shader.uniforms.uSearchCount = floods.searchCount;
+    shader.uniforms.uSearchColor = floods.searchColor;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vFieldWorld;\nattribute vec2 aWear;\nvarying vec2 vWear;')
       .replace(
@@ -1458,7 +2148,12 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: { pos: { v
         varying vec2 vWear;
         uniform vec3 uFloodPos[${MAX_FLOODS}];
         uniform int uFloodCount;
-        uniform vec3 uFloodColor;`,
+        uniform vec3 uFloodColor;
+        uniform vec3 uSearchPos[${MAX_SEARCH}];
+        uniform vec3 uSearchDir[${MAX_SEARCH}];
+        uniform vec4 uSearchCone[${MAX_SEARCH}];
+        uniform int uSearchCount;
+        uniform vec3 uSearchColor;`,
       )
       .replace(
         '#include <color_fragment>',
@@ -1504,6 +2199,22 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: { pos: { v
           // Inverse square, held level inside three metres and windowed away past six (floodRadiance).
           float near = max(d, ${FLOOD_NEAR.toFixed(1)});
           reflectedLight.directDiffuse += uFloodColor * (nl * reach / (near * near)) * BRDF_Lambert(material.diffuseColor);
+        }
+        // The inspection's searchlights: a spot with a soft edge, inverse square, held level inside its near distance (searchRadiance).
+        for (int i = 0; i < ${MAX_SEARCH}; i++) {
+          if (i >= uSearchCount) break;
+          vec3 L = uSearchPos[i] - geometryPosition;
+          float d = length(L);
+          L /= max(d, 1e-3);
+          float along = dot(-L, uSearchDir[i]);
+          // The face the beam meets takes its light: nothing a few metres past the beam's end is lit (the steel and
+          // the netting there stand in its shadow).
+          float spot = smoothstep(uSearchCone[i].x, uSearchCone[i].y, along) * (1.0 - smoothstep(0.5, 3.0, along * d - uSearchCone[i].w));
+          if (spot <= 0.0) continue;
+          float nl = max(dot(geometryNormal, L), 0.0);
+          nl = max(nl, 0.18 * max(dot(-geometryNormal, L), 0.0));
+          float near = max(d, ${SEARCH.near.toFixed(1)});
+          reflectedLight.directDiffuse += uSearchColor * (uSearchCone[i].z * spot * nl / (near * near)) * BRDF_Lambert(material.diffuseColor);
         }`,
       );
   };
@@ -1514,8 +2225,8 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: { pos: { v
 export interface ConstructionField {
   /** Every site's parts, drawn: a handful of batches whatever the number of sites. */
   group: THREE.Group;
-  /** Draws these sites (their own objects stay out of the scene: they are the record the batches copy). */
-  update(sites: ReadonlyArray<Construction>): void;
+  /** Draws these sites (their own objects stay out of the scene: they are the record the batches copy); `eye` turns the searchlights' lens glare to the camera. */
+  update(sites: ReadonlyArray<Construction>, eye?: THREE.Vector3): void;
   /** Meshes the field draws with, for budgets (tests). */
   draws(): number;
   dispose(): void;
@@ -1528,6 +2239,10 @@ interface Mirror {
   /** The source's own instances (an InstancedMesh), or one. */
   instanced: boolean;
   color: THREE.Color;
+  /** Each instance's own paint (a different mill, a different coat), before any cure tint or fade. */
+  base: THREE.Color[];
+  /** The source's paint revision last uploaded. */
+  paint: number;
 }
 
 /**
@@ -1546,12 +2261,22 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
   const group = new THREE.Group();
   group.name = 'construction-field';
   const sparkCount = quality === 'high' ? 720 : 300;
-  const floods = { pos: { value: Array.from({ length: MAX_FLOODS }, () => new THREE.Vector3()) }, count: { value: 0 }, color: { value: FLOOD_TINT.clone().multiplyScalar(FLOOD_GAIN * FLOOD.peak) } };
-  const steelMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.66, metalness: 0.35 }), floods, true);
+  const floods: FieldLights = {
+    pos: { value: Array.from({ length: MAX_FLOODS }, () => new THREE.Vector3()) },
+    count: { value: 0 },
+    color: { value: FLOOD_TINT.clone().multiplyScalar(FLOOD_GAIN * FLOOD.peak) },
+    searchPos: { value: Array.from({ length: MAX_SEARCH }, () => new THREE.Vector3()) },
+    searchDir: { value: Array.from({ length: MAX_SEARCH }, () => new THREE.Vector3(0, 1, 0)) },
+    searchCone: { value: Array.from({ length: MAX_SEARCH }, () => new THREE.Vector4(1, 1, 1, 0)) },
+    searchCount: { value: 0 },
+    searchColor: { value: SEARCH.color.clone().multiplyScalar(SEARCH.peak) },
+  };
+  // Pieces fade out by instance alpha (the cure, the strike): hashed, so the steel stays opaque and sorts as steel.
+  const steelMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.66, metalness: 0.35, alphaHash: true }), floods, true);
   const net = netTextures();
   // White: each panel's own green comes in as its instance colour.
   const netMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, map: net.map, alphaMap: net.alpha, transparent: true, depthWrite: false, side: THREE.DoubleSide }), floods, false);
-  const lampMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: true });
+  const lampMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: true, alphaHash: true });
 
   // Every site's sparks in one draw.
   const sparkGeo = sparkQuad(sparkCount, MAX_SITES);
@@ -1577,7 +2302,7 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
   };
 
   // The glare of every arc and floodlight in one draw.
-  const GLARES = MAX_SITES * 5;
+  const GLARES = MAX_SITES * 9;
   const glareGeo = new THREE.InstancedBufferGeometry();
   glareGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
   glareGeo.setIndex([0, 1, 2, 0, 2, 3]);
@@ -1605,15 +2330,69 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
     glareMat.uniforms.uPixel.value = pixelScale(renderer, camera);
   };
 
-  // The steel's flood term is in view space: the floods' positions follow the camera each frame.
+  // Every site's searchlight beams in one draw: a cone of 24 sides in 24 rings along the beam.
+  const beamGeo = new THREE.InstancedBufferGeometry();
+  {
+    const SIDES = 24;
+    const RINGS = 24;
+    const pos: number[] = [];
+    const idx: number[] = [];
+    for (let j = 0; j <= RINGS; j++) for (let i = 0; i <= SIDES; i++) pos.push(i / SIDES, (j / RINGS) ** 1.6, 0);
+    for (let j = 0; j < RINGS; j++) {
+      for (let i = 0; i < SIDES; i++) {
+        const a = j * (SIDES + 1) + i;
+        const b = a + SIDES + 1;
+        idx.push(a, b, a + 1, a + 1, b, b + 1);
+      }
+    }
+    beamGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    beamGeo.setIndex(idx);
+  }
+  const bFrom = new THREE.InstancedBufferAttribute(new Float32Array(MAX_SEARCH * 3), 3);
+  const bDir = new THREE.InstancedBufferAttribute(new Float32Array(MAX_SEARCH * 3), 3);
+  const bShape = new THREE.InstancedBufferAttribute(new Float32Array(MAX_SEARCH * 4), 4);
+  for (const a of [bFrom, bDir, bShape]) a.setUsage(THREE.DynamicDrawUsage);
+  beamGeo.setAttribute('iFrom', bFrom);
+  beamGeo.setAttribute('iDir', bDir);
+  beamGeo.setAttribute('iShape', bShape);
+  beamGeo.instanceCount = 0;
+  const beamMat = new THREE.ShaderMaterial({
+    vertexShader: BEAM_VERT,
+    fragmentShader: BEAM_FRAG,
+    uniforms: { uColor: { value: SEARCH.color.clone().multiplyScalar(0.3) }, uFog: { value: 0 }, uPixel: { value: 0.001 } },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const beams = new THREE.Mesh(beamGeo, beamMat);
+  beams.name = 'field:beams';
+  beams.frustumCulled = false;
+  beams.renderOrder = 2;
+  beams.visible = false;
+  beams.onBeforeRender = (renderer, scene, camera) => {
+    beamMat.uniforms.uFog.value = (scene.fog as THREE.FogExp2 | null)?.density ?? 0;
+    beamMat.uniforms.uPixel.value = pixelScale(renderer, camera);
+  };
+
+  // The steel's flood and searchlight terms are in view space: the lights follow the camera each frame.
   const floodWorld: THREE.Vector3[] = [];
+  const searchWorld: Array<{ at: THREE.Vector3; dir: THREE.Vector3; cone: THREE.Vector4 }> = [];
   const toView = (camera: THREE.Camera): void => {
     floods.count.value = Math.min(MAX_FLOODS, floodWorld.length);
     for (let i = 0; i < floods.count.value; i++) floods.pos.value[i].copy(floodWorld[i]).applyMatrix4(camera.matrixWorldInverse);
+    floods.searchCount.value = Math.min(MAX_SEARCH, searchWorld.length);
+    for (let i = 0; i < floods.searchCount.value; i++) {
+      floods.searchPos.value[i].copy(searchWorld[i].at).applyMatrix4(camera.matrixWorldInverse);
+      floods.searchDir.value[i].copy(searchWorld[i].dir).transformDirection(camera.matrixWorldInverse);
+      floods.searchCone.value[i].copy(searchWorld[i].cone);
+    }
   };
 
   let batches: { steel: THREE.BatchedMesh | null; net: THREE.BatchedMesh | null; lamp: THREE.BatchedMesh | null } = { steel: null, net: null, lamp: null };
   let mirrors: Mirror[] = [];
+  /** Parts that move every frame without an event (the searchlight heads sweeping): copied each frame, nothing else is. */
+  let live: Mirror[] = [];
   let bySite = new Map<Construction, { mirrors: Mirror[]; revision: number; structure: number; lamp: number }>();
   const geoCache = new Map<THREE.BufferGeometry, THREE.BufferGeometry>();
 
@@ -1642,6 +2421,7 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
     for (const g of geoCache.values()) g.dispose();
     geoCache.clear();
     mirrors = [];
+    live = [];
     bySite = new Map();
   }
 
@@ -1709,17 +2489,20 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
       }
       const inst = (p.mesh as THREE.InstancedMesh).isInstancedMesh;
       const n = inst ? (p.mesh as THREE.InstancedMesh).instanceMatrix.count : 1;
-      const mirror: Mirror = { src: p.mesh, batch, ids: [], instanced: inst, color: (p.mesh.material as THREE.MeshStandardMaterial).color.clone() };
+      const mirror: Mirror = { src: p.mesh, batch, ids: [], instanced: inst, color: (p.mesh.material as THREE.MeshStandardMaterial).color.clone(), base: [], paint: -1 };
       for (let i = 0; i < n; i++) {
         const id = batch.addInstance(gid);
         // Instanced steel (columns, beams, deck sheets) varies piece by piece: a different mill, a different coat.
         if (inst && p.kind === 'steel') {
           const h = hash01(i * 7919 + n * 104729);
           const k = hash01(i * 3571 + 17);
-          batch.setColorAt(id, jitter.copy(mirror.color).multiplyScalar(0.84 + 0.3 * h).offsetHSL((k - 0.5) * 0.025, (k - 0.5) * 0.12, 0));
-        } else batch.setColorAt(id, mirror.color);
+          jitter.copy(mirror.color).multiplyScalar(0.84 + 0.3 * h).offsetHSL((k - 0.5) * 0.025, (k - 0.5) * 0.12, 0);
+        } else jitter.copy(mirror.color);
+        mirror.base.push(jitter.clone());
+        batch.setColorAt(id, jitter);
         mirror.ids.push(id);
       }
+      if (p.mesh.userData.live) live.push(mirror);
       mirrors.push(mirror);
       let entry = bySite.get(p.site);
       if (!entry) bySite.set(p.site, (entry = { mirrors: [], revision: -1, structure: p.site.structure, lamp: -1 }));
@@ -1735,30 +2518,50 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
     for (let p: THREE.Object3D | null = o; p; p = p.parent) if (!p.visible) return false;
     return true;
   };
+  const paintTo = new THREE.Vector4();
+  const tinted = new THREE.Color();
+  /** The alpha a source gives instance `i`: its own fade (the cure, the strike), 1 when it has none. */
+  const alphaOf = (src: THREE.Object3D, i: number): number => {
+    const f = src.userData.fade as Float32Array | number | undefined;
+    return f === undefined ? 1 : typeof f === 'number' ? f : (f[i] ?? 1);
+  };
+  /** Uploads a part's paint: each instance's own colour turned toward the cure's tone, with its fade as alpha. */
+  function paint(mi: Mirror): void {
+    const t = mi.src.userData.tint as { color: THREE.Color; k: number } | undefined;
+    mi.ids.forEach((id, i) => {
+      tinted.copy(mi.base[i]);
+      if (t && t.k > 0) tinted.lerp(t.color, t.k);
+      mi.batch.setColorAt(id, paintTo.set(tinted.r, tinted.g, tinted.b, alphaOf(mi.src, i)));
+    });
+    mi.paint = mi.src.userData.paint as number;
+  }
   function copy(site: Construction, mirrorsOf: Mirror[]): void {
     site.object.updateMatrixWorld(true);
     for (const mi of mirrorsOf) {
       const on = shown(mi.src);
+      if (mi.src.userData.paint !== undefined && mi.src.userData.paint !== mi.paint) paint(mi);
       if (mi.instanced) {
         const im = mi.src as THREE.InstancedMesh;
         mi.ids.forEach((id, i) => {
-          const visible = on && i < im.count;
+          const visible = on && i < im.count && alphaOf(im, i) > 0.003;
           mi.batch.setVisibleAt(id, visible);
           if (!visible) return;
           im.getMatrixAt(i, m4);
           mi.batch.setMatrixAt(id, m5.multiplyMatrices(im.matrixWorld, m4));
         });
       } else {
-        mi.batch.setVisibleAt(mi.ids[0], on);
-        if (on) mi.batch.setMatrixAt(mi.ids[0], mi.src.matrixWorld);
+        const visible = on && alphaOf(mi.src, 0) > 0.003;
+        mi.batch.setVisibleAt(mi.ids[0], visible);
+        if (visible) mi.batch.setMatrixAt(mi.ids[0], mi.src.matrixWorld);
       }
     }
   }
 
   const col = new THREE.Color();
+  const tmp = new THREE.Vector3();
   return {
     group,
-    update(sites) {
+    update(sites, eye) {
       const list = sites.slice(0, MAX_SITES);
       // A site built, rebuilt or taken down, or the set of sites changed: the batches are laid out again.
       const changed = list.length !== bySite.size || list.some((s) => bySite.get(s)?.structure !== s.structure);
@@ -1779,8 +2582,18 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
           for (const id of mi.ids) mi.batch.setColorAt(id, col);
         }
       }
+      // The searchlight heads sweep without an event: only they are copied each frame.
+      for (const mi of live) {
+        const on = shown(mi.src);
+        mi.batch.setVisibleAt(mi.ids[0], on);
+        if (!on) continue;
+        mi.src.updateWorldMatrix(true, false);
+        mi.batch.setMatrixAt(mi.ids[0], mi.src.matrixWorld);
+      }
       // Sparks, glare and the floods' light, per site.
       floodWorld.length = 0;
+      searchWorld.length = 0;
+      let nb = 0;
       let g = 0;
       const put = (p: THREE.Vector3, c: THREE.Color, size: number, px: number, soft = 0): void => {
         if (g >= GLARES) return;
@@ -1811,14 +2624,38 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
           put(new THREE.Vector3(at.x, roof.top + roof.floorHeight * 0.7, at.z), DECK_HAZE, roof.half * 1.8, 28, 1);
           put(new THREE.Vector3(at.x, roof.top - roof.floorHeight * 1.5, at.z), FLOOR_HAZE, roof.half * 1.6, 20, 1);
         }
+        // The inspection's searchlights: the beams, their spots on the steel, and the lens's glare seen from in front.
+        for (const l of s.searchlights()) {
+          if (nb >= MAX_SEARCH) break;
+          const from = l.at.clone().add(at);
+          bFrom.setXYZ(nb, from.x, from.y, from.z);
+          bDir.setXYZ(nb, l.dir.x, l.dir.y, l.dir.z);
+          bShape.setXYZW(nb, l.length, l.r0, l.r1, 1);
+          nb++;
+          const half = Math.atan(l.r1 / l.length);
+          searchWorld.push({ at: from, dir: l.dir.clone(), cone: new THREE.Vector4(Math.cos(half), Math.cos(half * 0.45), searchThrow(l.length), l.length) });
+          const facing = eye ? Math.max(0, l.dir.dot(tmp.copy(eye).sub(from).normalize())) : 1;
+          if (facing > 0.02) put(from.clone().addScaledVector(l.dir, 0.05), col.copy(SEARCH_GLARE).multiplyScalar(facing ** 3), 0.5, 5);
+          // Where the beam meets the floor the haze round the spot is lit too: from across the city the floor reads as lit.
+          put(from.clone().addScaledVector(l.dir, l.length - 0.6), SEARCH_HIT, l.r1 * 1.5, 12, 1);
+        }
+        // The scar's work lamp: its lens and the warm air round it.
+        const wl = s.workLamp();
+        if (wl) {
+          put(wl.at.clone().add(at), WORK_GLARE, 0.3, 4.5);
+          put(wl.light.clone().add(at), WORK_HAZE, 2.6, 9, 1);
+        }
       });
+      beamGeo.instanceCount = nb;
+      bFrom.needsUpdate = bDir.needsUpdate = bShape.needsUpdate = true;
+      beams.visible = nb > 0;
       for (let i = list.length; i < MAX_SITES; i++) (sparkMat.uniforms.uSiteB.value[i] as THREE.Vector4).set(0, 0, 0, 0);
       glareGeo.instanceCount = g;
       gPos.needsUpdate = gColor.needsUpdate = gSize.needsUpdate = true;
       sparkGeo.instanceCount = sparkCount * list.length;
       sparks.visible = list.some((s) => s.sparks() !== null);
       glare.visible = g > 0;
-      if (sparks.parent !== group) group.add(sparks, glare);
+      if (sparks.parent !== group) group.add(sparks, glare, beams);
     },
     draws() {
       let n = 0;
@@ -1838,6 +2675,8 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
       sparkMat.dispose();
       glareGeo.dispose();
       glareMat.dispose();
+      beamGeo.dispose();
+      beamMat.dispose();
       group.clear();
     },
   };

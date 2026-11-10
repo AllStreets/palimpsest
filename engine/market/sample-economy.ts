@@ -1546,9 +1546,11 @@ export interface EconomyClock {
  * live at the start go on: a working run works, is inspected, ships and is
  * merged, then its agent rides home; an inspecting run ships; an awarded
  * job starts; a PR waiting at the start merges. Every step is the market's
- * own record and event. `now` stamps trips and the PR poll.
+ * own record and event. `now` stamps trips and the PR poll. A repo named in
+ * `fail` fails its next inspection instead (the guild's review rejects it):
+ * its scar is laid and its site struck, as a failed run's is.
  */
-export function economyClock(opts: { now: () => number; speed: number }): EconomyClock {
+export function economyClock(opts: { now: () => number; speed: number; fail?: string[] }): EconomyClock {
   const S = 1000;
   const p = new Pipeline(rng('sample-clock'));
   const steps: Array<{ at: number; run: () => void | Promise<void> }> = [];
@@ -1606,6 +1608,21 @@ export function economyClock(opts: { now: () => number; speed: number }): Econom
         const r = fresh(runId);
         if (!r || r.stage !== 'inspecting') return;
         const reviewer = listAgents().find((a) => !a.retired && a.firmId !== r.firmId && a.model.startsWith('claude:sonnet') && firm(a.firmId)?.status === 'active')!;
+        const diffOf = query({ kind: 'run.diff', runId, last: true })[0]?.data as { lines?: number } | undefined;
+        if (opts.fail?.includes(r.repo)) {
+          opts.fail.splice(opts.fail.indexOf(r.repo), 1);
+          const i = p.inspect(r, { passed: false, reviewer });
+          const ended = p.fail(r, i, diffOf?.lines ?? 40);
+          // The site is struck onto its scar, which the city shows for a while after the run has ended.
+          const j = storedJob(r.jobId);
+          const scar: SiteState = { repo: r.repo, runId, jobId: r.jobId, agentId: r.agentId, firmId: r.firmId, stage: 'scar', progress: 1, size: TIER_SIZE[j?.tier ?? 'normal'], since: iso(opts.now()) };
+          transient.set(runId, scar);
+          emit('site.changed', { site: scar });
+          at(elapsed / S + 60, () => {
+            transient.delete(ended.id);
+          });
+          return;
+        }
         const i = p.inspect(r, { passed: true, reviewer });
         site(r, 'curing', 0.95);
         const diff = query({ kind: 'run.diff', runId, last: true })[0]?.data as { lines?: number } | undefined;
@@ -1624,7 +1641,9 @@ export function economyClock(opts: { now: () => number; speed: number }): Econom
         await settleJobEffects();
         const ended = fresh(runId)!;
         if (ended.outcome !== 'merged') return;
-        transient.set(runId, { repo: r.repo, runId, jobId: r.jobId, agentId: r.agentId, firmId: r.firmId, stage: 'curing', progress: 1, size: TIER_SIZE[storedJob(r.jobId)?.tier ?? 'normal'], since: iso(opts.now()) });
+        const cured: SiteState = { repo: r.repo, runId, jobId: r.jobId, agentId: r.agentId, firmId: r.firmId, stage: 'curing', progress: 1, size: TIER_SIZE[storedJob(r.jobId)?.tier ?? 'normal'], since: iso(opts.now()) };
+        transient.set(runId, cured);
+        emit('site.changed', { site: cured });
         const a = storedAgent(r.agentId)!;
         startTrip(a, 'home', r.jobId, 'tram', siteOf(r.repo), homeOf(a), opts.now(), 1 / opts.speed);
       });
@@ -1645,6 +1664,13 @@ export function economyClock(opts: { now: () => number; speed: number }): Econom
       await p.merge(cur);
       await settleJobEffects();
       if (fresh(r.id)?.outcome === 'merged') {
+        // Its floor lights and its parked crane comes down: the city shows the site for a while after the run ends.
+        const cured: SiteState = { repo: r.repo, runId: r.id, jobId: r.jobId, agentId: r.agentId, firmId: r.firmId, stage: 'curing', progress: 1, size: TIER_SIZE[storedJob(r.jobId)?.tier ?? 'normal'], since: iso(opts.now()) };
+        transient.set(r.id, cured);
+        emit('site.changed', { site: cured });
+        at(elapsed / S + 60, () => {
+          transient.delete(r.id);
+        });
         const a = storedAgent(r.agentId)!;
         startTrip(a, 'home', r.jobId, 'walk', siteOf(r.repo), homeOf(a), opts.now(), 1 / opts.speed);
       }

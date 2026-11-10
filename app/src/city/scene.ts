@@ -2,10 +2,10 @@ import * as THREE from 'three';
 
 import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
-import type { District, Quarter, SiteStage, SiteState } from '../../../shared/types';
+import type { District, Era, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
 import { createCameraRig } from './camera';
-import { makeConstruction, makeConstructionField, type Construction, type ConstructionField } from './construction.js';
+import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
 import type { BoardJob, Exchange } from './exchange.js';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
@@ -147,6 +147,7 @@ export interface City {
 export interface SiteView {
   stage: SiteStage;
   progress: number;
+  runId: string;
   columns: number;
   beams: number;
   beamsTotal: number;
@@ -160,6 +161,23 @@ export interface SiteView {
   /** The roof the site stands on and the new floor's height. */
   top: number;
   floorHeight: number;
+  /** The inspection's searchlights: each lens and where its beam meets the floor, in the world. */
+  searchlights: Array<{ at: number[]; end: number[] }>;
+  /** The cure and the strike: how opaque the frame stands, how far the netting is down, the skeleton struck and the crane taken down. */
+  frameFade: number;
+  netDrop: number;
+  strike: number;
+  dismantle: number;
+  /** What the floor finishes as and in which era, and how far its windows have lit. */
+  floor: 'era' | 'primer' | null;
+  era: Era | null;
+  windows: number | null;
+  /** The scar's work lamp, in the world, or null. */
+  workLamp: number[] | null;
+  /** True while a transition plays out. */
+  busy: boolean;
+  /** How many panes the merged floor's rows light, as last found on its tower. */
+  panes: number;
 }
 
 /** Which of a repo's sites shows when it has more than one (a run waiting on its PR, and the next run at work). */
@@ -322,6 +340,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   /** Spots the board stands on, cleared like plots. */
   let boardSpots: Array<{ x: number; z: number }> = [];
   let lastOcc: Occupancy = { districts: [], sites: [], quarters: [] };
+  /** The occupied set last placed, floors and all (the job sites read the era of the floor a run laid from it). */
+  let occNow: Occupancy = lastOcc;
   function updatePlazas(occ: Occupancy): void {
     lastOcc = occ;
     // Only occupied plots are paved and cleared: a district, or a site under scaffold (and the board's spots).
@@ -452,20 +472,35 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   // ---------------------------------------------------------------- job sites: cranes, frames and welding
   let liveSites: SiteState[] = [];
-  const constructions = new Map<string, { c: Construction; top: number; floorHeight: number }>();
+  /**
+   * The city's job sites, one per run: the busiest site of each repo, a site
+   * the market no longer lists while its own transition (a cure, a strike)
+   * plays out, and every scar's work lamp for the rest of the evening.
+   */
+  const constructions = new Map<string, { c: Construction; site: SiteState; top: number; floorHeight: number; panes?: number }>();
   // Every site is drawn by one field of batches: each site's own object is the record it copies, kept out of the scene.
   let field: ConstructionField = makeConstructionField(quality);
   scene.add(field.group);
 
-  /** The roof a tower's next floor goes on: its top floor's plan centre, top and half-width (or the root's, before any floor). */
-  function roofOf(piece: Centerpiece): { x: number; z: number; top: number; half: number } | null {
+  /** A run's own floor on its repo's tower: the floor its merge lays, or the scar its failed inspection leaves. */
+  const ownFloors = (s: SiteState): string[] => [`${s.repo}#job-${s.jobId}`, `${s.repo}#scar-${s.runId}`];
+
+  /**
+   * The roof a site stands on: the roof under the run's own floor once the
+   * city has laid it (so the frame, the cure and the scar stay on the floor
+   * they made), otherwise the tower's top floor (or the root, before any
+   * floor): its plan centre, top and half-width.
+   */
+  function roofOf(piece: Centerpiece, site: SiteState): { x: number; z: number; top: number; half: number } | null {
     piece.object.updateWorldMatrix(true, true);
     let best: { x: number; z: number; top: number; half: number } | null = null;
     const at = new THREE.Vector3();
     const scale = new THREE.Vector3();
+    const own = ownFloors(site);
     for (const [o, id] of piece.pickables) {
       o.getWorldPosition(at);
       o.getWorldScale(scale);
+      if (id !== null && own.includes(id)) return { x: at.x, z: at.z, top: at.y - scale.y / 2, half: scale.x / 2 };
       const top = at.y + scale.y / 2;
       // The root's proxy reaches three metres past its top; a floor's is the floor.
       const half = id === null ? scale.x / 2 - 3 : scale.x / 2;
@@ -474,37 +509,53 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     return best;
   }
 
+  /** The era of the floor a run laid, once the city has it (the frame cures toward its tone). */
+  function eraOf(s: SiteState): Era | null {
+    const d = occNow.districts.find((x) => x.repo === s.repo);
+    const own = ownFloors(s);
+    return d?.tower.floors.find((f) => own.includes(f.id))?.era ?? null;
+  }
+
   function placeConstructions(): void {
     const byRepo = new Map<string, SiteState>();
     for (const s of liveSites) {
       const had = byRepo.get(s.repo);
       if (!had || SITE_RANK[s.stage] > SITE_RANK[had.stage]) byRepo.set(s.repo, s);
     }
+    const shown = new Map<string, SiteState>([...byRepo.values()].map((s) => [s.runId, s]));
     // Only a site that really changed is set again; an unrelated event neither recopies a site nor redraws the shadow map.
     let changed = false;
-    for (const [repo, entry] of constructions) {
-      if (byRepo.has(repo) && pieceOf(repo)) continue;
+    for (const [runId, entry] of constructions) {
+      if (shown.has(runId) && pieceOf(entry.site.repo)) continue;
+      // Gone from the market's list: a scar's lamp burns on, and a cure or a strike plays out unless the next run has the roof.
+      const lamp = entry.c.workLamp() !== null;
+      const finishing = entry.c.busy() && !byRepo.has(entry.site.repo);
+      if (pieceOf(entry.site.repo) && (lamp || finishing)) continue;
       entry.c.dispose();
-      constructions.delete(repo);
+      constructions.delete(runId);
       changed = true;
     }
-    for (const [repo, s] of byRepo) {
-      const piece = pieceOf(repo);
-      const roof = piece ? roofOf(piece) : null;
-      if (!roof) continue;
-      let entry = constructions.get(repo);
+    for (const s of shown.values()) {
+      let entry = constructions.get(s.runId);
       if (!entry) {
-        entry = { c: makeConstruction(quality), top: 0, floorHeight: 0 };
-        constructions.set(repo, entry);
+        entry = { c: makeConstruction(quality), site: s, top: 0, floorHeight: 0 };
+        constructions.set(s.runId, entry);
       }
+      entry.site = s;
+    }
+    for (const entry of constructions.values()) {
+      const s = entry.site;
+      const piece = pieceOf(s.repo);
+      const roof = piece ? roofOf(piece, s) : null;
+      if (!roof) continue;
       const floorHeight = FLOOR_HEIGHT[s.size] ?? FLOOR_HEIGHT.medium;
-      const moved = entry.c.object.position.x !== roof.x || entry.c.object.position.z !== roof.z;
-      if (moved) {
+      if (entry.c.object.position.x !== roof.x || entry.c.object.position.z !== roof.z) {
         entry.c.object.position.set(roof.x, 0, roof.z);
         // A site that only moved (its tower rebuilt in place elsewhere) is copied again at its new place.
-        entry.c.set(null, roof.top, roof.half, floorHeight);
+        entry.c.touch();
+        changed = true;
       }
-      if (entry.c.set(s, roof.top, roof.half, floorHeight)) changed = true;
+      if (entry.c.set(s, roof.top, roof.half, floorHeight, { era: eraOf(s) })) changed = true;
       entry.top = roof.top;
       entry.floorHeight = floorHeight;
     }
@@ -517,54 +568,155 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     placeConstructions();
   }
 
+  // ------------------------------------------------ a merged floor's windows, lit row by row
+  /** The panes of a run's new floor on its tower, in the order they light: bottom row first, round the floor from the city's side. */
+  const rows = new Map<string, { object: THREE.Object3D; panes: Array<{ mesh: THREE.InstancedMesh; i: number; lit: number }>; shown: number }>();
+  const paneColour = new THREE.Color();
+  function panesOf(entry: { site: SiteState }, piece: Centerpiece): Array<{ mesh: THREE.InstancedMesh; i: number; lit: number }> {
+    piece.object.updateMatrixWorld(true);
+    const own = ownFloors(entry.site);
+    let band: { y0: number; y1: number; x: number; z: number } | null = null;
+    const at = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    for (const [o, id] of piece.pickables) {
+      if (id === null || !own.includes(id)) continue;
+      o.getWorldPosition(at);
+      o.getWorldScale(scale);
+      band = { y0: at.y - scale.y / 2, y1: at.y + scale.y / 2, x: at.x, z: at.z };
+    }
+    if (!band) return [];
+    const out: Array<{ mesh: THREE.InstancedMesh; i: number; lit: number; y: number; a: number }> = [];
+    const m = new THREE.Matrix4();
+    const p = new THREE.Vector3();
+    piece.object.traverse((o) => {
+      const im = o as THREE.InstancedMesh;
+      if (!im.isInstancedMesh || !im.instanceColor || (im.material as THREE.Material).customProgramCacheKey?.() !== 'palimpsest-tower-window') return;
+      for (let i = 0; i < im.count; i++) {
+        im.getMatrixAt(i, m);
+        p.setFromMatrixPosition(m).applyMatrix4(im.matrixWorld);
+        if (p.y < band.y0 || p.y > band.y1) continue;
+        im.getColorAt(i, paneColour);
+        // Round the floor from the corner the city sees, so the light runs toward the eye.
+        const a = (Math.atan2(p.z - band.z, p.x - band.x) - Math.atan2(0.78, 0.63) + Math.PI * 3) % (Math.PI * 2);
+        out.push({ mesh: im, i, lit: paneColour.r, y: Math.round((p.y - band.y0) / 0.9), a });
+      }
+    });
+    out.sort((u, v) => u.y - v.y || u.a - v.a);
+    return out;
+  }
+  /** Lights each merged floor's panes up to how far its site has got, and leaves them as the tower built them once all are lit. */
+  function lightRows(): void {
+    for (const [runId, entry] of constructions) {
+      const w = entry.c.finish()?.windows ?? null;
+      const piece = pieceOf(entry.site.repo);
+      let r = rows.get(runId);
+      if (w === null || !piece) {
+        rows.delete(runId);
+        continue;
+      }
+      if (r && r.object !== piece.object) r = undefined;
+      if (!r) {
+        if (w >= 1) continue;
+        r = { object: piece.object, panes: panesOf(entry, piece), shown: -1 };
+        rows.set(runId, r);
+        entry.panes = r.panes.length;
+      }
+      const n = r.panes.length;
+      const shown = Math.round(w * n * 8) / 8;
+      if (shown === r.shown) continue;
+      r.shown = shown;
+      const touched = new Set<THREE.InstancedMesh>();
+      r.panes.forEach((pn, k) => {
+        // Each pane comes up over an eighth of the run of the floor, so a row reads as switched on, not as a fade.
+        const level = THREE.MathUtils.clamp(w * n - k, 0, 1);
+        pn.mesh.getColorAt(pn.i, paneColour);
+        paneColour.r = pn.lit * level;
+        pn.mesh.setColorAt(pn.i, paneColour);
+        touched.add(pn.mesh);
+      });
+      for (const im of touched) im.instanceColor!.needsUpdate = true;
+      if (w >= 1) rows.delete(runId);
+    }
+  }
+
   const weldAt = new THREE.Vector3();
-  /** Runs every site's crane and sparks, hands the pool's lights to the arcs nearest the camera, and asks for a shadow redraw while a crane moves. */
+  const lampColour = new THREE.Color(WORK_LAMP.color);
+  const arcColour = new THREE.Color(FLICKER.color);
+  /** Runs every site's crane and sparks, hands the pool's lights to the arcs and work lamps nearest the camera, and asks for a shadow redraw while a crane moves. */
   function updateConstructions(dt: number): void {
-    const arcs: Array<{ at: THREE.Vector3; intensity: number; d: number }> = [];
+    const emitters: Array<{ at: THREE.Vector3; intensity: number; d: number; arc: boolean }> = [];
     for (const { c } of constructions.values()) {
       if (c.update(dt)) sun.shadow.needsUpdate = true;
       const w = c.weld();
-      if (!w) continue;
-      weldAt.copy(w.at).add(c.object.position);
-      arcs.push({ at: weldAt.clone(), intensity: w.intensity, d: weldAt.distanceTo(camera.position) });
+      if (w) {
+        weldAt.copy(w.at).add(c.object.position);
+        emitters.push({ at: weldAt.clone(), intensity: w.intensity, d: weldAt.distanceTo(camera.position), arc: true });
+      }
+      const lamp = c.workLamp();
+      if (lamp) {
+        const at = lamp.light.add(c.object.position);
+        emitters.push({ at, intensity: lamp.intensity, d: at.distanceTo(camera.position), arc: false });
+      }
     }
-    field.update([...constructions.values()].map((e) => e.c));
-    arcs.sort((a, b) => a.d - b.d);
+    field.update([...constructions.values()].map((e) => e.c), camera.position);
+    lightRows();
+    emitters.sort((a, b) => a.d - b.d);
     flickerLights.forEach((l, i) => {
-      const a = arcs[i];
+      const a = emitters[i];
       l.intensity = a ? a.intensity : 0;
-      // Just off the steel, on the open side, so the light falls on the beam and the deck round the joint.
-      if (a) l.position.set(a.at.x, a.at.y + 0.35, a.at.z);
+      if (!a) return;
+      l.color.copy(a.arc ? arcColour : lampColour);
+      // An arc's light sits just off the steel, on the open side, so it falls on the beam and the deck round the joint.
+      if (a.arc) l.position.set(a.at.x, a.at.y + 0.35, a.at.z);
+      else l.position.copy(a.at);
     });
   }
 
   function siteView(repo: string): SiteView | null {
-    const entry = constructions.get(repo);
     const s = liveSites.filter((x) => x.repo === repo).sort((a, b) => SITE_RANK[b.stage] - SITE_RANK[a.stage])[0];
-    if (!entry || !s) return null;
+    // The site the city shows for the repo: the market's busiest, or the last one still finishing (or burning its lamp).
+    const entry = (s && constructions.get(s.runId)) || [...constructions.values()].reverse().find((e) => e.site.repo === repo);
+    if (!entry) return null;
     const count = (name: string): { count: number; total: number } => {
       const m = entry.c.object.getObjectByName(name) as THREE.InstancedMesh | undefined;
       return { count: m?.count ?? 0, total: m ? (m.instanceMatrix.count as number) : 0 };
     };
     const crane = entry.c.object.getObjectByName('construction:crane');
     const w = entry.c.weld();
+    const st = entry.c.state();
+    const fin = entry.c.finish();
+    const lamp = entry.c.workLamp();
+    const at = entry.c.object.position;
     return {
-      stage: s.stage,
-      progress: s.progress,
+      stage: entry.site.stage,
+      progress: entry.site.progress,
+      runId: entry.site.runId,
       columns: count('construction:columns').count,
       beams: count('construction:beams').count,
       beamsTotal: count('construction:beams').total,
       crane: crane ? crane.getWorldPosition(new THREE.Vector3()).toArray() : [],
-      weld: w ? w.at.clone().add(entry.c.object.position).toArray() : null,
+      weld: w ? w.at.clone().add(at).toArray() : null,
       arc: w ? w.intensity / FLICKER.peak : 0,
-      centre: [entry.c.object.position.x, entry.c.object.position.z],
+      centre: [at.x, at.z],
       top: entry.top,
       floorHeight: entry.floorHeight,
+      searchlights: entry.c.searchlights().map((l) => ({ at: l.at.clone().add(at).toArray(), end: l.at.clone().addScaledVector(l.dir, l.length).add(at).toArray() })),
+      frameFade: st?.frameFade ?? 0,
+      netDrop: st?.netDrop ?? 0,
+      strike: st?.strike ?? 0,
+      dismantle: st?.dismantle ?? 0,
+      floor: fin?.floor ?? null,
+      era: fin?.era ?? null,
+      windows: fin?.windows ?? null,
+      workLamp: lamp ? lamp.at.add(at).toArray() : null,
+      busy: entry.c.busy(),
+      panes: entry.panes ?? 0,
     };
   }
 
   let lastPlazas = '';
   function setPlots(occ: Occupancy): number {
+    occNow = occ;
     const built = placeDistricts(occ.districts) + placeQuarters(occ.quarters);
     reframe(occ);
     placeSites(occ.sites);
@@ -838,6 +990,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     buildExchange();
     for (const { c } of constructions.values()) c.dispose();
     constructions.clear();
+    rows.clear();
     scene.remove(field.group);
     field.dispose();
     field = makeConstructionField('medium');
@@ -947,6 +1100,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       scaffolds.clear();
       for (const { c } of constructions.values()) c.dispose();
       constructions.clear();
+      rows.clear();
       field.dispose();
       plates.dispose();
       markBox.dispose();
