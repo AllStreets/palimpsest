@@ -27,7 +27,8 @@ export interface Commit {
   lines: number;
 }
 
-function mirrorDir(fullName: string): string {
+/** The bare mirror directory for `fullName` under paths().mirrors. */
+export function mirrorDir(fullName: string): string {
   const [owner, name] = fullName.split('/');
   return join(paths().mirrors, `${owner}__${name}.git`);
 }
