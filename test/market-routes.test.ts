@@ -375,8 +375,8 @@ test('kill ends a run', async () => {
     watchMs: 0,
   });
   await s.tick();
-  const t0 = Date.now();
-  while (!started && Date.now() - t0 < 5000) await new Promise((r) => setTimeout(r, 5));
+  // Polled against the run's own state with a generous deadline, so a loaded machine never fails it.
+  await until(() => !!started);
   assert.ok(started, 'the run started');
   const runId = started as string;
 
@@ -594,10 +594,20 @@ test('settings validate concurrency, the bid window, the hard stop, the API budg
 
 // ------------------------------------------------------------------ the event stream and the front door
 
+/** Resolves once `cond` holds, polling every few milliseconds; throws past `ms` (generous, for a loaded machine). */
+async function until(cond: () => boolean, ms = 30_000): Promise<void> {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > ms) throw new Error('timed out waiting for the state');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 /** Opens the event stream; once it says it is connected, `onReady` runs; resolves with the text once `done` says stop. */
 function listen(s: StartedServer, onReady: () => void, done: (text: string) => boolean): Promise<string> {
   return new Promise((resolve, reject) => {
     let armed = false;
+    let timer: NodeJS.Timeout | null = null;
     const req = httpRequest({ host: '127.0.0.1', port: s.port, path: '/api/events', headers: { host: `127.0.0.1:${s.port}` } }, (res) => {
       let text = '';
       res.setEncoding('utf8');
@@ -608,6 +618,7 @@ function listen(s: StartedServer, onReady: () => void, done: (text: string) => b
           onReady();
         }
         if (done(text)) {
+          if (timer) clearTimeout(timer);
           req.destroy();
           resolve(text);
         }
@@ -618,7 +629,12 @@ function listen(s: StartedServer, onReady: () => void, done: (text: string) => b
       reject(e);
     });
     req.end();
-    setTimeout(() => reject(new Error('timed out waiting for the event')), 5000).unref();
+    // A generous deadline; on it the stream is closed too, so a missed event never leaves a socket holding the run open.
+    timer = setTimeout(() => {
+      req.destroy();
+      reject(new Error('timed out waiting for the event'));
+    }, 30_000);
+    timer.unref();
   });
 }
 

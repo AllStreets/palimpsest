@@ -84,9 +84,10 @@ interface DebugHandle {
   /**
    * For captures only: shows a firm's quarter as it stands between its
    * bankruptcy and the sale of its towers, every tower of its own dark.
-   * Never written anywhere; a reload restores the real state.
+   * Never written anywhere; `on` false (or the firm's real sale) clears it,
+   * and a reload restores the real state.
    */
-  darkQuarter(firmId: string): void;
+  darkQuarter(firmId: string, on?: boolean): void;
   /**
    * A firm's quarter as the city shows it now (Task 28): its plate, its
    * court's lamps, and each tower's light, scaffold, phase, root and firm.
@@ -255,7 +256,12 @@ async function main(): Promise<void> {
       const ex = city.exchange();
       return ex ? { slots: ex.slots(), running: ex.fountainRunning() } : null;
     },
-    darkQuarter(firmId) {
+    darkQuarter(firmId, on = true) {
+      if (!on) {
+        darkened.delete(firmId);
+        place();
+        return;
+      }
       // As a live bankruptcy shows: the windows going out over two seconds.
       darkened.add(firmId);
       city.quarterEvent({ kind: 'bankrupt', firmId });
@@ -321,7 +327,8 @@ async function main(): Promise<void> {
       place();
     },
   };
-  window.__palimpsest = debug;
+  // The debug handle (captures, the UI test, probes) is exposed only with ?debug: a production window has none.
+  if (new URLSearchParams(location.search).has('debug')) window.__palimpsest = debug;
 
   /** The towers the engine last served. */
   let served: District[] = [];
@@ -673,8 +680,10 @@ async function main(): Promise<void> {
       if (firmId) city.quarterEvent({ kind: 'bankrupt', firmId });
     }
     if (e.type === 'tower.sold') {
-      const agentId = (e.data as { agentId?: string } | null)?.agentId;
-      if (agentId) city.quarterEvent({ kind: 'sold', agentId });
+      const sold = e.data as { agentId?: string; from?: string } | null;
+      if (sold?.agentId) city.quarterEvent({ kind: 'sold', agentId: sold.agentId });
+      // A capture's dark override never hides a real sale.
+      if (sold?.from && darkened.delete(sold.from)) place();
     }
     if (LIVE_ON.has(e.type)) readLive();
     if (REFRESH_ON.has(e.type)) refresh();

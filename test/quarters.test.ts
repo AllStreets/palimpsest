@@ -9,12 +9,12 @@ import { ambientCap, COURT_APRON } from '../app/src/city/collar.js';
 import { standingLots } from '../app/src/city/lots.js';
 import { occupancy, plazasOf } from '../app/src/city/occupancy.js';
 import { lightsOutAt, quarterZones } from '../app/src/city/lightsout.js';
-import { agentLook, DARKEN_S, quarterBuildKey, quarterCenterpiece, quarterLooks, quarterShow, QUARTER_OFFSETS, RECLAD } from '../app/src/city/quarters.js';
+import { agentLook, DARKEN_S, LANTERN_GLASS, LANTERN_TOP, quarterBuildKey, quarterCenterpiece, quarterLooks, quarterShow, QUARTER_OFFSETS, RECLAD } from '../app/src/city/quarters.js';
 import { AGENT_FLOOR_WIDTH } from '../app/src/city/tower/build.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
 import { type Look, lookKey } from '../app/src/city/tower/variants.js';
 import { DISTRICT_PITCH, districtOrigin, QUARTER_COURT } from '../shared/district-layout.js';
-import { agentRootHeight, layoutTower } from '../shared/tower-layout.js';
+import { agentRootHeight, layoutTower, ROOT_HEIGHT } from '../shared/tower-layout.js';
 import type { Era, Floor, Quarter, RootStyle, Silhouette, TowerSpec } from '../shared/types.js';
 
 /** Plain materials, one per key, named by key, so the quarter builds in Node. */
@@ -345,4 +345,46 @@ test("a sold tower rebuilds with the buyer's look and root", () => {
   assert.equal(quarterBuildKey(drawn(0.5).quarter), quarterBuildKey(drawn(RECLAD.rise - 0.1).quarter));
   assert.equal(quarterBuildKey(drawn(RECLAD.rise + 0.1).quarter), quarterBuildKey(end.quarter));
   assert.notEqual(quarterBuildKey(drawn(0.5).quarter), quarterBuildKey(end.quarter));
+});
+
+test("the court's lantern stands over every agent root and under the lowest district tower, its glass as built", () => {
+  const roots = Object.keys(ROOT_HEIGHT) as RootStyle[];
+  const agentRoof = Math.max(...roots.map(agentRootHeight));
+  const lowestDistrict = Math.min(...roots.map((r) => ROOT_HEIGHT[r]));
+  assert.ok(LANTERN_TOP > agentRoof && LANTERN_TOP < lowestDistrict, `its top ${LANTERN_TOP} m is between ${agentRoof.toFixed(1)} and ${lowestDistrict} m`);
+  // The glass burns over the agents' roofs, inside the cage.
+  assert.ok(LANTERN_GLASS.y > agentRoof, `the glass's centre ${LANTERN_GLASS.y} m clears every agent root`);
+  assert.ok(LANTERN_GLASS.y + LANTERN_GLASS.height / 2 < LANTERN_TOP);
+  // And the build agrees: the court's tallest piece at the centre, and the lit glass where the glare is drawn.
+  for (const root of roots) {
+    const q = fullQuarter(root, 'plain');
+    const piece = quarterCenterpiece(q, 'high', (t) => quarterLooks(q).get(t.id)!, { name: 'Firm', materials: plainMaterials });
+    const court = piece.object.getObjectByName('quarter:walks')!;
+    court.updateMatrixWorld(true);
+    const top = new THREE.Box3();
+    const glass = new THREE.Box3();
+    court.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const pos = m.geometry.attributes.position as THREE.BufferAttribute;
+      const v = new THREE.Vector3();
+      const im = o as THREE.InstancedMesh;
+      const n = im.isInstancedMesh ? im.count : 1;
+      const mm = new THREE.Matrix4();
+      for (let k = 0; k < n; k++) {
+        if (im.isInstancedMesh) im.getMatrixAt(k, mm);
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i);
+          if (im.isInstancedMesh) v.applyMatrix4(mm);
+          v.applyMatrix4(m.matrixWorld);
+          if (Math.abs(v.x) > 3 || Math.abs(v.z) > 3) continue;
+          top.expandByPoint(v);
+          if ((m.material as THREE.Material).name === 'vent') glass.expandByPoint(v);
+        }
+      }
+    });
+    assert.ok(Math.abs(top.max.y - LANTERN_TOP) < 0.05, `${root}: the finial tops out at LANTERN_TOP (${top.max.y.toFixed(2)})`);
+    assert.ok(Math.abs((glass.min.y + glass.max.y) / 2 - LANTERN_GLASS.y) < 0.05, `${root}: the glass's centre is where the glare burns (${glass.min.y.toFixed(2)} to ${glass.max.y.toFixed(2)})`);
+    piece.dispose();
+  }
 });

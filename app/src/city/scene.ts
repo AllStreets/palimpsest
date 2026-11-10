@@ -445,10 +445,19 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
    * behind it, the scaffold struck and the windows relit.
    */
   const life = quarterLife((agentId) => {
-    const f = agentFrame(agentId);
-    if (!f) return null;
-    const h = new THREE.Vector3(f.width / 2, f.height / 2, f.width / 2);
-    return new THREE.Box3(f.center.clone().sub(h), f.center.clone().add(h));
+    // The agent's pick proxies: its root picks as null, each floor as its own id.
+    for (const { piece } of quarterPieces) {
+      const root = new THREE.Box3();
+      const upper = new THREE.Box3();
+      for (const [o, id] of piece.agents ?? []) {
+        if (id !== agentId) continue;
+        o.updateWorldMatrix(true, false);
+        const b = new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)).applyMatrix4(o.matrixWorld);
+        (piece.pickables.get(o) == null ? root : upper).union(b);
+      }
+      if (!root.isEmpty()) return { root, upper: upper.isEmpty() ? null : upper };
+    }
+    return null;
   });
   scene.add(life.group);
   /** Seconds since the scaffolds last asked for a shadow redraw: they move in steps, so the map follows in quarter seconds. */

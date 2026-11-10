@@ -218,7 +218,7 @@ async function kitFailureChecks(browser: Browser): Promise<void> {
   const thrown: string[] = [];
   page.on('pageerror', (e) => thrown.push(String(e)));
   await page.route('**/kits/kits.glb', (r) => r.fulfill({ status: 200, contentType: 'model/gltf-binary', body: Buffer.from('not a glb at all') }));
-  await page.goto(`http://127.0.0.1:${PORT}/`);
+  await page.goto(`http://127.0.0.1:${PORT}/?debug`);
   const ready = await page
     .waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 })
     .then(() => true)
@@ -1628,7 +1628,12 @@ async function main(): Promise<void> {
         body: JSON.stringify({ quality: process.env.UI_QUALITY }),
       });
     }
+    // Without ?debug the window exposes no debug handle at all.
     await page.goto(`http://127.0.0.1:${PORT}/`);
+    await page.waitForSelector('#city canvas', { timeout: 30_000 });
+    await page.waitForTimeout(1500);
+    check(await page.evaluate(() => (window as unknown as { __palimpsest?: unknown }).__palimpsest === undefined), 'a window opened without ?debug exposes no debug handle');
+    await page.goto(`http://127.0.0.1:${PORT}/?debug`);
     const ready = await page
       .waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, {
         timeout: 30_000,

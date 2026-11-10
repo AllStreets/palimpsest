@@ -476,6 +476,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         await page.waitForTimeout(1500);
         const o = by(extra).origin;
         await still(page, `quarter-dark-${extra}`, [o.x + 130, 40, o.z + 170], [o.x - 4, 22, o.z]);
+        await page.evaluate((f) => (window as unknown as { __palimpsest: { darkQuarter(f: string, on: boolean): void } }).__palimpsest.darkQuarter(f, false), extra);
       }
     },
 
@@ -503,6 +504,11 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await still(page, 'dark-far', [tx + 330, 110, tz + 420], [tx, 30, tz]);
       await still(page, 'dark-foot', [tx + 26, 2.2, tz + 34], [tx - 4, 5, tz]);
       await still(page, 'dark-court', [lode.origin.x + 40, 2, lode.origin.z + 96], [lode.origin.x - 20, 14, lode.origin.z - 30]);
+      // A lit firm's lantern standard and its plane trees, close, from the court.
+      const meri = by('meridian').origin;
+      await still(page, 'lantern', [meri.x + 16, 6, meri.z + 30], [meri.x, 16, meri.z]);
+      await still(page, 'lantern-top', [meri.x + 7, 21, meri.z + 11], [meri.x, 21, meri.z]);
+      await still(page, 'trees', [meri.x + 34, 4, meri.z + 40], [meri.x + 20, 6, meri.z + 20]);
       // A live bankruptcy, at Kiln: the windows going out.
       const kiln = by('kiln');
       const kEye: V3 = [kiln.origin.x + 130, 40, kiln.origin.z + 170];
@@ -518,6 +524,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await save(page, 'darkening', 86);
       await page.waitForTimeout(2600);
       await save(page, 'darkening-after', 86);
+      // The override ends with its shots: Kiln is not bankrupt in the economy, and its lantern relights.
+      await page.evaluate(() => (window as unknown as { __palimpsest: { darkQuarter(f: string, on: boolean): void } }).__palimpsest.darkQuarter('kiln', false));
       // The sale, live: Quickset buys Lodestar's tower and re-clads it.
       economy?.tick(1000);
       await economy?.idle();
@@ -937,7 +945,8 @@ async function main(): Promise<void> {
     page.on('pageerror', (e) => errors.push(String(e)));
     page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
     // Fixed quality: a slow headless frame must never step a capture down to medium.
-    await page.goto(`http://127.0.0.1:${PORT}/?fixed-quality`);
+    // ?debug exposes the app's debug handle (window.__palimpsest), which drives every shot.
+    await page.goto(`http://127.0.0.1:${PORT}/?fixed-quality&debug`);
     await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, {
       timeout: 60_000,
     });

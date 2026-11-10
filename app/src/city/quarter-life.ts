@@ -41,10 +41,10 @@ export interface QuarterLife {
 }
 
 /**
- * `towerBox(agentId)` gives a tower's box in the world as built now, for
- * sizing its scaffold.
+ * `towerBox(agentId)` gives a tower's root and the floors above it, each as
+ * a box in the world as built now, for sizing its scaffold's stages.
  */
-export function quarterLife(towerBox: (agentId: string) => THREE.Box3 | null): QuarterLife {
+export function quarterLife(towerBox: (agentId: string) => { root: THREE.Box3; upper: THREE.Box3 | null } | null): QuarterLife {
   const group = new THREE.Group();
   group.name = 'quarter-life';
   let served: Quarter[] = [];
@@ -88,7 +88,10 @@ export function quarterLife(towerBox: (agentId: string) => THREE.Box3 | null): Q
   const HAZE = new THREE.Color(1.0, 0.56, 0.2).multiplyScalar(0.38);
   let glareKey = '';
   function placeGlare(): void {
-    const lit = served.slice(0, MAX_LANTERNS).map((q) => [q.origin.x, q.origin.z, shows.get(q.firmId)?.court ?? 1] as const).filter(([, , c]) => c > 0.01);
+    const lit = served
+      .slice(0, MAX_LANTERNS)
+      .map((q) => [q.origin.x, q.origin.z, shows.get(q.firmId)?.court ?? 1] as const)
+      .filter(([, , c]) => c > 0.01);
     const key = JSON.stringify(lit);
     if (key === glareKey) return;
     glareKey = key;
@@ -129,12 +132,30 @@ export function quarterLife(towerBox: (agentId: string) => THREE.Box3 | null): Q
         want.add(id);
         let entry = scaffolds.get(id);
         if (!entry) {
-          const box = towerBox(id);
-          if (!box || box.isEmpty()) continue;
-          const size = box.getSize(new THREE.Vector3());
-          const centre = box.getCenter(new THREE.Vector3());
-          const s = makeRecladScaffold(size.x / 2 + 0.6, size.z / 2 + 0.6, size.y);
-          s.object.position.set(centre.x, box.min.y, centre.z);
+          const boxes = towerBox(id);
+          if (!boxes || boxes.root.isEmpty()) continue;
+          const { root, upper } = boxes;
+          const centre = root.getCenter(new THREE.Vector3());
+          const half = (b: THREE.Box3, axis: 'x' | 'z'): number => Math.max(Math.abs(b.max[axis] - centre[axis]), Math.abs(b.min[axis] - centre[axis])) + 0.6;
+          // Round the root to its roof, then stepped in round the floors above it, standing on the root's roof.
+          const stages = [
+            {
+              halfX: half(root, 'x'),
+              halfZ: half(root, 'z'),
+              y0: 0,
+              y1: root.max.y - root.min.y,
+            },
+          ];
+          if (upper && !upper.isEmpty() && upper.max.y > root.max.y + 1) {
+            stages.push({
+              halfX: half(upper, 'x'),
+              halfZ: half(upper, 'z'),
+              y0: root.max.y - root.min.y,
+              y1: upper.max.y - root.min.y,
+            });
+          }
+          const s = makeRecladScaffold(stages);
+          s.object.position.set(centre.x, root.min.y, centre.z);
           group.add(s.object);
           entry = { s, at: centre };
           scaffolds.set(id, entry);

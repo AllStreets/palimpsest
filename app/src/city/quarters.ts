@@ -459,59 +459,96 @@ function garden(k: Kit, root: RootStyle): void {
 }
 
 /**
- * The court's lantern column (Task 28): the firm's mark on the city's
- * skyline. A pedestal in the basin, a shaft in the root's stone (fluted for
- * the classical roots, eight-sided for the rest), a capital, and a glazed
- * lantern burning warm under a bronze cap, LANTERN_TOP high: above the
- * agents' roots, well under every district tower. When the firm goes
- * bankrupt its glass goes out with its towers (the lantern glass is the
- * `vent` emitter, under the lights-out uniform).
+ * The court's lantern standard (Task 28): the firm's mark on the city's
+ * skyline, proportioned like a civic lamp standard. A panelled pedestal in
+ * the basin; a column (fluted stone for the classical roots, banded cast
+ * iron for the rest) on a moulded base; a cast-iron bell capital carrying a
+ * railed gallery; and an eight-sided cast-iron lantern cage with bronze
+ * bands, its glass burning warm, under a stepped crown and a bronze finial. Its top (LANTERN_TOP) clears the
+ * tallest agent root (gothic, 20.9 m) and stays under the lowest district
+ * tower (a roman root with no floors, 24 m); its glass's centre
+ * (LANTERN_GLASS.y) clears every agent roof too, so the lamp is seen over
+ * the quarter's own towers (both pinned in test/quarters.test.ts). When the
+ * firm goes bankrupt its glass goes out with its towers (the lantern glass
+ * is the `vent` emitter, under the lights-out uniform).
  */
-export const LANTERN_TOP = 36;
-/** The lantern's glass: its centre's height, and its half width. */
-export const LANTERN_GLASS = { y: 30.4, half: 0.8 };
+export const LANTERN_TOP = 23.85;
+/** The lantern's glass: its centre's height, its height, and its half width (at the waist). */
+export const LANTERN_GLASS = { y: 21.25, height: 2.3, half: 0.62 };
+
+/** A ring of `r` round the column at `y`, `h` tall: a moulding, a collar, a gallery. */
+const ring = (r0: number, r1: number, h: number, seg = 24): THREE.BufferGeometry => new THREE.CylinderGeometry(r1, r0, h, seg);
 
 function lanternColumn(k: Kit, root: RootStyle): void {
   const stone = STONE[root];
-  // Pedestal: a base course, the die, and a cornice, standing in the water.
-  k.box(stone, 3.6, 0.5, 3.6, M(0, 0.25, 0));
-  k.box(stone, 2.8, 2.2, 2.8, M(0, 0.5 + 1.1, 0));
-  k.box(stone, 3.2, 0.35, 3.2, M(0, 2.7 + 0.175, 0));
-  const foot = 3.05;
-  const shaft = 25;
-  if (root === 'beauxarts' || root === 'roman') {
-    // flutedShaft stands on its foot (y 0 to its height).
-    k.inst('quarter:column-shaft', stone, () => flutedShaft(0.82, shaft, 20), M(0, foot, 0));
+  const classical = root === 'beauxarts' || root === 'roman';
+  // The pedestal, standing in the water: a base course, a panelled die, a moulded cornice.
+  k.box(stone, 3.4, 0.45, 3.4, M(0, 0.225, 0));
+  k.box(stone, 2.5, 2.1, 2.5, M(0, 0.45 + 1.05, 0));
+  for (let side = 0; side < 4; side++) {
+    // A sunk panel on each face of the die, framed by a fillet.
+    const f = M(0, 1.5, 0, (side * Math.PI) / 2);
+    k.box(stone, 1.7, 1.35, 0.06, f.clone().multiply(M(0, 0, 1.26)));
+    k.box('datum', 0.9, 0.34, 0.04, f.clone().multiply(M(0, 0.15, 1.3)));
+  }
+  k.box(stone, 2.95, 0.22, 2.95, M(0, 2.55 + 0.11, 0));
+  k.box(stone, 2.7, 0.18, 2.7, M(0, 2.77 + 0.09, 0));
+  // The column's base: a square plinth, a torus and a fillet.
+  const foot = 2.95;
+  k.box(stone, 1.6, 0.35, 1.6, M(0, foot + 0.175, 0));
+  k.add(classical ? stone : 'steel', ring(0.78, 0.7, 0.3), M(0, foot + 0.5, 0));
+  k.add(classical ? stone : 'steel', ring(0.66, 0.62, 0.12), M(0, foot + 0.71, 0));
+  const shaftFoot = foot + 0.77;
+  const shaft = 14.6;
+  if (classical) {
+    // flutedShaft stands on its foot (y 0 to its height), with its own entasis.
+    k.inst('quarter:column-shaft', stone, () => flutedShaft(0.56, shaft, 20), M(0, shaftFoot, 0));
   } else {
-    k.add(stone, new THREE.CylinderGeometry(0.72, 0.92, shaft, 8), M(0, foot + shaft / 2, 0, Math.PI / 8));
+    // Cast iron: a tapered shaft, a fluted drum at its foot, and a collar every lift.
+    k.add('steel', ring(0.5, 0.4, shaft, 20), M(0, shaftFoot + shaft / 2, 0));
+    k.inst('quarter:column-drum', 'steel', () => flutedShaft(0.56, 2.6, 16), M(0, shaftFoot, 0));
+    for (let i = 1; i <= 4; i++) k.add('datum', ring(0.52 - i * 0.02, 0.52 - i * 0.02, 0.16), M(0, shaftFoot + 2.6 + i * 2.2, 0));
   }
-  // Necking band and a square capital.
-  const top = foot + shaft;
-  k.box('datum', 1.9, 0.22, 1.9, M(0, top + 0.11, 0));
-  k.box(stone, 2.5, 0.55, 2.5, M(0, top + 0.22 + 0.27, 0));
-  // The lantern: a glass core between four bronze posts, a sill and a lintel.
-  const y0 = top + 0.77;
-  const h = 3.1;
-  k.box('datum', 2.1, 0.16, 2.1, M(0, y0 + 0.08, 0));
-  k.box('vent', LANTERN_GLASS.half * 2, h - 0.3, LANTERN_GLASS.half * 2, M(0, y0 + 0.16 + (h - 0.3) / 2, 0));
-  for (const [x, z] of [
-    [-0.92, -0.92],
-    [0.92, -0.92],
-    [-0.92, 0.92],
-    [0.92, 0.92],
-  ]) {
-    k.box('steel', 0.2, h, 0.2, M(x, y0 + h / 2, z));
+  // The bell capital in cast iron on a bronze necking, and its abacus.
+  const top = shaftFoot + shaft;
+  k.add('datum', ring(0.46, 0.5, 0.18), M(0, top + 0.09, 0));
+  k.add('steel', ring(0.48, 0.98, 0.9, 24), M(0, top + 0.18 + 0.45, 0));
+  k.box(classical ? stone : 'steel', 2.0, 0.24, 2.0, M(0, top + 1.08 + 0.12, 0));
+  // The gallery: a bronze ring a little wider than the abacus, railed with balusters.
+  const gallery = top + 1.32;
+  k.add('steel', ring(1.15, 1.15, 0.12, 32), M(0, gallery + 0.06, 0));
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    k.box('steel', 0.05, 0.62, 0.05, M(Math.cos(a) * 1.08, gallery + 0.12 + 0.31, Math.sin(a) * 1.08));
   }
-  // Glazing bars across each face, so up close the glass reads as a lantern's and not a block of light.
-  for (const side of [-1, 1]) {
-    k.box('steel', 0.06, h - 0.3, LANTERN_GLASS.half * 2 + 0.04, M(side * (LANTERN_GLASS.half + 0.01), y0 + 0.16 + (h - 0.3) / 2, 0));
-    k.box('steel', LANTERN_GLASS.half * 2 + 0.04, h - 0.3, 0.06, M(0, y0 + 0.16 + (h - 0.3) / 2, side * (LANTERN_GLASS.half + 0.01)));
+  k.add('steel', new THREE.TorusGeometry(1.08, 0.035, 6, 32).rotateX(Math.PI / 2), M(0, gallery + 0.76, 0));
+  // The lantern: a base ring, eight-sided glass flaring to its shoulder between eight bronze mullions, a top ring.
+  const g0 = LANTERN_GLASS.y - LANTERN_GLASS.height / 2;
+  const g1 = LANTERN_GLASS.y + LANTERN_GLASS.height / 2;
+  k.add('steel', ring(0.66, 0.78, g0 - (gallery + 0.12), 8), M(0, (gallery + 0.12 + g0) / 2, 0, Math.PI / 8));
+  k.add('vent', ring(LANTERN_GLASS.half * 0.88, LANTERN_GLASS.half * 1.18, LANTERN_GLASS.height, 8), M(0, LANTERN_GLASS.y, 0, Math.PI / 8));
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const r = (LANTERN_GLASS.half * (0.88 + 1.18)) / 2 / Math.cos(Math.PI / 8) + 0.01;
+    // Each mullion leans out with the glass's flare.
+    const lean = Math.atan2(LANTERN_GLASS.half * 0.3, LANTERN_GLASS.height);
+    const m = new THREE.Matrix4().compose(
+      new THREE.Vector3(Math.cos(a) * r, LANTERN_GLASS.y, Math.sin(a) * r),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -a, -lean, 'YXZ')),
+      new THREE.Vector3(1, 1, 1),
+    );
+    k.add('steel', new THREE.BoxGeometry(0.07, LANTERN_GLASS.height + 0.06, 0.07), m);
   }
-  k.box('datum', 2.2, 0.22, 2.2, M(0, y0 + h + 0.11, 0));
-  // A pyramid cap in bronze and a finial ball.
-  const cap = LANTERN_TOP - (y0 + h + 0.22) - 0.5;
-  k.add('datum', new THREE.ConeGeometry(1.5, cap, 4, 1), M(0, y0 + h + 0.22 + cap / 2, 0, Math.PI / 4));
-  k.add('datum', new THREE.SphereGeometry(0.25, 12, 8), M(0, LANTERN_TOP - 0.25, 0));
+  // A glazing bar round the waist of the glass.
+  k.add('datum', ring(LANTERN_GLASS.half * 1.04, LANTERN_GLASS.half * 1.04, 0.06, 8), M(0, LANTERN_GLASS.y, 0, Math.PI / 8));
+  k.add('datum', ring(0.86, 0.92, 0.16, 8), M(0, g1 + 0.08, 0, Math.PI / 8));
+  // The crown: a stepped bronze cap, a smaller cap over it, then the finial ball and spike.
+  const c0 = g1 + 0.16;
+  k.add('steel', ring(0.98, 0.32, 0.5, 8), M(0, c0 + 0.25, 0, Math.PI / 8));
+  k.add('datum', ring(0.36, 0.2, 0.18, 8), M(0, c0 + 0.5 + 0.09, 0, Math.PI / 8));
+  k.add('datum', new THREE.SphereGeometry(0.12, 12, 8), M(0, c0 + 0.68 + 0.12, 0));
+  const spike = LANTERN_TOP - (c0 + 0.92);
+  k.add('datum', new THREE.ConeGeometry(0.04, spike, 6), M(0, c0 + 0.92 + spike / 2, 0));
 }
 
 let foliage: { leaf: THREE.Material; bark: THREE.Material } | null = null;
@@ -544,29 +581,30 @@ function vnoise(x: number, y: number, z: number): number {
  * mass so it shades as foliage, not as facets.
  */
 function crownMass(): THREE.BufferGeometry {
-  const g = new THREE.IcosahedronGeometry(1, 3);
+  // A smooth indexed sphere (no facets), pushed in and out into leaf clusters by two octaves of noise.
+  const g = new THREE.SphereGeometry(1, 22, 14);
   const pos = g.attributes.position as THREE.BufferAttribute;
   const colors = new Float32Array(pos.count * 3);
   const v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i);
-    const n = vnoise(v.x * 2.6 + 4, v.y * 2.6, v.z * 2.6) * 0.7 + vnoise(v.x * 6.1, v.y * 6.1 + 9, v.z * 6.1) * 0.3;
-    const k = 0.8 + 0.42 * n;
-    v.multiplyScalar(k);
-    if (v.y < 0) v.y *= 0.58;
+    const n = vnoise(v.x * 2.2 + 4, v.y * 2.2, v.z * 2.2) * 0.65 + vnoise(v.x * 5.3, v.y * 5.3 + 9, v.z * 5.3) * 0.35;
+    v.multiplyScalar(0.84 + 0.3 * n);
+    if (v.y < 0) v.y *= 0.55;
     pos.setXYZ(i, v.x, v.y, v.z);
-    // Light on top and on the clumps that stand out, dark in the hollows and underneath.
-    const shade = (0.55 + 0.45 * THREE.MathUtils.smoothstep(v.y, -0.5, 0.8)) * (0.78 + 0.32 * n);
-    colors.set([shade * 0.96, shade, shade * 0.9], i * 3);
+    // Light on top and on the clusters that stand out, dark in the hollows and underneath.
+    const shade = (0.5 + 0.5 * THREE.MathUtils.smoothstep(v.y, -0.45, 0.85)) * (0.8 + 0.3 * n);
+    colors.set([shade * 0.96, shade, shade * 0.88], i * 3);
   }
   g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   g.computeVertexNormals();
+  // Normals bent toward the round of the mass, so it shades as a soft volume of leaves.
   const nrm = g.attributes.normal as THREE.BufferAttribute;
   const radial = new THREE.Vector3();
   const nv = new THREE.Vector3();
   for (let i = 0; i < nrm.count; i++) {
     radial.fromBufferAttribute(pos, i).normalize();
-    nv.fromBufferAttribute(nrm, i).lerp(radial, 0.55).normalize();
+    nv.fromBufferAttribute(nrm, i).lerp(radial, 0.45).normalize();
     nrm.setXYZ(i, nv.x, nv.y, nv.z);
   }
   return g;
@@ -578,8 +616,8 @@ function barkedLimb(): THREE.BufferGeometry {
   const pos = g.attributes.position as THREE.BufferAttribute;
   const colors = new Float32Array(pos.count * 3);
   const v = new THREE.Vector3();
-  const cream = new THREE.Color(0.86, 0.83, 0.7);
-  const olive = new THREE.Color(0.55, 0.55, 0.44);
+  const cream = new THREE.Color(0.68, 0.66, 0.55);
+  const olive = new THREE.Color(0.47, 0.47, 0.37);
   const brown = new THREE.Color(0.4, 0.35, 0.29);
   const c = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
@@ -587,7 +625,7 @@ function barkedLimb(): THREE.BufferGeometry {
     const a = Math.atan2(v.z, v.x);
     const n = vnoise(Math.cos(a) * 2.2 + 3, v.y * 3.4, Math.sin(a) * 2.2);
     const m = vnoise(Math.cos(a) * 4.4, v.y * 7 + 5, Math.sin(a) * 4.4);
-    c.copy(n > 0.55 ? cream : n > 0.38 ? olive : brown).lerp(brown, m * 0.25);
+    c.copy(n > 0.6 ? cream : n > 0.4 ? olive : brown).lerp(brown, m * 0.25);
     colors.set([c.r, c.g, c.b], i * 3);
   }
   g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -597,12 +635,12 @@ function barkedLimb(): THREE.BufferGeometry {
 /** London planes in leaf: a mottled bole forking into two limbs and a broad crown of overlapping clumped masses, instanced. */
 function plantTrees(): { object: THREE.Object3D; dispose(): void } {
   foliage ??= {
-    leaf: new THREE.MeshStandardMaterial({ color: 0x5b6740, roughness: 0.92, metalness: 0, vertexColors: true }),
+    leaf: new THREE.MeshStandardMaterial({ color: 0x66744a, roughness: 0.92, metalness: 0, vertexColors: true }),
     bark: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0, vertexColors: true }),
   };
   const trunkGeo = barkedLimb();
   const crownGeo = crownMass();
-  const MASSES = 7;
+  const MASSES = 18;
   const trunks = new THREE.InstancedMesh(trunkGeo, foliage.bark, TREES.length * 3);
   const crowns = new THREE.InstancedMesh(crownGeo, foliage.leaf, TREES.length * MASSES);
   const m = new THREE.Matrix4();
@@ -622,15 +660,21 @@ function plantTrees(): { object: THREE.Object3D; dispose(): void } {
       const tip = new THREE.Vector3(0, 1.4, 0).applyQuaternion(q);
       trunks.setMatrixAt(3 * i + 1 + side, m.compose(new THREE.Vector3(x + tip.x, 3.45 + tip.y, z + tip.z), q, new THREE.Vector3(0.62, 2.8, 0.62)));
     }
+    // Three layers of leaf clusters: a broad lower skirt of six, a middle ring of four, and two at the top,
+    // each turned and sized apart, overlapping so the crown reads as one canopy with depth, not a pile of balls.
     for (let j = 0; j < MASSES; j++) {
-      // A high central mass, and six round it at two heights, leaning out over the limbs.
-      const b = a + (j * Math.PI * 2) / (MASSES - 1) + 0.5 * Math.sin(i * 1.3 + j);
-      const r = j === 0 ? 0 : 2.3 + 0.5 * Math.sin(i + j * 2.1);
-      const size = (j === 0 ? 3.0 : 2.1 + 0.35 * Math.cos(i * 0.7 + j)) * s;
-      const y = (j === 0 ? 7.6 : j % 2 ? 6.2 : 7.0) * s + 0.3 * Math.sin(i * 3 + j);
+      const layer = j < 8 ? 0 : j < 14 ? 1 : 2;
+      const inLayer = layer === 0 ? j : layer === 1 ? j - 8 : j - 14;
+      const count = [8, 6, 4][layer];
+      const b = a + (inLayer * Math.PI * 2) / count + layer * 0.5 + 0.4 * Math.sin(i * 1.3 + j);
+      const r = [3.1, 2.0, 1.0][layer] + 0.45 * Math.sin(i + j * 2.1);
+      const size = [1.35, 1.45, 1.3][layer] * (1 + 0.18 * Math.cos(i * 0.7 + j * 1.3)) * s;
+      const y = [5.8, 7.0, 8.1][layer] * s + 0.35 * Math.sin(i * 3 + j);
       q.setFromAxisAngle(up, b * 1.7);
-      crowns.setMatrixAt(MASSES * i + j, m.compose(new THREE.Vector3(x + Math.cos(b) * r, y, z + Math.sin(b) * r), q, new THREE.Vector3(size * 1.08, size * 0.8, size)));
-      crowns.setColorAt(MASSES * i + j, tint.setRGB(0.92 + 0.1 * Math.sin(i * 1.3 + j * 2.1), 0.95 + 0.07 * Math.cos(i + j), 0.88));
+      crowns.setMatrixAt(MASSES * i + j, m.compose(new THREE.Vector3(x + Math.cos(b) * r, y, z + Math.sin(b) * r), q, new THREE.Vector3(size * 1.1, size * 0.78, size)));
+      // The top layer catches the most sky; the skirt sits in the crown's own shade.
+      const lift = [0.86, 0.96, 1.06][layer];
+      crowns.setColorAt(MASSES * i + j, tint.setRGB((0.92 + 0.08 * Math.sin(i * 1.3 + j * 2.1)) * lift, (0.95 + 0.06 * Math.cos(i + j)) * lift, 0.86 * lift));
     }
   });
   const g = new THREE.Group();
