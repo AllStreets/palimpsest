@@ -7,6 +7,7 @@ import { inspect } from './guild/inspect.js';
 import { installDeps } from './market/install.js';
 import { pollPRs, ship, watchReverts } from './market/ship.js';
 import { bankruptcyTick, dailyTick, DAY_MS, HOUR_MS, installTreasury } from './market/treasury.js';
+import { writeDailyReport } from './market/report.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
@@ -55,6 +56,10 @@ async function main(): Promise<void> {
     // Task 16: every waiting PR every five minutes, every repo with lit floors every thirty for a revert.
     pollPRs,
     watchReverts,
+    // Task 18: once a local day has ended, its report (reports/<day>.md) says what the market did and what waits on him.
+    daily: async (day) => {
+      writeDailyReport(day);
+    },
   });
   scheduler.start();
 

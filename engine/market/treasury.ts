@@ -30,7 +30,7 @@ import { canHire, HIRE_FEE, isBankrupt, REVIEWER_SHARE, salePrice, START_BALANCE
 import type { Bid, Inspection, Job, Trip } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit, subscribe, type Event } from '../events.js';
-import { entries, record, type LedgerEntry } from '../ledger.js';
+import { query, record, type LedgerEntry } from '../ledger.js';
 
 export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale';
 
@@ -116,16 +116,12 @@ function atomically<T>(fn: () => T): T {
   }
 }
 
-/** The highest credits row any `credits.moved` entry names. */
+/** The highest credits row any `credits.moved` entry names, read through the ledger's kind index. */
 function settledThrough(): number {
-  let max = 0;
-  for (const e of entries()) {
-    if (e.kind !== 'credits.moved') continue;
-    const ids = (e.data as { rowIds?: unknown }).rowIds;
-    if (!Array.isArray(ids)) continue;
-    for (const id of ids) if (typeof id === 'number' && id > max) max = id;
-  }
-  return max;
+  const row = openDb()
+    .prepare("SELECT MAX(CAST(r.value AS INTEGER)) AS max FROM ledger, json_each(ledger.json, '$.rowIds') AS r WHERE ledger.kind = 'credits.moved' AND r.type = 'integer'")
+    .get() as { max: number | bigint | null } | undefined;
+  return Number(row?.max ?? 0);
 }
 
 function move(m: CreditsMoved): void {
@@ -241,9 +237,9 @@ function winningBid(j: Job): Bid | null {
     if (b) return b;
   }
   let chosen: Bid | null = null;
-  for (const e of entries()) {
-    const d = e.data as { jobId?: string; chosen?: Bid | null };
-    if (e.kind === 'job.awarded' && d.jobId === j.id && d.chosen) chosen = d.chosen;
+  for (const e of query({ kind: 'job.awarded', jobId: j.id })) {
+    const d = e.data as { chosen?: Bid | null };
+    if (d.chosen) chosen = d.chosen;
   }
   return chosen;
 }
@@ -271,7 +267,7 @@ function payMerge(j: Job, now: number): void {
 }
 
 function alreadyNoted(jobId: string): boolean {
-  return entries().some((e) => e.kind === 'run.note' && (e.data as { jobId?: string; unpaid?: unknown }).jobId === jobId && (e.data as { unpaid?: unknown }).unpaid !== undefined);
+  return query({ kind: 'run.note', jobId }).some((e) => (e.data as { unpaid?: unknown }).unpaid !== undefined);
 }
 
 /** The reviewer's firm is paid REVIEWER_SHARE of the job's value by the city, once per inspection; nobody is paid when no reviewer read it. */

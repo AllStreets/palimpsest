@@ -17,8 +17,16 @@
  */
 import { eraForScore, ERA_ORDER, overclaimOf, reputationScore } from '../../shared/market-rules.js';
 import type { Agent, Bid, Era, FloorSize, Reputation, Tier } from '../../shared/types.js';
-import { entries, type LedgerEntry } from '../ledger.js';
+import { query, type LedgerEntry, type LedgerKind } from '../ledger.js';
 import { listAgents } from './firms.js';
+
+/** The kinds reputation reads; it asks the ledger's kind index for these alone. */
+export const REPUTATION_KINDS: readonly LedgerKind[] = ['job.awarded', 'merge.detected', 'floor.scarred', 'inspection.done', 'run.ended', 'merge.reverted'];
+
+/** The part of the ledger reputation reads, oldest first. */
+export function reputationLog(): LedgerEntry[] {
+  return query({ kind: REPUTATION_KINDS });
+}
 
 export interface Resolved {
   jobId: string;
@@ -77,7 +85,7 @@ function outcome(e: LedgerEntry): { jobId: string; passed: boolean; size: FloorS
 }
 
 /** Every resolved award in the ledger, oldest first. */
-export function resolvedBids(log: LedgerEntry[] = entries()): Resolved[] {
+export function resolvedBids(log: LedgerEntry[] = reputationLog()): Resolved[] {
   const holding = new Map<string, { bid: Bid; tier: Tier | null }>();
   const resolved: Resolved[] = [];
   const merges = new Map<string, Resolved>();
@@ -132,7 +140,7 @@ function firmCapability(firmId: string): Era {
 }
 
 /** `firmId`'s reputation from the ledger. A firm with no resolved bids has null rates and the new-firm overclaim. */
-export function reputation(firmId: string, log: LedgerEntry[] = entries()): Reputation {
+export function reputation(firmId: string, log: LedgerEntry[] = reputationLog()): Reputation {
   const mine = resolvedBids(log).filter((r) => r.firmId === firmId);
   const merges = mine.filter((r) => r.passed);
   const brier = mine.length === 0 ? null : tidy(mine.reduce((s, r) => s + (r.confidence - (r.passed ? 1 : 0)) ** 2, 0) / mine.length);
@@ -157,6 +165,6 @@ export function reputation(firmId: string, log: LedgerEntry[] = entries()): Repu
 }
 
 /** The era an agent builds in now: its firm's score, capped by what its model can reach. */
-export function eraFor(a: Agent, log: LedgerEntry[] = entries()): Era {
+export function eraFor(a: Agent, log: LedgerEntry[] = reputationLog()): Era {
   return eraForScore(reputation(a.firmId, log).score, a.capability);
 }

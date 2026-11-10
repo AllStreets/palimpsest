@@ -19,13 +19,12 @@
  * as data (quote.ts), never as instructions.
  */
 import type { Agent, CheckResult, Job, Run } from '../../shared/types.js';
-import { entries } from '../ledger.js';
 import { chargesItself } from '../market/anthropic-api.js';
 import { callPaused, charge, REVIEW_ESTIMATE, type Lease } from '../market/budget.js';
 import { firm as storedFirm, listAgents, listFirms } from '../market/firms.js';
 import type { Usage } from '../market/provider.js';
 import { providerFor } from '../market/providers.js';
-import { reputation } from '../market/reputation.js';
+import { reputation, reputationLog } from '../market/reputation.js';
 
 /** Reviewers tried in turn when a call fails for its own reasons (not a stop). */
 const MAX_TRIES = 3;
@@ -56,7 +55,7 @@ const ZERO: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
 
 /** Working agents of active firms other than the worker's, best reputation first. */
 export function reviewerCandidates(run: Pick<Run, 'firmId'>): Agent[] {
-  const log = entries();
+  const log = reputationLog();
   const firms = listFirms().filter((f) => f.status === 'active' && f.id !== run.firmId);
   const score = new Map(firms.map((f) => [f.id, reputation(f.id, log).score]));
   return listAgents()

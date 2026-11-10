@@ -33,7 +33,7 @@ import { calibrated as calibrate, expectedValue } from '../../shared/market-rule
 import type { Agent, Bid, FloorSize, Job, Repo, Tier } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
-import { entries, record } from '../ledger.js';
+import { query, record } from '../ledger.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
 import { acquire, charge, creditsFor, PLAN_ESTIMATE, unattended } from './budget.js';
@@ -107,7 +107,7 @@ export function bidById(id: string): Bid | null {
 /** When the job's last round drew no bid at all, the time it may open for bids again; else null. */
 export function coolingOffUntil(jobId: string): number | null {
   const row = openDb()
-    .prepare("SELECT json FROM ledger WHERE kind = 'job.awarded' AND json_extract(json, '$.jobId') = ? ORDER BY id DESC LIMIT 1")
+    .prepare("SELECT json FROM ledger WHERE kind = 'job.awarded' AND job_id = ? ORDER BY id DESC LIMIT 1")
     .get(jobId) as { json: string } | undefined;
   if (!row) return null;
   const until = (JSON.parse(row.json) as { coolOffUntil?: unknown }).coolOffUntil;
@@ -143,7 +143,7 @@ export function firmExamples(firmId: string, n: number): string[] {
   const holder = new Map<string, string>();
   const summary = new Map<string, string>();
   const out: string[] = [];
-  for (const e of entries()) {
+  for (const e of query({ kind: ['job.awarded', 'run.ended', 'job.changed'] })) {
     const d = (e.data ?? {}) as Record<string, unknown>;
     if (e.kind === 'job.awarded') {
       const chosen = d.chosen as { firmId?: unknown } | null | undefined;

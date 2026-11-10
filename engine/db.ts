@@ -16,7 +16,9 @@ const SCHEMA = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
     kind TEXT NOT NULL,
-    json TEXT NOT NULL
+    json TEXT NOT NULL,
+    job_id TEXT,
+    run_id TEXT
   );
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -112,6 +114,7 @@ const MARKET_SCHEMA = `
  */
 export function migrate(db: DatabaseSync): void {
   db.exec(SCHEMA);
+  migrateLedgerIndex(db);
   db.exec(MARKET_SCHEMA);
 
   const rows = db.prepare('SELECT full_name, json FROM repos').all() as Array<{ full_name: string; json: string }>;
@@ -132,6 +135,45 @@ export function migrate(db: DatabaseSync): void {
     db.exec('ROLLBACK');
     throw err;
   }
+}
+
+/**
+ * The SQL twin of ledger.ts `refsOf()`: the job and run an entry is about,
+ * read from where each kind keeps them.
+ */
+const JOB_REF = `COALESCE(
+  json_extract(json, '$.jobId'), json_extract(json, '$.job.id'), json_extract(json, '$.bid.jobId'),
+  json_extract(json, '$.run.jobId'), json_extract(json, '$.inspection.jobId'),
+  CASE WHEN kind = 'job.changed' THEN json_extract(json, '$.id') END)`;
+const RUN_REF = `COALESCE(json_extract(json, '$.runId'), json_extract(json, '$.run.id'), json_extract(json, '$.inspection.runId'))`;
+
+/**
+ * The ledger's index (Task 18): each entry carries the job and run it is
+ * about in its own columns, indexed with its kind and time, so a lookup by
+ * kind, job or run (the treasury's cursor, its notes, the award a payment
+ * reads, the daily report) never scans the whole ledger. A ledger written
+ * before the columns existed gets them and is filled in once, from the json.
+ */
+function migrateLedgerIndex(db: DatabaseSync): void {
+  const cols = new Set((db.prepare('PRAGMA table_info(ledger)').all() as Array<{ name: string }>).map((c) => c.name));
+  if (!cols.has('job_id') || !cols.has('run_id')) {
+    db.exec('BEGIN');
+    try {
+      if (!cols.has('job_id')) db.exec('ALTER TABLE ledger ADD COLUMN job_id TEXT');
+      if (!cols.has('run_id')) db.exec('ALTER TABLE ledger ADD COLUMN run_id TEXT');
+      db.exec(`UPDATE ledger SET job_id = ${JOB_REF}, run_id = ${RUN_REF}`);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS ledger_kind ON ledger (kind, id);
+    CREATE INDEX IF NOT EXISTS ledger_job ON ledger (job_id, id);
+    CREATE INDEX IF NOT EXISTS ledger_run ON ledger (run_id, id);
+    CREATE INDEX IF NOT EXISTS ledger_at ON ledger (at);
+  `);
 }
 
 // Cached per resolved db file path, so a changed PALIMPSEST_HOME (as every

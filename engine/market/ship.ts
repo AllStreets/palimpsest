@@ -552,7 +552,7 @@ async function pushMode(
     const mergeSha = await gitOk(ship, ['rev-parse', '--verify', 'HEAD^{commit}']);
     const parents = (await gitOk(ship, ['rev-list', '--parents', '-n', '1', mergeSha])).split(' ');
     if (parents.length !== 3 || parents[1] !== tip || parents[2] !== head) throw new Error('The merge commit is not the default branch plus the inspected change.');
-    record('run.note', { runId: r.id, jobId: job.id, repo: repo.fullName, note: `merge ${mergeSha} recorded for push mode`, mergeSha, at: iso() });
+    record('run.note', { runId: r.id, jobId: job.id, repo: repo.fullName, note: `merge ${mergeSha} recorded for push mode`, mergeSha, internal: true, at: iso() });
     log(`merged ${head.slice(0, 7)} into ${def} at ${mergeSha.slice(0, 7)}; rechecking`);
 
     // The recheck: install (registries only), then the test and the build (nothing reachable), under the tool profile.
@@ -797,7 +797,10 @@ export async function watchReverts(now: number = Date.now()): Promise<void> {
       try {
         if (!mergeSha) {
           mergeSha = await findMergeSha(r, repo, { sync: false });
-          if (mergeSha) updateRun(r.id, { mergeSha });
+          if (mergeSha && updateRun(r.id, { mergeSha })) {
+            // Bookkeeping for replay (Task 18), not a note for his brief.
+            record('run.note', { runId: r.id, jobId: r.jobId, repo: r.repo, note: `merge ${mergeSha} found in the history`, mergeSha, internal: true, at: iso(now) });
+          }
         }
         if (!mergeSha) continue;
         const after = await recentCommits(repo.fullName, repo.defaultBranch, mergeSha, { sync: false });

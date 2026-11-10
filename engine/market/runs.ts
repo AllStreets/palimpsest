@@ -729,7 +729,7 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     const patchPath = join(st.runRoot, 'diff.patch');
     writeFileSync(patchPath, d.patch);
     const diff: RunDiff = { ...d, patchPath };
-    record('run.diff', { runId: st.run.id, jobId: st.run.jobId, headSha: head, files: d.files, lines: d.lines, sha256: d.sha256, patchPath });
+    record('run.diff', { runId: st.run.id, jobId: st.run.jobId, headSha: head, baseSha, files: d.files, lines: d.lines, sha256: d.sha256, patchPath });
 
     checkpoint(st);
     st.job = transition(storedJob(st.job.id) ?? st.job, 'inspecting');
