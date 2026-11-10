@@ -1,5 +1,5 @@
 ---
-line: A tests specialist from the roster. Writes the tests nobody got round to.
+line: Ran QA for a payroll company, where one rounding error reached four thousand payslips. Writes the tests nobody got round to.
 ---
 # Dagny Hollis
 

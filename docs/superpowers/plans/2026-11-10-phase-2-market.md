@@ -386,7 +386,7 @@ Each task is marked for the implementer model per the controller's routing: **[O
 ### Task 4: Firms, agents, genomes, personas and quarters [Opus]
 
 **Files:**
-- Create: `engine/market/firms.ts`, `engine/market/reputation.ts`, `engine/market/personas/*.md` (12 seeded agents, 6 roster specialists), `shared/silhouette.ts`
+- Create: `engine/market/firms.ts`, `engine/market/reputation.ts`, `engine/market/personas/*.md` (10 seeded agents, 6 roster specialists), `shared/silhouette.ts`
 - Modify: `engine/repos.ts` (slot allocation moves to the `slots` table shared by repos and firms), `engine/layout.ts`
 - Test: `test/firms.test.ts`, `test/reputation.test.ts`, `test/silhouette.test.ts`, additions to `test/repos.test.ts`
 
@@ -400,7 +400,7 @@ Each task is marked for the implementer model per the controller's routing: **[O
 - Personas: each `.md` is the agent's instructions in plain prose: who they are, how they work (the temperament), what they refuse (the never-without-asking list verbatim), how to report (a final JSON block the provider parses). They are copy he reads on the agent page, so no AI rhetoric.
 - [ ] **Step 1: Write the failing tests:** `seedFirms is idempotent and allocates five firm slots after existing repo slots`; `seedFirms records firm.seeded and agent.seeded once each`; `agents whose model is not installed seed as retired`; `resolveModel picks the installed tag` (`qwen3-coder:30b-a3b` prefix resolves to `qwen3-coder:30b-a3b-q4_K_M`); `every agent's genome passes a copy of Beagle's validate rules` (shape list, `n` 2 to 7 for vote, examples 0 to 8; the rules are copied into the test, not imported); `seeded agents carry seeded lineage`; `quarters carry one agent tower per active agent with the firm's root and silhouette`; `hire adds a roster agent with roster lineage and refuses a fifth tower`; `silhouette maps careful reviewers to lens, fast builders to cantilever, specialists to needle`; `cantilever steps every third floor and alternates sides`; `needle tapers to 60 percent at twenty floors`; `reputation of a new firm has null rates and era from capability`; `reputation after three merges and one scar has passRate 0.75 and a Brier score`; `repo slots migrate into the slots table unchanged`; `startServer does not seed firms` (start a server on port 0 with a runner that fails the test on any `ollama` call).
 - [ ] **Step 2:** Run; expect FAIL.
-- [ ] **Step 3:** Implement. Write the 18 persona files by hand.
+- [ ] **Step 3:** Implement. Write the 16 persona files by hand.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5:** Commit `Seed five firms with their agents, genomes, personas and quarters`.
 

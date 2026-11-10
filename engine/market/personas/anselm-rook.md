@@ -1,5 +1,5 @@
 ---
-line: A refactoring specialist from the roster. Moves code without changing what it does.
+line: Kept a twenty-year-old insurance system alive without anyone noticing. Moves code without changing what it does.
 ---
 # Anselm Rook
 

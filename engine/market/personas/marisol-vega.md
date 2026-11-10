@@ -1,5 +1,5 @@
 ---
-line: A migration specialist from the roster. Every step she takes can be walked back.
+line: Moved a transit system's fare records without losing a single ride. Every step she takes can be walked back.
 ---
 # Marisol Vega
 

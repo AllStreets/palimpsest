@@ -357,6 +357,38 @@ export function hire(firmId: string, now: Date = new Date()): Agent | null {
   return a;
 }
 
+/**
+ * Brings back every agent that seeded retired because its model was missing
+ * and whose seed prefix now resolves in `installed`: it takes the resolved
+ * tag and the lowest free plot in its quarter (a hire may have taken its old
+ * one meanwhile), and is recorded as `agent.revived` with the full agent.
+ * An agent whose quarter is full, or that was retired for any other reason,
+ * stays retired. Called from engine/main.ts right after seedFirms.
+ */
+export function reviveAgents(installed: string[]): Agent[] {
+  const seeds = new Map(SEED_FIRMS.flatMap((f) => f.agents.map((a) => [a.id, a] as const)));
+  const revived: Agent[] = [];
+  for (const a of storedAgents()) {
+    if (!a.retired || a.retiredReason !== NOT_INSTALLED) continue;
+    const seed = seeds.get(a.id);
+    if (!seed) continue;
+    const { model, installed: ok } = seedModel(seed.model, installed);
+    if (!ok) continue;
+    const f = firm(a.firmId);
+    if (!f || f.status !== 'active') continue;
+    const taken = new Set(storedAgents(a.firmId).filter(standing).map((x) => x.towerIndex));
+    if (taken.size >= MAX_TOWERS) continue;
+    let towerIndex = 0;
+    while (taken.has(towerIndex)) towerIndex += 1;
+    const back: StoredAgent = { ...a, model, retired: false, retiredReason: null, towerIndex };
+    saveAgent(back);
+    const pub = publicAgent(back);
+    record('agent.revived', { agent: pub });
+    revived.push(pub);
+  }
+  return revived;
+}
+
 /** Retires an agent (it stops bidding and working) and records `agent.retired`. An agent already retired is left alone. */
 export function retireAgent(agentId: string, reason: string, now: Date = new Date()): Agent | null {
   const a = storedAgent(agentId);

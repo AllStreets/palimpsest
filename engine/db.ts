@@ -88,6 +88,7 @@ const MARKET_SCHEMA = `
     slot INTEGER NOT NULL,
     PRIMARY KEY (kind, owner)
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS slots_slot ON slots (slot);
   CREATE TABLE IF NOT EXISTS credits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,

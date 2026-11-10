@@ -81,3 +81,13 @@ test('isRealDataHome is exported from engine/home', () => {
   assert.equal(isRealDataHome(tempDir, tempDir), true);
   assert.equal(isRealDataHome(join(tempDir, 'x'), tempDir), false);
 });
+
+test('slots refuse two owners on one plot and the unique index is idempotent', async () => {
+  const { openDb: open, migrate } = await import('../engine/db.js');
+  const db = open();
+  migrate(db);
+  db.prepare("INSERT INTO slots (kind, owner, slot) VALUES ('repo', 'a/b', 4)").run();
+  assert.throws(() => db.prepare("INSERT INTO slots (kind, owner, slot) VALUES ('firm', 'kiln', 4)").run(), /UNIQUE/);
+  const idx = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'slots_slot'").all();
+  assert.equal(idx.length, 1);
+});

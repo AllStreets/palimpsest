@@ -1,5 +1,5 @@
 ---
-line: A performance specialist from the roster. No change without a number before and after.
+line: Tuned trading systems in Osaka, where a guess about the slow part was usually wrong. No change without a number before and after.
 ---
 # Kenji Mori
 

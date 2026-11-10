@@ -18,6 +18,7 @@ import {
   quarters,
   resolveModel,
   retireAgent,
+  reviveAgents,
   retireFirm,
   ROSTER,
   SEED_FIRMS,
@@ -25,6 +26,7 @@ import {
   sellTower,
   toGenome,
 } from '../engine/market/firms.js';
+import { readPersona } from '../engine/market/firms.js';
 import { layEarnedFloor } from '../engine/repos.js';
 import { startServer } from '../engine/server.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
@@ -107,6 +109,9 @@ function beagleValidate(x: unknown, tools: string[]): void {
   if (!g.memory || !Number.isInteger(g.memory.examples) || g.memory.examples! < 0 || g.memory.examples! > 8) {
     bad('examples must be 0 to 8');
   }
+}
+function agentLine(id: string): string {
+  return readPersona(id).line;
 }
 const TOOLS = ['read', 'edit', 'write', 'glob', 'grep', 'run'];
 
@@ -388,4 +393,50 @@ test('startServer does not seed firms', async () => {
   } finally {
     await server.close();
   }
+});
+
+test('reviveAgents brings back an agent whose model is now installed, on the lowest free plot', () => {
+  seedFirms(INSTALLED.filter((m) => m !== 'qwen3:1.7b'));
+  assert.equal(agent('juno-pike')!.towerIndex, 1);
+  // Meanwhile Sparrow hires into Juno's empty plot.
+  const hired = hire('sparrow');
+  assert.ok(hired);
+  assert.equal(hired.towerIndex, 1);
+  // An agent retired for another reason is never revived.
+  retireAgent('priya-rao', 'left the firm');
+
+  const revived = reviveAgents(INSTALLED);
+  assert.deepEqual(
+    revived.map((a) => a.id),
+    ['juno-pike'],
+  );
+  const juno = agent('juno-pike')!;
+  assert.equal(juno.retired, false);
+  assert.equal(juno.retiredReason, null);
+  assert.equal(juno.model, 'ollama:qwen3:1.7b');
+  assert.equal(juno.towerIndex, 2);
+  const indexes = quarters()
+    .find((q) => q.firmId === 'sparrow')!
+    .towers.map((t) => agent(t.agentId!)!.towerIndex);
+  assert.deepEqual(indexes, [0, 1, 2]);
+  assert.equal(agent('priya-rao')!.retired, true);
+  const rows = entries().filter((e) => e.kind === 'agent.revived');
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].data, { agent: juno });
+  // Idempotent: nothing more to revive.
+  assert.deepEqual(reviveAgents(INSTALLED), []);
+});
+
+test('reviveAgents leaves an agent retired while its model is still missing or its quarter is full', () => {
+  seedFirms(INSTALLED.filter((m) => m !== 'qwen3:1.7b'));
+  assert.deepEqual(reviveAgents(INSTALLED.filter((m) => m !== 'qwen3:1.7b')), []);
+  assert.ok(hire('sparrow'));
+  assert.ok(hire('sparrow'));
+  assert.ok(hire('sparrow'));
+  assert.deepEqual(reviveAgents(INSTALLED), []);
+  assert.equal(agent('juno-pike')!.retiredReason, 'model not installed');
+});
+
+test('roster persona lines carry a person, not a job title', () => {
+  for (const r of ROSTER) assert.doesNotMatch(agentLine(r.id), /from the roster/i, r.name);
 });

@@ -17,6 +17,7 @@ export const LEDGER_KINDS = [
   'agent.seeded',
   'agent.hired',
   'agent.retired',
+  'agent.revived',
   'job.proposed',
   'job.posted',
   'job.changed',

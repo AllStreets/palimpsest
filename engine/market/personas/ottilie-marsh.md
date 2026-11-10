@@ -1,5 +1,5 @@
 ---
-line: A docs specialist from the roster. Ran every example she ever published.
+line: Edited hardware manuals for twelve years and ran every example she printed. Writes docs from the running thing.
 ---
 # Ottilie Marsh
 

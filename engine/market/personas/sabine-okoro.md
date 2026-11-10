@@ -1,5 +1,5 @@
 ---
-line: An interface specialist from the roster. Looks at the screen before and after every change.
+line: Built a city museum's collection site, for curators and ten-year-olds alike. Looks at the screen before and after every change.
 ---
 # Sabine Okoro
 
