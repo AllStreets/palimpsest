@@ -3,7 +3,7 @@
  * Ollama and Anthropic API tool loops (Task 10) and the fake provider used
  * by tests and the sample economy (Task 6). Types only; frozen from Task 1.
  */
-import type { Agent, CheckResult, Job, RunProgress } from '../../shared/types.js';
+import type { Agent, CheckResult, Job, RunLogLine, RunProgress } from '../../shared/types.js';
 
 export interface Usage {
   weightedTokens: number;
@@ -66,9 +66,4 @@ export interface Provider {
   judge(i: JudgeInput, signal: AbortSignal): Promise<{ before: number | null; after: number; notes: string; usage: Usage }>;
 }
 
-export type RunLogLine = {
-  at: string;
-  kind: 'system' | 'assistant' | 'tool' | 'result' | 'stderr' | 'engine' | 'refused' | 'egress';
-  text: string;
-  data?: unknown;
-};
+export type { RunLogLine };

@@ -5,14 +5,17 @@ import type { AddressInfo } from 'node:net';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Repo, RootStyle, Settings } from '../shared/types.js';
+import type { Repo, RepoChecks, RootStyle, Settings } from '../shared/types.js';
 import type { Event } from './events.js';
 import { emit, subscribe } from './events.js';
+import { HttpError, readJsonBody, sendJson } from './http.js';
+import { handleMarketApi, scrub } from './market/api.js';
 import { noteSseClients } from './market/budget.js';
+import { resumeRepo, updateKeepAwake } from './market/runs.js';
 import { availableRepos, GhError } from './github.js';
 import { paths } from './home.js';
 import { record } from './ledger.js';
-import { analyze, BAD_NAME, city, connect, disconnect, isValidFullName, listRepos, patchRepo } from './repos.js';
+import { analyze, BAD_NAME, city, connect, disconnect, getRepo, isValidFullName, LABEL, listRepos, patchRepo, type RepoPatch } from './repos.js';
 import { getSettings, patchSettings } from './settings.js';
 import { realRunner, getRunner, setRunner } from './exec.js';
 import { isSampleHome, sampleGh } from './sample.js';
@@ -90,6 +93,8 @@ export interface StartServerOptions {
   port?: number;
   /** The Claude settings file the hook routes change. Without it, see claudeSettingsTarget(). */
   claudeSettingsPath?: string;
+  /** The keychain file the Anthropic key routes use. Without it, his login keychain (refused under tests). */
+  keychain?: string;
 }
 
 export interface StartedServer {
@@ -97,57 +102,29 @@ export interface StartedServer {
   port: number;
 }
 
-/** A gh/other failure classified as not-found or a validation failure: maps to a specific HTTP status, not 500. */
-class HttpError extends Error {
-  status: number;
-  body: unknown;
-
-  constructor(status: number, body: unknown) {
-    super(typeof body === 'object' && body !== null && 'error' in body ? String((body as { error: unknown }).error) : String(body));
-    this.status = status;
-    this.body = body;
-  }
-}
-
 function readableMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(data);
-}
-
-async function readBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-/** Reads and parses a JSON request body; an empty body parses as `{}`. Throws HttpError(400) on malformed JSON. */
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const text = await readBody(req);
-  if (text.trim() === '') return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new HttpError(400, { error: 'invalid JSON body' });
-  }
 }
 
 function isValidCap(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 100;
 }
 
+/** A whole number from `lo` to `hi`. */
+function intIn(v: unknown, lo: number, hi: number): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi;
+}
+
+const OLLAMA_HOST = /^(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/;
+
 /** Validates a PATCH /api/settings body, returning the partial patch or null when any present field is invalid. */
-function validateSettingsPatch(body: unknown): Partial<Settings> | null {
+function validateSettingsPatch(body: unknown, current: Settings): Partial<Settings> | null {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
   const b = body as Record<string, unknown>;
   const patch: Partial<Settings> = {};
+  const allowed = new Set(['quality', 'dayCapPct', 'nightCapPct', 'claudeConcurrency', 'localConcurrency', 'bidWindowSec', 'hardStopPct', 'keepAwake', 'ollamaHost', 'anthropicApi']);
+  if (Object.keys(b).some((k) => !allowed.has(k))) return null;
 
   if ('quality' in b) {
     if (b.quality !== 'high' && b.quality !== 'medium') return null;
@@ -161,14 +138,99 @@ function validateSettingsPatch(body: unknown): Partial<Settings> | null {
     if (!isValidCap(b.nightCapPct)) return null;
     patch.nightCapPct = b.nightCapPct;
   }
+  if ('claudeConcurrency' in b) {
+    if (!intIn(b.claudeConcurrency, 1, 4)) return null;
+    patch.claudeConcurrency = b.claudeConcurrency;
+  }
+  if ('localConcurrency' in b) {
+    if (!intIn(b.localConcurrency, 1, 4)) return null;
+    patch.localConcurrency = b.localConcurrency;
+  }
+  if ('bidWindowSec' in b) {
+    if (!intIn(b.bidWindowSec, 30, 600)) return null;
+    patch.bidWindowSec = b.bidWindowSec;
+  }
+  if ('hardStopPct' in b) {
+    if (!intIn(b.hardStopPct, 50, 95)) return null;
+    patch.hardStopPct = b.hardStopPct;
+  }
+  if ('keepAwake' in b) {
+    if (typeof b.keepAwake !== 'boolean') return null;
+    patch.keepAwake = b.keepAwake;
+  }
+  if ('ollamaHost' in b) {
+    const m = typeof b.ollamaHost === 'string' ? OLLAMA_HOST.exec(b.ollamaHost) : null;
+    if (!m || Number(m[2]) < 1 || Number(m[2]) > 65535) return null;
+    patch.ollamaHost = b.ollamaHost as string;
+  }
+  if ('anthropicApi' in b) {
+    const a = b.anthropicApi;
+    if (typeof a !== 'object' || a === null || Array.isArray(a)) return null;
+    const o = a as Record<string, unknown>;
+    if (Object.keys(o).some((k) => k !== 'enabled' && k !== 'dailyUsd')) return null;
+    const next = { ...current.anthropicApi };
+    if ('enabled' in o) {
+      if (typeof o.enabled !== 'boolean') return null;
+      next.enabled = o.enabled;
+    }
+    if ('dailyUsd' in o) {
+      if (typeof o.dailyUsd !== 'number' || !Number.isFinite(o.dailyUsd) || o.dailyUsd < 0 || o.dailyUsd > 100) return null;
+      next.dailyUsd = o.dailyUsd;
+    }
+    patch.anthropicApi = next;
+  }
   return patch;
 }
 
+const CHECK_COMMANDS = ['test', 'typecheck', 'lint', 'build', 'screenshot', 'install'] as const;
+const PREVIEW_KINDS = ['vite', 'next', 'astro', 'static'];
+const ECOSYSTEMS = ['npm', 'python', 'rust', 'go'];
+const COMMAND_TEXT = /^[^\x00-\x1f\x7f]{1,500}$/;
+
+/** A relative folder that stays inside the repo. */
+function isOutDir(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 100 && /^[A-Za-z0-9_./-]+$/.test(v) && !v.startsWith('/') && !v.split('/').includes('..');
+}
+
+/** Validates the `checks` part of a repo patch, or null when anything in it is not allowed. */
+function validateChecksPatch(v: unknown): Partial<RepoChecks> | null {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const c = v as Record<string, unknown>;
+  const known = new Set<string>([...CHECK_COMMANDS, 'preview', 'shots', 'ecosystems']);
+  if (Object.keys(c).some((k) => !known.has(k))) return null;
+  const out: Partial<RepoChecks> = {};
+  for (const k of CHECK_COMMANDS) {
+    if (!(k in c)) continue;
+    const x = c[k];
+    if (x === null) out[k] = null;
+    else if (typeof x === 'string' && COMMAND_TEXT.test(x.trim())) out[k] = x.trim();
+    else return null;
+  }
+  if ('preview' in c) {
+    const p = c.preview as Record<string, unknown> | null;
+    if (p === null) out.preview = null;
+    else if (typeof p === 'object' && !Array.isArray(p) && PREVIEW_KINDS.includes(p.kind as string) && isOutDir(p.outDir)) out.preview = { kind: p.kind as 'vite' | 'next' | 'astro' | 'static', outDir: p.outDir };
+    else return null;
+  }
+  if ('shots' in c) {
+    const s = c.shots;
+    if (!Array.isArray(s) || s.length > 20 || s.some((r) => typeof r !== 'string' || !/^\/[^\x00-\x1f\x7f\s]{0,199}$/.test(r))) return null;
+    out.shots = s as string[];
+  }
+  if ('ecosystems' in c) {
+    const e = c.ecosystems;
+    if (!Array.isArray(e) || e.length > 4 || e.some((x) => !ECOSYSTEMS.includes(x as string))) return null;
+    out.ecosystems = e as RepoChecks['ecosystems'];
+  }
+  return out;
+}
+
 /** Validates a PATCH /api/repos/:owner/:name body, returning the partial patch or null when any present field is invalid. */
-function validateRepoPatch(body: unknown): Partial<Pick<Repo, 'pushMode' | 'root'>> | null {
+function validateRepoPatch(body: unknown): RepoPatch | null {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
   const b = body as Record<string, unknown>;
-  const patch: Partial<Pick<Repo, 'pushMode' | 'root'>> = {};
+  const patch: RepoPatch = {};
+  if (Object.keys(b).some((k) => !['pushMode', 'root', 'market', 'label', 'checks'].includes(k))) return null;
 
   if ('pushMode' in b) {
     if (typeof b.pushMode !== 'boolean') return null;
@@ -178,7 +240,34 @@ function validateRepoPatch(body: unknown): Partial<Pick<Repo, 'pushMode' | 'root
     if (typeof b.root !== 'string' || !ROOT_STYLES.includes(b.root as RootStyle)) return null;
     patch.root = b.root as RootStyle;
   }
+  if ('market' in b) {
+    if (typeof b.market !== 'boolean') return null;
+    patch.market = b.market;
+  }
+  if ('label' in b) {
+    if (typeof b.label !== 'string' || !LABEL.test(b.label)) return null;
+    patch.label = b.label;
+  }
+  if ('checks' in b) {
+    const c = validateChecksPatch(b.checks);
+    if (c === null) return null;
+    patch.checks = c;
+  }
   return patch;
+}
+
+/**
+ * Push mode needs both a test and a build command (ruling 23): the page hides
+ * the switch, and the engine refuses it too, whether the patch turns push mode
+ * on or takes a command away from a repo that has it on.
+ */
+function pushModeRefusal(repo: Repo, patch: RepoPatch): string | null {
+  if (!('pushMode' in patch) && !patch.checks) return null;
+  const pushAfter = patch.pushMode ?? repo.pushMode;
+  if (!pushAfter) return null;
+  const after = { ...repo.checks, ...patch.checks };
+  if (after.test && after.build) return null;
+  return 'Push mode needs both a test command and a build command on this repo.';
 }
 
 /** The Claude settings file the hook routes may change: the one given, else claudeSettingsTarget(), else a 409. */
@@ -211,7 +300,7 @@ function setStopped(on: boolean): boolean {
 
 /** Sends one SSE event frame. */
 function writeSseEvent(res: ServerResponse, e: Event): void {
-  res.write(`event: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`);
+  res.write(`event: ${e.type}\ndata: ${JSON.stringify(scrub(e.data))}\n\n`);
 }
 
 function handleSse(req: IncomingMessage, res: ServerResponse, sseClients: Set<ServerResponse>): void {
@@ -256,8 +345,12 @@ async function handleApi(
   method: string,
   claudeSettingsPath: string | undefined,
   sseClients: Set<ServerResponse>,
+  search: URLSearchParams,
+  keychain: string | undefined,
 ): Promise<void> {
   try {
+    if (await handleMarketApi(req, res, pathname, method, search, { keychain })) return;
+
     if (pathname === '/api/health' && method === 'GET') {
       sendJson(res, 200, { ok: true, version: VERSION, stopped: existsSync(paths().stop) });
       return;
@@ -315,11 +408,13 @@ async function handleApi(
 
     if (pathname === '/api/settings' && method === 'PATCH') {
       const body = await readJsonBody(req);
-      const patch = validateSettingsPatch(body);
+      const patch = validateSettingsPatch(body, getSettings());
       if (patch === null) {
         throw new HttpError(400, { error: 'invalid settings patch' });
       }
-      sendJson(res, 200, patchSettings(patch));
+      const next = patchSettings(patch);
+      if ('keepAwake' in patch) updateKeepAwake();
+      sendJson(res, 200, next);
       return;
     }
 
@@ -328,7 +423,7 @@ async function handleApi(
       return;
     }
 
-    const repoMatch = pathname.match(/^\/api\/repos\/([^/]+)\/([^/]+?)(?:\/(connect|disconnect|analyze))?$/);
+    const repoMatch = pathname.match(/^\/api\/repos\/([^/]+)\/([^/]+?)(?:\/(connect|disconnect|analyze|resume))?$/);
     if (repoMatch) {
       const fullName = `${repoMatch[1]}/${repoMatch[2]}`;
       const action = repoMatch[3];
@@ -343,6 +438,12 @@ async function handleApi(
         if (!repoExists(fullName)) throw new HttpError(404, { error: 'unknown repo' });
         disconnect(fullName);
         sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (action === 'resume' && method === 'POST') {
+        if (!repoExists(fullName)) throw new HttpError(404, { error: 'unknown repo' });
+        sendJson(res, 200, resumeRepo(fullName));
         return;
       }
 
@@ -362,6 +463,8 @@ async function handleApi(
         if (patch === null) {
           throw new HttpError(400, { error: 'invalid repo patch' });
         }
+        const refusal = pushModeRefusal(getRepo(fullName) as Repo, patch);
+        if (refusal) throw new HttpError(409, { error: refusal });
         sendJson(res, 200, patchRepo(fullName, patch));
         return;
       }
@@ -457,7 +560,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Starte
             sendJson(res, 403, { error: 'missing x-palimpsest header' });
             return;
           }
-          await handleApi(req, res, pathname, method, claudeSettingsPath, sseClients);
+          await handleApi(req, res, pathname, method, claudeSettingsPath, sseClients, url.searchParams, opts.keychain);
           return;
         }
 

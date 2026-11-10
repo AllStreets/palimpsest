@@ -1011,6 +1011,16 @@ export function haltRepo(fullName: string, reason: string, at: string = new Date
 }
 
 /**
+ * Moves one halted job back (ruling 30): to `waiting` when it was halted from
+ * waiting (its PR is still open, so it is never re-bid), else to `open` with
+ * its bidding and inconclusive count cleared. Throws when the move is refused.
+ */
+export function resumeJob(j: Job): Job {
+  if (j.haltedFrom === 'waiting') return transition(j, 'waiting');
+  return transition(j, 'open', { runId: null, awardedBid: null, bidsCloseAt: null, inconclusive: 0, haltNote: null });
+}
+
+/**
  * Clears a repo's halt and strikes (`repo.resumed`) and moves each halted
  * job back: to `waiting` when it was halted from waiting (its PR is still
  * open, so it is never re-bid), else to `open`.
@@ -1021,8 +1031,7 @@ export function resumeRepo(fullName: string, at: string = new Date().toISOString
   emit('repo.resumed', { repo });
   for (const j of listJobs({ repo: fullName, status: 'halted' })) {
     try {
-      if (j.haltedFrom === 'waiting') transition(j, 'waiting');
-      else transition(j, 'open', { runId: null, awardedBid: null, bidsCloseAt: null, inconclusive: 0, haltNote: null });
+      resumeJob(j);
     } catch (err) {
       console.error(`palimpsest: could not resume job ${j.id}: ${err instanceof Error ? err.message : String(err)}`);
     }

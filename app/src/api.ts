@@ -1,4 +1,26 @@
-import type { District, Repo, Settings, UsageReading } from '../../shared/types.js';
+import type {
+  AgentDetail,
+  District,
+  FirmDetail,
+  FirmView,
+  InspectionView,
+  Job,
+  JobDetail,
+  JobStatus,
+  LiveView,
+  ManualJobBody,
+  ProviderUsage,
+  Quarter,
+  Repo,
+  RepoChecks,
+  ReportView,
+  RunDetail,
+  RunLogLine,
+  Settings,
+  Tier,
+  TreasuryView,
+  UsageReading,
+} from '../../shared/types.js';
 
 /** A failed engine call: the HTTP status plus the engine's readable message. */
 export class ApiError extends Error {
@@ -46,9 +68,46 @@ const EVENT_TYPES = [
   'repo.disconnected',
   'engine.stopped',
   'engine.resumed',
+  // The market (Task 20): everything the engine emits about jobs, runs, floors, firms and the city.
+  'job.posted',
+  'job.proposed',
+  'job.changed',
+  'job.awarded',
+  'bid.placed',
+  'bid.satOut',
+  'run.started',
+  'run.stage',
+  'run.progress',
+  'run.log',
+  'run.ended',
+  'inspection.done',
+  'site.changed',
+  'floor.laid',
+  'floor.lit',
+  'floor.removed',
+  'floor.scarred',
+  'merge.detected',
+  'merge.reverted',
+  'repo.halted',
+  'repo.resumed',
+  'firm.bankrupt',
+  'tower.sold',
+  'agent.hired',
+  'agent.retired',
+  'trip.started',
+  'trip.ended',
+  'report.written',
 ];
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** What the settings page may change (the engine checks every value again). */
+export type SettingsPatch = Partial<
+  Pick<Settings, 'quality' | 'dayCapPct' | 'nightCapPct' | 'claudeConcurrency' | 'localConcurrency' | 'bidWindowSec' | 'hardStopPct' | 'keepAwake' | 'ollamaHost'>
+> & { anthropicApi?: Partial<Settings['anthropicApi']> };
+
+/** What a repo patch may carry (the engine checks every value again). */
+export type RepoPatchBody = Partial<Pick<Repo, 'pushMode' | 'root' | 'market' | 'label'>> & { checks?: Partial<RepoChecks> };
+
+async function request<T>(method: string, path: string, body?: unknown, as: 'json' | 'text' = 'json'): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== 'GET') headers['x-palimpsest'] = '1';
   if (body !== undefined) headers['content-type'] = 'application/json';
@@ -64,8 +123,20 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
     throw new ApiError(res.status, err.error ?? `${method} ${path} failed with ${res.status}`, err.kind ?? null);
   }
+  if (as === 'text') return text as T;
   return (text ? JSON.parse(text) : null) as T;
 }
+
+/** `?a=1&b=2` from the values that are set, or nothing. */
+function queryOf(params: Record<string, string | number | undefined>): string {
+  const q = Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+    .join('&');
+  return q ? `?${q}` : '';
+}
+
+const enc = encodeURIComponent;
 
 function repoPath(fullName: string, action?: string): string {
   const [owner, name] = fullName.split('/');
@@ -85,13 +156,46 @@ export const api = {
   /** The kill switch: creates (on) or removes (off) the engine's stop file. */
   stop: (on: boolean) => request<{ stopped: boolean }>('POST', '/api/stop', { on }),
   settings: () => request<Settings>('GET', '/api/settings'),
-  patchSettings: (patch: Partial<Pick<Settings, 'quality' | 'dayCapPct' | 'nightCapPct'>>) =>
-    request<Settings>('PATCH', '/api/settings', patch),
+  patchSettings: (patch: SettingsPatch) => request<Settings>('PATCH', '/api/settings', patch),
   connect: (fullName: string) => request<Repo>('POST', repoPath(fullName, 'connect')),
   disconnect: (fullName: string) => request<{ ok: boolean }>('POST', repoPath(fullName, 'disconnect')),
   analyze: (fullName: string) => request<{ ok: boolean }>('POST', repoPath(fullName, 'analyze')),
-  patchRepo: (fullName: string, patch: Partial<Pick<Repo, 'pushMode' | 'root'>>) =>
-    request<Repo>('PATCH', repoPath(fullName), patch),
+  patchRepo: (fullName: string, patch: RepoPatchBody) => request<Repo>('PATCH', repoPath(fullName), patch),
+  /** Clears a repo's halt and strikes; its halted jobs go back to the board (a waiting one stays waiting). */
+  resumeRepo: (fullName: string) => request<Repo>('POST', repoPath(fullName, 'resume')),
+
+  // ------------------------------------------------------------ the market
+  jobs: (f: { status?: JobStatus; repo?: string } = {}) => request<Job[]>('GET', `/api/jobs${queryOf(f)}`),
+  job: (id: string) => request<JobDetail>('GET', `/api/jobs/${enc(id)}`),
+  postJob: (body: ManualJobBody) => request<Job>('POST', '/api/jobs', body),
+  withdrawJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/withdraw`),
+  repostJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/repost`),
+  acceptJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/accept`),
+  dismissJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/dismiss`),
+  /** Resumes one halted job (a waiting one goes back to waiting, any other to open). */
+  resumeJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/resume`),
+  setJobTier: (id: string, tier: Tier) => request<Job>('PATCH', `/api/jobs/${enc(id)}`, { tier }),
+  firms: () => request<FirmView[]>('GET', '/api/firms'),
+  firm: (id: string) => request<FirmDetail>('GET', `/api/firms/${enc(id)}`),
+  agent: (id: string) => request<AgentDetail>('GET', `/api/agents/${enc(id)}`),
+  run: (id: string) => request<RunDetail>('GET', `/api/runs/${enc(id)}`),
+  /** The log lines after the first `since` of them. */
+  runLog: (id: string, since = 0) => request<RunLogLine[]>('GET', `/api/runs/${enc(id)}/log?since=${since}`),
+  runDiff: (id: string) => request<string>('GET', `/api/runs/${enc(id)}/diff`, undefined, 'text'),
+  killRun: (id: string) => request<{ ok: boolean }>('POST', `/api/runs/${enc(id)}/kill`),
+  inspection: (id: string) => request<InspectionView>('GET', `/api/inspections/${enc(id)}`),
+  /** The URL of an inspection's screenshot, for an <img>. */
+  shotUrl: (inspectionId: string, route: string, which: 'before' | 'after') => `/api/inspections/${enc(inspectionId)}/shot/${enc(route)}/${which}`,
+  treasury: () => request<TreasuryView>('GET', '/api/treasury'),
+  resumeStale: () => request<TreasuryView>('POST', '/api/treasury/resume-stale'),
+  /** A day's report, or the newest with `'latest'`. */
+  report: (day: string) => request<ReportView>('GET', `/api/report/${enc(day)}`),
+  providers: () => request<ProviderUsage[]>('GET', '/api/providers'),
+  /** Stores the Anthropic API key in his keychain; the engine never sends it back. */
+  setApiKey: (key: string) => request<{ ok: boolean }>('POST', '/api/providers/anthropic/key', { key }),
+  removeApiKey: () => request<{ ok: boolean }>('DELETE', '/api/providers/anthropic/key'),
+  quarters: () => request<Quarter[]>('GET', '/api/quarters'),
+  live: () => request<LiveView>('GET', '/api/live'),
 
   /** Subscribes to the engine's event stream. Returns a function that closes it. */
   events(onEvent: (e: EngineEvent) => void): () => void {

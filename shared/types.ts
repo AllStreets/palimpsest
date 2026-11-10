@@ -390,3 +390,104 @@ export interface ProviderUsage {
   spendUsd: { today: number; week: number } | null;
   detail: string;
 }
+
+export type RunLogLine = {
+  at: string;
+  kind: 'system' | 'assistant' | 'tool' | 'result' | 'stderr' | 'engine' | 'refused' | 'egress';
+  text: string;
+  data?: unknown;
+};
+
+// ------------------------------------------------------- what the market routes answer
+
+/** A check with its log read inline (capped), never the path it was kept at. */
+export type CheckView = Omit<CheckResult, 'logPath'> & { logPath: null; log: string | null };
+
+/** An inspection as the API sends it: logs inline, shots as URLs, no path of this Mac. */
+export type InspectionView = Omit<Inspection, 'checks'> & { checks: CheckView[] };
+
+/** A run as the API sends it: the same run without its directory. */
+export type RunView = Run & { dir: null };
+
+export interface LedgerRow {
+  id: number;
+  at: string;
+  kind: string;
+  data: unknown;
+}
+
+export interface Award {
+  chosen: Bid | null;
+  why: string;
+  satOut: Array<{ agentId: string; reason: string }>;
+}
+
+export interface JobDetail {
+  job: Job;
+  bids: Bid[];
+  award: Award | null;
+  runs: RunView[];
+  inspections: InspectionView[];
+  ledger: LedgerRow[];
+}
+
+export type FirmView = Firm & { reputation: Reputation; agents: Agent[] };
+
+export interface CreditRow {
+  id: number;
+  at: string;
+  firmId: string | null;
+  runId: string | null;
+  kind: string;
+  amount: number;
+  usd: number | null;
+}
+
+export type FirmDetail = FirmView & { jobs: Job[]; credits: CreditRow[] };
+
+export interface Genome {
+  id: string;
+  name: string;
+  model: string;
+  instructions: string;
+  tools: string[];
+  workflow: { shape: WorkflowShape; n?: number };
+  memory: { examples: number };
+  note?: string;
+}
+
+export interface AgentDetail {
+  agent: Agent;
+  firm: Firm | null;
+  tower: TowerSpec | null;
+  runs: RunView[];
+  genome: Genome;
+  lineage: { agent: Agent['lineage']; parents: Agent[]; children: Agent[] };
+}
+
+export type RunDetail = RunView & { job: Job | null; inspection: InspectionView | null };
+
+export type TreasuryView = TreasuryState & {
+  balances: Record<string, number>;
+  calibration: { tokensPerPct: number; samples: number; calibrated: boolean };
+};
+
+export interface LiveView {
+  sites: SiteState[];
+  trips: Trip[];
+}
+
+export interface ReportView {
+  day: string;
+  markdown: string;
+  data: unknown;
+}
+
+export type ManualJobBody = {
+  repo: string;
+  title: string;
+  body?: string;
+  tier?: Tier;
+  scope?: string[];
+  acceptance?: string[];
+};

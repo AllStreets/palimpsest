@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import { salePrice, START_BALANCE } from '../../shared/market-rules.js';
 import { silhouetteFor } from '../../shared/silhouette.js';
-import type { Agent, Era, Firm, ModelRef, Quarter, RootStyle, Tier, TowerSpec, WorkflowShape } from '../../shared/types.js';
+import type { Agent, Era, Firm, Genome, ModelRef, Quarter, RootStyle, Tier, TowerSpec, WorkflowShape } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { getRunner } from '../exec.js';
 import { quarterOrigin } from '../layout.js';
@@ -468,17 +468,7 @@ export function idleAgents(firmId: string): Agent[] {
   return listAgents(firmId).filter((a) => !a.retired && !busy.has(a.id));
 }
 
-/** Beagle's genome shape (beagle/src/genome.ts), plus a note when the model had to be mapped. */
-export interface Genome {
-  id: string;
-  name: string;
-  model: string;
-  instructions: string;
-  tools: string[];
-  workflow: { shape: WorkflowShape; n?: number };
-  memory: { examples: number };
-  note?: string;
-}
+export type { Genome };
 
 /**
  * The agent as a genome Beagle's validate() accepts (ruling 22). Beagle knows

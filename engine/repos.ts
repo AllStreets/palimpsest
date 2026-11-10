@@ -460,7 +460,7 @@ function proposeHarnessIfNeeded(repo: Repo): void {
 }
 
 /** A label gh accepts as one argument and the tier labels can extend with `:low` and `:high`. */
-const LABEL = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
+export const LABEL = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
 
 export type RepoPatch = Partial<Pick<Repo, 'pushMode' | 'root' | 'market' | 'label'>> & { checks?: Partial<RepoChecks> };
 

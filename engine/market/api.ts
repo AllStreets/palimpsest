@@ -1,0 +1,487 @@
+/**
+ * The market over HTTP (Task 20): jobs, firms, agents, runs, inspections,
+ * the treasury, reports, providers, quarters and the live view. The server
+ * has already checked Host, Origin and the `x-palimpsest` header before a
+ * request gets here. Nothing here sends a path of this Mac, a raw secret or
+ * more of a log than the screen shows: every outgoing string goes through
+ * redact(), a run's directory is never sent, and an inspection's logs and
+ * shots are read only from inside the runs folder.
+ */
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { join, sep } from 'node:path';
+
+import { LEGAL_MOVES, MAX_ATTEMPTS } from '../../shared/market-rules.js';
+import type {
+  Agent,
+  AgentDetail,
+  CheckView,
+  CreditRow,
+  FirmDetail,
+  FirmView,
+  Inspection,
+  InspectionView,
+  Job,
+  JobDetail,
+  JobStatus,
+  LedgerRow,
+  LiveView,
+  ReportView,
+  Run,
+  RunDetail,
+  RunLogLine,
+  RunView,
+  Tier,
+  TreasuryView,
+} from '../../shared/types.js';
+import { openDb } from '../db.js';
+import { HttpError, readObjectBody, sendJson, sendText } from '../http.js';
+import { query } from '../ledger.js';
+import { paths } from '../home.js';
+import { getRepo, isValidFullName, BAD_NAME } from '../repos.js';
+import { providerUsages } from '../providers-usage.js';
+import { setApiKey, removeApiKey } from './anthropic-api.js';
+import { bidList } from './bids.js';
+import { MAX_RESUME_MS, treasury } from './budget.js';
+import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
+import { job, listJobs, postManualJob, redact, setTier, transition, withdrawable } from './jobs.js';
+import { latestReport } from './report.js';
+import { reputation, reputationLog } from './reputation.js';
+import { kill, killJob, listRuns, resumeJob, run, sites } from './runs.js';
+import { balances } from './treasury.js';
+import { storedCalibration } from '../usage.js';
+import { patchSettings } from '../settings.js';
+
+export interface MarketApiOptions {
+  /** The keychain file the API key routes use; without it, his login keychain (never under tests). */
+  keychain?: string;
+}
+
+const JOB_STATUSES = Object.keys(LEGAL_MOVES) as JobStatus[];
+const TIERS: Tier[] = ['low', 'normal', 'high'];
+const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** The most of a check log the API carries. */
+export const LOG_CAP = 64 * 1024;
+const DIFF_CAP = 2 * 1024 * 1024;
+const LOG_FILE_CAP = 16 * 1024 * 1024;
+const LOG_PAGE = 2000;
+const LEDGER_CAP = 500;
+const CREDIT_ROWS = 200;
+
+/** Keys whose values are places on this Mac. */
+const PATH_KEYS = new Set(['dir', 'logPath', 'patchPath', 'runRoot']);
+const HASH = /^[0-9a-f]{40,64}$/;
+
+/** Text with tokens and paths taken out; a bare hash (a sha) stays, it is an identifier. */
+function clean(text: string): string {
+  return HASH.test(text) ? text : redact(text);
+}
+
+/**
+ * A value as it may leave the engine: every string redacted, every key that
+ * names a place on this Mac dropped. Used for ledger rows, log lines and the
+ * event stream.
+ */
+export function scrub(value: unknown): unknown {
+  if (typeof value === 'string') return clean(value);
+  if (Array.isArray(value)) return value.map(scrub);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) if (!PATH_KEYS.has(k)) out[k] = scrub(v);
+    return out;
+  }
+  return value;
+}
+
+function idOf(s: string, what: string): string {
+  if (!ID.test(s)) throw new HttpError(400, { error: `That is not a ${what} id.` });
+  return s;
+}
+
+function mustJob(id: string): Job {
+  const j = job(idOf(id, 'job'));
+  if (!j) throw new HttpError(404, { error: 'unknown job' });
+  return j;
+}
+
+/** A refused move is a conflict with where the job is, not a server error. */
+function moving<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof Error && /^illegal move|^job \S+ is /.test(err.message)) throw new HttpError(409, { error: err.message });
+    throw err;
+  }
+}
+
+// ------------------------------------------------------------------ views
+
+function publicRun(r: Run): RunView {
+  return { ...r, dir: null, summary: r.summary ? redact(r.summary) : r.summary, endedReason: r.endedReason ? redact(r.endedReason) : r.endedReason };
+}
+
+/** The real path of `p` when it is a file inside the runs folder, else null. */
+function insideRuns(p: string | null): string | null {
+  if (!p) return null;
+  try {
+    const real = realpathSync(p);
+    const root = realpathSync(paths().runs);
+    return real.startsWith(root + sep) && statSync(real).isFile() ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The last LOG_CAP bytes of a check's log, redacted; null when there is none or it lies outside the runs folder. */
+function readLog(logPath: string | null): string | null {
+  const real = insideRuns(logPath);
+  if (!real) return null;
+  const size = statSync(real).size;
+  const len = Math.min(size, LOG_CAP);
+  const buf = Buffer.alloc(len);
+  const fd = openSync(real, 'r');
+  try {
+    readSync(fd, buf, 0, len, size - len);
+  } finally {
+    closeSync(fd);
+  }
+  return redact(buf.toString('utf8'));
+}
+
+function shotUrl(inspectionId: string, route: string, which: 'before' | 'after'): string {
+  return `/api/inspections/${encodeURIComponent(inspectionId)}/shot/${encodeURIComponent(route)}/${which}`;
+}
+
+export function inspectionView(i: Inspection, withLogs: boolean): InspectionView {
+  const checks: CheckView[] = i.checks.map((c) => ({ ...c, detail: redact(c.detail), logPath: null, log: withLogs ? readLog(c.logPath) : null }));
+  const design = i.design
+    ? {
+        ...i.design,
+        shots: i.design.shots.map((s) => ({
+          route: s.route,
+          before: insideRuns(s.before) ? shotUrl(i.id, s.route, 'before') : null,
+          after: insideRuns(s.after) ? shotUrl(i.id, s.route, 'after') : null,
+        })),
+      }
+    : null;
+  return { ...i, checks, design, inconclusive: i.inconclusive ? redact(i.inconclusive) : i.inconclusive };
+}
+
+function inspectionById(id: string): Inspection | null {
+  const row = openDb().prepare('SELECT json FROM inspections WHERE id = ?').get(id) as { json: string } | undefined;
+  return row ? (JSON.parse(row.json) as Inspection) : null;
+}
+
+function inspectionsOfRun(runId: string): Inspection[] {
+  const rows = openDb().prepare('SELECT json FROM inspections WHERE run_id = ?').all(runId) as Array<{ json: string }>;
+  return rows.map((r) => JSON.parse(r.json) as Inspection).sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+}
+
+function mustRun(id: string): Run {
+  const r = run(idOf(id, 'run'));
+  if (!r) throw new HttpError(404, { error: 'unknown run' });
+  return r;
+}
+
+// ------------------------------------------------------------------ jobs
+
+function jobDetail(j: Job): JobDetail {
+  const { bids } = bidList(j.id);
+  const [awarded] = query({ kind: 'job.awarded', jobId: j.id, last: true });
+  const a = awarded?.data as { chosen?: unknown; why?: unknown; satOut?: unknown } | undefined;
+  const runs = listRuns({ jobId: j.id });
+  const ledger: LedgerRow[] = query({ jobId: j.id }).slice(-LEDGER_CAP).map((e) => ({ id: e.id, at: e.at, kind: e.kind, data: scrub(e.data) }));
+  return {
+    job: j,
+    bids,
+    award: a
+      ? {
+          chosen: (a.chosen as JobDetail['bids'][number] | null) ?? null,
+          why: typeof a.why === 'string' ? redact(a.why) : '',
+          satOut: Array.isArray(a.satOut) ? (a.satOut as Array<{ agentId: string; reason: string }>).map((s) => ({ agentId: s.agentId, reason: redact(String(s.reason)) })) : [],
+        }
+      : null,
+    runs: runs.map(publicRun),
+    inspections: runs.flatMap((r) => inspectionsOfRun(r.id)).map((i) => inspectionView(i, false)),
+    ledger,
+  };
+}
+
+function text(b: Record<string, unknown>, key: string, max: number, required: boolean): string | undefined {
+  const v = b[key];
+  if (v === undefined) {
+    if (required) throw new HttpError(400, { error: `a job needs a ${key}` });
+    return undefined;
+  }
+  if (typeof v !== 'string' || (required && !v.trim()) || v.length > max) throw new HttpError(400, { error: `${key} must be text of at most ${max} characters` });
+  return v;
+}
+
+function list(b: Record<string, unknown>, key: string): string[] | undefined {
+  const v = b[key];
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.length > 50 || v.some((x) => typeof x !== 'string' || !x.trim() || x.length > 300)) {
+    throw new HttpError(400, { error: `${key} must be a list of up to 50 short texts` });
+  }
+  return v as string[];
+}
+
+function tierOf(v: unknown): Tier {
+  if (typeof v !== 'string' || !TIERS.includes(v as Tier)) throw new HttpError(400, { error: `tier must be one of ${TIERS.join(', ')}` });
+  return v as Tier;
+}
+
+async function postJob(req: IncomingMessage): Promise<Job> {
+  const b = await readObjectBody(req);
+  const repo = b.repo;
+  if (typeof repo !== 'string' || !isValidFullName(repo)) throw new HttpError(400, { error: BAD_NAME });
+  const title = text(b, 'title', 200, true) as string;
+  const body = text(b, 'body', 20_000, false);
+  const tier = b.tier === undefined ? undefined : tierOf(b.tier);
+  const scope = list(b, 'scope');
+  const acceptance = list(b, 'acceptance');
+  if (!getRepo(repo)?.connected) throw new HttpError(404, { error: `${repo} is not connected` });
+  return postManualJob({ repo, title, body, tier, scope, acceptance });
+}
+
+async function withdraw(j: Job): Promise<Job> {
+  if (!withdrawable(j)) {
+    const why = j.status === 'waiting' || (j.status === 'halted' && j.haltedFrom === 'waiting') ? 'its pull request is open: close or merge it on GitHub' : `a ${j.status} job cannot be withdrawn`;
+    throw new HttpError(409, { error: why });
+  }
+  if (j.status === 'running' || j.status === 'inspecting' || (j.status === 'awarded' && j.runId)) await killJob(j.id, 'He withdrew the job.');
+  const now = job(j.id);
+  if (!now || !withdrawable(now)) throw new HttpError(409, { error: 'the job moved on; look again' });
+  return moving(() => transition(now, 'withdrawn'));
+}
+
+// ------------------------------------------------------------------ firms, agents
+
+function firmView(f: ReturnType<typeof listFirms>[number], log = reputationLog()): FirmView {
+  return { ...f, reputation: reputation(f.id, log), agents: listAgents(f.id) };
+}
+
+function creditRows(firmId: string): CreditRow[] {
+  const rows = openDb()
+    .prepare('SELECT id, at, firm_id, run_id, kind, amount, usd FROM credits WHERE firm_id = ? ORDER BY id DESC LIMIT ?')
+    .all(firmId, CREDIT_ROWS) as Array<{ id: number; at: string; firm_id: string | null; run_id: string | null; kind: string; amount: number; usd: number | null }>;
+  return rows.map((r) => ({ id: Number(r.id), at: r.at, firmId: r.firm_id, runId: r.run_id, kind: r.kind, amount: r.amount, usd: r.usd }));
+}
+
+function agentDetail(a: Agent): AgentDetail {
+  const parents = a.lineage.parents.map((p) => agent(p)).filter((x): x is Agent => x !== null);
+  const children = listAgents().filter((x) => x.lineage.parents.includes(a.id));
+  const tower = quarters().flatMap((q) => q.towers).find((t) => t.agentId === a.id) ?? null;
+  return {
+    agent: a,
+    firm: firm(a.firmId),
+    tower,
+    runs: listRuns().filter((r) => r.agentId === a.id).map(publicRun),
+    genome: toGenome(a),
+    lineage: { agent: a.lineage, parents, children },
+  };
+}
+
+// ------------------------------------------------------------------ runs
+
+/** A run's log lines after the first `since` of them, redacted. */
+function logLines(runId: string, sinceRaw: string | null): RunLogLine[] {
+  let since = 0;
+  if (sinceRaw !== null) {
+    if (!/^\d{1,9}$/.test(sinceRaw)) throw new HttpError(400, { error: 'since is a line count' });
+    since = Number(sinceRaw);
+  }
+  const file = join(paths().runs, runId, 'log.jsonl');
+  if (!existsSync(file) || statSync(file).size > LOG_FILE_CAP) return [];
+  const raw = readFileSync(file, 'utf8').split('\n').filter((l) => l.trim() !== '');
+  return raw.slice(since, since + LOG_PAGE).map((l): RunLogLine => {
+    try {
+      const o = JSON.parse(l) as RunLogLine;
+      return { at: String(o.at), kind: o.kind, text: redact(String(o.text ?? '')), ...(o.data === undefined ? {} : { data: scrub(o.data) }) };
+    } catch {
+      return { at: '', kind: 'engine', text: redact(l) };
+    }
+  });
+}
+
+function shot(res: ServerResponse, inspectionId: string, routeRaw: string, which: string): void {
+  const i = inspectionById(idOf(inspectionId, 'inspection'));
+  if (!i || (which !== 'before' && which !== 'after')) throw new HttpError(404, { error: 'no such shot' });
+  const route = routeRaw.startsWith('/') ? routeRaw : `/${routeRaw}`;
+  const found = i.design?.shots.find((s) => s.route === routeRaw || s.route === route);
+  const real = insideRuns(found ? found[which] : null);
+  if (!real || !real.toLowerCase().endsWith('.png')) throw new HttpError(404, { error: 'no such shot' });
+  const png = readFileSync(real);
+  res.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length, 'cache-control': 'no-cache' });
+  res.end(png);
+}
+
+// ------------------------------------------------------------------ treasury, reports
+
+function treasuryView(): TreasuryView {
+  const c = storedCalibration();
+  return { ...treasury(), balances: balances(), calibration: { tokensPerPct: c.value, samples: c.samples, calibrated: c.samples > 0 } };
+}
+
+function reportFor(day: string): ReportView {
+  if (!DAY.test(day)) throw new HttpError(400, { error: 'a report is named by its day, YYYY-MM-DD' });
+  const file = join(paths().reports, `${day}.md`);
+  if (!existsSync(file)) throw new HttpError(404, { error: 'no report for that day' });
+  const written = query({ kind: 'report.written' }).filter((e) => (e.data as { day?: string }).day === day).at(-1);
+  return { day, markdown: readFileSync(file, 'utf8'), data: (written?.data as { data?: unknown } | undefined)?.data ?? null };
+}
+
+// ------------------------------------------------------------------ the router
+
+/**
+ * Answers the market routes. Returns false for a path it does not own, so the
+ * caller can go on to the older routes; throws HttpError for a refused input.
+ */
+export async function handleMarketApi(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  method: string,
+  search: URLSearchParams,
+  opts: MarketApiOptions = {},
+): Promise<boolean> {
+  const send = (status: number, body: unknown): true => {
+    sendJson(res, status, body);
+    return true;
+  };
+  let m: RegExpMatchArray | null;
+
+  // jobs
+  if (pathname === '/api/jobs' && method === 'GET') {
+    const status = search.get('status');
+    const repo = search.get('repo');
+    if (status !== null && !JOB_STATUSES.includes(status as JobStatus)) throw new HttpError(400, { error: `status must be one of ${JOB_STATUSES.join(', ')}` });
+    if (repo !== null && !isValidFullName(repo)) throw new HttpError(400, { error: BAD_NAME });
+    return send(200, listJobs({ ...(status ? { status: status as JobStatus } : {}), ...(repo ? { repo } : {}) }));
+  }
+  if (pathname === '/api/jobs' && method === 'POST') return send(201, await postJob(req));
+  if ((m = pathname.match(/^\/api\/jobs\/([^/]+)$/))) {
+    if (method === 'GET') return send(200, jobDetail(mustJob(m[1])));
+    if (method === 'PATCH') {
+      const j = mustJob(m[1]);
+      const b = await readObjectBody(req);
+      if (!('tier' in b)) throw new HttpError(400, { error: 'expected { tier }' });
+      const tier = tierOf(b.tier);
+      return send(200, moving(() => setTier(j.id, tier)));
+    }
+  }
+  if ((m = pathname.match(/^\/api\/jobs\/([^/]+)\/(withdraw|repost|accept|dismiss|resume)$/)) && method === 'POST') {
+    const j = mustJob(m[1]);
+    switch (m[2]) {
+      case 'withdraw':
+        return send(200, await withdraw(j));
+      case 'repost':
+        if (j.status !== 'failed' || j.attempts >= MAX_ATTEMPTS) throw new HttpError(409, { error: 'only a failed job with attempts left can be reposted' });
+        return send(200, moving(() => transition(j, 'open')));
+      case 'accept':
+        if (j.status !== 'proposed') throw new HttpError(409, { error: 'only a proposed job can be accepted' });
+        return send(200, moving(() => transition(j, 'open')));
+      case 'dismiss':
+        if (j.status !== 'proposed') throw new HttpError(409, { error: 'only a proposed job can be dismissed' });
+        return send(200, moving(() => transition(j, 'withdrawn')));
+      default:
+        if (j.status !== 'halted') throw new HttpError(409, { error: 'the job is not halted' });
+        if (getRepo(j.repo)?.halted) throw new HttpError(409, { error: `the market on ${j.repo} is halted: resume the repo first` });
+        return send(200, moving(() => resumeJob(j)));
+    }
+  }
+
+  // firms and agents
+  if (pathname === '/api/firms' && method === 'GET') {
+    const log = reputationLog();
+    return send(200, listFirms().map((f) => firmView(f, log)));
+  }
+  if ((m = pathname.match(/^\/api\/firms\/([^/]+)$/)) && method === 'GET') {
+    const f = firm(idOf(m[1], 'firm'));
+    if (!f) throw new HttpError(404, { error: 'unknown firm' });
+    const ids = [...new Set(listRuns().filter((r) => r.firmId === f.id).map((r) => r.jobId))];
+    const detail: FirmDetail = { ...firmView(f), jobs: ids.map((id) => job(id)).filter((x): x is Job => x !== null), credits: creditRows(f.id) };
+    return send(200, detail);
+  }
+  if ((m = pathname.match(/^\/api\/agents\/([^/]+)$/)) && method === 'GET') {
+    const a = agent(idOf(m[1], 'agent'));
+    if (!a) throw new HttpError(404, { error: 'unknown agent' });
+    return send(200, agentDetail(a));
+  }
+
+  // runs and inspections
+  if ((m = pathname.match(/^\/api\/runs\/([^/]+)$/)) && method === 'GET') {
+    const r = mustRun(m[1]);
+    const i = (r.inspectionId ? inspectionById(r.inspectionId) : null) ?? inspectionsOfRun(r.id).at(-1) ?? null;
+    const detail: RunDetail = { ...publicRun(r), job: job(r.jobId), inspection: i ? inspectionView(i, false) : null };
+    return send(200, detail);
+  }
+  if ((m = pathname.match(/^\/api\/runs\/([^/]+)\/log$/)) && method === 'GET') {
+    const r = mustRun(m[1]);
+    return send(200, logLines(r.id, search.get('since')));
+  }
+  if ((m = pathname.match(/^\/api\/runs\/([^/]+)\/diff$/)) && method === 'GET') {
+    const r = mustRun(m[1]);
+    const file = join(paths().runs, r.id, 'diff.patch');
+    if (!existsSync(file)) throw new HttpError(404, { error: 'this run has no diff' });
+    sendText(res, 200, readFileSync(file, 'utf8').slice(0, DIFF_CAP));
+    return true;
+  }
+  if ((m = pathname.match(/^\/api\/runs\/([^/]+)\/kill$/)) && method === 'POST') {
+    const r = mustRun(m[1]);
+    if (!kill(r.id, 'He stopped the run.')) throw new HttpError(409, { error: 'the run is not live' });
+    return send(200, { ok: true });
+  }
+  if ((m = pathname.match(/^\/api\/inspections\/([^/]+)$/)) && method === 'GET') {
+    const i = inspectionById(idOf(m[1], 'inspection'));
+    if (!i) throw new HttpError(404, { error: 'unknown inspection' });
+    return send(200, inspectionView(i, true));
+  }
+  if ((m = pathname.match(/^\/api\/inspections\/([^/]+)\/shot\/(.+)\/([^/]+)$/)) && method === 'GET') {
+    shot(res, m[1], m[2], m[3]);
+    return true;
+  }
+
+  // treasury, reports, providers
+  if (pathname === '/api/treasury' && method === 'GET') return send(200, treasuryView());
+  if (pathname === '/api/treasury/resume-stale' && method === 'POST') {
+    patchSettings({ resumeStaleUntil: Date.now() + MAX_RESUME_MS });
+    return send(200, treasuryView());
+  }
+  if (pathname === '/api/report/latest' && method === 'GET') {
+    const r = latestReport();
+    if (!r) throw new HttpError(404, { error: 'no report yet' });
+    return send(200, { day: r.day, markdown: r.markdown, data: r.data } satisfies ReportView);
+  }
+  if ((m = pathname.match(/^\/api\/report\/([^/]+)$/)) && method === 'GET') return send(200, reportFor(m[1]));
+  if (pathname === '/api/providers' && method === 'GET') return send(200, await providerUsages());
+  if (pathname === '/api/providers/anthropic/key' && method === 'POST') {
+    const b = await readObjectBody(req);
+    const key = b.key;
+    if (typeof key !== 'string' || key.length > 500) throw new HttpError(400, { error: 'expected { key }' });
+    try {
+      await setApiKey(key, { keychain: opts.keychain });
+    } catch (err) {
+      const msg = (err instanceof Error ? err.message : String(err)).split(key).join('[key]');
+      if (msg.startsWith('That is not')) throw new HttpError(400, { error: msg });
+      throw new HttpError(502, { error: redact(msg) });
+    }
+    return send(200, { ok: true });
+  }
+  if (pathname === '/api/providers/anthropic/key' && method === 'DELETE') {
+    try {
+      await removeApiKey({ keychain: opts.keychain });
+    } catch (err) {
+      throw new HttpError(502, { error: redact(err instanceof Error ? err.message : String(err)) });
+    }
+    return send(200, { ok: true });
+  }
+
+  // the city
+  if (pathname === '/api/quarters' && method === 'GET') return send(200, quarters());
+  // Trips are walked by the city's own clock (the trips task); until it exists none is under way.
+  if (pathname === '/api/live' && method === 'GET') return send(200, { sites: sites(), trips: [] } satisfies LiveView);
+
+  return false;
+}

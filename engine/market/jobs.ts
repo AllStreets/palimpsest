@@ -241,7 +241,7 @@ export async function pollJobs(repo: Repo, deps: PollDeps = {}): Promise<Job[]> 
  * waiting) is left to merge detection (Task 16): its PR closing the issue is
  * how a merge usually looks from here.
  */
-function withdrawable(j: Job): boolean {
+export function withdrawable(j: Job): boolean {
   if (j.status === 'waiting' || (j.status === 'halted' && j.haltedFrom === 'waiting')) return false;
   return legalMove(j.status, 'withdrawn');
 }
@@ -310,6 +310,22 @@ function proposed(jobId: string): Job {
 /** His click: the proposal goes on the board. */
 export function acceptProposed(jobId: string): Job {
   return transition(proposed(jobId), 'open');
+}
+
+/**
+ * His change of a job's tier, while it is proposed or open (before any bid is
+ * priced against it). The value follows the tier. Records and emits
+ * `job.changed` with the status unchanged.
+ */
+export function setTier(jobId: string, tier: Tier): Job {
+  const cur = job(jobId);
+  if (!cur) throw new Error(`no job ${jobId}`);
+  if (cur.status !== 'proposed' && cur.status !== 'open') throw new Error(`job ${jobId} is ${cur.status}: its tier can change only while proposed or open`);
+  const next: Job = { ...cur, tier, value: TIER_VALUE[tier] };
+  save(next);
+  record('job.changed', { id: next.id, from: cur.status, to: cur.status, job: next });
+  emit('job.changed', { job: next, from: cur.status });
+  return next;
 }
 
 /** His other click: the proposal is withdrawn and not proposed again. */
@@ -389,23 +405,40 @@ export function transition(j: Job, to: JobStatus, patch: Partial<Job> = {}, note
 export const SUMMARY_MAX = 600;
 
 /**
- * Makes an inspection summary safe for a public issue: anything shaped like a
- * token or key is redacted, any path under a home folder becomes `[path]`,
- * and the text is cut to SUMMARY_MAX characters.
+ * Takes anything shaped like a token or key out of text, and any path under a
+ * home folder or the engine's data home. Line breaks and length are left
+ * alone (a run log needs them); publicSummary() flattens and cuts.
  */
-export function publicSummary(text: string): string {
+export function redact(text: string): string {
   const home = homedir();
+  const data = dataHome();
   let s = text.split(home).join('~');
-  s = s
+  if (data && data !== home) s = s.split(data).join('[home]');
+  return s
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g, '[redacted]')
     .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}/g, '[redacted]')
     .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '[redacted]')
     .replace(/\b(?:xox[abposr]-|glpat-)[A-Za-z0-9-]{10,}/g, '[redacted]')
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?/g, '[redacted]')
     .replace(/\b[A-Za-z0-9+_-]{40,}={0,2}/g, '[redacted]')
-    .replace(/(?:~|\/Users\/[^/\s]+|\/home\/[^/\s]+|\/var\/root)(?:\/[^\s'"`)]*)?/g, '[path]')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/(?:~|\/Users\/[^/\s]+|\/home\/[^/\s]+|\/var\/root)(?:\/[^\s'"`)]*)?/g, '[path]');
+}
+
+function dataHome(): string {
+  try {
+    return home();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Makes an inspection summary safe for a public issue: anything shaped like a
+ * token or key is redacted, any path under a home folder becomes `[path]`,
+ * and the text is cut to SUMMARY_MAX characters.
+ */
+export function publicSummary(text: string): string {
+  const s = redact(text).replace(/\s+/g, ' ').trim();
   return s.length > SUMMARY_MAX ? `${s.slice(0, SUMMARY_MAX - 3).trimEnd()}...` : s;
 }
 
