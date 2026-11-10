@@ -423,8 +423,10 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
   };
   // Polished stone (granite, marble) carries a hard glassy skin over its grain that mirrors the sky; it is a
   // clear coat over the stone rather than a lower roughness on it, so the grain stays matte underneath.
+  // A full glaze (ceramic) is a mirror of the sky before it is a coloured surface, so it takes more of the sky
+  // than a polished stone does.
   const m = f.polish
-    ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: f.polish, clearcoatRoughness: 0.04, envMapIntensity: 2.6 })
+    ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: f.polish, clearcoatRoughness: f.polish >= 0.9 ? 0.02 : 0.04, envMapIntensity: f.polish >= 0.9 ? 4.2 : 2.6 })
     : new THREE.MeshStandardMaterial(params);
   const u = {
     uBody: { value: new THREE.Color(f.body) },
@@ -432,10 +434,11 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
     uSplit: { value: new THREE.Vector4(st.lo, st.hi, st.refBody, st.refJoint) },
     uKeep: { value: f.keep ? 1 : 0 },
     // Cut stone weathers in patches and streaks; brick and patina carry their own variation in the scan.
-    uWeather: { value: f.tex === 'sand' || f.tex === 'ashlar' || f.tex === 'granite' ? 0.22 : 0 },
+    uWeather: { value: f.weather ?? (f.tex === 'sand' || f.tex === 'ashlar' || f.tex === 'granite' ? 0.22 : 0) },
     // How much of the scan's own grain shows through the recolour: granite's speckle is the point of it.
     uDetail: { value: f.detail ?? (f.tex === 'granite' ? 1.0 : 0.8) },
     uCourse: { value: f.courses ? new THREE.Vector4(f.courses.h, f.courses.l, f.courses.joint, f.courses.vary) : new THREE.Vector4(0, 1, 0, 0) },
+    uGap: { value: f.courses?.gap ?? 0.012 },
     uTexScale: { value: 1 / (f.scale ?? 1) },
   };
   m.customProgramCacheKey = () => 'palimpsest-scan';
@@ -473,7 +476,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse; uniform float uGap;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
@@ -496,8 +499,13 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
           vec3 an = abs(vTFN);
           vec2 q = an.y > max(an.x, an.z) ? vTFP.xz : vec2(an.x > an.z ? vTFP.z : vTFP.x, vTFP.y);
           float wPatch = wNoise(q / 9.0) * 0.6 + wNoise(q / 3.0 + 19.0) * 0.4;
+          // Whole beds and batches of blocks, 6 to 20 m across, lighter or darker: variation that survives any
+          // distance, where the block-to-block grain has long averaged out.
+          float wBed = wNoise(vec2(q.x / 22.0, q.y / 6.0) + 41.0);
           float streak = wNoise(vec2(q.x / 0.9, q.y / 14.0) + 7.0);
-          diffuseColor.rgb *= 1.0 + uWeather * ((wPatch - 0.5) * 1.6 - max(streak - 0.5, 0.0) * 1.6);
+          // Long rain streaks a few metres wide, running the height of a run.
+          float wide = wNoise(vec2(q.x / 3.2, q.y / 60.0) + 23.0);
+          diffuseColor.rgb *= 1.0 + uWeather * ((wPatch - 0.5) * 1.6 + (wBed - 0.5) * 1.5 - max(streak - 0.5, 0.0) * 1.6 - max(wide - 0.55, 0.0) * 2.4);
         }
         if (uCourse.x > 0.0 && abs(vTFN.y) < 0.7) {
           // Coursed ashlar: bed joints every course, head joints staggered half a block course to course, each block
@@ -511,15 +519,19 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
           vec2 g = vec2(fract(u) * uCourse.y, fract(q.y / uCourse.x) * uCourse.x);
           vec2 e = min(g, vec2(uCourse.y, uCourse.x) - g);
           vec2 aa = fwidth(q) * 1.5 + 1e-4;
-          float jx = 1.0 - smoothstep(0.012, 0.012 + aa.x, e.x);
-          float jy = 1.0 - smoothstep(0.014, 0.014 + aa.y, e.y);
+          float jx = 1.0 - smoothstep(uGap, uGap + aa.x, e.x);
+          float jy = 1.0 - smoothstep(uGap * 1.15, uGap * 1.15 + aa.y, e.y);
           float joint = max(jx, jy);
           float hb = wHash(vec2(col, row) + 3.7);
+          // Each block its own tone while a block still covers a few pixels; from farther off the tone is the bed's,
+          // three courses sharing a quarry batch, so the coursing keeps reading as laid stone instead of as grain.
+          float blockFade = 1.0 - smoothstep(uCourse.y * 0.2, uCourse.y * 0.6, aa.x);
+          float bedTone = wHash(vec2(floor(row / 3.0), 11.0)) - 0.5;
           float bed = 1.0 + 0.045 * sin(q.y * 23.0 + hb * 9.0) * (1.0 - smoothstep(0.0, 0.05, aa.y));
-          diffuseColor.rgb *= (1.0 + uCourse.w * (hb - 0.5) * 2.0) * bed * (1.0 - uCourse.z * joint);
+          diffuseColor.rgb *= (1.0 + uCourse.w * ((hb - 0.5) * 2.0 * blockFade + bedTone * 1.6)) * bed * (1.0 - uCourse.z * joint);
         }
-        // Soot and splash darken masonry toward the street, and the lowest floors most.
-        diffuseColor.rgb *= 1.0 - 0.2 * exp(-max(vTFP.y - 20.0, 0.0) / 45.0);`,
+        // Soot and splash darken masonry toward the street, and the lowest floors most; porous cut stone soils deepest.
+        diffuseColor.rgb *= 1.0 - (0.2 + 0.3 * uWeather) * exp(-max(vTFP.y - 20.0, 0.0) / 45.0);`,
       )
       .replace(
         '#include <emissivemap_fragment>',
@@ -639,6 +651,12 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     lightLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.88, 0.93, 1.0).multiplyScalar(1.0) }),
     // Saturated amber, a hue the architecture never uses, so a Claude floor reads apart from any light line.
     accent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) }),
+    // Warm tungsten (about 2700 K) behind a louvre: a vent reads as fire-lit from across the city, never as neon.
+    vent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.5, 0.16).multiplyScalar(0.95) }),
+    // Bituminous roofing: near black, matte, a little grit in the roughness map.
+    roof: new THREE.MeshStandardMaterial({ color: 0x2b2d2f, roughness: 0.9, metalness: 0, roughnessMap: texture('metal_arm.jpg'), envMapIntensity: 0.6 }),
+    // Aviation red, at a level that reads as a small hot lamp without a halo.
+    beacon: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.1, 0.05).multiplyScalar(1.25) }),
     pick: new THREE.MeshBasicMaterial({ visible: false }),
   };
   return library;

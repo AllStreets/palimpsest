@@ -6,9 +6,11 @@ import type { Era } from '../shared/types.js';
 import { readFileSync } from 'node:fs';
 
 import { RENDERED } from '../app/src/city/tower/rendered.js';
-import { CROWNS, type Finish, lookFor, lookKey, pickLooks, preference, PREFERRED, renderedDistance, SEPARATION, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
+import { FAMILIES, type Finish, lookFor, lookKey, pickLooks, preference, PREFERRED, renderedDistance, SEPARATION, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
 
 const ERAS: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
+/** The eras the picker steers by rendered colour; the sci-fi era is steered by family (see pickLooks). */
+const COLOUR_ERAS: Era[] = ['stone', 'brick', 'glass', 'titanium'];
 
 /** Chebyshev distance between two slots' blocks on the district grid. */
 function blocks(a: number, b: number): number {
@@ -121,7 +123,7 @@ test('neighbours are steered apart by how they render: a pick is SEPARATION from
   for (const names of [HIS, SAMPLE, Array.from({ length: 50 }, (_, i) => `org${i % 7}/r${i}`)]) {
     const sites = names.map((repo, slot) => ({ repo, slot }));
     const looks = pickLooks(sites);
-    for (const era of ERAS) {
+    for (const era of COLOUR_ERAS) {
       for (const s of sites) {
         const earlier = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1).map((o) => looks.get(o.repo)![era]);
         const apart = (v: (typeof VARIANTS)[Era][number]): boolean => earlier.every((n) => renderedDistance(v, n) >= SEPARATION);
@@ -158,7 +160,7 @@ test('upper eras each read apart by their lit floors and rhythm', () => {
     const seen = new Set<string>();
     for (const v of VARIANTS[era]) {
       assert.ok(v.lights, `${v.id} sets its lights`);
-      const sig = [Math.round(v.lights!.warm * 5), v.pitch ?? 0, v.depth ?? 1, v.spandrel ?? 0, v.seams ?? false, v.glass.channel ?? false].join('|');
+      const sig = [Math.round(v.lights!.warm * 5), v.pitch ?? 0, v.depth ?? 1, v.spandrel ?? 0, v.seams ?? false, v.glass.channel ?? false, v.family ?? ''].join('|');
       assert.ok(!seen.has(sig), `${v.id} reads the same as another ${era} variant from afar (${sig})`);
       seen.add(sig);
     }
@@ -176,7 +178,7 @@ test('a variant is measured at the heights short towers stand at as well as high
 });
 
 test("a tower's adjacent eras render apart from each other whenever such a pick exists", () => {
-  const order: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
+  const order: Era[] = COLOUR_ERAS;
   for (const names of [HIS, SAMPLE, Array.from({ length: 40 }, (_, i) => `org${i % 7}/r${i}`)]) {
     const sites = names.map((repo, slot) => ({ repo, slot }));
     const looks = pickLooks(sites);
@@ -194,7 +196,7 @@ test("a tower's adjacent eras render apart from each other whenever such a pick 
 
 test('the picker takes the margin whenever a variant clears it: PREFERRED from neighbours and SEPARATION from the era below', () => {
   assert.ok(PREFERRED >= SEPARATION + 2);
-  const order: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
+  const order: Era[] = COLOUR_ERAS;
   for (const names of [HIS, SAMPLE, Array.from({ length: 40 }, (_, i) => `org${i % 7}/r${i}`)]) {
     const sites = names.map((repo, slot) => ({ repo, slot }));
     const looks = pickLooks(sites);
@@ -216,18 +218,20 @@ test('the picker takes the margin whenever a variant clears it: PREFERRED from n
  * updating this list in the same commit as rendered.ts.
  */
 const PINNED: Record<string, string> = {
-  'AllStreets/beagle': 'stone:marble,brick:green-terracotta,glass:blue,titanium:titanium,scifi:carbon,stepped',
-  'AllStreets/palimpsest': 'stone:dark-granite,brick:salmon,glass:channel,titanium:black,scifi:ceramic,ring',
-  'AllStreets/teardown': 'stone:pink-granite,brick:terracotta,glass:bronze,titanium:copper,scifi:pearl,lantern',
-  'AllStreets/understudy': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:carbon,twin',
-  'AllStreets/ONEXUS': 'stone:dark-granite,brick:cream,glass:channel,titanium:black,scifi:ceramic,stepped',
-  'AllStreets/Chicago-Open-World': 'stone:limestone,brick:red,glass:green,titanium:bronze,scifi:carbon,ring',
-  'tidewater/harbor-ledger': 'stone:pink-granite,brick:green-terracotta,glass:green,titanium:bronze,scifi:ceramic,lantern',
-  'kestrel/fieldnotes': 'stone:marble,brick:salmon,glass:channel,titanium:copper,scifi:carbon,stepped',
-  'lantern/assay-kit': 'stone:dark-granite,brick:terracotta,glass:bronze,titanium:black,scifi:pearl,ring',
-  'ferro/quarry': 'stone:limestone,brick:red,glass:blue,titanium:titanium,scifi:carbon,twin',
-  'hoshi/kumo': 'stone:sandstone,brick:cream,glass:channel,titanium:bronze,scifi:ceramic,stepped',
-  'alder/blank-slate': 'stone:marble,brick:ironspot,glass:green,titanium:black,scifi:carbon,ring',
+  // Round 5: the four crowns became the six sci-fi families, so every sci-fi id here is new. Stone, brick, glass and
+  // titanium are the round 4 pins, unchanged.
+  'AllStreets/beagle': 'stone:marble,brick:green-terracotta,glass:blue,titanium:titanium,scifi:deco',
+  'AllStreets/palimpsest': 'stone:dark-granite,brick:salmon,glass:channel,titanium:black,scifi:organic',
+  'AllStreets/teardown': 'stone:pink-granite,brick:terracotta,glass:bronze,titanium:copper,scifi:arcology',
+  'AllStreets/understudy': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:needle',
+  'AllStreets/ONEXUS': 'stone:dark-granite,brick:cream,glass:channel,titanium:black,scifi:cluster',
+  'AllStreets/Chicago-Open-World': 'stone:limestone,brick:red,glass:green,titanium:bronze,scifi:ziggurat',
+  'tidewater/harbor-ledger': 'stone:pink-granite,brick:green-terracotta,glass:green,titanium:bronze,scifi:ziggurat',
+  'kestrel/fieldnotes': 'stone:marble,brick:salmon,glass:channel,titanium:copper,scifi:organic',
+  'lantern/assay-kit': 'stone:dark-granite,brick:terracotta,glass:bronze,titanium:black,scifi:needle',
+  'ferro/quarry': 'stone:limestone,brick:red,glass:blue,titanium:titanium,scifi:arcology',
+  'hoshi/kumo': 'stone:sandstone,brick:cream,glass:channel,titanium:bronze,scifi:deco',
+  'alder/blank-slate': 'stone:marble,brick:ironspot,glass:green,titanium:black,scifi:cluster',
 };
 
 test('a re-measure never silently changes the look of a known tower', () => {
@@ -237,19 +241,25 @@ test('a re-measure never silently changes the look of a known tower', () => {
   }
 });
 
-test('sci-fi crowns: three or more silhouettes, deterministic, never shared by neighbours', () => {
-  assert.ok(CROWNS.length >= 3);
-  assert.equal(lookFor('a/b').crown, lookFor('a/b').crown);
+test('the sci-fi era is six families, one per variant, each in its own architectural language', () => {
+  assert.equal(FAMILIES.length, 6);
   const seen = new Set<string>();
-  for (let i = 0; i < 200; i++) seen.add(lookFor(`o/r${i}`).crown);
-  assert.equal(seen.size, CROWNS.length, 'every crown is reachable');
-  for (const names of [HIS, SAMPLE, Array.from({ length: 30 }, (_, i) => `org${i % 7}/r${i}`)]) {
-    const sites = names.map((repo, slot) => ({ repo, slot }));
-    const looks = pickLooks(sites);
-    for (const s of sites) {
-      const earlier = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1).map((o) => looks.get(o.repo)!.crown);
-      if (CROWNS.some((c) => !earlier.includes(c))) assert.ok(!earlier.includes(looks.get(s.repo)!.crown), `${s.repo} shares a crown with a neighbour`);
-    }
+  for (const v of VARIANTS.scifi) {
+    assert.ok(v.family, `${v.id} names its family`);
+    assert.ok(!seen.has(v.family!), `${v.id} shares the ${v.family} family with another variant`);
+    seen.add(v.family!);
+  }
+  for (const f of FAMILIES) assert.ok(seen.has(f), `the ${f} family has a variant`);
+  // Only the sci-fi era builds in families.
+  for (const era of ERAS) if (era !== 'scifi') for (const v of VARIANTS[era]) assert.equal(v.family, undefined, `${v.id} has a family`);
+  // Reachable and deterministic, like any variant.
+  const reached = new Set<string>();
+  for (let i = 0; i < 200; i++) reached.add(lookFor(`o/r${i}`).scifi.family!);
+  assert.equal(reached.size, FAMILIES.length, 'every family is reachable');
+  // Families are told apart by massing before colour: a city of six towers shows all six, whatever their names.
+  for (const names of [HIS, SAMPLE, Array.from({ length: 6 }, (_, i) => `org${i}/r${i * 11}`)]) {
+    const looks = pickLooks(names.map((repo, slot) => ({ repo, slot })));
+    assert.equal(new Set(names.map((n) => looks.get(n)!.scifi.family)).size, FAMILIES.length, `${names[0]}...: six towers, six families`);
   }
 });
 

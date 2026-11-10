@@ -50,11 +50,18 @@ export type Finish =
       /**
        * Laid in courses: bed joints every `h` metres and staggered head joints
        * every `l`, each block a little lighter or darker than the next
-       * (`vary`), joints darkened by `joint`. Drawn in world space, so the
+       * (`vary`), joints darkened by `joint` and `gap` metres wide (12 mm
+       * by default; wider for recessed panel seams). Drawn in world space, so the
        * coursing reads on any face and fades evenly into its average with
        * distance instead of shimmering.
        */
-      courses?: { h: number; l: number; joint: number; vary: number };
+      courses?: { h: number; l: number; joint: number; vary: number; gap?: number };
+      /**
+       * How hard the stone weathers (0 to 1): tonal patches across beds and
+       * batches of blocks, rain streaks, and soiling toward the street. The
+       * scan's default is 0.22 for cut stone and none for brick or patina.
+       */
+      weather?: number;
       seen?: number;
     }
   /** Cast or rolled metal under the scanned plate's normal and roughness. */
@@ -108,18 +115,36 @@ export interface Variant {
   depth?: number;
   /** Glass era: the spandrel band's height at each slab, metres (ribbon windows run tall bands). */
   spandrel?: number;
-  /** Sci-fi: light seams set into the corner masts. */
+  /** Sci-fi: light seams set into the core's corners. */
   seams?: boolean;
+  /** Sci-fi only: the architectural language its floors are built in (see FAMILIES). */
+  family?: Family;
 }
 
 /**
- * How the sci-fi run ends, chosen per repo like a variant: an open diagrid
- * lantern, a stepped spire, a cantilevered ring, or a split twin mast.
+ * The sci-fi era's six families: the architectural languages the old masters
+ * of screen sci-fi gave their vertical cities, each an original design in
+ * that language, never a copy of any film's building. A sci-fi variant is
+ * one family with its own materials, so a repo's sci-fi floors are picked,
+ * steered from neighbours and kept for good like any other variant.
+ * - deco: monumental art deco megatower: a pale cast-stone shaft in dark
+ *   bronze fins, stepping back toward an illuminated crown, sky bridges
+ *   over the setback terraces.
+ * - ziggurat: a megastructure pyramid: sloped basalt faces in a lattice of
+ *   lit floors, warm light vents at the terraces.
+ * - needle: a slender tapering tower in fine titanium lines, with
+ *   observation pods and warning lights, at the floors' own height.
+ * - arcology: a brutalist megablock of raw stained concrete, deep recesses,
+ *   planted ledges and cantilevered habitation pods.
+ * - organic: a biomorphic tower: a smooth swelling ceramic shell under a
+ *   swept, ribbed exoskeleton, on a round plan.
+ * - cluster: stacked cantilevers: offset carbon boxes climbing a lit core,
+ *   their undersides lit.
  */
-export const CROWNS = ['lantern', 'stepped', 'ring', 'twin'] as const;
-export type Crown = (typeof CROWNS)[number];
+export const FAMILIES = ['deco', 'ziggurat', 'needle', 'arcology', 'organic', 'cluster'] as const;
+export type Family = (typeof FAMILIES)[number];
 
-export type Look = Record<Era, Variant> & { crown: Crown };
+export type Look = Record<Era, Variant>;
 
 /** The colour a finish reads as, for the palette and contrast checks. */
 export function swatch(f: Finish): number {
@@ -132,7 +157,7 @@ const scan = (tex: Scan, body: number, rough: number, more: Partial<Extract<Fini
 
 // Stone bases sit cool of what they read as, because the low dusk sun warms every sunlit face.
 const LIMESTONE = scan('ashlar', 0xadb3b8, 0.5, { normal: 0.8, joint: 0x8b9196 });
-const SANDSTONE = scan('sand', 0xaea676, 0.55, { normal: 1.1, joint: 0x857244, courses: { h: 0.62, l: 1.35, joint: 0.55, vary: 0.2 } });
+const SANDSTONE = scan('sand', 0xaba184, 0.55, { normal: 1.1, joint: 0x786a4d, weather: 0.42, courses: { h: 0.62, l: 1.35, joint: 0.6, vary: 0.3 } });
 const MARBLE = scan('ashlar', 0xc8d2de, 0.18, { normal: 0.3, joint: 0x9fa7b3, scale: 1.4, polish: 0.6 });
 const DARK_GRANITE = scan('granite', 0x202328, 0.3, { normal: 0.5, joint: 0x141619, scale: 3, polish: 0.2 });
 const ROSE_GRANITE = scan('granite', 0x8e6a76, 0.3, { normal: 0.5, joint: 0x5e4450, scale: 3, polish: 0.6 });
@@ -152,7 +177,17 @@ const TERRACOTTA = scan('brick', 0xd0d8e2, 0.2, { joint: 0x969ca3, normal: 0.55 
  * dark joints, under a glazed skin that mirrors the sky. Cool on purpose, so
  * the orange key light leaves it white rather than salmon.
  */
-const CERAMIC = scan('ashlar', 0xd2d8e1, 0.3, { joint: 0xb1b8c2, normal: 0.15, polish: 0.55, detail: 0.25, courses: { h: 1.6, l: 2.4, joint: 0.45, vary: 0.04 } });
+const CERAMIC = scan('ashlar', 0x8e9db0, 0.2, { joint: 0x5a6472, normal: 0.12, polish: 1.0, detail: 0.2, weather: 0, courses: { h: 1.2, l: 1.8, joint: 0.6, vary: 0.05, gap: 0.045 }, seen: 0xb8c3d2 });
+/** Pale cast stone for the deco shaft: cool grey-buff panels in wide courses, lightly weathered. */
+const CAST_STONE = scan('ashlar', 0xc3c1b9, 0.6, { joint: 0x8f8d86, normal: 0.6, weather: 0.12, courses: { h: 1.2, l: 2.6, joint: 0.5, vary: 0.05 } });
+/** Dark basalt-grey concrete for the ziggurat's sloped faces: board-marked, streaked by rain. */
+const BASALT = scan('ashlar', 0x45474a, 0.8, { joint: 0x2e3032, normal: 0.9, weather: 0.3, courses: { h: 2.4, l: 3.6, joint: 0.45, vary: 0.08 } });
+/** Raw board-marked concrete for the arcology: pale grey, heavily stained. */
+const CONCRETE = scan('ashlar', 0x9c9b95, 0.9, { joint: 0x75746f, normal: 0.9, weather: 0.42, courses: { h: 1.25, l: 3.0, joint: 0.3, vary: 0.06 } });
+const DARK_CONCRETE = scan('ashlar', 0x6f6e69, 0.9, { joint: 0x53524e, normal: 0.9, weather: 0.35, courses: { h: 1.25, l: 3.0, joint: 0.3, vary: 0.05 } });
+/** Planted ledges: dark foliage, matte. */
+const PLANTING: Finish = { kind: 'solid', color: 0x4a5e36, rough: 0.95 };
+const CARBON: Finish = { kind: 'solid', color: 0x34383d, rough: 0.26, metal: 0.3, clearcoat: 0.8 };
 const FAIENCE: Finish = { kind: 'solid', color: 0x5c7466, rough: 0.28, env: 1.3 };
 
 /** Punched windows in masonry: dark glass, rooms seen as they are. */
@@ -222,7 +257,8 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'brick:cream',
       era: 'brick',
       name: 'Cream city brick',
-      wall: scan('brick', 0xcfc298, 0.6, { joint: 0xaca48e }),
+      // Pale cream, the mortar close to the brick: the low sun already pushes it to gold, so the body stays off yellow.
+      wall: scan('brick', 0xd8d2bc, 0.6, { joint: 0xb3ad9a, weather: 0.16 }),
       trim: SANDSTONE,
       band: VERDIGRIS,
       glass: { body: 0x020406, tint: 0xf4f6ff, env: 1.15 },
@@ -396,37 +432,78 @@ export const VARIANTS: Record<Era, Variant[]> = {
     },
   ],
   scifi: [
-    { id: 'scifi:graphite', era: 'scifi', name: 'Graphite and titanium', wall: GRAPHITE, trim: TITANIUM, band: TITANIUM, glass: CLEAR, lights: { lit: 0.92, warm: 0.5 } },
     {
-      id: 'scifi:ceramic',
+      id: 'scifi:deco',
       era: 'scifi',
-      name: 'White ceramic',
+      name: 'Deco megatower',
+      family: 'deco',
+      wall: CAST_STONE,
+      trim: DARK_BRONZE,
+      band: BRONZE,
+      glass: { body: 0x060402, tint: 0xffe6c8, env: 1.2 },
+      pitch: 1.9,
+      lights: { lit: 0.78, warm: 0.8 },
+    },
+    {
+      id: 'scifi:ziggurat',
+      era: 'scifi',
+      name: 'Megastructure ziggurat',
+      family: 'ziggurat',
+      wall: BASALT,
+      trim: BLACK_STEEL,
+      band: DARK_BRONZE,
+      glass: { body: 0x050302, tint: 0xffdcae, env: 1.15 },
+      pitch: 1.6,
+      lights: { lit: 0.9, warm: 0.95 },
+    },
+    {
+      id: 'scifi:needle',
+      era: 'scifi',
+      name: 'Tapering needle',
+      family: 'needle',
+      wall: TITANIUM,
+      trim: GRAPHITE,
+      band: GRAPHITE,
+      glass: { body: 0x040608, tint: 0xe4ecff, env: 1.2 },
+      pitch: 0.8,
+      lights: { lit: 0.6, warm: 0.15 },
+    },
+    {
+      id: 'scifi:arcology',
+      era: 'scifi',
+      name: 'Brutalist arcology',
+      family: 'arcology',
+      wall: CONCRETE,
+      trim: DARK_CONCRETE,
+      band: PLANTING,
+      glass: { body: 0x060403, tint: 0xffe2bc, env: 1.1 },
+      pitch: 4.6,
+      lights: { lit: 0.7, warm: 0.9 },
+    },
+    {
+      id: 'scifi:organic',
+      era: 'scifi',
+      name: 'Biomorphic ceramic',
+      family: 'organic',
       wall: CERAMIC,
       trim: CERAMIC,
-      band: CERAMIC,
-      glass: { body: 0x020304, tint: 0xf4f6fa, env: 1.2 },
-      lights: { lit: 0.85, warm: 0.85 },
+      band: TITANIUM,
+      glass: { body: 0x020304, tint: 0xe6edfa, env: 1.3 },
+      pitch: 1.8,
+      lights: { lit: 0.85, warm: 0.3 },
     },
     {
-      id: 'scifi:carbon',
+      id: 'scifi:cluster',
       era: 'scifi',
-      name: 'Dark carbon with light seams',
-      wall: { kind: 'solid', color: 0x1b1d20, rough: 0.3, metal: 0.3, clearcoat: 0.6 },
+      name: 'Cantilever cluster',
+      family: 'cluster',
+      wall: CARBON,
       trim: GRAPHITE,
-      band: { kind: 'solid', color: 0x1b1d20, rough: 0.3, metal: 0.3, clearcoat: 0.6 },
+      band: CARBON,
       glass: { body: 0x020203, tint: 0xe8eeff, env: 1.2 },
+      pitch: 1.7,
       seams: true,
-      lights: { lit: 0.95, warm: 0.12 },
-    },
-    {
-      id: 'scifi:pearl',
-      era: 'scifi',
-      name: 'Pearlescent panels',
-      wall: { kind: 'solid', color: 0xbabdc1, rough: 0.24, metal: 0.15, clearcoat: 0.5, iridescence: 0.45 },
-      trim: TITANIUM,
-      band: { kind: 'solid', color: 0xbabdc1, rough: 0.24, metal: 0.15, clearcoat: 0.5, iridescence: 0.45 },
-      glass: { body: 0x060403, tint: 0xfff0e0, env: 1.2 },
-      lights: { lit: 0.8, warm: 0.4 },
+      lights: { lit: 0.95, warm: 0.3 },
     },
   ],
 };
@@ -462,18 +539,7 @@ export function preference(repo: string, era: Era): Variant[] {
 
 /** A repo's look on its own, with no neighbours to steer clear of: its first choice in every era. */
 export function lookFor(repo: string): Look {
-  return { ...(Object.fromEntries(ERAS.map((era) => [era, preference(repo, era)[0]])) as Record<Era, Variant>), crown: crownPreference(repo)[0] };
-}
-
-/** The repo's own order of preference for its crown. */
-function crownPreference(repo: string): Crown[] {
-  const list = [...CROWNS];
-  const r = rng(`${repo}|crown`);
-  for (let i = list.length - 1; i > 0; i--) {
-    const j = Math.floor(r() * (i + 1));
-    [list[i], list[j]] = [list[j], list[i]];
-  }
-  return list;
+  return Object.fromEntries(ERAS.map((era) => [era, preference(repo, era)[0]])) as Look;
 }
 
 export interface LookSite {
@@ -533,8 +599,10 @@ export const PREFERRED = 9;
  * 4. how far short of PREFERRED it renders from them (the margin);
  * 5. how many towers anywhere in the city already use it;
  * 6. its own order of preference, from its name.
- * The crown is chosen the same way: not a neighbour's, then the least used,
- * then the repo's own preference. Pass every repo that holds a slot,
+ * The sci-fi era is the exception: its variants are architectural families
+ * (FAMILIES), told apart by their massing before their colour, so it ranks
+ * by 1, then how many towers anywhere already use the family, then 6, so a
+ * city of six towers shows six families. Pass every repo that holds a slot,
  * connected or not, so a tower keeps its look while a neighbour is off.
  * The colours come from rendered.ts, which is versioned data: see there.
  */
@@ -564,17 +632,12 @@ export function pickLooks(sites: LookSite[]): Map<string, Look> {
         placed.filter((p) => p.look[era].id === v.id).length,
         i,
       ];
-      const ranked = preference(s.repo, era).map((v, i) => ({ v, r: rank(v, i) }));
+      const familyRank = (v: Variant, i: number): number[] => [near.filter((l) => l[era].id === v.id).length, placed.filter((p) => p.look[era].id === v.id).length, i];
+      const ranked = preference(s.repo, era).map((v, i) => ({ v, r: era === 'scifi' ? familyRank(v, i) : rank(v, i) }));
       ranked.sort((a, b) => byRank(a.r, b.r));
       look[era] = ranked[0].v;
       below = look[era];
     }
-    const crowns = crownPreference(s.repo).map((c, i) => ({
-      c,
-      r: [near.filter((l) => l.crown === c).length, placed.filter((p) => p.look.crown === c).length, i],
-    }));
-    crowns.sort((a, b) => byRank(a.r, b.r));
-    look.crown = crowns[0].c;
     placed.push({ at, look });
     out.set(s.repo, look);
   }
@@ -583,5 +646,5 @@ export function pickLooks(sites: LookSite[]): Map<string, Look> {
 
 /** A short stable key for a look, for cache keys. */
 export function lookKey(look: Look): string {
-  return [...ERAS.map((e) => look[e].id), look.crown].join(',');
+  return ERAS.map((e) => look[e].id).join(',');
 }

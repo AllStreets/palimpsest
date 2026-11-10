@@ -5,7 +5,8 @@ import * as THREE from 'three';
 
 import { buildTower, FLOOR_WIDTH } from '../app/src/city/tower/build.js';
 import { PANE_CHANNEL, PANE_FULL, type TowerMaterials } from '../app/src/city/tower/kit.js';
-import { CROWNS, type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
+import { FAMILIES, type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
+import { DATUM_HEIGHT } from '../app/src/city/tower/datum.js';
 import { layoutTower, ROOT_HEIGHT } from '../shared/tower-layout.js';
 import type { Era, Floor, FloorSize, RootStyle, TowerSpec } from '../shared/types.js';
 
@@ -165,25 +166,52 @@ function vertsOf(o: THREE.Object3D, mat: THREE.Material): THREE.Vector3[] {
   return out;
 }
 
-test('a sci-fi datum below more floors never reaches past the slab above it', () => {
-  // Terraces turn side every three floors, so try every datum height in a run of nine.
-  for (let datumIndex = 1; datumIndex < 9; datumIndex++) {
-    const floors = Array.from({ length: 10 }, (_, i) => floor(i, 'scifi'));
-    const s: TowerSpec = { id: 'acme/mid#founding', repo: 'acme/mid', kind: 'founding', root: 'chicago', floors, datumIndex };
-    const mats = plainMaterials();
-    const t = buildTower(s, 'high', mats);
-    const lay = layoutTower(s);
-    const band = vertsOf(t.group, mats.datum);
-    assert.ok(band.length > 0, 'the datum band is drawn');
-    // The slab of the floor directly above: titanium in the first metre over the datum line.
-    const slab = vertsOf(t.group, mats.scifiTrim).filter((v) => v.y > lay.datumY - 1e-3 && v.y < lay.datumY + 0.96);
-    assert.ok(slab.length > 0, 'the floor above has a slab');
-    const sx0 = Math.min(...slab.map((v) => v.x));
-    const sx1 = Math.max(...slab.map((v) => v.x));
-    const sz0 = Math.min(...slab.map((v) => v.z));
-    const sz1 = Math.max(...slab.map((v) => v.z));
-    for (const v of band) {
-      assert.ok(v.x >= sx0 - 1e-3 && v.x <= sx1 + 1e-3 && v.z >= sz0 - 1e-3 && v.z <= sz1 + 1e-3, `datum ${datumIndex}: band at (${v.x.toFixed(2)}, ${v.z.toFixed(2)}) is past the slab above [${sx0.toFixed(2)}..${sx1.toFixed(2)}] x [${sz0.toFixed(2)}..${sz1.toFixed(2)}]`);
+/** The sci-fi variant of a family. */
+function familyVariant(family: string) {
+  const v = VARIANTS.scifi.find((x) => x.family === family);
+  if (!v) throw new Error(`no sci-fi variant in the ${family} family`);
+  return v;
+}
+
+test('a sci-fi datum below more floors wraps the floor under it, close to its facade, in every family', () => {
+  for (const family of FAMILIES) {
+    // Massing changes every few floors in most families, so try every datum height in a run of nine.
+    for (let datumIndex = 1; datumIndex < 9; datumIndex++) {
+      const floors = Array.from({ length: 10 }, (_, i) => floor(i, 'scifi'));
+      const s: TowerSpec = { id: 'acme/mid#founding', repo: 'acme/mid', kind: 'founding', root: 'chicago', floors, datumIndex };
+      const mats = plainMaterials();
+      const t = buildTower(s, 'high', mats, { ...lookFor('acme/mid'), scifi: familyVariant(family) });
+      const lay = layoutTower(s);
+      const band = vertsOf(t.group, mats.datum);
+      assert.ok(band.length > 0, `${family}: the datum band is drawn`);
+      // Everything the floor below the band draws (its own mass, not the slab of the floor above), at the band's height.
+      const under = lay.floors[datumIndex - 1];
+      const ys = { lo: under.y0 + under.h - DATUM_HEIGHT - 0.05, hi: under.y0 + under.h + 0.05 };
+      let reach = 0;
+      t.group.updateMatrixWorld(true);
+      t.group.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || m.material === mats.pick || m.material === mats.datum) return;
+        const pos = m.geometry.getAttribute('position');
+        const v = new THREE.Vector3();
+        const im = m as THREE.InstancedMesh;
+        const n = im.isInstancedMesh ? im.count : 1;
+        const mat = new THREE.Matrix4();
+        for (let k = 0; k < n; k++) {
+          if (im.isInstancedMesh) im.getMatrixAt(k, mat);
+          else mat.identity();
+          for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).applyMatrix4(mat).applyMatrix4(m.matrixWorld);
+            if (v.y > ys.lo && v.y < ys.hi) reach = Math.max(reach, Math.hypot(v.x, v.z));
+          }
+        }
+      });
+      const bandReach = Math.max(...band.map((v) => Math.hypot(v.x, v.z)));
+      const bandInner = Math.min(...band.map((v) => Math.max(Math.abs(v.x), Math.abs(v.z))));
+      // The band stands just proud of what it wraps: never buried inside the facade, never floating far from it.
+      assert.ok(bandReach <= reach + 1.2, `${family} datum ${datumIndex}: band reaches ${bandReach.toFixed(2)} but the floor only ${reach.toFixed(2)}`);
+      assert.ok(bandInner >= 1, `${family} datum ${datumIndex}: band collapsed`);
+      t.dispose();
     }
   }
 });
@@ -282,13 +310,13 @@ test('ribbed channel glass marks its panes as channel glass', () => {
   }
 });
 
-test('dark carbon sets light seams into its masts', () => {
+test('the carbon cluster sets light seams into its core; the ceramic shell carries none', () => {
   const lit = (id: string): number => {
     const mats = plainMaterials();
     const t = buildTower(single('scifi', 3), 'high', mats, lookWith(id));
     return vertsOf(t.group, mats.lightLine).length;
   };
-  assert.ok(lit('scifi:carbon') > lit('scifi:ceramic'), 'carbon has more light-line geometry than ceramic');
+  assert.ok(lit('scifi:cluster') > lit('scifi:organic'), 'the cluster has more light-line geometry than the organic shell');
 });
 
 test('floors laid in different years drift a few percent in colour; one year matches itself', () => {
@@ -401,40 +429,131 @@ test('masonry weathers: stains run down from every sill and from a run-end corni
   }
 });
 
-test('every sci-fi crown builds inside its height and reserve, and each draws its own silhouette', () => {
+/** How wide the drawn, merged faces are across x between heights `y0` and `y1` (boxes carry vertices only at their corners, so a floor is measured over its lower half, base included). */
+function widthBetween(t: ReturnType<typeof buildTower>, y0: number, y1: number): number {
+  let lo = Infinity;
+  let hi = -Infinity;
+  t.group.updateMatrixWorld(true);
+  t.group.traverseVisible((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || (m as THREE.InstancedMesh).isInstancedMesh) return;
+    const pos = m.geometry.getAttribute('position');
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+      if (v.y >= y0 && v.y <= y1) {
+        lo = Math.min(lo, v.x);
+        hi = Math.max(hi, v.x);
+      }
+    }
+  });
+  return hi - lo;
+}
+
+/** A floor's width: its merged faces over its lower half. */
+function floorWidth(t: ReturnType<typeof buildTower>, lay: ReturnType<typeof layoutTower>, f: number): number {
+  const { y0, h } = lay.floors[f];
+  return widthBetween(t, y0 - 0.01, y0 + h * 0.5);
+}
+
+/** A sci-fi run of `n` floors in `family`, root to top, over a chicago root. */
+function familyTower(family: string, n: number, mats = plainMaterials()) {
+  const s = single('scifi', n);
+  return { t: buildTower(s, 'high', mats, { ...lookFor('acme/one'), scifi: familyVariant(family) }), lay: layoutTower(s), mats };
+}
+
+test('every sci-fi family builds inside its height and the reserve, at every run length, and draws its own silhouette', () => {
   const profiles = new Set<string>();
-  for (const crown of CROWNS) {
-    const s = single('scifi', 6);
-    const look = { ...lookFor('acme/one'), crown };
-    const t = buildTower(s, 'high', plainMaterials(), look);
-    const box = bounds(t.group);
-    assert.ok(Math.abs(box.max.y - t.top) < 1e-3, `${crown}: top ${box.max.y} vs ${t.top}`);
-    const reach = Math.max(...[box.min.x, box.max.x].flatMap((x) => [box.min.z, box.max.z].map((z) => Math.hypot(x, z))));
-    assert.ok(reach < RESERVE_RADIUS, `${crown} reaches ${reach.toFixed(1)}`);
-    // The silhouette: how wide the drawn faces are just above each of the top three slabs and mid-way up the top floor.
-    const lay = layoutTower(s);
-    t.group.updateMatrixWorld(true);
-    const heights = [3, 4, 5].map((f) => lay.floors[f].y0 + 0.2).concat([lay.floors[5].y0 + lay.floors[5].h * 0.42 + 0.25, lay.top - 0.05]);
-    const widths = heights.map((y) => {
-      let lo = Infinity;
-      let hi = -Infinity;
-      t.group.traverseVisible((o) => {
-        const m = o as THREE.Mesh;
-        if (!m.isMesh || (m as THREE.InstancedMesh).isInstancedMesh) return;
-        const pos = m.geometry.getAttribute('position');
-        const v = new THREE.Vector3();
-        for (let i = 0; i < pos.count; i++) {
-          v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
-          if (Math.abs(v.y - y) < 0.6) {
-            lo = Math.min(lo, v.x);
-            hi = Math.max(hi, v.x);
-          }
-        }
-      });
-      return (hi - lo).toFixed(0);
-    });
+  for (const family of FAMILIES) {
+    for (const n of [1, 2, 3, 6, 12, 40]) {
+      const { t } = familyTower(family, n);
+      const box = bounds(t.group);
+      // Heights are the layout's alone: no family adds a spire, mast or taller storey.
+      assert.ok(Math.abs(box.max.y - t.top) < 1e-3, `${family} x${n}: top ${box.max.y} vs ${t.top}`);
+      const reach = Math.max(...[box.min.x, box.max.x].flatMap((x) => [box.min.z, box.max.z].map((z) => Math.hypot(x, z))));
+      assert.ok(reach < RESERVE_RADIUS, `${family} x${n} reaches ${reach.toFixed(1)}`);
+      assert.equal(t.pickables.size, n, `${family} x${n}: one pick per floor`);
+      t.dispose();
+    }
+    const { t, lay } = familyTower(family, 12);
+    const widths = [2, 5, 8, 10, 11].map((f) => floorWidth(t, lay, f).toFixed(0));
     profiles.add(widths.join(','));
     t.dispose();
   }
-  assert.equal(profiles.size, CROWNS.length, `crown silhouettes: ${[...profiles].join(' | ')}`);
+  assert.equal(profiles.size, FAMILIES.length, `family silhouettes: ${[...profiles].join(' | ')}`);
+});
+
+test('a ziggurat and a needle narrow as they rise; an arcology and a deco tower keep their mass until the deco setbacks', () => {
+  for (const family of ['ziggurat', 'needle'] as const) {
+    const { t, lay } = familyTower(family, 20);
+    const w = [1, 9, 18].map((f) => floorWidth(t, lay, f));
+    assert.ok(w[0] > w[1] + 0.5 && w[1] > w[2] + 0.5, `${family} narrows: ${w.map((x) => x.toFixed(1)).join(' > ')}`);
+  }
+  const deco = familyTower('deco', 20);
+  const dw = [2, 5, 14, 19].map((f) => floorWidth(deco.t, deco.lay, f));
+  // Only the tower's own 0.6 percent per floor taper between them.
+  assert.ok(dw[1] > dw[0] * 0.95, `deco shaft holds its width low down (${dw[0].toFixed(1)} vs ${dw[1].toFixed(1)})`);
+  assert.ok(dw[1] > dw[2] + 1 && dw[2] > dw[3] + 1, `deco steps back toward the crown: ${dw.map((x) => x.toFixed(1)).join(' > ')}`);
+  const arc = familyTower('arcology', 20);
+  const aw = [2, 10, 18].map((f) => floorWidth(arc.t, arc.lay, f));
+  // Only the tower's own taper between the first and the last: no setbacks, no batter.
+  assert.ok(aw[2] > aw[0] * 0.9 && aw[1] > aw[2], `arcology keeps its mass: ${aw.map((x) => x.toFixed(1)).join(', ')}`);
+});
+
+test('an arcology hangs habitation pods clear of its piers; a cluster climbs its core in offset boxes', () => {
+  const arc = familyTower('arcology', 12);
+  const pods = arc.t.group.getObjectByName('tower:pod') as THREE.InstancedMesh | undefined;
+  assert.ok(pods && pods.count >= 4, 'an arcology of twelve floors hangs several pods');
+  // Every pod reaches past the pier line of its floor.
+  const mat = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const sc = new THREE.Vector3();
+  for (let i = 0; i < pods!.count; i++) {
+    pods!.getMatrixAt(i, mat);
+    mat.decompose(p, new THREE.Quaternion(), sc);
+    assert.ok(Math.max(Math.abs(p.x), Math.abs(p.z)) + Math.min(sc.x, sc.z) / 2 > FLOOR_WIDTH / 2 + 1, `pod ${i} cantilevers past the face`);
+  }
+  const cl = familyTower('cluster', 12);
+  // Boxes offset in different directions on different floors: their plan centres are not all on the axis.
+  const centres = new Set<string>();
+  for (const [proxy] of cl.t.pickables) {
+    const b = proxyBounds(proxy);
+    centres.add(`${((b.min.x + b.max.x) / 2).toFixed(1)},${((b.min.z + b.max.z) / 2).toFixed(1)}`);
+  }
+  assert.ok(centres.size >= 4, `cluster floors centre at ${centres.size} places`);
+});
+
+test('every family tops out with aircraft warning lights and never with a spire', () => {
+  for (const family of FAMILIES) {
+    const { t, lay, mats } = familyTower(family, 8);
+    const beacons = vertsOf(t.group, mats.beacon);
+    assert.ok(beacons.length >= 8, `${family}: warning lights on the roof`);
+    assert.ok(beacons.every((v) => v.y > lay.top - 1.2 && v.y <= lay.top + 1e-6), `${family}: the lights sit on the top floor's roof`);
+    // Nothing thin reaches the top alone: the top 0.5 m is at least 1.5 m wide (no needle).
+    assert.ok(widthBetween(t, lay.top - 0.6, lay.top) >= 1.5, `${family}: the top is a crown, not a spire`);
+  }
+});
+
+test('the organic family stands on a round plan and its datum wraps it as a ring', () => {
+  const floors = Array.from({ length: 6 }, (_, i) => floor(i, 'scifi'));
+  const s: TowerSpec = { id: 'acme/round#founding', repo: 'acme/round', kind: 'founding', root: 'chicago', floors, datumIndex: 3 };
+  const mats = plainMaterials();
+  const t = buildTower(s, 'high', mats, { ...lookFor('acme/round'), scifi: familyVariant('organic') });
+  const band = vertsOf(t.group, mats.datum);
+  const radii = band.map((v) => Math.hypot(v.x, v.z));
+  const spread = Math.max(...radii) - Math.min(...radii);
+  assert.ok(spread < 0.8, `a ring's radii vary by ${spread.toFixed(2)}, a square band's by more`);
+  // The shell's corners are not at the plan's half-width diagonals: a round plan's extent along x equals its extent along the diagonal.
+  const wall = vertsOf(t.group, mats.scifiWall);
+  const alongX = Math.max(...wall.map((v) => Math.abs(v.x)));
+  const diag = Math.max(...wall.map((v) => Math.hypot(v.x, v.z)));
+  assert.ok(diag < alongX * 1.1, `round plan: diagonal reach ${diag.toFixed(1)} vs ${alongX.toFixed(1)} along x`);
+});
+
+test('the ziggurat sets its light vents into the sloped faces, the deco crown lights its fin slots', () => {
+  const zig = familyTower('ziggurat', 9);
+  assert.ok(vertsOf(zig.t.group, zig.mats.vent).length > 0, 'ziggurat has warm vents');
+  const deco = familyTower('deco', 9);
+  const slots = vertsOf(deco.t.group, deco.mats.vent).filter((v) => v.y > deco.lay.floors[8].y0);
+  assert.ok(slots.length > 0, 'the deco crown floor carries lit slots');
 });
