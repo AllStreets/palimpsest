@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +47,9 @@ export function paths(): Paths {
   for (const dir of [base, mirrors, usage, logs, runs, reports]) {
     mkdirSync(dir, { recursive: true });
   }
+  // Spotlight never indexes a run, so it never holds a sandbox extension for a run's files.
+  const neverIndex = join(runs, '.metadata_never_index');
+  if (!existsSync(neverIndex)) writeFileSync(neverIndex, '');
 
   const engineDir = dirname(fileURLToPath(import.meta.url));
   const dist = process.env.PALIMPSEST_DIST ?? join(engineDir, '..', 'dist');

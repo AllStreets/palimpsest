@@ -16,6 +16,10 @@
  *   no process can drop: this catches a daemon that cleared its
  *   environment, left the run root and exec-ed a system binary.
  *
+ * When the sandbox helper is available, membership of the run's sandbox is
+ * the only rule that authorizes a signal; the other rules apply only when
+ * the helper cannot be built.
+ *
  * Never matched: the engine and its ancestors, the engine's descendants
  * that neither run under the run's sandbox nor carry its markers (its own
  * git, whose HOME is not the agent's), pids the run protects
@@ -177,7 +181,14 @@ function belonging(procs: Proc[], files: Map<number, Files>, root: string, spare
   const out: number[] = [];
   for (const p of procs) {
     if (spare.has(p.pid) || live.has(p.pgid)) continue;
-    const sandboxed = members?.has(p.pid) ?? false;
+    // With the helper, only this run's sandbox members are ever signalled: the
+    // environment, executable and cwd rules never widen the set, so no
+    // process of his outside the sandbox can be killed by them.
+    if (members !== null) {
+      if (members.has(p.pid)) out.push(p.pid);
+      continue;
+    }
+    const sandboxed = false;
     const env = markers.some((m) => p.command.includes(` ${m}`) || p.command.startsWith(m));
     if (engine.has(p.pid) && !sandboxed && !env) continue;
     if (sandboxed || env) {

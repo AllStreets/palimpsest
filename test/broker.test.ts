@@ -404,11 +404,18 @@ describe('under the tool profile', () => {
 
 /** A sleep working in `cwd` whose parent has exited (as a daemon's would be), so it is no descendant of this process. */
 const orphans: number[] = [];
-function orphanIn(cwd: string): number {
-  const out = execFileSync('/bin/sh', ['-c', 'cd "$1" || exit 1; /bin/sleep 30 </dev/null >/dev/null 2>&1 & echo $!', 'sh', cwd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+/** A process whose parent has exited (as a daemon's would be), working in `cwd`, so it is no descendant of this process. */
+function orphanIn(cwd: string, argv: string[] = ['/bin/sleep', '30']): number {
+  const quoted = argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
+  const out = execFileSync('/bin/sh', ['-c', `cd "$1" || exit 1; ${quoted} </dev/null >/dev/null 2>&1 & echo $!`, 'sh', cwd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
   const pid = Number(out.trim());
   orphans.push(pid);
   return pid;
+}
+
+/** argv run under `run`'s own tool profile. */
+function underProfile(run: { runRoot: string }, argv: string[]): string[] {
+  return wrap(argv, 'tool', { runRoot: run.runRoot, home: join(tempDir, 'home'), dataHome: join(tempDir, 'data'), enginePort: 9, proxyPort: 9, toolchains: [], otherPorts: [] });
 }
 
 afterEach(() => {
@@ -421,48 +428,55 @@ afterEach(() => {
   }
 });
 
+const noSandbox = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || !existsSync('/usr/bin/cc') ? 'sandbox-exec or cc is missing' : false;
+
 describe('the reaper', () => {
   const daemon = (name: string, clearEnv = false) =>
     `${clearEnv ? 'env -i ' : ''}perl -e 'use POSIX; exit if fork; POSIX::setsid(); exit if fork; sleep 3; open(F, ">>", "${name}"); print F "alive\\n"; close F'; echo started`;
 
-  test('a fork and setsid daemon is gone after execTool returns and never writes', async () => {
+  test('a fork and setsid daemon is gone after execTool returns and never writes', { skip: noSandbox }, async () => {
+    process.env.PALIMPSEST_SANDBOX = 'on';
     const run = makeRun('run-daemon');
     const r = await execTool({ ...base(run, []), command: daemon('escaped.txt'), timeoutMs: 10_000 });
-    assert.equal(r.code, 0);
+    assert.equal(r.code, 0, r.stderr);
     const r2 = await execTool({ ...base(run, []), command: daemon('escaped-noenv.txt', true), timeoutMs: 10_000 });
-    assert.equal(r2.code, 0);
+    assert.equal(r2.code, 0, r2.stderr);
     await new Promise((res) => setTimeout(res, 4000));
     assert.ok(!existsSync(join(run.dir, 'escaped.txt')), 'the daemon outlived its command');
     assert.ok(!existsSync(join(run.dir, 'escaped-noenv.txt')), 'the env-cleared daemon outlived its command');
     assert.deepEqual(await reapRun(run.runRoot), []);
   });
 
-  test('the reaper never touches a process outside the run root or a protected one', async () => {
+  test('the reaper never touches a process outside the run root, a protected one or a non-member in the run root', { skip: noSandbox }, async () => {
+    process.env.PALIMPSEST_SANDBOX = 'on';
     const run = makeRun('run-protect');
     const outside = spawn('/bin/sleep', ['30'], { cwd: tempDir, stdio: 'ignore' }) as unknown as ChildProcessWithoutNullStreams;
     children.push(outside);
-    const kept = spawn('/bin/sleep', ['30'], { cwd: run.dir, stdio: 'ignore' }) as unknown as ChildProcessWithoutNullStreams;
+    const keptArgv = underProfile(run, ['/bin/sleep', '30']);
+    const kept = spawn(keptArgv[0], keptArgv.slice(1), { cwd: run.dir, stdio: 'ignore' }) as unknown as ChildProcessWithoutNullStreams;
     children.push(kept);
     protectPids(run.runRoot, [kept.pid as number]);
-    const inside = { pid: orphanIn(run.dir) };
-    await new Promise((res) => setTimeout(res, 200));
+    // Not sandboxed, working in the run root, no terminal, no parent here: the old cwd rule would have killed it.
+    const nonMember = orphanIn(run.dir);
+    const inside = orphanIn('/', underProfile(run, ['/bin/sleep', '30']));
+    await new Promise((res) => setTimeout(res, 300));
     const killed = await reapRun(run.runRoot);
-    assert.ok(killed.includes(inside.pid as number), `inside sleep not reaped: ${killed}`);
-    assert.ok(!killed.includes(outside.pid as number));
-    assert.ok(!killed.includes(kept.pid as number));
-    assert.ok(!killed.includes(process.pid));
-    assert.doesNotThrow(() => process.kill(outside.pid as number, 0));
-    assert.doesNotThrow(() => process.kill(kept.pid as number, 0));
+    assert.ok(killed.includes(inside), `the member was not reaped: ${killed}`);
+    for (const pid of [outside.pid as number, kept.pid as number, nonMember, process.pid]) {
+      assert.ok(!killed.includes(pid), `${pid} was signalled`);
+      assert.doesNotThrow(() => process.kill(pid, 0));
+    }
     protectPids(run.runRoot, []);
   });
 
-  test('runQuiet reaps and then confirms nothing is left', async () => {
+  test('runQuiet reaps and then confirms nothing is left', { skip: noSandbox }, async () => {
+    process.env.PALIMPSEST_SANDBOX = 'on';
     const run = makeRun('run-quiet');
-    const inside = { pid: orphanIn(run.dir) };
-    await new Promise((res) => setTimeout(res, 200));
+    const inside = orphanIn('/', underProfile(run, ['/bin/sleep', '30']));
+    await new Promise((res) => setTimeout(res, 300));
     await runQuiet(run.runRoot);
     await new Promise((res) => setTimeout(res, 100));
-    assert.throws(() => process.kill(inside.pid as number, 0));
+    assert.throws(() => process.kill(inside, 0));
   });
 
   test('the broker refuses a fifth concurrent call on one run', async () => {
@@ -528,6 +542,13 @@ describe('the sandbox check helper', () => {
     assert.equal(st.uid, process.getuid?.());
     assert.equal(st.mode & 0o022, 0);
     assert.ok(bin!.includes(`-${process.pid}-`), 'the helper path is not this process\'s own build');
+  });
+});
+
+describe('the runs directory', () => {
+  test('carries .metadata_never_index so Spotlight never indexes a run', async () => {
+    const { paths } = await import('../engine/home.js');
+    assert.ok(existsSync(join(paths().runs, '.metadata_never_index')));
   });
 });
 
