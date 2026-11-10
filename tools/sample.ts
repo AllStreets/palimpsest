@@ -91,7 +91,7 @@ export function sampleHistory(s: SampleRepo): { commits: Commit[]; prs: PR[] } {
     });
     if (i > 0 && r() < s.prShare) {
       prNumber += 1 + Math.floor(r() * 3);
-      prs.push({ number: prNumber, title: subject, mergedAt: new Date(at).toISOString(), mergeSha: sha, url: `https://github.com/${s.fullName}/pull/${prNumber}` });
+      prs.push({ number: prNumber, title: subject, mergedAt: new Date(at).toISOString(), mergeSha: sha, url: `https://github.com/${s.fullName}/pull/${prNumber}`, headRefName: `feature/${prNumber}` });
     }
   });
   return { commits, prs };

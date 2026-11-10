@@ -1,5 +1,5 @@
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { District, Repo, RootStyle, TowerSpec } from '../shared/types.js';
+import type { District, Floor, Repo, RootStyle, TowerSpec } from '../shared/types.js';
 import { openDb } from './db.js';
 import { emit } from './events.js';
 import { GhError, mergedPRs, repoMeta } from './github.js';
@@ -79,11 +79,14 @@ function ensureSlots(repos: Repo[]): Repo[] {
   });
 }
 
-/** A stored repo row, with the market defaults filled in for any field a pre-Phase 2 writer left out. */
+/**
+ * A stored repo row, with the market defaults filled in for any field a
+ * pre-Phase 2 writer left out. `joinedAt` is never derived here: migrate()
+ * backfilled it for old rows and runAnalysis() writes it at the first success.
+ */
 function parseRepo(json: string): Repo {
   const stored = JSON.parse(json) as Partial<Repo>;
-  const joinedAt = stored.joinedAt !== undefined ? stored.joinedAt : (stored.analyzedAt ?? null);
-  return { ...repoMarketDefaults(), ...stored, joinedAt } as Repo;
+  return { ...repoMarketDefaults(), ...stored } as Repo;
 }
 
 function loadRepo(fullName: string): Repo | null {
@@ -109,17 +112,73 @@ function saveRepo(repo: Repo): Repo {
   return repo;
 }
 
-function loadTower(repo: string): TowerSpec | null {
+/** The stored founding tower: the floors below the datum only, as the last successful analysis wrote them. */
+function loadFoundingTower(repo: string): TowerSpec | null {
   const db = openDb();
   const row = db.prepare('SELECT json FROM towers WHERE repo = ?').get(repo) as { json: string } | undefined;
   return row ? (JSON.parse(row.json) as TowerSpec) : null;
 }
 
-function saveTower(tower: TowerSpec): void {
+/** Writes the founding tower. Only founding floors are ever stored here; earned floors live in `earned_floors`. */
+function saveFoundingTower(tower: TowerSpec): void {
   const db = openDb();
   db.prepare(
     'INSERT INTO towers (repo, json) VALUES (?, ?) ON CONFLICT(repo) DO UPDATE SET json = excluded.json',
   ).run(tower.repo, JSON.stringify(tower));
+}
+
+/** The floors earned in the market on tower `towerId`, in the order they were laid. */
+export function earnedFloors(towerId: string): Floor[] {
+  const rows = openDb()
+    .prepare('SELECT json FROM earned_floors WHERE tower_id = ? ORDER BY seq')
+    .all(towerId) as Array<{ json: string }>;
+  return rows.map((row) => JSON.parse(row.json) as Floor);
+}
+
+/**
+ * `fullName`'s district tower as the city shows it (ruling 17): the founding
+ * floors, then every earned floor in laid order above the datum. `datumIndex`
+ * is the founding count, so it never moves when a floor is earned.
+ */
+export function loadTower(fullName: string): TowerSpec | null {
+  const founding = loadFoundingTower(fullName);
+  if (!founding) return null;
+  return { ...founding, floors: [...founding.floors, ...earnedFloors(founding.id)] };
+}
+
+/**
+ * Lays `floor` on top of tower `towerId`, above every floor already earned
+ * there, and returns it as stored (always `founding: false`). With
+ * updateEarnedFloor and removeEarnedFloor, the only writer of `earned_floors`.
+ */
+export function layEarnedFloor(towerId: string, floor: Floor): Floor {
+  const db = openDb();
+  const laid: Floor = { ...floor, founding: false };
+  const { next } = db
+    .prepare('SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM earned_floors WHERE tower_id = ?')
+    .get(towerId) as { next: number };
+  db.prepare('INSERT INTO earned_floors (id, tower_id, seq, json) VALUES (?, ?, ?, ?)').run(
+    laid.id,
+    towerId,
+    next,
+    JSON.stringify(laid),
+  );
+  return laid;
+}
+
+/** Merges `patch` into the earned floor `id`, keeping its id, tower and place. Null when there is no such floor. */
+export function updateEarnedFloor(id: string, patch: Partial<Omit<Floor, 'id' | 'founding'>>): Floor | null {
+  const db = openDb();
+  const row = db.prepare('SELECT json FROM earned_floors WHERE id = ?').get(id) as { json: string } | undefined;
+  if (!row) return null;
+  const updated: Floor = { ...(JSON.parse(row.json) as Floor), ...patch, id, founding: false };
+  db.prepare('UPDATE earned_floors SET json = ? WHERE id = ?').run(JSON.stringify(updated), id);
+  return updated;
+}
+
+/** Removes the earned floor `id`; the floors above it keep their order. */
+export function removeEarnedFloor(id: string): void {
+  openDb().prepare('DELETE FROM earned_floors WHERE id = ?').run(id);
 }
 
 /** Every repo ever connected, connected or not, oldest connectedAt first. */
@@ -243,6 +302,9 @@ async function runAnalysis(fullName: string): Promise<void> {
     if (!repo) {
       throw new Error(`analyze: ${fullName} has not been connected`);
     }
+    // The datum is fixed at join (ruling 17): a re-analysis reads the same
+    // window; a first analysis reads up to now and, on success, joins now.
+    const joinedAt = repo.joinedAt ?? new Date().toISOString();
 
     // Each step event carries the repo as stored now, so a toggle changed mid-analysis is never reported stale.
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'mirror' });
@@ -258,7 +320,7 @@ async function runAnalysis(fullName: string): Promise<void> {
     const prs = await mergedPRs(fullName);
 
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'floors' });
-    const floors = foundingFloors(fullName, commits, prs);
+    const floors = foundingFloors(fullName, commits, prs, { until: joinedAt });
 
     const tower: TowerSpec = {
       id: `${fullName}#founding`,
@@ -268,9 +330,27 @@ async function runAnalysis(fullName: string): Promise<void> {
       floors,
       datumIndex: floors.length,
     };
-    saveTower(tower);
 
-    repo = saveRepo({ ...(loadRepo(fullName) ?? repo), status: 'ready', error: null, analyzedAt: new Date().toISOString() });
+    // The founding tower and the ready repo are written together, so a write
+    // that fails part way leaves both as they were. Earned floors are not
+    // touched: they stand in their own table above the new founding floors.
+    const db = openDb();
+    db.exec('BEGIN');
+    try {
+      saveFoundingTower(tower);
+      const current = loadRepo(fullName) ?? repo;
+      repo = saveRepo({
+        ...current,
+        status: 'ready',
+        error: null,
+        analyzedAt: new Date().toISOString(),
+        joinedAt: current.joinedAt ?? joinedAt,
+      });
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
     settled(fullName);
     emit('repo.analyzed', { repo });
     record('repo.analyzed', { repo: fullName, floors: floors.length });
@@ -318,8 +398,8 @@ export function patchRepo(fullName: string, p: Partial<Pick<Repo, 'pushMode' | '
   }
   const updated = saveRepo({ ...repo, ...p });
   if (p.root) {
-    const tower = loadTower(fullName);
-    if (tower && tower.root !== p.root) saveTower({ ...tower, root: p.root });
+    const tower = loadFoundingTower(fullName);
+    if (tower && tower.root !== p.root) saveFoundingTower({ ...tower, root: p.root });
   }
   record('repo.patched', { repo: fullName, patch: p });
   emit('repo.patched', { repo: updated });

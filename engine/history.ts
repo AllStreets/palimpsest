@@ -9,6 +9,10 @@ export const ERA_CUTS = [0.2, 0.45, 0.7, 0.9];
 
 const HOUR_MS = 60 * 60 * 1000;
 const CLAUDE_TRAILER = /Co-Authored-By:\s*Claude/i;
+/** The trailer the city writes on every commit it makes for a job. */
+const JOB_TRAILER = /^Palimpsest-Job:\s*\S/im;
+/** The head branch prefix of every PR the city opens. */
+const CITY_BRANCH = 'palimpsest/';
 
 function sizeFor(lines: number): FloorSize {
   if (lines < 50) return 'small';
@@ -339,9 +343,26 @@ function withEras(floors: Floor[]): Floor[] {
  * - While floors exceed MAX_FOUNDING_FLOORS, the adjacent pair with the
  *   smallest combined lines is merged (earliest pair on a tie).
  * - Eras are assigned after capping, from the final floors' `at` values.
+ * - With `opts.until` set (the repo's `joinedAt`, ruling 17), only commits and
+ *   PRs at or before it are used. The city's own work never becomes history:
+ *   a commit carrying a `Palimpsest-Job:` trailer, a PR whose head branch
+ *   starts with `palimpsest/`, and that PR's merge commit are all dropped.
  */
-export function foundingFloors(repo: string, commits: Commit[], prs: PR[]): Floor[] {
-  const floors = buildFloors(repo, commits, prs);
+export function foundingFloors(
+  repo: string,
+  commits: Commit[],
+  prs: PR[],
+  opts: { until: string | null } = { until: null },
+): Floor[] {
+  const until = opts.until === null ? Infinity : Date.parse(opts.until);
+  const inWindow = (at: string) => !(Date.parse(at) > until);
+  const cityPrs = prs.filter((pr) => pr.headRefName.startsWith(CITY_BRANCH));
+  const cityMergeShas = new Set(cityPrs.map((pr) => pr.mergeSha).filter((sha): sha is string => sha !== null));
+  const keptCommits = commits.filter(
+    (c) => inWindow(c.at) && !JOB_TRAILER.test(c.body) && !cityMergeShas.has(c.sha),
+  );
+  const keptPrs = prs.filter((pr) => inWindow(pr.mergedAt) && !pr.headRefName.startsWith(CITY_BRANCH));
+  const floors = buildFloors(repo, keptCommits, keptPrs);
   const capped = capFloors(repo, floors);
   return withEras(capped);
 }

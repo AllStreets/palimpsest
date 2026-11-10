@@ -9,10 +9,23 @@ import { openDb } from '../engine/db.js';
 import { subscribe } from '../engine/events.js';
 import { realRunner, setRunner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
-import { analyze, city, connect, disconnect, failInterruptedAnalyses, listRepos, patchRepo, pickRoot } from '../engine/repos.js';
+import {
+  analyze,
+  city,
+  connect,
+  disconnect,
+  failInterruptedAnalyses,
+  layEarnedFloor,
+  listRepos,
+  loadTower,
+  patchRepo,
+  pickRoot,
+  removeEarnedFloor,
+  updateEarnedFloor,
+} from '../engine/repos.js';
 import type { Event } from '../engine/events.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { District, Repo } from '../shared/types.js';
+import type { District, Floor, Repo } from '../shared/types.js';
 
 let tempDir: string;
 let previousHome: string | undefined;
@@ -645,4 +658,224 @@ test('overlapping connects and analyze calls on one repo run a single analysis',
   await connect(fullName);
   await again;
   assert.equal(views, 2);
+});
+
+/** Two founding commits far enough apart to stand as two floors. */
+const FOUNDING_COMMITS: FixtureCommit[] = [
+  { sha: 'a1b2c3d', at: '2026-01-01T00:00:00.000Z', author: 'Author One', subject: 'first commit', body: '', lines: 10 },
+  { sha: 'b2c3d4e', at: '2026-01-03T00:00:00.000Z', author: 'Author Two', subject: 'second commit', body: '', lines: 20 },
+];
+
+function earnedFloor(repo: string, n: number): Floor {
+  return {
+    id: `${repo}#job-j${n}`,
+    repo,
+    kind: 'pr',
+    refs: [`#${100 + n}`],
+    title: `Earned floor ${n}`,
+    at: new Date(Date.now() + n * 1000).toISOString(),
+    era: 'glass',
+    size: 'small',
+    lines: 12 * n,
+    claude: true,
+    founding: false,
+    url: `https://github.com/${repo}/pull/${100 + n}`,
+    earned: { jobId: `j${n}`, runId: `r${n}`, agentId: 'a1', firmId: 'f1', state: 'lit', reverted: false },
+  };
+}
+
+function rawRepo(fullName: string): Repo {
+  const row = openDb().prepare('SELECT json FROM repos WHERE full_name = ?').get(fullName) as { json: string };
+  return JSON.parse(row.json) as Repo;
+}
+
+function rawTowerFloors(fullName: string): Floor[] {
+  const row = openDb().prepare('SELECT json FROM towers WHERE repo = ?').get(fullName) as { json: string };
+  return (JSON.parse(row.json) as { floors: Floor[] }).floors;
+}
+
+async function connectAndAnalyze(fullName: string): Promise<void> {
+  const analyzed = waitForEvent('repo.analyzed');
+  await connect(fullName);
+  await analyzed;
+}
+
+test('re-analysis keeps earned floors in order above the datum', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, FOUNDING_COMMITS));
+  await connectAndAnalyze(fullName);
+
+  const first = loadTower(fullName);
+  assert.ok(first);
+  assert.equal(first!.datumIndex, 2);
+  const e1 = layEarnedFloor(first!.id, earnedFloor(fullName, 1));
+  const e2 = layEarnedFloor(first!.id, earnedFloor(fullName, 2));
+  assert.equal(e1.founding, false);
+
+  const composed = loadTower(fullName)!;
+  assert.deepEqual(
+    composed.floors.map((f) => f.id),
+    [...first!.floors.map((f) => f.id), e1.id, e2.id],
+  );
+  assert.equal(composed.datumIndex, 2);
+
+  await analyze(fullName);
+
+  const again = loadTower(fullName)!;
+  assert.equal(again.datumIndex, 2, 'the datum stays the founding count');
+  assert.deepEqual(again.floors.slice(0, 2), first!.floors);
+  assert.deepEqual(again.floors.slice(2), [e1, e2]);
+  assert.ok(again.floors.slice(0, 2).every((f) => f.founding));
+
+  // GET /api/city serves the composed tower.
+  assert.deepEqual(city()[0].tower, again);
+
+  // Restyling writes only the founding row; the earned floors stay in their own table.
+  patchRepo(fullName, { root: 'gothic' });
+  assert.equal(rawTowerFloors(fullName).length, 2);
+  assert.deepEqual(loadTower(fullName)!.floors.slice(2), [e1, e2]);
+  assert.equal(loadTower(fullName)!.root, 'gothic');
+});
+
+test('earned floors are updated and removed only through their own writers', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, FOUNDING_COMMITS));
+  await connectAndAnalyze(fullName);
+
+  const towerId = loadTower(fullName)!.id;
+  const e1 = layEarnedFloor(towerId, earnedFloor(fullName, 1));
+  const e2 = layEarnedFloor(towerId, earnedFloor(fullName, 2));
+  const e3 = layEarnedFloor(towerId, earnedFloor(fullName, 3));
+
+  const updated = updateEarnedFloor(e2.id, { earned: { ...e2.earned!, state: 'scar' } });
+  assert.equal(updated?.earned?.state, 'scar');
+  removeEarnedFloor(e1.id);
+
+  const floors = loadTower(fullName)!.floors.slice(2);
+  assert.deepEqual(floors.map((f) => f.id), [e2.id, e3.id], 'order is kept after a removal');
+  assert.equal(floors[0].earned?.state, 'scar');
+  assert.equal(updateEarnedFloor('no-such-floor', { title: 'x' }), null);
+});
+
+test('commits after joinedAt do not become founding floors on a re-analysis', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, FOUNDING_COMMITS));
+  await connectAndAnalyze(fullName);
+
+  const later: FixtureCommit = {
+    sha: 'c3d4e5f',
+    at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    author: 'Author Three',
+    subject: 'pushed after the join',
+    body: '',
+    lines: 5,
+  };
+  setRunner(fixtureRunner(fullName, [...FOUNDING_COMMITS, later]));
+  await analyze(fullName);
+
+  const tower = loadTower(fullName)!;
+  assert.equal(tower.datumIndex, 2);
+  assert.ok(!tower.floors.flatMap((f) => f.refs).includes('c3d4e5f'));
+});
+
+test('a city merge never becomes a founding floor on a re-analysis', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, FOUNDING_COMMITS));
+  await connectAndAnalyze(fullName);
+
+  // Backdate the join so the city's work falls inside the founding window.
+  const repo = rawRepo(fullName);
+  openDb()
+    .prepare('UPDATE repos SET json = ? WHERE full_name = ?')
+    .run(JSON.stringify({ ...repo, joinedAt: '2026-02-01T00:00:00.000Z' }), fullName);
+
+  const jobCommit: FixtureCommit = {
+    sha: 'd4e5f6a',
+    at: '2026-01-05T00:00:00.000Z',
+    author: 'Author Three',
+    subject: 'Fix the parser',
+    body: 'Palimpsest-Job: j1',
+    lines: 5,
+  };
+  const prMerge: FixtureCommit = {
+    sha: 'e5f6a7b',
+    at: '2026-01-07T00:00:00.000Z',
+    author: 'Author Four',
+    subject: 'Merge pull request #7',
+    body: '',
+    lines: 5,
+  };
+  const prJson = JSON.stringify([
+    {
+      number: 7,
+      title: 'City job j1',
+      mergedAt: '2026-01-07T00:00:00.000Z',
+      mergeCommit: { oid: prMerge.sha },
+      url: `https://github.com/${fullName}/pull/7`,
+      headRefName: 'palimpsest/j1',
+    },
+  ]);
+  setRunner(fixtureRunner(fullName, [...FOUNDING_COMMITS, jobCommit, prMerge], prJson));
+  await analyze(fullName);
+
+  const tower = loadTower(fullName)!;
+  assert.deepEqual(tower.floors.flatMap((f) => f.refs), ['a1b2c3d', 'b2c3d4e']);
+  assert.equal(tower.datumIndex, 2);
+});
+
+test('joinedAt is set once', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, FOUNDING_COMMITS));
+  await connectAndAnalyze(fullName);
+
+  const joinedAt = rawRepo(fullName).joinedAt;
+  assert.ok(joinedAt, 'the first successful analysis writes joinedAt to the stored row');
+
+  await new Promise((r) => setTimeout(r, 5));
+  await analyze(fullName);
+  assert.equal(rawRepo(fullName).joinedAt, joinedAt);
+  assert.equal(listRepos()[0].joinedAt, joinedAt);
+});
+
+test('a failed analysis does not set joinedAt, and joinedAt is never read from analyzedAt', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(async (cmd, args) => {
+    if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') return { stdout: '', stderr: 'boom', code: 1 };
+    if (cmd === 'gh' && args[0] === 'auth') return { stdout: '', stderr: '', code: 0 };
+    throw new Error(`unexpected command ${cmd} ${args.join(' ')}`);
+  });
+  const errored = waitForEvent('repo.error');
+  await connect(fullName);
+  await errored;
+  assert.equal(listRepos()[0].joinedAt, null);
+
+  // A row that carries analyzedAt but a null joinedAt reads as null: no read-time derivation.
+  const repo = rawRepo(fullName);
+  openDb()
+    .prepare('UPDATE repos SET json = ? WHERE full_name = ?')
+    .run(JSON.stringify({ ...repo, analyzedAt: '2026-03-01T00:00:00.000Z', joinedAt: null }), fullName);
+  assert.equal(listRepos()[0].joinedAt, null);
+});
+
+test('a failed re-analysis leaves the tower untouched', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, FOUNDING_COMMITS));
+  await connectAndAnalyze(fullName);
+
+  const towerId = loadTower(fullName)!.id;
+  layEarnedFloor(towerId, earnedFloor(fullName, 1));
+  const before = loadTower(fullName);
+  const joinedAt = rawRepo(fullName).joinedAt;
+
+  const ok = fixtureRunner(fullName, [...FOUNDING_COMMITS, { ...FOUNDING_COMMITS[0], sha: 'f0f0f0f', at: '2026-01-09T00:00:00.000Z' }]);
+  setRunner(async (cmd, args) => {
+    if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'list') return { stdout: '', stderr: 'HTTP 502', code: 1 };
+    if (cmd === 'gh' && args[0] === 'auth') return { stdout: '', stderr: '', code: 0 };
+    return ok(cmd, args);
+  });
+  await analyze(fullName);
+
+  assert.equal(listRepos()[0].status, 'error');
+  assert.deepEqual(loadTower(fullName), before);
+  assert.equal(rawRepo(fullName).joinedAt, joinedAt);
 });
