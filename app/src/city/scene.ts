@@ -5,6 +5,7 @@ import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Era, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
 import { createCameraRig } from './camera';
+import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
 import type { BoardJob, Exchange } from './exchange.js';
 import { createGrid } from './grid';
@@ -348,6 +349,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const plazas = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z }))];
     grid.setPlazas(plazas);
     ground.setPlazas(plazas);
+    searchLitTree(grid.group);
     // Towers, scaffolds and the skyline around them may all have changed.
     sun.shadow.needsUpdate = true;
   }
@@ -722,6 +724,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     placeSites(occ.sites);
     // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
     placeConstructions();
+    // The inspection's searchlights streak whatever they sweep: towers, quarters and the blocks round them.
+    searchLitTree(districtGroup);
     // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
     const key = JSON.stringify(plazasOf(occ));
     if (key !== lastPlazas) {

@@ -59,6 +59,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { Era, SiteStage, SiteState } from '../../../shared/types.js';
 import { EXPOSURE, FLICKER, FLOOD } from './post.js';
+import { MAX_SEARCH, SEARCH, SEARCH_LIGHT, SEARCH_PARS, SEARCH_UNIFORMS } from './searchlight.js';
 
 // ---------------------------------------------------------------- the pure state
 
@@ -367,20 +368,7 @@ const SEARCH_LENS_Y = 1.72;
 const SEARCH_LENS_R = 0.3;
 const SEARCH_PERIOD = 44;
 
-/**
- * A searchlight's light on the steel: a 2 kW xenon lamp of the kind used for
- * night inspection, whose beam keeps its candela over the distance (inverse
- * square, held level inside 90 m, where the beam has not yet formed into a
- * spot). At that distance pale steel of albedo 0.35 comes to 0.8, under the
- * bloom threshold; at 120 m it is about half that. Cool white, mixed far
- * toward white, so the primer stays red and the net green.
- */
-export const SEARCH = (() => {
-  const near = 90;
-  const albedo = 0.35;
-  const peak = Math.round((0.8 * Math.PI * near * near) / (albedo * EXPOSURE));
-  return { peak, near, color: new THREE.Color(0.93, 0.96, 1) } as const;
-})();
+export { SEARCH } from './searchlight.js';
 
 /** How bright steel of `albedo` looks `d` metres from a searchlight in its beam, after exposure (the shader's term in JS). */
 export function searchRadiance(d: number, albedo: number): number {
@@ -389,12 +377,14 @@ export function searchRadiance(d: number, albedo: number): number {
 
 /**
  * The guild sizes its lamps to the throw, as a crew picks a lamp for the
- * distance: each lamp is SEARCH.peak times this, so the floor it falls on is
- * lit about as well on a tall tower as on a short one. The light still falls
- * off with the square of the distance from each lamp.
+ * distance: each lamp is SEARCH.peak times this (a 7 kW class lamp), so
+ * a face the beam rakes at a grazing angle still shows the streak, on a tall
+ * tower as on a short one. The light still falls off with the square of the
+ * distance from each lamp, and the term caps irradiance under the bloom
+ * threshold, surface by surface (searchlight.ts SEARCH_CAP).
  */
 export function searchThrow(length: number): number {
-  return THREE.MathUtils.clamp((length / SEARCH.near) ** 2, 1, 40);
+  return THREE.MathUtils.clamp(16 * (length / SEARCH.near) ** 2, 16, 640);
 }
 
 export interface Searchlight {
@@ -1111,7 +1101,7 @@ const LAMP_RED = new THREE.Color(9, 0.35, 0.1);
 /** The floodlights' lenses: a warm high-pressure-sodium white, hot enough to bloom. */
 const FLOOD_LENS = new THREE.Color(7.5, 4.6, 2.2);
 /** A searchlight's lens seen down its beam: a xenon white, far over the bloom threshold. */
-const SEARCH_LENS = new THREE.Color(9, 9.6, 10.5);
+const SEARCH_LENS = new THREE.Color(10, 9.7, 9.2);
 /** The scar's work lamp's lens: a warm 3000 K glow that blooms a little. */
 const WORK_LENS = new THREE.Color(5.2, 3.3, 1.7);
 const NET_GREEN = 0x3c5646;
@@ -1655,8 +1645,10 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       const fade = mesh.userData.fade as Float32Array;
       for (let i = shown - 1; i >= 0; i--) {
         const l = struck(k++);
-        // Each piece is lowered off its seat into the floor, and only at the last is it gone.
-        fade[i] = s.frameFade * (1 - smooth(l, 0.8, 1));
+        // Each piece is lowered off its seat into the floor and is gone at the last; in the cure each piece goes whole
+        // at its own moment, so the frame thins member by member into the floor rather than dissolving in a stipple.
+        const cured = s.frameFade < 1 && s.frameFade <= 0.02 + 0.96 * hash01(k * 7919 + 13);
+        fade[i] = !cured && l < 0.98 ? 1 : 0;
         if (moved) mesh.setMatrixAt(i, l > 0 ? m.makeTranslation(0, -b.fh * 0.8 * ease(l), 0).multiply(rest[i]) : rest[i]);
       }
       if (moved) mesh.instanceMatrix.needsUpdate = true;
@@ -1684,7 +1676,8 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     const y = H - (H - 1.4) * ease(clamp01(d / 0.85));
     b.slew.position.y = y;
     for (const o of b.mast) o.scale.y = Math.max(0.02, y / H);
-    const fade = 1 - smooth(d, 0.85, 1);
+    // The base is taken off whole once the head is down.
+    const fade = d < 0.97 ? 1 : 0;
     if (fade === b.craneFade) return;
     b.craneFade = fade;
     b.crane.traverse((o) => {
@@ -2007,12 +2000,11 @@ const FLOOD_GLARE = new THREE.Color(FLOOD.color).multiplyScalar(5.2);
 const DECK_HAZE = new THREE.Color(FLOOD.color).multiplyScalar(0.52);
 const FLOOR_HAZE = new THREE.Color(FLOOD.color).multiplyScalar(0.26);
 const MAX_FLOODS = MAX_SITES * 2;
-const MAX_SEARCH = MAX_SITES * 2;
 /** The searchlights' lenses from in front, and the work lamp's, as glare; and the warm air round the work lamp. */
-const SEARCH_GLARE = new THREE.Color(0.93, 0.97, 1).multiplyScalar(9);
+const SEARCH_GLARE = new THREE.Color(1, 0.97, 0.92).multiplyScalar(9);
 const WORK_GLARE = new THREE.Color(WORK_LAMP.color).multiplyScalar(3.2);
-const WORK_HAZE = new THREE.Color(WORK_LAMP.color).multiplyScalar(0.3);
-const SEARCH_HIT = new THREE.Color(0.93, 0.96, 1).multiplyScalar(0.24);
+const WORK_HAZE = new THREE.Color(WORK_LAMP.color).multiplyScalar(0.42);
+const SEARCH_HIT = new THREE.Color(1, 0.97, 0.92).multiplyScalar(0.24);
 
 /**
  * A searchlight's beam through the dusk haze, as an open cone from the lens
@@ -2111,11 +2103,6 @@ interface FieldLights {
   pos: { value: THREE.Vector3[] };
   count: { value: number };
   color: { value: THREE.Color };
-  searchPos: { value: THREE.Vector3[] };
-  searchDir: { value: THREE.Vector3[] };
-  searchCone: { value: THREE.Vector4[] };
-  searchCount: { value: number };
-  searchColor: { value: THREE.Color };
 }
 
 function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: FieldLights, grime: boolean): T {
@@ -2123,11 +2110,7 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: FieldLight
     shader.uniforms.uFloodPos = floods.pos;
     shader.uniforms.uFloodCount = floods.count;
     shader.uniforms.uFloodColor = floods.color;
-    shader.uniforms.uSearchPos = floods.searchPos;
-    shader.uniforms.uSearchDir = floods.searchDir;
-    shader.uniforms.uSearchCone = floods.searchCone;
-    shader.uniforms.uSearchCount = floods.searchCount;
-    shader.uniforms.uSearchColor = floods.searchColor;
+    Object.assign(shader.uniforms, SEARCH_UNIFORMS);
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vFieldWorld;\nattribute vec2 aWear;\nvarying vec2 vWear;')
       .replace(
@@ -2149,11 +2132,7 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: FieldLight
         uniform vec3 uFloodPos[${MAX_FLOODS}];
         uniform int uFloodCount;
         uniform vec3 uFloodColor;
-        uniform vec3 uSearchPos[${MAX_SEARCH}];
-        uniform vec3 uSearchDir[${MAX_SEARCH}];
-        uniform vec4 uSearchCone[${MAX_SEARCH}];
-        uniform int uSearchCount;
-        uniform vec3 uSearchColor;`,
+        ${SEARCH_PARS}`,
       )
       .replace(
         '#include <color_fragment>',
@@ -2200,25 +2179,13 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: FieldLight
           float near = max(d, ${FLOOD_NEAR.toFixed(1)});
           reflectedLight.directDiffuse += uFloodColor * (nl * reach / (near * near)) * BRDF_Lambert(material.diffuseColor);
         }
-        // The inspection's searchlights: a spot with a soft edge, inverse square, held level inside its near distance (searchRadiance).
-        for (int i = 0; i < ${MAX_SEARCH}; i++) {
-          if (i >= uSearchCount) break;
-          vec3 L = uSearchPos[i] - geometryPosition;
-          float d = length(L);
-          L /= max(d, 1e-3);
-          float along = dot(-L, uSearchDir[i]);
-          // The face the beam meets takes its light: nothing a few metres past the beam's end is lit (the steel and
-          // the netting there stand in its shadow).
-          float spot = smoothstep(uSearchCone[i].x, uSearchCone[i].y, along) * (1.0 - smoothstep(0.5, 3.0, along * d - uSearchCone[i].w));
-          if (spot <= 0.0) continue;
-          float nl = max(dot(geometryNormal, L), 0.0);
-          nl = max(nl, 0.18 * max(dot(-geometryNormal, L), 0.0));
-          float near = max(d, ${SEARCH.near.toFixed(1)});
-          reflectedLight.directDiffuse += uSearchColor * (uSearchCone[i].z * spot * nl / (near * near)) * BRDF_Lambert(material.diffuseColor);
-        }`,
+        // The inspection's searchlights (searchlight.ts), shared with the towers they sweep.
+        ${SEARCH_LIGHT}`,
       );
   };
   m.customProgramCacheKey = () => `construction-flood-${grime ? 1 : 0}`;
+  // It carries the searchlight term itself: the city's pass over its materials leaves it alone.
+  m.userData.searchLit = true;
   return m;
 }
 
@@ -2265,18 +2232,13 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
     pos: { value: Array.from({ length: MAX_FLOODS }, () => new THREE.Vector3()) },
     count: { value: 0 },
     color: { value: FLOOD_TINT.clone().multiplyScalar(FLOOD_GAIN * FLOOD.peak) },
-    searchPos: { value: Array.from({ length: MAX_SEARCH }, () => new THREE.Vector3()) },
-    searchDir: { value: Array.from({ length: MAX_SEARCH }, () => new THREE.Vector3(0, 1, 0)) },
-    searchCone: { value: Array.from({ length: MAX_SEARCH }, () => new THREE.Vector4(1, 1, 1, 0)) },
-    searchCount: { value: 0 },
-    searchColor: { value: SEARCH.color.clone().multiplyScalar(SEARCH.peak) },
   };
-  // Pieces fade out by instance alpha (the cure, the strike): hashed, so the steel stays opaque and sorts as steel.
-  const steelMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.66, metalness: 0.35, alphaHash: true }), floods, true);
+  // Pieces go whole (the cure, the strike): an instance's alpha is 1 or 0, and 0 hides it, so the steel stays opaque.
+  const steelMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.66, metalness: 0.35 }), floods, true);
   const net = netTextures();
   // White: each panel's own green comes in as its instance colour.
   const netMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, map: net.map, alphaMap: net.alpha, transparent: true, depthWrite: false, side: THREE.DoubleSide }), floods, false);
-  const lampMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: true, alphaHash: true });
+  const lampMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: true });
 
   // Every site's sparks in one draw.
   const sparkGeo = sparkQuad(sparkCount, MAX_SITES);
@@ -2381,12 +2343,6 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
   const toView = (camera: THREE.Camera): void => {
     floods.count.value = Math.min(MAX_FLOODS, floodWorld.length);
     for (let i = 0; i < floods.count.value; i++) floods.pos.value[i].copy(floodWorld[i]).applyMatrix4(camera.matrixWorldInverse);
-    floods.searchCount.value = Math.min(MAX_SEARCH, searchWorld.length);
-    for (let i = 0; i < floods.searchCount.value; i++) {
-      floods.searchPos.value[i].copy(searchWorld[i].at).applyMatrix4(camera.matrixWorldInverse);
-      floods.searchDir.value[i].copy(searchWorld[i].dir).transformDirection(camera.matrixWorldInverse);
-      floods.searchCone.value[i].copy(searchWorld[i].cone);
-    }
   };
 
   let batches: { steel: THREE.BatchedMesh | null; net: THREE.BatchedMesh | null; lamp: THREE.BatchedMesh | null } = { steel: null, net: null, lamp: null };
@@ -2642,9 +2598,18 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
         // The scar's work lamp: its lens and the warm air round it.
         const wl = s.workLamp();
         if (wl) {
-          put(wl.at.clone().add(at), WORK_GLARE, 0.3, 4.5);
-          put(wl.light.clone().add(at), WORK_HAZE, 2.6, 9, 1);
+          // Sized for the distance: a lamp's core never under seven pixels, and the warm air round it a soft halo that
+          // reads from home and fades out as the camera comes close (the haze shader's near fade).
+          put(wl.at.clone().add(at), WORK_GLARE, 0.3, 7);
+          put(wl.light.clone().add(at), WORK_HAZE, 3.2, 22, 1);
         }
+      });
+      // The lamps, in world space, for every material the searchlights light (searchlight.ts).
+      SEARCH_UNIFORMS.uSearchCount.value = Math.min(MAX_SEARCH, searchWorld.length);
+      searchWorld.slice(0, MAX_SEARCH).forEach((w, i) => {
+        SEARCH_UNIFORMS.uSearchPosW.value[i].copy(w.at);
+        SEARCH_UNIFORMS.uSearchDirW.value[i].copy(w.dir);
+        SEARCH_UNIFORMS.uSearchCone.value[i].copy(w.cone);
       });
       beamGeo.instanceCount = nb;
       bFrom.needsUpdate = bDir.needsUpdate = bShape.needsUpdate = true;
