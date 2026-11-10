@@ -10,7 +10,7 @@ import type { Plate } from './city/labels';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { createCity, type PickHit } from './city/scene';
 import { towerCenterpiece } from './city/tower/look';
-import { type Look, lookFor, lookKey, pickLooks } from './city/tower/variants';
+import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
 import { createInspector } from './ui/inspector';
@@ -35,6 +35,13 @@ interface DebugHandle {
   stats(): { calls: number; triangles: number };
   /** Plazas paved (the civic plaza included) and ambient buildings standing. */
   plots(): { plazas: number; buildings: number };
+  /**
+   * For captures that check a material against the datum and the Claude
+   * amber: rebuilds a repo's tower with the named variants (ids from
+   * variants.ts) and, if given, its datum after that many floors. Never
+   * written anywhere; a reload restores the real look.
+   */
+  restyle(repo: string, ids: string[], datumIndex?: number): void;
 }
 
 declare global {
@@ -71,7 +78,9 @@ async function main(): Promise<void> {
    * look while a neighbour is switched off. Filled in by place().
    */
   let looks = new Map<string, Look>();
-  const lookOf = (d: District): Look => looks.get(d.repo) ?? lookFor(d.repo);
+  /** Debug restyles (captures only): a look and a datum height per repo. */
+  const restyled = new Map<string, { look: Look; datumIndex?: number }>();
+  const lookOf = (d: District): Look => restyled.get(d.repo)?.look ?? looks.get(d.repo) ?? lookFor(d.repo);
   const city = createCity(host, {
     quality,
     makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d)),
@@ -91,6 +100,15 @@ async function main(): Promise<void> {
     precompile: () => city.precompile(),
     stats: () => city.stats(),
     plots: () => city.plots(),
+    restyle(repo, ids, datumIndex) {
+      const look = { ...lookOf(byRepo(repo) ?? ({ repo } as District)) };
+      for (const id of ids) {
+        const v = Object.values(VARIANTS).flat().find((x) => x.id === id);
+        if (v) look[v.era] = v;
+      }
+      restyled.set(repo, { look, datumIndex });
+      place();
+    },
   };
   window.__palimpsest = debug;
 
@@ -168,7 +186,11 @@ async function main(): Promise<void> {
    * gives its plot back to the ambient city; its slot stays its own.
    */
   function place(): void {
-    const occ = occupancy(known.values(), served);
+    const restyledServed = served.map((d) => {
+      const at = restyled.get(d.repo)?.datumIndex;
+      return at === undefined ? d : { ...d, tower: { ...d.tower, datumIndex: at } };
+    });
+    const occ = occupancy(known.values(), restyledServed);
     const sites = new Map<string, number>();
     for (const d of served) sites.set(d.repo, d.index);
     for (const r of known.values()) sites.set(r.fullName, r.slot);

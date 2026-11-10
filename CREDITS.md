@@ -6,8 +6,10 @@ Scanned PBR textures from [Poly Haven](https://polyhaven.com), all CC0 (public d
 
 | Files | Texture | Author | License | Used for |
 |---|---|---|---|---|
-| `sand_*` | [Sandstone Blocks 08](https://polyhaven.com/a/sandstone_blocks_08) | Poly Haven | CC0 | District plinths; classical tower roots; stone-era floors (limestone, granite, marble and travertine recoloured from it) |
+| `sand_*` | [Sandstone Blocks 08](https://polyhaven.com/a/sandstone_blocks_08) | Poly Haven | CC0 | District plinths; classical tower roots; stone-era floors (sandstone and travertine recoloured from it) |
 | `brick_*` | [Red Brick 03](https://polyhaven.com/a/red_brick_03) | Poly Haven | CC0 | Brick-era floors: common red as scanned; cream city, salmon, buff and glazed white terracotta recoloured from it |
+| `granite_*` | [Granite Tile](https://polyhaven.com/a/granite_tile) | Poly Haven (Charlotte Baglioni) | CC0 | Pink and dark grey granite floors, recoloured from it |
+| `ashlar_*` | [Marble 01](https://polyhaven.com/a/marble_01) | Poly Haven (Rob Tuytel) | CC0 | Limestone and white marble floors, recoloured from its cut slabs |
 | `ironspot_*` | [Dark Brick Wall](https://polyhaven.com/a/dark_brick_wall) | Poly Haven (Dimitrios Savva, Dario Barresi) | CC0 | Dark ironspot brick floors |
 | `metal_*` | [Metal Plate](https://polyhaven.com/a/metal_plate) | Poly Haven | CC0 | Brushed steel |
 | `pave_*` | [Precast Stone Paving](https://polyhaven.com/a/precast_stone_paving) | Poly Haven | CC0 | Pavements, plazas and the ground |

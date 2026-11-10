@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 
 import { buildTower, FLOOR_WIDTH } from '../app/src/city/tower/build.js';
-import { PANE_CHANNEL, type TowerMaterials } from '../app/src/city/tower/kit.js';
+import { PANE_CHANNEL, PANE_FULL, type TowerMaterials } from '../app/src/city/tower/kit.js';
 import { type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
 import { layoutTower, ROOT_HEIGHT } from '../shared/tower-layout.js';
 import type { Era, Floor, FloorSize, RootStyle, TowerSpec } from '../shared/types.js';
@@ -325,4 +325,58 @@ test('floors laid in different years drift a few percent in colour; one year mat
   assert.ok(diff(tone(0), tone(2)) < 1e-6, 'one year, one tone');
   const d = diff(tone(1), tone(4));
   assert.ok(d > 0.01 && d < 0.1, `two years drift ${d.toFixed(3)}`);
+});
+
+test('instanced parts take the year drift too; window data never does', () => {
+  const floors = Array.from({ length: 4 }, (_, i) => ({ ...floor(i, 'glass'), at: new Date(Date.UTC(i < 2 ? 2019 : 2020, 3, 1 + i)).toISOString() }));
+  const s: TowerSpec = { id: 'acme/years#founding', repo: 'acme/years', kind: 'founding', root: 'chicago', floors, datumIndex: 4 };
+  const t = buildTower(s, 'high', plainMaterials(), lookWith('glass:blue'));
+  const sp = instances(t.group, 'tower:spandrel')!;
+  assert.ok(sp.instanceColor, 'spandrels carry a colour');
+  const c0 = new THREE.Color();
+  const c1 = new THREE.Color();
+  const perFloor = sp.count / 4;
+  sp.getColorAt(0, c0);
+  sp.getColorAt(perFloor * 3, c1);
+  assert.ok(Math.abs(c0.r - c1.r) > 0.01, `two years drift (${c0.r.toFixed(3)} vs ${c1.r.toFixed(3)})`);
+  const panes = instances(t.group, 'tower:pane:glass')!;
+  const c = new THREE.Color();
+  for (let i = 0; i < panes.count; i++) {
+    panes.getColorAt(i, c);
+    assert.ok(c.r <= 1 && c.g <= 1 && Math.abs(c.b - PANE_FULL) < 1e-6, 'pane data is untouched');
+  }
+});
+
+test('a curtain wall takes its spandrel height and mullion depth from the variant', () => {
+  const scaleOf = (m: THREE.InstancedMesh): THREE.Vector3 => {
+    const mat = new THREE.Matrix4();
+    m.getMatrixAt(0, mat);
+    const sc = new THREE.Vector3();
+    mat.decompose(new THREE.Vector3(), new THREE.Quaternion(), sc);
+    return sc;
+  };
+  const green = buildTower(single('glass'), 'high', plainMaterials(), lookWith('glass:green'));
+  assert.ok(Math.abs(scaleOf(instances(green.group, 'tower:spandrel')!).y - 1.5) < 1e-6, 'green runs ribbon spandrels 1.5 m tall');
+  const bronze = buildTower(single('glass'), 'high', plainMaterials(), lookWith('glass:bronze'));
+  const blue = buildTower(single('glass'), 'high', plainMaterials(), lookWith('glass:blue'));
+  assert.ok(scaleOf(instances(bronze.group, 'tower:mullion')!).z > scaleOf(instances(blue.group, 'tower:mullion')!).z * 1.8, 'bronze mullions stand twice as deep');
+});
+
+test("a variant's lights set how its windows burn", () => {
+  const warmShare = (id: string): number => {
+    const t = buildTower(single('glass', 30), 'high', plainMaterials(), lookWith(id));
+    const m = instances(t.group, 'tower:pane:glass')!;
+    const c = new THREE.Color();
+    let lit = 0;
+    let warm = 0;
+    for (let i = 0; i < m.count; i++) {
+      m.getColorAt(i, c);
+      if (c.r > 0.3) {
+        lit++;
+        if (c.g > 0.5) warm++;
+      }
+    }
+    return warm / Math.max(1, lit);
+  };
+  assert.ok(warmShare('glass:bronze') > warmShare('glass:blue') + 0.4, 'bronze glass burns warm, blue burns cool');
 });

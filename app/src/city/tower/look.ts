@@ -380,16 +380,21 @@ function stainedMaterial(): THREE.MeshBasicMaterial {
 }
 
 /**
- * Where a scan's mortar (or patina, or vein) sits in its luminance, and the
- * typical luminance of each part, measured from the 2k colour maps.
- * Recolouring keys on these: below `lo` reads as body, above `hi` as joint
- * (reversed for rust, where the dark streaks are the joint).
+ * Each scan's split between body and joint in its linear luminance (from
+ * the 2k colour maps): at or past `lo` reads as body, at or past `hi` as
+ * joint. Brick and ironspot mortar is lighter than the brick; the joints of
+ * sandstone, granite tiles and ashlar are darker than the stone, so their
+ * split runs the other way, as does rust, whose dark streaks are the joint.
+ * `refBody` and `refJoint` are each part's typical luminance; `rough` is the
+ * mean of the scan's roughness map, so a finish's roughness is its true mean.
  */
-const SCAN_STATS: Record<Scan, { lo: number; hi: number; refBody: number; refJoint: number }> = {
-  brick: { lo: 0.13, hi: 0.22, refBody: 0.09, refJoint: 0.26 },
-  ironspot: { lo: 0.1, hi: 0.25, refBody: 0.04, refJoint: 0.31 },
-  sand: { lo: 2, hi: 3, refBody: 0.3, refJoint: 0.3 },
-  rust: { lo: 0.36, hi: 0.22, refBody: 0.37, refJoint: 0.2 },
+const SCAN_STATS: Record<Scan, { lo: number; hi: number; refBody: number; refJoint: number; rough: number }> = {
+  brick: { lo: 0.13, hi: 0.22, refBody: 0.09, refJoint: 0.26, rough: 0.53 },
+  ironspot: { lo: 0.1, hi: 0.25, refBody: 0.04, refJoint: 0.31, rough: 0.81 },
+  sand: { lo: 0.268, hi: 0.24, refBody: 0.3, refJoint: 0.23, rough: 0.51 },
+  rust: { lo: 0.36, hi: 0.22, refBody: 0.37, refJoint: 0.2, rough: 0.42 },
+  granite: { lo: 0.06, hi: 0.05, refBody: 0.077, refJoint: 0.05, rough: 0.54 },
+  ashlar: { lo: 0.29, hi: 0.235, refBody: 0.35, refJoint: 0.21, rough: 0.51 },
 };
 
 /**
@@ -411,7 +416,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
     aoMap: arm,
     roughnessMap: arm,
     color: f.keep ? f.body : 0xffffff,
-    roughness: f.rough,
+    roughness: Math.min(1, f.rough / st.rough),
     metalness: 0,
     vertexColors: true,
     normalScale: new THREE.Vector2(n, n),
@@ -421,12 +426,32 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
     uJoint: { value: new THREE.Color(f.joint ?? f.body) },
     uSplit: { value: new THREE.Vector4(st.lo, st.hi, st.refBody, st.refJoint) },
     uKeep: { value: f.keep ? 1 : 0 },
+    // Cut stone weathers in patches and streaks; brick and patina carry their own variation in the scan.
+    uWeather: { value: f.tex === 'sand' || f.tex === 'ashlar' || f.tex === 'granite' ? 0.13 : 0 },
+    uTexScale: { value: 1 / (f.scale ?? 1) },
   };
   m.customProgramCacheKey = () => 'palimpsest-scan';
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, u);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform float uTexScale;')
+      // Every map of a scan shares one scale, so its units can be enlarged or shrunk per finish.
+      .replace(
+        '#include <uv_vertex>',
+        `#include <uv_vertex>
+        #ifdef USE_MAP
+          vMapUv *= uTexScale;
+        #endif
+        #ifdef USE_NORMALMAP
+          vNormalMapUv *= uTexScale;
+        #endif
+        #ifdef USE_AOMAP
+          vAoMapUv *= uTexScale;
+        #endif
+        #ifdef USE_ROUGHNESSMAP
+          vRoughnessMapUv *= uTexScale;
+        #endif`,
+      )
       .replace(
         '#include <worldpos_vertex>',
         `#include <worldpos_vertex>
@@ -440,7 +465,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
@@ -455,7 +480,17 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
             vec3 recolour = mix(uBody, uJoint, t) * mix(1.0, d, 0.8);
             diffuseColor.rgb = mix(recolour, diffuse * tex, uKeep);
           }
-        #endif`,
+        #endif
+        if (uWeather > 0.0) {
+          // Stone weathers unevenly: broad patches a few metres across where one bed or one batch of blocks runs
+          // lighter or darker, and rain streaks running down the face. No hard edges, so it never fights the
+          // scan's own joints.
+          vec3 an = abs(vTFN);
+          vec2 q = an.y > max(an.x, an.z) ? vTFP.xz : vec2(an.x > an.z ? vTFP.z : vTFP.x, vTFP.y);
+          float wPatch = wNoise(q / 4.5) * 0.65 + wNoise(q / 1.7 + 19.0) * 0.35;
+          float streak = wNoise(vec2(q.x / 0.9, q.y / 14.0) + 7.0);
+          diffuseColor.rgb *= 1.0 + uWeather * ((wPatch - 0.5) * 1.6 - max(streak - 0.55, 0.0) * 1.4);
+        }`,
       )
       .replace(
         '#include <emissivemap_fragment>',
@@ -554,7 +589,14 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     limestone: stone(0xe2ded6, 'limestone', 0.8, 0.85),
     granite: stone(0x8a8886, 'granite', 1.3, 0.9),
     // Polished, lighter than the mullion bronze: it takes the sun on one side and the warm horizon on the other.
-    datum: metal(0xd9c26e, 0.34, 0.2),
+    // A little diffuse response under the metal, so the band takes the low sun as bronze even where its mirror
+    // sees only the dark city below; the polish still catches the sky on top and on the chamfers.
+    datum: (() => {
+      const d = metal(0xd9c26e, 0.4, 0.2);
+      d.metalness = 0.8;
+      d.envMapIntensity = 1.4;
+      return d;
+    })(),
     graphite: brushed(0x2e3136, 0.42, 0.4, 1.4),
     steel: lib.darkMetal,
     slab: lib.concrete,

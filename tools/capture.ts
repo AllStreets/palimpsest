@@ -20,7 +20,8 @@
  * Options (env): CAPTURE_FPS=30, CAPTURE_DPR=2, CAPTURE_KEEP=1 keeps the raw frames,
  * CAPTURE_OUT=<dir> writes somewhere other than docs/media (for probing),
  * PROBE='[[[eye],[target]], ...]' for quick stills in the probe shot, PROBE_CHROME=1
- * keeps the running head and plates in them, CAPTURE_CITY=tall seeds the
+ * keeps the running head and plates in them, PROBE_RESTYLE (see the probe
+ * shot) rebuilds towers in named variants, CAPTURE_CITY=tall seeds the
  * sample repos as four short towers and two at the 120-floor cap.
  *
  * Re-run it whenever the city changes, and add a shot here for each new
@@ -199,6 +200,12 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // One still per [eye, target] pair, written to probe-N.png for framing new shots.
       // PROBE_CHROME=1 keeps the running head and plates.
       await chrome(page, !!process.env.PROBE_CHROME);
+      // PROBE_RESTYLE='{"owner/repo": {"ids": ["brick:salmon"], "datum": 20}}' rebuilds towers in named variants first.
+      const restyles = JSON.parse(process.env.PROBE_RESTYLE ?? '{}') as Record<string, { ids: string[]; datum?: number }>;
+      for (const [repo, r] of Object.entries(restyles)) {
+        await page.evaluate(([rp, ids, at]) => (window as unknown as { __palimpsest: { restyle(r: string, i: string[], d?: number): void } }).__palimpsest.restyle(rp, ids, at), [repo, r.ids, r.datum] as [string, string[], number | undefined]);
+      }
+      if (Object.keys(restyles).length) await page.waitForTimeout(3000);
       const views = JSON.parse(process.env.PROBE ?? '[[[600,160,700],[0,80,0]]]') as [V3, V3][];
       for (const [i, [eye, target]] of views.entries()) await still(page, `probe-${i}`, eye, target);
     },

@@ -11,7 +11,6 @@ import {
   PANE_FULL,
   PANE_SASH,
   paneData,
-  paneGeometry,
   slot,
   squareSweep,
   unitBox,
@@ -61,8 +60,8 @@ const LIGHTING: Record<Era, { lit: number; warm: number }> = {
 };
 
 /** Per-window light: whole floors go dark now and then; the rest light by chance, warm or cool. */
-function lighter(era: Era, rand: () => number): (style: number) => THREE.Color {
-  const { lit, warm } = LIGHTING[era];
+function lighter(era: Era, rand: () => number, own?: { lit: number; warm: number }): (style: number) => THREE.Color {
+  const { lit, warm } = own ?? LIGHTING[era];
   const floorOn = rand() > 0.12;
   const floorWarm = rand() < warm;
   // Lights run in groups along a floor (one tenant, one open office), not pane by pane.
@@ -125,7 +124,7 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
   const sillY = Math.max(0.75, h * 0.2);
   const headY = Math.min(h - 0.55, sillY + h * s.winH);
   const winH = headY - sillY;
-  const light = lighter(floor.era, c.rand);
+  const light = lighter(floor.era, c.rand, c.variant.lights);
   const r = s.reveal;
 
   // Window centres along a face, left to right.
@@ -149,7 +148,7 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
       if (b - a > 1e-3) k.box(wall, b - a, winH, r, F.clone().multiply(M((a + b) / 2, sillY + winH / 2, -r / 2)));
     }
     for (const [j, u] of openings.entries()) {
-      k.inst(`pane:${era}`, slot(era, 'Win'), paneGeometry, F.clone().multiply(M(u, sillY + winH / 2, -r + 0.02, 0, winW, winH, 1)), light(PANE_SASH), false);
+      k.pane(`pane:${era}`, slot(era, 'Win'), F.clone().multiply(M(u, sillY + winH / 2, -r + 0.02, 0, winW, winH, 1)), light(PANE_SASH));
       // Sill, projecting and weathered.
       k.box(trim, winW + 0.32, 0.16, r + 0.16, F.clone().multiply(M(u, sillY - 0.08, -r / 2 + 0.08)));
       if (s.paired) {
@@ -224,8 +223,9 @@ const glass: EraBuilder = (k, w, h, f, c) => {
   const n = bays(w, c.variant.pitch ?? 1.55);
   const style = c.variant.glass.channel ? PANE_CHANNEL : PANE_FULL;
   const pitch = w / n;
-  const sb = 0.7;
-  const light = lighter(f.era, c.rand);
+  const sb = Math.min(h * 0.45, c.variant.spandrel ?? 0.7);
+  const depth = c.variant.depth ?? 1;
+  const light = lighter(f.era, c.rand, c.variant.lights);
   k.box('slab', w - 0.7, h, w - 0.7, M(0, h / 2, 0));
   for (let side = 0; side < 4; side++) {
     const F = face(side, half);
@@ -234,18 +234,19 @@ const glass: EraBuilder = (k, w, h, f, c) => {
     k.inst('transom', 'glassTrim', unitBox, F.clone().multiply(M(0, sb, 0.05, 0, w + 0.18, 0.1, 0.22)));
     for (let i = 0; i < n; i++) {
       const u = -half + pitch * (i + 0.5);
-      k.inst('pane:glass', 'glassWin', paneGeometry, F.clone().multiply(M(u, (sb + h) / 2, 0, 0, pitch, h - sb, 1)), light(style), false);
+      k.pane('pane:glass', 'glassWin', F.clone().multiply(M(u, (sb + h) / 2, 0, 0, pitch, h - sb, 1)), light(style));
     }
     for (let i = 0; i <= n; i++) {
       const u = -half + pitch * i;
-      k.inst('mullion', 'glassTrim', unitBox, F.clone().multiply(M(u, h / 2, 0.14, 0, 0.1, h, 0.3)));
+      k.inst('mullion', 'glassTrim', unitBox, F.clone().multiply(M(u, h / 2, -0.01 + 0.15 * depth, 0, 0.1, h, 0.3 * depth)));
     }
   }
   claudeAccent(k, f, half, sb - 0.14, 0.32, 0.1);
   if (c.runEnd && !c.datum) {
     k.add('glassBand', squareSweep(half, [[-0.2, h - 0.6], [0.3, h - 0.6], [0.3, h], [-0.2, h]]));
   }
-  return { cx: 0, cz: 0, half: half + 0.3, datumHalf: half + 0.3 };
+  // Mullion tips reach 0.3 m out per unit of depth; the datum wraps clear of them.
+  return { cx: 0, cz: 0, half: half + Math.max(0.3, 0.3 * depth), datumHalf: half + Math.max(0.3, 0.3 * depth + 0.01) };
 };
 
 // ---------------------------------------------------------------- titanium
@@ -275,9 +276,11 @@ function panelTone(rand: () => number): THREE.Color {
 const titanium: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
   const n = bays(w, c.variant.pitch ?? 2.0);
+  // How far the fins stand out: a multiple of the 1.3 m blade.
+  const fin = c.variant.depth ?? 1;
   const pitch = w / n;
   const edge = 0.55;
-  const light = lighter(f.era, c.rand);
+  const light = lighter(f.era, c.rand, c.variant.lights);
   k.box('slab', w - 1.2, h, w - 1.2, M(0, h / 2, 0));
   // A dark graphite slab edge with small chamfers: it frames each floor without becoming a lit strip.
   k.add('titaniumTrim', squareSweep(half, [[-0.6, 0], [0.3, 0], [0.38, 0.07], [0.38, edge - 0.07], [0.3, edge], [-0.6, edge]]));
@@ -285,20 +288,21 @@ const titanium: EraBuilder = (k, w, h, f, c) => {
     const F = face(side, half);
     for (let i = 0; i < n; i++) {
       const u = -half + pitch * (i + 0.5);
-      k.inst('pane:titanium', 'titaniumWin', paneGeometry, F.clone().multiply(M(u, (edge + h) / 2, -0.4, 0, pitch, h - edge, 1)), light(PANE_FULL), false);
+      k.pane('pane:titanium', 'titaniumWin', F.clone().multiply(M(u, (edge + h) / 2, -0.4, 0, pitch, h - edge, 1)), light(PANE_FULL));
     }
     for (let i = 1; i < n; i++) {
       const u = -half + pitch * i;
       const a = (i % 2 === 0 ? 1 : -1) * 0.14;
-      k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32, a, 1, h - edge, 1)), panelTone(c.rand));
+      k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32 * fin, a, 1, h - edge, fin)), panelTone(c.rand));
     }
-    k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32, 0, 1, h - edge, 1)), panelTone(c.rand));
+    k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32 * fin, 0, 1, h - edge, fin)), panelTone(c.rand));
   }
   claudeAccent(k, f, half + 0.38, edge / 2 - 0.05, 0.1, 0.1);
   if (c.runEnd && !c.datum) {
     k.add('titaniumBand', squareSweep(half, [[-0.6, h - 0.45], [0.75, h - 0.45], [0.8, h - 0.4], [0.8, h], [-0.6, h]]));
   }
-  return { cx: 0, cz: 0, half: half + 1, datumHalf: half + 1.0 };
+  // The fins reach 0.97 m out per unit of depth; the datum wraps just clear of their tips.
+  return { cx: 0, cz: 0, half: half + Math.max(1, fin), datumHalf: half + 0.97 * fin + 0.03 };
 };
 
 // ---------------------------------------------------------------- sci-fi
@@ -346,7 +350,7 @@ const scifi: EraBuilder = (k, w, h, f, c) => {
   if (!c.runStart) ring(k, 'lightLine', x0 + 0.45, x1 - 0.45, z0 + 0.45, z1 - 0.45, -0.025, 0, 0.06);
   if (f.claude) ring(k, 'accent', x0 - 0.03, x1 + 0.03, z0 - 0.03, z1 + 0.03, slab, slab + 0.08, 0.1);
 
-  const light = lighter(f.era, c.rand);
+  const light = lighter(f.era, c.rand, c.variant.lights);
   const top = c.top ? h - 0.5 : h;
   // The glass: the full core on ordinary floors, a small pavilion on the crown.
   const glassHalf = c.top ? core * 0.55 : core;
@@ -356,7 +360,7 @@ const scifi: EraBuilder = (k, w, h, f, c) => {
   for (let side = 0; side < 4; side++) {
     const F = face(side, glassHalf);
     for (let i = 0; i < nb; i++) {
-      k.inst('pane:scifi', 'scifiWin', paneGeometry, F.clone().multiply(M(-glassHalf + bw * (i + 0.5), (slab + top) / 2, 0, 0, bw, top - slab, 1)), light(PANE_FULL), false);
+      k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-glassHalf + bw * (i + 0.5), (slab + top) / 2, 0, 0, bw, top - slab, 1)), light(PANE_FULL));
     }
     for (let i = 0; i <= nb; i++) {
       k.inst('sf:mullion', 'graphite', unitBox, F.clone().multiply(M(-glassHalf + bw * i, (slab + top) / 2, 0.06, 0, 0.07, top - slab, 0.14)));

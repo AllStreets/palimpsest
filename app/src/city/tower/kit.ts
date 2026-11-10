@@ -217,9 +217,11 @@ export class Kit {
   /** Applied to everything added; builders set it to the current floor or root stage. */
   base = new THREE.Matrix4();
   /**
-   * The vertex colour of every unique piece added from now on: the small
-   * drift between runs of floors laid in different years. Materials that
-   * take vertex colours (the era variants) show it; the rest ignore it.
+   * The colour of every piece added from now on, unique pieces as a vertex
+   * colour and repeated parts as an instance colour: the small drift between
+   * runs of floors laid in different years. Window panes never take it
+   * (their instance colour is data). Variant materials read vertex colours;
+   * every material that draws an instanced part reads its instance colour.
    */
   tint = new THREE.Color(1, 1, 1);
   private merged = new Map<MatKey, THREE.BufferGeometry[]>();
@@ -252,8 +254,22 @@ export class Kit {
     return g;
   }
 
-  /** One instance of a repeated part. `key` names the part (geometry and material together). */
+  /**
+   * One instance of a repeated part. `key` names the part (geometry and
+   * material together). Its instance colour is `color` (white if none)
+   * times the current `tint`, so repeated parts drift year to year with the
+   * walls round them.
+   */
   inst(key: string, mat: MatKey, make: () => THREE.BufferGeometry, local: THREE.Matrix4, color?: THREE.Color, shadow = true): void {
+    this.instRaw(key, mat, make, local, (color ?? new THREE.Color(1, 1, 1)).clone().multiply(this.tint), shadow);
+  }
+
+  /** A window pane: its instance colour is data for the window shader (see paneData), so it is never tinted, and panes cast no shadow. */
+  pane(key: string, mat: MatKey, local: THREE.Matrix4, data: THREE.Color): void {
+    this.instRaw(key, mat, paneGeometry, local, data, false);
+  }
+
+  private instRaw(key: string, mat: MatKey, make: () => THREE.BufferGeometry, local: THREE.Matrix4, color: THREE.Color, shadow: boolean): void {
     let b = this.batches.get(key);
     if (!b) {
       const geo = make();
@@ -263,10 +279,8 @@ export class Kit {
       this.batches.set(key, b);
     }
     b.matrices.push(this.base.clone().multiply(local));
-    if (color) {
-      b.colors ??= [];
-      b.colors[b.matrices.length - 1] = color;
-    }
+    b.colors ??= [];
+    b.colors[b.matrices.length - 1] = color;
   }
 
   build(): THREE.Group {

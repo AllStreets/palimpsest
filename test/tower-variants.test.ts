@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { districtOrigin, DISTRICT_PITCH } from '../shared/district-layout.js';
 import type { Era } from '../shared/types.js';
-import { type Finish, lookFor, pickLooks, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
+import { type Finish, lookFor, pickLooks, preference, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
 
 const ERAS: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
 
@@ -100,6 +100,55 @@ test('a tower keeps its look when later repos join the city', () => {
   const later = pickLooks(HIS.map((repo, slot) => ({ repo, slot })));
   for (const repo of HIS.slice(0, 3)) {
     for (const era of ERAS) assert.equal(later.get(repo)![era].id, first.get(repo)![era].id, `${repo} ${era}`);
+  }
+});
+
+
+test('neighbouring districts never share a family (light and hue) while a variant of a free family exists', () => {
+  for (const names of [HIS, SAMPLE, Array.from({ length: 50 }, (_, i) => `org${i % 7}/r${i}`)]) {
+    const sites = names.map((repo, slot) => ({ repo, slot }));
+    const looks = pickLooks(sites);
+    for (const era of ERAS) {
+      for (const s of sites) {
+        const earlier = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1);
+        const families = new Set(earlier.map((o) => looks.get(o.repo)![era].family));
+        const free = VARIANTS[era].some((v) => !families.has(v.family));
+        if (free) assert.ok(!families.has(looks.get(s.repo)![era].family), `${s.repo} ${era} took a neighbour's family ${looks.get(s.repo)![era].family}`);
+      }
+    }
+  }
+});
+
+test('a district takes its own first choice when nothing near or in the city has it', () => {
+  // Slots 0 and 4 sit two blocks apart on the spiral: the earlier tower has a different first choice.
+  assert.equal(blocks(0, 4), 2);
+  const a = 'acme/first';
+  let b = '';
+  for (let i = 0; i < 500 && !b; i++) if (lookFor(`other/b${i}`).stone.id !== lookFor(a).stone.id) b = `other/b${i}`;
+  const looks = pickLooks([{ repo: a, slot: 0 }, { repo: b, slot: 4 }]);
+  assert.equal(looks.get(b)!.stone.id, preference(b, 'stone')[0].id);
+});
+
+test('a variant is not repeated across the city while an unused one is free of neighbour clashes', () => {
+  for (const names of [HIS, SAMPLE]) {
+    const looks = pickLooks(names.map((repo, slot) => ({ repo, slot })));
+    for (const era of ['stone', 'brick'] as const) {
+      const ids = names.map((n) => looks.get(n)![era].id);
+      assert.equal(new Set(ids).size, ids.length, `${era} repeats in ${ids.join(', ')}`);
+    }
+  }
+});
+
+test('every variant carries a family, and upper eras each read apart by their lit floors and rhythm', () => {
+  for (const era of ERAS) for (const v of VARIANTS[era]) assert.ok(v.family, `${v.id} has a family`);
+  for (const era of ['glass', 'titanium', 'scifi'] as const) {
+    const seen = new Set<string>();
+    for (const v of VARIANTS[era]) {
+      assert.ok(v.lights, `${v.id} sets its lights`);
+      const sig = [Math.round(v.lights!.warm * 5), v.pitch ?? 0, v.depth ?? 1, v.spandrel ?? 0, v.seams ?? false, v.glass.channel ?? false].join('|');
+      assert.ok(!seen.has(sig), `${v.id} reads the same as another ${era} variant from afar (${sig})`);
+      seen.add(sig);
+    }
   }
 });
 
