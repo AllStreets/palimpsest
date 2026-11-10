@@ -1,0 +1,144 @@
+/**
+ * The PreToolUse hook every city claude run carries (Task 8). Run by the
+ * CLI as `<node> guard-hook.mjs <dir> <dataHome>` with the hook JSON on
+ * stdin. Exits 0 to let the call through and 2 (reason on stderr) to refuse.
+ *
+ * It fails closed: any exception, unparsable, empty or truncated stdin, a
+ * missing or non-string path field, an unexpected input shape, a path it
+ * cannot resolve, or its own 5 s timeout all exit 2.
+ */
+import { statSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
+
+import { forbidden, pathAllowed, patternAllowed } from './guard-core.mjs';
+
+const COULD_NOT = 'guard could not check this call';
+const MAX_STDIN = 4 * 1024 * 1024;
+const MAX_TIMEOUT_MS = 5000;
+
+/** The run tool served by broker-mcp.mjs. */
+const RUN_TOOL = 'mcp__palimpsest__run';
+
+/**
+ * Path fields per file tool: `required` must be a string, `optional` must be
+ * a string when present, `patterns` are glob patterns. Any other field whose
+ * name looks like it carries a path is refused.
+ */
+const FILE_TOOLS = {
+  Read: { required: ['file_path'], optional: [], patterns: [] },
+  Edit: { required: ['file_path'], optional: [], patterns: [] },
+  Write: { required: ['file_path'], optional: [], patterns: [] },
+  MultiEdit: { required: ['file_path'], optional: [], patterns: [] },
+  NotebookEdit: { required: ['notebook_path'], optional: [], patterns: [] },
+  Glob: { required: [], optional: ['path'], patterns: ['pattern'] },
+  Grep: { required: [], optional: ['path'], patterns: ['glob'] },
+};
+const PATHISH_KEY = /path|file|dir|glob|cwd|root|target|dest|src/i;
+
+function refuse(reason) {
+  try {
+    process.stderr.write(`Palimpsest refused this call: ${reason}\n`);
+  } finally {
+    process.exit(2);
+  }
+}
+
+function allow() {
+  process.exit(0);
+}
+
+function timeoutMs() {
+  const raw = Number(process.env.PALIMPSEST_HOOK_TIMEOUT_MS);
+  // The environment may only shorten the timeout, never lengthen it.
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, MAX_TIMEOUT_MS) : MAX_TIMEOUT_MS;
+}
+
+function isPlainObject(v) {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** The reason the call is refused, or null. Throws (and so refuses) on anything it did not expect. */
+function decide(raw, dir, dataHome) {
+  if (raw.trim() === '') throw new Error('empty');
+  const msg = JSON.parse(raw);
+  if (!isPlainObject(msg)) throw new Error('not an object');
+  if (msg.hook_event_name !== undefined && msg.hook_event_name !== 'PreToolUse') throw new Error('not PreToolUse');
+  const tool = msg.tool_name;
+  const input = msg.tool_input;
+  if (typeof tool !== 'string' || !isPlainObject(input)) throw new Error('bad shape');
+
+  if (tool === RUN_TOOL) {
+    for (const k of Object.keys(input)) if (k !== 'command' && k !== 'timeoutMs') throw new Error(`unexpected field ${k}`);
+    if (typeof input.command !== 'string') throw new Error('command not a string');
+    if (input.timeoutMs !== undefined && typeof input.timeoutMs !== 'number') throw new Error('timeoutMs not a number');
+    return forbidden(input.command, dir, dataHome);
+  }
+
+  const spec = FILE_TOOLS[tool];
+  if (!spec) return 'tool not allowed in a city run';
+
+  const known = new Set([...spec.required, ...spec.optional, ...spec.patterns]);
+  for (const k of Object.keys(input)) {
+    if (!known.has(k) && PATHISH_KEY.test(k)) throw new Error(`unexpected path field ${k}`);
+  }
+  for (const k of spec.required) {
+    if (typeof input[k] !== 'string') throw new Error(`${k} missing`);
+    const r = pathAllowed(tool, input[k], dir);
+    if (r) return r;
+  }
+  for (const k of spec.optional) {
+    if (input[k] === undefined) continue;
+    if (typeof input[k] !== 'string') throw new Error(`${k} not a string`);
+    const r = pathAllowed(tool, input[k], dir);
+    if (r) return r;
+  }
+  for (const k of spec.patterns) {
+    if (input[k] === undefined) {
+      if (tool === 'Glob') throw new Error('pattern missing');
+      continue;
+    }
+    if (typeof input[k] !== 'string') throw new Error(`${k} not a string`);
+    const r = patternAllowed(input[k]);
+    if (r) return r;
+  }
+  return null;
+}
+
+function main() {
+  const timer = setTimeout(() => refuse(`${COULD_NOT} (timed out)`), timeoutMs());
+  try {
+    const [dir, dataHome] = process.argv.slice(2);
+    if (typeof dir !== 'string' || typeof dataHome !== 'string' || !isAbsolute(dir) || !isAbsolute(dataHome)) {
+      refuse(`${COULD_NOT} (no run directory)`);
+      return;
+    }
+    if (!statSync(dir).isDirectory()) {
+      refuse(`${COULD_NOT} (no run directory)`);
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    process.stdin.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_STDIN) refuse(`${COULD_NOT} (input too large)`);
+      chunks.push(c);
+    });
+    process.stdin.on('error', () => refuse(COULD_NOT));
+    process.stdin.on('end', () => {
+      try {
+        const reason = decide(Buffer.concat(chunks).toString('utf8'), dir, dataHome);
+        clearTimeout(timer);
+        if (reason) refuse(reason);
+        else allow();
+      } catch {
+        refuse(COULD_NOT);
+      }
+    });
+  } catch {
+    refuse(COULD_NOT);
+  }
+}
+
+process.on('uncaughtException', () => refuse(COULD_NOT));
+process.on('unhandledRejection', () => refuse(COULD_NOT));
+main();
