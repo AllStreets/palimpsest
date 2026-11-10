@@ -216,3 +216,35 @@ test('at a plaza edge the ambient blocks keep clear of the tower colours and a v
     }
   }
 });
+
+test("a tower's look changing retones only the blocks in its ring; every block outside it stays as it was", () => {
+  // The same district, its tower restyled from one stone and brick to another (a restyle, or the picker moving it).
+  const before = district(1, 30, [VARIANTS.stone[0].id, VARIANTS.brick[0].id]);
+  const after = district(1, 30, [VARIANTS.stone[VARIANTS.stone.length - 1].id, VARIANTS.brick[VARIANTS.brick.length - 1].id]);
+  const ci = Math.round(before.x / PITCH);
+  const cj = Math.round(before.z / PITCH);
+  let retoned = 0;
+  let outside = 0;
+  for (let i = ci - 6; i <= ci + 6; i++) {
+    for (let j = cj - 6; j <= cj + 6; j++) {
+      const a = standingLots(i, j, [CIVIC, before]);
+      const b = standingLots(i, j, [CIVIC, after]);
+      const inRing = a.some((l) => Math.hypot(l.x - before.x, l.z - before.z) <= RING_REACH);
+      if (!inRing) {
+        outside++;
+        assert.deepEqual(b, a, `block ${i},${j} lies outside the ring and must not change`);
+        continue;
+      }
+      assert.equal(b.length, a.length, `block ${i},${j} keeps its lots`);
+      for (let k = 0; k < a.length; k++) {
+        const near = Math.hypot(a[k].x - before.x, a[k].z - before.z) <= RING_REACH;
+        if (a[k].tone !== b[k].tone || a[k].archetype !== b[k].archetype) retoned++;
+        // Out of the ring a lot keeps its footprint and type; only a retoned neighbour can move its tone.
+        if (!near) assert.equal(b[k].archetype, a[k].archetype, `block ${i},${j} lot ${k} out of the ring keeps its type`);
+        assert.deepEqual([b[k].x, b[k].z, b[k].w, b[k].d], [a[k].x, a[k].z, a[k].w, a[k].d]);
+      }
+    }
+  }
+  assert.ok(outside > 100, `blocks outside the ring checked: ${outside}`);
+  assert.ok(retoned > 0, 'a different tower look retones some lots in its ring');
+});
