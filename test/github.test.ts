@@ -75,7 +75,7 @@ test('mergedPRs asks gh only for what GitHub can list cheaply', async () => {
       '--limit',
       '2000',
       '--json',
-      'number,title,mergedAt,mergeCommit,url',
+      'number,title,mergedAt,mergeCommit,url,headRefName',
     ]);
     const rows = [
       {
@@ -84,6 +84,7 @@ test('mergedPRs asks gh only for what GitHub can list cheaply', async () => {
         mergedAt: '2026-01-02T03:04:05Z',
         mergeCommit: { oid: 'abc123' },
         url: 'https://github.com/acme/widgets/pull/12',
+        headRefName: 'feature/polish',
       },
       {
         number: 13,
@@ -91,6 +92,7 @@ test('mergedPRs asks gh only for what GitHub can list cheaply', async () => {
         mergedAt: '2026-01-03T03:04:05Z',
         mergeCommit: null,
         url: 'https://github.com/acme/widgets/pull/13',
+        headRefName: 'palimpsest/j9',
       },
     ];
     return { stdout: JSON.stringify(rows), stderr: '', code: 0 };
@@ -105,6 +107,7 @@ test('mergedPRs asks gh only for what GitHub can list cheaply', async () => {
       mergedAt: '2026-01-02T03:04:05Z',
       mergeSha: 'abc123',
       url: 'https://github.com/acme/widgets/pull/12',
+      headRefName: 'feature/polish',
     },
     {
       number: 13,
@@ -112,6 +115,7 @@ test('mergedPRs asks gh only for what GitHub can list cheaply', async () => {
       mergedAt: '2026-01-03T03:04:05Z',
       mergeSha: null,
       url: 'https://github.com/acme/widgets/pull/13',
+      headRefName: 'palimpsest/j9',
     },
   ]);
 });

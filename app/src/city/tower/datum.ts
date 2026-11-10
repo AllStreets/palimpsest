@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+
 import { Kit, M, squareSweep } from './kit.js';
 
 /** The datum band's height; it hangs below `datumY` so it never rises past the floor it caps. Tall enough to read from a street away. */
@@ -18,21 +20,27 @@ export interface DatumPlan {
   cz: number;
   half: number;
   ry: number;
+  /** A round plan (the biomorphic sci-fi shell): the band is a ring of radius `half` instead of a square. */
+  round?: boolean;
 }
 
 export function addDatum(k: Kit, datumY: number, plan: DatumPlan): void {
   const y0 = datumY - DATUM_HEIGHT;
   // A flat polished face between two chamfers, so the band catches a line of light top and bottom.
-  k.add(
-    'datum',
-    squareSweep(plan.half, [
-      [-0.2, y0],
-      [PROUD - 0.12, y0],
-      [PROUD, y0 + 0.12],
-      [PROUD, y0 + DATUM_HEIGHT - 0.12],
-      [PROUD - 0.12, y0 + DATUM_HEIGHT],
-      [-0.2, y0 + DATUM_HEIGHT],
-    ]),
-    M(plan.cx, 0, plan.cz, plan.ry),
-  );
+  const profile: Array<[number, number]> = [
+    [-0.2, y0],
+    [PROUD - 0.12, y0],
+    [PROUD, y0 + 0.12],
+    [PROUD, y0 + DATUM_HEIGHT - 0.12],
+    [PROUD - 0.12, y0 + DATUM_HEIGHT],
+    [-0.2, y0 + DATUM_HEIGHT],
+  ];
+  const geo = plan.round
+    ? new THREE.LatheGeometry(
+        profile.map(([d, y]) => new THREE.Vector2(plan.half + d, y)),
+        64,
+      )
+    : squareSweep(plan.half, profile);
+  if (plan.round) geo.computeVertexNormals();
+  k.add('datum', geo, M(plan.cx, 0, plan.cz, plan.ry));
 }

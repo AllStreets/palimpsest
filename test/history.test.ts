@@ -37,6 +37,7 @@ test('no commits gives no floors', () => {
     mergedAt: iso(START),
     mergeSha: 'deadbeef',
     url: 'https://github.com/AllStreets/palimpsest/pull/1',
+    headRefName: 'feature/one',
   };
 
   assert.deepEqual(foundingFloors(REPO, [], []), []);
@@ -59,6 +60,7 @@ test('PR merge commit becomes a PR floor', () => {
     mergedAt: iso(START + HOUR),
     mergeSha: mergeCommit.sha,
     url: 'https://github.com/AllStreets/palimpsest/pull/42',
+    headRefName: 'feature/one',
   };
 
   const floors = foundingFloors(REPO, [mergeCommit], [pr]);
@@ -85,6 +87,7 @@ test('a PR whose mergeSha matches no commit in the list is ignored', () => {
     mergedAt: iso(START + HOUR),
     mergeSha: 'does-not-exist',
     url: 'https://github.com/AllStreets/palimpsest/pull/7',
+    headRefName: 'feature/one',
   };
 
   const floors = foundingFloors(REPO, [regular], [pr]);
@@ -160,6 +163,7 @@ test('Claude trailer marks the floor', () => {
     mergedAt: iso(START + 14 * HOUR),
     mergeSha: mergeCommit.sha,
     url: 'https://github.com/AllStreets/palimpsest/pull/9',
+    headRefName: 'feature/one',
   };
   const [, , prFloor] = foundingFloors(REPO, [plain, withTrailer, mergeCommit], [pr]);
   assert.equal(prFloor.kind, 'pr');
@@ -255,6 +259,7 @@ test('merging a PR floor with an adjacent commits floor follows the merge rule',
     mergedAt: iso(START + 10 * HOUR),
     mergeSha: mergeCommit.sha,
     url: 'https://github.com/AllStreets/palimpsest/pull/55',
+    headRefName: 'feature/one',
   };
 
   // floorB: a small commits floor (lines=3) with the Claude trailer, so the
@@ -300,4 +305,67 @@ test('merging a PR floor with an adjacent commits floor follows the merge rule',
   assert.equal(merged!.id, `${REPO}#${merged!.refs[0]}`); // id from the first ref
   assert.equal(merged!.lines, 8);
   assert.equal(merged!.size, 'small'); // size recomputed from the combined 8 lines
+});
+
+test('commits after joinedAt do not become founding floors', () => {
+  const joinedAt = iso(START + 10 * HOUR);
+  const before = commit({ sha: 'aaaaaaa1', at: iso(START) });
+  const atJoin = commit({ sha: 'bbbbbbb2', at: joinedAt, author: 'Author Two' });
+  const after = commit({ sha: 'ccccccc3', at: iso(START + 11 * HOUR), author: 'Author Three' });
+  const lateMerge = commit({ sha: 'ddddddd4', at: iso(START + 9 * HOUR), author: 'Author Four' });
+  const latePr: PR = {
+    number: 5,
+    title: 'Merged after the join',
+    mergedAt: iso(START + 12 * HOUR),
+    mergeSha: lateMerge.sha,
+    url: 'https://github.com/AllStreets/palimpsest/pull/5',
+    headRefName: 'feature/late',
+  };
+
+  const floors = foundingFloors(REPO, [before, lateMerge, atJoin, after], [latePr], { until: joinedAt });
+  const refs = floors.flatMap((f) => f.refs);
+  assert.ok(refs.includes('aaaaaaa'), 'a commit before the join stays');
+  assert.ok(refs.includes('bbbbbbb'), 'a commit exactly at the join stays');
+  assert.ok(!refs.includes('ccccccc'), 'a commit after the join is dropped');
+  assert.ok(!refs.includes('#5'), 'a PR merged after the join is dropped');
+  assert.ok(floors.every((f) => Date.parse(f.at) <= Date.parse(joinedAt)));
+
+  // Without a cutoff everything stands.
+  const all = foundingFloors(REPO, [before, atJoin, after], [], { until: null });
+  assert.ok(all.flatMap((f) => f.refs).includes('ccccccc'));
+});
+
+test('a city merge never becomes a founding floor', () => {
+  const own = commit({ sha: 'aaaaaaa1', at: iso(START) });
+  const jobCommit = commit({
+    sha: 'bbbbbbb2',
+    at: iso(START + 8 * HOUR),
+    author: 'Author Two',
+    subject: 'Fix the parser',
+    body: 'Fix the parser\n\nPalimpsest-Job: j1\n',
+  });
+  const cityMerge = commit({ sha: 'ccccccc3', at: iso(START + 16 * HOUR), author: 'Author Three', subject: 'Merge pull request #7' });
+  const humanMerge = commit({ sha: 'ddddddd4', at: iso(START + 24 * HOUR), author: 'Author Four', subject: 'Merge pull request #8' });
+  const cityPr: PR = {
+    number: 7,
+    title: 'City job j1',
+    mergedAt: iso(START + 16 * HOUR),
+    mergeSha: cityMerge.sha,
+    url: 'https://github.com/AllStreets/palimpsest/pull/7',
+    headRefName: 'palimpsest/j1',
+  };
+  const humanPr: PR = {
+    number: 8,
+    title: 'A person wrote this',
+    mergedAt: iso(START + 24 * HOUR),
+    mergeSha: humanMerge.sha,
+    url: 'https://github.com/AllStreets/palimpsest/pull/8',
+    headRefName: 'feature/palimpsest-docs',
+  };
+
+  const floors = foundingFloors(REPO, [own, jobCommit, cityMerge, humanMerge], [cityPr, humanPr], {
+    until: iso(START + 48 * HOUR),
+  });
+  const refs = floors.flatMap((f) => f.refs);
+  assert.deepEqual(refs, ['aaaaaaa', '#8']);
 });

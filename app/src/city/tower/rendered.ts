@@ -10,6 +10,13 @@
  * on its own (not the build, the tests or any default capture); only
  * `SWATCH_WRITE=1 node --import tsx tools/capture.ts swatches`, run by
  * hand as a deliberate change and committed with the reason.
+ *
+ * Round 5 of Task B merged by hand (2026-11-09): the six sci-fi family
+ * entries are new measurements. Every other entry is the round 4
+ * measurement, kept on purpose so no known tower's stone or brick moved:
+ * stone:sandstone and brick:cream were retinted that round by a few units
+ * (sandstone sun L44.2 to 43.8, cream sun L55.0 to 52.8 when re-measured),
+ * inside the margin PREFERRED leaves for a measurement to drift.
  */
 export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = {
   "stone:limestone": {
@@ -496,92 +503,136 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
       4.5
     ]
   },
-  "scifi:graphite": {
+  "scifi:deco": {
     "sun": [
-      43.9,
-      8.9,
+      41.9,
+      10,
+      6.6
+    ],
+    "shade": [
+      37,
+      11.9,
       6.5
     ],
+    "sunLow": [
+      42.6,
+      10,
+      6.5
+    ],
+    "shadeLow": [
+      36.9,
+      11.9,
+      6.3
+    ]
+  },
+  "scifi:ziggurat": {
+    "sun": [
+      37.9,
+      11.2,
+      10.1
+    ],
     "shade": [
-      39.3,
-      10.7,
+      42.1,
+      10.8,
+      6.2
+    ],
+    "sunLow": [
+      37.9,
+      11.3,
+      9.6
+    ],
+    "shadeLow": [
+      38.4,
+      10.9,
+      6.4
+    ]
+  },
+  "scifi:needle": {
+    "sun": [
+      47.3,
+      6.7,
       -3.7
     ],
-    "sunLow": [
-      40.4,
-      9.5,
-      4.3
-    ],
-    "shadeLow": [
-      37.1,
-      10.4,
-      -3.1
-    ]
-  },
-  "scifi:ceramic": {
-    "sun": [
-      41.8,
-      10.5,
-      4.4
-    ],
     "shade": [
-      47.6,
-      12.2,
-      -0.3
+      40.6,
+      10.9,
+      5
     ],
     "sunLow": [
-      43.7,
-      10.5,
-      4.1
-    ],
-    "shadeLow": [
-      45.3,
-      11.8,
-      -0.5
-    ]
-  },
-  "scifi:carbon": {
-    "sun": [
-      44.7,
-      6.9,
+      45.6,
+      7.3,
       -3.1
     ],
-    "shade": [
-      33.4,
-      10.1,
-      2.3
-    ],
-    "sunLow": [
-      43.2,
-      7.5,
-      -1.7
-    ],
     "shadeLow": [
-      32.9,
-      10,
-      2.6
+      35,
+      10.7,
+      4.2
     ]
   },
-  "scifi:pearl": {
+  "scifi:arcology": {
     "sun": [
-      48.4,
-      8,
-      0.6
+      44.3,
+      9.8,
+      9.2
     ],
     "shade": [
-      43.2,
-      11.1,
-      -2.3
+      40.7,
+      12.3,
+      7.5
     ],
     "sunLow": [
-      48.3,
-      8.1,
-      -0.1
+      45,
+      9.4,
+      9.4
     ],
     "shadeLow": [
-      39.6,
-      10.8,
-      -2.3
+      38.8,
+      11.6,
+      6.4
+    ]
+  },
+  "scifi:organic": {
+    "sun": [
+      44.6,
+      8.6,
+      2
+    ],
+    "shade": [
+      46.8,
+      11.2,
+      5
+    ],
+    "sunLow": [
+      46.6,
+      8.6,
+      1.9
+    ],
+    "shadeLow": [
+      39.4,
+      11.5,
+      5.5
+    ]
+  },
+  "scifi:cluster": {
+    "sun": [
+      48,
+      6.6,
+      -1.8
+    ],
+    "shade": [
+      47.9,
+      11.5,
+      5.9
+    ],
+    "sunLow": [
+      46.4,
+      7,
+      -1.4
+    ],
+    "shadeLow": [
+      38.8,
+      10.9,
+      6.4
     ]
   }
 };

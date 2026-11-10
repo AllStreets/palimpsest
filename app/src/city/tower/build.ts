@@ -90,14 +90,13 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
       runEnd: next !== floor.era,
       top: i === layout.floors.length - 1,
       fromTop: layout.floors.length - 1 - i,
-      crown: look.crown,
       datum: i === spec.datumIndex - 1,
       rand: rng(floor.id),
       variant: look[floor.era],
     });
     pickables.set(proxy(shape.cx, y0 + h / 2, shape.cz, shape.half * 2, h, ry), floor.id);
     if (i === spec.datumIndex - 1) {
-      datumPlan = { cx: shape.cx, cz: shape.cz, half: shape.datumHalf, ry };
+      datumPlan = { cx: shape.cx, cz: shape.cz, half: shape.datumHalf, ry, round: shape.round };
     }
     width *= TAPER;
   });

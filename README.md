@@ -46,7 +46,7 @@ Everything in these pictures is the real app, rendered by its own engine. The re
 
 ## Reading a tower
 
-<img src="docs/media/tower.webp" alt="One whole tower at dusk, seen across the rooftops: a red pagoda base with flared eaves, a long run of brick and stone floors lit warm by the low sun, then glass floors and a stacked steel crown against a violet sky. Two more towers stand in the haze behind it." />
+<img src="docs/media/tower.webp" alt="One whole tower at dusk, seen across the rooftops: a red pagoda base with flared eaves, a dark run of coursed sandstone, pale cream brick lit warm by the low sun, then glass floors and a stepped deco crown of pale stone and dark fins against a violet sky. Two more towers stand in the haze behind it." />
 
 A tower is read from the ground up.
 
@@ -58,7 +58,7 @@ The floors are built in eras taken from the repo's own timeline. Its first month
 
 The roots are modelled in code for Palimpsest. The Gothic one has its own pinnacles, buttresses, lancets and a rose window with real stained glass.
 
-<img src="docs/media/datum.webp" alt="The top of the tallest tower against the sky: glass floors banded with thin lines of light, a stacked steel crown, and a polished bronze band round the very top, with the city in haze far below." />
+<img src="docs/media/datum.webp" alt="The top of the tallest tower against the sky: bronze fins banded with thin lines of light, then a dark stepped pyramid whose sloped faces carry bands of lit windows and warm vents, and a polished bronze band round the very top, with the city in haze far below." />
 
 The bronze band at the very top is the datum line. It marks the height where the repo joined the city. Everything below it is founding history, built from real commits the moment the repo was connected, so a new city never starts at ground level. Everything above it will be floors earned in the market. Today every tower ends at its datum line, because the market isn't built yet.
 

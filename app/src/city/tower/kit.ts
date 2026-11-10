@@ -56,6 +56,12 @@ export interface TowerMaterials extends Record<EraMatKey, THREE.Material> {
   lightLine: THREE.Material;
   /** The thin warm accent at the slab edge of a floor Claude co-authored. */
   accent: THREE.Material;
+  /** Warm amber light vents and lit slots set into sci-fi faces (the ziggurat's terraces, the deco crown), a real emitter. */
+  vent: THREE.Material;
+  /** Red aircraft warning lights on every sci-fi roof, a real emitter. */
+  beacon: THREE.Material;
+  /** Dark matte roofing membrane on the sci-fi roof plates: a roof, never a mirror of the sunset. */
+  roof: THREE.Material;
   /** Invisible pick proxies. */
   pick: THREE.Material;
 }

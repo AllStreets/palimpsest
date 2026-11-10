@@ -14,8 +14,9 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe, swatches. With no shots named, all but
- * probe and swatches run. swatches measures every material variant's
+ * settings, flyover, rise, probe, swatches, families. With no shots named,
+ * all but probe, swatches and families run. families rebuilds the tallest
+ * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
  * app/src/city/tower/rendered.ts).
  * The city-only shots hide the running head and the name plates; overview,
@@ -41,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import type { Page } from 'playwright';
 
+import { FAMILIES, VARIANTS } from '../app/src/city/tower/variants.js';
 import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District } from '../shared/types.js';
@@ -324,6 +326,26 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         '',
       ].join('\n');
       writeFileSync(process.env.AMBIENT_WRITE === '1' ? join(ROOT, 'app', 'src', 'city', 'ambient-rendered.ts') : join(MEDIA, 'ambient-rendered.ts'), body);
+    },
+
+    async families(page) {
+      // The tallest tower's sci-fi run rebuilt in each family and shot close at dusk, then a street-level look up at
+      // the last one. For the quality rounds (use with CAPTURE_OUT); it restyles the tower, so it runs last.
+      await chrome(page, false);
+      const first = tallLay.floors.findIndex((l) => l.floor.era === 'scifi');
+      const y0 = first >= 0 ? tallLay.floors[first].y0 : tallLay.top - 40;
+      const span = Math.max(20, tallLay.top - y0);
+      const mid = (y0 + tallLay.top) / 2;
+      const dist = Math.max(60, span * 1.05);
+      const { x, z } = tall.origin;
+      for (const family of FAMILIES) {
+        const v = VARIANTS.scifi.find((c) => c.family === family);
+        if (!v) continue;
+        await page.evaluate(([rp, ids]) => (window as unknown as { __palimpsest: { restyle(r: string, i: string[]): void } }).__palimpsest.restyle(rp, ids), [tall.repo, [v.id]] as [string, string[]]);
+        await page.waitForTimeout(2500);
+        await still(page, `family-${family}`, [x - dist * 0.72, mid + span * 0.12, z + dist * 0.72], [x, mid, z]);
+      }
+      await still(page, 'family-street', [x - 70, 2.5, z + 92], [x, tallLay.top * 0.86, z]);
     },
 
     async hero(page) {

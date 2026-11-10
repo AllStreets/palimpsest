@@ -7,6 +7,14 @@ const DEFAULTS: Settings = {
   nightCapPct: 20,
   hookInstalled: false,
   previousStatusLine: null,
+  claudeConcurrency: 2,
+  localConcurrency: 1,
+  bidWindowSec: 120,
+  hardStopPct: 90,
+  resumeStaleUntil: null,
+  keepAwake: false,
+  ollamaHost: '127.0.0.1:11434',
+  anthropicApi: { enabled: false, dailyUsd: 5 },
 };
 
 /** Current settings, defaults filled in for any key not yet stored. */

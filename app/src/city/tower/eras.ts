@@ -3,7 +3,9 @@ import * as THREE from 'three';
 import type { Era, Floor } from '../../../../shared/types.js';
 import {
   face,
+  frustum,
   Kit,
+  lathe,
   M,
   ME,
   type MatKey,
@@ -15,7 +17,7 @@ import {
   squareSweep,
   unitBox,
 } from './kit.js';
-import type { Crown, MasonryRhythm, Variant } from './variants.js';
+import type { Family, MasonryRhythm, Variant } from './variants.js';
 
 /** Where a floor sits in its tower and in its run of same-era floors. */
 export interface FloorContext {
@@ -29,10 +31,8 @@ export interface FloorContext {
   runEnd: boolean;
   /** The tower's top floor. */
   top: boolean;
-  /** Floors above this one (0 on the top floor): crowns shape the last few. */
+  /** Floors above this one (0 on the top floor): the sci-fi families shape their last few. */
   fromTop: number;
-  /** How the tower's sci-fi run ends. */
-  crown: Crown;
   /** The last floor below the datum line: its run-end cap is left off so the datum band reads clean. */
   datum: boolean;
   rand: () => number;
@@ -46,6 +46,8 @@ export interface FloorShape {
   cz: number;
   half: number;
   datumHalf: number;
+  /** A round plan: the datum wraps it as a ring. */
+  round?: boolean;
 }
 
 /**
@@ -339,140 +341,396 @@ function ring(k: Kit, mat: MatKey, x0: number, x1: number, z0: number, z1: numbe
 }
 
 /**
- * Sci-fi: a glass core inside a graphite diagrid exoskeleton, on deep
- * titanium slabs that cantilever past the frame. Slabs run in blocks of
- * three, each block throwing a deep terrace out on a different side, so the
- * stack reads as cantilevered trays. Light is part of the build: a warm line
- * in the reveal between the slab's two fascia bands and a downlight line
- * set in each soffit. The top floor opens into a crown: the diagrid rises
- * free round a small glass pavilion under a thin canopy.
+ * The length of a sci-fi run. The sci-fi era is the latest, so every floor
+ * above a sci-fi floor is sci-fi too, and a family can shape its whole run
+ * (a pyramid's batter, a needle's taper) from one floor's place in it.
  */
+const runLength = (c: FloorContext): number => c.inRun + c.fromTop + 1;
+
+/** Red aircraft warning lights: a small lamp at each of `at` (x, z), its top at `top`. */
+function beacons(k: Kit, at: Array<[number, number]>, top: number): void {
+  for (const [x, z] of at) k.box('beacon', 0.28, 0.28, 0.28, M(x, top - 0.14, z));
+}
+
+/** The four corners of a square of half-width `hw`, inset `in`. */
+const corners = (hw: number, inset = 0.3): Array<[number, number]> => [-1, 1].flatMap((sx) => [-1, 1].map((sz) => [sx * (hw - inset), sz * (hw - inset)] as [number, number]));
+
+// ---- deco
+
 /**
- * How much a stepped spire narrows each of the last floors: the three below
- * the top step in, and the top is the needle's base.
+ * How far in the deco shaft stands `fromTop` floors below the roof of a run
+ * `run` floors long: the full shaft for the lower part, then three setbacks
+ * over the top 60 percent, so a short run gets a short crown and a long one
+ * a long shaft.
  */
-const STEPS = [0.42, 0.6, 0.78];
+function decoStep(fromTop: number, run: number): number {
+  const t = fromTop / Math.max(1, run);
+  return t > 0.6 ? 1 : t > 0.33 ? 0.86 : t > 0.12 ? 0.72 : 0.58;
+}
 
-const scifi: EraBuilder = (k, w, h, f, c) => {
+/**
+ * Monumental art deco: a pale cast-stone shaft drawn in unbroken vertical
+ * lines of dark bronze fins, stepping back three times toward the roof. Each
+ * setback leaves a terrace with a bronze parapet, four stone pylons at its
+ * corners and sky bridges from the pylons to the shaft. The top floor is the
+ * illuminated crown: no windows, only lit slots between the fins, under a
+ * stepped bronze cap.
+ */
+const deco: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
-  // A stepped spire narrows its last floors; every other crown keeps the shaft full to the top.
-  const step = c.crown === 'stepped' && c.fromTop < STEPS.length ? STEPS[c.fromTop] : 1;
-  const core = Math.max(c.crown === 'stepped' ? 2.2 : 4, (half - 2.2) * step);
-  const twin = c.crown === 'twin' && c.fromTop <= 1;
-  const deep = Math.floor(c.inRun / 3) % 4;
-  // Outward reach of the slab past the glass on each side: +z, +x, -z, -x. A spire's slabs draw in with it.
-  const ext = [0, 1, 2, 3].map((s) => (s === deep ? 3.6 : 1.5) * Math.max(0.5, step));
-  const x0 = -(core + ext[3]);
-  const x1 = core + ext[1];
-  const z0 = -(core + ext[2]);
-  const z1 = core + ext[0];
-  const slab = 0.95;
-
-  // Slab: two titanium fascia bands with a recessed light reveal between them, a concrete core. A twin crown's
-  // last two floors stand on two slab islands, one round each shaft, with the slot open between them.
-  const twinGh = core * 0.36;
-  const islands: Array<[number, number, number, number]> = twin
-    ? [-1, 1].map((sx) => [sx * core * 0.55 - twinGh - 1.2, sx * core * 0.55 + twinGh + 1.2, -twinGh - 1.2, twinGh + 1.2] as [number, number, number, number])
-    : [[x0, x1, z0, z1]];
-  for (const [a0, a1, b0, b1] of islands) {
-    slabBox(k, 'scifiTrim', a0, a1, 0, 0.42, b0, b1);
-    slabBox(k, 'slab', a0 + 0.12, a1 - 0.12, 0.42, 0.52, b0 + 0.12, b1 - 0.12);
-    ring(k, 'lightLine', a0 + 0.1, a1 - 0.1, b0 + 0.1, b1 - 0.1, 0.45, 0.49, 0.04);
-    slabBox(k, 'scifiTrim', a0, a1, 0.52, slab, b0, b1);
-    // Downlight line set into the soffit, a little in from the edge.
-    if (!c.runStart) ring(k, 'lightLine', a0 + 0.45, a1 - 0.45, b0 + 0.45, b1 - 0.45, -0.025, 0, 0.06);
-    if (f.claude) ring(k, 'accent', a0 - 0.03, a1 + 0.03, b0 - 0.03, b1 + 0.03, slab, slab + 0.08, 0.1);
-  }
-
+  const run = runLength(c);
+  const hs = Math.max(3.2, half * decoStep(c.fromTop, run));
+  const below = Math.max(3.2, half * decoStep(c.fromTop + 1, run));
+  const setback = !c.runStart && below > hs + 0.3;
+  const n = bays(hs * 2, c.variant.pitch ?? 2.4);
+  const p = (hs * 2) / n;
+  const sp = 0.9;
   const light = lighter(f.era, c.rand, c.variant.lights);
-  const lantern = c.top && c.crown === 'lantern';
-  // The diagrid's angled members need half a metre of headroom under a top floor's roof; the twin shafts carry no diagrid.
-  const top = c.top && !twin ? h - 0.5 : h;
-  /** A glass shaft of half-width `gh` centred at x = `cx`: a concrete core, panes and mullions on all four faces. */
-  const shaft = (gh: number, cx: number): void => {
-    k.box('slab', gh * 2 - 0.8, top - slab, gh * 2 - 0.8, M(cx, (slab + top) / 2, 0));
-    const nb = Math.max(2, Math.round((gh * 2) / 1.7));
-    const bw = (gh * 2) / nb;
-    for (let side = 0; side < 4; side++) {
-      const F = M(cx, 0, 0).multiply(face(side, gh));
-      for (let i = 0; i < nb; i++) {
-        k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-gh + bw * (i + 0.5), (slab + top) / 2, 0, 0, bw, top - slab, 1)), light(PANE_FULL));
-      }
-      for (let i = 0; i <= nb; i++) {
-        k.inst('sf:mullion', 'graphite', unitBox, F.clone().multiply(M(-gh + bw * i, (slab + top) / 2, 0.06, 0, 0.07, top - slab, 0.14)));
-      }
-    }
-  };
-  if (twin) {
-    // Split twin mast: the last two floors part into two slender shafts with a slot of sky between them,
-    // each carrying a mast up its outer edge.
-    for (const sx of [-1, 1]) {
-      shaft(twinGh, sx * core * 0.55);
-      k.box('scifiWall', 0.7, h - slab, 0.7, M(sx * (core * 0.55 + twinGh + 0.35), (slab + h) / 2, 0));
-    }
-  } else {
-    // The glass: the full core on ordinary floors, a small pavilion inside an open lantern.
-    shaft(lantern ? core * 0.55 : core, 0);
-  }
-
-  // Diagrid exoskeleton, 0.6 m outside the glass line: each floor's nodes sit half a module along from the floor
-  // below's, so the members form diamonds two storeys tall. The twin shafts stand free of it.
-  const frame = core + 0.6;
-  if (twin) {
-    const reachT = Math.max(...ext) + core;
-    return { cx: 0, cz: 0, half: reachT + 0.1, datumHalf: frame + 0.25 };
-  }
-  const modules = Math.max(2, Math.round((frame * 2) / 5));
-  const p = (frame * 2) / modules;
-  const off = (c.inRun % 2) * (p / 2);
-  const rise = top - slab;
+  k.box('slab', hs * 2 - 1.2, h, hs * 2 - 1.2, M(0, h / 2, 0));
   for (let side = 0; side < 4; side++) {
-    const F = face(side, frame);
-    for (let j = -1; j <= modules + 1; j++) {
-      const u = -frame + off + j * p;
-      if (u < -frame - 1e-6 || u > frame + 1e-6) continue;
-      for (const dir of [-1, 1]) {
-        const u1 = u + dir * (p / 2);
-        if (u1 < -frame - 1e-6 || u1 > frame + 1e-6) continue;
-        const dx = u1 - u;
-        const len = Math.hypot(dx, rise);
-        k.inst('sf:diagrid', 'scifiWall', unitBox, F.clone().multiply(ME((u + u1) / 2, slab + rise / 2, 0, 0, 0, -Math.atan2(dx, rise), 0.34, len, 0.46)));
+    const F = face(side, hs);
+    // Stone spandrel at the slab, with a bronze string line along its top.
+    k.box('scifiWall', hs * 2, sp, 0.5, F.clone().multiply(M(0, sp / 2, -0.25)));
+    for (let i = 0; i < n; i++) {
+      const u = -hs + p * (i + 0.5);
+      if (c.top) {
+        // The crown: a stone face with a lit slot recessed into it between every pair of fins.
+        k.box('scifiWall', p, h - sp, 0.5, F.clone().multiply(M(u, (sp + h) / 2, -0.25)));
+        k.box('vent', 0.16, h - sp - 0.7, 0.04, F.clone().multiply(M(u, (sp + h) / 2 - 0.1, 0.03)));
+      } else {
+        k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(u, (sp + h) / 2, -0.45, 0, p - 0.6, h - sp, 1)), light(PANE_FULL));
       }
     }
-    // Corner mast where two faces of the frame meet.
-    k.inst('sf:mast', 'scifiWall', unitBox, F.clone().multiply(M(frame, slab + rise / 2, 0, 0, 0.6, rise, 0.6)));
-    if (c.variant.seams) {
-      // A light seam set into each outward face of the mast, stopping short of the slabs.
-      const seam = rise * 0.86;
-      k.box('lightLine', 0.07, seam, 0.02, F.clone().multiply(M(frame, slab + rise / 2, 0.305)));
-      k.box('lightLine', 0.02, seam, 0.07, F.clone().multiply(M(frame + 0.305, slab + rise / 2, 0)));
+    for (let i = 0; i <= n; i++) {
+      const u = -hs + p * i;
+      const corner = i === 0 || i === n;
+      // A stone pier between the windows, and in front of it the fin that draws the shaft's vertical line.
+      k.inst('deco:pier', 'scifiWall', unitBox, F.clone().multiply(M(u, (sp + h) / 2, -0.25, 0, corner ? 1.0 : 0.5, h - sp, 0.5)));
+      k.inst('deco:fin', 'scifiTrim', unitBox, F.clone().multiply(M(u, h / 2, 0.08, 0, corner ? 0.6 : 0.26, h, 0.5)));
     }
   }
-
-  if (lantern) {
-    // Open diagrid lantern: the frame rises free round a small glass pavilion under a thin canopy with its own
-    // soffit downlight.
-    const ch = frame + 0.25;
-    slabBox(k, 'scifiBand', -ch, ch, h - 0.5, h, -ch, ch);
-    ring(k, 'lightLine', -ch + 0.35, ch - 0.35, -ch + 0.35, ch - 0.35, h - 0.525, h - 0.5, 0.06);
-  } else if (c.top && c.crown === 'ring') {
-    // Cantilevered ring: a halo deck thrown well clear of the frame, scaled to the shaft, under a roof slab.
-    const ch = frame + 0.25;
-    const out = frame + Math.max(4, core * 0.55);
-    ring(k, 'scifiBand', -out, out, -out, out, h * 0.42, h * 0.42 + 0.55, out - frame - 0.4);
-    ring(k, 'lightLine', -out + 0.2, out - 0.2, -out + 0.2, out - 0.2, h * 0.42 - 0.03, h * 0.42, 0.06);
-    slabBox(k, 'scifiBand', -ch, ch, h - 0.5, h, -ch, ch);
-  } else if (c.top && c.crown === 'stepped') {
-    // Stepped spire: the narrowest step carries a needle to the top of the floor.
-    slabBox(k, 'scifiBand', -frame, frame, h - 0.4, h - 0.1, -frame, frame);
-    slabBox(k, 'scifiWall', -0.45, 0.45, h - 0.1, h, -0.45, 0.45);
+  k.add('scifiBand', squareSweep(hs, [[-0.05, sp - 0.12], [0.1, sp - 0.12], [0.1, sp], [-0.05, sp]]));
+  claudeAccent(k, f, hs, sp + 0.04, 0.22, 0.1);
+  if (setback) {
+    // The terrace left by the setback: its deck, a bronze parapet at the old face, stone pylons at the corners
+    // and bridges from them to the shaft, so the masses read as one stepped composition.
+    slabBox(k, 'slab', -below, below, 0, 0.3, -below, below);
+    ring(k, 'scifiBand', -below, below, -below, below, 0.3, 1.1, 0.15);
+    if (c.fromTop >= 2 && run >= 6) {
+      const py = 1.3;
+      for (const [x, z] of corners(below, py / 2)) {
+        k.box('scifiWall', py, h, py, M(x, h / 2, z));
+        k.box('scifiTrim', py + 0.3, 0.25, py + 0.3, M(x, h - 0.125, z));
+        // The bridge runs from the pylon to the nearer face of the shaft.
+        const ax = Math.abs(x) - py / 2 - hs;
+        k.box('scifiTrim', ax, 0.5, 0.9, M(Math.sign(x) * (hs + ax / 2), h * 0.6, z));
+        k.box('scifiTrim', 0.9, 0.5, ax, M(x, h * 0.6, Math.sign(z) * (hs + ax / 2)));
+      }
+    }
   }
-  const reach = Math.max(...ext, c.top && c.crown === 'ring' ? Math.max(4, core * 0.55) + 0.6 : 0) + core;
-  // The datum wraps the diagrid just clear of its members. Every slab reaches at least 1.5 m past the core, so
-  // a band here always tucks under the slab of the floor above (whichever side that floor throws its terrace),
-  // and on the crown it sits under the canopy.
-  return { cx: 0, cz: 0, half: reach + 0.1, datumHalf: frame + 0.25 };
+  if (c.top) {
+    // Stepped cap: a dark steel roof plate with a bronze edge, a stone block above it, warning lights at the corners.
+    slabBox(k, 'roof', -hs - 0.3, hs + 0.3, h - 0.45, h - 0.25, -hs - 0.3, hs + 0.3);
+    ring(k, 'scifiBand', -hs - 0.35, hs + 0.35, -hs - 0.35, hs + 0.35, h - 0.45, h - 0.3, 0.1);
+    slabBox(k, 'scifiWall', -hs * 0.7, hs * 0.7, h - 0.25, h - 0.06, -hs * 0.7, hs * 0.7);
+    slabBox(k, 'roof', -hs * 0.72, hs * 0.72, h - 0.06, h, -hs * 0.72, hs * 0.72);
+    beacons(k, corners(hs + 0.35, 0.2), h);
+  }
+  return { cx: 0, cz: 0, half: (setback ? below : hs) + 0.5, datumHalf: hs + 0.42 };
 };
+
+// ---- ziggurat
+
+/**
+ * A megastructure pyramid: every floor's lower half is a sloped face of
+ * dark basalt concrete, battered so the whole run tapers to a flat crown;
+ * above it a band of amber-lit glazing is set back under the lip of the
+ * next floor, so the faces read as a lattice of lit floors. Every third
+ * floor is a terrace with warm light vents set into the slope.
+ */
+const ziggurat: EraBuilder = (k, w, h, f, c) => {
+  const half = w / 2;
+  const run = runLength(c);
+  const batter = Math.min(0.42, (half * 0.6) / run);
+  const h0 = Math.max(3.5, half - batter * c.inRun);
+  const h1 = Math.max(3.2, h0 - batter);
+  const terrace = c.inRun % 3 === 2;
+  const sp = Math.min(h * 0.55, 2.4);
+  // The glazing stands just inside the line the next floor's slope grows from, so the pyramid's face runs on
+  // unbroken: slope, a band of lit glass, slope again.
+  const gl = h1 - 0.12;
+  const n = bays(gl * 2, c.variant.pitch ?? 1.6);
+  const p = (gl * 2) / n;
+  const light = lighter(f.era, c.rand, c.variant.lights);
+  k.box('slab', gl * 2 - 0.8, h, gl * 2 - 0.8, M(0, h / 2, 0));
+  // The sloped face, from the floor below's line out at h0 up to the glass line at h1.
+  k.add('scifiWall', frustum(h0 * 2, sp, h0 * 2, (h1 * 2) / (h0 * 2)), M(0, sp / 2, 0));
+  const slope = Math.atan2(h0 - h1, sp);
+  for (let side = 0; side < 4; side++) {
+    const F = face(side, gl);
+    for (let i = 0; i < n; i++) {
+      const u = -gl + p * (i + 0.5);
+      k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(u, (sp + h - 0.2) / 2, 0, 0, p, h - 0.2 - sp, 1)), light(PANE_FULL));
+    }
+    for (let i = 0; i <= n; i++) {
+      k.inst('zig:mullion', 'scifiTrim', unitBox, F.clone().multiply(M(-gl + p * i, (sp + h - 0.2) / 2, 0.05, 0, 0.08, h - 0.2 - sp, 0.12)));
+    }
+    if (terrace || c.top) {
+      // Light vents set into the slope every few metres, tilted with the face, so the terraces read as fire-lit.
+      const G = face(side, 0);
+      const nv = Math.max(2, Math.round((h0 * 2) / 3.6));
+      for (let i = 0; i < nv; i++) {
+        const u = -h0 + ((h0 * 2) / nv) * (i + 0.5);
+        const y = sp * 0.5;
+        const d = h0 - (h0 - h1) * (y / sp) + 0.02;
+        k.add('vent', unitBox(), G.clone().multiply(ME(u, y, d, -slope, 0, 0, 1.3, 0.34, 0.08)));
+      }
+    }
+  }
+  // A thin dark edge where the slope above meets the glass; a terrace throws a ledge out with a warm line under it.
+  const lip = terrace ? 0.6 : 0;
+  slabBox(k, 'scifiTrim', -h1 - lip, h1 + lip, h - 0.2, h, -h1 - lip, h1 + lip);
+  if (terrace) ring(k, 'vent', -h1 - lip + 0.1, h1 + lip - 0.1, -h1 - lip + 0.1, h1 + lip - 0.1, h - 0.22, h - 0.2, 0.05);
+  claudeAccent(k, f, h1 + lip, h - 0.1, 0.12, 0.08);
+  if (c.top) {
+    // The crown deck: a dark steel plate over the last slope, a lit slot round a raised centre, lights at the corners.
+    slabBox(k, 'roof', -h1 - lip, h1 + lip, h - 0.2, h - 0.1, -h1 - lip, h1 + lip);
+    ring(k, 'vent', -h1 * 0.5 - 0.06, h1 * 0.5 + 0.06, -h1 * 0.5 - 0.06, h1 * 0.5 + 0.06, h - 0.1, h - 0.06, 0.05);
+    slabBox(k, 'roof', -h1 * 0.5, h1 * 0.5, h - 0.1, h, -h1 * 0.5, h1 * 0.5);
+    beacons(k, corners(h1 + lip, 0.25), h);
+  }
+  return { cx: 0, cz: 0, half: h0 + 0.1, datumHalf: h1 + lip + 0.1 };
+};
+
+// ---- needle
+
+/**
+ * A slender tapering tower: the shaft narrows steadily to the roof, drawn
+ * in fine titanium lines (mullions less than a metre apart), with an
+ * observation pod thrown out every ninth floor and warning lights at the
+ * top. It stays at the floors' own height: no mast.
+ */
+const needle: EraBuilder = (k, w, h, f, c) => {
+  const half = w / 2;
+  const run = runLength(c);
+  const hs = Math.max(2.8, half * (1 - (0.42 * c.inRun) / Math.max(1, run)));
+  const pod = run >= 9 && c.inRun % 9 === 5 && !c.top && !c.datum;
+  const n = bays(hs * 2, c.variant.pitch ?? 0.8);
+  const p = (hs * 2) / n;
+  const edge = 0.32;
+  const light = lighter(f.era, c.rand, c.variant.lights);
+  k.box('slab', hs * 2 - 0.6, h, hs * 2 - 0.6, M(0, h / 2, 0));
+  // A titanium slab edge at every floor, the horizontal line the fine verticals hang from.
+  k.add('scifiWall', squareSweep(hs, [[-0.5, 0], [0.2, 0], [0.24, edge / 2], [0.2, edge], [-0.5, edge]]));
+  for (let side = 0; side < 4; side++) {
+    const F = face(side, hs);
+    for (let i = 0; i < n; i++) {
+      k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-hs + p * (i + 0.5), (edge + h) / 2, 0, 0, p, h - edge, 1)), light(PANE_FULL));
+    }
+    for (let i = 0; i <= n; i++) {
+      k.inst('ndl:mullion', 'scifiTrim', unitBox, F.clone().multiply(M(-hs + p * i, (edge + h) / 2, 0.1, 0, 0.07, h - edge, 0.26)));
+    }
+  }
+  claudeAccent(k, f, hs + 0.24, edge / 2 - 0.05, 0.1, 0.1);
+  if (pod) {
+    // Observation pod: a glazed ring deck thrown clear of the shaft on a titanium plate, its soffit lit.
+    const r = hs + 2.2;
+    slabBox(k, 'scifiTrim', -r, r, 0.4, 0.75, -r, r);
+    ring(k, 'lightLine', -r + 0.5, r - 0.5, -r + 0.5, r - 0.5, 0.37, 0.4, 0.06);
+    slabBox(k, 'scifiWall', -r, r, h - 0.55, h - 0.2, -r, r);
+    const m = bays(r * 2, 1.6);
+    const q = (r * 2) / m;
+    for (let side = 0; side < 4; side++) {
+      const F = face(side, r);
+      for (let i = 0; i < m; i++) k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-r + q * (i + 0.5), (0.75 + h - 0.55) / 2, 0, 0, q, h - 1.3, 1)), light(PANE_FULL));
+      for (let i = 0; i <= m; i++) k.inst('ndl:mullion', 'scifiTrim', unitBox, F.clone().multiply(M(-r + q * i, (0.75 + h - 0.55) / 2, 0.06, 0, 0.07, h - 1.3, 0.18)));
+    }
+  }
+  if (c.top) {
+    // A dark steel cap over the last floor, edged in the trim metal, a low plant block, warning lights at the corners.
+    slabBox(k, 'roof', -hs - 0.2, hs + 0.2, h - 0.5, h - 0.25, -hs - 0.2, hs + 0.2);
+    ring(k, 'scifiTrim', -hs - 0.24, hs + 0.24, -hs - 0.24, hs + 0.24, h - 0.5, h - 0.38, 0.08);
+    slabBox(k, 'roof', -hs * 0.4, hs * 0.4, h - 0.25, h, -hs * 0.4, hs * 0.4);
+    beacons(k, corners(hs + 0.2, 0.2), h);
+  }
+  return { cx: 0, cz: 0, half: (pod ? hs + 2.2 : hs) + 0.3, datumHalf: hs + 0.12 };
+};
+
+// ---- arcology
+
+/**
+ * A brutalist arcology: raw board-marked concrete, a deep slab at every
+ * floor overhanging the face, piers between recesses more than a metre
+ * deep with planted ledges at their feet and warm rooms behind, rain
+ * stains under every slab, and cantilevered habitation pods hung off the
+ * piers with lit undersides. The roof carries a parapet and a service block.
+ */
+const arcology: EraBuilder = (k, w, h, f, c) => {
+  const half = w / 2;
+  const over = 0.9;
+  const recess = 1.3;
+  const n = bays(w, c.variant.pitch ?? 4.6);
+  const p = w / n;
+  const light = lighter(f.era, c.rand, c.variant.lights);
+  const pods = c.inRun % 2 === 1 && !c.datum && !c.top;
+  const podSides = pods ? [Math.floor(c.rand() * 4), (Math.floor(c.rand() * 4) + 2) % 4, Math.floor(c.rand() * 4)] : [];
+  const podBays = pods ? [Math.floor(c.rand() * n), Math.floor(c.rand() * n)] : [];
+  k.box('slab', w - 2 * recess - 0.4, h, w - 2 * recess - 0.4, M(0, h / 2, 0));
+  slabBox(k, 'scifiTrim', -half - over, half + over, 0, 0.5, -half - over, half + over);
+  for (let side = 0; side < 4; side++) {
+    const F = face(side, half);
+    for (let i = 0; i < n; i++) {
+      const u = -half + p * (i + 0.5);
+      // The recess: a concrete ledge with planting on it, and the room's window behind.
+      k.box('scifiTrim', p - 0.8, 0.35, 1.0, F.clone().multiply(M(u, 0.675, -recess + 0.5)));
+      k.box('scifiBand', p - 1.0, 0.3, 0.8, F.clone().multiply(M(u, 1.0, -recess + 0.5)));
+      k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(u, (1.15 + h - 0.1) / 2, -recess + 0.02, 0, p - 0.8, h - 1.25, 1)), light(PANE_FULL));
+      // The spandrel over the window, under the slab above.
+      k.box('scifiWall', p - 0.8, 0.5, 0.4, F.clone().multiply(M(u, h - 0.25, -recess + 0.2)));
+      if (podSides.includes(side) && (podBays.includes(i) || i === Math.floor(n / 2))) {
+        // A habitation pod cantilevered off the piers: a concrete box with a lit room at its end and a lit soffit.
+        const pw = Math.min(p - 1.0, 3.4);
+        const ph = h - 1.2;
+        const pz = 0.3 + 1.3;
+        k.inst('pod', 'scifiWall', unitBox, F.clone().multiply(M(u, 0.6 + ph / 2, pz, 0, pw, ph, 2.6)));
+        k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(u, 0.6 + ph / 2, pz + 1.31, 0, pw - 0.5, ph - 0.6, 1)), light(PANE_FULL));
+        k.box('lightLine', pw - 0.6, 0.03, 1.6, F.clone().multiply(M(u, 0.6 - 0.015, pz)));
+      }
+    }
+    for (let i = 0; i <= n; i++) {
+      const u = -half + p * i;
+      k.box('scifiWall', 0.8, h - 0.5, recess + 0.3, F.clone().multiply(M(u, (0.5 + h) / 2, -recess / 2 + 0.15)));
+      // Rain off the slab above has run down the pier from its top.
+      const sh = 1.4 + 0.6 * c.rand();
+      k.stain('scifiWall', 0.7, sh, F.clone().multiply(M(u + (c.rand() - 0.5) * 0.1, h - sh / 2 - 0.02, 0.312)), 0.5 + 0.2 * c.rand());
+    }
+  }
+  claudeAccent(k, f, half + over, 0.5 - 0.14, 0.1, 0.1);
+  if (c.top) {
+    ring(k, 'scifiTrim', -half - over, half + over, -half - over, half + over, h - 1.0, h, 0.35);
+    slabBox(k, 'slab', -half - over + 0.35, half + over - 0.35, h - 1.0, h - 0.85, -half - over + 0.35, half + over - 0.35);
+    k.box('scifiWall', half * 0.7, 1.0, half * 0.55, M(-half * 0.25, h - 0.5, half * 0.2));
+    k.box('scifiTrim', half * 0.3, 0.7, half * 0.3, M(half * 0.5, h - 0.65, -half * 0.45));
+    beacons(k, corners(half + over, 0.3), h);
+  }
+  return { cx: 0, cz: 0, half: half + over + (pods ? 2.9 : 0.1), datumHalf: half + 0.35 };
+};
+
+// ---- organic
+
+/**
+ * A biomorphic tower on a round plan: a white glazed-ceramic shell that
+ * swells a little at mid-height and tapers to a shallow dome, each floor a
+ * band of glazing between ceramic spandrels, under a ribbed exoskeleton
+ * whose ribs lean a few degrees per floor so they sweep up the shell in
+ * curves.
+ */
+const organic: EraBuilder = (k, w, h, f, c) => {
+  const half = w / 2;
+  const run = runLength(c);
+  const radius = (i: number): number => {
+    const t = i / Math.max(1, run);
+    return Math.max(2.6, half * 0.96 * (1 + 0.14 * Math.sin(Math.PI * t)) * (1 - 0.3 * t));
+  };
+  const r0 = radius(c.inRun);
+  const r1 = radius(c.inRun + 1);
+  const rg = Math.min(r0, r1) - 0.4;
+  const sp = 1.0;
+  const light = lighter(f.era, c.rand, c.variant.lights);
+  k.add('slab', lathe([[0, 0], [rg - 0.45, 0], [rg - 0.45, h], [0, h]], 48));
+  // The spandrel shell, curving from the slab line in to the glass, and the lip the next floor's shell grows from.
+  k.add('scifiWall', lathe([[rg - 0.3, sp + 0.2], [rg + 0.03, sp + 0.2], [rg + 0.03, sp], [(r0 + rg) / 2 + 0.1, sp * 0.55], [r0, 0.0], [r0 - 0.6, 0]], 64));
+  const top = c.top ? h - 0.45 : h;
+  k.add('scifiWall', lathe([[rg - 0.3, top - 0.3], [rg + 0.03, top - 0.3], [r1, top - 0.12], [r1, top], [r1 - 0.6, top]], 64));
+  const nP = Math.max(8, Math.round((2 * Math.PI * rg) / (c.variant.pitch ?? 1.8)));
+  const chord = 2 * rg * Math.sin(Math.PI / nP);
+  const gy0 = sp + 0.2;
+  const gy1 = top - 0.3;
+  for (let i = 0; i < nP; i++) {
+    const a = ((i + 0.5) / nP) * Math.PI * 2;
+    k.pane('pane:scifi', 'scifiWin', M(rg * Math.sin(a), (gy0 + gy1) / 2, rg * Math.cos(a), a, chord, gy1 - gy0, 1), light(PANE_FULL));
+    const b = (i / nP) * Math.PI * 2;
+    k.inst('org:mullion', 'graphite', unitBox, M((rg + 0.04) * Math.sin(b), (gy0 + gy1) / 2, (rg + 0.04) * Math.cos(b), b, 0.07, gy1 - gy0, 0.12));
+  }
+  // The exoskeleton: ribs leaning with the twist, each a straight piece of a helix one floor tall.
+  const nR = 12;
+  const twist = 0.045;
+  const R = Math.max(r0, r1) + 0.22;
+  const lean = Math.atan2(R * twist, h);
+  // Shortened so the leaning box's corners stay inside the floor's height.
+  const len = (h - 0.4 * Math.sin(lean)) / Math.cos(lean);
+  for (let j = 0; j < nR; j++) {
+    const a = c.inRun * twist + (j / nR) * Math.PI * 2 + twist / 2;
+    k.inst('org:rib', 'scifiTrim', unitBox, ME(R * Math.sin(a), h / 2, R * Math.cos(a), 0, a, -lean, 0.4, len, 0.44));
+  }
+  claudeAccent(k, f, rg + 0.1, sp + 0.22, 0.18, 0.1);
+  if (c.top) {
+    // A shallow ceramic dome over the last lip, a titanium ring at its spring, warning lights round the ring.
+    k.add('scifiBand', lathe([[r1 - 0.12, top], [r1 + 0.1, top], [r1 + 0.1, top + 0.08], [r1 - 0.12, top + 0.08]], 64));
+    k.add('scifiWall', lathe([[r1 - 0.2, top + 0.08], [r1 * 0.8, h - 0.2], [r1 * 0.45, h - 0.04], [0, h]], 64));
+    beacons(k, [0, 1, 2, 3].map((i) => [(r1 - 0.25) * Math.sin((i / 4) * Math.PI * 2 + Math.PI / 4), (r1 - 0.25) * Math.cos((i / 4) * Math.PI * 2 + Math.PI / 4)] as [number, number]), top + 0.36);
+  }
+  return { cx: 0, cz: 0, half: R + 0.3, datumHalf: R + 0.3, round: true };
+};
+
+// ---- cluster
+
+/** Where a cluster's boxes sit round the core, floor by floor: eight bearings, taken three apart so neighbours jump. */
+const BEARINGS: Array<[number, number]> = [[1, 0], [0.7, 0.7], [0, 1], [-0.7, 0.7], [-1, 0], [-0.7, -0.7], [0, -1], [0.7, -0.7]];
+
+/**
+ * Stacked cantilevers: glazed carbon boxes climb a dark core, each floor
+ * thrown out on a different bearing and a little larger or smaller than
+ * the last, so the stack reads as offset volumes with their undersides lit. The core's corners carry light
+ * seams. The roof box stands centred under a canopy.
+ */
+const cluster: EraBuilder = (k, w, h, f, c) => {
+  const half = w / 2;
+  const core = Math.max(3, half * 0.44);
+  const centred = c.datum || c.top;
+  const [ox, oz] = centred ? [0, 0] : BEARINGS[(c.inRun * 3) % BEARINGS.length];
+  const reach = half * (0.36 + 0.1 * (c.inRun % 2));
+  const bx = ox * reach;
+  const bz = oz * reach;
+  const bh = c.top ? half * 0.54 : half * (0.56 + 0.08 * ((c.inRun + 1) % 2));
+  const light = lighter(f.era, c.rand, c.variant.lights);
+  k.box('slab', core * 2 - 0.3, h, core * 2 - 0.3, M(0, h / 2, 0));
+  k.box('scifiWall', core * 2, h, core * 2, M(0, h / 2, 0));
+  if (c.variant.seams) {
+    for (const [x, z] of corners(core, 0)) {
+      k.box('lightLine', 0.06, h - 0.5, 0.06, M(x * (1 + 0.02 / core), h / 2, z * (1 + 0.02 / core)));
+    }
+  }
+  // The box: a floor plate, a carbon fascia over it, glazing above; the lower storey of a pair lights its underside.
+  slabBox(k, 'scifiTrim', bx - bh, bx + bh, 0, 0.35, bz - bh, bz + bh);
+  ring(k, 'lightLine', bx - bh + 0.4, bx + bh - 0.4, bz - bh + 0.4, bz + bh - 0.4, -0.03, 0, 0.06);
+  ring(k, 'scifiWall', bx - bh, bx + bh, bz - bh, bz + bh, 0.35, 0.7, 0.25);
+  const gt = c.top ? h - 0.4 : h;
+  const n = bays(bh * 2, c.variant.pitch ?? 1.7);
+  const p = (bh * 2) / n;
+  for (let side = 0; side < 4; side++) {
+    const F = M(bx, 0, bz).multiply(face(side, bh));
+    for (let i = 0; i < n; i++) k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-bh + p * (i + 0.5), (0.7 + gt) / 2, -0.02, 0, p, gt - 0.7, 1)), light(PANE_FULL));
+    for (let i = 0; i <= n; i++) k.inst('cl:mullion', 'scifiTrim', unitBox, F.clone().multiply(M(-bh + p * i, (0.7 + gt) / 2, 0.05, 0, 0.07, gt - 0.7, 0.14)));
+  }
+  if (!c.top) slabBox(k, 'roof', bx - bh, bx + bh, h - 0.25, h, bz - bh, bz + bh);
+  claudeAccent(k, f, bh, 0.35 + 0.04, 0.2, 0.1);
+  if (c.top) {
+    // The roof pavilion's canopy, thrown past the box, with a lit soffit and the warning lights at its corners.
+    const ch = bh + 0.8;
+    slabBox(k, 'roof', -ch, ch, h - 0.4, h - 0.1, -ch, ch);
+    slabBox(k, 'scifiBand', -ch, ch, h - 0.1, h, -ch, ch);
+    ring(k, 'lightLine', -ch + 0.35, ch - 0.35, -ch + 0.35, ch - 0.35, h - 0.425, h - 0.4, 0.06);
+    beacons(k, corners(ch, 0.2), h);
+  }
+  const far = Math.max(core, Math.abs(bx) + bh, Math.abs(bz) + bh);
+  return { cx: bx / 2, cz: bz / 2, half: far - Math.max(Math.abs(bx), Math.abs(bz)) / 2 + 0.2, datumHalf: bh + 0.12 };
+};
+
+const FAMILY_BUILDERS: Record<Family, EraBuilder> = { deco, ziggurat, needle, arcology, organic, cluster };
+
+/** Sci-fi: the floor is built in its variant's family (see FAMILIES in variants.ts). */
+const scifi: EraBuilder = (k, w, h, f, c) => FAMILY_BUILDERS[c.variant.family ?? 'cluster'](k, w, h, f, c);
 
 export const ERA_BUILDERS: Record<Era, EraBuilder> = { stone, brick, glass, titanium, scifi };
 

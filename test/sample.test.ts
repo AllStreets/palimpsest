@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { SAMPLE_MARKER } from '../engine/sample.js';
-import { isRealDataHome } from '../tools/sample.js';
+import { isRealDataHome } from '../engine/home.js';
 
 let tempDir: string;
 let fakeUserHome: string;

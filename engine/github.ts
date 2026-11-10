@@ -22,6 +22,8 @@ export interface PR {
   mergedAt: string;
   mergeSha: string | null;
   url: string;
+  /** The PR's head branch; the city's own PRs come from `palimpsest/<jobId>`. */
+  headRefName: string;
 }
 
 interface RepoRow {
@@ -38,6 +40,7 @@ interface PrListRow {
   mergedAt: string;
   mergeCommit: { oid: string } | null;
   url: string;
+  headRefName: string;
 }
 
 /** Classifies a thrown spawn error (e.g. the runner rejecting because the binary itself is missing) into a GhError. */
@@ -157,7 +160,7 @@ export async function mergedPRs(fullName: string): Promise<PR[]> {
     '--limit',
     '2000',
     '--json',
-    'number,title,mergedAt,mergeCommit,url',
+    'number,title,mergedAt,mergeCommit,url,headRefName',
   ]);
   const rows = JSON.parse(result.stdout) as PrListRow[];
   return rows.map((row) => ({
@@ -166,5 +169,6 @@ export async function mergedPRs(fullName: string): Promise<PR[]> {
     mergedAt: row.mergedAt,
     mergeSha: row.mergeCommit?.oid ?? null,
     url: row.url,
+    headRefName: row.headRefName ?? '',
   }));
 }

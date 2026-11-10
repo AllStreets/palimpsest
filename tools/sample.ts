@@ -22,14 +22,15 @@
  * PALIMPSEST_HOME, and use sampleGh (engine/sample.ts) as a stand-in for
  * every gh and git call.
  */
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { PR } from '../engine/github.js';
 import type { Commit } from '../engine/mirror.js';
 import type { SampleRepo } from '../engine/sample.js';
-import { defaultHome } from '../engine/home.js';
+import { isRealDataHome } from '../engine/home.js';
+import { repoMarketDefaults } from '../shared/market-rules.js';
 import { SAMPLE, SAMPLE_MARKER } from '../engine/sample.js';
 import type { Repo, TowerSpec } from '../shared/types.js';
 
@@ -90,7 +91,7 @@ export function sampleHistory(s: SampleRepo): { commits: Commit[]; prs: PR[] } {
     });
     if (i > 0 && r() < s.prShare) {
       prNumber += 1 + Math.floor(r() * 3);
-      prs.push({ number: prNumber, title: subject, mergedAt: new Date(at).toISOString(), mergeSha: sha, url: `https://github.com/${s.fullName}/pull/${prNumber}` });
+      prs.push({ number: prNumber, title: subject, mergedAt: new Date(at).toISOString(), mergeSha: sha, url: `https://github.com/${s.fullName}/pull/${prNumber}`, headRefName: `feature/${prNumber}` });
     }
   });
   return { commits, prs };
@@ -143,6 +144,8 @@ export async function seedSample(now: number = Date.now(), repos: SampleRepo[] =
       error: null,
       connectedAt: at,
       analyzedAt: at,
+      ...repoMarketDefaults(),
+      joinedAt: at,
     };
     const tower: TowerSpec = {
       id: `${s.fullName}#founding`,
@@ -197,24 +200,6 @@ export async function shrinkSample(): Promise<void> {
 }
 
 // ---------------------------------------------------------------- command line
-
-/**
- * `p` with every symlink resolved, as far up as the path exists (a folder
- * still to be made keeps its own name under its real parent), in lower case
- * because the Mac's disk ignores case.
- */
-function canonical(p: string): string {
-  const abs = resolve(p);
-  if (existsSync(abs)) return realpathSync.native(abs).toLowerCase();
-  const parent = dirname(abs);
-  if (parent === abs) return abs.toLowerCase();
-  return join(canonical(parent), basename(abs).toLowerCase());
-}
-
-/** True when `dir` is the real data home, however it is spelled: through a symlink, a parent step or another letter case. */
-export function isRealDataHome(dir: string, real: string = defaultHome()): boolean {
-  return canonical(dir) === canonical(real);
-}
 
 async function main(): Promise<void> {
   const dir = process.argv[2];
