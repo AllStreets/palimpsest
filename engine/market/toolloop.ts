@@ -16,6 +16,7 @@ import { paths } from '../home.js';
 import { DEFAULT_TOOL_MS, execFileTool, execTool, reapRun, type FileOp, type ToolResult } from './broker.js';
 import type { RunLogLine, Usage, WorkInput } from './provider.js';
 import { realish } from './sandbox.js';
+import { planSection } from './quote.js';
 
 /* ------------------------------------------------------------------ */
 /* The transport                                                       */
@@ -236,7 +237,7 @@ export function loopWorkPrompt(i: WorkInput): string {
     `Acceptance:\n${list(i.job.acceptance)}`,
     `Scope (the only paths you may change):\n${list(i.job.scope)}`,
   ];
-  if (i.plan) parts.push(`Your plan from the bid:\n${i.plan.trim()}`);
+  if (i.plan) parts.push(planSection(i.plan));
   if (i.examples.length) parts.push(`Earlier work of your firm that merged:\n${list(i.examples)}`);
   parts.push(
     [

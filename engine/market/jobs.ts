@@ -320,6 +320,19 @@ export function dismissProposed(jobId: string): Job {
 // --------------------------------------------------------------- transitions
 
 /** What the GitHub write-back needs that the job itself does not hold. */
+/**
+ * Ties a job to the run working on it without moving the job (the runner,
+ * Task 13, while the job is still `awarded`). The move to `running`, and
+ * every later one, goes through transition().
+ */
+export function attachRun(jobId: string, runId: string | null): Job | null {
+  const cur = job(jobId);
+  if (!cur) return null;
+  const next: Job = { ...cur, runId };
+  save(next);
+  return next;
+}
+
 export interface TransitionNote {
   /** The merged PR, commented on the issue. */
   prUrl?: string;

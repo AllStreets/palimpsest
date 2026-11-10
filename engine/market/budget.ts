@@ -588,6 +588,15 @@ export function acquire(
   });
 }
 
+/**
+ * Aborts a lease and every sub-lease under it (the runner's kill: the stop
+ * file, him, a halt). The slot stays held until the holder releases it.
+ */
+export function abortLease(lease: Lease, reason: Error): void {
+  const rec = recOf.get(lease);
+  if (rec && !rec.controller.signal.aborted) rec.controller.abort(reason);
+}
+
 /** Leases live now (runs, plan calls and sub-leases), for keep-awake. */
 export function liveLeaseCount(): number {
   return live.size;

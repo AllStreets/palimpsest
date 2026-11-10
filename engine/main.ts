@@ -2,12 +2,16 @@ import { existsSync } from 'node:fs';
 
 import { paths } from './home.js';
 import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
+import { installDeps } from './market/install.js';
+import { createScheduler, failInterruptedRuns } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
 
 async function main(): Promise<void> {
   // An analysis the last engine was running when it stopped can never finish: say so, with a Retry.
   failInterruptedAnalyses();
+  // Likewise a run the last engine had live: it ends crashed and its job returns to the board once (ruling 16).
+  failInterruptedRuns();
   // The five firms are seeded here and only here (never inside startServer, so tests never run ollama list).
   // An agent whose Ollama model is not installed seeds retired; seeding is idempotent per firm.
   const installed = await installedModels();
@@ -18,11 +22,25 @@ async function main(): Promise<void> {
   const stopped = existsSync(paths().stop);
   // eslint-disable-next-line no-console
   console.log(`Palimpsest engine listening on 127.0.0.1:${port} (stop file ${stopped ? 'present' : 'absent'})`);
+  // The scheduler always starts; each tick does nothing while the stop file is set, so clearing it
+  // resumes the market without a restart. Inspection (Task 15) and shipping (Task 16) are wired in
+  // when they exist; until then a run that reaches them ends crashed, never shipped.
+  const scheduler = createScheduler({
+    installDeps,
+    inspect: async () => {
+      throw new Error('The inspection guild is not built yet, so nothing is shipped.');
+    },
+    ship: async () => {
+      throw new Error('Shipping is not built yet.');
+    },
+  });
+  scheduler.start();
 
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
+    scheduler.stop();
     // eslint-disable-next-line no-console
     console.log(`Palimpsest engine received ${signal}, shutting down`);
     void close().then(

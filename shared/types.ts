@@ -247,6 +247,8 @@ export interface Run {
   inspectionId: string | null;
   scar: boolean;
   unattended: boolean;
+  /** The agent's own summary of its change (model output: shown as data, never run). */
+  summary?: string | null;
 }
 
 export type CheckName = 'install' | 'test' | 'typecheck' | 'lint' | 'build' | 'review' | 'scope' | 'design';

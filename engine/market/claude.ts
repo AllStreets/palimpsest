@@ -40,6 +40,7 @@ import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
 import type { JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
 import { CLAUDE_TMP, detectToolchains, proxyUrl, realish, SYSTEM_PATH, wrap, type CliProfileInput } from './sandbox.js';
 import { controlFiles } from './worktree.js';
+import { planSection } from './quote.js';
 
 /* ------------------------------------------------------------------ */
 /* Fixed values                                                        */
@@ -540,7 +541,7 @@ function workPrompt(i: WorkInput): string {
     `Acceptance:\n${list(i.job.acceptance)}`,
     `Scope (the only paths you may change):\n${list(i.job.scope)}`,
   ];
-  if (i.plan) parts.push(`Your plan from the bid:\n${i.plan.trim()}`);
+  if (i.plan) parts.push(planSection(i.plan));
   if (i.examples.length) parts.push(`Earlier work of your firm that merged:\n${list(i.examples)}`);
   parts.push(
     [

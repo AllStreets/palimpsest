@@ -399,6 +399,21 @@ export function disconnect(fullName: string): void {
   emit('repo.disconnected', { repo: updated });
 }
 
+/** The stored repo, or null when it was never connected. */
+export function getRepo(fullName: string): Repo | null {
+  return loadRepo(fullName);
+}
+
+/**
+ * Writes the market state of a repo (its halt and its strikes). The caller
+ * records and emits what it means (`repo.halted`, `repo.resumed`).
+ */
+export function updateRepoMarket(fullName: string, p: Partial<Pick<Repo, 'halted' | 'strikes'>>): Repo {
+  const repo = loadRepo(fullName);
+  if (!repo) throw new Error(`updateRepoMarket: ${fullName} has not been connected`);
+  return saveRepo({ ...repo, ...p });
+}
+
 /**
  * Merges `p` into the stored repo's pushMode/root and emits `repo.patched`.
  * A new root restyles the standing tower too (the floors are unchanged), so
