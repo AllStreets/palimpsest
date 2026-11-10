@@ -362,6 +362,23 @@ export function toolProfile(o: ProfileInput): string {
   return lines.join('\n');
 }
 
+/** Where macOS records which shell `/bin/sh` runs (a shim that reads it and execs that shell). */
+export const SH_SELECT = '/private/var/select/sh';
+
+/**
+ * The shell `/bin/sh` hands over to, resolved now (on this Mac `/bin/bash`),
+ * or null when the select link is missing. The CLI profile allows exec of
+ * `/bin/sh` and of this one shell only, so Claude Code can start the
+ * PreToolUse hook; the model itself has no Bash tool (ruling 19).
+ */
+export function selectedShell(): string | null {
+  try {
+    return realpathSync.native(SH_SELECT);
+  } catch {
+    return null;
+  }
+}
+
 /** The claude runtime paths under `home`, resolved. */
 export function claudeRuntimePaths(home: string): string[] {
   return CLAUDE_RUNTIME_PATHS.map((p) => join(realish(home), p));
@@ -379,8 +396,9 @@ export function cliProfile(o: CliProfileInput): string {
   const isRepo = work === join(r.runRoot, 'repo');
   const lines = header('cli', r);
 
-  lines.push('; exec: only the claude binary, security (his login) and node (the hook and the broker client)');
-  const execs = new Set([o.claudeBin, claudeBin, '/usr/bin/security', o.nodeBin, nodeBin].map((p) => resolve(p)));
+  lines.push('; exec: only the claude binary, security (his login), node (the hook and the broker client), and /bin/sh with the one shell it selects (claude starts hooks through it)');
+  const shell = selectedShell();
+  const execs = new Set([o.claudeBin, claudeBin, '/usr/bin/security', o.nodeBin, nodeBin, '/bin/sh', ...(shell ? [shell] : [])].map((p) => resolve(p)));
   lines.push(`(allow process-exec ${[...execs].map(lit).join(' ')})`);
   lines.push('');
 
@@ -388,6 +406,7 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push('; the claude install, his claude login state and the runtime paths');
   lines.push(`(allow file-read* ${sub(dirname(claudeBin))} ${lit(o.claudeBin)} ${sub(dirname(nodeBin))} ${rx('^' + reEscape(claudeJson) + '[^/]*$')} ${runtime.map(sub).join(' ')})`);
   lines.push(`(allow file-read-metadata ${lit(claudeDir)})`);
+  lines.push(`(allow file-read* ${lit(SH_SELECT)})`);
   if (!isRepo) lines.push(`(allow file-read* ${sub(work)})`);
   lines.push('');
 

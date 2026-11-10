@@ -14,6 +14,7 @@ import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from '../engine/market/gua
 import { CALL_DENY, HOOK_MATCHER, KILL_AFTER_MS, claudeProvider, type ClaudeOptions } from '../engine/market/claude.js';
 import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
+import { protectedPidsOf } from '../engine/market/reaper.js';
 import { SANDBOX_EXEC } from '../engine/market/sandbox.js';
 import { weightedTokens, claudeCredits } from '../shared/credits.js';
 import type { Agent, Job, RunProgress } from '../shared/types.js';
@@ -258,8 +259,15 @@ function workInput(over: Partial<WorkInput> = {}) {
 
 function provider(over: ClaudeOptions = {}) {
   const quiets: string[] = [];
-  const p = claudeProvider({ claudeBin, tokensPerPct: () => 60_000, quiet: async (root) => void quiets.push(root), ...over });
-  return { p, quiets };
+  const reaps: Array<{ root: string; existed: boolean }> = [];
+  const p = claudeProvider({
+    claudeBin,
+    tokensPerPct: () => 60_000,
+    quiet: async (root) => void quiets.push(root),
+    reap: async (root) => void reaps.push({ root, existed: existsSync(root) }),
+    ...over,
+  });
+  return { p, quiets, reaps };
 }
 
 const onMac = process.platform === 'darwin';
@@ -421,10 +429,70 @@ describe('work', () => {
     const { input, logs } = workInput();
     const out = await p.work(input);
     assert.equal(out.ended, 'crashed');
-    assert.match(out.reason ?? '', /without a result/);
+    assert.match(out.reason ?? '', /malformed stream-json/);
     assert.ok(logs.some((l) => l.kind === 'assistant' && l.text.includes('Starting the change.')));
     assert.ok(logs.some((l) => l.kind === 'stderr' && l.text.includes('{"type":"assistant"')), 'the truncated line goes to the log as stderr');
     assert.ok(logs.some((l) => l.kind === 'stderr' && l.text.includes('something broke')));
+  });
+
+  test('a stream that simply stops after init is crashed for want of a result', async () => {
+    fake([init(), assistant('m1', [{ type: 'text', text: 'Starting.' }])]);
+    const { p } = provider();
+    const { input, logs } = workInput();
+    const out = await p.work(input);
+    assert.equal(out.ended, 'crashed');
+    assert.match(out.reason ?? '', /without a result/);
+    assert.ok(logs.some((l) => l.kind === 'assistant' && l.text.includes('Starting.')));
+  });
+
+  test('a non-JSON line before init is noise, after init it crashes the run', async () => {
+    fake(['claude 2.1.319 starting', ...happyWork()]);
+    const { p } = provider();
+    const ok = await p.work(workInput().input);
+    assert.equal(ok.ended, 'finished', ok.reason ?? '');
+
+    const events = happyWork();
+    events.splice(2, 0, 'Segmentation fault: 11');
+    const { calls } = fake(events, { hang: true });
+    const { input, logs } = workInput({ runId: 'run-2' });
+    const out = await p.work(input);
+    assert.equal(out.ended, 'crashed');
+    assert.equal(out.reason, 'malformed stream-json after init');
+    assert.ok(calls[0].kills.includes('SIGTERM'));
+    assert.ok(logs.some((l) => l.kind === 'stderr' && l.text.includes('Segmentation fault')));
+  });
+
+  test('init without a tools or mcp_servers list crashes the run', async () => {
+    for (const drop of ['tools', 'mcp_servers']) {
+      const bad = init();
+      delete (bad as Record<string, unknown>)[drop];
+      const { calls } = fake([bad, ...happyWork().slice(1)], { hang: true });
+      const { p } = provider();
+      const out = await p.work(workInput({ runId: `run-no-${drop}` }).input);
+      assert.equal(out.ended, 'crashed', drop);
+      assert.equal(out.reason, 'unexpected tools');
+      assert.ok(calls[0].kills.includes('SIGTERM'));
+    }
+  });
+
+  test('a callback that throws still kills claude and clears its protection', async () => {
+    const { calls } = fake(happyWork(), { hang: true });
+    const { p } = provider();
+    const { input, run } = workInput({
+      onProgress: () => {
+        throw new Error('progress sink broke');
+      },
+    });
+    let protectedDuring: number[] = [];
+    const log = input.log;
+    input.log = (l) => {
+      if (l.kind === 'system') protectedDuring = protectedPidsOf(run.runRoot);
+      log(l);
+    };
+    await assert.rejects(p.work(input), /progress sink broke/);
+    assert.deepEqual(protectedDuring, [424242], 'claude was protected while it ran');
+    assert.ok(calls[0].kills.includes('SIGTERM'), 'claude was killed');
+    assert.deepEqual(protectedPidsOf(run.runRoot), [], 'the protection is cleared');
   });
 
   test('a turn cap kills the group and reports capped', async () => {
@@ -595,7 +663,7 @@ describe('plan and review', () => {
         root = realpathSync(join(call.opts.cwd!, '..'));
       },
     });
-    const { p } = provider();
+    const { p, reaps } = provider();
     await p.plan(planInput, new AbortController().signal);
     const c = calls[0];
     const runs = realpathSync(join(tempDir, 'data', 'runs'));
@@ -617,6 +685,7 @@ describe('plan and review', () => {
     assert.equal(env.TMPDIR, join(root, 'tmp') + '/');
     assert.match(env.HTTPS_PROXY, /^http:\/\/palimpsest:[0-9a-f]+@127\.0\.0\.1:\d+$/);
     assert.ok(!existsSync(root), 'the scratch root is removed when the call ends');
+    assert.deepEqual(reaps, [{ root: realpathSync(join(tempDir, 'data', 'runs')) + '/' + root.split('/').pop(), existed: true }], 'the reaper ran on the scratch root before it was removed');
   });
 
   test('plan init listing any tool or MCP server crashes the call', async () => {
@@ -628,9 +697,11 @@ describe('plan and review', () => {
           root = join(call.opts.cwd!, '..');
         },
       });
-      const { p } = provider();
+      const { p, reaps } = provider();
       await assert.rejects(p.plan(planInput, new AbortController().signal), bad.apiKeySource ? /API key/ : /unexpected/);
       assert.ok(calls[0].kills.includes('SIGTERM'));
+      assert.equal(reaps.length, 1);
+      assert.ok(reaps[0].existed);
       assert.ok(!existsSync(root));
     }
   });

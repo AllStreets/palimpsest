@@ -11,6 +11,7 @@ import {
   CLAUDE_RUNTIME_PATHS,
   childEnv,
   cliProfile,
+  selectedShell,
   registerRunPorts,
   toolProfile,
   unregisterRunPorts,
@@ -173,12 +174,15 @@ describe('profile text', () => {
     assert.ok(!p.includes('network-bind'));
   });
 
-  test('cli profile allows exec of only the claude binary, security and node', () => {
+  test('cli profile allows exec of only the claude binary, security, node, /bin/sh and the shell it selects', () => {
     const p = cliProfile(cliInput);
     const execs = p.split('\n').filter((l) => l.includes('process-exec'));
     assert.equal(execs.length, 1);
     const allowed = [...execs[0].matchAll(/\(literal "([^"]+)"\)/g)].map((m) => m[1]).sort();
-    assert.deepEqual(allowed, [cliInput.claudeBin, cliInput.nodeBin, '/usr/bin/security'].sort());
+    const shells = ['/bin/sh', ...(selectedShell() ? [selectedShell() as string] : [])];
+    assert.deepEqual(allowed, [...new Set([cliInput.claudeBin, cliInput.nodeBin, '/usr/bin/security', ...shells])].sort());
+    assert.ok(!allowed.includes('/bin/zsh') || selectedShell() === '/bin/zsh');
+    assert.ok(p.includes('(allow file-read* (literal "/private/var/select/sh"))'));
     assert.ok(!/process-exec[^\n]*subpath/.test(p));
   });
 
@@ -543,15 +547,18 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
       assert.equal((r.stdout.match(/^denied /gm) ?? []).length, 3, r.stdout + r.stderr);
     });
 
-    test('a shell cannot be started and only the broker port is reachable', async () => {
+    test('/bin/sh runs for the hook, other shells do not, and only the broker port is reachable', async () => {
       const broker = await listen();
       const other = await listen();
+      const others = ['/bin/zsh', '/bin/dash', '/bin/csh'].filter((x) => x !== selectedShell() && existsSync(x));
       const script =
-        `const cp=require('child_process');try{cp.execFileSync('/bin/sh',['-c','echo shell']);console.log('shell ran')}catch(e){console.log('shell denied')}` +
+        `const cp=require('child_process');try{console.log('sh says '+cp.execFileSync('/bin/sh',['-c','echo ok']).toString().trim())}catch(e){console.log('sh denied')}` +
+        `for(const x of ${JSON.stringify(others)}){try{cp.execFileSync(x,['-c','echo shell']);console.log('ran '+x)}catch(e){console.log('denied '+x)}}` +
         `const http=require('http');const get=(p)=>new Promise(r=>{http.get('http://127.0.0.1:'+p,(s)=>{s.resume();r('reached '+p)}).on('error',()=>r('denied '+p))});` +
         `(async()=>{console.log(await get(${broker}));console.log(await get(${other}))})()`;
       const r = await cli(script, broker);
-      assert.match(r.stdout, /shell denied/);
+      assert.match(r.stdout, /sh says ok/, r.stdout + r.stderr);
+      for (const x of others) assert.ok(r.stdout.includes(`denied ${x}`), `${x}: ${r.stdout}${r.stderr}`);
       assert.ok(r.stdout.includes(`reached ${broker}`), r.stdout + r.stderr);
       assert.ok(r.stdout.includes(`denied ${other}`), r.stdout + r.stderr);
     });

@@ -59,6 +59,11 @@ export function protectPids(runRoot: string, pids: number[]): void {
   else protectedPids.delete(key(runRoot));
 }
 
+/** The pids protected for this run (for tests and diagnostics). */
+export function protectedPidsOf(runRoot: string): number[] {
+  return [...(protectedPids.get(key(runRoot)) ?? [])];
+}
+
 /** Marks a live command's process group, so a reap after another command of the same run leaves it running. */
 export function noteLiveGroup(runRoot: string, pgid: number | null, live: boolean): void {
   if (pgid === null) return;

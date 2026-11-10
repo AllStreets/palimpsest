@@ -33,7 +33,7 @@ import type { RunProgress } from '../../shared/types.js';
 import { getSpawner, type Spawned } from '../exec.js';
 import { home as dataHomeDir, paths } from '../home.js';
 import { storedCalibration } from '../usage.js';
-import { brokerMcpServer, enginePort, guardHookCommand, protectPids, runQuiet } from './broker.js';
+import { brokerMcpServer, enginePort, guardHookCommand, protectPids, reapRun, runQuiet } from './broker.js';
 import { CLAUDE_HOSTS, startEgress } from './egress.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
 import type { JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
@@ -84,6 +84,8 @@ export interface ClaudeOptions {
   maxTurnsFlag?: boolean;
   /** Reaps the run and throws if anything of it is left (runQuiet), before claude starts and before each tool turn. */
   quiet?: (runRoot: string) => Promise<void>;
+  /** Kills whatever a plan, review or judge call left under its scratch root before the root is removed. Default reapRun. */
+  reap?: (root: string) => Promise<unknown>;
   /** Weighted tokens per percent of the five-hour window. Default: the stored calibration. */
   tokensPerPct?: () => number;
   /** SIGKILL delay after the SIGTERM on a cap or an abort. Default KILL_AFTER_MS. */
@@ -280,175 +282,191 @@ async function session(s: SessionSpec): Promise<SessionOut> {
   const stop = (ended: Ended, reason: string) => {
     if (stopped) return;
     stopped = { ended, reason };
-    log('engine', `${ended}: ${reason}`);
     child.kill('SIGTERM');
     timers.push(setTimeout(() => child.kill('SIGKILL'), s.killAfterMs));
+    try {
+      log('engine', `${ended}: ${reason}`);
+    } catch {
+      // stop runs from timers and the abort listener too: a failing log must not stop the kill
+    }
   };
   const onAbort = () => stop('aborted', 'signal');
-  s.signal.addEventListener('abort', onAbort, { once: true });
-  timers.push(setTimeout(() => stop('capped', `time cap of ${Math.round(s.caps.maxMs / 60_000)} minutes`), s.caps.maxMs));
+  try {
+    s.signal.addEventListener('abort', onAbort, { once: true });
+    timers.push(setTimeout(() => stop('capped', `time cap of ${Math.round(s.caps.maxMs / 60_000)} minutes`), s.caps.maxMs));
 
-  const tick = () => {
-    progress.weightedTokens = weightedTokens(running, model);
-    progress.credits = claudeCredits(progress.weightedTokens, s.tokensPerPct);
-    s.onProgress?.({ ...progress });
-  };
+    const tick = () => {
+      progress.weightedTokens = weightedTokens(running, model);
+      progress.credits = claudeCredits(progress.weightedTokens, s.tokensPerPct);
+      s.onProgress?.({ ...progress });
+    };
 
-  const onInit = (e: Record<string, unknown>) => {
-    initSeen = true;
-    if (typeof e.model === 'string') model = e.model;
-    const tools = names(e.tools);
-    const servers = names(e.mcp_servers);
-    const plugins = names(e.plugins);
-    log('system', `init: model ${String(e.model)}, apiKeySource ${String(e.apiKeySource)}, tools ${tools.join(', ') || 'none'}, mcp ${servers.join(', ') || 'none'}, plugins ${plugins.join(', ') || 'none'}`, {
-      model: e.model,
-      apiKeySource: e.apiKeySource,
-      tools,
-      mcp_servers: e.mcp_servers,
-      plugins: e.plugins,
-    });
-    if (e.apiKeySource !== 'none') return stop('crashed', 'claude would bill an API key');
-    if (tools.some((t) => !s.tools.includes(t)) || servers.some((m) => !s.mcpServers.includes(m))) return stop('crashed', 'unexpected tools');
-    if (plugins.length) return stop('crashed', 'unexpected plugins');
-  };
-
-  const onAssistant = (e: Record<string, unknown>) => {
-    const msg = (e.message && typeof e.message === 'object' ? e.message : {}) as Record<string, unknown>;
-    const id = typeof msg.id === 'string' ? msg.id : `anon-${seenMessages.size}`;
-    const content = Array.isArray(msg.content) ? (msg.content as Record<string, unknown>[]) : [];
-    if (!seenMessages.has(id)) {
-      seenMessages.add(id);
-      progress.turns += 1;
-      const u = sums(msg.usage);
-      running.input += u.input;
-      running.output += u.output;
-      running.cacheRead += u.cacheRead;
-      running.cacheCreation += u.cacheCreation;
-    }
-    let usedTool = false;
-    for (const block of content) {
-      if (block?.type === 'text' && typeof block.text === 'string') log('assistant', clip(block.text));
-      if (block?.type === 'tool_use') {
-        usedTool = true;
-        progress.toolCalls += 1;
-        const input = (block.input && typeof block.input === 'object' ? block.input : {}) as Record<string, unknown>;
-        if ((block.name === 'Write' || block.name === 'Edit' || block.name === 'MultiEdit') && typeof input.file_path === 'string' && typeof block.id === 'string') {
-          pendingWrites.set(block.id, input.file_path);
-        }
-        log('tool', clip(`${String(block.name)} ${JSON.stringify(input)}`), { id: block.id, name: block.name });
-      }
-    }
-    tick();
-    if (progress.turns > s.caps.maxTurns) return stop('capped', `turn cap of ${s.caps.maxTurns}`);
-    if (progress.credits > s.caps.maxCredits) return stop('capped', `credit cap of ${s.caps.maxCredits}`);
-    if (usedTool && s.quiet) {
-      const quiet = s.quiet;
-      quietChain = quietChain.then(async () => {
-        if (stopped) return;
-        try {
-          await quiet(s.runRoot);
-        } catch (err) {
-          stop('crashed', `run not quiet before a tool turn: ${err instanceof Error ? err.message : String(err)}`);
-        }
+    const onInit = (e: Record<string, unknown>) => {
+      initSeen = true;
+      if (typeof e.model === 'string') model = e.model;
+      const tools = names(e.tools);
+      const servers = names(e.mcp_servers);
+      const plugins = names(e.plugins);
+      log('system', `init: model ${String(e.model)}, apiKeySource ${String(e.apiKeySource)}, tools ${tools.join(', ') || 'none'}, mcp ${servers.join(', ') || 'none'}, plugins ${plugins.join(', ') || 'none'}`, {
+        model: e.model,
+        apiKeySource: e.apiKeySource,
+        tools,
+        mcp_servers: e.mcp_servers,
+        plugins: e.plugins,
       });
-    }
-  };
+      if (e.apiKeySource !== 'none') return stop('crashed', 'claude would bill an API key');
+      // An init that does not list its tools and MCP servers cannot be checked, so it fails.
+      if (!Array.isArray(e.tools) || !Array.isArray(e.mcp_servers)) return stop('crashed', 'unexpected tools');
+      if (tools.some((t) => !s.tools.includes(t)) || servers.some((m) => !s.mcpServers.includes(m))) return stop('crashed', 'unexpected tools');
+      if (plugins.length) return stop('crashed', 'unexpected plugins');
+    };
 
-  const onUser = (e: Record<string, unknown>) => {
-    const msg = (e.message && typeof e.message === 'object' ? e.message : {}) as Record<string, unknown>;
-    const content = Array.isArray(msg.content) ? (msg.content as Record<string, unknown>[]) : [];
-    for (const block of content) {
-      if (block?.type !== 'tool_result') continue;
-      const text = resultText(block.content);
-      const written = typeof block.tool_use_id === 'string' ? pendingWrites.get(block.tool_use_id) : undefined;
-      if (written !== undefined) {
-        pendingWrites.delete(block.tool_use_id as string);
-        if (block.is_error !== true) {
-          files.add(written);
-          progress.filesChanged = files.size;
+    const onAssistant = (e: Record<string, unknown>) => {
+      const msg = (e.message && typeof e.message === 'object' ? e.message : {}) as Record<string, unknown>;
+      const id = typeof msg.id === 'string' ? msg.id : `anon-${seenMessages.size}`;
+      const content = Array.isArray(msg.content) ? (msg.content as Record<string, unknown>[]) : [];
+      if (!seenMessages.has(id)) {
+        seenMessages.add(id);
+        progress.turns += 1;
+        const u = sums(msg.usage);
+        running.input += u.input;
+        running.output += u.output;
+        running.cacheRead += u.cacheRead;
+        running.cacheCreation += u.cacheCreation;
+      }
+      let usedTool = false;
+      for (const block of content) {
+        if (block?.type === 'text' && typeof block.text === 'string') log('assistant', clip(block.text));
+        if (block?.type === 'tool_use') {
+          usedTool = true;
+          progress.toolCalls += 1;
+          const input = (block.input && typeof block.input === 'object' ? block.input : {}) as Record<string, unknown>;
+          if ((block.name === 'Write' || block.name === 'Edit' || block.name === 'MultiEdit') && typeof input.file_path === 'string' && typeof block.id === 'string') {
+            pendingWrites.set(block.id, input.file_path);
+          }
+          log('tool', clip(`${String(block.name)} ${JSON.stringify(input)}`), { id: block.id, name: block.name });
         }
       }
-      if (block.is_error === true && REFUSAL_MARKERS.some((m) => text.includes(m))) {
-        progress.refusals += 1;
-        log('refused', clip(text), { id: block.tool_use_id });
-      } else {
-        log('tool', clip(text), { id: block.tool_use_id, error: block.is_error === true });
+      tick();
+      if (progress.turns > s.caps.maxTurns) return stop('capped', `turn cap of ${s.caps.maxTurns}`);
+      if (progress.credits > s.caps.maxCredits) return stop('capped', `credit cap of ${s.caps.maxCredits}`);
+      if (usedTool && s.quiet) {
+        const quiet = s.quiet;
+        quietChain = quietChain.then(async () => {
+          if (stopped) return;
+          try {
+            await quiet(s.runRoot);
+          } catch (err) {
+            stop('crashed', `run not quiet before a tool turn: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        });
       }
-    }
-    tick();
-  };
+    };
 
-  const onResult = (e: Record<string, unknown>) => {
-    resultLine = e;
-    const u = sums(e.usage);
-    log('result', `${String(e.subtype)}: ${clip(typeof e.result === 'string' ? e.result : '')}`, {
-      subtype: e.subtype,
-      num_turns: e.num_turns,
-      duration_ms: e.duration_ms,
-      usage: u,
+    const onUser = (e: Record<string, unknown>) => {
+      const msg = (e.message && typeof e.message === 'object' ? e.message : {}) as Record<string, unknown>;
+      const content = Array.isArray(msg.content) ? (msg.content as Record<string, unknown>[]) : [];
+      for (const block of content) {
+        if (block?.type !== 'tool_result') continue;
+        const text = resultText(block.content);
+        const written = typeof block.tool_use_id === 'string' ? pendingWrites.get(block.tool_use_id) : undefined;
+        if (written !== undefined) {
+          pendingWrites.delete(block.tool_use_id as string);
+          if (block.is_error !== true) {
+            files.add(written);
+            progress.filesChanged = files.size;
+          }
+        }
+        if (block.is_error === true && REFUSAL_MARKERS.some((m) => text.includes(m))) {
+          progress.refusals += 1;
+          log('refused', clip(text), { id: block.tool_use_id });
+        } else {
+          log('tool', clip(text), { id: block.tool_use_id, error: block.is_error === true });
+        }
+      }
+      tick();
+    };
+
+    const onResult = (e: Record<string, unknown>) => {
+      resultLine = e;
+      const u = sums(e.usage);
+      log('result', `${String(e.subtype)}: ${clip(typeof e.result === 'string' ? e.result : '')}`, {
+        subtype: e.subtype,
+        num_turns: e.num_turns,
+        duration_ms: e.duration_ms,
+        usage: u,
+      });
+    };
+
+    for await (const { stream, line } of child.lines) {
+      if (stream === 'stderr') {
+        log('stderr', clip(line));
+        continue;
+      }
+      if (!line.trim()) continue;
+      let e: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+        e = parsed as Record<string, unknown>;
+      } catch {
+        log('stderr', clip(line));
+        // Before init a stray line is noise; after it, a broken stream-json line means the stream cannot be trusted.
+        if (initSeen) stop('crashed', 'malformed stream-json after init');
+        continue;
+      }
+      if (stopped) continue; // keep draining, act on nothing
+      if (e.type === 'system' && e.subtype === 'init') {
+        onInit(e);
+        continue;
+      }
+      if (!initSeen && (e.type === 'assistant' || e.type === 'user' || e.type === 'result')) {
+        stop('crashed', 'the stream began without system/init');
+        continue;
+      }
+      if (e.type === 'assistant') onAssistant(e);
+      else if (e.type === 'user') onUser(e);
+      else if (e.type === 'result') onResult(e);
+      else if (e.type === 'system') log('system', clip(`${String(e.subtype)}`), e);
+    }
+
+    const done = await child.done;
+    await quietChain;
+    for (const t of timers) clearTimeout(t);
+    s.signal.removeEventListener('abort', onAbort);
+    child.kill('SIGTERM'); // a no-op once done; never leave a group behind
+    if (child.pid !== null) protectPids(s.runRoot, []);
+
+    const r = resultLine as Record<string, unknown> | null;
+    const tokens = r && r.usage ? sums(r.usage) : running;
+    const weighted = weightedTokens(tokens, model);
+    const seconds = r && typeof r.duration_ms === 'number' ? r.duration_ms / 1000 : (Date.now() - started) / 1000;
+    const usage: Usage = { weightedTokens: weighted, seconds, usd: 0, credits: claudeCredits(weighted, s.tokensPerPct) };
+    progress.weightedTokens = weighted;
+    progress.credits = usage.credits;
+    s.onProgress?.({ ...progress });
+
+    const out = (ended: Ended, reason: string | null): SessionOut => ({
+      ended,
+      reason,
+      usage,
+      text: r && typeof r.result === 'string' ? r.result : '',
+      structured: r ? (r.structured_output ?? null) : null,
     });
-  };
-
-  for await (const { stream, line } of child.lines) {
-    if (stream === 'stderr') {
-      log('stderr', clip(line));
-      continue;
-    }
-    if (!line.trim()) continue;
-    let e: Record<string, unknown>;
-    try {
-      const parsed: unknown = JSON.parse(line);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
-      e = parsed as Record<string, unknown>;
-    } catch {
-      log('stderr', clip(line));
-      continue;
-    }
-    if (stopped) continue; // keep draining, act on nothing
-    if (e.type === 'system' && e.subtype === 'init') {
-      onInit(e);
-      continue;
-    }
-    if (!initSeen && (e.type === 'assistant' || e.type === 'user' || e.type === 'result')) {
-      stop('crashed', 'the stream began without system/init');
-      continue;
-    }
-    if (e.type === 'assistant') onAssistant(e);
-    else if (e.type === 'user') onUser(e);
-    else if (e.type === 'result') onResult(e);
-    else if (e.type === 'system') log('system', clip(`${String(e.subtype)}`), e);
+    const st = stopped as { ended: Ended; reason: string } | null;
+    if (st) return out(st.ended, st.reason);
+    if (!initSeen) return out('crashed', `the stream ended without system/init (exit ${done.code ?? done.signal ?? done.error ?? 'unknown'})`);
+    if (!r) return out('crashed', `the stream ended without a result (exit ${done.code ?? done.signal ?? done.error ?? 'unknown'})`);
+    if (r.subtype === 'error_max_turns') return out('capped', 'claude reached its turn limit');
+    if (r.subtype !== 'success' || r.is_error === true) return out('crashed', `claude ended with ${String(r.subtype)}`);
+    return out('finished', null);
+  } finally {
+    // Every exit, a throw from the line loop or a callback included: no timer, no listener, no protection and no live group is left behind.
+    for (const t of timers) clearTimeout(t);
+    s.signal.removeEventListener('abort', onAbort);
+    child.kill('SIGTERM');
+    if (child.pid !== null) protectPids(s.runRoot, []);
   }
-
-  const done = await child.done;
-  await quietChain;
-  for (const t of timers) clearTimeout(t);
-  s.signal.removeEventListener('abort', onAbort);
-  child.kill('SIGTERM'); // a no-op once done; never leave a group behind
-  if (child.pid !== null) protectPids(s.runRoot, []);
-
-  const r = resultLine as Record<string, unknown> | null;
-  const tokens = r && r.usage ? sums(r.usage) : running;
-  const weighted = weightedTokens(tokens, model);
-  const seconds = r && typeof r.duration_ms === 'number' ? r.duration_ms / 1000 : (Date.now() - started) / 1000;
-  const usage: Usage = { weightedTokens: weighted, seconds, usd: 0, credits: claudeCredits(weighted, s.tokensPerPct) };
-  progress.weightedTokens = weighted;
-  progress.credits = usage.credits;
-  s.onProgress?.({ ...progress });
-
-  const out = (ended: Ended, reason: string | null): SessionOut => ({
-    ended,
-    reason,
-    usage,
-    text: r && typeof r.result === 'string' ? r.result : '',
-    structured: r ? (r.structured_output ?? null) : null,
-  });
-  const st = stopped as { ended: Ended; reason: string } | null;
-  if (st) return out(st.ended, st.reason);
-  if (!initSeen) return out('crashed', `the stream ended without system/init (exit ${done.code ?? done.signal ?? done.error ?? 'unknown'})`);
-  if (!r) return out('crashed', `the stream ended without a result (exit ${done.code ?? done.signal ?? done.error ?? 'unknown'})`);
-  if (r.subtype === 'error_max_turns') return out('capped', 'claude reached its turn limit');
-  if (r.subtype !== 'success' || r.is_error === true) return out('crashed', `claude ended with ${String(r.subtype)}`);
-  return out('finished', null);
 }
 
 /* ------------------------------------------------------------------ */
@@ -544,6 +562,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
   const bin = () => o.claudeBin ?? findClaude();
   const settingSources = o.settingSources ?? '';
   const quiet = o.quiet ?? runQuiet;
+  const reap = o.reap ?? reapRun;
   const tokensPerPct = () => (o.tokensPerPct ?? defaultTokensPerPct)();
   const killAfterMs = o.killAfterMs ?? KILL_AFTER_MS;
 
@@ -709,6 +728,11 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
       return out;
     } finally {
       await egress?.close();
+      try {
+        await reap(root);
+      } catch {
+        // the root goes either way; a survivor is bounded by the call's own profile
+      }
       rmSync(root, { recursive: true, force: true });
     }
   }
