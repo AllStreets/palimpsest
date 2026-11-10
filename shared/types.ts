@@ -80,6 +80,8 @@ export interface TowerSpec {
   agentId?: string;
   dark?: boolean;
   silhouette?: Silhouette;
+  /** An agent tower's plot in its quarter (the agent's towerIndex, Task 4): QUARTER_OFFSETS[towerIndex]. */
+  towerIndex?: number;
 }
 
 export interface District {

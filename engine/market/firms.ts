@@ -356,6 +356,7 @@ export function quarters(): Quarter[] {
           agentId: a.id,
           dark: !buyer && a.retired,
           silhouette: a.silhouette,
+          towerIndex: a.towerIndex,
         };
       });
     return { firmId: f.id, slot: f.slot, origin: quarterOrigin(f.slot), root: f.root, dark: f.status === 'bankrupt', towers };

@@ -1,6 +1,7 @@
 /**
- * The silhouette board for captures and the UI test (Task 23): until Task 24
- * stands each firm's quarter in the city, one agent tower of each silhouette
+ * The silhouette board for captures and the UI test (Task 23). The towers
+ * stand in their quarters since Task 24; the board stays for the grown
+ * twenty-floor crops: one agent tower of each silhouette
  * from the sample economy is stood in a row off the city's western edge,
  * where the dusk sky is behind it. The economy's agents hold 3 to 14 floors;
  * each is grown to twenty by laying its own floors again in order (as the

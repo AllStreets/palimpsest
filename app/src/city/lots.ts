@@ -16,7 +16,7 @@
 import * as THREE from 'three';
 
 import { AMBIENT_RENDERED } from './ambient-rendered.js';
-import { ambientCap, cappedHeight, RESERVE_RADIUS, type CollarPlaza } from './collar.js';
+import { ambientCap, cappedHeight, RESERVE_RADIUS, reserves, type CollarPlaza } from './collar.js';
 import { RENDERED } from './tower/rendered.js';
 import type { Look } from './tower/variants.js';
 
@@ -581,14 +581,14 @@ const FALLBACK: Record<Archetype, Archetype[]> = {
 
 /**
  * The lots that stand on block (i, j) round these plazas (the civic plaza
- * included): none within RESERVE_RADIUS of a plaza, each one cut to whole
+ * included): none within RESERVE_RADIUS of a plaza (or a quarter's court apron), each one cut to whole
  * storeys of its type under the collar, and those at a district's edge
  * re-toned clear of its tower.
  */
 export function standingLots(i: number, j: number, plazas: CollarPlaza[]): Lot[] {
   const out: Lot[] = [];
   for (const lot of blockLots(i, j)) {
-    if (plazas.some((p) => rectNear(lot.x, lot.z, lot.w, lot.d, p.x, p.z, RESERVE_RADIUS))) continue;
+    if (plazas.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
     const cap = ambientCap(lot.x, lot.z, plazas);
     // A factory stack stands only where nothing caps the skyline.
     out.push({ ...lot, h: cutTo(lot.archetype, lot.h, cap), stack: cap === Infinity ? lot.stack : 0 });

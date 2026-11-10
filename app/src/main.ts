@@ -3,13 +3,14 @@ import * as THREE from 'three';
 import './ui/style.css';
 import './ui/screens.css';
 
-import type { District, Repo, TowerSpec } from '../../shared/types';
+import type { District, FirmView, Quarter, Repo, TowerSpec } from '../../shared/types';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
 import { occupancy, type RepoState } from './city/occupancy.js';
+import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
-import { towerCenterpiece } from './city/tower/look';
+import { towerCenterpiece, towerMaterials } from './city/tower/look';
 import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
 import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
 import { towerTones } from './city/lots';
@@ -67,12 +68,24 @@ interface DebugHandle {
   swatchBoard(): Promise<SwatchPoint[]>;
   /**
    * Stands agent towers at the spots given, each in its firm's look, the
-   * ground under them cleared like a plot (captures and the UI test, until
-   * Task 24 stands quarters in the city; reload to clear).
+   * ground under them cleared like a plot (captures and the UI test, for
+   * towers grown past their real heights; reload to clear).
    */
   agentBoard(towers: TowerSpec[], spots: Array<{ x: number; z: number }>): Promise<void>;
   /** Stands the ambient tone board in the city's light and returns where to read each tone (captures only; reload to clear). */
   ambientBoard(): Promise<AmbientSwatchPoint[]>;
+  /** Firms' quarters standing in the city. */
+  quarters: number;
+  /** The page the last agent or firm pick opened (its hash), until those pages exist (Task 38). */
+  opened: string;
+  /** Where an agent's tower stands: its centre and height, or null. */
+  agentFrame(agentId: string): { center: number[]; width: number; height: number } | null;
+  /**
+   * For captures only: shows a firm's quarter as it stands between its
+   * bankruptcy and the sale of its towers, every tower of its own dark.
+   * Never written anywhere; a reload restores the real state.
+   */
+  darkQuarter(firmId: string): void;
 }
 
 declare global {
@@ -95,9 +108,14 @@ const REFRESH_ON = new Set([
   'merge.reverted',
   'firm.bankrupt',
   'tower.sold',
+  'agent.hired',
+  'agent.retired',
 ]);
-/** Events that change the names on the market's floors: who works where, and which runs have reports. */
-const NAMES_ON = new Set(['agent.hired', 'agent.retired', 'firm.bankrupt', 'tower.sold', 'inspection.done']);
+/**
+ * Events that change the names on the market's floors (who works where, and which runs have reports) and
+ * the firms' plates (how many agents, how many credits).
+ */
+const NAMES_ON = new Set(['agent.hired', 'agent.retired', 'firm.bankrupt', 'tower.sold', 'inspection.done', 'run.ended', 'merge.detected', 'floor.lit', 'report.written']);
 
 /**
  * A quiet line at the foot of the window for what the city did by itself
@@ -138,6 +156,9 @@ const STEP_TEXT: Record<string, string> = {
 };
 
 const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`;
+
+/** What a firm's plate and plinth show of it, for telling when they change. */
+const plateOf = (f: FirmView): string => `${f.id}|${f.name}|${Math.round(f.balance)}|${f.status}|${f.agents.filter((a) => !a.retired).length}`;
 
 async function main(): Promise<void> {
   const host = document.getElementById('city');
@@ -188,10 +209,29 @@ async function main(): Promise<void> {
     makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d), { firmSlots }),
     centerpieceKey: (d) => `${lookKey(lookOf(d))}|${quality}|${d.tower.floors.some((f) => f.earned) ? firmsKey : ''}`,
     districtTones: (d) => towerTones(lookOf(d)),
+    makeQuarterCenterpiece: (q) => {
+      const looks = quarterLooks(q);
+      return quarterCenterpiece(q, quality, (t) => looks.get(t.id) ?? lookFor(t.firmId ?? q.firmId), {
+        name: firmViews.get(q.firmId)?.name ?? q.firmId,
+        firmSlots,
+        materials: towerMaterials,
+      });
+    },
+    quarterKey: (q) => `${firmViews.get(q.firmId)?.name ?? ''}|${quality}|${firmsKey}`,
   });
 
   const debug: DebugHandle = {
     ready: false,
+    quarters: 0,
+    opened: '',
+    agentFrame: (id) => {
+      const f = city.agentFrame(id);
+      return f ? { center: f.center.toArray(), width: f.width, height: f.height } : null;
+    },
+    darkQuarter(firmId) {
+      darkened.add(firmId);
+      place();
+    },
     districts: 0,
     sites: 0,
     builds: 0,
@@ -246,6 +286,12 @@ async function main(): Promise<void> {
 
   /** The towers the engine last served. */
   let served: District[] = [];
+  /** Each firm's quarter as the engine last served it. */
+  let servedQuarters: Quarter[] = [];
+  /** Each firm as last read: its name, books and agents, for its plate and the name on its plinth. */
+  const firmViews = new Map<string, FirmView>();
+  /** Quarters shown dark by a capture (debug only). */
+  const darkened = new Set<string>();
   /** The districts standing now: served towers whose repos are still connected. */
   let districts: District[] = [];
   /**
@@ -294,8 +340,13 @@ async function main(): Promise<void> {
   const readNames = coalesced(async () => {
     try {
       const firms = await api.firms();
+      // A firm's plate shows its agents and books, and its plinth its name: a change re-places the plates.
+      const before = JSON.stringify([...firmViews.values()].map(plateOf));
+      firmViews.clear();
+      for (const f of firms) firmViews.set(f.id, f);
+      const platesChanged = JSON.stringify([...firmViews.values()].map(plateOf)) !== before;
       // A firm founded or hired since the city opened: its marks take their colour from its slot.
-      if (takeFirms(firms)) place();
+      if (takeFirms(firms) || platesChanged) place();
       const agents = new Map<string, string>();
       for (const f of firms) for (const a of f.agents) agents.set(a.id, a.name);
       // A scar links to its inspection report: read the run once for each scar not yet known.
@@ -337,9 +388,26 @@ async function main(): Promise<void> {
     if (inspector.repo) city.setInset(inspector.width);
   });
 
+  /**
+   * An agent's tower or a firm's plinth opens its page (Task 38 draws them;
+   * until then the address changes and the camera comes to the tower).
+   */
+  function openAgent(agentId: string): void {
+    debug.opened = `#/agents/${encodeURIComponent(agentId)}`;
+    location.hash = debug.opened;
+    const t = city.agentFrame(agentId);
+    if (t && city.camera.position.distanceTo(t.center) > Math.max(300, t.height * 3.5)) city.flyTo(t.center, Math.max(120, t.height * 2.4));
+  }
+  function openFirm(firmId: string): void {
+    debug.opened = `#/firms/${encodeURIComponent(firmId)}`;
+    location.hash = debug.opened;
+  }
+
   city.onPick((hit) => {
     debug.lastPick = hit;
-    inspect(hit.repo, hit.floorId);
+    if (hit.kind === 'tower') inspect(hit.repo, hit.floorId);
+    else if (hit.kind === 'agent') openAgent(hit.agentId);
+    else openFirm(hit.firmId);
   });
 
   // ---------------------------------------------------------------- districts, sites and plates
@@ -354,7 +422,11 @@ async function main(): Promise<void> {
       const at = restyled.get(d.repo)?.datumIndex;
       return at === undefined ? d : { ...d, tower: { ...d.tower, datumIndex: at } };
     });
-    const occ = occupancy(known.values(), restyledServed);
+    // A capture may show a quarter dark, as between a bankruptcy and the sale of its towers.
+    const quarters = servedQuarters.map((q) =>
+      darkened.has(q.firmId) ? { ...q, dark: true, towers: q.towers.map((t) => ({ ...t, dark: true, firmId: q.firmId, root: q.root })) } : q,
+    );
+    const occ = occupancy(known.values(), restyledServed, quarters);
     const sites = new Map<string, number>();
     for (const d of served) sites.set(d.repo, d.index);
     for (const r of known.values()) sites.set(r.fullName, r.slot);
@@ -363,6 +435,7 @@ async function main(): Promise<void> {
     debug.builds += city.setPlots(occ);
     debug.districts = occ.districts.length;
     debug.sites = occ.sites.length;
+    debug.quarters = occ.quarters.length;
 
     const plates: Plate[] = occ.districts.map((d) => {
       const [owner, name] = d.repo.split('/');
@@ -379,6 +452,19 @@ async function main(): Promise<void> {
       const [, name] = s.repo.split('/');
       plates.push({ key: s.repo, origin: s.origin, name: name ?? s.repo, sub: STEP_TEXT[analyzingStep(s.repo)] ?? 'Surveying the site' });
     }
+    for (const q of occ.quarters) {
+      const f = firmViews.get(q.firmId);
+      // Its own agents at work: towers it bought are counted with it, towers sold away with their buyer.
+      const own = f ? f.agents.filter((a) => !a.retired).length : q.towers.filter((t) => (t.firmId ?? q.firmId) === q.firmId && !t.dark).length;
+      const books = f ? `, ${Math.round(f.balance)} credits` : '';
+      plates.push({
+        key: `firm:${q.firmId}`,
+        origin: q.origin,
+        name: f?.name ?? q.firmId,
+        sub: q.dark || f?.status === 'bankrupt' ? 'bankrupt' : `${plural(own, 'agent')}${books}`,
+        onActivate: () => openFirm(q.firmId),
+      });
+    }
     city.setPlates(plates);
 
     const open = inspector.repo ? byRepo(inspector.repo) : undefined;
@@ -386,8 +472,9 @@ async function main(): Promise<void> {
     else if (open) inspector.update(open);
   }
 
-  const show = (next: District[]): void => {
+  const show = (next: District[], quarters: Quarter[] = servedQuarters): void => {
     served = next;
+    servedQuarters = quarters;
     // A finished first analysis stops holding its scaffold once the refresh after it lands, tower or not.
     for (const r of known.values()) {
       if (r.done) {
@@ -423,9 +510,9 @@ async function main(): Promise<void> {
   };
 
   try {
-    const [loaded, repos] = await Promise.all([api.city(), api.repos().catch(() => [] as Repo[])]);
+    const [loaded, repos, quarters] = await Promise.all([api.city(), api.repos().catch(() => [] as Repo[]), api.quarters().catch(() => [] as Quarter[])]);
     takeRepos(repos);
-    show(loaded);
+    show(loaded, quarters);
   } catch (err) {
     console.warn('could not load the city from the engine', err);
     show([]);
@@ -433,9 +520,12 @@ async function main(): Promise<void> {
 
   // Events that land while a refresh is in flight are not dropped: one more refresh follows it.
   const refresh = coalesced(() =>
-    api.city().then(show, (err) => {
-      console.warn('city refresh failed', err);
-    }),
+    Promise.all([api.city(), api.quarters().catch(() => servedQuarters)]).then(
+      ([next, quarters]) => show(next, quarters),
+      (err) => {
+        console.warn('city refresh failed', err);
+      },
+    ),
   );
   api.events((e) => {
     if (e.type === 'engine.reconnected') {

@@ -23,7 +23,8 @@ import type { Browser, Page } from 'playwright';
 
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import { layoutTower } from '../shared/tower-layout.js';
-import type { District, Era, Quarter, Repo, TowerSpec } from '../shared/types.js';
+import { QUARTER_OFFSETS } from '../shared/district-layout.js';
+import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../shared/types.js';
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
@@ -127,6 +128,9 @@ interface Debug {
   quality(): 'high' | 'medium';
   notice(): string;
   inspect(repo: string): void;
+  quarters: number;
+  opened: string;
+  lastPick: { kind: string; agentId?: string; firmId?: string; repo?: string } | null;
 }
 
 function debug<T>(page: Page, read: (d: Debug) => T): Promise<T> {
@@ -348,6 +352,96 @@ async function silhouetteChecks(page: Page): Promise<void> {
     await page.screenshot({ path: join(SHOTS, file) });
   }
   check((await debug(page, (x) => x.quality())) === 'high', 'the silhouette board holds high quality');
+}
+
+// ---------------------------------------------------------------- quarters (Task 24)
+
+/**
+ * Each firm's quarter in the city (the economy is seeded): quarters.png from
+ * a bearing that holds two quarters and a district, their plates readable,
+ * a click on an agent's tower picking that agent, and a firm's plate opening
+ * the firm. Runs after earnedChecks.
+ */
+async function quarterChecks(page: Page): Promise<void> {
+  const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const firms = (await page.evaluate(() => fetch('/api/firms').then((r) => r.json()))) as FirmView[];
+  const standing = qs.filter((q) => q.towers.length > 0);
+  check(standing.length >= 2, `the economy has quarters standing (${standing.length})`);
+  check((await debug(page, (x) => x.quarters)) === standing.length, `every quarter with a tower stands in the city (${standing.length})`);
+  const city = await cityOf(page);
+  const quick = standing.find((q) => q.firmId === 'quickset') ?? standing[0];
+  const other = standing.find((q) => q !== quick && q.towers.length > 1) ?? standing.find((q) => q !== quick)!;
+  const d = city[0];
+  const cx = (quick.origin.x + other.origin.x + d.origin.x) / 3;
+  const cz = (quick.origin.z + other.origin.z + d.origin.z) / 3;
+  await setView(page, [cx + 360, 150, cz + 430], [cx - 10, 30, cz - 30]);
+  await debug(page, (x) => x.precompile());
+  await page.waitForTimeout(1500);
+  const project = (p: number[]): Promise<number[]> =>
+    page.evaluate(([q]) => (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest.project(q), [p] as [number[]]) as Promise<number[]>;
+  for (const [what, o] of [
+    [quick.firmId, quick.origin],
+    [other.firmId, other.origin],
+    [d.repo, d.origin],
+  ] as const) {
+    const at = await project([o.x, 10, o.z]);
+    check(Math.abs(at[0]) < 1 && Math.abs(at[1]) < 1, `${what} is in the quarters frame (${at.map((v) => v.toFixed(2)).join(', ')})`);
+  }
+  await page.screenshot({ path: join(SHOTS, 'quarters.png') });
+  // Measured once the view has settled: the first seconds after a jump redraw the shadow map and the haze eases.
+  await page.waitForTimeout(2500);
+  const stats = await debug(page, (x) => x.stats());
+  const fps = (await page.evaluate(`new Promise((resolve) => {
+    let frames = 0;
+    const t0 = performance.now();
+    function tick() {
+      frames++;
+      if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
+      else resolve((frames * 1000) / (performance.now() - t0));
+    }
+    requestAnimationFrame(tick);
+  })`)) as number;
+  console.log(`info  quarters: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+
+  // The plates: the firm's name, then its agents and books (or bankrupt), and they show.
+  const plates = (await page.$$eval('.plate', (els) =>
+    els.map((e) => ({
+      name: e.querySelector('.plate-name')?.textContent ?? '',
+      sub: e.querySelector('.plate-sub')?.textContent ?? '',
+      shown: (e as HTMLElement).style.visibility === 'visible' && Number((e as HTMLElement).style.opacity) > 0.5,
+    })),
+  )) as Array<{ name: string; sub: string; shown: boolean }>;
+  for (const q of [quick, other]) {
+    const f = firms.find((x) => x.id === q.firmId);
+    const p = plates.find((x) => x.name === f?.name);
+    check(!!p && p.shown, `${f?.name ?? q.firmId}'s plate reads in the quarters view`);
+    if (p) check(/^(\d+ agents?, -?\d+ credits|bankrupt)$/.test(p.sub), `its plate says "${p.sub}"`);
+  }
+  const bankrupt = firms.find((f) => f.status === 'bankrupt' && standing.some((q) => q.firmId === f.id));
+  if (bankrupt) check(plates.some((p) => p.name === bankrupt.name && p.sub === 'bankrupt'), `${bankrupt.name}'s plate says bankrupt`);
+
+  // Picking an agent's tower: look at its root and click the middle of the screen.
+  const t = quick.towers[0];
+  const off = QUARTER_OFFSETS[t.towerIndex ?? 0];
+  const x0 = quick.origin.x + off.x;
+  const z0 = quick.origin.z + off.z;
+  await setView(page, [x0 + 40, 14, z0 + 40], [x0, 8, z0]);
+  await page.mouse.click(VIEWPORT.width / 2, VIEWPORT.height / 2);
+  await page.waitForTimeout(300);
+  const pick = await debug(page, (x) => x.lastPick);
+  check(pick?.kind === 'agent' && pick.agentId === t.agentId, `clicking an agent's tower picks kind 'agent' (got ${JSON.stringify(pick)})`);
+  check((await debug(page, (x) => x.opened)) === `#/agents/${t.agentId}`, 'and opens its agent page');
+  // A firm's plate opens the firm.
+  await setView(page, [cx + 360, 150, cz + 430], [cx - 10, 30, cz - 30]);
+  const name = firms.find((f) => f.id === quick.firmId)?.name ?? '';
+  await page.waitForTimeout(1200);
+  // The plate may sit behind a tower from here; its button is what is tested.
+  await page.locator('.plate', { hasText: name }).first().dispatchEvent('click');
+  check((await debug(page, (x) => x.opened)) === `#/firms/${quick.firmId}`, `${name}'s plate opens the firm`);
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
+  check((await debug(page, (x) => x.quality())) === 'high', 'the quarters hold high quality');
 }
 
 // ---------------------------------------------------------------- inspector
@@ -1196,6 +1290,7 @@ async function main(): Promise<void> {
       await viewGrowsChecks(page);
       await reconnectChecks(page, restart);
       await earnedChecks(page);
+      await quarterChecks(page);
       await silhouetteChecks(page);
     }
 

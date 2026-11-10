@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
-import type { District } from '../../../shared/types';
+import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
+import type { District, Quarter } from '../../../shared/types';
 import { createCameraRig } from './camera';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
@@ -14,20 +15,23 @@ import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
 import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
 
-export interface PickHit {
-  kind: 'tower';
-  repo: string;
-  floorId: string | null;
-}
+/** What a click in the city landed on: a district's tower (a floor, or its root), an agent's tower in a quarter, or a firm's plinth. */
+export type PickHit =
+  | { kind: 'tower'; repo: string; floorId: string | null }
+  | { kind: 'agent'; agentId: string; firmId: string; floorId: string | null }
+  | { kind: 'firm'; firmId: string };
 
 /** What stands at a district's origin, and which of its parts can be clicked (mapped to a floor id, or null). */
 export interface Centerpiece {
   object: THREE.Object3D;
   pickables: Map<THREE.Object3D, string | null>;
+  /** In a quarter: each pickable part of an agent's tower, mapped to its agent (the rest picks as the firm). */
+  agents?: Map<THREE.Object3D, string>;
   dispose?(): void;
 }
 
 export type CenterpieceFactory = (d: District) => Centerpiece;
+export type QuarterFactory = (q: Quarter) => Centerpiece;
 
 export interface CityOptions {
   quality: 'high' | 'medium';
@@ -43,6 +47,10 @@ export interface CityOptions {
    * its plaza edge keep clear of them and a value step away.
    */
   districtTones?: (d: District) => { tones: Array<[number, number, number]>; value?: number };
+  /** Builds a firm's quarter (quarters.ts); without it quarters stand empty courts. */
+  makeQuarterCenterpiece?: QuarterFactory;
+  /** Anything beyond the quarter's own data that changes what the factory builds (its name, its looks); a change rebuilds it. */
+  quarterKey?: (q: Quarter) => string;
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
@@ -60,8 +68,9 @@ export interface City {
   camera: THREE.PerspectiveCamera;
   /**
    * Shows the occupied plots: a tower for each district (only districts that
-   * changed are rebuilt), a scaffold at each site, and the ambient city round
-   * exactly those plots. Every other plot is the city's. Returns how many towers were built.
+   * changed are rebuilt), a scaffold at each site, each firm's quarter, and
+   * the ambient city round exactly those plots. Every other plot is the
+   * city's. Returns how many districts and quarters were built.
    */
   setPlots(occ: Occupancy): number;
   /** Sets the street-level name plates. */
@@ -70,6 +79,8 @@ export interface City {
   highlightFloor(repo: string, floorId: string | null): void;
   floorFrame(repo: string, floorId: string): Frame | null;
   towerFrame(repo: string): Frame | null;
+  /** Where an agent's tower stands, root to roof, for framing the camera on it. */
+  agentFrame(agentId: string): Frame | null;
   /** Keeps the view centred in the part of the window not covered by a panel this wide on the right. */
   setInset(px: number): void;
   /** Compiles every material for the current scene so later frames never stall on a shader compile. */
@@ -92,7 +103,7 @@ export interface City {
   /**
    * Stands objects at spots in the city outside the plots, each spot paved
    * and cleared of ambient blocks like a district (captures and the UI test:
-   * the agent silhouette board until quarters stand in the city).
+   * the agent silhouette board of grown towers).
    */
   board(objects: THREE.Object3D[], spots: Array<{ x: number; z: number }>): { dispose(): void };
   /** Draws ambient lots on their own, outside the city (the ambient swatch board). */
@@ -197,6 +208,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   districtGroup.name = 'districts';
   scene.add(districtGroup);
   let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece }> = [];
+  let quarterPieces: Array<{ firmId: string; key: string; piece: Centerpiece }> = [];
+  /** Every pickable part in the city: towers' floors and roots, quarters' towers and plinths. */
+  const allPickables = (): THREE.Object3D[] => [...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]);
   let scaffolds = new Map<string, Scaffold>();
   let framed = false;
 
@@ -232,7 +246,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   /** Spots the board stands on, cleared like plots. */
   let boardSpots: Array<{ x: number; z: number }> = [];
-  let lastOcc: Occupancy = { districts: [], sites: [] };
+  let lastOcc: Occupancy = { districts: [], sites: [], quarters: [] };
   function updatePlazas(occ: Occupancy): void {
     lastOcc = occ;
     // Only occupied plots are paved and cleared: a district, or a site under scaffold (and the board's spots).
@@ -266,17 +280,51 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       piece.dispose?.();
     }
     if (highlighted) applyHighlight();
-    extent = cityExtent(districts);
+    return built;
+  }
+
+  function placeQuarters(quarters: Quarter[]): number {
+    const old = new Map(quarterPieces.map((c) => [c.firmId, c]));
+    let built = 0;
+    quarterPieces = quarters.map((q) => {
+      const key = JSON.stringify(q) + (opts.quarterKey?.(q) ?? '');
+      const kept = old.get(q.firmId);
+      if (kept && kept.key === key) {
+        old.delete(q.firmId);
+        return kept;
+      }
+      const piece = opts.makeQuarterCenterpiece?.(q) ?? { object: new THREE.Group(), pickables: new Map() };
+      piece.object.position.set(q.origin.x, 0, q.origin.z);
+      piece.object.userData.firmId = q.firmId;
+      districtGroup.add(piece.object);
+      built++;
+      return { firmId: q.firmId, key, piece };
+    });
+    for (const { piece } of old.values()) {
+      districtGroup.remove(piece.object);
+      piece.dispose?.();
+    }
+    return built;
+  }
+
+  /** The view's limits follow everything that stands: districts, and each agent tower where it stands in its quarter. */
+  function reframe(occ: Occupancy): void {
+    const agents = occ.quarters.flatMap((q) =>
+      q.towers.map((t, i) => {
+        const at = QUARTER_OFFSETS[t.towerIndex ?? i] ?? { x: 0, z: 0 };
+        return { origin: { x: q.origin.x + at.x, z: q.origin.z + at.z }, tower: t };
+      }),
+    );
+    extent = cityExtent([...occ.districts, ...agents]);
     // The city opens on its home framing, with its limits in force at once, at the first placement that has
-    // districts (an empty first answer leaves the camera unframed); after that the limits ease.
-    const open = opensHome(framed, districts.length);
+    // anything standing (an empty first answer leaves the camera unframed); after that the limits ease.
+    const open = opensHome(framed, occ.districts.length + occ.quarters.length);
     relimit(open);
     if (open) {
       applyLimits();
       rig.view(toV(limits.home.eye), toV(limits.home.target));
       framed = true;
     }
-    return built;
   }
 
   function placeSites(sites: Site[]): void {
@@ -300,7 +348,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   let lastPlazas = '';
   function setPlots(occ: Occupancy): number {
-    const built = placeDistricts(occ.districts);
+    const built = placeDistricts(occ.districts) + placeQuarters(occ.quarters);
+    reframe(occ);
     placeSites(occ.sites);
     // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
     const key = JSON.stringify(plazasOf(occ));
@@ -341,6 +390,21 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (box.isEmpty()) return null;
     const size = box.getSize(new THREE.Vector3());
     return { center: box.getCenter(new THREE.Vector3()), width: Math.max(size.x, size.z), height: size.y };
+  }
+
+  function agentFrame(agentId: string): Frame | null {
+    for (const { piece } of quarterPieces) {
+      const box = new THREE.Box3();
+      for (const [o, id] of piece.agents ?? []) {
+        if (id !== agentId) continue;
+        o.updateWorldMatrix(true, false);
+        box.union(new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)).applyMatrix4(o.matrixWorld));
+      }
+      if (box.isEmpty()) continue;
+      const size = box.getSize(new THREE.Vector3());
+      return { center: box.getCenter(new THREE.Vector3()), width: Math.max(size.x, size.z), height: size.y };
+    }
+    return null;
   }
 
   let highlighted: { repo: string; floorId: string } | null = null;
@@ -453,17 +517,20 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     raycaster.setFromCamera(pointer, camera);
     // Only the pickable parts (tower pick proxies, plinth meshes) are tested, not every piece of tower geometry.
-    const targets = centerpieces.flatMap(({ piece }) => [...piece.pickables.keys()]);
-    const hits = raycaster.intersectObjects(targets, false);
+    const hits = raycaster.intersectObjects(allPickables(), false);
+    const send = (hit: PickHit): void => {
+      for (const fn of pickListeners) fn(hit);
+    };
     for (const h of hits) {
       for (const { repo, piece } of centerpieces) {
         let o: THREE.Object3D | null = h.object;
         while (o && !piece.pickables.has(o)) o = o.parent;
-        if (o) {
-          const hit: PickHit = { kind: 'tower', repo, floorId: piece.pickables.get(o) ?? null };
-          for (const fn of pickListeners) fn(hit);
-          return;
-        }
+        if (o) return send({ kind: 'tower', repo, floorId: piece.pickables.get(o) ?? null });
+      }
+      for (const { firmId, piece } of quarterPieces) {
+        if (!piece.pickables.has(h.object)) continue;
+        const agentId = piece.agents?.get(h.object);
+        return send(agentId ? { kind: 'agent', agentId, firmId, floorId: piece.pickables.get(h.object) ?? null } : { kind: 'firm', firmId });
       }
     }
   };
@@ -490,7 +557,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   // Towers always hide the plates behind them. The skyline does too from street level, where a name seen
   // through a wall would be wrong; from above the plates read as a map's annotations and stay.
   const plates = createPlates(canvasHost, camera, () => [
-    ...centerpieces.flatMap(({ piece }) => [...piece.pickables.keys()]),
+    ...allPickables(),
     ...(camera.position.y < STREET_EYE ? grid.blockers : []),
   ]);
   const observer = new ResizeObserver(resize);
@@ -581,6 +648,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     highlightFloor,
     floorFrame,
     towerFrame,
+    agentFrame,
     setInset(px) {
       insetTarget = Math.max(0, Math.min(px, width() * 0.6));
     },
@@ -625,8 +693,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       observer.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
-      for (const { piece } of centerpieces) piece.dispose?.();
+      for (const { piece } of [...centerpieces, ...quarterPieces]) piece.dispose?.();
       centerpieces = [];
+      quarterPieces = [];
       for (const sc of scaffolds.values()) sc.dispose();
       scaffolds.clear();
       plates.dispose();

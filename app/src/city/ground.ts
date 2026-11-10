@@ -10,8 +10,14 @@ import {
   PLAZA_LAMP_RING,
   PLAZA_LAMPS,
   PLAZA_RADIUS,
+  COURT_LANTERN_INSET,
+  COURT_LANTERN_REACH,
+  COURT_LANTERN_STEP,
+  COURT_PLINTH_CLEAR,
   type Plaza,
 } from './grid';
+import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
+import { AGENT_ROOT_SCALE } from '../../../shared/tower-layout.js';
 import { materials, texture, worldBox } from './materials';
 
 /** Most plazas the ground shader tracks at once (the civic plaza plus districts). */
@@ -23,6 +29,8 @@ const PAVE_TILE = 4;
 const LAMP_REACH = 1.3;
 /** The plinth's base course, in metres (its steps add 4 m each side). */
 const PLINTH_FOOT = 34;
+/** Half the foot of an agent tower's root (a district root's 21 m at the agent scale): the floodlit edge on a court. */
+const AGENT_FOOT_HALF = 21 * AGENT_ROOT_SCALE;
 
 export interface Ground {
   mesh: THREE.Mesh;
@@ -60,7 +68,8 @@ export function createGround(): Ground {
   });
 
   const uniforms = {
-    uPlazas: { value: Array.from({ length: MAX_PLAZAS }, () => new THREE.Vector2(1e6, 1e6)) },
+    // x and z of each plaza's centre, a quarter's court half-side (0 for a round plaza), and its standing plots as bits.
+    uPlazas: { value: Array.from({ length: MAX_PLAZAS }, () => new THREE.Vector4(1e6, 1e6, 0, 0)) },
     uPlazaCount: { value: 1 },
   };
 
@@ -76,7 +85,7 @@ export function createGround(): Ground {
         '#include <common>',
         `#include <common>
         varying vec3 vGP;
-        uniform vec2 uPlazas[${MAX_PLAZAS}];
+        uniform vec4 uPlazas[${MAX_PLAZAS}];
         uniform int uPlazaCount;
         const float PITCH = ${PITCH.toFixed(1)};
         const float HALF_BLOCK = ${(BLOCK / 2).toFixed(1)};
@@ -87,17 +96,28 @@ export function createGround(): Ground {
         const float BOLLARD_R = ${BOLLARD_RING.toFixed(1)};
         const float BOLLARD_N = ${BOLLARDS.toFixed(1)};
         const float PLINTH_HALF = ${(PLINTH_FOOT / 2 + 4).toFixed(1)};
+        const float AGENT_FOOT = ${AGENT_FOOT_HALF.toFixed(2)};
+        const float QOFF = ${Math.abs(QUARTER_OFFSETS[0].x).toFixed(1)};
+        const float LANTERN_IN = ${COURT_LANTERN_INSET.toFixed(1)};
+        const float LANTERN_STEP = ${COURT_LANTERN_STEP.toFixed(1)};
+        const float LANTERN_REACH = ${COURT_LANTERN_REACH.toFixed(1)};
+        const float PLINTH_CLEAR = ${COURT_PLINTH_CLEAR.toFixed(1)};
         const float OFFS[4] = float[4](${lampOffsets});
         float gHash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
-        // Distance to the nearest plaza centre, that centre, and whether it is a district (index 0 is the civic plaza).
-        float nearestPlaza(vec2 p, out vec2 c, out bool district) {
-          float best = 1e9; c = vec2(1e6); district = false;
+        // The plaza whose edge is nearest: its centre, its radius (a quarter's court half-side), whether it is a
+        // district (index 0 is the civic plaza) and a quarter's standing plots. Returns the distance from its centre,
+        // round for a plaza and square (the larger of the two offsets) for a court.
+        float nearestPlaza(vec2 p, out vec2 c, out bool district, out float r, out float court, out float plots) {
+          float best = 1e9; float bestD = 1e9; c = vec2(1e6); district = false; r = PLAZA_R; court = 0.0; plots = 0.0;
           for (int i = 0; i < ${MAX_PLAZAS}; i++) {
             if (i >= uPlazaCount) break;
-            float d = distance(p, uPlazas[i]);
-            if (d < best) { best = d; c = uPlazas[i]; district = i > 0; }
+            vec4 u = uPlazas[i];
+            vec2 q = abs(p - u.xy);
+            float d = u.z > 0.0 ? max(q.x, q.y) : length(q);
+            float rr = u.z > 0.0 ? u.z : PLAZA_R;
+            if (d - rr < best) { best = d - rr; bestD = d; c = u.xy; district = i > 0 && u.z == 0.0; r = rr; court = u.z; plots = u.w; }
           }
-          return best;
+          return bestD;
         }
         // Nearest of n lights evenly spaced on a ring of radius r (offset by half a step when half is 0.5).
         vec2 ringLight(vec2 d, float r, float n, float half_) {
@@ -111,7 +131,9 @@ export function createGround(): Ground {
         bool inPlaza(vec2 p) {
           for (int i = 0; i < ${MAX_PLAZAS}; i++) {
             if (i >= uPlazaCount) break;
-            if (distance(p, uPlazas[i]) < PLAZA_R) return true;
+            vec4 u = uPlazas[i];
+            vec2 q = abs(p - u.xy);
+            if (u.z > 0.0 ? max(q.x, q.y) < u.z : length(q) < PLAZA_R) return true;
           }
           return false;
         }`,
@@ -124,8 +146,11 @@ export function createGround(): Ground {
         vec2 lc = gp - cellId * PITCH;                 // position within this block's cell, block centred
         vec2 plazaC;
         bool district;
-        float plazaD = nearestPlaza(gp, plazaC, district);
-        float plaza = 1.0 - smoothstep(PLAZA_R - 2.0, PLAZA_R, plazaD);
+        float plazaR;
+        float court;
+        float plots;
+        float plazaD = nearestPlaza(gp, plazaC, district, plazaR, court, plots);
+        float plaza = 1.0 - smoothstep(plazaR - 2.0, plazaR, plazaD);
         float edge = max(abs(lc.x), abs(lc.y));
         float road = smoothstep(HALF_BLOCK + 3.9, HALF_BLOCK + 4.1, edge) * (1.0 - plaza);
         float kerb = smoothstep(HALF_BLOCK + 3.6, HALF_BLOCK + 3.75, edge) * (1.0 - smoothstep(HALF_BLOCK + 3.85, HALF_BLOCK + 4.0, edge)) * (1.0 - plaza);
@@ -145,10 +170,18 @@ export function createGround(): Ground {
         diffuseColor.rgb = mix(diffuseColor.rgb, asphalt, road);
         diffuseColor.rgb *= 1.0 - kerb * 0.35;
         // Plaza ring: a band of lighter dressed stone at the plaza's edge.
-        float ring = smoothstep(PLAZA_R - 4.0, PLAZA_R - 3.6, plazaD) * (1.0 - smoothstep(PLAZA_R - 1.2, PLAZA_R - 0.8, plazaD));
+        float ring = smoothstep(plazaR - 4.0, plazaR - 3.6, plazaD) * (1.0 - smoothstep(plazaR - 1.2, plazaR - 0.8, plazaD));
         diffuseColor.rgb *= 1.0 + ring * 0.18;
-        // Inside the plaza: warmer, paler dressed paving laid in concentric courses.
+        // Inside the plaza: warmer, paler dressed paving laid in concentric courses; a court is laid in a grid of
+        // large slabs in staggered rows, and a little darker, so the quarter reads as one paved yard.
         float course = 1.0 - 0.3 * (1.0 - smoothstep(0.02, 0.06, abs(fract(plazaD / 6.0) - 0.5) - 0.44));
+        if (court > 0.0) {
+          vec2 cl = gp - plazaC;
+          float row = floor(cl.y / 3.0);
+          vec2 slab = abs(fract(vec2(cl.x / 6.0 + 0.5 * mod(row, 2.0), cl.y / 3.0)) - 0.5);
+          float joint = 1.0 - smoothstep(0.455, 0.48, max(slab.x * 1.0, slab.y * 0.5 + 0.25));
+          course = (0.86 + 0.08 * gHash(vec2(floor(cl.x / 6.0 + 0.5 * mod(row, 2.0)), row))) * mix(0.72, 1.0, joint);
+        }
         diffuseColor.rgb *= mix(vec3(1.0), vec3(1.28, 1.2, 1.08) * course, plaza * (1.0 - ring));
         roughnessFactor = mix(roughnessFactor, 0.74 + grain, road);`,
       )
@@ -157,7 +190,7 @@ export function createGround(): Ground {
         `#include <emissivemap_fragment>
         {
           float light = 0.0;
-          bool nearP = plazaD < PLAZA_R + 24.0;
+          bool nearP = plazaD < plazaR + 24.0;
           for (int k = 0; k < 4; k++) {
             float o = OFFS[k];
             vec2 lamps[4] = vec2[4](vec2(o, LAMP_AT), vec2(LAMP_AT, o), vec2(o, LAMP_AT - PITCH), vec2(LAMP_AT - PITCH, o));
@@ -170,8 +203,20 @@ export function createGround(): Ground {
               light += pool(lc - lp);
             }
           }
-          // Lanterns around the nearest plaza.
-          if (plazaD < RING_R + 14.0) {
+          // Lanterns around the nearest plaza, or lining a quarter's court.
+          if (court > 0.0) {
+            vec2 d = gp - plazaC;
+            float l = court - LANTERN_IN;
+            if (plazaD < l + 14.0) {
+              // The nearest lantern on the edge running along x, and on the edge running along z.
+              float ux = clamp(floor(d.x / LANTERN_STEP + 0.5) * LANTERN_STEP, -LANTERN_REACH, LANTERN_REACH);
+              float uz = clamp(floor(d.y / LANTERN_STEP + 0.5) * LANTERN_STEP, -LANTERN_REACH, LANTERN_REACH);
+              vec2 a = vec2(ux, sign(d.y) * l);
+              vec2 b = vec2(sign(d.x) * l, uz);
+              if (!(a.y > 0.0 && abs(a.x) < PLINTH_CLEAR)) light += 0.8 * pool(d - a);
+              light += 0.8 * pool(d - b);
+            }
+          } else if (plazaD < RING_R + 14.0) {
             vec2 d = gp - plazaC;
             float step_ = 6.28318530718 / RING_N;
             float a = floor(atan(d.y, d.x) / step_ + 0.5) * step_;
@@ -181,6 +226,18 @@ export function createGround(): Ground {
           // District plazas: floodlight spill at the plinth's foot and lit bollards around it.
           // The plaza floor holds a broad, low wash from all of it together, brightest toward the plinth.
           if (district) light += 0.55 * (1.0 - smoothstep(18.0, PLAZA_R - 4.0, plazaD));
+          // A quarter: floodlight spill at the foot of each standing tower's root, and a softer wash over the court.
+          if (court > 0.0 && plots >= 0.0 && plazaD < court) {
+            vec2 d = gp - plazaC;
+            light += 0.3 * (1.0 - smoothstep(court - 30.0, court, plazaD));
+            for (int k = 0; k < 4; k++) {
+              if (mod(floor(plots / pow(2.0, float(k))), 2.0) < 0.5) continue;
+              vec2 off = vec2(k % 2 == 0 ? -QOFF : QOFF, k < 2 ? -QOFF : QOFF);
+              vec2 q = abs(d - off);
+              float foot = max(q.x, q.y);
+              light += 2.0 * exp(-pow(max(foot - AGENT_FOOT, 0.0), 2.0) / 9.0) * step(AGENT_FOOT - 0.5, foot);
+            }
+          }
           if (district && plazaD < BOLLARD_R + 10.0) {
             vec2 d = gp - plazaC;
             vec2 q = abs(d);
@@ -202,8 +259,9 @@ export function createGround(): Ground {
   return {
     mesh,
     setPlazas(plazas) {
-      const all = [{ x: 0, z: 0 }, ...plazas].slice(0, MAX_PLAZAS);
-      all.forEach((p, i) => uniforms.uPlazas.value[i].set(p.x, p.z));
+      const all: Plaza[] = [{ x: 0, z: 0 }, ...plazas].slice(0, MAX_PLAZAS);
+      // A dark quarter's plots go in as -1: its floodlights are off.
+      all.forEach((p, i) => uniforms.uPlazas.value[i].set(p.x, p.z, p.court ?? 0, p.dark ? -1 : (p.towers ?? 0)));
       uniforms.uPlazaCount.value = all.length;
     },
     plazas: () => uniforms.uPlazaCount.value,

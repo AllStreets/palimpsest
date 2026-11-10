@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 
-/** A district's name plate: what it says, where it stands, what clicking it does. */
+/** A district's or a firm's quarter's name plate: what it says, where it stands, what clicking it does. */
 export interface Plate {
   key: string;
   origin: { x: number; z: number };
   name: string;
-  /** The quieter second line: owner and floor count, or the analysis step. */
+  /** The quieter second line: owner and floor count, the analysis step, or a firm's agents and credits. */
   sub: string;
   onActivate?: () => void;
 }

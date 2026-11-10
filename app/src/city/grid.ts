@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 
-import { RESERVE_RADIUS, type CollarPlaza } from './collar';
+import { reserves, type CollarPlaza } from './collar';
 import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade';
 import { kitShared } from './kits';
-import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, lotParts, PITCH, rectNear, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
+import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
 import { materials } from './materials';
 
 export { BLOCK, PITCH, STREET } from './lots';
@@ -39,8 +39,37 @@ export interface Grid {
   dispose(): void;
 }
 
-function near(x: number, z: number, plazas: Plaza[], r: number): boolean {
-  return plazas.some((p) => (p.x - x) ** 2 + (p.z - z) ** 2 < r * r);
+/**
+ * Lanterns line a quarter's court this far in from its edge, every
+ * COURT_LANTERN_STEP metres out to COURT_LANTERN_REACH either side of the
+ * centre line (past it the towers stand).
+ */
+export const COURT_LANTERN_INSET = 5;
+export const COURT_LANTERN_STEP = 16;
+export const COURT_LANTERN_REACH = 32;
+/** No lantern stands within this of the court's centre line on its south edge, where the firm's name plinth is. */
+export const COURT_PLINTH_CLEAR = 20;
+
+/** True on a plaza's paving: within PLAZA_RADIUS of a round plaza's centre, or on a quarter's court. */
+function paved(x: number, z: number, plazas: Plaza[]): boolean {
+  return plazas.some((p) => (p.court !== undefined ? Math.max(Math.abs(p.x - x), Math.abs(p.z - z)) < p.court : (p.x - x) ** 2 + (p.z - z) ** 2 < PLAZA_RADIUS * PLAZA_RADIUS));
+}
+
+/** Where the lanterns round a quarter's court stand, from its centre: along each edge, clear of the name plinth. */
+export function courtLanterns(court: number): Array<{ x: number; z: number }> {
+  const l = court - COURT_LANTERN_INSET;
+  const out: Array<{ x: number; z: number }> = [];
+  const seen = new Set<string>();
+  for (let u = -COURT_LANTERN_REACH; u <= COURT_LANTERN_REACH + 1e-6; u += COURT_LANTERN_STEP) {
+    for (const [x, z] of [[u, -l], [u, l], [-l, u], [l, u]]) {
+      const key = `${x},${z}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (z === l && Math.abs(x) < COURT_PLINTH_CLEAR) continue;
+      out.push({ x, z });
+    }
+  }
+  return out;
 }
 
 const dummy = new THREE.Object3D();
@@ -270,10 +299,10 @@ export function createGrid(quality: 'high' | 'medium'): Grid {
         for (const off of LAMP_OFFSETS) {
           const sx = cx + off;
           const sz = cz + LAMP_EDGE;
-          if (!near(sx, sz, all, PLAZA_RADIUS)) lamp(sx, sz, 'z', rl);
+          if (!paved(sx, sz, all)) lamp(sx, sz, 'z', rl);
           const ex = cx + LAMP_EDGE;
           const ez = cz + off;
-          if (!near(ex, ez, all, PLAZA_RADIUS)) lamp(ex, ez, 'x', rl);
+          if (!paved(ex, ez, all)) lamp(ex, ez, 'x', rl);
         }
         const nearBlock = Math.max(Math.abs(i), Math.abs(j)) <= DETAIL_RADIUS;
         for (const lot of standingLots(i, j, all)) draw({ walls, cuts, parts }, lot, false, nearBlock);
@@ -284,15 +313,19 @@ export function createGrid(quality: 'high' | 'medium'): Grid {
       for (let j = -farRadius; j <= farRadius; j++) {
         if (Math.max(Math.abs(i), Math.abs(j)) <= radius) continue;
         const lot = farLot(i, j);
-        if (all.some((p) => rectNear(lot.x, lot.z, lot.w, lot.d, p.x, p.z, RESERVE_RADIUS))) continue;
+        if (all.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
         draw({ walls, cuts, parts }, lot, true);
       }
     }
 
-    // Lanterns ringing each plaza, and lit bollards around each district's plinth.
+    // Lanterns ringing each plaza (lining a quarter's court), and lit bollards around each district's plinth.
     const bollardColour = new THREE.Color(3.0, 1.9, 1.0);
-    all.forEach((p, idx) => {
+    all.forEach((p: Plaza, idx) => {
       const r = rng(blockSeed(Math.round(p.x), Math.round(p.z)) + 7);
+      if (p.court !== undefined) {
+        for (const l of courtLanterns(p.court)) lamp(p.x + l.x, p.z + l.z, 'none', r);
+        return;
+      }
       for (let k = 0; k < PLAZA_LAMPS; k++) {
         const a = (k / PLAZA_LAMPS) * Math.PI * 2;
         lamp(p.x + Math.cos(a) * PLAZA_LAMP_RING, p.z + Math.sin(a) * PLAZA_LAMP_RING, 'none', r);

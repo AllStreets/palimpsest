@@ -14,6 +14,18 @@ export const FLOOR_HEIGHT: Record<FloorSize, number> = {
   large: 5.2,
 };
 
+/**
+ * An agent's tower stands on its firm's root at the agent's scale (16 m
+ * floors over a district's 26, ruling 15): the same vernacular, smaller in
+ * every dimension, so four of them stand round one court as a quarter.
+ */
+export const AGENT_ROOT_SCALE = 16 / 26;
+
+/** The height of an agent tower's root in `root`'s vernacular. */
+export function agentRootHeight(root: RootStyle): number {
+  return ROOT_HEIGHT[root] * AGENT_ROOT_SCALE;
+}
+
 export interface LaidFloor {
   floor: Floor;
   y0: number;
@@ -28,13 +40,13 @@ export interface TowerLayout {
 }
 
 /**
- * Stacks a tower's floors from the top of its root upward, in the order they
- * appear in `spec.floors` (oldest first). `datumY` sits at the top of the
+ * Stacks a tower's floors from the top of its root (an agent's at the agent
+ * scale) upward, in the order they appear in `spec.floors` (oldest first). `datumY` sits at the top of the
  * floors below `spec.datumIndex` (the founding floors); `top` sits at the top
  * of every floor, founding or not.
  */
 export function layoutTower(spec: TowerSpec): TowerLayout {
-  const rootHeight = ROOT_HEIGHT[spec.root];
+  const rootHeight = spec.kind === 'agent' ? agentRootHeight(spec.root) : ROOT_HEIGHT[spec.root];
 
   const floors: LaidFloor[] = [];
   let y = rootHeight;

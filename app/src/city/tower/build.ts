@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { layoutTower } from '../../../../shared/tower-layout.js';
+import { AGENT_ROOT_SCALE, layoutTower } from '../../../../shared/tower-layout.js';
 import { crownFor, floorTransform } from '../../../../shared/silhouette.js';
 import type { Silhouette, TowerSpec } from '../../../../shared/types.js';
 import { crownSlots } from '../kits.js';
@@ -113,7 +113,12 @@ export function buildTower(
   const towerRemap: Partial<Record<MatKey, MatKey | null>> = dark ? DARK : {};
   kit.remap = towerRemap;
 
+  // An agent's tower stands on its firm's root at the agent scale: the same vernacular, smaller in every dimension.
+  const rootScale = spec.kind === 'agent' ? AGENT_ROOT_SCALE : 1;
+  kit.base = M(0, 0, 0, 0, rootScale, rootScale, rootScale);
   ROOT_BUILDERS[spec.root](kit, detail, rng(spec.id));
+  kit.base = new THREE.Matrix4();
+  const rootTopHalf = ROOT_TOP_HALF[spec.root] * rootScale;
 
   const proxyGeo = new THREE.BoxGeometry(1, 1, 1);
   const proxies = new THREE.Group();
@@ -128,12 +133,12 @@ export function buildTower(
     proxies.add(p);
     return p;
   };
-  const rootPick = proxy(0, layout.rootHeight / 2, 0, ROOT_TOP_HALF[spec.root] * 2 + 6, layout.rootHeight, 0);
+  const rootPick = proxy(0, layout.rootHeight / 2, 0, (rootTopHalf + 3) * 2, layout.rootHeight, 0);
 
   let width = opts.width ?? (spec.kind === 'agent' ? AGENT_FLOOR_WIDTH : FLOOR_WIDTH);
   let inRun = 0;
   const last = layout.floors.length - 1;
-  let datumPlan: DatumPlan = { cx: 0, cz: 0, half: ROOT_TOP_HALF[spec.root] - 0.4, ry: 0 };
+  let datumPlan: DatumPlan = { cx: 0, cz: 0, half: rootTopHalf - 0.4, ry: 0 };
   const yearOf = (at: string): number => new Date(at).getUTCFullYear() || 0;
   const firstYear = layout.floors.length ? yearOf(layout.floors[0].floor.at) : 0;
   /** Floors earned in the market: they stand above the datum, each in its agent's era. */

@@ -31,7 +31,8 @@
  * rounds; use with CAPTURE_OUT). CAPTURE_ECONOMY=1 seeds the sample economy
  * (engine/market/sample-economy.ts) on top, so towers carry earned, waiting
  * and scar floors; the `earned` shot frames them, and the `silhouettes` shot
- * stands one agent tower of each silhouette off the city (tools/agent-board.ts).
+ * stands one agent tower of each silhouette off the city (tools/agent-board.ts),
+ * and the `quarters` shot frames the firms' quarters in the city.
  *
  * Re-run it whenever the city changes, and add a shot here for each new
  * thing worth showing.
@@ -440,6 +441,39 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await page.waitForTimeout(2500);
       const tops = towers.map((t) => layoutTower(t).top);
       for (const [name, eye, target] of boardViews(fr, towers, tops)) await still(page, name, eye, target);
+    },
+
+    async quarters(page) {
+      // The firms' quarters (CAPTURE_ECONOMY=1): the city from home with its quarters, two quarters and a district
+      // from one bearing, a quarter close, its name plinth, the lens crowns at city distance, the re-clad tower
+      // Quickset bought, and a quarter dark as it stands between a bankruptcy and the sale of its towers.
+      const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+      const by = (id: string): Quarter => qs.find((q) => q.firmId === id) ?? qs[0];
+      await chrome(page, true);
+      await page.evaluate(() => (window as unknown as { __palimpsest: { home(): void } }).__palimpsest.home());
+      await page.waitForTimeout(3200);
+      await shoot(page, 'quarters-home');
+      const quick = by('quickset').origin;
+      const kiln = by('kiln').origin;
+      const d0 = city[0].origin;
+      const cx = (quick.x + kiln.x + d0.x) / 3;
+      const cz = (quick.z + kiln.z + d0.z) / 3;
+      await still(page, 'quarters', [cx + 360, 150, cz + 430], [cx - 10, 30, cz - 30]);
+      await chrome(page, false);
+      await still(page, 'quarter-close', [quick.x + 120, 34, quick.z + 170], [quick.x - 4, 30, quick.z + 6]);
+      await still(page, 'quarter-court', [quick.x + 30, 1.7, quick.z + 100], [quick.x - 30, 14, quick.z - 40]);
+      await still(page, 'quarter-plinth', [quick.x + 9, 2.2, quick.z + 88], [quick.x, 0.9, quick.z + 74]);
+      const ashlar = by('ashlar-vane').origin;
+      await still(page, 'quarter-lens-far', [ashlar.x + 300, 90, ashlar.z + 380], [ashlar.x, 50, ashlar.z]);
+      await still(page, 'quarter-lens', [ashlar.x + 60, 70, ashlar.z + 110], [ashlar.x - 30, 52, ashlar.z]);
+      const lode = by('lodestar').origin;
+      await still(page, 'quarter-reclad', [lode.x + 90, 30, lode.z + 120], [lode.x - 52, 30, lode.z - 52]);
+      for (const extra of (process.env.QUARTER_DARK ?? 'kiln').split(',')) {
+        await page.evaluate((f) => (window as unknown as { __palimpsest: { darkQuarter(f: string): void } }).__palimpsest.darkQuarter(f), extra);
+        await page.waitForTimeout(1500);
+        const o = by(extra).origin;
+        await still(page, `quarter-dark-${extra}`, [o.x + 130, 40, o.z + 170], [o.x - 4, 22, o.z]);
+      }
     },
 
     async hero(page) {

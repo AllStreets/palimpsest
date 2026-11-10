@@ -43,3 +43,19 @@ export function districtOrigin(i: number): { x: number; z: number } {
   const { bx, bz } = spiralBlock(i + 1);
   return { x: bx * DISTRICT_PITCH, z: bz * DISTRICT_PITCH };
 }
+
+/**
+ * Where each of a firm's agent towers stands in its quarter, from the
+ * quarter's origin, by the agent's tower index (Task 4): four plots on the
+ * corners of a square, far enough apart that the quarter reads as a cluster
+ * of four practices round a shared court, never as four districts.
+ */
+export const QUARTER_OFFSETS: Array<{ x: number; z: number }> = [
+  { x: -52, z: -52 },
+  { x: 52, z: -52 },
+  { x: -52, z: 52 },
+  { x: 52, z: 52 },
+];
+
+/** Half the side of a quarter's square paved court, from its origin to the court's edge. */
+export const QUARTER_COURT = 74;

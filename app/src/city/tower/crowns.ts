@@ -9,7 +9,8 @@ import { type Kit, lathe, M, ME, PANE_FULL, paneData, unitBox } from './kit.js';
  *   mullions for every five floors earned, a bronze cornice and a dark roof
  *   plate, and on a turntable over it a fork mount carrying a thick coated
  *   lens in a bronze cell, tipped toward the low western sun like an
- *   instrument aimed at it. The more rings, the higher the fork lifts the
+ *   instrument aimed at it (turned halfway toward the city's home view, so
+ *   its face shows from there). The more rings, the higher the fork lifts the
  *   lens and the further it can tip;
  * - a specialist's spire: a galvanised mast in three telescoping sections on
  *   a battered footing, collared at each joint, with an aviation lamp at mid
@@ -25,13 +26,22 @@ export const LENS_MULLIONS = 24;
 export const LENS_TIER = 0.8;
 /** Where the dusk sun sits, as an angle about the vertical (sky.ts SUN_DIRECTION, x -260 and z 120). */
 const SUN_AZIMUTH = Math.atan2(-260, 120);
+/** Where the city's home framing looks from (view.ts BEARING, x 0.63 and z 0.78). */
+const HOME_AZIMUTH = Math.atan2(0.63, 0.78);
+/**
+ * Where a lens tips: between the sun and the home framing. Aimed at the sun
+ * alone it showed the city only its rim; turned this far toward the eye its
+ * face holds the bright western sky from home and still leans to the light.
+ */
+export const LENS_BLEND = 0.5;
+const LENS_AZIMUTH = SUN_AZIMUTH + LENS_BLEND * Math.atan2(Math.sin(HOME_AZIMUTH - SUN_AZIMUTH), Math.cos(HOME_AZIMUTH - SUN_AZIMUTH));
 /** The furthest a lens tips toward the sun. */
 const MAX_TILT = (30 * Math.PI) / 180;
 
 /**
  * A lens crown with `rings` tiers of mullions on a roof `half` metres from
  * centre to face, `height` tall (crownFor), turned `ry` about the vertical
- * with the tower's top floor so its lens stays aimed at the sun. Medium
+ * with the tower's top floor so its lens stays aimed where it was. Medium
  * quality leaves out the small hardware (pivot bosses, cell screws).
  */
 export function makeLensCrown(k: Kit, rings: number, quality: 'high' | 'medium', half: number, height: number, ry = 0): void {
@@ -83,7 +93,7 @@ export function makeLensCrown(k: Kit, rings: number, quality: 'high' | 'medium',
   const tilt = Math.max(0, Math.min(MAX_TILT, Math.asin(Math.min(1, Math.max(0, (room - thick) / (2 * Rl))))));
   // The pivot sits where the tipped lens's low rim just clears the turntable.
   const pivotY = y + Rl * Math.sin(tilt) + (thick / 2) * Math.cos(tilt) + 0.06;
-  const aim = SUN_AZIMUTH - ry;
+  const aim = LENS_AZIMUTH - ry;
   const pivot = M(0, pivotY, 0, aim);
   const tip = pivot.clone().multiply(ME(0, 0, 0, tilt, 0, 0));
   k.add('lens', lensGeometry(Rl, thick, 0.1), tip);

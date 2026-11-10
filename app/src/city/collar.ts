@@ -7,7 +7,8 @@
  * is the tallest thing on its block and reads. Past the ring the skyline
  * rises again with distance. The civic plaza at the origin, and an analyzing
  * site that has no root yet, keep the gentler collar: low at the plaza's
- * edge and rising out to COLLAR_REACH.
+ * edge and rising out to COLLAR_REACH. A firm's quarter keeps the blocks
+ * just outside its court under its agents' roots, rising past COURT_RING.
  */
 
 /** Ambient buildings keep this far from a district origin or the civic plaza. */
@@ -18,6 +19,13 @@ export const COLLAR_RISE = 0.45;
 export const COLLAR_REACH = 320;
 /** Out to this distance from a district's origin, ambient buildings stay below its root. */
 export const ROOT_RING = 200;
+/** Round a quarter's court the ambient blocks stay below its agents' roots this far past the court's edge. */
+export const COURT_RING = 40;
+/**
+ * Ambient buildings keep this far outside a quarter's court: the blocks round
+ * it stand close, so the court reads as a room in the city, not a clearing.
+ */
+export const COURT_APRON = 4;
 /** The most a roof carries above its parapet line: a water tank on its stand, or a rooftop plant room. */
 export const ROOF_CLUTTER = 7.6;
 /** Storey height of the ambient city, and the ground-floor extra over it. */
@@ -36,6 +44,28 @@ export interface CollarPlaza {
   tones?: Array<[number, number, number]>;
   /** The L* of the tower's stone floors over the root: ambient lots at its edge stand a value step from it. */
   value?: number;
+  /**
+   * A firm's quarter: a square paved court this many metres from its centre
+   * to its edge, in place of a district's round plaza. `rootHeight` is then
+   * its agents' lowest root.
+   */
+  court?: number;
+  /** A quarter's standing plots, a bit per tower index (bit i is QUARTER_OFFSETS[i]). */
+  towers?: number;
+  /** A bankrupt firm's quarter: its court's floodlights are off. */
+  dark?: boolean;
+}
+
+/**
+ * True when a lot `w` by `d` centred at (x, z) stands on ground the plaza
+ * keeps clear: within RESERVE_RADIUS of a round plaza's centre, or within
+ * COURT_APRON of a quarter's court.
+ */
+export function reserves(p: CollarPlaza, x: number, z: number, w: number, d: number): boolean {
+  const dx = Math.max(Math.abs(p.x - x) - w / 2, 0);
+  const dz = Math.max(Math.abs(p.z - z) - d / 2, 0);
+  if (p.court !== undefined) return Math.max(dx, dz) < p.court + COURT_APRON;
+  return dx * dx + dz * dz < RESERVE_RADIUS * RESERVE_RADIUS;
 }
 
 /** The tallest an ambient building at (x, z) may stand, before rooftop clutter. Infinity when nothing limits it. */
@@ -46,7 +76,8 @@ export function ambientCap(x: number, z: number, plazas: CollarPlaza[]): number 
     let c: number;
     if (p.rootHeight !== undefined) {
       const low = p.rootHeight - ROOF_CLUTTER - 0.2;
-      c = gap < ROOT_RING ? low : low + (gap - ROOT_RING) * COLLAR_RISE;
+      const ring = p.court !== undefined ? p.court + COURT_RING : ROOT_RING;
+      c = gap < ring ? low : low + (gap - ring) * COLLAR_RISE;
     } else {
       c = gap < COLLAR_REACH ? COLLAR_BASE + Math.max(0, gap - RESERVE_RADIUS) * COLLAR_RISE : Infinity;
     }
