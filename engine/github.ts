@@ -405,16 +405,23 @@ export async function openPRsFrom(fullName: string, head: string): Promise<numbe
   return (JSON.parse(result.stdout || '[]') as Array<{ number: number }>).map((p) => p.number);
 }
 
-/** A pull request's commits, oldest first, each with the GitHub logins of its authors (an empty login where GitHub knows no account). */
-export async function prCommits(fullName: string, number: number): Promise<Array<{ sha: string; authors: string[] }>> {
+/**
+ * A pull request's commits, oldest first, with the GitHub logins of each
+ * one's author and committer as the REST API links them (empty when GitHub
+ * links no account). The author is linked by email alone, so only the
+ * committer says who actually made the commit.
+ */
+export async function prCommits(fullName: string, number: number): Promise<Array<{ sha: string; author: string; committer: string }>> {
   checkName(fullName);
   checkIssue(number);
-  const result = await runGh(['pr', 'view', String(number), '-R', fullName, '--json', 'commits']);
-  const row = JSON.parse(result.stdout || '{}') as { commits?: Array<{ oid?: unknown; authors?: Array<{ login?: unknown }> }> };
-  return (row.commits ?? []).map((c) => ({
-    sha: typeof c.oid === 'string' && /^[0-9a-f]{40}$/.test(c.oid) ? c.oid : '',
-    authors: (c.authors ?? []).map((a) => (typeof a.login === 'string' ? a.login : '')),
-  }));
+  const result = await runGh(['api', `repos/${fullName}/pulls/${number}/commits?per_page=100`, '--paginate', '--jq', '.[] | [.sha, (.author.login // ""), (.committer.login // "")] | @tsv']);
+  return result.stdout
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      const [sha = '', author = '', committer = ''] = line.split('\t');
+      return { sha: /^[0-9a-f]{40}$/.test(sha) ? sha : '', author: author.trim(), committer: committer.trim() };
+    });
 }
 
 /** The GitHub login gh is signed in as (his own account). Throws when gh cannot say. */

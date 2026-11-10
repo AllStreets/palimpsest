@@ -39,8 +39,8 @@ type GhCall = string[];
 let ghCalls: GhCall[] = [];
 let gitCalls: string[][] = [];
 let prStates = new Map<number, object>();
-/** What `gh pr view --json commits` answers per PR, and who `gh api user` says he is. */
-let prCommits = new Map<number, Array<{ oid: string; authors: Array<{ login: string }> }>>();
+/** The PR's commits as the REST API lists them (author and committer logins), and who `gh api user` says he is. */
+let prCommits = new Map<number, Array<{ sha: string; author: string; committer: string }>>();
 let viewer = 'connorevans';
 let nextPr = 12;
 /** Runs before a git command reaches real git (to move the stand-in remote under a push). */
@@ -50,8 +50,11 @@ const fakeGh: Runner = async (cmd, args, opts) => {
   if (cmd === 'gh') {
     ghCalls.push(args);
     if (args[0] === 'pr' && args[1] === 'create') return { stdout: `https://github.com/${FULL}/pull/${nextPr}\n`, stderr: '', code: 0 };
-    if (args[0] === 'pr' && args[1] === 'view' && args.includes('commits')) {
-      return { stdout: JSON.stringify({ commits: prCommits.get(Number(args[2])) ?? [] }), stderr: '', code: 0 };
+    const pulls = args[0] === 'api' ? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/commits/.exec(args[1] ?? '') : null;
+    if (pulls) {
+      // As `--jq` prints it: one tab-separated line per commit, sha, author login, committer login.
+      const rows = prCommits.get(Number(pulls[1])) ?? [];
+      return { stdout: rows.map((c) => `${c.sha}\t${c.author}\t${c.committer}\n`).join(''), stderr: '', code: 0 };
     }
     if (args[0] === 'api' && args[1] === 'user') return { stdout: `${viewer}\n`, stderr: '', code: 0 };
     if (args[0] === 'pr' && args[1] === 'view') {
@@ -352,9 +355,9 @@ test('a PR he finished with his own commits counts as merged, pays and notes his
   const { job, run: r } = await shipPr();
   const his = 'd'.repeat(40);
   prCommits.set(12, [
-    { oid: r.headSha as string, authors: [{ login: 'palimpsest-city' }] },
-    { oid: 'e'.repeat(40), authors: [{ login: 'ConnorEvans' }] },
-    { oid: his, authors: [{ login: 'connorevans' }] },
+    { sha: r.headSha as string, author: 'palimpsest-city', committer: 'palimpsest-city' },
+    { sha: 'e'.repeat(40), author: 'ConnorEvans', committer: 'web-flow' },
+    { sha: his, author: 'connorevans', committer: 'connorevans' },
   ]);
   prStates.set(12, { state: 'MERGED', mergedAt: '2026-11-10T12:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, closedAt: '2026-11-10T12:00:00Z', headRefOid: his, baseRefName: 'main' });
   await pollPRs(Date.now());
@@ -379,9 +382,9 @@ test("a PR with someone else's commits on top is merged with changes and not pai
   const { job, run: r } = await shipPr();
   const head = 'd'.repeat(40);
   prCommits.set(12, [
-    { oid: r.headSha as string, authors: [{ login: 'palimpsest-city' }] },
-    { oid: 'e'.repeat(40), authors: [{ login: 'connorevans' }] },
-    { oid: head, authors: [{ login: 'connorevans' }, { login: 'someone-else' }] },
+    { sha: r.headSha as string, author: 'palimpsest-city', committer: 'palimpsest-city' },
+    { sha: 'e'.repeat(40), author: 'connorevans', committer: 'connorevans' },
+    { sha: head, author: 'someone-else', committer: 'someone-else' },
   ]);
   prStates.set(12, { state: 'MERGED', mergedAt: '2026-11-10T12:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, closedAt: '2026-11-10T12:00:00Z', headRefOid: head, baseRefName: 'main' });
   await pollPRs(Date.now());
@@ -391,6 +394,21 @@ test("a PR with someone else's commits on top is merged with changes and not pai
   assert.ok(!all().some((e) => e.kind === 'job.changed' && e.data.to === 'merged'), 'no payment');
   assert.ok((storedRun(r.id) as Run).mergedWithChanges);
   assert.deepEqual(earnedFloors(TOWER), []);
+});
+
+test('a commit forged with his email but committed by someone else is merged with changes and not paid', async () => {
+  const { job, run: r } = await shipPr();
+  const head = 'd'.repeat(40);
+  prCommits.set(12, [
+    { sha: r.headSha as string, author: 'palimpsest-city', committer: 'palimpsest-city' },
+    // GitHub links the author to his account by the email alone; the committer is who pushed it.
+    { sha: head, author: 'connorevans', committer: 'mallory' },
+  ]);
+  prStates.set(12, { state: 'MERGED', mergedAt: '2026-11-10T12:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, closedAt: '2026-11-10T12:00:00Z', headRefOid: head, baseRefName: 'main' });
+  await pollPRs(Date.now());
+  assert.equal(kinds('merge.detected').length, 0);
+  assert.equal(storedJob(job.id)?.status, 'closed');
+  assert.ok((storedRun(r.id) as Run).mergedWithChanges);
 });
 
 test('a fast-forward merge is found at the head, not at a later commit on top of it', async () => {

@@ -306,9 +306,13 @@ export function setFirmBooks(id: string, balance: number, negativeSince: string 
   return next;
 }
 
-/** Every dark tower of a bankrupt firm not yet sold, by firm slot then plot. */
-export function darkTowers(): Array<{ agentId: string; firmId: string; floors: number }> {
-  const bankrupt = new Set(listFirms().filter((f) => f.status === 'bankrupt').map((f) => f.id));
+/**
+ * Every dark tower of a bankrupt firm not yet sold, by firm slot then plot.
+ * Towers of a firm in `busy` (one with a run still live, being killed) are
+ * left out: they are not for sale until its last run has ended.
+ */
+export function darkTowers(busy: ReadonlySet<string> = new Set()): Array<{ agentId: string; firmId: string; floors: number }> {
+  const bankrupt = new Set(listFirms().filter((f) => f.status === 'bankrupt' && !busy.has(f.id)).map((f) => f.id));
   return storedAgents()
     .filter((a) => bankrupt.has(a.firmId) && a.retired && a.retiredReason === BANKRUPT_REASON && !a.soldTo)
     .map((a) => ({ agentId: a.id, firmId: a.firmId, floors: earnedFloors(agentTowerId(a.id)).length }));

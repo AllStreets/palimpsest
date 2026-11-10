@@ -476,6 +476,40 @@ test('kill() ends a run as killed and reopens the job without an attempt', async
   assert.ok('summary' in ended, 'summary is recorded at the top level of run.ended');
 });
 
+test("bankruptcy kills the firm's live run, reopens its job without an attempt, and its tower is not sold while the run lives", async () => {
+  const { bankruptcyTick, dailyTick, liveFirmIds } = await import('../engine/market/treasury.js');
+  const { darkTowers, firm } = await import('../engine/market/firms.js');
+  const held = heldWork();
+  useScript({ work: held.work });
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('l1', 'gamma', 'ollama:qwen3'));
+  addFirm('delta');
+  const s = createScheduler(deps().deps);
+  await s.tick();
+  await until(() => held.started.length === 1);
+  const runId = held.started[0].runId;
+  // Gamma's books go below zero and stay there for 72 hours.
+  openDb()
+    .prepare('INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(new Date(NOW).toISOString(), 'gamma', 'run-old', 'run', 400, null, JSON.stringify({ kind: 'run' }));
+  bankruptcyTick(NOW);
+  bankruptcyTick(NOW + 72 * HOUR);
+  assert.equal(firm('gamma')?.status, 'bankrupt');
+  assert.ok(liveFirmIds().has('gamma'), 'the run is still winding down');
+  assert.deepEqual(darkTowers(liveFirmIds()), [], 'no tower of a firm with a live run is for sale');
+  dailyTick(NOW + 73 * HOUR);
+  assert.equal(entries().filter((e) => e.kind === 'tower.sold').length, 0);
+
+  await s.idle();
+  assert.equal(storedRun(runId)?.outcome, 'killed');
+  assert.match(storedRun(runId)?.endedReason ?? '', /bankrupt/);
+  assert.equal(job(j.id)?.status, 'open');
+  assert.equal(job(j.id)?.attempts, 0);
+  assert.equal(darkTowers(liveFirmIds()).length, 1, 'once the run ends the dark tower can sell');
+  dailyTick(NOW + 74 * HOUR);
+  assert.equal(entries().filter((e) => e.kind === 'tower.sold').length, 1);
+});
+
 test('clearing the stop file resumes the next tick without a restart', async () => {
   makeRepo();
   addAgent('a1', 'alpha', 'claude:sonnet');

@@ -661,13 +661,16 @@ async function findMergeSha(r: Run, repo: Repo, o: { sync?: boolean } = {}): Pro
   return hit?.sha ?? null;
 }
 
+/** The committer GitHub names on commits made in its web interface. */
+const WEB_FLOW = 'web-flow';
+
 /** What he calls a PR he finished himself: every commit on top of the city's head is his. */
 export const HIS_CHANGES_NOTE = 'merged with his changes';
 
 /**
  * The commits on a merged PR after the head the city pushed, when every one
- * of them is authored by his GitHub login (the account gh is signed in as)
- * and the last is the head that merged; null otherwise (someone else's
+ * of them is authored by his GitHub login (the account gh is signed in as),
+ * committed by him or by GitHub's web-flow, and the last is the head that merged; null otherwise (someone else's
  * commit, an author GitHub cannot name, a rewritten history).
  */
 async function hisCommitsOnTop(r: Run, s: PRState): Promise<string[] | null> {
@@ -678,7 +681,9 @@ async function hisCommitsOnTop(r: Run, s: PRState): Promise<string[] | null> {
   const extra = commits.slice(at + 1);
   if (extra.length === 0 || extra[extra.length - 1].sha !== s.headRefOid) return null;
   const me = (await viewerLogin()).toLowerCase();
-  const his = extra.every((c) => c.authors.length > 0 && c.authors.every((a) => a.toLowerCase() === me));
+  // The author must be him and so must the committer (or GitHub's own web-flow, for his edits and
+  // merges on github.com): an author is linked by email alone, which anyone can put on a commit.
+  const his = extra.every((c) => c.author.toLowerCase() === me && (c.committer.toLowerCase() === me || c.committer.toLowerCase() === WEB_FLOW));
   return his ? extra.map((c) => c.sha) : null;
 }
 

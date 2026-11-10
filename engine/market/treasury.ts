@@ -24,8 +24,8 @@
  */
 import { BANKRUPT_REASON, darkTowers, firm, hire, idleAgents, listFirms, quarters, retireFirm, sellTower, setFirmBooks } from './firms.js';
 import { bidById } from './bids.js';
-import { job as storedJob } from './jobs.js';
-import { run as storedRun } from './runs.js';
+import { job as storedJob, listJobs, transition } from './jobs.js';
+import { kill, liveRunIds, run as storedRun } from './runs.js';
 import { canHire, HIRE_FEE, isBankrupt, REVIEWER_SHARE, salePrice, START_BALANCE } from '../../shared/market-rules.js';
 import type { Bid, Inspection, Job, Trip } from '../../shared/types.js';
 import { openDb } from '../db.js';
@@ -40,6 +40,8 @@ const MONEY_KINDS = Object.keys(FIRM_SIGN) as MoneyKind[];
 const COST_KINDS: MoneyKind[] = ['bid', 'run'];
 /** How often the engine runs dailyTick. */
 export const DAY_MS = 24 * 3600_000;
+/** How often the engine runs bankruptcyTick. */
+export const HOUR_MS = 3600_000;
 /** A dark tower sells only to a firm left with at least this much after paying (ruling 6). */
 export const SALE_MARGIN = 100;
 
@@ -70,6 +72,50 @@ let cursor = 0;
 const iso = (ms: number) => new Date(ms).toISOString();
 const msOf = (t: number | Date | string) => (typeof t === 'number' ? t : typeof t === 'string' ? Date.parse(t) : t.getTime());
 
+let depth = 0;
+let pending: Array<[string, object]> = [];
+
+/** Emits now, or once the outermost atomic block has written everything. */
+function later(type: string, data: object): void {
+  if (depth > 0) pending.push([type, data]);
+  else emit(type, data);
+}
+
+/**
+ * Runs `fn` so its rows and ledger entries land together or not at all (a
+ * savepoint, so it also nests inside a caller's transaction). Events wait
+ * until the outermost block has written; a failure drops them and puts the
+ * settle cursor back.
+ */
+function atomically<T>(fn: () => T): T {
+  const db = openDb();
+  const savedCursor = cursor;
+  db.exec('SAVEPOINT treasury');
+  depth++;
+  try {
+    const out = fn();
+    db.exec('RELEASE treasury');
+    depth--;
+    if (depth === 0) {
+      const ready = pending;
+      pending = [];
+      for (const [type, data] of ready) emit(type, data);
+    }
+    return out;
+  } catch (err) {
+    depth--;
+    try {
+      db.exec('ROLLBACK TO treasury');
+      db.exec('RELEASE treasury');
+    } catch {
+      // the savepoint is already gone
+    }
+    cursor = savedCursor;
+    if (depth === 0) pending = [];
+    throw err;
+  }
+}
+
 /** The highest credits row any `credits.moved` entry names. */
 function settledThrough(): number {
   let max = 0;
@@ -84,7 +130,7 @@ function settledThrough(): number {
 
 function move(m: CreditsMoved): void {
   record('credits.moved', m);
-  emit('credits.moved', m);
+  later('credits.moved', m);
 }
 
 /**
@@ -93,37 +139,42 @@ function move(m: CreditsMoved): void {
  * up to date. Bids that sat out were charged too, so they settle here as well.
  */
 export function settle(now: number = clock()): void {
-  const rows = openDb()
-    .prepare('SELECT id, firm_id, run_id, kind, amount FROM credits WHERE id > ? ORDER BY id')
-    .all(cursor) as Array<{ id: number | bigint; firm_id: string | null; run_id: string | null; kind: string; amount: number }>;
-  const groups = new Map<string, { kind: MoneyKind; firmId: string; runId: string | null; micro: number; rowIds: number[] }>();
-  for (const r of rows) {
-    const id = Number(r.id);
-    if (id > cursor) cursor = id;
-    if (!r.firm_id || !COST_KINDS.includes(r.kind as MoneyKind)) continue;
-    const key = `${r.kind}\u0000${r.firm_id}\u0000${r.run_id ?? ''}`;
-    const g = groups.get(key) ?? { kind: r.kind as MoneyKind, firmId: r.firm_id, runId: r.run_id, micro: 0, rowIds: [] };
-    g.micro += toMicro(r.amount);
-    g.rowIds.push(id);
-    groups.set(key, g);
-  }
-  for (const g of groups.values()) {
-    move({
-      kind: g.kind,
-      firmId: g.firmId,
-      from: g.firmId,
-      to: 'spent',
-      amount: fromMicro(g.micro),
-      delta: -fromMicro(g.micro),
-      rowIds: g.rowIds,
-      runId: g.runId,
-      jobId: null,
-      inspectionId: null,
-      agentId: null,
-      at: iso(now),
-    });
-  }
-  updateBooks(now);
+  atomically(() => {
+    const rows = openDb()
+      .prepare('SELECT id, firm_id, run_id, kind, amount FROM credits WHERE id > ? ORDER BY id')
+      .all(cursor) as Array<{ id: number | bigint; firm_id: string | null; run_id: string | null; kind: string; amount: number }>;
+    const groups = new Map<string, { kind: MoneyKind; firmId: string; runId: string | null; micro: number; rowIds: number[] }>();
+    let through = cursor;
+    for (const r of rows) {
+      const id = Number(r.id);
+      if (id > through) through = id;
+      if (!r.firm_id || !COST_KINDS.includes(r.kind as MoneyKind)) continue;
+      const key = `${r.kind}\u0000${r.firm_id}\u0000${r.run_id ?? ''}`;
+      const g = groups.get(key) ?? { kind: r.kind as MoneyKind, firmId: r.firm_id, runId: r.run_id, micro: 0, rowIds: [] };
+      g.micro += toMicro(r.amount);
+      g.rowIds.push(id);
+      groups.set(key, g);
+    }
+    for (const g of groups.values()) {
+      move({
+        kind: g.kind,
+        firmId: g.firmId,
+        from: g.firmId,
+        to: 'spent',
+        amount: fromMicro(g.micro),
+        delta: -fromMicro(g.micro),
+        rowIds: g.rowIds,
+        runId: g.runId,
+        jobId: null,
+        inspectionId: null,
+        agentId: null,
+        at: iso(now),
+      });
+    }
+    // Only once every movement is recorded does the cursor pass those rows.
+    cursor = through;
+    updateBooks(now);
+  });
 }
 
 /** Writes each firm's balance and, while it is below zero, since when (ruling 6: 72 hours continuously). */
@@ -139,42 +190,44 @@ function updateBooks(now: number): void {
 /** Writes a money row the treasury itself moves (pay, review-pay, hire, sale) and its ledger entry. */
 function transfer(o: { kind: Exclude<MoneyKind, 'bid' | 'run'>; firmId: string; micro: number; runId?: string | null; jobId?: string | null; inspectionId?: string | null; agentId?: string | null; extra?: object }, now: number): CreditsMoved | null {
   if (!(o.micro > 0)) return null;
-  // Settle first, so the cursor never passes a cost row that was not yet in the ledger.
-  settle(now);
-  const credits = fromMicro(o.micro);
-  const inbound = FIRM_SIGN[o.kind] > 0;
-  const from = inbound ? 'city' : o.firmId;
-  const to = inbound ? o.firmId : 'city';
-  const result = openDb()
-    .prepare('INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(
-      iso(now),
-      o.firmId,
-      o.runId ?? null,
-      o.kind,
-      credits,
-      null,
-      JSON.stringify({ kind: o.kind, from, to, credits, jobId: o.jobId ?? null, inspectionId: o.inspectionId ?? null, agentId: o.agentId ?? null, ...(o.extra ?? {}) }),
-    );
-  const id = Number(result.lastInsertRowid);
-  cursor = Math.max(cursor, id);
-  const m: CreditsMoved = {
-    kind: o.kind,
-    firmId: o.firmId,
-    from,
-    to,
-    amount: credits,
-    delta: inbound ? credits : -credits,
-    rowIds: [id],
-    runId: o.runId ?? null,
-    jobId: o.jobId ?? null,
-    inspectionId: o.inspectionId ?? null,
-    agentId: o.agentId ?? null,
-    at: iso(now),
-  };
-  move(m);
-  updateBooks(now);
-  return m;
+  return atomically(() => {
+    // Settle first, so the cursor never passes a cost row that was not yet in the ledger.
+    settle(now);
+    const credits = fromMicro(o.micro);
+    const inbound = FIRM_SIGN[o.kind] > 0;
+    const from = inbound ? 'city' : o.firmId;
+    const to = inbound ? o.firmId : 'city';
+    const result = openDb()
+      .prepare('INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(
+        iso(now),
+        o.firmId,
+        o.runId ?? null,
+        o.kind,
+        credits,
+        null,
+        JSON.stringify({ kind: o.kind, from, to, credits, jobId: o.jobId ?? null, inspectionId: o.inspectionId ?? null, agentId: o.agentId ?? null, ...(o.extra ?? {}) }),
+      );
+    const id = Number(result.lastInsertRowid);
+    const m: CreditsMoved = {
+      kind: o.kind,
+      firmId: o.firmId,
+      from,
+      to,
+      amount: credits,
+      delta: inbound ? credits : -credits,
+      rowIds: [id],
+      runId: o.runId ?? null,
+      jobId: o.jobId ?? null,
+      inspectionId: o.inspectionId ?? null,
+      agentId: o.agentId ?? null,
+      at: iso(now),
+    };
+    move(m);
+    cursor = Math.max(cursor, id);
+    updateBooks(now);
+    return m;
+  });
 }
 
 function hasRow(kind: MoneyKind, key: 'jobId' | 'inspectionId', value: string): boolean {
@@ -204,7 +257,21 @@ function payMerge(j: Job, now: number): void {
     console.warn(`palimpsest: ${j.id} merged with no winning bid on record; nothing paid`);
     return;
   }
+  const winner = firm(bid.firmId);
+  if (winner?.status === 'bankrupt') {
+    // The work merged and its floors stand, but the firm is dissolved: nobody is paid.
+    if (alreadyNoted(j.id)) return;
+    const note = `merged after ${winner.name} went bankrupt: nobody was paid ${bid.price} credits (the firm is dissolved)`;
+    const data = { runId: j.runId, jobId: j.id, repo: j.repo, firmId: winner.id, note, unpaid: bid.price, at: iso(now) };
+    record('run.note', data);
+    later('run.note', data);
+    return;
+  }
   transfer({ kind: 'pay', firmId: bid.firmId, micro: toMicro(bid.price), jobId: j.id, runId: j.runId, agentId: bid.agentId, extra: { bidId: bid.id } }, now);
+}
+
+function alreadyNoted(jobId: string): boolean {
+  return entries().some((e) => e.kind === 'run.note' && (e.data as { jobId?: string; unpaid?: unknown }).jobId === jobId && (e.data as { unpaid?: unknown }).unpaid !== undefined);
 }
 
 /** The reviewer's firm is paid REVIEWER_SHARE of the job's value by the city, once per inspection; nobody is paid when no reviewer read it. */
@@ -296,24 +363,69 @@ function endTrips(firmId: string, now: number): void {
     openDb().prepare('UPDATE trips SET json = ? WHERE id = ?').run(JSON.stringify(ended), row.id);
     const data = { tripId: t.id, agentId: t.agentId, firmId, reason: BANKRUPT_REASON, at: iso(now) };
     record('trip.ended', data);
-    emit('trip.ended', data);
+    later('trip.ended', data);
+  }
+}
+
+/** Firms with a run in a live stage right now. */
+export function liveFirmIds(): Set<string> {
+  const out = new Set<string>();
+  for (const id of liveRunIds()) {
+    const r = storedRun(id);
+    if (r) out.add(r.firmId);
+  }
+  return out;
+}
+
+/**
+ * Declares a firm bankrupt: its agents retire and their towers go dark,
+ * its people's trips end, its live runs are killed (they end `killed`, so
+ * their jobs return to the board without spending an attempt) and its
+ * awarded jobs that had not started go back on the board. A waiting PR is
+ * left open: if he merges it, the floors still go up but nobody is paid.
+ */
+function declareBankrupt(firmId: string, now: number): void {
+  atomically(() => {
+    retireFirm(firmId, new Date(now));
+    endTrips(firmId, now);
+    for (const j of listJobs({ status: 'awarded' })) {
+      const b = j.awardedBid ? bidById(j.awardedBid) : null;
+      if (b?.firmId !== firmId) continue;
+      if (j.runId && liveRunIds().includes(j.runId)) continue;
+      transition(j, 'open', { awardedBid: null, bidsCloseAt: null });
+    }
+    later('firm.bankrupt', { firmId, at: iso(now) });
+  });
+  const reason = `${firm(firmId)?.name ?? firmId} went bankrupt.`;
+  for (const id of liveRunIds()) if (storedRun(id)?.firmId === firmId) kill(id, reason);
+}
+
+/**
+ * The hourly pass: settles the cost rows and declares bankrupt every active
+ * firm that has been below zero for 72 hours without a break (ruling 6).
+ */
+export function bankruptcyTick(now: number | Date = clock()): void {
+  const t = msOf(now);
+  settle(t);
+  for (const f of listFirms()) {
+    if (f.status !== 'active' || !isBankrupt(f.negativeSince, t)) continue;
+    declareBankrupt(f.id, t);
   }
 }
 
 /**
  * The once-a-day pass (ruling 6): settles the cost rows, sells every dark
- * tower of a firm that went bankrupt on an earlier tick to the richest
- * active firm holding its price plus SALE_MARGIN (re-clad in the buyer's
- * root on its plot), declares bankrupt every firm negative for 72 hours
- * (its agents retire, its towers go dark, its people's trips end), then lets
- * each active firm that canHire() hire one specialist for HIRE_FEE.
+ * tower of a firm that went bankrupt on an earlier tick and has no run left
+ * live to the richest active firm holding its price plus SALE_MARGIN
+ * (re-clad in the buyer's root on its plot), then lets each active firm
+ * that canHire() hire one specialist for HIRE_FEE.
  */
 export function dailyTick(now: number | Date = clock()): void {
   const t = msOf(now);
   settle(t);
 
-  // Sales: towers that went dark on an earlier tick.
-  for (const tower of darkTowers()) {
+  // Sales: towers that went dark on an earlier tick, of firms with no run still winding down.
+  for (const tower of darkTowers(liveFirmIds())) {
     const seller = firm(tower.firmId);
     if (!seller?.bankruptAt || Date.parse(seller.bankruptAt) >= t) continue;
     const price = salePrice(tower.floors);
@@ -322,19 +434,13 @@ export function dailyTick(now: number | Date = clock()): void {
       .filter((f) => f.status === 'active')
       .sort((x, y) => (b[y.id] ?? 0) - (b[x.id] ?? 0) || x.slot - y.slot)[0];
     if (!richest || (b[richest.id] ?? 0) < price + SALE_MARGIN) continue;
-    // sellTower records tower.sold with the price; the treasury only moves the money.
-    const sold = sellTower(tower.agentId, richest.id, price);
-    if (!sold) continue;
-    transfer({ kind: 'sale', firmId: richest.id, micro: toMicro(price), agentId: tower.agentId, extra: { seller: tower.firmId } }, t);
-    emit('tower.sold', { from: tower.firmId, to: richest.id, price, agentId: tower.agentId });
-  }
-
-  // Bankruptcy: 72 hours below zero without a break.
-  for (const f of listFirms()) {
-    if (f.status !== 'active' || !isBankrupt(f.negativeSince, t)) continue;
-    retireFirm(f.id, new Date(t));
-    endTrips(f.id, t);
-    emit('firm.bankrupt', { firmId: f.id, at: iso(t) });
+    atomically(() => {
+      // sellTower records tower.sold with the price; the treasury only moves the money, in the same write.
+      const sold = sellTower(tower.agentId, richest.id, price);
+      if (!sold) return;
+      transfer({ kind: 'sale', firmId: richest.id, micro: toMicro(price), agentId: tower.agentId, extra: { seller: tower.firmId } }, t);
+      later('tower.sold', { from: tower.firmId, to: richest.id, price, agentId: tower.agentId });
+    });
   }
 
   // Hiring: one specialist per firm per tick.
@@ -343,10 +449,12 @@ export function dailyTick(now: number | Date = clock()): void {
     const b = balances();
     const towers = quarters().find((q) => q.firmId === f.id)?.towers.length ?? 0;
     if (!canHire(b[f.id] ?? 0, openJobs, idleAgents(f.id).length, towers, f.status)) continue;
-    const a = hire(f.id, new Date(t));
-    if (!a) continue;
-    transfer({ kind: 'hire', firmId: f.id, micro: toMicro(HIRE_FEE), agentId: a.id }, t);
-    emit('agent.hired', { agent: a });
+    atomically(() => {
+      const a = hire(f.id, new Date(t));
+      if (!a) return;
+      transfer({ kind: 'hire', firmId: f.id, micro: toMicro(HIRE_FEE), agentId: a.id }, t);
+      later('agent.hired', { agent: a });
+    });
   }
 }
 

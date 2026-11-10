@@ -6,7 +6,7 @@ import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
 import { inspect } from './guild/inspect.js';
 import { installDeps } from './market/install.js';
 import { pollPRs, ship, watchReverts } from './market/ship.js';
-import { dailyTick, DAY_MS, installTreasury } from './market/treasury.js';
+import { bankruptcyTick, dailyTick, DAY_MS, HOUR_MS, installTreasury } from './market/treasury.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
@@ -22,18 +22,22 @@ async function main(): Promise<void> {
   seedFirms(installed);
   // An agent that seeded retired for a missing model comes back once that model is installed.
   reviveAgents(installed);
-  // Task 17: the treasury books every payment and cost from the event bus, then once a day settles,
-  // sells dark towers, declares bankruptcies and hires (ruling 6).
+  // Task 17: the treasury books every payment and cost from the event bus. Every hour it checks
+  // for bankruptcy (72 hours below zero); once a day it sells dark towers and hires (ruling 6).
   installTreasury();
-  const runDailyTick = () => {
-    try {
-      dailyTick(Date.now());
-    } catch (err) {
-      console.error('palimpsest: the daily treasury tick failed:', err);
-    }
+  const every = (name: string, fn: (now: number) => void, ms: number) => {
+    const once = () => {
+      try {
+        fn(Date.now());
+      } catch (err) {
+        console.error(`palimpsest: the ${name} failed:`, err);
+      }
+    };
+    once();
+    setInterval(once, ms).unref();
   };
-  runDailyTick();
-  setInterval(runDailyTick, DAY_MS).unref();
+  every('bankruptcy check', bankruptcyTick, HOUR_MS);
+  every('daily treasury tick', dailyTick, DAY_MS);
   const { close, port } = await startServer();
   const stopped = existsSync(paths().stop);
   // eslint-disable-next-line no-console

@@ -11,7 +11,8 @@ import { emit, subscribe, type Event } from '../engine/events.js';
 import { entries } from '../engine/ledger.js';
 import { charge } from '../engine/market/budget.js';
 import { agentTowerId, firm, listAgents, quarters, seedFirms, BANKRUPT_REASON } from '../engine/market/firms.js';
-import { balances, cityLedger, dailyTick, installTreasury, replayBalances } from '../engine/market/treasury.js';
+import { balances, bankruptcyTick, cityLedger, dailyTick, installTreasury, replayBalances } from '../engine/market/treasury.js';
+import { job as storedJob } from '../engine/market/jobs.js';
 import { layEarnedFloor } from '../engine/repos.js';
 import { HIRE_FEE, START_BALANCE } from '../shared/market-rules.js';
 import type { Bid, Floor, Inspection, Job, ModelRef, Trip } from '../shared/types.js';
@@ -249,13 +250,16 @@ test('bankruptcy after 72 hours negative retires agents and darkens towers', () 
   spend('sparrow', 'run', 400, 'run-s');
   emit('run.ended', { runId: 'run-s', outcome: 'failed', reason: null });
   assert.equal(balances().sparrow, -100);
-  dailyTick(T0);
+  bankruptcyTick(T0);
   assert.equal(firm('sparrow')?.negativeSince, new Date(T0).toISOString());
 
-  dailyTick(T0 + 71 * HOUR);
+  // Checked hourly: still active through hour 71, bankrupt on the hour the 72 are up.
+  for (let h = 1; h < 72; h++) bankruptcyTick(T0 + h * HOUR);
   assert.equal(firm('sparrow')?.status, 'active', 'not yet');
-
   dailyTick(T0 + 72 * HOUR);
+  assert.equal(firm('sparrow')?.status, 'active', 'the daily tick does not declare bankruptcy');
+
+  bankruptcyTick(T0 + 72 * HOUR);
   assert.equal(firm('sparrow')?.status, 'bankrupt');
   const sparrows = listAgents('sparrow');
   assert.ok(sparrows.length > 0);
@@ -279,12 +283,12 @@ test('bankruptcy after 72 hours negative retires agents and darkens towers', () 
 test('a firm back above zero is no longer counted as negative', () => {
   spend('sparrow', 'run', 400, 'run-s');
   emit('run.ended', { runId: 'run-s', outcome: 'failed', reason: null });
-  dailyTick(T0);
+  bankruptcyTick(T0);
   const { job } = awardedJob('sparrow', 'wren-sparrow', 150);
   clock = T0 + 40 * HOUR;
   merge(job);
   assert.equal(firm('sparrow')?.negativeSince, null);
-  dailyTick(T0 + 80 * HOUR);
+  bankruptcyTick(T0 + 80 * HOUR);
   assert.equal(firm('sparrow')?.status, 'active');
 });
 
@@ -297,8 +301,8 @@ test('a dark tower sells to the richest firm that can afford it and is re-clad',
   merge(j2);
   spend('sparrow', 'run', 400, 'run-s');
   emit('run.ended', { runId: 'run-s', outcome: 'failed', reason: null });
-  dailyTick(T0);
-  dailyTick(T0 + 72 * HOUR);
+  bankruptcyTick(T0);
+  bankruptcyTick(T0 + 72 * HOUR);
   assert.equal(firm('sparrow')?.status, 'bankrupt');
   dailyTick(T0 + 96 * HOUR);
 
@@ -335,8 +339,8 @@ test('a dark tower does not sell when no firm has the price plus 100', () => {
   floorsOn(agentTowerId('wren-sparrow'), 200); // price 420
   spend('sparrow', 'run', 400, 'run-s');
   emit('run.ended', { runId: 'run-s', outcome: 'failed', reason: null });
-  dailyTick(T0);
-  dailyTick(T0 + 72 * HOUR);
+  bankruptcyTick(T0);
+  bankruptcyTick(T0 + 72 * HOUR);
   dailyTick(T0 + 96 * HOUR);
   assert.equal(entries().filter((e) => e.kind === 'tower.sold' && (e.data as { agentId: string }).agentId === 'wren-sparrow').length, 0);
 });
@@ -409,4 +413,52 @@ test('balances replay from credits rows', () => {
   assert.equal(day.received.hire, HIRE_FEE);
   assert.equal(day.spent.bid, 3.333333);
   assert.equal(day.spent.run, 0.3);
+});
+
+test("bankruptcy reopens the firm's awarded jobs without spending an attempt", () => {
+  const { job } = awardedJob('sparrow', 'wren-sparrow', 10, { status: 'awarded' });
+  const { job: other } = awardedJob('kiln', 'oskar-kiln', 10, { status: 'awarded' });
+  spend('sparrow', 'run', 400, 'run-s');
+  emit('run.ended', { runId: 'run-s', outcome: 'failed', reason: null });
+  bankruptcyTick(T0);
+  bankruptcyTick(T0 + 72 * HOUR);
+  assert.equal(firm('sparrow')?.status, 'bankrupt');
+  const reopened = storedJob(job.id);
+  assert.equal(reopened?.status, 'open');
+  assert.equal(reopened?.attempts, 0);
+  assert.equal(reopened?.awardedBid, null);
+  assert.equal(storedJob(other.id)?.status, 'awarded', "another firm's job is left alone");
+});
+
+test('a waiting PR of a bankrupt firm that merges pays nobody and says why', () => {
+  const { job } = awardedJob('sparrow', 'wren-sparrow', 50, { runId: 'run-w' });
+  spend('sparrow', 'run', 400, 'run-s');
+  emit('run.ended', { runId: 'run-s', outcome: 'failed', reason: null });
+  bankruptcyTick(T0);
+  bankruptcyTick(T0 + 72 * HOUR);
+  assert.equal(storedJob(job.id)?.status, 'waiting', 'a waiting PR stays waiting');
+  merge(job);
+  assert.equal(creditRows('pay').length, 0, 'nobody is paid');
+  const note = entries().find((e) => e.kind === 'run.note' && (e.data as { jobId: string }).jobId === job.id);
+  assert.ok(note);
+  assert.match(String((note.data as { note: string }).note), /bankrupt/);
+  assert.equal((note.data as { runId: string }).runId, 'run-w');
+});
+
+test('a hire whose fee cannot be written is undone with it', () => {
+  const { job } = awardedJob('ashlar-vane', 'ines-ashlar', 200);
+  merge(job);
+  for (let i = 0; i < 3; i++) awardedJob('quickset', 'priya-rao', 1, { status: 'open', awardedBid: null });
+  const before = listAgents('ashlar-vane').length;
+  openDb().exec("CREATE TRIGGER no_fee BEFORE INSERT ON credits WHEN NEW.kind = 'hire' BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+  assert.throws(() => dailyTick(T0 + HOUR), /disk full/);
+  openDb().exec('DROP TRIGGER no_fee');
+  assert.equal(listAgents('ashlar-vane').length, before, 'no agent without the fee');
+  assert.equal(entries().filter((e) => e.kind === 'agent.hired').length, 0);
+  assert.equal(moved('hire').length, 0);
+  assert.ok(!events.some((e) => e.type === 'agent.hired'), 'nothing announced');
+  // The next tick hires and charges together.
+  dailyTick(T0 + 2 * HOUR);
+  assert.equal(listAgents('ashlar-vane').length, before + 1);
+  assert.equal(creditRows('hire').length, 1);
 });
