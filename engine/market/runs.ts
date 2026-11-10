@@ -157,8 +157,8 @@ export interface SchedulerDeps {
   inspect: InspectFn;
   ship: ShipFn;
   pollJobs?: (repo: Repo, deps: PollDeps) => Promise<Job[]>;
-  /** Task 14: the baseline at the run's base commit, computed when missing. */
-  baseline?: (repo: Repo, sha: string) => Promise<unknown>;
+  /** Task 14: the baseline at the run's base commit, computed when missing; it stops when the run's signal aborts. */
+  baseline?: (repo: Repo, sha: string, opts: { signal: AbortSignal; log: (line: RunLogLine) => void }) => Promise<unknown>;
   /** Task 16: the open PRs and the revert watch, called every tick (they keep their own pace). */
   pollPRs?: (now: number) => Promise<void>;
   watchReverts?: (now: number) => Promise<void>;
@@ -676,12 +676,12 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     if (st.agent.model.startsWith('claude:')) {
       st.broker = await guarded(st, startBroker(st.run.id, { runRoot: st.runRoot, dir, log, signal: st.lease.signal, stage: () => st.toolStage }));
     }
-    if (config.baseline) await guarded(st, config.baseline(st.repo, baseSha));
+    if (config.baseline) await guarded(st, config.baseline(st.repo, baseSha, { signal: st.lease.signal, log }));
 
     boundary(st, 'installing');
     st.toolStage = 'install';
     st.egress.setStage('install', hostsFor('install', ecosystems, null));
-    const ctx: RunContext = { runId: st.run.id, runRoot: st.runRoot, dir, log, signal: st.lease.signal };
+    const ctx: RunContext = { runId: st.run.id, runRoot: st.runRoot, dir, log, signal: st.lease.signal, egress: st.egress };
     const install = await guarded(st, config.installDeps(ctx, st.repo));
     record('check.done', { runId: st.run.id, jobId: st.run.jobId, check: install });
     checkpoint(st);

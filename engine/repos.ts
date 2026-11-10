@@ -1,8 +1,10 @@
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { District, Floor, Repo, RootStyle, TowerSpec } from '../shared/types.js';
+import type { District, Floor, Repo, RepoChecks, RootStyle, TowerSpec } from '../shared/types.js';
 import { openDb } from './db.js';
 import { emit } from './events.js';
 import { GhError, mergedPRs, repoMeta } from './github.js';
+import { clearBaselines, ensureHarnessProposal } from './guild/baseline.js';
+import { detectChecksInMirror, emptyChecks } from './guild/checks.js';
 import { foundingFloors } from './history.js';
 import { districtOrigin } from './layout.js';
 import { record } from './ledger.js';
@@ -278,6 +280,8 @@ export async function connect(fullName: string): Promise<Repo> {
   saveRepo(repo);
   record('repo.connected', { repo: fullName });
   emit('repo.connected', { repo });
+  // A reconnecting repo already knows its checks; a new one is proposed for once analysis detects them.
+  proposeHarnessIfNeeded(repo);
   void analyze(fullName).catch((err) => {
     // analyze() guards its own body and should never reject; this is a last
     // resort so a truly unexpected failure never becomes an unhandled
@@ -335,6 +339,16 @@ async function runAnalysis(fullName: string): Promise<void> {
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'floors' });
     const floors = foundingFloors(fullName, commits, prs, { until: joinedAt });
 
+    // The repo's checks, read from the default branch's manifests and
+    // lockfiles. A git failure here keeps what was stored: the analysis is
+    // about the tower, and the checks are detected again next time.
+    let detected: RepoChecks | null = null;
+    try {
+      detected = await detectChecksInMirror(dir, repo.defaultBranch);
+    } catch {
+      detected = null;
+    }
+
     const tower: TowerSpec = {
       id: `${fullName}#founding`,
       repo: fullName,
@@ -352,8 +366,11 @@ async function runAnalysis(fullName: string): Promise<void> {
     try {
       saveFoundingTower(tower);
       const current = loadRepo(fullName) ?? repo;
+      const checks = detected ? mergeDetected(current.checks, detected) : current.checks;
+      if (commandsChanged(current.checks, checks)) clearBaselines(fullName);
       repo = saveRepo({
         ...current,
+        checks,
         status: 'ready',
         error: null,
         analyzedAt: new Date().toISOString(),
@@ -367,6 +384,7 @@ async function runAnalysis(fullName: string): Promise<void> {
     settled(fullName);
     emit('repo.analyzed', { repo });
     record('repo.analyzed', { repo: fullName, floors: floors.length });
+    proposeHarnessIfNeeded(repo);
   } catch (err) {
     const message = err instanceof GhError ? err.message : readableMessage(err);
     // Guarded: loadRepo/saveRepo/emit/record can themselves throw (a closed
@@ -414,23 +432,73 @@ export function updateRepoMarket(fullName: string, p: Partial<Pick<Repo, 'halted
   return saveRepo({ ...repo, ...p });
 }
 
+/** The fields of RepoChecks that name a command or what to render; a change to any of them invalidates baselines. */
+const COMMAND_FIELDS = ['test', 'typecheck', 'lint', 'build', 'screenshot', 'install', 'preview', 'ecosystems'] as const;
+
+function commandsChanged(a: RepoChecks | null, b: RepoChecks | null): boolean {
+  if (!a || !b) return a !== b;
+  return COMMAND_FIELDS.some((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+}
+
 /**
- * Merges `p` into the stored repo's pushMode/root and emits `repo.patched`.
- * A new root restyles the standing tower too (the floors are unchanged), so
- * the city shows the choice at once rather than at the next analysis.
+ * Freshly detected checks over the stored ones: checks he set by hand
+ * (`detected: false`) are kept as they are, and his routes to shoot survive
+ * a re-detection.
  */
-export function patchRepo(fullName: string, p: Partial<Pick<Repo, 'pushMode' | 'root'>>): Repo {
+function mergeDetected(stored: RepoChecks | null, detected: RepoChecks): RepoChecks {
+  if (stored && stored.detected === false) return stored;
+  return { ...detected, shots: stored?.shots?.length ? stored.shots : detected.shots };
+}
+
+/** A harness proposal is never worth failing an analysis or a patch over. */
+function proposeHarnessIfNeeded(repo: Repo): void {
+  try {
+    ensureHarnessProposal(repo);
+  } catch (err) {
+    console.warn(`palimpsest: proposing the harness job for ${repo.fullName} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** A label gh accepts as one argument and the tier labels can extend with `:low` and `:high`. */
+const LABEL = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
+
+export type RepoPatch = Partial<Pick<Repo, 'pushMode' | 'root' | 'market' | 'label'>> & { checks?: Partial<RepoChecks> };
+
+/**
+ * Merges `p` into the stored repo and emits `repo.patched`. A new root
+ * restyles the standing tower too (the floors are unchanged), so the city
+ * shows the choice at once rather than at the next analysis. A `checks`
+ * patch is merged over the stored checks; changing a command marks them
+ * set by hand (`detected: false`, kept across re-analysis) and forgets the
+ * repo's baselines; then the harness job is proposed if a test or build
+ * command is still missing.
+ */
+export function patchRepo(fullName: string, p: RepoPatch): Repo {
   const repo = loadRepo(fullName);
   if (!repo) {
     throw new Error(`patchRepo: ${fullName} has not been connected`);
   }
-  const updated = saveRepo({ ...repo, ...p });
+  if (p.label !== undefined && (typeof p.label !== 'string' || !LABEL.test(p.label))) {
+    throw new Error('patchRepo: a label is 1 to 40 letters, digits, ".", "_" or "-", starting with a letter or digit');
+  }
+  const { checks: checksPatch, ...rest } = p;
+  let checks = repo.checks;
+  if (checksPatch) {
+    const base = repo.checks ?? emptyChecks();
+    const merged: RepoChecks = { ...base, ...checksPatch };
+    const changed = commandsChanged(base, merged);
+    if (checksPatch.detected === undefined && changed) merged.detected = false;
+    if (commandsChanged(repo.checks, merged)) clearBaselines(fullName);
+    checks = merged;
+  }
+  const updated = saveRepo({ ...repo, ...rest, checks });
   if (p.root) {
     const tower = loadFoundingTower(fullName);
     if (tower && tower.root !== p.root) saveFoundingTower({ ...tower, root: p.root });
   }
   record('repo.patched', { repo: fullName, patch: p });
   emit('repo.patched', { repo: updated });
+  if (checksPatch) proposeHarnessIfNeeded(updated);
   return updated;
 }
 

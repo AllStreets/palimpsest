@@ -929,3 +929,90 @@ test('repo slots migrate into the slots table unchanged', async () => {
     ],
   );
 });
+
+/** fixtureRunner plus a tree: `git ls-tree` lists `files` and `git show <branch>:<name>` reads them. */
+function treeRunner(fullName: string, files: Record<string, string>) {
+  const base = fixtureRunner(fullName, []);
+  return async (cmd: string, args: string[]) => {
+    if (cmd === 'git' && args.includes('ls-tree')) return { stdout: Object.keys(files).join('\0') + '\0', stderr: '', code: 0 };
+    if (cmd === 'git' && args.includes('show')) {
+      const name = args[args.length - 1].split(':').slice(1).join(':');
+      return name in files ? { stdout: files[name], stderr: '', code: 0 } : { stdout: '', stderr: 'no such path', code: 128 };
+    }
+    return base(cmd, args);
+  };
+}
+
+test('analysis detects the checks from the mirror and proposes the harness when the build is missing', async () => {
+  const { listJobs } = await import('../engine/market/jobs.js');
+  const fullName = 'acme/widgets';
+  setRunner(treeRunner(fullName, {
+    'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+    'package-lock.json': '{}',
+    'README.md': '# w',
+  }));
+  const analyzed = waitForEvent('repo.analyzed');
+  await connect(fullName);
+  await analyzed;
+
+  const repo = listRepos()[0];
+  assert.equal(repo.checks?.test, 'npm test');
+  assert.equal(repo.checks?.build, null);
+  assert.equal(repo.checks?.install, 'npm ci');
+  assert.deepEqual(repo.checks?.ecosystems, ['npm']);
+  assert.equal(repo.checks?.detected, true);
+  const proposals = listJobs({ repo: fullName, source: 'harness' });
+  assert.equal(proposals.length, 1);
+  assert.equal(proposals[0].status, 'proposed');
+
+  // A second analysis proposes nothing new.
+  const again = waitForEvent('repo.analyzed');
+  void analyze(fullName);
+  await again;
+  assert.equal(listJobs({ repo: fullName, source: 'harness' }).length, 1);
+});
+
+test('a failed detection keeps the stored checks and fails nothing', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, []));
+  const analyzed = waitForEvent('repo.analyzed');
+  await connect(fullName);
+  await analyzed;
+  const repo = listRepos()[0];
+  assert.equal(repo.status, 'ready');
+  assert.equal(repo.checks, null);
+});
+
+test('patchRepo takes checks, market and label; hand-set checks survive a re-analysis', async () => {
+  const { listJobs } = await import('../engine/market/jobs.js');
+  const fullName = 'acme/widgets';
+  setRunner(treeRunner(fullName, { 'go.mod': 'module x\n', 'go.sum': '' }));
+  const analyzed = waitForEvent('repo.analyzed');
+  await connect(fullName);
+  await analyzed;
+  assert.equal(listRepos()[0].checks?.build, 'go build ./...');
+  assert.equal(listJobs({ repo: fullName, source: 'harness' }).length, 0);
+
+  // Shots alone keep the checks detected.
+  const shots = patchRepo(fullName, { checks: { shots: ['/', '/settings'] } });
+  assert.equal(shots.checks?.detected, true);
+  assert.deepEqual(shots.checks?.shots, ['/', '/settings']);
+
+  // Clearing the build is his own setting, and the harness is proposed.
+  const p = patchRepo(fullName, { market: true, label: 'city-work', checks: { build: null } });
+  assert.equal(p.market, true);
+  assert.equal(p.label, 'city-work');
+  assert.equal(p.checks?.build, null);
+  assert.equal(p.checks?.test, 'go test ./...');
+  assert.equal(p.checks?.detected, false);
+  assert.equal(listJobs({ repo: fullName, source: 'harness' }).length, 1);
+
+  const again = waitForEvent('repo.analyzed');
+  void analyze(fullName);
+  await again;
+  assert.equal(listRepos()[0].checks?.build, null);
+  assert.deepEqual(listRepos()[0].checks?.shots, ['/', '/settings']);
+
+  assert.throws(() => patchRepo(fullName, { label: '--force' }));
+  assert.throws(() => patchRepo(fullName, { label: 'a b' }));
+});

@@ -570,6 +570,32 @@ test('an install failure fails the run without a scar', async () => {
   assert.equal(entries().filter((e) => e.kind === 'floor.scarred').length, 0);
 });
 
+test('the runner hands the baseline its signal and the install its egress', async () => {
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const ctxs: RunContext[] = [];
+  const baselines: Array<{ sha: string; signal: AbortSignal }> = [];
+  const s = createScheduler(
+    deps({
+      baseline: async (_repo, sha, opts) => {
+        baselines.push({ sha, signal: opts.signal });
+        return [];
+      },
+      installDeps: async (ctx) => {
+        ctxs.push(ctx);
+        return { name: 'install', status: 'skipped', detail: 'Nothing to install.', durationMs: 0, logPath: null, testsRun: null };
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(baselines.length, 1);
+  assert.equal(baselines[0].sha, r.baseSha);
+  assert.equal(baselines[0].signal, ctxs[0].signal);
+  assert.equal(typeof ctxs[0].egress?.setStage, 'function');
+});
+
 test('resuming a repo puts a halted waiting job back to waiting and does not re-bid it', async () => {
   makeRepo();
   addAgent('a1', 'alpha', 'claude:sonnet');

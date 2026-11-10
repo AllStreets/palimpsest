@@ -7,7 +7,7 @@
  * hook's Claude settings inside the sample home.
  */
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type { RootStyle } from '../shared/types.js';
 import { home } from './home.js';
@@ -149,6 +149,61 @@ export const SAMPLE_OTHERS = [
 /** The one listed repo gh cannot read, so connecting it ends in a readable error. */
 export const SAMPLE_UNREADABLE = 'marlow/locked-vault';
 
+/**
+ * The root files of each sample repo's default branch, as check detection
+ * (engine/guild/checks.ts) reads them: harbor-ledger is a Vite app with every
+ * check, fieldnotes is a Swift app nothing is detected in, assay-kit has
+ * tests but no build, quarry is a Rust crate and kumo a Go module. A repo
+ * not listed here (blank-slate, the other repos) has an empty tree. Two of
+ * them therefore get the harness proposal (ruling 23).
+ */
+export const SAMPLE_TREES: Record<string, Record<string, string>> = {
+  'tidewater/harbor-ledger': {
+    'package.json': `${JSON.stringify(
+      {
+        name: 'harbor-ledger',
+        private: true,
+        scripts: { test: 'node --test', typecheck: 'tsc --noEmit', lint: 'eslint .', build: 'vite build' },
+        devDependencies: { typescript: '^5.9.0', vite: '^8.0.0', eslint: '^9.0.0' },
+      },
+      null,
+      2,
+    )}\n`,
+    'package-lock.json': '{}\n',
+    'tsconfig.json': '{}\n',
+    'index.html': '<!doctype html>\n<title>Harbor ledger</title>\n',
+    'README.md': '# Harbor ledger\n',
+  },
+  'kestrel/fieldnotes': {
+    'Package.swift': '// swift-tools-version:5.9\n',
+    'README.md': '# Fieldnotes\n',
+  },
+  'lantern/assay-kit': {
+    'pyproject.toml': '[project]\nname = "assay-kit"\n',
+    'requirements.txt': 'pytest\n',
+    'pytest.ini': '[pytest]\n',
+    'README.md': '# Assay kit\n',
+  },
+  'ferro/quarry': {
+    'Cargo.toml': '[package]\nname = "quarry"\n',
+    'Cargo.lock': '',
+    'README.md': '# Quarry\n',
+  },
+  'hoshi/kumo': {
+    'go.mod': 'module example.com/kumo\n',
+    'go.sum': '',
+    'README.md': '# Kumo\n',
+  },
+};
+
+/** The repo a git call names by its mirror (`-C <mirrors>/<owner>__<name>.git`), or null. */
+function mirrorRepo(args: string[]): string | null {
+  const i = args.indexOf('-C');
+  if (i < 0 || !args[i + 1]) return null;
+  const m = /^(.+?)__(.+)\.git$/.exec(basename(args[i + 1]));
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
 // ---------------------------------------------------------------- a fake GitHub
 
 const RS = '\x1e';
@@ -186,6 +241,15 @@ export function sampleGh(delayMs = 0): (cmd: string, args: string[]) => Promise<
       return ok(JSON.stringify(row(args[2])));
     }
     if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'clone') return ok('');
+    if (cmd === 'git' && args.includes('ls-tree')) {
+      const tree = SAMPLE_TREES[mirrorRepo(args) ?? ''] ?? {};
+      return ok(Object.keys(tree).map((n) => `${n}\0`).join(''));
+    }
+    if (cmd === 'git' && args.includes('show')) {
+      const tree = SAMPLE_TREES[mirrorRepo(args) ?? ''] ?? {};
+      const name = (args[args.length - 1] ?? '').split(':').slice(1).join(':');
+      return name in tree ? ok(tree[name]) : { stdout: '', stderr: `fatal: path '${name}' does not exist`, code: 128 };
+    }
     if (cmd === 'git' && args.includes('log')) {
       const log = Array.from({ length: 18 }, (_, i) => {
         const sha = `9${i.toString(16).padStart(6, '0')}`.padEnd(40, 'b');

@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 
+import { baseline } from './guild/baseline.js';
 import { paths } from './home.js';
 import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
 import { installDeps } from './market/install.js';
@@ -27,6 +28,8 @@ async function main(): Promise<void> {
   // when they exist; until then a run that reaches them ends crashed, never shipped.
   const scheduler = createScheduler({
     installDeps,
+    // Ruling 12: the repo's checks at the run's base commit, cached per sha, in its own run root.
+    baseline,
     inspect: async () => {
       throw new Error('The inspection guild is not built yet, so nothing is shipped.');
     },
