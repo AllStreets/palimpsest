@@ -203,7 +203,29 @@ export function ollamaTransport(model: string): ChatTransport {
 /** The context window review and judge calls ask for: the whole diff must fit, never Ollama's small default. */
 export const REVIEW_NUM_CTX = 32_768;
 
-async function jsonCall(model: string, messages: ChatMessage[], signal: AbortSignal, numCtx?: number): Promise<{ answer: Record<string, unknown> | null; seconds: number }> {
+/** Tokens below num_ctx a prompt must stay under: at or past it, Ollama may have cut the front. */
+export const CONTEXT_MARGIN = 512;
+
+/**
+ * A review or judge call whose prompt filled the context: Ollama silently
+ * drops the front of a prompt longer than `num_ctx`, so the answer may not
+ * have read the change. Never a pass: the inspection is inconclusive.
+ */
+export class TooLargeError extends Error {
+  readonly tooLarge = true;
+  constructor(message: string) {
+    super(message);
+    this.name = 'TooLargeError';
+  }
+}
+
+async function jsonCall(
+  model: string,
+  messages: ChatMessage[],
+  signal: AbortSignal,
+  numCtx?: number,
+  what = 'call',
+): Promise<{ answer: Record<string, unknown> | null; seconds: number }> {
   const started = Date.now();
   const ctl = new AbortController();
   const onAbort = () => ctl.abort();
@@ -217,6 +239,10 @@ async function jsonCall(model: string, messages: ChatMessage[], signal: AbortSig
     const body = JSON.parse(text) as OllamaLine;
     if (body.error !== undefined) throw new Error(`ollama: ${String(body.error).slice(0, 500)}`);
     const ns = num(body.total_duration);
+    const read = num(body.prompt_eval_count);
+    if (numCtx && read >= numCtx - CONTEXT_MARGIN) {
+      throw new TooLargeError(`ollama ${what}: the prompt filled ${read} of the ${numCtx} token context, so Ollama may have cut its front; the change is too large to review.`);
+    }
     return { answer: parseAnswer(body.message?.content), seconds: ns ? ns / 1e9 : (Date.now() - started) / 1000 };
   } finally {
     clearTimeout(timer);
@@ -284,18 +310,19 @@ export function cleanImages(list: string[]): string[] {
 /** The judge's prompt: with screenshots, or the diff text alone (ruling 13). */
 export function judgeText(i: JudgeInput, before: number, after: number): string {
   const diff = diffSection(i.diff, MAX_DIFF_CHARS);
+  // The bar and the instructions come after the diff: were the front of the prompt ever cut, they survive.
   if (before + after === 0) {
     return [
-      `The design bar:\n${i.bar.trim()}`,
       diff,
+      `The design bar:\n${i.bar.trim()}`,
       'There are no screenshots: you see only the change as text. Score how well the result meets the bar from 0 to 10.',
       'Answer only with a JSON object: {"after": number, "notes": string}.',
     ].join('\n\n');
   }
   return [
+    diff,
     `The design bar:\n${i.bar.trim()}`,
     `You get ${before + after} screenshots: the first ${before} show the interface before the change, the last ${after} after it.`,
-    diff,
     `Score each side from 0 to 10 against the bar.${before ? '' : ' There is no before screenshot: set before to null.'}`,
     'Answer only with a JSON object: {"before": number | null, "after": number, "notes": string}.',
   ].join('\n\n');
@@ -342,7 +369,7 @@ export function ollamaProvider(): Provider {
     async review(i: ReviewInput, signal) {
       const model = modelName(i.agent.model);
       const gb = await modelGB(model);
-      const out = await jsonCall(model, [{ role: 'system', content: systemPrompt(i.persona, i.agent.instructions) }, { role: 'user', content: `${reviewPrompt(i)}\n${REVIEW_JSON}\n` }], signal, REVIEW_NUM_CTX);
+      const out = await jsonCall(model, [{ role: 'system', content: systemPrompt(i.persona, i.agent.instructions) }, { role: 'user', content: `${reviewPrompt(i)}\n${REVIEW_JSON}\n` }], signal, REVIEW_NUM_CTX, 'review');
       return { ...reviewAnswer(out.answer, 'ollama'), usage: usageOf(out.seconds, gb) };
     },
 
@@ -361,6 +388,7 @@ export function ollamaProvider(): Provider {
         ],
         signal,
         REVIEW_NUM_CTX,
+        'judge',
       );
       const a = judgeAnswer(out.answer, 'ollama', before.length > 0);
       const notes = images.length ? a.notes : `Scored from the diff text alone, with no screenshot to see. ${a.notes}`;

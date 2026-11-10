@@ -29,6 +29,12 @@ export interface RunContext {
   signal: AbortSignal;
   /** The run's egress proxy: the install stage opens it to the repo's registries and nothing else. */
   egress?: Pick<Egress, 'setStage'>;
+  /**
+   * Which side of the run the clone belongs to (default `head`): the design
+   * check's base clone is `base`, with its own home, cache, tmp and tool
+   * profile. Named by the caller, never read off the folder's name.
+   */
+  side?: 'head' | 'base';
 }
 
 export type InstallDeps = (ctx: RunContext, repo: Repo) => Promise<CheckResult>;
@@ -46,7 +52,7 @@ export const installDeps: InstallDeps = async (ctx, repo) => {
   }
   // Only the registries of the ecosystems the repo's lockfiles name; the caller sets the next stage after.
   ctx.egress?.setStage('install', hostsFor('install', repo.checks?.ecosystems ?? [], null));
-  const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: ctx.signal, command, timeoutMs: INSTALL_MS, stage: 'install' });
+  const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: ctx.signal, command, timeoutMs: INSTALL_MS, stage: 'install', side: ctx.side });
   const durationMs = Date.now() - started;
   if (r.refused) return { name: 'install', status: 'fail', detail: `Refused: ${r.refused}`, durationMs, logPath: null, testsRun: null };
   if (r.code !== 0) {

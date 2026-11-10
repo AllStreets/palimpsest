@@ -279,7 +279,7 @@ export async function runCheck(
       while (bytes > MAX_CHECK_LOG_BYTES && kept.length > 1) bytes -= Buffer.byteLength(kept.shift()!) + 1;
     }
   };
-  const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, command, timeoutMs: CHECK_MS, stage: 'checks', signal: ctx.signal, log: tee });
+  const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, command, timeoutMs: CHECK_MS, stage: 'checks', signal: ctx.signal, log: tee, side: ctx.side });
   const durationMs = Date.now() - started;
   const output = kept.length ? kept.join('\n') : `${r.stdout}\n${r.stderr}`;
   let logPath: string | null = null;

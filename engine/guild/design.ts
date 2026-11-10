@@ -26,7 +26,7 @@
  * (ruling 28) and is charged to the city, never to a firm.
  */
 import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { ModelRef, Repo } from '../../shared/types.js';
@@ -40,6 +40,7 @@ import { providerFor } from '../market/providers.js';
 import { BASE_SCRATCH } from '../market/sandbox.js';
 import { createBaseDir, engineGit, removeOwned } from '../market/worktree.js';
 import { CHECK_MS } from './checks.js';
+import { isTooLarge, TOO_LARGE } from './review.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -292,7 +293,7 @@ async function serve(ctx: RunContext, root: string): Promise<{ port: number; sto
     }
   };
   const command = `${q(process.execPath)} ${q(script)} ${q(root)} ${SERVE_MS}`;
-  const done = execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log, signal: ac.signal, command, timeoutMs: SERVE_MS, stage: 'checks' });
+  const done = execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log, signal: ac.signal, command, timeoutMs: SERVE_MS, stage: 'checks', side: ctx.side });
   const stop = async () => {
     ac.abort();
     ctx.signal.removeEventListener('abort', onAbort);
@@ -373,11 +374,11 @@ export async function shoot(ctx: RunContext, repo: Repo, sha: string, routes: st
     const out: Shot[] = [];
     for (const [i, route] of routes.entries()) {
       // Each side writes only its own tmp (the base side cannot write the head's, nor the head the base's).
-      const tmp = join(ctx.runRoot, basename(ctx.dir) === 'base' ? BASE_SCRATCH.tmp : 'tmp', 'shots', `${opts.side}-${i}.png`);
+      const tmp = join(ctx.runRoot, ctx.side === 'base' ? BASE_SCRATCH.tmp : 'tmp', 'shots', `${opts.side}-${i}.png`);
       mkdirSync(dirname(tmp), { recursive: true });
       rmSync(tmp, { force: true });
       const command = `PALIMPSEST_SHOT=${q(tmp)} PALIMPSEST_ROUTE=${q(route)} ${c.screenshot}`;
-      const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: ctx.signal, command, timeoutMs: SHOT_SCRIPT_MS, stage: 'checks' });
+      const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: ctx.signal, command, timeoutMs: SHOT_SCRIPT_MS, stage: 'checks', side: ctx.side });
       if (ctx.signal.aborted) throw new Error('The design check was stopped.');
       if (r.refused || r.code !== 0) {
         log(`the screenshot script failed for ${route} on the ${opts.side} side`);
@@ -397,7 +398,7 @@ export async function shoot(ctx: RunContext, repo: Repo, sha: string, routes: st
 
   const preview = c.preview!;
   if (c.build && !opts.built) {
-    const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: ctx.signal, command: c.build, timeoutMs: CHECK_MS, stage: 'checks' });
+    const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: ctx.signal, command: c.build, timeoutMs: CHECK_MS, stage: 'checks', side: ctx.side });
     if (ctx.signal.aborted) throw new Error('The design check was stopped.');
     if (r.refused || r.code !== 0) throw new Error(`The ${opts.side} side did not build.`);
   }
@@ -427,7 +428,7 @@ export async function prepareBase(
   for (const d of ['base', ...Object.values(BASE_SCRATCH)]) removeOwned(join(ctx.runRoot, d));
   for (const d of Object.values(BASE_SCRATCH)) mkdirSync(join(ctx.runRoot, d), { recursive: true });
   const dir = await createBaseDir(repo, ctx.runId, baseSha);
-  const base: RunContext = { ...ctx, dir, egress: o.egress ?? ctx.egress };
+  const base: RunContext = { ...ctx, dir, side: 'base', egress: o.egress ?? ctx.egress };
   const c = repo.checks;
   const runs = !!c && (!!c.screenshot || (!!c.preview && !!c.build));
   if (runs && c?.install) {
@@ -483,6 +484,7 @@ export async function judgeDesign(
   const models = o.models ?? (diffOnly ? [VISION_JUDGE, TEXT_JUDGE] : [VISION_JUDGE]);
   const problems: string[] = [];
   let credits = 0;
+  let tooLarge = false;
   for (const model of models) {
     if (lease.signal.aborted) throw new Error('The design check was stopped.');
     const sub = lease.sub('judge', model, JUDGE_ESTIMATE);
@@ -516,10 +518,14 @@ export async function judgeDesign(
       // A call that failed or was stopped still cost something on his plan: at least the estimate.
       bill(ZERO, model.startsWith('claude:') ? JUDGE_ESTIMATE : 0);
       if (sub.signal.aborted || lease.signal.aborted) throw err;
+      if (isTooLarge(err)) tooLarge = true;
       problems.push(`${model}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       sub.release();
     }
   }
-  throw new Error(`No design judge could score the change (${problems.join('; ') || 'none tried'}).`);
+  const why = `No design judge could score the change (${problems.join('; ') || 'none tried'}).`;
+  // A judge that may not have read the change gives no verdict: the inspection is inconclusive.
+  if (tooLarge) throw Object.assign(new Error(`The change is ${TOO_LARGE} for the design judge. ${why}`), { tooLarge: true });
+  throw new Error(why);
 }

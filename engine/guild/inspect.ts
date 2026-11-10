@@ -25,8 +25,11 @@
  *    gitlink (a nested repo) and any `.gitattributes` are always out;
  * 4. the review by another firm (review.ts), skipped when a check already
  *    failed; a diff longer than every reviewer's window fails it unread;
- * 5. the design check when the diff touches UI_FILES (design.ts); a
- *    screenshot script the change touches fails it.
+ * 5. the design check when the diff touches UI_FILES (design.ts); in a
+ *    repo with only a screenshot script, any changed file that is not a UI
+ *    file (scriptRepoUiFile) fails it without running the script. A review
+ *    or judge that may not have read the change (an Ollama prompt that
+ *    filled its context) makes the verdict inconclusive, never a pass.
  *
  * `passed` is canOpenPR, `pushable` is canPush. Each check is recorded
  * (`check.done`) and the verdict too (`inspection.done`, with the reviewer,
@@ -34,7 +37,7 @@
  * row halt the repo (`repo.halted`); a pass resets the strikes.
  */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, lstatSync, mkdirSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -50,11 +53,11 @@ import { installDeps as defaultInstallDeps, needsReinstall, type InstallDeps, ty
 import type { RunLogLine } from '../market/provider.js';
 import { haltRepo, type RunDiff } from '../market/runs.js';
 import { reapRun } from '../market/reaper.js';
-import { createShipDir, engineGit, removeOwned } from '../market/worktree.js';
+import { createShipDir, engineGit } from '../market/worktree.js';
 import { cachedBaseline } from './baseline.js';
 import { CHECK_ORDER, runCheck } from './checks.js';
 import { designPasses, judgeDesign, prepareBase, shoot, UI_FILES, type Screenshotter, type Shot } from './design.js';
-import { review } from './review.js';
+import { isTooLarge, review } from './review.js';
 
 /** Paths no job may change, whatever its scope. */
 export const DENY_SCOPE = ['.github/workflows/**', '.env', '.env.*', '**/*.pem', '**/*.key', '**/id_rsa*', '.claude/**', '.git/**'];
@@ -332,6 +335,7 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
   let cost = 0;
   let reviewer: { agentId: string | null; firmId: string | null } = { agentId: null, firmId: null };
   let design: Inspection['design'] = null;
+  let designTooLarge = false;
   halt();
 
   // 0. Exactly the committed change, in a fresh engine clone at headSha (ruling 20). Nothing the
@@ -431,16 +435,17 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
       halt();
       cost += d.credits;
       design = d.design;
+      designTooLarge = !!d.tooLarge;
       done(d.result);
     }
   }
 
   const passed = canOpenPR(checks);
   // Only the review failed, and no reviewer read the change: the city's limit, not the agent's failure.
-  const rvCheck = checks.find((c) => c.name === 'review');
+  // So is a design judge that may not have read the change (its prompt filled the context).
   const failing = checks.filter((c) => c.status === 'fail');
-  const inconclusive =
-    !passed && rvCheck?.status === 'fail' && reviewer.agentId === null && failing.every((c) => c.name === 'review') ? rvCheck.detail.slice(0, 600) : null;
+  const unread = (c: CheckResult) => (c.name === 'review' && reviewer.agentId === null) || (c.name === 'design' && designTooLarge);
+  const inconclusive = !passed && failing.length > 0 && failing.every(unread) ? failing.map((c) => c.detail).join(' ').slice(0, 600) : null;
   const inspection: Inspection = {
     id: `insp-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
     runId: run.id,
@@ -507,18 +512,18 @@ async function designCheck(
   lease: Lease,
   ictx: InspectContext,
   headBuilt: boolean,
-): Promise<{ result: CheckResult; design: NonNullable<Inspection['design']>; credits: number }> {
+): Promise<{ result: CheckResult; design: NonNullable<Inspection['design']>; credits: number; tooLarge?: boolean }> {
   const started = Date.now();
   const c = repo.checks;
   const renderable = !!c && (!!c.screenshot || !!c.preview);
   // The repo's own script runs only when there is no preview for the engine's Chromium to shoot, and
-  // then the base commit's copy of it (and its folder) shoots the head: a script the agent wrote could
-  // draw any picture it likes. Where that cannot be arranged, the design fails.
+  // then only on a change of UI files alone: anything else the script, its helpers or its dependencies
+  // might run, so the design fails deterministically without running it or the judge.
   if (c?.screenshot && !c.preview) {
-    const refused = await useBaseScript(ctx.dir, run.baseSha as string, run.headSha as string, c.screenshot, files.map((f) => f.path));
+    const refused = await scriptMayJudge(ctx.dir, run.baseSha as string, c.screenshot, files.map((f) => f.path));
     if (refused) {
       return {
-        result: check('design', 'fail', `${refused} The screenshot script's pictures cannot be trusted, so the change is not judged.`, Date.now() - started),
+        result: check('design', 'fail', refused, Date.now() - started),
         design: { before: null, after: 0, diffOnly: false, shots: [] },
         credits: 0,
       };
@@ -573,6 +578,7 @@ async function designCheck(
       result: check('design', 'fail', err instanceof Error ? err.message : String(err), Date.now() - started),
       design: { before: null, after: 0, diffOnly: !renderable, shots },
       credits: 0,
+      tooLarge: isTooLarge(err),
     };
   }
 }
@@ -597,65 +603,53 @@ async function packageScripts(dir: string, sha: string): Promise<Record<string, 
   }
 }
 
-const MAKEFILES = new Set(['Makefile', 'makefile', 'GNUmakefile']);
+/** Assets a UI change may carry beside its source: images and fonts, never code. */
+const UI_ASSETS = /\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf)$/i;
+/** Folders whose files serve the screenshot script, not the interface: tooling, helpers and vendored code. */
+const TOOL_FOLDERS = new Set(['scripts', 'tools', 'lib', 'vendor', 'node_modules']);
 
 /**
- * Arranges for the head to be shot with the base commit's copy of the
- * repo's screenshot script: every file or folder the command (or the
- * package script it runs) names that exists at the base commit has its
- * folder restored to the base copy in the ship clone, files the head added
- * there removed. Returns why that cannot be done (and the design fails), or
- * null: the package script behind the command changed; a Makefile behind
- * it changed; the script sits at the repo root and a non-UI file changed
- * anywhere (its folder is the whole tree); or a changed UI file sits in a
- * folder that would be restored (the shot would not show it).
+ * A file a script-only repo's change may touch and still be shot by the
+ * repo's own screenshot script: a UI source file or an asset, outside the
+ * script's tooling folders (`scripts/`, `tools/`, `lib/`, vendored code)
+ * and outside any folder the screenshot command names. Package manifests,
+ * lockfiles and every other file are not: the script, its helpers and its
+ * dependencies could draw any picture they like.
  */
-export async function useBaseScript(dir: string, base: string, head: string, command: string, changed: string[]): Promise<string | null> {
+export function scriptRepoUiFile(path: string, scriptFolders: Iterable<string> = []): boolean {
+  if (!UI_FILES.test(path) && !UI_ASSETS.test(path)) return false;
+  if (path.split('/').slice(0, -1).some((seg) => TOOL_FOLDERS.has(seg))) return false;
+  for (const f of scriptFolders) if (path === f || path.startsWith(`${f}/`)) return false;
+  return true;
+}
+
+/**
+ * Whether a repo with a screenshot script and no preview may shoot this
+ * change with that script. The script is never trusted to judge its own
+ * change: every changed file must be a UI file (`scriptRepoUiFile`), else
+ * the design fails without running it. Returns why, or null. Folders the
+ * command (or the package script behind it, at the base commit) names are
+ * the script's own, as are `scripts/`, `tools/`, `lib/` and vendored code.
+ */
+export async function scriptMayJudge(dir: string, base: string, command: string, changed: string[]): Promise<string | null> {
   const named = new Set(words(command));
   const run = /\b(?:npm|pnpm|yarn|bun)\s+(?:run(?:-script)?\s+)?([A-Za-z0-9:._-]+)/.exec(command);
   if (run) {
-    const [b, h] = [await packageScripts(dir, base), await packageScripts(dir, head)];
-    const name = run[1];
-    for (const n of [name, `pre${name}`, `post${name}`]) {
-      if (b[n] !== h[n]) return `The change edits the package script behind the screenshot script (package.json, "${n}").`;
-      for (const w of words(b[n] ?? '')) named.add(w);
-    }
-  }
-  if (named.has('make') || /\bmake\b/.test(command)) {
-    const mk = changed.filter((p) => MAKEFILES.has(posix.basename(p)));
-    if (mk.length) return `The change edits a Makefile behind the screenshot script (${mk.join(', ')}).`;
+    const b = await packageScripts(dir, base);
+    for (const n of [run[1], `pre${run[1]}`, `post${run[1]}`]) for (const w of words(b[n] ?? '')) named.add(w);
   }
   const folders = new Set<string>();
-  const rootFiles: string[] = [];
   for (const w of named) {
     const p = posix.normalize(w).replace(/\/+$/, '');
     if (!p || p === '.' || p.startsWith('..') || p.startsWith('/')) continue;
     const t = (await engineGit(dir, ['cat-file', '-t', `${base}:${p}`])).stdout.trim();
     if (t === 'tree') folders.add(p);
-    else if (t === 'blob') {
-      const d = posix.dirname(p);
-      if (d === '.') rootFiles.push(p);
-      else folders.add(d);
-    }
+    else if (t === 'blob' && posix.dirname(p) !== '.') folders.add(posix.dirname(p));
   }
-  if (rootFiles.length) {
-    const nonUi = changed.filter((p) => !UI_FILES.test(p));
-    if (nonUi.length) return `The screenshot script sits at the repo root, so its folder is the whole tree, and the change touches files there that are not UI files (${nonUi.slice(0, 10).join(', ')}).`;
-  }
-  for (const f of folders) {
-    const ui = changed.filter((p) => p.startsWith(`${f}/`) && UI_FILES.test(p));
-    if (ui.length) return `The change touches UI files inside the screenshot script's folder ${f} (${ui.slice(0, 10).join(', ')}).`;
-  }
-  for (const f of [...folders, ...rootFiles]) {
-    // Never through a symlink the head put on the way: every parent must be a real folder of the clone.
-    const parts = f.split('/');
-    for (let i = 1; i < parts.length; i++) {
-      const st = lstatSync(join(dir, ...parts.slice(0, i)), { throwIfNoEntry: false });
-      if (st && !st.isDirectory()) return `The screenshot script's folder ${f} sits under something that is not a folder in the change.`;
-    }
-    removeOwned(join(dir, f));
-    const r = await engineGit(dir, ['checkout', base, '--', f]);
-    if (r.code !== 0) return `The base copy of the screenshot script's ${f} could not be restored: ${r.stderr.trim()}`;
-  }
-  return null;
+  const other = changed.filter((p) => !scriptRepoUiFile(p, folders));
+  if (other.length === 0) return null;
+  return (
+    `The repo has no preview, only its own screenshot script, and the change touches files that are not UI files outside the script's folders (${other.slice(0, 10).join(', ')}${other.length > 10 ? ', ...' : ''}). ` +
+    'The screenshot script is never trusted to judge its own change: a helper it imports, a dependency or a manifest could draw any picture.'
+  );
 }

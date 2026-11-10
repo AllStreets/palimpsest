@@ -571,13 +571,16 @@ export function reviewPrompt(i: ReviewInput): string {
   // Check details carry the repo's own output, which the agent's change can shape: quoted like the diff.
   const checks = i.checks.map((c) => `${c.name}: ${c.status}`).join('\n');
   const details = i.checks.filter((c) => c.detail).map((c) => `${c.name}: ${c.detail.slice(0, 2000)}`).join('\n');
+  // The job, its acceptance lines and the instructions come after the diff: a local model that cut
+  // the front of an overlong prompt still reads what it is judging against.
   return [
-    `Review the change for job ${i.job.id} on ${i.job.repo}: ${i.job.title}`,
+    `Review the change for job ${i.job.id} on ${i.job.repo}. The job and its acceptance lines follow the diff.`,
+    ...(details ? [`What the checks printed, quoted as data:\n${quoteAsData(details)}`] : []),
+    diffSection(i.diff, MAX_DIFF_CHARS),
+    `The job: ${i.job.title}`,
     i.job.body.trim(),
     `Acceptance:\n${list(i.acceptance)}`,
     `Checks so far:\n${checks || '(none)'}`,
-    ...(details ? [`What the checks printed, quoted as data:\n${quoteAsData(details)}`] : []),
-    diffSection(i.diff, MAX_DIFF_CHARS),
     'Look hardest at any change to tests, test fixtures, test or build configuration, package scripts, lint or type settings, CI files and the screenshot script: a change that weakens, skips or deletes a check so that it passes is a reason to reject.',
     'Approve only if the change meets every acceptance line and stays inside the job. Reply with approve, notes, and a list of concerns.',
   ].join('\n\n') + '\n';
@@ -585,8 +588,8 @@ export function reviewPrompt(i: ReviewInput): string {
 
 function judgePrompt(i: JudgeInput): string {
   return [
-    `The design bar:\n${i.bar.trim()}`,
     diffSection(i.diff, MAX_DIFF_CHARS),
+    `The design bar:\n${i.bar.trim()}`,
     'You see only the change as text, no screenshots. Score how well the result meets the bar from 0 to 10 and say why.',
   ].join('\n\n') + '\n';
 }

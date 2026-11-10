@@ -62,6 +62,8 @@ export interface ExecToolInput {
   stage: ToolStage;
   signal: AbortSignal;
   log: (line: RunLogLine) => void;
+  /** The side of the run (Task 15, default `head`): `base` runs only in `<runRoot>/base`, under its own profile. */
+  side?: 'head' | 'base';
 }
 
 export type FileOp = 'read' | 'write' | 'edit' | 'list' | 'search';
@@ -196,12 +198,14 @@ function profileFor(runRoot: string, side: 'head' | 'base' = 'head'): ProfileInp
  * Checks the run context: the run root is a directory under the data
  * home's runs, and `dir` is one of its clones. Returns a reason or null.
  */
-function contextProblem(runRoot: string, dir: string): string | null {
+function contextProblem(runRoot: string, dir: string, side: 'head' | 'base' = 'head'): string | null {
   const runs = realish(paths().runs);
   const root = realish(runRoot);
   if (dirname(root).toLowerCase() !== runs.toLowerCase()) return 'the run context is not a run root';
   const d = realish(dir);
   if (dirname(d) !== root || !['repo', 'ship', 'base'].includes(basename(d))) return 'the run context names no clone of this run';
+  // Each side runs only in its own clones: the base side in the base clone, the head side never there.
+  if ((side === 'base') !== (basename(d) === 'base')) return `the ${side} side does not run in the ${basename(d)} clone`;
   if (!existsSync(d)) return 'the run directory does not exist';
   return null;
 }
@@ -284,7 +288,7 @@ class Spooler {
 
 /** Runs argv under the tool profile with the child environment and collects its output. */
 async function runSandboxed(
-  o: { runId: string; runRoot: string; dir: string; signal: AbortSignal; log: (l: RunLogLine) => void },
+  o: { runId: string; runRoot: string; dir: string; signal: AbortSignal; log: (l: RunLogLine) => void; side?: 'head' | 'base' },
   argv: string[],
   maxMs: number,
   stdin: string | undefined,
@@ -292,7 +296,7 @@ async function runSandboxed(
   spoolIt: boolean,
 ): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean; aborted: boolean }> {
   // The design check's base checkout is its own side, with its own home, cache and tmp (Task 15).
-  const side = basename(o.dir) === 'base' ? 'base' : 'head';
+  const side = o.side ?? 'head';
   const wrapped = wrap(argv, 'tool', profileFor(o.runRoot, side), (l) => o.log({ at: now(), kind: 'engine', text: l }));
   if (o.signal.aborted) return { code: null, stdout: '', stderr: 'aborted before the command ran\n', timedOut: false, aborted: true };
   const child: Spawned = getSpawner()(wrapped[0], wrapped.slice(1), {
@@ -342,7 +346,7 @@ async function runSandboxed(
 export async function execTool(o: ExecToolInput): Promise<ToolResult> {
   const timeoutMs = clampTimeout(o.timeoutMs, o.log);
   if (typeof o.command !== 'string' || o.command.length > MAX_COMMAND_CHARS) return refuse(o, String(o.command).slice(0, 200), 'The command is too long or not text.');
-  const ctx = contextProblem(o.runRoot, o.dir);
+  const ctx = contextProblem(o.runRoot, o.dir, o.side);
   if (ctx) return refuse(o, o.command, ctx);
   // The engine's own port and every other live run's proxy and broker, beside 4770 and 11434.
   const reason = forbidden(o.command, o.dir, dataHomeDir(), [enginePort(), ...liveRunPorts(o.runId)]);

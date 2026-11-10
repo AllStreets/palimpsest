@@ -254,6 +254,38 @@ describe('ollama', () => {
     assert.ok(m.some((x) => x.content.includes('glow')));
   });
 
+  test('a review or judge whose prompt filled the context is too large, never a pass', async () => {
+    fakeRunner();
+    // Ollama cuts the front of a prompt that overflows num_ctx and says nothing but the count it read.
+    const full = { prompt_eval_count: 32_768 - 100, total_duration: 2e9, done: true };
+    await fakeOllama([
+      { json: { message: { role: 'assistant', content: JSON.stringify({ approve: true, notes: 'Fine.', concerns: [] }) }, ...full } },
+      { json: { message: { role: 'assistant', content: JSON.stringify({ before: 5, after: 9, notes: 'Lovely.' }) }, ...full } },
+      { json: { message: { role: 'assistant', content: JSON.stringify({ approve: true, notes: 'Fine.', concerns: [] }) }, done: true, total_duration: 1e9, prompt_eval_count: 32_768 - 600 } },
+    ]);
+    const p = ollamaProvider();
+    const { TooLargeError } = await import('../engine/market/ollama.js');
+    const rv = p.review({ job: makeJob(), agent, persona: 'Wren', diff: '+x', acceptance: [], checks: [] }, new AbortController().signal);
+    await assert.rejects(rv, (err: unknown) => err instanceof TooLargeError && /too large to review/.test((err as Error).message));
+    const png = Buffer.from('png').toString('base64');
+    await assert.rejects(p.judge({ bar: 'x', before: [png], after: [png], diff: '+x' }, new AbortController().signal), TooLargeError);
+    // Below the margin the answer stands.
+    const ok = await p.review({ job: makeJob(), agent, persona: 'Wren', diff: '+x', acceptance: [], checks: [] }, new AbortController().signal);
+    assert.equal(ok.approve, true);
+  });
+
+  test('the acceptance lines and the instructions come after the diff', async () => {
+    const { reviewPrompt } = await import('../engine/market/claude.js');
+    const { judgeText } = await import('../engine/market/ollama.js');
+    const prompt = reviewPrompt({ job: makeJob(), agent, persona: 'Wren', diff: '+PADDING', acceptance: ['the changelog has an entry'], checks: [] });
+    const at = (s: string) => prompt.indexOf(s);
+    assert.ok(at('PADDING') > 0);
+    assert.ok(at('the changelog has an entry') > at('PADDING'), 'acceptance after the diff');
+    assert.ok(at('Approve only if') > at('PADDING'), 'instructions after the diff');
+    const judge = judgeText({ bar: 'Hairline rules.', before: [], after: [], diff: '+PADDING' }, 0, 0);
+    assert.ok(judge.indexOf('Hairline rules.') > judge.indexOf('PADDING'), 'the bar after the diff');
+  });
+
   test('judge refuses an image that is not base64', async () => {
     fakeRunner();
     await fakeOllama([]);

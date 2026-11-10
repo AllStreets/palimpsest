@@ -450,6 +450,33 @@ test('no reviewer available is inconclusive: no strike, nothing against the firm
   }
 });
 
+test('an Ollama reviewer whose prompt overflowed its context is inconclusive, never a pass', { timeout: 60_000 }, async () => {
+  const { TooLargeError } = await import('../engine/market/ollama.js');
+  const local = fakeProvider({
+    review: () => {
+      throw new TooLargeError('ollama review: the prompt filled the 32768 token context, so the change is too large to review');
+    },
+  });
+  setProvider('ollama', local);
+  const repo = makeRepo(checks(), { 'src/a.ts': 'export const a = 1;\n' });
+  const worker = addAgent('wanda', 'alpha', 'claude:sonnet');
+  addAgent('olga', 'beta', 'ollama:qwen2.5-coder:7b');
+  const job = postJob(['src/**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'src/a.ts', 'export const a = 2;\n'));
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    const r = insp.checks.find((c) => c.name === 'review')!;
+    assert.equal(r.status, 'fail');
+    assert.match(r.detail, /too large to review/);
+    assert.equal(insp.passed, false);
+    assert.match(insp.inconclusive ?? '', /too large to review/);
+    assert.equal(getRepo(FULL)!.strikes, 0);
+  } finally {
+    lease.release();
+  }
+});
+
 test('a real binary file shows in the review as a line, never as raw bytes', { timeout: 60_000 }, async () => {
   const repo = makeRepo(checks(), { 'src/a.ts': 'export const a = 1;\n' });
   const { worker } = team();

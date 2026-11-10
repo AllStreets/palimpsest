@@ -478,29 +478,126 @@ test("a preview is always shot by the engine's Chromium, never the repo's script
   }
 });
 
-test("the head is shot with the base commit's copy of the screenshot script and its folder", { timeout: 60_000 }, async () => {
-  const repo = makeRepo(checks({ screenshot: 'node tools/shot.mjs', shots: ['/'] }), {
-    'tools/shot.mjs': "import './lib.mjs';\n",
-    'tools/lib.mjs': 'export const honest = true;\n',
+/** A script-only repo whose change the script must never judge: design fails, the script never runs, no judge. */
+async function scriptNeverJudges(files: Record<string, string>, change: (dir: string) => void, expect: RegExp, fullName = 'acme/scripted') {
+  const repo = makeRepo(checks({ screenshot: 'node scripts/shot.mjs', preview: null, shots: ['/'] }), files, fullName);
+  const { worker } = team();
+  const job = postJob(['**'], fullName);
+  const { run, diff } = await makeRun(repo, job, worker, change);
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
+    const d = insp.checks.find((c) => c.name === 'design')!;
+    assert.equal(d.status, 'fail');
+    assert.match(d.detail, expect);
+    assert.match(d.detail, /never trusted to judge its own change/);
+    assert.equal(scriptRuns.length, 0, 'the screenshot script never ran');
+    assert.equal(judged.length, 0, 'nothing was judged');
+    assert.equal(insp.passed, false);
+  } finally {
+    lease.release();
+  }
+}
+
+test('a script-only repo fails design when the change edits a helper the screenshot script imports', { timeout: 60_000 }, async () => {
+  await scriptNeverJudges(
+    {
+      'scripts/shot.mjs': "import { render } from '../lib/render.mjs';\nrender();\n",
+      'lib/render.mjs': 'export const render = () => "honest";\n',
+      'app.tsx': 'export const App = () => null;\n',
+    },
+    (dir) => {
+      write(dir, 'app.tsx', 'export const App = () => 1;\n');
+      // The helper now draws a pretty picture whatever the app looks like.
+      write(dir, 'lib/render.mjs', 'export const render = () => "FORGED";\n');
+    },
+    /lib\/render\.mjs/,
+  );
+});
+
+test('a script-only repo fails design when the change edits a vendored dependency or points the manifest at one', { timeout: 60_000 }, async () => {
+  const pkg = (dep: string) => JSON.stringify({ dependencies: { shotkit: dep } }, null, 2) + '\n';
+  const base = {
+    'package.json': pkg('file:vendor/shotkit'),
+    'vendor/shotkit/index.js': 'module.exports = () => "honest";\n',
+    'scripts/shot.mjs': "import kit from 'shotkit';\nkit();\n",
     'app.tsx': 'export const App = () => null;\n',
+  };
+  // The vendored copy itself.
+  await scriptNeverJudges(base, (dir) => {
+    write(dir, 'app.tsx', 'export const App = () => 1;\n');
+    write(dir, 'vendor/shotkit/index.js', 'module.exports = () => "FORGED";\n');
+  }, /vendor\/shotkit\/index\.js/, 'acme/vendored');
+  scriptRuns = [];
+  judged = [];
+  // A fake dependency the head's manifest now points at.
+  await scriptNeverJudges(base, (dir) => {
+    write(dir, 'app.tsx', 'export const App = () => 1;\n');
+    write(dir, 'package.json', pkg('file:fake/shotkit'));
+    write(dir, 'fake/shotkit/index.js', 'module.exports = () => "FORGED";\n');
+  }, /package\.json/, 'acme/faked');
+});
+
+test("a script-only repo fails design on UI files in the script's own folders", { timeout: 60_000 }, async () => {
+  await scriptNeverJudges(
+    {
+      'scripts/shot.mjs': "import '../lib/theme.css';\n",
+      'lib/theme.css': 'body { color: black; }\n',
+      'app.tsx': 'export const App = () => null;\n',
+    },
+    (dir) => {
+      write(dir, 'app.tsx', 'export const App = () => 1;\n');
+      write(dir, 'lib/theme.css', 'body { color: red; }\n');
+    },
+    /lib\/theme\.css/,
+    'acme/themed',
+  );
+});
+
+test('a script-only repo shoots a change of UI files and assets alone with its script', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks({ screenshot: 'node scripts/shot.mjs', preview: null, shots: ['/'] }), {
+    'scripts/shot.mjs': 'export {};\n',
+    'src/app.tsx': 'export const App = () => null;\n',
+    'src/app.css': 'body { color: black; }\n',
   });
   const { worker } = team();
   const job = postJob(['**']);
   const { run, diff } = await makeRun(repo, job, worker, (dir) => {
-    write(dir, 'app.tsx', 'export const App = () => 1;\n');
-    // The helper the script imports now draws a pretty picture whatever the app looks like.
-    write(dir, 'tools/lib.mjs', 'export const honest = false;\n');
-    write(dir, 'tools/extra.mjs', 'export {};\n');
+    write(dir, 'src/app.tsx', 'export const App = () => 1;\n');
+    write(dir, 'src/app.css', 'body { color: #222; }\n');
+    write(dir, 'public/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>\n');
   });
   const lease = await workLease();
   try {
     const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
-    const head = scriptRuns.find((r) => r.cwd.endsWith('/ship'));
-    assert.ok(head, 'the script ran on the head side');
-    assert.equal(head!.lib, 'export const honest = true;\n', "the base commit's helper ran, not the agent's");
-    assert.equal(existsSync(join(head!.cwd, 'tools', 'extra.mjs')), false, 'the folder is exactly the base copy');
-    assert.equal(existsSync(join(head!.cwd, 'app.tsx')) && readFileSync(join(head!.cwd, 'app.tsx'), 'utf8').includes('=> 1'), true, 'the app is the head');
+    assert.equal(scriptRuns.length, 2, 'once for each side');
     assert.equal(insp.checks.find((c) => c.name === 'design')?.status, 'pass');
+  } finally {
+    lease.release();
+  }
+});
+
+test('a design judge whose prompt overflowed its context is inconclusive, never a pass', { timeout: 60_000 }, async () => {
+  const { TooLargeError } = await import('../engine/market/ollama.js');
+  const p = fakeProvider({
+    judge: () => {
+      throw new TooLargeError('ollama judge: the prompt filled the 32768 token context, so the change is too large to review');
+    },
+  });
+  setProvider('ollama', p);
+  setProvider('claude', fakeProvider());
+  const repo = makeRepo(checks({ screenshot: 'npm run shot', preview: null, shots: ['/'] }), { 'app.tsx': 'export const App = () => null;\n' });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'app.tsx', 'export const App = () => 1;\n'));
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
+    const d = insp.checks.find((c) => c.name === 'design')!;
+    assert.equal(d.status, 'fail');
+    assert.match(d.detail, /too large to review/);
+    assert.equal(insp.passed, false);
+    assert.match(insp.inconclusive ?? '', /too large to review/);
   } finally {
     lease.release();
   }
@@ -632,10 +729,13 @@ test('the base side has its own home, cache and tmp, out of the head profile\'s 
   const { execTool } = await import('../engine/market/broker.js');
   setSpawner(realSpawner);
   delete process.env.PALIMPSEST_SANDBOX;
-  const run = (dir: string, command: string) =>
-    execTool({ runId: 'run-sides', runRoot: root, dir: join(root, dir), command, timeoutMs: 20_000, stage: 'checks', signal: new AbortController().signal, log: () => {} });
+  const run = (dir: string, command: string, side?: 'base') =>
+    execTool({ runId: 'run-sides', runRoot: root, dir: join(root, dir), command, timeoutMs: 20_000, stage: 'checks', signal: new AbortController().signal, log: () => {}, ...(side ? { side } : {}) });
   assert.notEqual((await run('repo', `touch '${join(root, 'base-home', 'poison')}'`)).code, 0);
   assert.equal(existsSync(join(root, 'base-home', 'poison')), false);
-  assert.equal((await run('base', `touch '${join(root, 'base-home', 'ok')}'`)).code, 0);
-  assert.notEqual((await run('base', `touch '${join(root, 'home', 'poison')}'`)).code, 0);
+  assert.equal((await run('base', `touch '${join(root, 'base-home', 'ok')}'`, 'base')).code, 0);
+  assert.notEqual((await run('base', `touch '${join(root, 'home', 'poison')}'`, 'base')).code, 0);
+  // The side is named by the caller, never read off the folder's name: each side runs only in its own clone.
+  assert.match((await run('base', 'true')).refused ?? '', /side/);
+  assert.match((await run('repo', 'true', 'base')).refused ?? '', /side/);
 });

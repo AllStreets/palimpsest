@@ -47,6 +47,11 @@ export function reviewWindow(model: string): number {
 
 export const TOO_LARGE = 'too large to review';
 
+/** A model call that may not have read the whole prompt (ollama.ts `TooLargeError`): never a verdict. */
+export function isTooLarge(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { tooLarge?: unknown }).tooLarge === true;
+}
+
 const ZERO: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
 
 /** Working agents of active firms other than the worker's, best reputation first. */
@@ -121,6 +126,7 @@ export async function review(run: Run, job: Job, diff: string, checks: CheckResu
   let credits = 0;
   const problems: string[] = [];
   let tries = 0;
+  let tooLarge = false;
   const candidates = reviewerCandidates(run);
   const fits = candidates.filter((a) => diff.length <= reviewWindow(a.model));
   if (candidates.length && fits.length === 0) {
@@ -174,14 +180,16 @@ export async function review(run: Run, job: Job, diff: string, checks: CheckResu
       // A failed or stopped Claude call still spent his plan: at least the estimate.
       bill(ZERO, a.model.startsWith('claude:') ? REVIEW_ESTIMATE : 0);
       if (sub.signal.aborted || lease.signal.aborted) throw err;
+      if (isTooLarge(err)) tooLarge = true;
       problems.push(`${a.id}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       sub.release();
     }
   }
   const why = problems.length ? ` (${problems.join('; ')})` : '';
+  const lead = tooLarge ? `The change is ${TOO_LARGE}: a reviewer's prompt filled its context, so it may not have read the change. ` : '';
   return {
-    result: { name: 'review', status: 'fail', detail: `No reviewer from another firm could review the change${why}.`.slice(0, 4000), durationMs: Date.now() - started, logPath: null, testsRun: null },
+    result: { name: 'review', status: 'fail', detail: `${lead}No reviewer from another firm could review the change${why}.`.slice(0, 4000), durationMs: Date.now() - started, logPath: null, testsRun: null },
     reviewerAgentId: null,
     reviewerFirmId: null,
     usage,
