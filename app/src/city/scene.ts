@@ -233,8 +233,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     exchange.setStopped(stopped);
     scene.add(exchange.object);
     sunNeedsUpdate();
+    rebatchQuarters();
   }
-  buildExchange();
 
   // ---------------------------------------------------------------- districts
   const districtGroup = new THREE.Group();
@@ -317,9 +317,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   }
 
   /**
-   * Every quarter's towers, walks, plinth and court drawn as one set of
-   * batches across the city (batch.ts): the pieces themselves stay, hidden,
-   * for picking, framing and the next rebuild.
+   * Every quarter's towers, walks, plinth and court, and the exchange's
+   * unchanging stone, copper and glass, drawn as one set of batches across
+   * the city (batch.ts): the pieces themselves stay, hidden, for picking,
+   * framing and the next rebuild. The exchange's board, water and clock hands
+   * draw themselves.
    */
   let quarterBatch: Batched | null = null;
   function rebatchQuarters(): void {
@@ -328,12 +330,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       quarterBatch.dispose();
       quarterBatch = null;
     }
-    if (quarterPieces.length === 0) return;
-    for (const { piece } of quarterPieces) piece.object.visible = true;
+    const roots = [...quarterPieces.map(({ piece }) => piece.object), ...(exchange?.statics ?? [])];
+    if (roots.length === 0) return;
+    for (const r of roots) r.visible = true;
     districtGroup.updateMatrixWorld(true);
-    quarterBatch = batchPieces(quarterPieces.map(({ piece }) => piece.object));
+    exchange?.object.updateMatrixWorld(true);
+    quarterBatch = batchPieces(roots);
     quarterBatch.group.name = 'quarters';
-    for (const { piece } of quarterPieces) piece.object.visible = false;
+    for (const r of roots) r.visible = false;
     districtGroup.add(quarterBatch.group);
   }
 
@@ -362,6 +366,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (built > 0 || removed > 0) rebatchQuarters();
     return built;
   }
+
+  buildExchange();
 
   /** The view's limits follow everything that stands: districts, and each agent tower where it stands in its quarter. */
   function reframe(occ: Occupancy): void {

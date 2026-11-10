@@ -4,7 +4,13 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { CIVIC_LAMPS, EXCHANGE_SLOTS, FOUNTAIN, HALL, JOBS_ROUTE, LAMPS_PER_SLOT, boardLabel, makeExchange, toteBoard } from '../app/src/city/exchange.js';
+import { batchPieces, drawnMeshes } from '../app/src/city/batch.js';
+import { quarterCenterpiece } from '../app/src/city/quarters.js';
+import { lookFor } from '../app/src/city/tower/variants.js';
+import type { TowerMaterials } from '../app/src/city/tower/kit.js';
+import { districtOrigin } from '../shared/district-layout.js';
+import type { Floor, Quarter, TowerSpec } from '../shared/types.js';
+import { CAMPANILE, onExchange, CIVIC_LAMPS, EXCHANGE_SLOTS, FOUNTAIN, HALL, JOBS_ROUTE, LAMPS_PER_SLOT, boardLabel, makeExchange, toteBoard } from '../app/src/city/exchange.js';
 import { BLOCK, PITCH, standingLots } from '../app/src/city/lots.js';
 import type { JobStatus } from '../shared/types.js';
 
@@ -119,9 +125,28 @@ test('the exchange, its fountain and its lamp standards stand on the civic plaza
   const ex = makeExchange('medium');
   ex.object.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(ex.object);
-  // Every corner of the hall, steps and stair included, is on the plaza's paving.
-  const hall = new THREE.Box3().setFromObject(ex.object.getObjectByName('exchange:hall-at-scale')!);
-  for (const x of [hall.min.x, hall.max.x]) for (const z of [hall.min.z, hall.max.z]) assert.ok(Math.hypot(x, z) < PLAZA_RADIUS, `corner ${x.toFixed(1)}, ${z.toFixed(1)} is on the plaza`);
+  // Everything the hall, the campanile and the forecourt set on the ground is on the plaza's paving.
+  const v = new THREE.Vector3();
+  const m = new THREE.Matrix4();
+  let far = 0;
+  for (const root of ex.statics) {
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const n = (mesh as THREE.InstancedMesh).isInstancedMesh ? (mesh as THREE.InstancedMesh).count : 1;
+      for (let k = 0; k < n; k++) {
+        if ((mesh as THREE.InstancedMesh).isInstancedMesh) (mesh as THREE.InstancedMesh).getMatrixAt(k, m);
+        else m.identity();
+        m.premultiply(mesh.matrixWorld);
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i).applyMatrix4(m);
+          if (v.y < 0.6) far = Math.max(far, Math.hypot(v.x, v.z));
+        }
+      }
+    });
+  }
+  assert.ok(far < PLAZA_RADIUS, `its foot reaches ${far.toFixed(1)} m from the plaza's centre`);
   // A civic building, not a kiosk: it reads at city distance.
   const size = box.getSize(new THREE.Vector3());
   assert.ok(size.x > 60 && size.y > 40, `the hall is ${size.x.toFixed(0)} m wide and ${size.y.toFixed(0)} m high`);
@@ -133,6 +158,8 @@ test('the exchange, its fountain and its lamp standards stand on the civic plaza
     assert.ok(l.z > HALL.z0 + HALL.depth + HALL.stair + 2 || Math.abs(l.x) > HALL.width / 2 + 2, 'clear of the hall and its stair');
     assert.ok(Math.hypot(l.x - FOUNTAIN.x, l.z - FOUNTAIN.z) > FOUNTAIN.radius + 3, 'clear of the basin');
   }
+  // The campanile stands on the axis behind the hall, inside the plaza and clear of the ring of lanterns.
+  assert.ok(onExchange(0, CAMPANILE.z, 0) && onExchange(0, CAMPANILE.z - CAMPANILE.half, 0));
   // The ambient city stands no lot on the hall.
   const reach = Math.ceil((PLAZA_RADIUS + BLOCK) / PITCH);
   for (let i = -reach; i <= reach; i++) {
@@ -170,4 +197,96 @@ test("a slot's card carries only the repo's short name and the issue number, nev
   const odd = boardLabel({ repo: 'x/ghp_abcdefghijklmnopqrstuvwxyz0123456789/Users/connor/.ssh', issue: 3 });
   assert.ok(!/ghp_|\/Users|\.ssh|connor/.test(odd), odd);
   assert.ok(boardLabel({ repo: 'a/a-very-long-repository-name-that-runs-on', issue: 12345 }).length <= 22);
+});
+
+test('the campanile rises well over the hall and stays below the district towers', () => {
+  const ex = makeExchange('medium');
+  ex.object.updateMatrixWorld(true);
+  const top = new THREE.Box3().setFromObject(ex.object).max.y;
+  assert.ok(Math.abs(top - CAMPANILE.top) < 0.5, `its finial is the exchange's top (${top.toFixed(1)} m)`);
+  // Findable from the home framing over the ambient roofs (the civic collar tops out near 60 m round the plaza)...
+  assert.ok(top > 95, `${top.toFixed(0)} m`);
+  // ...and never a rival to the market's towers: a 20 floor district already stands over 120 m.
+  assert.ok(top < 115, `${top.toFixed(0)} m`);
+  // Five clocks (the entrance and each face of the campanile), every hand in one instanced batch.
+  assert.equal((ex.object.getObjectByName('exchange:hands') as THREE.InstancedMesh).count, 10);
+  ex.dispose();
+});
+
+/** Plain materials, one per key, shared by everything built with them (as the city shares its stone across looks). */
+function plainMaterials(): TowerMaterials {
+  const made = new Map<string | symbol, THREE.Material>();
+  return new Proxy({} as TowerMaterials, {
+    get(_, key) {
+      let m = made.get(key);
+      if (!m) made.set(key, (m = new THREE.MeshStandardMaterial({ name: String(key) })));
+      return m;
+    },
+  });
+}
+
+function quarterOf(slot: number): Quarter {
+  const firmId = 'firm-roman';
+  const floor = (agent: string, i: number): Floor => ({
+    id: `agent:${agent}#job-${i}`,
+    repo: 'acme/widgets',
+    kind: 'pr',
+    refs: [],
+    title: `change ${i}`,
+    at: new Date(Date.UTC(2026, 9, 1 + i)).toISOString(),
+    era: 'glass',
+    size: 'medium',
+    lines: 10,
+    claude: false,
+    founding: false,
+    url: null,
+    earned: { jobId: `job-${i}`, runId: `run-${i}`, agentId: agent, firmId, state: 'lit', reverted: false },
+  });
+  const towers: TowerSpec[] = [0, 1, 2, 3].map((t) => ({
+    id: `agent:a${t}`,
+    repo: '',
+    kind: 'agent',
+    root: 'roman',
+    floors: Array.from({ length: 10 }, (_, i) => floor(`a${t}`, i)),
+    datumIndex: 0,
+    firmId,
+    agentId: `a${t}`,
+    silhouette: 'plain',
+    towerIndex: t,
+  }));
+  return { firmId, slot, origin: districtOrigin(slot), root: 'roman', dark: false, towers };
+}
+
+test('the exchange draws in the city-wide batches, under 30 calls over the city without it', () => {
+  const mats = plainMaterials();
+  const q = quarterCenterpiece(quarterOf(7), 'high', () => lookFor('firm-roman'), { name: 'Firm', materials: () => mats });
+  q.object.position.set(districtOrigin(7).x, 0, districtOrigin(7).z);
+  const ex = makeExchange('high', { materials: mats });
+  const unbatched = drawnMeshes(ex.object);
+  const without = batchPieces([q.object]);
+  const before = drawnMeshes(without.group);
+  const withEx = batchPieces([q.object, ...ex.statics]);
+  for (const r of ex.statics) r.visible = false;
+  // The batches, plus what the exchange still draws itself: the board, its words, the water, the hands.
+  const after = drawnMeshes(withEx.group) + drawnMeshes(ex.object);
+  assert.ok(after - before < 30, `the exchange adds ${after - before} calls (${unbatched} unbatched)`);
+  // Nothing is lost: every triangle the exchange drew is still drawn.
+  const tris = (o: THREE.Object3D): number => {
+    let n = 0;
+    o.traverseVisible((c) => {
+      const m = c as THREE.Mesh;
+      if (!m.isMesh) return;
+      const g = m.geometry;
+      const per = (g.index ? g.index.count : g.attributes.position.count) / 3;
+      n += per * ((m as THREE.InstancedMesh).isInstancedMesh ? (m as THREE.InstancedMesh).count : 1);
+    });
+    return n;
+  };
+  for (const r of ex.statics) r.visible = true;
+  const exTris = ex.statics.reduce((n, r) => n + tris(r), 0);
+  assert.equal(tris(withEx.group), tris(without.group) + exTris);
+  without.dispose();
+  withEx.dispose();
+  ex.dispose();
+  q.dispose();
 });

@@ -43,6 +43,10 @@ export const HALL_SCALE = 1.25;
 const HALL_SHIFT = 4;
 /** The hall's footprint in the city, in metres from the plaza's centre. */
 export const HALL = { width: D.width * HALL_SCALE, depth: D.depth * HALL_SCALE, z0: D.z0 * HALL_SCALE + HALL_SHIFT, stair: (D.stair + 1.6) * HALL_SCALE };
+/** The campanile behind the hall, in the hall's own numbers: its centre on the plan, half its side, and its height to the finial. */
+const TOWER = { z: D.z0 - 4.8, half: 4.6, top: 86 };
+/** The campanile in the city: its centre, half its side, and its top, in metres. */
+export const CAMPANILE = { z: TOWER.z * HALL_SCALE + HALL_SHIFT, half: TOWER.half * HALL_SCALE, top: TOWER.top * HALL_SCALE };
 /** The forecourt fountain: its centre and the basin's outer radius. */
 export const FOUNTAIN = { x: 0, z: 42, radius: 10 };
 /** The four lamp standards on the forecourt (the ground lights a pool under each). */
@@ -56,7 +60,9 @@ export const CIVIC_LAMPS: ReadonlyArray<{ x: number; z: number }> = [
 /** True within `margin` metres of the hall's footprint, steps and stair included (grid.ts keeps the plaza's lanterns off it). */
 export function onExchange(x: number, z: number, margin: number): boolean {
   const steps = 1.6 * HALL_SCALE;
-  return Math.abs(x) < HALL.width / 2 + steps + margin && z > HALL.z0 - steps - margin && z < HALL.z0 + HALL.depth + HALL.stair + margin;
+  const hall = Math.abs(x) < HALL.width / 2 + steps + margin && z > HALL.z0 - steps - margin && z < HALL.z0 + HALL.depth + HALL.stair + margin;
+  const tower = Math.abs(x) < CAMPANILE.half + 1 + margin && z > CAMPANILE.z - CAMPANILE.half - 1 - margin && z < HALL.z0 + margin;
+  return hall || tower;
 }
 
 /** What one slot shows: a job taking bids (lit, with its bids' lamps), a job posted and not yet open for bids (dark), or nothing. */
@@ -113,6 +119,12 @@ export interface Exchange {
   object: THREE.Object3D;
   /** The hall's pick proxies, each mapped to the route it opens. */
   pickables: Map<THREE.Object3D, string>;
+  /**
+   * The parts that never change (stone, copper, glass, the forecourt's
+   * fittings): the scene draws them in the city-wide batches (batch.ts) and
+   * hides these. The board, the water and the clock hands draw themselves.
+   */
+  statics: THREE.Object3D[];
   setBoard(jobs: ReadonlyArray<BoardJob>): void;
   setStopped(stopped: boolean): void;
   /** The board as it shows now. */
@@ -388,6 +400,8 @@ function ribGeometry(profile: Array<[number, number]>, w: number, d: number): TH
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  // Empty UVs, so the ribs batch with the copper they stand on.
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array((pos.length / 3) * 2), 2));
   g.computeVertexNormals();
   return g;
 }
@@ -697,7 +711,7 @@ function entablature(k: Kit, detail: boolean): void {
 }
 
 /** The clock over the entrance, in an aedicule rising through the attic: pilasters, a segmental pediment, an opal face lit from behind. */
-function aedicule(k: Kit): { y: number; z: number } {
+function aedicule(k: Kit): THREE.Matrix4 {
   const L = X('limestone');
   const z = FRONT - 0.6;
   const y = (ENT1 + ATTIC) / 2 + 0.6;
@@ -716,16 +730,78 @@ function aedicule(k: Kit): { y: number; z: number } {
   arc.closePath();
   k.add(L, new THREE.ExtrudeGeometry(arc, { depth: 1.0, bevelEnabled: false, curveSegments: 20 }), M(0, ATTIC + 2.0, z + 0.2));
   k.box(L, 9.6, 0.4, 1.6, M(0, ATTIC + 2.0, z + 0.4));
-  // The bezel.
-  k.add(X('brass'), new THREE.TorusGeometry(2.3, 0.14, 10, 64), M(0, y, z + 0.78), false);
-  k.add(X('enamel'), new THREE.CircleGeometry(2.24, 64), M(0, y, z + 0.72), false);
-  // Hour marks.
-  for (let i = 0; i < 12; i++) {
-    const t = (i / 12) * Math.PI * 2;
-    const len = i % 3 === 0 ? 0.42 : 0.24;
-    k.inst('exchange:hour-mark', X('iron'), () => new THREE.BoxGeometry(0.09, 1, 0.03), ME(Math.sin(t) * 1.88, y + Math.cos(t) * 1.88, z + 0.76, 0, 0, -t, 1, len, 1));
+  return clockFace(k, M(0, y, z + 0.72), 2.24);
+}
+
+/**
+ * A clock dial in the frame `F` (facing +z, centred on its origin): an opal
+ * face of radius `r` (its numerals are the dial texture's) in a brass bezel.
+ * Returns where its hands turn, at the dial's own scale (radius 2.24 hands).
+ */
+function clockFace(k: Kit, F: THREE.Matrix4, r: number): THREE.Matrix4 {
+  k.add(X('brass'), new THREE.TorusGeometry(r + 0.06, 0.14 * (r / 2.24), 10, 64), F.clone().multiply(M(0, 0, 0.06)), false);
+  k.add(X('enamel'), new THREE.CircleGeometry(r, 64), F.clone(), false);
+  const s = r / 2.24;
+  return F.clone().multiply(M(0, 0, 0.08, 0, s, s, s));
+}
+
+/**
+ * The campanile behind the hall, on the axis of the stair and the dome: a
+ * granite foot, a limestone shaft with corner piers and a lit slit window in
+ * each stage, a clock on every face, an open belfry lit from within, and an
+ * octagonal glazed lantern under a copper cap. It is the exchange's mark from
+ * across the city, and stands well below the district towers round it.
+ */
+function campanile(k: Kit, rand: () => number): THREE.Matrix4[] {
+  const L = X('limestone');
+  const T = TOWER.half;
+  const z = TOWER.z;
+  const face = (s: number): THREE.Matrix4 => M(0, 0, z, (s * Math.PI) / 2).multiply(M(0, 0, T));
+  k.box(X('granite'), 2 * T + 1.6, PODIUM + 0.4, 2 * T + 1.6, M(0, (PODIUM + 0.4) / 2, z));
+  const shaft0 = PODIUM + 0.4;
+  const stage = 56;
+  k.box(L, 2 * T, stage - shaft0, 2 * T, M(0, (shaft0 + stage) / 2, z));
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) k.box(L, 2.0, stage - shaft0, 2.0, M(sx * (T - 0.45), (shaft0 + stage) / 2, z + sz * (T - 0.45)));
+  for (const y of [shaft0 + 0.2, 20, 38]) k.add(L, rectSweep(T + 0.55, T + 0.55, z, [[-1, y], [0.12, y], [0.3, y + 0.2], [0.3, y + 0.7], [0.05, y + 0.9], [-1, y + 0.9]]));
+  for (let s = 0; s < 4; s++) {
+    const F = face(s);
+    // A sunk panel up each face, a lit slit window in it every stage.
+    k.box(L, 3.4, stage - shaft0 - 6, 0.12, F.clone().multiply(M(0, (shaft0 + stage) / 2, -0.04)));
+    for (let y = 8; y < stage - 4; y += 6) {
+      if (Math.abs(y - 20) < 2 || Math.abs(y - 38) < 2) continue;
+      k.pane('exchange:pane-slit', 'window', F.clone().multiply(M(0, y, 0.04, 0, 0.9, 2.8, 1)), paneData(0.45 + rand() * 0.5, 0.95, PANE_SASH));
+    }
   }
-  return { y, z: z + 0.8 };
+  // The clock stage: a cornice under it, a dial on every face.
+  k.add(L, rectSweep(T, T, z, [[-1, stage], [0.6, stage], [0.6, stage + 0.5], [0.3, stage + 0.8], [-1, stage + 0.8]]));
+  const clock0 = stage + 0.8;
+  const clock1 = clock0 + 8;
+  k.box(L, 2 * T, clock1 - clock0, 2 * T, M(0, (clock0 + clock1) / 2, z));
+  const hands: THREE.Matrix4[] = [];
+  for (let s = 0; s < 4; s++) hands.push(clockFace(k, face(s).multiply(M(0, (clock0 + clock1) / 2, 0.02)), 3.0));
+  // The belfry: four arched faces round a chamber lit from within.
+  k.add(L, rectSweep(T, T, z, [[-1, clock1], [0.7, clock1], [0.7, clock1 + 0.6], [0.4, clock1 + 0.9], [-1, clock1 + 0.9]]));
+  const bel0 = clock1 + 0.9;
+  const belH = 8.6;
+  for (let s = 0; s < 4; s++) {
+    const arches = [-1.9, 1.9].map((u) => roundArch(u, 2.6, 0.9, 5.4, 14));
+    k.add(L, piercedWall(2 * T, belH, 0.9, arches), face(s).multiply(M(0, bel0, -0.9)));
+  }
+  k.box(X('glow'), 2 * T - 2.4, belH - 0.6, 2 * T - 2.4, M(0, bel0 + belH / 2, z));
+  const top = bel0 + belH;
+  k.add(L, rectSweep(T, T, z, [[-1, top], [0.75, top], [0.75, top + 0.7], [0.35, top + 1.0], [-1, top + 1.0]]));
+  // The lantern: an octagon of glazed bays between colonnettes, a copper cap and a brass finial.
+  const l0 = top + 1.0;
+  k.add(L, new THREE.CylinderGeometry(3.4, 3.6, 0.8, 8).translate(0, 0.4, 0), M(0, l0, z, Math.PI / 8));
+  k.add(X('glow'), new THREE.CylinderGeometry(2.5, 2.5, 4.6, 8, 1, true).translate(0, 2.3, 0), M(0, l0 + 0.8, z, Math.PI / 8), false);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    k.inst('exchange:colonnette', L, () => new THREE.CylinderGeometry(0.17, 0.2, 3.0, 10), M(Math.sin(a) * 2.75, l0 + 0.8 + 2.3, z + Math.cos(a) * 2.75, 0, 1, 4.6 / 3.0, 1));
+  }
+  k.add(L, new THREE.CylinderGeometry(3.3, 3.1, 0.6, 8).translate(0, 0.3, 0), M(0, l0 + 5.4, z, Math.PI / 8));
+  k.add(X('copper'), lathe([[0, 0], [3.1, 0], [2.8, 0.7], [2.0, 1.6], [1.0, 2.6], [0.35, 3.1], [0, 3.2]], 8), M(0, l0 + 6.0, z, Math.PI / 8), false);
+  k.add(X('brass'), lathe([[0, 0], [0.24, 0], [0.34, 0.35], [0.14, 0.7], [0.24, 1.05], [0.06, TOWER.top - l0 - 9.2 - 0.1], [0, TOWER.top - l0 - 9.2]], 12), M(0, l0 + 9.2, z), false);
+  return hands;
 }
 
 /** The drum of clerestory windows, the shallow copper dome with standing-seam ribs, and the glazed lantern on its crown. */
@@ -785,9 +861,9 @@ function standards(k: Kit): void {
     const globe = (): THREE.BufferGeometry => new THREE.SphereGeometry(0.36, 16, 12);
     for (let a = 0; a < 4; a++) {
       const r = (a * Math.PI) / 2 + Math.PI / 4;
-      k.inst('exchange:globe', X('globe'), globe, M(l.x + Math.cos(r) * 1.08, 8.3, l.z - Math.sin(r) * 1.08), undefined, false);
+      k.inst('exchange:globe', X('globe'), globe, M(l.x + Math.cos(r) * 1.08, 8.3, l.z - Math.sin(r) * 1.08));
     }
-    k.inst('exchange:globe', X('globe'), globe, M(l.x, 8.78, l.z), undefined, false);
+    k.inst('exchange:globe', X('globe'), globe, M(l.x, 8.78, l.z));
   }
 }
 
@@ -840,23 +916,22 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
   const owned: THREE.Material[] = [];
   const own = <T extends THREE.Material>(m: T): T => (owned.push(m), m);
   const copper = own(copperMaterial());
-  const seam = own(copperMaterial());
-  seam.color.setHex(0x557f70);
-  seam.roughness = 0.5;
-  seam.customProgramCacheKey = () => 'palimpsest-exchange-copper-seam';
+  copper.side = THREE.DoubleSide;
   // Old brass, dulled by the weather: it takes the light without mirroring the whole sunset.
   const brass = own(new THREE.MeshStandardMaterial({ color: 0x9c8048, metalness: 0.85, roughness: 0.42, envMapIntensity: 0.9 }));
   // Opal glass lit from behind: the clock reads at dusk, warm, under the bloom threshold.
-  const enamel = own(new THREE.MeshStandardMaterial({ color: 0xf2ead8, roughness: 0.4, emissive: new THREE.Color(1.0, 0.86, 0.62), emissiveIntensity: 0.62 }));
+  const dial = clockDial();
+  const enamel = own(new THREE.MeshStandardMaterial({ color: 0xf2ead8, roughness: 0.4, map: dial, emissiveMap: dial, emissive: new THREE.Color(1.0, 0.86, 0.62), emissiveIntensity: 0.62 }));
   const iron = own(new THREE.MeshStandardMaterial({ color: 0x1a1c1e, metalness: 0.7, roughness: 0.45, envMapIntensity: 0.9 }));
-  // The lantern's glass, lit from inside the hall.
-  const glow = own(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.25, 0.9, 0.55), side: THREE.DoubleSide }));
-  const globe = own(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 1.75, 1.05) }));
-  seam.side = THREE.DoubleSide;
+  // Lit glass: the lanterns' glazing, the belfry's lit chamber, the standards' globes. One material, so one batch.
+  const glow = own(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.7, 1.22, 0.72), side: THREE.DoubleSide }));
   // Laylight glass over the lit trading floor: dark glass holding the sky, warm light coming up through it.
   const skylight = own(new THREE.MeshStandardMaterial({ color: 0x0e0c0a, roughness: 0.1, metalness: 0.1, emissive: new THREE.Color(1.0, 0.7, 0.4), emissiveIntensity: 0.26, envMapIntensity: 0.9 }));
-  const mats: Record<string, THREE.Material> = { copper, seam, brass, enamel, iron, glow, globe, skylight };
+  const mats: Record<string, THREE.Material> = { copper, seam: copper, brass, enamel, iron, glow, globe: glow, skylight };
   for (const key of USED) mats[key] = base[key];
+  // Fewer materials, fewer batches: the city's own steel for the iron, its polished bronze for the brass, the
+  // stone for the portico's ceiling, dark steel sheet for the flat roof, one warm glass for every lit lamp, and the laylights in the city's dark glass.
+  Object.assign(mats, { iron: base.steel, brass: base.datum, slab: base.limestone, roof: base.steel, vent: glow, skylight: base.darkGlass });
 
   const rand = (() => {
     let s = 1234567;
@@ -890,7 +965,7 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
   colonnade(k, detail);
   porticoWall(k, rand);
   entablature(k, detail);
-  const clockAt = aedicule(k);
+  const clocks = [aedicule(k), ...campanile(k, rand)];
   dome(k, detail, rand);
 
   // The tote board's brass frames, along the frieze over the portico.
@@ -1038,23 +1113,29 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
   let time = 0;
 
   // ---------------------------------------------------------------- the clock's hands
-  const hands = new THREE.Group();
-  hands.name = 'exchange:clock';
-  hands.position.set(0, clockAt.y, clockAt.z);
-  const handGeo = { hour: new THREE.BoxGeometry(0.16, 1.25, 0.04).translate(0, 0.5, 0), minute: new THREE.BoxGeometry(0.1, 1.85, 0.04).translate(0, 0.78, 0) };
-  const hour = new THREE.Mesh(handGeo.hour, iron);
-  const minute = new THREE.Mesh(handGeo.minute, iron);
-  minute.position.z = 0.04;
-  hands.add(hour, minute);
+  // Every dial's hands, the hall's and the campanile's four, in two instanced batches showing real local time.
+  const handGeo = new THREE.BoxGeometry(1, 1, 0.04).translate(0, 0.5, 0);
+  const hands = new THREE.InstancedMesh(handGeo, base.steel, clocks.length * 2);
+  hands.name = 'exchange:hands';
+  hands.castShadow = false;
   hall.add(hands);
+  const turn = new THREE.Matrix4();
+  const HOUR = M(0, -0.125, 0, 0, 0.16, 1.25, 1);
+  const MINUTE = M(0, -0.145, 0.04, 0, 0.1, 1.85, 1);
   let shownMinute = -1;
   function setClock(): void {
     const now = new Date();
     const m = now.getHours() * 60 + now.getMinutes();
     if (m === shownMinute) return;
     shownMinute = m;
-    minute.rotation.z = -(now.getMinutes() / 60) * Math.PI * 2;
-    hour.rotation.z = -(((now.getHours() % 12) + now.getMinutes() / 60) / 12) * Math.PI * 2;
+    const minuteA = -(now.getMinutes() / 60) * Math.PI * 2;
+    const hourA = -(((now.getHours() % 12) + now.getMinutes() / 60) / 12) * Math.PI * 2;
+    clocks.forEach((F, i) => {
+      hands.setMatrixAt(2 * i, F.clone().multiply(turn.makeRotationZ(hourA)).multiply(HOUR));
+      hands.setMatrixAt(2 * i + 1, F.clone().multiply(turn.makeRotationZ(minuteA)).multiply(MINUTE));
+    });
+    hands.instanceMatrix.needsUpdate = true;
+    hands.computeBoundingSphere();
   }
   setClock();
 
@@ -1077,6 +1158,7 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
   return {
     object: group,
     pickables,
+    statics: [built, forecourt],
     setBoard,
     setStopped(s) {
       stopped = s;
@@ -1106,13 +1188,73 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
         m.geometry.dispose();
         if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
       });
-      for (const g of [...waterGeos, ...pickGeos, cardGeo, lampGeo, handGeo.hour, handGeo.minute]) g.dispose();
+      for (const g of [...waterGeos, ...pickGeos, cardGeo, lampGeo, handGeo]) g.dispose();
+      hands.dispose();
+      dial?.dispose();
       cards.dispose();
       lamps.dispose();
       labels?.dispose();
       for (const m of owned) m.dispose();
     },
   };
+}
+
+// ---------------------------------------------------------------- the clock dial
+
+/**
+ * The dial every clock shares: an opal face with a minute track and Roman
+ * numerals in the index's serif, drawn on a canvas, so only in the browser
+ * (null in node tests, where the face is plain).
+ */
+function clockDial(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const N = 1024;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = N;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  const ROMAN = ['XII', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI'];
+  const draw = (): void => {
+    const g = canvas.getContext('2d');
+    if (!g) return;
+    const c = N / 2;
+    g.fillStyle = '#f4ecdb';
+    g.fillRect(0, 0, N, N);
+    g.strokeStyle = 'rgba(28, 24, 20, 0.9)';
+    g.fillStyle = 'rgba(28, 24, 20, 0.92)';
+    // The minute track: two fine rings and a tick every minute, heavier at the hours.
+    g.lineWidth = 4;
+    for (const r of [0.94, 0.86]) {
+      g.beginPath();
+      g.arc(c, c, c * r, 0, Math.PI * 2);
+      g.stroke();
+    }
+    for (let i = 0; i < 60; i++) {
+      const a = (i / 60) * Math.PI * 2;
+      g.lineWidth = i % 5 === 0 ? 12 : 4;
+      g.beginPath();
+      g.moveTo(c + Math.sin(a) * c * 0.86, c - Math.cos(a) * c * 0.86);
+      g.lineTo(c + Math.sin(a) * c * 0.94, c - Math.cos(a) * c * 0.94);
+      g.stroke();
+    }
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.font = '500 112px Newsreader, Georgia, serif';
+    ROMAN.forEach((n, i) => {
+      const a = (i / 12) * Math.PI * 2;
+      // Each numeral stands on the rim, read from the centre, as on a tower clock.
+      g.save();
+      g.translate(c + Math.sin(a) * c * 0.7, c - Math.cos(a) * c * 0.7);
+      g.rotate(a);
+      g.fillText(n, 0, 0);
+      g.restore();
+    });
+    tex.needsUpdate = true;
+  };
+  draw();
+  void document.fonts?.load('500 112px Newsreader').then(draw, () => {});
+  return tex;
 }
 
 // ---------------------------------------------------------------- the cards' words
@@ -1173,6 +1315,8 @@ function cardLabels(slotX: (i: number) => number, y: number): { object: THREE.Ob
     const g = canvas.getContext('2d');
     if (!g) return;
     g.clearRect(0, 0, canvas.width, canvas.height);
+    // With nothing to say the words are not drawn at all.
+    mesh.visible = board.some((s) => s.state !== 'empty' && !!s.label);
     board.forEach((s, i) => {
       if (s.state === 'empty' || !s.label) return;
       const x = (i % COLS_A) * CW;

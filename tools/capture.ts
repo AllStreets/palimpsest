@@ -490,10 +490,10 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await shoot(page, 'exchange-home');
       const at = await page.evaluate(() => {
         const d = (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest;
-        return [d.project([0, 30, -6]), d.project([-42, 0, 9]), d.project([42, 0, 9]), d.project([0, 64, -20])];
+        return [d.project([0, 30, -6]), d.project([-42, 0, 9]), d.project([42, 0, 9]), d.project([0, 104, -52])];
       });
       const px = (v: number[]): string => `${Math.round(((v[0] + 1) / 2) * 1600)},${Math.round(((1 - v[1]) / 2) * 1000)}`;
-      console.log(`  home: exchange at ${px(at[0])}, front ${px(at[1])} to ${px(at[2])}, lantern ${px(at[3])}`);
+      console.log(`  home: exchange at ${px(at[0])}, front ${px(at[1])} to ${px(at[2])}, campanile top ${px(at[3])}`);
       await chrome(page, false);
       await still(page, 'exchange', [34, 11, 84], [0, 24, -8]);
       await still(page, 'exchange-far', [300, 150, 420], [0, 26, -10]);
@@ -502,6 +502,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await still(page, 'exchange-portico', [20, 5.5, 34], [-2, 14, 4]);
       await still(page, 'exchange-fountain', [14, 2.2, 68], [0, 5, 40]);
       await still(page, 'exchange-dome', [88, 75, 70], [0, 48, -20]);
+      await still(page, 'exchange-campanile', [70, 40, 30], [0, 75, -52]);
+      await still(page, 'exchange-clock', [6, 74, -30], [0, 76.5, -50]);
       // The kill switch, set through the engine's own route on the temp home: the stream tells the page, the water stills.
       await page.evaluate(() => fetch('/api/stop', { method: 'POST', headers: { 'content-type': 'application/json', 'x-palimpsest': '1' }, body: '{"on":true}' }));
       await page.waitForTimeout(2500);

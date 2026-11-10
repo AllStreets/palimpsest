@@ -122,6 +122,12 @@ function combine(list: Inst[], shift?: THREE.Matrix4): THREE.InstancedMesh {
   return out;
 }
 
+/** An unindexed piece as an indexed one (each vertex its own index), so it merges with indexed pieces in its material. */
+function indexed(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  if (!g.index) g.setIndex(Array.from({ length: g.attributes.position.count }, (_, i) => i));
+  return g;
+}
+
 /** Merges every drawn mesh under `roots` (each already placed in the world) into batches; see above. */
 export function batchPieces(roots: THREE.Object3D[]): Batched {
   const group = new THREE.Group();
@@ -158,7 +164,7 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
         const mat = mesh.material as THREE.Material;
         if ((mesh as THREE.InstancedMesh).isInstancedMesh && expandable(mesh as THREE.InstancedMesh)) {
           const im = mesh as THREE.InstancedMesh;
-          for (const g of expand(im, im.matrixWorld)) {
+          for (const g of expand(im, im.matrixWorld).map(indexed)) {
             const key = `${mat.uuid}|${im.castShadow}|${im.receiveShadow}|${attrs(g)}`;
             let b = plain.get(key);
             if (!b) plain.set(key, (b = { mat, cast: im.castShadow, receive: im.receiveShadow, geos: [] }));
@@ -171,10 +177,11 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
           if (!l) inst.set(key, (l = []));
           l.push({ mesh: im, world: im.matrixWorld.clone() });
         } else {
-          const key = `${mat.uuid}|${mesh.castShadow}|${mesh.receiveShadow}|${attrs(mesh.geometry)}`;
+          const g = indexed(mesh.geometry.clone().applyMatrix4(mesh.matrixWorld));
+          const key = `${mat.uuid}|${mesh.castShadow}|${mesh.receiveShadow}|${attrs(g)}`;
           let b = plain.get(key);
           if (!b) plain.set(key, (b = { mat, cast: mesh.castShadow, receive: mesh.receiveShadow, geos: [] }));
-          b.geos.push(mesh.geometry.clone().applyMatrix4(mesh.matrixWorld));
+          b.geos.push(g);
         }
       }
       o.children.forEach(visit);
