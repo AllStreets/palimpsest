@@ -40,9 +40,9 @@ test('home() honours PALIMPSEST_HOME', () => {
 });
 
 test('ledger records are append-only and ordered', () => {
-  const id1 = record('a', { n: 1 });
-  const id2 = record('b', { n: 2 });
-  const id3 = record('c', { n: 3 });
+  const id1 = record('repo.connected', { n: 1 });
+  const id2 = record('repo.analyzed', { n: 2 });
+  const id3 = record('repo.patched', { n: 3 });
 
   assert.deepEqual([id1, id2, id3], [1, 2, 3]);
 
@@ -61,6 +61,14 @@ test('settings defaults', () => {
   assert.equal(settings.nightCapPct, 20);
   assert.equal(settings.hookInstalled, false);
   assert.equal(settings.previousStatusLine, null);
+  assert.equal(settings.claudeConcurrency, 2);
+  assert.equal(settings.localConcurrency, 1);
+  assert.equal(settings.bidWindowSec, 120);
+  assert.equal(settings.hardStopPct, 90);
+  assert.equal(settings.resumeStaleUntil, null);
+  assert.equal(settings.keepAwake, false);
+  assert.equal(settings.ollamaHost, '127.0.0.1:11434');
+  assert.deepEqual(settings.anthropicApi, { enabled: false, dailyUsd: 5 });
 });
 
 test('patchSettings persists across reopen', () => {

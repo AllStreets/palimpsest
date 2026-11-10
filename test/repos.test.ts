@@ -11,6 +11,7 @@ import { realRunner, setRunner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { analyze, city, connect, disconnect, failInterruptedAnalyses, listRepos, patchRepo, pickRoot } from '../engine/repos.js';
 import type { Event } from '../engine/events.js';
+import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { District, Repo } from '../shared/types.js';
 
 let tempDir: string;
@@ -558,6 +559,7 @@ function storeOrphanedAnalyzing(fullName: string): void {
     error: null,
     connectedAt: '2026-11-01T10:00:00.000Z',
     analyzedAt: null,
+    ...repoMarketDefaults(),
   };
   openDb().prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(fullName, JSON.stringify(repo));
 }

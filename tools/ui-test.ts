@@ -21,6 +21,7 @@ import { inflateSync } from 'node:zlib';
 import { chromium } from 'playwright';
 import type { Browser, Page } from 'playwright';
 
+import { repoMarketDefaults } from '../shared/market-rules.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District, Era, Repo, TowerSpec } from '../shared/types.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
@@ -292,6 +293,7 @@ async function siteChecks(page: Page): Promise<void> {
     error: null,
     connectedAt: now,
     analyzedAt: null,
+    ...repoMarketDefaults(),
   };
   db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(fullName, JSON.stringify(repo));
   emit('repo.analyzing', { repo, step: 'log' });

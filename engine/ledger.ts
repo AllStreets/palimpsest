@@ -1,4 +1,7 @@
+import { isLedgerKind, type LedgerKind } from '../shared/ledger-kinds.js';
 import { openDb } from './db.js';
+
+export type { LedgerKind } from '../shared/ledger-kinds.js';
 
 export interface LedgerEntry {
   id: number;
@@ -7,8 +10,13 @@ export interface LedgerEntry {
   data: unknown;
 }
 
-/** Appends an entry to the ledger and returns its id. No update or delete is exposed: the ledger is append-only. */
-export function record(kind: string, data: object): number {
+/**
+ * Appends an entry to the ledger and returns its id. No update or delete is
+ * exposed: the ledger is append-only. Throws `unknown ledger kind <kind>`
+ * for a kind outside LEDGER_KINDS, before anything is written.
+ */
+export function record(kind: LedgerKind, data: object): number {
+  if (!isLedgerKind(kind)) throw new Error(`unknown ledger kind ${kind}`);
   const db = openDb();
   const at = new Date().toISOString();
   const json = JSON.stringify(data);

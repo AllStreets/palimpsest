@@ -1,3 +1,4 @@
+import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { District, Repo, RootStyle, TowerSpec } from '../shared/types.js';
 import { openDb } from './db.js';
 import { emit } from './events.js';
@@ -78,13 +79,20 @@ function ensureSlots(repos: Repo[]): Repo[] {
   });
 }
 
+/** A stored repo row, with the market defaults filled in for any field a pre-Phase 2 writer left out. */
+function parseRepo(json: string): Repo {
+  const stored = JSON.parse(json) as Partial<Repo>;
+  const joinedAt = stored.joinedAt !== undefined ? stored.joinedAt : (stored.analyzedAt ?? null);
+  return { ...repoMarketDefaults(), ...stored, joinedAt } as Repo;
+}
+
 function loadRepo(fullName: string): Repo | null {
   const db = openDb();
   const row = db.prepare('SELECT json FROM repos WHERE full_name = ?').get(fullName) as
     | { json: string }
     | undefined;
   if (!row) return null;
-  const repo = JSON.parse(row.json) as Repo;
+  const repo = parseRepo(row.json);
   if (hasValidSlot(repo)) return repo;
   // This row predates the slot field (or another process wrote it without
   // one). Assigning it a slot in isolation would ignore any other row that
@@ -118,7 +126,7 @@ function saveTower(tower: TowerSpec): void {
 export function listRepos(): Repo[] {
   const db = openDb();
   const rows = db.prepare('SELECT json FROM repos').all() as Array<{ json: string }>;
-  const repos = ensureSlots(rows.map((row) => JSON.parse(row.json) as Repo));
+  const repos = ensureSlots(rows.map((row) => parseRepo(row.json)));
   return repos.sort((a, b) => {
     const at = a.connectedAt ? Date.parse(a.connectedAt) : 0;
     const bt = b.connectedAt ? Date.parse(b.connectedAt) : 0;
@@ -192,6 +200,7 @@ export async function connect(fullName: string): Promise<Repo> {
         error: null,
         connectedAt: now,
         analyzedAt: null,
+        ...repoMarketDefaults(),
       };
 
   saveRepo(repo);
