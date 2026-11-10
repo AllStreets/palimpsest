@@ -155,6 +155,10 @@ export interface Job {
   closedAt: string | null;
   excludedFirms: string[];
   haltedFrom: JobStatus | null;
+  /** Inspections of this job in a row that no reviewer could read (Task 15); the third halts the job. */
+  inconclusive?: number;
+  /** Why the job was halted on its own, for his daily brief; cleared on resume. */
+  haltNote?: string | null;
 }
 
 export type ModelRef = `claude:${string}` | `ollama:${string}` | `anthropic:${string}` | `mlx:${string}`;

@@ -333,6 +333,15 @@ export function attachRun(jobId: string, runId: string | null): Job | null {
   return next;
 }
 
+/** Writes a job's inconclusive-inspection count without moving it. */
+export function setInconclusive(jobId: string, n: number): Job | null {
+  const cur = job(jobId);
+  if (!cur) return null;
+  const next: Job = { ...cur, inconclusive: n };
+  save(next);
+  return next;
+}
+
 export interface TransitionNote {
   /** The merged PR, commented on the issue. */
   prUrl?: string;

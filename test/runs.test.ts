@@ -648,6 +648,39 @@ test('an inconclusive inspection (no reviewer) leaves no scar, spends no attempt
   assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0);
 });
 
+test('a third inconclusive inspection halts the job with a note, spending no attempt; a resume puts it back', async () => {
+  useScript({});
+  makeRepo();
+  const d = deps().deps;
+  delete (d as Partial<SchedulerDeps>).inspect;
+  createScheduler(d);
+  const { job: j, bid } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  for (let n = 1; n <= 3; n++) {
+    if (n > 1) {
+      // Back on the board after an inconclusive inspection, awarded to the same bid again.
+      const reopened = job(j.id)!;
+      assert.equal(reopened.status, 'open');
+      transition(transition(reopened, 'bidding'), 'awarded', { awardedBid: bid.id });
+    }
+    await startRun(bid);
+    assert.equal(job(j.id)!.inconclusive, n);
+  }
+  const halted = job(j.id)!;
+  assert.equal(halted.status, 'halted');
+  assert.equal(halted.haltNote, 'needs a reviewer: too large or no reviewer available');
+  assert.equal(halted.attempts, 0, 'no attempt spent');
+  assert.deepEqual(halted.excludedFirms, [], 'no firm blamed');
+  assert.equal(getRepo(FULL)!.halted, null, 'the repo itself goes on');
+  assert.ok(entries().some((e) => e.kind === 'run.note' && (e.data as { note: string }).note.startsWith('needs a reviewer')));
+  assert.equal(runsOf(j.id).every((r) => !r.scar), true);
+
+  resumeRepo(FULL);
+  const back = job(j.id)!;
+  assert.equal(back.status, 'open');
+  assert.equal(back.inconclusive, 0);
+  assert.equal(back.haltNote, null);
+});
+
 test('resuming a repo puts a halted waiting job back to waiting and does not re-bid it', async () => {
   makeRepo();
   addAgent('a1', 'alpha', 'claude:sonnet');

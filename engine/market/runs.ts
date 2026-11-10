@@ -80,7 +80,7 @@ import { hostsFor, startEgress, type Egress } from './egress.js';
 import { agent as storedAgent } from './firms.js';
 import { inspect as guildInspect, inspectionSummary, type InspectContext } from '../guild/inspect.js';
 import { installDeps as defaultInstallDeps, type InstallDeps, type RunContext } from './install.js';
-import { attachRun, job as storedJob, listJobs, pollJobs as defaultPollJobs, transition, type PollDeps } from './jobs.js';
+import { attachRun, setInconclusive, job as storedJob, listJobs, pollJobs as defaultPollJobs, transition, type PollDeps } from './jobs.js';
 import type { Provider, RunLogLine, Usage, WorkInput } from './provider.js';
 import { providerFor } from './providers.js';
 import { quoteAsData } from './quote.js';
@@ -113,6 +113,9 @@ const SELF_CHECK_DIFF_MAX = 20_000;
 export const RUN_EXTRA_MINUTES = 90;
 
 export const STOP_REASON = 'The stop file is set.';
+/** Inconclusive inspections a job may have in a row before it leaves the board (controller ruling, Task 15). */
+export const MAX_INCONCLUSIVE = 2;
+export const NEEDS_REVIEWER = 'needs a reviewer: too large or no reviewer available';
 export const SHUTDOWN_REASON = 'The engine is shutting down.';
 export const INTERRUPTED_RUN = 'The engine stopped during the run.';
 export const HELPER_MISSING =
@@ -737,10 +740,25 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     st.egress.setStage('checks', hostsFor('checks', ecosystems, null));
     const inspection = await guarded(st, config.inspect(st.run, st.job, st.repo, diff, st.lease, { log, egress: st.egress }));
     // No reviewer could read the change: not the agent's failure. No scar, no attempt, the firm not excluded.
+    // The third time in a row the job leaves the board, halted with a note for his daily brief.
     if (!inspection.passed && inspection.inconclusive && !st.lease.signal.aborted) {
       st.run = { ...st.run, inspectionId: inspection.id };
       saveRun(st.run);
-      return end(st, 'crashed', `The inspection could not reach a verdict: ${inspection.inconclusive}`, { job: 'reopen' });
+      const reason = `The inspection could not reach a verdict: ${inspection.inconclusive}`;
+      const count = (storedJob(st.job.id)?.inconclusive ?? 0) + 1;
+      setInconclusive(st.job.id, count);
+      if (count <= MAX_INCONCLUSIVE) return end(st, 'crashed', reason, { job: 'reopen' });
+      const ended = end(st, 'crashed', reason, { job: 'none' });
+      try {
+        const cur = storedJob(st.job.id);
+        if (cur && cur.runId === st.run.id && LIVE_JOB.includes(cur.status)) {
+          transition(cur, 'halted', { runId: null, awardedBid: null, bidsCloseAt: null, haltNote: NEEDS_REVIEWER });
+          record('run.note', { runId: st.run.id, jobId: st.job.id, repo: st.run.repo, note: NEEDS_REVIEWER, inconclusive: count, at: iso() });
+        }
+      } catch (err) {
+        engineLog(st, `[palimpsest] the job could not be halted: ${errText(err)}`);
+      }
+      return ended;
     }
     // A failed inspection that halts the repo does not kill this run: it still ends failed, with its scar.
     if (!inspection.passed && !st.lease.signal.aborted) {
@@ -990,7 +1008,7 @@ export function resumeRepo(fullName: string, at: string = new Date().toISOString
   for (const j of listJobs({ repo: fullName, status: 'halted' })) {
     try {
       if (j.haltedFrom === 'waiting') transition(j, 'waiting');
-      else transition(j, 'open', { runId: null, awardedBid: null, bidsCloseAt: null });
+      else transition(j, 'open', { runId: null, awardedBid: null, bidsCloseAt: null, inconclusive: 0, haltNote: null });
     } catch (err) {
       console.error(`palimpsest: could not resume job ${j.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
