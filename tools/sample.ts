@@ -143,6 +143,46 @@ export async function seedSample(now: number = Date.now()): Promise<void> {
   writeFileSync(`${paths().usage}/readings.jsonl`, `${JSON.stringify(reading)}\n`);
 }
 
+/**
+ * A sample repo's founding tower as it would stand with `commits` commits in
+ * the same span: a long history reaches the 120 floor cap with its eras
+ * laid as a real connect lays them.
+ */
+export async function grownTower(fullName: string, commits: number): Promise<TowerSpec> {
+  const s = SAMPLE.find((x) => x.fullName === fullName);
+  if (!s) throw new Error(`no sample repo ${fullName}`);
+  const { foundingFloors } = await import('../engine/history.js');
+  const { commits: log, prs } = sampleHistory({ ...s, commits });
+  const floors = foundingFloors(s.fullName, log, prs);
+  return { id: `${s.fullName}#founding`, repo: s.fullName, kind: 'founding', root: s.root, floors, datumIndex: floors.length };
+}
+
+/**
+ * Reshapes a seeded sample home for the view's framing rounds: `tall` raises
+ * the two tallest towers to the 120 floor cap (a city like one with years of
+ * history in two repos), `small` leaves one tower of 8 floors and nothing else.
+ */
+export async function reshapeSample(kind: 'tall' | 'small'): Promise<void> {
+  const { openDb } = await import('../engine/db.js');
+  const db = openDb();
+  const setTower = (t: TowerSpec): void => {
+    db.prepare('INSERT OR REPLACE INTO towers (repo, json) VALUES (?, ?)').run(t.repo, JSON.stringify(t));
+  };
+  if (kind === 'tall') {
+    for (const fullName of ['tidewater/harbor-ledger', 'lantern/assay-kit']) setTower(await grownTower(fullName, 2000));
+    return;
+  }
+  const keep = 'ferro/quarry';
+  for (const s of SAMPLE) {
+    if (s.fullName === keep) continue;
+    db.prepare('DELETE FROM towers WHERE repo = ?').run(s.fullName);
+    db.prepare('DELETE FROM repos WHERE full_name = ?').run(s.fullName);
+  }
+  const t = await grownTower(keep, SAMPLE.find((s) => s.fullName === keep)?.commits ?? 24);
+  const floors = t.floors.slice(0, 8);
+  setTower({ ...t, floors, datumIndex: floors.length });
+}
+
 // ---------------------------------------------------------------- command line
 
 /**

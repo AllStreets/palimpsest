@@ -10,6 +10,7 @@ import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { createPost } from './post';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
+import { cityExtent, easeLimits, viewLimits, type EasedLimits, type ViewLimits } from './view';
 
 export interface PickHit {
   kind: 'tower';
@@ -62,6 +63,10 @@ export interface City {
   /** Compiles every material for the current scene so later frames never stall on a shader compile. */
   precompile(): Promise<void>;
   flyTo(target: THREE.Vector3, distance: number): void;
+  /** Glides back to the framing the city opened on, as it stands now. */
+  home(): void;
+  /** The view's limits now: the home framing, and how far, how hazy and how deep, as eased this frame (tests and debugging). */
+  limits(): { home: { eye: number[]; target: number[] }; maxDistance: number; fogDensity: number; far: number; settled: boolean };
   onPick(fn: (hit: PickHit) => void): void;
   dispose(): void;
   /** Resolves once textures have loaded and the first frames are on screen. */
@@ -90,8 +95,6 @@ export function plinthCenterpiece(): Centerpiece {
   };
 }
 
-/** Fog density: thick enough to swallow the city's far edge into the horizon colour. */
-const FOG_DENSITY = 0.00055;
 const SHADOW_HALF = 320;
 /** Below this eye height the skyline hides name plates behind it. */
 const STREET_EYE = 80;
@@ -125,7 +128,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   configureMaterials(renderer);
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(HORIZON_FOG.getHex(), FOG_DENSITY);
+  const fog = new THREE.FogExp2(HORIZON_FOG.getHex());
+  scene.fog = fog;
 
   const rig = createCameraRig(renderer.domElement, width() / height());
   const camera = rig.camera;
@@ -166,17 +170,27 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let scaffolds = new Map<string, Scaffold>();
   let framed = false;
 
-  function frameOverview(districts: District[]): void {
-    const c = new THREE.Vector3();
-    for (const d of districts) c.add(new THREE.Vector3(d.origin.x, 0, d.origin.z));
-    if (districts.length > 0) c.divideScalar(districts.length);
-    const spread = districts.reduce((m, d) => Math.max(m, Math.hypot(d.origin.x - c.x, d.origin.z - c.z)), 0);
-    const dist = 300 + spread * 1.2;
-    // The mockup's bearing: the afterglow off to the left, sunlit faces turned partly toward the eye.
-    const bearing = new THREE.Vector3(0.63, 0.15, 0.78).normalize();
-    const target = c.clone().setY(55);
-    rig.view(target.clone().addScaledVector(bearing, dist), target);
+  // ---------------------------------------------------------------- the view grows with the city
+  // The limits follow the districts standing: the home framing changes at once (it is only used when asked
+  // for), while how far the camera may go, the haze and the far plane ease over a second or two. The camera
+  // itself is never moved for the city's sake once it has opened.
+  let extent = cityExtent([]);
+  let limits: ViewLimits = viewLimits(extent, width() / height());
+  let eased: EasedLimits = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
+  function relimit(snap: boolean): void {
+    limits = viewLimits(extent, width() / height());
+    if (snap) eased = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
   }
+  const applyLimits = (): void => {
+    rig.controls.maxDistance = eased.maxDistance;
+    fog.density = eased.fogDensity;
+    if (camera.far !== eased.far) {
+      camera.far = eased.far;
+      camera.updateProjectionMatrix();
+    }
+  };
+  applyLimits();
+  const toV = (v: number[]): THREE.Vector3 => new THREE.Vector3(v[0], v[1], v[2]);
 
   function updatePlazas(occ: Occupancy): void {
     // Only occupied plots are paved and cleared: a district, or a site under scaffold.
@@ -210,8 +224,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       piece.dispose?.();
     }
     if (highlighted) applyHighlight();
+    extent = cityExtent(districts);
+    // The city opens on its home framing with its limits in force at once; after that they ease.
+    relimit(!framed);
     if (!framed) {
-      frameOverview(districts);
+      applyLimits();
+      rig.view(toV(limits.home.eye), toV(limits.home.target));
       framed = true;
     }
     return built;
@@ -420,6 +438,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const resize = (): void => {
     renderer.setSize(width(), height());
     rig.setAspect(width() / height());
+    relimit(false);
     applyInset();
     post.setSize(width(), height());
   };
@@ -475,6 +494,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       inset = Math.abs(insetTarget - inset) < 0.5 ? insetTarget : THREE.MathUtils.damp(inset, insetTarget, 7, dt);
       applyInset();
     }
+    eased = easeLimits(eased, limits, dt, camera.position.distanceTo(rig.controls.target));
+    applyLimits();
     rig.update(dt);
     fitMark();
     plates.update();
@@ -500,6 +521,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     },
     precompile: () => renderer.compileAsync(scene, camera).then(() => undefined),
     flyTo: (target, distance) => rig.flyTo(target, distance),
+    home: () => rig.flyView(toV(limits.home.eye), toV(limits.home.target)),
+    limits: () => ({
+      home: { eye: [...limits.home.eye], target: [...limits.home.target] },
+      ...eased,
+      settled: eased.maxDistance === limits.maxDistance && eased.fogDensity === limits.fogDensity && eased.far === limits.far,
+    }),
     onPick(fn) {
       pickListeners.push(fn);
     },

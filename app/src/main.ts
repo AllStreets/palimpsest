@@ -30,6 +30,12 @@ interface DebugHandle {
   highlight: { repo: string; floorId: string } | null;
   view(eye: number[], target: number[]): void;
   camera(): number[];
+  /** Glides back to the home framing, as the H key does. */
+  home(): void;
+  /** The view's limits now, as eased this frame. */
+  limits(): ReturnType<ReturnType<typeof createCity>['limits']>;
+  /** Where a world point lands on screen, in normalised device coordinates (y up, the frame is -1 to 1). */
+  project(p: number[]): number[];
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
   /** Plazas paved (the civic plaza included) and ambient buildings standing. */
@@ -76,6 +82,9 @@ async function main(): Promise<void> {
     highlight: null,
     view: (e, t) => city.view(new THREE.Vector3(e[0], e[1], e[2]), new THREE.Vector3(t[0], t[1], t[2])),
     camera: () => city.camera.position.toArray(),
+    home: () => city.home(),
+    limits: () => city.limits(),
+    project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
     plots: () => city.plots(),
@@ -270,6 +279,12 @@ async function main(): Promise<void> {
     if (e.key === 'Escape' && !e.defaultPrevented && document.body.dataset.route !== 'city') {
       e.preventDefault();
       toCity();
+    }
+    // H (or Home) in the city glides back to the home framing, which grows with the city.
+    const typing = e.target instanceof HTMLElement && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName));
+    if ((e.key === 'h' || e.key === 'H' || e.key === 'Home') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city') {
+      e.preventDefault();
+      city.home();
     }
   });
 

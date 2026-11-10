@@ -20,7 +20,9 @@
  * Options (env): CAPTURE_FPS=30, CAPTURE_DPR=2, CAPTURE_KEEP=1 keeps the raw frames,
  * CAPTURE_OUT=<dir> writes somewhere other than docs/media (for probing),
  * PROBE='[[[eye],[target]], ...]' for quick stills in the probe shot, PROBE_CHROME=1
- * keeps the running head and plates in them.
+ * keeps the running head and plates in them. CAPTURE_CITY=tall raises the two
+ * tallest sample towers to 120 floors, CAPTURE_CITY=small leaves one 8 floor
+ * tower (for the view's framing rounds; use with CAPTURE_OUT).
  *
  * Re-run it whenever the city changes, and add a shot here for each new
  * thing worth showing.
@@ -34,9 +36,10 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import type { Page } from 'playwright';
 
+import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District } from '../shared/types.js';
-import { sampleGh, seedSample } from './sample.js';
+import { reshapeSample, sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -182,7 +185,8 @@ async function openScreen(page: Page, route: 'city' | 'repos' | 'settings', read
 
 function shots(city: District[]): Record<string, (page: Page) => Promise<void>> {
   const by = (repo: string): District => {
-    const d = city.find((c) => c.repo === repo);
+    // A city reshaped for the framing rounds (CAPTURE_CITY=small) stands in its one tower.
+    const d = city.find((c) => c.repo === repo) ?? (process.env.CAPTURE_CITY ? city[0] : undefined);
     if (!d) throw new Error(`no district ${repo}`);
     return d;
   };
@@ -310,11 +314,33 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
   };
 }
 
-/** Framings tuned by eye in the quality rounds (see the probe shot). */
-const HERO: { eye: V3; target: V3 } = { eye: [700, 70, 700], target: [0, 170, 80] };
-const OVERVIEW: { eye: V3; target: V3 } = { eye: [540, 380, 960], target: [-40, 70, 0] };
+/** Framings tuned by eye in the quality rounds (see the probe shot), on the sample city; followCity fits them to the city served. */
+let HERO: { eye: V3; target: V3 } = { eye: [700, 70, 700], target: [0, 170, 80] };
+let OVERVIEW: { eye: V3; target: V3 } = { eye: [540, 380, 960], target: [-40, 70, 0] };
 const SCREENS: { eye: V3; target: V3 } = { eye: [-700, 90, 520], target: [160, 150, -200] };
-const FLY = { cx: 0, cz: 80, a0: 0.42, a1: 1.12, r0: 980, r1: 840, y0: 110, y1: 72, ty0: 175, ty1: 160 };
+let FLY = { cx: 0, cz: 80, a0: 0.42, a1: 1.12, r0: 980, r1: 840, y0: 110, y1: 72, ty0: 175, ty1: 160 };
+
+/** The sample city the framings above were tuned on: six districts round (-40, 80), the tallest of 92 floors. */
+const TUNED_ON: CityExtent = { cx: -40, cz: 80, radius: 377.36, height: 410.6, count: 6 };
+
+/**
+ * Derives the framings from the city served, so README media follow it. The
+ * overview is the app's own home framing (view.ts). The hero and the flyover
+ * keep their tuned composition, scaled about the city's centre by how much
+ * farther its home framing stands than the sample's: unchanged for the
+ * sample, wider for a taller or broader city.
+ */
+function followCity(city: District[]): void {
+  const aspect = VIEWPORT.width / VIEWPORT.height;
+  const e = cityExtent(city);
+  const lim = viewLimits(e, aspect);
+  OVERVIEW = lim.home;
+  const k = lim.homeDistance / viewLimits(TUNED_ON, aspect).homeDistance;
+  const at = (p: V3): V3 => [e.cx + k * (p[0] - TUNED_ON.cx), k * p[1], e.cz + k * (p[2] - TUNED_ON.cz)];
+  HERO = { eye: at(HERO.eye), target: at(HERO.target) };
+  const [cx, , cz] = at([FLY.cx, 0, FLY.cz]);
+  FLY = { ...FLY, cx, cz, r0: FLY.r0 * k, r1: FLY.r1 * k, y0: FLY.y0 * k, y1: FLY.y1 * k, ty0: FLY.ty0 * k, ty1: FLY.ty1 * k };
+}
 
 // ---------------------------------------------------------------- main
 
@@ -329,6 +355,7 @@ async function main(): Promise<void> {
   mkdirSync(MEDIA, { recursive: true });
 
   await seedSample();
+  if (process.env.CAPTURE_CITY) await reshapeSample(process.env.CAPTURE_CITY as 'tall' | 'small');
   // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
   const { setRunner } = await import('../engine/exec.js');
   setRunner(sampleGh());
@@ -347,6 +374,7 @@ async function main(): Promise<void> {
     // Let the veil fade out completely before any frame is taken.
     await page.waitForTimeout(2500);
     const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+    followCity(city);
     const all = shots(city);
     for (const name of wanted) {
       if (!all[name]) throw new Error(`unknown shot ${name}`);

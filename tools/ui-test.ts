@@ -118,6 +118,7 @@ interface Debug {
   builds: number;
   highlight: { repo: string; floorId: string } | null;
   camera(): number[];
+  limits(): Limits;
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
   plots(): { plazas: number; buildings: number };
@@ -765,6 +766,107 @@ async function splashChecks(browser: Browser): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- the view grows with the city
+
+interface Limits {
+  home: { eye: number[]; target: number[] };
+  maxDistance: number;
+  fogDensity: number;
+  far: number;
+}
+
+const limitsOf = (page: Page): Promise<Limits> =>
+  page.evaluate(() => (window as unknown as { __palimpsest: { limits(): Limits } }).__palimpsest.limits());
+
+/** Where each district's crown and base land on screen now, in normalised device coordinates. */
+async function projected(page: Page, city: District[]): Promise<Array<{ repo: string; crown: number[]; base: number[] }>> {
+  const { CROWN_ALLOWANCE } = await import('../app/src/city/view.js');
+  const pts = city.map((d) => ({ repo: d.repo, crown: [d.origin.x, layoutTower(d.tower).top + CROWN_ALLOWANCE, d.origin.z], base: [d.origin.x, 0, d.origin.z] }));
+  return page.evaluate(
+    (list) =>
+      list.map((p) => {
+        const h = (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest;
+        return { repo: p.repo, crown: h.project(p.crown), base: h.project(p.base) };
+      }),
+    pts,
+  );
+}
+
+const inFrame = (p: number[], top = 1): boolean => p[2] < 1 && Math.abs(p[0]) < 1 && p[1] > -1 && p[1] < top;
+
+/**
+ * A tower grows to the 120 floor cap while the user is looking elsewhere:
+ * the camera stays where they put it, the limits ease rather than snap, the
+ * home framing (the H key) shows every crown with sky above, and the camera
+ * may fly out far enough to frame every district whole.
+ */
+async function viewGrowsChecks(page: Page): Promise<void> {
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const { grownTower } = await import('./sample.js');
+  const db = openDb();
+  const fullName = 'lantern/assay-kit';
+  const was = (db.prepare('SELECT json FROM towers WHERE repo = ?').get(fullName) as { json: string }).json;
+  const repo = JSON.parse((db.prepare('SELECT json FROM repos WHERE full_name = ?').get(fullName) as { json: string }).json) as Repo;
+  const tall = await grownTower(fullName, 2000);
+  check(tall.floors.length === 120, `the grown tower stands at the 120 floor cap (${tall.floors.length})`);
+
+  await setView(page, [300, 60, 620], [40, 40, 120]);
+  const camBefore = await debug(page, (d) => d.camera());
+  const before = await limitsOf(page);
+  const builds = await debug(page, (d) => d.builds);
+  db.prepare('UPDATE towers SET json = ? WHERE repo = ?').run(JSON.stringify(tall), fullName);
+  emit('repo.patched', { repo });
+  const rebuilt = await page
+    .waitForFunction((n) => (window as unknown as { __palimpsest: { builds: number } }).__palimpsest.builds > n, builds, { timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  check(rebuilt, 'the grown tower is built');
+  const soon = await limitsOf(page);
+  await page.waitForTimeout(3000);
+  const after = await limitsOf(page);
+  const camAfter = await debug(page, (d) => d.camera());
+  const moved = Math.hypot(camAfter[0] - camBefore[0], camAfter[1] - camBefore[1], camAfter[2] - camBefore[2]);
+  check(moved < 0.01, `a growing city never moves the camera the user holds (moved ${moved.toFixed(3)} m)`);
+  const homeDist = (l: Limits) => Math.hypot(...l.home.eye.map((v, i) => v - l.home.target[i]));
+  check(homeDist(after) > homeDist(before) + 1, `the home framing stands back for the taller tower (${homeDist(before).toFixed(0)} to ${homeDist(after).toFixed(0)} m)`);
+  check(after.maxDistance > before.maxDistance && soon.maxDistance < after.maxDistance - 0.5, `how far the camera may go eases out rather than snapping (${before.maxDistance.toFixed(0)}, then ${soon.maxDistance.toFixed(0)}, then ${after.maxDistance.toFixed(0)} m)`);
+  check(after.far > after.maxDistance, `the far plane reaches past the farthest eye (${after.far.toFixed(0)} m)`);
+
+  const city = await cityOf(page);
+  // Home, as the H key takes it: every crown on screen, the tallest with sky above it.
+  await page.locator('#city canvas').focus();
+  await page.keyboard.press('h');
+  await page.waitForTimeout(2600);
+  const home = await projected(page, city);
+  const tallest = home.find((p) => p.repo === fullName);
+  check(!!tallest && tallest.crown[1] < 0.95 && inFrame(tallest.crown), `at the home view the 120 floor crown is inside the frame with sky above (screen y ${tallest?.crown[1].toFixed(3)})`);
+  const cut = home.filter((p) => !inFrame(p.crown));
+  check(cut.length === 0, `at the home view every crown is inside the frame${cut.length ? ` (cut: ${cut.map((c) => c.repo).join(', ')})` : ''}`);
+  await page.screenshot({ path: join(SHOTS, 'view-home-tall.png') });
+
+  // Flown out as far as allowed, along the home bearing and from higher up: every district whole, sky above.
+  const t = after.home.target;
+  const dir = after.home.eye.map((v, i) => v - t[i]);
+  const flat = Math.hypot(dir[0], dir[2]);
+  for (const [name, el] of [['bearing', Math.atan2(dir[1], flat)], ['high', (55 * Math.PI) / 180]] as const) {
+    const r = after.maxDistance * 0.999;
+    const eye = [t[0] + (dir[0] / flat) * Math.cos(el) * r, t[1] + Math.sin(el) * r, t[2] + (dir[2] / flat) * Math.cos(el) * r];
+    await setView(page, eye, t);
+    const cam = await debug(page, (d) => d.camera());
+    const dist = Math.hypot(...cam.map((v, i) => v - t[i]));
+    const out = (await projected(page, city)).filter((p) => !inFrame(p.crown, 0.97) || !inFrame(p.base));
+    check(dist > after.maxDistance * 0.99 && out.length === 0, `flown out ${dist.toFixed(0)} m (${name}), every district is whole in the frame${out.length ? ` (cut: ${out.map((c) => c.repo).join(', ')})` : ''}`);
+    await page.screenshot({ path: join(SHOTS, `view-flyout-${name}.png`) });
+  }
+
+  // Back as it was, for the checks that follow.
+  db.prepare('UPDATE towers SET json = ? WHERE repo = ?').run(was, fullName);
+  const n = await debug(page, (d) => d.builds);
+  emit('repo.patched', { repo });
+  await page.waitForFunction((k) => (window as unknown as { __palimpsest: { builds: number } }).__palimpsest.builds > k, n, { timeout: 15_000 }).catch(() => {});
+}
+
 // ---------------------------------------------------------------- the engine restarting
 
 /**
@@ -909,6 +1011,7 @@ async function main(): Promise<void> {
       await reposChecks(page);
       await freedPlotChecks(page);
       await settingsChecks(page, claudeSettingsPath);
+      await viewGrowsChecks(page);
       await reconnectChecks(page, restart);
     }
 

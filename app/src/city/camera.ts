@@ -10,6 +10,8 @@ export interface CameraRig {
   controls: OrbitControls;
   /** Glides to look at `target` from `distance` away, keeping the current bearing. */
   flyTo(target: THREE.Vector3, distance: number): void;
+  /** Glides to an eye and target. */
+  flyView(eye: THREE.Vector3, target: THREE.Vector3): void;
   /** Jumps straight to an eye and target. */
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
   update(dt: number): void;
@@ -24,8 +26,8 @@ function easeInOutCubic(t: number): number {
 /**
  * A 36 degree lens (close to a 50 mm on full frame: no wide-angle
  * distortion on the towers), orbit controls with damping, and smooth flights
- * between targets. The far plane reaches past the ground's edge so the
- * horizon is always fog, never a clipped edge.
+ * between targets. How far the camera may fly out and where the far plane
+ * sits are the city's to set (see view.ts); these are only where they start.
  */
 export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
   const camera = new THREE.PerspectiveCamera(36, aspect, 0.5, 20000);
@@ -68,6 +70,10 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
         toEye: target.clone().addScaledVector(dir, distance),
         toTarget: target.clone(),
       };
+      flight.toEye.y = Math.max(flight.toEye.y, MIN_EYE_HEIGHT);
+    },
+    flyView(eye, target) {
+      flight = { t: 0, fromEye: camera.position.clone(), fromTarget: controls.target.clone(), toEye: eye.clone(), toTarget: target.clone() };
       flight.toEye.y = Math.max(flight.toEye.y, MIN_EYE_HEIGHT);
     },
     view(eye, target) {
