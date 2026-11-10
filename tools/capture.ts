@@ -14,7 +14,10 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe. With no shots named, all but probe run.
+ * settings, flyover, rise, probe, swatches. With no shots named, all but
+ * probe and swatches run. swatches measures every material variant's
+ * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
+ * app/src/city/tower/rendered.ts).
  * The city-only shots hide the running head and the name plates; overview,
  * inspector, repos and settings show the app as it is.
  * Options (env): CAPTURE_FPS=30, CAPTURE_DPR=2, CAPTURE_KEEP=1 keeps the raw frames,
@@ -38,6 +41,7 @@ import type { Page } from 'playwright';
 
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District } from '../shared/types.js';
+import { decodePng, labOf } from './png.js';
 import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -208,6 +212,45 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       if (Object.keys(restyles).length) await page.waitForTimeout(3000);
       const views = JSON.parse(process.env.PROBE ?? '[[[600,160,700],[0,80,0]]]') as [V3, V3][];
       for (const [i, [eye, target]] of views.entries()) await still(page, `probe-${i}`, eye, target);
+    },
+
+    async swatches(page) {
+      // Every variant's rendered colour in the real scene light, haze and tone mapping, at the overview's distance:
+      // the sunlit and shaded face of a short tower per variant, averaged over a patch and converted to Lab.
+      // SWATCH_WRITE=1 writes app/src/city/tower/rendered.ts, which the picker steers neighbours apart by.
+      await chrome(page, false);
+      const points = (await page.evaluate(() => (window as unknown as { __palimpsest: { swatchBoard(): Promise<unknown> } }).__palimpsest.swatchBoard())) as Array<{ id: string; sun: [number, number]; shade: [number, number] }>;
+      await page.waitForTimeout(2500);
+      await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+      const shot = await page.screenshot();
+      writeFileSync(join(MEDIA, 'swatches.png'), shot);
+      const img = decodePng(shot);
+      const scale = img.width / VIEWPORT.width;
+      const mean = ([cx, cy]: [number, number]): [number, number, number] => {
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let n = 0;
+        // A 7 x 9 css-pixel patch: several windows and the wall between them, as the eye averages them from afar.
+        for (let dy = -4; dy <= 4; dy++) {
+          for (let dx = -3; dx <= 3; dx++) {
+            const x = Math.round((cx + dx) * scale);
+            const y = Math.round((cy + dy) * scale);
+            if (x < 0 || y < 0 || x >= img.width || y >= img.height) continue;
+            const i = (y * img.width + x) * 4;
+            r += img.data[i];
+            g += img.data[i + 1];
+            b += img.data[i + 2];
+            n++;
+          }
+        }
+        return labOf(r / n, g / n, b / n).map((v) => Math.round(v * 10) / 10) as [number, number, number];
+      };
+      const out: Record<string, { sun: [number, number, number]; shade: [number, number, number] }> = {};
+      for (const p of points) out[p.id] = { sun: mean(p.sun), shade: mean(p.shade) };
+      for (const [id, v] of Object.entries(out)) console.log(`  ${id.padEnd(26)} sun L${v.sun[0]} a${v.sun[1]} b${v.sun[2]}   shade L${v.shade[0]} a${v.shade[1]} b${v.shade[2]}`);
+      const body = `/**\n * Each variant's colour as the city renders it at the overview's distance\n * and bearing (CIE Lab of the sunlit and the shaded face), measured by\n * tools/capture.ts, the swatches shot. Generated: re-run\n * \`SWATCH_WRITE=1 node --import tsx tools/capture.ts swatches\` after a\n * material, light or post change. The picker steers neighbours apart by it.\n */\nexport const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number] }> = ${JSON.stringify(out, null, 2)};\n`;
+      writeFileSync(process.env.SWATCH_WRITE ? join(ROOT, 'app', 'src', 'city', 'tower', 'rendered.ts') : join(MEDIA, 'rendered.ts'), body);
     },
 
     async hero(page) {

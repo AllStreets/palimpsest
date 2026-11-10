@@ -1,5 +1,6 @@
 import { districtOrigin, DISTRICT_PITCH } from '../../../../shared/district-layout.js';
 import type { Era } from '../../../../shared/types.js';
+import { RENDERED } from './rendered.js';
 
 /**
  * Per-repo materials inside each era. The era of a floor is the agent's
@@ -42,6 +43,8 @@ export type Finish =
       rough: number;
       normal?: number;
       scale?: number;
+      /** A clear polished skin over the stone (0 to 1) that mirrors the sky: granite, marble. */
+      polish?: number;
       seen?: number;
     }
   /** Cast or rolled metal under the scanned plate's normal and roughness. */
@@ -69,18 +72,10 @@ export interface MasonryRhythm {
   paired: boolean;
 }
 
-/**
- * How a variant reads from across the city, in light and hue together:
- * neighbours avoid sharing a family as well as a variant, so a pale cool
- * stone never stands beside another pale cool stone when there is a choice.
- */
-export type Family = 'pale-cool' | 'pale-warm' | 'mid-warm' | 'mid-cool' | 'dark' | 'green' | 'bronze';
-
 export interface Variant {
   id: string;
   era: Era;
   name: string;
-  family: Family;
   /** The main surface: masonry wall, curtain-wall spandrel, titanium fins, sci-fi exoskeleton. */
   wall: Finish;
   /** The second surface: sills, lintels and quoins; mullions; slab edges; sci-fi slab fascias. */
@@ -119,12 +114,13 @@ export function swatch(f: Finish): number {
 const scan = (tex: Scan, body: number, rough: number, more: Partial<Extract<Finish, { kind: 'scan' }>> = {}): Finish => ({ kind: 'scan', tex, body, rough, ...more });
 
 // Stone bases sit cool of what they read as, because the low dusk sun warms every sunlit face.
-const LIMESTONE = scan('ashlar', 0xacb0af, 0.5, { normal: 0.8, joint: 0x8a8e8d });
-const SANDSTONE = scan('sand', 0xaea78d, 0.55, { normal: 0.9, joint: 0x8b846c });
-const MARBLE = scan('ashlar', 0xcdd1d3, 0.18, { normal: 0.3, joint: 0xa7abad, scale: 1.4 });
-const DARK_GRANITE = scan('granite', 0x3b3d41, 0.2, { normal: 0.5, joint: 0x26272a });
-const ROSE_GRANITE = scan('granite', 0x857d88, 0.22, { normal: 0.5, joint: 0x57515a });
-const BRONZE: Finish = { kind: 'metal', color: 0x6b4a2e, rough: 0.42 };
+const LIMESTONE = scan('ashlar', 0xa1a5a7, 0.5, { normal: 0.8, joint: 0x828688 });
+const SANDSTONE = scan('sand', 0xa49f7a, 0.55, { normal: 0.9, joint: 0x857244 });
+const MARBLE = scan('ashlar', 0xc8d2de, 0.18, { normal: 0.3, joint: 0x9fa7b3, scale: 1.4, polish: 0.6 });
+const DARK_GRANITE = scan('granite', 0x32363e, 0.3, { normal: 0.5, joint: 0x202329, scale: 3, polish: 1 });
+const ROSE_GRANITE = scan('granite', 0x8e7682, 0.3, { normal: 0.5, joint: 0x5e4650, scale: 3, polish: 1 });
+// Architectural bronze, brushed and kept polished: a lighter warm metal that takes the sky in its grain.
+const BRONZE: Finish = { kind: 'brushed', color: 0x8f6c4a, rough: 0.24, aniso: 0.45, env: 1.9 };
 const DARK_BRONZE: Finish = { kind: 'metal', color: 0x4a3324, rough: 0.5 };
 const GRAPHITE: Finish = { kind: 'brushed', color: 0x2e3136, rough: 0.42, aniso: 0.4, env: 1.4 };
 const TITANIUM: Finish = { kind: 'brushed', color: 0xa9afb7, rough: 0.13, aniso: 0.6, env: 2.2 };
@@ -133,7 +129,7 @@ const BLACK_STEEL: Finish = { kind: 'metal', color: 0x17181a, rough: 0.34 };
 const VERDIGRIS = scan('rust', 0x6f8a7c, 0.5, { joint: 0x51665a, normal: 0.6 });
 /** Verdigris as a smooth mineral skin, for curved fins where a scan would wrap into blotches. */
 const PATINA: Finish = { kind: 'solid', color: 0x628a86, rough: 0.6, metal: 0.15 };
-const TERRACOTTA = scan('brick', 0xd2cdc2, 0.2, { joint: 0x9c968c, normal: 0.55 });
+const TERRACOTTA = scan('brick', 0xd0d8e2, 0.2, { joint: 0x969ca3, normal: 0.55 });
 const FAIENCE: Finish = { kind: 'solid', color: 0x5c7466, rough: 0.28, env: 1.3 };
 
 /** Punched windows in masonry: dark glass, rooms seen as they are. */
@@ -143,13 +139,12 @@ const CLEAR: Glazing = { body: 0x000000, tint: 0xffffff, env: 1.15 };
 
 export const VARIANTS: Record<Era, Variant[]> = {
   stone: [
-    { id: 'stone:limestone', era: 'stone', name: 'Indiana limestone', family: 'pale-cool', wall: LIMESTONE, trim: LIMESTONE, band: LIMESTONE, glass: CLEAR },
-    { id: 'stone:sandstone', era: 'stone', name: 'Pale sandstone', family: 'pale-warm', wall: SANDSTONE, trim: SANDSTONE, band: SANDSTONE, glass: CLEAR },
+    { id: 'stone:limestone', era: 'stone', name: 'Indiana limestone', wall: LIMESTONE, trim: LIMESTONE, band: LIMESTONE, glass: CLEAR },
+    { id: 'stone:sandstone', era: 'stone', name: 'Pale sandstone', wall: SANDSTONE, trim: SANDSTONE, band: SANDSTONE, glass: CLEAR },
     {
       id: 'stone:pink-granite',
       era: 'stone',
       name: 'Pink granite',
-      family: 'mid-warm',
       wall: ROSE_GRANITE,
       trim: ROSE_GRANITE,
       band: DARK_GRANITE,
@@ -160,7 +155,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'stone:dark-granite',
       era: 'stone',
       name: 'Dark grey granite',
-      family: 'dark',
       wall: DARK_GRANITE,
       trim: DARK_GRANITE,
       band: BRONZE,
@@ -171,7 +165,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'stone:marble',
       era: 'stone',
       name: 'White marble',
-      family: 'pale-cool',
       wall: MARBLE,
       trim: MARBLE,
       band: MARBLE,
@@ -182,8 +175,7 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'stone:travertine',
       era: 'stone',
       name: 'Rusticated travertine',
-      family: 'mid-warm',
-      wall: scan('sand', 0x9a8f7b, 0.7, { normal: 1.4, joint: 0x6f6758, scale: 0.8 }),
+      wall: scan('sand', 0x8c6d48, 0.7, { normal: 1.4, joint: 0x6a5134, scale: 0.8 }),
       trim: MARBLE,
       band: MARBLE,
       glass: CLEAR,
@@ -195,7 +187,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'brick:red',
       era: 'brick',
       name: 'Common red brick',
-      family: 'mid-warm',
       wall: scan('brick', 0xd8c4b8, 0.55, { keep: true, seen: 0x5a4036 }),
       trim: LIMESTONE,
       band: LIMESTONE,
@@ -205,8 +196,7 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'brick:cream',
       era: 'brick',
       name: 'Cream city brick',
-      family: 'pale-warm',
-      wall: scan('brick', 0xc6bea6, 0.6, { joint: 0xa9a496 }),
+      wall: scan('brick', 0xcfc298, 0.6, { joint: 0xaca48e }),
       trim: SANDSTONE,
       band: VERDIGRIS,
       glass: { body: 0x020406, tint: 0xf4f6ff, env: 1.15 },
@@ -216,7 +206,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'brick:ironspot',
       era: 'brick',
       name: 'Dark ironspot manganese',
-      family: 'dark',
       wall: scan('ironspot', 0xd6cec8, 0.8, { keep: true, seen: 0x453929 }),
       trim: DARK_GRANITE,
       band: BRONZE,
@@ -227,7 +216,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'brick:terracotta',
       era: 'brick',
       name: 'Glazed white terracotta',
-      family: 'pale-cool',
       wall: TERRACOTTA,
       trim: TERRACOTTA,
       band: TERRACOTTA,
@@ -238,7 +226,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'brick:green-terracotta',
       era: 'brick',
       name: 'Dark green glazed terracotta',
-      family: 'green',
       wall: scan('brick', 0x34463c, 0.2, { joint: 0x4c5a52, normal: 0.6 }),
       trim: FAIENCE,
       band: BRONZE,
@@ -249,8 +236,7 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'brick:salmon',
       era: 'brick',
       name: 'Salmon brick',
-      family: 'mid-warm',
-      wall: scan('brick', 0xa47e6c, 0.6, { joint: 0xbdb3a3 }),
+      wall: scan('brick', 0xa8735e, 0.6, { joint: 0xbdb3a3 }),
       trim: SANDSTONE,
       band: SANDSTONE,
       glass: CLEAR,
@@ -262,7 +248,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'glass:green',
       era: 'glass',
       name: 'Green-tinted curtain wall',
-      family: 'green',
       wall: { kind: 'solid', color: 0x2f3d38, rough: 0.45, metal: 0.4 },
       trim: { kind: 'metal', color: 0x8d9590, rough: 0.4 },
       band: { kind: 'metal', color: 0x8d9590, rough: 0.4 },
@@ -276,7 +261,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'glass:bronze',
       era: 'glass',
       name: 'Bronze-tinted curtain wall',
-      family: 'bronze',
       wall: { kind: 'metal', color: 0x3b2c22, rough: 0.45 },
       trim: BRONZE,
       band: BRONZE,
@@ -290,7 +274,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'glass:blue',
       era: 'glass',
       name: 'Cool blue curtain wall',
-      family: 'mid-cool',
       wall: { kind: 'solid', color: 0x2c3644, rough: 0.4, metal: 0.4 },
       trim: ALUMINIUM,
       band: ALUMINIUM,
@@ -303,7 +286,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'glass:black',
       era: 'glass',
       name: 'Clear glass, black mullions',
-      family: 'dark',
       wall: BLACK_STEEL,
       trim: BLACK_STEEL,
       band: BLACK_STEEL,
@@ -317,7 +299,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'glass:channel',
       era: 'glass',
       name: 'Ribbed channel glass',
-      family: 'pale-warm',
       wall: { kind: 'metal', color: 0x9a9fa3, rough: 0.5 },
       trim: ALUMINIUM,
       band: ALUMINIUM,
@@ -332,7 +313,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'titanium:titanium',
       era: 'titanium',
       name: 'Brushed titanium',
-      family: 'pale-cool',
       wall: TITANIUM,
       trim: GRAPHITE,
       band: GRAPHITE,
@@ -343,7 +323,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'titanium:zinc',
       era: 'titanium',
       name: 'Pre-weathered zinc',
-      family: 'mid-cool',
       // Pre-weathered zinc wears a matte carbonate patina, a mineral layer rather than bare metal.
       wall: { kind: 'solid', color: 0x7a838a, rough: 0.58, metal: 0.25 },
       trim: { kind: 'metal', color: 0x4c5257, rough: 0.5 },
@@ -358,7 +337,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'titanium:copper',
       era: 'titanium',
       name: 'Weathered copper',
-      family: 'green',
       wall: PATINA,
       trim: DARK_BRONZE,
       band: DARK_BRONZE,
@@ -371,8 +349,7 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'titanium:bronze',
       era: 'titanium',
       name: 'Bronze cladding',
-      family: 'bronze',
-      wall: { kind: 'brushed', color: 0x7a5a40, rough: 0.2, aniso: 0.65, env: 2.0 },
+      wall: { kind: 'brushed', color: 0xad8762, rough: 0.16, aniso: 0.7, env: 2.5 },
       trim: GRAPHITE,
       band: GRAPHITE,
       glass: { body: 0x0a0604, tint: 0xffe2c4, env: 1.2 },
@@ -383,7 +360,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'titanium:black',
       era: 'titanium',
       name: 'Black anodised aluminium',
-      family: 'dark',
       wall: { kind: 'brushed', color: 0x1f2023, rough: 0.28, aniso: 0.4, env: 1.6 },
       trim: BRONZE,
       band: BRONZE,
@@ -393,12 +369,11 @@ export const VARIANTS: Record<Era, Variant[]> = {
     },
   ],
   scifi: [
-    { id: 'scifi:graphite', era: 'scifi', name: 'Graphite and titanium', family: 'dark', wall: GRAPHITE, trim: TITANIUM, band: TITANIUM, glass: CLEAR, lights: { lit: 0.92, warm: 0.5 } },
+    { id: 'scifi:graphite', era: 'scifi', name: 'Graphite and titanium', wall: GRAPHITE, trim: TITANIUM, band: TITANIUM, glass: CLEAR, lights: { lit: 0.92, warm: 0.5 } },
     {
       id: 'scifi:ceramic',
       era: 'scifi',
       name: 'White ceramic',
-      family: 'pale-warm',
       wall: { kind: 'solid', color: 0xd8d4ca, rough: 0.36, clearcoat: 0.3 },
       trim: { kind: 'solid', color: 0xd8d4ca, rough: 0.36, clearcoat: 0.3 },
       band: { kind: 'solid', color: 0xd8d4ca, rough: 0.36, clearcoat: 0.3 },
@@ -409,7 +384,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'scifi:carbon',
       era: 'scifi',
       name: 'Dark carbon with light seams',
-      family: 'dark',
       wall: { kind: 'solid', color: 0x1b1d20, rough: 0.3, metal: 0.3, clearcoat: 0.6 },
       trim: GRAPHITE,
       band: { kind: 'solid', color: 0x1b1d20, rough: 0.3, metal: 0.3, clearcoat: 0.6 },
@@ -421,7 +395,6 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'scifi:pearl',
       era: 'scifi',
       name: 'Pearlescent panels',
-      family: 'pale-cool',
       wall: { kind: 'solid', color: 0xbabdc1, rough: 0.24, metal: 0.15, clearcoat: 0.5, iridescence: 0.45 },
       trim: TITANIUM,
       band: { kind: 'solid', color: 0xbabdc1, rough: 0.24, metal: 0.15, clearcoat: 0.5, iridescence: 0.45 },
@@ -475,6 +448,28 @@ function block(slot: number): { x: number; z: number } {
   return { x: Math.round(o.x / DISTRICT_PITCH), z: Math.round(o.z / DISTRICT_PITCH) };
 }
 
+/** CIE76 distance between two Lab colours. */
+function dE(a: [number, number, number], b: [number, number, number]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+/**
+ * How far apart two variants read from across the city: the mean CIE Lab
+ * distance of their sunlit and their shaded faces as the scene actually
+ * renders them at the overview's distance (rendered.ts, measured through
+ * the real light, haze and tone mapping), not as their albedos are
+ * declared. The haze compresses every difference about threefold there.
+ */
+export function renderedDistance(a: Variant, b: Variant): number {
+  const ra = RENDERED[a.id];
+  const rb = RENDERED[b.id];
+  if (!ra || !rb) return a.id === b.id ? 0 : Infinity;
+  return (dE(ra.sun, rb.sun) + dE(ra.shade, rb.shade)) / 2;
+}
+
+/** Neighbours count as reading apart from across the city at this rendered distance or more. */
+export const SEPARATION = 6;
+
 /**
  * Every district's look. Districts choose in slot order (a slot is a repo's
  * for good, and new repos take new slots), so a tower's look depends only on
@@ -482,7 +477,7 @@ function block(slot: number): { x: number; z: number } {
  * never changes an older tower. Neighbours are the eight blocks round a
  * district. In each era a district ranks the variants by, in turn:
  * 1. how many neighbours have taken that variant (fewest first);
- * 2. how many neighbours have taken its family, light and hue together;
+ * 2. how many neighbours it renders within SEPARATION of (fewest first);
  * 3. how many towers anywhere in the city already use it, so a variant is
  *    not repeated across the city while another stands unused;
  * 4. its own order of preference, from its name.
@@ -501,7 +496,7 @@ export function pickLooks(sites: LookSite[]): Map<string, Look> {
     for (const era of ERAS) {
       const rank = (v: Variant, i: number): number[] => [
         near.filter((l) => l[era].id === v.id).length,
-        near.filter((l) => l[era].family === v.family).length,
+        near.filter((l) => renderedDistance(l[era], v) < SEPARATION).length,
         placed.filter((p) => p.look[era].id === v.id).length,
         i,
       ];

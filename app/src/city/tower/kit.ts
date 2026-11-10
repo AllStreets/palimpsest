@@ -232,7 +232,10 @@ export class Kit {
 
   /** Adds a unique piece, placed by `local` within `base`. Takes ownership of `geo`. */
   add(mat: MatKey, geo: THREE.BufferGeometry, local?: THREE.Matrix4, projectUv = true): void {
-    const g = normalise(geo, this.tint);
+    this.addNormalised(mat, normalise(geo, this.tint), local, projectUv);
+  }
+
+  private addNormalised(mat: MatKey, g: THREE.BufferGeometry, local?: THREE.Matrix4, projectUv = true): void {
     const m = local ? this.base.clone().multiply(local) : this.base;
     g.applyMatrix4(m);
     const tile = TILE[mat];
@@ -240,6 +243,24 @@ export class Kit {
     let list = this.merged.get(mat);
     if (!list) this.merged.set(mat, (list = []));
     list.push(g);
+  }
+
+  /**
+   * A weathering stain: a thin box standing 2 cm proud of a wall in `mat`,
+   * darkest along its top edge (`strength` of the current tint taken off)
+   * and fading to the wall's own tone at its foot, the way water and soot
+   * run down from a sill or a cornice. Merges with the wall in one mesh.
+   */
+  stain(mat: MatKey, w: number, h: number, local: THREE.Matrix4, strength: number): void {
+    const g = normalise(new THREE.BoxGeometry(w, h, 0.02), this.tint);
+    const pos = g.attributes.position as THREE.BufferAttribute;
+    const col = g.attributes.color as THREE.BufferAttribute;
+    for (let i = 0; i < pos.count; i++) {
+      const t = pos.getY(i) / h + 0.5;
+      const k = 1 - strength * t * t;
+      col.setXYZ(i, this.tint.r * k, this.tint.g * k, this.tint.b * k);
+    }
+    this.addNormalised(mat, g, local);
   }
 
   /** A box centred at `local`'s origin. */

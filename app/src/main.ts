@@ -10,6 +10,7 @@ import type { Plate } from './city/labels';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { createCity, type PickHit } from './city/scene';
 import { towerCenterpiece } from './city/tower/look';
+import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
@@ -42,6 +43,12 @@ interface DebugHandle {
    * written anywhere; a reload restores the real look.
    */
   restyle(repo: string, ids: string[], datumIndex?: number): void;
+  /**
+   * For the `swatches` capture shot: floats one short tower per variant at
+   * the overview's distance and bearing, moves the camera onto them, and
+   * returns where each one's sunlit and shaded face sit on screen.
+   */
+  swatchBoard(): Promise<SwatchPoint[]>;
 }
 
 declare global {
@@ -100,6 +107,12 @@ async function main(): Promise<void> {
     precompile: () => city.precompile(),
     stats: () => city.stats(),
     plots: () => city.plots(),
+    async swatchBoard() {
+      const board = swatchBoard(city.scene, city.camera, (e, t) => city.view(e, t));
+      await city.precompile();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return board.points(innerWidth, innerHeight);
+    },
     restyle(repo, ids, datumIndex) {
       const look = { ...lookOf(byRepo(repo) ?? ({ repo } as District)) };
       for (const id of ids) {

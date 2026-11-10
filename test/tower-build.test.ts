@@ -308,18 +308,13 @@ test('floors laid in different years drift a few percent in colour; one year mat
   const pos = g.getAttribute('position');
   const tone = (fi: number): THREE.Color => {
     const { y0, h } = lay.floors[fi];
-    const sum = new THREE.Color(0, 0, 0);
-    let n = 0;
+    // The floor's own tone is its brightest vertex: weathering stains only ever darken it.
+    const top = new THREE.Color(0, 0, 0);
     for (let i = 0; i < pos.count; i++) {
       const y = pos.getY(i);
-      if (y > y0 + 0.05 && y < y0 + h - 0.05) {
-        sum.r += col.getX(i);
-        sum.g += col.getY(i);
-        sum.b += col.getZ(i);
-        n++;
-      }
+      if (y > y0 + 0.05 && y < y0 + h - 0.05 && col.getY(i) > top.g) top.setRGB(col.getX(i), col.getY(i), col.getZ(i));
     }
-    return sum.multiplyScalar(1 / n);
+    return top;
   };
   const diff = (a: THREE.Color, b: THREE.Color): number => Math.max(Math.abs(a.r - b.r), Math.abs(a.g - b.g), Math.abs(a.b - b.b));
   assert.ok(diff(tone(0), tone(2)) < 1e-6, 'one year, one tone');
@@ -379,4 +374,29 @@ test("a variant's lights set how its windows burn", () => {
     return warm / Math.max(1, lit);
   };
   assert.ok(warmShare('glass:bronze') > warmShare('glass:blue') + 0.4, 'bronze glass burns warm, blue burns cool');
+});
+
+test('masonry weathers: stains run down from every sill and from a run-end cornice, darkest at the top', () => {
+  for (const id of ['stone:sandstone', 'brick:cream']) {
+    const mats = plainMaterials();
+    const era = id.split(':')[0] as Era;
+    const t = buildTower(single(era, 2), 'high', mats, lookWith(id));
+    const wall = [...t.group.children].find((c) => (c as THREE.Mesh).material === mats[`${era}Wall`] && !(c as THREE.InstancedMesh).isInstancedMesh) as THREE.Mesh;
+    const col = wall.geometry.getAttribute('color');
+    const pos = wall.geometry.getAttribute('position');
+    let dark = 0;
+    let darkTopY = -Infinity;
+    let darkBottomY = Infinity;
+    for (let i = 0; i < col.count; i++) {
+      if (col.getY(i) < 0.85) {
+        dark++;
+        darkTopY = Math.max(darkTopY, pos.getY(i));
+        darkBottomY = Math.min(darkBottomY, pos.getY(i));
+      }
+    }
+    const panes = instances(t.group, `tower:pane:${era}`)!.count;
+    // Eight box corners per stain, four of them on its dark top edge.
+    assert.ok(dark >= panes * 4, `${id}: ${dark} dark stain vertices for ${panes} windows`);
+    assert.ok(darkTopY > darkBottomY, `${id}: stains are darkest along their top edge`);
+  }
 });

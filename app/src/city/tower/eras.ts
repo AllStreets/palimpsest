@@ -151,6 +151,9 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
       k.pane(`pane:${era}`, slot(era, 'Win'), F.clone().multiply(M(u, sillY + winH / 2, -r + 0.02, 0, winW, winH, 1)), light(PANE_SASH));
       // Sill, projecting and weathered.
       k.box(trim, winW + 0.32, 0.16, r + 0.16, F.clone().multiply(M(u, sillY - 0.08, -r / 2 + 0.08)));
+      // Rain off the sill has run down the spandrel below it, darkest under the drip.
+      const run = sillY - 0.2;
+      k.stain(wall, winW * (0.7 + 0.25 * c.rand()), run, F.clone().multiply(M(u + (c.rand() - 0.5) * 0.2, run / 2 + 0.04, 0.012)), 0.22 + 0.16 * c.rand());
       if (s.paired) {
         // One lintel spans each pair, pier and all.
         if (j % 2 === 0) k.box(trim, 2 * winW + PAIR_PIER + 0.5, 0.42, 0.08, F.clone().multiply(M(u + (winW + PAIR_PIER) / 2, headY + 0.21, 0.04)));
@@ -191,6 +194,17 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
   if (c.runEnd && !c.datum) {
     // A cornice closes the run: bed moulding, corona, cymatium, all inside the floor's height.
     const y0 = h - 0.95;
+    // Streaks below the cornice where its drip has run down the wall between the windows.
+    for (let side = 0; side < 4; side++) {
+      const F = face(side, half);
+      for (let i = 0; i <= openings.length; i++) {
+        const a = i === 0 ? -half : openings[i - 1] + winW / 2;
+        const b = i === openings.length ? half : openings[i] - winW / 2;
+        if (b - a < 0.35) continue;
+        const len = Math.min(y0 - 0.1, 1.2 + 1.8 * c.rand());
+        k.stain(wall, Math.min(b - a, 0.25 + 0.5 * c.rand()), len, F.clone().multiply(M((a + b) / 2 + (c.rand() - 0.5) * 0.3, y0 - len / 2, 0.012)), 0.25 + 0.2 * c.rand());
+      }
+    }
     k.add(band, squareSweep(half, [
       [-0.1, y0],
       [0.0, y0],

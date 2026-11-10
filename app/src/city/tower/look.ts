@@ -410,7 +410,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
   const arm = texture(`${f.tex}_arm.jpg`);
   const st = SCAN_STATS[f.tex];
   const n = f.normal ?? 1;
-  const m = new THREE.MeshStandardMaterial({
+  const params: THREE.MeshPhysicalMaterialParameters = {
     map: texture(`${f.tex}_diff.jpg`, true),
     normalMap: texture(`${f.tex}_nor.jpg`),
     aoMap: arm,
@@ -420,14 +420,21 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
     metalness: 0,
     vertexColors: true,
     normalScale: new THREE.Vector2(n, n),
-  });
+  };
+  // Polished stone (granite, marble) carries a hard glassy skin over its grain that mirrors the sky; it is a
+  // clear coat over the stone rather than a lower roughness on it, so the grain stays matte underneath.
+  const m = f.polish
+    ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: f.polish, clearcoatRoughness: 0.04, envMapIntensity: 2.6 })
+    : new THREE.MeshStandardMaterial(params);
   const u = {
     uBody: { value: new THREE.Color(f.body) },
     uJoint: { value: new THREE.Color(f.joint ?? f.body) },
     uSplit: { value: new THREE.Vector4(st.lo, st.hi, st.refBody, st.refJoint) },
     uKeep: { value: f.keep ? 1 : 0 },
     // Cut stone weathers in patches and streaks; brick and patina carry their own variation in the scan.
-    uWeather: { value: f.tex === 'sand' || f.tex === 'ashlar' || f.tex === 'granite' ? 0.13 : 0 },
+    uWeather: { value: f.tex === 'sand' || f.tex === 'ashlar' || f.tex === 'granite' ? 0.22 : 0 },
+    // How much of the scan's own grain shows through the recolour: granite's speckle is the point of it.
+    uDetail: { value: f.tex === 'granite' ? 1.0 : 0.8 },
     uTexScale: { value: 1 / (f.scale ?? 1) },
   };
   m.customProgramCacheKey = () => 'palimpsest-scan';
@@ -465,7 +472,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
@@ -476,8 +483,8 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
             float t = clamp((l - uSplit.x) / (uSplit.y - uSplit.x), 0.0, 1.0);
             t = t * t * (3.0 - 2.0 * t);
             float ref = mix(uSplit.z, uSplit.w, t);
-            float d = clamp(l / max(ref, 0.01), 0.5, 1.6);
-            vec3 recolour = mix(uBody, uJoint, t) * mix(1.0, d, 0.8);
+            float d = clamp(l / max(ref, 0.01), 0.35, 2.0);
+            vec3 recolour = mix(uBody, uJoint, t) * mix(1.0, d, uDetail);
             diffuseColor.rgb = mix(recolour, diffuse * tex, uKeep);
           }
         #endif
@@ -487,10 +494,12 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
           // scan's own joints.
           vec3 an = abs(vTFN);
           vec2 q = an.y > max(an.x, an.z) ? vTFP.xz : vec2(an.x > an.z ? vTFP.z : vTFP.x, vTFP.y);
-          float wPatch = wNoise(q / 4.5) * 0.65 + wNoise(q / 1.7 + 19.0) * 0.35;
+          float wPatch = wNoise(q / 9.0) * 0.6 + wNoise(q / 3.0 + 19.0) * 0.4;
           float streak = wNoise(vec2(q.x / 0.9, q.y / 14.0) + 7.0);
-          diffuseColor.rgb *= 1.0 + uWeather * ((wPatch - 0.5) * 1.6 - max(streak - 0.55, 0.0) * 1.4);
-        }`,
+          diffuseColor.rgb *= 1.0 + uWeather * ((wPatch - 0.5) * 1.6 - max(streak - 0.5, 0.0) * 1.6);
+        }
+        // Soot and splash darken masonry toward the street, and the lowest floors most.
+        diffuseColor.rgb *= 1.0 - 0.2 * exp(-max(vTFP.y - 20.0, 0.0) / 45.0);`,
       )
       .replace(
         '#include <emissivemap_fragment>',

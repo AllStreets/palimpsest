@@ -3,7 +3,8 @@ import { test } from 'node:test';
 
 import { districtOrigin, DISTRICT_PITCH } from '../shared/district-layout.js';
 import type { Era } from '../shared/types.js';
-import { type Finish, lookFor, pickLooks, preference, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
+import { RENDERED } from '../app/src/city/tower/rendered.js';
+import { type Finish, lookFor, pickLooks, preference, renderedDistance, SEPARATION, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
 
 const ERAS: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
 
@@ -104,16 +105,41 @@ test('a tower keeps its look when later repos join the city', () => {
 });
 
 
-test('neighbouring districts never share a family (light and hue) while a variant of a free family exists', () => {
+test('every variant has a rendered measurement from the real scene light', () => {
+  for (const era of ERAS) {
+    for (const v of VARIANTS[era]) {
+      const r = RENDERED[v.id];
+      assert.ok(r, `${v.id} is measured (re-run the swatches shot)`);
+      assert.ok(r.sun.every(Number.isFinite) && r.shade.every(Number.isFinite), `${v.id} has a sunlit and a shaded Lab colour`);
+    }
+  }
+});
+
+test('neighbours are steered apart by how they render: a pick is SEPARATION from every neighbour whenever such a variant exists', () => {
   for (const names of [HIS, SAMPLE, Array.from({ length: 50 }, (_, i) => `org${i % 7}/r${i}`)]) {
     const sites = names.map((repo, slot) => ({ repo, slot }));
     const looks = pickLooks(sites);
     for (const era of ERAS) {
       for (const s of sites) {
-        const earlier = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1);
-        const families = new Set(earlier.map((o) => looks.get(o.repo)![era].family));
-        const free = VARIANTS[era].some((v) => !families.has(v.family));
-        if (free) assert.ok(!families.has(looks.get(s.repo)![era].family), `${s.repo} ${era} took a neighbour's family ${looks.get(s.repo)![era].family}`);
+        const earlier = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1).map((o) => looks.get(o.repo)![era]);
+        const apart = (v: (typeof VARIANTS)[Era][number]): boolean => earlier.every((n) => renderedDistance(v, n) >= SEPARATION);
+        if (VARIANTS[era].some(apart)) assert.ok(apart(looks.get(s.repo)![era]), `${s.repo} ${era} renders within ${SEPARATION} of a neighbour`);
+      }
+    }
+  }
+});
+
+test("Connor's six and the sample's six render apart from every neighbour in the eras that make up most of a tower", () => {
+  for (const names of [HIS, SAMPLE]) {
+    const sites = names.map((repo, slot) => ({ repo, slot }));
+    const looks = pickLooks(sites);
+    for (const era of ['stone', 'brick'] as const) {
+      for (const s of sites) {
+        for (const o of sites) {
+          if (o === s || blocks(o.slot, s.slot) > 1) continue;
+          const d = renderedDistance(looks.get(s.repo)![era], looks.get(o.repo)![era]);
+          assert.ok(d >= SEPARATION, `${s.repo} and ${o.repo} render only ${d.toFixed(1)} apart in ${era}`);
+        }
       }
     }
   }
@@ -129,18 +155,25 @@ test('a district takes its own first choice when nothing near or in the city has
   assert.equal(looks.get(b)!.stone.id, preference(b, 'stone')[0].id);
 });
 
-test('a variant is not repeated across the city while an unused one is free of neighbour clashes', () => {
-  for (const names of [HIS, SAMPLE]) {
-    const looks = pickLooks(names.map((repo, slot) => ({ repo, slot })));
-    for (const era of ['stone', 'brick'] as const) {
-      const ids = names.map((n) => looks.get(n)![era].id);
-      assert.equal(new Set(ids).size, ids.length, `${era} repeats in ${ids.join(', ')}`);
+test('a variant repeats across the city only when every unused one would render too close to a neighbour', () => {
+  for (const names of [HIS, SAMPLE, Array.from({ length: 30 }, (_, i) => `org${i % 7}/r${i}`)]) {
+    const sites = names.map((repo, slot) => ({ repo, slot }));
+    const looks = pickLooks(sites);
+    for (const era of ERAS) {
+      for (const s of sites) {
+        const before = sites.filter((o) => o.slot < s.slot).map((o) => looks.get(o.repo)![era]);
+        const mine = looks.get(s.repo)![era];
+        if (!before.some((v) => v.id === mine.id)) continue;
+        const near = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1).map((o) => looks.get(o.repo)![era]);
+        const unused = VARIANTS[era].filter((v) => !before.some((b) => b.id === v.id));
+        const better = unused.filter((v) => near.every((n) => renderedDistance(v, n) >= SEPARATION));
+        assert.equal(better.length, 0, `${s.repo} repeats ${mine.id} though ${better.map((b) => b.id).join(', ')} was unused and rendered apart from its neighbours`);
+      }
     }
   }
 });
 
-test('every variant carries a family, and upper eras each read apart by their lit floors and rhythm', () => {
-  for (const era of ERAS) for (const v of VARIANTS[era]) assert.ok(v.family, `${v.id} has a family`);
+test('upper eras each read apart by their lit floors and rhythm', () => {
   for (const era of ['glass', 'titanium', 'scifi'] as const) {
     const seen = new Set<string>();
     for (const v of VARIANTS[era]) {
