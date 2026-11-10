@@ -206,6 +206,9 @@ export const REVIEW_NUM_CTX = 32_768;
 /** Tokens below num_ctx a prompt must stay under: at or past it, Ollama may have cut the front. */
 export const CONTEXT_MARGIN = 512;
 
+/** Characters a token for the densest text (CJK, minified code, base64): the length guard before a call. */
+export const CHARS_PER_TOKEN_DENSE = 1.5;
+
 /**
  * A review or judge call whose prompt filled the context: Ollama silently
  * drops the front of a prompt longer than `num_ctx`, so the answer may not
@@ -226,6 +229,14 @@ async function jsonCall(
   numCtx?: number,
   what = 'call',
 ): Promise<{ answer: Record<string, unknown> | null; seconds: number }> {
+  // A prompt that cannot fit is refused unsent: dense text (CJK, minified, base64) runs near
+  // 1.5 characters a token, and Ollama would silently cut its front.
+  if (numCtx) {
+    const chars = messages.reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0);
+    if (chars / CHARS_PER_TOKEN_DENSE > numCtx - CONTEXT_MARGIN) {
+      throw new TooLargeError(`ollama ${what}: the prompt is ${chars} characters, more than the ${numCtx} token context can surely hold; the change is too large to review.`);
+    }
+  }
   const started = Date.now();
   const ctl = new AbortController();
   const onAbort = () => ctl.abort();
@@ -240,6 +251,9 @@ async function jsonCall(
     if (body.error !== undefined) throw new Error(`ollama: ${String(body.error).slice(0, 500)}`);
     const ns = num(body.total_duration);
     const read = num(body.prompt_eval_count);
+    if (numCtx && read === 0) {
+      throw new TooLargeError(`ollama ${what}: Ollama did not say how much of the prompt it read, so it may have cut its front; the change is too large to review.`);
+    }
     if (numCtx && read >= numCtx - CONTEXT_MARGIN) {
       throw new TooLargeError(`ollama ${what}: the prompt filled ${read} of the ${numCtx} token context, so Ollama may have cut its front; the change is too large to review.`);
     }

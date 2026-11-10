@@ -212,7 +212,7 @@ describe('ollama', () => {
   test('plan and review are single json calls and a bad shape is refused', async () => {
     fakeRunner();
     const { bodies } = await fakeOllama([
-      { json: { message: { role: 'assistant', content: JSON.stringify({ approve: true, notes: 'Fine.', concerns: [] }) }, done: true, total_duration: 1e9 } },
+      { json: { message: { role: 'assistant', content: JSON.stringify({ approve: true, notes: 'Fine.', concerns: [] }) }, done: true, total_duration: 1e9, prompt_eval_count: 300 } },
       { json: { message: { role: 'assistant', content: JSON.stringify({ plan: 'x', price: 'lots', confidence: 2 }) }, done: true, total_duration: 1e9 } },
     ]);
     const p = ollamaProvider();
@@ -228,7 +228,7 @@ describe('ollama', () => {
   test('judge sends both images', async () => {
     const { calls } = fakeRunner();
     const { bodies } = await fakeOllama([
-      { json: { message: { role: 'assistant', content: JSON.stringify({ before: 5, after: 8, notes: 'Calmer.' }) }, done: true, total_duration: 3e9 } },
+      { json: { message: { role: 'assistant', content: JSON.stringify({ before: 5, after: 8, notes: 'Calmer.' }) }, done: true, total_duration: 3e9, prompt_eval_count: 300 } },
     ]);
     const before = Buffer.from('before-png').toString('base64');
     const after = Buffer.from('after-png').toString('base64');
@@ -244,7 +244,7 @@ describe('ollama', () => {
 
   test('judge falls back to the diff text only when no image exists', async () => {
     fakeRunner();
-    const { bodies } = await fakeOllama([{ json: { message: { role: 'assistant', content: JSON.stringify({ after: 6, notes: 'Plain.' }) }, done: true, total_duration: 1e9 } }]);
+    const { bodies } = await fakeOllama([{ json: { message: { role: 'assistant', content: JSON.stringify({ after: 6, notes: 'Plain.' }) }, done: true, total_duration: 1e9, prompt_eval_count: 300 } }]);
     const r = await ollamaProvider().judge({ bar: 'Hairline rules.', before: [], after: [], diff: '+<div class="glow">' }, new AbortController().signal);
     assert.equal(r.before, null);
     assert.equal(r.after, 6);
@@ -272,6 +272,27 @@ describe('ollama', () => {
     // Below the margin the answer stands.
     const ok = await p.review({ job: makeJob(), agent, persona: 'Wren', diff: '+x', acceptance: [], checks: [] }, new AbortController().signal);
     assert.equal(ok.approve, true);
+  });
+
+  test('a review or judge with no prompt count is too large, and an overlong prompt is refused before any call', async () => {
+    fakeRunner();
+    const { bodies } = await fakeOllama([
+      { json: { message: { role: 'assistant', content: JSON.stringify({ approve: true, notes: 'Fine.', concerns: [] }) }, done: true, total_duration: 1e9 } },
+      { json: { message: { role: 'assistant', content: JSON.stringify({ before: 5, after: 9, notes: 'Lovely.' }) }, done: true, total_duration: 1e9, prompt_eval_count: 0 } },
+    ]);
+    const p = ollamaProvider();
+    const { TooLargeError } = await import('../engine/market/ollama.js');
+    const input = (diff: string) => ({ job: makeJob(), agent, persona: 'Wren', diff, acceptance: [], checks: [] });
+    // Ollama said nothing about how much it read: never taken as fitting.
+    await assert.rejects(p.review(input('+x'), new AbortController().signal), (e: unknown) => e instanceof TooLargeError && /too large to review/.test((e as Error).message));
+    const png = Buffer.from('png').toString('base64');
+    await assert.rejects(p.judge({ bar: 'x', before: [png], after: [png], diff: '+x' }, new AbortController().signal), TooLargeError);
+    assert.equal(bodies.length, 2);
+    // Dense text whose characters over 1.5 pass num_ctx minus the margin is refused unsent, whatever Ollama would say.
+    const dense = '+' + '\u6f22'.repeat(50_000);
+    await assert.rejects(p.review(input(dense), new AbortController().signal), TooLargeError);
+    await assert.rejects(p.judge({ bar: 'x', before: [], after: [], diff: dense }, new AbortController().signal), TooLargeError);
+    assert.equal(bodies.length, 2, 'no call was made for an overlong prompt');
   });
 
   test('the acceptance lines and the instructions come after the diff', async () => {
