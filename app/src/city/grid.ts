@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { reserves, type CollarPlaza } from './collar';
+import { onExchange } from './exchange';
 import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade';
 import { kitShared } from './kits';
 import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
@@ -328,7 +329,11 @@ export function createGrid(quality: 'high' | 'medium'): Grid {
       }
       for (let k = 0; k < PLAZA_LAMPS; k++) {
         const a = (k / PLAZA_LAMPS) * Math.PI * 2;
-        lamp(p.x + Math.cos(a) * PLAZA_LAMP_RING, p.z + Math.sin(a) * PLAZA_LAMP_RING, 'none', r);
+        const lx = Math.cos(a) * PLAZA_LAMP_RING;
+        const lz = Math.sin(a) * PLAZA_LAMP_RING;
+        // The civic plaza's ring keeps off the exchange's steps.
+        if (idx === 0 && onExchange(lx, lz, 3)) continue;
+        lamp(p.x + lx, p.z + lz, 'none', r);
       }
       if (idx === 0) return;
       for (let k = 0; k < BOLLARDS; k++) {

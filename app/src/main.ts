@@ -3,10 +3,11 @@ import * as THREE from 'three';
 import './ui/style.css';
 import './ui/screens.css';
 
-import type { District, FirmView, Quarter, Repo, TowerSpec } from '../../shared/types';
+import type { District, FirmView, Job, Quarter, Repo, TowerSpec } from '../../shared/types';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
+import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
@@ -86,6 +87,8 @@ interface DebugHandle {
    * Never written anywhere; a reload restores the real state.
    */
   darkQuarter(firmId: string): void;
+  /** The exchange's tote board as it shows now, and whether its fountain runs. */
+  exchange(): { slots: BoardSlot[]; running: boolean } | null;
 }
 
 declare global {
@@ -116,6 +119,8 @@ const REFRESH_ON = new Set([
  * the firms' plates (how many agents, how many credits).
  */
 const NAMES_ON = new Set(['agent.hired', 'agent.retired', 'firm.bankrupt', 'tower.sold', 'inspection.done', 'run.ended', 'merge.detected', 'floor.lit', 'report.written']);
+/** Events that change what the exchange's tote board shows: a job posted or moved on, a bid placed or declined. */
+const BOARD_ON = new Set(['job.posted', 'job.proposed', 'job.changed', 'job.awarded', 'bid.placed', 'bid.satOut']);
 
 /**
  * A quiet line at the foot of the window for what the city did by itself
@@ -218,6 +223,8 @@ async function main(): Promise<void> {
       });
     },
     quarterKey: (q) => `${firmViews.get(q.firmId)?.name ?? ''}|${quality}|${firmsKey}`,
+    // The civic exchange in the city's own pale limestone and granite.
+    makeExchange: (q) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')) }),
   });
 
   const debug: DebugHandle = {
@@ -227,6 +234,10 @@ async function main(): Promise<void> {
     agentFrame: (id) => {
       const f = city.agentFrame(id);
       return f ? { center: f.center.toArray(), width: f.width, height: f.height } : null;
+    },
+    exchange() {
+      const ex = city.exchange();
+      return ex ? { slots: ex.slots(), running: ex.fountainRunning() } : null;
     },
     darkQuarter(firmId) {
       darkened.add(firmId);
@@ -314,8 +325,13 @@ async function main(): Promise<void> {
   };
   const toCity = (): void => navigate('city');
   const repos = createRepos(document.body, { listen, onDismiss: toCity });
-  const settings = createSettings(document.body, { listen, onDismiss: toCity, onStopped: (s) => runhead.setStopped(s) });
-  void api.health().then((h) => runhead.setStopped(h.stopped), () => {});
+  /** The kill switch, shown in the running head and as still water in the exchange's fountain. */
+  const setStopped = (s: boolean): void => {
+    runhead.setStopped(s);
+    city.setStopped(s);
+  };
+  const settings = createSettings(document.body, { listen, onDismiss: toCity, onStopped: setStopped });
+  void api.health().then((h) => setStopped(h.stopped), () => {});
 
   // ---------------------------------------------------------------- the inspector
   const inspector = createInspector(document.body, {
@@ -402,12 +418,38 @@ async function main(): Promise<void> {
     debug.opened = `#/firms/${encodeURIComponent(firmId)}`;
     location.hash = debug.opened;
   }
+  /** The exchange opens the job board (Task 36 draws it; until then the address changes). */
+  function openJobs(): void {
+    debug.opened = JOBS_ROUTE;
+    location.hash = JOBS_ROUTE;
+  }
 
   city.onPick((hit) => {
     debug.lastPick = hit;
     if (hit.kind === 'tower') inspect(hit.repo, hit.floorId);
     else if (hit.kind === 'agent') openAgent(hit.agentId);
+    else if (hit.kind === 'exchange') openJobs();
     else openFirm(hit.firmId);
+  });
+
+  // ---------------------------------------------------------------- the exchange's tote board
+  /** The open and bidding jobs, in the order they were posted, as the board last read them. */
+  let posted: BoardJob[] = [];
+  /**
+   * Reads the board: every open and bidding job, oldest first, and the bids
+   * each has drawn this round (the job's own detail, so only real bids count).
+   * A card carries the repo's short name and the issue number, nothing more.
+   */
+  const readBoard = coalesced(async () => {
+    try {
+      const jobs = (await api.jobs()).filter((j) => j.status === 'open' || j.status === 'bidding').slice(0, 24);
+      const bids = await Promise.all(jobs.map((j: Job) => (j.status === 'bidding' ? api.job(j.id).then((d) => d.bids.length, () => 0) : Promise.resolve(0))));
+      posted = jobs.map((j, i) => ({ status: j.status, bids: bids[i], label: boardLabel(j) }));
+      city.setBoard(posted);
+      place();
+    } catch {
+      /* the board keeps what it last showed until the jobs can be read */
+    }
   });
 
   // ---------------------------------------------------------------- districts, sites and plates
@@ -465,6 +507,15 @@ async function main(): Promise<void> {
         onActivate: () => openFirm(q.firmId),
       });
     }
+    // The exchange's plate stands on its forecourt: what the board holds, in counts (never a job's own words).
+    const taking = posted.filter((j) => j.status === 'bidding').length;
+    plates.push({
+      key: 'exchange',
+      origin: { x: 0, z: 52 },
+      name: 'The exchange',
+      sub: posted.length === 0 ? 'No jobs posted' : `${plural(posted.length, 'job')} posted, ${taking} taking bids`,
+      onActivate: openJobs,
+    });
     city.setPlates(plates);
 
     const open = inspector.repo ? byRepo(inspector.repo) : undefined;
@@ -513,6 +564,7 @@ async function main(): Promise<void> {
     const [loaded, repos, quarters] = await Promise.all([api.city(), api.repos().catch(() => [] as Repo[]), api.quarters().catch(() => [] as Quarter[])]);
     takeRepos(repos);
     show(loaded, quarters);
+    readBoard();
   } catch (err) {
     console.warn('could not load the city from the engine', err);
     show([]);
@@ -534,8 +586,9 @@ async function main(): Promise<void> {
         takeRepos(list);
         place();
       }, () => {});
-      void api.health().then((h) => runhead.setStopped(h.stopped), () => {});
+      void api.health().then((h) => setStopped(h.stopped), () => {});
       refresh();
+      readBoard();
       for (const fn of listeners) fn(e);
       return;
     }
@@ -554,7 +607,8 @@ async function main(): Promise<void> {
       countConnected();
       place();
     }
-    if (e.type === 'engine.stopped' || e.type === 'engine.resumed') runhead.setStopped(e.type === 'engine.stopped');
+    if (e.type === 'engine.stopped' || e.type === 'engine.resumed') setStopped(e.type === 'engine.stopped');
+    if (BOARD_ON.has(e.type)) readBoard();
     if (REFRESH_ON.has(e.type)) refresh();
     if (NAMES_ON.has(e.type)) readNames();
     for (const fn of listeners) fn(e);

@@ -23,6 +23,8 @@ The Palimpsest towers (`app/src/city/tower/`) are modelled in code, written for 
 
 The analyzing-site scaffold (`app/src/city/scaffold.ts`) is modelled in code, written for Palimpsest.
 
+The civic exchange (`app/src/city/exchange.ts`) is an original design, modelled in code and written for Palimpsest: the granite stylobate and grand stair, the portico of fluted Corinthian columns between rusticated pavilions, the entablature and its brass tote board, the attic clock, the copper dome on its drum of clerestory windows and the glazed lantern, the trading floor's laylights, the forecourt fountain and its four lamp standards, and the civic plaza's paving pattern (`ground.ts`). It copies no real building. No third-party models are used; its stone takes the scanned textures above.
+
 The architecture kits in `app/public/kits/kits.glb` are own work, authored in Blender from code by `tools/kits/kits.py` (run headless; the script is the source): the coursed stone and banded brick blocks laid over the masonry floors, the six sci-fi family crowns (deco tiers, ziggurat summit, needle blades, arcology sky garden, ribbed dome, stacked pods), and the ambient city's roof and massing pieces (timber water tanks on braced stands, stair bulkheads, louvred penthouses, finned plant screens, rooftop units, cars, oriel bays, cut-corner walls). No third-party models or textures are in it.
 
 ## Type

@@ -444,6 +444,95 @@ async function quarterChecks(page: Page): Promise<void> {
   check((await debug(page, (x) => x.quality())) === 'high', 'the quarters hold high quality');
 }
 
+// ---------------------------------------------------------------- the exchange (Task 25)
+
+/**
+ * The civic exchange on the plaza at the origin (the economy is seeded): its
+ * tote board lights one slot per bidding job with a lamp per real bid, dark
+ * for the open one; exchange.png close on the hall at dusk; clicking the hall
+ * opens #/jobs; the fountain stills while the engine is stopped and runs again
+ * when it resumes. Runs after earnedChecks.
+ */
+async function exchangeChecks(page: Page): Promise<void> {
+  type Ex = { exchange(): { slots: Array<{ state: string; lamps: number; label?: string }>; running: boolean } | null };
+  const jobs = (await page.evaluate(() => fetch('/api/jobs').then((r) => r.json()))) as Array<{ id: string; status: string; repo: string; issue: number | null }>;
+  const posted = jobs.filter((j) => j.status === 'open' || j.status === 'bidding');
+  const bids = await Promise.all(
+    posted.map((j) => page.evaluate((id) => fetch(`/api/jobs/${id}`).then((r) => r.json()).then((d: { bids: unknown[] }) => d.bids.length), j.id) as Promise<number>),
+  );
+  const bidding = posted.filter((j) => j.status === 'bidding');
+  check(bidding.length === 2, `the economy has two jobs taking bids (${bidding.length})`);
+  const want = posted.map((j, i) => ({ state: j.status, lamps: j.status === 'bidding' ? Math.min(6, bids[i]) : 0 }));
+  const shows = await page
+    .waitForFunction(
+      (w) => {
+        const ex = (window as unknown as { __palimpsest: Ex }).__palimpsest.exchange();
+        return !!ex && JSON.stringify(ex.slots.filter((s) => s.state !== 'empty').map((s) => ({ state: s.state, lamps: s.lamps }))) === JSON.stringify(w);
+      },
+      want,
+      { timeout: 10_000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  const ex = await page.evaluate(() => (window as unknown as { __palimpsest: Ex }).__palimpsest.exchange());
+  check(shows, `the tote board shows each posted job with a lamp per real bid (want ${JSON.stringify(want)}, got ${JSON.stringify(ex?.slots.filter((s) => s.state !== 'empty'))})`);
+  check(ex?.slots.filter((s) => s.state === 'bidding').length === 2, 'two slots are lit');
+  check(ex?.slots.filter((s) => s.state === 'empty').length === 24 - posted.length, 'every other slot stands dark');
+  check(!!ex?.slots.filter((s) => s.state !== 'empty').every((s) => !!s.label && !/[/~]|ghp_|sk-/.test(s.label)), `cards carry only a repo's short name and an issue number (${ex?.slots.filter((s) => s.label).map((s) => s.label).join(', ')})`);
+  // The exchange's plate on its forecourt, in counts.
+  const plate = await page.$$eval('.plate', (els) => els.map((e) => `${e.querySelector('.plate-name')?.textContent}|${e.querySelector('.plate-sub')?.textContent}`).find((t) => t.startsWith('The exchange|')) ?? '');
+  check(plate === `The exchange|${posted.length} jobs posted, 2 taking bids`, `the exchange's plate reads (${plate})`);
+
+  // exchange.png: close on the hall at dusk, the two bidding slots lit under the clock.
+  await setView(page, [30, 12, 82], [0, 24, -6]);
+  await debug(page, (x) => x.precompile());
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'exchange.png') });
+  await page.waitForTimeout(1500);
+  const stats = await debug(page, (x) => x.stats());
+  const fps = (await page.evaluate(`new Promise((resolve) => {
+    let frames = 0;
+    const t0 = performance.now();
+    function tick() {
+      frames++;
+      if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
+      else resolve((frames * 1000) / (performance.now() - t0));
+    }
+    requestAnimationFrame(tick);
+  })`)) as number;
+  console.log(`info  exchange: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+
+  // Clicking the hall opens the job board.
+  await setView(page, [0, 12, 70], [0, 18, 0]);
+  await page.mouse.click(VIEWPORT.width / 2, VIEWPORT.height / 2);
+  await page.waitForTimeout(300);
+  const pick = await debug(page, (x) => x.lastPick);
+  check(pick?.kind === 'exchange', `clicking the hall picks the exchange (got ${JSON.stringify(pick)})`);
+  check((await page.evaluate(() => location.hash)) === '#/jobs', 'and opens #/jobs');
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
+
+  // The kill switch stills the fountain; clearing it runs the water again.
+  const stop = (on: boolean): Promise<unknown> =>
+    page.evaluate((v) => fetch('/api/stop', { method: 'POST', headers: { 'content-type': 'application/json', 'x-palimpsest': '1' }, body: JSON.stringify({ on: v }) }).then((r) => r.json()), on);
+  const running = (): Promise<boolean | undefined> => page.evaluate(() => (window as unknown as { __palimpsest: Ex }).__palimpsest.exchange()?.running);
+  check((await running()) === true, 'the fountain runs while the engine runs');
+  await stop(true);
+  const stilled = await page
+    .waitForFunction(() => (window as unknown as { __palimpsest: Ex }).__palimpsest.exchange()?.running === false, null, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  check(stilled, 'the fountain stops when the engine is stopped');
+  await stop(false);
+  const again = await page
+    .waitForFunction(() => (window as unknown as { __palimpsest: Ex }).__palimpsest.exchange()?.running === true, null, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false);
+  check(again, 'and runs again when it resumes');
+  check((await debug(page, (x) => x.quality())) === 'high', 'the exchange holds high quality');
+}
+
 // ---------------------------------------------------------------- inspector
 
 async function inspectorChecks(page: Page): Promise<void> {
@@ -1291,6 +1380,7 @@ async function main(): Promise<void> {
       await reconnectChecks(page, restart);
       await earnedChecks(page);
       await quarterChecks(page);
+      await exchangeChecks(page);
       await silhouetteChecks(page);
     }
 

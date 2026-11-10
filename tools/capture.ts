@@ -476,6 +476,41 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       }
     },
 
+    async exchange(page) {
+      // The civic exchange (CAPTURE_ECONOMY=1): the city from home, the hall from its forecourt and from across the
+      // city, the tote board close with the economy's bidding jobs lit, the fountain at street level, and the fountain
+      // stilled as it stands while the engine is stopped.
+      type Ex = { exchange(): { slots: Array<{ state: string; lamps: number }>; running: boolean } | null };
+      await page.waitForFunction(() => ((window as unknown as { __palimpsest: Ex }).__palimpsest.exchange()?.slots ?? []).some((s) => s.state === 'bidding'), null, { timeout: 15_000 }).catch(() => {});
+      const ex = await page.evaluate(() => (window as unknown as { __palimpsest: Ex }).__palimpsest.exchange());
+      console.log(`  board: ${JSON.stringify(ex?.slots.filter((s) => s.state !== 'empty'))}`);
+      await chrome(page, true);
+      await page.evaluate(() => (window as unknown as { __palimpsest: { home(): void } }).__palimpsest.home());
+      await page.waitForTimeout(3200);
+      await shoot(page, 'exchange-home');
+      const at = await page.evaluate(() => {
+        const d = (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest;
+        return [d.project([0, 30, -6]), d.project([-42, 0, 9]), d.project([42, 0, 9]), d.project([0, 64, -20])];
+      });
+      const px = (v: number[]): string => `${Math.round(((v[0] + 1) / 2) * 1600)},${Math.round(((1 - v[1]) / 2) * 1000)}`;
+      console.log(`  home: exchange at ${px(at[0])}, front ${px(at[1])} to ${px(at[2])}, lantern ${px(at[3])}`);
+      await chrome(page, false);
+      await still(page, 'exchange', [34, 11, 84], [0, 24, -8]);
+      await still(page, 'exchange-far', [300, 150, 420], [0, 26, -10]);
+      await still(page, 'exchange-board', [3, 22.5, 30], [-1.5, 26.6, 9]);
+      await still(page, 'exchange-capital', [-4, 22, 22], [-6.9, 24, 8]);
+      await still(page, 'exchange-portico', [20, 5.5, 34], [-2, 14, 4]);
+      await still(page, 'exchange-fountain', [14, 2.2, 68], [0, 5, 40]);
+      await still(page, 'exchange-dome', [88, 75, 70], [0, 48, -20]);
+      // The kill switch, set through the engine's own route on the temp home: the stream tells the page, the water stills.
+      await page.evaluate(() => fetch('/api/stop', { method: 'POST', headers: { 'content-type': 'application/json', 'x-palimpsest': '1' }, body: '{"on":true}' }));
+      await page.waitForTimeout(2500);
+      await still(page, 'exchange-fountain-stopped', [14, 2.2, 66], [0, 5, 38]);
+      const after = await page.evaluate(() => (window as unknown as { __palimpsest: Ex }).__palimpsest.exchange());
+      console.log(`  fountain running after the stop: ${after?.running}`);
+      await page.evaluate(() => fetch('/api/stop', { method: 'POST', headers: { 'content-type': 'application/json', 'x-palimpsest': '1' }, body: '{"on":false}' }));
+    },
+
     async hero(page) {
       // The whole sample city at dusk from above the rooftops, the sunlit faces turned to the eye.
       await chrome(page, false);

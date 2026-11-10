@@ -17,6 +17,7 @@ import {
   type Plaza,
 } from './grid';
 import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
+import { CIVIC_LAMPS, FOUNTAIN, HALL } from './exchange.js';
 import { AGENT_ROOT_SCALE } from '../../../shared/tower-layout.js';
 import { materials, texture, worldBox } from './materials';
 
@@ -103,19 +104,24 @@ export function createGround(): Ground {
         const float LANTERN_REACH = ${COURT_LANTERN_REACH.toFixed(1)};
         const float PLINTH_CLEAR = ${COURT_PLINTH_CLEAR.toFixed(1)};
         const float OFFS[4] = float[4](${lampOffsets});
+        const vec2 CIVIC_LAMP[4] = vec2[4](${CIVIC_LAMPS.map((l) => `vec2(${l.x.toFixed(1)}, ${l.z.toFixed(1)})`).join(', ')});
+        const vec2 FOUNT = vec2(${FOUNTAIN.x.toFixed(1)}, ${FOUNTAIN.z.toFixed(1)});
+        const float FOUNT_R = ${FOUNTAIN.radius.toFixed(1)};
+        const float STAIR_FOOT = ${(HALL.z0 + HALL.depth + HALL.stair).toFixed(1)};
+        const float HALL_HALF = ${(HALL.width / 2).toFixed(1)};
         float gHash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
         // The plaza whose edge is nearest: its centre, its radius (a quarter's court half-side), whether it is a
         // district (index 0 is the civic plaza) and a quarter's standing plots. Returns the distance from its centre,
         // round for a plaza and square (the larger of the two offsets) for a court.
-        float nearestPlaza(vec2 p, out vec2 c, out bool district, out float r, out float court, out float plots) {
-          float best = 1e9; float bestD = 1e9; c = vec2(1e6); district = false; r = PLAZA_R; court = 0.0; plots = 0.0;
+        float nearestPlaza(vec2 p, out vec2 c, out bool district, out bool civic, out float r, out float court, out float plots) {
+          float best = 1e9; float bestD = 1e9; c = vec2(1e6); district = false; civic = false; r = PLAZA_R; court = 0.0; plots = 0.0;
           for (int i = 0; i < ${MAX_PLAZAS}; i++) {
             if (i >= uPlazaCount) break;
             vec4 u = uPlazas[i];
             vec2 q = abs(p - u.xy);
             float d = u.z > 0.0 ? max(q.x, q.y) : length(q);
             float rr = u.z > 0.0 ? u.z : PLAZA_R;
-            if (d - rr < best) { best = d - rr; bestD = d; c = u.xy; district = i > 0 && u.z == 0.0; r = rr; court = u.z; plots = u.w; }
+            if (d - rr < best) { best = d - rr; bestD = d; c = u.xy; district = i > 0 && u.z == 0.0; civic = i == 0; r = rr; court = u.z; plots = u.w; }
           }
           return bestD;
         }
@@ -146,10 +152,11 @@ export function createGround(): Ground {
         vec2 lc = gp - cellId * PITCH;                 // position within this block's cell, block centred
         vec2 plazaC;
         bool district;
+        bool civic;
         float plazaR;
         float court;
         float plots;
-        float plazaD = nearestPlaza(gp, plazaC, district, plazaR, court, plots);
+        float plazaD = nearestPlaza(gp, plazaC, district, civic, plazaR, court, plots);
         float plaza = 1.0 - smoothstep(plazaR - 2.0, plazaR, plazaD);
         float edge = max(abs(lc.x), abs(lc.y));
         float road = smoothstep(HALF_BLOCK + 3.9, HALF_BLOCK + 4.1, edge) * (1.0 - plaza);
@@ -182,7 +189,34 @@ export function createGround(): Ground {
           float joint = 1.0 - smoothstep(0.455, 0.48, max(slab.x * 1.0, slab.y * 0.5 + 0.25));
           course = (0.86 + 0.08 * gHash(vec2(floor(cl.x / 6.0 + 0.5 * mod(row, 2.0)), row))) * mix(0.72, 1.0, joint);
         }
-        diffuseColor.rgb *= mix(vec3(1.0), vec3(1.28, 1.2, 1.08) * course, plaza * (1.0 - ring));
+        vec3 civicTone = vec3(1.0);
+        if (civic && plazaD < plazaR) {
+          // The civic plaza is laid to the exchange, not in rings: pale slabs in running bond across the axis; a
+          // processional of dark granite setts from the stair to the fountain and on to the plaza's edge; a rosette
+          // of radiating setts round the basin inside a dark band; and a dark border framing the forecourt.
+          vec2 cl = gp - plazaC;
+          float row = floor(cl.y / 1.5);
+          vec2 slab = abs(fract(vec2(cl.x / 3.0 + 0.5 * mod(row, 2.0), cl.y / 1.5)) - 0.5);
+          float sj = 1.0 - smoothstep(0.46, 0.49, max(slab.x, slab.y * 0.5 + 0.25));
+          course = (0.9 + 0.1 * gHash(vec2(floor(cl.x / 3.0 + 0.5 * mod(row, 2.0)), row))) * mix(0.8, 1.0, sj);
+          vec2 fd = cl - FOUNT;
+          float fr = length(fd);
+          float axis = step(abs(cl.x), 6.0) * step(STAIR_FOOT, cl.y);
+          vec2 sett = abs(fract(cl / 0.6) - 0.5);
+          float sjoint = 1.0 - smoothstep(0.42, 0.48, max(sett.x, sett.y));
+          vec3 granite = vec3(0.56, 0.55, 0.56) * (0.88 + 0.16 * gHash(floor(cl / 0.6))) * mix(0.7, 1.0, sjoint);
+          float rosette = step(FOUNT_R + 0.4, fr) * step(fr, FOUNT_R + 7.0);
+          float ringJ = abs(fract(fr / 0.8) - 0.5);
+          float rayJ = abs(fract(atan(fd.y, fd.x) / 6.28318530718 * 96.0 + floor(fr / 0.8) * 0.5) - 0.5);
+          float rj = 1.0 - smoothstep(0.42, 0.48, max(ringJ, rayJ));
+          vec3 rose = vec3(1.08, 1.0, 0.9) * (0.9 + 0.12 * gHash(vec2(floor(fr / 0.8), floor(atan(fd.y, fd.x) * 15.0)))) * mix(0.72, 1.0, rj);
+          float band = step(FOUNT_R + 7.0, fr) * step(fr, FOUNT_R + 8.2);
+          float border = step(abs(abs(cl.x) - (HALL_HALF + 4.0)), 0.6) * step(STAIR_FOOT - 1.0, cl.y) * step(cl.y, 66.0);
+          civicTone = mix(vec3(1.0), granite / course, max(axis * (1.0 - rosette), 0.0));
+          civicTone = mix(civicTone, rose / course, rosette);
+          civicTone = mix(civicTone, vec3(0.5, 0.49, 0.5) / course, max(band, border));
+        }
+        diffuseColor.rgb *= mix(vec3(1.0), vec3(1.28, 1.2, 1.08) * course * civicTone, plaza * (1.0 - ring));
         roughnessFactor = mix(roughnessFactor, 0.74 + grain, road);`,
       )
       .replace(
@@ -222,6 +256,20 @@ export function createGround(): Ground {
             float a = floor(atan(d.y, d.x) / step_ + 0.5) * step_;
             vec2 lp = vec2(cos(a), sin(a)) * RING_R;
             light += 0.8 * pool(d - lp);
+          }
+          // The civic plaza: a broad pool under each of the exchange's lamp standards, the warm spill of the open
+          // doors down the stair and onto the forecourt, and the lamps' light caught round the basin's kerb.
+          if (civic && plazaD < plazaR + 10.0) {
+            vec2 cl = gp - plazaC;
+            for (int k = 0; k < 4; k++) {
+              vec2 d = cl - CIVIC_LAMP[k];
+              float dd = dot(d, d);
+              light += 1.25 * exp(-dd / 70.0) + 0.3 * exp(-dd / 520.0);
+            }
+            float spill = exp(-pow(max(abs(cl.x) - 18.0, 0.0), 2.0) / 30.0) * exp(-pow(max(cl.y - STAIR_FOOT, 0.0), 2.0) / 90.0) * step(STAIR_FOOT - 2.0, cl.y);
+            light += 0.55 * spill;
+            float fr = length(cl - FOUNT);
+            light += 0.35 * exp(-pow(fr - FOUNT_R - 0.6, 2.0) / 3.0);
           }
           // District plazas: floodlight spill at the plinth's foot and lit bollards around it.
           // The plaza floor holds a broad, low wash from all of it together, brightest toward the plinth.

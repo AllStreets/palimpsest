@@ -4,6 +4,7 @@ import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import type { District, Quarter } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
 import { createCameraRig } from './camera';
+import type { BoardJob, Exchange } from './exchange.js';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
 import { createPlates, type Plate } from './labels';
@@ -20,7 +21,8 @@ import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits
 export type PickHit =
   | { kind: 'tower'; repo: string; floorId: string | null }
   | { kind: 'agent'; agentId: string; firmId: string; floorId: string | null }
-  | { kind: 'firm'; firmId: string };
+  | { kind: 'firm'; firmId: string }
+  | { kind: 'exchange'; route: string };
 
 /** What stands at a district's origin, and which of its parts can be clicked (mapped to a floor id, or null). */
 export interface Centerpiece {
@@ -52,6 +54,8 @@ export interface CityOptions {
   makeQuarterCenterpiece?: QuarterFactory;
   /** Anything beyond the quarter's own data that changes what the factory builds (its name, its looks); a change rebuilds it. */
   quarterKey?: (q: Quarter) => string;
+  /** Builds the civic exchange on the plaza at the origin (exchange.ts); without it the plaza stands empty. */
+  makeExchange?: (quality: 'high' | 'medium') => Exchange;
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
@@ -80,6 +84,12 @@ export interface City {
   highlightFloor(repo: string, floorId: string | null): void;
   floorFrame(repo: string, floorId: string): Frame | null;
   towerFrame(repo: string): Frame | null;
+  /** Shows the open and bidding jobs on the exchange's tote board. */
+  setBoard(jobs: ReadonlyArray<BoardJob>): void;
+  /** The engine's kill switch: the exchange's fountain runs only while it is off. */
+  setStopped(stopped: boolean): void;
+  /** The civic exchange as built now, or null (tests and debugging). */
+  exchange(): Exchange | null;
   /** Where an agent's tower stands, root to roof, for framing the camera on it. */
   agentFrame(agentId: string): Frame | null;
   /** Keeps the view centred in the part of the window not covered by a panel this wide on the right. */
@@ -197,12 +207,34 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const sunOffset = SUN_DIRECTION.clone().multiplyScalar(800);
   let texel = (SHADOW_HALF * 2) / shadowSize;
 
+  const sunNeedsUpdate = (): void => {
+    sun.shadow.needsUpdate = true;
+  };
   const ground = createGround();
   scene.add(ground.mesh);
   const grid = createGrid(quality);
   scene.add(grid.group);
 
   let post = createPost(renderer, scene, camera, quality);
+
+  // ---------------------------------------------------------------- the civic exchange
+  // Built once on the plaza at the origin, and again at medium if the city steps down; it keeps the board and the switch.
+  let exchange: Exchange | null = null;
+  let board: ReadonlyArray<BoardJob> = [];
+  let stopped = false;
+  function buildExchange(): void {
+    if (!opts.makeExchange) return;
+    if (exchange) {
+      scene.remove(exchange.object);
+      exchange.dispose();
+    }
+    exchange = opts.makeExchange(quality);
+    exchange.setBoard(board);
+    exchange.setStopped(stopped);
+    scene.add(exchange.object);
+    sunNeedsUpdate();
+  }
+  buildExchange();
 
   // ---------------------------------------------------------------- districts
   const districtGroup = new THREE.Group();
@@ -211,7 +243,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece }> = [];
   let quarterPieces: Array<{ firmId: string; key: string; piece: Centerpiece }> = [];
   /** Every pickable part in the city: towers' floors and roots, quarters' towers and plinths. */
-  const allPickables = (): THREE.Object3D[] => [...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]);
+  const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : [])];
   let scaffolds = new Map<string, Scaffold>();
   let framed = false;
 
@@ -556,6 +588,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         const agentId = piece.agents?.get(h.object);
         return send(agentId ? { kind: 'agent', agentId, firmId, floorId: piece.pickables.get(h.object) ?? null } : { kind: 'firm', firmId });
       }
+      const route = exchange?.pickables.get(h.object);
+      if (route) return send({ kind: 'exchange', route });
     }
   };
   renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -638,6 +672,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     sun.shadow.map = null;
     sun.shadow.mapSize.set(shadowSize, shadowSize);
     sun.shadow.needsUpdate = true;
+    buildExchange();
     for (const fn of dropListeners) fn();
   }
   renderer.setAnimationLoop(() => {
@@ -652,6 +687,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     eased = easeLimits(eased, limits, dt, camera.position.distanceTo(rig.controls.target));
     easedHome = THREE.MathUtils.damp(easedHome, limits.homeDistance, 3, dt);
     rig.update(dt);
+    exchange?.update(dt);
     applyLimits();
     fitMark();
     plates.update();
@@ -669,6 +705,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     camera,
     setPlots,
     setPlates: (p) => plates.set(p),
+    setBoard(jobs) {
+      board = jobs;
+      exchange?.setBoard(jobs);
+    },
+    setStopped(s) {
+      stopped = s;
+      exchange?.setStopped(s);
+    },
+    exchange: () => exchange,
     highlightFloor,
     floorFrame,
     towerFrame,
@@ -718,6 +763,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       quarterBatch?.dispose();
+      exchange?.dispose();
       for (const { piece } of [...centerpieces, ...quarterPieces]) piece.dispose?.();
       centerpieces = [];
       quarterPieces = [];

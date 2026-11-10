@@ -1,0 +1,173 @@
+import './kit-setup.js';
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import * as THREE from 'three';
+
+import { CIVIC_LAMPS, EXCHANGE_SLOTS, FOUNTAIN, HALL, JOBS_ROUTE, LAMPS_PER_SLOT, boardLabel, makeExchange, toteBoard } from '../app/src/city/exchange.js';
+import { BLOCK, PITCH, standingLots } from '../app/src/city/lots.js';
+import type { JobStatus } from '../shared/types.js';
+
+/** Instances of a named instanced mesh whose colour is lit (an emitter above the bloom threshold). */
+function litCount(root: THREE.Object3D, name: string): number {
+  const mesh = root.getObjectByName(name) as THREE.InstancedMesh | undefined;
+  assert.ok(mesh, `${name} exists`);
+  const c = new THREE.Color();
+  let n = 0;
+  for (let i = 0; i < mesh.count; i++) {
+    mesh.getColorAt(i, c);
+    if (Math.max(c.r, c.g, c.b) > 1) n++;
+  }
+  return n;
+}
+
+function slotCount(root: THREE.Object3D): number {
+  return (root.getObjectByName('exchange:slots') as THREE.InstancedMesh).count;
+}
+
+/** The civic plaza's paved radius (grid.ts PLAZA_RADIUS; grid.ts itself is browser code outside the node project). */
+const PLAZA_RADIUS = 72;
+
+const jobs = (n: number, status: JobStatus, bids: number): Array<{ status: JobStatus; bids: number }> => Array.from({ length: n }, () => ({ status, bids }));
+
+test('the tote board lights one slot per bidding job and one lamp per bid', () => {
+  const ex = makeExchange('high');
+  ex.setBoard([
+    { status: 'bidding', bids: 3 },
+    { status: 'open', bids: 0 },
+  ]);
+  const board = toteBoard([
+    { status: 'bidding', bids: 3 },
+    { status: 'open', bids: 0 },
+  ]);
+  assert.deepEqual(board.slice(0, 2), [
+    { state: 'bidding', lamps: 3 },
+    { state: 'open', lamps: 0 },
+  ]);
+  assert.ok(board.slice(2).every((s) => s.state === 'empty' && s.lamps === 0), 'every other slot is empty and dark');
+  assert.equal(litCount(ex.object, 'exchange:slots'), 1, 'one lit slot');
+  assert.equal(litCount(ex.object, 'exchange:lamps'), 3, 'three lit lamps');
+  // The open job's slot stands dark but posted: its shutter is up, its card unlit.
+  assert.equal(ex.slots()[1].state, 'open');
+  assert.equal(ex.slots()[1].lamps, 0);
+  // A bid placed later ticks one more lamp, and only real counts show.
+  ex.setBoard([{ status: 'bidding', bids: 4 }]);
+  assert.equal(litCount(ex.object, 'exchange:lamps'), 4);
+  ex.setBoard([]);
+  assert.equal(litCount(ex.object, 'exchange:slots'), 0);
+  assert.equal(litCount(ex.object, 'exchange:lamps'), 0);
+  ex.dispose();
+});
+
+test('the board holds 24 slots and ignores the rest', () => {
+  assert.equal(EXCHANGE_SLOTS, 24);
+  const ex = makeExchange('high');
+  assert.equal(slotCount(ex.object), 24);
+  ex.setBoard([...jobs(30, 'bidding', 2), ...jobs(5, 'running', 9), ...jobs(3, 'merged', 4)]);
+  assert.equal(litCount(ex.object, 'exchange:slots'), 24, 'only 24 slots light');
+  assert.equal(litCount(ex.object, 'exchange:lamps'), 48, 'two lamps on each of the 24');
+  // Jobs past bidding never reach the board, whatever their bids.
+  const board = toteBoard([...jobs(2, 'awarded', 5), ...jobs(1, 'bidding', 1)]);
+  assert.deepEqual(board[0], { state: 'bidding', lamps: 1 });
+  assert.equal(board.filter((s) => s.state !== 'empty').length, 1);
+  // More bids than a slot has lamps light every lamp it has, never more; a negative or fractional count lights none past the real whole bids.
+  assert.equal(toteBoard([{ status: 'bidding', bids: 40 }])[0].lamps, LAMPS_PER_SLOT);
+  assert.equal(toteBoard([{ status: 'bidding', bids: -2 }])[0].lamps, 0);
+  assert.equal(toteBoard([{ status: 'bidding', bids: 2.7 }])[0].lamps, 2);
+  ex.dispose();
+});
+
+test('the fountain stops when the engine is stopped', () => {
+  const ex = makeExchange('high');
+  const jet = ex.object.getObjectByName('exchange:jet');
+  assert.ok(jet, 'the fountain has a jet');
+  assert.equal(ex.fountainRunning(), true, 'a running engine runs the fountain');
+  assert.equal(jet.visible, true);
+  ex.setStopped(true);
+  assert.equal(ex.fountainRunning(), false);
+  // The water falls still over a moment, then the jet is gone.
+  for (let i = 0; i < 120; i++) ex.update(1 / 30);
+  assert.equal(jet.visible, false, 'no water rises while the engine is stopped');
+  ex.setStopped(false);
+  assert.equal(ex.fountainRunning(), true);
+  ex.update(1 / 30);
+  assert.equal(jet.visible, true, 'and it runs again when the engine resumes');
+  ex.dispose();
+});
+
+test('picking the hall returns the jobs route', () => {
+  assert.equal(JOBS_ROUTE, '#/jobs');
+  const ex = makeExchange('high');
+  ex.object.updateMatrixWorld(true);
+  assert.ok(ex.pickables.size > 0);
+  for (const route of ex.pickables.values()) assert.equal(route, JOBS_ROUTE);
+  const ray = new THREE.Raycaster();
+  // From the forecourt at eye height, toward the portico; and from far above, onto the dome.
+  for (const [from, to] of [
+    [new THREE.Vector3(0, 8, 160), new THREE.Vector3(0, 10, 0)],
+    [new THREE.Vector3(260, 300, 260), new THREE.Vector3(0, 30, HALL.z0 + HALL.depth / 2)],
+  ]) {
+    ray.set(from, to.clone().sub(from).normalize());
+    const hits = ray.intersectObjects([...ex.pickables.keys()], false);
+    assert.ok(hits.length > 0, `a ray from ${from.toArray()} hits the hall`);
+    assert.equal(ex.pickables.get(hits[0].object), JOBS_ROUTE);
+  }
+  ex.dispose();
+});
+
+test('the exchange, its fountain and its lamp standards stand on the civic plaza, clear of every ambient block', () => {
+  const ex = makeExchange('medium');
+  ex.object.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(ex.object);
+  // Every corner of the hall, steps and stair included, is on the plaza's paving.
+  const hall = new THREE.Box3().setFromObject(ex.object.getObjectByName('exchange:hall-at-scale')!);
+  for (const x of [hall.min.x, hall.max.x]) for (const z of [hall.min.z, hall.max.z]) assert.ok(Math.hypot(x, z) < PLAZA_RADIUS, `corner ${x.toFixed(1)}, ${z.toFixed(1)} is on the plaza`);
+  // A civic building, not a kiosk: it reads at city distance.
+  const size = box.getSize(new THREE.Vector3());
+  assert.ok(size.x > 60 && size.y > 40, `the hall is ${size.x.toFixed(0)} m wide and ${size.y.toFixed(0)} m high`);
+  assert.ok(Math.hypot(FOUNTAIN.x, FOUNTAIN.z) + FOUNTAIN.radius < PLAZA_RADIUS);
+  assert.equal(CIVIC_LAMPS.length, 4);
+  for (const l of CIVIC_LAMPS) {
+    assert.ok(Math.hypot(l.x, l.z) < PLAZA_RADIUS - 6, 'each standard is inside the plaza ring');
+    // Never on the stair, the hall or the basin.
+    assert.ok(l.z > HALL.z0 + HALL.depth + HALL.stair + 2 || Math.abs(l.x) > HALL.width / 2 + 2, 'clear of the hall and its stair');
+    assert.ok(Math.hypot(l.x - FOUNTAIN.x, l.z - FOUNTAIN.z) > FOUNTAIN.radius + 3, 'clear of the basin');
+  }
+  // The ambient city stands no lot on the hall.
+  const reach = Math.ceil((PLAZA_RADIUS + BLOCK) / PITCH);
+  for (let i = -reach; i <= reach; i++) {
+    for (let j = -reach; j <= reach; j++) {
+      for (const lot of standingLots(i, j, [{ x: 0, z: 0 }])) {
+        const clear = lot.x + lot.w / 2 < box.min.x || lot.x - lot.w / 2 > box.max.x || lot.z + lot.d / 2 < box.min.z || lot.z - lot.d / 2 > box.max.z;
+        assert.ok(clear, `lot at ${lot.x}, ${lot.z} stands clear of the exchange`);
+      }
+    }
+  }
+  ex.dispose();
+});
+
+test('the exchange draws its columns and lamps instanced and its stone in few batches', () => {
+  const ex = makeExchange('high');
+  let meshes = 0;
+  const instanced: THREE.InstancedMesh[] = [];
+  ex.object.traverse((o) => {
+    if (!(o as THREE.Mesh).isMesh || !o.visible) return;
+    if (o.parent && (o.parent as THREE.LOD).isLOD) return;
+    meshes++;
+    if ((o as THREE.InstancedMesh).isInstancedMesh) instanced.push(o as THREE.InstancedMesh);
+  });
+  const shafts = instanced.find((m) => m.name.includes('exchange:shaft'));
+  assert.ok(shafts && shafts.count >= 8, 'the colonnade is one instanced batch of fluted shafts');
+  assert.equal((ex.object.getObjectByName('exchange:lamps') as THREE.InstancedMesh).count, EXCHANGE_SLOTS * LAMPS_PER_SLOT);
+  assert.ok(meshes < 70, `the exchange draws in ${meshes} meshes`);
+  ex.dispose();
+});
+
+test("a slot's card carries only the repo's short name and the issue number, never a path or a token", () => {
+  assert.equal(boardLabel({ repo: 'marlow/harbour-ledger', issue: 14 }), 'harbour-ledger #14');
+  assert.equal(boardLabel({ repo: 'marlow/kumo', issue: null }), 'kumo');
+  // A name is cut to what fits a card, and anything outside a repo name's characters is dropped.
+  const odd = boardLabel({ repo: 'x/ghp_abcdefghijklmnopqrstuvwxyz0123456789/Users/connor/.ssh', issue: 3 });
+  assert.ok(!/ghp_|\/Users|\.ssh|connor/.test(odd), odd);
+  assert.ok(boardLabel({ repo: 'a/a-very-long-repository-name-that-runs-on', issue: 12345 }).length <= 22);
+});
