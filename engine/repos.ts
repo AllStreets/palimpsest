@@ -57,18 +57,14 @@ function ensureSlots(repos: Repo[]): Repo[] {
   const missing = repos.filter((r) => !hasValidSlot(r));
   if (missing.length === 0) return repos;
 
-  let next = repos.reduce((max, r) => (hasValidSlot(r) ? Math.max(max, r.slot) : max), -1) + 1;
-
   const bySlot = new Map<string, number>();
   const missingByConnectedAt = [...missing].sort((a, b) => {
     const at = a.connectedAt ? Date.parse(a.connectedAt) : 0;
     const bt = b.connectedAt ? Date.parse(b.connectedAt) : 0;
     return at - bt;
   });
-  for (const r of missingByConnectedAt) {
-    bySlot.set(r.fullName, next);
-    next += 1;
-  }
+  // Slots come from the table repos share with firms, so a backfilled repo never lands on a firm's plot.
+  for (const r of missingByConnectedAt) bySlot.set(r.fullName, nextSlot('repo', r.fullName));
 
   return repos.map((r) => {
     const slot = bySlot.get(r.fullName);
@@ -200,21 +196,38 @@ function readableMessage(err: unknown): string {
 }
 
 /**
- * The next unused slot: one past the highest slot assigned so far across
- * every stored repo (connected or not), starting at 0. A slot is assigned
- * once, at a repo's first connect, and is never reused, so a repo's district
- * position is stable for the repo's whole lifetime in the city regardless of
- * how many other repos connect, disconnect or reconnect around it.
- *
- * listRepos() already backfills any row missing a finite slot before this
- * runs, so in practice every row here has one; the Number.isFinite guard is
- * a second, cheap line of defense against ever folding a NaN/undefined
- * slot into the max (which would poison every later slot with NaN).
+ * Copies every stored repo's slot into the `slots` table, keeping each one
+ * unchanged. Rows already there are left alone, so this is safe to run on
+ * every allocation; it reads the raw rows so it never recurses through listRepos().
  */
-function nextSlot(): number {
-  const repos = listRepos();
-  if (repos.length === 0) return 0;
-  return repos.reduce((max, r) => (Number.isFinite(r.slot) ? Math.max(max, r.slot) : max), -1) + 1;
+function migrateRepoSlots(): void {
+  const db = openDb();
+  const rows = db.prepare('SELECT full_name, json FROM repos').all() as Array<{ full_name: string; json: string }>;
+  const insert = db.prepare("INSERT OR IGNORE INTO slots (kind, owner, slot) VALUES ('repo', ?, ?)");
+  for (const row of rows) {
+    const slot = (JSON.parse(row.json) as Partial<Repo>).slot;
+    if (typeof slot === 'number' && Number.isFinite(slot)) insert.run(row.full_name, slot);
+  }
+}
+
+/**
+ * The plot on the district spiral held by `owner` (a repo's full name or a
+ * firm's id). Repos and firms share one numbering: an owner that already
+ * holds a slot keeps it, and a new owner takes one past the highest slot ever
+ * assigned to anyone, so no plot is reused and nothing already standing ever
+ * moves. Existing repo slots are migrated into the table first, unchanged.
+ */
+export function nextSlot(kind: 'repo' | 'firm', owner: string): number {
+  migrateRepoSlots();
+  const db = openDb();
+  const held = db.prepare('SELECT slot FROM slots WHERE kind = ? AND owner = ?').get(kind, owner) as
+    | { slot: number }
+    | undefined;
+  if (held) return Number(held.slot);
+  const top = db.prepare('SELECT MAX(slot) AS top FROM slots').get() as { top: number | null };
+  const slot = top.top === null ? 0 : Number(top.top) + 1;
+  db.prepare('INSERT INTO slots (kind, owner, slot) VALUES (?, ?, ?)').run(kind, owner, slot);
+  return slot;
 }
 
 /** Analyses running in this process, by repo. A second call for a repo joins the one already running. */
@@ -254,7 +267,7 @@ export async function connect(fullName: string): Promise<Repo> {
         connected: true,
         pushMode: false,
         root: pickRoot(fullName),
-        slot: nextSlot(),
+        slot: nextSlot('repo', fullName),
         status: 'analyzing',
         error: null,
         connectedAt: now,

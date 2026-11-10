@@ -879,3 +879,53 @@ test('a failed re-analysis leaves the tower untouched', async () => {
   assert.deepEqual(loadTower(fullName), before);
   assert.equal(rawRepo(fullName).joinedAt, joinedAt);
 });
+
+test('repo slots migrate into the slots table unchanged', async () => {
+  const { nextSlot } = await import('../engine/repos.js');
+  const db = openDb();
+  for (const [fullName, slot] of [
+    ['connor/one', 0],
+    ['connor/two', 2],
+    ['connor/three', 5],
+  ] as const) {
+    const repo: Repo = {
+      fullName,
+      private: false,
+      defaultBranch: 'main',
+      language: null,
+      description: null,
+      connected: true,
+      pushMode: false,
+      root: 'roman',
+      slot,
+      status: 'ready',
+      error: null,
+      connectedAt: '2026-01-01T00:00:00.000Z',
+      analyzedAt: null,
+      ...repoMarketDefaults(),
+    };
+    db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(fullName, JSON.stringify(repo));
+  }
+  // An existing owner keeps its slot; a new one goes after every slot taken.
+  assert.equal(nextSlot('repo', 'connor/two'), 2);
+  const rows = db.prepare('SELECT kind, owner, slot FROM slots ORDER BY slot').all() as Array<{ kind: string; owner: string; slot: number }>;
+  assert.deepEqual(
+    rows.map((r) => [r.kind, r.owner, r.slot]),
+    [
+      ['repo', 'connor/one', 0],
+      ['repo', 'connor/two', 2],
+      ['repo', 'connor/three', 5],
+    ],
+  );
+  assert.equal(nextSlot('firm', 'quickset'), 6);
+  assert.equal(nextSlot('firm', 'quickset'), 6);
+  assert.equal(nextSlot('repo', 'connor/four'), 7);
+  assert.deepEqual(
+    listRepos().map((r) => [r.fullName, r.slot]),
+    [
+      ['connor/one', 0],
+      ['connor/two', 2],
+      ['connor/three', 5],
+    ],
+  );
+});

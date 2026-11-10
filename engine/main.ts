@@ -1,12 +1,16 @@
 import { existsSync } from 'node:fs';
 
 import { paths } from './home.js';
+import { installedModels, seedFirms } from './market/firms.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
 
 async function main(): Promise<void> {
   // An analysis the last engine was running when it stopped can never finish: say so, with a Retry.
   failInterruptedAnalyses();
+  // The five firms are seeded here and only here (never inside startServer, so tests never run ollama list).
+  // An agent whose Ollama model is not installed seeds retired; seeding is idempotent per firm.
+  seedFirms(await installedModels());
   const { close, port } = await startServer();
   const stopped = existsSync(paths().stop);
   // eslint-disable-next-line no-console
