@@ -13,8 +13,8 @@
  * `{ ok: true, ... }`, `{ ok: false, refused }` (exit 3) or
  * `{ ok: false, error }` (exit 1; exit 2 for bad arguments).
  */
-import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, writeSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, writeSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { pathAllowed, patternAllowed } from './guard-core.mjs';
 
@@ -41,10 +41,48 @@ function str(args, key, required = true) {
   return v;
 }
 
-function check(tool, path, dir) {
+const SYMLINK = 'The path is or passes through a symlink, which file tools never follow.';
+
+/**
+ * Checks `path` with pathAllowed(), then walks to it component by component
+ * so nothing can be swapped in between: from the real `dir`, each parent is
+ * lstat-ed (a symlink or a non-directory is refused), entered with chdir,
+ * and the real path of the new working directory compared with where the
+ * walk expects to be. Returns the last component, to open relative to the
+ * working directory with O_NOFOLLOW, and its path relative to `dir`.
+ * With `into`, the last component is entered too (list and search) and the
+ * name is `.`. With `makeDirs`, missing parents are created on the way.
+ */
+function walkTo(tool, path, dir, { into = false, makeDirs = false } = {}) {
   const r = pathAllowed(tool, path, dir);
   if (r) throw new Refused(r);
-  return resolve(dir, path);
+  const dirReal = realpathSync.native(dir);
+  const abs = resolve(dir, path);
+  const lexical = resolve(dir);
+  const rel = abs.toLowerCase() === lexical.toLowerCase() || abs.toLowerCase() === dirReal.toLowerCase()
+    ? ''
+    : abs.toLowerCase().startsWith(lexical.toLowerCase() + '/')
+      ? abs.slice(lexical.length + 1)
+      : abs.slice(dirReal.length + 1);
+  const parts = rel.split('/').filter(Boolean);
+  const enter = into ? parts : parts.slice(0, -1);
+  process.chdir(dirReal);
+  let expected = dirReal;
+  for (const part of enter) {
+    let st;
+    try {
+      st = lstatSync(part);
+    } catch (err) {
+      if (!makeDirs || err.code !== 'ENOENT') throw err;
+      mkdirSync(part);
+      st = lstatSync(part);
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new Refused(SYMLINK);
+    process.chdir(part);
+    expected = join(expected, part);
+    if (realpathSync.native('.').toLowerCase() !== expected.toLowerCase()) throw new Refused(SYMLINK);
+  }
+  return { name: into ? '.' : parts[parts.length - 1] ?? '.', rel };
 }
 
 /** Opens a regular file without following a symlink, and refuses anything else (a FIFO, a device, a hard-linked file). */
@@ -80,26 +118,9 @@ function writeAll(fd, data) {
   while (off < buf.length) off += writeSync(fd, buf, off, buf.length - off, off);
 }
 
-/** Creates the missing parents of `abs` inside `dir` one by one, refusing any symlink on the way. */
-function makeParents(abs, dir) {
-  const rel = relative(dir, abs).split('/').slice(0, -1);
-  let cur = dir;
-  for (const part of rel) {
-    cur = join(cur, part);
-    let st = null;
-    try {
-      st = lstatSync(cur);
-    } catch {
-      mkdirSync(cur);
-      st = lstatSync(cur);
-    }
-    if (st.isSymbolicLink() || !st.isDirectory()) throw new Refused('The path is or passes through a symlink, which file tools never follow.');
-  }
-}
-
 function opRead(dir, args) {
-  const abs = check('Read', str(args, 'path'), dir);
-  const { fd, size } = openFile(abs, O_RDONLY);
+  const { name } = walkTo('Read', str(args, 'path'), dir);
+  const { fd, size } = openFile(name, O_RDONLY);
   try {
     const buf = readAll(fd, size, MAX_READ_BYTES);
     return { content: buf.toString('utf8'), bytes: size, truncated: size > MAX_READ_BYTES };
@@ -112,10 +133,8 @@ function opWrite(dir, args) {
   const path = str(args, 'path');
   const content = str(args, 'content');
   if (Buffer.byteLength(content) > MAX_WRITE_BYTES) throw new BadArgs('content too large');
-  const abs = check('Write', path, dir);
-  makeParents(abs, dir);
-  check('Write', path, dir);
-  const { fd } = openFile(abs, O_WRONLY | O_CREAT);
+  const { name } = walkTo('Write', path, dir, { makeDirs: true });
+  const { fd } = openFile(name, O_WRONLY | O_CREAT);
   try {
     ftruncateSync(fd, 0);
     writeAll(fd, content);
@@ -126,12 +145,12 @@ function opWrite(dir, args) {
 }
 
 function opEdit(dir, args) {
-  const abs = check('Edit', str(args, 'path'), dir);
+  const { name } = walkTo('Edit', str(args, 'path'), dir);
   const old = str(args, 'old');
   const next = str(args, 'new');
   const all = args.all === true;
   if (old === '') throw new BadArgs('old must not be empty');
-  const { fd, size } = openFile(abs, O_RDWR);
+  const { fd, size } = openFile(name, O_RDWR);
   try {
     if (size > MAX_WRITE_BYTES) throw new BadArgs('file too large to edit');
     const text = readAll(fd, size, MAX_WRITE_BYTES).toString('utf8');
@@ -156,7 +175,7 @@ function typeOf(d) {
 
 function opList(dir, args) {
   const path = str(args, 'path', false) ?? '.';
-  const abs = check('Glob', path, dir);
+  const { rel: base } = walkTo('Glob', path, dir, { into: true });
   const recursive = args.recursive === true;
   const entries = [];
   let truncated = false;
@@ -169,11 +188,11 @@ function opList(dir, args) {
       const full = join(at, d.name);
       if (d.name.toLowerCase() === '.git') continue;
       const type = typeOf(d);
-      entries.push({ path: relative(dir, full), type: type === 'symlink' ? 'symlink (not followed)' : type });
+      entries.push({ path: join(base, full), type: type === 'symlink' ? 'symlink (not followed)' : type });
       if (recursive && type === 'dir') walk(full);
     }
   };
-  walk(abs);
+  walk('.');
   return { entries, truncated };
 }
 
@@ -201,7 +220,9 @@ function opSearch(dir, args) {
     const r = patternAllowed(glob);
     if (r) throw new Refused(r);
   }
-  const abs = check('Grep', path, dir);
+  const target = lstatSync(resolve(dir, path));
+  const { name, rel } = walkTo('Grep', path, dir, { into: target.isDirectory() });
+  const base = name === '.' ? rel : dirname(rel);
   let re;
   try {
     re = new RegExp(pattern, args.ignoreCase === true ? 'i' : '');
@@ -213,7 +234,7 @@ function opSearch(dir, args) {
   const skipped = [];
   let files = 0;
   const visit = (full) => {
-    const rel = relative(dir, full);
+    const rel = join(base, full);
     if (globRe && !globRe.test(rel) && !globRe.test(rel.split('/').pop())) return;
     files += 1;
     let fd;
@@ -241,7 +262,7 @@ function opSearch(dir, args) {
       if (matches.length >= MAX_MATCHES || files >= MAX_SEARCH_FILES) return;
       const full = join(at, d.name);
       if (d.isSymbolicLink()) {
-        skipped.push(relative(dir, full) + ' (symlink, not followed)');
+        skipped.push(join(base, full) + ' (symlink, not followed)');
         continue;
       }
       if (d.isDirectory()) {
@@ -250,9 +271,8 @@ function opSearch(dir, args) {
       } else if (d.isFile()) visit(full);
     }
   };
-  const st = lstatSync(abs);
-  if (st.isDirectory()) walk(abs);
-  else visit(abs);
+  if (name === '.') walk('.');
+  else visit(name);
   return { matches, truncated: matches.length >= MAX_MATCHES, skipped: skipped.slice(0, 50) };
 }
 

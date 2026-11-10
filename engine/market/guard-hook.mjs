@@ -7,10 +7,16 @@
  * missing or non-string path field, an unexpected input shape, a path it
  * cannot resolve, or its own 5 s timeout all exit 2.
  */
+// Only node built-ins are imported statically. guard-core.mjs is loaded
+// dynamically inside a try: a missing, broken or incomplete module would
+// otherwise make node exit 1, which Claude Code treats as non-blocking.
 import { statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 
-import { forbidden, pathAllowed, patternAllowed } from './guard-core.mjs';
+/** The guard's functions, set once guard-core.mjs has loaded. */
+let forbidden;
+let pathAllowed;
+let patternAllowed;
 
 const COULD_NOT = 'guard could not check this call';
 const MAX_STDIN = 4 * 1024 * 1024;
@@ -104,9 +110,18 @@ function decide(raw, dir, dataHome) {
   return null;
 }
 
-function main() {
+async function loadGuard() {
+  const core = await import('./guard-core.mjs');
+  for (const name of ['forbidden', 'pathAllowed', 'patternAllowed']) {
+    if (typeof core[name] !== 'function') throw new Error(`guard-core lacks ${name}`);
+  }
+  ({ forbidden, pathAllowed, patternAllowed } = core);
+}
+
+async function main() {
   const timer = setTimeout(() => refuse(`${COULD_NOT} (timed out)`), timeoutMs());
   try {
+    await loadGuard();
     const [dir, dataHome] = process.argv.slice(2);
     if (typeof dir !== 'string' || typeof dataHome !== 'string' || !isAbsolute(dir) || !isAbsolute(dataHome)) {
       refuse(`${COULD_NOT} (no run directory)`);
@@ -139,6 +154,15 @@ function main() {
   }
 }
 
+// Any exit that is not an explicit allow is a refusal.
+process.exitCode = 2;
 process.on('uncaughtException', () => refuse(COULD_NOT));
 process.on('unhandledRejection', () => refuse(COULD_NOT));
-main();
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGPIPE', 'SIGQUIT', 'SIGUSR1', 'SIGUSR2']) {
+  try {
+    process.on(sig, () => refuse(`${COULD_NOT} (${sig})`));
+  } catch {
+    // a signal this platform cannot catch
+  }
+}
+main().catch(() => refuse(COULD_NOT));

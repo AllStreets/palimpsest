@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+
+import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from '../engine/market/guard.js';
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), '..', 'engine', 'market', 'guard-hook.mjs');
 
@@ -28,13 +30,14 @@ afterEach(() => {
 });
 
 /** Runs the hook under plain node (no tsx), with an empty environment, feeding `stdin`. `null` leaves stdin open. */
-function runHook(stdin: string | null, argv: string[] = [dir, dataHome], env: Record<string, string> = {}): Promise<{ code: number | null; stderr: string }> {
+function runHook(stdin: string | null, argv: string[] = [dir, dataHome], env: Record<string, string> = {}, hook = HOOK, onSpawn?: (pid: number) => void): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [HOOK, ...argv], { env: { PATH: '/usr/bin:/bin', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [hook, ...argv], { env: { PATH: '/usr/bin:/bin', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stderr = '';
     child.stderr.on('data', (d) => (stderr += d.toString()));
     child.on('error', reject);
     child.on('close', (code) => resolve({ code, stderr }));
+    if (onSpawn && child.pid) onSpawn(child.pid);
     if (stdin !== null) child.stdin.end(stdin);
   });
 }
@@ -126,5 +129,51 @@ describe('guard hook', () => {
     const r = await runHook(null, [dir, dataHome], { PALIMPSEST_HOOK_TIMEOUT_MS: '600000' });
     assert.equal(r.code, 2);
     assert.ok(Date.now() - started < 8000);
+  });
+
+  test('exits 2 when guard-core.mjs is missing or broken', async () => {
+    const bin = join(tempDir, 'bin');
+    mkdirSync(bin);
+    const hook = join(bin, 'guard-hook.mjs');
+    copyFileSync(HOOK, hook);
+    const okCall = call('mcp__palimpsest__run', { command: 'npm test' });
+    const missing = await runHook(okCall, [dir, dataHome], {}, hook);
+    assert.equal(missing.code, 2);
+    assert.match(missing.stderr, /guard could not check this call/);
+    writeFileSync(join(bin, 'guard-core.mjs'), 'export function forbidden( {\n');
+    assert.equal((await runHook(okCall, [dir, dataHome], {}, hook)).code, 2);
+    writeFileSync(join(bin, 'guard-core.mjs'), 'export const nothing = 1;\n');
+    assert.equal((await runHook(okCall, [dir, dataHome], {}, hook)).code, 2);
+    writeFileSync(join(bin, 'guard-core.mjs'), 'throw new Error("load failure");\n');
+    assert.equal((await runHook(okCall, [dir, dataHome], {}, hook)).code, 2);
+  });
+
+  test('exits 2 when ctl/bin/guard-core.mjs is deleted from an installed run', async () => {
+    const prev = process.env.PALIMPSEST_HOME;
+    process.env.PALIMPSEST_HOME = dataHome;
+    try {
+      const { guardHookCommand } = await import('../engine/market/broker.js');
+      const runRoot = join(dataHome, 'runs', 'run-1');
+      const [node, hook, hookDir, hookHome] = guardHookCommand(runRoot, dir);
+      assert.equal(node, process.execPath);
+      unlinkSync(join(runRoot, 'ctl', 'bin', 'guard-core.mjs'));
+      const r = await runHook(call('mcp__palimpsest__run', { command: 'npm test' }), [hookDir, hookHome], {}, hook);
+      assert.equal(r.code, 2);
+    } finally {
+      if (prev === undefined) delete process.env.PALIMPSEST_HOME;
+      else process.env.PALIMPSEST_HOME = prev;
+    }
+  });
+
+  test('exits 2 when it is sent SIGTERM while waiting', async () => {
+    const r = await runHook(null, [dir, dataHome], {}, HOOK, (pid) => setTimeout(() => process.kill(pid, 'SIGTERM'), 300));
+    assert.equal(r.code, 2);
+  });
+
+  test('exports the deny lists a second layer independent of the hook', () => {
+    for (const t of ['Bash', 'WebFetch', 'WebSearch', 'Task']) assert.ok(CLI_DISALLOWED_TOOLS.includes(t), t);
+    for (const rule of ['Bash', 'Read(~/.claude/**)', 'Edit(~/.claude/**)', 'Read(~/.config/gh/**)', 'Edit(//**/.git/**)']) {
+      assert.ok(CLI_PERMISSIONS_DENY.includes(rule), rule);
+    }
   });
 });

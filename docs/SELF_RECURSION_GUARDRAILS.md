@@ -52,6 +52,10 @@ Each is enough on its own for a push; together they also cover his credentials a
    - The claude CLI has no shell tool; its only command tool is `mcp__palimpsest__run` (`engine/market/broker-mcp.mjs`), which forwards to the broker with a per-run bearer token read from `<ctl>/broker.token` and never passed on an argv (ruling 19).
 3. **The sandbox.** `engine/market/sandbox.ts`, `toolProfile()` and `cliProfile()`, applied by `wrap()`: deny by default; his home unreadable except the run root and toolchains; writes only inside the run root, with every clone's `.git` and the clone directories themselves write-denied; exec of `gh`, `security`, `osascript`, `sudo`, `launchctl` and `open` denied; the keychain's mach services denied; outbound only to loopback (the engine port, Ollama and other runs' proxy and broker ports denied) and through the run's egress proxy (`engine/market/egress.ts`), which never lists GitHub.
 
+`<ctl>/broker.token` is readable by both profiles (ctl is read-only to both), so a tool child can read it; but the broker's port is reachable only from the CLI profile's own network rule and from tool children of the same run, which already run every command through that same broker and guard. Another run's tool children are denied the port by their profile (it is registered with `registerRunPorts`) and hold a different token.
+
+After every broker command and file tool call, `reapRun()` (`engine/market/reaper.ts`) kills whatever the call left running (a forked, setsid daemon): every process of his user whose environment carries the run's markers, whose executable lives under the run root, or whose working directory is under the run root without a terminal, sparing the engine, its ancestors, protected pids (the claude CLI) and live commands of the run, and signalling only pids verified still to belong to the run. `runQuiet()` is required before `diffOf`, `commitAll` and each claude tool turn (Tasks 9 and 13). The claude CLI also runs with `--disallowedTools` and `permissions.deny` from `CLI_DISALLOWED_TOOLS` and `CLI_PERMISSIONS_DENY` (`engine/market/guard.ts`, Task 9), so a hook that fails to start still leaves no shell.
+
 The control scripts the sandboxed processes run (the hook, the MCP server, the file tool and the guard) are copied into `<runRoot>/ctl/bin` (read-only to both profiles) by `installControlScripts()` in `engine/market/broker.ts`, because both profiles deny reads of his home, where this repository lives.
 
 ## Kill switches and caps
@@ -69,6 +73,8 @@ The control scripts the sandboxed processes run (the hook, the MCP server, the f
 | Command output: 64 KB per stream to the caller, `MAX_SPOOL_BYTES` (20 MB) per run to the log, then the first and last 4 KB of each call | `engine/market/broker.ts` `Capped`, `Spooler` |
 | The file tool's reads capped at 256 KB | `engine/market/file-tool.mjs` `MAX_READ_BYTES` |
 | The hook's own 5 s timeout | `engine/market/guard-hook.mjs` |
+| At most four concurrent broker calls per run (`MAX_CONCURRENT_CALLS`, then 429) | `engine/market/broker.ts` `startBroker` |
+| Processes a command leaves behind are killed after the call | `engine/market/reaper.ts` `reapRun`, `runQuiet` |
 | Spawned process groups capped by wall clock and killed as a group | `engine/exec.ts` `realSpawner` (`maxMs`, `kill`) |
 | Turn and minute caps of a run | Task 9 and Task 13 (`WorkInput.caps`) |
 | Self-halt after three failed inspections in a row or any revert of a city merge | Tasks 15 and 16 (`repo.halted`) |

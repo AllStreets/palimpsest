@@ -14,6 +14,9 @@ import {
   brokerMcpServer,
   execFileTool,
   execTool,
+  protectPids,
+  reapRun,
+  runQuiet,
   spoolUsed,
   startBroker,
   setSpoolUsedForTests,
@@ -204,6 +207,11 @@ describe('execFileTool', () => {
     assert.match(ls.stdout, /a\.ts/);
     const s = await execFileTool({ ...base(run, log), op: 'search', args: { pattern: 'const b' } });
     assert.match(s.stdout, /b\.ts/);
+    const one = await execFileTool({ ...base(run, log), op: 'search', args: { pattern: 'const a', path: 'src/a.ts' } });
+    assert.deepEqual((one.result as { matches: Array<{ path: string }> }).matches.map((m) => m.path), ['src/a.ts']);
+    const deep = await execFileTool({ ...base(run, log), op: 'write', args: { path: 'x/y/z/c.ts', content: 'c' } });
+    assert.equal(deep.refused, null, deep.stdout);
+    assert.equal(readFileSync(join(run.dir, 'x', 'y', 'z', 'c.ts'), 'utf8'), 'c');
   });
 
   test('file-tool read through a symlink to a temp hosts.yml stand-in is refused', async () => {
@@ -391,5 +399,62 @@ describe('under the tool profile', () => {
     const r = await execFileTool({ ...base(run, log), op: 'read', args: { path: 'hosts.yml' } });
     assert.ok(r.refused);
     assert.doesNotMatch(r.stdout, /stand-in/);
+  });
+});
+
+describe('the reaper', () => {
+  const daemon = (name: string, clearEnv = false) =>
+    `${clearEnv ? 'env -i ' : ''}perl -e 'use POSIX; exit if fork; POSIX::setsid(); exit if fork; sleep 3; open(F, ">>", "${name}"); print F "alive\\n"; close F'; echo started`;
+
+  test('a fork and setsid daemon is gone after execTool returns and never writes', async () => {
+    const run = makeRun('run-daemon');
+    const r = await execTool({ ...base(run, []), command: daemon('escaped.txt'), timeoutMs: 10_000 });
+    assert.equal(r.code, 0);
+    const r2 = await execTool({ ...base(run, []), command: daemon('escaped-noenv.txt', true), timeoutMs: 10_000 });
+    assert.equal(r2.code, 0);
+    await new Promise((res) => setTimeout(res, 4000));
+    assert.ok(!existsSync(join(run.dir, 'escaped.txt')), 'the daemon outlived its command');
+    assert.ok(!existsSync(join(run.dir, 'escaped-noenv.txt')), 'the env-cleared daemon outlived its command');
+    assert.deepEqual(await reapRun(run.runRoot), []);
+  });
+
+  test('the reaper never touches a process outside the run root or a protected one', async () => {
+    const run = makeRun('run-protect');
+    const outside = spawn('/bin/sleep', ['30'], { cwd: tempDir, stdio: 'ignore' }) as unknown as ChildProcessWithoutNullStreams;
+    children.push(outside);
+    const kept = spawn('/bin/sleep', ['30'], { cwd: run.dir, stdio: 'ignore' }) as unknown as ChildProcessWithoutNullStreams;
+    children.push(kept);
+    protectPids(run.runRoot, [kept.pid as number]);
+    const inside = spawn('/bin/sleep', ['30'], { cwd: run.dir, stdio: 'ignore', detached: true }) as unknown as ChildProcessWithoutNullStreams;
+    children.push(inside);
+    await new Promise((res) => setTimeout(res, 200));
+    const killed = await reapRun(run.runRoot);
+    assert.ok(killed.includes(inside.pid as number), `inside sleep not reaped: ${killed}`);
+    assert.ok(!killed.includes(outside.pid as number));
+    assert.ok(!killed.includes(kept.pid as number));
+    assert.ok(!killed.includes(process.pid));
+    assert.doesNotThrow(() => process.kill(outside.pid as number, 0));
+    assert.doesNotThrow(() => process.kill(kept.pid as number, 0));
+    protectPids(run.runRoot, []);
+  });
+
+  test('runQuiet reaps and then confirms nothing is left', async () => {
+    const run = makeRun('run-quiet');
+    const inside = spawn('/bin/sleep', ['30'], { cwd: run.dir, stdio: 'ignore', detached: true }) as unknown as ChildProcessWithoutNullStreams;
+    children.push(inside);
+    await new Promise((res) => setTimeout(res, 200));
+    await runQuiet(run.runRoot);
+    await new Promise((res) => setTimeout(res, 100));
+    assert.throws(() => process.kill(inside.pid as number, 0));
+  });
+
+  test('the broker refuses a fifth concurrent call on one run', async () => {
+    const a = makeRun('run-busy');
+    const broker = await startBroker(a.runId, { runRoot: a.runRoot, dir: a.dir, log: () => {}, signal: new AbortController().signal });
+    open.push(broker);
+    const token = readFileSync(join(a.runRoot, 'ctl', 'broker.token'), 'utf8').trim();
+    const calls = Array.from({ length: 5 }, () => post(broker.port, '/run', { command: 'sleep 1', timeoutMs: 5000 }, { authorization: `Bearer ${token}` }));
+    const statuses = (await Promise.all(calls)).map((c) => c.status).sort();
+    assert.deepEqual(statuses, [200, 200, 200, 200, 429]);
   });
 });

@@ -20,6 +20,7 @@ import { home as dataHomeDir, paths } from '../home.js';
 import { record } from '../ledger.js';
 import { forbidden } from './guard.js';
 import type { RunLogLine } from './provider.js';
+import { noteLiveGroup, reapRun } from './reaper.js';
 import { childEnv, detectToolchains, realish, registerRunPorts, unregisterRunPorts, wrap, type ProfileInput } from './sandbox.js';
 
 /** The longest a single agent command may run. A request above it is cut to it. */
@@ -33,6 +34,10 @@ export const MAX_RETURN_BYTES = 64 * 1024;
 /** Output spooled to the run log per run; past it, each call logs only its first and last SPOOL_EDGE_BYTES. */
 export const MAX_SPOOL_BYTES = 20 * 1024 * 1024;
 export const SPOOL_EDGE_BYTES = 4 * 1024;
+export { protectPids, reapRun, runQuiet } from './reaper.js';
+
+/** Concurrent broker calls per run; more get 429. */
+export const MAX_CONCURRENT_CALLS = 4;
 /** The file tool's own cap. */
 const FILE_TOOL_MS = 60_000;
 const MAX_FILE_TOOL_STDOUT = 2 * 1024 * 1024;
@@ -242,18 +247,19 @@ class Capped {
  * SPOOL_EDGE_BYTES with a line saying how much was dropped.
  */
 class Spooler {
-  private allowance: number;
-  private streamed = 0;
+  /** Bytes this call has logged as it streamed. */
+  private head = 0;
   private tail: Array<{ stream: string; line: string; n: number }> = [];
   private tailBytes = 0;
   private dropped = 0;
-  constructor(private runId: string, private log: (l: RunLogLine) => void) {
-    this.allowance = Math.max(MAX_SPOOL_BYTES - spoolUsed(runId), SPOOL_EDGE_BYTES);
-  }
+  constructor(private runId: string, private log: (l: RunLogLine) => void) {}
   add(stream: string, line: string) {
     const n = Buffer.byteLength(line) + 1;
-    if (this.streamed + n <= this.allowance) {
-      this.streamed += n;
+    const used = spoolUsed(this.runId);
+    // Bytes are reserved in the run's count line by line, so concurrent calls cannot overrun the cap together.
+    if (used + n <= MAX_SPOOL_BYTES || this.head + n <= SPOOL_EDGE_BYTES) {
+      spool.set(this.runId, used + n);
+      this.head += n;
       this.log({ at: now(), kind: 'tool', text: line, data: { stream } });
       return;
     }
@@ -270,7 +276,7 @@ class Spooler {
       this.log({ at: now(), kind: 'engine', text: `[palimpsest] ${this.dropped} bytes of output dropped from the run log (the run's ${MAX_SPOOL_BYTES} byte spool is full)` });
     }
     for (const t of this.tail) this.log({ at: now(), kind: 'tool', text: t.line, data: { stream: t.stream } });
-    spool.set(this.runId, spoolUsed(this.runId) + this.streamed + this.tailBytes);
+    spool.set(this.runId, spoolUsed(this.runId) + this.tailBytes);
   }
 }
 
@@ -292,6 +298,7 @@ async function runSandboxed(
     maxMs,
     ...(stdin === undefined ? {} : { stdin }),
   });
+  noteLiveGroup(o.runRoot, child.pid, true);
   let aborted = false;
   const onAbort = () => {
     aborted = true;
@@ -316,6 +323,10 @@ async function runSandboxed(
     o.signal.removeEventListener('abort', onAbort);
     spooler?.end();
     child.kill('SIGTERM');
+    noteLiveGroup(o.runRoot, child.pid, false);
+    // Whatever the command left behind (a forked, setsid daemon) is killed before the result returns.
+    const reaped = await reapRun(o.runRoot);
+    if (reaped.length) o.log({ at: now(), kind: 'engine', text: `[palimpsest] killed ${reaped.length} process(es) the command left running: ${reaped.join(', ')}` });
   }
 }
 
@@ -419,6 +430,7 @@ export async function startBroker(runId: string, ctx: BrokerContext): Promise<Br
   installControlScripts(ctx.runRoot);
 
   const note = (text: string) => ctx.log({ at: now(), kind: 'refused', text: `broker: ${text}` });
+  let inFlight = 0;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.headers.origin !== undefined) {
@@ -466,6 +478,12 @@ export async function startBroker(runId: string, ctx: BrokerContext): Promise<Br
         return;
       }
       const timeoutMs = typeof body.timeoutMs === 'number' ? body.timeoutMs : DEFAULT_TOOL_MS;
+      if (inFlight >= MAX_CONCURRENT_CALLS) {
+        note(`more than ${MAX_CONCURRENT_CALLS} commands at once refused`);
+        send(res, 429, { error: `at most ${MAX_CONCURRENT_CALLS} commands run at once` });
+        return;
+      }
+      inFlight += 1;
       execTool({
         runId,
         runRoot: ctx.runRoot,
@@ -475,10 +493,14 @@ export async function startBroker(runId: string, ctx: BrokerContext): Promise<Br
         stage: ctx.stage?.() ?? 'working',
         signal: ctx.signal,
         log: ctx.log,
-      }).then(
-        (r) => send(res, 200, r),
-        (err: unknown) => send(res, 500, { error: err instanceof Error ? err.message : String(err) }),
-      );
+      })
+        .then(
+          (r) => send(res, 200, r),
+          (err: unknown) => send(res, 500, { error: err instanceof Error ? err.message : String(err) }),
+        )
+        .finally(() => {
+          inFlight -= 1;
+        });
     });
   });
 
