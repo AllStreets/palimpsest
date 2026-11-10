@@ -18,7 +18,12 @@ import { registerRunPorts, unregisterRunPorts } from './sandbox.js';
 
 export type EgressStage = 'install' | 'working' | 'checks';
 
-/** The hosts a Claude run needs for the model (Task 11 extends it with what his login refresh needs). */
+/**
+ * The hosts a Claude run needs. The Task 11 smoke run on his login (claude
+ * 2.1.319, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1) made CONNECTs to
+ * api.anthropic.com only. A login refresh may need more; any host it asks
+ * for is refused and logged, never added silently.
+ */
 export const CLAUDE_HOSTS: string[] = ['api.anthropic.com'];
 
 /** Registries by ecosystem (ruling 21). */

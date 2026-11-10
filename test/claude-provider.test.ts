@@ -5,13 +5,13 @@
  */
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { realSpawner, setSpawner, type SpawnLine, type SpawnOpts, type Spawned } from '../engine/exec.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from '../engine/market/guard.js';
-import { CALL_DENY, HOOK_MATCHER, KILL_AFTER_MS, claudeProvider, type ClaudeOptions } from '../engine/market/claude.js';
+import { BUILTIN_PLUGINS, CALL_DENY, CLAUDE_SANDBOX, HOOK_MATCHER, KILL_AFTER_MS, claudeProvider, type ClaudeOptions } from '../engine/market/claude.js';
 import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { protectedPidsOf } from '../engine/market/reaper.js';
@@ -340,13 +340,18 @@ describe('work', () => {
     const { opts } = calls[0];
     assert.equal(opts.clearEnv, true);
     const env = opts.env ?? {};
-    assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'MCP_TOOL_TIMEOUT', 'NO_PROXY', 'PATH', 'TMPDIR'].sort());
+    assert.deepEqual(Object.keys(env).sort(), ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'CLAUDE_CODE_TMPDIR', 'HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'LOGNAME', 'MCP_TOOL_TIMEOUT', 'NO_PROXY', 'PATH', 'TMPDIR', 'USER'].sort());
+    // claude names his login's keychain account by USER (Task 11: without it claude reports Not logged in)
+    assert.equal(env.USER, userInfo().username);
+    assert.equal(env.LOGNAME, userInfo().username);
     for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']) assert.equal(env[k], undefined, k);
     assert.ok(!Object.values(env).some((v) => v.includes('sk-ant-test') || v.includes('auth-test')));
     assert.equal(env.MCP_TOOL_TIMEOUT, '900000');
     assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
     assert.equal(env.NO_PROXY, '127.0.0.1,localhost');
     assert.equal(realpathSync(env.TMPDIR), realpathSync(join(run.runRoot, 'tmp')));
+    // claude makes its own temp dir under CLAUDE_CODE_TMPDIR (default /tmp, which the CLI profile denies; Task 11)
+    assert.equal(realpathSync(env.CLAUDE_CODE_TMPDIR), realpathSync(join(run.runRoot, 'tmp')));
     assert.match(env.HTTPS_PROXY, /^http:\/\/palimpsest:egress-token-1@127\.0\.0\.1:50102$/);
     assert.equal(env.HTTP_PROXY, env.HTTPS_PROXY);
   });
@@ -382,7 +387,10 @@ describe('work', () => {
     const { input, run } = workInput();
     await p.work(input);
     const settings = JSON.parse(calls[0].seen['settings.json']!);
-    assert.deepEqual(Object.keys(settings).sort(), ['hooks', 'permissions']);
+    assert.deepEqual(Object.keys(settings).sort(), ['enabledPlugins', 'hooks', 'permissions', 'sandbox']);
+    // Claude Code's built-in plugins are switched off, so init lists no plugins (Task 11 smoke run)
+    assert.deepEqual(settings.enabledPlugins, Object.fromEntries(BUILTIN_PLUGINS.map((n) => [`${n}@builtin`, false])));
+    assert.ok(BUILTIN_PLUGINS.includes('cc-plugin-agents-md') && BUILTIN_PLUGINS.includes('cc-plugin-privacy') && BUILTIN_PLUGINS.includes('cc-plugin-plugin-authoring'));
     assert.deepEqual(Object.keys(settings.hooks), ['PreToolUse']);
     const [entry] = settings.hooks.PreToolUse;
     assert.equal(entry.matcher, HOOK_MATCHER);
@@ -396,6 +404,26 @@ describe('work', () => {
     assert.deepEqual(settings.permissions.allow, ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'mcp__palimpsest__run']);
     assert.deepEqual(settings.permissions.deny, [...CLI_PERMISSIONS_DENY]);
     for (const t of ['Bash', 'WebFetch', 'WebSearch', 'Task', 'Agent']) assert.ok(settings.permissions.deny.includes(t), t);
+  });
+
+  test('work asks claude for its hook events, so the run log shows every hook decision (Task 11)', async () => {
+    const { calls } = fake(happyWork());
+    const { input } = workInput();
+    await provider().p.work(input);
+    assert.ok(claudeArgs(calls[0]).includes('--include-hook-events'));
+  });
+
+  test("work settings turn on Claude Code's own sandbox as a fourth layer, unless told not to (ruling 19, Task 11)", async () => {
+    const nested = { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false };
+    assert.deepEqual(CLAUDE_SANDBOX, nested);
+    const on = fake(happyWork());
+    await provider().p.work(workInput().input);
+    const settings = JSON.parse(on.calls[0].seen['settings.json']!);
+    assert.deepEqual(settings.sandbox, nested);
+    assert.equal(settings.hooks.PreToolUse[0].matcher, HOOK_MATCHER);
+    const off = fake(happyWork());
+    await provider({ nestedSandbox: false }).p.work(workInput({ runId: 'run-2' }).input);
+    assert.equal(JSON.parse(off.calls[0].seen['settings.json']!).sandbox, undefined);
   });
 
   test('usage parses from the result line into weighted credits', async () => {
@@ -638,9 +666,9 @@ describe('plan and review', () => {
     assert.match(flagValue(a, '--append-system-prompt'), /Ada is careful and terse\./);
     assert.ok(!a.includes('--bare'));
     assert.ok(!a.includes('--allowedTools'));
-    assert.ok(!a.includes('--max-turns'), 'turns are counted until the probe finds --max-turns');
+    assert.equal(flagValue(a, '--max-turns'), '3', 'the smoke run (Task 11) found --max-turns in claude 2.1.319');
     assert.deepEqual(JSON.parse(calls[0].seen['mcp.json']!), { mcpServers: {} });
-    assert.deepEqual(JSON.parse(calls[0].seen['settings.json']!), { permissions: { deny: CALL_DENY } });
+    assert.deepEqual(JSON.parse(calls[0].seen['settings.json']!), { enabledPlugins: Object.fromEntries(BUILTIN_PLUGINS.map((n) => [`${n}@builtin`, false])), permissions: { deny: CALL_DENY } });
     assert.deepEqual(CALL_DENY, ['Bash', 'Read', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'Task', 'Agent']);
     assert.match(calls[0].opts.stdin ?? '', /Add a changelog/);
     assert.match(calls[0].opts.stdin ?? '', /A TypeScript widget library\./);
@@ -649,11 +677,13 @@ describe('plan and review', () => {
     for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK']) assert.equal(env[k], undefined, k);
   });
 
-  test('plan passes --max-turns 3 when the probe found it', async () => {
+  test('plan passes --max-turns 3 by default and leaves it out when told the CLI lacks it', async () => {
     const { calls } = fake([callInit(), result({ structured_output: { plan: 'p', price: 10, confidence: 0.5 } })]);
-    const { p } = provider({ maxTurnsFlag: true });
-    await p.plan(planInput, new AbortController().signal);
+    await provider().p.plan(planInput, new AbortController().signal);
     assert.equal(flagValue(claudeArgs(calls[0]), '--max-turns'), '3');
+    const second = fake([callInit(), result({ structured_output: { plan: 'p', price: 10, confidence: 0.5 } })]);
+    await provider({ maxTurnsFlag: false }).p.plan(planInput, new AbortController().signal);
+    assert.ok(!claudeArgs(second.calls[0]).includes('--max-turns'));
   });
 
   test('plan runs in its own scratch root with its own profile and removes it after', async () => {

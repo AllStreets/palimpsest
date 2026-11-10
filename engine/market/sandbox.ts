@@ -56,15 +56,18 @@ export const OLLAMA_PORT = 11434;
 
 /**
  * The paths under his home the claude CLI must write while it runs
- * (relative to the home). The smoke run (Task 11) confirms this list.
+ * (relative to the home). The Task 11 smoke run (claude 2.1.319) needed
+ * nothing more: with these, `~/.claude.json` write-denied and claude's own
+ * temp dir moved to the run (CLAUDE_CODE_TMPDIR), `claude -p` starts and
+ * finishes a work run. Its writes to `~/.claude/projects` and
+ * `~/Library/Caches/claude-cli-nodejs` are denied and it carries on.
  */
 export const CLAUDE_RUNTIME_PATHS = ['.claude/debug', '.claude/todos', '.claude/telemetry'] as const;
 // Never writable by a city run: his live sessions source `.claude/shell-snapshots`
 // and `.claude/session-env`, read `.claude/statsig`, and start every `mcpServers`
 // entry in `~/.claude.json`. City runs have no Bash tool, so they need none of
-// them. Task 11's smoke run confirms that `claude -p` starts without writing
-// `~/.claude.json`; if it cannot, the run gets a per-run CLAUDE_CONFIG_DIR copy,
-// never a write to his own file.
+// them. Task 11's smoke run confirmed that `claude -p` starts and works without
+// writing `~/.claude.json`, so no per-run CLAUDE_CONFIG_DIR copy is needed.
 
 /** Credential and config files under his home, denied by name in both profiles as a guard against a later edit. */
 export const SECRET_PATHS = [
@@ -154,8 +157,12 @@ const TOOL_MACH = [
   'com.apple.trustd.agent',
 ];
 
-/** The keychain's mach services: denied to every tool child, whatever binary asks. */
-export const KEYCHAIN_MACH = ['com.apple.SecurityServer', 'com.apple.securityd'] as const;
+/**
+ * The keychain's mach services: denied to every tool child, whatever binary
+ * asks, and allowed to the claude process for his login (the smoke run saw
+ * claude 2.1.319 look up `com.apple.securityd.xpc` itself; Task 11).
+ */
+export const KEYCHAIN_MACH = ['com.apple.SecurityServer', 'com.apple.securityd', 'com.apple.securityd.xpc'] as const;
 
 /* ------------------------------------------------------------------ */
 /* Live run ports                                                      */
@@ -301,13 +308,21 @@ function readRules(r: Resolved): string[] {
   return lines;
 }
 
-function secretDenies(r: Resolved, names: readonly string[]): string[] {
+function secretDenies(r: Resolved, names: readonly string[], writeOnly: readonly string[] = []): string[] {
   return [
     '; credentials and config, denied by name after every allow',
     `(deny file-read* file-write* ${names.map((n) => sub(join(r.home, n))).join(' ')})`,
+    ...(writeOnly.length ? [`(deny file-write* ${writeOnly.map((n) => sub(join(r.home, n))).join(' ')})`] : []),
     '',
   ];
 }
+
+/** Where his login keychain lives: readable (never writable) by the CLI profile alone, so `security` finds his Claude login. */
+export const KEYCHAINS = 'Library/Keychains';
+/** The Security framework's MDS directory (its shared memory messages): `security` opens it before any keychain search (Task 11). */
+export const MDS_DIR = '/private/var/db/mds';
+/** His keychain search list, which the Security framework reads from disk (Task 11). */
+export const SECURITY_PREFS = 'Library/Preferences/com.apple.security.plist';
 
 /**
  * Denies writes to each clone's `.git` and to the clone directory itself
@@ -409,6 +424,10 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push(`(allow file-read* ${lit(SH_SELECT)})`);
   if (!isRepo) lines.push(`(allow file-read* ${sub(work)})`);
   lines.push('');
+  lines.push('; his login: claude runs `security find-generic-password`, which reads the login keychain and its search list (Task 11)');
+  lines.push(`(allow file-read* ${sub(join(r.home, KEYCHAINS))} ${sub(MDS_DIR)} ${lit(join(r.home, SECURITY_PREFS))})`);
+  lines.push('(allow user-preference-read (preference-domain "kCFPreferencesAnyApplication") (preference-domain "com.apple.security"))');
+  lines.push('');
 
   lines.push(`; writes: the ${isRepo ? 'repo' : 'work dir'}, tmp and the runtime paths (never ~/.claude.json)`);
   lines.push(`(allow file-write* ${sub(work)} ${sub(join(r.runRoot, 'tmp'))} ${runtime.map(sub).join(' ')})`);
@@ -420,7 +439,7 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push(`(deny file-read* ${sub(join(claudeDir, 'projects'))} ${lit(join(claudeDir, 'history.jsonl'))})`);
   lines.push('');
 
-  lines.push(...secretDenies(r, SECRET_PATHS));
+  lines.push(...secretDenies(r, SECRET_PATHS.filter((n) => n !== KEYCHAINS), [KEYCHAINS]));
 
   lines.push('; mach: the keychain is needed by security for his login');
   lines.push(`(allow mach-lookup ${[...TOOL_MACH, ...KEYCHAIN_MACH].map((n) => `(global-name ${q(n)})`).join(' ')})`);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,6 +57,31 @@ describe('guard hook', () => {
     const r = await runHook(call('Edit', { file_path: join(tempDir, 'home', '.claude', 'settings.json'), old_string: '{}', new_string: '{"x":1}' }));
     assert.equal(r.code, 2);
     assert.ok(r.stderr.length > 0);
+  });
+
+  test('writes a marker line for each decision to the run tmp/hook.log (Task 11)', async () => {
+    const tmp = join(dir, '..', 'tmp');
+    mkdirSync(tmp, { recursive: true });
+    assert.equal((await runHook(call('Read', { file_path: join(dir, 'src', 'a.ts') }))).code, 0);
+    assert.equal((await runHook(call('Bash', { command: 'ls' }))).code, 2);
+    const lines = readFileSync(join(tmp, 'hook.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(lines.length, 2);
+    assert.deepEqual([lines[0].tool, lines[0].decision], ['Read', 'allowed']);
+    assert.deepEqual([lines[1].tool, lines[1].decision], ['Bash', 'refused']);
+    assert.match(lines[1].reason, /tool not allowed/);
+  });
+
+  test('a marker that cannot be written changes no decision and is never written through a symlink', async () => {
+    // no tmp dir: the decision stands
+    assert.equal((await runHook(call('Read', { file_path: join(dir, 'src', 'a.ts') }))).code, 0);
+    assert.equal((await runHook(call('Bash', { command: 'ls' }))).code, 2);
+    // tmp/hook.log a symlink to a file in the repo: refused as before, and the target stays untouched
+    const tmp = join(dir, '..', 'tmp');
+    mkdirSync(tmp, { recursive: true });
+    symlinkSync(join(dir, 'src', 'a.ts'), join(tmp, 'hook.log'));
+    assert.equal((await runHook(call('Read', { file_path: join(dir, 'src', 'a.ts') }))).code, 0);
+    assert.equal(readFileSync(join(dir, 'src', 'a.ts'), 'utf8'), 'export const a = 1;\n');
+    assert.ok(existsSync(join(tmp, 'hook.log')));
   });
 
   test('exits 2 for an unknown tool', async () => {

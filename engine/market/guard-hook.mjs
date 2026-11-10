@@ -10,8 +10,8 @@
 // Only node built-ins are imported statically. guard-core.mjs is loaded
 // dynamically inside a try: a missing, broken or incomplete module would
 // otherwise make node exit 1, which Claude Code treats as non-blocking.
-import { statSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { closeSync, constants, openSync, statSync, writeSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 
 /** The guard's functions, set once guard-core.mjs has loaded. */
 let forbidden;
@@ -41,8 +41,36 @@ const FILE_TOOLS = {
 };
 const PATHISH_KEY = /path|file|dir|glob|cwd|root|target|dest|src/i;
 
+/** The tool of the call being decided, for the marker line. */
+let markerTool = null;
+
+/**
+ * Appends one marker line to `<runRoot>/tmp/hook.log` (the run dir is
+ * `<runRoot>/repo`, `ship` or `base`), so the engine can show that the hook
+ * ran and what it decided. Best effort and never followed through a
+ * symlink or blocked on a FIFO: a marker that cannot be written changes no
+ * decision.
+ */
+function mark(decision, reason) {
+  try {
+    const dir = process.argv[2];
+    if (typeof dir !== 'string' || !isAbsolute(dir) || !['repo', 'ship', 'base'].includes(basename(dir))) return;
+    const flags = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+    const fd = openSync(join(dirname(dir), 'tmp', 'hook.log'), flags, 0o600);
+    try {
+      const line = JSON.stringify({ at: new Date().toISOString(), hook: 'palimpsest-guard', tool: markerTool, decision, ...(reason ? { reason } : {}) });
+      writeSync(fd, line + '\n');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // the marker is evidence only
+  }
+}
+
 function refuse(reason) {
   try {
+    mark('refused', reason);
     process.stderr.write(`Palimpsest refused this call: ${reason}\n`);
   } finally {
     process.exit(2);
@@ -50,6 +78,7 @@ function refuse(reason) {
 }
 
 function allow() {
+  mark('allowed', null);
   process.exit(0);
 }
 
@@ -71,6 +100,7 @@ function decide(raw, dir, dataHome) {
   if (msg.hook_event_name !== undefined && msg.hook_event_name !== 'PreToolUse') throw new Error('not PreToolUse');
   const tool = msg.tool_name;
   const input = msg.tool_input;
+  if (typeof tool === 'string') markerTool = tool.slice(0, 100);
   if (typeof tool !== 'string' || !isPlainObject(input)) throw new Error('bad shape');
 
   if (tool === RUN_TOOL) {

@@ -25,7 +25,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 
 import { claudeCredits, DEFAULT_TOKENS_PER_PCT, weightedTokens } from '../../shared/credits.js';
@@ -54,6 +54,39 @@ export const MCP_SERVER = 'palimpsest';
 export const HOOK_MATCHER = 'Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep|mcp__palimpsest__run';
 /** `permissions.deny` of a plan, review or judge call: there are no tools to hook. */
 export const CALL_DENY = ['Bash', 'Read', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'Task', 'Agent'];
+/**
+ * Claude Code's built-in plugins (claude 2.1.319). Every settings file of a
+ * city call switches each off (`enabledPlugins: { "<name>@builtin": false }`),
+ * so init lists no plugins; a built-in this list misses shows up in init and
+ * ends the call (`unexpected plugins`), which is the closed way to fail.
+ * The Task 11 smoke run found three enabled by default: agents-md, privacy
+ * and plugin-authoring.
+ */
+export const BUILTIN_PLUGINS: readonly string[] = [
+  'cc-plugin-agents-md',
+  'cc-plugin-claude-platform',
+  'cc-plugin-claude-test',
+  'cc-plugin-diff',
+  'cc-plugin-easel',
+  'cc-plugin-mermaid',
+  'cc-plugin-mods-guide',
+  'cc-plugin-plugin-authoring',
+  'cc-plugin-privacy',
+  'cc-plugin-responsive-mode',
+  'cc-plugin-sec-default',
+  'cc-plugin-telemetry',
+  'cc-plugin-tips',
+  'cc-plugin-you-should-know',
+];
+const PLUGINS_OFF: Record<string, false> = Object.fromEntries(BUILTIN_PLUGINS.map((n) => [`${n}@builtin`, false]));
+/**
+ * Claude Code's own sandbox, a fourth layer in every work run (ruling 19).
+ * claude 2.1.319 starts and finishes a work run with it inside the CLI
+ * profile (Task 11). It bounds only the Bash tool, which a city run never
+ * has, so it is a guard against a later change rather than a wall today;
+ * `failIfUnavailable` makes a CLI that cannot sandbox end the run.
+ */
+export const CLAUDE_SANDBOX = { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false } as const;
 /** The broker's tool timeout, in ms, as claude reads it (MCP_TOOL_TIMEOUT). */
 export const MCP_TOOL_TIMEOUT_MS = 900_000;
 /** After a SIGTERM to the group on a cap or an abort, SIGKILL follows after this. */
@@ -80,8 +113,18 @@ export interface ClaudeOptions {
    * carrying `.claude/settings.local.json` is refused.
    */
   settingSources?: '' | 'local';
-  /** True once Task 11's probe finds `--max-turns`: plan and review calls pass `--max-turns 3`. Turns are counted either way. */
+  /**
+   * Plan, review and judge calls pass `--max-turns 3` (default true: the
+   * Task 11 smoke run found the flag in claude 2.1.319). Turns are counted
+   * either way; false leaves the flag out for a CLI that lacks it.
+   */
   maxTurnsFlag?: boolean;
+  /**
+   * Turn on Claude Code's own sandbox in a work run's settings (default
+   * true, ruling 19): the Task 11 smoke run showed the CLI starts and works
+   * with it inside the CLI profile. The smoke run's plain call passes false.
+   */
+  nestedSandbox?: boolean;
   /** Reaps the run and throws if anything of it is left (runQuiet), before claude starts and before each tool turn. */
   quiet?: (runRoot: string) => Promise<void>;
   /** Kills whatever a plan, review or judge call left under its scratch root before the root is removed. Default reapRun. */
@@ -144,15 +187,22 @@ function shellLine(argv: string[]): string {
 
 /**
  * The claude child's whole environment (nothing else is inherited): his
- * real home (his login lives there), the system path, the run's tmp, the
- * run's egress proxy and two of claude's own switches.
+ * real home and user name (his login lives there), the system path, the run's tmp (as
+ * TMPDIR and as claude's own CLAUDE_CODE_TMPDIR), the run's egress proxy
+ * and two of claude's own switches.
  */
 function claudeEnv(runRoot: string, proxyPort: number, proxyToken: string): Record<string, string> {
   const proxy = proxyUrl(proxyPort, proxyToken);
+  const user = userInfo().username;
   return {
     HOME: homedir(),
+    // claude names his login's keychain item by USER; without it the smoke run (Task 11) got "Not logged in"
+    USER: user,
+    LOGNAME: user,
     PATH: SYSTEM_PATH.join(':'),
     TMPDIR: join(realish(runRoot), 'tmp') + '/',
+    // claude makes `claude-<uid>` under this (default /tmp, outside the CLI profile; Task 11 smoke run)
+    CLAUDE_CODE_TMPDIR: join(realish(runRoot), 'tmp'),
     HTTPS_PROXY: proxy,
     HTTP_PROXY: proxy,
     NO_PROXY: '127.0.0.1,localhost',
@@ -618,6 +668,8 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
         ctl.settings,
         JSON.stringify(
           {
+            ...(o.nestedSandbox !== false ? { sandbox: { ...CLAUDE_SANDBOX } } : {}),
+            enabledPlugins: { ...PLUGINS_OFF },
             permissions: { allow, deny: [...CLI_PERMISSIONS_DENY] },
             hooks: {
               PreToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: shellLine(guardHookCommand(runRoot, i.dir)), timeout: HOOK_TIMEOUT_S }] }],
@@ -631,6 +683,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
       writeCtl(ctl.persona, i.persona);
       const args = [
         ...head(i.agent.model, ctl.dir),
+        '--include-hook-events',
         '--tools',
         WORK_TOOLS.join(','),
         '--allowedTools',
@@ -690,7 +743,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
       egress = await startEgress(runId, log);
       egress.setStage('working', [...CLAUDE_HOSTS]);
       const ctl = join(root, 'ctl');
-      writeCtl(join(ctl, 'settings.json'), JSON.stringify({ permissions: { deny: CALL_DENY } }, null, 2) + '\n');
+      writeCtl(join(ctl, 'settings.json'), JSON.stringify({ enabledPlugins: { ...PLUGINS_OFF }, permissions: { deny: CALL_DENY } }, null, 2) + '\n');
       writeCtl(join(ctl, 'mcp.json'), JSON.stringify({ mcpServers: {} }) + '\n');
       writeCtl(join(ctl, 'persona.md'), persona);
       const claudeBin = bin();
@@ -700,7 +753,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
         '',
         '--json-schema',
         JSON.stringify(schema),
-        ...(o.maxTurnsFlag ? ['--max-turns', String(CALL_MAX_TURNS)] : []),
+        ...(o.maxTurnsFlag !== false ? ['--max-turns', String(CALL_MAX_TURNS)] : []),
         '--append-system-prompt',
         systemPrompt(persona, instructions),
       ];

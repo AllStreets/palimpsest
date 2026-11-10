@@ -212,6 +212,26 @@ describe('profile text', () => {
   });
 });
 
+describe('the claude login under the cli profile (Task 11)', () => {
+  test('cli profile lets security read his login keychain and its preferences, read-only; the tool profile never', () => {
+    const p = cliProfile(cliInput);
+    const lines = p.split('\n');
+    const homeDeny = lineAt(p, '(deny file-read*', `(subpath "${HOME}")`);
+    const allow = lineAt(p, '(allow file-read*', `(subpath "${HOME}/Library/Keychains")`, '(subpath "/private/var/db/mds")', `(literal "${HOME}/Library/Preferences/com.apple.security.plist")`);
+    assert.ok(allow > homeDeny, 'the keychain read comes after the home deny');
+    for (const [i, l] of lines.entries()) {
+      if (l.includes('Library/Keychains') && l.startsWith('(deny file-read*')) assert.ok(i < allow, 'no read deny of the keychains follows the allow');
+      if (l.includes('Library/Keychains') && l.startsWith('(allow file-write')) assert.fail('the keychains are never writable');
+    }
+    assert.ok(lineAt(p, '(deny file-write*', `(subpath "${HOME}/Library/Keychains")`) > allow, 'keychain writes are denied by name');
+    assert.ok(p.includes('(allow user-preference-read (preference-domain "kCFPreferencesAnyApplication") (preference-domain "com.apple.security"))'));
+    const t = toolProfile(input);
+    assert.ok(!t.includes('user-preference-read'));
+    assert.ok(!t.includes('/private/var/db/mds'));
+    assert.ok(lineAt(t, '(deny file-read*', `(subpath "${HOME}/Library/Keychains")`) > lineAt(t, '(allow file-read*'));
+  });
+});
+
 describe('wrap and the child environment', () => {
   test('wrap is identity when sandbox is off on a temp home', () => {
     const dir = mkdtempSync(join(tmpdir(), 'palimpsest-sandbox-test-'));
