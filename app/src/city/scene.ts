@@ -5,6 +5,7 @@ import { createCameraRig } from './camera';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
 import { createPlates, type Plate } from './labels';
+import type { Lot } from './lots';
 import { configureMaterials, texturesSettled } from './materials';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { createPost } from './post';
@@ -33,6 +34,12 @@ export interface CityOptions {
   makeDistrictCenterpiece?: CenterpieceFactory;
   /** Anything beyond the district's own data that changes what the factory builds (a tower's materials); a change rebuilds it. */
   centerpieceKey?: (d: District) => string;
+  /**
+   * A district's tower colours as the scene renders them (CIE Lab of its
+   * stone and brick floors) and the L* of its stone: the ambient blocks at
+   * its plaza edge keep clear of them and a value step away.
+   */
+  districtTones?: (d: District) => { tones: Array<[number, number, number]>; value?: number };
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
@@ -79,6 +86,8 @@ export interface City {
   stats(): { calls: number; triangles: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
   plots(): { plazas: number; buildings: number };
+  /** Draws ambient lots on their own, outside the city (the ambient swatch board). */
+  ambientBoard(lots: Lot[]): { group: THREE.Group; dispose(): void };
 }
 
 /** The plain plinth every district shows until towers exist. */
@@ -204,7 +213,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   function updatePlazas(occ: Occupancy): void {
     // Only occupied plots are paved and cleared: a district, or a site under scaffold.
-    const plazas = plazasOf(occ);
+    const plazas = plazasOf(occ, opts.districtTones);
     grid.setPlazas(plazas);
     ground.setPlazas(plazas);
     // Towers, scaffolds and the skyline around them may all have changed.
@@ -547,6 +556,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
+    ambientBoard: (lots) => grid.board(lots),
     dispose() {
       renderer.setAnimationLoop(null);
       observer.disconnect();

@@ -29,6 +29,13 @@ export interface CollarPlaza {
   z: number;
   /** A district's root height. Absent for the civic plaza and for an analyzing site. */
   rootHeight?: number;
+  /**
+   * A district's tower colours as the scene renders them (CIE Lab of its
+   * stone and brick floors): ambient lots at its edge keep clear of them.
+   */
+  tones?: Array<[number, number, number]>;
+  /** The L* of the tower's stone floors over the root: ambient lots at its edge stand a value step from it. */
+  value?: number;
 }
 
 /** The tallest an ambient building at (x, z) may stand, before rooftop clutter. Infinity when nothing limits it. */
