@@ -29,12 +29,13 @@
  * The revert watch halts a repo whose city merge was reverted (self-halt).
  */
 import { appendFileSync, existsSync, mkdirSync, realpathSync, renameSync, rmSync } from 'node:fs';
+import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 
 import type { CheckName, CheckResult, Floor, FloorSize, Inspection, Job, Repo, Run } from '../../shared/types.js';
 import { emit } from '../events.js';
 import { getRunner } from '../exec.js';
-import { createPR, openPRsFrom, prState, recentCommits, type PRState } from '../github.js';
+import { createPR, openPRsFrom, prState, prTitle, recentCommits, type PRState } from '../github.js';
 import { runCheck } from '../guild/checks.js';
 import { canOpenPR, canPush, inspectionSummary, wipeScratch } from '../guild/inspect.js';
 import { home, isRealDataHome, paths } from '../home.js';
@@ -49,15 +50,14 @@ import { job as storedJob, publicSummary, transition } from './jobs.js';
 import type { RunLogLine } from './provider.js';
 import { reapRun } from './reaper.js';
 import { eraFor } from './reputation.js';
-import { finishWaitingRun, haltRepo, listRuns, liveRunIds, run as storedRun } from './runs.js';
+import { finishWaitingRun, haltRepo, listRuns, liveRunIds, run as storedRun, updateRun } from './runs.js';
+import { SYSTEM_PATH } from './sandbox.js';
 import { createShipDir, engineGit, ENGINE_GIT_FLAGS } from './worktree.js';
 
 /** How often one waiting PR is asked about. */
 export const PR_POLL_MS = 5 * 60_000;
 /** How often one repo with lit floors is read for reverts. */
 export const REVERT_WATCH_MS = 30 * 60_000;
-/** How far before the oldest lit floor the revert watch reads. */
-const REVERT_SLACK_MS = 24 * 60 * 60_000;
 const PUSH_TIMEOUT_MS = 120_000;
 /** Pushes to the default branch in push mode: the first, and one retry after a fetch. */
 export const PUSH_TRIES = 2;
@@ -168,25 +168,73 @@ async function changedLines(ship: string, base: string, head: string): Promise<n
  * must be a local path, so nothing but a temp stand-in is ever written.
  */
 export async function pushTarget(repo: Repo): Promise<string> {
-  const r = await getRunner()('git', ['-C', mirrorDir(repo.fullName), 'config', '--get', 'remote.origin.url'], { timeoutMs: 30_000 });
+  // Read with the push's own clean environment: no GIT_DIR, config parameters or global config of the engine's can redirect it.
+  const r = await getRunner()('git', [`--git-dir=${mirrorDir(repo.fullName)}`, 'config', '--local', '--get', 'remote.origin.url'], { timeoutMs: 30_000, env: pushEnv() });
   const url = r.stdout.trim();
   if (r.code !== 0 || !url) throw new Error(`The mirror of ${repo.fullName} has no origin to push to.`);
   if (isRealDataHome(home())) {
     const full = repo.fullName.toLowerCase();
-    const allowed = [`https://github.com/${full}.git`, `https://github.com/${full}`, `git@github.com:${full}.git`, `ssh://git@github.com/${full}.git`];
-    if (!allowed.includes(url.toLowerCase())) throw new Error(`Refused: the mirror's origin ${url} is not ${repo.fullName} on GitHub.`);
+    if (url.toLowerCase() !== `https://github.com/${full}.git`) throw new Error(`Refused: the mirror's origin ${url} is not ${repo.fullName} on GitHub.`);
     return url;
   }
   if (!url.startsWith('/') || url.includes('\n')) throw new Error(`Refused: away from the real data home the city pushes only to a local stand-in, not ${url}.`);
   return url;
 }
 
+/** A local stand-in remote (tests, the sample), never GitHub. */
+function isLocal(url: string): boolean {
+  return url.startsWith('/') && !url.includes('\n');
+}
+
+/**
+ * The config of every city push: hooks, fsmonitor and the global attributes
+ * file off, no submodule pushes, and only gh answering for credentials (the
+ * helper list is emptied first). The file protocol only for a local stand-in.
+ */
+export function pushFlags(url: string): string[] {
+  return [
+    ...ENGINE_GIT_FLAGS,
+    ...SAFE,
+    ...(isLocal(url) ? ['-c', 'protocol.file.allow=always'] : []),
+    '-c',
+    'push.recurseSubmodules=no',
+    '-c',
+    'credential.helper=',
+    '-c',
+    'credential.helper=!gh auth git-credential',
+  ];
+}
+
+/**
+ * The whole environment of a city push, built from nothing (no GIT_* of the
+ * engine's, no SSH command, no config parameters): no global or system git
+ * config, no prompt. HOME is his, so gh finds its own login.
+ */
+function pushEnv(): Record<string, string> {
+  let user = '';
+  try {
+    user = userInfo().username;
+  } catch {
+    user = '';
+  }
+  return {
+    PATH: SYSTEM_PATH.join(':'),
+    HOME: homedir(),
+    LANG: 'en_US.UTF-8',
+    ...(user ? { USER: user, LOGNAME: user } : {}),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '/usr/bin/false',
+  };
+}
+
 type PushResult = { ok: true } | { ok: false; rejected: boolean; detail: string };
 
 /**
- * Pushes refspecs from the ship clone by sha, through the runner (his git
- * credentials, as the mirror's fetch uses them), with hooks, fsmonitor and
- * the global attributes file off and an explicit git dir. Refuses, before
+ * Pushes refspecs from the ship clone by sha, through the runner with an
+ * environment built from nothing and pushFlags (gh as the only credential
+ * helper), and an explicit git dir. Refuses, before
  * git runs, any force flag, any `+` refspec, and any destination other than
  * those `allowed` names. A deletion is allowed only for the city's own
  * `refs/heads/palimpsest/` branches.
@@ -201,12 +249,7 @@ async function push(ship: string, runRoot: string, url: string, refspecs: string
     if (o.del ? src !== '' || !/^refs\/heads\/palimpsest\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(dst) : !SHA.test(src)) throw new Error(`Refused push refspec ${spec}`);
   }
   const argv = [
-    ...ENGINE_GIT_FLAGS,
-    ...SAFE,
-    '-c',
-    'protocol.file.allow=always',
-    '-c',
-    'push.recurseSubmodules=no',
+    ...pushFlags(url),
     `--git-dir=${join(realpathSync.native(ship), '.git')}`,
     'push',
     '--no-verify',
@@ -215,7 +258,7 @@ async function push(ship: string, runRoot: string, url: string, refspecs: string
     ...refspecs,
   ];
   for (const a of argv) if (FORCE_FLAGS.has(a)) throw new Error(`Refused push flag ${a}`);
-  const r = await getRunner()('git', argv, { cwd: runRoot, timeoutMs: PUSH_TIMEOUT_MS });
+  const r = await getRunner()('git', argv, { cwd: runRoot, timeoutMs: PUSH_TIMEOUT_MS, env: pushEnv() });
   if (r.code === 0) return { ok: true };
   const text = `${r.stdout}\n${r.stderr}`;
   const rejected = /\[rejected\]|non-fast-forward|fetch first|\[remote rejected\]/.test(text);
@@ -532,6 +575,7 @@ async function pushMode(
     // HEAD must still be the merge the engine made (a check must not have moved it).
     const now = await engineGit(ship, ['rev-parse', '--verify', 'HEAD^{commit}']);
     if (now.code !== 0 || now.stdout.trim() !== mergeSha) {
+      await deleteCityBranch(ship, runRoot, url, `palimpsest/${job.id}`, log);
       throw new Error(`HEAD in the ship clone moved from the recorded merge ${mergeSha.slice(0, 7)} during the recheck: nothing is pushed.`);
     }
 
@@ -543,6 +587,8 @@ async function pushMode(
       const floor = layJobFloors(r, job, { kind: 'commits', refs: [mergeSha.slice(0, 7)], url: `https://github.com/${repo.fullName}/commit/${mergeSha}`, lines, state: 'lit', at });
       transition(storedJob(job.id) ?? job, 'merged', { floorId: floor.id }, { summary: r.summary ?? undefined });
       log(`pushed ${mergeSha.slice(0, 7)} to ${def}`);
+      // The default branch holds the change now: the city's branch has done its work.
+      await deleteCityBranch(ship, runRoot, url, `palimpsest/${job.id}`, log);
       return { ...r, mergeSha, stage: 'done', outcome: 'merged', endedReason: null };
     }
     if (!res.rejected) throw new Error(`The push to ${def} failed: ${res.detail}`);
@@ -596,12 +642,49 @@ function settleWaitingJob(jobId: string, to: 'merged' | 'closed', patch: Partial
   if (j.status === 'waiting') transition(j, to, patch, note);
 }
 
-function merged(r: Run, s: PRState): void {
+/**
+ * The commit that brought the run's change into the default branch, when gh
+ * names none: the newest commit whose parents include the head the city
+ * pushed (a merge), the head itself (a fast-forward), or one carrying the
+ * job's trailer (a squash or a rebase keeps the commit messages).
+ */
+async function findMergeSha(r: Run, repo: Repo, o: { sync?: boolean } = {}): Promise<string | null> {
+  const head = r.headSha;
+  if (!head) return null;
+  const trailer = new RegExp(`^Palimpsest-Job: ${r.jobId.replace(/[.]/g, '\\.')}$`, 'm');
+  const commits = await recentCommits(repo.fullName, repo.defaultBranch, '', { sync: o.sync, limit: 2000 });
+  const hit = commits.find((c) => c.sha === head || c.parents.includes(head) || trailer.test(c.body));
+  return hit?.sha ?? null;
+}
+
+async function merged(r: Run, s: PRState): Promise<void> {
+  const repo = getRepo(r.repo);
+  const def = repo?.defaultBranch ?? 'main';
+  // What merged must be what the city pushed, into the default branch; otherwise it is not the city's work to pay for.
+  if (s.headRefOid !== r.headSha || s.baseRefName !== def) {
+    const changes = { headRefOid: s.headRefOid, baseRefName: s.baseRefName, mergeSha: s.mergeCommit };
+    const why = s.headRefOid !== r.headSha
+      ? `merged with changes: the PR head was ${s.headRefOid?.slice(0, 7) ?? 'unknown'}, not the inspected ${r.headSha?.slice(0, 7)}`
+      : `merged with changes: merged into ${s.baseRefName ?? 'an unknown branch'}, not ${def}`;
+    removeFloors(r, r.jobId);
+    finishWaitingRun(r.id, 'closed', `The PR was ${why}.`, { mergedWithChanges: changes });
+    record('run.note', { runId: r.id, jobId: r.jobId, repo: r.repo, note: why, pr: r.prNumber, prUrl: r.prUrl, ...changes, at: iso() });
+    settleWaitingJob(r.jobId, 'closed', { floorId: null }, {});
+    return;
+  }
+  let mergeSha = s.mergeCommit;
+  if (!mergeSha && repo) {
+    try {
+      mergeSha = await findMergeSha(r, repo);
+    } catch (err) {
+      console.warn(`palimpsest: could not find the merge of ${r.repo}#${r.prNumber}: ${errText(err)}`);
+    }
+  }
   const at = s.mergedAt ?? iso();
   const floor = earnedFloors(repoTowerId(r.repo)).find((f) => f.id === repoFloorId(r.repo, r.jobId));
-  record('merge.detected', { jobId: r.jobId, runId: r.id, repo: r.repo, pr: r.prNumber, prUrl: r.prUrl, mergeSha: s.mergeCommit, mergedAt: at, size: floor?.size ?? null, at: iso() });
+  record('merge.detected', { jobId: r.jobId, runId: r.id, repo: r.repo, pr: r.prNumber, prUrl: r.prUrl, mergeSha, mergedAt: at, size: floor?.size ?? null, at: iso() });
   lightFloors(r, r.jobId, at);
-  finishWaitingRun(r.id, 'merged', null, { mergeSha: s.mergeCommit });
+  finishWaitingRun(r.id, 'merged', null, { mergeSha });
   settleWaitingJob(r.jobId, 'merged', {}, { prUrl: r.prUrl ?? undefined, summary: r.summary ?? undefined });
 }
 
@@ -626,7 +709,7 @@ export async function pollPRs(now: number = Date.now()): Promise<void> {
     lastPoll.set(r.id, now);
     try {
       const s = await prState(r.repo, r.prNumber);
-      if (s.state === 'MERGED') merged(r, s);
+      if (s.state === 'MERGED') await merged(r, s);
       else if (s.state === 'CLOSED') closed(r);
     } catch (err) {
       console.warn(`palimpsest: could not read ${r.repo}#${r.prNumber}: ${errText(err)}`);
@@ -636,12 +719,22 @@ export async function pollPRs(now: number = Date.now()): Promise<void> {
 
 // ---------------------------------------------------------------- the revert watch
 
+/** The subjects a revert of a floor's PR or merge can carry, against the exact title the city sent. */
+function revertSubject(subject: string, title: string, pr: number | null): boolean {
+  const t = prTitle(title);
+  const plain = `Revert "${t}"`;
+  return subject === plain || subject.startsWith(`${plain} (#`) || (pr !== null && (subject === `Revert "${t} (#${pr})"` || subject.startsWith(`Revert "${t} (#${pr})" (#`)));
+}
+
 /**
  * Reads, every thirty minutes per repo with lit floors, the default branch
- * for a revert of a city merge: a commit whose body says `This reverts
- * commit <mergeSha>` or whose subject is `Revert "<floor title>"`. A hit
- * marks the floor (and the agent's) reverted, records `merge.reverted` and
- * halts the repo until he clears it.
+ * after each city merge (by ancestry, `<mergeSha>..<branch>`, never by
+ * date) for a revert of it: a commit whose body says `This reverts commit
+ * <mergeSha>`, or whose subject is `Revert "<title>"` or GitHub's squash
+ * form `Revert "<title> (#n)"`, against the exact title sent to GitHub. A
+ * merge gh named no commit for is found in the history first. A hit marks
+ * the floor (and the agent's) reverted, records `merge.reverted` and halts
+ * the repo until he clears it.
  */
 export async function watchReverts(now: number = Date.now()): Promise<void> {
   for (const repo of listRepos()) {
@@ -649,11 +742,8 @@ export async function watchReverts(now: number = Date.now()): Promise<void> {
     if (!lit.length) continue;
     if (now - (lastWatch.get(repo.fullName) ?? -Infinity) < REVERT_WATCH_MS) continue;
     lastWatch.set(repo.fullName, now);
-    const oldest = Math.min(...lit.map((f) => Date.parse(f.at)).filter(Number.isFinite));
-    const since = iso((Number.isFinite(oldest) ? oldest : now) - REVERT_SLACK_MS);
-    let commits;
     try {
-      commits = await recentCommits(repo.fullName, repo.defaultBranch, since);
+      await syncMirror(repo.fullName);
     } catch (err) {
       console.warn(`palimpsest: could not read ${repo.fullName} for reverts: ${errText(err)}`);
       continue;
@@ -661,19 +751,30 @@ export async function watchReverts(now: number = Date.now()): Promise<void> {
     const hits: string[] = [];
     for (const f of lit) {
       const e = f.earned!;
-      const mergeSha = storedRun(e.runId)?.mergeSha ?? null;
-      const byBody = mergeSha && SHA.test(mergeSha) ? new RegExp(`This reverts commit ${mergeSha}\\b`) : null;
-      const bySubject = `Revert "${f.title}"`;
-      const hit = commits.find((c) => c.sha !== mergeSha && ((byBody && byBody.test(c.body)) || c.subject === bySubject || c.subject.startsWith(`${bySubject} (#`)));
-      if (!hit) continue;
-      for (const [towerId, id] of [[repoTowerId(repo.fullName), f.id], [agentTowerId(e.agentId), agentFloorId(e.agentId, e.jobId)]]) {
-        const cur = earnedFloors(towerId).find((x) => x.id === id);
-        if (cur?.earned) updateEarnedFloor(id, { earned: { ...cur.earned, reverted: true } });
+      const r = storedRun(e.runId);
+      if (!r) continue;
+      let mergeSha = r.mergeSha && SHA.test(r.mergeSha) ? r.mergeSha : null;
+      try {
+        if (!mergeSha) {
+          mergeSha = await findMergeSha(r, repo, { sync: false });
+          if (mergeSha) updateRun(r.id, { mergeSha });
+        }
+        if (!mergeSha) continue;
+        const after = await recentCommits(repo.fullName, repo.defaultBranch, mergeSha, { sync: false });
+        const byBody = new RegExp(`This reverts commit ${mergeSha}\\b`);
+        const hit = after.find((c) => byBody.test(c.body) || revertSubject(c.subject, f.title, r.prNumber));
+        if (!hit) continue;
+        for (const [towerId, id] of [[repoTowerId(repo.fullName), f.id], [agentTowerId(e.agentId), agentFloorId(e.agentId, e.jobId)]]) {
+          const cur = earnedFloors(towerId).find((x) => x.id === id);
+          if (cur?.earned) updateEarnedFloor(id, { earned: { ...cur.earned, reverted: true } });
+        }
+        const data = { jobId: e.jobId, runId: e.runId, repo: repo.fullName, floorId: f.id, mergeSha, revertSha: hit.sha, at: iso(now) };
+        record('merge.reverted', data);
+        emit('merge.reverted', data);
+        hits.push(f.title);
+      } catch (err) {
+        console.warn(`palimpsest: could not read ${repo.fullName} after ${mergeSha?.slice(0, 7) ?? 'its merge'}: ${errText(err)}`);
       }
-      const data = { jobId: e.jobId, runId: e.runId, repo: repo.fullName, floorId: f.id, mergeSha, revertSha: hit.sha, at: iso(now) };
-      record('merge.reverted', data);
-      emit('merge.reverted', data);
-      hits.push(f.title);
     }
     if (hits.length) haltRepo(repo.fullName, `A city merge was reverted: ${hits.join('; ').slice(0, 300)}`, iso(now));
   }

@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 export type Runner = (
   cmd: string,
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number },
+  /** `env`, when given, is the child's whole environment: nothing is inherited from the engine. */
+  opts?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> },
 ) => Promise<{ stdout: string; stderr: string; code: number }>;
 
 /**
@@ -37,7 +38,7 @@ export const realRunner: Runner = (cmd, args, opts) =>
       reject(new Error(`${describeCommand(cmd, args)} refused in tests: install a fake runner`));
       return;
     }
-    const child = spawn(cmd, args, { cwd: opts?.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, { cwd: opts?.cwd, stdio: ['ignore', 'pipe', 'pipe'], ...(opts?.env ? { env: opts.env } : {}) });
     let stdout = '';
     let stderr = '';
     let settled = false;

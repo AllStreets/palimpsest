@@ -253,6 +253,11 @@ export interface Run {
   unattended: boolean;
   /** The agent's own summary of its change (model output: shown as data, never run). */
   summary?: string | null;
+  /**
+   * The PR merged, but not as the city shipped it (another head sha or
+   * another base branch): not paid, no floor, flagged for his brief.
+   */
+  mergedWithChanges?: { headRefOid: string | null; baseRefName: string | null; mergeSha: string | null } | null;
 }
 
 export type CheckName = 'install' | 'test' | 'typecheck' | 'lint' | 'build' | 'review' | 'scope' | 'design';

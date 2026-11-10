@@ -65,6 +65,8 @@ function outcome(e: LedgerEntry): { jobId: string; passed: boolean; size: FloorS
       const r = (d.run ?? d) as Data;
       const jobId = str(r.jobId);
       if (!jobId) return null;
+      // A PR merged with changes (not the city's head, or into another branch) is no outcome for the firm.
+      if (r.mergedWithChanges) return null;
       if (r.outcome === 'merged') return { jobId, passed: true, size: floorSize };
       if (r.outcome === 'failed' || r.outcome === 'closed') return { jobId, passed: false, size: floorSize };
       return null;

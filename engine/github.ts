@@ -1,7 +1,7 @@
 import type { Repo } from '../shared/types.js';
 import { getRunner, realRunner } from './exec.js';
 import { home, isRealDataHome } from './home.js';
-import { syncMirror, type Commit } from './mirror.js';
+import { mirrorDir, syncMirror, type Commit } from './mirror.js';
 
 const TIMEOUT_MS = 120_000;
 
@@ -311,6 +311,11 @@ function checkBranch(name: string, re: RegExp): void {
   }
 }
 
+/** The title exactly as the city sends it to `gh pr create` (the revert watch matches against it). */
+export function prTitle(title: string): string {
+  return title.replace(/\s+/g, ' ').trim().slice(0, 240) || 'Palimpsest change';
+}
+
 /**
  * Real GitHub writes happen only from the real data home (the Task 5 guard):
  * with the real runner and a temp or sample home, a write is refused before
@@ -335,7 +340,7 @@ export async function createPR(
   checkBranch(pr.base, BRANCH);
   const refused = githubWriteRefused();
   if (refused) throw new GhError('other', refused);
-  const title = pr.title.replace(/\s+/g, ' ').trim().slice(0, 240) || 'Palimpsest change';
+  const title = prTitle(pr.title);
   const result = await runGh([
     'pr',
     'create',
@@ -362,14 +367,24 @@ export interface PRState {
   mergedAt: string | null;
   mergeCommit: string | null;
   closedAt: string | null;
+  /** The PR head's sha when it merged: the city pays only when it is the sha it pushed. */
+  headRefOid: string | null;
+  baseRefName: string | null;
 }
 
 /** A pull request's fate: open, merged (with its merge commit) or closed without a merge. */
 export async function prState(fullName: string, number: number): Promise<PRState> {
   checkName(fullName);
   checkIssue(number);
-  const result = await runGh(['pr', 'view', String(number), '-R', fullName, '--json', 'state,mergedAt,mergeCommit,closedAt']);
-  const row = JSON.parse(result.stdout) as { state?: string; mergedAt?: string | null; mergeCommit?: { oid?: string } | null; closedAt?: string | null };
+  const result = await runGh(['pr', 'view', String(number), '-R', fullName, '--json', 'state,mergedAt,mergeCommit,closedAt,headRefOid,baseRefName']);
+  const row = JSON.parse(result.stdout) as {
+    state?: string;
+    mergedAt?: string | null;
+    mergeCommit?: { oid?: string } | null;
+    closedAt?: string | null;
+    headRefOid?: string | null;
+    baseRefName?: string | null;
+  };
   const state = row.state === 'MERGED' ? 'MERGED' : row.state === 'CLOSED' ? 'CLOSED' : 'OPEN';
   const oid = row.mergeCommit?.oid ?? null;
   return {
@@ -377,6 +392,8 @@ export async function prState(fullName: string, number: number): Promise<PRState
     mergedAt: row.mergedAt || null,
     mergeCommit: oid && /^[0-9a-f]{40}$/.test(oid) ? oid : null,
     closedAt: row.closedAt || null,
+    headRefOid: typeof row.headRefOid === 'string' && /^[0-9a-f]{40}$/.test(row.headRefOid) ? row.headRefOid : null,
+    baseRefName: typeof row.baseRefName === 'string' ? row.baseRefName : null,
   };
 }
 
@@ -389,20 +406,27 @@ export async function openPRsFrom(fullName: string, head: string): Promise<numbe
 }
 
 /**
- * Commits on `branch` since `since` (ISO), every parent line, newest first,
- * read through the mirror after `syncMirror` (the revert watch).
+ * Commits on `branch` after `since`, newest first, every parent line, read
+ * through the mirror (after `syncMirror` unless `sync` is false). `since` is
+ * a commit sha (`<sha>..<branch>`, by ancestry: committer dates are never
+ * trusted) or, failing that, an ISO time. Each commit's `parents` are given.
  */
-export async function recentCommits(fullName: string, branch: string, since: string): Promise<Commit[]> {
+export async function recentCommits(fullName: string, branch: string, since: string, o: { sync?: boolean; limit?: number } = {}): Promise<Array<Commit & { parents: string[] }>> {
   checkName(fullName);
   checkBranch(branch, BRANCH);
-  const dir = await syncMirror(fullName);
-  const at = Date.parse(since);
-  const sinceArg = Number.isFinite(at) ? new Date(at).toISOString() : '1970-01-01T00:00:00Z';
+  const dir = o.sync === false ? mirrorDir(fullName) : await syncMirror(fullName);
   const RS = '\x1e';
   const US = '\x1f';
+  const range: string[] = [];
+  if (/^[0-9a-f]{40}$/.test(since)) range.push(`${since}..refs/heads/${branch}`);
+  else {
+    const at = Date.parse(since);
+    if (Number.isFinite(at)) range.push(`--since=${new Date(at).toISOString()}`);
+    range.push(`refs/heads/${branch}`);
+  }
   const r = await getRunner()(
     'git',
-    ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', dir, 'log', `--since=${sinceArg}`, `--format=${RS}%H${US}%aI${US}%an${US}%s${US}%b${US}`, `refs/heads/${branch}`, '--'],
+    ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', dir, 'log', ...(o.limit ? [`-n${o.limit}`] : []), `--format=${RS}%H${US}%P${US}%aI${US}%an${US}%s${US}%b${US}`, ...range, '--'],
     { timeoutMs: TIMEOUT_MS },
   );
   if (r.code !== 0) throw new Error(`git log failed for ${branch} in ${dir}: ${r.stderr.trim()}`);
@@ -410,7 +434,7 @@ export async function recentCommits(fullName: string, branch: string, since: str
     .split(RS)
     .filter((c) => c.trim().length > 0)
     .map((chunk) => {
-      const [sha, at2, author, subject, body] = chunk.split(US);
-      return { sha: sha ?? '', at: at2 ?? '', author: author ?? '', subject: subject ?? '', body: (body ?? '').trim(), lines: 0 };
+      const [sha, parents, at2, author, subject, body] = chunk.split(US);
+      return { sha: (sha ?? '').trim(), parents: (parents ?? '').split(' ').filter(Boolean), at: at2 ?? '', author: author ?? '', subject: subject ?? '', body: (body ?? '').trim(), lines: 0 };
     });
 }

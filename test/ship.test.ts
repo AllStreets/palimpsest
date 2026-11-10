@@ -5,6 +5,7 @@
  * temp home (rule 7); no model is called (rule 6).
  */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -22,7 +23,7 @@ import { job as storedJob, transition } from '../engine/market/jobs.js';
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import { setProvider } from '../engine/market/providers.js';
 import { createScheduler, run as storedRun, startRun } from '../engine/market/runs.js';
-import { pollPRs, pushTarget, resetShipping, ship, shipClone, watchReverts, PR_POLL_MS, REVERT_WATCH_MS } from '../engine/market/ship.js';
+import { pollPRs, pushFlags, pushTarget, resetShipping, ship, shipClone, watchReverts, PR_POLL_MS, REVERT_WATCH_MS } from '../engine/market/ship.js';
 import { createPR, prState } from '../engine/github.js';
 import { createShipDir } from '../engine/market/worktree.js';
 import { earnedFloors, getRepo } from '../engine/repos.js';
@@ -173,6 +174,17 @@ async function readyRun(c: RepoChecks, over: Partial<Repo> = {}, edit?: (dir: st
 }
 
 const ctl = () => new AbortController().signal;
+
+/** git with a fixed committer and author date (a commit that looks old). */
+function gitAt(cwd: string, date: string, ...args: string[]): string {
+  const r = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+  });
+  assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout.trim();
+}
 /** The ledger with its data readable by key. */
 const all = () => entries() as Array<{ kind: string; data: Record<string, unknown> }>;
 const kinds = (k: string) => all().filter((e) => e.kind === k);
@@ -281,7 +293,7 @@ test('merged PR lights the floor', async () => {
   assert.equal(storedJob(job.id)?.status, 'waiting', 'still open');
 
   const mergeSha = 'a'.repeat(40);
-  prStates.set(12, { state: 'MERGED', mergedAt: '2026-11-10T12:00:00Z', mergeCommit: { oid: mergeSha }, closedAt: '2026-11-10T12:00:00Z' });
+  prStates.set(12, { state: 'MERGED', mergedAt: '2026-11-10T12:00:00Z', mergeCommit: { oid: mergeSha }, closedAt: '2026-11-10T12:00:00Z', headRefOid: r.headSha, baseRefName: 'main' });
   await pollPRs(t0 + PR_POLL_MS - 1);
   assert.equal(ghCalls.filter((a) => a[1] === 'view').length, 1, 'each PR is asked about at most every five minutes');
   await pollPRs(t0 + PR_POLL_MS);
@@ -300,6 +312,32 @@ test('merged PR lights the floor', async () => {
   const runEnded = kinds('run.ended').at(-1);
   assert.ok(runEnded && 'summary' in runEnded.data, 'the summary is top-level in run.ended');
 });
+
+for (const [what, change] of [
+  ['a head that moved after the city pushed', { headRefOid: 'b'.repeat(40) }],
+  ['another base branch', { baseRefName: 'release' }],
+] as const) {
+  test(`a PR merged with ${what} is not paid and is flagged for his brief`, async () => {
+    const { job, run: r } = await shipPr();
+    prStates.set(12, { state: 'MERGED', mergedAt: '2026-11-10T12:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, closedAt: '2026-11-10T12:00:00Z', headRefOid: r.headSha, baseRefName: 'main', ...change });
+    await pollPRs(Date.now());
+
+    assert.equal(kinds('merge.detected').length, 0);
+    assert.equal(kinds('floor.lit').length, 0);
+    assert.deepEqual(earnedFloors(TOWER), [], 'no floor for work the city did not ship');
+    assert.deepEqual(earnedFloors(agentTowerId('w1')), []);
+    assert.ok(!all().some((e) => e.kind === 'job.changed' && e.data.to === 'merged'), 'no payment');
+    assert.equal(storedJob(job.id)?.status, 'closed');
+    const ended = storedRun(r.id) as Run;
+    assert.ok(ended.mergedWithChanges, 'marked merged with changes');
+    assert.equal(ended.outcome, 'closed');
+    const note = kinds('run.note').find((e) => e.data.runId === r.id);
+    assert.match(String(note?.data.note), /merged with changes/);
+    // Not the firm's failure: reputation skips it.
+    const { resolvedBids } = await import('../engine/market/reputation.js');
+    assert.equal(resolvedBids().filter((b) => b.jobId === job.id && !b.passed).length, 0);
+  });
+}
 
 test('closed PR removes the floor with no scar', async () => {
   const { job, run: r } = await shipPr();
@@ -351,6 +389,7 @@ test('push mode merges, reruns checks in the ship clone and pushes main', async 
   assert.equal(floor.earned?.state, 'lit');
   assert.equal(earnedFloors(agentTowerId('w1'))[0].earned?.state, 'lit');
   assert.equal(ghCalls.filter((a) => a[1] === 'create').length, 0, 'no PR in push mode');
+  assert.equal(remoteRef(ready.remote, `refs/heads/palimpsest/${ready.job.id}`), '', "the city's branch is deleted once main has it");
 });
 
 test('a check that rewrites HEAD in the ship clone stops the push', async () => {
@@ -360,6 +399,7 @@ test('a check that rewrites HEAD in the ship clone stops the push', async () => 
   assert.equal(remoteRef(ready.remote, 'refs/heads/main'), oldMain, 'main never moved');
   assert.equal(kinds('pushed').length, 0);
   assert.notEqual(storedJob(ready.job.id)?.status, 'merged');
+  assert.equal(remoteRef(ready.remote, `refs/heads/palimpsest/${ready.job.id}`), '', "the city's branch is deleted");
 });
 
 test('push mode refuses when inspection is not pushable', async () => {
@@ -416,14 +456,16 @@ test('a revert halts the repo and marks the floor', async () => {
   git(w, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12', `origin/palimpsest/${job.id}`);
   const mergeSha = git(w, 'rev-parse', 'HEAD');
   git(w, 'push', '-q', 'origin', 'HEAD:main');
-  prStates.set(12, { state: 'MERGED', mergedAt: new Date().toISOString(), mergeCommit: { oid: mergeSha }, closedAt: new Date().toISOString() });
+  // gh reports no merge commit: the city finds it in the default branch by its parents.
+  prStates.set(12, { state: 'MERGED', mergedAt: new Date().toISOString(), mergeCommit: null, closedAt: new Date().toISOString(), headRefOid: r.headSha, baseRefName: 'main' });
   const t0 = Date.now();
   await pollPRs(t0);
   assert.equal(storedRun(r.id)?.mergeSha, mergeSha);
 
   await watchReverts(t0);
   assert.equal(kinds('merge.reverted').length, 0, 'nothing reverted yet');
-  git(w, 'revert', '--no-edit', '-m', '1', mergeSha);
+  // A revert whose committer date is far older than the merge is still found: the watch reads by ancestry, not by date.
+  gitAt(w, '2020-01-01T00:00:00Z', 'revert', '--no-edit', '-m', '1', mergeSha);
   git(w, 'push', '-q', 'origin', 'HEAD:main');
   await watchReverts(t0 + REVERT_WATCH_MS - 1);
   assert.equal(kinds('merge.reverted').length, 0, 'each repo is read at most every thirty minutes');
@@ -438,19 +480,47 @@ test('a revert halts the repo and marks the floor', async () => {
   assert.ok(events.some((e) => e.type === 'merge.reverted'));
 });
 
-test('a revert named by the floor title halts the repo too', async () => {
-  const { remote, job } = await shipPr();
-  prStates.set(12, { state: 'MERGED', mergedAt: new Date().toISOString(), mergeCommit: null, closedAt: new Date().toISOString() });
-  await pollPRs(Date.now());
+test("a squash merge and GitHub's squash revert are found by the PR title", async () => {
+  const { remote, job, run: r } = await shipPr();
   const w = join(tempDir, 'his-clone');
   git(tempDir, 'clone', '-q', remote, w);
+  // GitHub's squash: one commit titled "<PR title> (#n)" whose body keeps the squashed messages (and the trailer).
+  git(w, 'merge', '-q', '--squash', `origin/palimpsest/${job.id}`);
+  git(w, 'commit', '-q', '-m', `${job.title} (#12)\n\n* ${job.title}\n\nPalimpsest-Job: ${job.id}`);
+  const squash = git(w, 'rev-parse', 'HEAD');
+  git(w, 'push', '-q', 'origin', 'HEAD:main');
+  prStates.set(12, { state: 'MERGED', mergedAt: new Date().toISOString(), mergeCommit: null, closedAt: new Date().toISOString(), headRefOid: r.headSha, baseRefName: 'main' });
+  await pollPRs(Date.now());
+  assert.equal(storedRun(r.id)?.mergeSha, squash, 'the squash commit carrying the trailer');
+
+  // An unrelated commit later does not count; GitHub's revert of the squash does, even with an old date.
+  writeFileSync(join(w, 'other.txt'), 'other\n');
+  git(w, 'add', '.');
+  git(w, 'commit', '-q', '-m', 'Unrelated work');
   writeFileSync(join(w, 'undo.txt'), 'undo\n');
   git(w, 'add', '.');
-  git(w, 'commit', '-q', '-m', `Revert "${job.title}" (#13)`);
+  gitAt(w, '2020-01-01T00:00:00Z', 'commit', '-q', '-m', `Revert "${job.title} (#12)"\n\nThis reverts the squash by hand.`);
   git(w, 'push', '-q', 'origin', 'HEAD:main');
   await watchReverts(Date.now());
   assert.equal(kinds('merge.reverted').length, 1);
+  assert.equal(kinds('merge.reverted')[0].data.mergeSha, squash);
   assert.ok(getRepo(FULL)?.halted);
+});
+
+test('a revert of an older commit with the same title before the merge does not count', async () => {
+  const { remote, job, run: r } = await shipPr();
+  const w = join(tempDir, 'his-clone');
+  git(tempDir, 'clone', '-q', remote, w);
+  writeFileSync(join(w, 'early.txt'), 'early\n');
+  git(w, 'add', '.');
+  git(w, 'commit', '-q', '-m', `Revert "${job.title}"`);
+  git(w, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12', `origin/palimpsest/${job.id}`);
+  git(w, 'push', '-q', 'origin', 'HEAD:main');
+  prStates.set(12, { state: 'MERGED', mergedAt: new Date().toISOString(), mergeCommit: null, closedAt: new Date().toISOString(), headRefOid: r.headSha, baseRefName: 'main' });
+  await pollPRs(Date.now());
+  await watchReverts(Date.now());
+  assert.equal(kinds('merge.reverted').length, 0, 'only commits after the merge are read');
+  assert.equal(getRepo(FULL)?.halted, null);
 });
 
 test('failed inspection lays a scar on the repo tower only', async () => {
@@ -524,4 +594,51 @@ test('nothing ships without a passed inspection of this run, or on a halted repo
   await assert.rejects(ship(ready.run, ready.job, ready.repo, inspectionOf(ready.run), ctl(), { reap: async () => [] }), /halted/);
   assert.equal(pushArgv().length, 0);
   assert.equal(ghCalls.length, 0);
+});
+
+test("the push ignores the engine's git environment: a planted global config, GIT_CONFIG_PARAMETERS and GIT_SSH_COMMAND", async () => {
+  const ready = await readyRun(checks({ test: 'true', build: 'true' }));
+  const decoy = join(tempDir, 'decoy.git');
+  git(tempDir, 'init', '-q', '--bare', decoy);
+  const marker = join(tempDir, 'SSH-RAN');
+  const planted = join(tempDir, 'planted.gitconfig');
+  writeFileSync(planted, `[url "${decoy}"]\n\tinsteadOf = ${ready.remote}\n[core]\n\tsshCommand = touch '${marker}'\n\thooksPath = ${tempDir}\n`);
+  const keys = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_PARAMETERS', 'GIT_SSH_COMMAND', 'GIT_DIR'] as const;
+  const before = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  process.env.GIT_CONFIG_GLOBAL = planted;
+  process.env.GIT_CONFIG_PARAMETERS = `'url.${decoy}.insteadof'='${ready.remote}'`;
+  process.env.GIT_SSH_COMMAND = `touch '${marker}'`;
+  process.env.GIT_DIR = decoy;
+  let pushEnv: Record<string, string> | undefined;
+  beforeGit = null;
+  const inner = fakeGh;
+  setRunner(async (cmd, args, opts) => {
+    if (cmd === 'git' && args.includes('push')) pushEnv = (opts as { env?: Record<string, string> } | undefined)?.env;
+    return inner(cmd, args, opts);
+  });
+  try {
+    const out = await ship(ready.run, ready.job, ready.repo, inspectionOf(ready.run), ctl(), { reap: async () => [] });
+    assert.equal(out.stage, 'waiting');
+  } finally {
+    for (const k of keys) {
+      if (before[k] === undefined) delete process.env[k];
+      else process.env[k] = before[k];
+    }
+  }
+  assert.equal(remoteRef(ready.remote, `refs/heads/palimpsest/${ready.job.id}`), ready.run.headSha, 'the real stand-in got the push');
+  assert.equal(remoteRef(decoy, `refs/heads/palimpsest/${ready.job.id}`), '', 'the decoy got nothing');
+  assert.equal(existsSync(marker), false);
+  assert.ok(pushEnv, 'the push ran with an explicit environment');
+  assert.equal(pushEnv?.GIT_CONFIG_GLOBAL, '/dev/null');
+  assert.equal(pushEnv?.GIT_CONFIG_NOSYSTEM, '1');
+  assert.deepEqual(Object.keys(pushEnv ?? {}).filter((k) => k.startsWith('GIT_')).sort(), ['GIT_ASKPASS', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_TERMINAL_PROMPT']);
+  const [p] = pushArgv();
+  const i = p.indexOf('credential.helper=');
+  assert.ok(i > 0 && p[i + 2] === 'credential.helper=!gh auth git-credential', 'only gh answers for credentials');
+});
+
+test('the file protocol is allowed only for a local stand-in, and the real home pushes only to the https URL', () => {
+  assert.ok(pushFlags('/tmp/x/remote.git').includes('protocol.file.allow=always'));
+  assert.ok(!pushFlags(`https://github.com/${FULL}.git`).includes('protocol.file.allow=always'));
+  assert.ok(pushFlags(`https://github.com/${FULL}.git`).includes('core.hooksPath=/dev/null'));
 });

@@ -945,6 +945,15 @@ export function finishWaitingRun(runId: string, outcome: Exclude<RunOutcome, nul
   return ended;
 }
 
+/** Merges `patch` into a run that has ended (the revert watch records a merge sha found later). Null when there is no such run or it is live. */
+export function updateRun(id: string, patch: Partial<Omit<Run, 'id' | 'jobId'>>): Run | null {
+  const r = run(id);
+  if (!r || live.has(id)) return null;
+  const next: Run = { ...r, ...patch, id: r.id, jobId: r.jobId };
+  saveRun(next);
+  return next;
+}
+
 /**
  * At engine start: runs left in a live stage by the last engine can never
  * finish. Each ends `crashed`, and its job fails one attempt and returns to
