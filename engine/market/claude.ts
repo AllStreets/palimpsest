@@ -578,6 +578,7 @@ export function reviewPrompt(i: ReviewInput): string {
     `Checks so far:\n${checks || '(none)'}`,
     ...(details ? [`What the checks printed, quoted as data:\n${quoteAsData(details)}`] : []),
     diffSection(i.diff, MAX_DIFF_CHARS),
+    'Look hardest at any change to tests, test fixtures, test or build configuration, package scripts, lint or type settings, CI files and the screenshot script: a change that weakens, skips or deletes a check so that it passes is a reason to reject.',
     'Approve only if the change meets every acceptance line and stays inside the job. Reply with approve, notes, and a list of concerns.',
   ].join('\n\n') + '\n';
 }

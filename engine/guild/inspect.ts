@@ -2,31 +2,39 @@
  * The inspection guild's verdict (Task 15): whether an agent's change ships
  * or becomes a scar floor.
  *
- * It inspects exactly the commit the engine made (`run.headSha`): the run
- * dir must still be at that commit with nothing changed after it, and the
- * diff the reviewer and the scope read is `baseSha..headSha` from git, so
- * nothing written after the commit can be reviewed or shipped (Task 16
- * ships that same sha).
+ * It inspects exactly the commit the engine made (`run.headSha`), in a
+ * fresh engine clone at `<runRoot>/ship` (ruling 20): the run branch is
+ * fetched from the run dir as data and its tip must be that commit. Nothing
+ * the agent left in its run dir (ignored files, installed tools, build
+ * output) is ever run, served or reviewed. Before the clean install the
+ * run is reaped and its fake home, caches and tmp are emptied; they are
+ * emptied again before the base side's install, so neither the agent nor
+ * the head's code reaches the before shot. The diff the reviewer reads is
+ * `baseSha..headSha` as text with the base commit's attributes, so a head
+ * `.gitattributes` cannot hide a line (and changing one fails scope).
  *
  * In order, every step under the run's work lease, whose signal aborts the
  * running check, the review and the judge:
- * 1. the install again when the diff touches a manifest or lockfile;
+ * 1. a clean install in the fresh clone;
  * 2. every configured check (test, typecheck, lint, build) after the
  *    change, compared with the baseline at the base commit (ruling 12): a
  *    check failing before and after is `preexisting`; a missing command is
- *    `skipped`, never a pass;
+ *    `skipped`, never a pass; fewer tests than the baseline ran is a fail;
  * 3. scope: every changed file matches one of the job's globs and none
  *    matches DENY_SCOPE; a lockfile rides along only with its manifest; a
- *    gitlink (a nested repo) is always out;
- * 4. the review by another firm (review.ts);
- * 5. the design check when the diff touches UI_FILES (design.ts).
+ *    gitlink (a nested repo) and any `.gitattributes` are always out;
+ * 4. the review by another firm (review.ts), skipped when a check already
+ *    failed; a diff longer than every reviewer's window fails it unread;
+ * 5. the design check when the diff touches UI_FILES (design.ts); a
+ *    screenshot script the change touches fails it.
  *
  * `passed` is canOpenPR, `pushable` is canPush. Each check is recorded
  * (`check.done`) and the verdict too (`inspection.done`, with the reviewer,
  * which the treasury pays from, Task 17). Three failed inspections in a
  * row halt the repo (`repo.halted`); a pass resets the strikes.
  */
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { appendFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -41,7 +49,8 @@ import type { Egress } from '../market/egress.js';
 import { installDeps as defaultInstallDeps, needsReinstall, type InstallDeps, type RunContext } from '../market/install.js';
 import type { RunLogLine } from '../market/provider.js';
 import { haltRepo, type RunDiff } from '../market/runs.js';
-import { engineGit } from '../market/worktree.js';
+import { reapRun } from '../market/reaper.js';
+import { createShipDir, engineGit } from '../market/worktree.js';
 import { cachedBaseline } from './baseline.js';
 import { CHECK_ORDER, runCheck } from './checks.js';
 import { designPasses, judgeDesign, prepareBase, shoot, UI_FILES, type Screenshotter, type Shot } from './design.js';
@@ -70,8 +79,14 @@ export const LOCK_MANIFEST: Record<string, string> = {
 export const HALT_STRIKES = 3;
 export const HALT_REASON = 'Three inspections in a row failed.';
 
-/** The longest diff handed to the reviewer and the judge (the providers cut further). */
-const MAX_REVIEW_DIFF = 400_000;
+/** The longest diff handed to the design judge (the reviewer gets the whole diff or none, review.ts). */
+const MAX_JUDGE_DIFF = 100_000;
+
+/** The checks whose failure skips the review call. */
+const CHECK_NAMES: ReadonlySet<CheckName> = new Set(['install', 'test', 'typecheck', 'lint', 'build']);
+
+/** The run's scratch dirs: its fake home, caches and tmp, emptied before each clean install. */
+const SCRATCH = ['home', 'cache', 'tmp'] as const;
 
 // ---------------------------------------------------------------- globs and scope
 
@@ -140,6 +155,10 @@ export function scopeCheck(files: ChangedFile[], scope: string[]): CheckResult {
       out.push(`${f.path} is a nested repository (a gitlink), which no job may change`);
       continue;
     }
+    if (posix.basename(f.path) === '.gitattributes') {
+      out.push(`${f.path} changes how git shows and filters files, which no job may change`);
+      continue;
+    }
     const deny = denied(f.path);
     if (deny) {
       out.push(`${f.path} is never in scope (${deny})`);
@@ -201,6 +220,8 @@ export interface InspectContext {
   screenshotter?: Screenshotter;
   /** Judge models to try, in order (default design.ts's). */
   judgeModels?: ModelRef[];
+  /** Kills whatever of the run is left before its scratch dirs are wiped (default reapRun). */
+  reap?: (runRoot: string) => Promise<unknown>;
 }
 
 class Stopped extends Error {
@@ -219,6 +240,40 @@ function fileLog(runRoot: string): (line: RunLogLine) => void {
       // the log must never stop the inspection
     }
   };
+}
+
+/**
+ * Empties the run's fake home, caches and tmp (after the reap, so nothing
+ * of the run is alive to write there), so what one side's code left there
+ * (the agent's work, the head's checks) never reaches the next install.
+ */
+export function wipeScratch(runRoot: string): void {
+  for (const d of SCRATCH) {
+    const p = join(runRoot, d);
+    try {
+      rmSync(p, { recursive: true, force: true });
+    } catch {
+      // A folder the code made unwritable: make it writable, then remove it.
+      spawnSync('/bin/chmod', ['-R', 'u+rwx', p]);
+      rmSync(p, { recursive: true, force: true });
+    }
+    mkdirSync(p, { recursive: true });
+  }
+}
+
+/** Attributes come from the base commit (never the head's .gitattributes), and no driver, textconv or binary flag hides a line. */
+function diffArgs(base: string): string[] {
+  return ['-c', 'core.attributesFile=/dev/null', `--attr-source=${base}`];
+}
+const DIFF_FLAGS = ['--no-color', '--no-ext-diff', '--no-textconv', '--text', '--no-renames'];
+
+/** The committed change as the reviewer reads it: every changed file as text, with the base's attributes. */
+async function reviewDiff(dir: string, base: string, head: string): Promise<string> {
+  let r = await engineGit(dir, [...diffArgs(base), 'diff', ...DIFF_FLAGS, base, head, '--']);
+  // A git older than 2.40 has no --attr-source; --text alone still shows every line.
+  if (r.code !== 0 && /attr-source/.test(r.stderr)) r = await engineGit(dir, ['-c', 'core.attributesFile=/dev/null', 'diff', ...DIFF_FLAGS, base, head, '--']);
+  if (r.code !== 0) throw new Error(`git diff failed: ${r.stderr.trim()}`);
+  return r.stdout;
 }
 
 /** The changed files of `base..head` with their gitlink flags, from `git diff --raw`. */
@@ -263,40 +318,48 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
   let design: Inspection['design'] = null;
   halt();
 
-  // 0. Exactly the committed change: the run dir is at headSha with nothing after it.
+  // 0. Exactly the committed change, in a fresh engine clone at headSha (ruling 20). Nothing the
+  //    agent left in its run dir (ignored files, installed tools, build output) is run or served.
   const base = run.baseSha;
   const head = run.headSha;
   let patch = '';
   let files: ChangedFile[] = [];
   let moved: string | null = null;
+  let ship = '';
   if (!base || !head) moved = 'The run has no committed change to inspect.';
   else {
-    const at = (await engineGit(dir, ['rev-parse', 'HEAD'])).stdout.trim();
-    const dirty = (await engineGit(dir, ['status', '--porcelain', '--untracked-files=all'])).stdout.trim();
-    if (at !== head) moved = `The run dir is at ${at.slice(0, 7)}, not the engine's commit ${head.slice(0, 7)}.`;
-    else if (dirty) moved = `The run dir changed after the engine's commit: ${dirty.split('\n').slice(0, 10).join('; ')}`;
-    const p = await engineGit(dir, ['diff', '--binary', '--no-color', '--no-ext-diff', '--no-textconv', base, head, '--']);
-    if (p.code !== 0) throw new Error(`git diff failed: ${p.stderr.trim()}`);
-    patch = p.stdout;
-    files = await changedFiles(dir, base, head);
-    if (diff.files.length && diff.files.slice().sort().join('\0') !== files.map((f) => f.path).sort().join('\0')) {
-      note('the diff the runner kept differs from the commit; the commit is what is inspected');
+    // The agent's processes are gone and its scratch dirs (fake home, caches, tmp) are emptied before the clean install.
+    await (ictx.reap ?? reapRun)(runRoot);
+    halt();
+    wipeScratch(runRoot);
+    try {
+      ship = await createShipDir(repo, run.id, dir, run.branch, head);
+    } catch (err) {
+      halt();
+      moved = `The change could not be taken from the engine's commit: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (ship) {
+      patch = await reviewDiff(ship, base, head);
+      files = await changedFiles(ship, base, head);
+      if (diff.files.length && diff.files.slice().sort().join('\0') !== files.map((f) => f.path).sort().join('\0')) {
+        note('the diff the runner kept differs from the commit; the commit is what is inspected');
+      }
     }
   }
   halt();
+  const headCtx: RunContext = { ...ctx, dir: ship || dir };
 
   if (moved) {
     // Nothing that does not match the commit is run or reviewed.
     done(check('scope', 'fail', moved));
   } else {
-    // 1. The install again, when the change touches a manifest or a lockfile.
+    // 1. A clean install in the fresh clone.
     let installFailed = false;
-    if (needsReinstall(files.map((f) => f.path)) && repo.checks?.install) {
-      note('the change touches dependencies: installing again before the checks');
-      const install = await (ictx.installDeps ?? defaultInstallDeps)(ctx, repo);
+    if (repo.checks?.install) {
+      const install = await (ictx.installDeps ?? defaultInstallDeps)(headCtx, repo);
       egress?.setStage('checks', []);
       halt();
-      done(install);
+      done(needsReinstall(files.map((f) => f.path)) ? { ...install, detail: `${install.detail} (the change touches dependencies)`.slice(0, 4000) } : install);
       installFailed = install.status === 'fail';
     }
 
@@ -313,10 +376,16 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
         done(check(name, 'fail', 'Not run: the install failed.'));
         continue;
       }
-      const r = await runCheck(ctx, name, command, log);
+      const r = await runCheck(headCtx, name, command, log);
       halt();
-      if (r.status === 'fail' && before?.find((b) => b.name === name)?.status === 'fail') {
-        done({ ...r, status: 'preexisting', detail: `Failing before the change too. ${r.detail}`.slice(0, 4000) });
+      const was = before?.find((b) => b.name === name);
+      // Tests that ran before and no longer run are a failure, whatever the exit code says.
+      if (name === 'test' && r.status !== 'fail' && r.testsRun !== null && typeof was?.testsRun === 'number' && r.testsRun < was.testsRun) {
+        done({ ...r, status: 'fail', detail: `${was.testsRun} tests ran before the change, ${r.testsRun} after: tests disappeared. ${r.detail}`.slice(0, 4000) });
+      } else if (r.status === 'fail' && was?.status === 'fail') {
+        const fewer = name === 'test' && r.testsRun !== null && typeof was.testsRun === 'number' && r.testsRun < was.testsRun;
+        if (fewer) done({ ...r, detail: `${was.testsRun} tests ran before the change, ${r.testsRun} after: tests disappeared. ${r.detail}`.slice(0, 4000) });
+        else done({ ...r, status: 'preexisting', detail: `Failing before the change too. ${r.detail}`.slice(0, 4000) });
       } else done(r);
     }
 
@@ -325,15 +394,16 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
   }
   halt();
 
-  // 4. The review, by another firm, of the committed diff (nothing is reviewed that is not the commit).
-  const shown = patch.length > MAX_REVIEW_DIFF ? `${patch.slice(0, MAX_REVIEW_DIFF)}\n[diff cut: ${patch.length - MAX_REVIEW_DIFF} more characters]\n` : patch;
-  if (!moved) {
-    const rv = await review(run, job, shown, checks.slice(), lease);
+  // 4. The review, by another firm, of the committed diff. A failed check already fails the
+  //    inspection, so no review call is spent on it; scope and design alone still get one.
+  const checkFailed = checks.some((c) => CHECK_NAMES.has(c.name) && c.status === 'fail');
+  if (!moved && !checkFailed) {
+    const rv = await review(run, job, patch, checks.slice(), lease);
     halt();
     cost += rv.credits;
     reviewer = { agentId: rv.reviewerAgentId, firmId: rv.reviewerFirmId };
     done(rv.result);
-  }
+  } else if (checkFailed) note('a check failed: no review call is made');
 
   // 5. The design check, for a UI change. A head that did not build cannot be shown, so it is not judged.
   if (!moved && files.some((f) => !f.gitlink && UI_FILES.test(f.path))) {
@@ -341,7 +411,7 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
       design = { before: null, after: 0, diffOnly: false, shots: [] };
       done(check('design', 'fail', 'Not judged: the change does not build, so it cannot be shown.'));
     } else {
-      const d = await designCheck(ctx, run, repo, files, shown, lease, ictx, statusOf(checks, 'build') === 'pass');
+      const d = await designCheck(headCtx, run, repo, files, patch.slice(0, MAX_JUDGE_DIFF), lease, ictx, statusOf(checks, 'build') === 'pass');
       halt();
       cost += d.credits;
       design = d.design;
@@ -418,6 +488,18 @@ async function designCheck(
   const started = Date.now();
   const c = repo.checks;
   const renderable = !!c && (!!c.screenshot || !!c.preview);
+  // The repo's own script runs only when there is no preview for the engine's Chromium to shoot,
+  // and never when the change touches it: a script the agent wrote can draw any picture it likes.
+  if (c?.screenshot && !c.preview) {
+    const touched = await scriptTouched(ctx.dir, run.baseSha as string, run.headSha as string, c.screenshot, files.map((f) => f.path));
+    if (touched.length) {
+      return {
+        result: check('design', 'fail', `The change touches the screenshot script (${touched.join(', ')}), so its pictures cannot be trusted and the change is not judged.`, Date.now() - started),
+        design: { before: null, after: 0, diffOnly: false, shots: [] },
+        credits: 0,
+      };
+    }
+  }
   const routes = routesOf(repo);
   const note = (text: string) => ctx.log({ at: new Date().toISOString(), kind: 'engine', text: `[design] ${text}` });
   const stoppedOr = (err: unknown) => {
@@ -427,14 +509,19 @@ async function designCheck(
   let before: Shot[] = [];
   let after: Shot[] = [];
   if (renderable) {
+    // The head first, from the engine's clone; then the run's processes are reaped and its scratch
+    // dirs emptied, so nothing the head's code left in the fake home or the caches reaches the base.
     try {
-      const baseCtx = await prepareBase(ctx, repo, run.baseSha as string, { egress: ctx.egress, installDeps: ictx.installDeps });
-      before = await shoot(baseCtx, repo, run.baseSha as string, routes, { side: 'before', screenshotter: ictx.screenshotter });
+      after = await shoot(ctx, repo, run.headSha as string, routes, { side: 'after', screenshotter: ictx.screenshotter, built: headBuilt });
     } catch (err) {
       stoppedOr(err);
     }
     try {
-      after = await shoot(ctx, repo, run.headSha as string, routes, { side: 'after', screenshotter: ictx.screenshotter, built: headBuilt });
+      await (ictx.reap ?? reapRun)(ctx.runRoot);
+      if (ctx.signal.aborted) throw new Error('The design check was stopped.');
+      wipeScratch(ctx.runRoot);
+      const baseCtx = await prepareBase(ctx, repo, run.baseSha as string, { egress: ctx.egress, installDeps: ictx.installDeps });
+      before = await shoot(baseCtx, repo, run.baseSha as string, routes, { side: 'before', screenshotter: ictx.screenshotter });
     } catch (err) {
       stoppedOr(err);
     }
@@ -467,4 +554,51 @@ async function designCheck(
       credits: 0,
     };
   }
+}
+
+/** Words of a command that may name files: no options, no assignments, no shell punctuation. */
+function words(command: string): string[] {
+  return command
+    .split(/[\s;&|()<>]+/)
+    .map((w) => w.replace(/^['"]|['"]$/g, '').replace(/^\.\//, ''))
+    .filter((w) => w && !w.startsWith('-') && !w.includes('=') && !w.includes('$'));
+}
+
+async function packageScripts(dir: string, sha: string): Promise<Record<string, string>> {
+  const r = await engineGit(dir, ['show', `${sha}:package.json`]);
+  if (r.code !== 0) return {};
+  try {
+    const scripts = (JSON.parse(r.stdout) as { scripts?: unknown }).scripts;
+    if (!scripts || typeof scripts !== 'object') return {};
+    return Object.fromEntries(Object.entries(scripts as Record<string, unknown>).filter(([, v]) => typeof v === 'string')) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The changed paths that make up the repo's screenshot command: a file the
+ * command or the package script it runs names (or a file under a folder it
+ * names), and package.json when that package script changed. Empty when the
+ * change leaves the script alone.
+ */
+export async function scriptTouched(dir: string, base: string, head: string, command: string, changed: string[]): Promise<string[]> {
+  const named = new Set(words(command));
+  const out = new Set<string>();
+  const run = /\b(?:npm|pnpm|yarn|bun)\s+(?:run(?:-script)?\s+)?([A-Za-z0-9:._-]+)/.exec(command);
+  if (run) {
+    const [b, h] = [await packageScripts(dir, base), await packageScripts(dir, head)];
+    const name = run[1];
+    for (const n of [name, `pre${name}`, `post${name}`]) {
+      if (b[n] !== h[n]) out.add('package.json');
+      for (const w of [...words(b[n] ?? ''), ...words(h[n] ?? '')]) named.add(w);
+    }
+  }
+  for (const p of changed) {
+    for (const w of named) {
+      const d = w.replace(/\/+$/, '');
+      if (p === d || p.startsWith(`${d}/`)) out.add(p);
+    }
+  }
+  return [...out];
 }

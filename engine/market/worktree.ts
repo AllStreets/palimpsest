@@ -235,6 +235,35 @@ export async function createBaseDir(repo: Repo, runId: string, sha: string): Pro
   return dir;
 }
 
+/**
+ * Makes `<runRoot>/ship` (ruling 20): a fresh clone of the repo's mirror,
+ * without hardlinks, into which the engine fetches the run branch from the
+ * run dir as data, checks that its tip is `headSha` (the engine's own
+ * commit), and checks out exactly that sha. The inspection runs its checks
+ * and the head preview here, so nothing the agent left in its run dir
+ * (ignored files, build output, installed tools) is ever run or served,
+ * and Task 16 ships from the same clone.
+ */
+export async function createShipDir(repo: Repo, runId: string, runDir: string, branch: string, headSha: string): Promise<string> {
+  const runRoot = join(paths().runs, runId);
+  const dir = join(runRoot, 'ship');
+  if (existsSync(dir)) throw new Error(`ship dir already exists: ${dir}`);
+  mkdirSync(join(runRoot, 'ctl'), { recursive: true });
+  const ctl = controlFiles(runId);
+  if (!existsSync(ctl.gitconfig)) writeFileSync(ctl.gitconfig, '', { mode: 0o444 });
+  // The run dir's layout and config are checked before it is read from at all.
+  const tip = (await engineGitOk(runDir, ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`])).trim();
+  if (tip !== headSha) throw new Error(`The run branch is at ${tip.slice(0, 7)}, not the engine's commit ${headSha.slice(0, 7)}.`);
+  await gitOk(['clone', '--quiet', '--local', '--no-hardlinks', '--no-checkout', mirrorDir(repo.fullName), dir], runRoot, runRoot);
+  await gitOk(['remote', 'set-url', '--push', 'origin', PUSH_URL], dir, runRoot);
+  recordGitConfig(dir);
+  await engineGitOk(dir, ['-c', 'protocol.file.allow=always', 'fetch', '--quiet', '--no-tags', '--no-recurse-submodules', runDir, `+refs/heads/${branch}:refs/palimpsest/head`]);
+  const fetched = (await engineGitOk(dir, ['rev-parse', '--verify', 'refs/palimpsest/head^{commit}'])).trim();
+  if (fetched !== headSha) throw new Error(`The fetched run branch is at ${fetched.slice(0, 7)}, not ${headSha.slice(0, 7)}.`);
+  await engineGitOk(dir, ['checkout', '--quiet', '--detach', headSha]);
+  return dir;
+}
+
 /** The run's change against its base: the patch (untracked files included), the files, the changed line count and the patch hash. */
 export async function diffOf(dir: string, baseSha: string): Promise<{ patch: string; files: string[]; lines: number; sha256: string }> {
   await engineGitOk(dir, ['add', '--all']);

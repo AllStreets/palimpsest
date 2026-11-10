@@ -30,6 +30,22 @@ import { reputation } from '../market/reputation.js';
 /** Reviewers tried in turn when a call fails for its own reasons (not a stop). */
 const MAX_TRIES = 3;
 
+/**
+ * The most diff, in characters, each backend's reviewer reads whole: below
+ * every cut a prompt makes (claude.ts and the API at 200,000 characters)
+ * and, for Ollama, inside a default context window. A diff longer than a
+ * reviewer's window is never handed to it cut: a padded diff could push the
+ * real change past what the reviewer sees.
+ */
+export const REVIEW_WINDOW = { claude: 150_000, anthropic: 150_000, ollama: 12_000, mlx: 12_000 } as const;
+
+export function reviewWindow(model: string): number {
+  const prefix = model.slice(0, model.indexOf(':')) as keyof typeof REVIEW_WINDOW;
+  return REVIEW_WINDOW[prefix] ?? 12_000;
+}
+
+export const TOO_LARGE = 'too large to review';
+
 const ZERO: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
 
 /** Working agents of active firms other than the worker's, best reputation first. */
@@ -104,7 +120,26 @@ export async function review(run: Run, job: Job, diff: string, checks: CheckResu
   let credits = 0;
   const problems: string[] = [];
   let tries = 0;
-  for (const a of reviewerCandidates(run)) {
+  const candidates = reviewerCandidates(run);
+  const fits = candidates.filter((a) => diff.length <= reviewWindow(a.model));
+  if (candidates.length && fits.length === 0) {
+    const widest = Math.max(...candidates.map((a) => reviewWindow(a.model)));
+    return {
+      result: {
+        name: 'review',
+        status: 'fail',
+        detail: `The change is ${TOO_LARGE}: its diff is ${diff.length} characters and the widest reviewer reads ${widest} whole. No reviewer is shown a cut diff.`,
+        durationMs: 0,
+        logPath: null,
+        testsRun: null,
+      },
+      reviewerAgentId: null,
+      reviewerFirmId: null,
+      usage,
+      credits,
+    };
+  }
+  for (const a of fits) {
     if (tries >= MAX_TRIES) break;
     if (lease.signal.aborted) throw new Error('The review was stopped.');
     const sub = lease.sub('review', a.model, REVIEW_ESTIMATE);

@@ -103,16 +103,19 @@ test('a UI diff on a static repo is shot before and after at each route', { time
   try {
     const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
     // Both sides, every route, against the port the static server reported.
+    // The head first (from the engine's fresh clone), then the base once the run's scratch dirs are wiped.
     assert.deepEqual(shots.map((s) => [s.side, s.routes, s.port]), [
-      ['before', ['/', '/about'], SERVED_PORT],
       ['after', ['/', '/about'], SERVED_PORT],
+      ['before', ['/', '/about'], SERVED_PORT],
     ]);
     const root = join(paths().runs, run.id);
     for (const s of shots) assert.ok(s.outDir.startsWith(join(root, 'inspection')), 'shots are kept with the inspection');
     // The base side was a checkout of the base sha made by the engine.
     assert.ok(existsSync(join(root, 'base', 'index.html')));
     assert.equal(commands.filter((c) => c.includes('static-server.mjs')).length, 2);
-    assert.ok(commands.some((c) => c.includes(join(root, 'base'))), 'the base side is served from <runRoot>/base');
+    assert.ok(commands.some((c) => c.includes('static-server.mjs') && c.includes(join(root, 'base'))), 'the base side is served from <runRoot>/base');
+    assert.ok(commands.some((c) => c.includes('static-server.mjs') && c.includes(join(root, 'ship'))), 'the head is served from the engine clone, never the run dir');
+    assert.ok(!commands.some((c) => c.includes('static-server.mjs') && c.includes(join(root, 'repo'))));
 
     assert.equal(judged.length, 1);
     assert.equal(judged[0].before.length, 2);
@@ -132,7 +135,7 @@ test('a UI diff on a static repo is shot before and after at each route', { time
 });
 
 test('a repo with a screenshot script uses it', { timeout: 60_000 }, async () => {
-  const repo = makeRepo(checks({ screenshot: 'npm run shot', preview: { kind: 'static', outDir: '.' }, shots: ['/'] }), {
+  const repo = makeRepo(checks({ screenshot: 'npm run shot', preview: null, shots: ['/'] }), {
     'index.html': '<h1>Widgets</h1>\n',
     'app.tsx': 'export const App = () => null;\n',
   });
@@ -445,6 +448,108 @@ test('a static preview is served under the tool profile and shot by the real Chr
     assert.equal(judged[0].after.length, 1);
     // The server ran under the generated tool profile wherever sandbox-exec exists.
     if (existsSync(SANDBOX_EXEC)) assert.ok(existsSync(join(paths().runs, run.id, 'ctl', 'tool.sb')));
+  } finally {
+    lease.release();
+  }
+});
+
+// ---------------------------------------------------------------- fix round 1: anti-gaming
+
+test("a preview is always shot by the engine's Chromium, never the repo's script", { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks({ screenshot: 'npm run shot', preview: { kind: 'static', outDir: '.' }, shots: ['/'] }), {
+    'index.html': '<h1>Widgets</h1>\n',
+    'app.tsx': 'export const App = () => null;\n',
+  });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'app.tsx', 'export const App = () => 1;\n'));
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
+    assert.equal(commands.filter((c) => c.includes('npm run shot')).length, 0, 'the script never runs');
+    assert.deepEqual(shots.map((x) => x.side), ['after', 'before']);
+    assert.equal(insp.checks.find((c) => c.name === 'design')?.status, 'pass');
+  } finally {
+    lease.release();
+  }
+});
+
+test('a screenshot script the diff touches fails design', { timeout: 60_000 }, async () => {
+  // The script itself.
+  const repo = makeRepo(checks({ screenshot: 'node tools/shot.mjs', shots: ['/'] }), {
+    'tools/shot.mjs': 'export {};\n',
+    'app.tsx': 'export const App = () => null;\n',
+  });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, 'app.tsx', 'export const App = () => 1;\n');
+    write(dir, 'tools/shot.mjs', 'export {}; // writes a pretty picture\n');
+  });
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
+    const d = insp.checks.find((c) => c.name === 'design')!;
+    assert.equal(d.status, 'fail');
+    assert.match(d.detail, /screenshot script/);
+    assert.equal(judged.length, 0);
+    assert.equal(commands.filter((c) => c.includes('tools/shot.mjs')).length, 0, 'a touched script is never run');
+  } finally {
+    lease.release();
+  }
+});
+
+test('a package script behind the screenshot command that the diff changes fails design', { timeout: 60_000 }, async () => {
+  const pkg = (shot: string) => JSON.stringify({ scripts: { shot, test: 'node --test' } }, null, 2) + '\n';
+  const repo = makeRepo(checks({ screenshot: 'npm run shot', shots: ['/'] }), {
+    'package.json': pkg('node tools/shot.mjs'),
+    'app.tsx': 'export const App = () => null;\n',
+  }, 'acme/gadgets');
+  const { worker } = team();
+  const job = postJob(['**'], 'acme/gadgets');
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, 'app.tsx', 'export const App = () => 1;\n');
+    write(dir, 'package.json', pkg('cp pretty.png "$PALIMPSEST_SHOT"'));
+  });
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
+    const d = insp.checks.find((c) => c.name === 'design')!;
+    assert.equal(d.status, 'fail');
+    assert.match(d.detail, /screenshot script/);
+  } finally {
+    lease.release();
+  }
+});
+
+test('ignored build output in the run dir is never served, and head code cannot reach the before shot', { timeout: 120_000 }, async () => {
+  const { realSpawner } = await import('../engine/exec.js');
+  setSpawner(realSpawner);
+  // The test writes poison into the run's HOME and cache; the build bakes it into the page when it finds it.
+  const build = 'mkdir -p dist && if [ -e "$HOME/poison" ] || [ -e "$XDG_CACHE_HOME/poison" ]; then echo POISONED > dist/index.html; else cp index.html dist/index.html; fi';
+  const repo = makeRepo(checks({ test: 'touch "$HOME/poison" "$XDG_CACHE_HOME/poison"', build, preview: { kind: 'static', outDir: 'dist' }, shots: ['/'] }), {
+    '.gitignore': 'dist/\n',
+    'index.html': '<h1>Widgets</h1>\n',
+    'style.css': 'h1 { color: black; }\n',
+  });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, 'style.css', 'h1 { color: navy; }\n');
+    write(dir, 'dist/index.html', 'TAMPERED\n');
+  });
+  const bodies: Record<string, string> = {};
+  const fetching: Screenshotter = async (o) => {
+    const res = await fetch(`http://127.0.0.1:${o.port}/`);
+    bodies[o.side] = await res.text();
+    return screenshotter(o);
+  };
+  const lease = await workLease();
+  try {
+    await inspect(run, job, repo, diff, lease, { screenshotter: fetching });
+    assert.doesNotMatch(bodies.after ?? '', /TAMPERED/, 'the head is built and served from the engine clone');
+    assert.match(bodies.after ?? '', /POISONED/, 'the head checks did write their poison');
+    assert.match(bodies.before ?? '', /Widgets/, 'the base side never sees what the head left in HOME or the cache');
   } finally {
     lease.release();
   }

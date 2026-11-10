@@ -5,6 +5,8 @@
  * `node --test` suite (rule 5), every model the fake provider (rule 6).
  */
 import assert from 'node:assert/strict';
+import { chmodSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
@@ -16,13 +18,23 @@ import { abortLease } from '../engine/market/budget.js';
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import { setProvider } from '../engine/market/providers.js';
 import { getRepo } from '../engine/repos.js';
+import type { ReviewInput } from '../engine/market/provider.js';
 import type { CheckResult } from '../shared/types.js';
-import { addAgent, checks, FULL, makeRepo, makeRun, postJob, setUp, suite, tearDown, workLease, write } from './guild-fixtures.js';
+import { addAgent, checks, FULL, git, makeRepo, makeRun, postJob, setUp, suite, tearDown, workLease, write } from './guild-fixtures.js';
+
+let reviewed: ReviewInput[] = [];
 
 beforeEach(() => {
   setUp('inspect');
-  setProvider('claude', fakeProvider());
-  setProvider('ollama', fakeProvider());
+  reviewed = [];
+  const p = fakeProvider({
+    review: (i) => {
+      reviewed.push(i);
+      return { approve: true, notes: 'Fine.', concerns: [], usage: { weightedTokens: 400, seconds: 1, usd: 0, credits: 1 } };
+    },
+  });
+  setProvider('claude', p);
+  setProvider('ollama', p);
 });
 afterEach(tearDown);
 
@@ -97,8 +109,9 @@ test('a new failure fails', { timeout: 120_000 }, async () => {
     assert.ok(done.some((e) => (e.data as { check: CheckResult }).check.name === 'test'));
     const verdict = entries().find((e) => e.kind === 'inspection.done');
     const v = verdict?.data as { reviewerAgentId: string; reviewerFirmId: string; inspection: { passed: boolean } };
-    assert.equal(v.reviewerAgentId, 'rex');
-    assert.equal(v.reviewerFirmId, 'beta');
+    // A failed check means no review call (fix round 1 ruling).
+    assert.equal(v.reviewerAgentId, null);
+    assert.equal(v.reviewerFirmId, null);
     assert.equal(v.inspection.passed, false);
     assert.match(inspectionSummary(insp), /test/);
     // Stored for the inspection screen.
@@ -195,13 +208,35 @@ test('the inspection reads the committed change, not the run dir after it', { ti
   const { worker } = team();
   const job = postJob(['src/**']);
   const { run, diff, dir } = await makeRun(repo, job, worker, (d) => write(d, 'src/header.ts', 'export const header = 2;\n'));
-  // Something writes into the run dir after the engine's commit.
+  // Something writes into the run dir after the engine's commit: it is never inspected, reviewed or shipped.
   write(dir, 'src/late.ts', 'export const late = true;\n');
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    assert.equal(insp.passed, true);
+    assert.equal(reviewed.length, 1);
+    assert.match(reviewed[0].diff, /header = 2/);
+    assert.doesNotMatch(reviewed[0].diff, /late/);
+  } finally {
+    lease.release();
+  }
+
+});
+
+test('a run branch that moved past the engine commit fails', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), { 'src/header.ts': 'export const header = 1;\n' });
+  const { worker } = team();
+  const job = postJob(['src/**']);
+  const { run, diff, dir } = await makeRun(repo, job, worker, (d) => write(d, 'src/header.ts', 'export const header = 2;\n'));
+  write(dir, 'src/late.ts', 'export const late = true;\n');
+  git(dir, 'add', '.');
+  git(dir, 'commit', '-q', '-m', 'after the engine');
   const lease = await workLease();
   try {
     const insp = await inspect(run, job, repo, diff, lease);
     assert.equal(insp.passed, false);
     assert.match(insp.checks.find((c) => c.name === 'scope')!.detail, /commit/);
+    assert.equal(reviewed.length, 0, 'nothing that is not the commit is reviewed');
   } finally {
     lease.release();
   }
@@ -256,4 +291,134 @@ test('canOpenPR and canPush', () => {
   assert.equal(canPush([c('test', 'pass'), c('build', 'skipped'), c('scope', 'pass'), c('review', 'pass')]), false);
   assert.equal(canOpenPR([...good, c('design', 'fail')]), false);
   assert.equal(canOpenPR([c('test', 'skipped'), c('build', 'skipped'), c('scope', 'pass')]), false, 'no review, no PR');
+});
+
+// ---------------------------------------------------------------- fix round 1: anti-gaming
+
+test('a failed check means no review call: no review sub-lease and no review charge', { timeout: 120_000 }, async () => {
+  const repo = makeRepo(checks({ test: 'node --test' }), {
+    'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+    'test/a.test.mjs': suite(false),
+  });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'test/a.test.mjs', suite(true)));
+  const lease = await workLease();
+  const subs: string[] = [];
+  const spy = { signal: lease.signal, release: () => lease.release(), sub: ((k, m, e) => (subs.push(k), lease.sub(k, m, e))) as typeof lease.sub };
+  try {
+    const insp = await inspect(run, job, repo, diff, spy);
+    assert.equal(statusOf(insp.checks, 'test'), 'fail');
+    assert.equal(statusOf(insp.checks, 'review'), undefined);
+    assert.equal(insp.reviewerAgentId, null);
+    assert.equal(insp.passed, false);
+  } finally {
+    lease.release();
+  }
+  assert.deepEqual(subs.filter((k) => k === 'review'), []);
+  assert.equal(reviewed.length, 0);
+  assert.equal((openDb().prepare("SELECT COUNT(*) AS n FROM credits WHERE kind = 'review'").get() as { n: number }).n, 0);
+});
+
+test('a scope failure alone still gets a review', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), { 'src/header.ts': 'export const header = 1;\n', 'README.md': 'w\n' });
+  const { worker } = team();
+  const job = postJob(['src/**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'README.md', 'changed\n'));
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    assert.equal(statusOf(insp.checks, 'scope'), 'fail');
+    assert.equal(statusOf(insp.checks, 'review'), 'pass');
+  } finally {
+    lease.release();
+  }
+});
+
+test('an agent-tampered ignored file does not affect the checks', { timeout: 120_000 }, async () => {
+  // The install makes the test runner under node_modules (ignored); the agent breaks a test and replaces the runner.
+  const install = "mkdir -p node_modules/.bin && printf '#!/bin/sh\\nexec node --test\\n' > node_modules/.bin/runner && chmod +x node_modules/.bin/runner";
+  const repo = makeRepo(checks({ install, test: './node_modules/.bin/runner' }), {
+    '.gitignore': 'node_modules/\n',
+    'test/a.test.mjs': suite(false),
+  });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, 'test/a.test.mjs', suite(true));
+    write(dir, 'node_modules/.bin/runner', '#!/bin/sh\nexit 0\n');
+    chmodSync(join(dir, 'node_modules/.bin/runner'), 0o755);
+  });
+  assert.ok(!diff.files.some((f) => f.startsWith('node_modules')), 'the tampered runner is ignored by git');
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    assert.equal(statusOf(insp.checks, 'install'), 'pass', 'a clean install in a fresh clone');
+    assert.equal(statusOf(insp.checks, 'test'), 'fail', 'the real runner ran, not the agent\'s');
+    assert.equal(insp.passed, false);
+  } finally {
+    lease.release();
+  }
+});
+
+test("the head's .gitattributes cannot hide code from the reviewer and fails scope", { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), { 'src/a.ts': 'export const a = 1;\n' });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, '.gitattributes', '*.ts -diff\n');
+    write(dir, 'src/a.ts', 'export const a = stealTheKeys();\n');
+  });
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    assert.equal(reviewed.length, 1);
+    assert.match(reviewed[0].diff, /stealTheKeys/, 'the code is shown as text');
+    assert.doesNotMatch(reviewed[0].diff, /Binary files/);
+    const scope = insp.checks.find((c) => c.name === 'scope')!;
+    assert.equal(scope.status, 'fail');
+    assert.match(scope.detail, /\.gitattributes/);
+  } finally {
+    lease.release();
+  }
+});
+
+test('a diff padded past the reviewer window fails as too large to review', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), { 'src/a.ts': 'export const a = 1;\n' });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const pad = Array.from({ length: 8000 }, (_, i) => `// padding line ${i} ${'x'.repeat(40)}`).join('\n');
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, 'src/pad.ts', `${pad}\n`);
+    write(dir, 'src/a.ts', 'export const a = stealTheKeys();\n');
+  });
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    const r = insp.checks.find((c) => c.name === 'review')!;
+    assert.equal(r.status, 'fail');
+    assert.match(r.detail, /too large to review/);
+    assert.equal(reviewed.length, 0, 'no reviewer sees a cut diff');
+    assert.equal(insp.passed, false);
+  } finally {
+    lease.release();
+  }
+});
+
+test('tests that disappeared fail the test check', { timeout: 120_000 }, async () => {
+  const repo = makeRepo(checks({ test: 'node --test' }), { 'test/a.test.mjs': suite(false) });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'test/a.test.mjs', "import { test } from 'node:test';\ntest('one', () => {});\n"));
+  const base = await baseline(repo, run.baseSha as string);
+  assert.equal(base.find((c) => c.name === 'test')?.testsRun, 2);
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    const t = insp.checks.find((c) => c.name === 'test')!;
+    assert.equal(t.status, 'fail');
+    assert.match(t.detail, /2 tests ran before the change, 1 after/);
+  } finally {
+    lease.release();
+  }
 });

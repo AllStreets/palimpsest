@@ -3,9 +3,11 @@
  * screenshots of every UI change the guild can render, and the vision
  * judge that scores them against his design bar (`design-bar.md`).
  *
- * Rendering, in order: the repo's own `checks.screenshot` script, run
- * through execTool() with `PALIMPSEST_SHOT=<path>` (and the route in
- * `PALIMPSEST_ROUTE`); else the detected preview: built with
+ * Rendering: a detected preview is always shot by the engine's own
+ * Chromium (the repo's script is ignored then); only a repo with no
+ * preview uses its own `checks.screenshot` script, run through execTool()
+ * with `PALIMPSEST_SHOT=<path>` (and the route in `PALIMPSEST_ROUTE`), and
+ * never when the change touches that script (inspect.ts). The preview is built with
  * `checks.build` through execTool(), served from its output directory by
  * `static-server.mjs`, itself started through execTool() under the tool
  * profile on a loopback port the kernel picks, and shot from outside the
@@ -365,7 +367,8 @@ export async function shoot(ctx: RunContext, repo: Repo, sha: string, routes: st
   mkdirSync(outDir, { recursive: true });
   const log = (text: string) => ctx.log({ at: nowIso(), kind: 'engine', text: `design: ${text}` });
 
-  if (c.screenshot) {
+  // A preview is always shot by the engine's own Chromium; the repo's script is used only without one.
+  if (c.screenshot && !c.preview) {
     const out: Shot[] = [];
     for (const [i, route] of routes.entries()) {
       const tmp = join(ctx.runRoot, 'tmp', 'shots', `${opts.side}-${i}.png`);
