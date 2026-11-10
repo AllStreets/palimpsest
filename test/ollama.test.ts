@@ -171,6 +171,22 @@ describe('ollama', () => {
     assert.equal(readFileSync(join(dir, 'docs', 'CHANGELOG.md'), 'utf8'), '# Changelog\n');
   });
 
+  test('an Ollama turn with too many tool calls is cut and the model is told', async () => {
+    fakeRunner();
+    const calls = Array.from({ length: 33 }, (_, n) => toolCall('write_file', { path: `f${n}.md`, content: 'x' }));
+    const { bodies } = await fakeOllama([
+      { stream: [msg('', { tool_calls: calls }), done(1)] },
+      { stream: [msg('', { tool_calls: [toolCall('finish', { summary: 'ok' })] }), done(1)] },
+    ]);
+    const { input, dir } = workInput('run-many');
+    const r = await ollamaProvider().work(input);
+    assert.equal(r.ended, 'finished', r.reason ?? '');
+    const last = (bodies[1].messages as Array<{ role: string; content: string }>).at(-1)!;
+    assert.equal(last.role, 'user');
+    assert.match(last.content, /more than 32 tool calls/);
+    assert.throws(() => readFileSync(join(dir, 'f0.md')));
+  });
+
   test('credits come from seconds and model size', async () => {
     const { calls } = fakeRunner();
     await fakeOllama([

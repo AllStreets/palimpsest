@@ -15,6 +15,17 @@ export type Runner = (
  */
 const REFUSED_IN_TESTS = new Set(['gh', 'claude', 'ollama', 'security', 'caffeinate', 'osascript', 'launchctl']);
 
+/**
+ * A command line for an error message. A `security` call shows only its
+ * subcommand: its arguments can name a keychain item or hold a secret.
+ */
+export function describeCommand(cmd: string, args: string[]): string {
+  const base = cmd.split('/').pop() ?? cmd;
+  if (base === 'security') return `${cmd} ${args[0] ?? ''} [arguments hidden]`.trim();
+  if (args.some((a) => /(^|[^A-Za-z0-9_-])security([^A-Za-z0-9_-]|$)/.test(a))) return `${cmd} [arguments hidden]`;
+  return `${cmd} ${args.join(' ')}`;
+}
+
 function inTestRun(): boolean {
   return !!process.env.NODE_TEST_CONTEXT;
 }
@@ -23,7 +34,7 @@ function inTestRun(): boolean {
 export const realRunner: Runner = (cmd, args, opts) =>
   new Promise((resolve, reject) => {
     if (inTestRun() && REFUSED_IN_TESTS.has(cmd.split('/').pop() ?? cmd)) {
-      reject(new Error(`${cmd} ${args.join(' ')} refused in tests: install a fake runner`));
+      reject(new Error(`${describeCommand(cmd, args)} refused in tests: install a fake runner`));
       return;
     }
     const child = spawn(cmd, args, { cwd: opts?.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -36,7 +47,7 @@ export const realRunner: Runner = (cmd, args, opts) =>
       if (settled) return;
       settled = true;
       child.kill();
-      reject(new Error(`${cmd} ${args.join(' ')} timed out after ${timeoutMs}ms`));
+      reject(new Error(`${describeCommand(cmd, args)} timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -232,7 +243,7 @@ function lineQueue(limit: number) {
  */
 export const realSpawner: Spawner = (cmd, args, opts) => {
   const refused = refusedInTests(cmd, args);
-  if (refused) throw new Error(`${cmd} ${args.join(' ')} refused in tests (${refused}): install a fake spawner`);
+  if (refused) throw new Error(`${describeCommand(cmd, args)} refused in tests (${refused}): install a fake spawner`);
 
   const queue = lineQueue(Math.max(1, opts.maxBufferedLines ?? MAX_BUFFERED_LINES));
   const child = spawn(cmd, args, {

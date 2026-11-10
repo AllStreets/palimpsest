@@ -9,8 +9,9 @@
  *
  * The key lives in his login keychain under service KEY_SERVICE, read with
  * `security find-generic-password` through the engine's runner each time a
- * call needs it. It goes only into the request header: never into a child
- * environment, a log line, the ledger or an error message.
+ * call needs it, and stored by `security -i` with the command on stdin, so
+ * it is never on an argv. It goes only into the request header: never into
+ * a child environment, a log line, the ledger or an error message.
  *
  * Every API call first acquires an `api` lease (budget.ts), which refuses
  * when today's spend plus what is reserved would pass `dailyUsd`, then
@@ -18,9 +19,13 @@
  * lease and releases it in `finally`. The backend charges each call itself
  * (`chargesItself`), so the runner must not charge an API run's usage again.
  */
+import { statSync } from 'node:fs';
+import { homedir, userInfo } from 'node:os';
+import { isAbsolute } from 'node:path';
+
 import { apiCredits, modelFamily, type ModelFamily } from '../../shared/credits.js';
 import type { ModelRef } from '../../shared/types.js';
-import { getRunner } from '../exec.js';
+import { getRunner, getSpawner } from '../exec.js';
 import { record } from '../ledger.js';
 import { getSettings } from '../settings.js';
 import { acquire, charge, unattended, type Lease } from './budget.js';
@@ -78,10 +83,43 @@ export const chargesItself = true;
 /* The key                                                             */
 /* ------------------------------------------------------------------ */
 
-/** The stored API key, or null. Read through `security`; never from the environment. */
-export async function apiKey(): Promise<string | null> {
+/** Where the key lives: his login keychain by default; tests pass a throwaway keychain file. */
+export interface KeychainOptions {
+  keychain?: string;
+}
+
+/**
+ * The keychain file named by `o`, checked to exist: `security` silently
+ * falls back to the default (login) keychain when a named one is missing.
+ */
+function keychainOf(o: KeychainOptions): string | null {
+  if (o.keychain === undefined) return null;
+  const k = o.keychain;
+  if (typeof k !== 'string' || !isAbsolute(k) || !/\.keychain(-db)?$/.test(k)) throw new Error('The keychain must be an absolute path to a .keychain-db file.');
+  let file = false;
   try {
-    const { stdout, code } = await getRunner()(SECURITY, ['find-generic-password', '-s', KEY_SERVICE, '-w'], { timeoutMs: 15_000 });
+    file = statSync(k).isFile();
+  } catch {
+    file = false;
+  }
+  if (!file) throw new Error('The keychain file does not exist.');
+  return k;
+}
+
+/** A word for a `security -i` command line: double-quoted, with backslashes and quotes escaped. */
+function quoted(word: string): string {
+  if (/[\n\r\0]/.test(word)) throw new Error('A keychain argument cannot hold a line break.');
+  return `"${word.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * The stored API key, or null. Read through `security` (the runner returns
+ * its stdout and logs nothing); never from the environment.
+ */
+export async function apiKey(o: KeychainOptions = {}): Promise<string | null> {
+  try {
+    const kc = keychainOf(o);
+    const { stdout, code } = await getRunner()(SECURITY, ['find-generic-password', '-s', KEY_SERVICE, '-w', ...(kc ? [kc] : [])], { timeoutMs: 15_000 });
     if (code !== 0) return null;
     const key = stdout.trim();
     return KEY_RE.test(key) ? key : null;
@@ -90,25 +128,39 @@ export async function apiKey(): Promise<string | null> {
   }
 }
 
-/** Stores the key (Settings), replacing any earlier one. Records `api.key.set`, never the key. */
-export async function setApiKey(key: string): Promise<void> {
+/**
+ * Stores the key (Settings), replacing any earlier one. The key never goes
+ * on an argv: the command is fed to `security -i` on stdin, and nothing
+ * security prints is kept. Records `api.key.set`, never the key.
+ */
+export async function setApiKey(key: string, o: KeychainOptions = {}): Promise<void> {
   if (typeof key !== 'string' || !KEY_RE.test(key)) throw new Error('That is not an Anthropic API key.');
+  const kc = keychainOf(o);
+  const line = ['add-generic-password', '-U', '-a', quoted(KEY_ACCOUNT), '-s', quoted(KEY_SERVICE), '-w', quoted(key), ...(kc ? [quoted(kc)] : [])].join(' ') + '\n';
   let ok = false;
   try {
-    const { code } = await getRunner()(SECURITY, ['add-generic-password', '-U', '-a', KEY_ACCOUNT, '-s', KEY_SERVICE, '-w', key], { timeoutMs: 15_000 });
-    ok = code === 0;
+    const child = getSpawner()(SECURITY, ['-i'], {
+      stdin: line,
+      clearEnv: true,
+      env: { HOME: homedir(), USER: userInfo().username, PATH: '/usr/bin:/bin' },
+      maxMs: 15_000,
+    });
+    // Drained and dropped: nothing security prints is logged or returned.
+    for await (const _ of child.lines) void _;
+    const done = await child.done;
+    ok = done.code === 0 && !done.error && !done.timedOut;
   } catch {
     ok = false;
   }
-  // The runner's own errors name the argv, which holds the key: none of them is passed on.
   if (!ok) throw new Error('The keychain did not store the key.');
   record('api.key.set', { service: KEY_SERVICE });
 }
 
 /** Removes the key. Records `api.key.removed`. */
-export async function removeApiKey(): Promise<void> {
+export async function removeApiKey(o: KeychainOptions = {}): Promise<void> {
   try {
-    await getRunner()(SECURITY, ['delete-generic-password', '-a', KEY_ACCOUNT, '-s', KEY_SERVICE], { timeoutMs: 15_000 });
+    const kc = keychainOf(o);
+    await getRunner()(SECURITY, ['delete-generic-password', '-a', KEY_ACCOUNT, '-s', KEY_SERVICE, ...(kc ? [kc] : [])], { timeoutMs: 15_000 });
   } catch {
     throw new Error('The keychain did not remove the key.');
   }
@@ -334,8 +386,11 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
       } catch (err) {
         const partialUsage = (err as { partialUsage?: typeof usage }).partialUsage;
         if (partialUsage) usage = partialUsage;
-        chargeNow();
-        throw new Error(scrub(err instanceof Error ? err.message : String(err), key));
+        const usd = chargeNow();
+        const e = new Error(scrub(err instanceof Error ? err.message : String(err), key));
+        // What the cut-off call cost, so the loop counts it too.
+        (e as { spent?: Partial<ChatUsage> }).spent = { ...usage, usd, seconds: (Date.now() - started) / 1000 };
+        throw e;
       }
     } finally {
       signal.removeEventListener('abort', abort);
@@ -390,6 +445,8 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
           res = await call(ref, body, { kind: 'run', runId, firmId }, signal, (c) => chunks.push(c));
         } catch (err) {
           for (const c of chunks) yield c;
+          const spent = (err as { spent?: Partial<ChatUsage> }).spent;
+          if (spent) yield { type: 'usage', usage: spent };
           throw err;
         }
         for (const c of chunks) yield c;

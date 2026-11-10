@@ -255,6 +255,12 @@ export function loopWorkPrompt(i: WorkInput): string {
 /* ------------------------------------------------------------------ */
 
 const MAX_RESULT_CHARS = 64 * 1024;
+/** Text one turn may stream before it is cut. */
+export const MAX_TURN_TEXT = 64 * 1024;
+/** Tool calls one turn may ask for before it is cut. */
+export const MAX_TURN_CALLS = 32;
+/** How often a turn in flight is checked against the credit cap. */
+const CAP_CHECK_MS = 500;
 const LOG_CHARS = 2000;
 
 function now(): string {
@@ -343,27 +349,74 @@ export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: Loo
       let raw: unknown;
       const calls: ToolCall[] = [];
       const turnUsage = emptyUsage();
+      const turnStart = Date.now();
+      // The turn has its own controller, so an overflow or a credit cap can stop it mid-stream.
+      const turnCtl = new AbortController();
+      const onLoopAbort = () => turnCtl.abort();
+      ctl.signal.addEventListener('abort', onLoopAbort, { once: true });
+      let cut: string | null = null;
+      let capHit = false;
+      const elapsed = () => (Date.now() - turnStart) / 1000;
+      /** Credits so far, counting the turn's wall time until the model reports its own seconds. */
+      const provisional = () => {
+        const t = { ...total };
+        addUsage(t, turnUsage);
+        if (!turnUsage.seconds) t.seconds += elapsed();
+        return o.creditsFor(t);
+      };
+      const checkCap = () => {
+        if (!capHit && !cut && provisional() > i.caps.maxCredits) {
+          capHit = true;
+          turnCtl.abort();
+        }
+      };
+      const capTimer = setInterval(checkCap, CAP_CHECK_MS);
+      capTimer.unref();
+      let failure: unknown = null;
       try {
-        for await (const chunk of transport.chat(messages, LOOP_TOOLS, ctl.signal)) {
-          if (chunk.type === 'text') text += chunk.text;
-          else if (chunk.type === 'tool_call') calls.push(chunk.call);
-          else if (chunk.type === 'usage') addUsage(turnUsage, chunk.usage);
-          else if (chunk.type === 'raw') raw = chunk.raw;
+        for await (const chunk of transport.chat(messages, LOOP_TOOLS, turnCtl.signal)) {
+          if (chunk.type === 'usage') addUsage(turnUsage, chunk.usage);
+          // After a cut or a cap the rest of the turn is drained and dropped.
+          if (cut || capHit) continue;
+          if (chunk.type === 'text') {
+            text += chunk.text;
+            if (text.length > MAX_TURN_TEXT) cut = `it passed ${MAX_TURN_TEXT} characters of text`;
+          } else if (chunk.type === 'tool_call') {
+            calls.push(chunk.call);
+            if (calls.length > MAX_TURN_CALLS) cut = `it asked for more than ${MAX_TURN_CALLS} tool calls`;
+          } else if (chunk.type === 'raw') raw = chunk.raw;
+          if (cut) turnCtl.abort();
+          else checkCap();
         }
       } catch (err) {
-        addUsage(total, turnUsage);
-        const s = stopped();
-        if (s) return s;
-        if (err instanceof LoopCap) return end('capped', err.message);
-        return end('crashed', `the model call failed: ${err instanceof Error ? err.message : String(err)}`);
+        failure = err;
+      } finally {
+        clearInterval(capTimer);
+        ctl.signal.removeEventListener('abort', onLoopAbort);
       }
+      if (!turnUsage.seconds) turnUsage.seconds = elapsed();
       addUsage(total, turnUsage);
+      const s = stopped();
+      if (s) return s;
+      if (capHit) return end('capped', `credit cap of ${i.caps.maxCredits} reached during a turn`);
+      if (failure !== null && !cut) {
+        if (failure instanceof LoopCap) return end('capped', failure.message);
+        return end('crashed', `the model call failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+      }
       progress.turns += 1;
       if (text.trim()) log({ at: now(), kind: 'assistant', text: clip(text, LOG_CHARS) });
       tick();
-      const halted2 = stopped();
-      if (halted2) return halted2;
       if (usage().credits > i.caps.maxCredits) return end('capped', `credit cap of ${i.caps.maxCredits} reached`);
+      if (cut) {
+        log({ at: now(), kind: 'refused', text: `turn cut: ${cut}` });
+        progress.refusals += 1;
+        messages.push({ role: 'assistant', content: text.slice(0, MAX_TURN_TEXT) || '(cut off)', toolCalls: [] });
+        messages.push({
+          role: 'user',
+          content: `Your last reply was cut off because ${cut} in one turn. None of its tool calls ran. Make at most ${MAX_TURN_CALLS} tool calls per turn and keep your text short.`,
+        });
+        continue;
+      }
       if (calls.length === 0) return end('finished', null, text.trim());
 
       // Ids come from the model: make them unique so results pair with their calls.
@@ -390,6 +443,7 @@ export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: Loo
         }
         const halted3 = stopped();
         if (halted3) return halted3;
+        if (usage().credits > i.caps.maxCredits) return end('capped', `credit cap of ${i.caps.maxCredits} reached`);
         const base = { runId: i.runId, runRoot, dir: i.dir, signal: ctl.signal, log, stage: 'working' as const };
         let content: string;
         let isError: boolean;

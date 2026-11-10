@@ -288,6 +288,83 @@ describe('runToolLoop', () => {
     assert.match(r.reason ?? '', /model went away/);
   });
 
+  test('a turn with too many tool calls is cut, nothing runs, and the model is told', async () => {
+    const { input } = workInput('run-many');
+    const many = Array.from({ length: 40 }, (_, n) => call('write_file', { path: `f${n}.md`, content: 'x' }));
+    const { transport, seen } = scripted([many, [call('finish', { summary: 'done' })]]);
+    const r = await runToolLoop(transport, input, opts);
+    assert.equal(r.ended, 'finished');
+    assert.throws(() => fs.statSync(join(input.dir, 'f0.md')));
+    const last = seen[1].messages.at(-1) as { role: string; content: string };
+    assert.equal(last.role, 'user');
+    assert.match(last.content, /cut off because it asked for more than 32 tool calls/);
+    const assistant = seen[1].messages.at(-2) as { role: string; toolCalls: unknown[] };
+    assert.equal(assistant.role, 'assistant');
+    assert.deepEqual(assistant.toolCalls, []);
+  });
+
+  test('a turn with too much text is cut and the model is told', async () => {
+    const { input } = workInput('run-chatty');
+    const chunk = 'x'.repeat(10_000);
+    let yielded = 0;
+    const seen: ChatMessage[][] = [];
+    const transport: ChatTransport = {
+      async *chat(messages, _tools, signal) {
+        seen.push(JSON.parse(JSON.stringify(messages)));
+        if (seen.length > 1) {
+          yield call('finish', { summary: 'done' });
+          return;
+        }
+        for (let n = 0; n < 1000 && !signal.aborted; n++) {
+          yielded += 1;
+          yield text(chunk);
+        }
+      },
+    };
+    const r = await runToolLoop(transport, input, opts);
+    assert.equal(r.ended, 'finished');
+    assert.ok(yielded < 20, `the stream was stopped early (${yielded} chunks)`);
+    const last = seen[1].at(-1) as { role: string; content: string };
+    assert.match(last.content, /cut off because it passed 65536 characters of text/);
+    assert.ok(((seen[1].at(-2) as { content: string }).content.length) <= 65536);
+  });
+
+  test('the credit cap is checked during a turn, not only after it', async () => {
+    const { input } = workInput('run-runaway', { caps: { maxTurns: 25, maxMinutes: 10, maxCredits: 1 } });
+    let after = 0;
+    const transport: ChatTransport = {
+      async *chat(_m, _t, signal) {
+        yield usage(500);
+        // A runaway turn: it keeps going until stopped.
+        while (!signal.aborted) {
+          after += 1;
+          yield call('list_files', {});
+          if (after > 1000) throw new Error('never stopped');
+        }
+      },
+    };
+    const r = await runToolLoop(transport, input, opts);
+    assert.equal(r.ended, 'capped');
+    assert.match(r.reason ?? '', /credit cap of 1 reached during a turn/);
+    assert.ok(after <= 1);
+  });
+
+  test('a silent turn that runs past the credit cap is stopped by the clock', async () => {
+    const { input } = workInput('run-silent', { caps: { maxTurns: 25, maxMinutes: 10, maxCredits: 5 } });
+    const transport: ChatTransport = {
+      async *chat(_m, _t, signal) {
+        await new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+      },
+    };
+    const started = Date.now();
+    // Ten credits a second: a local model's credits come from its seconds.
+    const r = await runToolLoop(transport, input, { ...opts, creditsFor: (u: { seconds: number }) => u.seconds * 10 });
+    assert.equal(r.ended, 'capped');
+    assert.match(r.reason ?? '', /credit cap/);
+    assert.ok(Date.now() - started < 5_000);
+    assert.ok(r.usage.seconds >= 0.5);
+  });
+
   test('finish ends with the summary', async () => {
     const { input, ticks } = workInput('run-finish');
     const { transport, seen } = scripted([[text('Looking.'), usage(2), call('list_files', {})], [usage(3), call('finish', { summary: 'Added the changelog.' }), call('run', { command: 'echo never' })]]);

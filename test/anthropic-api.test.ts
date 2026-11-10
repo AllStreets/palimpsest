@@ -4,14 +4,15 @@
  * read from his keychain and the real API is never called.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
-import { realRunner, setRunner, type Runner } from '../engine/exec.js';
+import { describeCommand, realRunner, realSpawner, setRunner, setSpawner, type Runner, type SpawnDone, type SpawnLine, type Spawned } from '../engine/exec.js';
 import { entries } from '../engine/ledger.js';
 import { API_PRICES, KEY_SERVICE, anthropicProvider, apiKey, removeApiKey, setApiKey, usdFor } from '../engine/market/anthropic-api.js';
 import { resetBudget } from '../engine/market/budget.js';
@@ -43,6 +44,7 @@ beforeEach(() => {
 afterEach(async () => {
   resetBudget();
   setRunner(realRunner);
+  setSpawner(realSpawner);
   if (server) await new Promise((r) => server!.close(r));
   server = null;
   for (const k of ENV_KEYS) {
@@ -53,7 +55,7 @@ afterEach(async () => {
 });
 
 /** A fake `security`: holds one keychain item in memory. */
-function fakeSecurity(initial: string | null = KEY): { calls: string[][]; stored: () => string | null } {
+function fakeSecurity(initial: string | null = KEY): { calls: string[][]; stored: () => string | null; set: (v: string | null) => void } {
   let item = initial;
   const calls: string[][] = [];
   const r: Runner = async (cmd, args) => {
@@ -73,7 +75,27 @@ function fakeSecurity(initial: string | null = KEY): { calls: string[][]; stored
     return { stdout: '', stderr: 'unknown', code: 1 };
   };
   setRunner(r);
-  return { calls, stored: () => item };
+  return { calls, stored: () => item, set: (v: string | null) => (item = v) };
+}
+
+interface ShellSpawn {
+  cmd: string;
+  args: string[];
+  stdin: string;
+  env: Record<string, string> | undefined;
+  clearEnv: boolean;
+}
+
+/** A fake `security -i`: applies add-generic-password lines from stdin to the fake keychain. */
+function fakeSecurityShell(sec: { set: (v: string | null) => void }): ShellSpawn[] {
+  const spawns: ShellSpawn[] = [];
+  setSpawner((cmd, args, opts): Spawned => {
+    spawns.push({ cmd, args, stdin: opts.stdin ?? '', env: opts.env, clearEnv: !!opts.clearEnv });
+    const m = /-w "([^"]+)"/.exec(opts.stdin ?? '');
+    if (m) sec.set(m[1]);
+    return { pid: 1, kill: () => {}, done: Promise.resolve({ code: m ? 0 : 1, signal: null }), lines: (async function* () {})() };
+  });
+  return spawns;
 }
 
 type Block = { type: 'text'; text: string } | { type: 'tool_use'; name: string; input: Record<string, unknown> };
@@ -260,14 +282,19 @@ describe('anthropic api', () => {
     assert.doesNotMatch(everything, /ENV-KEY/);
   });
 
-  test('setApiKey and removeApiKey go through security and record without the key', async () => {
+  test('setApiKey feeds security -i on stdin, removeApiKey deletes, and both record without the key', async () => {
     const sec = fakeSecurity(null);
+    const spawns = fakeSecurityShell(sec);
     assert.equal(await apiKey(), null);
     await setApiKey(KEY);
     assert.equal(sec.stored(), KEY);
     assert.equal(await apiKey(), KEY);
-    const add = sec.calls.find((c) => c[1] === 'add-generic-password')!;
-    assert.ok(add.includes('-U'));
+    assert.equal(spawns.length, 1);
+    assert.deepEqual([spawns[0].cmd, ...spawns[0].args], ['/usr/bin/security', '-i']);
+    assert.match(spawns[0].stdin, /^add-generic-password -U -a "palimpsest" -s "Palimpsest Anthropic API key" -w "sk-ant-[^"]+"\n$/);
+    assert.equal(spawns[0].clearEnv, true);
+    assert.doesNotMatch(JSON.stringify(spawns.map((x) => [x.cmd, ...x.args, x.env])), /TESTKEY/);
+    assert.doesNotMatch(JSON.stringify(sec.calls), /TESTKEY/);
     await removeApiKey();
     assert.equal(sec.stored(), null);
     const kinds = entries().map((e) => e.kind);
@@ -275,13 +302,82 @@ describe('anthropic api', () => {
     assert.ok(kinds.includes('api.key.removed'));
     assert.doesNotMatch(JSON.stringify(entries()), /TESTKEY/);
     await assert.rejects(setApiKey('-w evil'), /not an Anthropic API key/);
+    await assert.rejects(setApiKey('sk-ant-abc" -w "x'), /not an Anthropic API key/);
   });
 
   test('a failing security call never carries the key in its error', async () => {
-    setRunner(async () => {
-      throw new Error(`security add-generic-password -w ${KEY} timed out`);
+    setSpawner(() => {
+      throw new Error(`security -i add-generic-password -w ${KEY} failed`);
     });
     await assert.rejects(setApiKey(KEY), (err: Error) => !err.message.includes('TESTKEY'));
+    // The real runner and spawner never print a security argv either.
+    await assert.rejects(realRunner('/usr/bin/security', ['add-generic-password', '-w', KEY]), (err: Error) => !err.message.includes('TESTKEY'));
+    assert.throws(() => realSpawner('/bin/sh', ['-c', `security add-generic-password -w ${KEY}`], {}), (err: Error) => !err.message.includes('TESTKEY'));
+    assert.equal(describeCommand('/usr/bin/security', ['find-generic-password', '-w', 'x']), '/usr/bin/security find-generic-password [arguments hidden]');
+  });
+
+  test('a named keychain that does not exist is refused before security runs', async () => {
+    const sec = fakeSecurity(null);
+    const spawns = fakeSecurityShell(sec);
+    await assert.rejects(setApiKey(KEY, { keychain: join(tempDir, 'missing.keychain-db') }), /does not exist/);
+    assert.equal(await apiKey({ keychain: join(tempDir, 'missing.keychain-db') }), null);
+    assert.equal(spawns.length, 0);
+    assert.equal(sec.calls.length, 0);
+  });
+
+  test('the key round-trips through a throwaway keychain, never on an argv and never echoed', { skip: !existsSync('/usr/bin/security') || process.platform !== 'darwin' }, async () => {
+    const kc = join(tempDir, 'throwaway.keychain-db');
+    const searchBefore = execFileSync('/usr/bin/security', ['list-keychains', '-d', 'user'], { encoding: 'utf8' });
+    execFileSync('/usr/bin/security', ['create-keychain', '-p', 'throwaway', kc]);
+    try {
+      execFileSync('/usr/bin/security', ['unlock-keychain', '-p', 'throwaway', kc]);
+      const argvs: string[][] = [];
+      const output: string[] = [];
+      // Real security, but only ever against the throwaway keychain.
+      setSpawner((cmd, args, opts): Spawned => {
+        argvs.push([cmd, ...args]);
+        assert.deepEqual([cmd, ...args], ['/usr/bin/security', '-i']);
+        assert.ok(opts.stdin?.endsWith(`"${kc}"\n`), 'every stdin command names the throwaway keychain');
+        const child = spawn(cmd, args, { env: opts.env, stdio: ['pipe', 'pipe', 'pipe'] });
+        child.stdin.end(opts.stdin);
+        const lines: SpawnLine[] = [];
+        child.stdout.on('data', (d) => lines.push({ stream: 'stdout', line: String(d) }));
+        child.stderr.on('data', (d) => lines.push({ stream: 'stderr', line: String(d) }));
+        const done = new Promise<SpawnDone>((resolve) => child.on('close', (code, signal) => resolve({ code, signal })));
+        return {
+          pid: child.pid ?? null,
+          kill: () => child.kill(),
+          done,
+          lines: (async function* () {
+            await done;
+            for (const l of lines) {
+              output.push(l.line);
+              yield l;
+            }
+          })(),
+        };
+      });
+      setRunner(async (cmd, args, opts) => {
+        argvs.push([cmd, ...args]);
+        assert.equal(args.at(-1), kc, 'every runner call names the throwaway keychain');
+        return new Promise((resolve) => {
+          execFile(cmd, args, { timeout: opts?.timeoutMs }, (err, stdout, stderr) => resolve({ stdout, stderr, code: err ? Number((err as { code?: unknown }).code) || 1 : 0 }));
+        });
+      });
+      assert.equal(await apiKey({ keychain: kc }), null);
+      await setApiKey(KEY, { keychain: kc });
+      assert.equal(await apiKey({ keychain: kc }), KEY);
+      const next = 'sk-ant-api03-SECONDKEY0123456789';
+      await setApiKey(next, { keychain: kc });
+      assert.equal(await apiKey({ keychain: kc }), next);
+      await removeApiKey({ keychain: kc });
+      assert.equal(await apiKey({ keychain: kc }), null);
+      assert.doesNotMatch(JSON.stringify(argvs), /TESTKEY|SECONDKEY/);
+      assert.doesNotMatch(output.join(''), /TESTKEY|SECONDKEY/);
+    } finally {
+      execFileSync('/usr/bin/security', ['delete-keychain', kc]);
+    }
+    assert.equal(execFileSync('/usr/bin/security', ['list-keychains', '-d', 'user'], { encoding: 'utf8' }), searchBefore);
   });
 
   test('judge sends both images to the API', async () => {
