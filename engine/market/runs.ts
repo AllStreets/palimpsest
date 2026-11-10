@@ -87,6 +87,7 @@ import { quoteAsData } from './quote.js';
 import { reapRun, runQuiet } from './reaper.js';
 import { sandboxOff } from './sandbox.js';
 import { sandboxCheckBin } from './sandbox-check.js';
+import { layScar, ship as defaultShip, type ShipContext } from './ship.js';
 import { commitAll, diffOf, removeRunDir, createRunDir } from './worktree.js';
 
 // ---------------------------------------------------------------- constants
@@ -157,7 +158,7 @@ export interface RunDiff {
  */
 export type InspectFn = (run: Run, job: Job, repo: Repo, diff: RunDiff, lease: Lease, ctx?: InspectContext) => Promise<Inspection>;
 /** Task 16: shipping. Returns the run as it stands after (stage `waiting`, or ended with an outcome). */
-export type ShipFn = (run: Run, job: Job, repo: Repo, inspection: Inspection, signal: AbortSignal) => Promise<Run>;
+export type ShipFn = (run: Run, job: Job, repo: Repo, inspection: Inspection, signal: AbortSignal, ctx?: ShipContext) => Promise<Run>;
 
 export interface SchedulerDeps {
   now?: () => number;
@@ -198,10 +199,6 @@ export interface Scheduler {
 type Optional = 'baseline' | 'pollPRs' | 'watchReverts' | 'daily' | 'runWallMs';
 type Config = Required<Omit<SchedulerDeps, Optional>> & Pick<SchedulerDeps, Optional>;
 
-const notWired = (what: string) => async (): Promise<never> => {
-  throw new Error(`${what} is not wired into the scheduler yet`);
-};
-
 let preflightOk: Promise<string | null> | null = null;
 
 /** The sandbox membership helper must build, and the sandbox may be off only away from the real home. */
@@ -224,7 +221,8 @@ function defaults(): Config {
     installDeps: defaultInstallDeps,
     // Called through a wrapper: inspect.ts imports this module too (haltRepo), so the binding is read at call time.
     inspect: (...a) => guildInspect(...a),
-    ship: notWired('Shipping'),
+    // Through a wrapper too: ship.ts imports this module (the PR poll ends waiting runs, a revert halts the repo).
+    ship: (...a) => defaultShip(...a),
     pollJobs: defaultPollJobs,
     quiet: runQuiet,
     reap: reapRun,
@@ -764,6 +762,11 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     if (!inspection.passed && !st.lease.signal.aborted) {
       st.run = { ...st.run, inspectionId: inspection.id };
       saveRun(st.run);
+      try {
+        layScar(st.run, st.job, diff.lines);
+      } catch (err) {
+        engineLog(st, `[palimpsest] the scar floor could not be laid: ${errText(err)}`);
+      }
       return end(st, 'failed', 'The change failed inspection.', { job: 'fail', exclude: true, scar: true, summary: inspectionSummary(inspection) });
     }
     checkpoint(st);
@@ -772,7 +775,7 @@ async function lifecycle(st: LiveRun): Promise<Run> {
 
     st.job = transition(storedJob(st.job.id) ?? st.job, 'shipping');
     setStage(st, 'shipping');
-    const shipped = await guarded(st, config.ship(st.run, st.job, st.repo, inspection, st.lease.signal));
+    const shipped = await guarded(st, config.ship(st.run, st.job, st.repo, inspection, st.lease.signal, { log, egress: st.egress }));
     st.run = { ...st.run, ...shipped, id: st.run.id, jobId: st.run.jobId, summary: st.summary };
     if (st.run.outcome) return end(st, st.run.outcome, st.run.endedReason, { job: 'none' });
     setStage(st, st.run.stage === 'done' ? 'done' : 'waiting');

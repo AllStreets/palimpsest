@@ -5,6 +5,7 @@ import { paths } from './home.js';
 import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
 import { inspect } from './guild/inspect.js';
 import { installDeps } from './market/install.js';
+import { pollPRs, ship, watchReverts } from './market/ship.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
@@ -25,17 +26,18 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`Palimpsest engine listening on 127.0.0.1:${port} (stop file ${stopped ? 'present' : 'absent'})`);
   // The scheduler always starts; each tick does nothing while the stop file is set, so clearing it
-  // resumes the market without a restart. Shipping (Task 16) is wired in when it exists; until then a
-  // run that passes inspection ends crashed, never shipped.
+  // resumes the market without a restart.
   const scheduler = createScheduler({
     installDeps,
     // Ruling 12: the repo's checks at the run's base commit, cached per sha, in its own run root.
     baseline,
     // Task 15: the inspection guild (checks against the baseline, scope, another firm's review, design).
     inspect,
-    ship: async () => {
-      throw new Error('Shipping is not built yet.');
-    },
+    // Task 16: a PR (or, in push mode past every gate, a fast-forward of the default branch) from the engine's own clone.
+    ship,
+    // Task 16: every waiting PR every five minutes, every repo with lit floors every thirty for a revert.
+    pollPRs,
+    watchReverts,
   });
   scheduler.start();
 

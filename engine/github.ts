@@ -1,5 +1,7 @@
 import type { Repo } from '../shared/types.js';
-import { getRunner } from './exec.js';
+import { getRunner, realRunner } from './exec.js';
+import { home, isRealDataHome } from './home.js';
+import { syncMirror, type Commit } from './mirror.js';
 
 const TIMEOUT_MS = 120_000;
 
@@ -294,4 +296,121 @@ export async function ensureLabel(fullName: string, name: string): Promise<void>
   } catch (err) {
     if (!/already exists/i.test(err instanceof Error ? err.message : String(err))) throw err;
   }
+}
+
+// ---------------------------------------------------------------- shipping (Task 16)
+
+/** A branch the city pushes and opens PRs from: always `palimpsest/<jobId>`. */
+const CITY_HEAD = /^palimpsest\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+/** A base branch name: never a flag, never `..`, never a refspec. */
+const BRANCH = /^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$/;
+
+function checkBranch(name: string, re: RegExp): void {
+  if (typeof name !== 'string' || !re.test(name) || name.includes('..') || name.endsWith('/') || name.endsWith('.lock')) {
+    throw new GhError('other', `Bad branch name ${JSON.stringify(name)}`);
+  }
+}
+
+/**
+ * Real GitHub writes happen only from the real data home (the Task 5 guard):
+ * with the real runner and a temp or sample home, a write is refused before
+ * any gh call.
+ */
+export function githubWriteRefused(): string | null {
+  if (getRunner() !== realRunner || isRealDataHome(home())) return null;
+  return `GitHub writes are refused: ${home()} is not the real data home`;
+}
+
+/**
+ * Opens a pull request from the city's branch `head` into `base` and
+ * returns its number and URL. Title and body travel as `--flag=value`, so
+ * no text can read as a flag.
+ */
+export async function createPR(
+  fullName: string,
+  pr: { head: string; base: string; title: string; body: string },
+): Promise<{ number: number; url: string }> {
+  checkName(fullName);
+  checkBranch(pr.head, CITY_HEAD);
+  checkBranch(pr.base, BRANCH);
+  const refused = githubWriteRefused();
+  if (refused) throw new GhError('other', refused);
+  const title = pr.title.replace(/\s+/g, ' ').trim().slice(0, 240) || 'Palimpsest change';
+  const result = await runGh([
+    'pr',
+    'create',
+    '-R',
+    fullName,
+    `--head=${pr.head}`,
+    `--base=${pr.base}`,
+    `--title=${title}`,
+    `--body=${pr.body}`,
+  ]);
+  const url = result.stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(l));
+  if (!url) throw new GhError('other', `gh pr create printed no pull request URL: ${result.stdout.trim().slice(0, 200)}`);
+  const [owner, name] = fullName.toLowerCase().split('/');
+  const m = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)$/.exec(url)!;
+  if (m[1].toLowerCase() !== owner || m[2].toLowerCase() !== name) throw new GhError('other', `gh pr create answered for another repo: ${url}`);
+  return { number: Number(m[3]), url };
+}
+
+export interface PRState {
+  state: 'OPEN' | 'MERGED' | 'CLOSED';
+  mergedAt: string | null;
+  mergeCommit: string | null;
+  closedAt: string | null;
+}
+
+/** A pull request's fate: open, merged (with its merge commit) or closed without a merge. */
+export async function prState(fullName: string, number: number): Promise<PRState> {
+  checkName(fullName);
+  checkIssue(number);
+  const result = await runGh(['pr', 'view', String(number), '-R', fullName, '--json', 'state,mergedAt,mergeCommit,closedAt']);
+  const row = JSON.parse(result.stdout) as { state?: string; mergedAt?: string | null; mergeCommit?: { oid?: string } | null; closedAt?: string | null };
+  const state = row.state === 'MERGED' ? 'MERGED' : row.state === 'CLOSED' ? 'CLOSED' : 'OPEN';
+  const oid = row.mergeCommit?.oid ?? null;
+  return {
+    state,
+    mergedAt: row.mergedAt || null,
+    mergeCommit: oid && /^[0-9a-f]{40}$/.test(oid) ? oid : null,
+    closedAt: row.closedAt || null,
+  };
+}
+
+/** The numbers of open pull requests whose head is the city's branch `head`. */
+export async function openPRsFrom(fullName: string, head: string): Promise<number[]> {
+  checkName(fullName);
+  checkBranch(head, CITY_HEAD);
+  const result = await runGh(['pr', 'list', '-R', fullName, `--head=${head}`, '--state', 'open', '--json', 'number']);
+  return (JSON.parse(result.stdout || '[]') as Array<{ number: number }>).map((p) => p.number);
+}
+
+/**
+ * Commits on `branch` since `since` (ISO), every parent line, newest first,
+ * read through the mirror after `syncMirror` (the revert watch).
+ */
+export async function recentCommits(fullName: string, branch: string, since: string): Promise<Commit[]> {
+  checkName(fullName);
+  checkBranch(branch, BRANCH);
+  const dir = await syncMirror(fullName);
+  const at = Date.parse(since);
+  const sinceArg = Number.isFinite(at) ? new Date(at).toISOString() : '1970-01-01T00:00:00Z';
+  const RS = '\x1e';
+  const US = '\x1f';
+  const r = await getRunner()(
+    'git',
+    ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-C', dir, 'log', `--since=${sinceArg}`, `--format=${RS}%H${US}%aI${US}%an${US}%s${US}%b${US}`, `refs/heads/${branch}`, '--'],
+    { timeoutMs: TIMEOUT_MS },
+  );
+  if (r.code !== 0) throw new Error(`git log failed for ${branch} in ${dir}: ${r.stderr.trim()}`);
+  return r.stdout
+    .split(RS)
+    .filter((c) => c.trim().length > 0)
+    .map((chunk) => {
+      const [sha, at2, author, subject, body] = chunk.split(US);
+      return { sha: sha ?? '', at: at2 ?? '', author: author ?? '', subject: subject ?? '', body: (body ?? '').trim(), lines: 0 };
+    });
 }
