@@ -43,10 +43,14 @@ export function occupancy(repos: Iterable<RepoState>, districts: District[]): Oc
   return { districts: standing, sites };
 }
 
-/** The occupied plots as plazas: a district carries its root's height for the collar, a site none. */
-export function plazasOf(occ: Occupancy): CollarPlaza[] {
+/**
+ * The occupied plots as plazas: a district carries its root's height for the
+ * collar, and its tower's rendered colours when `tones` gives them (so the
+ * blocks at its edge keep clear of them); a site carries neither.
+ */
+export function plazasOf(occ: Occupancy, tones?: (d: District) => { tones: Array<[number, number, number]>; value?: number }): CollarPlaza[] {
   return [
-    ...occ.districts.map((d) => ({ x: d.origin.x, z: d.origin.z, rootHeight: ROOT_HEIGHT[d.tower.root] })),
+    ...occ.districts.map((d) => ({ x: d.origin.x, z: d.origin.z, rootHeight: ROOT_HEIGHT[d.tower.root], ...(tones ? tones(d) : {}) })),
     ...occ.sites.map((s) => ({ ...s.origin })),
   ];
 }

@@ -277,6 +277,55 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       writeFileSync(process.env.SWATCH_WRITE === '1' ? join(ROOT, 'app', 'src', 'city', 'tower', 'rendered.ts') : join(MEDIA, 'rendered.ts'), body);
     },
 
+    async ambient(page) {
+      // The ambient city's tones in the same light, one plain building per tone (app/src/city/ambient-swatches.ts).
+      // AMBIENT_WRITE=1 writes app/src/city/ambient-rendered.ts; otherwise the numbers land beside the shots.
+      await chrome(page, false);
+      type P = [number, number];
+      const points = (await page.evaluate(() => (window as unknown as { __palimpsest: { ambientBoard(): Promise<unknown> } }).__palimpsest.ambientBoard())) as Array<{ id: string; sun: P; shade: P }>;
+      await page.waitForTimeout(2500);
+      await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+      const shot = await page.screenshot();
+      writeFileSync(join(MEDIA, 'ambient-swatches.png'), shot);
+      const img = decodePng(shot);
+      const scale = img.width / VIEWPORT.width;
+      type Lab = [number, number, number];
+      // A 7 x 9 css-pixel patch, as the swatches shot reads the towers.
+      const mean = ([cx, cy]: P): Lab => {
+        const sum = [0, 0, 0];
+        let n = 0;
+        for (let dy = -4; dy <= 4; dy++) {
+          for (let dx = -3; dx <= 3; dx++) {
+            const x = Math.round((cx + dx) * scale);
+            const y = Math.round((cy + dy) * scale);
+            if (x < 0 || y < 0 || x >= img.width || y >= img.height) continue;
+            const i = (y * img.width + x) * 4;
+            for (let c = 0; c < 3; c++) sum[c] += img.data[i + c];
+            n++;
+          }
+        }
+        return labOf(sum[0] / n, sum[1] / n, sum[2] / n).map((v) => Math.round(v * 10) / 10) as Lab;
+      };
+      const out: Record<string, { sun: Lab; shade: Lab }> = {};
+      for (const p of points) out[p.id] = { sun: mean(p.sun), shade: mean(p.shade) };
+      for (const [id, v] of Object.entries(out)) console.log(`  ${id.padEnd(30)} sun L${v.sun.join(' ')}  shade L${v.shade.join(' ')}`);
+      const body = [
+        '/**',
+        " * Each ambient tone's colour as the city renders it at the overview's",
+        ' * distance and bearing: CIE Lab of the sunlit and the shaded face of a',
+        ' * plain building of its type. Measured by tools/capture.ts, the ambient shot.',
+        ' *',
+        ' * VERSIONED DATA. The plaza-edge rule in lots.ts chooses tones from these',
+        ' * numbers, and the tests hold the palette to them; only',
+        ' * `AMBIENT_WRITE=1 node --import tsx tools/capture.ts ambient` regenerates',
+        ' * it, by hand, committed with the reason.',
+        ' */',
+        `export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number] }> = ${JSON.stringify(out, null, 2)};`,
+        '',
+      ].join('\n');
+      writeFileSync(process.env.AMBIENT_WRITE === '1' ? join(ROOT, 'app', 'src', 'city', 'ambient-rendered.ts') : join(MEDIA, 'ambient-rendered.ts'), body);
+    },
+
     async hero(page) {
       // The whole sample city at dusk from above the rooftops, the sunlit faces turned to the eye.
       await chrome(page, false);

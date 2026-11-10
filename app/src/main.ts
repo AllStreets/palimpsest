@@ -11,6 +11,9 @@ import { occupancy, type RepoState } from './city/occupancy.js';
 import { createCity, type PickHit } from './city/scene';
 import { towerCenterpiece } from './city/tower/look';
 import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
+import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
+import { towerTones } from './city/lots';
+import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
@@ -55,6 +58,8 @@ interface DebugHandle {
    * returns where each one's sunlit and shaded face sit on screen.
    */
   swatchBoard(): Promise<SwatchPoint[]>;
+  /** Stands the ambient tone board in the city's light and returns where to read each tone (captures only; reload to clear). */
+  ambientBoard(): Promise<AmbientSwatchPoint[]>;
 }
 
 declare global {
@@ -98,6 +103,7 @@ async function main(): Promise<void> {
     quality,
     makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d)),
     centerpieceKey: (d) => lookKey(lookOf(d)),
+    districtTones: (d) => towerTones(lookOf(d)),
   });
 
   const debug: DebugHandle = {
@@ -116,6 +122,13 @@ async function main(): Promise<void> {
     precompile: () => city.precompile(),
     stats: () => city.stats(),
     plots: () => city.plots(),
+    async ambientBoard() {
+      const board = ambientBoard(city.scene, city.camera, (lots) => city.ambientBoard(lots), (e, t) => city.view(e, t));
+      await city.precompile();
+      await texturesSettled();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return board.points(innerWidth, innerHeight);
+    },
     async swatchBoard() {
       const board = swatchBoard(city.scene, city.camera, (e, t) => city.view(e, t));
       await city.precompile();
