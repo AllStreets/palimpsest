@@ -480,10 +480,13 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       const had = byRepo.get(s.repo);
       if (!had || SITE_RANK[s.stage] > SITE_RANK[had.stage]) byRepo.set(s.repo, s);
     }
+    // Only a site that really changed is set again; an unrelated event neither recopies a site nor redraws the shadow map.
+    let changed = false;
     for (const [repo, entry] of constructions) {
       if (byRepo.has(repo) && pieceOf(repo)) continue;
       entry.c.dispose();
       constructions.delete(repo);
+      changed = true;
     }
     for (const [repo, s] of byRepo) {
       const piece = pieceOf(repo);
@@ -495,13 +498,18 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         constructions.set(repo, entry);
       }
       const floorHeight = FLOOR_HEIGHT[s.size] ?? FLOOR_HEIGHT.medium;
-      entry.c.object.position.set(roof.x, 0, roof.z);
-      entry.c.set(s, roof.top, roof.half, floorHeight);
+      const moved = entry.c.object.position.x !== roof.x || entry.c.object.position.z !== roof.z;
+      if (moved) {
+        entry.c.object.position.set(roof.x, 0, roof.z);
+        // A site that only moved (its tower rebuilt in place elsewhere) is copied again at its new place.
+        entry.c.set(null, roof.top, roof.half, floorHeight);
+      }
+      if (entry.c.set(s, roof.top, roof.half, floorHeight)) changed = true;
       entry.top = roof.top;
       entry.floorHeight = floorHeight;
     }
     // What stands on the roofs changed: the cached shadow map is drawn again.
-    sun.shadow.needsUpdate = true;
+    if (changed) sun.shadow.needsUpdate = true;
   }
 
   function setSites(sites: ReadonlyArray<SiteState>): void {

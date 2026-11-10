@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { constructionState, makeConstruction, makeConstructionField, makeHoist, netPanel, netTextures } from '../app/src/city/construction.js';
+import { constructionState, floodRadiance, makeConstruction, makeConstructionField, makeHoist, netPanel, netTextures } from '../app/src/city/construction.js';
 import { BLOOM_THRESHOLD, EXPOSURE, FLOOD } from '../app/src/city/post.js';
 import { workProgress } from '../engine/market/runs.js';
 import type { SiteStage, SiteState } from '../shared/types.js';
@@ -303,4 +303,97 @@ test('the netting is a woven diamond mesh that sags between its ties', () => {
   assert.ok(topEnd - topMid > 0.05 && topEnd - topMid < 0.3, `the top rope sags between ties (${(topEnd - topMid).toFixed(2)} m)`);
   for (const t of [map, alpha]) t.dispose();
   g.dispose();
+});
+
+test('setting a site to the state it already shows changes nothing', () => {
+  const c = makeConstruction('high');
+  assert.equal(c.set(site('framing', 0.4), TOP, HALF, FH), true, 'the first event builds');
+  const r = c.revision;
+  const st = c.structure;
+  assert.equal(c.set(site('framing', 0.4), TOP, HALF, FH), false, 'the same stage and progress again is no change');
+  assert.equal(c.revision, r, 'nothing is copied again');
+  assert.equal(c.structure, st);
+  assert.equal(c.set({ ...site('framing', 0.4), since: '2026-11-10T19:00:00.000Z' }, TOP, HALF, FH), false, 'a new timestamp alone is no change');
+  assert.equal(c.set(site('framing', 0.45), TOP, HALF, FH), true, 'real progress is');
+  assert.ok(c.revision > r);
+  c.dispose();
+});
+
+test('the field uploads a lamp colour only when the lamp changes', () => {
+  const field = makeConstructionField('high');
+  const c = makeConstruction('high');
+  c.set(site('curing', 1), TOP, HALF, FH);
+  c.update(1 / 60);
+  field.update([c]);
+  const lamp = field.group.getObjectByName('field:lamp') as THREE.BatchedMesh;
+  let calls = 0;
+  const orig = lamp.setColorAt.bind(lamp);
+  lamp.setColorAt = (id: number, color: THREE.Color) => {
+    calls++;
+    return orig(id, color);
+  };
+  for (let i = 0; i < 30; i++) {
+    c.update(1 / 60);
+    field.update([c]);
+  }
+  assert.equal(calls, 0, 'a steady lamp is never re-uploaded');
+  c.set(site('framing', 0.5), TOP, HALF, FH);
+  for (let i = 0; i < 120; i++) {
+    c.update(1 / 60);
+    field.update([c]);
+  }
+  assert.ok(calls > 0 && calls < 120 * 2, `a flashing lamp uploads only on the frames its level changes (${calls})`);
+  c.dispose();
+  field.dispose();
+});
+
+test('a lit site glows warm over its deck and top floors, and the floods light the frame within the budget', () => {
+  const field = makeConstructionField('high');
+  const c = makeConstruction('high');
+  c.set(site('framing', 0.5), TOP, HALF, FH);
+  field.update([c]);
+  const glare = field.group.getObjectByName('field:glare') as THREE.Mesh;
+  const g = glare.geometry as THREE.InstancedBufferGeometry;
+  const size = g.getAttribute('iSize') as THREE.InstancedBufferAttribute;
+  let halos = 0;
+  for (let i = 0; i < g.instanceCount; i++) if (size.getX(i) > HALF) halos++;
+  assert.ok(halos >= 2, `a warm glow over the deck and the top floors (${halos})`);
+  c.set(site('waiting', 1), TOP, HALF, FH);
+  field.update([c]);
+  let after = 0;
+  for (let i = 0; i < g.instanceCount; i++) if (size.getX(i) > HALF) after++;
+  assert.equal(after, 0, 'no glow once the floods are off');
+  // The floods' beams: never brighter than the budget, and still lighting steel ten metres off.
+  let peak = 0;
+  for (let d = 0.5; d < 40; d += 0.25) peak = Math.max(peak, floodRadiance(d, 0.6));
+  assert.ok(peak <= BLOOM_THRESHOLD + 1e-9, `lit steel never blooms (${peak.toFixed(2)})`);
+  assert.ok(floodRadiance(10, 0.6) > 0.25, `the frame ten metres off is visibly lit (${floodRadiance(10, 0.6).toFixed(2)})`);
+  c.dispose();
+  field.dispose();
+});
+
+test('the steel varies member by member, so the frame reads as weathered steel', () => {
+  const field = makeConstructionField('high');
+  const c = makeConstruction('high');
+  c.set(site('framing', 0.8), TOP, HALF, FH);
+  field.update([c]);
+  const steel = field.group.getObjectByName('field:steel') as THREE.BatchedMesh;
+  // Each member carries its own tone and wear.
+  const mast = c.object.getObjectByName('construction:mast') as THREE.Mesh;
+  const wear = mast.geometry.getAttribute('aWear') as THREE.BufferAttribute;
+  assert.ok(wear, 'members carry a wear attribute');
+  const values = new Set<string>();
+  for (let i = 0; i < wear.count; i += 24) values.add(`${wear.getX(i).toFixed(3)},${wear.getY(i).toFixed(3)}`);
+  assert.ok(values.size > 20, `the mast's members differ (${values.size})`);
+  // The beams, one instance each, are not all one colour.
+  const tones = new Set<string>();
+  const col = new THREE.Color();
+  for (let i = 0; i < steel.instanceCount; i++) {
+    if (!steel.getVisibleAt(i)) continue;
+    steel.getColorAt(i, col);
+    tones.add(col.getHexString());
+  }
+  assert.ok(tones.size > 20, `primer tones vary beam by beam (${tones.size})`);
+  c.dispose();
+  field.dispose();
 });
