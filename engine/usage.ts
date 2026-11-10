@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative, resolve, isAbsolute } from 'node:path';
+import { join, relative, resolve, isAbsolute, sep } from 'node:path';
 
 import { calibrate, DEFAULT_TOKENS_PER_PCT, weightedTokens } from '../shared/credits.js';
 import type { UsageReading, UsageWindow } from '../shared/types.js';
@@ -441,7 +441,12 @@ interface TranscriptLine {
  */
 export function transcriptTokens(fromMs: number, toMs: number, dir: string = projectsDir()): { weighted: number; messages: number } {
   const seen = new Map<string, number>();
-  for (const file of transcriptFiles(dir)) {
+  const files = transcriptFiles(dir);
+  // A transcript that is gone takes its cached lines with it.
+  const present = new Set(files.map((f) => f.path));
+  const root = realOrResolved(checkedProjectsDir(dir)) + sep;
+  for (const path of transcriptCache.keys()) if (path.startsWith(root) && !present.has(path)) transcriptCache.delete(path);
+  for (const file of files) {
     if (file.mtimeMs < fromMs) continue;
     for (const e of transcriptEntries(file)) {
       if (!(e.at > fromMs && e.at <= toMs)) continue;
@@ -468,6 +473,11 @@ interface TranscriptEntry {
  * whole history is parsed once, not on every read.
  */
 const transcriptCache = new Map<string, { ino: number; size: number; mtimeMs: number; offset: number; entries: TranscriptEntry[] }>();
+
+/** Transcripts held in the cache. For tests. */
+export function transcriptCacheSize(): number {
+  return transcriptCache.size;
+}
 
 /** Forgets the transcript cache. For tests. */
 export function resetTranscriptCache(): void {

@@ -597,6 +597,20 @@ export function abortLease(lease: Lease, reason: Error): void {
   if (rec && !rec.controller.signal.aborted) rec.controller.abort(reason);
 }
 
+/**
+ * Aborts every live lease (runs, plan, review and judge calls) and refuses
+ * every queued plan call: the engine is shutting down.
+ */
+export function abortAllLeases(reason: Error): void {
+  for (const rec of live) if (!rec.controller.signal.aborted) rec.controller.abort(reason);
+  for (const pool of Object.keys(queues) as Pool[]) {
+    for (const w of queues[pool].splice(0)) {
+      clearTimeout(w.timer);
+      w.resolve({ ok: false, reason: { reason: 'stopped', detail: reason.message } });
+    }
+  }
+}
+
 /** Leases live now (runs, plan calls and sub-leases), for keep-awake. */
 export function liveLeaseCount(): number {
   return live.size;

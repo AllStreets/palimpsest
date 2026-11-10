@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { paths } from './home.js';
 import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
 import { installDeps } from './market/install.js';
-import { createScheduler, failInterruptedRuns } from './market/runs.js';
+import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
 
@@ -36,18 +36,9 @@ async function main(): Promise<void> {
   });
   scheduler.start();
 
-  let shuttingDown = false;
-  const shutdown = (signal: string): void => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    // eslint-disable-next-line no-console
-    console.log(`Palimpsest engine received ${signal}, shutting down`);
-    // Live runs are killed, their processes reaped and their proxies closed before the engine exits.
-    void scheduler.stop().catch(() => {}).then(close).then(
-      () => process.exit(0),
-      () => process.exit(1),
-    );
-  };
+  // A first signal stops the market (runs killed and reaped, leases aborted) within a 10 s grace; a second exits at once.
+  // eslint-disable-next-line no-console
+  const shutdown = shutdownHandler(scheduler, { close, exit: (code) => process.exit(code), log: (l) => console.log(l) });
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

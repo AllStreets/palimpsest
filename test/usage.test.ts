@@ -16,6 +16,7 @@ import {
   projectsDir,
   readings,
   resetTranscriptCache,
+  transcriptCacheSize,
   transcriptTokens,
   uninstallHook,
 } from '../engine/usage.js';
@@ -543,4 +544,15 @@ test('transcript scans are cached by path, mtime and size and read only the new 
   // A file that shrank is read again from the start.
   writeFileSync(file, `${assistantLine({ at: T0 + 60_000, id: 'd', requestId: 'd', model: 'claude-opus-4-1', input: 10 })}\n`);
   assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 10, messages: 1 });
+});
+
+test('a deleted transcript leaves the cache', () => {
+  resetTranscriptCache();
+  writeTranscript('gone.jsonl', [assistantLine({ at: T0 + 60_000, id: 'g', requestId: 'g', model: 'claude-opus-4-1', input: 10 })]);
+  writeTranscript('kept.jsonl', [assistantLine({ at: T0 + 60_000, id: 'k', requestId: 'k', model: 'claude-opus-4-1', input: 20 })]);
+  assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 30, messages: 2 });
+  assert.equal(transcriptCacheSize(), 2);
+  rmSync(join(projects, '-Users-someone-code-thing', 'gone.jsonl'));
+  assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 20, messages: 1 });
+  assert.equal(transcriptCacheSize(), 1);
 });

@@ -31,6 +31,7 @@ import {
   createScheduler,
   failInterruptedRuns,
   liveRunIds,
+  shutdownHandler,
   startRun,
   finishWaitingRun,
   haltRepo,
@@ -1008,4 +1009,75 @@ test('a city failure after the work is not blamed on the agent', async () => {
   assert.match(r.endedReason ?? '', /still alive/);
   assert.equal(job(j.id)?.attempts, 1);
   assert.deepEqual(job(j.id)?.excludedFirms, []);
+});
+
+// ---------------------------------------------------------------- fix round 2
+
+test('stopping the scheduler aborts bid-time plan calls instead of waiting on them', async () => {
+  const planned: string[] = [];
+  useScript({
+    plan: (i, signal) =>
+      new Promise((_resolve, reject) => {
+        planned.push(i.agent.id);
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }),
+  });
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  const posted = postJob();
+  const s = createScheduler(deps().deps);
+  await s.tick();
+  await until(() => planned.length === 1);
+  const t0 = Date.now();
+  await s.stop();
+  assert.ok(Date.now() - t0 < 2000);
+  assert.match(bidList(posted.id).satOut[0]?.reason ?? '', /stopped mid-plan/);
+});
+
+test('a second signal exits at once and a stuck shutdown exits after its grace with a reap', async () => {
+  const exits: number[] = [];
+  const never = { stop: () => new Promise<void>(() => {}) };
+  const reaps: string[] = [];
+  const held = heldWork();
+  useScript({ work: held.work });
+  makeRepo();
+  awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const s = createScheduler(deps({ reap: async (root) => { reaps.push(root); return []; } }).deps);
+  await s.tick();
+  await until(() => held.started.length === 1);
+
+  const twice = shutdownHandler(never, { close: async () => {}, exit: (c) => exits.push(c), graceMs: 60_000 });
+  twice('SIGTERM');
+  assert.equal(exits.length, 0);
+  twice('SIGTERM');
+  assert.deepEqual(exits, [1], 'a second signal exits at once');
+
+  const stuck = shutdownHandler(never, { close: async () => {}, exit: (c) => exits.push(c), graceMs: 30 });
+  stuck('SIGTERM');
+  await until(() => exits.length === 2);
+  assert.deepEqual(exits, [1, 1]);
+  assert.deepEqual(reaps, [join(paths().runs, held.started[0].runId)], 'the live run was reaped before the exit');
+
+  const clean = shutdownHandler(s, { close: async () => {}, exit: (c) => exits.push(c), graceMs: 60_000 });
+  clean('SIGTERM');
+  await until(() => exits.length === 3);
+  assert.equal(exits[2], 0);
+});
+
+test('a run killed by the stop file ends killed even when its deadline has also passed', async () => {
+  const held = heldWork();
+  useScript({ work: held.work });
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const s = createScheduler(deps({ runWallMs: 1 }).deps);
+  await s.tick();
+  await until(() => held.started.length === 1);
+  await new Promise((r) => setTimeout(r, 5));
+  writeFileSync(paths().stop, 'stopped\n');
+  s.watch();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(r.outcome, 'killed');
+  assert.match(r.endedReason ?? '', /stop/i);
+  assert.equal(job(j.id)?.attempts, 0);
 });

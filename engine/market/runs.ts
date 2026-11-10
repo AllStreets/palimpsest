@@ -64,6 +64,7 @@ import { chargesItself } from './anthropic-api.js';
 import { award, bidById, collectBids, firmExamples, openBidding } from './bids.js';
 import { forgetRun, startBroker, type Broker, type ToolStage } from './broker.js';
 import {
+  abortAllLeases,
   abortLease,
   acquire,
   charge,
@@ -436,7 +437,8 @@ export function watchOnce(): void {
   if (existsSync(paths().stop)) for (const id of [...live.keys()]) kill(id, STOP_REASON);
   const t = Date.now();
   for (const st of [...live.values()]) {
-    if (st.deadlineHit || t < st.deadlineAt) continue;
+    // A run already being stopped (the stop file, him, a halt) ends as that, never as a deadline.
+    if (st.deadlineHit || st.lease.signal.aborted || t < st.deadlineAt) continue;
     st.deadlineHit = true;
     kill(st.run.id, `The run passed its wall deadline of ${Math.round(wallMsOf(st.agent) / MIN_MS)} minutes.`);
   }
@@ -1137,8 +1139,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     async stop() {
       if (timer) clearInterval(timer);
       timer = null;
-      // Shutdown: every live run is killed, then closed, reaped and released by its own lifecycle.
+      // Shutdown: every live run is killed, then closed, reaped and released by its own lifecycle;
+      // every other lease (bid-time plan calls, queued ones too) is aborted so nothing keeps the wait open.
       for (const id of [...live.keys()]) kill(id, SHUTDOWN_REASON);
+      abortAllLeases(new Error(SHUTDOWN_REASON));
       while (current || pending.size > 0) await Promise.allSettled([current, ...pending]);
     },
     async idle() {
@@ -1147,6 +1151,58 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
     },
     watch: watchOnce,
+  };
+}
+
+/** Grace a shutdown gets before the process exits anyway. */
+export const SHUTDOWN_GRACE_MS = 10_000;
+
+/** Reaps every live run's root, best effort, each bounded by `ms`. */
+export async function reapLiveRuns(ms = 3_000): Promise<void> {
+  await Promise.allSettled(
+    [...live.values()].map((st) =>
+      Promise.race([config.reap(st.runRoot), new Promise((r) => setTimeout(r, ms).unref?.())]),
+    ),
+  );
+}
+
+/**
+ * The engine's signal handler. The first signal stops the scheduler (live
+ * runs killed and reaped, every lease aborted), closes the server and
+ * exits; past `graceMs` it reaps what is left, best effort, and exits
+ * anyway. A second signal exits at once.
+ */
+export function shutdownHandler(
+  scheduler: Pick<Scheduler, 'stop'>,
+  o: { close: () => Promise<void>; exit: (code: number) => void; graceMs?: number; log?: (line: string) => void },
+): (signal: string) => void {
+  let shuttingDown = false;
+  return (signal) => {
+    if (shuttingDown) {
+      o.log?.(`Palimpsest engine received ${signal} again, exiting now`);
+      o.exit(1);
+      return;
+    }
+    shuttingDown = true;
+    o.log?.(`Palimpsest engine received ${signal}, shutting down`);
+    const hard = setTimeout(() => {
+      o.log?.('Palimpsest engine shutdown took too long, exiting');
+      void reapLiveRuns().finally(() => o.exit(1));
+    }, o.graceMs ?? SHUTDOWN_GRACE_MS);
+    void scheduler
+      .stop()
+      .catch(() => {})
+      .then(() => o.close())
+      .then(
+        () => {
+          clearTimeout(hard);
+          o.exit(0);
+        },
+        () => {
+          clearTimeout(hard);
+          o.exit(1);
+        },
+      );
   };
 }
 
