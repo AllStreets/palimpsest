@@ -186,7 +186,8 @@ export const SAMPLE_UNREADABLE = 'marlow/locked-vault';
  * check, fieldnotes is a Swift app nothing is detected in, assay-kit has
  * tests but no build, quarry is a Rust crate and kumo a Go module. A repo
  * not listed here (blank-slate, the other repos) has an empty tree. Two of
- * them therefore get the harness proposal (ruling 23).
+ * them therefore get the harness proposal (ruling 23). Of the other repos,
+ * tidepool-notes has a test and a build, so push mode can go on there.
  */
 export const SAMPLE_TREES: Record<string, Record<string, string>> = {
   'tidewater/harbor-ledger': {
@@ -219,6 +220,13 @@ export const SAMPLE_TREES: Record<string, Record<string, string>> = {
     'Cargo.toml': '[package]\nname = "quarry"\n',
     'Cargo.lock': '',
     'README.md': '# Quarry\n',
+  },
+  // A notes site with a test and a build, so push mode can be switched on (ruling 23); the UI test does.
+  'marlow/tidepool-notes': {
+    'package.json': `${JSON.stringify({ name: 'tidepool-notes', private: true, scripts: { test: 'node --test', build: 'vite build' }, devDependencies: { vite: '^8.0.0' } }, null, 2)}\n`,
+    'package-lock.json': '{}\n',
+    'index.html': '<!doctype html>\n<title>Tidepool notes</title>\n',
+    'README.md': '# Tidepool notes\n',
   },
   'hoshi/kumo': {
     'go.mod': 'module example.com/kumo\n',

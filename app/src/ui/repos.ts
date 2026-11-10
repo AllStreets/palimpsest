@@ -1,5 +1,6 @@
 import type { District, Repo, RootStyle } from '../../../shared/types';
-import { api, type AvailableRepo, type EngineEvent } from '../api';
+import { pushModeRefusal } from '../../../shared/market-rules';
+import { api, ApiError, type AvailableRepo, type EngineEvent } from '../api';
 import {
   button,
   checkRadio,
@@ -122,6 +123,8 @@ export function createRepos(
   const steps = new Map<string, string>();
   /** Errors from the screen's own calls (a refused connect, say), shown in the row until the next change. */
   const callErrors = new Map<string, string>();
+  /** Why push mode is off where he asked for it on. */
+  const pushWhy = new Map<string, string>();
   const rows = new Map<string, Row>();
   let unlisten: (() => void) | null = null;
 
@@ -180,10 +183,10 @@ export function createRepos(
     } else if (e.type === 'repo.analyzed') {
       // Ready and its floor count arrive together: the row never says a bare "Ready" first.
       // A disconnect or patch may land while the city is fetched: the toggles come from the latest
-      // state this screen holds, only the analysis result from the event.
+      // state this screen holds, only the analysis result (status, checks) from the event.
       void api.city().then(readFloors, () => {}).finally(() => {
         const latest = stored.get(repo.fullName) ?? repo;
-        stored.set(repo.fullName, { ...latest, status: repo.status, error: repo.error, analyzedAt: repo.analyzedAt });
+        stored.set(repo.fullName, { ...latest, status: repo.status, error: repo.error, analyzedAt: repo.analyzedAt, checks: repo.checks });
         render();
       });
       return;
@@ -226,6 +229,29 @@ export function createRepos(
       callErrors.set(fullName, err instanceof Error ? err.message : String(err));
       render();
     }
+  }
+
+  /**
+   * Push mode (ruling 23): refused here, before any request, when the repo
+   * has no test or no build command; and if the engine still refuses it
+   * (409), its reason. Either way the reason shows quietly beside the
+   * switch and the switch goes back to what is stored.
+   */
+  async function patchPush(fullName: string, on: boolean): Promise<void> {
+    const refusal = on ? pushModeRefusal(stored.get(fullName)?.checks ?? null) : null;
+    if (refusal) {
+      pushWhy.set(fullName, refusal);
+      render();
+      return;
+    }
+    try {
+      stored.set(fullName, await api.patchRepo(fullName, { pushMode: on }));
+      pushWhy.delete(fullName);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) pushWhy.set(fullName, err.message);
+      else callErrors.set(fullName, err instanceof Error ? err.message : String(err));
+    }
+    render();
   }
 
   async function patch(fullName: string, p: Partial<Pick<Repo, 'pushMode' | 'root'>>): Promise<void> {
@@ -329,7 +355,7 @@ export function createRepos(
     const pushWrap = el('div', 'repo-push');
     const push = createSwitch('push', `Push mode for ${row.fullName}`, (on) => row.pushSync?.set(on));
     row.pushSync = latestWins<boolean>(
-      (on) => patch(row.fullName, { pushMode: on }),
+      (on) => patchPush(row.fullName, on),
       (busy) => {
         markBusy(push.el, busy);
         if (!busy) render();
@@ -345,7 +371,9 @@ export function createRepos(
     const pushText = el('span', 'repo-push-text');
     pushText.append(el('span', 'repo-ctl-label', 'Push mode'), el('span', 'repo-push-note', 'takes effect when the market opens'));
     pushText.addEventListener('click', () => push.el.click());
-    pushWrap.append(push.el, pushText);
+    const why = el('span', 'repo-push-why');
+    why.setAttribute('aria-live', 'polite');
+    pushWrap.append(push.el, pushText, why);
 
     c.append(rootWrap, pushWrap);
     row.controls = c;
@@ -422,6 +450,8 @@ export function createRepos(
           const c = controlsFor(row);
           if (c.parentElement !== row.el) row.el.append(c);
           row.push?.set(row.pushSync?.want ?? repo.pushMode);
+          const why = row.controls?.querySelector('.repo-push-why');
+          if (why && why.textContent !== (pushWhy.get(fullName) ?? '')) why.textContent = pushWhy.get(fullName) ?? '';
           const root = row.rootSync?.want ?? repo.root;
           const chosen = row.roots?.querySelector<HTMLElement>(`[data-root="${root}"]`) ?? null;
           // Re-checking moves the tab stop; leave a radio the user is on alone.

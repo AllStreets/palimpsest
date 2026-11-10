@@ -459,6 +459,18 @@ async function reposChecks(page: Page): Promise<void> {
   check(repos.find((r) => r.fullName === 'marlow/tidepool-notes')?.pushMode === true, 'Space on the push mode switch stores push mode');
   await page.screenshot({ path: join(SHOTS, 'repos-focus.png') });
 
+  // Push mode on a repo without a test and a build command (ruling 23): refused quietly beside the switch, which stays off.
+  const refusedPush = page.locator(`${rowSel('kestrel/fieldnotes')} [role="switch"].push`);
+  await refusedPush.focus();
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(400);
+  const why = ((await page.locator(`${rowSel('kestrel/fieldnotes')} .repo-push-why`).textContent()) ?? '').trim();
+  const afterRefusal = (await page.evaluate(() => fetch('/api/repos').then((r) => r.json()))) as Repo[];
+  check(
+    (await refusedPush.getAttribute('aria-checked')) === 'false' && afterRefusal.find((r) => r.fullName === 'kestrel/fieldnotes')?.pushMode === false && /test command and a build command/.test(why),
+    `push mode without a test and a build stays off and says why (${why.slice(0, 60)})`,
+  );
+
   // Root style: pick another root, the tower is restyled.
   const target = SAMPLE[0].fullName;
   await page.locator(`${rowSel(target)} [role="radio"][data-root="pagoda"]`).click();

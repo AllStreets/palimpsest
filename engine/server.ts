@@ -9,6 +9,7 @@ import type { Repo, RepoChecks, RootStyle, Settings } from '../shared/types.js';
 import type { Event } from './events.js';
 import { emit, subscribe } from './events.js';
 import { HttpError, readJsonBody, sendJson } from './http.js';
+import { pushModeRefusal as pushChecksRefusal } from '../shared/market-rules.js';
 import { handleMarketApi, scrub, setMarketExtras } from './market/api.js';
 import { fakeProvider } from './market/fake-provider.js';
 import { setProvider } from './market/providers.js';
@@ -268,9 +269,8 @@ function pushModeRefusal(repo: Repo, patch: RepoPatch): string | null {
   if (!('pushMode' in patch) && !patch.checks) return null;
   const pushAfter = patch.pushMode ?? repo.pushMode;
   if (!pushAfter) return null;
-  const after = { ...repo.checks, ...patch.checks };
-  if (after.test && after.build) return null;
-  return 'Push mode needs both a test command and a build command on this repo.';
+  const after = { test: null, build: null, ...repo.checks, ...patch.checks };
+  return pushChecksRefusal(after);
 }
 
 /** The Claude settings file the hook routes may change: the one given, else claudeSettingsTarget(), else a 409. */

@@ -3,7 +3,7 @@
  * reputation score and era, firm money and the job transition table. Shared
  * by the engine and the UI; imports nothing from engine/.
  */
-import type { Era, JobStatus, Repo, Reputation, Tier } from './types.js';
+import type { Era, JobStatus, Repo, RepoChecks, Reputation, Tier } from './types.js';
 
 /** A job's value (the bid ceiling) by tier, in credits (ruling 3). */
 export const TIER_VALUE: Record<Tier, number> = { low: 20, normal: 60, high: 150 };
@@ -114,6 +114,14 @@ export function canHire(balance: number, openJobs: number, idleAgents: number, t
 /** The market fields a repo starts with, also filled in for rows written before Phase 2. */
 export function repoMarketDefaults(): Pick<Repo, 'market' | 'label' | 'checks' | 'halted' | 'strikes' | 'joinedAt'> {
   return { market: false, label: 'palimpsest', checks: null, halted: null, strikes: 0, joinedAt: null };
+}
+
+/** Why push mode cannot be on (ruling 23). */
+export const PUSH_MODE_NEEDS = 'Push mode needs both a test command and a build command on this repo.';
+
+/** Push mode needs both a test and a build command: null when the checks have both, else the reason. Shared by the engine's gate and the Repos page. */
+export function pushModeRefusal(checks: Pick<RepoChecks, 'test' | 'build'> | null): string | null {
+  return checks?.test && checks.build ? null : PUSH_MODE_NEEDS;
 }
 
 /** Every move a job may make. Anything not listed is refused. */

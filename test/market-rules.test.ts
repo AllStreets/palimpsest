@@ -10,6 +10,8 @@ import {
   HIRE_FEE,
   isBankrupt,
   LEGAL_MOVES,
+  PUSH_MODE_NEEDS,
+  pushModeRefusal,
   legalMove,
   MAX_ATTEMPTS,
   NEW_FIRM_OVERCLAIM,
@@ -148,4 +150,11 @@ test('merged is terminal', () => {
   for (const to of Object.keys(LEGAL_MOVES) as Array<keyof typeof LEGAL_MOVES>) {
     assert.equal(legalMove('merged', to), false);
   }
+});
+
+test('push mode needs a test and a build command, and says so', () => {
+  assert.equal(pushModeRefusal({ test: 'npm test', build: 'vite build' }), null);
+  assert.equal(pushModeRefusal({ test: 'npm test', build: null }), PUSH_MODE_NEEDS);
+  assert.equal(pushModeRefusal({ test: null, build: 'vite build' }), PUSH_MODE_NEEDS);
+  assert.equal(pushModeRefusal(null), PUSH_MODE_NEEDS);
 });

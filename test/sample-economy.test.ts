@@ -288,3 +288,25 @@ test('npx tsx tools/sample.ts <tmp> --economy writes the marker and refuses the 
   assert.match(r.stdout, /jobs/);
   assert.equal(existsSync(join(dir, 'claude-projects')), true, 'its own transcripts folder, never his');
 });
+
+test('the hire does not depend on the seed time: the same books and one specialist at any hour', async () => {
+  const books: string[] = [];
+  for (const at of [NOW, NOW + 13 * 3600_000 + 17 * 60_000 + 5_123]) {
+    process.env.PALIMPSEST_HOME = join(tempDir, `home-${at}`);
+    resetShipping();
+    samplePRs.reset();
+    await seedSample(at);
+    await seedEconomy(at);
+    assert.equal(listAgents().filter((a) => a.lineage.origin === 'roster').length, 1);
+    const hire = query({ kind: 'agent.hired' })[0];
+    const tick = hire.at;
+    // Every firm's books just before the tick: only Quickset can hire, by a wide margin.
+    const before = (id: string) => 300 + query({ kind: 'credits.moved', to: tick }).filter((e) => (e.data as { firmId: string }).firmId === id).reduce((s, e) => s + (e.data as { delta: number }).delta, 0);
+    for (const f of ['ashlar-vane', 'meridian', 'kiln', 'sparrow']) assert.ok(before(f) < 340, `${f} holds ${before(f)} at the tick`);
+    assert.ok(before('quickset') > 520, `quickset holds ${before('quickset')}`);
+    books.push(JSON.stringify(Object.fromEntries(listAgents().map((a) => [a.id, earnedFloors(`agent:${a.id}`).length]))) + JSON.stringify(quarters().map((q) => q.firmId)));
+    books.push(JSON.stringify(Object.fromEntries((openDb().prepare('SELECT id, json FROM firms').all() as Array<{ id: string; json: string }>).map((r) => [r.id, JSON.parse(r.json).balance]))));
+  }
+  assert.equal(books[0], books[2], 'the same floors');
+  assert.equal(books[1], books[3], 'the same balances');
+});
