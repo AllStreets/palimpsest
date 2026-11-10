@@ -18,14 +18,23 @@ import { lookFor, VARIANTS } from './variants';
 const OVERVIEW_OFFSET = new THREE.Vector3(580, 310, 960);
 /** Where the board stands: off the districts, over the ambient city, at the overview's distance from its own eye. */
 const CENTRE = new THREE.Vector3(-900, 0, -700);
-const SPACING = 52;
-const ROWS = [118, 196];
+const SPACING = 40;
+/**
+ * Two rows of every variant: one lifted so its floors stand at 146 to 180 m,
+ * as tall towers' do, and one on the ground so its floors stand at 26 to
+ * 60 m, where short towers' do and the street-level darkening and the
+ * thickest haze reach. The ambient city is hidden while the board stands, so
+ * no block hides the low row.
+ */
+const ROWS = { high: 120, low: 0 } as const;
 
 export interface SwatchPoint {
   id: string;
-  /** CSS pixel centres of the +z face (half sunlit at dusk) and the +x face (in shade), as the overview sees them. */
+  /** CSS pixel centres of the +z face (half sunlit at dusk) and the +x face (in shade), as the overview sees them, high and low. */
   sun: [number, number];
   shade: [number, number];
+  sunLow: [number, number];
+  shadeLow: [number, number];
 }
 
 function spec(id: string, era: Era): TowerSpec {
@@ -50,31 +59,34 @@ export function swatchBoard(scene: THREE.Scene, camera: THREE.PerspectiveCamera,
   const group = new THREE.Group();
   group.name = 'swatch-board';
   const all = Object.values(VARIANTS).flat();
-  const perRow = Math.ceil(all.length / ROWS.length);
-  const eye = CENTRE.clone().add(new THREE.Vector3(0, 150, 0)).add(OVERVIEW_OFFSET);
-  const target = CENTRE.clone().add(new THREE.Vector3(0, 150, 0));
+  const eye = CENTRE.clone().add(new THREE.Vector3(0, 90, 0)).add(OVERVIEW_OFFSET);
+  const target = CENTRE.clone().add(new THREE.Vector3(0, 90, 0));
   const d = new THREE.Vector3(target.x - eye.x, 0, target.z - eye.z).normalize();
   const across = new THREE.Vector3(-d.z, 0, d.x);
-  const samples: Array<{ id: string; sun: THREE.Vector3; shade: THREE.Vector3 }> = [];
+  const samples: Array<{ id: string; at: Record<'high' | 'low', { sun: THREE.Vector3; shade: THREE.Vector3 }> }> = [];
   const disposers: Array<() => void> = [];
   all.forEach((v, i) => {
-    const row = Math.floor(i / perRow);
-    const col = i % perRow;
-    const base = CENTRE.clone().addScaledVector(across, (col - (perRow - 1) / 2) * SPACING);
+    const base = CENTRE.clone().addScaledVector(across, (i - (all.length - 1) / 2) * SPACING);
     const look = { ...lookFor('swatch/board'), [v.era]: v };
-    const t = buildTower(spec(v.id, v.era), 'high', towerMaterials(look), look);
-    // Lifted so its floors stand clear of the ambient city; the root below them is never sampled.
-    const lift = ROWS[row];
-    t.group.position.set(base.x, lift, base.z);
-    t.group.traverse((o) => {
-      o.castShadow = false;
-    });
-    group.add(t.group);
-    disposers.push(() => t.dispose());
-    // Mid-height of the eight floors (the chicago root is 26 m), just proud of the wall line.
-    const y = lift + 26 + 8 * 4.2 * 0.5;
-    samples.push({ id: v.id, sun: new THREE.Vector3(base.x, y, base.z + 12.6), shade: new THREE.Vector3(base.x + 12.6, y, base.z) });
+    const at = {} as Record<'high' | 'low', { sun: THREE.Vector3; shade: THREE.Vector3 }>;
+    for (const row of ['high', 'low'] as const) {
+      const t = buildTower(spec(v.id, v.era), 'high', towerMaterials(look), look);
+      const lift = ROWS[row];
+      t.group.position.set(base.x, lift, base.z);
+      t.group.traverse((o) => {
+        o.castShadow = false;
+      });
+      group.add(t.group);
+      disposers.push(() => t.dispose());
+      // Mid-height of the eight floors (the chicago root is 26 m), just proud of the wall line.
+      const y = lift + 26 + 8 * 4.2 * 0.5;
+      at[row] = { sun: new THREE.Vector3(base.x, y, base.z + 12.6), shade: new THREE.Vector3(base.x + 12.6, y, base.z) };
+    }
+    samples.push({ id: v.id, at });
   });
+  const ambient = scene.getObjectByName('ambient-city');
+  const wasVisible = ambient?.visible ?? true;
+  if (ambient) ambient.visible = false;
   scene.add(group);
   view(eye, target);
   return {
@@ -84,10 +96,11 @@ export function swatchBoard(scene: THREE.Scene, camera: THREE.PerspectiveCamera,
         const q = p.clone().project(camera);
         return [((q.x + 1) / 2) * width, ((1 - q.y) / 2) * height];
       };
-      return samples.map((s) => ({ id: s.id, sun: px(s.sun), shade: px(s.shade) }));
+      return samples.map((s) => ({ id: s.id, sun: px(s.at.high.sun), shade: px(s.at.high.shade), sunLow: px(s.at.low.sun), shadeLow: px(s.at.low.shade) }));
     },
     dispose() {
       scene.remove(group);
+      if (ambient) ambient.visible = wasVisible;
       for (const fn of disposers) fn();
     },
   };

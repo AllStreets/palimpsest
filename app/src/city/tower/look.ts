@@ -434,7 +434,8 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
     // Cut stone weathers in patches and streaks; brick and patina carry their own variation in the scan.
     uWeather: { value: f.tex === 'sand' || f.tex === 'ashlar' || f.tex === 'granite' ? 0.22 : 0 },
     // How much of the scan's own grain shows through the recolour: granite's speckle is the point of it.
-    uDetail: { value: f.tex === 'granite' ? 1.0 : 0.8 },
+    uDetail: { value: f.detail ?? (f.tex === 'granite' ? 1.0 : 0.8) },
+    uCourse: { value: f.courses ? new THREE.Vector4(f.courses.h, f.courses.l, f.courses.joint, f.courses.vary) : new THREE.Vector4(0, 1, 0, 0) },
     uTexScale: { value: 1 / (f.scale ?? 1) },
   };
   m.customProgramCacheKey = () => 'palimpsest-scan';
@@ -472,7 +473,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
@@ -497,6 +498,25 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
           float wPatch = wNoise(q / 9.0) * 0.6 + wNoise(q / 3.0 + 19.0) * 0.4;
           float streak = wNoise(vec2(q.x / 0.9, q.y / 14.0) + 7.0);
           diffuseColor.rgb *= 1.0 + uWeather * ((wPatch - 0.5) * 1.6 - max(streak - 0.5, 0.0) * 1.6);
+        }
+        if (uCourse.x > 0.0 && abs(vTFN.y) < 0.7) {
+          // Coursed ashlar: bed joints every course, head joints staggered half a block course to course, each block
+          // its own tone, and fine bedding in the stone running along the course. The joints widen into their
+          // screen footprint, so from afar they fade into the wall's average rather than shimmer.
+          vec3 an = abs(vTFN);
+          vec2 q = vec2(an.x > an.z ? vTFP.z : vTFP.x, vTFP.y);
+          float row = floor(q.y / uCourse.x);
+          float u = q.x / uCourse.y + 0.5 * mod(row, 2.0);
+          float col = floor(u);
+          vec2 g = vec2(fract(u) * uCourse.y, fract(q.y / uCourse.x) * uCourse.x);
+          vec2 e = min(g, vec2(uCourse.y, uCourse.x) - g);
+          vec2 aa = fwidth(q) * 1.5 + 1e-4;
+          float jx = 1.0 - smoothstep(0.012, 0.012 + aa.x, e.x);
+          float jy = 1.0 - smoothstep(0.014, 0.014 + aa.y, e.y);
+          float joint = max(jx, jy);
+          float hb = wHash(vec2(col, row) + 3.7);
+          float bed = 1.0 + 0.045 * sin(q.y * 23.0 + hb * 9.0) * (1.0 - smoothstep(0.0, 0.05, aa.y));
+          diffuseColor.rgb *= (1.0 + uCourse.w * (hb - 0.5) * 2.0) * bed * (1.0 - uCourse.z * joint);
         }
         // Soot and splash darken masonry toward the street, and the lowest floors most.
         diffuseColor.rgb *= 1.0 - 0.2 * exp(-max(vTFP.y - 20.0, 0.0) / 45.0);`,
@@ -577,7 +597,8 @@ export function towerMaterials(look: Look): TowerMaterials {
   const hit = looks.get(key);
   if (hit) return hit;
   const eras = {} as Record<EraMatKey, THREE.Material>;
-  for (const v of Object.values(look)) {
+  for (const era of ['stone', 'brick', 'glass', 'titanium', 'scifi'] as const) {
+    const v = look[era];
     eras[`${v.era}Wall`] = finishMaterial(v.wall);
     eras[`${v.era}Trim`] = finishMaterial(v.trim);
     eras[`${v.era}Band`] = finishMaterial(v.band);

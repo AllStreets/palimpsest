@@ -89,6 +89,8 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
       runStart: prev !== floor.era,
       runEnd: next !== floor.era,
       top: i === layout.floors.length - 1,
+      fromTop: layout.floors.length - 1 - i,
+      crown: look.crown,
       datum: i === spec.datumIndex - 1,
       rand: rng(floor.id),
       variant: look[floor.era],

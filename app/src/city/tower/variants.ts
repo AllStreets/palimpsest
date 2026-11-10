@@ -45,6 +45,16 @@ export type Finish =
       scale?: number;
       /** A clear polished skin over the stone (0 to 1) that mirrors the sky: granite, marble. */
       polish?: number;
+      /** How much of the scan's own grain shows (0 to 1; 0.8 by default, 1 for granite). */
+      detail?: number;
+      /**
+       * Laid in courses: bed joints every `h` metres and staggered head joints
+       * every `l`, each block a little lighter or darker than the next
+       * (`vary`), joints darkened by `joint`. Drawn in world space, so the
+       * coursing reads on any face and fades evenly into its average with
+       * distance instead of shimmering.
+       */
+      courses?: { h: number; l: number; joint: number; vary: number };
       seen?: number;
     }
   /** Cast or rolled metal under the scanned plate's normal and roughness. */
@@ -102,7 +112,14 @@ export interface Variant {
   seams?: boolean;
 }
 
-export type Look = Record<Era, Variant>;
+/**
+ * How the sci-fi run ends, chosen per repo like a variant: an open diagrid
+ * lantern, a stepped spire, a cantilevered ring, or a split twin mast.
+ */
+export const CROWNS = ['lantern', 'stepped', 'ring', 'twin'] as const;
+export type Crown = (typeof CROWNS)[number];
+
+export type Look = Record<Era, Variant> & { crown: Crown };
 
 /** The colour a finish reads as, for the palette and contrast checks. */
 export function swatch(f: Finish): number {
@@ -114,11 +131,11 @@ export function swatch(f: Finish): number {
 const scan = (tex: Scan, body: number, rough: number, more: Partial<Extract<Finish, { kind: 'scan' }>> = {}): Finish => ({ kind: 'scan', tex, body, rough, ...more });
 
 // Stone bases sit cool of what they read as, because the low dusk sun warms every sunlit face.
-const LIMESTONE = scan('ashlar', 0xa1a5a7, 0.5, { normal: 0.8, joint: 0x828688 });
-const SANDSTONE = scan('sand', 0xa49f7a, 0.55, { normal: 0.9, joint: 0x857244 });
+const LIMESTONE = scan('ashlar', 0xadb3b8, 0.5, { normal: 0.8, joint: 0x8b9196 });
+const SANDSTONE = scan('sand', 0xaea676, 0.55, { normal: 1.1, joint: 0x857244, courses: { h: 0.62, l: 1.35, joint: 0.55, vary: 0.2 } });
 const MARBLE = scan('ashlar', 0xc8d2de, 0.18, { normal: 0.3, joint: 0x9fa7b3, scale: 1.4, polish: 0.6 });
-const DARK_GRANITE = scan('granite', 0x32363e, 0.3, { normal: 0.5, joint: 0x202329, scale: 3, polish: 1 });
-const ROSE_GRANITE = scan('granite', 0x8e7682, 0.3, { normal: 0.5, joint: 0x5e4650, scale: 3, polish: 1 });
+const DARK_GRANITE = scan('granite', 0x202328, 0.3, { normal: 0.5, joint: 0x141619, scale: 3, polish: 0.2 });
+const ROSE_GRANITE = scan('granite', 0x8e6a76, 0.3, { normal: 0.5, joint: 0x5e4450, scale: 3, polish: 0.6 });
 // Architectural bronze, brushed and kept polished: a lighter warm metal that takes the sky in its grain.
 const BRONZE: Finish = { kind: 'brushed', color: 0x8f6c4a, rough: 0.24, aniso: 0.45, env: 1.9 };
 const DARK_BRONZE: Finish = { kind: 'metal', color: 0x4a3324, rough: 0.5 };
@@ -130,6 +147,12 @@ const VERDIGRIS = scan('rust', 0x6f8a7c, 0.5, { joint: 0x51665a, normal: 0.6 });
 /** Verdigris as a smooth mineral skin, for curved fins where a scan would wrap into blotches. */
 const PATINA: Finish = { kind: 'solid', color: 0x628a86, rough: 0.6, metal: 0.15 };
 const TERRACOTTA = scan('brick', 0xd0d8e2, 0.2, { joint: 0x969ca3, normal: 0.55 });
+/**
+ * Sintered ceramic cladding: cool white panels about 1.6 by 2.4 m with fine
+ * dark joints, under a glazed skin that mirrors the sky. Cool on purpose, so
+ * the orange key light leaves it white rather than salmon.
+ */
+const CERAMIC = scan('ashlar', 0xd2d8e1, 0.3, { joint: 0xb1b8c2, normal: 0.15, polish: 0.55, detail: 0.25, courses: { h: 1.6, l: 2.4, joint: 0.45, vary: 0.04 } });
 const FAIENCE: Finish = { kind: 'solid', color: 0x5c7466, rough: 0.28, env: 1.3 };
 
 /** Punched windows in masonry: dark glass, rooms seen as they are. */
@@ -159,7 +182,10 @@ export const VARIANTS: Record<Era, Variant[]> = {
       trim: DARK_GRANITE,
       band: BRONZE,
       glass: { body: 0x080604, tint: 0xffe6c8, env: 1.3 },
-      masonry: { winH: 0.6 },
+      // Small deep openings in a heavy dark wall, a quiet bank or court building with few lights burning late:
+      // from afar the stone, not the windows, sets its tone.
+      masonry: { winH: 0.42, winW: 1.15 },
+      lights: { lit: 0.28, warm: 0.9 },
     },
     {
       id: 'stone:marble',
@@ -175,7 +201,7 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'stone:travertine',
       era: 'stone',
       name: 'Rusticated travertine',
-      wall: scan('sand', 0x8c6d48, 0.7, { normal: 1.4, joint: 0x6a5134, scale: 0.8 }),
+      wall: scan('sand', 0xa58457, 0.7, { normal: 1.4, joint: 0x7a5f3c, scale: 0.8, courses: { h: 0.9, l: 1.8, joint: 0.6, vary: 0.1 } }),
       trim: MARBLE,
       band: MARBLE,
       glass: CLEAR,
@@ -375,9 +401,9 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'scifi:ceramic',
       era: 'scifi',
       name: 'White ceramic',
-      wall: { kind: 'solid', color: 0xd8d4ca, rough: 0.36, clearcoat: 0.3 },
-      trim: { kind: 'solid', color: 0xd8d4ca, rough: 0.36, clearcoat: 0.3 },
-      band: { kind: 'solid', color: 0xd8d4ca, rough: 0.36, clearcoat: 0.3 },
+      wall: CERAMIC,
+      trim: CERAMIC,
+      band: CERAMIC,
       glass: { body: 0x020304, tint: 0xf4f6fa, env: 1.2 },
       lights: { lit: 0.85, warm: 0.85 },
     },
@@ -436,7 +462,18 @@ export function preference(repo: string, era: Era): Variant[] {
 
 /** A repo's look on its own, with no neighbours to steer clear of: its first choice in every era. */
 export function lookFor(repo: string): Look {
-  return Object.fromEntries(ERAS.map((era) => [era, preference(repo, era)[0]])) as Look;
+  return { ...(Object.fromEntries(ERAS.map((era) => [era, preference(repo, era)[0]])) as Record<Era, Variant>), crown: crownPreference(repo)[0] };
+}
+
+/** The repo's own order of preference for its crown. */
+function crownPreference(repo: string): Crown[] {
+  const list = [...CROWNS];
+  const r = rng(`${repo}|crown`);
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(r() * (i + 1));
+    [list[i], list[j]] = [list[j], list[i]];
+  }
+  return list;
 }
 
 export interface LookSite {
@@ -465,46 +502,79 @@ export function renderedDistance(a: Variant, b: Variant): number {
   const ra = RENDERED[a.id];
   const rb = RENDERED[b.id];
   if (!ra || !rb) return a.id === b.id ? 0 : Infinity;
-  return (dE(ra.sun, rb.sun) + dE(ra.shade, rb.shade)) / 2;
+  const high = (dE(ra.sun, rb.sun) + dE(ra.shade, rb.shade)) / 2;
+  // Measured again where short towers stand, low over the street, where the street-level darkening and the
+  // thicker haze close the gap: the nearer of the two is what counts.
+  const low = ra.sunLow && rb.sunLow && ra.shadeLow && rb.shadeLow ? (dE(ra.sunLow, rb.sunLow) + dE(ra.shadeLow, rb.shadeLow)) / 2 : high;
+  return Math.min(high, low);
 }
 
 /** Neighbours count as reading apart from across the city at this rendered distance or more. */
 export const SEPARATION = 6;
 
 /**
+ * The distance the picker prefers when it can have it: SEPARATION with a
+ * margin, so the next measurement (another GPU, a light change) moving a
+ * colour a couple of units does not drop neighbours under SEPARATION.
+ */
+export const PREFERRED = 9;
+
+/**
  * Every district's look. Districts choose in slot order (a slot is a repo's
  * for good, and new repos take new slots), so a tower's look depends only on
  * its own name and the towers placed before it, and a repo that joins later
  * never changes an older tower. Neighbours are the eight blocks round a
- * district. In each era a district ranks the variants by, in turn:
- * 1. how many neighbours have taken that variant (fewest first);
- * 2. how many neighbours it renders within SEPARATION of (fewest first);
- * 3. how many towers anywhere in the city already use it, so a variant is
- *    not repeated across the city while another stands unused;
- * 4. its own order of preference, from its name.
- * Pass every repo that holds a slot, connected or not, so a tower keeps its
- * look while a neighbour is switched off.
+ * district. Eras are chosen bottom to top, and in each a district ranks the
+ * variants by, in turn:
+ * 1. how many neighbours have taken that variant;
+ * 2. how far short of SEPARATION it renders from its neighbours, summed;
+ * 3. whether it renders within SEPARATION of its own tower's era below, so
+ *    the floors still read as laid in different times;
+ * 4. how far short of PREFERRED it renders from them (the margin);
+ * 5. how many towers anywhere in the city already use it;
+ * 6. its own order of preference, from its name.
+ * The crown is chosen the same way: not a neighbour's, then the least used,
+ * then the repo's own preference. Pass every repo that holds a slot,
+ * connected or not, so a tower keeps its look while a neighbour is off.
+ * The colours come from rendered.ts, which is versioned data: see there.
  */
 export function pickLooks(sites: LookSite[]): Map<string, Look> {
   const order = [...sites].sort((a, b) => a.slot - b.slot || (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : 0));
   const placed: Array<{ at: { x: number; z: number }; look: Look }> = [];
   const out = new Map<string, Look>();
+  const byRank = (a: number[], b: number[]): number => {
+    for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return a[k] - b[k];
+    return 0;
+  };
   for (const s of order) {
     if (out.has(s.repo)) continue;
     const at = block(s.slot);
     const near = placed.filter((p) => Math.max(Math.abs(p.at.x - at.x), Math.abs(p.at.z - at.z)) === 1).map((p) => p.look);
     const look = {} as Look;
+    let below: Variant | null = null;
     for (const era of ERAS) {
+      // How far short of `d` a variant falls against each neighbour, summed: zero when it clears them all, and
+      // otherwise smaller for the variant that is least alike, so a crowded corner still takes the best it has.
+      const short = (v: Variant, d: number): number => near.reduce((sum, l) => sum + Math.max(0, d - renderedDistance(l[era], v)), 0);
       const rank = (v: Variant, i: number): number[] => [
         near.filter((l) => l[era].id === v.id).length,
-        near.filter((l) => renderedDistance(l[era], v) < SEPARATION).length,
+        Math.round(short(v, SEPARATION) * 10),
+        below && renderedDistance(below, v) < SEPARATION ? 1 : 0,
+        Math.round(short(v, PREFERRED) * 10),
         placed.filter((p) => p.look[era].id === v.id).length,
         i,
       ];
       const ranked = preference(s.repo, era).map((v, i) => ({ v, r: rank(v, i) }));
-      ranked.sort((a, b) => a.r[0] - b.r[0] || a.r[1] - b.r[1] || a.r[2] - b.r[2] || a.r[3] - b.r[3]);
+      ranked.sort((a, b) => byRank(a.r, b.r));
       look[era] = ranked[0].v;
+      below = look[era];
     }
+    const crowns = crownPreference(s.repo).map((c, i) => ({
+      c,
+      r: [near.filter((l) => l.crown === c).length, placed.filter((p) => p.look.crown === c).length, i],
+    }));
+    crowns.sort((a, b) => byRank(a.r, b.r));
+    look.crown = crowns[0].c;
     placed.push({ at, look });
     out.set(s.repo, look);
   }
@@ -513,5 +583,5 @@ export function pickLooks(sites: LookSite[]): Map<string, Look> {
 
 /** A short stable key for a look, for cache keys. */
 export function lookKey(look: Look): string {
-  return ERAS.map((e) => look[e].id).join(',');
+  return [...ERAS.map((e) => look[e].id), look.crown].join(',');
 }

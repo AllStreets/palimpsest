@@ -15,7 +15,7 @@ import {
   squareSweep,
   unitBox,
 } from './kit.js';
-import type { MasonryRhythm, Variant } from './variants.js';
+import type { Crown, MasonryRhythm, Variant } from './variants.js';
 
 /** Where a floor sits in its tower and in its run of same-era floors. */
 export interface FloorContext {
@@ -29,6 +29,10 @@ export interface FloorContext {
   runEnd: boolean;
   /** The tower's top floor. */
   top: boolean;
+  /** Floors above this one (0 on the top floor): crowns shape the last few. */
+  fromTop: number;
+  /** How the tower's sci-fi run ends. */
+  crown: Crown;
   /** The last floor below the datum line: its run-end cap is left off so the datum band reads clean. */
   datum: boolean;
   rand: () => number;
@@ -153,7 +157,7 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
       k.box(trim, winW + 0.32, 0.16, r + 0.16, F.clone().multiply(M(u, sillY - 0.08, -r / 2 + 0.08)));
       // Rain off the sill has run down the spandrel below it, darkest under the drip.
       const run = sillY - 0.2;
-      k.stain(wall, winW * (0.7 + 0.25 * c.rand()), run, F.clone().multiply(M(u + (c.rand() - 0.5) * 0.2, run / 2 + 0.04, 0.012)), 0.22 + 0.16 * c.rand());
+      k.stain(wall, winW * (0.85 + 0.25 * c.rand()), run, F.clone().multiply(M(u + (c.rand() - 0.5) * 0.2, run / 2 + 0.04, 0.012)), 0.5 + 0.22 * c.rand());
       if (s.paired) {
         // One lintel spans each pair, pier and all.
         if (j % 2 === 0) k.box(trim, 2 * winW + PAIR_PIER + 0.5, 0.42, 0.08, F.clone().multiply(M(u + (winW + PAIR_PIER) / 2, headY + 0.21, 0.04)));
@@ -202,7 +206,7 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
         const b = i === openings.length ? half : openings[i] - winW / 2;
         if (b - a < 0.35) continue;
         const len = Math.min(y0 - 0.1, 1.2 + 1.8 * c.rand());
-        k.stain(wall, Math.min(b - a, 0.25 + 0.5 * c.rand()), len, F.clone().multiply(M((a + b) / 2 + (c.rand() - 0.5) * 0.3, y0 - len / 2, 0.012)), 0.25 + 0.2 * c.rand());
+        k.stain(wall, Math.min(b - a, 0.4 + 0.6 * c.rand()), len, F.clone().multiply(M((a + b) / 2 + (c.rand() - 0.5) * 0.3, y0 - len / 2, 0.012)), 0.45 + 0.2 * c.rand());
       }
     }
     k.add(band, squareSweep(half, [
@@ -343,47 +347,81 @@ function ring(k: Kit, mat: MatKey, x0: number, x1: number, z0: number, z1: numbe
  * set in each soffit. The top floor opens into a crown: the diagrid rises
  * free round a small glass pavilion under a thin canopy.
  */
+/**
+ * How much a stepped spire narrows each of the last floors: the three below
+ * the top step in, and the top is the needle's base.
+ */
+const STEPS = [0.42, 0.6, 0.78];
+
 const scifi: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
-  const core = Math.max(4, half - 2.2);
+  // A stepped spire narrows its last floors; every other crown keeps the shaft full to the top.
+  const step = c.crown === 'stepped' && c.fromTop < STEPS.length ? STEPS[c.fromTop] : 1;
+  const core = Math.max(c.crown === 'stepped' ? 2.2 : 4, (half - 2.2) * step);
+  const twin = c.crown === 'twin' && c.fromTop <= 1;
   const deep = Math.floor(c.inRun / 3) % 4;
-  // Outward reach of the slab past the glass on each side: +z, +x, -z, -x.
-  const ext = [0, 1, 2, 3].map((s) => (s === deep ? 3.6 : 1.5));
+  // Outward reach of the slab past the glass on each side: +z, +x, -z, -x. A spire's slabs draw in with it.
+  const ext = [0, 1, 2, 3].map((s) => (s === deep ? 3.6 : 1.5) * Math.max(0.5, step));
   const x0 = -(core + ext[3]);
   const x1 = core + ext[1];
   const z0 = -(core + ext[2]);
   const z1 = core + ext[0];
   const slab = 0.95;
 
-  // Slab: two titanium fascia bands with a recessed light reveal between them, a concrete core.
-  slabBox(k, 'scifiTrim', x0, x1, 0, 0.42, z0, z1);
-  slabBox(k, 'slab', x0 + 0.12, x1 - 0.12, 0.42, 0.52, z0 + 0.12, z1 - 0.12);
-  ring(k, 'lightLine', x0 + 0.1, x1 - 0.1, z0 + 0.1, z1 - 0.1, 0.45, 0.49, 0.04);
-  slabBox(k, 'scifiTrim', x0, x1, 0.52, slab, z0, z1);
-  // Downlight line set into the soffit, a little in from the edge.
-  if (!c.runStart) ring(k, 'lightLine', x0 + 0.45, x1 - 0.45, z0 + 0.45, z1 - 0.45, -0.025, 0, 0.06);
-  if (f.claude) ring(k, 'accent', x0 - 0.03, x1 + 0.03, z0 - 0.03, z1 + 0.03, slab, slab + 0.08, 0.1);
+  // Slab: two titanium fascia bands with a recessed light reveal between them, a concrete core. A twin crown's
+  // last two floors stand on two slab islands, one round each shaft, with the slot open between them.
+  const twinGh = core * 0.36;
+  const islands: Array<[number, number, number, number]> = twin
+    ? [-1, 1].map((sx) => [sx * core * 0.55 - twinGh - 1.2, sx * core * 0.55 + twinGh + 1.2, -twinGh - 1.2, twinGh + 1.2] as [number, number, number, number])
+    : [[x0, x1, z0, z1]];
+  for (const [a0, a1, b0, b1] of islands) {
+    slabBox(k, 'scifiTrim', a0, a1, 0, 0.42, b0, b1);
+    slabBox(k, 'slab', a0 + 0.12, a1 - 0.12, 0.42, 0.52, b0 + 0.12, b1 - 0.12);
+    ring(k, 'lightLine', a0 + 0.1, a1 - 0.1, b0 + 0.1, b1 - 0.1, 0.45, 0.49, 0.04);
+    slabBox(k, 'scifiTrim', a0, a1, 0.52, slab, b0, b1);
+    // Downlight line set into the soffit, a little in from the edge.
+    if (!c.runStart) ring(k, 'lightLine', a0 + 0.45, a1 - 0.45, b0 + 0.45, b1 - 0.45, -0.025, 0, 0.06);
+    if (f.claude) ring(k, 'accent', a0 - 0.03, a1 + 0.03, b0 - 0.03, b1 + 0.03, slab, slab + 0.08, 0.1);
+  }
 
   const light = lighter(f.era, c.rand, c.variant.lights);
-  const top = c.top ? h - 0.5 : h;
-  // The glass: the full core on ordinary floors, a small pavilion on the crown.
-  const glassHalf = c.top ? core * 0.55 : core;
-  k.box('slab', glassHalf * 2 - 0.8, top - slab, glassHalf * 2 - 0.8, M(0, (slab + top) / 2, 0));
-  const nb = Math.max(2, Math.round((glassHalf * 2) / 1.7));
-  const bw = (glassHalf * 2) / nb;
-  for (let side = 0; side < 4; side++) {
-    const F = face(side, glassHalf);
-    for (let i = 0; i < nb; i++) {
-      k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-glassHalf + bw * (i + 0.5), (slab + top) / 2, 0, 0, bw, top - slab, 1)), light(PANE_FULL));
+  const lantern = c.top && c.crown === 'lantern';
+  // The diagrid's angled members need half a metre of headroom under a top floor's roof; the twin shafts carry no diagrid.
+  const top = c.top && !twin ? h - 0.5 : h;
+  /** A glass shaft of half-width `gh` centred at x = `cx`: a concrete core, panes and mullions on all four faces. */
+  const shaft = (gh: number, cx: number): void => {
+    k.box('slab', gh * 2 - 0.8, top - slab, gh * 2 - 0.8, M(cx, (slab + top) / 2, 0));
+    const nb = Math.max(2, Math.round((gh * 2) / 1.7));
+    const bw = (gh * 2) / nb;
+    for (let side = 0; side < 4; side++) {
+      const F = M(cx, 0, 0).multiply(face(side, gh));
+      for (let i = 0; i < nb; i++) {
+        k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-gh + bw * (i + 0.5), (slab + top) / 2, 0, 0, bw, top - slab, 1)), light(PANE_FULL));
+      }
+      for (let i = 0; i <= nb; i++) {
+        k.inst('sf:mullion', 'graphite', unitBox, F.clone().multiply(M(-gh + bw * i, (slab + top) / 2, 0.06, 0, 0.07, top - slab, 0.14)));
+      }
     }
-    for (let i = 0; i <= nb; i++) {
-      k.inst('sf:mullion', 'graphite', unitBox, F.clone().multiply(M(-glassHalf + bw * i, (slab + top) / 2, 0.06, 0, 0.07, top - slab, 0.14)));
+  };
+  if (twin) {
+    // Split twin mast: the last two floors part into two slender shafts with a slot of sky between them,
+    // each carrying a mast up its outer edge.
+    for (const sx of [-1, 1]) {
+      shaft(twinGh, sx * core * 0.55);
+      k.box('scifiWall', 0.7, h - slab, 0.7, M(sx * (core * 0.55 + twinGh + 0.35), (slab + h) / 2, 0));
     }
+  } else {
+    // The glass: the full core on ordinary floors, a small pavilion inside an open lantern.
+    shaft(lantern ? core * 0.55 : core, 0);
   }
 
   // Diagrid exoskeleton, 0.6 m outside the glass line: each floor's nodes sit half a module along from the floor
-  // below's, so the members form diamonds two storeys tall.
+  // below's, so the members form diamonds two storeys tall. The twin shafts stand free of it.
   const frame = core + 0.6;
+  if (twin) {
+    const reachT = Math.max(...ext) + core;
+    return { cx: 0, cz: 0, half: reachT + 0.1, datumHalf: frame + 0.25 };
+  }
   const modules = Math.max(2, Math.round((frame * 2) / 5));
   const p = (frame * 2) / modules;
   const off = (c.inRun % 2) * (p / 2);
@@ -411,13 +449,25 @@ const scifi: EraBuilder = (k, w, h, f, c) => {
     }
   }
 
-  if (c.top) {
-    // Crown canopy over the frame, with its own soffit downlight.
+  if (lantern) {
+    // Open diagrid lantern: the frame rises free round a small glass pavilion under a thin canopy with its own
+    // soffit downlight.
     const ch = frame + 0.25;
     slabBox(k, 'scifiBand', -ch, ch, h - 0.5, h, -ch, ch);
     ring(k, 'lightLine', -ch + 0.35, ch - 0.35, -ch + 0.35, ch - 0.35, h - 0.525, h - 0.5, 0.06);
+  } else if (c.top && c.crown === 'ring') {
+    // Cantilevered ring: a halo deck thrown well clear of the frame, scaled to the shaft, under a roof slab.
+    const ch = frame + 0.25;
+    const out = frame + Math.max(4, core * 0.55);
+    ring(k, 'scifiBand', -out, out, -out, out, h * 0.42, h * 0.42 + 0.55, out - frame - 0.4);
+    ring(k, 'lightLine', -out + 0.2, out - 0.2, -out + 0.2, out - 0.2, h * 0.42 - 0.03, h * 0.42, 0.06);
+    slabBox(k, 'scifiBand', -ch, ch, h - 0.5, h, -ch, ch);
+  } else if (c.top && c.crown === 'stepped') {
+    // Stepped spire: the narrowest step carries a needle to the top of the floor.
+    slabBox(k, 'scifiBand', -frame, frame, h - 0.4, h - 0.1, -frame, frame);
+    slabBox(k, 'scifiWall', -0.45, 0.45, h - 0.1, h, -0.45, 0.45);
   }
-  const reach = Math.max(...ext) + core;
+  const reach = Math.max(...ext, c.top && c.crown === 'ring' ? Math.max(4, core * 0.55) + 0.6 : 0) + core;
   // The datum wraps the diagrid just clear of its members. Every slab reaches at least 1.5 m past the core, so
   // a band here always tucks under the slab of the floor above (whichever side that floor throws its terrace),
   // and on the crown it sits under the canopy.

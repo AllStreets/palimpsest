@@ -3,8 +3,10 @@ import { test } from 'node:test';
 
 import { districtOrigin, DISTRICT_PITCH } from '../shared/district-layout.js';
 import type { Era } from '../shared/types.js';
+import { readFileSync } from 'node:fs';
+
 import { RENDERED } from '../app/src/city/tower/rendered.js';
-import { type Finish, lookFor, pickLooks, preference, renderedDistance, SEPARATION, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
+import { CROWNS, type Finish, lookFor, lookKey, pickLooks, preference, PREFERRED, renderedDistance, SEPARATION, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
 
 const ERAS: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
 
@@ -129,33 +131,7 @@ test('neighbours are steered apart by how they render: a pick is SEPARATION from
   }
 });
 
-test("Connor's six and the sample's six render apart from every neighbour in the eras that make up most of a tower", () => {
-  for (const names of [HIS, SAMPLE]) {
-    const sites = names.map((repo, slot) => ({ repo, slot }));
-    const looks = pickLooks(sites);
-    for (const era of ['stone', 'brick'] as const) {
-      for (const s of sites) {
-        for (const o of sites) {
-          if (o === s || blocks(o.slot, s.slot) > 1) continue;
-          const d = renderedDistance(looks.get(s.repo)![era], looks.get(o.repo)![era]);
-          assert.ok(d >= SEPARATION, `${s.repo} and ${o.repo} render only ${d.toFixed(1)} apart in ${era}`);
-        }
-      }
-    }
-  }
-});
-
-test('a district takes its own first choice when nothing near or in the city has it', () => {
-  // Slots 0 and 4 sit two blocks apart on the spiral: the earlier tower has a different first choice.
-  assert.equal(blocks(0, 4), 2);
-  const a = 'acme/first';
-  let b = '';
-  for (let i = 0; i < 500 && !b; i++) if (lookFor(`other/b${i}`).stone.id !== lookFor(a).stone.id) b = `other/b${i}`;
-  const looks = pickLooks([{ repo: a, slot: 0 }, { repo: b, slot: 4 }]);
-  assert.equal(looks.get(b)!.stone.id, preference(b, 'stone')[0].id);
-});
-
-test('a variant repeats across the city only when every unused one would render too close to a neighbour', () => {
+test('a variant repeats across the city only when no unused one renders as well apart from its neighbours and the era below', () => {
   for (const names of [HIS, SAMPLE, Array.from({ length: 30 }, (_, i) => `org${i % 7}/r${i}`)]) {
     const sites = names.map((repo, slot) => ({ repo, slot }));
     const looks = pickLooks(sites);
@@ -166,7 +142,11 @@ test('a variant repeats across the city only when every unused one would render 
         if (!before.some((v) => v.id === mine.id)) continue;
         const near = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1).map((o) => looks.get(o.repo)![era]);
         const unused = VARIANTS[era].filter((v) => !before.some((b) => b.id === v.id));
-        const better = unused.filter((v) => near.every((n) => renderedDistance(v, n) >= SEPARATION));
+        const order: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
+        const below = order.indexOf(era) > 0 ? looks.get(s.repo)![order[order.indexOf(era) - 1]] : null;
+        // Unused and as good on every rule the picker ranks above reuse: apart from neighbours with the margin, apart from the era below.
+        const better = unused.filter((v) => near.every((n) => renderedDistance(v, n) >= PREFERRED) && (!below || renderedDistance(v, below) >= SEPARATION));
+        if (!near.every((n) => renderedDistance(mine, n) >= PREFERRED) || (below && renderedDistance(mine, below) < SEPARATION)) continue;
         assert.equal(better.length, 0, `${s.repo} repeats ${mine.id} though ${better.map((b) => b.id).join(', ')} was unused and rendered apart from its neighbours`);
       }
     }
@@ -181,6 +161,94 @@ test('upper eras each read apart by their lit floors and rhythm', () => {
       const sig = [Math.round(v.lights!.warm * 5), v.pitch ?? 0, v.depth ?? 1, v.spandrel ?? 0, v.seams ?? false, v.glass.channel ?? false].join('|');
       assert.ok(!seen.has(sig), `${v.id} reads the same as another ${era} variant from afar (${sig})`);
       seen.add(sig);
+    }
+  }
+});
+
+
+test('a variant is measured at the heights short towers stand at as well as high', () => {
+  for (const era of ERAS) {
+    for (const v of VARIANTS[era]) {
+      const r = RENDERED[v.id];
+      assert.ok(r.sunLow && r.shadeLow, `${v.id} has a low measurement`);
+    }
+  }
+});
+
+test("a tower's adjacent eras render apart from each other whenever such a pick exists", () => {
+  const order: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
+  for (const names of [HIS, SAMPLE, Array.from({ length: 40 }, (_, i) => `org${i % 7}/r${i}`)]) {
+    const sites = names.map((repo, slot) => ({ repo, slot }));
+    const looks = pickLooks(sites);
+    for (const s of sites) {
+      const look = looks.get(s.repo)!;
+      for (let e = 1; e < order.length; e++) {
+        const below = look[order[e - 1]];
+        const near = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1).map((o) => looks.get(o.repo)![order[e]]);
+        const both = VARIANTS[order[e]].filter((v) => renderedDistance(v, below) >= SEPARATION && near.every((n) => renderedDistance(v, n) >= SEPARATION));
+        if (both.length) assert.ok(renderedDistance(look[order[e]], below) >= SEPARATION, `${s.repo}: ${look[order[e]].id} renders within ${SEPARATION} of ${below.id} below it`);
+      }
+    }
+  }
+});
+
+test('the picker takes the margin whenever a variant clears it: PREFERRED from neighbours and SEPARATION from the era below', () => {
+  assert.ok(PREFERRED >= SEPARATION + 2);
+  const order: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
+  for (const names of [HIS, SAMPLE, Array.from({ length: 40 }, (_, i) => `org${i % 7}/r${i}`)]) {
+    const sites = names.map((repo, slot) => ({ repo, slot }));
+    const looks = pickLooks(sites);
+    for (const s of sites) {
+      for (const [e, era] of order.entries()) {
+        const below = e > 0 ? looks.get(s.repo)![order[e - 1]] : null;
+        const near = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1).map((o) => looks.get(o.repo)![era]);
+        const clears = (v: (typeof VARIANTS)[Era][number]): boolean => near.every((n) => renderedDistance(v, n) >= PREFERRED) && (!below || renderedDistance(v, below) >= SEPARATION);
+        if (VARIANTS[era].some(clears)) assert.ok(clears(looks.get(s.repo)![era]), `${s.repo} ${era} passed over a variant that clears the margin`);
+      }
+    }
+  }
+});
+
+/**
+ * The looks of Connor's six and the sample's six, pinned. They come from
+ * rendered.ts, so a re-measure that would change the materials of a tower
+ * people already know fails here, and has to be accepted on purpose by
+ * updating this list in the same commit as rendered.ts.
+ */
+const PINNED: Record<string, string> = {
+  'AllStreets/beagle': 'stone:marble,brick:green-terracotta,glass:blue,titanium:titanium,scifi:carbon,stepped',
+  'AllStreets/palimpsest': 'stone:dark-granite,brick:salmon,glass:channel,titanium:black,scifi:ceramic,ring',
+  'AllStreets/teardown': 'stone:pink-granite,brick:terracotta,glass:bronze,titanium:copper,scifi:pearl,lantern',
+  'AllStreets/understudy': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:carbon,twin',
+  'AllStreets/ONEXUS': 'stone:dark-granite,brick:cream,glass:channel,titanium:black,scifi:ceramic,stepped',
+  'AllStreets/Chicago-Open-World': 'stone:limestone,brick:red,glass:green,titanium:bronze,scifi:carbon,ring',
+  'tidewater/harbor-ledger': 'stone:pink-granite,brick:green-terracotta,glass:green,titanium:bronze,scifi:ceramic,lantern',
+  'kestrel/fieldnotes': 'stone:marble,brick:salmon,glass:channel,titanium:copper,scifi:carbon,stepped',
+  'lantern/assay-kit': 'stone:dark-granite,brick:terracotta,glass:bronze,titanium:black,scifi:pearl,ring',
+  'ferro/quarry': 'stone:limestone,brick:red,glass:blue,titanium:titanium,scifi:carbon,twin',
+  'hoshi/kumo': 'stone:sandstone,brick:cream,glass:channel,titanium:bronze,scifi:ceramic,stepped',
+  'alder/blank-slate': 'stone:marble,brick:ironspot,glass:green,titanium:black,scifi:carbon,ring',
+};
+
+test('a re-measure never silently changes the look of a known tower', () => {
+  for (const names of [HIS, SAMPLE]) {
+    const looks = pickLooks(names.map((repo, slot) => ({ repo, slot })));
+    for (const n of names) assert.equal(lookKey(looks.get(n)!), PINNED[n], `${n} changed look`);
+  }
+});
+
+test('sci-fi crowns: three or more silhouettes, deterministic, never shared by neighbours', () => {
+  assert.ok(CROWNS.length >= 3);
+  assert.equal(lookFor('a/b').crown, lookFor('a/b').crown);
+  const seen = new Set<string>();
+  for (let i = 0; i < 200; i++) seen.add(lookFor(`o/r${i}`).crown);
+  assert.equal(seen.size, CROWNS.length, 'every crown is reachable');
+  for (const names of [HIS, SAMPLE, Array.from({ length: 30 }, (_, i) => `org${i % 7}/r${i}`)]) {
+    const sites = names.map((repo, slot) => ({ repo, slot }));
+    const looks = pickLooks(sites);
+    for (const s of sites) {
+      const earlier = sites.filter((o) => o.slot < s.slot && blocks(o.slot, s.slot) <= 1).map((o) => looks.get(o.repo)!.crown);
+      if (CROWNS.some((c) => !earlier.includes(c))) assert.ok(!earlier.includes(looks.get(s.repo)!.crown), `${s.repo} shares a crown with a neighbour`);
     }
   }
 });
@@ -249,4 +317,17 @@ test('within an era, variants differ from each other by material alone', () => {
       }
     }
   }
+});
+
+test('nothing regenerates rendered.ts on its own: no default capture measures, and only SWATCH_WRITE=1 writes it', () => {
+  const src = readFileSync(new URL('../tools/capture.ts', import.meta.url), 'utf8');
+  const defaults = /const wanted = [^;]*?\[([^\]]*)\]/.exec(src)?.[1] ?? '';
+  assert.ok(defaults.length > 0, 'found the default shot list');
+  assert.ok(!defaults.includes('swatches'), 'the default capture does not measure');
+  const writes = src.split('\n').filter((l) => l.includes("'rendered.ts'") && l.includes('writeFileSync'));
+  assert.ok(writes.length === 1 && writes[0].includes("process.env.SWATCH_WRITE === '1'"), 'the one write into the app is guarded by SWATCH_WRITE=1');
+  const pkg = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+  assert.ok(!/swatches|SWATCH_WRITE/.test(pkg), 'no npm script measures');
+  const head = readFileSync(new URL('../app/src/city/tower/rendered.ts', import.meta.url), 'utf8').slice(0, 900);
+  assert.ok(/VERSIONED DATA/.test(head) && /city-wide look change/.test(head), 'rendered.ts says what regenerating it means');
 });

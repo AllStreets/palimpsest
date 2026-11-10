@@ -219,7 +219,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // the sunlit and shaded face of a short tower per variant, averaged over a patch and converted to Lab.
       // SWATCH_WRITE=1 writes app/src/city/tower/rendered.ts, which the picker steers neighbours apart by.
       await chrome(page, false);
-      const points = (await page.evaluate(() => (window as unknown as { __palimpsest: { swatchBoard(): Promise<unknown> } }).__palimpsest.swatchBoard())) as Array<{ id: string; sun: [number, number]; shade: [number, number] }>;
+      type P = [number, number];
+      const points = (await page.evaluate(() => (window as unknown as { __palimpsest: { swatchBoard(): Promise<unknown> } }).__palimpsest.swatchBoard())) as Array<{ id: string; sun: P; shade: P; sunLow: P; shadeLow: P }>;
       await page.waitForTimeout(2500);
       await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
       const shot = await page.screenshot();
@@ -246,11 +247,30 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         }
         return labOf(r / n, g / n, b / n).map((v) => Math.round(v * 10) / 10) as [number, number, number];
       };
-      const out: Record<string, { sun: [number, number, number]; shade: [number, number, number] }> = {};
-      for (const p of points) out[p.id] = { sun: mean(p.sun), shade: mean(p.shade) };
-      for (const [id, v] of Object.entries(out)) console.log(`  ${id.padEnd(26)} sun L${v.sun[0]} a${v.sun[1]} b${v.sun[2]}   shade L${v.shade[0]} a${v.shade[1]} b${v.shade[2]}`);
-      const body = `/**\n * Each variant's colour as the city renders it at the overview's distance\n * and bearing (CIE Lab of the sunlit and the shaded face), measured by\n * tools/capture.ts, the swatches shot. Generated: re-run\n * \`SWATCH_WRITE=1 node --import tsx tools/capture.ts swatches\` after a\n * material, light or post change. The picker steers neighbours apart by it.\n */\nexport const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number] }> = ${JSON.stringify(out, null, 2)};\n`;
-      writeFileSync(process.env.SWATCH_WRITE ? join(ROOT, 'app', 'src', 'city', 'tower', 'rendered.ts') : join(MEDIA, 'rendered.ts'), body);
+      type Lab = [number, number, number];
+      const out: Record<string, { sun: Lab; shade: Lab; sunLow: Lab; shadeLow: Lab }> = {};
+      for (const p of points) out[p.id] = { sun: mean(p.sun), shade: mean(p.shade), sunLow: mean(p.sunLow), shadeLow: mean(p.shadeLow) };
+      const f = (v: Lab): string => `L${v[0]} a${v[1]} b${v[2]}`;
+      for (const [id, v] of Object.entries(out)) console.log(`  ${id.padEnd(26)} high sun ${f(v.sun)} shade ${f(v.shade)}   low sun ${f(v.sunLow)} shade ${f(v.shadeLow)}`);
+      const body = [
+        '/**',
+        " * Each variant's colour as the city renders it at the overview's distance",
+        ' * and bearing: CIE Lab of the sunlit and the shaded face, with floors at',
+        ' * tall-tower height (sun, shade) and at short-tower height over the street',
+        ' * (sunLow, shadeLow). Measured by tools/capture.ts, the swatches shot.',
+        ' *',
+        ' * VERSIONED DATA. pickLooks chooses every tower\'s materials from these',
+        ' * numbers, so regenerating this file is a city-wide look change: towers',
+        ' * people already know can change their materials. Nothing regenerates it',
+        ' * on its own (not the build, the tests or any default capture); only',
+        ' * `SWATCH_WRITE=1 node --import tsx tools/capture.ts swatches`, run by',
+        ' * hand as a deliberate change and committed with the reason.',
+        ' */',
+        `export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = ${JSON.stringify(out, null, 2)};`,
+        '',
+      ].join('\n');
+      // Writes the versioned data only when asked, by name, on the command line.
+      writeFileSync(process.env.SWATCH_WRITE === '1' ? join(ROOT, 'app', 'src', 'city', 'tower', 'rendered.ts') : join(MEDIA, 'rendered.ts'), body);
     },
 
     async hero(page) {

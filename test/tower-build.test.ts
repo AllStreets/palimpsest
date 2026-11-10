@@ -5,7 +5,7 @@ import * as THREE from 'three';
 
 import { buildTower, FLOOR_WIDTH } from '../app/src/city/tower/build.js';
 import { PANE_CHANNEL, PANE_FULL, type TowerMaterials } from '../app/src/city/tower/kit.js';
-import { type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
+import { CROWNS, type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
 import { layoutTower, ROOT_HEIGHT } from '../shared/tower-layout.js';
 import type { Era, Floor, FloorSize, RootStyle, TowerSpec } from '../shared/types.js';
 
@@ -399,4 +399,42 @@ test('masonry weathers: stains run down from every sill and from a run-end corni
     assert.ok(dark >= panes * 4, `${id}: ${dark} dark stain vertices for ${panes} windows`);
     assert.ok(darkTopY > darkBottomY, `${id}: stains are darkest along their top edge`);
   }
+});
+
+test('every sci-fi crown builds inside its height and reserve, and each draws its own silhouette', () => {
+  const profiles = new Set<string>();
+  for (const crown of CROWNS) {
+    const s = single('scifi', 6);
+    const look = { ...lookFor('acme/one'), crown };
+    const t = buildTower(s, 'high', plainMaterials(), look);
+    const box = bounds(t.group);
+    assert.ok(Math.abs(box.max.y - t.top) < 1e-3, `${crown}: top ${box.max.y} vs ${t.top}`);
+    const reach = Math.max(...[box.min.x, box.max.x].flatMap((x) => [box.min.z, box.max.z].map((z) => Math.hypot(x, z))));
+    assert.ok(reach < RESERVE_RADIUS, `${crown} reaches ${reach.toFixed(1)}`);
+    // The silhouette: how wide the drawn faces are just above each of the top three slabs and mid-way up the top floor.
+    const lay = layoutTower(s);
+    t.group.updateMatrixWorld(true);
+    const heights = [3, 4, 5].map((f) => lay.floors[f].y0 + 0.2).concat([lay.floors[5].y0 + lay.floors[5].h * 0.42 + 0.25, lay.top - 0.05]);
+    const widths = heights.map((y) => {
+      let lo = Infinity;
+      let hi = -Infinity;
+      t.group.traverseVisible((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || (m as THREE.InstancedMesh).isInstancedMesh) return;
+        const pos = m.geometry.getAttribute('position');
+        const v = new THREE.Vector3();
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+          if (Math.abs(v.y - y) < 0.6) {
+            lo = Math.min(lo, v.x);
+            hi = Math.max(hi, v.x);
+          }
+        }
+      });
+      return (hi - lo).toFixed(0);
+    });
+    profiles.add(widths.join(','));
+    t.dispose();
+  }
+  assert.equal(profiles.size, CROWNS.length, `crown silhouettes: ${[...profiles].join(' | ')}`);
 });
