@@ -162,7 +162,8 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function enginePort(): number {
+/** The engine's API port (PALIMPSEST_PORT, default 4770): denied to every sandboxed child. */
+export function enginePort(): number {
   const raw = process.env.PALIMPSEST_PORT;
   const n = Number(raw);
   return raw && /^\d+$/.test(raw) && n >= 1 && n <= 65535 ? n : 4770;

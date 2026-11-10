@@ -41,7 +41,14 @@ export interface ProfileInput {
 export interface CliProfileInput extends ProfileInput {
   claudeBin: string;
   nodeBin: string;
-  brokerPort: number;
+  /** This run's broker port; null for a bid or review call, which has no broker (Task 9). */
+  brokerPort: number | null;
+  /**
+   * The one directory the CLI may write besides tmp and the runtime paths.
+   * Default `<runRoot>/repo`; a plan or review call's scratch root uses
+   * `<runRoot>/work` (Task 9).
+   */
+  workDir?: string;
 }
 
 /** The Ollama port: only the engine talks to it. */
@@ -228,7 +235,8 @@ function ancestors(p: string): string[] {
 }
 
 function ports(o: ProfileInput, runIdHint?: string): number[] {
-  const own = new Set<number>([o.proxyPort, ...('brokerPort' in o ? [(o as CliProfileInput).brokerPort] : [])]);
+  const broker = 'brokerPort' in o ? (o as CliProfileInput).brokerPort : null;
+  const own = new Set<number>([o.proxyPort, ...(broker === null || broker === undefined ? [] : [broker])]);
   const others = o.otherPorts ?? liveRunPorts(runIdHint);
   return [...new Set(others)].filter((p) => !own.has(p)).sort((a, b) => a - b);
 }
@@ -367,6 +375,8 @@ export function cliProfile(o: CliProfileInput): string {
   const runtime = claudeRuntimePaths(r.home);
   const claudeJson = join(r.home, '.claude.json');
   const claudeDir = join(r.home, '.claude');
+  const work = realish(o.workDir ?? join(o.runRoot, 'repo'));
+  const isRepo = work === join(r.runRoot, 'repo');
   const lines = header('cli', r);
 
   lines.push('; exec: only the claude binary, security (his login) and node (the hook and the broker client)');
@@ -378,12 +388,13 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push('; the claude install, his claude login state and the runtime paths');
   lines.push(`(allow file-read* ${sub(dirname(claudeBin))} ${lit(o.claudeBin)} ${sub(dirname(nodeBin))} ${rx('^' + reEscape(claudeJson) + '[^/]*$')} ${runtime.map(sub).join(' ')})`);
   lines.push(`(allow file-read-metadata ${lit(claudeDir)})`);
+  if (!isRepo) lines.push(`(allow file-read* ${sub(work)})`);
   lines.push('');
 
-  lines.push('; writes: the repo, tmp and the runtime paths (never ~/.claude.json)');
-  lines.push(`(allow file-write* ${sub(join(r.runRoot, 'repo'))} ${sub(join(r.runRoot, 'tmp'))} ${runtime.map(sub).join(' ')})`);
+  lines.push(`; writes: the ${isRepo ? 'repo' : 'work dir'}, tmp and the runtime paths (never ~/.claude.json)`);
+  lines.push(`(allow file-write* ${sub(work)} ${sub(join(r.runRoot, 'tmp'))} ${runtime.map(sub).join(' ')})`);
   lines.push(...devWrites());
-  lines.push(cloneGitDenies(r, ['repo']));
+  lines.push(isRepo ? cloneGitDenies(r, ['repo']) : `(deny file-write* ${lit(work)} ${sub(join(work, '.git'))})`);
   lines.push(`(deny file-write* ${sub(join(r.runRoot, 'ctl'))})`);
   lines.push('; his claude settings, memory, skills, plugins, agents, commands, hooks and transcripts');
   lines.push(`(deny file-write* ${rx('^' + reEscape(claudeDir) + '/settings[^/]*\\.json$')} ${rx('^' + reEscape(claudeJson) + '[^/]*$')} ${CLAUDE_WRITE_DENIED.map((n) => sub(join(claudeDir, n))).join(' ')})`);
@@ -396,8 +407,9 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push(`(allow mach-lookup ${[...TOOL_MACH, ...KEYCHAIN_MACH].map((n) => `(global-name ${q(n)})`).join(' ')})`);
   lines.push('');
 
-  lines.push("; network: only this run's proxy and broker");
-  lines.push(`(allow network-outbound (remote ip "localhost:${o.proxyPort}") (remote ip "localhost:${o.brokerPort}"))`);
+  lines.push(o.brokerPort === null ? "; network: only this call's proxy" : "; network: only this run's proxy and broker");
+  const outbound = [o.proxyPort, ...(o.brokerPort === null ? [] : [o.brokerPort])];
+  lines.push(`(allow network-outbound ${outbound.map((p) => `(remote ip "localhost:${p}")`).join(' ')})`);
   lines.push('');
   return lines.join('\n');
 }

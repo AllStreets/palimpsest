@@ -142,7 +142,8 @@ test('providerFor routes by prefix and setProvider overrides', () => {
   const claude: Provider = { ...fakeProvider(), kind: 'claude' };
   const ollama: Provider = { ...fakeProvider(), kind: 'ollama' };
   const anthropic: Provider = { ...fakeProvider(), kind: 'anthropic' };
-  assert.throws(() => providerFor('claude:sonnet'), /no provider/);
+  assert.equal(providerFor('claude:sonnet').kind, 'claude', 'the claude -p backend is registered (Task 9)');
+  assert.notEqual(providerFor('claude:sonnet'), claude);
   setProvider('claude', claude);
   setProvider('ollama', ollama);
   setProvider('anthropic', anthropic);
@@ -155,5 +156,6 @@ test('providerFor routes by prefix and setProvider overrides', () => {
   setProvider('claude', fake);
   assert.equal(providerFor('claude:opus'), fake);
   resetProviders();
-  assert.throws(() => providerFor('claude:opus'), /no provider/);
+  assert.notEqual(providerFor('claude:opus'), fake);
+  assert.equal(providerFor('claude:opus').kind, 'claude');
 });
