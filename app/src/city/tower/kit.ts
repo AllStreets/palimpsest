@@ -68,6 +68,10 @@ export interface TowerMaterials extends Record<EraMatKey, THREE.Material> {
   primer: THREE.Material;
   /** Glass with nothing lit behind it: every pane of a dark tower. */
   darkGlass: THREE.Material;
+  /** Coated optical glass: the polished disc of a lens tower's crown, holding the dusk sky. */
+  lens: THREE.Material;
+  /** Hot-dip galvanised steel, a pale satin grey: the cantilever brackets and girders, and the needle's mast. */
+  galvanised: THREE.Material;
   /** The unlit stand-in for every emitter (vents, beacons, stained glass) on a dark tower. */
   unlit: THREE.Material;
   /** Warm amber light vents and lit slots set into sci-fi faces (the ziggurat's terraces, the deco crown), a real emitter. */
@@ -574,4 +578,41 @@ export function paneGeometry(): THREE.BufferGeometry {
 
 export function unitBox(): THREE.BufferGeometry {
   return new THREE.BoxGeometry(1, 1, 1);
+}
+
+/**
+ * A tapered steel cantilever bracket, the kind that carries a floor stepped
+ * out past the one below it: a plate web, full depth `depth` at the wall and
+ * narrowing to a 0.3 m nose at the tip `reach` metres out, with a flat top
+ * flange under the slab, a raking bottom flange that takes the thrust back
+ * into the wall, and a bolted base plate. Frame: x out from the wall face
+ * (the wall at x = 0), y up with the soffit at y = 0, z across the web.
+ */
+export function bracketGeometry(reach: number, depth: number): THREE.BufferGeometry {
+  const nose = 0.3;
+  const web = new THREE.ExtrudeGeometry(
+    new THREE.Shape([new THREE.Vector2(0, 0), new THREE.Vector2(reach, 0), new THREE.Vector2(reach, -nose), new THREE.Vector2(0, -depth)]),
+    { depth: 0.24, bevelEnabled: false },
+  );
+  web.translate(0, 0, -0.12);
+  const top = new THREE.BoxGeometry(reach, 0.1, 0.6);
+  top.translate(reach / 2, -0.05, 0);
+  // The raking flange runs along the web's lower edge, from the foot at the wall to the nose.
+  const rake = Math.hypot(reach, depth - nose);
+  const bottom = new THREE.BoxGeometry(rake, 0.12, 0.6);
+  bottom.rotateZ(Math.atan2(depth - nose, reach));
+  bottom.translate(reach / 2, -(depth + nose) / 2 - 0.03, 0);
+  const plate = new THREE.BoxGeometry(0.08, depth + 0.3, 0.9);
+  plate.translate(0.03, -depth / 2 + 0.05, 0);
+  // A stiffener at the nose, closing the end.
+  const end = new THREE.BoxGeometry(0.1, nose, 0.6);
+  end.translate(reach - 0.04, -nose / 2, 0);
+  const parts = [web, top, bottom, plate, end].map((g) => {
+    const n = g.index ? g.toNonIndexed() : g;
+    for (const name of Object.keys(n.attributes)) if (name !== 'position' && name !== 'normal' && name !== 'uv') n.deleteAttribute(name);
+    return n;
+  });
+  const g = mergeGeometries(parts, false)!;
+  g.computeVertexNormals();
+  return g;
 }

@@ -23,7 +23,8 @@ import type { Browser, Page } from 'playwright';
 
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import { layoutTower } from '../shared/tower-layout.js';
-import type { District, Era, Repo, TowerSpec } from '../shared/types.js';
+import type { District, Era, Quarter, Repo, TowerSpec } from '../shared/types.js';
+import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -286,6 +287,67 @@ async function earnedChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'tower-earned-inspector.png') });
   await page.keyboard.press('Escape');
   check((await debug(page, (x) => x.notice())) === '', 'no notice shows when the kits load and the frame rate holds');
+}
+
+// ---------------------------------------------------------------- silhouettes (Task 23)
+
+/**
+ * One agent tower of each silhouette from the sample economy, grown to
+ * twenty floors and stood in a row off the city (tools/agent-board.ts):
+ * silhouettes.png against the dusk sky, then crops of the lens crown, the
+ * cantilever's brackets and the needle's spire. Runs after earnedChecks,
+ * with the economy seeded.
+ */
+async function silhouetteChecks(page: Page): Promise<void> {
+  const quarters = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const towers = boardTowers(quarters);
+  check(
+    BOARD_ORDER.every((s) => towers.some((t) => t.silhouette === s)),
+    `the economy has an agent of each silhouette (${towers.map((t) => `${t.agentId}: ${t.silhouette}`).join(', ')})`,
+  );
+  const fr = boardFrame(await cityOf(page), towers.length);
+  await page.evaluate(
+    ([t, s]) => (window as unknown as { __palimpsest: { agentBoard(t: unknown, s: unknown): Promise<void> } }).__palimpsest.agentBoard(t, s),
+    [towers, fr.spots] as const,
+  );
+  await page.waitForTimeout(1500);
+  const tops = towers.map((t) => layoutTower(t).top);
+  const shots = new Map<string, string>([
+    ['silhouettes', 'silhouettes.png'],
+    ['silhouettes-crown', 'silhouettes-crown.png'],
+    ['silhouettes-brackets', 'silhouettes-brackets.png'],
+    ['silhouettes-spire', 'silhouettes-spire.png'],
+  ]);
+  for (const [name, eye, target] of boardViews(fr, towers, tops)) {
+    const file = shots.get(name);
+    if (!file) continue;
+    await setView(page, eye, target);
+    if (name === 'silhouettes') {
+      await debug(page, (x) => x.precompile());
+      await page.waitForTimeout(1200);
+      const stats = await debug(page, (x) => x.stats());
+      const fps = (await page.evaluate(`new Promise((resolve) => {
+        let frames = 0;
+        const t0 = performance.now();
+        function tick() {
+          frames++;
+          if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
+          else resolve((frames * 1000) / (performance.now() - t0));
+        }
+        requestAnimationFrame(tick);
+      })`)) as number;
+      console.log(`info  silhouette board: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+      // The whole row is in frame, the needle's spire included.
+      const spire = towers.findIndex((t) => t.silhouette === 'needle');
+      const at = (await page.evaluate(
+        ([p]) => (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest.project(p),
+        [[fr.spots[spire].x, tops[spire] + 12, fr.spots[spire].z]] as [number[]],
+      )) as number[];
+      check(Math.abs(at[0]) < 1 && Math.abs(at[1]) < 1, `the needle's spire is in frame (${at.map((v) => v.toFixed(2)).join(', ')})`);
+    }
+    await page.screenshot({ path: join(SHOTS, file) });
+  }
+  check((await debug(page, (x) => x.quality())) === 'high', 'the silhouette board holds high quality');
 }
 
 // ---------------------------------------------------------------- inspector
@@ -1134,6 +1196,7 @@ async function main(): Promise<void> {
       await viewGrowsChecks(page);
       await reconnectChecks(page, restart);
       await earnedChecks(page);
+      await silhouetteChecks(page);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);

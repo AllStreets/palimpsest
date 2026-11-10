@@ -30,7 +30,8 @@
  * CAPTURE_CITY=small leaves one 8 floor tower (for the view's framing
  * rounds; use with CAPTURE_OUT). CAPTURE_ECONOMY=1 seeds the sample economy
  * (engine/market/sample-economy.ts) on top, so towers carry earned, waiting
- * and scar floors; the `earned` shot frames them.
+ * and scar floors; the `earned` shot frames them, and the `silhouettes` shot
+ * stands one agent tower of each silhouette off the city (tools/agent-board.ts).
  *
  * Re-run it whenever the city changes, and add a shot here for each new
  * thing worth showing.
@@ -47,7 +48,8 @@ import type { Page } from 'playwright';
 import { FAMILIES, VARIANTS } from '../app/src/city/tower/variants.js';
 import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
-import type { District } from '../shared/types.js';
+import type { District, Quarter } from '../shared/types.js';
+import { boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
 import { decodePng, labOf } from './png.js';
 import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sample.js';
@@ -422,6 +424,22 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         await page.keyboard.press('Escape');
         await page.waitForTimeout(800);
       }
+    },
+
+    async silhouettes(page) {
+      // Each agent silhouette (CAPTURE_ECONOMY=1): the economy's agents grown to twenty floors and stood in a row
+      // west of the city (tools/agent-board.ts), against the dusk sky, from the home bearing, and close.
+      await chrome(page, false);
+      const quarters = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+      const towers = boardTowers(quarters);
+      const fr = boardFrame(city, towers.length);
+      await page.evaluate(
+        ([t, s]) => (window as unknown as { __palimpsest: { agentBoard(t: unknown, s: unknown): Promise<void> } }).__palimpsest.agentBoard(t, s),
+        [towers, fr.spots] as const,
+      );
+      await page.waitForTimeout(2500);
+      const tops = towers.map((t) => layoutTower(t).top);
+      for (const [name, eye, target] of boardViews(fr, towers, tops)) await still(page, name, eye, target);
     },
 
     async hero(page) {

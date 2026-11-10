@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import './ui/style.css';
 import './ui/screens.css';
 
-import type { District, Repo } from '../../shared/types';
+import type { District, Repo, TowerSpec } from '../../shared/types';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
@@ -65,6 +65,12 @@ interface DebugHandle {
    * returns where each one's sunlit and shaded face sit on screen.
    */
   swatchBoard(): Promise<SwatchPoint[]>;
+  /**
+   * Stands agent towers at the spots given, each in its firm's look, the
+   * ground under them cleared like a plot (captures and the UI test, until
+   * Task 24 stands quarters in the city; reload to clear).
+   */
+  agentBoard(towers: TowerSpec[], spots: Array<{ x: number; z: number }>): Promise<void>;
   /** Stands the ambient tone board in the city's light and returns where to read each tone (captures only; reload to clear). */
   ambientBoard(): Promise<AmbientSwatchPoint[]>;
 }
@@ -209,6 +215,16 @@ async function main(): Promise<void> {
       await texturesSettled();
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       return board.points(innerWidth, innerHeight);
+    },
+    async agentBoard(towers, spots) {
+      const pieces = towers.map((t, i) => {
+        const piece = towerCenterpiece({ repo: t.id, index: i, origin: spots[i], tower: t }, quality, lookFor(t.firmId ?? t.id), { firmSlots });
+        piece.object.position.set(spots[i].x, 0, spots[i].z);
+        return piece.object;
+      });
+      city.board(pieces, spots);
+      await city.precompile();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
     async swatchBoard() {
       const board = swatchBoard(city.scene, city.camera, (e, t) => city.view(e, t));

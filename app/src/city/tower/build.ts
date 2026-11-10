@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 
 import { layoutTower } from '../../../../shared/tower-layout.js';
-import type { TowerSpec } from '../../../../shared/types.js';
+import { crownFor, floorTransform } from '../../../../shared/silhouette.js';
+import type { Silhouette, TowerSpec } from '../../../../shared/types.js';
 import { crownSlots } from '../kits.js';
+import { makeLensCrown, makeSpire } from './crowns.js';
 import { addDatum, type DatumPlan } from './datum.js';
 import { bareEdge, crownFloors, earnedLine, ERA_BUILDERS, firmMark, firmMarkColor, type FloorShape, scarFloor, TITANIUM_TWIST } from './eras.js';
-import { Kit, M, type MatKey, rng, type TowerMaterials } from './kit.js';
+import { bracketGeometry, Kit, M, type MatKey, rng, type TowerMaterials } from './kit.js';
 import { ROOT_BUILDERS, ROOT_TOP_HALF } from './roots.js';
 import { type Look, lookFor } from './variants.js';
 
@@ -26,6 +28,9 @@ export const AGENT_FLOOR_WIDTH = 16;
  * agent works in: a repo's earned floors change era floor by floor.
  */
 export const EARNED_LEDGE = 2.4;
+/** The cantilever bracket as modelled (kit.ts bracketGeometry): its reach and its depth at the wall, in metres. */
+const BRACKET_REACH = 3;
+const BRACKET_DEPTH = 2.6;
 
 export interface BuildOptions {
   /** The first floor's width; an agent tower's default is AGENT_FLOOR_WIDTH, a repo's FLOOR_WIDTH. */
@@ -62,8 +67,10 @@ export interface BuiltTower {
   pickables: Map<THREE.Object3D, string>;
   /** The root's own pick proxy (not a floor). */
   rootPick: THREE.Object3D;
-  /** Equals layoutTower(spec).top. */
+  /** Equals layoutTower(spec).top: the roof of the top floor, under any crown or spire. */
   top: number;
+  /** What stands on an agent tower's roof by its silhouette (crownFor), or nothing. */
+  crown: { kind: 'lens' | 'spire' | 'none'; rings: number; height: number };
   dispose(): void;
 }
 
@@ -139,13 +146,18 @@ export function buildTower(
    */
   const sameRun = (a: number, b: number): boolean =>
     a >= 0 && b <= last && layout.floors[a].floor.era === layout.floors[b].floor.era && !(b === spec.datumIndex && earnedAt(b));
+  // An agent's tower is shaped above its datum by how the agent works; a repo's own tower never is.
+  const silhouette: Silhouette = spec.kind === 'agent' ? (spec.silhouette ?? 'plain') : 'plain';
+  const earnedCount = layout.floors.filter((_, i) => earnedAt(i)).length;
+  const roofCrown = earnedCount > 0 ? crownFor(silhouette, earnedCount) : { kind: 'none' as const, rings: 0, height: 0 };
   // The sci-fi run at the top carries its family's crown over its last few floors, founding or earned, starting
   // above the datum line if the band falls inside them, so the band never cuts a crown in two, and above any
   // scar, which stays primer. A tower topped in another era ends in that era's own roof. Without the Blender
   // kits the family builds its own top floor.
   let crownStart = Infinity;
   const family = look.scifi.family ?? 'cluster';
-  if (last >= 0 && layout.floors[last].floor.era === 'scifi' && stateAt(last) !== 'scar' && crownSlots(family).length > 0) {
+  // A lens or a spire is the tower's crown: the family's own crown is left off under it.
+  if (roofCrown.kind === 'none' && last >= 0 && layout.floors[last].floor.era === 'scifi' && stateAt(last) !== 'scar' && crownSlots(family).length > 0) {
     let start = last;
     while (start > 0 && sameRun(start - 1, start) && stateAt(start - 1) !== 'scar') start--;
     let n = crownFloors(last - start + 1);
@@ -159,6 +171,11 @@ export function buildTower(
   while (topRun > 0 && sameRun(topRun - 1, topRun)) topRun--;
   /** Earned floors taper by whole runs: each run holds one width, the next starts as narrow as the floors laid. */
   let pendingTaper = 0;
+  /** The width of the first earned floor, which every silhouette measures from. */
+  let earnedBase = 0;
+  /** The floor below, as built: its plan centre, half-width and height, for the brackets under an overhang. */
+  let below: { cx: number; half: number; h: number } | null = null;
+  let topPlan = { cx: 0, cz: 0, half: width / 2, ry: 0 };
   layout.floors.forEach(({ floor, y0, h }, i) => {
     kit.tint = yearDrift(spec.repo, floor.era, yearOf(floor.at), firstYear);
     const earned = earnedAt(i);
@@ -172,19 +189,25 @@ export function buildTower(
       width *= TAPER ** pendingTaper;
       pendingTaper = 0;
     }
-    const ry = floor.era === 'titanium' ? inRun * TITANIUM_TWIST : 0;
-    kit.base = M(0, y0, 0, ry);
+    if (earned && i === spec.datumIndex) earnedBase = width;
+    // The silhouette moves each earned floor: a lens turns it, a cantilever steps it out, a needle narrows it.
+    const t = earned ? floorTransform(silhouette, i - spec.datumIndex, earnedBase) : floorTransform('plain', 0, width);
+    const w = silhouette === 'needle' && earned ? t.width : width;
+    const ry = (floor.era === 'titanium' ? inRun * TITANIUM_TWIST : 0) + t.rotY;
+    const ox = t.offsetX;
+    const oz = t.offsetZ;
+    kit.base = M(ox, y0, oz, ry);
     const inCrown = i >= crownStart;
     let shape: FloorShape;
     if (state === 'scar') {
-      shape = scarFloor(kit, width, h, rng(floor.id));
+      shape = scarFloor(kit, w, h, rng(floor.id));
     } else {
       // A crown is asleep while the floor at the top of it waits on his review.
       const asleep = state === 'waiting' || (inCrown && stateAt(last) === 'waiting');
       if (asleep) kit.remap = { ...towerRemap, ...ASLEEP, ...(dark ? DARK : {}) };
       // The amber belongs to Claude-co-authored history: an earned floor shows its firm's mark instead.
       const built = earned ? { ...floor, claude: false } : floor;
-      shape = ERA_BUILDERS[floor.era](kit, width, h, built, {
+      shape = ERA_BUILDERS[floor.era](kit, w, h, built, {
         index: i,
         inRun,
         runStart,
@@ -205,7 +228,28 @@ export function buildTower(
         if (floor.earned) firmMark(kit, shape.edge, firmMarkColor(floor.earned.firmId, opts.firmSlots));
       }
     }
-    pickables.set(proxy(shape.cx, y0 + h / 2, shape.cz, shape.half * 2, h, ry), floor.id);
+    pickables.set(proxy(shape.cx + ox, y0 + h / 2, shape.cz + oz, shape.half * 2, h, ry), floor.id);
+    // Wherever an earned floor overhangs the one below (a cantilever's step, and the floor back over the axis
+    // above it), a pair of tapered steel brackets carries it from the face of the floor below.
+    if (earned && below && silhouette === 'cantilever') {
+      kit.base = new THREE.Matrix4();
+      kit.tint = new THREE.Color(1, 1, 1);
+      const half = w / 2;
+      for (const side of [1, -1]) {
+        const face = below.cx + side * below.half;
+        const reach = side * (ox + side * half - face);
+        if (reach < 0.5) continue;
+        // One bracket shape, stretched to the reach and to the depth the floor below allows.
+        const depth = Math.min(BRACKET_DEPTH, below.h * 0.62);
+        for (const z of [-half * 0.52, half * 0.52]) {
+          kit.inst('bracket', 'galvanised', () => bracketGeometry(BRACKET_REACH, BRACKET_DEPTH), M(face, y0, z, side > 0 ? 0 : Math.PI, reach / BRACKET_REACH, depth / BRACKET_DEPTH, 1));
+        }
+        // The edge girder the brackets' noses carry, under the slab along the overhang's outer edge.
+        kit.box('galvanised', 0.36, 0.5, w + 0.2, M(face + side * (reach - 0.2), y0 - 0.25, 0));
+      }
+    }
+    below = { cx: ox, half: w / 2, h };
+    topPlan = { cx: shape.cx + ox, cz: shape.cz + oz, half: shape.edge.half, ry };
     if (i === spec.datumIndex - 1) {
       datumPlan = { cx: shape.cx, cz: shape.cz, half: shape.datumHalf, ry, round: shape.round, ledge: last > i };
     }
@@ -216,6 +260,13 @@ export function buildTower(
   kit.base = new THREE.Matrix4();
   kit.tint = new THREE.Color(1, 1, 1);
   addDatum(kit, layout.datumY, datumPlan);
+  if (roofCrown.kind !== 'none') {
+    // On the top floor's roof, turned with it, so a lens tower's crown follows its twist.
+    kit.base = M(topPlan.cx, layout.top, topPlan.cz, topPlan.ry);
+    if (roofCrown.kind === 'lens') makeLensCrown(kit, roofCrown.rings, quality, topPlan.half, roofCrown.height, topPlan.ry);
+    else makeSpire(kit, roofCrown.height, topPlan.half);
+    kit.base = new THREE.Matrix4();
+  }
 
   const group = kit.build();
   group.add(proxies);
@@ -225,6 +276,7 @@ export function buildTower(
     pickables,
     rootPick,
     top: layout.top,
+    crown: roofCrown,
     dispose() {
       group.traverse((o) => {
         const m = o as THREE.Mesh;

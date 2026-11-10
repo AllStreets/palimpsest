@@ -89,6 +89,12 @@ export interface City {
   stats(): { calls: number; triangles: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
   plots(): { plazas: number; buildings: number };
+  /**
+   * Stands objects at spots in the city outside the plots, each spot paved
+   * and cleared of ambient blocks like a district (captures and the UI test:
+   * the agent silhouette board until quarters stand in the city).
+   */
+  board(objects: THREE.Object3D[], spots: Array<{ x: number; z: number }>): { dispose(): void };
   /** Draws ambient lots on their own, outside the city (the ambient swatch board). */
   ambientBoard(lots: Lot[]): { group: THREE.Group; dispose(): void };
   /** The quality the city draws at now: Settings' choice, or medium after the automatic drop. */
@@ -224,9 +230,13 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   applyLimits();
   const toV = (v: number[]): THREE.Vector3 => new THREE.Vector3(v[0], v[1], v[2]);
 
+  /** Spots the board stands on, cleared like plots. */
+  let boardSpots: Array<{ x: number; z: number }> = [];
+  let lastOcc: Occupancy = { districts: [], sites: [] };
   function updatePlazas(occ: Occupancy): void {
-    // Only occupied plots are paved and cleared: a district, or a site under scaffold.
-    const plazas = plazasOf(occ, opts.districtTones);
+    lastOcc = occ;
+    // Only occupied plots are paved and cleared: a district, or a site under scaffold (and the board's spots).
+    const plazas = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z }))];
     grid.setPlazas(plazas);
     ground.setPlazas(plazas);
     // Towers, scaffolds and the skyline around them may all have changed.
@@ -590,6 +600,21 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     stats: () => ({ ...lastFrame }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     ambientBoard: (lots) => grid.board(lots),
+    board(objects, spots) {
+      const group = new THREE.Group();
+      group.name = 'board';
+      group.add(...objects);
+      scene.add(group);
+      boardSpots = spots;
+      updatePlazas(lastOcc);
+      return {
+        dispose() {
+          scene.remove(group);
+          boardSpots = [];
+          updatePlazas(lastOcc);
+        },
+      };
+    },
     quality: () => quality,
     dropQuality,
     onQualityDrop(fn) {

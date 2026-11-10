@@ -683,6 +683,22 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     primer: new THREE.MeshStandardMaterial({ color: 0x5c2c22, roughness: 0.9, metalness: 0, vertexColors: true, envMapIntensity: 0.5 }),
     // Black glazing with nothing lit behind it: it holds only the sky.
     darkGlass: new THREE.MeshStandardMaterial({ color: 0x050607, roughness: 0.06, metalness: 0, envMapIntensity: 1.1 }),
+    // Optical glass under a thin anti-reflection coat: a dark body that mirrors the sky, with the faint green to
+    // magenta shift a coated objective shows as the angle changes, so the disc reads as an instrument's lens.
+    lens: new THREE.MeshPhysicalMaterial({
+      color: 0x0b1014,
+      roughness: 0.03,
+      metalness: 0,
+      clearcoat: 1,
+      clearcoatRoughness: 0.02,
+      envMapIntensity: 2.4,
+      iridescence: 0.55,
+      iridescenceIOR: 1.38,
+      iridescenceThicknessRange: [180, 420],
+    }),
+    // Galvanised structural steel: zinc-grey, satin, a little spangle in the roughness, so a bracket or a mast takes
+    // the low sun along its edges and reads as load-bearing steel, not a black cut-out.
+    galvanised: new THREE.MeshStandardMaterial({ color: 0x8c9095, roughness: 0.42, metalness: 0.85, roughnessMap: texture('metal_arm.jpg'), envMapIntensity: 1.3 }),
     // What a vent, a beacon or a stained window is with the power off: dark, matte.
     unlit: new THREE.MeshStandardMaterial({ color: 0x1c1d20, roughness: 0.7, metalness: 0.2 }),
     // Warm tungsten (about 2700 K) behind a louvre: a vent reads as fire-lit from across the city, never as neon.

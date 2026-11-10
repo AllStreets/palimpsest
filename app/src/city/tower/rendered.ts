@@ -648,5 +648,7 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
  * draws (the earned and hand lines, the firm mark, primer, dark glass, unlit): no measured value can move with it. A full
  * re-measure, run and reviewed for that task, changes six titanium and stone picks across the pinned towers
  * (the stone and brick entries predate the coursed Face slot), so it stays with the Phase 5 re-measure.
+ * Restamped again, also without a re-measure, for Task 23, whose change to look.ts only adds the lens glass and the
+ * galvanised steel of agent crowns and brackets: the swatch board builds repo towers, which never take a silhouette.
  */
-export const RENDERED_INPUTS = '9d18bf37ed511096';
+export const RENDERED_INPUTS = 'cbcb8a6825862a74';
