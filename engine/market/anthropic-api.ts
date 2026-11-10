@@ -19,9 +19,9 @@
  * lease and releases it in `finally`. The backend charges each call itself
  * (`chargesItself`), so the runner must not charge an API run's usage again.
  */
-import { statSync } from 'node:fs';
-import { homedir, userInfo } from 'node:os';
-import { isAbsolute } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { homedir, tmpdir, userInfo } from 'node:os';
+import { isAbsolute, sep } from 'node:path';
 
 import { apiCredits, modelFamily, type ModelFamily } from '../../shared/credits.js';
 import type { ModelRef } from '../../shared/types.js';
@@ -88,22 +88,42 @@ export interface KeychainOptions {
   keychain?: string;
 }
 
+/** True under `node --test`: the key functions then touch only a named keychain inside the temp dir. */
+function inTestRun(): boolean {
+  return !!process.env.NODE_TEST_CONTEXT;
+}
+
 /**
  * The keychain file named by `o`, checked to exist: `security` silently
  * falls back to the default (login) keychain when a named one is missing.
+ * Null means his login keychain, which is never allowed under tests: there
+ * a keychain must be named and its real path must lie inside the temp dir.
  */
 function keychainOf(o: KeychainOptions): string | null {
-  if (o.keychain === undefined) return null;
+  if (o.keychain === undefined) {
+    if (inTestRun()) throw new Error('Under tests the API key functions need a keychain inside the temp dir.');
+    return null;
+  }
   const k = o.keychain;
   if (typeof k !== 'string' || !isAbsolute(k) || !/\.keychain(-db)?$/.test(k)) throw new Error('The keychain must be an absolute path to a .keychain-db file.');
+  let real: string;
+  try {
+    real = realpathSync(k);
+  } catch {
+    throw new Error('The keychain file does not exist.');
+  }
+  if (inTestRun()) {
+    const tmp = realpathSync(tmpdir());
+    if (!real.startsWith(tmp + sep)) throw new Error('Under tests the keychain must lie inside the temp dir.');
+  }
   let file = false;
   try {
-    file = statSync(k).isFile();
+    file = statSync(real).isFile();
   } catch {
     file = false;
   }
   if (!file) throw new Error('The keychain file does not exist.');
-  return k;
+  return real;
 }
 
 /** A word for a `security -i` command line: double-quoted, with backslashes and quotes escaped. */
@@ -117,8 +137,8 @@ function quoted(word: string): string {
  * its stdout and logs nothing); never from the environment.
  */
 export async function apiKey(o: KeychainOptions = {}): Promise<string | null> {
+  const kc = keychainOf(o);
   try {
-    const kc = keychainOf(o);
     const { stdout, code } = await getRunner()(SECURITY, ['find-generic-password', '-s', KEY_SERVICE, '-w', ...(kc ? [kc] : [])], { timeoutMs: 15_000 });
     if (code !== 0) return null;
     const key = stdout.trim();
@@ -137,7 +157,7 @@ export async function setApiKey(key: string, o: KeychainOptions = {}): Promise<v
   if (typeof key !== 'string' || !KEY_RE.test(key)) throw new Error('That is not an Anthropic API key.');
   const kc = keychainOf(o);
   const line = ['add-generic-password', '-U', '-a', quoted(KEY_ACCOUNT), '-s', quoted(KEY_SERVICE), '-w', quoted(key), ...(kc ? [quoted(kc)] : [])].join(' ') + '\n';
-  let ok = false;
+  let problem: string | null = null;
   try {
     const child = getSpawner()(SECURITY, ['-i'], {
       stdin: line,
@@ -148,18 +168,21 @@ export async function setApiKey(key: string, o: KeychainOptions = {}): Promise<v
     // Drained and dropped: nothing security prints is logged or returned.
     for await (const _ of child.lines) void _;
     const done = await child.done;
-    ok = done.code === 0 && !done.error && !done.timedOut;
-  } catch {
-    ok = false;
+    if (done.error) problem = `security could not start: ${done.error}`;
+    else if (done.timedOut) problem = 'security timed out';
+    else if (done.code !== 0) problem = `security exited ${done.code ?? done.signal}`;
+  } catch (err) {
+    // The cause is kept (a spawner's own error says what went wrong), with the key scrubbed out.
+    problem = scrub(err instanceof Error ? `${err.name}: ${err.message}` : String(err), key);
   }
-  if (!ok) throw new Error('The keychain did not store the key.');
+  if (problem) throw new Error(`The keychain did not store the key: ${problem}`);
   record('api.key.set', { service: KEY_SERVICE });
 }
 
 /** Removes the key. Records `api.key.removed`. */
 export async function removeApiKey(o: KeychainOptions = {}): Promise<void> {
+  const kc = keychainOf(o);
   try {
-    const kc = keychainOf(o);
     await getRunner()(SECURITY, ['delete-generic-password', '-a', KEY_ACCOUNT, '-s', KEY_SERVICE, ...(kc ? [kc] : [])], { timeoutMs: 15_000 });
   } catch {
     throw new Error('The keychain did not remove the key.');
@@ -305,6 +328,8 @@ async function readStream(res: Response, onChunk: (c: ChatChunk) => void): Promi
 export interface AnthropicOptions {
   /** The API base: the real one, or a loopback stand-in for tests. */
   baseUrl?: string;
+  /** The keychain holding the key: his login keychain by default; tests name one in the temp dir. */
+  keychain?: string;
 }
 
 export function anthropicProvider(o: AnthropicOptions = {}): Provider {
@@ -316,7 +341,7 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
     const s = getSettings().anthropicApi;
     if (!s.enabled) throw new Off('The Anthropic API backend is off.');
     if (!(typeof s.dailyUsd === 'number' && s.dailyUsd > 0)) throw new Off('The Anthropic API backend is off: no daily dollar limit is set.');
-    const key = await apiKey();
+    const key = await apiKey(o.keychain === undefined ? {} : { keychain: o.keychain });
     if (!key) throw new Off('The Anthropic API backend has no API key stored.');
     return key;
   }
