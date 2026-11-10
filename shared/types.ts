@@ -384,7 +384,7 @@ export interface Trip {
 
 export interface ProviderUsage {
   provider: 'claude' | 'ollama' | 'anthropic-api' | 'openai' | 'gemini' | 'mlx';
-  status: 'ready' | 'not-found' | 'off' | 'later';
+  status: 'ready' | 'not-found' | 'off' | 'later' | 'unknown';
   windows: Array<{ label: string; usedPct: number | null; resetsAt: number | null }>;
   tokens: { today: number; week: number } | null;
   spendUsd: { today: number; week: number } | null;

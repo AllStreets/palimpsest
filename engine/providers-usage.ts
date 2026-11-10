@@ -64,10 +64,19 @@ function mtime(path: string): number {
 
 type Json = Record<string, any>;
 
+/** A window's name from its length in minutes: 300 is "5 hours", 10080 is "week"; otherwise the position's default. */
+function labelFor(minutes: unknown, fallback: string): string {
+  if (typeof minutes !== 'number' || !(minutes > 0)) return fallback;
+  if (minutes === 10080) return 'week';
+  if (minutes % 1440 === 0) return `${minutes / 1440} days`;
+  if (minutes % 60 === 0) return `${minutes / 60} hours`;
+  return `${minutes} minutes`;
+}
+
 function windowOf(label: string, w: Json | undefined): ProviderUsage['windows'][number] | null {
   if (!w || typeof w !== 'object') return null;
   return {
-    label,
+    label: labelFor(w.window_minutes, label),
     usedPct: typeof w.used_percent === 'number' ? w.used_percent : null,
     resetsAt: typeof w.resets_at === 'number' ? w.resets_at : null,
   };
@@ -99,6 +108,7 @@ export function openaiUsage(now: number = Date.now()): ProviderUsage {
   let week = 0;
   let windows: ProviderUsage['windows'] = [];
   let windowsSeen = false;
+  let readAny = false;
   for (const f of files) {
     let text: string;
     try {
@@ -106,6 +116,7 @@ export function openaiUsage(now: number = Date.now()): ProviderUsage {
     } catch {
       continue;
     }
+    readAny = true;
     let prevTotal = 0;
     let last: Json | null = null;
     for (const raw of text.split('\n')) {
@@ -137,7 +148,7 @@ export function openaiUsage(now: number = Date.now()): ProviderUsage {
   }
   const detail =
     files.length === 0 ? 'No Codex sessions in the last 7 days' : windows.length ? 'Plan windows from the latest Codex session' : 'No plan windows in the latest Codex session';
-  return { ...base, windows, tokens: { today, week }, detail };
+  return { ...base, windows, tokens: readAny ? { today, week } : null, detail };
 }
 
 // ------------------------------------------------------------------ Gemini
@@ -151,6 +162,7 @@ export function geminiUsage(now: number = Date.now()): ProviderUsage {
   const midnight = localMidnight(now);
   let today = 0;
   let week = 0;
+  let readAny = false;
   const chats = walk(join(root, 'tmp'), (n) => n.endsWith('.json'), 3).filter((p) => /[\\/]chats[\\/][^\\/]+$/.test(p));
   for (const path of chats) {
     const fileAt = mtime(path);
@@ -161,6 +173,7 @@ export function geminiUsage(now: number = Date.now()): ProviderUsage {
     } catch {
       continue;
     }
+    readAny = true;
     const messages: Json[] = Array.isArray(doc?.messages) ? doc.messages : [];
     for (const m of messages) {
       const total = m?.tokens?.total;
@@ -171,7 +184,7 @@ export function geminiUsage(now: number = Date.now()): ProviderUsage {
       if (at >= midnight && at <= now) today += total;
     }
   }
-  return { ...base, tokens: { today, week }, detail: 'Token counts only; Gemini reports no plan percentages' };
+  return { ...base, tokens: readAny ? { today, week } : null, detail: 'Token counts only; Gemini reports no plan percentages' };
 }
 
 // ------------------------------------------------------------------ Ollama, Claude, API, MLX
@@ -186,19 +199,29 @@ function creditsSince(fromMs: number, pattern: string, column: 'amount' | 'usd')
   return row.c;
 }
 
-/** Whether Ollama answers at the configured host, its installed models, and the local credits spent. */
-export async function ollamaUsage(now: number = Date.now()): Promise<ProviderUsage> {
+/** Local credits spent today and this week on Ollama models. */
+function localCredits(now: number): { today: number; week: number } {
+  return { today: round(creditsSince(localMidnight(now), 'ollama:%', 'amount')), week: round(creditsSince(now - WEEK_MS, 'ollama:%', 'amount')) };
+}
+
+/** Whether Ollama answers at the configured host, its installed models, and the local credits spent. The two are separate: a database error never reads as "not reachable". */
+export async function ollamaUsage(now: number = Date.now(), credits: (now: number) => { today: number; week: number } = localCredits): Promise<ProviderUsage> {
   const base: ProviderUsage = { provider: 'ollama', status: 'not-found', windows: [], tokens: null, spendUsd: null, detail: '' };
+  let count: number;
   try {
     const res = await fetch(`${ollamaBase()}/api/tags`, { signal: AbortSignal.timeout(2000) });
     if (!res.ok) return { ...base, detail: `Ollama answered ${res.status}` };
     const body = (await res.json()) as { models?: Array<{ name?: string }> };
-    const count = (body.models ?? []).filter((m) => typeof m.name === 'string').length;
-    const today = round(creditsSince(localMidnight(now), 'ollama:%', 'amount'));
-    const week = round(creditsSince(now - WEEK_MS, 'ollama:%', 'amount'));
-    return { ...base, status: 'ready', detail: `${count} ${count === 1 ? 'model' : 'models'} installed; local credits ${today} today, ${week} this week` };
+    count = (body.models ?? []).filter((m) => typeof m.name === 'string').length;
   } catch {
     return { ...base, detail: 'Ollama is not reachable' };
+  }
+  const models = `${count} ${count === 1 ? 'model' : 'models'} installed`;
+  try {
+    const c = credits(now);
+    return { ...base, status: 'ready', detail: `${models}; local credits ${c.today} today, ${c.week} this week` };
+  } catch {
+    return { ...base, status: 'ready', detail: `${models}; local credits unknown` };
   }
 }
 
@@ -239,7 +262,26 @@ export function mlxUsage(): ProviderUsage {
   return { provider: 'mlx', status: 'later', windows: [], tokens: null, spendUsd: null, detail: 'arrives with the school' };
 }
 
-/** Every provider, in the fixed order Settings shows them. */
-export async function providerUsages(): Promise<ProviderUsage[]> {
-  return [claudeUsage(), anthropicApiUsage(), await ollamaUsage(), openaiUsage(), geminiUsage(), mlxUsage()];
+type Reader = () => ProviderUsage | Promise<ProviderUsage>;
+
+/** Every provider, in the fixed order Settings shows them. A reader that throws shows as unknown with a short reason; it never empties the list. */
+export async function providerUsages(overrides: Partial<Record<ProviderUsage['provider'], Reader>> = {}): Promise<ProviderUsage[]> {
+  const readers: Array<[ProviderUsage['provider'], Reader]> = [
+    ['claude', claudeUsage],
+    ['anthropic-api', anthropicApiUsage],
+    ['ollama', ollamaUsage],
+    ['openai', openaiUsage],
+    ['gemini', geminiUsage],
+    ['mlx', mlxUsage],
+  ];
+  const out: ProviderUsage[] = [];
+  for (const [provider, read] of readers) {
+    try {
+      out.push(await (overrides[provider] ?? read)());
+    } catch (e) {
+      const reason = (e instanceof Error ? e.message : String(e)).slice(0, 120);
+      out.push({ provider, status: 'unknown', windows: [], tokens: null, spendUsd: null, detail: `Could not read usage: ${reason}` });
+    }
+  }
+  return out;
 }

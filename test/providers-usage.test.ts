@@ -3,13 +3,14 @@
  * fixture; no real Codex, Gemini, Ollama or Claude config and no network is used.
  */
 import assert from 'node:assert/strict';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import fs, { chmodSync, cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 
-import { codexHome, geminiHome, geminiUsage, mlxUsage, ollamaUsage, openaiUsage, anthropicApiUsage, providerUsages } from '../engine/providers-usage.js';
+import { claudeUsage, codexHome, geminiHome, geminiUsage, mlxUsage, ollamaUsage, openaiUsage, anthropicApiUsage, providerUsages } from '../engine/providers-usage.js';
 import { patchSettings } from '../engine/settings.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_CODEX_HOME', 'PALIMPSEST_GEMINI_HOME', 'PALIMPSEST_CLAUDE_PROJECTS', 'PALIMPSEST_TEST_PROJECTS', 'PALIMPSEST_CLAUDE_SETTINGS'];
@@ -79,14 +80,85 @@ describe('provider usage', () => {
 
   test('codex auth.json is never opened', () => {
     const dir = codexFixture();
-    writeFileSync(join(dir, 'auth.json'), '{"secret":"x"}');
-    chmodSync(join(dir, 'auth.json'), 0o000);
+    writeFileSync(join(dir, 'auth.json'), '{"secret":"SURFACE-ME"}');
+    process.env.PALIMPSEST_CODEX_HOME = dir;
+    const opened: string[] = [];
+    for (const name of ['readFileSync', 'openSync', 'statSync', 'createReadStream'] as const) {
+      const orig = (fs as any)[name];
+      mock.method(fs as any, name, (...args: any[]) => {
+        opened.push(String(args[0]));
+        return orig.apply(fs, args);
+      });
+    }
+    syncBuiltinESMExports();
+    try {
+      const u = openaiUsage(NOW);
+      assert.equal(u.status, 'ready');
+      assert.ok(opened.length > 0, 'the spy sees reads');
+      assert.deepEqual(opened.filter((p) => p.includes('auth.json')), []);
+      assert.ok(!JSON.stringify(u).includes('SURFACE-ME'));
+    } finally {
+      mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+
+  test('codex labels come from window_minutes and no sessions means unknown tokens', () => {
+    const dir = join(tempDir, 'codex2');
+    mkdirSync(join(dir, 'sessions'), { recursive: true });
+    assert.equal(openaiUsage(NOW).status, 'not-found');
+    process.env.PALIMPSEST_CODEX_HOME = dir;
+    assert.equal(openaiUsage(NOW).tokens, null);
+    const f = join(dir, 'sessions', 'r.jsonl');
+    writeFileSync(f, JSON.stringify({ type: 'token_count', rate_limits: { primary: { used_percent: 1, window_minutes: 10080, resets_at: 5 }, secondary: { used_percent: 2, window_minutes: 300, resets_at: 6 } } }) + '\n');
+    utimesSync(f, new Date(NOW - 1000), new Date(NOW - 1000));
+    assert.deepEqual(openaiUsage(NOW).windows.map((w) => w.label), ['week', '5 hours']);
+  });
+
+  test('an unreadable codex session dir degrades without throwing', () => {
+    const dir = join(tempDir, 'codex3');
+    mkdirSync(join(dir, 'sessions'), { recursive: true });
+    chmodSync(join(dir, 'sessions'), 0o000);
     process.env.PALIMPSEST_CODEX_HOME = dir;
     try {
-      assert.equal(openaiUsage(NOW).status, 'ready');
+      const u = openaiUsage(NOW);
+      assert.equal(u.tokens, null);
     } finally {
-      chmodSync(join(dir, 'auth.json'), 0o600);
+      chmodSync(join(dir, 'sessions'), 0o700);
     }
+  });
+
+  test('corrupt gemini json and no chats are unknown, not zero', () => {
+    const dir = join(tempDir, 'gem2');
+    assert.equal((mkdirSync(join(dir, 'tmp', 'a', 'chats'), { recursive: true }), geminiUsage(NOW).status), 'not-found');
+    process.env.PALIMPSEST_GEMINI_HOME = dir;
+    assert.equal(geminiUsage(NOW).tokens, null);
+    const f = join(dir, 'tmp', 'a', 'chats', 'bad.json');
+    writeFileSync(f, '{ not json');
+    utimesSync(f, new Date(NOW - 1000), new Date(NOW - 1000));
+    const u = geminiUsage(NOW);
+    assert.equal(u.status, 'ready');
+    assert.equal(u.tokens, null);
+  });
+
+  test('a throwing reader shows that provider as unknown and keeps the list', async () => {
+    patchSettings({ ollamaHost: '127.0.0.1:1' });
+    const list = await providerUsages({ claude: () => { throw new Error('boom'); }, 'anthropic-api': () => { throw new Error('bang'); } });
+    assert.deepEqual(list.map((p) => p.provider), ['claude', 'anthropic-api', 'ollama', 'openai', 'gemini', 'mlx']);
+    assert.equal(list[0].status, 'unknown');
+    assert.match(list[0].detail, /boom/);
+    assert.equal(list[1].status, 'unknown');
+    assert.equal(list[2].status, 'not-found');
+    assert.equal(typeof claudeUsage, 'function');
+  });
+
+  test('an ollama database error is not reported as unreachable', async () => {
+    server = createServer((req, res) => res.end(JSON.stringify({ models: [] })));
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+    patchSettings({ ollamaHost: `127.0.0.1:${(server.address() as { port: number }).port}` });
+    const u = await ollamaUsage(NOW, () => { throw new Error('db down'); });
+    assert.equal(u.status, 'ready');
+    assert.match(u.detail, /credits unknown/);
   });
 
   test('gemini sums tokens and has no windows', () => {
