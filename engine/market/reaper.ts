@@ -12,7 +12,13 @@
  * - its working directory is under the run root and it has no controlling
  *   terminal (his own shell in a run dir has one, a tool child never does).
  *
- * Never matched: the engine and its ancestors, pids the run protects
+ * - it runs under this run's own sandbox profile (sandbox-check.ts), which
+ *   no process can drop: this catches a daemon that cleared its
+ *   environment, left the run root and exec-ed a system binary.
+ *
+ * Never matched: the engine and its ancestors, the engine's descendants
+ * that neither run under the run's sandbox nor carry its markers (its own
+ * git, whose HOME is not the agent's), pids the run protects
  * (protectPids: the claude CLI, Task 9) and their descendants, and the
  * process groups of commands of the run that are still live.
  *
@@ -23,6 +29,9 @@ import { execFile } from 'node:child_process';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
 
+import { mkdirSync } from 'node:fs';
+
+import { sandboxMembers } from './sandbox-check.js';
 import { realish } from './sandbox.js';
 
 interface Proc {
@@ -123,6 +132,22 @@ function ancestors(procs: Proc[]): Set<number> {
   return out;
 }
 
+/** The engine's descendants (its own git, ps, lsof, live commands). */
+function engineDescendants(procs: Proc[]): Set<number> {
+  const out = new Set<number>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const p of procs) {
+      if (!out.has(p.pid) && (p.ppid === process.pid || out.has(p.ppid)) && p.pid !== process.pid) {
+        out.add(p.pid);
+        grew = true;
+      }
+    }
+  }
+  return out;
+}
+
 /** Protected pids and all their descendants. */
 function protectedSet(procs: Proc[], root: string): Set<number> {
   const roots = protectedPids.get(root) ?? new Set<number>();
@@ -140,19 +165,30 @@ function protectedSet(procs: Proc[], root: string): Set<number> {
   return out;
 }
 
-/** The pids among `procs` that belong to the run rooted at `root` (resolved). */
-function belonging(procs: Proc[], files: Map<number, Files>, root: string, spare: Set<number>): number[] {
+/**
+ * The pids among `procs` that belong to the run rooted at `root` (resolved).
+ * `members` are the pids running under this run's own sandbox profile (null
+ * when the helper is unavailable). The engine's descendants are spared
+ * unless they run under the run's sandbox or carry its environment markers.
+ */
+function belonging(procs: Proc[], files: Map<number, Files>, root: string, spare: Set<number>, members: Set<number> | null, engine: Set<number>): number[] {
   const markers = [`HOME=${join(root, 'home')}`, `TMPDIR=${join(root, 'tmp')}/`];
   const live = liveGroups.get(root) ?? new Set<number>();
   const out: number[] = [];
   for (const p of procs) {
     if (spare.has(p.pid) || live.has(p.pgid)) continue;
+    const sandboxed = members?.has(p.pid) ?? false;
     const env = markers.some((m) => p.command.includes(` ${m}`) || p.command.startsWith(m));
+    if (engine.has(p.pid) && !sandboxed && !env) continue;
+    if (sandboxed || env) {
+      out.push(p.pid);
+      continue;
+    }
     const f = files.get(p.pid) ?? { cwd: null, txt: [] };
     const exeUnder = f.txt.some((x) => under(x, root));
     const cwdUnder = f.cwd !== null && under(f.cwd, root);
     const noTty = p.tty === '??' || p.tty === '-';
-    if (env || exeUnder || (cwdUnder && noTty)) out.push(p.pid);
+    if (exeUnder || (cwdUnder && noTty)) out.push(p.pid);
   }
   return out;
 }
@@ -162,8 +198,12 @@ async function scan(root: string, pids?: number[]): Promise<number[]> {
   const spare = new Set([...ancestors(all), ...protectedSet(all, root)]);
   const procs = pids ? all.filter((p) => pids.includes(p.pid)) : all;
   if (procs.length === 0) return [];
+  // sandbox_check needs both probe paths to exist; an agent may have removed tmp.
+  for (const d of ['tmp', 'ctl']) mkdirSync(join(root, d), { recursive: true });
+  const candidates = procs.filter((p) => !spare.has(p.pid)).map((p) => p.pid);
+  const members = await sandboxMembers(candidates, join(root, 'tmp'), join(root, 'ctl'));
   const files = await paths(pids ?? undefined);
-  return belonging(procs, files, root, spare);
+  return belonging(procs, files, root, spare, members, engineDescendants(all));
 }
 
 /** Signals each pid only after checking, just before, that it still belongs to the run. */

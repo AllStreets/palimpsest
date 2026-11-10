@@ -43,11 +43,15 @@ export function controlFiles(runId: string) {
   };
 }
 
-/** The environment of the engine's own git in a run root: nothing from the engine, an empty global config, no system config. */
-function engineGitEnv(runRoot: string): Record<string, string> {
+/**
+ * The environment of the engine's own git in a run root: nothing from the
+ * engine, an empty global config, no system config. HOME is not the agent's
+ * fake home, so the reaper's environment marker never names engine git.
+ */
+export function engineGitEnvFor(runRoot: string): Record<string, string> {
   return {
     PATH: SYSTEM_PATH.join(':'),
-    HOME: join(runRoot, 'home'),
+    HOME: join(runRoot, 'ctl', 'git-home'),
     LANG: 'en_US.UTF-8',
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: join(runRoot, 'ctl', 'gitconfig'),
@@ -64,7 +68,7 @@ function git(args: string[], cwd: string, runRoot: string, extraEnv: Record<stri
     execFile(
       'git',
       [...ENGINE_GIT_FLAGS, ...args],
-      { cwd, env: { ...engineGitEnv(runRoot), ...extraEnv }, timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_BUFFER, encoding: 'utf8' },
+      { cwd, env: { ...engineGitEnvFor(runRoot), ...extraEnv }, timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_BUFFER, encoding: 'utf8' },
       (err, stdout, stderr) => {
         if (err && typeof (err as NodeJS.ErrnoException).code === 'string') {
           reject(err);

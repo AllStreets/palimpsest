@@ -23,7 +23,7 @@ import {
   type Broker,
 } from '../engine/market/broker.js';
 import type { RunLogLine } from '../engine/market/provider.js';
-import { liveRunPorts } from '../engine/market/sandbox.js';
+import { liveRunPorts, wrap } from '../engine/market/sandbox.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_SANDBOX', 'PALIMPSEST_BROKER_TEST_SENTINEL'];
 let previousEnv: Record<string, string | undefined>;
@@ -402,6 +402,25 @@ describe('under the tool profile', () => {
   });
 });
 
+/** A sleep working in `cwd` whose parent has exited (as a daemon's would be), so it is no descendant of this process. */
+const orphans: number[] = [];
+function orphanIn(cwd: string): number {
+  const out = execFileSync('/bin/sh', ['-c', 'cd "$1" || exit 1; /bin/sleep 30 </dev/null >/dev/null 2>&1 & echo $!', 'sh', cwd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+  const pid = Number(out.trim());
+  orphans.push(pid);
+  return pid;
+}
+
+afterEach(() => {
+  for (const pid of orphans.splice(0)) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // already reaped
+    }
+  }
+});
+
 describe('the reaper', () => {
   const daemon = (name: string, clearEnv = false) =>
     `${clearEnv ? 'env -i ' : ''}perl -e 'use POSIX; exit if fork; POSIX::setsid(); exit if fork; sleep 3; open(F, ">>", "${name}"); print F "alive\\n"; close F'; echo started`;
@@ -425,8 +444,7 @@ describe('the reaper', () => {
     const kept = spawn('/bin/sleep', ['30'], { cwd: run.dir, stdio: 'ignore' }) as unknown as ChildProcessWithoutNullStreams;
     children.push(kept);
     protectPids(run.runRoot, [kept.pid as number]);
-    const inside = spawn('/bin/sleep', ['30'], { cwd: run.dir, stdio: 'ignore', detached: true }) as unknown as ChildProcessWithoutNullStreams;
-    children.push(inside);
+    const inside = { pid: orphanIn(run.dir) };
     await new Promise((res) => setTimeout(res, 200));
     const killed = await reapRun(run.runRoot);
     assert.ok(killed.includes(inside.pid as number), `inside sleep not reaped: ${killed}`);
@@ -440,8 +458,7 @@ describe('the reaper', () => {
 
   test('runQuiet reaps and then confirms nothing is left', async () => {
     const run = makeRun('run-quiet');
-    const inside = spawn('/bin/sleep', ['30'], { cwd: run.dir, stdio: 'ignore', detached: true }) as unknown as ChildProcessWithoutNullStreams;
-    children.push(inside);
+    const inside = { pid: orphanIn(run.dir) };
     await new Promise((res) => setTimeout(res, 200));
     await runQuiet(run.runRoot);
     await new Promise((res) => setTimeout(res, 100));
@@ -456,5 +473,56 @@ describe('the reaper', () => {
     const calls = Array.from({ length: 5 }, () => post(broker.port, '/run', { command: 'sleep 1', timeoutMs: 5000 }, { authorization: `Bearer ${token}` }));
     const statuses = (await Promise.all(calls)).map((c) => c.status).sort();
     assert.deepEqual(statuses, [200, 200, 200, 200, 429]);
+  });
+});
+
+describe('the reaper by sandbox membership', () => {
+  const skip = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || !existsSync('/usr/bin/cc') ? 'sandbox-exec or cc is missing' : false;
+
+  test('an env-cleared daemon that leaves for / and execs /bin/sh is killed and never writes', { skip }, async () => {
+    process.env.PALIMPSEST_SANDBOX = 'on';
+    const run = makeRun('run-esc2');
+    const target = join(run.dir, 'esc2.txt');
+    const inner = `use POSIX; exit if fork; POSIX::setsid(); exit if fork; chdir("/"); exec("/bin/sh", "-c", "sleep 3; echo alive >> ${target}")`;
+    const r = await execTool({ ...base(run, []), command: `env -i /usr/bin/perl -e '${inner}'; echo started`, timeoutMs: 20_000 });
+    assert.equal(r.code, 0, r.stderr);
+    await new Promise((res) => setTimeout(res, 4500));
+    assert.ok(!existsSync(target), 'the daemon outlived its command');
+  });
+
+  test("a sandboxed process of a different run root is never killed, and its own run's reap finds it", { skip }, async () => {
+    process.env.PALIMPSEST_SANDBOX = 'on';
+    const a = makeRun('run-member-a');
+    const b = makeRun('run-member-b');
+    const argv = wrap(['/bin/sleep', '30'], 'tool', { runRoot: b.runRoot, home: join(tempDir, 'home'), dataHome: join(tempDir, 'data'), enginePort: 9, proxyPort: 9, toolchains: [], otherPorts: [] });
+    // No markers, cwd outside both run roots: only its sandbox ties it to run b.
+    const child = spawn('/usr/bin/env', ['-i', ...argv], { cwd: '/', stdio: 'ignore', detached: true }) as unknown as ChildProcessWithoutNullStreams;
+    children.push(child);
+    await new Promise((res) => setTimeout(res, 300));
+    const killedA = await reapRun(a.runRoot);
+    assert.ok(!killedA.includes(child.pid as number));
+    assert.doesNotThrow(() => process.kill(child.pid as number, 0));
+    const killedB = await reapRun(b.runRoot);
+    assert.ok(killedB.includes(child.pid as number), `run b's reap missed it: ${killedB}`);
+  });
+});
+
+describe("the engine's own processes", () => {
+  test('the reaper spares an engine child working in the run dir, such as its git', async () => {
+    const run = makeRun('run-engine-git');
+    const git = spawn('/bin/sleep', ['30'], { cwd: run.dir, stdio: 'ignore', detached: true, env: { HOME: join(run.runRoot, 'ctl', 'git-home') } }) as unknown as ChildProcessWithoutNullStreams;
+    children.push(git);
+    await new Promise((res) => setTimeout(res, 200));
+    const killed = await reapRun(run.runRoot);
+    assert.ok(!killed.includes(git.pid as number));
+    assert.doesNotThrow(() => process.kill(git.pid as number, 0));
+  });
+
+  test("the engine's git does not carry the run's HOME marker", async () => {
+    const { engineGitEnvFor } = await import('../engine/market/worktree.js');
+    const run = makeRun('run-git-env');
+    const env = engineGitEnvFor(run.runRoot);
+    assert.notEqual(env.HOME, join(run.runRoot, 'home'));
+    assert.ok(!(env.TMPDIR ?? '').startsWith(join(run.runRoot, 'tmp')));
   });
 });
