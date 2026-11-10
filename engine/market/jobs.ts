@@ -14,12 +14,15 @@
  * undo it (settleJobEffects() waits for them).
  */
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 
 import { legalMove, MAX_ATTEMPTS, TIER_LABELS, TIER_VALUE, tierFromLabels } from '../../shared/market-rules.js';
 import type { Job, JobSource, JobStatus, Repo, Tier } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
-import { addLabel, commentIssue, type Issue, issueState, openIssues } from '../github.js';
+import { getRunner, realRunner } from '../exec.js';
+import { addLabel, commentIssue, ensureLabel, type Issue, issueState, openIssues } from '../github.js';
+import { home, isRealDataHome } from '../home.js';
 import { record } from '../ledger.js';
 
 /** The city signs what it writes with this; an issue whose body carries it is never a job. */
@@ -360,18 +363,70 @@ export function transition(j: Job, to: JobStatus, patch: Partial<Job> = {}, note
   return next;
 }
 
+/** The longest inspection summary a public comment carries. */
+export const SUMMARY_MAX = 600;
+
+/**
+ * Makes an inspection summary safe for a public issue: anything shaped like a
+ * token or key is redacted, any path under a home folder becomes `[path]`,
+ * and the text is cut to SUMMARY_MAX characters.
+ */
+export function publicSummary(text: string): string {
+  const home = homedir();
+  let s = text.split(home).join('~');
+  s = s
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g, '[redacted]')
+    .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}/g, '[redacted]')
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '[redacted]')
+    .replace(/\b(?:xox[abposr]-|glpat-)[A-Za-z0-9-]{10,}/g, '[redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?/g, '[redacted]')
+    .replace(/\b[A-Za-z0-9+_-]{40,}={0,2}/g, '[redacted]')
+    .replace(/(?:~|\/Users\/[^/\s]+|\/home\/[^/\s]+|\/var\/root)(?:\/[^\s'"`)]*)?/g, '[path]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s.length > SUMMARY_MAX ? `${s.slice(0, SUMMARY_MAX - 3).trimEnd()}...` : s;
+}
+
+/**
+ * Real GitHub writes happen only from the real data home. A temp or sample
+ * home with the real runner (a test that forgot its fake, a capture) is
+ * refused before any gh call.
+ */
+function writeRefused(j: Job): boolean {
+  if (getRunner() !== realRunner || isRealDataHome(home())) return false;
+  console.warn(`palimpsest: issue write-back for ${j.repo}#${j.issue} refused: ${home()} is not the real data home`);
+  return true;
+}
+
+/** Runs one write; its failure is logged and never stops the next. */
+async function attempt(what: string, j: Job, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    console.warn(`palimpsest: ${what} on ${j.repo}#${j.issue} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function writeBack(j: Job, label: string, comment: string): Promise<void> {
+  if (writeRefused(j)) return;
+  await attempt(`label ${label}`, j, async () => {
+    await ensureLabel(j.repo, label);
+    await addLabel(j.repo, j.issue!, label);
+  });
+  await attempt('comment', j, () => commentIssue(j.repo, j.issue!, comment));
+}
+
 async function writeMerged(j: Job, note: TransitionNote): Promise<void> {
-  await addLabel(j.repo, j.issue!, DONE_LABEL);
-  const where = note.prUrl ? ` in ${note.prUrl}` : '';
-  await commentIssue(j.repo, j.issue!, `Palimpsest merged this${where}.\n\n${CITY_MARKER}`);
+  const pr = note.prUrl && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(note.prUrl) ? note.prUrl : null;
+  const where = pr ? ` in ${pr}` : '';
+  await writeBack(j, DONE_LABEL, `Palimpsest merged this${where}.\n\n${CITY_MARKER}`);
 }
 
 async function writeFailed(j: Job, note: TransitionNote): Promise<void> {
-  await addLabel(j.repo, j.issue!, FAILED_LABEL);
-  const summary = note.summary?.trim() || 'No inspection summary was recorded.';
-  await commentIssue(
-    j.repo,
-    j.issue!,
+  const summary = publicSummary(note.summary ?? '') || 'No inspection summary was recorded.';
+  await writeBack(
+    j,
+    FAILED_LABEL,
     `Palimpsest tried this ${j.attempts} times and is leaving it to you.\n\nLast inspection: ${summary}\n\n${CITY_MARKER}`,
   );
 }

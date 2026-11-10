@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
@@ -83,11 +83,23 @@ interface FakeIssue {
  * (gh's own filter), `gh issue view --json state` answers from `states`, and
  * every write succeeds. Every call is kept in `calls`.
  */
-function fakeGh(issues: FakeIssue[], states: Record<number, 'OPEN' | 'CLOSED'> = {}) {
+function fakeGh(
+  issues: FakeIssue[],
+  states: Record<number, 'OPEN' | 'CLOSED'> = {},
+  opts: { labels?: string[]; fail?: 'label' | 'comment' } = {},
+) {
   const calls: string[][] = [];
   setRunner(async (cmd, args) => {
     assert.equal(cmd, 'gh', 'only gh is called');
     calls.push(args);
+    if (args[0] === 'auth') return { stdout: '', stderr: '', code: 0 };
+    if (args[0] === 'label' && args[1] === 'list') {
+      return { stdout: JSON.stringify((opts.labels ?? []).map((name) => ({ name }))), stderr: '', code: 0 };
+    }
+    if (opts.fail === 'label' && (args[0] === 'label' || args[1] === 'edit')) {
+      return { stdout: '', stderr: 'HTTP 403', code: 1 };
+    }
+    if (opts.fail === 'comment' && args[1] === 'comment') return { stdout: '', stderr: 'HTTP 403', code: 1 };
     if (args[0] === 'issue' && args[1] === 'list') {
       const label = args[args.indexOf('--label') + 1];
       const rows = issues
@@ -422,6 +434,13 @@ test('a merged issue job gets palimpsest:done and the PR link', async () => {
   assert.equal(merged.status, 'merged');
   assert.ok(merged.closedAt);
   await settleJobEffects();
+  const creates = calls.filter((c) => c[0] === 'label' && c[1] === 'create');
+  assert.equal(creates.length, 1, 'the missing label is created first');
+  assert.equal(creates[0][2], 'palimpsest:done');
+  assert.ok(
+    calls.findIndex((c) => c[0] === 'label' && c[1] === 'create') < calls.findIndex((c) => c[1] === 'edit'),
+    'created before it is added',
+  );
   assert.deepEqual(
     calls.filter((c) => c[1] === 'edit'),
     [['issue', 'edit', '13', '-R', FULL, '--add-label', 'palimpsest:done']],
@@ -527,4 +546,78 @@ test('listJobs filters by repo, status and source', () => {
   assert.deepEqual(listJobs({ source: 'harness' }).map((j) => j.id), [h.id]);
   assert.equal(listJobs().length, 3);
   assert.equal(job('nope'), null);
+});
+
+test('the final failure creates palimpsest:failed only when the repo lacks it', async () => {
+  const calls = fakeGh([{ number: 14, labels: ['palimpsest'] }], {}, { labels: ['palimpsest:failed'] });
+  const [j] = await pollJobs(makeRepo());
+  walk(j, ['bidding', 'awarded', 'running', 'failed', 'open', 'bidding', 'awarded', 'running', 'failed']);
+  await settleJobEffects();
+  assert.equal(calls.filter((c) => c[0] === 'label' && c[1] === 'create').length, 0);
+  assert.deepEqual(
+    calls.filter((c) => c[1] === 'edit'),
+    [['issue', 'edit', '14', '-R', FULL, '--add-label', 'palimpsest:failed']],
+  );
+});
+
+test('a label failure does not stop the comment, nor a comment failure the label', async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    let calls = fakeGh([{ number: 15, labels: ['palimpsest'] }], {}, { fail: 'label' });
+    const [a] = await pollJobs(makeRepo());
+    walk(a, ['bidding', 'awarded', 'running', 'inspecting', 'shipping', 'merged']);
+    await settleJobEffects();
+    assert.equal(calls.filter((c) => c[1] === 'comment').length, 1, 'commented despite the label failure');
+
+    calls = fakeGh([{ number: 16, labels: ['palimpsest'] }], {}, { fail: 'comment' });
+    const [b] = await pollJobs(makeRepo());
+    walk(b, ['bidding', 'awarded', 'running', 'inspecting', 'shipping', 'merged']);
+    await settleJobEffects();
+    assert.equal(calls.filter((c) => c[1] === 'edit').length, 1, 'labelled despite the comment failure');
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test('the write-back refuses the real gh outside the real data home', async () => {
+  fakeGh([{ number: 17, labels: ['palimpsest'] }]);
+  const [j] = await pollJobs(makeRepo());
+  setRunner(realRunner);
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (msg: string) => warnings.push(String(msg));
+  try {
+    walk(j, ['bidding', 'awarded', 'running', 'inspecting', 'shipping', 'merged']);
+    await settleJobEffects();
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /refused/);
+  assert.match(warnings[0], /not the real data home/);
+});
+
+test('the failure comment is trimmed and keeps tokens and home paths out', async () => {
+  const calls = fakeGh([{ number: 18, labels: ['palimpsest'] }]);
+  const [j] = await pollJobs(makeRepo());
+  const once = walk(j, ['bidding', 'awarded', 'running', 'failed', 'open', 'bidding', 'awarded', 'running', 'inspecting']);
+  const home = homedir();
+  const summary = [
+    `Lint failed in ${home}/Library/Application Support/Palimpsest/runs/r1/repo/src/a.ts and /Users/someone/.config/gh/hosts.yml and ~/.ssh/id_ed25519.`,
+    'Token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 and github_pat_11ABCDEFG0123456789_abcdefghijklmnop',
+    'key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 and AKIAABCDEFGHIJKLMNOP',
+    'x'.repeat(2000),
+  ].join(' ');
+  transition(once, 'failed', {}, { summary });
+  await settleJobEffects();
+  const comment = calls.find((c) => c[1] === 'comment')!;
+  const body = comment[comment.indexOf('--body') + 1];
+  assert.ok(!body.includes(home), 'no path under his home');
+  assert.ok(!body.includes('/Users/'));
+  assert.ok(!body.includes('~/.ssh'));
+  assert.ok(!body.includes('hosts.yml'));
+  for (const secret of ['ghp_', 'github_pat_', 'sk-ant-', 'AKIA']) assert.ok(!body.includes(secret), secret);
+  assert.match(body, /Lint failed in/);
+  assert.ok(body.length < 900, `comment is ${body.length} chars`);
 });

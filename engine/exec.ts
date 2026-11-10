@@ -6,9 +6,26 @@ export type Runner = (
   opts?: { cwd?: string; timeoutMs?: number },
 ) => Promise<{ stdout: string; stderr: string; code: number }>;
 
+/**
+ * Commands that reach his accounts, his login or his machine's services.
+ * Under `node --test` (NODE_TEST_CONTEXT is set) the real runner refuses
+ * them, so a test that forgets to install a fake fails loudly instead of
+ * talking to GitHub (test safety rule 4). Real git and sh stay allowed for
+ * the bare repos tests build in their temp dirs (rule 5).
+ */
+const REFUSED_IN_TESTS = new Set(['gh', 'claude', 'ollama', 'security', 'caffeinate', 'osascript', 'launchctl']);
+
+function inTestRun(): boolean {
+  return !!process.env.NODE_TEST_CONTEXT;
+}
+
 /** The default Runner: actually spawns the process. */
 export const realRunner: Runner = (cmd, args, opts) =>
   new Promise((resolve, reject) => {
+    if (inTestRun() && REFUSED_IN_TESTS.has(cmd.split('/').pop() ?? cmd)) {
+      reject(new Error(`${cmd} ${args.join(' ')} refused in tests: install a fake runner`));
+      return;
+    }
     const child = spawn(cmd, args, { cwd: opts?.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';

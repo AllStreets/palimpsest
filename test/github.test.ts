@@ -2,7 +2,17 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
 import { realRunner, setRunner } from '../engine/exec.js';
-import { addLabel, availableRepos, commentIssue, GhError, issueState, mergedPRs, openIssues, removeLabel } from '../engine/github.js';
+import {
+  addLabel,
+  availableRepos,
+  commentIssue,
+  ensureLabel,
+  GhError,
+  issueState,
+  mergedPRs,
+  openIssues,
+  removeLabel,
+} from '../engine/github.js';
 
 afterEach(() => {
   setRunner(realRunner);
@@ -245,4 +255,50 @@ test('addLabel, removeLabel and commentIssue go through gh issue edit and gh iss
     ['issue', 'edit', '3', '-R', 'acme/widgets', '--remove-label', 'palimpsest'],
     ['issue', 'comment', '3', '-R', 'acme/widgets', '--body', 'Merged in https://github.com/acme/widgets/pull/9'],
   ]);
+});
+
+test('ensureLabel creates the label only when the repo lacks it', async () => {
+  const calls: string[][] = [];
+  let existing = ['bug', 'palimpsest'];
+  setRunner(async (_cmd, args) => {
+    calls.push(args);
+    if (args[0] === 'label' && args[1] === 'list') {
+      return { stdout: JSON.stringify(existing.map((name) => ({ name }))), stderr: '', code: 0 };
+    }
+    return { stdout: '', stderr: '', code: 0 };
+  });
+
+  await ensureLabel('acme/widgets', 'palimpsest:done');
+  assert.deepEqual(calls[0], ['label', 'list', '-R', 'acme/widgets', '--limit', '1000', '--json', 'name']);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].slice(0, 5), ['label', 'create', 'palimpsest:done', '-R', 'acme/widgets']);
+
+  calls.length = 0;
+  existing = ['palimpsest:done'];
+  await ensureLabel('acme/widgets', 'palimpsest:done');
+  assert.equal(calls.length, 1, 'a label already there is not created again');
+  assert.equal(calls[0][1], 'list');
+});
+
+test('a malformed repo name never reaches gh', async () => {
+  const calls: string[][] = [];
+  setRunner(async (_cmd, args) => {
+    calls.push(args);
+    return { stdout: '[]', stderr: '', code: 0 };
+  });
+  for (const bad of ['--repo=evil/x', 'acme', 'acme/widgets/extra', 'acme/wid gets', '-x/y', 'acme/-y', '']) {
+    await assert.rejects(openIssues(bad, 'palimpsest'), /repo name/);
+    await assert.rejects(issueState(bad, 1), /repo name/);
+    await assert.rejects(addLabel(bad, 1, 'x'), /repo name/);
+    await assert.rejects(removeLabel(bad, 1, 'x'), /repo name/);
+    await assert.rejects(commentIssue(bad, 1, 'x'), /repo name/);
+    await assert.rejects(ensureLabel(bad, 'x'), /repo name/);
+    await assert.rejects(mergedPRs(bad), /repo name/);
+  }
+  await assert.rejects(issueState('acme/widgets', -1), /issue number/);
+  assert.equal(calls.length, 0);
+});
+
+test('the real runner refuses gh inside a test run', async () => {
+  await assert.rejects(realRunner('gh', ['auth', 'status']), /refused in tests/);
 });

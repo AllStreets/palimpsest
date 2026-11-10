@@ -101,6 +101,20 @@ async function runGh(args: string[]): Promise<{ stdout: string; stderr: string; 
   throw await classifyGhFailure(result, `gh ${args.join(' ')}`);
 }
 
+/** owner/name, each part letters, digits, `_`, `.` or `-` and not starting with `-` (so it can never read as a flag). */
+const FULL_NAME = /^[\w.][\w.-]*\/[\w.][\w.-]*$/;
+
+/** Throws before any gh call when a repo name could be anything but owner/name. */
+function checkName(fullName: string): void {
+  if (typeof fullName !== 'string' || !FULL_NAME.test(fullName)) {
+    throw new GhError('other', `Bad repo name ${JSON.stringify(fullName)}: expected owner/name`);
+  }
+}
+
+function checkIssue(number: number): void {
+  if (!Number.isInteger(number) || number <= 0) throw new GhError('other', `Bad issue number ${number}`);
+}
+
 /** Repos the authenticated gh user can see, mapped to the subset of Repo fields gh gives us. */
 export async function availableRepos(): Promise<
   Pick<Repo, 'fullName' | 'private' | 'description' | 'language' | 'defaultBranch'>[]
@@ -132,6 +146,7 @@ function mapRepoRow(row: RepoRow): Pick<Repo, 'fullName' | 'private' | 'descript
 export async function repoMeta(
   fullName: string,
 ): Promise<Pick<Repo, 'fullName' | 'private' | 'description' | 'language' | 'defaultBranch'>> {
+  checkName(fullName);
   const result = await runGh([
     'repo',
     'view',
@@ -150,6 +165,7 @@ export async function repoMeta(
  * time with a 502. A PR floor is sized from its merge commit's diff instead.
  */
 export async function mergedPRs(fullName: string): Promise<PR[]> {
+  checkName(fullName);
   const result = await runGh([
     'pr',
     'list',
@@ -199,6 +215,7 @@ interface IssueRow {
  * market asks once per tier label and merges the lists itself (ruling 3).
  */
 export async function openIssues(fullName: string, label: string): Promise<Issue[]> {
+  checkName(fullName);
   const result = await runGh([
     'issue',
     'list',
@@ -227,6 +244,8 @@ export async function openIssues(fullName: string, label: string): Promise<Issue
 
 /** Whether one issue is open or closed. */
 export async function issueState(fullName: string, number: number): Promise<'OPEN' | 'CLOSED'> {
+  checkName(fullName);
+  checkIssue(number);
   const result = await runGh(['issue', 'view', String(number), '-R', fullName, '--json', 'state']);
   const { state } = JSON.parse(result.stdout) as { state: string };
   return state === 'CLOSED' ? 'CLOSED' : 'OPEN';
@@ -234,15 +253,45 @@ export async function issueState(fullName: string, number: number): Promise<'OPE
 
 /** Adds a label to an issue. */
 export async function addLabel(fullName: string, number: number, label: string): Promise<void> {
+  checkName(fullName);
+  checkIssue(number);
   await runGh(['issue', 'edit', String(number), '-R', fullName, '--add-label', label]);
 }
 
 /** Removes a label from an issue. */
 export async function removeLabel(fullName: string, number: number, label: string): Promise<void> {
+  checkName(fullName);
+  checkIssue(number);
   await runGh(['issue', 'edit', String(number), '-R', fullName, '--remove-label', label]);
 }
 
 /** Posts a comment on an issue. */
 export async function commentIssue(fullName: string, number: number, body: string): Promise<void> {
+  checkName(fullName);
+  checkIssue(number);
   await runGh(['issue', 'comment', String(number), '-R', fullName, '--body', body]);
+}
+
+/** Colours and descriptions for the labels the city itself creates. */
+const CITY_LABELS: Record<string, { color: string; description: string }> = {
+  'palimpsest:done': { color: '2f6f4f', description: 'Palimpsest merged work for this issue' },
+  'palimpsest:failed': { color: '8a3b2e', description: 'Palimpsest tried this issue and left it to you' },
+};
+
+/**
+ * Creates a label on the repo only when it is missing, so `addLabel` cannot
+ * fail on a repo that never had it. A create that loses a race to another
+ * create ("already exists") counts as present.
+ */
+export async function ensureLabel(fullName: string, name: string): Promise<void> {
+  checkName(fullName);
+  const result = await runGh(['label', 'list', '-R', fullName, '--limit', '1000', '--json', 'name']);
+  const names = (JSON.parse(result.stdout || '[]') as Array<{ name: string }>).map((l) => l.name.toLowerCase());
+  if (names.includes(name.toLowerCase())) return;
+  const meta = CITY_LABELS[name] ?? { color: 'cccccc', description: 'Palimpsest' };
+  try {
+    await runGh(['label', 'create', name, '-R', fullName, '--color', meta.color, '--description', meta.description]);
+  } catch (err) {
+    if (!/already exists/i.test(err instanceof Error ? err.message : String(err))) throw err;
+  }
 }
