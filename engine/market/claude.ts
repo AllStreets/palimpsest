@@ -477,7 +477,7 @@ function list(items: string[]): string {
   return items.length ? items.map((x) => `- ${x}`).join('\n') : '- (none given)';
 }
 
-function systemPrompt(persona: string, instructions: string | undefined): string {
+export function systemPrompt(persona: string, instructions: string | undefined): string {
   return [persona.trim(), instructions?.trim()].filter(Boolean).join('\n\n');
 }
 
@@ -502,7 +502,7 @@ function workPrompt(i: WorkInput): string {
   return parts.join('\n\n') + '\n';
 }
 
-function planPrompt(i: PlanInput): string {
+export function planPrompt(i: PlanInput): string {
   return [
     `Job ${i.job.id} on ${i.job.repo}: ${i.job.title}`,
     i.job.body.trim(),
@@ -514,7 +514,7 @@ function planPrompt(i: PlanInput): string {
   ].join('\n\n') + '\n';
 }
 
-function reviewPrompt(i: ReviewInput): string {
+export function reviewPrompt(i: ReviewInput): string {
   const diff = i.diff.length > MAX_DIFF_CHARS ? i.diff.slice(0, MAX_DIFF_CHARS) + `\n[diff cut: ${i.diff.length - MAX_DIFF_CHARS} more characters]\n` : i.diff;
   const checks = i.checks.map((c) => `${c.name}: ${c.status}${c.detail ? ` (${c.detail})` : ''}`);
   return [

@@ -25,7 +25,11 @@ export function getSettings(): Settings {
   for (const row of rows) {
     stored[row.key] = JSON.parse(row.json);
   }
-  return { ...DEFAULTS, ...stored } as Settings;
+  const merged = { ...DEFAULTS, ...stored } as Settings;
+  // Nested settings take their defaults key by key, so an older or partial stored value never drops one.
+  const api = stored.anthropicApi;
+  merged.anthropicApi = { ...DEFAULTS.anthropicApi, ...(api && typeof api === 'object' && !Array.isArray(api) ? api : {}) };
+  return merged;
 }
 
 /** Merges `p` into the stored settings (one row per key) and returns the result. */

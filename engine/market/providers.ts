@@ -5,7 +5,9 @@
  * and resetProviders drops the overrides.
  */
 import type { ModelRef } from '../../shared/types.js';
+import { anthropicProvider } from './anthropic-api.js';
 import { claudeProvider } from './claude.js';
+import { ollamaProvider } from './ollama.js';
 import type { Provider } from './provider.js';
 
 export type BackendKind = 'claude' | 'ollama' | 'anthropic';
@@ -14,6 +16,8 @@ const registered = new Map<BackendKind, Provider>();
 const overrides = new Map<BackendKind, Provider>();
 
 registered.set('claude', claudeProvider());
+registered.set('ollama', ollamaProvider());
+registered.set('anthropic', anthropicProvider());
 
 function kindOf(model: ModelRef): BackendKind | null {
   const prefix = model.slice(0, model.indexOf(':'));
