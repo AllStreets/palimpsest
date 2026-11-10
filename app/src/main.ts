@@ -10,6 +10,7 @@ import type { Plate } from './city/labels';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { createCity, type PickHit } from './city/scene';
 import { towerCenterpiece } from './city/tower/look';
+import { type Look, lookFor, lookKey, pickLooks } from './city/tower/variants';
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
 import { createInspector } from './ui/inspector';
@@ -64,7 +65,18 @@ async function main(): Promise<void> {
     (s) => s.quality,
     () => 'high' as const,
   );
-  const city = createCity(host, { quality, makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality) });
+  /**
+   * Each tower's materials, picked over every repo that holds a slot,
+   * connected or not, so neighbouring towers differ and a tower keeps its
+   * look while a neighbour is switched off. Filled in by place().
+   */
+  let looks = new Map<string, Look>();
+  const lookOf = (d: District): Look => looks.get(d.repo) ?? lookFor(d.repo);
+  const city = createCity(host, {
+    quality,
+    makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d)),
+    centerpieceKey: (d) => lookKey(lookOf(d)),
+  });
 
   const debug: DebugHandle = {
     ready: false,
@@ -157,6 +169,10 @@ async function main(): Promise<void> {
    */
   function place(): void {
     const occ = occupancy(known.values(), served);
+    const sites = new Map<string, number>();
+    for (const d of served) sites.set(d.repo, d.index);
+    for (const r of known.values()) sites.set(r.fullName, r.slot);
+    looks = pickLooks([...sites].map(([repo, slot]) => ({ repo, slot })));
     districts = occ.districts;
     debug.builds += city.setPlots(occ);
     debug.districts = occ.districts.length;

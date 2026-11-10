@@ -30,6 +30,8 @@ export interface CityOptions {
   quality: 'high' | 'medium';
   /** Builds what stands in each district. Defaults to a plain stone plinth; towers plug in here. */
   makeDistrictCenterpiece?: CenterpieceFactory;
+  /** Anything beyond the district's own data that changes what the factory builds (a tower's materials); a change rebuilds it. */
+  centerpieceKey?: (d: District) => string;
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
@@ -192,7 +194,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const old = new Map(centerpieces.map((c) => [c.repo, c]));
     let built = 0;
     centerpieces = districts.map((d) => {
-      const key = JSON.stringify(d);
+      const key = JSON.stringify(d) + (opts.centerpieceKey?.(d) ?? '');
       const kept = old.get(d.repo);
       if (kept && kept.key === key) {
         old.delete(d.repo);

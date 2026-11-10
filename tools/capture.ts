@@ -20,7 +20,8 @@
  * Options (env): CAPTURE_FPS=30, CAPTURE_DPR=2, CAPTURE_KEEP=1 keeps the raw frames,
  * CAPTURE_OUT=<dir> writes somewhere other than docs/media (for probing),
  * PROBE='[[[eye],[target]], ...]' for quick stills in the probe shot, PROBE_CHROME=1
- * keeps the running head and plates in them.
+ * keeps the running head and plates in them, CAPTURE_CITY=tall seeds the
+ * sample repos as four short towers and two at the 120-floor cap.
  *
  * Re-run it whenever the city changes, and add a shot here for each new
  * thing worth showing.
@@ -36,7 +37,7 @@ import type { Page } from 'playwright';
 
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District } from '../shared/types.js';
-import { sampleGh, seedSample } from './sample.js';
+import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -328,7 +329,8 @@ async function main(): Promise<void> {
   writeFileSync(claudeSettingsPath, '{}\n');
   mkdirSync(MEDIA, { recursive: true });
 
-  await seedSample();
+  // CAPTURE_CITY=tall seeds the same repos in a working developer's shape (four short towers, two at the cap), for probes.
+  await seedSample(Date.now(), process.env.CAPTURE_CITY === 'tall' ? SAMPLE_TALL : SAMPLE);
   // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
   const { setRunner } = await import('../engine/exec.js');
   setRunner(sampleGh());

@@ -7,13 +7,16 @@ import {
   M,
   ME,
   type MatKey,
+  PANE_CHANNEL,
   PANE_FULL,
   PANE_SASH,
   paneData,
   paneGeometry,
+  slot,
   squareSweep,
   unitBox,
 } from './kit.js';
+import type { MasonryRhythm, Variant } from './variants.js';
 
 /** Where a floor sits in its tower and in its run of same-era floors. */
 export interface FloorContext {
@@ -30,6 +33,8 @@ export interface FloorContext {
   /** The last floor below the datum line: its run-end cap is left off so the datum band reads clean. */
   datum: boolean;
   rand: () => number;
+  /** The repo's variant for this floor's era: its materials (through the era's slots) and its rhythm. */
+  variant: Variant;
 }
 
 /** What a floor builder reports back: its plan centre and half-width (for the pick proxy), and where a datum band at its top would sit clear of its facade. */
@@ -92,63 +97,76 @@ function bays(width: number, bay: number): number {
 
 // ---------------------------------------------------------------- masonry
 
-interface MasonryStyle {
-  wall: MatKey;
-  trim: MatKey;
-  bay: number;
-  winW: number;
-  /** Window height as a fraction of the floor. */
-  winH: number;
-  reveal: number;
-  style: number;
-}
+/** Each masonry era's own rhythm, before a variant adjusts it. */
+const MASONRY: Record<'stone' | 'brick', MasonryRhythm> = {
+  stone: { bay: 3.6, winW: 1.55, winH: 0.56, reveal: 0.55, paired: false },
+  brick: { bay: 2.9, winW: 1.5, winH: 0.58, reveal: 0.34, paired: false },
+};
+
+/** The pier between the two windows of a pair. */
+const PAIR_PIER = 0.5;
 
 /**
  * A load-bearing wall: piers between deep punched openings, solid spandrels
  * above and below, the glass set back the full reveal so each opening holds
- * real shadow. Sills project; heads carry a lintel or a hood.
+ * real shadow. Sills project; heads carry a lintel or a hood. Windows come
+ * singly or in pairs about a narrow pier, as the variant's rhythm says.
  */
-function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext, s: MasonryStyle): FloorShape {
+function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext, era: 'stone' | 'brick'): FloorShape {
+  const s: MasonryRhythm = { ...MASONRY[era], ...c.variant.masonry };
+  const wall = slot(era, 'Wall');
+  const trim = slot(era, 'Trim');
+  const band = slot(era, 'Band');
+  const isBrick = era === 'brick';
   const half = width / 2;
   const n = bays(width, s.bay);
   const pitch = width / n;
-  const winW = Math.min(s.winW, pitch * 0.62);
+  const winW = s.paired ? Math.min(s.winW, (pitch * 0.66 - PAIR_PIER) / 2) : Math.min(s.winW, pitch * 0.62);
   const sillY = Math.max(0.75, h * 0.2);
   const headY = Math.min(h - 0.55, sillY + h * s.winH);
   const winH = headY - sillY;
   const light = lighter(floor.era, c.rand);
   const r = s.reveal;
 
+  // Window centres along a face, left to right.
+  const openings: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const u = -half + pitch * (i + 0.5);
+    if (s.paired) openings.push(u - (winW + PAIR_PIER) / 2, u + (winW + PAIR_PIER) / 2);
+    else openings.push(u);
+  }
+
   // The building behind the openings.
   k.box('slab', width - 2 * r, h, width - 2 * r, M(0, h / 2, 0));
   for (let side = 0; side < 4; side++) {
     const F = face(side, half);
     // Spandrels run the full face; piers stand between the openings.
-    k.box(s.wall, width, sillY, r, F.clone().multiply(M(0, sillY / 2, -r / 2)));
-    k.box(s.wall, width, h - headY, r, F.clone().multiply(M(0, (headY + h) / 2, -r / 2)));
-    for (let i = 0; i <= n; i++) {
-      const u = -half + pitch * i;
-      const a = Math.max(-half, u - (pitch - winW) / 2);
-      const b = Math.min(half, u + (pitch - winW) / 2);
-      k.box(s.wall, b - a, winH, r, F.clone().multiply(M((a + b) / 2, sillY + winH / 2, -r / 2)));
+    k.box(wall, width, sillY, r, F.clone().multiply(M(0, sillY / 2, -r / 2)));
+    k.box(wall, width, h - headY, r, F.clone().multiply(M(0, (headY + h) / 2, -r / 2)));
+    for (let i = 0; i <= openings.length; i++) {
+      const a = i === 0 ? -half : openings[i - 1] + winW / 2;
+      const b = i === openings.length ? half : openings[i] - winW / 2;
+      if (b - a > 1e-3) k.box(wall, b - a, winH, r, F.clone().multiply(M((a + b) / 2, sillY + winH / 2, -r / 2)));
     }
-    for (let i = 0; i < n; i++) {
-      const u = -half + pitch * (i + 0.5);
-      k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(u, sillY + winH / 2, -r + 0.02, 0, winW, winH, 1)), light(s.style), false);
+    for (const [j, u] of openings.entries()) {
+      k.inst(`pane:${era}`, slot(era, 'Win'), paneGeometry, F.clone().multiply(M(u, sillY + winH / 2, -r + 0.02, 0, winW, winH, 1)), light(PANE_SASH), false);
       // Sill, projecting and weathered.
-      k.box(s.trim, winW + 0.32, 0.16, r + 0.16, F.clone().multiply(M(u, sillY - 0.08, -r / 2 + 0.08)));
-      if (s.wall === 'brick') {
+      k.box(trim, winW + 0.32, 0.16, r + 0.16, F.clone().multiply(M(u, sillY - 0.08, -r / 2 + 0.08)));
+      if (s.paired) {
+        // One lintel spans each pair, pier and all.
+        if (j % 2 === 0) k.box(trim, 2 * winW + PAIR_PIER + 0.5, 0.42, 0.08, F.clone().multiply(M(u + (winW + PAIR_PIER) / 2, headY + 0.21, 0.04)));
+      } else if (isBrick) {
         // Stone lintel flush with the brick, a little proud.
-        k.box(s.trim, winW + 0.5, 0.42, 0.08, F.clone().multiply(M(u, headY + 0.21, 0.04)));
+        k.box(trim, winW + 0.5, 0.42, 0.08, F.clone().multiply(M(u, headY + 0.21, 0.04)));
       } else if ((floor.size !== 'small' || c.inRun % 2 === 0) && headY + 0.5 < h) {
         // A hood moulding over each window.
-        k.box(s.trim, winW + 0.5, 0.18, 0.22, F.clone().multiply(M(u, headY + 0.24, 0.11)));
-        k.box(s.trim, winW + 0.34, 0.12, 0.12, F.clone().multiply(M(u, headY + 0.1, 0.06)));
+        k.box(trim, winW + 0.5, 0.18, 0.22, F.clone().multiply(M(u, headY + 0.24, 0.11)));
+        k.box(trim, winW + 0.34, 0.12, 0.12, F.clone().multiply(M(u, headY + 0.1, 0.06)));
       }
     }
   }
 
-  if (s.wall === 'brick') {
+  if (isBrick) {
     // Stone quoins at the corners, long and short in alternate courses.
     for (let side = 0; side < 4; side++) {
       const F = face(side, half);
@@ -156,24 +174,25 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
         const long = (c.index + q + side) % 2 === 0;
         const L = long ? 1.1 : 0.7;
         const qh = h / 2 - 0.06;
-        k.box(s.trim, L, qh, 0.06, F.clone().multiply(M(half - L / 2, q * (h / 2) + qh / 2 + 0.03, 0.03)));
+        k.box(trim, L, qh, 0.06, F.clone().multiply(M(half - L / 2, q * (h / 2) + qh / 2 + 0.03, 0.03)));
       }
     }
     if (c.runStart || c.inRun % 4 === 0) {
-      k.add(s.trim, squareSweep(half, [[-0.05, 0], [0.06, 0], [0.06, 0.32], [-0.05, 0.32]]));
+      // A belt course in the variant's accent.
+      k.add(band, squareSweep(half, [[-0.05, 0], [0.06, 0], [0.06, 0.32], [-0.05, 0.32]]));
     }
   } else {
     // A string course at every slab, so the floors read as laid courses.
-    k.add(s.trim, squareSweep(half, [[-0.05, 0], [0.1, 0], [0.1, 0.22], [0.04, 0.3], [-0.05, 0.3]]));
+    k.add(band, squareSweep(half, [[-0.05, 0], [0.1, 0], [0.1, 0.22], [0.04, 0.3], [-0.05, 0.3]]));
   }
 
   // On the string course's upper face (stone) or just above the soldier course (brick), standing clear of both.
-  claudeAccent(k, floor, half, s.wall === 'brick' ? 0.32 : 0.3, 0.12, 0.1);
+  claudeAccent(k, floor, half, isBrick ? 0.32 : 0.3, 0.12, 0.1);
 
   if (c.runEnd && !c.datum) {
     // A cornice closes the run: bed moulding, corona, cymatium, all inside the floor's height.
     const y0 = h - 0.95;
-    k.add(s.trim, squareSweep(half, [
+    k.add(band, squareSweep(half, [
       [-0.1, y0],
       [0.0, y0],
       [0.18, y0 + 0.18],
@@ -189,18 +208,21 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
   return { cx: 0, cz: 0, half: half + 0.3, datumHalf: half + 0.12 };
 }
 
-const stone: EraBuilder = (k, w, h, f, c) =>
-  masonry(k, w, h, f, c, { wall: 'sand', trim: 'sand', bay: 3.6, winW: 1.55, winH: 0.56, reveal: 0.55, style: PANE_SASH });
+const stone: EraBuilder = (k, w, h, f, c) => masonry(k, w, h, f, c, 'stone');
 
-const brick: EraBuilder = (k, w, h, f, c) =>
-  masonry(k, w, h, f, c, { wall: 'brick', trim: 'sand', bay: 2.9, winW: 1.5, winH: 0.58, reveal: 0.34, style: PANE_SASH });
+const brick: EraBuilder = (k, w, h, f, c) => masonry(k, w, h, f, c, 'brick');
 
 // ---------------------------------------------------------------- glass
 
-/** Curtain wall: floor-height glazing over a lit office, bronze mullions, a dark spandrel at each slab. */
+/**
+ * Curtain wall: floor-height glazing over a lit office, mullions in the
+ * variant's metal, a spandrel panel at each slab. Channel glass reads as
+ * translucent ribbed panels instead of clear glass.
+ */
 const glass: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
-  const n = bays(w, 1.55);
+  const n = bays(w, c.variant.pitch ?? 1.55);
+  const style = c.variant.glass.channel ? PANE_CHANNEL : PANE_FULL;
   const pitch = w / n;
   const sb = 0.7;
   const light = lighter(f.era, c.rand);
@@ -208,20 +230,20 @@ const glass: EraBuilder = (k, w, h, f, c) => {
   for (let side = 0; side < 4; side++) {
     const F = face(side, half);
     // Spandrel band: bronze-framed dark panel hiding the slab.
-    k.inst('spandrel', 'steel', unitBox, F.clone().multiply(M(0, sb / 2, -0.02, 0, w, sb, 0.12)));
-    k.inst('transom', 'bronze', unitBox, F.clone().multiply(M(0, sb, 0.05, 0, w + 0.18, 0.1, 0.22)));
+    k.inst('spandrel', 'glassWall', unitBox, F.clone().multiply(M(0, sb / 2, -0.02, 0, w, sb, 0.12)));
+    k.inst('transom', 'glassTrim', unitBox, F.clone().multiply(M(0, sb, 0.05, 0, w + 0.18, 0.1, 0.22)));
     for (let i = 0; i < n; i++) {
       const u = -half + pitch * (i + 0.5);
-      k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(u, (sb + h) / 2, 0, 0, pitch, h - sb, 1)), light(PANE_FULL), false);
+      k.inst('pane:glass', 'glassWin', paneGeometry, F.clone().multiply(M(u, (sb + h) / 2, 0, 0, pitch, h - sb, 1)), light(style), false);
     }
     for (let i = 0; i <= n; i++) {
       const u = -half + pitch * i;
-      k.inst('mullion', 'bronze', unitBox, F.clone().multiply(M(u, h / 2, 0.14, 0, 0.1, h, 0.3)));
+      k.inst('mullion', 'glassTrim', unitBox, F.clone().multiply(M(u, h / 2, 0.14, 0, 0.1, h, 0.3)));
     }
   }
   claudeAccent(k, f, half, sb - 0.14, 0.32, 0.1);
   if (c.runEnd && !c.datum) {
-    k.add('bronze', squareSweep(half, [[-0.2, h - 0.6], [0.3, h - 0.6], [0.3, h], [-0.2, h]]));
+    k.add('glassBand', squareSweep(half, [[-0.2, h - 0.6], [0.3, h - 0.6], [0.3, h], [-0.2, h]]));
   }
   return { cx: 0, cz: 0, half: half + 0.3, datumHalf: half + 0.3 };
 };
@@ -252,29 +274,29 @@ function panelTone(rand: () => number): THREE.Color {
  */
 const titanium: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
-  const n = bays(w, 2.0);
+  const n = bays(w, c.variant.pitch ?? 2.0);
   const pitch = w / n;
   const edge = 0.55;
   const light = lighter(f.era, c.rand);
   k.box('slab', w - 1.2, h, w - 1.2, M(0, h / 2, 0));
   // A dark graphite slab edge with small chamfers: it frames each floor without becoming a lit strip.
-  k.add('graphite', squareSweep(half, [[-0.6, 0], [0.3, 0], [0.38, 0.07], [0.38, edge - 0.07], [0.3, edge], [-0.6, edge]]));
+  k.add('titaniumTrim', squareSweep(half, [[-0.6, 0], [0.3, 0], [0.38, 0.07], [0.38, edge - 0.07], [0.3, edge], [-0.6, edge]]));
   for (let side = 0; side < 4; side++) {
     const F = face(side, half);
     for (let i = 0; i < n; i++) {
       const u = -half + pitch * (i + 0.5);
-      k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(u, (edge + h) / 2, -0.4, 0, pitch, h - edge, 1)), light(PANE_FULL), false);
+      k.inst('pane:titanium', 'titaniumWin', paneGeometry, F.clone().multiply(M(u, (edge + h) / 2, -0.4, 0, pitch, h - edge, 1)), light(PANE_FULL), false);
     }
     for (let i = 1; i < n; i++) {
       const u = -half + pitch * i;
       const a = (i % 2 === 0 ? 1 : -1) * 0.14;
-      k.inst('blade', 'titanium', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32, a, 1, h - edge, 1)), panelTone(c.rand));
+      k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32, a, 1, h - edge, 1)), panelTone(c.rand));
     }
-    k.inst('blade', 'titanium', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32, 0, 1, h - edge, 1)), panelTone(c.rand));
+    k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32, 0, 1, h - edge, 1)), panelTone(c.rand));
   }
   claudeAccent(k, f, half + 0.38, edge / 2 - 0.05, 0.1, 0.1);
   if (c.runEnd && !c.datum) {
-    k.add('graphite', squareSweep(half, [[-0.6, h - 0.45], [0.75, h - 0.45], [0.8, h - 0.4], [0.8, h], [-0.6, h]]));
+    k.add('titaniumBand', squareSweep(half, [[-0.6, h - 0.45], [0.75, h - 0.45], [0.8, h - 0.4], [0.8, h], [-0.6, h]]));
   }
   return { cx: 0, cz: 0, half: half + 1, datumHalf: half + 1.0 };
 };
@@ -316,10 +338,10 @@ const scifi: EraBuilder = (k, w, h, f, c) => {
   const slab = 0.95;
 
   // Slab: two titanium fascia bands with a recessed light reveal between them, a concrete core.
-  slabBox(k, 'titanium', x0, x1, 0, 0.42, z0, z1);
+  slabBox(k, 'scifiTrim', x0, x1, 0, 0.42, z0, z1);
   slabBox(k, 'slab', x0 + 0.12, x1 - 0.12, 0.42, 0.52, z0 + 0.12, z1 - 0.12);
   ring(k, 'lightLine', x0 + 0.1, x1 - 0.1, z0 + 0.1, z1 - 0.1, 0.45, 0.49, 0.04);
-  slabBox(k, 'titanium', x0, x1, 0.52, slab, z0, z1);
+  slabBox(k, 'scifiTrim', x0, x1, 0.52, slab, z0, z1);
   // Downlight line set into the soffit, a little in from the edge.
   if (!c.runStart) ring(k, 'lightLine', x0 + 0.45, x1 - 0.45, z0 + 0.45, z1 - 0.45, -0.025, 0, 0.06);
   if (f.claude) ring(k, 'accent', x0 - 0.03, x1 + 0.03, z0 - 0.03, z1 + 0.03, slab, slab + 0.08, 0.1);
@@ -334,7 +356,7 @@ const scifi: EraBuilder = (k, w, h, f, c) => {
   for (let side = 0; side < 4; side++) {
     const F = face(side, glassHalf);
     for (let i = 0; i < nb; i++) {
-      k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(-glassHalf + bw * (i + 0.5), (slab + top) / 2, 0, 0, bw, top - slab, 1)), light(PANE_FULL), false);
+      k.inst('pane:scifi', 'scifiWin', paneGeometry, F.clone().multiply(M(-glassHalf + bw * (i + 0.5), (slab + top) / 2, 0, 0, bw, top - slab, 1)), light(PANE_FULL), false);
     }
     for (let i = 0; i <= nb; i++) {
       k.inst('sf:mullion', 'graphite', unitBox, F.clone().multiply(M(-glassHalf + bw * i, (slab + top) / 2, 0.06, 0, 0.07, top - slab, 0.14)));
@@ -358,17 +380,23 @@ const scifi: EraBuilder = (k, w, h, f, c) => {
         if (u1 < -frame - 1e-6 || u1 > frame + 1e-6) continue;
         const dx = u1 - u;
         const len = Math.hypot(dx, rise);
-        k.inst('sf:diagrid', 'graphite', unitBox, F.clone().multiply(ME((u + u1) / 2, slab + rise / 2, 0, 0, 0, -Math.atan2(dx, rise), 0.34, len, 0.46)));
+        k.inst('sf:diagrid', 'scifiWall', unitBox, F.clone().multiply(ME((u + u1) / 2, slab + rise / 2, 0, 0, 0, -Math.atan2(dx, rise), 0.34, len, 0.46)));
       }
     }
     // Corner mast where two faces of the frame meet.
-    k.inst('sf:mast', 'graphite', unitBox, F.clone().multiply(M(frame, slab + rise / 2, 0, 0, 0.6, rise, 0.6)));
+    k.inst('sf:mast', 'scifiWall', unitBox, F.clone().multiply(M(frame, slab + rise / 2, 0, 0, 0.6, rise, 0.6)));
+    if (c.variant.seams) {
+      // A light seam set into each outward face of the mast, stopping short of the slabs.
+      const seam = rise * 0.86;
+      k.box('lightLine', 0.07, seam, 0.02, F.clone().multiply(M(frame, slab + rise / 2, 0.305)));
+      k.box('lightLine', 0.02, seam, 0.07, F.clone().multiply(M(frame + 0.305, slab + rise / 2, 0)));
+    }
   }
 
   if (c.top) {
     // Crown canopy over the frame, with its own soffit downlight.
     const ch = frame + 0.25;
-    slabBox(k, 'titanium', -ch, ch, h - 0.5, h, -ch, ch);
+    slabBox(k, 'scifiBand', -ch, ch, h - 0.5, h, -ch, ch);
     ring(k, 'lightLine', -ch + 0.35, ch - 0.35, -ch + 0.35, ch - 0.35, h - 0.525, h - 0.5, 0.06);
   }
   const reach = Math.max(...ext) + core;

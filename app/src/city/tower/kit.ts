@@ -1,12 +1,29 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+import type { Era } from '../../../../shared/types.js';
+
+/**
+ * The four surfaces every era is built from, filled per repo from its
+ * variant (variants.ts): `Wall` the main surface, `Trim` the second one,
+ * `Band` the accent on belt courses, cornices and the crown, `Win` the
+ * window glass. So `brickWall` is common red on one tower and cream city
+ * brick on the next.
+ */
+export type EraSlot = 'Wall' | 'Trim' | 'Band' | 'Win';
+export type EraMatKey = `${Era}${EraSlot}`;
+
+/** The material key of one of an era's slots. */
+export function slot(era: Era, s: EraSlot): EraMatKey {
+  return `${era}${s}`;
+}
+
 /**
  * The materials a tower is built from. In the browser these are the scanned
  * PBR sets and the window shader (see look.ts); node tests pass plain
  * materials, so nothing here touches textures or the DOM.
  */
-export interface TowerMaterials {
+export interface TowerMaterials extends Record<EraMatKey, THREE.Material> {
   /** Dressed sandstone: Beaux-Arts roots and stone-era floors. */
   sand: THREE.Material;
   /** Warm travertine: the Roman root. */
@@ -17,14 +34,11 @@ export interface TowerMaterials {
   limestone: THREE.Material;
   /** Rough granite: battered pagoda platforms and plinths. */
   granite: THREE.Material;
-  brick: THREE.Material;
-  bronze: THREE.Material;
   /** Polished bronze: the datum band, bright enough to read against stone and dark steel alike. */
   datum: THREE.Material;
-  titanium: THREE.Material;
   /** Dark painted steel: frames, reveals, roof edges. */
   steel: THREE.Material;
-  /** Dark graphite metal: the sci-fi exoskeleton. */
+  /** Dark graphite metal: the sci-fi mullions. */
   graphite: THREE.Material;
   /** Concrete slab edges and soffits. */
   slab: THREE.Material;
@@ -55,12 +69,24 @@ const TILE: Partial<Record<MatKey, number>> = {
   gothic: 2.2,
   limestone: 3.0,
   granite: 2.0,
-  brick: 1.5,
-  bronze: 2,
   datum: 2,
-  titanium: 3,
   steel: 2,
   slab: 3,
+  stoneWall: 2.6,
+  stoneTrim: 2.6,
+  stoneBand: 2.6,
+  brickWall: 1.5,
+  brickTrim: 2.6,
+  brickBand: 2.6,
+  glassWall: 2,
+  glassTrim: 2,
+  glassBand: 2,
+  titaniumWall: 3,
+  titaniumTrim: 2,
+  titaniumBand: 2,
+  scifiWall: 3,
+  scifiTrim: 3,
+  scifiBand: 3,
 };
 
 /**
@@ -68,6 +94,7 @@ const TILE: Partial<Record<MatKey, number>> = {
  * `warm` (0 cool office light to 1 warm lamp light) and the pane style.
  */
 export const PANE_FULL = 0.0; // floor to ceiling, no sill
+export const PANE_CHANNEL = 0.25; // ribbed channel glass: translucent, the room reads only as light
 export const PANE_SILL = 0.5; // punched window over a sill
 export const PANE_SHOJI = 0.75; // lit paper in a timber lattice
 export const PANE_SASH = 1.0; // punched window with glazing bars
@@ -122,13 +149,21 @@ export function rng(seed: string): () => number {
   };
 }
 
-/** Indexed position/normal/uv only, so any two pieces merge. */
-function normalise(g: THREE.BufferGeometry): THREE.BufferGeometry {
+/** Indexed position/normal/uv/colour only, so any two pieces merge. Every vertex takes `tint` as its colour. */
+function normalise(g: THREE.BufferGeometry, tint: THREE.Color): THREE.BufferGeometry {
   for (const name of Object.keys(g.attributes)) {
     if (name !== 'position' && name !== 'normal' && name !== 'uv') g.deleteAttribute(name);
   }
   if (!g.attributes.normal) g.computeVertexNormals();
   if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+  const n = g.attributes.position.count;
+  const col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    col[i * 3] = tint.r;
+    col[i * 3 + 1] = tint.g;
+    col[i * 3 + 2] = tint.b;
+  }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   if (!g.index) {
     const n = g.attributes.position.count;
     const idx = new Uint32Array(n);
@@ -181,6 +216,12 @@ interface Batch {
 export class Kit {
   /** Applied to everything added; builders set it to the current floor or root stage. */
   base = new THREE.Matrix4();
+  /**
+   * The vertex colour of every unique piece added from now on: the small
+   * drift between runs of floors laid in different years. Materials that
+   * take vertex colours (the era variants) show it; the rest ignore it.
+   */
+  tint = new THREE.Color(1, 1, 1);
   private merged = new Map<MatKey, THREE.BufferGeometry[]>();
   private batches = new Map<string, Batch>();
   private geos = new Map<string, THREE.BufferGeometry>();
@@ -189,7 +230,7 @@ export class Kit {
 
   /** Adds a unique piece, placed by `local` within `base`. Takes ownership of `geo`. */
   add(mat: MatKey, geo: THREE.BufferGeometry, local?: THREE.Matrix4, projectUv = true): void {
-    const g = normalise(geo);
+    const g = normalise(geo, this.tint);
     const m = local ? this.base.clone().multiply(local) : this.base;
     g.applyMatrix4(m);
     const tile = TILE[mat];
@@ -215,7 +256,10 @@ export class Kit {
   inst(key: string, mat: MatKey, make: () => THREE.BufferGeometry, local: THREE.Matrix4, color?: THREE.Color, shadow = true): void {
     let b = this.batches.get(key);
     if (!b) {
-      b = { mat, geo: make(), matrices: [], colors: null, shadow };
+      const geo = make();
+      // White vertex colour, so a variant material that reads vertex colours (for the year drift) never draws a part black.
+      if (!geo.attributes.color) geo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(geo.attributes.position.count * 3).fill(1), 3));
+      b = { mat, geo, matrices: [], colors: null, shadow };
       this.batches.set(key, b);
     }
     b.matrices.push(this.base.clone().multiply(local));
