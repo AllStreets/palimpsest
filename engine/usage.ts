@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, resolve, isAbsolute } from 'node:path';
 
@@ -379,9 +379,9 @@ export function readings(sinceMs: number): UsageReading[] {
 }
 
 /** Every .jsonl file under `dir` with its mtime. Symlinks (files or folders) are never followed, so the scan stays inside `dir`. */
-function transcriptFiles(dir: string): Array<{ path: string; mtimeMs: number }> {
+function transcriptFiles(dir: string): Array<{ path: string; mtimeMs: number; size: number; ino: number }> {
   const root = checkedProjectsDir(dir);
-  const out: Array<{ path: string; mtimeMs: number }> = [];
+  const out: Array<{ path: string; mtimeMs: number; size: number; ino: number }> = [];
   const walk = (d: string, depth: number): void => {
     if (depth > 8) return;
     let entries;
@@ -396,7 +396,8 @@ function transcriptFiles(dir: string): Array<{ path: string; mtimeMs: number }> 
       if (e.isDirectory()) walk(path, depth + 1);
       else if (e.isFile() && e.name.endsWith('.jsonl')) {
         try {
-          out.push({ path, mtimeMs: lstatSync(path).mtimeMs });
+          const st = lstatSync(path);
+          out.push({ path, mtimeMs: st.mtimeMs, size: st.size, ino: st.ino });
         } catch {
           // Removed while we looked.
         }
@@ -442,40 +443,104 @@ export function transcriptTokens(fromMs: number, toMs: number, dir: string = pro
   const seen = new Map<string, number>();
   for (const file of transcriptFiles(dir)) {
     if (file.mtimeMs < fromMs) continue;
-    let text: string;
-    try {
-      text = readFileSync(file.path, 'utf8');
-    } catch {
-      continue;
-    }
-    for (const line of text.split('\n')) {
-      if (!line.includes('"usage"')) continue;
-      let row: TranscriptLine;
-      try {
-        row = JSON.parse(line) as TranscriptLine;
-      } catch {
-        continue;
-      }
-      if (row.type !== 'assistant' || !row.message?.usage || !row.timestamp) continue;
-      const at = Date.parse(row.timestamp);
-      if (!(at > fromMs && at <= toMs)) continue;
-      const u = row.message.usage;
-      const w = weightedTokens(
-        {
-          input: u.input_tokens ?? 0,
-          output: u.output_tokens ?? 0,
-          cacheRead: u.cache_read_input_tokens ?? 0,
-          cacheCreation: u.cache_creation_input_tokens ?? 0,
-        },
-        row.message.model ?? '',
-      );
-      const key = `${row.message.id ?? ''}\u0000${row.requestId ?? ''}`;
-      seen.set(key, Math.max(seen.get(key) ?? 0, w));
+    for (const e of transcriptEntries(file)) {
+      if (!(e.at > fromMs && e.at <= toMs)) continue;
+      seen.set(e.key, Math.max(seen.get(e.key) ?? 0, e.w));
     }
   }
   let weighted = 0;
   for (const w of seen.values()) weighted += w;
   return { weighted: Math.round(weighted * 1e6) / 1e6, messages: seen.size };
+}
+
+/** One assistant usage line of a transcript: when, which message, its weighted tokens. */
+interface TranscriptEntry {
+  at: number;
+  key: string;
+  w: number;
+}
+
+/**
+ * What each transcript has yielded so far, by path. A file that grew is
+ * read only from where the last read stopped (the last full line); one that
+ * shrank or was replaced (another inode) is read again from the start. The
+ * treasury reads transcripts every few seconds while a run is live, so his
+ * whole history is parsed once, not on every read.
+ */
+const transcriptCache = new Map<string, { ino: number; size: number; mtimeMs: number; offset: number; entries: TranscriptEntry[] }>();
+
+/** Forgets the transcript cache. For tests. */
+export function resetTranscriptCache(): void {
+  transcriptCache.clear();
+}
+
+function parseTranscriptLine(line: string): TranscriptEntry | null {
+  if (!line.includes('"usage"')) return null;
+  let row: TranscriptLine;
+  try {
+    row = JSON.parse(line) as TranscriptLine;
+  } catch {
+    return null;
+  }
+  if (row.type !== 'assistant' || !row.message?.usage || !row.timestamp) return null;
+  const at = Date.parse(row.timestamp);
+  if (!Number.isFinite(at)) return null;
+  const u = row.message.usage;
+  const w = weightedTokens(
+    {
+      input: u.input_tokens ?? 0,
+      output: u.output_tokens ?? 0,
+      cacheRead: u.cache_read_input_tokens ?? 0,
+      cacheCreation: u.cache_creation_input_tokens ?? 0,
+    },
+    row.message.model ?? '',
+  );
+  return { at, key: `${row.message.id ?? ''}\u0000${row.requestId ?? ''}`, w };
+}
+
+function transcriptEntries(file: { path: string; mtimeMs: number; size: number; ino: number }): TranscriptEntry[] {
+  let c = transcriptCache.get(file.path);
+  if (c && c.ino === file.ino && c.size === file.size && c.mtimeMs === file.mtimeMs) return c.entries;
+  if (!c || c.ino !== file.ino || file.size < c.offset) {
+    c = { ino: file.ino, size: 0, mtimeMs: 0, offset: 0, entries: [] };
+    transcriptCache.set(file.path, c);
+  }
+  let fd: number;
+  try {
+    fd = openSync(file.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch {
+    return c.entries;
+  }
+  try {
+    const st = fstatSync(fd);
+    if (st.ino !== c.ino) return c.entries;
+    const length = st.size - c.offset;
+    if (length > 0) {
+      const buf = Buffer.alloc(length);
+      let got = 0;
+      while (got < length) {
+        const n = readSync(fd, buf, got, length - got, c.offset + got);
+        if (n <= 0) break;
+        got += n;
+      }
+      // Only whole lines are consumed; a line still being written waits for the next read.
+      const last = buf.lastIndexOf(0x0a, got - 1);
+      if (last >= 0) {
+        for (const line of buf.subarray(0, last + 1).toString('utf8').split('\n')) {
+          const e = parseTranscriptLine(line);
+          if (e) c.entries.push(e);
+        }
+        c.offset += last + 1;
+      }
+    }
+    c.size = file.size;
+    c.mtimeMs = file.mtimeMs;
+  } catch {
+    // Unreadable now: keep what we have.
+  } finally {
+    closeSync(fd);
+  }
+  return c.entries;
 }
 
 /** True when any transcript under `dir` was written in the last ten minutes: he is using Claude Code now (spec 17). */

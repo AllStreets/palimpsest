@@ -18,9 +18,10 @@ import { realSpawner, setSpawner, type Spawned } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
 import { mirrorDir } from '../engine/mirror.js';
-import { noteSseClients, resetBudget, treasury } from '../engine/market/budget.js';
+import { acquire, noteSseClients, resetBudget, treasury } from '../engine/market/budget.js';
+import { resolvedBids } from '../engine/market/reputation.js';
 import { fakeDefaults, fakeProvider, type FakeScript } from '../engine/market/fake-provider.js';
-import { openBidding } from '../engine/market/bids.js';
+import { bidList, openBidding } from '../engine/market/bids.js';
 import { job, postManualJob, settleJobEffects, transition } from '../engine/market/jobs.js';
 import type { RunContext } from '../engine/market/install.js';
 import type { WorkInput } from '../engine/market/provider.js';
@@ -29,6 +30,8 @@ import { loopWorkPrompt } from '../engine/market/toolloop.js';
 import {
   createScheduler,
   failInterruptedRuns,
+  liveRunIds,
+  startRun,
   finishWaitingRun,
   haltRepo,
   keepAwakeState,
@@ -395,7 +398,7 @@ test('concurrency holds two claude and one local runs with a fourth waiting', as
   // A claude run finishes: its slot goes to the fourth job on the next tick.
   const firstClaude = held.started.find((i) => i.agent.model.startsWith('claude:')) as WorkInput;
   held.release(firstClaude.runId);
-  await until(() => storedRun(firstClaude.runId)?.stage === 'waiting');
+  await until(() => storedRun(firstClaude.runId)?.stage === 'waiting' && !liveRunIds().includes(firstClaude.runId));
   await s.tick();
   await until(() => held.started.length === 4);
   assert.equal(job(waiting[0])?.status, 'running');
@@ -417,7 +420,7 @@ test('a second awarded job on the same repo waits while the first runs', async (
   const [running, waiting] = job(first.job.id)?.status === 'running' ? [first, second] : [second, first];
   assert.equal(job(waiting.job.id)?.status, 'awarded');
   held.release(held.started[0].runId);
-  await until(() => job(running.job.id)?.status === 'waiting');
+  await until(() => job(running.job.id)?.status === 'waiting' && liveRunIds().length === 0);
   await s.tick();
   await until(() => held.started.length === 2);
   held.release(held.started[1].runId);
@@ -549,9 +552,12 @@ test('an install failure fails the run without a scar', async () => {
   await s.tick();
   await s.idle();
   const [r] = runsOf(j.id);
-  assert.equal(r.outcome, 'failed');
+  // Ruling (fix round 1): an install failure is crashed, spends the attempt, and never counts against the firm.
+  assert.equal(r.outcome, 'crashed');
   assert.equal(r.scar, false);
   assert.match(r.endedReason ?? '', /install/);
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0, 'no reputation outcome for the firm');
+  assert.deepEqual(job(j.id)?.excludedFirms, []);
   assert.equal(ctxs[0].dir, join(paths().runs, r.id, 'repo'));
   const check = entries().find((e) => e.kind === 'check.done')?.data as { runId: string; check: CheckResult };
   assert.equal(check.runId, r.id);
@@ -695,7 +701,7 @@ test('a self-check agent makes a second work call', async () => {
   assert.equal(runsOf(j.id)[0].stage, 'waiting');
 });
 
-test('interrupted runs crash at startup and reopen their jobs', () => {
+test('interrupted runs crash at startup and reopen their jobs', async () => {
   makeRepo();
   const a = addAgent('c1', 'alpha', 'claude:sonnet');
   const mk = (stage: Run['stage'], jobStatus: Job['status']): { r: Run; j: Job } => {
@@ -738,7 +744,23 @@ test('interrupted runs crash at startup and reopen their jobs', () => {
   const working = mk('working', 'running');
   const preparing = mk('preparing', 'awarded');
   const waiting = mk('waiting', 'waiting');
-  failInterruptedRuns();
+  for (const x of [working, preparing]) {
+    mkdirSync(join(paths().runs, x.r.id, 'repo'), { recursive: true });
+    writeFileSync(join(paths().runs, x.r.id, 'log.jsonl'), '');
+  }
+  const reaped: Array<{ root: string; hadRepo: boolean }> = [];
+  await failInterruptedRuns({
+    reap: async (root) => {
+      reaped.push({ root, hadRepo: existsSync(join(root, 'repo')) });
+      return [];
+    },
+  });
+  assert.deepEqual(
+    reaped.map((x) => x.root).sort(),
+    [join(paths().runs, preparing.r.id), join(paths().runs, working.r.id)].sort(),
+  );
+  assert.ok(reaped.every((x) => x.hadRepo), 'reaped before the run dir is removed');
+  assert.ok(!existsSync(join(paths().runs, working.r.id, 'repo')));
   assert.equal(storedRun(working.r.id)?.outcome, 'crashed');
   assert.equal(storedRun(preparing.r.id)?.outcome, 'crashed');
   assert.equal(storedRun(waiting.r.id)?.outcome, null, 'a run waiting on its PR is not live');
@@ -847,4 +869,143 @@ test('the market starts no run when the sandbox membership helper cannot be buil
   assert.equal(runsOf(j.id).length, 0);
   assert.equal(job(j.id)?.status, 'awarded');
   assert.equal(treasury(clock).concurrency.claude, 0, 'no lease is held');
+});
+
+// ---------------------------------------------------------------- fix round 1
+
+test('the stop file aborts bid-time plan calls even with no run live', async () => {
+  const planned: string[] = [];
+  useScript({
+    plan: (i, signal) =>
+      new Promise((resolve, reject) => {
+        planned.push(i.agent.id);
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }),
+  });
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  const posted = postJob();
+  const s = createScheduler(deps().deps);
+  await s.tick();
+  await until(() => planned.length === 1);
+  assert.equal(liveRunIds().length, 0);
+  writeFileSync(paths().stop, 'stopped\n');
+  await s.tick();
+  await s.idle();
+  const { satOut } = bidList(posted.id);
+  assert.equal(satOut.length, 1);
+  assert.match(satOut[0].reason, /stopped mid-plan/);
+});
+
+test('a stage that hangs past the run wall deadline is ended by the watcher', async () => {
+  useScript({});
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const s = createScheduler(
+    deps({
+      runWallMs: 300,
+      watchMs: 20,
+      // An inspection that ignores its signal and never returns.
+      inspect: () => new Promise<Inspection>(() => {}),
+    }).deps,
+  );
+  await s.tick();
+  await until(() => runsOf(j.id)[0]?.outcome != null, 3000);
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(r.outcome, 'capped');
+  assert.match(r.endedReason ?? '', /wall deadline/);
+  assert.equal(job(j.id)?.attempts, 1);
+  assert.deepEqual(job(j.id)?.excludedFirms, [], 'the agent had finished: the hang was not its');
+  assert.equal(treasury(clock).concurrency.claude, 0);
+});
+
+test('stopping the scheduler kills live runs and reaps them', async () => {
+  const held = heldWork();
+  useScript({ work: held.work });
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const { deps: d, calls } = deps();
+  const s = createScheduler(d);
+  await s.tick();
+  await until(() => held.started.length === 1);
+  await s.stop();
+  const [r] = runsOf(j.id);
+  assert.equal(r.outcome, 'killed');
+  assert.match(r.endedReason ?? '', /shutting down/);
+  assert.equal(calls.reaped, 1);
+  assert.equal(liveRunIds().length, 0);
+  assert.equal(job(j.id)?.status, 'open');
+});
+
+test('the lease and the live slot are released only after the reap', async () => {
+  useScript({});
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  let finishReap!: () => void;
+  let reaping = false;
+  const s = createScheduler(
+    deps({
+      reap: async () => {
+        reaping = true;
+        await new Promise<void>((r) => (finishReap = r));
+        return [];
+      },
+    }).deps,
+  );
+  await s.tick();
+  await until(() => reaping);
+  assert.equal(runsOf(j.id)[0].stage, 'waiting');
+  assert.equal(liveRunIds().length, 1);
+  assert.equal(treasury(clock).concurrency.claude, 1);
+  finishReap();
+  await s.idle();
+  assert.equal(liveRunIds().length, 0);
+  assert.equal(treasury(clock).concurrency.claude, 0);
+});
+
+test('startRun releases its lease on any throw and never starts two runs on one repo', async () => {
+  const held = heldWork();
+  useScript({ work: held.work });
+  makeRepo();
+  const a = addAgent('c1', 'alpha', 'claude:sonnet');
+  const l = addAgent('l1', 'gamma', 'ollama:qwen3');
+  const one = awarded(FULL, a);
+  const two = awarded(FULL, l);
+  createScheduler(deps({ preflight: async () => { throw new Error('preflight blew up'); } }).deps);
+  const got = await acquire(a.model, 'work', 20, { now: clock });
+  assert.ok(got.ok);
+  await assert.rejects(startRun(one.bid, { lease: got.ok ? got.lease : undefined }), /preflight blew up/);
+  assert.equal(treasury(clock).concurrency.claude, 0, 'the lease went back');
+  assert.equal(liveRunIds().length, 0);
+
+  createScheduler(deps().deps);
+  const p1 = startRun(one.bid);
+  const p2 = startRun(two.bid);
+  await assert.rejects(p2, /already has a live run/);
+  await until(() => held.started.length === 1);
+  assert.equal(treasury(clock).concurrency.local, 0, 'the refused call held no lease');
+  held.release(held.started[0].runId);
+  await p1;
+  assert.equal(runsOf(two.job.id).length, 0);
+});
+
+test('a city failure after the work is not blamed on the agent', async () => {
+  useScript({});
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const s = createScheduler(
+    deps({
+      quiet: async () => {
+        throw new Error('run processes still alive: 4242');
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(r.outcome, 'crashed');
+  assert.match(r.endedReason ?? '', /still alive/);
+  assert.equal(job(j.id)?.attempts, 1);
+  assert.deepEqual(job(j.id)?.excludedFirms, []);
 });

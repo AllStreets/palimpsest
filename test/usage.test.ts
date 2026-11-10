@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync, closeSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -15,6 +15,7 @@ import {
   latestReading,
   projectsDir,
   readings,
+  resetTranscriptCache,
   transcriptTokens,
   uninstallHook,
 } from '../engine/usage.js';
@@ -516,4 +517,30 @@ test('the transcript scan does not follow directory symlinks out of the projects
   symlinkSync(join(outside, 'leak.jsonl'), join(projects, 'leak-link.jsonl'));
   writeTranscript('own.jsonl', [assistantLine({ at: T0 + 60_000, id: 'm', requestId: 'r', model: 'claude-opus-4-1', input: 100 })]);
   assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 100, messages: 1 });
+});
+
+test('transcript scans are cached by path, mtime and size and read only the new bytes', () => {
+  resetTranscriptCache();
+  const file = join(projects, 'session.jsonl');
+  const first = assistantLine({ at: T0 + 60_000, id: 'a', requestId: 'a', model: 'claude-opus-4-1', input: 100 });
+  writeFileSync(file, `${first}\n`);
+  assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 100, messages: 1 });
+
+  // Spoil the bytes already read (same length) and append a line: a cached scan reads only the new line.
+  const fd = openSync(file, 'r+');
+  writeSync(fd, 'x'.repeat(first.length), 0);
+  closeSync(fd);
+  appendFileSync(file, `${assistantLine({ at: T0 + 120_000, id: 'b', requestId: 'b', model: 'claude-opus-4-1', input: 50 })}\n`);
+  assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 150, messages: 2 });
+
+  // A line still being written waits for its newline.
+  const partial = assistantLine({ at: T0 + 180_000, id: 'c', requestId: 'c', model: 'claude-opus-4-1', input: 25 });
+  appendFileSync(file, partial.slice(0, 40));
+  assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 150, messages: 2 });
+  appendFileSync(file, `${partial.slice(40)}\n`);
+  assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 175, messages: 3 });
+
+  // A file that shrank is read again from the start.
+  writeFileSync(file, `${assistantLine({ at: T0 + 60_000, id: 'd', requestId: 'd', model: 'claude-opus-4-1', input: 10 })}\n`);
+  assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 10, messages: 1 });
 });

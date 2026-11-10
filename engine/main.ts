@@ -10,8 +10,8 @@ import { startServer } from './server.js';
 async function main(): Promise<void> {
   // An analysis the last engine was running when it stopped can never finish: say so, with a Retry.
   failInterruptedAnalyses();
-  // Likewise a run the last engine had live: it ends crashed and its job returns to the board once (ruling 16).
-  failInterruptedRuns();
+  // Likewise a run the last engine had live: its strays are reaped, it ends crashed and its job returns to the board once (ruling 16).
+  await failInterruptedRuns();
   // The five firms are seeded here and only here (never inside startServer, so tests never run ollama list).
   // An agent whose Ollama model is not installed seeds retired; seeding is idempotent per firm.
   const installed = await installedModels();
@@ -40,10 +40,10 @@ async function main(): Promise<void> {
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
-    scheduler.stop();
     // eslint-disable-next-line no-console
     console.log(`Palimpsest engine received ${signal}, shutting down`);
-    void close().then(
+    // Live runs are killed, their processes reaped and their proxies closed before the engine exits.
+    void scheduler.stop().catch(() => {}).then(close).then(
       () => process.exit(0),
       () => process.exit(1),
     );

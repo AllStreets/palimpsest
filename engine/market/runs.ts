@@ -107,7 +107,11 @@ export const SELF_CHECK_TURNS = 10;
 /** The longest diff quoted into a self-check prompt. */
 const SELF_CHECK_DIFF_MAX = 20_000;
 
+/** Minutes a run may live beyond its work cap (install, commit, inspection, shipping) before the watcher ends it. */
+export const RUN_EXTRA_MINUTES = 90;
+
 export const STOP_REASON = 'The stop file is set.';
+export const SHUTDOWN_REASON = 'The engine is shutting down.';
 export const INTERRUPTED_RUN = 'The engine stopped during the run.';
 export const HELPER_MISSING =
   'The sandbox membership helper could not be built (is /usr/bin/cc installed?), so the market starts no agent runs.';
@@ -167,20 +171,23 @@ export interface SchedulerDeps {
   preflight?: () => Promise<string | null>;
   /** The watcher's interval; 0 starts none (tests call watch()). Default WATCH_MS. */
   watchMs?: number;
+  /** A run's whole wall time; past it the watcher ends the run `capped`. Default its work cap plus RUN_EXTRA_MINUTES. */
+  runWallMs?: number;
 }
 
 export interface Scheduler {
   tick(): Promise<void>;
   start(intervalMs?: number): void;
-  stop(): void;
+  /** Stops ticking, kills every live run and waits until each has closed, been reaped and released. */
+  stop(): Promise<void>;
   /** Resolves once no tick, bid collection or run is in flight. */
   idle(): Promise<void>;
   /** One pass of the watcher: the stop file, the treasury and keep-awake. */
   watch(): void;
 }
 
-type Config = Required<Omit<SchedulerDeps, 'baseline' | 'pollPRs' | 'watchReverts' | 'daily'>> &
-  Pick<SchedulerDeps, 'baseline' | 'pollPRs' | 'watchReverts' | 'daily'>;
+type Optional = 'baseline' | 'pollPRs' | 'watchReverts' | 'daily' | 'runWallMs';
+type Config = Required<Omit<SchedulerDeps, Optional>> & Pick<SchedulerDeps, Optional>;
 
 const notWired = (what: string) => async (): Promise<never> => {
   throw new Error(`${what} is not wired into the scheduler yet`);
@@ -259,10 +266,22 @@ interface LiveRun {
   logWindow: { start: number; count: number };
   site: SiteState;
   summary: string | null;
+  /** Wall-clock ms past which the watcher ends the run. */
+  deadlineAt: number;
+  deadlineHit: boolean;
 }
+
+/** An error in the city's own work (git, disk, the reaper), never blamed on the agent. */
+class CityError extends Error {}
 
 const live = new Map<string, LiveRun>();
 const pending = new Set<Promise<unknown>>();
+/** Repos a startRun call has claimed but not yet made live, so two calls never start two runs on one repo. */
+const reserved = new Set<string>();
+
+function repoBusy(fullName: string): boolean {
+  return reserved.has(fullName) || [...live.values()].some((x) => x.run.repo === fullName);
+}
 
 function track<T>(p: Promise<T>): Promise<T> {
   pending.add(p);
@@ -415,6 +434,12 @@ let watcher: NodeJS.Timeout | null = null;
 /** One watcher pass: the stop file kills every live run; the treasury read catches a hard stop with nothing in flight. */
 export function watchOnce(): void {
   if (existsSync(paths().stop)) for (const id of [...live.keys()]) kill(id, STOP_REASON);
+  const t = Date.now();
+  for (const st of [...live.values()]) {
+    if (st.deadlineHit || t < st.deadlineAt) continue;
+    st.deadlineHit = true;
+    kill(st.run.id, `The run passed its wall deadline of ${Math.round(wallMsOf(st.agent) / MIN_MS)} minutes.`);
+  }
   try {
     treasury(config.now());
   } catch (err) {
@@ -563,13 +588,15 @@ async function doWork(st: LiveRun, dir: string, baseSha: string): Promise<WorkOu
     caps,
   });
 
-  const first = await provider.work(input(st.job, shape === 'plan-then-answer' ? st.bid.plan : null, { maxTurns: a.maxTurns, maxMinutes, maxCredits }, null));
+  const first = await guarded(st, provider.work(input(st.job, shape === 'plan-then-answer' ? st.bid.plan : null, { maxTurns: a.maxTurns, maxMinutes, maxCredits }, null)));
   const spent = chargeRun(st, provider, first.usage);
   if (first.ended !== 'finished' || shape !== 'self-check') return first;
   checkpoint(st);
 
-  await config.quiet(st.runRoot);
-  const sofar = await diffOf(dir, baseSha);
+  const sofar = await city(st, async () => {
+    await config.quiet(st.runRoot);
+    return diffOf(dir, baseSha);
+  });
   const caps = {
     maxTurns: Math.max(1, Math.min(a.maxTurns, SELF_CHECK_TURNS)),
     maxMinutes: Math.max(1, Math.round((maxMinutes - (Date.now() - t0) / MIN_MS) * 100) / 100),
@@ -580,7 +607,7 @@ async function doWork(st: LiveRun, dir: string, baseSha: string): Promise<WorkOu
     return first;
   }
   engineLog(st, '[palimpsest] self-check: a second pass reviews the change against the acceptance list');
-  const second = await provider.work(input({ ...st.job, body: selfCheckBody(st.job, sofar.patch) }, null, caps, { ...st.run.progress }));
+  const second = await guarded(st, provider.work(input({ ...st.job, body: selfCheckBody(st.job, sofar.patch) }, null, caps, { ...st.run.progress })));
   chargeRun(st, provider, second.usage);
   if (second.ended === 'finished') return { ...second, summary: second.summary || first.summary };
   if (second.ended === 'capped') {
@@ -590,6 +617,49 @@ async function doWork(st: LiveRun, dir: string, baseSha: string): Promise<WorkOu
   return second;
 }
 
+/**
+ * Awaits `p` unless the run's signal fires first: a stage that ignores the
+ * signal (a hung check, a stuck git) cannot hold the run past a kill.
+ */
+function guarded<T>(st: LiveRun, p: Promise<T>): Promise<T> {
+  const s = st.lease.signal;
+  if (s.aborted) {
+    p.catch(() => {});
+    return Promise.reject(new Killed(reasonOf(st)));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      p.catch(() => {});
+      reject(new Killed(reasonOf(st)));
+    };
+    s.addEventListener('abort', onAbort, { once: true });
+    p.then(
+      (v) => {
+        s.removeEventListener('abort', onAbort);
+        resolve(v);
+      },
+      (e) => {
+        s.removeEventListener('abort', onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** The city's own step: a failure in it is never the agent's. */
+async function city<T>(st: LiveRun, p: () => Promise<T>): Promise<T> {
+  try {
+    return await guarded(st, p());
+  } catch (err) {
+    if (err instanceof Killed) throw err;
+    throw new CityError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+function wallMsOf(a: Agent): number {
+  return config.runWallMs ?? (maxMinutesOf(a) + RUN_EXTRA_MINUTES) * MIN_MS;
+}
+
 /** The whole life of one run, from preparing to its end or to waiting on its PR. */
 async function lifecycle(st: LiveRun): Promise<Run> {
   const log = logTo(st);
@@ -597,23 +667,24 @@ async function lifecycle(st: LiveRun): Promise<Run> {
   const ecosystems = st.repo.checks?.ecosystems ?? [];
   try {
     boundary(st, 'preparing');
-    const { dir, baseSha } = await createRunDir(st.repo, st.run.id, st.run.branch);
+    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch));
     st.run = { ...st.run, dir, baseSha };
     saveRun(st.run);
-    st.egress = await startEgress(st.run.id, log);
+    st.egress = await guarded(st, startEgress(st.run.id, log));
     if (st.agent.model.startsWith('claude:')) {
-      st.broker = await startBroker(st.run.id, { runRoot: st.runRoot, dir, log, signal: st.lease.signal, stage: () => st.toolStage });
+      st.broker = await guarded(st, startBroker(st.run.id, { runRoot: st.runRoot, dir, log, signal: st.lease.signal, stage: () => st.toolStage }));
     }
-    if (config.baseline) await config.baseline(st.repo, baseSha);
+    if (config.baseline) await guarded(st, config.baseline(st.repo, baseSha));
 
     boundary(st, 'installing');
     st.toolStage = 'install';
     st.egress.setStage('install', hostsFor('install', ecosystems, null));
     const ctx: RunContext = { runId: st.run.id, runRoot: st.runRoot, dir, log, signal: st.lease.signal };
-    const install = await config.installDeps(ctx, st.repo);
+    const install = await guarded(st, config.installDeps(ctx, st.repo));
     record('check.done', { runId: st.run.id, jobId: st.run.jobId, check: install });
     checkpoint(st);
-    if (install.status === 'fail') return end(st, 'failed', `The install failed: ${install.detail}`, { job: 'fail' });
+    // An install failure is the repo's or the city's, never the firm's: crashed, an attempt spent, no reputation hit.
+    if (install.status === 'fail') return end(st, 'crashed', `The install failed: ${install.detail}`, { job: 'fail' });
 
     phase = 'work';
     checkpoint(st);
@@ -622,6 +693,8 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     st.toolStage = 'working';
     st.egress.setStage('working', hostsFor('working', ecosystems, st.agent.model));
     const out = await doWork(st, dir, baseSha);
+    // From here on the agent has stopped: git, disk and reaper failures are the city's.
+    phase = 'after';
     st.summary = typeof out.summary === 'string' ? out.summary.slice(0, 4000) : null;
     if (out.ended === 'aborted' && st.lease.signal.aborted) throw new Killed(reasonOf(st));
     checkpoint(st);
@@ -632,25 +705,25 @@ async function lifecycle(st: LiveRun): Promise<Run> {
       return end(st, 'crashed', reason, { job: 'fail', exclude: true });
     }
 
-    await config.quiet(st.runRoot);
-    const head = await commitAll(dir, st.job.title, st.job.id);
+    // A stray the reaper cannot clear is counted as the city's failure: runQuiet does not say whether the survivor was the agent's.
+    await city(st, () => config.quiet(st.runRoot));
+    const head = await city(st, () => commitAll(dir, st.job.title, st.job.id));
     if (!head) return end(st, 'failed', 'The run finished without changing anything.', { job: 'fail', exclude: true });
     st.run = { ...st.run, headSha: head };
     saveRun(st.run);
-    await config.quiet(st.runRoot);
-    const d = await diffOf(dir, baseSha);
+    await city(st, () => config.quiet(st.runRoot));
+    const d = await city(st, () => diffOf(dir, baseSha));
     const patchPath = join(st.runRoot, 'diff.patch');
     writeFileSync(patchPath, d.patch);
     const diff: RunDiff = { ...d, patchPath };
     record('run.diff', { runId: st.run.id, jobId: st.run.jobId, headSha: head, files: d.files, lines: d.lines, sha256: d.sha256, patchPath });
 
-    phase = 'after';
     checkpoint(st);
     st.job = transition(storedJob(st.job.id) ?? st.job, 'inspecting');
     setStage(st, 'inspecting');
     st.toolStage = 'checks';
     st.egress.setStage('checks', hostsFor('checks', ecosystems, null));
-    const inspection = await config.inspect(st.run, st.job, st.repo, diff, st.lease);
+    const inspection = await guarded(st, config.inspect(st.run, st.job, st.repo, diff, st.lease));
     checkpoint(st);
     st.run = { ...st.run, inspectionId: inspection.id };
     saveRun(st.run);
@@ -658,20 +731,19 @@ async function lifecycle(st: LiveRun): Promise<Run> {
 
     st.job = transition(storedJob(st.job.id) ?? st.job, 'shipping');
     setStage(st, 'shipping');
-    const shipped = await config.ship(st.run, st.job, st.repo, inspection, st.lease.signal);
+    const shipped = await guarded(st, config.ship(st.run, st.job, st.repo, inspection, st.lease.signal));
     st.run = { ...st.run, ...shipped, id: st.run.id, jobId: st.run.jobId, summary: st.summary };
     if (st.run.outcome) return end(st, st.run.outcome, st.run.endedReason, { job: 'none' });
     setStage(st, st.run.stage === 'done' ? 'done' : 'waiting');
     return st.run;
   } catch (err) {
+    // Past its wall deadline the run is capped: an attempt spent, the firm excluded only if it was still working.
+    if (st.deadlineHit) return end(st, 'capped', reasonOf(st), { job: 'fail', exclude: phase === 'work' });
     if (st.lease.signal.aborted || err instanceof Killed) return end(st, 'killed', reasonOf(st), { job: 'reopen' });
     const msg = err instanceof Error ? err.message : String(err);
-    // A crash while the agent worked is the agent's; one before or after it is the city's.
-    return end(st, 'crashed', msg, { job: 'fail', exclude: phase === 'work' });
+    // A crash while the agent worked is the agent's; one before or after it, or in the city's own step, is the city's.
+    return end(st, 'crashed', msg, { job: 'fail', exclude: phase === 'work' && !(err instanceof CityError) });
   } finally {
-    live.delete(st.run.id);
-    st.lease.release();
-    syncWatcher();
     for (const close of [() => st.broker?.close(), () => st.egress?.close()]) {
       try {
         await close();
@@ -686,6 +758,10 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     }
     forgetRun(st.run.id);
     removeRunDir(st.run.id);
+    // The slot and the lease go only once the proxy, the broker and the run's processes are gone.
+    live.delete(st.run.id);
+    st.lease.release();
+    syncWatcher();
     updateKeepAwake();
   }
 }
@@ -703,21 +779,41 @@ export async function startRun(bid: Bid, opts: { lease?: Lease } = {}): Promise<
     lease?.release();
     throw new Error(why);
   };
-  const problem = await config.preflight();
-  if (problem) refuse(problem);
-  const j = storedJob(bid.jobId);
-  const a = storedAgent(bid.agentId);
-  const repo = j ? getRepo(j.repo) : null;
-  if (!j || j.status !== 'awarded' || j.awardedBid !== bid.id) return refuse(`job ${bid.jobId} is not awarded to bid ${bid.id}`);
-  if (!a || a.retired) return refuse(`agent ${bid.agentId} cannot work`);
-  if (!repo) return refuse(`repo ${j.repo} is not connected`);
-  if ([...live.values()].some((x) => x.run.repo === repo.fullName)) return refuse(`${repo.fullName} already has a live run`);
-  if (!lease) {
-    const got = await acquire(a.model, 'work', bid.price, { now: config.now() });
-    if (!got.ok) throw new Error(`no work lease: ${got.reason.detail}`);
-    lease = got.lease;
+  const check = () => {
+    const j = storedJob(bid.jobId);
+    const a = storedAgent(bid.agentId);
+    const repo = j ? getRepo(j.repo) : null;
+    if (!j || j.status !== 'awarded' || j.awardedBid !== bid.id) return refuse(`job ${bid.jobId} is not awarded to bid ${bid.id}`);
+    if (!a || a.retired) return refuse(`agent ${bid.agentId} cannot work`);
+    if (!repo) return refuse(`repo ${j.repo} is not connected`);
+    return { j, a, repo };
+  };
+  const first = check();
+  // The repo is claimed before the first await, so a second call for it is refused at once.
+  if (repoBusy(first.repo.fullName)) refuse(`${first.repo.fullName} already has a live run`);
+  reserved.add(first.repo.fullName);
+  try {
+    const problem = await config.preflight();
+    if (problem) refuse(problem);
+    if (!lease) {
+      const got = await acquire(first.a.model, 'work', bid.price, { now: config.now() });
+      if (!got.ok) refuse(`no work lease: ${got.reason.detail}`);
+      else lease = got.lease;
+    }
+    // The job may have moved while we waited.
+    const { j, a, repo } = check();
+    const st = begin(bid, j, a, repo, lease as Lease);
+    return lifecycle(st);
+  } catch (err) {
+    lease?.release();
+    throw err;
+  } finally {
+    reserved.delete(first.repo.fullName);
   }
+}
 
+/** Makes the run live: its record, its job's run id, its site and its deadline. */
+function begin(bid: Bid, j: Job, a: Agent, repo: Repo, lease: Lease): LiveRun {
   const now = config.now();
   const id = `run-${randomUUID().replace(/-/g, '').slice(0, 12)}`;
   const runRoot = join(paths().runs, id);
@@ -764,6 +860,8 @@ export async function startRun(bid: Bid, opts: { lease?: Lease } = {}): Promise<
     logWindow: { start: 0, count: 0 },
     site: { repo: repo.fullName, runId: id, jobId: j.id, agentId: a.id, firmId: a.firmId, stage: 'crane', progress: 0, size: TIER_SIZE[j.tier], since: iso(now) },
     summary: null,
+    deadlineAt: Date.now() + wallMsOf(a),
+    deadlineHit: false,
   };
   live.set(id, st);
   saveRun(r);
@@ -771,7 +869,7 @@ export async function startRun(bid: Bid, opts: { lease?: Lease } = {}): Promise<
   emit('run.started', { run: r });
   syncWatcher();
   updateKeepAwake();
-  return lifecycle(st);
+  return st;
 }
 
 /**
@@ -808,7 +906,8 @@ export function finishWaitingRun(runId: string, outcome: Exclude<RunOutcome, nul
  * finish. Each ends `crashed`, and its job fails one attempt and returns to
  * the board if it has one left (ruling 16).
  */
-export function failInterruptedRuns(): Run[] {
+export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Promise<number[]> } = {}): Promise<Run[]> {
+  const reap = opts.reap ?? reapRun;
   const out: Run[] = [];
   for (const r of listRuns()) {
     if (r.outcome !== null || !LIVE_STAGES.includes(r.stage)) continue;
@@ -817,6 +916,13 @@ export function failInterruptedRuns(): Run[] {
     record('run.ended', { runId: r.id, jobId: r.jobId, outcome: 'crashed', reason: INTERRUPTED_RUN, summary: r.summary ?? null, run: ended });
     emit('run.ended', { runId: r.id, outcome: 'crashed', reason: INTERRUPTED_RUN });
     settleJob({ run: ended }, 'fail', false);
+    // Whatever the run left running (a daemon that outlived the engine) is killed before its files go.
+    const runRoot = join(paths().runs, r.id);
+    try {
+      if (existsSync(runRoot)) await reap(runRoot);
+    } catch (err) {
+      console.warn(`palimpsest: reaping interrupted run ${r.id} failed: ${errText(err)}`);
+    }
     removeRunDir(r.id);
     out.push(ended);
   }
@@ -907,9 +1013,9 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       return;
     }
     lastRefusal = null;
-    const busy = new Set([...live.values()].map((st) => st.run.repo));
+    const busy = new Set<string>();
     for (const j of due) {
-      if (busy.has(j.repo)) continue;
+      if (busy.has(j.repo) || repoBusy(j.repo)) continue;
       const bid = j.awardedBid ? bidById(j.awardedBid) : null;
       const a = bid ? storedAgent(bid.agentId) : null;
       if (!bid || !a || a.retired) {
@@ -932,6 +1038,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const now = config.now();
     if (existsSync(paths().stop)) {
       for (const id of [...live.keys()]) kill(id, STOP_REASON);
+      // The treasury read sees the stop file and aborts every lease, bid-time plan calls included, even with no run live.
+      try {
+        treasury(now);
+      } catch (err) {
+        console.warn(`palimpsest: the treasury could not be read: ${errText(err)}`);
+      }
       updateKeepAwake();
       return;
     }
@@ -1022,9 +1134,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       void tick();
       timer = setInterval(() => void tick(), intervalMs);
     },
-    stop() {
+    async stop() {
       if (timer) clearInterval(timer);
       timer = null;
+      // Shutdown: every live run is killed, then closed, reaped and released by its own lifecycle.
+      for (const id of [...live.keys()]) kill(id, SHUTDOWN_REASON);
+      while (current || pending.size > 0) await Promise.allSettled([current, ...pending]);
     },
     async idle() {
       while (current || pending.size > 0) {
