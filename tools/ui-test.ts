@@ -142,6 +142,23 @@ const cityOf = (page: Page): Promise<District[]> =>
 
 // ---------------------------------------------------------------- fps
 
+/** The steady overview's frame rate, which every other view is held to. */
+let overviewFps = 0;
+
+/** Frames per second over three seconds, as the page draws them. */
+function pageFps(page: Page): Promise<number> {
+  return page.evaluate(`new Promise((resolve) => {
+    let frames = 0;
+    const t0 = performance.now();
+    function tick() {
+      frames++;
+      if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
+      else resolve((frames * 1000) / (performance.now() - t0));
+    }
+    requestAnimationFrame(tick);
+  })`) as Promise<number>;
+}
+
 /**
  * Steady-state frame rate: every shader is compiled first (renderer.compile
  * through the debug handle) and the view settles, so a first-sight compile
@@ -188,6 +205,7 @@ async function measureFps(page: Page): Promise<void> {
   );
   const closeStats = await debug(page, (d) => d.stats());
   console.log(`info  ${gpu}, ${VIEWPORT.width}x${VIEWPORT.height} at pixel ratio ${ratio}`);
+  overviewFps = overview;
   console.log(`info  steady overview: ${overview.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
   console.log(`info  steady close tower: ${close.toFixed(0)} fps, ${closeStats.calls} draw calls, ${(closeStats.triangles / 1e6).toFixed(2)}M triangles`);
 }
@@ -442,6 +460,100 @@ async function quarterChecks(page: Page): Promise<void> {
     location.hash = '#/';
   });
   check((await debug(page, (x) => x.quality())) === 'high', 'the quarters hold high quality');
+}
+
+// ---------------------------------------------------------------- live construction (Task 26)
+
+/**
+ * The sample economy's live mode, ticked on demand at speed 20 (test safety
+ * rule 8): its working run frames a floor on its repo's tower. The crane
+ * stands on the roof and the frame at the new floor's height; each tick of
+ * real progress adds beams, and with no tick nothing on the site advances.
+ * construction.png close on the crane mid-weld, a four-frame strip of real
+ * progress steps, and the frame rate held within 5 of the overview.
+ */
+async function constructionChecks(page: Page): Promise<void> {
+  type SV = { stage: string; progress: number; beams: number; beamsTotal: number; columns: number; crane: number[]; weld: number[] | null; arc: number; top: number; floorHeight: number; centre: number[] };
+  type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): SV | null };
+  const { setMarketExtras } = await import('../engine/market/api.js');
+  const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
+  setMarketExtras({ sites: economySites, trips: economyTrips });
+  const clock = economyClock({ now: () => Date.now(), speed: 20 });
+  try {
+    await page.reload();
+    await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+    const found = await page
+      .waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().some((s) => s.stage === 'framing'), null, { timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false);
+    check(found, 'the economy has a site framing a floor');
+    if (!found) return;
+    const repo = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().find((s) => s.stage === 'framing')!.repo)) as string;
+    const view = (): Promise<SV | null> => page.evaluate((r) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r), repo);
+    const tick = async (ms: number): Promise<void> => {
+      clock.tick(ms);
+      await clock.idle();
+      await page.waitForTimeout(500);
+    };
+    await tick(1000);
+    let s = await view();
+    check(!!s && s.stage === 'framing', `the site frames (${s?.stage})`);
+    if (!s) return;
+    const city = await cityOf(page);
+    const d = city.find((x) => x.repo === repo)!;
+    check(Math.abs(s.top - layoutTower(d.tower).top) < 0.05, `the site stands on the tower's roof (${s.top.toFixed(1)} m)`);
+    check(Math.abs(s.crane[1] - s.top) < 0.05, 'the crane stands on the roof');
+    check(s.beams === Math.round(s.beamsTotal * s.progress), `the frame shows its progress (${s.beams} of ${s.beamsTotal} beams at ${s.progress})`);
+    // No event, no progress: the frame holds.
+    await page.waitForTimeout(2000);
+    const held = await view();
+    check(held?.beams === s.beams && held?.progress === s.progress, 'between events the frame holds still');
+
+    const [cx, , cz] = s.crane;
+    const eye: [number, number, number] = [cx - 70, s.top + 22, cz + 62];
+    const target: [number, number, number] = [cx + 4, s.top + 12, cz - 2];
+    await setView(page, eye, target);
+    await debug(page, (x) => x.precompile());
+    await page.waitForTimeout(1500);
+    const midWeld = async (): Promise<void> => {
+      for (let i = 0; i < 30; i++) {
+        await page.waitForFunction((r) => ((window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r)?.arc ?? 0) > 0.3, repo, { timeout: 10_000 }).catch(() => {});
+        await page.waitForTimeout(300);
+        if (((await view())?.arc ?? 0) > 0.3) return;
+      }
+    };
+    await midWeld();
+    await page.screenshot({ path: join(SHOTS, 'construction.png') });
+    await page.waitForTimeout(1500);
+    const stats = await debug(page, (x) => x.stats());
+    const fps = await pageFps(page);
+    console.log(`info  construction: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+    check(fps >= overviewFps - 5, `the site holds the frame rate within 5 of the overview (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+
+    // The strip: four real progress steps from the same eye; each adds steel.
+    let last = s.beams;
+    for (let i = 0; i < 4; i++) {
+      await tick(2200);
+      s = await view();
+      if (!s) break;
+      await page.waitForTimeout(2500);
+      await midWeld();
+      await page.screenshot({ path: join(SHOTS, `construction-strip-${i}.png`) });
+      console.log(`info  strip ${i}: ${s.stage} at ${s.progress}, ${s.beams} of ${s.beamsTotal} beams`);
+      check(s.beams >= last, `step ${i} never takes steel away (${last} to ${s.beams})`);
+      last = s.beams;
+    }
+    check(last > (held?.beams ?? 0), 'the frame rose over the strip');
+    await debug(page, (x) => (x as unknown as { home(): void }).home());
+    await page.waitForTimeout(2500);
+    const home = await debug(page, (x) => x.stats());
+    const homeFps = await pageFps(page);
+    console.log(`info  city from home with live sites: ${homeFps.toFixed(0)} fps, ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
+    check(homeFps >= overviewFps - 5, `the city from home holds its frame rate with live sites (${homeFps.toFixed(0)} fps)`);
+  } finally {
+    clock.stop();
+    setMarketExtras({});
+  }
 }
 
 // ---------------------------------------------------------------- the exchange (Task 25)
@@ -1381,6 +1493,7 @@ async function main(): Promise<void> {
       await earnedChecks(page);
       await quarterChecks(page);
       await exchangeChecks(page);
+      await constructionChecks(page);
       await silhouetteChecks(page);
     }
 

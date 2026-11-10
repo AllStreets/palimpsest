@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 
 import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
-import type { District, Quarter } from '../../../shared/types';
+import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
+import type { District, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
 import { createCameraRig } from './camera';
+import { makeConstruction, type Construction } from './construction.js';
 import type { BoardJob, Exchange } from './exchange.js';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
@@ -12,7 +14,7 @@ import type { Lot } from './lots';
 import { configureMaterials, texturesSettled } from './materials';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor } from './governor';
-import { createPost } from './post';
+import { createPost, EXPOSURE, FLICKER } from './post';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
 import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
@@ -90,6 +92,14 @@ export interface City {
   setStopped(stopped: boolean): void;
   /** The civic exchange as built now, or null (tests and debugging). */
   exchange(): Exchange | null;
+  /**
+   * The market's job sites (GET /api/live, then site.changed): a crane, a
+   * rising frame, netting and welding on the roof of each repo's tower while
+   * a run works there. One site per repo shows: the busiest.
+   */
+  setSites(sites: ReadonlyArray<SiteState>): void;
+  /** The job site standing on a repo's tower: its stage and progress, the frame shown, and where the arc strikes (tests and captures). */
+  site(repo: string): SiteView | null;
   /** Where an agent's tower stands, root to roof, for framing the camera on it. */
   agentFrame(agentId: string): Frame | null;
   /** Keeps the view centred in the part of the window not covered by a panel this wide on the right. */
@@ -131,6 +141,28 @@ export interface City {
   onQualityDrop(fn: () => void): void;
 }
 
+/** A job site as the city shows it. */
+export interface SiteView {
+  stage: SiteStage;
+  progress: number;
+  columns: number;
+  beams: number;
+  beamsTotal: number;
+  /** World position of the crane's base and of the welding arc (null when nobody welds). */
+  crane: number[];
+  weld: number[] | null;
+  /** How bright the arc burns this frame, 0 (between beads) to 1. */
+  arc: number;
+  /** The roof's plan centre, in the world. */
+  centre: number[];
+  /** The roof the site stands on and the new floor's height. */
+  top: number;
+  floorHeight: number;
+}
+
+/** Which of a repo's sites shows when it has more than one (a run waiting on its PR, and the next run at work). */
+const SITE_RANK: Record<SiteStage, number> = { framing: 6, crane: 5, inspecting: 4, curing: 3, teardown: 2, scar: 1, waiting: 0 };
+
 /** The plain plinth every district shows until towers exist. */
 export function plinthCenterpiece(): Centerpiece {
   const object = makePlinth();
@@ -169,7 +201,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   renderer.setPixelRatio(Math.min(devicePixelRatio, quality === 'high' ? 1.75 : 1));
   renderer.setSize(width(), height());
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.85;
+  renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   // Counted per frame across the whole post chain, not per render call.
@@ -204,6 +236,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   sun.shadow.needsUpdate = true;
   scene.add(sun, sun.target);
   scene.add(new THREE.HemisphereLight(0x8fa3c8, 0x2e241c, 0.35));
+  // The welders' arcs light the steel round them from a fixed pool of point lights (post.ts FLICKER):
+  // always in the scene, dark when unused, so an arc striking never recompiles the city's materials.
+  const flickerLights = Array.from({ length: FLICKER.lights }, () => {
+    const l = new THREE.PointLight(FLICKER.color, 0, FLICKER.distance, 2);
+    l.castShadow = false;
+    scene.add(l);
+    return l;
+  });
   const sunOffset = SUN_DIRECTION.clone().multiplyScalar(800);
   let texel = (SHADOW_HALF * 2) / shadowSize;
 
@@ -408,11 +448,116 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     scaffolds = next;
   }
 
+  // ---------------------------------------------------------------- job sites: cranes, frames and welding
+  let liveSites: SiteState[] = [];
+  const constructions = new Map<string, { c: Construction; top: number; floorHeight: number }>();
+
+  /** The roof a tower's next floor goes on: its top floor's plan centre, top and half-width (or the root's, before any floor). */
+  function roofOf(piece: Centerpiece): { x: number; z: number; top: number; half: number } | null {
+    piece.object.updateWorldMatrix(true, true);
+    let best: { x: number; z: number; top: number; half: number } | null = null;
+    const at = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    for (const [o, id] of piece.pickables) {
+      o.getWorldPosition(at);
+      o.getWorldScale(scale);
+      const top = at.y + scale.y / 2;
+      // The root's proxy reaches three metres past its top; a floor's is the floor.
+      const half = id === null ? scale.x / 2 - 3 : scale.x / 2;
+      if (!best || top > best.top + 1e-6) best = { x: at.x, z: at.z, top, half };
+    }
+    return best;
+  }
+
+  function placeConstructions(): void {
+    const byRepo = new Map<string, SiteState>();
+    for (const s of liveSites) {
+      const had = byRepo.get(s.repo);
+      if (!had || SITE_RANK[s.stage] > SITE_RANK[had.stage]) byRepo.set(s.repo, s);
+    }
+    for (const [repo, entry] of constructions) {
+      if (byRepo.has(repo) && pieceOf(repo)) continue;
+      districtGroup.remove(entry.c.object);
+      entry.c.dispose();
+      constructions.delete(repo);
+    }
+    for (const [repo, s] of byRepo) {
+      const piece = pieceOf(repo);
+      const roof = piece ? roofOf(piece) : null;
+      if (!roof) continue;
+      let entry = constructions.get(repo);
+      if (!entry) {
+        entry = { c: makeConstruction(quality), top: 0, floorHeight: 0 };
+        districtGroup.add(entry.c.object);
+        constructions.set(repo, entry);
+      }
+      const floorHeight = FLOOR_HEIGHT[s.size] ?? FLOOR_HEIGHT.medium;
+      entry.c.object.position.set(roof.x, 0, roof.z);
+      entry.c.set(s, roof.top, roof.half, floorHeight);
+      entry.top = roof.top;
+      entry.floorHeight = floorHeight;
+    }
+    // What stands on the roofs changed: the cached shadow map is drawn again.
+    sun.shadow.needsUpdate = true;
+  }
+
+  function setSites(sites: ReadonlyArray<SiteState>): void {
+    liveSites = [...sites];
+    placeConstructions();
+  }
+
+  const weldAt = new THREE.Vector3();
+  /** Runs every site's crane and sparks, hands the pool's lights to the arcs nearest the camera, and asks for a shadow redraw while a crane moves. */
+  function updateConstructions(dt: number): void {
+    const arcs: Array<{ at: THREE.Vector3; intensity: number; d: number }> = [];
+    for (const { c } of constructions.values()) {
+      if (c.update(dt)) sun.shadow.needsUpdate = true;
+      const w = c.weld();
+      if (!w) continue;
+      weldAt.copy(w.at).add(c.object.position);
+      arcs.push({ at: weldAt.clone(), intensity: w.intensity, d: weldAt.distanceTo(camera.position) });
+    }
+    arcs.sort((a, b) => a.d - b.d);
+    flickerLights.forEach((l, i) => {
+      const a = arcs[i];
+      l.intensity = a ? a.intensity : 0;
+      // Just off the steel, on the open side, so the light falls on the beam and the deck round the joint.
+      if (a) l.position.set(a.at.x, a.at.y + 0.35, a.at.z);
+    });
+  }
+
+  function siteView(repo: string): SiteView | null {
+    const entry = constructions.get(repo);
+    const s = liveSites.filter((x) => x.repo === repo).sort((a, b) => SITE_RANK[b.stage] - SITE_RANK[a.stage])[0];
+    if (!entry || !s) return null;
+    const count = (name: string): { count: number; total: number } => {
+      const m = entry.c.object.getObjectByName(name) as THREE.InstancedMesh | undefined;
+      return { count: m?.count ?? 0, total: m ? (m.instanceMatrix.count as number) : 0 };
+    };
+    const crane = entry.c.object.getObjectByName('construction:crane');
+    const w = entry.c.weld();
+    return {
+      stage: s.stage,
+      progress: s.progress,
+      columns: count('construction:columns').count,
+      beams: count('construction:beams').count,
+      beamsTotal: count('construction:beams').total,
+      crane: crane ? crane.getWorldPosition(new THREE.Vector3()).toArray() : [],
+      weld: w ? w.at.clone().add(entry.c.object.position).toArray() : null,
+      arc: w ? w.intensity / FLICKER.peak : 0,
+      centre: [entry.c.object.position.x, entry.c.object.position.z],
+      top: entry.top,
+      floorHeight: entry.floorHeight,
+    };
+  }
+
   let lastPlazas = '';
   function setPlots(occ: Occupancy): number {
     const built = placeDistricts(occ.districts) + placeQuarters(occ.quarters);
     reframe(occ);
     placeSites(occ.sites);
+    // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
+    placeConstructions();
     // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
     const key = JSON.stringify(plazasOf(occ));
     if (key !== lastPlazas) {
@@ -679,6 +824,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     sun.shadow.mapSize.set(shadowSize, shadowSize);
     sun.shadow.needsUpdate = true;
     buildExchange();
+    for (const { c } of constructions.values()) {
+      districtGroup.remove(c.object);
+      c.dispose();
+    }
+    constructions.clear();
+    placeConstructions();
     for (const fn of dropListeners) fn();
   }
   renderer.setAnimationLoop(() => {
@@ -694,6 +845,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     easedHome = THREE.MathUtils.damp(easedHome, limits.homeDistance, 3, dt);
     rig.update(dt);
     exchange?.update(dt);
+    updateConstructions(dt);
     applyLimits();
     fitMark();
     plates.update();
@@ -720,6 +872,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       exchange?.setStopped(s);
     },
     exchange: () => exchange,
+    setSites,
+    site: siteView,
     highlightFloor,
     floorFrame,
     towerFrame,
@@ -775,6 +929,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       quarterPieces = [];
       for (const sc of scaffolds.values()) sc.dispose();
       scaffolds.clear();
+      for (const { c } of constructions.values()) c.dispose();
+      constructions.clear();
       plates.dispose();
       markBox.dispose();
       markMaterials.edge.dispose();

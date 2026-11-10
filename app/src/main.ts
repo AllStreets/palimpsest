@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import './ui/style.css';
 import './ui/screens.css';
 
-import type { District, FirmView, Job, Quarter, Repo, TowerSpec } from '../../shared/types';
+import type { District, FirmView, Job, Quarter, Repo, SiteState, TowerSpec } from '../../shared/types';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
@@ -89,6 +89,10 @@ interface DebugHandle {
   darkQuarter(firmId: string): void;
   /** The exchange's tote board as it shows now, and whether its fountain runs. */
   exchange(): { slots: BoardSlot[]; running: boolean } | null;
+  /** The job site on a repo's tower as the city shows it (crane, frame, arc), or null. */
+  site(repo: string): ReturnType<ReturnType<typeof createCity>['site']>;
+  /** Every job site the page knows, as the engine last sent it. */
+  liveSites(): SiteState[];
 }
 
 declare global {
@@ -119,6 +123,8 @@ const REFRESH_ON = new Set([
  * the firms' plates (how many agents, how many credits).
  */
 const NAMES_ON = new Set(['agent.hired', 'agent.retired', 'firm.bankrupt', 'tower.sold', 'inspection.done', 'run.ended', 'merge.detected', 'floor.lit', 'report.written']);
+/** Events after which the job sites are read afresh: a run starting or ending, or a floor laid, lit or taken down under one. */
+const LIVE_ON = new Set(['run.started', 'run.ended', 'floor.laid', 'floor.lit', 'floor.removed', 'floor.scarred', 'merge.detected']);
 /** Events that change what the exchange's tote board shows: a job posted or moved on, a bid placed or declined. */
 const BOARD_ON = new Set(['job.posted', 'job.proposed', 'job.changed', 'job.awarded', 'bid.placed', 'bid.satOut']);
 
@@ -235,6 +241,8 @@ async function main(): Promise<void> {
       const f = city.agentFrame(id);
       return f ? { center: f.center.toArray(), width: f.width, height: f.height } : null;
     },
+    site: (repo) => city.site(repo),
+    liveSites: () => [...liveSites.values()],
     exchange() {
       const ex = city.exchange();
       return ex ? { slots: ex.slots(), running: ex.fountainRunning() } : null;
@@ -452,6 +460,26 @@ async function main(): Promise<void> {
     }
   });
 
+  // ---------------------------------------------------------------- job sites: live construction
+  /**
+   * Every job site, by run: read whole from /api/live on load and after a
+   * reconnect or a run starting or ending, and moved one event at a time by
+   * site.changed (a stage, or real progress). The city draws each repo's
+   * busiest site; between events nothing on it advances.
+   */
+  const liveSites = new Map<string, SiteState>();
+  const showSites = (): void => city.setSites([...liveSites.values()]);
+  const readLive = coalesced(async () => {
+    try {
+      const view = await api.live();
+      liveSites.clear();
+      for (const s of view.sites) liveSites.set(s.runId, s);
+      showSites();
+    } catch {
+      /* the sites keep what they last showed until the engine answers */
+    }
+  });
+
   // ---------------------------------------------------------------- districts, sites and plates
   /**
    * Places everything from the one occupied set: towers, scaffolds, the
@@ -565,6 +593,7 @@ async function main(): Promise<void> {
     takeRepos(repos);
     show(loaded, quarters);
     readBoard();
+    readLive();
   } catch (err) {
     console.warn('could not load the city from the engine', err);
     show([]);
@@ -589,6 +618,7 @@ async function main(): Promise<void> {
       void api.health().then((h) => setStopped(h.stopped), () => {});
       refresh();
       readBoard();
+      readLive();
       for (const fn of listeners) fn(e);
       return;
     }
@@ -609,6 +639,14 @@ async function main(): Promise<void> {
     }
     if (e.type === 'engine.stopped' || e.type === 'engine.resumed') setStopped(e.type === 'engine.stopped');
     if (BOARD_ON.has(e.type)) readBoard();
+    if (e.type === 'site.changed') {
+      const s = (e.data as { site?: SiteState } | null)?.site;
+      if (s?.runId && s.repo) {
+        liveSites.set(s.runId, s);
+        showSites();
+      }
+    }
+    if (LIVE_ON.has(e.type)) readLive();
     if (REFRESH_ON.has(e.type)) refresh();
     if (NAMES_ON.has(e.type)) readNames();
     for (const fn of listeners) fn(e);

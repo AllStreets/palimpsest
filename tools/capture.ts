@@ -60,6 +60,8 @@ const DIST = join(ROOT, 'dist');
 // CAPTURE_OUT sends everything elsewhere, for framing probes that should not touch docs/media.
 const MEDIA = process.env.CAPTURE_OUT ?? join(ROOT, 'docs', 'media');
 const PORT = 4789;
+/** The sample economy's clock (CAPTURE_ECONOMY=live), ticked on demand by the shots that show it moving. */
+let economy: { tick(ms: number): void; idle(): Promise<void> } | null = null;
 /** The block pitch (lots.ts PITCH), for framing streets. */
 const PITCH_M = 80;
 const FFMPEG = existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg';
@@ -513,6 +515,72 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await page.evaluate(() => fetch('/api/stop', { method: 'POST', headers: { 'content-type': 'application/json', 'x-palimpsest': '1' }, body: '{"on":false}' }));
     },
 
+    async construction(page) {
+      // Live construction (CAPTURE_ECONOMY=live): the economy's working run framing a floor on its repo's tower. The
+      // clock is ticked on demand, so each frame of the strip is one real progress step. Shots: the city from home, the
+      // site from across the street, the crane close, the arc mid-weld, and a four-frame strip of the frame rising.
+      type SV = { stage: string; progress: number; beams: number; beamsTotal: number; crane: number[]; weld: number[] | null; arc: number; top: number; floorHeight: number; centre: number[] };
+      type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): SV | null };
+      const dbg = (): Promise<Array<{ repo: string; stage: string }>> => page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites());
+      await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().some((s) => s.stage === 'framing'), null, { timeout: 15_000 }).catch(() => {});
+      const framing = (await dbg()).find((s) => s.stage === 'framing');
+      if (!framing) throw new Error('no framing site in the economy');
+      const repo = framing.repo;
+      const view = (): Promise<SV | null> => page.evaluate((r) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r), repo);
+      const step = async (ms: number): Promise<void> => {
+        economy?.tick(ms);
+        await economy?.idle();
+        await page.waitForTimeout(400);
+      };
+      // Into the work: a few steps of real progress.
+      await step(1000);
+      let s = (await view())!;
+      console.log(`  ${repo}: ${s.stage} ${s.progress} beams ${s.beams}/${s.beamsTotal} top ${s.top.toFixed(1)}`);
+      const [cx, , cz] = s.crane;
+      const top = s.top;
+      const w = (s.weld ?? [cx, top + s.floorHeight, cz]) as V3;
+      const midWeld = async (name: string, eye: V3, target: V3): Promise<void> => {
+        await frame(page, eye, target);
+        await page.waitForTimeout(600);
+        // Mid-bead: the arc has burned a third of a second (the spray is built up) and still burns.
+        for (let tries = 0; tries < 30; tries++) {
+          await page.waitForFunction((r) => ((window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r)?.arc ?? 0) > 0.3, repo, { timeout: 10_000 }).catch(() => {});
+          await page.waitForTimeout(350);
+          if (((await view())?.arc ?? 0) > 0.3) break;
+        }
+        await save(page, name, 90);
+      };
+      // CONSTRUCTION_ONLY=weld: just the close-up of the arc, for quick spark rounds.
+      if (process.env.CONSTRUCTION_ONLY === 'weld') {
+        await chrome(page, false);
+        const [ox, oz] = s.centre;
+        for (let i = 0; i < 3; i++) await midWeld(`construction-weld-${i}`, [ox + (w[0] - ox) * 0.45 + 2.5, w[1] + 1.6, oz + (w[2] - oz) * 0.45 + 1.5], [w[0], w[1] - 0.8, w[2]]);
+        return;
+      }
+      await chrome(page, true);
+      await page.evaluate(() => (window as unknown as { __palimpsest: { home(): void } }).__palimpsest.home());
+      await page.waitForTimeout(3500);
+      await shoot(page, 'construction-home');
+      await chrome(page, false);
+      await midWeld('construction', [cx - 70, top + 22, cz + 62], [cx + 4, top + 12, cz - 2]);
+      await midWeld('construction-far', [cx - 260, top * 0.7 + 40, cz + 240], [cx, top + 6, cz]);
+      await midWeld('construction-crane', [cx - 26, top + 14, cz + 34], [cx + 6, top + 14, cz - 4]);
+      // Close on the arc from the deck inside the frame, looking out over the working edge.
+      const [ox, oz] = s.centre;
+      const inX = ox + (w[0] - ox) * 0.45;
+      const inZ = oz + (w[2] - oz) * 0.45;
+      await midWeld('construction-weld', [inX + 2.5, w[1] + 1.6, inZ + 1.5], [w[0], w[1] - 0.8, w[2]]);
+      await midWeld('construction-street', [cx - 120, 6, cz + 150], [cx, top + 8, cz]);
+      // The strip: four real progress steps, from the same eye.
+      for (let i = 0; i < 4; i++) {
+        await step(3000);
+        s = (await view())!;
+        console.log(`  strip ${i}: ${s.stage} ${s.progress} beams ${s.beams}/${s.beamsTotal}`);
+        await page.waitForTimeout(3500);
+        await midWeld(`construction-strip-${i}`, [cx - 70, top + 22, cz + 62], [cx + 4, top + 12, cz - 2]);
+      }
+    },
+
     async hero(page) {
       // The whole sample city at dusk from above the rooftops, the sunlit faces turned to the eye.
       await chrome(page, false);
@@ -676,6 +744,13 @@ async function main(): Promise<void> {
   setRunner(sampleGh());
   const { startServer } = await import('../engine/server.js');
   const server = await startServer({ port: PORT, claudeSettingsPath });
+  // CAPTURE_ECONOMY=live: the economy's job sites and trips in the live view, and its clock at speed 20, ticked by the shots.
+  if (process.env.CAPTURE_ECONOMY === 'live') {
+    const { setMarketExtras } = await import('../engine/market/api.js');
+    const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
+    setMarketExtras({ sites: economySites, trips: economyTrips });
+    economy = economyClock({ now: () => Date.now(), speed: 20 });
+  }
   const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   try {
     const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: DPR });

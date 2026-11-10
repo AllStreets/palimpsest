@@ -359,17 +359,27 @@ function logTo(st: LiveRun): (line: RunLogLine) => void {
 
 // ---------------------------------------------------------------- sites
 
+/**
+ * How far a working run's frame has risen, from what it has really done
+ * (spec 6.3): its tool calls and the tests it ran, against about two of each
+ * per turn it may take, and never behind its turns. The frame starts at 0.15
+ * with its first columns and tops out at 0.7, where inspection takes over.
+ * Nothing here reads a clock.
+ */
+export function workProgress(p: RunProgress, maxTurns: number): number {
+  const max = Math.max(1, maxTurns);
+  const done = Math.max(p.turns / max, (p.toolCalls + p.testsRun) / (2 * max));
+  return Math.round((0.15 + 0.55 * Math.min(1, done)) * 100) / 100;
+}
+
 function progressOf(st: LiveRun): number {
   switch (st.run.stage) {
     case 'preparing':
       return 0.05;
     case 'installing':
       return 0.1;
-    case 'working': {
-      const turns = st.run.progress.turns;
-      const max = Math.max(1, st.agent.maxTurns);
-      return Math.round((0.15 + 0.55 * Math.min(1, turns / max)) * 100) / 100;
-    }
+    case 'working':
+      return workProgress(st.run.progress, st.agent.maxTurns);
     case 'inspecting':
       return 0.8;
     case 'shipping':

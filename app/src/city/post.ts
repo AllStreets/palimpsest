@@ -36,6 +36,30 @@ function fadeWithDistance(gtao: GTAOPass, camera: THREE.PerspectiveCamera): void
   m.needsUpdate = true;
 }
 
+/** Bloom catches only what is brighter than this in the linear HDR frame: real emitters, never lit paint. */
+export const BLOOM_THRESHOLD = 0.97;
+/** The renderer's exposure (scene.ts), which the threshold is measured after. */
+export const EXPOSURE = 0.85;
+
+/**
+ * The budget for flickering lights (a welder's arc on a job site, Task 26):
+ * how many point lights the city keeps (a fixed pool, so a light switching on
+ * never recompiles every material in the city), and how bright one may get.
+ * The peak is set so the steel a welder works on, two metres from the arc,
+ * stays just under the bloom threshold: the arc itself and its sparks bloom,
+ * the beams round it are lit by it without glowing. A lit surface's radiance
+ * is I / d^2 * albedo / pi, times the exposure; primer steel's albedo is
+ * about 0.25 and the brightest metal deck about 0.6.
+ */
+export const FLICKER = (() => {
+  const lights = 2;
+  const distance = 26;
+  const albedo = 0.6;
+  const d = 2;
+  const peak = Math.floor((BLOOM_THRESHOLD * Math.PI * d * d) / (albedo * EXPOSURE));
+  return { lights, distance, peak, color: 0xc4dcff } as const;
+})();
+
 export interface Post {
   render(): void;
   setSize(width: number, height: number): void;
@@ -77,7 +101,7 @@ export function createPost(
     composer.addPass(gtao);
   }
 
-  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.45, 0.5, 0.97);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.45, 0.5, BLOOM_THRESHOLD);
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 

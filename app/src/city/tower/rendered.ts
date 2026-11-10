@@ -650,5 +650,8 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
  * (the stone and brick entries predate the coursed Face slot), so it stays with the Phase 5 re-measure.
  * Restamped again, also without a re-measure, for Task 23, whose change to look.ts only adds the lens glass and the
  * galvanised steel of agent crowns and brackets: the swatch board builds repo towers, which never take a silhouette.
+ * Restamped for Task 26, also without a re-measure: post.ts gained the flicker budget and names its bloom threshold
+ * (the same 0.97), scene.ts reads its exposure from it (the same 0.85), and the welders' point lights stand dark
+ * unless an arc burns on a job site, which the swatch board never has: every rendered value is unchanged.
  */
-export const RENDERED_INPUTS = 'cbcb8a6825862a74';
+export const RENDERED_INPUTS = '932665a05b05ba8b';
