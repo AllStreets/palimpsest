@@ -9,7 +9,10 @@ import type { Repo, RepoChecks, RootStyle, Settings } from '../shared/types.js';
 import type { Event } from './events.js';
 import { emit, subscribe } from './events.js';
 import { HttpError, readJsonBody, sendJson } from './http.js';
-import { handleMarketApi, scrub } from './market/api.js';
+import { handleMarketApi, scrub, setMarketExtras } from './market/api.js';
+import { fakeProvider } from './market/fake-provider.js';
+import { setProvider } from './market/providers.js';
+import { economyClock, economySites, economyTrips, sampleOllamaUsage } from './market/sample-economy.js';
 import { noteSseClients } from './market/budget.js';
 import { resumeRepo, updateKeepAwake } from './market/runs.js';
 import { availableRepos, GhError } from './github.js';
@@ -17,8 +20,8 @@ import { paths } from './home.js';
 import { record } from './ledger.js';
 import { analyze, BAD_NAME, city, connect, disconnect, getRepo, isValidFullName, LABEL, listRepos, patchRepo, type RepoPatch } from './repos.js';
 import { getSettings, patchSettings } from './settings.js';
-import { realRunner, getRunner, setRunner } from './exec.js';
-import { isSampleHome, sampleGh } from './sample.js';
+import { realRunner, getRunner, setRunner, getSpawner, realSpawner, setSpawner } from './exec.js';
+import { isSampleHome, sampleGh, sampleSpawner, useSampleFolders } from './sample.js';
 import { claudeSettingsTarget, installHook, isStale, latestReading, NO_CLAUDE_SETTINGS, uninstallHook } from './usage.js';
 
 const engineDir = dirname(fileURLToPath(import.meta.url));
@@ -530,18 +533,51 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
   createReadStream(filePath).pipe(res);
 }
 
+/** How fast the sample economy's clock runs: script seconds per wall second. */
+function sampleSpeed(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.PALIMPSEST_SAMPLE_SPEED ?? 20);
+  return Number.isFinite(n) && n > 0 && n <= 600 ? n : 20;
+}
+
+/**
+ * An engine on a sample home (tools/sample.ts) reaches nothing real: gh,
+ * git and `ollama list` go to the sample stand-in, no child process starts,
+ * every model backend is the scripted fake provider, the budget and Settings
+ * read the sample home's own folders, and the live view carries the sample
+ * economy's sites and trips. With PALIMPSEST_SAMPLE_ECONOMY=live the
+ * economy's clock ticks once a second. A test that installed its own runner
+ * or spawner keeps it. Returns what undoes the clock.
+ */
+function enterSampleMode(): () => void {
+  if (getRunner() === realRunner) setRunner(sampleGh());
+  if (getSpawner() === realSpawner) setSpawner(sampleSpawner);
+  useSampleFolders();
+  const fake = fakeProvider();
+  for (const kind of ['claude', 'ollama', 'anthropic'] as const) setProvider(kind, fake);
+  setMarketExtras({ sites: economySites, trips: economyTrips, providers: { ollama: () => sampleOllamaUsage() } });
+  if (process.env.PALIMPSEST_SAMPLE_ECONOMY !== 'live') return () => setMarketExtras({});
+  const clock = economyClock({ now: () => Date.now(), speed: sampleSpeed() });
+  const timer = setInterval(() => clock.tick(1000), 1000);
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+    clock.stop();
+    setMarketExtras({});
+  };
+}
+
 /**
  * Starts the engine's HTTP/SSE server on 127.0.0.1. Without
  * `claudeSettingsPath` the hook routes use claudeSettingsTarget(): the real
  * `~/.claude/settings.json` only for an engine on the default data home, and
  * a 409 on any other home unless PALIMPSEST_CLAUDE_SETTINGS names a file.
  * Tests pass a temp path. An engine on a sample home (tools/sample.ts)
- * answers gh and git from the sample stand-in unless a test installed its own.
+ * reaches nothing real (enterSampleMode).
  */
 export async function startServer(opts: StartServerOptions = {}): Promise<StartedServer> {
   const requestedPort = opts.port ?? enginePort();
   const claudeSettingsPath = opts.claudeSettingsPath;
-  if (isSampleHome() && getRunner() === realRunner) setRunner(sampleGh());
+  const stopSample = isSampleHome() ? enterSampleMode() : () => {};
   const sseClients = new Set<ServerResponse>();
 
   let listeningPort = requestedPort;
@@ -593,6 +629,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Starte
         }
         sseClients.clear();
         noteSseClients(0);
+        stopSample();
         server.close(() => resolveClose());
       }),
   };

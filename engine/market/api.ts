@@ -32,8 +32,10 @@ import type {
   RunDetail,
   RunLogLine,
   RunView,
+  SiteState,
   Tier,
   TreasuryView,
+  Trip,
 } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { HttpError, readObjectBody, sendJson, sendText } from '../http.js';
@@ -52,6 +54,23 @@ import { kill, killJob, listRuns, resumeJob, run, sites } from './runs.js';
 import { balances } from './treasury.js';
 import { storedCalibration } from '../usage.js';
 import { patchSettings } from '../settings.js';
+
+/**
+ * What a sample engine (Task 21) adds to the live view and Settings: the
+ * sample economy's job sites and trips, and provider readers that never
+ * reach a real service. A real engine sets none.
+ */
+export interface MarketExtras {
+  sites?: () => SiteState[];
+  trips?: () => Trip[];
+  providers?: Parameters<typeof providerUsages>[0];
+}
+
+let extras: MarketExtras = {};
+
+export function setMarketExtras(x: MarketExtras): void {
+  extras = x;
+}
 
 export interface MarketApiOptions {
   /** The keychain file the API key routes use; without it, his login keychain (never under tests). */
@@ -486,7 +505,7 @@ export async function handleMarketApi(
     return send(200, { day: r.day, markdown: r.markdown, data: r.data } satisfies ReportView);
   }
   if ((m = pathname.match(/^\/api\/report\/([^/]+)$/)) && method === 'GET') return send(200, reportFor(m[1]));
-  if (pathname === '/api/providers' && method === 'GET') return send(200, await providerUsages());
+  if (pathname === '/api/providers' && method === 'GET') return send(200, await providerUsages(extras.providers ?? {}));
   if (pathname === '/api/providers/anthropic/key' && method === 'POST') {
     const b = await readObjectBody(req);
     const key = b.key;
@@ -511,8 +530,8 @@ export async function handleMarketApi(
 
   // the city
   if (pathname === '/api/quarters' && method === 'GET') return send(200, quarters());
-  // Trips are walked by the city's own clock (the trips task); until it exists none is under way.
-  if (pathname === '/api/live' && method === 'GET') return send(200, { sites: sites(), trips: [] } satisfies LiveView);
+  // Trips are walked by the city's own clock (the trips task); until it exists none is under way, except in a sample engine.
+  if (pathname === '/api/live' && method === 'GET') return send(200, { sites: [...sites(), ...(extras.sites?.() ?? [])], trips: extras.trips?.() ?? [] } satisfies LiveView);
 
   return false;
 }

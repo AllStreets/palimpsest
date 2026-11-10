@@ -8,7 +8,7 @@ import type { UsageReading, UsageWindow } from '../shared/types.js';
 import { openDb } from './db.js';
 import { defaultHome, home, paths } from './home.js';
 import { record } from './ledger.js';
-import { isSampleHome, sampleClaudeSettingsPath } from './sample.js';
+import { isSampleHome, sampleClaudeSettingsPath, sampleProjectsDir } from './sample.js';
 import { getSettings, patchSettings } from './settings.js';
 
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
@@ -350,6 +350,8 @@ function realOrResolved(p: string): string {
 function checkedProjectsDir(dir: string): string {
   const abs = resolve(dir);
   if (process.env.PALIMPSEST_TEST_PROJECTS === '1') return abs;
+  // A sample home (tools/sample.ts) keeps its own empty transcripts folder inside itself.
+  if (isSampleHome() && realOrResolved(abs) === realOrResolved(sampleProjectsDir())) return abs;
   const root = realOrResolved(realProjectsRoot());
   const rel = relative(root, realOrResolved(abs));
   if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return abs;

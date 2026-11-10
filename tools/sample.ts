@@ -3,9 +3,12 @@
  * Every README picture, every UI test shot and every capture comes from it,
  * so they all show the same city and never anyone's real or private repos.
  *
- *   npx tsx tools/sample.ts <dir>
+ *   npx tsx tools/sample.ts <dir> [--economy]
  *
- * writes a complete PALIMPSEST_HOME at <dir>, marked as a sample home. Serve
+ * writes a complete PALIMPSEST_HOME at <dir>, marked as a sample home. With
+ * --economy it also writes the sample economy (engine/market/sample-economy.ts):
+ * eight days of a fictional market and a board in every state; serve it with
+ * PALIMPSEST_SAMPLE_ECONOMY=live to watch the board move. Serve
  * it beside the installed engine with
  * PALIMPSEST_HOME=<dir> PALIMPSEST_PORT=4790 npm run engine. An engine on a
  * sample home answers every gh and git call from the sample stand-in and
@@ -202,9 +205,11 @@ export async function shrinkSample(): Promise<void> {
 // ---------------------------------------------------------------- command line
 
 async function main(): Promise<void> {
-  const dir = process.argv[2];
+  const args = process.argv.slice(2);
+  const economy = args.includes('--economy');
+  const dir = args.find((a) => !a.startsWith('--'));
   if (!dir) {
-    console.error('usage: npx tsx tools/sample.ts <dir>');
+    console.error('usage: npx tsx tools/sample.ts <dir> [--economy]');
     process.exit(2);
   }
   const home = resolve(dir);
@@ -214,14 +219,26 @@ async function main(): Promise<void> {
   }
   mkdirSync(home, { recursive: true });
   process.env.PALIMPSEST_HOME = home;
+  // The mark that makes an engine on this folder answer GitHub from the sample and keep the usage hook
+  // and every reader of his folders inside it. Written first, so the economy below already runs as a sample.
+  writeFileSync(join(home, SAMPLE_MARKER), `${JSON.stringify({ sample: true, economy, written: new Date().toISOString() })}\n`);
   await seedSample();
-  // The mark that makes an engine on this folder answer GitHub from the sample and keep the usage hook inside it.
-  writeFileSync(join(home, SAMPLE_MARKER), `${JSON.stringify({ sample: true, written: new Date().toISOString() })}\n`);
+  if (economy) {
+    const { seedEconomy } = await import('../engine/market/sample-economy.js');
+    await seedEconomy();
+  }
   const { openDb } = await import('../engine/db.js');
   const towers = openDb().prepare('SELECT repo, json FROM towers ORDER BY repo').all() as { repo: string; json: string }[];
   for (const t of towers) {
     const floors = (JSON.parse(t.json) as TowerSpec).floors;
     console.log(`${t.repo}: ${floors.length} floors, ${floors.filter((f) => f.claude).length} with Claude`);
+  }
+  if (economy) {
+    const { listJobs } = await import('../engine/market/jobs.js');
+    const jobs = listJobs();
+    const by = new Map<string, number>();
+    for (const j of jobs) by.set(j.status, (by.get(j.status) ?? 0) + 1);
+    console.log(`economy: ${jobs.length} jobs (${[...by].map(([s, n]) => `${n} ${s}`).join(', ')})`);
   }
   console.log(`wrote ${home}`);
 }

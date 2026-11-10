@@ -352,8 +352,8 @@ function lay(towerId: string, floor: Floor): Floor {
   return laid;
 }
 
-/** The job's floor on the repo tower and on the agent's own tower. */
-function layJobFloors(r: Run, job: Job, o: Omit<Parameters<typeof floorOf>[2], 'id'>): Floor {
+/** The job's floor on the repo tower and on the agent's own tower (the sample economy, Task 21, lays them through this too). */
+export function layJobFloors(r: Run, job: Job, o: Omit<Parameters<typeof floorOf>[2], 'id'>): Floor {
   const floor = lay(repoTowerId(r.repo), floorOf(r, job, { ...o, id: repoFloorId(r.repo, job.id) }));
   lay(agentTowerId(r.agentId), floorOf(r, job, { ...o, id: agentFloorId(r.agentId, job.id) }));
   if (o.state === 'lit') {

@@ -10,6 +10,8 @@ import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 import type { RootStyle } from '../shared/types.js';
+import { openDb } from './db.js';
+import type { Spawned, Spawner } from './exec.js';
 import { home } from './home.js';
 
 /** The file tools/sample.ts writes into a sample home: its presence makes the engine a sample engine. */
@@ -23,6 +25,35 @@ export function isSampleHome(dir: string = home()): boolean {
 /** The stand-in Claude settings file a sample engine's usage hook writes, inside the sample home. */
 export function sampleClaudeSettingsPath(dir: string = home()): string {
   return join(dir, 'claude-settings.json');
+}
+
+/** The sample's own Claude transcripts folder (empty): the budget reads it, never his ~/.claude/projects. */
+export function sampleProjectsDir(dir: string = home()): string {
+  return join(dir, 'claude-projects');
+}
+
+/** The sample's Codex home, with a fixture session for Settings (Task 19 reads it through PALIMPSEST_CODEX_HOME). */
+export function sampleCodexHome(dir: string = home()): string {
+  return join(dir, 'providers', 'codex');
+}
+
+/** The sample's Gemini home, with a fixture chat. */
+export function sampleGeminiHome(dir: string = home()): string {
+  return join(dir, 'providers', 'gemini');
+}
+
+/**
+ * Points every reader of his other folders at the sample home's own: the
+ * Claude transcripts the budget scans, and the Codex and Gemini homes
+ * Settings reads. A variable already set (a test's temp folder) is kept.
+ */
+export function useSampleFolders(dir: string = home()): void {
+  const set = (k: string, v: string) => {
+    if (!process.env[k]) process.env[k] = v;
+  };
+  set('PALIMPSEST_CLAUDE_PROJECTS', sampleProjectsDir(dir));
+  set('PALIMPSEST_CODEX_HOME', sampleCodexHome(dir));
+  set('PALIMPSEST_GEMINI_HOME', sampleGeminiHome(dir));
 }
 
 export interface SampleRepo {
@@ -259,6 +290,311 @@ export function sampleGh(delayMs = 0): (cmd: string, args: string[]) => Promise<
       return ok(log);
     }
     if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'list') return ok('[]');
+    const market = marketAnswer(cmd, args);
+    if (market) return market;
     throw new Error(`sampleGh: unexpected command ${cmd} ${args.join(' ')}`);
   };
 }
+
+// ---------------------------------------------------------------- the sample market's GitHub (Task 21)
+
+/** The Ollama models the sample Mac has installed: every seeded local agent resolves, plus the vision judge. */
+export const SAMPLE_INSTALLED = ['qwen3-coder:30b-a3b-q4_K_M', 'gpt-oss:20b', 'qwen2.5-coder:7b-instruct', 'qwen3:1.7b', 'qwen2.5vl:7b'];
+
+/** The GitHub login the sample stand-in is signed in as. */
+export const SAMPLE_LOGIN = 'marlow';
+
+export interface SampleIssue {
+  repo: string;
+  number: number;
+  title: string;
+  labels: string[];
+  author: string;
+  updatedAt: string;
+  body: string;
+}
+
+/**
+ * The eight open issues the sample repos carry a market label on, as their
+ * maintainers wrote them. Three are on the harbour repo. Every one is
+ * fictional; seedEconomy posts them through the real pollJobs.
+ */
+export const SAMPLE_ISSUES: SampleIssue[] = [
+  {
+    repo: 'tidewater/harbor-ledger',
+    number: 214,
+    title: 'Berth schedule puts arrivals after midnight UTC on the previous day',
+    labels: ['palimpsest', 'bug'],
+    author: 'ines-varga',
+    updatedAt: '2026-11-08T08:12:00Z',
+    body: [
+      'Ships that arrive between 00:00 and 01:00 UTC show up in the previous day\'s column of the berth schedule. The harbour office works in Lisbon time, so the *Maren Dahl* (00:40 UTC on the 12th) sat under the 11th all last week and the night shift missed her.',
+      '',
+      'To see it: import `fixtures/arrivals-dst.csv` and open the schedule for 12 March.',
+      '',
+      'We bucket by `arrival.toISOString().slice(0, 10)` in `src/schedule/days.ts`. It should be the harbour\'s own day.',
+      '',
+      'Scope:',
+      '- src/schedule/**',
+      '- test/schedule/**',
+      '',
+      '- [ ] Arrivals land in the harbour\'s local day, not the UTC day',
+      '- [ ] A test covers 00:00 to 01:00 UTC on both sides of the March clock change',
+    ].join('\n'),
+  },
+  {
+    repo: 'tidewater/harbor-ledger',
+    number: 219,
+    title: 'Manifest CSV export splits the consignee when the name has a comma',
+    labels: ['palimpsest:low'],
+    author: 'tomas-reyes',
+    updatedAt: '2026-11-09T14:30:00Z',
+    body: [
+      '"Holt, Varga & Sons" comes out as two columns in the manifest export, and customs rejects the file. We write the rows by joining with commas in `src/manifest/csv.ts` and never quote anything.',
+      '',
+      'Please quote fields that hold a comma, a quote or a newline (RFC 4180), and keep the column order exactly as it is: customs maps by position.',
+      '',
+      'Scope: src/manifest/**, test/manifest/**',
+      '',
+      '- [ ] A consignee with a comma round-trips through export and import',
+      '- [ ] Fields without special characters are written unquoted, as today',
+    ].join('\n'),
+  },
+  {
+    repo: 'tidewater/harbor-ledger',
+    number: 221,
+    title: 'Port fee invoice: add the pilotage line the auditors asked for',
+    labels: ['palimpsest:high', 'invoices'],
+    author: 'mira-holt',
+    updatedAt: '2026-11-10T07:05:00Z',
+    body: [
+      'The auditors want pilotage shown as its own line on the port fee invoice, with the pilot\'s hours and the rate that applied, instead of being folded into "harbour dues". It has to match the tariff table in `src/fees/tariff.ts` to the cent, including the night supplement.',
+      '',
+      'Old invoices must render exactly as they did; only invoices issued after this change get the new line. There is a snapshot test per invoice template; please add one rather than updating the old ones.',
+      '',
+      'Scope:',
+      '- src/fees/**',
+      '- src/invoice/**',
+      '- test/invoice/**',
+      '',
+      '- [ ] Pilotage appears as its own line with hours, rate and amount',
+      '- [ ] Totals are unchanged for every invoice in test/fixtures/invoices',
+      '- [ ] Invoices issued before the change render byte for byte as before',
+    ].join('\n'),
+  },
+  {
+    repo: 'hoshi/kumo',
+    number: 57,
+    title: 'Tile cache never evicts tiles older than the radar retention',
+    labels: ['palimpsest'],
+    author: 'aiko-hoshino',
+    updatedAt: '2026-11-07T21:44:00Z',
+    body: [
+      'The radar keeps two hours of frames, but `cache/tiles.go` only evicts by count, so after a stormy week the cache holds thousands of tiles nobody can request any more. My Pi ran out of disk on Sunday.',
+      '',
+      'Evict by age as well (anything older than the retention in `config.RadarRetention`), and keep the count limit as a backstop.',
+      '',
+      'Scope: cache/**',
+      '',
+      '- [ ] Tiles older than the retention are evicted on the next write',
+      '- [ ] The count limit still applies',
+      '- [ ] go test ./... passes with -race',
+    ].join('\n'),
+  },
+  {
+    repo: 'hoshi/kumo',
+    number: 61,
+    title: 'Light rain is unreadable on the dark dashboard',
+    labels: ['palimpsest:low', 'ui'],
+    author: 'sam-bell',
+    updatedAt: '2026-11-09T19:02:00Z',
+    body: [
+      'The first two steps of the colour ramp (under 0.5 mm/h) are #1b2a3a and #1f3346, which is nearly the dashboard background. Drizzle just vanishes at night.',
+      '',
+      'Lift the low end of the ramp in `render/ramp.go` so it reads on #0e1620 without changing the heavy-rain colours people already know.',
+      '',
+      'Scope: render/**',
+      '',
+      '- [ ] The two lowest steps have at least 3:1 contrast against #0e1620',
+      '- [ ] Steps from 4 mm/h up are unchanged',
+    ].join('\n'),
+  },
+  {
+    repo: 'lantern/assay-kit',
+    number: 88,
+    title: 'Custody chain export skips samples moved between freezers on the same day',
+    labels: ['palimpsest:high', 'compliance'],
+    author: 'clara-sousa',
+    updatedAt: '2026-11-09T10:20:00Z',
+    body: [
+      'When a sample moves from F2 to F4 and back on the same day, the custody export in `assay/custody/export.py` keeps only the last move, because we key the transfers by (sample, date). The lab audit on the 20th needs every hand-off.',
+      '',
+      'Key transfers by their own id and order them by timestamp. The CSV header must not change.',
+      '',
+      'Scope:',
+      '- assay/custody/**',
+      '- tests/custody/**',
+      '',
+      '- [ ] Every transfer appears in the export, in time order',
+      '- [ ] The CSV header is unchanged',
+      '- [ ] A test covers two moves of one sample on one day',
+    ].join('\n'),
+  },
+  {
+    repo: 'ferro/quarry',
+    number: 33,
+    title: 'Typed rows: Option<T> columns panic on NULL from a LEFT JOIN',
+    labels: ['palimpsest'],
+    author: 'luca-ferro',
+    updatedAt: '2026-11-08T16:50:00Z',
+    body: [
+      'A column declared `Option<i64>` panics with "invalid column type Null" when it comes from the right side of a LEFT JOIN, because `FromRow` asks the statement for the declared type and SQLite reports the left table\'s affinity.',
+      '',
+      'Decode `Option<T>` from the value, not the declared type. Minimal repro is in `tests/join_null.rs` (currently `#[ignore]`).',
+      '',
+      'Scope: src/row/**, tests/**',
+      '',
+      '- [ ] tests/join_null.rs passes without #[ignore]',
+      '- [ ] No change to the public API',
+    ].join('\n'),
+  },
+  {
+    repo: 'kestrel/fieldnotes',
+    number: 142,
+    title: 'GPX import fails on Garmin files with extensions inside trkpt',
+    labels: ['palimpsest:low'],
+    author: 'ruth-ngata',
+    updatedAt: '2026-11-06T09:15:00Z',
+    body: [
+      'Garmin watches write `<extensions><gpxtpx:TrackPointExtension>` inside each trkpt, and our parser in `Sources/Import/GPXParser.swift` treats any unknown child as an error. Every survey walked with a Forerunner fails to import.',
+      '',
+      'Skip unknown children of trkpt instead of failing; keep failing on a trkpt without lat or lon.',
+      '',
+      'Scope: Sources/Import/**, Tests/ImportTests/**',
+      '',
+      '- [ ] The Garmin file in Tests/ImportTests/Fixtures imports with all 412 points',
+    ].join('\n'),
+  },
+];
+
+/**
+ * The pull requests the sample stand-in has opened or scripted, by
+ * `owner/name#number`. A PR it has never heard of reads as open. The sample
+ * economy scripts merges and closes here (merge(), close()); a fresh engine
+ * process starts with every PR open.
+ */
+interface ScriptedPR {
+  state: 'OPEN' | 'MERGED' | 'CLOSED';
+  mergedAt: string | null;
+  mergeCommit: { oid: string } | null;
+  closedAt: string | null;
+  headRefOid: string | null;
+  baseRefName: string;
+}
+
+const prBook = new Map<string, ScriptedPR>();
+const prNext = new Map<string, number>();
+
+/** The first PR number the stand-in hands out on each repo, above any number the sample history used. */
+const FIRST_PR = 300;
+
+export const samplePRs = {
+  /** Marks a PR merged with the head the city pushed and a merge commit. */
+  merge(repo: string, number: number, o: { headRefOid: string; mergeCommit: string; at?: string }): void {
+    const at = o.at ?? new Date().toISOString();
+    prBook.set(`${repo}#${number}`, { state: 'MERGED', mergedAt: at, mergeCommit: { oid: o.mergeCommit }, closedAt: at, headRefOid: o.headRefOid, baseRefName: 'main' });
+  },
+  /** Marks a PR closed without a merge. */
+  close(repo: string, number: number, at: string = new Date().toISOString()): void {
+    prBook.set(`${repo}#${number}`, { state: 'CLOSED', mergedAt: null, mergeCommit: null, closedAt: at, headRefOid: null, baseRefName: 'main' });
+  },
+  /** Forgets every scripted PR (tests). */
+  reset(): void {
+    prBook.clear();
+    prNext.clear();
+  },
+};
+
+/** The next PR number on `repo`: past every number the book and the stored runs already hold. */
+function nextPR(repo: string): number {
+  let top = prNext.get(repo) ?? FIRST_PR - 1;
+  try {
+    const row = openDb()
+      .prepare("SELECT MAX(CAST(json_extract(json, '$.prNumber') AS INTEGER)) AS n FROM runs WHERE repo = ?")
+      .get(repo) as { n: number | bigint | null } | undefined;
+    top = Math.max(top, Number(row?.n ?? 0));
+  } catch {
+    // no database yet: the book alone decides
+  }
+  prNext.set(repo, top + 1);
+  return top + 1;
+}
+
+function flag(args: string[], name: string): string | null {
+  const i = args.indexOf(name);
+  if (i >= 0) return args[i + 1] ?? null;
+  const eq = args.find((a) => a.startsWith(`${name}=`));
+  return eq ? eq.slice(name.length + 1) : null;
+}
+
+/**
+ * The market's gh calls (Tasks 5 and 16) and `ollama list`, answered from
+ * the sample: issues per label, an issue's state, label and comment writes
+ * (accepted and dropped), PR create and view from the scripted book, the
+ * signed-in login. Null for anything else, so sampleGh throws on it.
+ */
+function marketAnswer(cmd: string, args: string[]): { stdout: string; stderr: string; code: number } | null {
+  const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
+  if (cmd === 'ollama' && args[0] === 'list') {
+    const rows = SAMPLE_INSTALLED.map((m, i) => `${m.padEnd(32)}${(0x5a17c0de + i).toString(16).slice(0, 12)}    ${[18, 13, 4.7, 1.4, 6][i] ?? 1} GB    3 weeks ago`);
+    return ok(`NAME                            ID              SIZE      MODIFIED\n${rows.join('\n')}\n`);
+  }
+  if (cmd !== 'gh') return null;
+  const repo = flag(args, '-R');
+  if (args[0] === 'issue' && args[1] === 'list' && repo) {
+    const label = flag(args, '--label');
+    const rows = SAMPLE_ISSUES.filter((i) => i.repo === repo && (label === null || i.labels.includes(label))).map((i) => ({
+      number: i.number,
+      title: i.title,
+      body: i.body,
+      labels: i.labels.map((name) => ({ name })),
+      url: `https://github.com/${i.repo}/issues/${i.number}`,
+      author: { login: i.author },
+      updatedAt: i.updatedAt,
+    }));
+    return ok(JSON.stringify(rows));
+  }
+  if (args[0] === 'issue' && args[1] === 'view' && repo) {
+    const open = SAMPLE_ISSUES.some((i) => i.repo === repo && i.number === Number(args[2]));
+    return ok(JSON.stringify({ state: open ? 'OPEN' : 'CLOSED' }));
+  }
+  if (args[0] === 'issue' && (args[1] === 'edit' || args[1] === 'comment')) return ok('');
+  if (args[0] === 'label' && args[1] === 'list') return ok(JSON.stringify([{ name: 'palimpsest' }, { name: 'palimpsest:low' }, { name: 'palimpsest:high' }]));
+  if (args[0] === 'label' && args[1] === 'create') return ok('');
+  if (args[0] === 'pr' && args[1] === 'create' && repo) {
+    const n = nextPR(repo);
+    prBook.set(`${repo}#${n}`, { state: 'OPEN', mergedAt: null, mergeCommit: null, closedAt: null, headRefOid: null, baseRefName: flag(args, '--base') ?? 'main' });
+    return ok(`https://github.com/${repo}/pull/${n}\n`);
+  }
+  if (args[0] === 'pr' && args[1] === 'view' && repo) {
+    const pr = prBook.get(`${repo}#${Number(args[2])}`) ?? { state: 'OPEN', mergedAt: null, mergeCommit: null, closedAt: null, headRefOid: null, baseRefName: 'main' };
+    return ok(JSON.stringify(pr));
+  }
+  if (args[0] === 'api' && args[1] === 'user') return ok(`${SAMPLE_LOGIN}\n`);
+  return null;
+}
+
+/**
+ * The spawner a sample engine runs with: it starts nothing. Every child the
+ * market would start (claude, a check, caffeinate) ends at once as not
+ * started, so nothing in a sample engine runs on this Mac or reaches out.
+ */
+export const sampleSpawner: Spawner = (cmd) => {
+  const done: Spawned['done'] = Promise.resolve({ code: null, signal: null, error: `${cmd.split('/').pop()} is not started in a sample engine` });
+  return {
+    pid: null,
+    lines: { [Symbol.asyncIterator]: async function* () {} },
+    kill: () => {},
+    done,
+  };
+};

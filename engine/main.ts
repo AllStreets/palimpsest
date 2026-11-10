@@ -10,9 +10,14 @@ import { bankruptcyTick, dailyTick, DAY_MS, HOUR_MS, installTreasury } from './m
 import { backfillReports, ensureDailyReport, latestReportDay } from './market/report.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
+import { setRunner } from './exec.js';
+import { isSampleHome, sampleGh, useSampleFolders } from './sample.js';
 import { startServer } from './server.js';
 
 async function main(): Promise<void> {
+  // A sample home (tools/sample.ts) reaches nothing real, from the first call on: `ollama list` and gh go to the
+  // sample stand-in and the budget reads the sample's own folders. Its runs are scripted, so none is failed here.
+  if (isSampleHome()) return sampleMain();
   // An analysis the last engine was running when it stopped can never finish: say so, with a Retry.
   failInterruptedAnalyses();
   // Likewise a run the last engine had live: its strays are reaped, it ends crashed and its job returns to the board once (ruling 16).
@@ -77,6 +82,30 @@ async function main(): Promise<void> {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
+/**
+ * The engine on a sample home: the firms (on the sample's installed models)
+ * and the treasury, but no scheduler, no PR poll and no daily ticks. The
+ * sample economy's clock (PALIMPSEST_SAMPLE_ECONOMY=live, started by
+ * startServer) is all that moves the market, on the fake provider.
+ */
+async function sampleMain(): Promise<void> {
+  setRunner(sampleGh());
+  useSampleFolders();
+  failInterruptedAnalyses();
+  const installed = await installedModels();
+  seedFirms(installed);
+  reviveAgents(installed);
+  installTreasury();
+  const { close, port } = await startServer();
+  // eslint-disable-next-line no-console
+  console.log(`Palimpsest sample engine listening on 127.0.0.1:${port} (economy ${process.env.PALIMPSEST_SAMPLE_ECONOMY === 'live' ? 'live' : 'still'})`);
+  const stop = () => {
+    void close().finally(() => process.exit(0));
+  };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
 }
 
 main().catch((err) => {
