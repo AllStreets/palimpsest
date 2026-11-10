@@ -10,7 +10,7 @@ import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { createPost } from './post';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
-import { cityExtent, easeLimits, viewLimits, type EasedLimits, type ViewLimits } from './view';
+import { cityExtent, easeLimits, fogFor, viewLimits, type EasedLimits, type ViewLimits } from './view';
 
 export interface PickHit {
   kind: 'tower';
@@ -177,13 +177,21 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let extent = cityExtent([]);
   let limits: ViewLimits = viewLimits(extent, width() / height());
   let eased: EasedLimits = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
+  /** The home distance the haze thins against, eased with the rest so a growing city never makes it jump. */
+  let easedHome = limits.homeDistance;
   function relimit(snap: boolean): void {
     limits = viewLimits(extent, width() / height());
-    if (snap) eased = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
+    if (snap) {
+      eased = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
+      easedHome = limits.homeDistance;
+    }
   }
+  const homeTarget = new THREE.Vector3();
   const applyLimits = (): void => {
     rig.controls.maxDistance = eased.maxDistance;
-    fog.density = eased.fogDensity;
+    // Flown out past home the haze thins, so the whole city still reads from as far as the camera may go.
+    const fromCity = camera.position.distanceTo(homeTarget.set(limits.home.target[0], limits.home.target[1], limits.home.target[2]));
+    fog.density = fogFor(eased.fogDensity, easedHome, fromCity);
     if (camera.far !== eased.far) {
       camera.far = eased.far;
       camera.updateProjectionMatrix();
@@ -495,8 +503,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       applyInset();
     }
     eased = easeLimits(eased, limits, dt, camera.position.distanceTo(rig.controls.target));
-    applyLimits();
+    easedHome = THREE.MathUtils.damp(easedHome, limits.homeDistance, 3, dt);
     rig.update(dt);
+    applyLimits();
     fitMark();
     plates.update();
     sky.dome.position.copy(camera.position);

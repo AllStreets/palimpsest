@@ -327,15 +327,16 @@ const TUNED_ON: CityExtent = { cx: -40, cz: 80, radius: 377.36, height: 410.6, c
  * Derives the framings from the city served, so README media follow it. The
  * overview is the app's own home framing (view.ts). The hero and the flyover
  * keep their tuned composition, scaled about the city's centre by how much
- * farther its home framing stands than the sample's: unchanged for the
- * sample, wider for a taller or broader city.
+ * farther its home framing stands, or how much taller its tallest crown is,
+ * than the sample's: unchanged for the sample, wider for a taller or broader city.
  */
 function followCity(city: District[]): void {
   const aspect = VIEWPORT.width / VIEWPORT.height;
   const e = cityExtent(city);
   const lim = viewLimits(e, aspect);
   OVERVIEW = lim.home;
-  const k = lim.homeDistance / viewLimits(TUNED_ON, aspect).homeDistance;
+  // Low and looking up, the hero is bound by the tallest crown as much as by the city's breadth.
+  const k = Math.max(lim.homeDistance / viewLimits(TUNED_ON, aspect).homeDistance, e.height / TUNED_ON.height);
   const at = (p: V3): V3 => [e.cx + k * (p[0] - TUNED_ON.cx), k * p[1], e.cz + k * (p[2] - TUNED_ON.cz)];
   HERO = { eye: at(HERO.eye), target: at(HERO.target) };
   const [cx, , cz] = at([FLY.cx, 0, FLY.cz]);

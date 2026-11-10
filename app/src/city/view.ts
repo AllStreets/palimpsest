@@ -45,6 +45,8 @@ const BOTTOM = -0.97;
 const SIDE = 0.94;
 /** Haze on the far edge of the city, seen from home, that still reads as a silhouette. */
 const FAR_EDGE_HAZE = 0.58;
+/** Density times distance that leaves the horizon about 92% haze (exponential squared). */
+const HORIZON_HAZE = 1.6;
 /** Seconds-based rate the limits ease at: most of the way in a second, settled in two. */
 const EASE_RATE = 3;
 
@@ -222,6 +224,19 @@ export function viewLimits(e: CityExtent, aspect: number): ViewLimits {
 
   const far = Math.max(MIN_FAR, (maxDistance + e.radius + GROUND_REACH) * 1.1);
   return { home: { eye, target }, homeDistance, maxDistance, fogDensity, far };
+}
+
+/**
+ * The haze density for an eye `cameraDistance` from the city's home target.
+ * Up to the home distance it is the city's own; flown out past it, it thins
+ * in step with the distance, so the city keeps the haze it has from home and
+ * reads whole from as far as the camera may go. It never thins so far that
+ * the ground's edge, 8 km past the eye's distance, shows through the horizon.
+ */
+export function fogFor(density: number, homeDistance: number, cameraDistance: number): number {
+  if (cameraDistance <= homeDistance) return density;
+  const horizon = Math.min(density, HORIZON_HAZE / (cameraDistance + 8000));
+  return Math.max(density * (homeDistance / cameraDistance), horizon);
 }
 
 /**

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CROWN_ALLOWANCE, cityExtent, easeLimits, FOV, HERO_FOG, viewLimits, type CityExtent, type V3 } from '../app/src/city/view.js';
+import { CROWN_ALLOWANCE, cityExtent, easeLimits, fogFor, FOV, HERO_FOG, viewLimits, type CityExtent, type V3 } from '../app/src/city/view.js';
 import { FLOOR_HEIGHT, ROOT_HEIGHT } from '../shared/tower-layout.js';
 
 // ---------------------------------------------------------------- an independent pinhole camera
@@ -261,5 +261,29 @@ test('framed on the crowns where they stand, one tower growing a floor at a time
         prev = next;
       }
     }
+  }
+});
+
+test('flown out past home, the haze thins so the city reads as it does from home; nearer than home it keeps its density', () => {
+  for (const floors of CITIES) {
+    const e = peaked(floors);
+    const lim = viewLimits(e, 1.6);
+    const at = (d: number) => fogFor(lim.fogDensity, lim.homeDistance, d);
+    assert.equal(at(lim.homeDistance * 0.3), lim.fogDensity);
+    assert.equal(at(lim.homeDistance), lim.fogDensity);
+    // The haze on the city's centre at the farthest the camera may go is no thicker than at home
+    // (a tiny city, nearly clear at home, may take on a little, so the horizon past it stays haze).
+    const home = fogAt(lim.fogDensity, lim.homeDistance);
+    const out = fogAt(at(lim.maxDistance), lim.maxDistance);
+    assert.ok(out <= Math.max(home, 0.3) + 1e-9,`${floors.join('/')}: ${(out * 100).toFixed(0)}% haze flown out against ${(home * 100).toFixed(0)}% at home`);
+    // Continuous, and never thicker as the camera flies out.
+    let prev = at(lim.homeDistance);
+    for (let d = lim.homeDistance; d <= lim.maxDistance; d *= 1.01) {
+      const f = at(d);
+      assert.ok(f <= prev + 1e-12 && prev - f < prev * 0.02, `${floors.join('/')} at ${d} m`);
+      prev = f;
+    }
+    // The horizon stays haze from anywhere: the ground's edge 8 km off is all but gone.
+    assert.ok(fogAt(at(lim.maxDistance), lim.maxDistance + 8000) > 0.9, `${floors.join('/')}: the horizon shows through`);
   }
 });
