@@ -46,6 +46,8 @@ export interface FloorContext {
    * build nothing of their own.
    */
   crown?: { stage: number; height: number };
+  /** A floor finished and waiting on his review: built whole, every pane unlit. */
+  asleep?: boolean;
 }
 
 /** What a floor builder reports back: its plan centre and half-width (for the pick proxy), and where a datum band at its top would sit clear of its facade. */
@@ -56,6 +58,12 @@ export interface FloorShape {
   datumHalf: number;
   /** A round plan: the datum wraps it as a ring. */
   round?: boolean;
+  /**
+   * Where the floor's own slab edge runs: the plan centre and half-width of
+   * its face at the foot of the floor (a ring when `round`). An earned
+   * floor's light line, or a waiting floor's bare concrete edge, is laid here.
+   */
+  edge: { cx: number; cz: number; half: number; round?: boolean };
 }
 
 /**
@@ -74,7 +82,8 @@ const LIGHTING: Record<Era, { lit: number; warm: number }> = {
 };
 
 /** Per-window light: whole floors go dark now and then; the rest light by chance, warm or cool. */
-function lighter(era: Era, rand: () => number, own?: { lit: number; warm: number }): (style: number) => THREE.Color {
+function lighter(era: Era, rand: () => number, own?: { lit: number; warm: number }, asleep = false): (style: number) => THREE.Color {
+  if (asleep) return (style) => paneData(0, 0, style);
   const { lit, warm } = own ?? LIGHTING[era];
   const floorOn = rand() > 0.12;
   const floorWarm = rand() < warm;
@@ -178,7 +187,7 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
   const sillY = Math.max(0.75, h * 0.2);
   const headY = Math.min(h - 0.55, sillY + h * s.winH);
   const winH = headY - sillY;
-  const light = lighter(floor.era, c.rand, c.variant.lights);
+  const light = lighter(floor.era, c.rand, c.variant.lights, c.asleep);
   const r = s.reveal;
 
   // Window centres along a face, left to right.
@@ -278,7 +287,7 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
       [-0.1, h],
     ]));
   }
-  return { cx: 0, cz: 0, half: half + 0.3, datumHalf: half + 0.12 };
+  return { cx: 0, cz: 0, half: half + 0.3, datumHalf: half + 0.12, edge: { cx: 0, cz: 0, half: half + 0.02 } };
 }
 
 const stone: EraBuilder = (k, w, h, f, c) => masonry(k, w, h, f, c, 'stone');
@@ -299,7 +308,7 @@ const glass: EraBuilder = (k, w, h, f, c) => {
   const pitch = w / n;
   const sb = Math.min(h * 0.45, c.variant.spandrel ?? 0.7);
   const depth = c.variant.depth ?? 1;
-  const light = lighter(f.era, c.rand, c.variant.lights);
+  const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
   k.box('slab', w - 0.7, h, w - 0.7, M(0, h / 2, 0));
   for (let side = 0; side < 4; side++) {
     const F = face(side, half);
@@ -320,7 +329,7 @@ const glass: EraBuilder = (k, w, h, f, c) => {
     k.add('glassBand', squareSweep(half, [[-0.2, h - 0.6], [0.3, h - 0.6], [0.3, h], [-0.2, h]]));
   }
   // Mullion tips reach 0.3 m out per unit of depth; the datum wraps clear of them.
-  return { cx: 0, cz: 0, half: half + Math.max(0.3, 0.3 * depth), datumHalf: half + Math.max(0.3, 0.3 * depth + 0.01) };
+  return { cx: 0, cz: 0, half: half + Math.max(0.3, 0.3 * depth), datumHalf: half + Math.max(0.3, 0.3 * depth + 0.01), edge: { cx: 0, cz: 0, half: half + 0.06 } };
 };
 
 // ---------------------------------------------------------------- titanium
@@ -354,7 +363,7 @@ const titanium: EraBuilder = (k, w, h, f, c) => {
   const fin = c.variant.depth ?? 1;
   const pitch = w / n;
   const edge = 0.55;
-  const light = lighter(f.era, c.rand, c.variant.lights);
+  const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
   k.box('slab', w - 1.2, h, w - 1.2, M(0, h / 2, 0));
   // A dark graphite slab edge with small chamfers: it frames each floor without becoming a lit strip.
   k.add('titaniumTrim', squareSweep(half, [[-0.6, 0], [0.3, 0], [0.38, 0.07], [0.38, edge - 0.07], [0.3, edge], [-0.6, edge]]));
@@ -376,7 +385,7 @@ const titanium: EraBuilder = (k, w, h, f, c) => {
     k.add('titaniumBand', squareSweep(half, [[-0.6, h - 0.45], [0.75, h - 0.45], [0.8, h - 0.4], [0.8, h], [-0.6, h]]));
   }
   // The fins reach 0.97 m out per unit of depth; the datum wraps just clear of their tips.
-  return { cx: 0, cz: 0, half: half + Math.max(1, fin), datumHalf: half + 0.97 * fin + 0.03 };
+  return { cx: 0, cz: 0, half: half + Math.max(1, fin), datumHalf: half + 0.97 * fin + 0.03, edge: { cx: 0, cz: 0, half: half + 0.4 } };
 };
 
 // ---------------------------------------------------------------- sci-fi
@@ -440,7 +449,7 @@ const deco: EraBuilder = (k, w, h, f, c) => {
   const n = bays(hs * 2, c.variant.pitch ?? 2.4);
   const p = (hs * 2) / n;
   const sp = 0.9;
-  const light = lighter(f.era, c.rand, c.variant.lights);
+  const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
   k.box('slab', hs * 2 - 1.2, h, hs * 2 - 1.2, M(0, h / 2, 0));
   for (let side = 0; side < 4; side++) {
     const F = face(side, hs);
@@ -491,7 +500,7 @@ const deco: EraBuilder = (k, w, h, f, c) => {
     slabBox(k, 'roof', -hs * 0.72, hs * 0.72, h - 0.06, h, -hs * 0.72, hs * 0.72);
     beacons(k, corners(hs + 0.35, 0.2), h);
   }
-  return { cx: 0, cz: 0, half: (setback ? below : hs) + 0.5, datumHalf: hs + 0.42 };
+  return { cx: 0, cz: 0, half: (setback ? below : hs) + 0.5, datumHalf: hs + 0.42, edge: { cx: 0, cz: 0, half: hs + 0.03 } };
 };
 
 // ---- ziggurat
@@ -517,7 +526,7 @@ const ziggurat: EraBuilder = (k, w, h, f, c) => {
   const gl = h1 - 0.12;
   const n = bays(gl * 2, c.variant.pitch ?? 1.6);
   const p = (gl * 2) / n;
-  const light = lighter(f.era, c.rand, c.variant.lights);
+  const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
   k.box('slab', gl * 2 - 0.8, h, gl * 2 - 0.8, M(0, h / 2, 0));
   // The sloped face, from the floor below's line out at h0 up to the glass line at h1.
   k.add('scifiWall', frustum(h0 * 2, sp, h0 * 2, (h1 * 2) / (h0 * 2)), M(0, sp / 2, 0));
@@ -555,7 +564,7 @@ const ziggurat: EraBuilder = (k, w, h, f, c) => {
     slabBox(k, 'roof', -h1 * 0.5, h1 * 0.5, h - 0.1, h, -h1 * 0.5, h1 * 0.5);
     beacons(k, corners(h1 + lip, 0.25), h);
   }
-  return { cx: 0, cz: 0, half: h0 + 0.1, datumHalf: h1 + lip + 0.1 };
+  return { cx: 0, cz: 0, half: h0 + 0.1, datumHalf: h1 + lip + 0.1, edge: { cx: 0, cz: 0, half: h0 + 0.03 } };
 };
 
 // ---- needle
@@ -575,7 +584,7 @@ const needle: EraBuilder = (k, w, h, f, c) => {
   const n = bays(hs * 2, c.variant.pitch ?? 0.8);
   const p = (hs * 2) / n;
   const edge = 0.32;
-  const light = lighter(f.era, c.rand, c.variant.lights);
+  const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
   k.box('slab', hs * 2 - 0.6, h, hs * 2 - 0.6, M(0, h / 2, 0));
   // A titanium slab edge at every floor, the horizontal line the fine verticals hang from.
   k.add('scifiWall', squareSweep(hs, [[-0.5, 0], [0.2, 0], [0.24, edge / 2], [0.2, edge], [-0.5, edge]]));
@@ -610,7 +619,7 @@ const needle: EraBuilder = (k, w, h, f, c) => {
     slabBox(k, 'roof', -hs * 0.4, hs * 0.4, h - 0.25, h, -hs * 0.4, hs * 0.4);
     beacons(k, corners(hs + 0.2, 0.2), h);
   }
-  return { cx: 0, cz: 0, half: (pod ? hs + 2.2 : hs) + 0.3, datumHalf: hs + 0.12 };
+  return { cx: 0, cz: 0, half: (pod ? hs + 2.2 : hs) + 0.3, datumHalf: hs + 0.12, edge: { cx: 0, cz: 0, half: hs + 0.26 } };
 };
 
 // ---- arcology
@@ -629,7 +638,7 @@ const arcology: EraBuilder = (k, w, h, f, c) => {
   const recess = 1.3;
   const n = bays(w, c.variant.pitch ?? 4.6);
   const p = w / n;
-  const light = lighter(f.era, c.rand, c.variant.lights);
+  const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
   const pods = c.inRun % 2 === 1 && !c.datum && !c.top;
   const podSides = pods ? [Math.floor(c.rand() * 4), (Math.floor(c.rand() * 4) + 2) % 4, Math.floor(c.rand() * 4)] : [];
   const podBays = pods ? [Math.floor(c.rand() * n), Math.floor(c.rand() * n)] : [];
@@ -671,7 +680,7 @@ const arcology: EraBuilder = (k, w, h, f, c) => {
     k.box('scifiTrim', half * 0.3, 0.7, half * 0.3, M(half * 0.5, h - 0.65, -half * 0.45));
     beacons(k, corners(half + over, 0.3), h);
   }
-  return { cx: 0, cz: 0, half: half + over + (pods ? 2.9 : 0.1), datumHalf: half + 0.35 };
+  return { cx: 0, cz: 0, half: half + over + (pods ? 2.9 : 0.1), datumHalf: half + 0.35, edge: { cx: 0, cz: 0, half: half + over + 0.02 } };
 };
 
 // ---- organic
@@ -695,7 +704,7 @@ const organic: EraBuilder = (k, w, h, f, c) => {
   const r1 = radius(c.inRun + 1);
   const rg = Math.min(r0, r1) - 0.4;
   const sp = 1.0;
-  const light = lighter(f.era, c.rand, c.variant.lights);
+  const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
   k.add('slab', lathe([[0, 0], [rg - 0.45, 0], [rg - 0.45, h], [0, h]], 48));
   // The spandrel shell, curving from the slab line in to the glass, and the lip the next floor's shell grows from.
   k.add('scifiWall', lathe([[rg - 0.3, sp + 0.2], [rg + 0.03, sp + 0.2], [rg + 0.03, sp], [(r0 + rg) / 2 + 0.1, sp * 0.55], [r0, 0.0], [r0 - 0.6, 0]], 64));
@@ -729,7 +738,7 @@ const organic: EraBuilder = (k, w, h, f, c) => {
     k.add('scifiWall', lathe([[r1 - 0.2, top + 0.08], [r1 * 0.8, h - 0.2], [r1 * 0.45, h - 0.04], [0, h]], 64));
     beacons(k, [0, 1, 2, 3].map((i) => [(r1 - 0.25) * Math.sin((i / 4) * Math.PI * 2 + Math.PI / 4), (r1 - 0.25) * Math.cos((i / 4) * Math.PI * 2 + Math.PI / 4)] as [number, number]), top + 0.36);
   }
-  return { cx: 0, cz: 0, half: R + 0.3, datumHalf: R + 0.3, round: true };
+  return { cx: 0, cz: 0, half: R + 0.3, datumHalf: R + 0.3, round: true, edge: { cx: 0, cz: 0, half: r0 + 0.03, round: true } };
 };
 
 // ---- cluster
@@ -753,7 +762,7 @@ const cluster: EraBuilder = (k, w, h, f, c) => {
   const bx = ox * reach;
   const bz = oz * reach;
   const bh = c.top ? half * 0.54 : half * (0.56 + 0.08 * ((c.inRun + 1) % 2));
-  const light = lighter(f.era, c.rand, c.variant.lights);
+  const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
   k.box('slab', core * 2 - 0.3, h, core * 2 - 0.3, M(0, h / 2, 0));
   k.box('scifiWall', core * 2, h, core * 2, M(0, h / 2, 0));
   if (c.variant.seams) {
@@ -784,7 +793,7 @@ const cluster: EraBuilder = (k, w, h, f, c) => {
     beacons(k, corners(ch, 0.2), h);
   }
   const far = Math.max(core, Math.abs(bx) + bh, Math.abs(bz) + bh);
-  return { cx: bx / 2, cz: bz / 2, half: far - Math.max(Math.abs(bx), Math.abs(bz)) / 2 + 0.2, datumHalf: bh + 0.12 };
+  return { cx: bx / 2, cz: bz / 2, half: far - Math.max(Math.abs(bx), Math.abs(bz)) / 2 + 0.2, datumHalf: bh + 0.12, edge: { cx: bx, cz: bz, half: bh + 0.03 } };
 };
 
 const FAMILY_BUILDERS: Record<Family, EraBuilder> = { deco, ziggurat, needle, arcology, organic, cluster };
@@ -842,7 +851,7 @@ function crown(k: Kit, family: Family, half: number, c: FloorContext): FloorShap
       k.add(mat, kitPiece(name), M(0, 0, 0, 0, b, H, b));
     }
   }
-  return { cx: 0, cz: 0, half: b * spec.reach + 0.3, datumHalf: b * spec.top + 0.12, round: spec.round };
+  return { cx: 0, cz: 0, half: b * spec.reach + 0.3, datumHalf: b * spec.top + 0.12, round: spec.round, edge: { cx: 0, cz: 0, half: b + 0.03, round: spec.round } };
 }
 
 /** Sci-fi: the floor is built in its variant's family (see FAMILIES in variants.ts). */
@@ -852,3 +861,139 @@ export const ERA_BUILDERS: Record<Era, EraBuilder> = { stone, brick, glass, tita
 
 /** Each run of titanium floors twists a little per floor (radians). */
 export const TITANIUM_TWIST = 0.012;
+
+// ---------------------------------------------------------------- earned floors (Task 22)
+
+/** A sweep round a plan's edge: a square of half-width `half`, or a ring when `round`. */
+function edgeSweep(edge: FloorShape['edge'], profile: Array<[number, number]>): THREE.BufferGeometry {
+  if (!edge.round) return squareSweep(edge.half, profile);
+  const g = new THREE.LatheGeometry(
+    profile.map(([d, y]) => new THREE.Vector2(edge.half + d, y)),
+    64,
+  );
+  g.computeVertexNormals();
+  return g;
+}
+
+/** How tall the light line at an earned floor's slab edge is, and how far it stands clear of the face. */
+const LINE = { tall: 0.11, proud: 0.05 };
+
+/**
+ * The thin cool line at the slab edge of a floor earned in the market and
+ * merged: a lit reveal at the very foot of the floor, below anything the
+ * era puts at its slab (so it never sits on the Claude amber). A floor he
+ * merged with his own changes added carries a warm ivory pair instead.
+ */
+export function earnedLine(k: Kit, edge: FloorShape['edge'], his: boolean): void {
+  const strip = (y: number): Array<[number, number]> => [
+    [-0.12, y],
+    [LINE.proud, y],
+    [LINE.proud, y + LINE.tall],
+    [-0.12, y + LINE.tall],
+  ];
+  const at = M(edge.cx, 0, edge.cz);
+  if (!his) {
+    k.add('earnedLine', edgeSweep(edge, strip(0.0)), at);
+    return;
+  }
+  k.add('handLine', edgeSweep(edge, strip(0.0)), at);
+  k.add('handLine', edgeSweep(edge, strip(0.2)), at);
+}
+
+/**
+ * A waiting floor's slab edge, left in bare concrete until the PR merges:
+ * a plain cast nosing round the foot of the floor, standing over whatever
+ * finish the era would give its slab.
+ */
+export function bareEdge(k: Kit, edge: FloorShape['edge']): void {
+  k.add('slab', edgeSweep(edge, [
+    [-0.2, 0],
+    [0.09, 0],
+    [0.09, 0.32],
+    [-0.2, 0.32],
+  ]), M(edge.cx, 0, edge.cz));
+}
+
+/**
+ * A scar: the floor a failed inspection left standing, built as the approved
+ * primer floor. A rough concrete slab whose edge was never dressed (its
+ * nosing broken into uneven lengths, rebar stubs left out of it), steel
+ * studs bare at the corners where the sheathing stops short, and between
+ * them sheathing boards in matte rust-red primer, each coat a little
+ * different, butted with open seams. No glazing at all. It stands as tall
+ * as its size, like any floor.
+ */
+export function scarFloor(k: Kit, width: number, h: number, rand: () => number): FloorShape {
+  const half = width / 2;
+  const slabT = 0.34;
+  const skin = half - 0.12;
+  const clear = Math.min(1.6, half * 0.28);
+  const tint = k.tint.clone();
+  // The structure behind: a dark core, so nothing reads through the seams as sky.
+  k.box('slab', width - 1.0, h, width - 1.0, M(0, h / 2, 0));
+  for (let side = 0; side < 4; side++) {
+    const F = face(side, half);
+    // The slab's edge, cast and never dressed: lengths of nosing at uneven depths and heights.
+    let u = -half;
+    while (u < half - 1e-3) {
+      const len = Math.min(half - u, 0.7 + 1.6 * rand());
+      const out = -0.04 + 0.16 * rand();
+      const t = slabT * (0.72 + 0.28 * rand());
+      k.box('slab', len, t, 0.3 + out, F.clone().multiply(M(u + len / 2, t / 2, -0.15 + out / 2)));
+      u += len;
+    }
+    // Rebar stubs left out of the slab edge, a few per face.
+    const stubs = 3 + Math.floor(rand() * 3);
+    for (let i = 0; i < stubs; i++) {
+      const su = -half + clear + rand() * (width - 2 * clear);
+      k.box('steel', 0.035, 0.035, 0.22 + 0.2 * rand(), F.clone().multiply(M(su, 0.12 + 0.12 * rand(), 0.12)));
+    }
+    // Sheathing boards between the bare corners, 1.2 m wide and stood on end in two rows with their joints
+    // staggered, each board's coat of primer a few percent off its neighbours. One bay per face was never
+    // closed: its studs stand bare, the wound shown rather than painted over.
+    const span = width - 2 * clear;
+    const n = Math.max(2, Math.round(span / 1.22));
+    const bw = span / n;
+    const y0 = slabT + 0.02;
+    const y1 = h - 0.06;
+    const open = 1 + Math.floor(rand() * Math.max(1, n - 2));
+    const split = y0 + (y1 - y0) * (0.48 + 0.1 * rand());
+    for (let i = 0; i < n; i++) {
+      const bu = -half + clear + bw * (i + 0.5);
+      if (i === open) {
+        for (let j = 0; j <= 3; j++) {
+          const su = bu - bw / 2 + 0.06 + ((bw - 0.12) * j) / 3;
+          k.box('steel', 0.05, y1 - y0, 0.15, F.clone().multiply(M(su, (y0 + y1) / 2, skin - half - 0.06)));
+        }
+        k.box('steel', bw, 0.05, 0.16, F.clone().multiply(M(bu, split, skin - half - 0.06)));
+        continue;
+      }
+      const stagger = i % 2 === 0 ? 0 : 0.35;
+      const cut = Math.min(y1 - 0.2, split + stagger * (y1 - split));
+      for (const [a, z] of [[y0, cut], [cut, y1]] as const) {
+        const v = 0.84 + 0.22 * rand();
+        k.tint = tint.clone().multiplyScalar(v);
+        k.box('primer', bw - 0.04, z - a - 0.03, 0.05, F.clone().multiply(M(bu, (a + z) / 2, skin - half + 0.025)));
+      }
+    }
+    k.tint = tint.clone();
+    // The bare corner: studs at 40 cm centres on both tracks, a bottom and a top track, a diagonal strap.
+    const c0 = half - clear;
+    const cu = half - 0.08;
+    const studs = Math.max(2, Math.round(clear / 0.4));
+    for (let i = 0; i <= studs; i++) {
+      const su = c0 + ((cu - c0) * i) / studs;
+      k.box('steel', 0.05, y1 - y0, 0.15, F.clone().multiply(M(su, (y0 + y1) / 2, skin - half - 0.06)));
+    }
+    k.box('steel', clear + 0.04, 0.05, 0.16, F.clone().multiply(M((c0 + half) / 2, y0 + 0.025, skin - half - 0.06)));
+    k.box('steel', clear + 0.04, 0.05, 0.16, F.clone().multiply(M((c0 + half) / 2, y1 - 0.025, skin - half - 0.06)));
+    const dx = cu - c0;
+    const dy = y1 - y0 - 0.2;
+    const len = Math.hypot(dx, dy);
+    k.add('steel', new THREE.BoxGeometry(0.03, len, 0.01), F.clone().multiply(ME((c0 + cu) / 2, (y0 + y1) / 2, skin - half + 0.02, 0, 0, Math.atan2(dx, dy))));
+  }
+  // The corner post itself: a steel box column, bare.
+  const post = h - 0.08 - slabT;
+  for (const [x, z] of corners(half, 0.1)) k.box('steel', 0.16, post, 0.16, M(x, slabT + post / 2, z));
+  return { cx: 0, cz: 0, half: half + 0.2, datumHalf: half + 0.12, edge: { cx: 0, cz: 0, half: half + 0.02 } };
+}

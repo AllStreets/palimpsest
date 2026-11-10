@@ -1,4 +1,4 @@
-import type { District, Era, Floor, FloorSize, RootStyle } from '../../../shared/types.js';
+import type { District, Era, Floor, FloorSize, RootStyle, TowerSpec } from '../../../shared/types.js';
 
 export const ROOT_NAMES: Record<RootStyle, string> = {
   beauxarts: 'Beaux-Arts',
@@ -63,6 +63,89 @@ export function floorDate(at: string): string {
 
 const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`;
 
+/** Who the market's floors belong to, by id: agent and firm names, and each failed run's inspection. */
+export interface MarketNames {
+  agents: Map<string, string>;
+  firms: Map<string, string>;
+  /** Run id to the id of its inspection report. */
+  inspections: Map<string, string>;
+}
+
+export const NO_NAMES: MarketNames = { agents: new Map(), firms: new Map(), inspections: new Map() };
+
+/** What an earned floor's row says: who built it, for which job, where its PR or its inspection report is. */
+export interface EarnedRow {
+  agent: string;
+  firm: string;
+  /** The job's title, without the engine's "Failed inspection: " prefix. */
+  job: string;
+  pr: { text: string; href: string } | null;
+  failed: boolean;
+  /** A word on how the floor stands, when it is not simply merged. */
+  state: string | null;
+  /** A scar's inspection report (its run while the report id is not known yet). */
+  report: string | null;
+}
+
+const SCAR_PREFIX = /^Failed inspection:\s*/;
+
+export function earnedRow(f: Floor, names: MarketNames): EarnedRow {
+  const e = f.earned;
+  const failed = e?.state === 'scar';
+  const link = failed ? null : floorLink(f);
+  let state: string | null = null;
+  if (failed) state = 'Failed inspection';
+  else if (e?.reverted) state = 'Reverted';
+  else if (e?.state === 'waiting') state = 'Waiting on your review';
+  else if (e?.note && /^merged with his changes/i.test(e.note)) state = 'Merged with your changes';
+  const inspection = e ? names.inspections.get(e.runId) : undefined;
+  return {
+    agent: e ? (names.agents.get(e.agentId) ?? e.agentId) : '',
+    firm: e ? (names.firms.get(e.firmId) ?? e.firmId) : '',
+    job: f.title.replace(SCAR_PREFIX, ''),
+    pr: link?.href ? { text: link.text, href: link.href } : null,
+    failed,
+    state,
+    report: failed && e ? (inspection ? `#/inspections/${encodeURIComponent(inspection)}` : `#/runs/${encodeURIComponent(e.runId)}`) : null,
+  };
+}
+
+/** One line of the inspector's list, top to bottom. */
+export type InspectorEntry =
+  | { type: 'heading'; text: string; count: number; market: boolean }
+  | { type: 'floor'; floor: Floor; n: number }
+  | { type: 'datum' }
+  | { type: 'root' };
+
+/**
+ * The inspector's list, top to bottom: the floors earned in the market
+ * (newest first) under their own heading, the datum line, then the founding
+ * floors grouped under the era each run began in, and the root.
+ */
+export function inspectorEntries(t: TowerSpec): InspectorEntry[] {
+  const floors = t.floors;
+  const out: InspectorEntry[] = [];
+  const above = floors.length - t.datumIndex;
+  if (above > 0) {
+    out.push({ type: 'heading', text: 'Built in the market', count: above, market: true });
+    for (let i = floors.length - 1; i >= t.datumIndex; i--) out.push({ type: 'floor', floor: floors[i], n: i + 1 });
+  }
+  if (floors.length > 0) out.push({ type: 'datum' });
+  let era: Era | null = null;
+  for (let i = Math.min(t.datumIndex, floors.length) - 1; i >= 0; i--) {
+    const f = floors[i];
+    if (f.era !== era) {
+      era = f.era;
+      let n = 0;
+      for (let j = i; j >= 0 && floors[j].era === era; j--) n++;
+      out.push({ type: 'heading', text: `${ERA_NAMES[era]} era`, count: n, market: false });
+    }
+    out.push({ type: 'floor', floor: f, n: i + 1 });
+  }
+  out.push({ type: 'root' });
+  return out;
+}
+
 export interface InspectorHandlers {
   /** The selected floor changed (null: none). */
   onSelect(repo: string, floorId: string | null): void;
@@ -75,6 +158,8 @@ export interface Inspector {
   open(d: District, floorId?: string | null): void;
   /** Re-reads a district that was rebuilt, keeping the selection when its floor still exists. */
   update(d: District): void;
+  /** Takes the market's names (agents, firms, inspection reports) and redraws the open tower's earned floors with them. */
+  setNames(names: MarketNames): void;
   close(): void;
   readonly repo: string | null;
   readonly width: number;
@@ -107,6 +192,7 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
   let selected: string | null = null;
   let rows: HTMLElement[] = [];
   let opener: HTMLElement | null = null;
+  let names: MarketNames = NO_NAMES;
 
   const rowFor = (id: string | null): HTMLElement | undefined => rows.find((r) => r.dataset.floor === (id ? encodeURIComponent(id) : ''));
 
@@ -142,7 +228,7 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
     const facts =
       floors.length === 0
         ? `${ROOT_NAMES[d.tower.root]} root, no floors yet`
-        : `${ROOT_NAMES[d.tower.root]} root, ${plural(d.tower.datumIndex, 'founding floor')}`;
+        : `${ROOT_NAMES[d.tower.root]} root, ${plural(d.tower.datumIndex, 'founding floor')}${floors.length > d.tower.datumIndex ? `, ${floors.length - d.tower.datumIndex} earned` : ''}`;
     head.append(close, el('p', 'insp-owner', owner ?? ''), title, el('p', 'insp-facts', facts));
 
     const list = el('ol', 'insp-floors');
@@ -150,27 +236,20 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
     list.setAttribute('aria-label', `Floors of ${name ?? d.repo}, top to bottom`);
     rows = [];
 
-    if (floors.length > 0 && d.tower.datumIndex === floors.length) {
-      const datum = el('li', 'insp-datum');
-      datum.setAttribute('role', 'presentation');
-      datum.append(el('span', 'insp-datum-name', 'Datum line'), el('span', 'insp-datum-note', 'where the repo joined the city'));
-      list.append(datum);
-    }
-
-    // Top to bottom: newest floor first, a heading where each era begins.
-    let era: Era | null = null;
-    for (let i = floors.length - 1; i >= 0; i--) {
-      const f = floors[i];
-      if (f.era !== era) {
-        era = f.era;
-        let n = 0;
-        for (let j = i; j >= 0 && floors[j].era === era; j--) n++;
-        const eh = el('li', 'insp-era');
+    for (const e of inspectorEntries(d.tower)) {
+      if (e.type === 'datum') {
+        const datum = el('li', 'insp-datum');
+        datum.setAttribute('role', 'presentation');
+        datum.append(el('span', 'insp-datum-name', 'Datum line'), el('span', 'insp-datum-note', d.tower.kind === 'agent' ? 'where the agent joined the city' : 'where the repo joined the city'));
+        list.append(datum);
+      } else if (e.type === 'heading') {
+        const eh = el('li', e.market ? 'insp-era insp-market' : 'insp-era');
         eh.setAttribute('role', 'presentation');
-        eh.append(el('span', 'insp-era-name', `${ERA_NAMES[era]} era`), el('span', 'insp-era-count', plural(n, 'floor')));
+        eh.append(el('span', 'insp-era-name', e.text), el('span', 'insp-era-count', plural(e.count, 'floor')));
         list.append(eh);
+      } else if (e.type === 'floor') {
+        list.append(e.floor.founding ? row(e.floor, e.n) : earnedFloorRow(e.floor, e.n));
       }
-      list.append(row(f, i + 1));
     }
 
     const root = el('li', 'insp-era insp-root');
@@ -184,6 +263,53 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
     }
 
     panel.append(head, list);
+  }
+
+  /** A link that opens beside the city, never selecting the row it sits in. */
+  function link(text: string, href: string, title: string, external: boolean): HTMLAnchorElement {
+    const a = el('a', undefined, text);
+    a.href = href;
+    if (external) {
+      a.target = '_blank';
+      a.rel = 'noopener';
+    }
+    a.title = title;
+    a.tabIndex = -1;
+    a.addEventListener('click', (ev) => ev.stopPropagation());
+    return a;
+  }
+
+  /** An earned floor: its job, who built it for which firm, its PR (or its inspection report), how it stands. */
+  function earnedFloorRow(f: Floor, n: number): HTMLElement {
+    const e = earnedRow(f, names);
+    const r = el('li', 'insp-floor insp-earned');
+    r.dataset.floor = encodeURIComponent(f.id);
+    r.setAttribute('role', 'option');
+    r.tabIndex = -1;
+    if (e.failed) r.classList.add('scar');
+    if (f.earned?.state === 'waiting') r.classList.add('waiting');
+    if (f.claude) r.classList.add('claude');
+
+    const title = el('span', 'insp-title', e.job);
+    title.title = e.job;
+    const ref = el('span', 'insp-ref');
+    if (e.pr) ref.append(link(e.pr.text, e.pr.href, `Open ${e.pr.text} on GitHub`, true));
+    else if (e.report) ref.append(link('Report', e.report, 'Open the inspection report', false));
+
+    const meta = el('span', 'insp-meta');
+    meta.append(el('span', 'insp-who', `${e.agent}, ${e.firm}`));
+    if (f.claude) meta.append(el('span', 'insp-claude', 'with Claude'));
+
+    r.append(el('span', 'insp-n', String(n)), title, ref, meta, el('span', 'insp-date', floorDate(f.at)));
+    // How it stands, on a line of its own so the builder's name never gives way to it.
+    if (e.state) r.append(el('span', e.failed ? 'insp-state insp-failed' : 'insp-state', e.state));
+    r.setAttribute('aria-label', `Floor ${n}, ${e.job}, built by ${e.agent} of ${e.firm}${e.state ? `, ${e.state.toLowerCase()}` : ''}, ${floorDate(f.at)}`);
+    r.addEventListener('click', () => {
+      select(f.id, { focus: true });
+      if (district) h.onFly(district.repo, f.id);
+    });
+    rows.push(r);
+    return r;
   }
 
   function row(f: Floor, n: number): HTMLElement {
@@ -312,6 +438,16 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
       if (hadFocus && !panel.contains(document.activeElement)) {
         (rows[0] ?? panel.querySelector<HTMLElement>('.insp-close'))?.focus({ preventScroll: true });
       }
+    },
+    setNames(next) {
+      names = next;
+      if (!district) return;
+      const keep = selected;
+      const scroll = panel.querySelector('.insp-floors')?.scrollTop ?? 0;
+      const hadFocus = panel.contains(document.activeElement);
+      render(district);
+      panel.querySelector('.insp-floors')?.scrollTo({ top: scroll });
+      select(keep, { focus: hadFocus && keep !== null });
     },
     close() {
       if (!district) return;

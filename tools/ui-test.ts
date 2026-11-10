@@ -123,6 +123,9 @@ interface Debug {
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
   plots(): { plazas: number; buildings: number };
+  quality(): 'high' | 'medium';
+  notice(): string;
+  inspect(repo: string): void;
 }
 
 function debug<T>(page: Page, read: (d: Debug) => T): Promise<T> {
@@ -182,6 +185,107 @@ async function measureFps(page: Page): Promise<void> {
   console.log(`info  ${gpu}, ${VIEWPORT.width}x${VIEWPORT.height} at pixel ratio ${ratio}`);
   console.log(`info  steady overview: ${overview.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
   console.log(`info  steady close tower: ${close.toFixed(0)} fps, ${closeStats.calls} draw calls, ${(closeStats.triangles / 1e6).toFixed(2)}M triangles`);
+}
+
+// ---------------------------------------------------------------- the kits missing
+
+/** With kits.glb unreachable the city still stands, on plain blocks, and says why, instead of going blank. */
+async function kitFailureChecks(browser: Browser): Promise<void> {
+  const page = await browser.newPage({ viewport: VIEWPORT });
+  const thrown: string[] = [];
+  page.on('pageerror', (e) => thrown.push(String(e)));
+  await page.route('**/kits/kits.glb', (r) => r.fulfill({ status: 200, contentType: 'model/gltf-binary', body: Buffer.from('not a glb at all') }));
+  await page.goto(`http://127.0.0.1:${PORT}/`);
+  const ready = await page
+    .waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false);
+  check(ready && thrown.length === 0, `a corrupt kits.glb still opens the city (${thrown.join(' | ') || 'no errors'})`);
+  const districts = (await page.evaluate(() => (window as unknown as { __palimpsest?: { districts: number } }).__palimpsest?.districts ?? 0)) as number;
+  check(districts === SAMPLE.length, `and stands every district on plain blocks (${districts})`);
+  const notice = (await page.locator('.city-notice p').textContent()) ?? '';
+  check(/kits did not load/.test(notice), `and says so (${notice.slice(0, 60)})`);
+  // Past the veil's fade, so the shot shows the plain city under the notice.
+  await page.waitForTimeout(2500);
+  await page.screenshot({ path: join(SHOTS, 'kits-missing.png') });
+  await page.close();
+}
+
+// ---------------------------------------------------------------- earned floors (Task 22)
+
+/**
+ * The sample economy laid over the sample city (engine/market/sample-economy.ts):
+ * a tower with lit, waiting and scar floors over its bronze band, shot as
+ * tower-earned.png, and the inspector listing them under "Built in the market".
+ */
+async function earnedChecks(page: Page): Promise<void> {
+  const { seedEconomy } = await import('../engine/market/sample-economy.js');
+  await seedEconomy();
+  await page.reload();
+  await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+  await page.waitForTimeout(2500);
+  const ds = await cityOf(page);
+  const states = (d: District): Set<string> => new Set(d.tower.floors.map((f) => f.earned?.state ?? '').filter(Boolean));
+  const d = ds.find((x) => ['lit', 'waiting', 'scar'].every((st) => states(x).has(st)));
+  check(!!d, `a tower carries lit, waiting and scar floors (${d?.repo ?? 'none'})`);
+  if (!d) return;
+  const lay = layoutTower(d.tower);
+  check(lay.top > lay.datumY + 20, `its earned floors rise above the datum (${(lay.top - lay.datumY).toFixed(0)} m)`);
+  const span = lay.top - lay.datumY;
+  const mid = lay.datumY + span * 0.5;
+  await setView(page, [d.origin.x - 70 - span * 0.6, mid - 6, d.origin.z + 55 + span * 0.5], [d.origin.x, mid, d.origin.z]);
+  await debug(page, (x) => x.precompile());
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: join(SHOTS, 'tower-earned.png') });
+  const stats = await debug(page, (x) => x.stats());
+  const fps = (await page.evaluate(`new Promise((resolve) => {
+    let frames = 0;
+    const t0 = performance.now();
+    function tick() {
+      frames++;
+      if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
+      else resolve((frames * 1000) / (performance.now() - t0));
+    }
+    requestAnimationFrame(tick);
+  })`)) as number;
+  console.log(`info  earned tower: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+  await debug(page, (x) => (x as unknown as { home(): void }).home());
+  await page.waitForTimeout(2500);
+  const home = await debug(page, (x) => x.stats());
+  console.log(`info  economy city from home: ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
+  check((await debug(page, (x) => x.quality())) === 'high', 'the economy city holds high quality too');
+
+  await page.evaluate((r) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(r), d.repo);
+  await page.waitForSelector('.inspector.open', { timeout: 5000 });
+  // The names arrive from /api/firms after the list draws.
+  const named = await page
+    .waitForFunction(() => [...document.querySelectorAll('.insp-who')].some((e) => /Quickset|Ashlar|Meridian|Kiln|Sparrow|Lodestar/.test(e.textContent ?? '')), null, { timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  check(named, 'earned rows name the agent and the firm');
+  const heads = await page.locator('.insp-era-name').allTextContents();
+  check(heads[0] === 'Built in the market', `the market's floors head the list (${heads[0]})`);
+  const order = await page.evaluate(() => [...document.querySelectorAll('.insp-floors > li')].map((li) => (li.classList.contains('insp-datum') ? 'datum' : li.classList.contains('insp-earned') ? 'earned' : li.classList.contains('insp-floor') ? 'founding' : 'head')));
+  const lastEarned = order.lastIndexOf('earned');
+  const datumAt = order.indexOf('datum');
+  check(lastEarned >= 0 && datumAt > lastEarned && order.indexOf('founding') > datumAt, 'earned floors list above the datum entry, founding floors below it');
+  const scarRow = page.locator('.insp-earned.scar').first();
+  check((await scarRow.locator('.insp-failed').textContent()) === 'Failed inspection', 'a scar says Failed inspection');
+  const report = await scarRow.locator('.insp-ref a').getAttribute('href');
+  check(!!report && /^#\/(inspections|runs)\//.test(report), `a scar links to its inspection report (${report})`);
+  const pr = await page.locator('.insp-earned:not(.scar) .insp-ref a').first().getAttribute('href');
+  check(!!pr && pr.startsWith(`https://github.com/${d.repo}/pull/`), `an earned floor links to its PR (${pr})`);
+  check((await page.locator('.insp-earned.waiting .insp-state').first().textContent()) === 'Waiting on your review', 'a waiting floor says it waits on his review');
+  // Clicking an earned floor still flies to it.
+  const before = await debug(page, (x) => x.camera());
+  await scarRow.click();
+  await page.waitForTimeout(2500);
+  const after = await debug(page, (x) => x.camera());
+  const hl = await debug(page, (x) => x.highlight);
+  check(hl?.floorId?.includes('#scar-') === true && Math.hypot(after[0] - before[0], after[1] - before[1], after[2] - before[2]) > 1, 'clicking a scar marks it and flies to it');
+  await page.screenshot({ path: join(SHOTS, 'tower-earned-inspector.png') });
+  await page.keyboard.press('Escape');
+  check((await debug(page, (x) => x.notice())) === '', 'no notice shows when the kits load and the frame rate holds');
 }
 
 // ---------------------------------------------------------------- inspector
@@ -942,6 +1046,7 @@ async function main(): Promise<void> {
   });
   try {
     await splashChecks(browser);
+    await kitFailureChecks(browser);
     const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: Number(process.env.UI_DPR ?? 1) });
     const consoleErrors: string[] = [];
     page.on('console', (m) => {
@@ -1019,6 +1124,7 @@ async function main(): Promise<void> {
       check(pick?.repo === SAMPLE[0].fullName, `clicking a plinth picks its district (got ${pick?.repo ?? 'nothing'})`);
 
       await measureFps(page);
+      check((await debug(page, (d) => d.quality())) === 'high', 'the city holds high quality at the default settings (no automatic drop)');
       await inspectorChecks(page);
       await siteChecks(page);
       await disconnectWhileInspecting(page);
@@ -1027,6 +1133,7 @@ async function main(): Promise<void> {
       await settingsChecks(page, claudeSettingsPath);
       await viewGrowsChecks(page);
       await reconnectChecks(page, restart);
+      await earnedChecks(page);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);

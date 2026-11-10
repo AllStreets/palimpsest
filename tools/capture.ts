@@ -28,7 +28,9 @@
  * shot) rebuilds towers in named variants, CAPTURE_CITY=tall seeds the
  * sample repos as four short towers and two at the 120-floor cap, and
  * CAPTURE_CITY=small leaves one 8 floor tower (for the view's framing
- * rounds; use with CAPTURE_OUT).
+ * rounds; use with CAPTURE_OUT). CAPTURE_ECONOMY=1 seeds the sample economy
+ * (engine/market/sample-economy.ts) on top, so towers carry earned, waiting
+ * and scar floors; the `earned` shot frames them.
  *
  * Re-run it whenever the city changes, and add a shot here for each new
  * thing worth showing.
@@ -390,6 +392,38 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await still(page, 'af-datum', [tall.origin.x - 260, tallLay.datumY + 20, tall.origin.z + 240], [tall.origin.x, tallLay.datumY - 10, tall.origin.z]);
     },
 
+    async earned(page) {
+      // The market's floors over the datum (CAPTURE_ECONOMY=1): the harbour tower's earned run and its scar, the
+      // kumo tower's waiting floor at the top, the ledge from above, and the inspector's list for each.
+      await chrome(page, false);
+      const shotsOf = (d: District, tag: string): Array<[string, V3, V3]> => {
+        const lay = layoutTower(d.tower);
+        const { x, z } = d.origin;
+        const mid = (lay.datumY + lay.top) / 2;
+        const span = lay.top - lay.datumY;
+        return [
+          [`earned-${tag}`, [x - 70 - span * 0.6, mid - 6, z + 55 + span * 0.5], [x, mid, z]],
+          [`earned-${tag}-ledge`, [x - 46, lay.datumY + 22, z + 40], [x, lay.datumY + 2, z]],
+          [`earned-${tag}-far`, [x - 300, lay.datumY * 0.75, z + 240], [x, lay.datumY, z]],
+          ...lay.floors
+            .filter((l) => l.floor.earned?.state === 'scar')
+            .slice(0, 1)
+            .map((l): [string, V3, V3] => [`earned-${tag}-scar`, [x - 26, l.y0 + 6, z + 22], [x, l.y0 + l.h / 2, z]]),
+        ];
+      };
+      const kumo = pagoda;
+      for (const [name, eye, target] of [...shotsOf(tall, 'harbour'), ...shotsOf(kumo, 'kumo')]) await still(page, name, eye, target);
+      await chrome(page, true);
+      for (const [d, tag] of [[tall, 'harbour'], [kumo, 'kumo']] as const) {
+        await page.evaluate((r) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(r), d.repo);
+        await page.waitForSelector('.inspector.open', { timeout: 5000 });
+        await page.waitForTimeout(3500);
+        await shoot(page, `earned-${tag}-inspector`);
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(800);
+      }
+    },
+
     async hero(page) {
       // The whole sample city at dusk from above the rooftops, the sunlit faces turned to the eye.
       await chrome(page, false);
@@ -543,6 +577,11 @@ async function main(): Promise<void> {
   await seedSample(Date.now(), process.env.CAPTURE_CITY === 'tall' ? SAMPLE_TALL : SAMPLE);
   // CAPTURE_CITY=small leaves one tower of 8 floors, for the view's framing rounds.
   if (process.env.CAPTURE_CITY === 'small') await shrinkSample();
+  // CAPTURE_ECONOMY=1: the sample economy on top, its firms' floors standing above every datum.
+  if (process.env.CAPTURE_ECONOMY) {
+    const { seedEconomy } = await import('../engine/market/sample-economy.js');
+    await seedEconomy();
+  }
   // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
   const { setRunner } = await import('../engine/exec.js');
   setRunner(sampleGh());
@@ -554,7 +593,8 @@ async function main(): Promise<void> {
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-    await page.goto(`http://127.0.0.1:${PORT}/`);
+    // Fixed quality: a slow headless frame must never step a capture down to medium.
+    await page.goto(`http://127.0.0.1:${PORT}/?fixed-quality`);
     await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, {
       timeout: 60_000,
     });

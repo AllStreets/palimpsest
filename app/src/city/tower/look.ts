@@ -671,6 +671,18 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     lightLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.88, 0.93, 1.0).multiplyScalar(1.0) }),
     // Saturated amber, a hue the architecture never uses, so a Claude floor reads apart from any light line.
     accent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) }),
+    // Cool moonlight blue-white, darker than the neutral light line: a merged floor's slab edge reads as lit
+    // from the city's distance without reaching the bloom threshold (0.97), and never as the Claude amber.
+    earnedLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.68, 0.95).multiplyScalar(1.1) }),
+    // Warm ivory (about 3200 K), a pair of lines: his own hand in the floor, apart from the cool line and the amber.
+    handLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.84, 0.62).multiplyScalar(0.78) }),
+    // Shop primer: red iron oxide in a flat alkyd, matte and a little chalky, browner and darker than any brick
+    // in the city, so it reads as a coat waiting for its finish rather than as paint.
+    primer: new THREE.MeshStandardMaterial({ color: 0x5c2c22, roughness: 0.9, metalness: 0, vertexColors: true, envMapIntensity: 0.5 }),
+    // Black glazing with nothing lit behind it: it holds only the sky.
+    darkGlass: new THREE.MeshStandardMaterial({ color: 0x050607, roughness: 0.06, metalness: 0, envMapIntensity: 1.1 }),
+    // What a vent, a beacon or a stained window is with the power off: dark, matte.
+    unlit: new THREE.MeshStandardMaterial({ color: 0x1c1d20, roughness: 0.7, metalness: 0.2 }),
     // Warm tungsten (about 2700 K) behind a louvre: a vent reads as fire-lit from across the city, never as neon.
     vent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.5, 0.16).multiplyScalar(0.95) }),
     // Bituminous roofing: near black, matte, a little grit in the roughness map.

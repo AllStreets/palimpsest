@@ -22,6 +22,11 @@ export interface DatumPlan {
   ry: number;
   /** A round plan (the biomorphic sci-fi shell): the band is a ring of radius `half` instead of a square. */
   round?: boolean;
+  /**
+   * Floors stand above the datum: the band is the rim of a ledge, a cast
+   * deck across the founding top that the earned floors stand back from.
+   */
+  ledge?: boolean;
 }
 
 export function addDatum(k: Kit, datumY: number, plan: DatumPlan): void {
@@ -43,6 +48,20 @@ export function addDatum(k: Kit, datumY: number, plan: DatumPlan): void {
     : squareSweep(plan.half, profile);
   if (plan.round) geo.computeVertexNormals();
   k.add('datum', geo, M(plan.cx, 0, plan.cz, plan.ry));
+  if (plan.ledge) {
+    // The deck: a concrete plate inside the band, its top a hair above the founding roof so the two never fight.
+    const deck: Array<[number, number]> = [
+      [-plan.half, datumY - 0.1],
+      [-0.18, datumY - 0.1],
+      [-0.18, datumY + 0.025],
+      [-plan.half, datumY + 0.025],
+    ];
+    const g = plan.round
+      ? new THREE.LatheGeometry(deck.map(([d, y]) => new THREE.Vector2(Math.max(0, plan.half + d), y)), 64)
+      : squareSweep(plan.half, deck);
+    if (plan.round) g.computeVertexNormals();
+    k.add('slab', g, M(plan.cx, 0, plan.cz, plan.ry));
+  }
   // A lit reveal under the band's soffit, so the line still reads where the band itself falls into shade.
   const lit: Array<[number, number]> = [
     [-0.2, y0 - 0.06],

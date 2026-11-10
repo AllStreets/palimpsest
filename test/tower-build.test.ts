@@ -595,3 +595,184 @@ test('the ziggurat sets its light vents into the sloped faces, the deco crown li
   const slots = vertsOf(deco.t.group, deco.mats.vent).filter((v) => v.y > deco.lay.floors[8].y0);
   assert.ok(slots.length > 0, 'the deco crown floor carries lit slots');
 });
+
+// ---------------------------------------------------------------- earned floors (Task 22)
+
+/** A floor earned in the market above the datum: its job, agent and firm, and how it stands. */
+function earned(i: number, era: Era, state: 'lit' | 'waiting' | 'scar', extra: Partial<Floor> = {}): Floor {
+  const scar = state === 'scar';
+  return {
+    ...floor(100 + i, era),
+    id: scar ? `acme/widgets#scar-run-${i}` : `acme/widgets#job-job-${i}`,
+    kind: scar ? 'commits' : 'pr',
+    refs: scar ? [] : [`#${300 + i}`],
+    title: scar ? `Failed inspection: job ${i}` : `job ${i}`,
+    founding: false,
+    url: scar ? null : `https://github.com/acme/widgets/pull/${300 + i}`,
+    earned: { jobId: `job-${i}`, runId: `run-${i}`, agentId: 'priya-rao', firmId: 'quickset', state, reverted: false },
+    ...extra,
+  };
+}
+
+/** Founding floors in every era, then the earned floors given, the datum between them. */
+function earnedSpec(above: Floor[], root: RootStyle = 'beauxarts'): TowerSpec {
+  const base = spec(root, 3);
+  return { ...base, floors: [...base.floors, ...above], datumIndex: base.floors.length };
+}
+
+/** Window panes whose centre falls between y0 and y1, as world-space pane data (r = how lit). */
+function panesBetween(o: THREE.Object3D, y0: number, y1: number): THREE.Color[] {
+  o.updateMatrixWorld(true);
+  const out: THREE.Color[] = [];
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  o.traverse((c) => {
+    const im = c as THREE.InstancedMesh;
+    if (!im.isInstancedMesh || !im.name.startsWith('tower:pane:')) return;
+    for (let i = 0; i < im.count; i++) {
+      im.getMatrixAt(i, m);
+      p.setFromMatrixPosition(m).applyMatrix4(im.matrixWorld);
+      if (p.y < y0 || p.y > y1) continue;
+      const col = new THREE.Color();
+      im.getColorAt(i, col);
+      out.push(col);
+    }
+  });
+  return out;
+}
+
+/** Vertices of every merged mesh in `mat` (by material name) between y0 and y1. */
+function namedVertsBetween(o: THREE.Object3D, name: string, y0: number, y1: number): number {
+  o.updateMatrixWorld(true);
+  let n = 0;
+  const v = new THREE.Vector3();
+  o.traverse((c) => {
+    const m = c as THREE.Mesh;
+    if (!m.isMesh || (m.material as THREE.Material).name !== name) return;
+    const pos = m.geometry.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+      if (v.y >= y0 - 1e-6 && v.y <= y1 + 1e-6) n++;
+    }
+  });
+  return n;
+}
+
+/** The pick proxy of a floor, by id. */
+function proxyOf(t: ReturnType<typeof buildTower>, id: string): THREE.Object3D {
+  for (const [p, fid] of t.pickables) if (fid === id) return p;
+  throw new Error(`no proxy for ${id}`);
+}
+
+test('an earned floor builds above the datum', () => {
+  const above = [earned(1, 'glass', 'lit'), earned(2, 'brick', 'lit'), earned(3, 'titanium', 'lit'), earned(4, 'scifi', 'lit'), earned(5, 'stone', 'lit')];
+  const s = earnedSpec(above);
+  const lay = layoutTower(s);
+  const t = buildTower(s, 'high', plainMaterials());
+  const box = bounds(t.group);
+  assert.ok(Math.abs(box.max.y - lay.top) < 1e-3, `the tower tops out at the last earned floor (${box.max.y} vs ${lay.top})`);
+  for (const f of above) {
+    const b = proxyBounds(proxyOf(t, f.id));
+    assert.ok(b.min.y >= lay.datumY - 1e-6, `${f.id} stands above the datum (${b.min.y} vs ${lay.datumY})`);
+  }
+  // A lit earned floor carries the cool line at its slab edge; founding floors never do.
+  assert.ok(namedVertsBetween(t.group, 'earnedLine', lay.datumY, lay.top) > 0, 'lit earned floors draw the cool line');
+  assert.equal(namedVertsBetween(t.group, 'earnedLine', 0, lay.datumY - 0.01), 0, 'no founding floor draws it');
+  // Earned floors come in whatever era their agent works in, floor by floor: they hold one width (with the
+  // taper) instead of stepping in at every change of era, and the first stands inside the datum band, a ledge.
+  const first = layoutTower(s).floors[s.datumIndex];
+  const firstHalf = proxyBounds(proxyOf(t, first.floor.id)).getSize(new THREE.Vector3()).x / 2;
+  const lastFounding = proxyBounds(proxyOf(t, s.floors[s.datumIndex - 1].id)).getSize(new THREE.Vector3()).x / 2;
+  assert.ok(firstHalf < lastFounding, `the first earned floor steps in from the founding top (${firstHalf.toFixed(2)} vs ${lastFounding.toFixed(2)})`);
+  // The datum is a ledge under the earned floors: a concrete deck across the founding top, not a band on the roof.
+  assert.ok(namedVertsBetween(t.group, 'datum', lay.datumY - 2, lay.datumY + 0.01) > 0, 'the bronze band wraps the founding top');
+});
+
+test('earned floors of mixed eras never step in more than the datum ledge', () => {
+  const eras: Era[] = ['glass', 'brick', 'titanium', 'scifi', 'stone', 'glass', 'titanium', 'brick', 'scifi', 'glass', 'stone', 'titanium'];
+  const s = earnedSpec(eras.map((e, i) => earned(i, e, 'lit')), 'chicago');
+  const t = buildTower(s, 'high', plainMaterials());
+  const datumFloor = proxyBounds(proxyOf(t, s.floors[s.datumIndex - 1].id)).getSize(new THREE.Vector3()).x;
+  const top = proxyBounds(proxyOf(t, s.floors[s.floors.length - 1].id)).getSize(new THREE.Vector3()).x;
+  // Twelve changes of era would step a founding run in by 19 m; the earned zone keeps its width (sci-fi
+  // families and fins aside, which the proxies include, so compare with a generous margin).
+  assert.ok(top > datumFloor * 0.6, `the top earned floor is still ${top.toFixed(1)} m across (datum floor ${datumFloor.toFixed(1)} m)`);
+  const box = bounds(t.group);
+  assert.ok(Math.abs(box.max.y - t.top) < 1e-3);
+});
+
+test('a scar floor has no panes', () => {
+  for (const era of ERAS) {
+    const s = earnedSpec([earned(1, era, 'lit'), earned(2, era, 'scar'), earned(3, era, 'lit')]);
+    const lay = layoutTower(s);
+    const scar = lay.floors[s.datumIndex + 1];
+    const t = buildTower(s, 'high', plainMaterials());
+    assert.equal(panesBetween(t.group, scar.y0, scar.y0 + scar.h).length, 0, `${era}: the scar floor is not glazed`);
+    assert.ok(panesBetween(t.group, lay.floors[s.datumIndex].y0, lay.floors[s.datumIndex].y0 + lay.floors[s.datumIndex].h).length > 0, `${era}: the lit floor below it is`);
+    assert.ok(namedVertsBetween(t.group, 'primer', scar.y0, scar.y0 + scar.h) > 0, `${era}: the scar is laid in primer`);
+    assert.ok(namedVertsBetween(t.group, 'steel', scar.y0, scar.y0 + scar.h) > 0, `${era}: its studs show at the corners`);
+    assert.equal(namedVertsBetween(t.group, 'earnedLine', scar.y0 + 0.01, scar.y0 + scar.h - 0.01), 0, `${era}: a scar carries no light line`);
+    const b = proxyBounds(proxyOf(t, scar.floor.id));
+    assert.ok(Math.abs(b.min.y - scar.y0) < 1e-6 && Math.abs(b.max.y - (scar.y0 + scar.h)) < 1e-6, `${era}: the scar is as tall as its size`);
+  }
+});
+
+test('a waiting floor has no lit panes', () => {
+  for (const era of ERAS) {
+    const s = earnedSpec([earned(1, era, 'lit'), earned(2, era, 'waiting')]);
+    const lay = layoutTower(s);
+    const wait = lay.floors[s.datumIndex + 1];
+    const t = buildTower(s, 'high', plainMaterials());
+    const panes = panesBetween(t.group, wait.y0, wait.y0 + wait.h);
+    assert.ok(panes.length > 0, `${era}: the waiting floor is glazed, finished`);
+    for (const c of panes) assert.equal(c.r, 0, `${era}: every pane of a waiting floor is unlit`);
+    assert.equal(namedVertsBetween(t.group, 'earnedLine', wait.y0 + 0.01, wait.y0 + wait.h), 0, `${era}: no light line until it merges`);
+    assert.ok(namedVertsBetween(t.group, 'slab', wait.y0 - 0.01, wait.y0 + 0.5) > 0, `${era}: its slab edge is bare concrete`);
+  }
+});
+
+test('a floor merged with his changes reads apart from a plain lit floor, never in the Claude amber', () => {
+  const s = earnedSpec([earned(1, 'glass', 'lit'), earned(2, 'glass', 'lit', { earned: { jobId: 'job-2', runId: 'run-2', agentId: 'priya-rao', firmId: 'quickset', state: 'lit', reverted: false, note: 'merged with his changes' } })]);
+  const lay = layoutTower(s);
+  const t = buildTower(s, 'high', plainMaterials());
+  const [a, b] = [lay.floors[s.datumIndex], lay.floors[s.datumIndex + 1]];
+  assert.ok(namedVertsBetween(t.group, 'earnedLine', a.y0, a.y0 + 0.5) > 0);
+  assert.ok(namedVertsBetween(t.group, 'handLine', b.y0, b.y0 + b.h) > 0, 'his floor draws its own line');
+  assert.equal(namedVertsBetween(t.group, 'earnedLine', b.y0 + 0.001, b.y0 + b.h - 0.001), 0, 'and not the plain one');
+});
+
+test('a dark tower has no emissive material', () => {
+  const s = earnedSpec([earned(1, 'glass', 'lit'), earned(2, 'scifi', 'waiting'), earned(3, 'brick', 'scar'), earned(4, 'scifi', 'lit', { claude: true })], 'gothic');
+  const lit = buildTower(s, 'high', plainMaterials());
+  const names = (o: THREE.Object3D): Set<string> => {
+    const out = new Set<string>();
+    o.traverse((c) => {
+      const m = c as THREE.Mesh;
+      if (m.isMesh && m.visible) out.add((m.material as THREE.Material).name);
+    });
+    return out;
+  };
+  const EMITTERS = ['lightLine', 'earnedLine', 'handLine', 'accent', 'vent', 'beacon', 'stained', 'window', 'stoneWin', 'brickWin', 'glassWin', 'titaniumWin', 'scifiWin'];
+  assert.ok(EMITTERS.some((e) => names(lit.group).has(e)), 'a lit tower draws its emitters');
+  for (const t of [buildTower(s, 'high', plainMaterials(), lookFor(s.repo), { dark: true }), buildTower({ ...s, dark: true }, 'medium', plainMaterials())]) {
+    const used = names(t.group);
+    for (const e of EMITTERS) assert.ok(!used.has(e), `a dark tower never draws ${e}`);
+    assert.ok(used.has('darkGlass'), 'its windows are dark glass');
+    assert.ok(used.has('datum'), 'the datum stays');
+  }
+});
+
+test('agent towers build at width 16', () => {
+  const floors = Array.from({ length: 6 }, (_, i) => earned(i, 'glass', 'lit'));
+  const agent: TowerSpec = { id: 'agent:priya-rao', repo: 'agent:priya-rao', kind: 'agent', root: 'chicago', floors, datumIndex: 0, agentId: 'priya-rao', firmId: 'quickset' };
+  const t = buildTower(agent, 'high', plainMaterials());
+  const w = proxyBounds(proxyOf(t, floors[0].id)).getSize(new THREE.Vector3()).x;
+  // The glass floor's proxy reaches its mullion tips, 0.3 m each side.
+  assert.ok(Math.abs(w - (16 + 0.6)) < 0.05, `an agent's first floor is 16 m across (proxy ${w.toFixed(2)} m)`);
+  const wide = buildTower(agent, 'high', plainMaterials(), lookFor(agent.repo), { width: 20 });
+  const w2 = proxyBounds(proxyOf(wide, floors[0].id)).getSize(new THREE.Vector3()).x;
+  assert.ok(Math.abs(w2 - 20.6) < 0.05, `a width given wins (${w2.toFixed(2)} m)`);
+  const repo = buildTower(spec('chicago', 1), 'high', plainMaterials());
+  const w3 = proxyBounds(proxyOf(repo, spec('chicago', 1).floors[0].id)).getSize(new THREE.Vector3()).x;
+  assert.ok(w3 > FLOOR_WIDTH, 'a repo tower keeps the founding width');
+});

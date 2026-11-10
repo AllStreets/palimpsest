@@ -13,12 +13,12 @@ import { towerCenterpiece } from './city/tower/look';
 import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
 import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
 import { towerTones } from './city/lots';
-import { loadKits } from './city/kits';
+import { loadKits, registerFallbackKits } from './city/kits';
 import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
-import { createInspector } from './ui/inspector';
+import { createInspector, type MarketNames } from './ui/inspector';
 import { createRepos } from './ui/repos';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
@@ -44,6 +44,12 @@ interface DebugHandle {
   project(p: number[]): number[];
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
+  /** The quality the city draws at now (medium after an automatic drop). */
+  quality(): 'high' | 'medium';
+  /** Steps down to medium as the automatic drop does (tests). */
+  dropQuality(): void;
+  /** The notice line's text, or '' when none shows. */
+  notice(): string;
   /** Plazas paved (the civic plaza included) and ambient buildings standing. */
   plots(): { plazas: number; buildings: number };
   /**
@@ -69,8 +75,53 @@ declare global {
   }
 }
 
-/** Events that change what stands in the city: a new tower, a failed one, a restyle, or a district leaving. */
-const REFRESH_ON = new Set(['repo.connected', 'repo.analyzed', 'repo.error', 'repo.patched', 'repo.disconnected']);
+/** Events that change what stands in the city: a new tower, a failed one, a restyle, a district leaving, or a floor laid, lit, scarred or taken down by the market. */
+const REFRESH_ON = new Set([
+  'repo.connected',
+  'repo.analyzed',
+  'repo.error',
+  'repo.patched',
+  'repo.disconnected',
+  'floor.laid',
+  'floor.lit',
+  'floor.scarred',
+  'floor.removed',
+  'merge.reverted',
+  'firm.bankrupt',
+  'tower.sold',
+]);
+/** Events that change the names on the market's floors: who works where, and which runs have reports. */
+const NAMES_ON = new Set(['agent.hired', 'agent.retired', 'firm.bankrupt', 'tower.sold', 'inspection.done']);
+
+/**
+ * A quiet line at the foot of the window for what the city did by itself
+ * (stood on plain stand-ins when the kits would not load, stepped down to
+ * medium quality). It stays until dismissed; a second notice joins the first.
+ */
+function createNotice(parent: HTMLElement): { add(text: string): void; text(): string } {
+  const box = document.createElement('div');
+  box.className = 'city-notice';
+  box.setAttribute('role', 'status');
+  box.hidden = true;
+  const lines = document.createElement('p');
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'city-notice-close';
+  close.textContent = 'Dismiss';
+  close.addEventListener('click', () => {
+    box.hidden = true;
+    lines.textContent = '';
+  });
+  box.append(lines, close);
+  parent.appendChild(box);
+  return {
+    add(text) {
+      lines.textContent = lines.textContent ? `${lines.textContent} ${text}` : text;
+      box.hidden = false;
+    },
+    text: () => (box.hidden ? '' : (lines.textContent ?? '')),
+  };
+}
 
 /** What the plate under an analyzing site says for each step of the engine's analysis. */
 const STEP_TEXT: Record<string, string> = {
@@ -87,14 +138,24 @@ async function main(): Promise<void> {
   const veil = document.getElementById('veil');
   if (!host) throw new Error('missing #city');
 
+  const notice = createNotice(document.body);
   // The Blender-authored kits (masonry courses, crowns, roof pieces) load before anything is built from them.
-  const [quality] = await Promise.all([
+  // Missing or corrupt, the city stands on plain stand-ins and says so, rather than going blank.
+  const [settingsQuality] = await Promise.all([
     api.settings().then(
       (s) => s.quality,
       () => 'high' as const,
     ),
-    loadKits(),
+    loadKits().catch((err: unknown) => {
+      console.warn('the architecture kits did not load; building from plain stand-ins', err);
+      registerFallbackKits();
+      notice.add('The architecture kits did not load (kits/kits.glb is missing or damaged), so the city is built from plain blocks. Reinstalling Palimpsest restores them.');
+    }),
   ]);
+  /** The quality towers are built at: Settings' choice, until the city steps down by itself. */
+  let quality: 'high' | 'medium' = settingsQuality;
+  // Captures and the UI test hold the quality still with ?fixed-quality, so a slow headless frame never changes a shot.
+  const autoQuality = !new URLSearchParams(location.search).has('fixed-quality');
   /**
    * Each tower's materials, picked over every repo that holds a slot,
    * connected or not, so neighbouring towers differ and a tower keeps its
@@ -106,8 +167,9 @@ async function main(): Promise<void> {
   const lookOf = (d: District): Look => restyled.get(d.repo)?.look ?? looks.get(d.repo) ?? lookFor(d.repo);
   const city = createCity(host, {
     quality,
+    autoQuality,
     makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d)),
-    centerpieceKey: (d) => lookKey(lookOf(d)),
+    centerpieceKey: (d) => `${lookKey(lookOf(d))}|${quality}`,
     districtTones: (d) => towerTones(lookOf(d)),
   });
 
@@ -126,6 +188,9 @@ async function main(): Promise<void> {
     project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
+    quality: () => city.quality(),
+    dropQuality: () => city.dropQuality(),
+    notice: () => notice.text(),
     plots: () => city.plots(),
     async ambientBoard() {
       const board = ambientBoard(city.scene, city.camera, (lots) => city.ambientBoard(lots), (e, t) => city.view(e, t));
@@ -194,6 +259,36 @@ async function main(): Promise<void> {
       debug.highlight = null;
       city.setInset(0);
     },
+  });
+
+  // ---------------------------------------------------------------- the market's names
+  /** Agent and firm names for the earned floors, and each scar's inspection report, read from the engine. */
+  let names: MarketNames = { agents: new Map(), firms: new Map(), inspections: new Map() };
+  const readNames = coalesced(async () => {
+    try {
+      const firms = await api.firms();
+      const agents = new Map<string, string>();
+      for (const f of firms) for (const a of f.agents) agents.set(a.id, a.name);
+      // A scar links to its inspection report: read the run once for each scar not yet known.
+      const scars = served.flatMap((d) => d.tower.floors.filter((f) => f.earned?.state === 'scar').map((f) => f.earned!.runId));
+      const inspections = new Map(names.inspections);
+      await Promise.all(
+        scars
+          .filter((id) => !inspections.has(id))
+          .map((id) =>
+            api.run(id).then(
+              (r) => {
+                if (r.inspectionId) inspections.set(id, r.inspectionId);
+              },
+              () => {},
+            ),
+          ),
+      );
+      names = { agents, firms: new Map(firms.map((f) => [f.id, f.name])), inspections };
+      inspector.setNames(names);
+    } catch {
+      /* the rows show ids until the names can be read */
+    }
   });
 
   function inspect(repo: string, floorId: string | null): void {
@@ -272,6 +367,8 @@ async function main(): Promise<void> {
       }
     }
     place();
+    // New scars may need their reports, and new floors their builders' names.
+    readNames();
   };
 
   const countConnected = (): void => runhead.setConnected([...known.values()].filter((r) => r.connected).length);
@@ -340,7 +437,15 @@ async function main(): Promise<void> {
     }
     if (e.type === 'engine.stopped' || e.type === 'engine.resumed') runhead.setStopped(e.type === 'engine.stopped');
     if (REFRESH_ON.has(e.type)) refresh();
+    if (NAMES_ON.has(e.type)) readNames();
     for (const fn of listeners) fn(e);
+  });
+
+  // Stepped down to medium by itself: every tower rebuilds at medium, and the notice says why.
+  city.onQualityDrop(() => {
+    quality = 'medium';
+    place();
+    notice.add('The city stepped down to medium quality to hold its frame rate. Settings can set it back to high for the next time it opens.');
   });
 
   // Escape on a sheet returns to the city, unless a field used it first (clearing a search, undoing a cap).

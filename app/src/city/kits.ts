@@ -106,6 +106,40 @@ export function loadKits(): Promise<void> {
   return loading;
 }
 
+let fallback = false;
+
+/** Every plain piece the app builds from: what a stand-in must cover when the kits cannot load. */
+const COURSES = ['course_a', 'course_b', 'pier_block', 'band_course'];
+const BOXES = ['water_tank', 'tank_cap', 'tank_stand', 'bulkhead', 'penthouse', 'screen_panel', 'rooftop_unit', 'car', 'bay', 'bay_glass', 'chamfer_box', 'round_box', 'deco_fin', 'org_rib', 'arc_pod'];
+
+/**
+ * Plain stand-ins for every kit piece, for when kits.glb is missing or
+ * corrupt: a course is a flat slab in the course's frame (x -0.5..0.5,
+ * y 0..1, face at z 0, 5 cm deep), every roof and massing piece a unit box,
+ * and no crowns (each sci-fi family then builds its own top floor). The
+ * city stands, plainer, instead of going blank. Leaves real pieces alone.
+ */
+export function registerFallbackKits(): void {
+  fallback = true;
+  const white = (g: THREE.BufferGeometry): THREE.BufferGeometry => {
+    g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 3).fill(1), 3));
+    g.computeBoundingBox();
+    return g;
+  };
+  for (const c of COURSES) {
+    for (const lod of ['hi', 'lo']) {
+      const name = `${c}.${lod}`;
+      if (!pieces.has(name)) pieces.set(name, white(new THREE.BoxGeometry(1, 1, 0.05).translate(0, 0.5, -0.025)));
+    }
+  }
+  for (const b of BOXES) if (!pieces.has(b)) pieces.set(b, white(new THREE.BoxGeometry(1, 1, 1)));
+}
+
+/** True when the city is standing on the plain stand-ins (registerFallbackKits) rather than the Blender kits. */
+export function kitsFallback(): boolean {
+  return fallback;
+}
+
 export function hasKit(name: string): boolean {
   return pieces.has(name);
 }

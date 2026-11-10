@@ -58,6 +58,16 @@ export interface TowerMaterials extends Record<EraMatKey, THREE.Material> {
   lightLine: THREE.Material;
   /** The thin warm accent at the slab edge of a floor Claude co-authored. */
   accent: THREE.Material;
+  /** The thin cool line at the slab edge of a floor earned in the market and merged: under the bloom threshold, never the Claude amber. */
+  earnedLine: THREE.Material;
+  /** The line of a floor he merged with his own changes added: a warm ivory pair, apart from both the cool line and the amber. */
+  handLine: THREE.Material;
+  /** Matte rust-red primer: a scar floor, a failed inspection left standing as a deliberate wound. */
+  primer: THREE.Material;
+  /** Glass with nothing lit behind it: every pane of a dark tower. */
+  darkGlass: THREE.Material;
+  /** The unlit stand-in for every emitter (vents, beacons, stained glass) on a dark tower. */
+  unlit: THREE.Material;
   /** Warm amber light vents and lit slots set into sci-fi faces (the ziggurat's terraces, the deco crown), a real emitter. */
   vent: THREE.Material;
   /** Red aircraft warning lights on every sci-fi roof, a real emitter. */
@@ -239,6 +249,12 @@ export class Kit {
   tint = new THREE.Color(1, 1, 1);
   /** High quality: kit parts carry their near level of detail too; medium draws only the distant one. */
   detail = true;
+  /**
+   * Materials swapped for others as pieces are added (a dark tower draws its
+   * vents in `unlit` and its panes in `darkGlass`), or left out (null: a dark
+   * tower's light lines). Empty for a lit tower.
+   */
+  remap: Partial<Record<MatKey, MatKey | null>> = {};
   private merged = new Map<MatKey, THREE.BufferGeometry[]>();
   private batches = new Map<string, Batch>();
   private geos = new Map<string, THREE.BufferGeometry>();
@@ -250,7 +266,18 @@ export class Kit {
     this.addNormalised(mat, normalise(geo, this.tint), local, projectUv);
   }
 
-  private addNormalised(mat: MatKey, g: THREE.BufferGeometry, local?: THREE.Matrix4, projectUv = true): void {
+  /** The material a piece in `mat` is drawn in after the remap, or null when it is left out. */
+  private resolve(mat: MatKey): MatKey | null {
+    const to = this.remap[mat];
+    return to === undefined ? mat : to;
+  }
+
+  private addNormalised(want: MatKey, g: THREE.BufferGeometry, local?: THREE.Matrix4, projectUv = true): void {
+    const mat = this.resolve(want);
+    if (mat === null) {
+      g.dispose();
+      return;
+    }
     const m = local ? this.base.clone().multiply(local) : this.base;
     g.applyMatrix4(m);
     const tile = TILE[mat];
@@ -310,8 +337,10 @@ export class Kit {
       this.inst(`${key}:lo`, mat, lo, local, color);
       return;
     }
+    const to = this.resolve(mat);
+    if (to === null) return;
     this.inst(key, mat, hi, local, color);
-    const b = this.batches.get(key)!;
+    const b = this.batches.get(to === mat ? key : `${key}|${to}`)!;
     b.lo ??= lo();
   }
 
@@ -320,7 +349,11 @@ export class Kit {
     this.instRaw(key, mat, paneGeometry, local, data, false);
   }
 
-  private instRaw(key: string, mat: MatKey, make: () => THREE.BufferGeometry, local: THREE.Matrix4, color: THREE.Color, shadow: boolean): void {
+  private instRaw(part: string, want: MatKey, make: () => THREE.BufferGeometry, local: THREE.Matrix4, color: THREE.Color, shadow: boolean): void {
+    const mat = this.resolve(want);
+    if (mat === null) return;
+    // A remapped part batches apart from the same part in its own material.
+    const key = mat === want ? part : `${part}|${mat}`;
     let b = this.batches.get(key);
     if (!b) {
       const geo = make();

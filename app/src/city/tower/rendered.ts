@@ -642,5 +642,11 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   }
 };
 
-/** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */
-export const RENDERED_INPUTS = 'fbe18ba391251993';
+/**
+ * The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it.
+ * Restamped without a re-measure for Task 22, whose change to look.ts only adds materials the swatch board never
+ * draws (the earned and hand lines, primer, dark glass, unlit): no measured value can move with it. A full
+ * re-measure, run and reviewed for that task, changes six titanium and stone picks across the pinned towers
+ * (the stone and brick entries predate the coursed Face slot), so it stays with the Phase 5 re-measure.
+ */
+export const RENDERED_INPUTS = '94b65919c0ca31f9';

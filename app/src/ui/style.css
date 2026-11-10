@@ -233,6 +233,35 @@
 .insp-root {
   padding-top: 26px;
 }
+/* The market's floors sit over the datum: their heading is set like an era's, in the bronze of the band. */
+.insp-market .insp-era-name {
+  color: #d9b48a;
+}
+.insp-who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.insp-floor.insp-earned {
+  grid-template-areas:
+    'n title ref'
+    'n meta date'
+    'n state state';
+}
+.insp-state {
+  grid-area: state;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+/* A scar's words in the primer's own oxide red, lifted to read on the dark paper. */
+.insp-failed {
+  color: #d07a62;
+}
+.insp-earned.scar .insp-n {
+  color: #d07a62;
+}
+.insp-earned.waiting .insp-title {
+  color: var(--ink-2);
+}
 .insp-empty {
   margin: 12px 28px 0;
   font-size: 13px;
@@ -361,4 +390,46 @@
 /* The canvas takes focus back from a closed panel; the city itself needs no ring. */
 #city canvas:focus {
   outline: none;
+}
+
+/* ---------------------------------------------------------------- the city's own notices */
+
+/* What the city did by itself (plain blocks without the kits, a step down in quality): a printed slip at the foot. */
+.city-notice {
+  position: fixed;
+  left: var(--gutter, 28px);
+  bottom: 22px;
+  z-index: 6;
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  max-width: min(620px, calc(100vw - 56px));
+  padding: 11px 16px 12px 14px;
+  border-left: 2px solid var(--bronze);
+  background: var(--paper);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+.city-notice[hidden] {
+  display: none;
+}
+.city-notice p {
+  margin: 0;
+}
+.city-notice-close {
+  all: unset;
+  flex-shrink: 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-3);
+  border-bottom: 1px solid rgba(236, 230, 218, 0.22);
+}
+.city-notice-close:hover {
+  color: var(--ink);
+}
+.city-notice-close:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 3px;
 }

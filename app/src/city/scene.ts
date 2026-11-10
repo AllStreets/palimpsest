@@ -8,6 +8,7 @@ import { createPlates, type Plate } from './labels';
 import type { Lot } from './lots';
 import { configureMaterials, texturesSettled } from './materials';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
+import { qualityGovernor } from './governor';
 import { createPost } from './post';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
@@ -30,6 +31,8 @@ export type CenterpieceFactory = (d: District) => Centerpiece;
 
 export interface CityOptions {
   quality: 'high' | 'medium';
+  /** Step down to medium by itself when the frame rate or the triangle budget is missed (default true; captures turn it off). */
+  autoQuality?: boolean;
   /** Builds what stands in each district. Defaults to a plain stone plinth; towers plug in here. */
   makeDistrictCenterpiece?: CenterpieceFactory;
   /** Anything beyond the district's own data that changes what the factory builds (a tower's materials); a change rebuilds it. */
@@ -88,6 +91,16 @@ export interface City {
   plots(): { plazas: number; buildings: number };
   /** Draws ambient lots on their own, outside the city (the ambient swatch board). */
   ambientBoard(lots: Lot[]): { group: THREE.Group; dispose(): void };
+  /** The quality the city draws at now: Settings' choice, or medium after the automatic drop. */
+  quality(): 'high' | 'medium';
+  /**
+   * Steps down to medium now (the governor does this by itself when the
+   * frame rate or the triangle budget is missed for several seconds): lighter
+   * shadows, no ambient occlusion, pixel ratio 1. Listeners rebuild what they
+   * built at high quality.
+   */
+  dropQuality(): void;
+  onQualityDrop(fn: () => void): void;
 }
 
 /** The plain plinth every district shows until towers exist. */
@@ -116,7 +129,7 @@ const STREET_EYE = 80;
  * and street grid, the ambient skyline, and one centerpiece per district.
  */
 export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
-  const quality = opts.quality;
+  let quality = opts.quality;
   installSkyFog();
   const makeCenterpiece = opts.makeDistrictCenterpiece ?? (() => plinthCenterpiece());
 
@@ -153,7 +166,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   // Key light: the last of the sun, low and warm. Its shadow box follows the view, snapped to texels so edges do not crawl.
   const sun = new THREE.DirectionalLight(0xff9c5e, 2.4);
   sun.castShadow = true;
-  const shadowSize = quality === 'high' ? 4096 : 2048;
+  let shadowSize = quality === 'high' ? 4096 : 2048;
   sun.shadow.mapSize.set(shadowSize, shadowSize);
   sun.shadow.bias = -0.0004;
   sun.shadow.normalBias = 0.6;
@@ -164,14 +177,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(sun, sun.target);
   scene.add(new THREE.HemisphereLight(0x8fa3c8, 0x2e241c, 0.35));
   const sunOffset = SUN_DIRECTION.clone().multiplyScalar(800);
-  const texel = (SHADOW_HALF * 2) / shadowSize;
+  let texel = (SHADOW_HALF * 2) / shadowSize;
 
   const ground = createGround();
   scene.add(ground.mesh);
   const grid = createGrid(quality);
   scene.add(grid.group);
 
-  const post = createPost(renderer, scene, camera, quality);
+  let post = createPost(renderer, scene, camera, quality);
 
   // ---------------------------------------------------------------- districts
   const districtGroup = new THREE.Group();
@@ -509,8 +522,28 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   const lastFrame = { calls: 0, triangles: 0 };
   const clock = new THREE.Clock();
+  const dropListeners: Array<() => void> = [];
+  const governor = qualityGovernor({ start: opts.autoQuality === false ? 'medium' : quality });
+  function dropQuality(): void {
+    if (quality === 'medium') return;
+    quality = 'medium';
+    renderer.setPixelRatio(1);
+    renderer.setSize(width(), height());
+    post.dispose();
+    post = createPost(renderer, scene, camera, 'medium');
+    shadowSize = 2048;
+    texel = (SHADOW_HALF * 2) / shadowSize;
+    sun.shadow.map?.dispose();
+    sun.shadow.map = null;
+    sun.shadow.mapSize.set(shadowSize, shadowSize);
+    sun.shadow.needsUpdate = true;
+    for (const fn of dropListeners) fn();
+  }
   renderer.setAnimationLoop(() => {
-    const dt = Math.min(clock.getDelta(), 0.05);
+    const raw = clock.getDelta();
+    const dt = Math.min(raw, 0.05);
+    // Judged only once the city has loaded and shown its first frames, on the last whole frame's triangles.
+    if (framesAfterLoad >= 3 && governor.frame(raw * 1000, lastFrame.triangles) === 'medium') dropQuality();
     if (inset !== insetTarget) {
       inset = Math.abs(insetTarget - inset) < 0.5 ? insetTarget : THREE.MathUtils.damp(inset, insetTarget, 7, dt);
       applyInset();
@@ -557,6 +590,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     stats: () => ({ ...lastFrame }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     ambientBoard: (lots) => grid.board(lots),
+    quality: () => quality,
+    dropQuality,
+    onQualityDrop(fn) {
+      dropListeners.push(fn);
+    },
     dispose() {
       renderer.setAnimationLoop(null);
       observer.disconnect();
