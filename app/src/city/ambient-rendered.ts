@@ -574,3 +574,6 @@ export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; s
     ]
   }
 };
+
+/** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */
+export const AMBIENT_INPUTS = '2460676630ae501b';

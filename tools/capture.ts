@@ -46,6 +46,7 @@ import { FAMILIES, VARIANTS } from '../app/src/city/tower/variants.js';
 import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District } from '../shared/types.js';
+import { ambientInputs, towerInputs } from './measure-inputs.js';
 import { decodePng, labOf } from './png.js';
 import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sample.js';
 
@@ -273,6 +274,10 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         ' * hand as a deliberate change and committed with the reason.',
         ' */',
         `export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = ${JSON.stringify(out, null, 2)};`,
+
+        '',
+        '/** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */',
+        `export const RENDERED_INPUTS = '${towerInputs()}';`,
         '',
       ].join('\n');
       // Writes the versioned data only when asked, by name, on the command line.
@@ -323,6 +328,10 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         ' * it, by hand, committed with the reason.',
         ' */',
         `export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number] }> = ${JSON.stringify(out, null, 2)};`,
+
+        '',
+        '/** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */',
+        `export const AMBIENT_INPUTS = '${ambientInputs()}';`,
         '',
       ].join('\n');
       writeFileSync(process.env.AMBIENT_WRITE === '1' ? join(ROOT, 'app', 'src', 'city', 'ambient-rendered.ts') : join(MEDIA, 'ambient-rendered.ts'), body);
