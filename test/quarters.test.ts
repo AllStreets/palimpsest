@@ -4,12 +4,14 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
+import { batchPieces, drawnMeshes } from '../app/src/city/batch.js';
 import { ambientCap, COURT_APRON } from '../app/src/city/collar.js';
 import { standingLots } from '../app/src/city/lots.js';
 import { occupancy, plazasOf } from '../app/src/city/occupancy.js';
 import { quarterCenterpiece, quarterLooks, QUARTER_OFFSETS } from '../app/src/city/quarters.js';
 import { AGENT_FLOOR_WIDTH } from '../app/src/city/tower/build.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
+import { type Look, lookKey } from '../app/src/city/tower/variants.js';
 import { DISTRICT_PITCH, districtOrigin, QUARTER_COURT } from '../shared/district-layout.js';
 import { agentRootHeight, layoutTower } from '../shared/tower-layout.js';
 import type { Era, Floor, Quarter, RootStyle, Silhouette, TowerSpec } from '../shared/types.js';
@@ -176,4 +178,83 @@ test('an agent root is the district root at the agent scale, and its floors stan
   assert.equal(lay.rootHeight, agentRootHeight('gothic'));
   assert.ok(lay.rootHeight < 34 && lay.rootHeight > 15);
   assert.equal(lay.floors[0].y0, lay.rootHeight);
+});
+
+// ---------------------------------------------------------------- batching (draw calls)
+
+/** Plain materials as the city has them: the shared library once, each look's era slots its own. */
+function cityMaterials(): (look: Look) => TowerMaterials {
+  const library = new Map<string, THREE.Material>();
+  const byLook = new Map<string, Map<string, THREE.Material>>();
+  return (look) => {
+    const key = lookKey(look);
+    let own = byLook.get(key);
+    if (!own) byLook.set(key, (own = new Map()));
+    return new Proxy({} as TowerMaterials, {
+      get(_, k) {
+        const name = String(k);
+        const era = /^(stone|brick|glass|titanium|scifi)(Wall|Trim|Band|Win|Face)$/.test(name);
+        const map = era ? own : library;
+        let m = map.get(name);
+        if (!m) {
+          // As in look.ts: the variant materials read vertex colours, and the window glass reads its instance matrix.
+          map.set(name, (m = new THREE.MeshStandardMaterial({ name, vertexColors: era && !name.endsWith('Win') })));
+          if (name === 'window' || name.endsWith('Win')) m.userData.instanceData = true;
+        }
+        return m;
+      },
+    });
+  };
+}
+
+/** Triangles drawn under `o`, instances counted, an LOD counting its near level. */
+function drawnTriangles(o: THREE.Object3D): number {
+  let n = 0;
+  const visit = (x: THREE.Object3D, top: boolean): void => {
+    if ((x as THREE.LOD).isLOD) return visit((x as THREE.LOD).levels[0].object, false);
+    const m = x as THREE.Mesh;
+    if (m.isMesh && m.visible) {
+      const tris = (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3;
+      n += tris * ((m as THREE.InstancedMesh).isInstancedMesh ? (m as THREE.InstancedMesh).count : 1);
+    }
+    if (top || x.visible) x.children.forEach((c) => visit(c, false));
+  };
+  visit(o, true);
+  return n;
+}
+
+test("the city's quarters draw in a bounded number of batches, and draw the same triangles where they stood", () => {
+  const materials = cityMaterials();
+  const roots: RootStyle[] = ['gothic', 'chicago', 'beauxarts', 'roman', 'pagoda', 'beauxarts'];
+  const sils: Silhouette[] = ['lens', 'cantilever', 'needle', 'plain'];
+  const eras: Era[] = ['glass', 'titanium', 'scifi', 'brick'];
+  const pieces = roots.map((root, k) => {
+    const firmId = `firm-${k}`;
+    const q: Quarter = {
+      firmId,
+      slot: 6 + k,
+      origin: districtOrigin(6 + k),
+      root,
+      dark: k === 5,
+      towers: [0, 1, 2, 3].map((i) => tower(`${firmId}-${i}`, firmId, root, sils[(i + k) % 4], 3 + ((i * 5 + k * 3) % 12), i, eras[(i + k) % 4])),
+    };
+    const looks = quarterLooks(q);
+    const piece = quarterCenterpiece(q, 'high', (t) => looks.get(t.id)!, { name: q.firmId, materials });
+    piece.object.position.set(q.origin.x, 0, q.origin.z);
+    return piece;
+  });
+  const unbatched = pieces.reduce((n, p) => n + drawnMeshes(p.object), 0);
+  const triangles = pieces.reduce((n, p) => n + drawnTriangles(p.object), 0);
+  const bounds = new THREE.Box3();
+  for (const p of pieces) bounds.union(planOf(p.object));
+  const batched = batchPieces(pieces.map((p) => p.object));
+  const calls = drawnMeshes(batched.group);
+  const perQuarter = calls / pieces.length;
+  assert.ok(perQuarter <= 26, `six full quarters draw in ${calls} batches (${perQuarter.toFixed(1)} a quarter, from ${unbatched} meshes)`);
+  assert.ok(calls < unbatched / 2, `batching at least halves the meshes (${unbatched} to ${calls})`);
+  assert.equal(drawnTriangles(batched.group), triangles, 'every triangle still drawn');
+  const after = planOf(batched.group);
+  assert.ok(after.min.distanceTo(bounds.min) < 1e-3 && after.max.distanceTo(bounds.max) < 1e-3, 'and where it stood');
+  batched.dispose();
+  for (const p of pieces) p.dispose();
 });

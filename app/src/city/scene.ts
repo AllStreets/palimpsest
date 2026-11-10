@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import type { District, Quarter } from '../../../shared/types';
+import { batchPieces, type Batched } from './batch.js';
 import { createCameraRig } from './camera';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
@@ -283,6 +284,27 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     return built;
   }
 
+  /**
+   * Every quarter's towers, walks, plinth and court drawn as one set of
+   * batches across the city (batch.ts): the pieces themselves stay, hidden,
+   * for picking, framing and the next rebuild.
+   */
+  let quarterBatch: Batched | null = null;
+  function rebatchQuarters(): void {
+    if (quarterBatch) {
+      districtGroup.remove(quarterBatch.group);
+      quarterBatch.dispose();
+      quarterBatch = null;
+    }
+    if (quarterPieces.length === 0) return;
+    for (const { piece } of quarterPieces) piece.object.visible = true;
+    districtGroup.updateMatrixWorld(true);
+    quarterBatch = batchPieces(quarterPieces.map(({ piece }) => piece.object));
+    quarterBatch.group.name = 'quarters';
+    for (const { piece } of quarterPieces) piece.object.visible = false;
+    districtGroup.add(quarterBatch.group);
+  }
+
   function placeQuarters(quarters: Quarter[]): number {
     const old = new Map(quarterPieces.map((c) => [c.firmId, c]));
     let built = 0;
@@ -300,10 +322,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       built++;
       return { firmId: q.firmId, key, piece };
     });
+    const removed = old.size;
     for (const { piece } of old.values()) {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
+    if (built > 0 || removed > 0) rebatchQuarters();
     return built;
   }
 
@@ -693,6 +717,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       observer.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
+      quarterBatch?.dispose();
       for (const { piece } of [...centerpieces, ...quarterPieces]) piece.dispose?.();
       centerpieces = [];
       quarterPieces = [];
