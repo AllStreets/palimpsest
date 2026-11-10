@@ -51,14 +51,13 @@ export const OLLAMA_PORT = 11434;
  * The paths under his home the claude CLI must write while it runs
  * (relative to the home). The smoke run (Task 11) confirms this list.
  */
-export const CLAUDE_RUNTIME_PATHS = [
-  '.claude/debug',
-  '.claude/statsig',
-  '.claude/todos',
-  '.claude/shell-snapshots',
-  '.claude/session-env',
-  '.claude/telemetry',
-] as const;
+export const CLAUDE_RUNTIME_PATHS = ['.claude/debug', '.claude/todos', '.claude/telemetry'] as const;
+// Never writable by a city run: his live sessions source `.claude/shell-snapshots`
+// and `.claude/session-env`, read `.claude/statsig`, and start every `mcpServers`
+// entry in `~/.claude.json`. City runs have no Bash tool, so they need none of
+// them. Task 11's smoke run confirms that `claude -p` starts without writing
+// `~/.claude.json`; if it cannot, the run gets a per-run CLAUDE_CONFIG_DIR copy,
+// never a write to his own file.
 
 /** Credential and config files under his home, denied by name in both profiles as a guard against a later edit. */
 export const SECRET_PATHS = [
@@ -89,6 +88,9 @@ export const CLAUDE_WRITE_DENIED = [
   'commands',
   'hooks',
   'projects',
+  'shell-snapshots',
+  'session-env',
+  'statsig',
 ] as const;
 
 /** Run root subdirectories the tool profile may read. */
@@ -299,8 +301,13 @@ function secretDenies(r: Resolved, names: readonly string[]): string[] {
   ];
 }
 
+/**
+ * Denies writes to each clone's `.git` and to the clone directory itself
+ * (its literal path), so a clone can be neither renamed away, nor replaced
+ * by another directory or a symlink with a `.git` of the agent's making.
+ */
 function cloneGitDenies(r: Resolved, clones: readonly string[]): string {
-  return `(deny file-write* ${clones.map((c) => sub(join(r.runRoot, c, '.git'))).join(' ')})`;
+  return `(deny file-write* ${clones.map((c) => `${lit(join(r.runRoot, c))} ${sub(join(r.runRoot, c, '.git'))}`).join(' ')})`;
 }
 
 function devWrites(): string[] {
@@ -373,13 +380,13 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push(`(allow file-read-metadata ${lit(claudeDir)})`);
   lines.push('');
 
-  lines.push('; writes: the repo, tmp, ~/.claude.json and its siblings, the runtime paths');
-  lines.push(`(allow file-write* ${sub(join(r.runRoot, 'repo'))} ${sub(join(r.runRoot, 'tmp'))} ${rx('^' + reEscape(claudeJson) + '[^/]*$')} ${runtime.map(sub).join(' ')})`);
+  lines.push('; writes: the repo, tmp and the runtime paths (never ~/.claude.json)');
+  lines.push(`(allow file-write* ${sub(join(r.runRoot, 'repo'))} ${sub(join(r.runRoot, 'tmp'))} ${runtime.map(sub).join(' ')})`);
   lines.push(...devWrites());
   lines.push(cloneGitDenies(r, ['repo']));
   lines.push(`(deny file-write* ${sub(join(r.runRoot, 'ctl'))})`);
   lines.push('; his claude settings, memory, skills, plugins, agents, commands, hooks and transcripts');
-  lines.push(`(deny file-write* ${rx('^' + reEscape(claudeDir) + '/settings[^/]*\\.json$')} ${CLAUDE_WRITE_DENIED.map((n) => sub(join(claudeDir, n))).join(' ')})`);
+  lines.push(`(deny file-write* ${rx('^' + reEscape(claudeDir) + '/settings[^/]*\\.json$')} ${rx('^' + reEscape(claudeJson) + '[^/]*$')} ${CLAUDE_WRITE_DENIED.map((n) => sub(join(claudeDir, n))).join(' ')})`);
   lines.push(`(deny file-read* ${sub(join(claudeDir, 'projects'))} ${lit(join(claudeDir, 'history.jsonl'))})`);
   lines.push('');
 

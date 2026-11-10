@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -137,6 +137,16 @@ describe('profile text', () => {
     }
   });
 
+  test('tool profile denies writes to the clone directories themselves, so they cannot be renamed or replaced', () => {
+    const p = toolProfile(input);
+    const allow = lineAt(p, '(allow file-write*', `(subpath "${ROOT}/repo")`);
+    for (const c of ['repo', 'ship', 'base']) {
+      assert.ok(lineAt(p, '(deny file-write*', `(literal "${ROOT}/${c}")`) > allow, c);
+    }
+    const cli = cliProfile(cliInput);
+    assert.ok(lineAt(cli, '(deny file-write*', `(literal "${ROOT}/repo")`) > lineAt(cli, '(allow file-write*', `(subpath "${ROOT}/repo")`));
+  });
+
   test('tool profile allows reads and writes of ship and base and denies their .git', () => {
     const p = toolProfile(input);
     for (const c of ['ship', 'base']) {
@@ -177,13 +187,19 @@ describe('profile text', () => {
     const allow = lineAt(p, '(allow file-write*', `(subpath "${ROOT}/repo")`);
     const line = p.split('\n')[allow];
     for (const rel of CLAUDE_RUNTIME_PATHS) assert.ok(line.includes(`(subpath "${HOME}/${rel}")`), rel);
-    assert.ok(line.includes('\\.claude\\.json[^/]*$'));
+    // His live sessions source shell snapshots and session env, read statsig, and run mcpServers from ~/.claude.json.
+    for (const rel of ['.claude/shell-snapshots', '.claude/session-env', '.claude/statsig']) {
+      assert.ok(!(CLAUDE_RUNTIME_PATHS as readonly string[]).includes(rel), rel);
+      assert.ok(!line.includes(`${HOME}/${rel}`), rel);
+    }
+    assert.ok(!line.includes('claude\\.json'), 'never ~/.claude.json');
     assert.ok(!line.includes(`(subpath "${HOME}/.claude")`), 'never the whole of ~/.claude');
     const deny = lineAt(p, '(deny file-write*', 'settings[^/]*\\.json$');
     assert.ok(deny > allow);
-    for (const name of ['CLAUDE.md', 'skills', 'plugins', 'agents', 'commands', 'hooks', 'projects']) {
+    for (const name of ['CLAUDE.md', 'skills', 'plugins', 'agents', 'commands', 'hooks', 'projects', 'shell-snapshots', 'session-env', 'statsig']) {
       assert.ok(p.split('\n')[deny].includes(`(subpath "${HOME}/.claude/${name}")`), name);
     }
+    assert.ok(p.split('\n')[deny].includes('\\.claude\\.json[^/]*$'), '~/.claude.json and its siblings are write-denied');
     const readDeny = lineAt(p, '(deny file-read*', `(subpath "${HOME}/.claude/projects")`);
     assert.ok(p.split('\n')[readDeny].includes(`(literal "${HOME}/.claude/history.jsonl")`));
     assert.ok(readDeny > lineAt(p, '(allow file-read*'));
@@ -269,6 +285,7 @@ describe('wrap and the child environment', () => {
 /* ------------------------------------------------------------------ */
 
 const hasSandbox = process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec');
+const PYTHON = ['/opt/homebrew/bin/python3', '/usr/local/bin/python3'].find((p) => existsSync(p));
 
 function run(argv: string[], opts: { cwd?: string; env?: Record<string, string> } = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
@@ -310,7 +327,8 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     mkdirSync(join(home, '.config', 'gh'), { recursive: true });
     writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'oauth_token: stand-in\n');
     writeFileSync(join(home, 'outside.txt'), 'outside\n');
-    mkdirSync(join(home, '.claude', 'debug'), { recursive: true });
+    for (const d of ['debug', 'todos', 'shell-snapshots', 'session-env', 'statsig']) mkdirSync(join(home, '.claude', d), { recursive: true });
+    writeFileSync(join(home, '.claude', 'shell-snapshots', 'snapshot-zsh-1.sh'), '# his\n');
     mkdirSync(join(home, '.claude', 'projects'), { recursive: true });
     writeFileSync(join(home, '.claude', 'settings.json'), '{}\n');
     writeFileSync(join(home, '.claude', 'projects', 'p.jsonl'), 'transcript\n');
@@ -403,12 +421,8 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     assert.doesNotMatch(inside.stdout, /keychain/i);
   });
 
-  test("no tool child can look up the keychain's mach service, whatever binary asks", async (ctx) => {
-    const python = ['/opt/homebrew/bin/python3', '/usr/local/bin/python3'].find((p) => existsSync(p));
-    if (!python) {
-      ctx.skip('no python3 outside the developer tools');
-      return;
-    }
+  test("no tool child can look up the keychain's mach service, whatever binary asks", { skip: !PYTHON && 'no python3 outside the developer tools' }, async (ctx) => {
+    const python = PYTHON as string;
     const script = join(runRoot, 'tmp', 'lookup.py');
     writeFileSync(
       script,
@@ -429,6 +443,40 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     const inside = await tool(`'${python}' '${script}' com.apple.SecurityServer com.apple.logd`);
     assert.match(inside.stdout, /^com\.apple\.SecurityServer [1-9]\d*$/m, inside.stdout + inside.stderr);
     assert.match(inside.stdout, /^com\.apple\.logd 0$/m, 'the probe itself works inside');
+  });
+
+  test('the repo, ship and base cannot be renamed, replaced or swapped for a symlink', async () => {
+    writeFileSync(join(runRoot, 'ship', 'f'), 's\n');
+    const r = await tool(
+      `cd '${runRoot}' && /bin/mv repo tmp/x; /bin/mv ship tmp/s; /bin/mv base tmp/b; /bin/rm -rf repo; /bin/ln -s '${home}' tmp/l && /bin/mv tmp/l repo; ` +
+        `/bin/mkdir -p tmp/x/.git && echo '${home}' > tmp/x/.git/commondir && /bin/mv tmp/x repo; echo done`,
+    );
+    assert.match(r.stdout, /done/);
+    for (const c of ['repo', 'ship', 'base']) {
+      const st = lstatSync(join(runRoot, c));
+      assert.ok(st.isDirectory() && !st.isSymbolicLink(), c);
+    }
+    // rm -rf may empty the worktree (that is ordinary work) but never the .git or the directory itself.
+    assert.equal(readFileSync(join(runRoot, 'repo', '.git', 'config'), 'utf8'), '[core]\n');
+    assert.ok(!existsSync(join(runRoot, 'repo', '.git', 'commondir')));
+    assert.ok(!existsSync(join(runRoot, 'tmp', 'x')));
+    // Work inside the clones still goes on.
+    const ok = await tool(`echo y > '${runRoot}/repo/sub.txt' && /bin/mkdir -p '${runRoot}/repo/src/a' && /bin/mv '${runRoot}/repo/sub.txt' '${runRoot}/repo/src/a/sub.txt'`);
+    assert.equal(ok.code, 0, ok.stderr);
+  });
+
+  test('the engine port is unreachable as 0.0.0.0, ::1, ::ffff:127.0.0.1 and localhost', async () => {
+    const engine = await listen();
+    const s6 = createServer((_q, r) => r.end('reached'));
+    servers.push(s6);
+    await new Promise<void>((r) => s6.listen(engine, '::1', () => r()));
+    for (const host of ['127.0.0.1', '0.0.0.0', '[::1]', '[::ffff:127.0.0.1]', 'localhost']) {
+      const r = await tool(`/usr/bin/curl -sS -m 5 --noproxy '*' http://${host}:${engine}/`, { enginePort: engine });
+      assert.doesNotMatch(r.stdout, /reached/, host);
+    }
+    // Control: the same forms reach it when another port is the engine's.
+    const open = await tool(`/usr/bin/curl -sS -m 5 --noproxy '*' http://[::1]:${engine}/`, { enginePort: 9 });
+    assert.equal(open.stdout, 'reached', open.stderr);
   });
 
   test('curl to a loopback server standing in for the engine port fails while one on another port succeeds', async () => {
@@ -466,8 +514,14 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     const tryRead = (p: string) => `try{require('fs').readFileSync(${JSON.stringify(p)});console.log('read ${p}')}catch(e){console.log('denied ${p}')}`;
 
     test('writes reach the runtime paths and ~/.claude.json but never settings, projects or the .git', async () => {
-      const allowed = [join(home, '.claude', 'debug', 'log.txt'), join(home, '.claude.json'), join(home, '.claude.json.backup'), join(runRoot, 'repo', 'a.txt')];
+      const allowed = [join(home, '.claude', 'debug', 'log.txt'), join(home, '.claude', 'todos', 't.json'), join(runRoot, 'repo', 'a.txt')];
       const denied = [
+        join(home, '.claude', 'shell-snapshots', 'snapshot-zsh-1.sh'),
+        join(home, '.claude', 'session-env', 'env.sh'),
+        join(home, '.claude', 'statsig', 'cache'),
+        join(home, '.claude.json'),
+        join(home, '.claude.json.backup'),
+        join(home, '.claude.json.tmp.1'),
         join(home, '.claude', 'settings.json'),
         join(home, '.claude', 'settings.local.json'),
         join(home, '.claude', 'CLAUDE.md'),
@@ -480,6 +534,8 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
       for (const p of allowed) assert.ok(r.stdout.includes(`wrote ${p}`), `${p}: ${r.stdout}${r.stderr}`);
       for (const p of denied) assert.ok(r.stdout.includes(`denied ${p}`), `${p}: ${r.stdout}${r.stderr}`);
       assert.equal(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'), '{}\n');
+      assert.equal(readFileSync(join(home, '.claude', 'shell-snapshots', 'snapshot-zsh-1.sh'), 'utf8'), '# his\n');
+      assert.equal(readFileSync(join(home, '.claude.json'), 'utf8'), '{}\n');
     });
 
     test('reads of transcripts and gh config fail', async () => {

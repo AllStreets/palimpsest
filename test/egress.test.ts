@@ -21,7 +21,7 @@ beforeEach(async () => {
   tempDir = mkdtempSync(join(tmpdir(), 'palimpsest-egress-test-'));
   process.env.PALIMPSEST_HOME = tempDir;
   // A plain HTTP server on port 0 standing in for a registry.
-  target = createServer((req, res) => res.end(`registry ${req.url}`));
+  target = createServer((req, res) => res.end(req.url === '/host' ? `host ${req.headers.host}` : `registry ${req.url}`));
   await new Promise<void>((r) => target.listen(0, '127.0.0.1', () => r()));
   targetPort = (target.address() as { port: number }).port;
 });
@@ -34,8 +34,9 @@ afterEach(async () => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-async function start(runId: string, log: RunLogLine[] = []): Promise<Egress> {
-  const e = await startEgress(runId, (l) => log.push(l));
+/** Starts a proxy that also allows the stand-in registry's port (production allows only 443 and 80). */
+async function start(runId: string, log: RunLogLine[] = [], ports?: { connectPorts: number[]; httpPorts: number[] }): Promise<Egress> {
+  const e = await startEgress(runId, (l) => log.push(l), ports ?? { connectPorts: [443, targetPort], httpPorts: [80, targetPort] });
   open.push(e);
   return e;
 }
@@ -134,6 +135,35 @@ test('a listed host passes and an unlisted host gets 403', async () => {
   assert.equal((await connectVia(e.port, 'localhost', targetPort, e.token)).status, 403);
   assert.equal((await connectVia(e.port, 'github.com', 443, e.token)).status, 403);
   assert.equal((await getVia(e.port, 'http://github.com/', e.token)).status, 403);
+});
+
+test('a forwarded request carries the target host, never the client Host header', async () => {
+  const e = await start('run-a');
+  e.setStage('install', ['127.0.0.1']);
+  const body = await new Promise<string>((resolve, reject) => {
+    const req = request(
+      { host: '127.0.0.1', port: e.port, method: 'GET', path: `http://127.0.0.1:${targetPort}/host`, headers: { host: 'evil.example', 'proxy-authorization': auth(e.token) } },
+      (res) => {
+        let b = '';
+        res.on('data', (d) => (b += d));
+        res.on('end', () => resolve(b));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+  assert.equal(body, `host 127.0.0.1:${targetPort}`);
+});
+
+test('by default CONNECT reaches only 443 and plain forwards only 80', async () => {
+  const log: RunLogLine[] = [];
+  const e = await startEgress('run-d', (l) => log.push(l));
+  open.push(e);
+  e.setStage('install', ['127.0.0.1']);
+  assert.equal((await connectVia(e.port, '127.0.0.1', targetPort, e.token)).status, 403);
+  assert.equal((await getVia(e.port, `http://127.0.0.1:${targetPort}/x`, e.token)).status, 403);
+  assert.equal((await connectVia(e.port, '127.0.0.1', 22, e.token)).status, 403);
+  assert.ok(log.some((l) => /refused CONNECT 127\.0\.0\.1:\d+ .*port not allowed/.test(l.text)));
 });
 
 test('setStage checks closes the list', async () => {

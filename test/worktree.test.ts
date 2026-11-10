@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, existsSync, realpathSync, renameSync, symlinkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -120,6 +120,59 @@ test('engineGit refuses when .git/config is replaced by a symlink', async () => 
   rmSync(join(dir, '.git', 'config'));
   spawnSync('/bin/ln', ['-s', copy, join(dir, '.git', 'config')]);
   await assert.rejects(engineGit(dir, ['status']), /run dir git config changed/);
+});
+
+test('the engine refuses a planted commondir, gitdir or config.worktree and runs no filter it names', async () => {
+  for (const planted of ['commondir', 'gitdir', 'config.worktree']) {
+    const runId = `run-${planted.replace('.', '-')}`;
+    const { runRoot, dir, baseSha } = await createRunDir(repo, runId, 'palimpsest/job1');
+    const marker = join(tempDir, `MARKER-${planted}`);
+    // A common dir whose config defines a clean filter, as the rename trick would plant it.
+    const evil = join(runRoot, 'tmp', 'evil');
+    cpSync(join(dir, '.git'), evil, { recursive: true });
+    appendFileSync(join(evil, 'config'), `[filter "x"]\n\tclean = touch ${marker}; cat\n[core]\n\tworktree = ${tempDir}\n`);
+    if (planted === 'config.worktree') writeFileSync(join(dir, '.git', planted), `[filter "x"]\n\tclean = touch ${marker}; cat\n`);
+    else writeFileSync(join(dir, '.git', planted), evil + '\n');
+    writeFileSync(join(dir, '.gitattributes'), '* filter=x\n');
+    writeFileSync(join(dir, 'b.txt'), 'b\n');
+    await assert.rejects(diffOf(dir, baseSha), /run dir git layout changed/, planted);
+    await assert.rejects(commitAll(dir, 'm', 'job1'), /run dir git layout changed/, planted);
+    await assert.rejects(engineGit(dir, ['status']), /run dir git layout changed/, planted);
+    assert.ok(!existsSync(marker), `${planted}: the engine ran attacker code`);
+  }
+});
+
+test('the engine refuses when the repo dir or its .git is a symlink', async () => {
+  const { runRoot, dir } = await createRunDir(repo, 'run1', 'palimpsest/job1');
+  // .git swapped for a symlink to an identical copy (same config hash).
+  const copy = join(runRoot, 'tmp', 'gitcopy');
+  cpSync(join(dir, '.git'), copy, { recursive: true });
+  rmSync(join(dir, '.git'), { recursive: true });
+  symlinkSync(copy, join(dir, '.git'));
+  await assert.rejects(engineGit(dir, ['status']), /run dir git layout changed/);
+  rmSync(join(dir, '.git'));
+  cpSync(copy, join(dir, '.git'), { recursive: true });
+  assert.equal((await engineGit(dir, ['status', '--short'])).code, 0);
+  // The repo dir itself swapped for a symlink to a moved copy.
+  const moved = join(runRoot, 'tmp', 'moved');
+  renameSync(dir, moved);
+  symlinkSync(moved, dir);
+  await assert.rejects(engineGit(dir, ['status']), /run dir git layout changed/);
+  await assert.rejects(diffOf(dir, 'HEAD'), /run dir git layout changed/);
+});
+
+test('engine git ignores GIT_DIR and GIT_WORK_TREE in its own environment', async () => {
+  const { dir } = await createRunDir(repo, 'run1', 'palimpsest/job1');
+  const prev = { d: process.env.GIT_DIR, w: process.env.GIT_WORK_TREE };
+  process.env.GIT_DIR = join(tempDir, 'nowhere');
+  process.env.GIT_WORK_TREE = tempDir;
+  try {
+    const r = await engineGit(dir, ['rev-parse', '--show-toplevel']);
+    assert.equal(realpathSync(r.stdout.trim()), realpathSync(dir));
+  } finally {
+    if (prev.d === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev.d;
+    if (prev.w === undefined) delete process.env.GIT_WORK_TREE; else process.env.GIT_WORK_TREE = prev.w;
+  }
 });
 
 test('engineGit does not run a planted hook', async () => {

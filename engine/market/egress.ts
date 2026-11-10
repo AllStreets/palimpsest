@@ -103,7 +103,15 @@ export interface Egress {
  * allowed) until the runner sets one. Writes the token to
  * `<ctl>/egress.token` (mode 0400) and the port to `<ctl>/egress.json`.
  */
-export async function startEgress(runId: string, log: (line: RunLogLine) => void): Promise<Egress> {
+/** Ports a tunnel or a forward may reach: CONNECT only to 443 and plain HTTP only to 80 unless a test stands in another. */
+export interface EgressPorts {
+  connectPorts: number[];
+  httpPorts: number[];
+}
+
+export const DEFAULT_EGRESS_PORTS: EgressPorts = { connectPorts: [443], httpPorts: [80] };
+
+export async function startEgress(runId: string, log: (line: RunLogLine) => void, ports: EgressPorts = DEFAULT_EGRESS_PORTS): Promise<Egress> {
   const ctl = join(paths().runs, runId, 'ctl');
   mkdirSync(ctl, { recursive: true });
   const token = randomBytes(24).toString('hex');
@@ -148,13 +156,19 @@ export async function startEgress(runId: string, log: (line: RunLogLine) => void
       res.writeHead(407, { 'proxy-authenticate': 'Basic realm="palimpsest"' }).end('proxy authentication required\n');
       return;
     }
-    if (url.protocol !== 'http:' || !hostAllowed(host, allowed)) {
+    if (url.protocol !== 'http:' || !ports.httpPorts.includes(port)) {
+      note(false, req.method ?? 'GET', host, port, 'port not allowed');
+      res.writeHead(403).end('port not allowed\n');
+      return;
+    }
+    if (!hostAllowed(host, allowed)) {
       note(false, req.method ?? 'GET', host, port, 'host not allowed in this stage');
       res.writeHead(403).end('host not allowed in this stage\n');
       return;
     }
     note(true, req.method ?? 'GET', host, port, 'listed');
-    const headers = { ...req.headers };
+    // The Host header names the target, never what the client claimed.
+    const headers: Record<string, string | string[] | undefined> = { ...req.headers, host: url.host };
     delete headers['proxy-authorization'];
     delete headers['proxy-connection'];
     const up = httpRequest(
@@ -184,6 +198,11 @@ export async function startEgress(runId: string, log: (line: RunLogLine) => void
     if (!tokenOk(req.headers['proxy-authorization'], token)) {
       note(false, 'CONNECT', target.host, target.port, 'no token for this run');
       client.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="palimpsest"\r\n\r\n');
+      return;
+    }
+    if (!ports.connectPorts.includes(target.port)) {
+      note(false, 'CONNECT', target.host, target.port, 'port not allowed');
+      client.end('HTTP/1.1 403 Forbidden\r\n\r\n');
       return;
     }
     if (!hostAllowed(target.host, allowed)) {

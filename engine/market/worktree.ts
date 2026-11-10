@@ -7,8 +7,8 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { constants, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import type { Repo } from '../../shared/types.js';
 import { paths } from '../home.js';
@@ -113,27 +113,72 @@ export function recordGitConfig(dir: string): void {
  * clone's `.git/config` still matches the recorded hash.
  */
 export async function engineGit(dir: string, args: string[]): Promise<GitResult> {
-  const runRoot = dirname(dir);
-  let recorded: string;
+  return checkedGit(dir, args);
+}
+
+/** Files that point git at another directory or add per-worktree config: none may exist in a run clone's .git. */
+export const REDIRECT_FILES = ['commondir', 'gitdir', 'config.worktree'] as const;
+
+const LAYOUT = 'run dir git layout changed';
+
+function lstatOrNull(p: string) {
   try {
-    recorded = readFileSync(shaFile(dir), 'utf8').trim();
+    return lstatSync(p);
   } catch {
-    throw new Error('run dir git config changed');
+    return null;
   }
+}
+
+/**
+ * The clone's layout as the engine left it: the dir and its .git are real
+ * directories (no symlink), the dir resolves where it sits, and nothing in
+ * .git redirects git elsewhere. Returns the resolved dir and git dir.
+ */
+function checkLayout(dir: string): { work: string; gitDir: string } {
+  const d = lstatOrNull(dir);
+  if (!d || d.isSymbolicLink() || !d.isDirectory()) throw new Error(LAYOUT);
+  const work = realpathSync.native(dir);
+  if (work !== join(realpathSync.native(dirname(dir)), basename(dir))) throw new Error(LAYOUT);
+  const gitDir = join(work, '.git');
+  const g = lstatOrNull(gitDir);
+  if (!g || g.isSymbolicLink() || !g.isDirectory()) throw new Error(LAYOUT);
+  for (const f of REDIRECT_FILES) if (lstatOrNull(join(gitDir, f))) throw new Error(LAYOUT);
+  return { work, gitDir };
+}
+
+/**
+ * Every engine git call in a clone: checks the layout and the recorded
+ * config hash, then runs git with an explicit --git-dir and --work-tree (so
+ * no .git file, core.worktree or environment can redirect it) and confirms
+ * the common dir is the clone's own .git.
+ */
+async function checkedGit(dir: string, args: string[], extraEnv?: Record<string, string>): Promise<GitResult> {
+  const { work, gitDir } = checkLayout(dir);
+  let recorded: string;
   let now: string;
   try {
-    now = configHash(dir);
+    recorded = readFileSync(shaFile(dir), 'utf8').trim();
+    now = configHash(work);
   } catch {
     throw new Error('run dir git config changed');
   }
   if (now !== recorded) throw new Error('run dir git config changed');
-  return git(args, dir, runRoot);
+  const explicit = [`--git-dir=${gitDir}`, `--work-tree=${work}`];
+  const common = await git([...explicit, 'rev-parse', '--git-common-dir'], work, dirname(dir));
+  if (common.code !== 0) throw new Error(LAYOUT);
+  const c = common.stdout.trim();
+  let commonReal: string;
+  try {
+    commonReal = realpathSync.native(resolve(work, c));
+  } catch {
+    throw new Error(LAYOUT);
+  }
+  if (commonReal !== gitDir) throw new Error(LAYOUT);
+  return git([...explicit, ...args], work, dirname(dir), extraEnv);
 }
 
 async function engineGitOk(dir: string, args: string[], extraEnv?: Record<string, string>): Promise<string> {
-  // Same checks as engineGit, with an extra environment for commit identity.
-  await engineGit(dir, ['rev-parse', '--git-dir']);
-  const r = await git(args, dir, dirname(dir), extraEnv);
+  const r = await checkedGit(dir, args, extraEnv);
   if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim() || r.stdout.trim()}`);
   return r.stdout;
 }
