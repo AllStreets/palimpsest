@@ -118,12 +118,13 @@ test('sale price', () => {
   assert.equal(salePrice(0), 20);
 });
 
-test('canHire needs balance over 400, more open jobs than idle agents, fewer than four towers', () => {
-  assert.equal(canHire(401, 3, 1, 2), true);
-  assert.equal(canHire(400, 3, 1, 2), false);
-  assert.equal(canHire(500, 2, 2, 2), false);
-  assert.equal(canHire(500, 3, 2, 4), false);
-  assert.equal(canHire(500, 3, 2, 3), true);
+test('canHire needs an active firm, balance over 400, more open jobs than idle agents, fewer than four towers', () => {
+  assert.equal(canHire(401, 3, 1, 2, 'active'), true);
+  assert.equal(canHire(400, 3, 1, 2, 'active'), false);
+  assert.equal(canHire(500, 2, 2, 2, 'active'), false);
+  assert.equal(canHire(500, 3, 2, 4, 'active'), false);
+  assert.equal(canHire(500, 3, 2, 3, 'active'), true);
+  assert.equal(canHire(900, 9, 0, 0, 'bankrupt'), false, 'only an active firm hires');
 });
 
 test('legal moves include bidding to open, awarded to failed, running to open and failed, inspecting to failed, halted to open and to waiting, proposed to open', () => {

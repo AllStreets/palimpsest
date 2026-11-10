@@ -65,6 +65,8 @@ export interface EarnedFloor {
   firmId: string;
   state: 'waiting' | 'lit' | 'scar';
   reverted: boolean;
+  /** A note on how the floor was earned, e.g. "merged with his changes" (he added his own commits before merging). */
+  note?: string | null;
 }
 
 export interface TowerSpec {
@@ -258,6 +260,12 @@ export interface Run {
    * another base branch): not paid, no floor, flagged for his brief.
    */
   mergedWithChanges?: { headRefOid: string | null; baseRefName: string | null; mergeSha: string | null } | null;
+  /**
+   * The PR merged with commits he added himself on top of what the city
+   * pushed (all authored by his GitHub login): it counts as merged and is
+   * paid; `headRefOid` is the head that merged.
+   */
+  hisChanges?: { headRefOid: string; commits: string[] } | null;
 }
 
 export type CheckName = 'install' | 'test' | 'typecheck' | 'lint' | 'build' | 'review' | 'scope' | 'design';

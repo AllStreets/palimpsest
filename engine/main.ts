@@ -6,6 +6,7 @@ import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
 import { inspect } from './guild/inspect.js';
 import { installDeps } from './market/install.js';
 import { pollPRs, ship, watchReverts } from './market/ship.js';
+import { dailyTick, DAY_MS, installTreasury } from './market/treasury.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
@@ -21,6 +22,18 @@ async function main(): Promise<void> {
   seedFirms(installed);
   // An agent that seeded retired for a missing model comes back once that model is installed.
   reviveAgents(installed);
+  // Task 17: the treasury books every payment and cost from the event bus, then once a day settles,
+  // sells dark towers, declares bankruptcies and hires (ruling 6).
+  installTreasury();
+  const runDailyTick = () => {
+    try {
+      dailyTick(Date.now());
+    } catch (err) {
+      console.error('palimpsest: the daily treasury tick failed:', err);
+    }
+  };
+  runDailyTick();
+  setInterval(runDailyTick, DAY_MS).unref();
   const { close, port } = await startServer();
   const stopped = existsSync(paths().stop);
   // eslint-disable-next-line no-console

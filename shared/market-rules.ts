@@ -106,9 +106,9 @@ export function salePrice(floors: number): number {
   return 2 * floors + 20;
 }
 
-/** Hiring needs a balance above 400, more open jobs than idle agents and fewer than four towers in the quarter. */
-export function canHire(balance: number, openJobs: number, idleAgents: number, towers: number): boolean {
-  return balance > 400 && openJobs > idleAgents && towers < 4;
+/** Hiring needs an active firm, a balance above 400, more open jobs than idle agents and fewer than four towers in the quarter. */
+export function canHire(balance: number, openJobs: number, idleAgents: number, towers: number, status: 'active' | 'bankrupt'): boolean {
+  return status === 'active' && balance > 400 && openJobs > idleAgents && towers < 4;
 }
 
 /** The market fields a repo starts with, also filled in for rows written before Phase 2. */

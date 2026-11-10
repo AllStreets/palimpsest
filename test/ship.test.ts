@@ -39,6 +39,9 @@ type GhCall = string[];
 let ghCalls: GhCall[] = [];
 let gitCalls: string[][] = [];
 let prStates = new Map<number, object>();
+/** What `gh pr view --json commits` answers per PR, and who `gh api user` says he is. */
+let prCommits = new Map<number, Array<{ oid: string; authors: Array<{ login: string }> }>>();
+let viewer = 'connorevans';
 let nextPr = 12;
 /** Runs before a git command reaches real git (to move the stand-in remote under a push). */
 let beforeGit: ((args: string[]) => void) | null = null;
@@ -47,6 +50,10 @@ const fakeGh: Runner = async (cmd, args, opts) => {
   if (cmd === 'gh') {
     ghCalls.push(args);
     if (args[0] === 'pr' && args[1] === 'create') return { stdout: `https://github.com/${FULL}/pull/${nextPr}\n`, stderr: '', code: 0 };
+    if (args[0] === 'pr' && args[1] === 'view' && args.includes('commits')) {
+      return { stdout: JSON.stringify({ commits: prCommits.get(Number(args[2])) ?? [] }), stderr: '', code: 0 };
+    }
+    if (args[0] === 'api' && args[1] === 'user') return { stdout: `${viewer}\n`, stderr: '', code: 0 };
     if (args[0] === 'pr' && args[1] === 'view') {
       const s = prStates.get(Number(args[2])) ?? { state: 'OPEN', mergedAt: null, mergeCommit: null, closedAt: null };
       return { stdout: JSON.stringify(s), stderr: '', code: 0 };
@@ -68,6 +75,8 @@ beforeEach(() => {
   ghCalls = [];
   gitCalls = [];
   prStates = new Map();
+  prCommits = new Map();
+  viewer = 'connorevans';
   nextPr = 12;
   beforeGit = null;
   setRunner(fakeGh);
@@ -338,6 +347,65 @@ for (const [what, change] of [
     assert.equal(resolvedBids().filter((b) => b.jobId === job.id && !b.passed).length, 0);
   });
 }
+
+test('a PR he finished with his own commits counts as merged, pays and notes his changes', async () => {
+  const { job, run: r } = await shipPr();
+  const his = 'd'.repeat(40);
+  prCommits.set(12, [
+    { oid: r.headSha as string, authors: [{ login: 'palimpsest-city' }] },
+    { oid: 'e'.repeat(40), authors: [{ login: 'ConnorEvans' }] },
+    { oid: his, authors: [{ login: 'connorevans' }] },
+  ]);
+  prStates.set(12, { state: 'MERGED', mergedAt: '2026-11-10T12:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, closedAt: '2026-11-10T12:00:00Z', headRefOid: his, baseRefName: 'main' });
+  await pollPRs(Date.now());
+
+  assert.equal(kinds('merge.detected').length, 1);
+  assert.equal(kinds('merge.detected')[0].data.withHisChanges, true);
+  assert.equal(storedJob(job.id)?.status, 'merged', 'paid through job.changed to merged');
+  assert.ok(all().some((e) => e.kind === 'job.changed' && e.data.to === 'merged' && e.data.id === job.id));
+  const ended = storedRun(r.id) as Run;
+  assert.equal(ended.outcome, 'merged');
+  assert.ok(!ended.mergedWithChanges);
+  for (const tower of [TOWER, agentTowerId('w1')]) {
+    const f = earnedFloors(tower)[0];
+    assert.equal(f.earned?.state, 'lit');
+    assert.equal(f.earned?.note, 'merged with his changes');
+  }
+  const note = kinds('run.note').find((e) => e.data.runId === r.id);
+  assert.match(String(note?.data.note), /merged with his changes/);
+});
+
+test("a PR with someone else's commits on top is merged with changes and not paid", async () => {
+  const { job, run: r } = await shipPr();
+  const head = 'd'.repeat(40);
+  prCommits.set(12, [
+    { oid: r.headSha as string, authors: [{ login: 'palimpsest-city' }] },
+    { oid: 'e'.repeat(40), authors: [{ login: 'connorevans' }] },
+    { oid: head, authors: [{ login: 'connorevans' }, { login: 'someone-else' }] },
+  ]);
+  prStates.set(12, { state: 'MERGED', mergedAt: '2026-11-10T12:00:00Z', mergeCommit: { oid: 'c'.repeat(40) }, closedAt: '2026-11-10T12:00:00Z', headRefOid: head, baseRefName: 'main' });
+  await pollPRs(Date.now());
+
+  assert.equal(kinds('merge.detected').length, 0);
+  assert.equal(storedJob(job.id)?.status, 'closed');
+  assert.ok(!all().some((e) => e.kind === 'job.changed' && e.data.to === 'merged'), 'no payment');
+  assert.ok((storedRun(r.id) as Run).mergedWithChanges);
+  assert.deepEqual(earnedFloors(TOWER), []);
+});
+
+test('a fast-forward merge is found at the head, not at a later commit on top of it', async () => {
+  const { remote, job, run: r } = await shipPr();
+  const w = join(tempDir, 'his-clone');
+  git(tempDir, 'clone', '-q', remote, w);
+  git(w, 'merge', '-q', '--ff-only', `origin/palimpsest/${job.id}`);
+  writeFileSync(join(w, 'later.txt'), 'later\n');
+  git(w, 'add', '.');
+  git(w, 'commit', '-q', '-m', 'Later work on top');
+  git(w, 'push', '-q', 'origin', 'HEAD:main');
+  prStates.set(12, { state: 'MERGED', mergedAt: new Date().toISOString(), mergeCommit: null, closedAt: new Date().toISOString(), headRefOid: r.headSha, baseRefName: 'main' });
+  await pollPRs(Date.now());
+  assert.equal(storedRun(r.id)?.mergeSha, r.headSha);
+});
 
 test('closed PR removes the floor with no scar', async () => {
   const { job, run: r } = await shipPr();

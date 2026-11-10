@@ -405,6 +405,26 @@ export async function openPRsFrom(fullName: string, head: string): Promise<numbe
   return (JSON.parse(result.stdout || '[]') as Array<{ number: number }>).map((p) => p.number);
 }
 
+/** A pull request's commits, oldest first, each with the GitHub logins of its authors (an empty login where GitHub knows no account). */
+export async function prCommits(fullName: string, number: number): Promise<Array<{ sha: string; authors: string[] }>> {
+  checkName(fullName);
+  checkIssue(number);
+  const result = await runGh(['pr', 'view', String(number), '-R', fullName, '--json', 'commits']);
+  const row = JSON.parse(result.stdout || '{}') as { commits?: Array<{ oid?: unknown; authors?: Array<{ login?: unknown }> }> };
+  return (row.commits ?? []).map((c) => ({
+    sha: typeof c.oid === 'string' && /^[0-9a-f]{40}$/.test(c.oid) ? c.oid : '',
+    authors: (c.authors ?? []).map((a) => (typeof a.login === 'string' ? a.login : '')),
+  }));
+}
+
+/** The GitHub login gh is signed in as (his own account). Throws when gh cannot say. */
+export async function viewerLogin(): Promise<string> {
+  const result = await runGh(['api', 'user', '--jq', '.login']);
+  const login = result.stdout.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(login)) throw new GhError('other', 'gh did not name the signed-in GitHub user');
+  return login;
+}
+
 /**
  * Commits on `branch` after `since`, newest first, every parent line, read
  * through the mirror (after `syncMirror` unless `sync` is false). `since` is

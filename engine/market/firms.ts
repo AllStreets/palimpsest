@@ -292,6 +292,28 @@ export function firm(id: string): Firm | null {
   return row ? (JSON.parse(row.json) as Firm) : null;
 }
 
+/**
+ * Writes the treasury's view of a firm's books onto the stored firm: its
+ * balance and when it last went below zero (null while it is not). The
+ * credits rows stay the truth (treasury `balances()` rebuilds from them).
+ */
+export function setFirmBooks(id: string, balance: number, negativeSince: string | null): Firm | null {
+  const f = firm(id);
+  if (!f) return null;
+  if (f.balance === balance && f.negativeSince === negativeSince) return f;
+  const next: Firm = { ...f, balance, negativeSince };
+  saveFirm(next);
+  return next;
+}
+
+/** Every dark tower of a bankrupt firm not yet sold, by firm slot then plot. */
+export function darkTowers(): Array<{ agentId: string; firmId: string; floors: number }> {
+  const bankrupt = new Set(listFirms().filter((f) => f.status === 'bankrupt').map((f) => f.id));
+  return storedAgents()
+    .filter((a) => bankrupt.has(a.firmId) && a.retired && a.retiredReason === BANKRUPT_REASON && !a.soldTo)
+    .map((a) => ({ agentId: a.id, firmId: a.firmId, floors: earnedFloors(agentTowerId(a.id)).length }));
+}
+
 export function agent(id: string): Agent | null {
   const a = storedAgent(id);
   return a ? publicAgent(a) : null;

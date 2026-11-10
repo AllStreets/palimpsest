@@ -35,7 +35,7 @@ import { join } from 'node:path';
 import type { CheckName, CheckResult, Floor, FloorSize, Inspection, Job, Repo, Run } from '../../shared/types.js';
 import { emit } from '../events.js';
 import { getRunner } from '../exec.js';
-import { createPR, openPRsFrom, prState, prTitle, recentCommits, type PRState } from '../github.js';
+import { createPR, openPRsFrom, prCommits, prState, prTitle, recentCommits, viewerLogin, type PRState } from '../github.js';
 import { runCheck } from '../guild/checks.js';
 import { canOpenPR, canPush, inspectionSummary, wipeScratch } from '../guild/inspect.js';
 import { home, isRealDataHome, paths } from '../home.js';
@@ -365,12 +365,12 @@ function layJobFloors(r: Run, job: Job, o: Omit<Parameters<typeof floorOf>[2], '
   return floor;
 }
 
-/** Lights the job's waiting floors (a merged PR). */
-function lightFloors(r: Run, jobId: string, at: string): void {
+/** Lights the job's waiting floors (a merged PR), with a note on how it merged when there is one. */
+function lightFloors(r: Run, jobId: string, at: string, note: string | null = null): void {
   for (const [towerId, id] of [[repoTowerId(r.repo), repoFloorId(r.repo, jobId)], [agentTowerId(r.agentId), agentFloorId(r.agentId, jobId)]]) {
     const f = earnedFloors(towerId).find((x) => x.id === id);
     if (!f?.earned) continue;
-    const lit = updateEarnedFloor(id, { at, earned: { ...f.earned, state: 'lit' } });
+    const lit = updateEarnedFloor(id, { at, earned: { ...f.earned, state: 'lit', ...(note ? { note } : {}) } });
     record('floor.lit', { jobId, runId: r.id, towerId, floorId: id, floor: lit });
     emit('floor.lit', { towerId, floorId: id, floor: lit });
   }
@@ -649,19 +649,51 @@ function settleWaitingJob(jobId: string, to: 'merged' | 'closed', patch: Partial
  * job's trailer (a squash or a rebase keeps the commit messages).
  */
 async function findMergeSha(r: Run, repo: Repo, o: { sync?: boolean } = {}): Promise<string | null> {
-  const head = r.headSha;
+  // With his own commits on top, the head that merged is his last one, not the city's.
+  const head = r.hisChanges?.headRefOid ?? r.headSha;
   if (!head) return null;
   const trailer = new RegExp(`^Palimpsest-Job: ${r.jobId.replace(/[.]/g, '\\.')}$`, 'm');
   const commits = await recentCommits(repo.fullName, repo.defaultBranch, '', { sync: o.sync, limit: 2000 });
-  const hit = commits.find((c) => c.sha === head || c.parents.includes(head) || trailer.test(c.body));
+  // Newest first. The head itself is tested before any parent: a merge commit names the head as a
+  // second (or later) parent and is newer than it, while an ordinary commit laid on a fast-forwarded
+  // head names it as its first parent and must not be taken for the merge.
+  const hit = commits.find((c) => c.sha === head || c.parents.slice(1).includes(head) || trailer.test(c.body));
   return hit?.sha ?? null;
 }
 
-async function merged(r: Run, s: PRState): Promise<void> {
+/** What he calls a PR he finished himself: every commit on top of the city's head is his. */
+export const HIS_CHANGES_NOTE = 'merged with his changes';
+
+/**
+ * The commits on a merged PR after the head the city pushed, when every one
+ * of them is authored by his GitHub login (the account gh is signed in as)
+ * and the last is the head that merged; null otherwise (someone else's
+ * commit, an author GitHub cannot name, a rewritten history).
+ */
+async function hisCommitsOnTop(r: Run, s: PRState): Promise<string[] | null> {
+  if (!r.prNumber || !r.headSha || !s.headRefOid) return null;
+  const commits = await prCommits(r.repo, r.prNumber);
+  const at = commits.findIndex((c) => c.sha === r.headSha);
+  if (at < 0) return null;
+  const extra = commits.slice(at + 1);
+  if (extra.length === 0 || extra[extra.length - 1].sha !== s.headRefOid) return null;
+  const me = (await viewerLogin()).toLowerCase();
+  const his = extra.every((c) => c.authors.length > 0 && c.authors.every((a) => a.toLowerCase() === me));
+  return his ? extra.map((c) => c.sha) : null;
+}
+
+async function merged(r0: Run, s: PRState): Promise<void> {
+  let r = r0;
   const repo = getRepo(r.repo);
   const def = repo?.defaultBranch ?? 'main';
-  // What merged must be what the city pushed, into the default branch; otherwise it is not the city's work to pay for.
-  if (s.headRefOid !== r.headSha || s.baseRefName !== def) {
+  // He may finish a city PR himself: extra commits all authored by his own login still count as the
+  // city's merge (paid, floors lit with a note). Anyone else's commit makes it merged with changes.
+  let his: string[] | null = null;
+  if (s.headRefOid !== r.headSha && s.baseRefName === def) his = await hisCommitsOnTop(r, s);
+  if (his && s.headRefOid) r = { ...r, hisChanges: { headRefOid: s.headRefOid, commits: his } };
+  // What merged must be what the city pushed (or that plus his own commits), into the default branch;
+  // otherwise it is not the city's work to pay for.
+  if ((s.headRefOid !== r.headSha && !his) || s.baseRefName !== def) {
     const changes = { headRefOid: s.headRefOid, baseRefName: s.baseRefName, mergeSha: s.mergeCommit };
     const why = s.headRefOid !== r.headSha
       ? `merged with changes: the PR head was ${s.headRefOid?.slice(0, 7) ?? 'unknown'}, not the inspected ${r.headSha?.slice(0, 7)}`
@@ -682,9 +714,12 @@ async function merged(r: Run, s: PRState): Promise<void> {
   }
   const at = s.mergedAt ?? iso();
   const floor = earnedFloors(repoTowerId(r.repo)).find((f) => f.id === repoFloorId(r.repo, r.jobId));
-  record('merge.detected', { jobId: r.jobId, runId: r.id, repo: r.repo, pr: r.prNumber, prUrl: r.prUrl, mergeSha, mergedAt: at, size: floor?.size ?? null, at: iso() });
-  lightFloors(r, r.jobId, at);
-  finishWaitingRun(r.id, 'merged', null, { mergeSha });
+  record('merge.detected', { jobId: r.jobId, runId: r.id, repo: r.repo, pr: r.prNumber, prUrl: r.prUrl, mergeSha, mergedAt: at, size: floor?.size ?? null, withHisChanges: his !== null, at: iso() });
+  if (his) {
+    record('run.note', { runId: r.id, jobId: r.jobId, repo: r.repo, note: `${HIS_CHANGES_NOTE}: ${his.length} commit${his.length === 1 ? '' : 's'} of his on top of ${r.headSha?.slice(0, 7)}`, pr: r.prNumber, prUrl: r.prUrl, headRefOid: s.headRefOid, commits: his, at: iso() });
+  }
+  lightFloors(r, r.jobId, at, his ? HIS_CHANGES_NOTE : null);
+  finishWaitingRun(r.id, 'merged', null, { mergeSha, ...(r.hisChanges ? { hisChanges: r.hisChanges } : {}) });
   settleWaitingJob(r.jobId, 'merged', {}, { prUrl: r.prUrl ?? undefined, summary: r.summary ?? undefined });
 }
 
