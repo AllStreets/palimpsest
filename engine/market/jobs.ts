@@ -420,8 +420,8 @@ export function redact(text: string): string {
     .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '[redacted]')
     .replace(/\b(?:xox[abposr]-|glpat-)[A-Za-z0-9-]{10,}/g, '[redacted]')
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?/g, '[redacted]')
-    .replace(/\b[A-Za-z0-9+_-]{40,}={0,2}/g, '[redacted]')
-    .replace(/(?:~|\/Users\/[^/\s]+|\/home\/[^/\s]+|\/var\/root)(?:\/[^\s'"`)]*)?/g, '[path]');
+    .replace(/[A-Za-z0-9+_]{40,}={0,2}/g, (m) => (/[A-Z]/.test(m) && /[a-z]/.test(m) && /\d/.test(m) ? '[redacted]' : m))
+    .replace(/(?:~(?=\/|$)|\/Users\/[^/\s]+|\/home\/[^/\s]+|\/var\/root)(?:\/[^\s'"`)]*)?/g, '[path]');
 }
 
 function dataHome(): string {

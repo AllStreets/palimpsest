@@ -243,7 +243,7 @@ test('agent detail carries genome and lineage', async () => {
   assert.equal(d.json.lineage.agent.generation, 1);
   assert.deepEqual(d.json.lineage.parents.map((p: { id: string }) => p.id), ['p1']);
   assert.equal(d.json.runs.length, 1);
-  assert.equal(d.json.runs[0].dir, null, 'a run dir is never sent');
+  assert.ok(!('dir' in d.json.runs[0]), 'a run dir is never sent');
   assert.equal(d.json.tower?.agentId, 'c1');
 
   const p = await call('GET', `/api/agents/${parent.id}`);
@@ -284,7 +284,7 @@ test('run detail, log, diff and inspection never carry a home path or a raw secr
 
   const detail = await call('GET', `/api/runs/${run.id}`);
   assert.equal(detail.status, 200);
-  assert.equal(detail.json.dir, null);
+  assert.ok(!('dir' in detail.json));
   assert.equal(detail.json.job.id, j.id);
   assert.equal(detail.json.inspection, null);
 
@@ -325,13 +325,13 @@ test('run detail, log, diff and inspection never carry a home path or a raw secr
   const got = await call('GET', `/api/inspections/${insp.id}`);
   assert.equal(got.status, 200);
   assert.ok(Buffer.byteLength(got.json.checks[0].log) <= 64 * 1024 && got.json.checks[0].log.length > 60 * 1024, 'a check log is capped at 64 KB');
-  assert.equal(got.json.checks[0].logPath, null);
+  assert.ok(!('logPath' in got.json.checks[0]));
   assert.equal(got.json.checks[1].log, null, 'a log outside the runs folder is never read');
   assert.ok(!got.text.includes(tempDir), 'no path of this Mac leaves the engine');
   assert.equal((await call('GET', `/api/runs/${run.id}`)).json.inspection.id, 'insp-1');
   const viaJob = await call('GET', `/api/jobs/${j.id}`);
   assert.deepEqual(viaJob.json.inspections.map((i: { id: string }) => i.id), ['insp-1']);
-  assert.equal(viaJob.json.runs[0].dir, null);
+  assert.ok(!('dir' in viaJob.json.runs[0]));
 
   const shot = await fetch(`http://127.0.0.1:${server!.port}/api/inspections/insp-1/shot/${encodeURIComponent('/about')}/after`);
   assert.equal(shot.status, 200);
@@ -493,6 +493,9 @@ test('repo resume clears a halt, reopens its jobs and leaves a job with an open 
   assert.equal(getRepo(FULL)!.halted?.reason, 'three failed inspections');
 
   assert.equal((await call('POST', '/api/repos/acme/nothing/resume')).status, 404);
+  assert.equal((await call('POST', `/api/repos/${FULL}/resume`)).status, 200);
+  assert.equal((await call('POST', `/api/repos/${FULL}/resume`)).status, 409, 'a repo that is not halted');
+  haltRepo(FULL, 'three failed inspections');
   assert.equal((await call('POST', '/api/repos/-bad/x/resume')).status, 400);
   const r = await call('POST', `/api/repos/${FULL}/resume`);
   assert.equal(r.status, 200);
@@ -653,4 +656,69 @@ test('the market routes keep the Host, Origin and header checks', async () => {
   assert.equal(await raw({ host: `127.0.0.1:${s.port}` }, 'POST', '/api/treasury/resume-stale'), 403, 'a write needs the header');
   assert.equal(await raw({ host: `127.0.0.1:${s.port}` }, 'DELETE', '/api/providers/anthropic/key'), 403);
   assert.equal(await raw({ host: `127.0.0.1:${s.port}` }), 200);
+});
+
+test('a request body over 1 MB is refused with 413 before it is buffered', async () => {
+  repoOf();
+  const big = JSON.stringify({ repo: FULL, title: 'x', body: 'y'.repeat(1024 * 1024 + 10) });
+  const s = await start();
+  const status = await new Promise<number>((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port: s.port, path: '/api/jobs', method: 'POST', headers: { host: `127.0.0.1:${s.port}`, 'x-palimpsest': '1', 'content-type': 'application/json' } }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('error', (e) => ((e as NodeJS.ErrnoException).code === 'EPIPE' || (e as NodeJS.ErrnoException).code === 'ECONNRESET' ? undefined : reject(e)));
+    req.end(big);
+  });
+  assert.equal(status, 413);
+  assert.equal((await call('POST', '/api/jobs', { repo: FULL, title: 'fine' })).status, 201, 'the engine is still serving');
+});
+
+test('what reaches the page is redacted without cutting ordinary text: a token and a home path go, "~50%" and a long slug stay', async () => {
+  repoOf();
+  const slug = 'a-very-long-hyphenated-slug-name-for-a-feature-branch-that-goes-on-and-on';
+  const made = await call('POST', '/api/jobs', {
+    repo: FULL,
+    title: `Raise ~50% of ${slug}`,
+    body: 'Token ghp_abcdefghijklmnopqrstuvwxyz0123456789 and /Users/someone/secret/file.txt and ~/notes and AbCdEf0123456789AbCdEf0123456789AbCdEf0123 here.',
+  });
+  assert.equal(made.status, 201);
+  const got = await call('GET', `/api/jobs/${made.json.id}`);
+  assert.equal(got.json.job.title, `Raise ~50% of ${slug}`);
+  assert.ok(!got.text.includes('ghp_abcdefgh'));
+  assert.ok(!got.text.includes('/Users/someone'));
+  assert.ok(!got.text.includes('~/notes'));
+  assert.ok(!got.text.includes('AbCdEf0123456789AbCdEf0123456789'), 'a mixed-case digit run of token length is redacted');
+  const list = await call('GET', '/api/jobs');
+  assert.ok(!list.text.includes('ghp_abcdefgh'));
+
+  mkdirSync(paths().reports, { recursive: true });
+  const file = join(paths().reports, '2026-11-08.md');
+  writeFileSync(file, 'Lead\nsk-ant-api03-ABCDEFGHIJKLMNOP1234 in /Users/someone/x\n');
+  record('report.written', { day: '2026-11-08', path: file, at: new Date().toISOString(), data: { day: '2026-11-08' } });
+  const rep = await call('GET', '/api/report/2026-11-08');
+  assert.ok(!rep.text.includes('sk-ant-api03') && !rep.text.includes('/Users/someone'));
+  assert.ok(rep.json.markdown.startsWith('Lead\n'), 'line breaks are kept');
+});
+
+test('a run log over 16 MB answers its last page of lines, and a diff has home paths taken out but is otherwise raw', async () => {
+  const repo = repoOf();
+  const a = addAgent('a1', 'alpha', 'claude:sonnet');
+  const j = postJob(['**']);
+  const { run } = await makeRun(repo, j, a, (dir) => write(dir, 'a.txt', 'a\n'));
+  const runRoot = join(paths().runs, run.id);
+  const line = JSON.stringify({ at: 'x', kind: 'engine', text: 'z'.repeat(1000) + ' L' });
+  const n = Math.ceil((17 * 1024 * 1024) / (line.length + 1));
+  const lines: string[] = [];
+  for (let i = 0; i < n; i++) lines.push(i === n - 1 ? JSON.stringify({ at: 'x', kind: 'engine', text: 'the last line' }) : line);
+  writeFileSync(join(runRoot, 'log.jsonl'), lines.join('\n') + '\n');
+  const got = await call('GET', `/api/runs/${run.id}/log?since=0`);
+  assert.equal(got.status, 200);
+  assert.ok(got.json.length > 0 && got.json.length <= 2000);
+  assert.equal(got.json.at(-1).text, 'the last line');
+
+  writeFileSync(join(runRoot, 'diff.patch'), `+const home = "${process.env.HOME}/secret";\n+const sha = "0123456789abcdef0123456789abcdef01234567";\n`);
+  const d = await call('GET', `/api/runs/${run.id}/diff`);
+  assert.ok(!d.text.includes(String(process.env.HOME) + '/secret'));
+  assert.ok(d.text.includes('0123456789abcdef0123456789abcdef01234567'), 'code is otherwise raw');
 });

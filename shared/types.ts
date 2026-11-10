@@ -401,13 +401,13 @@ export type RunLogLine = {
 // ------------------------------------------------------- what the market routes answer
 
 /** A check with its log read inline (capped), never the path it was kept at. */
-export type CheckView = Omit<CheckResult, 'logPath'> & { logPath: null; log: string | null };
+export type CheckView = Omit<CheckResult, 'logPath'> & { log: string | null };
 
 /** An inspection as the API sends it: logs inline, shots as URLs, no path of this Mac. */
 export type InspectionView = Omit<Inspection, 'checks'> & { checks: CheckView[] };
 
-/** A run as the API sends it: the same run without its directory. */
-export type RunView = Run & { dir: null };
+/** A run as the API sends it: the same run without its directory (the key is absent, as in the event stream). */
+export type RunView = Omit<Run, 'dir'>;
 
 export interface LedgerRow {
   id: number;

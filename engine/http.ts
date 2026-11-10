@@ -14,7 +14,7 @@ export class HttpError extends Error {
 
 export function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...(status === 413 ? { connection: 'close' } : {}) });
   res.end(data);
 }
 
@@ -23,9 +23,18 @@ export function sendText(res: ServerResponse, status: number, text: string): voi
   res.end(text);
 }
 
+/** The most a request body may hold. */
+export const MAX_BODY_BYTES = 1024 * 1024;
+
 async function readBody(req: IncomingMessage): Promise<string> {
+  const tooBig = () => new HttpError(413, { error: `The request body is larger than ${MAX_BODY_BYTES} bytes.` });
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooBig();
   const chunks: Buffer[] = [];
+  let size = 0;
   for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_BODY_BYTES) throw tooBig();
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks).toString('utf8');

@@ -443,6 +443,7 @@ async function handleApi(
 
       if (action === 'resume' && method === 'POST') {
         if (!repoExists(fullName)) throw new HttpError(404, { error: 'unknown repo' });
+        if (!getRepo(fullName)?.halted) throw new HttpError(409, { error: 'the repo is not halted' });
         sendJson(res, 200, resumeRepo(fullName));
         return;
       }

@@ -9,6 +9,7 @@
  */
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 
 import { LEGAL_MOVES, MAX_ATTEMPTS } from '../../shared/market-rules.js';
@@ -117,8 +118,21 @@ function moving<T>(fn: () => T): T {
 
 // ------------------------------------------------------------------ views
 
+/**
+ * A diff is the repo's own code, which the page shows as it is: it is not
+ * run through redact() (that would cut long identifiers and hashes out of
+ * code). Only this Mac's home and data folders are taken out of it.
+ */
+function homePathsOut(text: string): string {
+  let s = text.split(homedir()).join('~');
+  const data = paths().runs.slice(0, -'/runs'.length);
+  if (data && data !== homedir()) s = s.split(data).join('[home]');
+  return s;
+}
+
 function publicRun(r: Run): RunView {
-  return { ...r, dir: null, summary: r.summary ? redact(r.summary) : r.summary, endedReason: r.endedReason ? redact(r.endedReason) : r.endedReason };
+  const { dir: _dir, ...rest } = r;
+  return { ...rest, summary: r.summary ? redact(r.summary) : r.summary, endedReason: r.endedReason ? redact(r.endedReason) : r.endedReason };
 }
 
 /** The real path of `p` when it is a file inside the runs folder, else null. */
@@ -154,7 +168,7 @@ function shotUrl(inspectionId: string, route: string, which: 'before' | 'after')
 }
 
 export function inspectionView(i: Inspection, withLogs: boolean): InspectionView {
-  const checks: CheckView[] = i.checks.map((c) => ({ ...c, detail: redact(c.detail), logPath: null, log: withLogs ? readLog(c.logPath) : null }));
+  const checks: CheckView[] = i.checks.map(({ logPath, ...c }) => ({ ...c, detail: redact(c.detail), log: withLogs ? readLog(logPath) : null }));
   const design = i.design
     ? {
         ...i.design,
@@ -293,9 +307,25 @@ function logLines(runId: string, sinceRaw: string | null): RunLogLine[] {
     since = Number(sinceRaw);
   }
   const file = join(paths().runs, runId, 'log.jsonl');
-  if (!existsSync(file) || statSync(file).size > LOG_FILE_CAP) return [];
-  const raw = readFileSync(file, 'utf8').split('\n').filter((l) => l.trim() !== '');
-  return raw.slice(since, since + LOG_PAGE).map((l): RunLogLine => {
+  if (!existsSync(file)) return [];
+  const size = statSync(file).size;
+  let raw: string[];
+  let from = since;
+  if (size > LOG_FILE_CAP) {
+    // Too big to page from the start: the newest page of lines, from the tail of the file.
+    const buf = Buffer.alloc(LOG_FILE_CAP);
+    const fd = openSync(file, 'r');
+    try {
+      readSync(fd, buf, 0, LOG_FILE_CAP, size - LOG_FILE_CAP);
+    } finally {
+      closeSync(fd);
+    }
+    raw = buf.toString('utf8').split('\n').slice(1).filter((l) => l.trim() !== '');
+    from = Math.max(0, raw.length - LOG_PAGE);
+  } else {
+    raw = readFileSync(file, 'utf8').split('\n').filter((l) => l.trim() !== '');
+  }
+  return raw.slice(from, from + LOG_PAGE).map((l): RunLogLine => {
     try {
       const o = JSON.parse(l) as RunLogLine;
       return { at: String(o.at), kind: o.kind, text: redact(String(o.text ?? '')), ...(o.data === undefined ? {} : { data: scrub(o.data) }) };
@@ -346,8 +376,9 @@ export async function handleMarketApi(
   search: URLSearchParams,
   opts: MarketApiOptions = {},
 ): Promise<boolean> {
+  // Everything that reaches the page passes the same redaction as the event stream.
   const send = (status: number, body: unknown): true => {
-    sendJson(res, status, body);
+    sendJson(res, status, scrub(body));
     return true;
   };
   let m: RegExpMatchArray | null;
@@ -425,7 +456,7 @@ export async function handleMarketApi(
     const r = mustRun(m[1]);
     const file = join(paths().runs, r.id, 'diff.patch');
     if (!existsSync(file)) throw new HttpError(404, { error: 'this run has no diff' });
-    sendText(res, 200, readFileSync(file, 'utf8').slice(0, DIFF_CAP));
+    sendText(res, 200, homePathsOut(readFileSync(file, 'utf8').slice(0, DIFF_CAP)));
     return true;
   }
   if ((m = pathname.match(/^\/api\/runs\/([^/]+)\/kill$/)) && method === 'POST') {
