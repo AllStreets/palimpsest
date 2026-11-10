@@ -34,10 +34,11 @@ import { getSpawner, type Spawned } from '../exec.js';
 import { home as dataHomeDir, paths } from '../home.js';
 import { storedCalibration } from '../usage.js';
 import { brokerMcpServer, enginePort, guardHookCommand, protectPids, reapRun, runQuiet } from './broker.js';
-import { CLAUDE_HOSTS, startEgress } from './egress.js';
+import { CLAUDE_HOSTS, isAnthropicHost, refusedHosts, startEgress } from './egress.js';
+import { record } from '../ledger.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
 import type { JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
-import { detectToolchains, proxyUrl, realish, SYSTEM_PATH, wrap, type CliProfileInput } from './sandbox.js';
+import { CLAUDE_TMP, detectToolchains, proxyUrl, realish, SYSTEM_PATH, wrap, type CliProfileInput } from './sandbox.js';
 import { controlFiles } from './worktree.js';
 
 /* ------------------------------------------------------------------ */
@@ -187,7 +188,7 @@ function shellLine(argv: string[]): string {
 
 /**
  * The claude child's whole environment (nothing else is inherited): his
- * real home and user name (his login lives there), the system path, the run's tmp (as
+ * real home and user name (his login lives there), the system path, the run's ctmp (as
  * TMPDIR and as claude's own CLAUDE_CODE_TMPDIR), the run's egress proxy
  * and two of claude's own switches.
  */
@@ -200,9 +201,10 @@ function claudeEnv(runRoot: string, proxyPort: number, proxyToken: string): Reco
     USER: user,
     LOGNAME: user,
     PATH: SYSTEM_PATH.join(':'),
-    TMPDIR: join(realish(runRoot), 'tmp') + '/',
-    // claude makes `claude-<uid>` under this (default /tmp, outside the CLI profile; Task 11 smoke run)
-    CLAUDE_CODE_TMPDIR: join(realish(runRoot), 'tmp'),
+    // claude's own temp dir, which no tool child can read or write; claude makes `claude-<uid>`
+    // under CLAUDE_CODE_TMPDIR (default /tmp, outside the CLI profile; Task 11 smoke run)
+    TMPDIR: join(realish(runRoot), CLAUDE_TMP) + '/',
+    CLAUDE_CODE_TMPDIR: join(realish(runRoot), CLAUDE_TMP),
     HTTPS_PROXY: proxy,
     HTTP_PROXY: proxy,
     NO_PROXY: '127.0.0.1,localhost',
@@ -658,6 +660,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     if (brokerPort === null) return crash('the broker is not running');
     if (proxyPort === null || proxyToken === null) return crash('the egress proxy is not running');
     if (settingSources === 'local' && existsSync(join(i.dir, '.claude', 'settings.local.json'))) return crash('the clone carries .claude/settings.local.json');
+    mkdirSync(join(runRoot, CLAUDE_TMP), { recursive: true });
 
     const claudeBin = bin();
     const system = systemPrompt(i.persona, i.agent.instructions);
@@ -721,6 +724,19 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
       tokensPerPct: tokensPerPct(),
       killAfterMs,
     });
+    // A login refused because his refresh host is not allowed is the city's fault, not the firm's:
+    // the run ends crashed without spending an attempt, and the ledger says which host (Task 11).
+    const refusedLogin = refusedHosts(i.runId).find(isAnthropicHost);
+    if (refusedLogin && out.ended !== 'finished') {
+      const note = `login refresh host refused: ${refusedLogin}`;
+      i.log({ at: now(), kind: 'engine', text: note });
+      try {
+        record('run.note', { runId: i.runId, note });
+      } catch {
+        // the run's result carries the reason either way
+      }
+      return { summary: out.text, usage: out.usage, ended: 'crashed' as const, reason: note, spendsAttempt: false as const };
+    }
     return { summary: out.text, usage: out.usage, ended: out.ended, reason: out.reason };
   }
 
@@ -739,7 +755,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     };
     let egress: Awaited<ReturnType<typeof startEgress>> | null = null;
     try {
-      for (const d of ['work', 'tmp', 'ctl']) mkdirSync(join(root, d), { recursive: true });
+      for (const d of ['work', 'tmp', CLAUDE_TMP, 'ctl']) mkdirSync(join(root, d), { recursive: true });
       egress = await startEgress(runId, log);
       egress.setStage('working', [...CLAUDE_HOSTS]);
       const ctl = join(root, 'ctl');

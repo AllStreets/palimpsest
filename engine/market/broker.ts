@@ -21,7 +21,7 @@ import { record } from '../ledger.js';
 import { forbidden } from './guard.js';
 import type { RunLogLine } from './provider.js';
 import { noteLiveGroup, reapRun } from './reaper.js';
-import { childEnv, detectToolchains, realish, registerRunPorts, unregisterRunPorts, wrap, type ProfileInput } from './sandbox.js';
+import { childEnv, detectToolchains, liveRunPorts, realish, registerRunPorts, unregisterRunPorts, wrap, type ProfileInput } from './sandbox.js';
 
 /** The longest a single agent command may run. A request above it is cut to it. */
 export const MAX_TOOL_MS = 15 * 60_000;
@@ -341,7 +341,8 @@ export async function execTool(o: ExecToolInput): Promise<ToolResult> {
   if (typeof o.command !== 'string' || o.command.length > MAX_COMMAND_CHARS) return refuse(o, String(o.command).slice(0, 200), 'The command is too long or not text.');
   const ctx = contextProblem(o.runRoot, o.dir);
   if (ctx) return refuse(o, o.command, ctx);
-  const reason = forbidden(o.command, o.dir, dataHomeDir());
+  // The engine's own port and every other live run's proxy and broker, beside 4770 and 11434.
+  const reason = forbidden(o.command, o.dir, dataHomeDir(), [enginePort(), ...liveRunPorts(o.runId)]);
   if (reason) return refuse(o, o.command, reason);
 
   o.log({ at: now(), kind: 'tool', text: `$ ${o.command}`, data: { stage: o.stage, timeoutMs } });

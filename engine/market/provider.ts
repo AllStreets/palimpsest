@@ -55,7 +55,13 @@ export interface JudgeInput {
 export interface Provider {
   kind: 'claude' | 'ollama' | 'anthropic' | 'fake';
   plan(i: PlanInput, signal: AbortSignal): Promise<{ plan: string; price: number; confidence: number; usage: Usage }>;
-  work(i: WorkInput): Promise<{ summary: string; usage: Usage; ended: 'finished' | 'capped' | 'aborted' | 'crashed'; reason: string | null }>;
+  /**
+   * `spendsAttempt: false` marks a run that failed for the city's reasons
+   * (a login refresh host the egress refused), so the job returns to the
+   * board without consuming an attempt (ruling 16; Task 11). Absent means
+   * the usual rule.
+   */
+  work(i: WorkInput): Promise<{ summary: string; usage: Usage; ended: 'finished' | 'capped' | 'aborted' | 'crashed'; reason: string | null; spendsAttempt?: false }>;
   review(i: ReviewInput, signal: AbortSignal): Promise<{ approve: boolean; notes: string; concerns: string[]; usage: Usage }>;
   judge(i: JudgeInput, signal: AbortSignal): Promise<{ before: number | null; after: number; notes: string; usage: Usage }>;
 }

@@ -456,10 +456,12 @@ export async function runSmoke(o: SmokeOptions = {}): Promise<SmokeReport> {
     }
     report.hookEvents = lines.filter((l) => l.kind === 'system' && /hook/i.test(l.text)).map((l) => clip(`${l.text} ${JSON.stringify(l.data)}`, 400));
     print('');
-    print(`hook: ${report.hookMarkers.length ? 'fired' : 'NOT FIRED'} (${report.hookMarkers.length} marker lines, ${report.hookEvents.length} hook events in the stream)`);
+    // Proof is claude's own stream (hook_response events); tmp/hook.log is a display aid that a tool child could forge.
+    const responses = lines.filter((l) => l.kind === 'system' && l.text === 'hook_response').length;
+    print(`hook: ${responses ? 'fired' : 'NOT FIRED'} (${responses} hook_response events in claude's stream; ${report.hookMarkers.length} display marker lines)`);
     for (const m of report.hookMarkers) print(`  marker ${m}`);
     for (const e of report.hookEvents.slice(0, 12)) print(`  event ${e}`);
-    if (!report.hookMarkers.length) failures.push('the hook marker is missing: the PreToolUse hook never ran');
+    if (!responses) failures.push('no hook_response event in the stream: the PreToolUse hook never ran');
 
     // Egress
     report.egress = lines.filter((l) => l.kind === 'egress').map((l) => l.text);

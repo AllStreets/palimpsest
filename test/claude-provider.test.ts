@@ -4,6 +4,7 @@
  * claude binary named in the argv is a stub that is never executed.
  */
 import assert from 'node:assert/strict';
+import { request as httpRequest } from 'node:http';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +15,8 @@ import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from '../engine/market/gua
 import { BUILTIN_PLUGINS, CALL_DENY, CLAUDE_SANDBOX, HOOK_MATCHER, KILL_AFTER_MS, claudeProvider, type ClaudeOptions } from '../engine/market/claude.js';
 import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
+import { startEgress } from '../engine/market/egress.js';
+import { entries } from '../engine/ledger.js';
 import { protectedPidsOf } from '../engine/market/reaper.js';
 import { SANDBOX_EXEC } from '../engine/market/sandbox.js';
 import { weightedTokens, claudeCredits } from '../shared/credits.js';
@@ -349,9 +352,9 @@ describe('work', () => {
     assert.equal(env.MCP_TOOL_TIMEOUT, '900000');
     assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
     assert.equal(env.NO_PROXY, '127.0.0.1,localhost');
-    assert.equal(realpathSync(env.TMPDIR), realpathSync(join(run.runRoot, 'tmp')));
-    // claude makes its own temp dir under CLAUDE_CODE_TMPDIR (default /tmp, which the CLI profile denies; Task 11)
-    assert.equal(realpathSync(env.CLAUDE_CODE_TMPDIR), realpathSync(join(run.runRoot, 'tmp')));
+    // claude has its own temp dir, ctmp, which no tool child can write (Task 11)
+    assert.equal(realpathSync(env.TMPDIR), realpathSync(join(run.runRoot, 'ctmp')));
+    assert.equal(realpathSync(env.CLAUDE_CODE_TMPDIR), realpathSync(join(run.runRoot, 'ctmp')));
     assert.match(env.HTTPS_PROXY, /^http:\/\/palimpsest:egress-token-1@127\.0\.0\.1:50102$/);
     assert.equal(env.HTTP_PROXY, env.HTTPS_PROXY);
   });
@@ -424,6 +427,59 @@ describe('work', () => {
     const off = fake(happyWork());
     await provider({ nestedSandbox: false }).p.work(workInput({ runId: 'run-2' }).input);
     assert.equal(JSON.parse(off.calls[0].seen['settings.json']!).sandbox, undefined);
+  });
+
+  test('a login refused because a refresh host is not allowed ends crashed, spends no attempt and leaves a ledger note (Task 11 minors)', async () => {
+    const { input, run } = workInput();
+    const egressLog: RunLogLine[] = [];
+    const egress = await startEgress(run.runId, (l) => egressLog.push(l));
+    try {
+      egress.setStage('working', ['api.anthropic.com']);
+      // claude tries to refresh his login at a host the run does not allow
+      const status = await new Promise<number>((resolve) => {
+        const req = httpRequest({ host: '127.0.0.1', port: egress.port, method: 'CONNECT', path: 'platform.claude.com:443', headers: { 'proxy-authorization': `Basic ${Buffer.from(`palimpsest:${egress.token}`).toString('base64')}` } });
+        req.on('connect', (res, socket) => {
+          socket.destroy();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on('response', (res) => resolve(res.statusCode ?? 0));
+        req.on('error', () => resolve(0));
+        req.end();
+      });
+      assert.equal(status, 403);
+      fake([init(), assistant('m1', [{ type: 'text', text: 'Not logged in · Please run /login' }]), result({ is_error: true, result: 'Not logged in · Please run /login' })]);
+      const out = await provider().p.work(input);
+      assert.equal(out.ended, 'crashed');
+      assert.equal(out.reason, 'login refresh host refused: platform.claude.com');
+      assert.equal(out.spendsAttempt, false);
+      const notes = entries().filter((e) => e.kind === 'run.note');
+      assert.equal(notes.length, 1);
+      assert.deepEqual(notes[0].data, { runId: run.runId, note: 'login refresh host refused: platform.claude.com' });
+    } finally {
+      await egress.close();
+    }
+  });
+
+  test('a refused host that is not Anthropic, or a run that finishes, leaves the result as it was', async () => {
+    const { input, run } = workInput();
+    const egress = await startEgress(run.runId, () => {});
+    try {
+      egress.setStage('working', ['api.anthropic.com']);
+      await new Promise<void>((resolve) => {
+        const req = httpRequest({ host: '127.0.0.1', port: egress.port, method: 'CONNECT', path: 'evil.example:443', headers: { 'proxy-authorization': `Basic ${Buffer.from(`palimpsest:${egress.token}`).toString('base64')}` } });
+        req.on('connect', (_r, socket) => (socket.destroy(), resolve()));
+        req.on('response', () => resolve());
+        req.on('error', () => resolve());
+        req.end();
+      });
+      fake(happyWork());
+      const out = await provider().p.work(input);
+      assert.equal(out.ended, 'finished');
+      assert.equal(out.spendsAttempt, undefined);
+      assert.deepEqual(entries().filter((e) => e.kind === 'run.note'), []);
+    } finally {
+      await egress.close();
+    }
   });
 
   test('usage parses from the result line into weighted credits', async () => {
@@ -707,12 +763,12 @@ describe('plan and review', () => {
       assert.ok(profile.includes(`(allow file-write* (subpath "${join(root, 'work')}")`), 'writes go to the work dir');
       const writes = profile.split('\n').filter((l) => l.startsWith('(allow file-write*'));
       assert.ok(!writes.some((l) => l.includes(join(root, 'repo'))), 'a scratch profile writes no repo');
-      assert.ok(writes.every((l) => !l.includes(root) || l.includes(join(root, 'work')) || l.includes(join(root, 'tmp'))));
+      assert.ok(writes.every((l) => !l.includes(root) || l.includes(join(root, 'work')) || l.includes(join(root, 'tmp')) || l.includes(join(root, 'ctmp'))));
       const egressPort = JSON.parse(c.seen['egress.json']!).port as number;
       assert.match(profile, new RegExp(`allow network-outbound \\(remote ip "localhost:${egressPort}"\\)\\)\\n`));
     }
     const env = c.opts.env ?? {};
-    assert.equal(env.TMPDIR, join(root, 'tmp') + '/');
+    assert.equal(env.TMPDIR, join(root, 'ctmp') + '/');
     assert.match(env.HTTPS_PROXY, /^http:\/\/palimpsest:[0-9a-f]+@127\.0\.0\.1:\d+$/);
     assert.ok(!existsSync(root), 'the scratch root is removed when the call ends');
     assert.deepEqual(reaps, [{ root: realpathSync(join(tempDir, 'data', 'runs')) + '/' + root.split('/').pop(), existed: true }], 'the reaper ran on the scratch root before it was removed');

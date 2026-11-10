@@ -46,10 +46,11 @@ let markerTool = null;
 
 /**
  * Appends one marker line to `<runRoot>/tmp/hook.log` (the run dir is
- * `<runRoot>/repo`, `ship` or `base`), so the engine can show that the hook
- * ran and what it decided. Best effort and never followed through a
- * symlink or blocked on a FIFO: a marker that cannot be written changes no
- * decision.
+ * `<runRoot>/repo`, `ship` or `base`). A display aid only: tmp is writable
+ * by the run's tool children, so the file can be forged or erased. The
+ * proof that the hook ran is claude's own `--include-hook-events` stream in
+ * the run log. Best effort and never followed through a symlink or blocked
+ * on a FIFO: a marker that cannot be written changes no decision.
  */
 function mark(decision, reason) {
   try {

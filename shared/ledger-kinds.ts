@@ -48,6 +48,7 @@ export const LEDGER_KINDS = [
   'report.written',
   'api.key.set',
   'api.key.removed',
+  'run.note',
 ] as const;
 
 export type LedgerKind = (typeof LEDGER_KINDS)[number];

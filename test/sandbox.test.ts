@@ -93,6 +93,15 @@ describe('profile text', () => {
     }
   });
 
+  test('ctmp is the CLI profile\'s alone: written by the CLI profile, denied by name in the tool profile', () => {
+    const t = toolProfile(input);
+    assert.ok(lineAt(t, '(deny file-read* file-write*', `(subpath "${ROOT}/ctmp")`) > lineAt(t, '(allow file-write*'));
+    assert.ok(!/\(allow file-[^\n]*\/ctmp"/.test(t));
+    const c = cliProfile(cliInput);
+    assert.ok(lineAt(c, '(allow file-write*', `(subpath "${ROOT}/ctmp")`) >= 0);
+    assert.ok(lineAt(c, '(allow file-read*', `(subpath "${ROOT}/ctmp")`) >= 0);
+  });
+
   test("tool profile denies writes under the repo's .git", () => {
     const p = toolProfile(input);
     const allow = lineAt(p, '(allow file-write*', `(subpath "${ROOT}/repo")`);
@@ -344,7 +353,7 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     home = join(t, 'home');
     data = join(home, 'Library', 'Application Support', 'Palimpsest');
     runRoot = join(data, 'runs', 'run-1');
-    for (const d of ['repo/.git/hooks', 'tmp', 'home', 'cache', 'ctl', 'ship/.git', 'base/.git']) mkdirSync(join(runRoot, d), { recursive: true });
+    for (const d of ['repo/.git/hooks', 'tmp', 'ctmp', 'home', 'cache', 'ctl', 'ship/.git', 'base/.git']) mkdirSync(join(runRoot, d), { recursive: true });
     writeFileSync(join(runRoot, 'repo', 'file.txt'), 'inside\n');
     writeFileSync(join(runRoot, 'repo', '.git', 'config'), '[core]\n');
     writeFileSync(join(runRoot, 'ctl', 'gitconfig'), '');
@@ -379,6 +388,14 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     assert.equal(readFileSync(join(runRoot, 'ctl', 'gitconfig'), 'utf8'), '');
     const ok = await tool(`echo y > '${runRoot}/repo/y.txt' && echo z > '${runRoot}/tmp/z' && echo w > '${runRoot}/cache/w'`);
     assert.equal(ok.code, 0, ok.stderr);
+  });
+
+  test("claude's own temp dir (ctmp) is neither writable nor readable by a tool child (Task 11 minors)", async () => {
+    writeFileSync(join(runRoot, 'ctmp', 'claude-state'), 'claude\n');
+    const r = await tool(`echo x > '${runRoot}/ctmp/planted'; cat '${runRoot}/ctmp/claude-state'`);
+    assert.match(r.stderr, /Operation not permitted/);
+    assert.ok(!existsSync(join(runRoot, 'ctmp', 'planted')));
+    assert.ok(!r.stdout.includes('claude'));
   });
 
   test('a read of a file under the run root succeeds although the home is denied', async () => {
@@ -538,7 +555,7 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     const tryRead = (p: string) => `try{require('fs').readFileSync(${JSON.stringify(p)});console.log('read ${p}')}catch(e){console.log('denied ${p}')}`;
 
     test('writes reach the runtime paths and ~/.claude.json but never settings, projects or the .git', async () => {
-      const allowed = [join(home, '.claude', 'debug', 'log.txt'), join(home, '.claude', 'todos', 't.json'), join(runRoot, 'repo', 'a.txt')];
+      const allowed = [join(home, '.claude', 'debug', 'log.txt'), join(home, '.claude', 'todos', 't.json'), join(runRoot, 'repo', 'a.txt'), join(runRoot, 'ctmp', 'claude-501')];
       const denied = [
         join(home, '.claude', 'shell-snapshots', 'snapshot-zsh-1.sh'),
         join(home, '.claude', 'session-env', 'env.sh'),

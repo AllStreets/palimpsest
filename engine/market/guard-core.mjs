@@ -29,6 +29,7 @@ export const FORBIDDEN_REASONS = Object.freeze({
   pipeShell: 'A download is never piped into a shell.',
   gitDir: "The repository's .git directory is not writable.",
   credentials: 'Commands may not name credential files or Claude configuration.',
+  reservedPort: 'Commands may not reach the engine, Ollama or another run on loopback.',
   unreadable: 'The guard could not read this command.',
   pathOutside: 'The path is outside the repository.',
   pathGit: "The path is inside the repository's .git directory.",
@@ -352,18 +353,37 @@ function scanGitAnywhere(toks) {
 /**
  * The reason `command` must not run in a city run, or null.
  * `dir` is the run's repository (from the run context, never the request)
- * and `dataHome` the Palimpsest data home.
+ * and `dataHome` the Palimpsest data home. `ports` are further loopback
+ * ports to refuse beside the engine's 4770 and Ollama's 11434: the engine
+ * passes its own port and every other live run's proxy and broker.
  */
-export function forbidden(command, dir, dataHome) {
+export function forbidden(command, dir, dataHome, ports = []) {
   try {
-    return check(command, dir, dataHome);
+    return check(command, dir, dataHome, ports);
   } catch {
     return R.unreadable;
   }
 }
 
-function check(command, dir, dataHome) {
+/** The engine's port and Ollama's: no agent command may name either next to a loopback host. */
+export const RESERVED_PORTS = Object.freeze([4770, 11434]);
+
+/**
+ * A loopback host form (localhost, 127.x.y.z, 0.0.0.0, [::1], ::ffff:127.x)
+ * followed by a port: `host:port`, `host port`, `host', port: N` and the like.
+ */
+const LOOPBACK_PORT = /(?:\blocalhost|\b127(?:\.\d{1,3}){1,3}|\b0\.0\.0\.0|\[?::1\]?|\[?::ffff:127(?:\.\d{1,3}){1,3}\]?)\]?['"`]?\s*(?:[:\s,]|,\s*port\s*[:=])\s*(?:port\s*[:=]\s*)?['"`]?(\d{1,5})(?!\d)/gi;
+
+/** True when `flat` names one of `ports` next to a loopback host form. */
+function namesReservedPort(flat, ports) {
+  const reserved = new Set([...RESERVED_PORTS, ...ports.filter((p) => Number.isInteger(p))]);
+  for (const m of flat.matchAll(LOOPBACK_PORT)) if (reserved.has(Number(m[1]))) return true;
+  return false;
+}
+
+function check(command, dir, dataHome, ports) {
   if (typeof command !== 'string' || typeof dir !== 'string' || typeof dataHome !== 'string') return R.unreadable;
+  if (!Array.isArray(ports)) return R.unreadable;
   if (command.includes('\0') || command.length > 256 * 1024) return R.unreadable;
   const home = homedir();
   const dirAbs = resolve(dir);
@@ -373,6 +393,9 @@ function check(command, dir, dataHome) {
   // Named credential files, anywhere in the text.
   for (const re of NAMED_SECRETS) if (re.test(flat)) return R.credentials;
   if (/(~[^/\s]*|\$home)\/+\.claude\b/i.test(flat) || lower(flat).includes(lower(join(home, '.claude')))) return R.credentials;
+
+  // The engine, Ollama or another live run, named on loopback.
+  if (namesReservedPort(flat, ports) || namesReservedPort(command, ports)) return R.reservedPort;
 
   // A download piped or substituted into a shell or an interpreter.
   if (/\b(curl|wget)\b[^\n;&]*\|\s*(\S*\/)?(sudo\s+|env\s+)?(\S*\/)?(sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|perl|ruby)\b/i.test(flat)) return R.pipeShell;

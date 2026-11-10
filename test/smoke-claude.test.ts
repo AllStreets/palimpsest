@@ -153,6 +153,14 @@ describe('smoke run reading', () => {
     assert.ok(report.failures.some((f) => /hook/.test(f)), 'a run whose hook never fired fails');
   });
 
+  test("the proof the hook ran is claude's hook_response event, not the display marker file", async () => {
+    process.env.PALIMPSEST_SMOKE = '1';
+    fakeClaude([GOOD_INIT, { type: 'system', subtype: 'hook_response', hook_name: 'PreToolUse:Read', exit_code: 0, outcome: 'success' }]);
+    const report = await runSmoke({ claudeBin, attacks: false, kernelLog: false, quiet: async () => {}, print: () => {} });
+    assert.ok(!report.failures.some((f) => /hook/.test(f)), report.failures.join('\n'));
+    assert.deepEqual(report.hookMarkers, [], 'no marker file was written, and none is needed');
+  });
+
   test('--nested-sandbox writes the nested sandbox settings', async () => {
     process.env.PALIMPSEST_SMOKE = '1';
     let settings = '';

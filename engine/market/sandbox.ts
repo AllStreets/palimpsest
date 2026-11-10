@@ -103,6 +103,14 @@ export const CLAUDE_WRITE_DENIED = [
   'statsig',
 ] as const;
 
+/**
+ * claude's own temp dir in a run root (TMPDIR and CLAUDE_CODE_TMPDIR of the
+ * claude process): readable and writable by the CLI profile, denied by name
+ * to the tool profile, so no agent command can plant or read claude's temp
+ * files (Task 11).
+ */
+export const CLAUDE_TMP = 'ctmp';
+
 /** Run root subdirectories the tool profile may read. */
 const RUN_READ = ['repo', 'ship', 'base', 'tmp', 'home', 'cache', 'ctl'] as const;
 /** Clones under the run root whose `.git` no sandboxed child may write. */
@@ -358,6 +366,8 @@ export function toolProfile(o: ProfileInput): string {
   lines.push("; no clone's .git is writable, after the allow");
   lines.push(cloneGitDenies(r, RUN_CLONES));
   lines.push(`(deny file-write* ${sub(join(r.runRoot, 'ctl'))})`);
+  lines.push(`; claude's own temp dir is the CLI profile's alone`);
+  lines.push(`(deny file-read* file-write* ${sub(join(r.runRoot, CLAUDE_TMP))})`);
   lines.push('');
 
   lines.push(...secretDenies(r, [...SECRET_PATHS, ...CLAUDE_SECRET_PATHS]));
@@ -423,6 +433,7 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push(`(allow file-read-metadata ${lit(claudeDir)})`);
   lines.push(`(allow file-read* ${lit(SH_SELECT)})`);
   if (!isRepo) lines.push(`(allow file-read* ${sub(work)})`);
+  lines.push(`(allow file-read* ${sub(join(r.runRoot, CLAUDE_TMP))})`);
   lines.push('');
   lines.push('; his login: claude runs `security find-generic-password`, which reads the login keychain and its search list (Task 11)');
   lines.push(`(allow file-read* ${sub(join(r.home, KEYCHAINS))} ${sub(MDS_DIR)} ${lit(join(r.home, SECURITY_PREFS))})`);
@@ -430,7 +441,7 @@ export function cliProfile(o: CliProfileInput): string {
   lines.push('');
 
   lines.push(`; writes: the ${isRepo ? 'repo' : 'work dir'}, tmp and the runtime paths (never ~/.claude.json)`);
-  lines.push(`(allow file-write* ${sub(work)} ${sub(join(r.runRoot, 'tmp'))} ${runtime.map(sub).join(' ')})`);
+  lines.push(`(allow file-write* ${sub(work)} ${sub(join(r.runRoot, 'tmp'))} ${sub(join(r.runRoot, CLAUDE_TMP))} ${runtime.map(sub).join(' ')})`);
   lines.push(...devWrites());
   lines.push(isRepo ? cloneGitDenies(r, ['repo']) : `(deny file-write* ${lit(work)} ${sub(join(work, '.git'))})`);
   lines.push(`(deny file-write* ${sub(join(r.runRoot, 'ctl'))})`);

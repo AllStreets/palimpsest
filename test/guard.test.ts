@@ -111,6 +111,29 @@ describe('forbidden', () => {
     }
   });
 
+  test('refuses commands that name the engine, Ollama or a live run port next to a loopback host (Task 11 minors)', () => {
+    const refused = [
+      'curl -X POST http://127.0.0.1:4770/api/stop',
+      'curl localhost:4770',
+      'curl http://0.0.0.0:4770/x',
+      'curl "http://[::1]:4770/"',
+      'curl http://[::ffff:127.0.0.1]:4770/',
+      'nc 127.0.0.1 4770',
+      'nc localhost 11434',
+      'curl http://127.1.2.3:11434/api/tags',
+      "node -e \"require('http').get({host:'127.0.0.1', port: 4770})\"",
+      'curl http://LOCALHOST:11434',
+    ];
+    for (const c of refused) assert.equal(forbidden(c, dir, dataHome), FORBIDDEN_REASONS.reservedPort, c);
+    // a live run's port, passed by the engine from its registry
+    assert.equal(forbidden('curl http://127.0.0.1:50123/run', dir, dataHome, [50123]), FORBIDDEN_REASONS.reservedPort);
+    assert.equal(forbidden('curl http://127.0.0.1:50123/run', dir, dataHome), null, 'not reserved unless the engine names it');
+    // ordinary loopback work and numbers elsewhere stay allowed
+    for (const c of ['curl http://127.0.0.1:3000/health', 'npm test -- --port 4771', 'echo 4770', 'curl localhost:47700', 'curl https://example.com:4770']) {
+      assert.equal(forbidden(c, dir, dataHome), null, c);
+    }
+  });
+
   test('allows ordinary work inside the repo', () => {
     for (const cmd of ALLOWED) {
       assert.equal(forbidden(cmd, dir, dataHome), null, `expected no refusal for: ${cmd}`);

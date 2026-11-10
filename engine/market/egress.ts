@@ -18,6 +18,20 @@ import { registerRunPorts, unregisterRunPorts } from './sandbox.js';
 
 export type EgressStage = 'install' | 'working' | 'checks';
 
+/** True for a host Anthropic owns (its API, claude.ai, claude.com and their subdomains): a refusal of one during a Claude run is a login problem, not the agent's. */
+export function isAnthropicHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  return ['anthropic.com', 'claude.ai', 'claude.com'].some((d) => h === d || h.endsWith('.' + d));
+}
+
+/** Hosts each run's proxy refused for not being listed, by run id, since its proxy started. */
+const refused = new Map<string, string[]>();
+
+/** The hosts this run's proxy refused because its stage did not list them, in order, without repeats. */
+export function refusedHosts(runId: string): string[] {
+  return [...(refused.get(runId) ?? [])];
+}
+
 /**
  * The hosts a Claude run needs. The Task 11 smoke run on his login (claude
  * 2.1.319, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1) made CONNECTs to
@@ -129,6 +143,7 @@ export async function startEgress(runId: string, log: (line: RunLogLine) => void
   writeFileSync(tokenPath, token, { mode: 0o400 });
   chmodSync(tokenPath, 0o400);
 
+  refused.set(runId, []);
   let stage: EgressStage = 'checks';
   let allowed: string[] = [];
   const sockets = new Set<Socket | Duplex>();
@@ -142,6 +157,13 @@ export async function startEgress(runId: string, log: (line: RunLogLine) => void
       text: `${allowedNow ? 'allowed' : 'refused'} ${method} ${host}:${port} (${stage}${allowedNow ? '' : `, ${reason}`})`,
       data: { allowed: allowedNow, method, host, port, stage, reason },
     });
+  };
+
+  const noteRefused = (host: string) => {
+    const list = refused.get(runId) ?? [];
+    const h = host.toLowerCase();
+    if (!list.includes(h) && list.length < 100) list.push(h);
+    refused.set(runId, list);
   };
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -167,6 +189,7 @@ export async function startEgress(runId: string, log: (line: RunLogLine) => void
       return;
     }
     if (!hostAllowed(host, allowed)) {
+      noteRefused(host);
       note(false, req.method ?? 'GET', host, port, 'host not allowed in this stage');
       res.writeHead(403).end('host not allowed in this stage\n');
       return;
@@ -211,6 +234,7 @@ export async function startEgress(runId: string, log: (line: RunLogLine) => void
       return;
     }
     if (!hostAllowed(target.host, allowed)) {
+      noteRefused(target.host);
       note(false, 'CONNECT', target.host, target.port, 'host not allowed in this stage');
       client.end('HTTP/1.1 403 Forbidden\r\n\r\n');
       return;

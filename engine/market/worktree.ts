@@ -197,7 +197,7 @@ export async function createRunDir(repo: Repo, runId: string, branch: string): P
   const runRoot = join(paths().runs, runId);
   const dir = join(runRoot, 'repo');
   if (existsSync(dir)) throw new Error(`run dir already exists: ${dir}`);
-  for (const d of ['tmp', 'home', 'cache', 'ctl']) mkdirSync(join(runRoot, d), { recursive: true });
+  for (const d of ['tmp', 'ctmp', 'home', 'cache', 'ctl']) mkdirSync(join(runRoot, d), { recursive: true });
   const ctl = controlFiles(runId);
   for (const f of [ctl.gitconfig, ctl.npmrc]) {
     rmSync(f, { force: true });
