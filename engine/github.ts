@@ -172,3 +172,77 @@ export async function mergedPRs(fullName: string): Promise<PR[]> {
     headRefName: row.headRefName ?? '',
   }));
 }
+
+/** An open issue as the market reads it: labels and author flattened to names. */
+export interface Issue {
+  number: number;
+  title: string;
+  body: string;
+  labels: string[];
+  url: string;
+  author: string;
+  updatedAt: string;
+}
+
+interface IssueRow {
+  number: number;
+  title: string;
+  body: string | null;
+  labels: Array<{ name: string }> | null;
+  url: string;
+  author: { login: string } | null;
+  updatedAt: string;
+}
+
+/**
+ * Open issues carrying one label. gh ANDs repeated `--label` flags, so the
+ * market asks once per tier label and merges the lists itself (ruling 3).
+ */
+export async function openIssues(fullName: string, label: string): Promise<Issue[]> {
+  const result = await runGh([
+    'issue',
+    'list',
+    '-R',
+    fullName,
+    '--label',
+    label,
+    '--state',
+    'open',
+    '--limit',
+    '200',
+    '--json',
+    'number,title,body,labels,url,author,updatedAt',
+  ]);
+  const rows = JSON.parse(result.stdout) as IssueRow[];
+  return rows.map((row) => ({
+    number: row.number,
+    title: row.title,
+    body: row.body ?? '',
+    labels: (row.labels ?? []).map((l) => l.name),
+    url: row.url,
+    author: row.author?.login ?? '',
+    updatedAt: row.updatedAt,
+  }));
+}
+
+/** Whether one issue is open or closed. */
+export async function issueState(fullName: string, number: number): Promise<'OPEN' | 'CLOSED'> {
+  const result = await runGh(['issue', 'view', String(number), '-R', fullName, '--json', 'state']);
+  const { state } = JSON.parse(result.stdout) as { state: string };
+  return state === 'CLOSED' ? 'CLOSED' : 'OPEN';
+}
+
+/** Adds a label to an issue. */
+export async function addLabel(fullName: string, number: number, label: string): Promise<void> {
+  await runGh(['issue', 'edit', String(number), '-R', fullName, '--add-label', label]);
+}
+
+/** Removes a label from an issue. */
+export async function removeLabel(fullName: string, number: number, label: string): Promise<void> {
+  await runGh(['issue', 'edit', String(number), '-R', fullName, '--remove-label', label]);
+}
+
+/** Posts a comment on an issue. */
+export async function commentIssue(fullName: string, number: number, body: string): Promise<void> {
+  await runGh(['issue', 'comment', String(number), '-R', fullName, '--body', body]);
+}

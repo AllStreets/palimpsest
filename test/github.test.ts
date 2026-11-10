@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
 import { realRunner, setRunner } from '../engine/exec.js';
-import { availableRepos, GhError, mergedPRs } from '../engine/github.js';
+import { addLabel, availableRepos, commentIssue, GhError, issueState, mergedPRs, openIssues, removeLabel } from '../engine/github.js';
 
 afterEach(() => {
   setRunner(realRunner);
@@ -168,4 +168,81 @@ test('GhError kind notfound when gh cannot resolve the repo', async () => {
     assert.equal(err.kind, 'notfound');
     return true;
   });
+});
+
+test('openIssues asks gh for one label, open issues only, and flattens labels and author', async () => {
+  const calls: string[][] = [];
+  setRunner(async (cmd, args) => {
+    assert.equal(cmd, 'gh');
+    calls.push(args);
+    const rows = [
+      {
+        number: 7,
+        title: 'Fix the header',
+        body: 'It wraps.',
+        labels: [{ name: 'palimpsest:high' }, { name: 'bug' }],
+        url: 'https://github.com/acme/widgets/issues/7',
+        author: { login: 'connor' },
+        updatedAt: '2026-11-09T10:00:00Z',
+      },
+    ];
+    return { stdout: JSON.stringify(rows), stderr: '', code: 0 };
+  });
+
+  const issues = await openIssues('acme/widgets', 'palimpsest:high');
+
+  assert.deepEqual(calls, [
+    [
+      'issue',
+      'list',
+      '-R',
+      'acme/widgets',
+      '--label',
+      'palimpsest:high',
+      '--state',
+      'open',
+      '--limit',
+      '200',
+      '--json',
+      'number,title,body,labels,url,author,updatedAt',
+    ],
+  ]);
+  assert.deepEqual(issues, [
+    {
+      number: 7,
+      title: 'Fix the header',
+      body: 'It wraps.',
+      labels: ['palimpsest:high', 'bug'],
+      url: 'https://github.com/acme/widgets/issues/7',
+      author: 'connor',
+      updatedAt: '2026-11-09T10:00:00Z',
+    },
+  ]);
+});
+
+test('issueState reads the state of one issue', async () => {
+  setRunner(async (cmd, args) => {
+    assert.equal(cmd, 'gh');
+    assert.deepEqual(args, ['issue', 'view', '12', '-R', 'acme/widgets', '--json', 'state']);
+    return { stdout: JSON.stringify({ state: 'CLOSED' }), stderr: '', code: 0 };
+  });
+  assert.equal(await issueState('acme/widgets', 12), 'CLOSED');
+});
+
+test('addLabel, removeLabel and commentIssue go through gh issue edit and gh issue comment', async () => {
+  const calls: string[][] = [];
+  setRunner(async (_cmd, args) => {
+    calls.push(args);
+    return { stdout: '', stderr: '', code: 0 };
+  });
+
+  await addLabel('acme/widgets', 3, 'palimpsest:done');
+  await removeLabel('acme/widgets', 3, 'palimpsest');
+  await commentIssue('acme/widgets', 3, 'Merged in https://github.com/acme/widgets/pull/9');
+
+  assert.deepEqual(calls, [
+    ['issue', 'edit', '3', '-R', 'acme/widgets', '--add-label', 'palimpsest:done'],
+    ['issue', 'edit', '3', '-R', 'acme/widgets', '--remove-label', 'palimpsest'],
+    ['issue', 'comment', '3', '-R', 'acme/widgets', '--body', 'Merged in https://github.com/acme/widgets/pull/9'],
+  ]);
 });
