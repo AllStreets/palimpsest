@@ -5,7 +5,7 @@ import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
 import { createCameraRig } from './camera';
-import { makeConstruction, type Construction } from './construction.js';
+import { makeConstruction, makeConstructionField, type Construction, type ConstructionField } from './construction.js';
 import type { BoardJob, Exchange } from './exchange.js';
 import { createGrid } from './grid';
 import { createGround, makePlinth } from './ground';
@@ -100,6 +100,8 @@ export interface City {
   setSites(sites: ReadonlyArray<SiteState>): void;
   /** The job site standing on a repo's tower: its stage and progress, the frame shown, and where the arc strikes (tests and captures). */
   site(repo: string): SiteView | null;
+  /** Hides or shows every site's drawing (tests: what the sites cost in draw calls). */
+  showSites(on: boolean): void;
   /** Where an agent's tower stands, root to roof, for framing the camera on it. */
   agentFrame(agentId: string): Frame | null;
   /** Keeps the view centred in the part of the window not covered by a panel this wide on the right. */
@@ -451,6 +453,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   // ---------------------------------------------------------------- job sites: cranes, frames and welding
   let liveSites: SiteState[] = [];
   const constructions = new Map<string, { c: Construction; top: number; floorHeight: number }>();
+  // Every site is drawn by one field of batches: each site's own object is the record it copies, kept out of the scene.
+  let field: ConstructionField = makeConstructionField(quality);
+  scene.add(field.group);
 
   /** The roof a tower's next floor goes on: its top floor's plan centre, top and half-width (or the root's, before any floor). */
   function roofOf(piece: Centerpiece): { x: number; z: number; top: number; half: number } | null {
@@ -477,7 +482,6 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
     for (const [repo, entry] of constructions) {
       if (byRepo.has(repo) && pieceOf(repo)) continue;
-      districtGroup.remove(entry.c.object);
       entry.c.dispose();
       constructions.delete(repo);
     }
@@ -488,7 +492,6 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       let entry = constructions.get(repo);
       if (!entry) {
         entry = { c: makeConstruction(quality), top: 0, floorHeight: 0 };
-        districtGroup.add(entry.c.object);
         constructions.set(repo, entry);
       }
       const floorHeight = FLOOR_HEIGHT[s.size] ?? FLOOR_HEIGHT.medium;
@@ -517,6 +520,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       weldAt.copy(w.at).add(c.object.position);
       arcs.push({ at: weldAt.clone(), intensity: w.intensity, d: weldAt.distanceTo(camera.position) });
     }
+    field.update([...constructions.values()].map((e) => e.c));
     arcs.sort((a, b) => a.d - b.d);
     flickerLights.forEach((l, i) => {
       const a = arcs[i];
@@ -824,11 +828,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     sun.shadow.mapSize.set(shadowSize, shadowSize);
     sun.shadow.needsUpdate = true;
     buildExchange();
-    for (const { c } of constructions.values()) {
-      districtGroup.remove(c.object);
-      c.dispose();
-    }
+    for (const { c } of constructions.values()) c.dispose();
     constructions.clear();
+    scene.remove(field.group);
+    field.dispose();
+    field = makeConstructionField('medium');
+    scene.add(field.group);
     placeConstructions();
     for (const fn of dropListeners) fn();
   }
@@ -874,6 +879,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     exchange: () => exchange,
     setSites,
     site: siteView,
+    showSites(on) {
+      field.group.visible = on;
+    },
     highlightFloor,
     floorFrame,
     towerFrame,
@@ -931,6 +939,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       scaffolds.clear();
       for (const { c } of constructions.values()) c.dispose();
       constructions.clear();
+      field.dispose();
       plates.dispose();
       markBox.dispose();
       markMaterials.edge.dispose();

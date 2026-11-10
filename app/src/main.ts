@@ -93,6 +93,8 @@ interface DebugHandle {
   site(repo: string): ReturnType<ReturnType<typeof createCity>['site']>;
   /** Every job site the page knows, as the engine last sent it. */
   liveSites(): SiteState[];
+  /** Hides or shows the sites' drawing, to measure what they cost (tests). */
+  showSites(on: boolean): void;
 }
 
 declare global {
@@ -243,6 +245,7 @@ async function main(): Promise<void> {
     },
     site: (repo) => city.site(repo),
     liveSites: () => [...liveSites.values()],
+    showSites: (on) => city.showSites(on),
     exchange() {
       const ex = city.exchange();
       return ex ? { slots: ex.slots(), running: ex.fountainRunning() } : null;

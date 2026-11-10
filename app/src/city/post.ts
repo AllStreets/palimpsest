@@ -60,6 +60,20 @@ export const FLICKER = (() => {
   return { lights, distance, peak, color: 0xc4dcff } as const;
 })();
 
+/**
+ * The work floodlights on a job site's deck (Task 26): a warm high-pressure
+ * sodium white that lights the frame, the crane's mast and the netting round
+ * it, and nothing else in the city. Steel three metres from a head stays just
+ * under the bloom threshold, so the lenses bloom and the frame they light
+ * does not. They switch with the site's stage, never on a timer.
+ */
+export const FLOOD = (() => {
+  const albedo = 0.6;
+  const d = 3;
+  const peak = Math.floor((BLOOM_THRESHOLD * Math.PI * d * d) / (albedo * EXPOSURE));
+  return { peak, distance: 34, color: 0xffb066 } as const;
+})();
+
 export interface Post {
   render(): void;
   setSize(width: number, height: number): void;

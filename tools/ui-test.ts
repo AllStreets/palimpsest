@@ -550,6 +550,14 @@ async function constructionChecks(page: Page): Promise<void> {
     const homeFps = await pageFps(page);
     console.log(`info  city from home with live sites: ${homeFps.toFixed(0)} fps, ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
     check(homeFps >= overviewFps - 5, `the city from home holds its frame rate with live sites (${homeFps.toFixed(0)} fps)`);
+    // What the sites cost from home: every site is drawn in a few batches, so all of them together add under 60 calls.
+    const nSites = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length)) as number;
+    await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(false));
+    await page.waitForTimeout(800);
+    const bare = await debug(page, (x) => x.stats());
+    await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(true));
+    console.log(`info  the ${nSites} live sites add ${home.calls - bare.calls} draw calls from home`);
+    check(nSites >= 3 && home.calls - bare.calls < 60, `${nSites} live sites add fewer than 60 draw calls from home (${home.calls - bare.calls})`);
   } finally {
     clock.stop();
     setMarketExtras({});

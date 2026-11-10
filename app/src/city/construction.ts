@@ -44,7 +44,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { SiteStage, SiteState } from '../../../shared/types.js';
-import { FLICKER } from './post.js';
+import { FLICKER, FLOOD } from './post.js';
 
 // ---------------------------------------------------------------- the pure state
 
@@ -145,6 +145,8 @@ export interface ConstructionState {
   /** Where the arc strikes, in the site's space (the tower's, roof at `top`), or null when nobody welds. */
   weldAt: [number, number, number] | null;
   lamp: 'blink' | 'steady';
+  /** Whether the deck's work floodlights burn: from the crane's raising to the end of inspection, switched by stage. */
+  floods: boolean;
 }
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
@@ -178,6 +180,7 @@ export function constructionState(site: SiteState, top: number, half: number, fl
     load: false,
     weldAt: null,
     lamp: 'blink',
+    floods: true,
   };
   // Parked: the jib turned to the tower's diagonal, trolley in, hook up under the jib.
   const parked = { slew: aim(lay.mast, half, -half), trolley: 6, hook: -2.6 };
@@ -220,9 +223,9 @@ export function constructionState(site: SiteState, top: number, half: number, fl
     case 'inspecting':
       return { ...base, columns: { shown: cTotal, total: cTotal }, beams: { shown: bTotal, total: bTotal }, decks: { shown: dTotal, total: dTotal }, nets: edgesShown(bTotal), ...parked };
     case 'curing':
-      return { ...base, columns: { shown: cTotal, total: cTotal }, beams: { shown: bTotal, total: bTotal }, decks: { shown: dTotal, total: dTotal }, ...parked, lamp: 'steady' };
+      return { ...base, columns: { shown: cTotal, total: cTotal }, beams: { shown: bTotal, total: bTotal }, decks: { shown: dTotal, total: dTotal }, ...parked, lamp: 'steady', floods: false };
     case 'waiting':
-      return { ...base, ...parked, lamp: 'steady' };
+      return { ...base, ...parked, lamp: 'steady', floods: false };
     default:
       // Teardown and the scar are Task 27's: nothing stands here yet.
       return { ...base, crane: null };
@@ -409,9 +412,13 @@ function deckSheet(ribs: number): THREE.BufferGeometry {
   return g;
 }
 
-/** A net panel `len` wide and `h` tall hanging from y = h down to 0, bellied a little outward (+z) between its ties. */
-function netPanel(len: number, h: number): THREE.BufferGeometry {
-  const g = new THREE.PlaneGeometry(1, 1, 8, 6);
+/**
+ * A net panel `len` wide and `h` tall hanging from y = h down to 0: its top
+ * rope sags a hand between the columns it is tied to, its free bottom hem
+ * droops further, and it bellies outward (+z), most at the hem.
+ */
+export function netPanel(len: number, h: number): THREE.BufferGeometry {
+  const g = new THREE.PlaneGeometry(1, 1, 10, 8);
   const pos = g.attributes.position as THREE.BufferAttribute;
   const uv = g.attributes.uv as THREE.BufferAttribute;
   for (let i = 0; i < pos.count; i++) {
@@ -420,56 +427,100 @@ function netPanel(len: number, h: number): THREE.BufferGeometry {
     const u = x + 0.5;
     const t = y + 0.5;
     // Tied at its top rope and every column; the bottom edge hangs free and swings out a hand's width.
-    const belly = Math.sin(Math.PI * u) * (0.08 + 0.18 * (1 - t) * (1 - t));
-    pos.setXYZ(i, x * len, t * h, belly);
+    const span = Math.sin(Math.PI * u);
+    const belly = span * (0.08 + 0.2 * (1 - t) * (1 - t));
+    const sag = span * (0.1 * t + 0.22 * (1 - t));
+    pos.setXYZ(i, x * len, t * h - sag, belly);
     uv.setXY(i, u * len, t * h);
   }
   g.computeVertexNormals();
   return g;
 }
 
-/** A knotted square-mesh net, 50 mm cells, as an alpha texture (built from data so it also builds outside a browser). */
-function netTexture(): THREE.DataTexture {
-  const n = 32;
-  const data = new Uint8Array(n * n * 4);
+/** Net tiles per metre of panel: one 100 mm diamond to a tile, as debris and safety nets are knotted. */
+export const NET_TILE = 10;
+
+/**
+ * Knotted diamond-mesh netting, one cell per tile, built from data so it
+ * builds outside a browser too. `map` carries the cord's twist (a three-strand
+ * rope catches the light in short bands, darker where it dives under at a
+ * knot); `alpha` is the cord itself (read from the green channel), soft-edged
+ * so that far off the net mips to a veil rather than vanishing.
+ */
+export function netTextures(): { map: THREE.DataTexture; alpha: THREE.DataTexture } {
+  const n = 64;
+  const shade = new Uint8Array(n * n * 4);
+  const cover = new Uint8Array(n * n * 4);
+  const r = 3.4;
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
-      // Two cords per tile in each direction, slightly irregular, thicker at the knots.
-      const cx = Math.min(x % 16, 16 - (x % 16));
-      const cy = Math.min(y % 16, 16 - (y % 16));
-      const cord = Math.min(cx, cy) < 0.8 ? 1 : 0;
-      const knot = cx < 2 && cy < 2 ? 1 : 0;
-      const a = Math.max(cord, knot);
+      // Two cords cross the tile on its diagonals; the knots sit where they meet.
+      const a = (x + y) % n;
+      const b = (x - y + n) % n;
+      const dA = Math.min(a, n - a);
+      const dB = Math.min(b, n - b);
+      const d = Math.min(dA, dB) / Math.SQRT2;
+      const knot = Math.hypot(dA, dB) / Math.SQRT2 < 4.2 ? 1 : 0;
+      const on = Math.max(knot, THREE.MathUtils.clamp((r - d) / 0.9 + 0.5, 0, 1));
+      // The twist: bands across the cord, along its length.
+      const along = dA < dB ? b : a;
+      const twist = 0.72 + 0.28 * Math.sin(along * 1.35 + d * 1.6);
+      const under = knot ? 0.62 : 1;
       const i = (y * n + x) * 4;
-      // An alpha map is read from its green channel: the cords are white, the holes black.
-      const v = a ? 255 : 0;
-      data[i] = v;
-      data[i + 1] = v;
-      data[i + 2] = v;
-      data[i + 3] = 255;
+      const v = Math.round(255 * twist * under);
+      shade[i] = shade[i + 1] = shade[i + 2] = v;
+      shade[i + 3] = 255;
+      // A faint floor between the cords: up close the holes stay open, far off the net reads as a dark veil.
+      const c = Math.round(255 * Math.max(on, 0.06));
+      cover[i] = cover[i + 1] = cover[i + 2] = c;
+      cover[i + 3] = 255;
     }
   }
-  const t = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  // 50 mm cells: the tile (two cells) repeats every 0.1 m of panel.
-  t.repeat.set(10, 10);
-  t.magFilter = THREE.LinearFilter;
-  t.minFilter = THREE.LinearMipmapLinearFilter;
-  t.generateMipmaps = true;
-  t.needsUpdate = true;
-  return t;
+  const tex = (data: Uint8Array, srgb: boolean): THREE.DataTexture => {
+    const t = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(NET_TILE, NET_TILE);
+    t.magFilter = THREE.LinearFilter;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.generateMipmaps = true;
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 4;
+    t.needsUpdate = true;
+    return t;
+  };
+  return { map: tex(shade, true), alpha: tex(cover, false) };
 }
 
 // ---------------------------------------------------------------- sparks
 
-const SPARK_VERT = /* glsl */ `
+/** Most job sites the city draws at once (one live run per repo; more than this is never on screen). */
+export const MAX_SITES = 8;
+
+/**
+ * The sparks' vertex shader. For one site its source is uniforms; for the
+ * city's field every site's sparks share one draw, each spark reading its
+ * site's arc, roof and clock from arrays by its site attribute.
+ */
+const sparkVert = (field: boolean): string => /* glsl */ `
   ${GLSL_ARC}
   attribute vec4 aSeed;
   attribute vec4 aDir;
-  uniform float uTime;
+  ${
+    field
+      ? `attribute float aSite;
+  uniform vec4 uSiteA[${MAX_SITES}];
+  uniform vec4 uSiteB[${MAX_SITES}];
+  vec3 uAt;
+  float uTime;
+  float uDeck;
+  float uHalf;
+  vec2 uCentre;`
+      : `uniform float uTime;
   uniform vec3 uAt;
   uniform float uDeck;
   uniform float uHalf;
+  const vec2 uCentre = vec2(0.0);`
+  }
   uniform float uPixel;
   varying vec2 vQuad;
   varying vec3 vColor;
@@ -510,7 +561,8 @@ const SPARK_VERT = /* glsl */ `
     vec3 p = fly(v0, hit);
     vec3 w = uAt + p;
     // Off the roof's edge it keeps falling.
-    if (abs(w.x) > uHalf || abs(w.z) > uHalf) return fly(v0, a);
+    vec2 rel = w.xz - uCentre;
+    if (abs(rel.x) > uHalf || abs(rel.y) > uHalf) return fly(v0, a);
     vec3 s = speed(v0, hit);
     vec3 v1 = vec3(s.x * 0.45, -s.y * 0.28, s.z * 0.45);
     vec3 q = p + fly(v1, a - hit);
@@ -520,6 +572,22 @@ const SPARK_VERT = /* glsl */ `
 
   void main() {
     vQuad = position.xy;
+    ${
+      field
+        ? `int si = int(aSite + 0.5);
+    uAt = uSiteA[si].xyz;
+    uTime = uSiteA[si].w;
+    uCentre = uSiteB[si].xy;
+    uDeck = uSiteB[si].z;
+    uHalf = uSiteB[si].w;
+    if (uHalf <= 0.0) {
+      vAlpha = 0.0;
+      vColor = vec3(0.0);
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      return;
+    }`
+        : ''
+    }
     float life = aSeed.x;
     float period = aSeed.y;
     float t = uTime + aSeed.z * period;
@@ -570,6 +638,8 @@ const SPARK_VERT = /* glsl */ `
   }
 `;
 
+const SPARK_VERT = sparkVert(false);
+
 const SPARK_FRAG = /* glsl */ `
   varying vec2 vQuad;
   varying vec3 vColor;
@@ -612,15 +682,18 @@ const ARC_FRAG = /* glsl */ `
   }
 `;
 
-function makeSparks(count: number): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } {
+/** One quad per spark, `count` per site for `sites` sites (each spark knows its site by `aSite`). */
+function sparkQuad(count: number, sites: number): THREE.InstancedBufferGeometry {
   const quad = new THREE.InstancedBufferGeometry();
   quad.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
   quad.setIndex([0, 1, 2, 0, 2, 3]);
-  const seed = new Float32Array(count * 4);
-  const dir = new Float32Array(count * 4);
+  const seed = new Float32Array(count * sites * 4);
+  const dir = new Float32Array(count * sites * 4);
+  const site = new Float32Array(count * sites);
   let s = 0x2545f491;
   const rnd = (): number => ((s = (Math.imul(s ^ (s >>> 15), 0x2c1b3c6d) + 0x9e3779b9) >>> 0) / 4294967296);
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < count * sites; i++) {
+    site[i] = Math.floor(i / count);
     const glob = rnd() < 0.12;
     // Most sparks are tiny and short; a few are molten drops that fall slowly and glow longer.
     const life = glob ? 1.3 + rnd() * 0.9 : 0.25 + rnd() * rnd() * 1.25;
@@ -636,7 +709,13 @@ function makeSparks(count: number): { mesh: THREE.Mesh; material: THREE.ShaderMa
   }
   quad.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seed, 4));
   quad.setAttribute('aDir', new THREE.InstancedBufferAttribute(dir, 4));
-  quad.instanceCount = count;
+  quad.setAttribute('aSite', new THREE.InstancedBufferAttribute(site, 1));
+  quad.instanceCount = count * sites;
+  return quad;
+}
+
+function makeSparks(count: number): { mesh: THREE.Mesh; material: THREE.ShaderMaterial } {
+  const quad = sparkQuad(count, 1);
   const material = new THREE.ShaderMaterial({
     vertexShader: SPARK_VERT,
     fragmentShader: SPARK_FRAG,
@@ -681,6 +760,16 @@ export interface Construction {
   weld(): { at: THREE.Vector3; intensity: number } | null;
   /** The brightest the arc's light ever gets (post.ts). */
   readonly flickerPeak: number;
+  /** Bumped whenever anything drawn moves or switches (an event, or the crane easing); the city redraws the site's instances then. */
+  readonly revision: number;
+  /** Bumped whenever the site's parts are rebuilt or taken down; the city rebuilds its batches then. */
+  readonly structure: number;
+  /** The aviation lamps' brightness this frame, 0 to 1. */
+  lampLevel(): number;
+  /** The sparks' source this frame, in the site's space: the arc, the roof they bounce on, its half-width and the site's clock; null when nobody welds. */
+  sparks(): { at: THREE.Vector3; deck: number; half: number; time: number } | null;
+  /** Where the lit floodlights are, in the site's space (none when they are off). */
+  floods(): THREE.Vector3[];
   dispose(): void;
 }
 
@@ -704,13 +793,21 @@ interface Built {
   arc: THREE.Mesh;
   arcMat: THREE.ShaderMaterial;
   top: number;
+  half: number;
+  floods: THREE.Group;
+  lampLevel: number;
   disposables: Array<{ dispose(): void }>;
 }
 
 /** The crane's paint: a weathered crane yellow, darker than signage so it reads as painted steel at dusk. */
-const CRANE_YELLOW = 0xa98228;
+const CRANE_YELLOW = 0x9c8a3e;
 const PRIMER = 0x5c3024;
 const LAMP_RED = new THREE.Color(9, 0.35, 0.1);
+/** The floodlights' lenses: a warm high-pressure-sodium white, hot enough to bloom. */
+const FLOOD_LENS = new THREE.Color(7.5, 4.6, 2.2);
+const NET_GREEN = 0x3c5646;
+/** How far above the new floor's top the flood heads stand. */
+const FLOOD_RISE = 2.4;
 
 /** Eases `x` toward `to`, snapping when within `eps` so a settled pose is exact. */
 function approach(x: number, to: number, k: number, dt: number, eps: number): number {
@@ -734,6 +831,8 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
   let clock = 0;
   let arcLevelNow = 0;
   const weldAt = new THREE.Vector3();
+  let revision = 0;
+  let structure = 0;
 
   function build(top: number, half: number, fh: number, state: ConstructionState): Built {
     const disposables: Array<{ dispose(): void }> = [];
@@ -752,13 +851,14 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       deck: own(new THREE.MeshStandardMaterial({ color: 0x9ea3a6, roughness: 0.42, metalness: 0.85, side: THREE.DoubleSide })),
       rope: own(new THREE.MeshStandardMaterial({ color: 0x1d1e1f, roughness: 0.45, metalness: 0.8 })),
     };
-    const netMap = own(netTexture());
-    const netMat = own(
-      new THREE.MeshStandardMaterial({ color: 0x2f4a3a, roughness: 1, alphaMap: netMap, alphaTest: 0.35, transparent: false, side: THREE.DoubleSide }),
-    );
-    // The alpha map tiles in metres (the panels' UVs are in metres).
-    netMap.repeat.set(10, 10);
+    const net = netTextures();
+    own(net.map);
+    own(net.alpha);
+    const netMat = own(new THREE.MeshStandardMaterial({ color: NET_GREEN, roughness: 1, map: net.map, alphaMap: net.alpha, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
     const lampMat = own(new THREE.MeshBasicMaterial({ color: LAMP_RED.clone(), toneMapped: true }));
+    const floodMat = own(new THREE.MeshBasicMaterial({ color: FLOOD_LENS.clone(), toneMapped: true }));
+    // Named by kind: the city draws every site's parts of one kind together (ConstructionField), by these names.
+    for (const [k, m] of Object.entries({ ...mats, net: netMat, lamp: lampMat, flood: floodMat })) m.name = k;
 
     const mesh = (geo: THREE.BufferGeometry, mat: THREE.Material, name: string, shadow = true): THREE.Mesh => {
       own(geo);
@@ -988,18 +1088,52 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     const decks = new THREE.InstancedMesh(deckGeo, mats.deck, lay.decks.length);
     decks.name = 'construction:decks';
     lay.decks.forEach(([x, z], i) => decks.setMatrixAt(i, new THREE.Matrix4().compose(v(x, top + fh + 0.065, z), new THREE.Quaternion(), v(lay.bay - 0.12, 1, lay.bay - 0.12))));
-    const netGeo = own(netPanel(1, fh + NET_OVER + 0.3));
+    const netGeo = own(netPanel(lay.nets[0].len, fh + NET_OVER + 0.3));
     const nets = new THREE.InstancedMesh(netGeo, netMat, lay.nets.length);
     nets.name = 'construction:netting';
-    lay.nets.forEach((nt, i) => nets.setMatrixAt(i, new THREE.Matrix4().compose(v(nt.x, top - 0.3, nt.z), new THREE.Quaternion().setFromAxisAngle(UP, nt.ry), v(nt.len, 1, 1))));
-    // The net's own UVs are in metres along a unit panel: stretch them with the panel length.
-    netMap.repeat.set(10 * lay.nets[0].len, 10);
+    lay.nets.forEach((nt, i) => nets.setMatrixAt(i, new THREE.Matrix4().compose(v(nt.x, top - 0.3, nt.z), new THREE.Quaternion().setFromAxisAngle(UP, nt.ry), v(1, 1, 1))));
     for (const m of [columns, beams, decks]) {
       m.castShadow = true;
       m.receiveShadow = true;
     }
     nets.receiveShadow = true;
     object.add(columns, beams, decks, nets);
+
+    // Work floodlights: two on short masts at the deck's far corners, heads tipped in over the frame.
+    const floods = new THREE.Group();
+    floods.name = 'construction:floods';
+    const pole = new Parts();
+    const heads = new Parts();
+    const lens = new Parts();
+    const floodAt: THREE.Vector3[] = [];
+    const fy = top + fh + FLOOD_RISE;
+    for (const [sx, sz] of [
+      [1, 1],
+      [-1, -1],
+    ]) {
+      const x = sx * (half - 0.6);
+      const z = sz * (half - 0.6);
+      pole.bar(v(x, top, z), v(x, fy, z), 0.09, true);
+      pole.bar(v(x - sx * 0.6, top, z), v(x, top + 1.6, z), 0.05, true);
+      pole.bar(v(x, top, z - sz * 0.6), v(x, top + 1.6, z), 0.05, true);
+      // The head faces the deck's middle, tipped down.
+      const ry = Math.atan2(-x, -z);
+      const m = new THREE.Matrix4().compose(v(x, fy, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.45, ry, 0, 'YXZ')), v(1, 1, 1));
+      for (const dx of [-0.3, 0.3]) {
+        const box = new THREE.BoxGeometry(0.5, 0.42, 0.2);
+        heads.add(box, new THREE.Matrix4().makeTranslation(dx, 0, 0).premultiply(m));
+        box.dispose();
+        const glass = new THREE.PlaneGeometry(0.42, 0.34);
+        lens.add(glass, new THREE.Matrix4().makeTranslation(dx, 0, 0.105).premultiply(m));
+        glass.dispose();
+      }
+      floodAt.push(v(x, fy, z).add(v(-x, 0, -z).normalize().multiplyScalar(0.3)));
+    }
+    floods.add(mesh(pole.build(), mats.dark, 'construction:flood-masts'));
+    floods.add(mesh(heads.build(), mats.dark, 'construction:flood-heads'));
+    floods.add(mesh(lens.build(), floodMat, 'construction:flood-lenses', false));
+    floods.userData.at = floodAt;
+    object.add(floods);
 
     // sparks and the arc
     const { mesh: sparks, material: sparkMat } = makeSparks(sparkCount);
@@ -1050,12 +1184,17 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       arc,
       arcMat,
       top,
+      half,
+      floods,
+      lampLevel: 1,
       disposables,
     };
   }
 
   function clear(): void {
     if (!built) return;
+    structure++;
+    revision++;
     for (const d of built.disposables) d.dispose();
     object.clear();
     built = null;
@@ -1073,6 +1212,7 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     b.decks.visible = s.decks.shown > 0;
     b.nets.visible = s.nets > 0;
     b.load.visible = s.load;
+    b.floods.visible = s.floods;
     b.sparks.visible = s.weldAt !== null;
     b.arc.visible = s.weldAt !== null;
     if (s.weldAt) {
@@ -1099,6 +1239,7 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       const u = (clock % 2) / 2;
       level = 0.05 + 0.95 * THREE.MathUtils.smoothstep(u, 0, 0.04) * (1 - THREE.MathUtils.smoothstep(u, 0.22, 0.3));
     }
+    b.lampLevel = level;
     b.lampMat.color.copy(LAMP_RED).multiplyScalar(level);
   }
 
@@ -1122,8 +1263,10 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
         clear();
         built = build(top, half, floorHeight, keep ? { ...state, ...keep } : state);
         built.key = key;
+        structure++;
       }
       apply(built, state);
+      revision++;
     },
     update(dt) {
       clock = (clock + dt) % WRAP;
@@ -1140,6 +1283,7 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
         b.trolley.position.x = trolley;
         b.hook.position.set(trolley, hook, 0);
         placeRopes(b);
+        revision++;
       }
       b.sparkMat.uniforms.uTime.value = clock;
       arcLevelNow = s.weldAt ? arcLevel(clock) : 0;
@@ -1151,9 +1295,451 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       if (!built || !built.state.weldAt || !site) return null;
       return { at: weldAt.clone(), intensity: arcLevelNow * FLICKER.peak };
     },
+    get revision() {
+      return revision;
+    },
+    get structure() {
+      return structure;
+    },
+    lampLevel: () => built?.lampLevel ?? 0,
+    sparks() {
+      if (!built || !built.state.weldAt) return null;
+      return { at: weldAt.clone(), deck: built.top, half: built.half, time: clock };
+    },
+    floods() {
+      if (!built || !built.state.floods) return [];
+      return (built.floods.userData.at as THREE.Vector3[]).map((p) => p.clone());
+    },
     dispose() {
       clear();
       site = null;
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------- the city's field: every site in a few draws
+
+/** Which drawn kind a site part belongs to, by its material's name. */
+const STEEL_KINDS = new Set(['yellow', 'dark', 'ballast', 'glass', 'primer', 'deck', 'rope']);
+const LAMP_KINDS = new Set(['lamp', 'flood']);
+
+const GLARE_VERT = /* glsl */ `
+  attribute vec3 iPos;
+  attribute vec3 iColor;
+  attribute vec2 iSize;
+  uniform float uPixel;
+  varying vec2 vQuad;
+  varying vec3 vColor;
+  void main() {
+    vQuad = position.xy;
+    vColor = iColor;
+    vec4 c = viewMatrix * vec4(iPos, 1.0);
+    // A world size, but never under a few pixels: from across the city a lamp still reads as a lamp.
+    float size = max(iSize.x, -c.z * uPixel * iSize.y);
+    c.xy += position.xy * size;
+    c.xyz *= 1.0 - 0.6 / max(1.0, length(c.xyz));
+    gl_Position = projectionMatrix * c;
+  }
+`;
+
+const GLARE_FRAG = /* glsl */ `
+  varying vec2 vQuad;
+  varying vec3 vColor;
+  void main() {
+    float r = length(vQuad);
+    float core = exp(-r * r * 26.0);
+    float glow = exp(-r * 5.5) * 0.18;
+    float a = core + glow;
+    if (a <= 0.003) discard;
+    gl_FragColor = vec4(vColor * a, 1.0);
+  }
+`;
+
+/** The arc's glare colour at full burn, and the floodlights' (a warm sodium white). */
+const ARC_GLARE = new THREE.Color(10.9, 12.3, 14);
+const FLOOD_GLARE = new THREE.Color(FLOOD.color).multiplyScalar(3.4);
+const MAX_FLOODS = MAX_SITES * 2;
+
+/**
+ * The city's steel, lit by the sites' floodlights. The floods light only the
+ * construction itself (the frame, the deck, the crane's mast and the netting),
+ * by a term added after three's own lights, so they cost nothing anywhere
+ * else in the city. A little grime, by world position, keeps the paint from
+ * reading as fresh plastic. Radiance stays under the bloom threshold
+ * (post.ts FLOOD).
+ */
+function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: { pos: { value: THREE.Vector3[] }; count: { value: number }; color: { value: THREE.Color } }, grime: boolean): T {
+  m.onBeforeCompile = (shader) => {
+    shader.uniforms.uFloodPos = floods.pos;
+    shader.uniforms.uFloodCount = floods.count;
+    shader.uniforms.uFloodColor = floods.color;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vFieldWorld;')
+      .replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+        vec4 fw = vec4(transformed, 1.0);
+        #ifdef USE_BATCHING
+          fw = batchingMatrix * fw;
+        #endif
+        vFieldWorld = (modelMatrix * fw).xyz;`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying vec3 vFieldWorld;
+        uniform vec3 uFloodPos[${MAX_FLOODS}];
+        uniform int uFloodCount;
+        uniform vec3 uFloodColor;`,
+      )
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        ${
+          grime
+            ? `{
+          vec3 q = floor(vFieldWorld * 2.7);
+          float g = fract(sin(dot(q, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+          float streak = fract(sin(dot(floor(vFieldWorld.xz * 9.0), vec2(41.3, 17.9))) * 9631.7);
+          diffuseColor.rgb *= 0.84 + 0.12 * g + 0.04 * streak;
+        }`
+            : ''
+        }`,
+      )
+      .replace(
+        '#include <lights_fragment_end>',
+        `#include <lights_fragment_end>
+        for (int i = 0; i < ${MAX_FLOODS}; i++) {
+          if (i >= uFloodCount) break;
+          vec3 L = uFloodPos[i] - geometryPosition;
+          float d2 = max(dot(L, L), 1.0);
+          L *= inversesqrt(d2);
+          float reach = 1.0 - smoothstep(${(FLOOD.distance * 0.6).toFixed(1)}, ${FLOOD.distance.toFixed(1)}, sqrt(d2));
+          float nl = max(dot(geometryNormal, L), 0.0);
+          // A thin cloth or a beam seen from behind still glows a little with the light through it.
+          nl = max(nl, 0.18 * max(dot(-geometryNormal, L), 0.0));
+          reflectedLight.directDiffuse += uFloodColor * (nl * reach / d2) * BRDF_Lambert(material.diffuseColor);
+        }`,
+      );
+  };
+  m.customProgramCacheKey = () => `construction-flood-${grime ? 1 : 0}`;
+  return m;
+}
+
+export interface ConstructionField {
+  /** Every site's parts, drawn: a handful of batches whatever the number of sites. */
+  group: THREE.Group;
+  /** Draws these sites (their own objects stay out of the scene: they are the record the batches copy). */
+  update(sites: ReadonlyArray<Construction>): void;
+  /** Meshes the field draws with, for budgets (tests). */
+  draws(): number;
+  dispose(): void;
+}
+
+interface Mirror {
+  src: THREE.Mesh;
+  batch: THREE.BatchedMesh;
+  ids: number[];
+  /** The source's own instances (an InstancedMesh), or one. */
+  instanced: boolean;
+  color: THREE.Color;
+}
+
+/**
+ * Draws every job site in the city with a fixed number of draw calls: one
+ * batch for all the steel (crane, frame, deck, ropes: each part keeps its
+ * paint as an instance colour), one for the netting, one for the lamps and
+ * flood lenses, one for every site's sparks and one for the glare of arcs and
+ * floods. Each site's own object is the record: the field copies its parts'
+ * world matrices into the batches when the site changes (an event, or the
+ * crane easing after one) and rebuilds the batches only when a site's parts
+ * are built or taken down. Between events nothing is copied; only the spark
+ * clocks, the arcs, the lamps and the glare change, which are uniforms and a
+ * few dozen instance values.
+ */
+export function makeConstructionField(quality: 'high' | 'medium'): ConstructionField {
+  const group = new THREE.Group();
+  group.name = 'construction-field';
+  const sparkCount = quality === 'high' ? 720 : 300;
+  const floods = { pos: { value: Array.from({ length: MAX_FLOODS }, () => new THREE.Vector3()) }, count: { value: 0 }, color: { value: new THREE.Color(FLOOD.color).multiplyScalar(FLOOD.peak) } };
+  const steelMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.66, metalness: 0.35 }), floods, true);
+  const net = netTextures();
+  // White: each panel's own green comes in as its instance colour.
+  const netMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, map: net.map, alphaMap: net.alpha, transparent: true, depthWrite: false, side: THREE.DoubleSide }), floods, false);
+  const lampMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: true });
+
+  // Every site's sparks in one draw.
+  const sparkGeo = sparkQuad(sparkCount, MAX_SITES);
+  const sparkMat = new THREE.ShaderMaterial({
+    vertexShader: sparkVert(true),
+    fragmentShader: SPARK_FRAG,
+    uniforms: {
+      uSiteA: { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) },
+      uSiteB: { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) },
+      uPixel: { value: 0.001 },
+    },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const sparks = new THREE.Mesh(sparkGeo, sparkMat);
+  sparks.name = 'field:sparks';
+  sparks.frustumCulled = false;
+  sparks.renderOrder = 2;
+  sparks.onBeforeRender = (renderer, _s, camera) => {
+    sparkMat.uniforms.uPixel.value = pixelScale(renderer, camera);
+  };
+
+  // The glare of every arc and floodlight in one draw.
+  const GLARES = MAX_SITES * 3;
+  const glareGeo = new THREE.InstancedBufferGeometry();
+  glareGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+  glareGeo.setIndex([0, 1, 2, 0, 2, 3]);
+  const gPos = new THREE.InstancedBufferAttribute(new Float32Array(GLARES * 3), 3);
+  const gColor = new THREE.InstancedBufferAttribute(new Float32Array(GLARES * 3), 3);
+  const gSize = new THREE.InstancedBufferAttribute(new Float32Array(GLARES * 2), 2);
+  for (const a of [gPos, gColor, gSize]) a.setUsage(THREE.DynamicDrawUsage);
+  glareGeo.setAttribute('iPos', gPos);
+  glareGeo.setAttribute('iColor', gColor);
+  glareGeo.setAttribute('iSize', gSize);
+  glareGeo.instanceCount = 0;
+  const glareMat = new THREE.ShaderMaterial({
+    vertexShader: GLARE_VERT,
+    fragmentShader: GLARE_FRAG,
+    uniforms: { uPixel: { value: 0.001 } },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const glare = new THREE.Mesh(glareGeo, glareMat);
+  glare.name = 'field:glare';
+  glare.frustumCulled = false;
+  glare.renderOrder = 3;
+  glare.onBeforeRender = (renderer, _s, camera) => {
+    glareMat.uniforms.uPixel.value = pixelScale(renderer, camera);
+  };
+
+  // The steel's flood term is in view space: the floods' positions follow the camera each frame.
+  const floodWorld: THREE.Vector3[] = [];
+  const toView = (camera: THREE.Camera): void => {
+    floods.count.value = Math.min(MAX_FLOODS, floodWorld.length);
+    for (let i = 0; i < floods.count.value; i++) floods.pos.value[i].copy(floodWorld[i]).applyMatrix4(camera.matrixWorldInverse);
+  };
+
+  let batches: { steel: THREE.BatchedMesh | null; net: THREE.BatchedMesh | null; lamp: THREE.BatchedMesh | null } = { steel: null, net: null, lamp: null };
+  let mirrors: Mirror[] = [];
+  let bySite = new Map<Construction, { mirrors: Mirror[]; revision: number; structure: number }>();
+  const geoCache = new Map<THREE.BufferGeometry, THREE.BufferGeometry>();
+
+  /** A copy with only position, normal and uv, never indexed: every geometry a batch holds must agree. */
+  function plain(g: THREE.BufferGeometry): THREE.BufferGeometry {
+    let c = geoCache.get(g);
+    if (c) return c;
+    c = g.index ? g.toNonIndexed() : g.clone();
+    for (const k of Object.keys(c.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') c.deleteAttribute(k);
+    if (!c.attributes.uv) c.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(c.attributes.position.count * 2), 2));
+    c.clearGroups();
+    geoCache.set(g, c);
+    return c;
+  }
+
+  function clearBatches(): void {
+    for (const b of Object.values(batches)) {
+      if (!b) continue;
+      group.remove(b);
+      b.dispose();
+    }
+    batches = { steel: null, net: null, lamp: null };
+    for (const g of geoCache.values()) g.dispose();
+    geoCache.clear();
+    mirrors = [];
+    bySite = new Map();
+  }
+
+  function kindOf(m: THREE.Mesh): 'steel' | 'net' | 'lamp' | null {
+    const name = (m.material as THREE.Material).name;
+    if (STEEL_KINDS.has(name)) return 'steel';
+    if (name === 'net') return 'net';
+    if (LAMP_KINDS.has(name)) return 'lamp';
+    return null;
+  }
+
+  /** Builds the batches afresh from every site's parts. */
+  function rebuild(sites: ReadonlyArray<Construction>): void {
+    clearBatches();
+    const parts: Array<{ site: Construction; mesh: THREE.Mesh; kind: 'steel' | 'net' | 'lamp' }> = [];
+    for (const site of sites) {
+      site.object.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        const kind = kindOf(m);
+        if (kind) parts.push({ site, mesh: m, kind });
+      });
+    }
+    const size = { steel: { v: 0, n: 0 }, net: { v: 0, n: 0 }, lamp: { v: 0, n: 0 } };
+    const seen = new Set<THREE.BufferGeometry>();
+    for (const p of parts) {
+      const g = plain(p.mesh.geometry);
+      if (!seen.has(g)) {
+        seen.add(g);
+        size[p.kind].v += g.attributes.position.count;
+      }
+      size[p.kind].n += (p.mesh as THREE.InstancedMesh).isInstancedMesh ? (p.mesh as THREE.InstancedMesh).instanceMatrix.count : 1;
+    }
+    const make = (kind: 'steel' | 'net' | 'lamp', mat: THREE.Material): THREE.BatchedMesh | null => {
+      if (size[kind].n === 0) return null;
+      const b = new THREE.BatchedMesh(size[kind].n, size[kind].v, 0, mat);
+      b.name = `field:${kind}`;
+      b.frustumCulled = false;
+      b.sortObjects = kind === 'net';
+      b.castShadow = kind === 'steel';
+      b.receiveShadow = kind !== 'lamp';
+      group.add(b);
+      return b;
+    };
+    batches = { steel: make('steel', steelMat), net: make('net', netMat), lamp: make('lamp', lampMat) };
+    // BatchedMesh lays out its draw list in its own onBeforeRender: keep it, and move the floods into view space first.
+    for (const b of [batches.steel, batches.net]) {
+      if (!b) continue;
+      const own = b.onBeforeRender.bind(b);
+      b.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
+        toView(camera);
+        own(renderer, scene, camera, geometry, material, group);
+      };
+    }
+    const geoIds = new Map<THREE.BatchedMesh, Map<THREE.BufferGeometry, number>>();
+    for (const p of parts) {
+      const batch = batches[p.kind]!;
+      let ids = geoIds.get(batch);
+      if (!ids) geoIds.set(batch, (ids = new Map()));
+      const g = plain(p.mesh.geometry);
+      let gid = ids.get(g);
+      if (gid === undefined) {
+        gid = batch.addGeometry(g);
+        ids.set(g, gid);
+      }
+      const inst = (p.mesh as THREE.InstancedMesh).isInstancedMesh;
+      const n = inst ? (p.mesh as THREE.InstancedMesh).instanceMatrix.count : 1;
+      const mirror: Mirror = { src: p.mesh, batch, ids: [], instanced: inst, color: (p.mesh.material as THREE.MeshStandardMaterial).color.clone() };
+      for (let i = 0; i < n; i++) {
+        const id = batch.addInstance(gid);
+        batch.setColorAt(id, mirror.color);
+        mirror.ids.push(id);
+      }
+      mirrors.push(mirror);
+      let entry = bySite.get(p.site);
+      if (!entry) bySite.set(p.site, (entry = { mirrors: [], revision: -1, structure: p.site.structure }));
+      entry.mirrors.push(mirror);
+    }
+    for (const site of sites) if (!bySite.has(site)) bySite.set(site, { mirrors: [], revision: -1, structure: site.structure });
+  }
+
+  const m4 = new THREE.Matrix4();
+  const m5 = new THREE.Matrix4();
+  /** Whether a part and every group above it, up to its site, is shown. */
+  const shown = (o: THREE.Object3D): boolean => {
+    for (let p: THREE.Object3D | null = o; p; p = p.parent) if (!p.visible) return false;
+    return true;
+  };
+  function copy(site: Construction, mirrorsOf: Mirror[]): void {
+    site.object.updateMatrixWorld(true);
+    for (const mi of mirrorsOf) {
+      const on = shown(mi.src);
+      if (mi.instanced) {
+        const im = mi.src as THREE.InstancedMesh;
+        mi.ids.forEach((id, i) => {
+          const visible = on && i < im.count;
+          mi.batch.setVisibleAt(id, visible);
+          if (!visible) return;
+          im.getMatrixAt(i, m4);
+          mi.batch.setMatrixAt(id, m5.multiplyMatrices(im.matrixWorld, m4));
+        });
+      } else {
+        mi.batch.setVisibleAt(mi.ids[0], on);
+        if (on) mi.batch.setMatrixAt(mi.ids[0], mi.src.matrixWorld);
+      }
+    }
+  }
+
+  const col = new THREE.Color();
+  return {
+    group,
+    update(sites) {
+      const list = sites.slice(0, MAX_SITES);
+      // A site built, rebuilt or taken down, or the set of sites changed: the batches are laid out again.
+      const changed = list.length !== bySite.size || list.some((s) => bySite.get(s)?.structure !== s.structure);
+      if (changed) rebuild(list);
+      for (const s of list) {
+        const e = bySite.get(s)!;
+        if (e.revision !== s.revision) {
+          copy(s, e.mirrors);
+          e.revision = s.revision;
+        }
+        // The aviation lamps flash: their instance colours follow the site's lamp level.
+        const level = s.lampLevel();
+        for (const mi of e.mirrors) {
+          if ((mi.src.material as THREE.Material).name !== 'lamp') continue;
+          col.copy(mi.color).setRGB(LAMP_RED.r * level, LAMP_RED.g * level, LAMP_RED.b * level);
+          for (const id of mi.ids) mi.batch.setColorAt(id, col);
+        }
+      }
+      // Sparks, glare and the floods' light, per site.
+      floodWorld.length = 0;
+      let g = 0;
+      const put = (p: THREE.Vector3, c: THREE.Color, size: number, px: number): void => {
+        if (g >= GLARES) return;
+        gPos.setXYZ(g, p.x, p.y, p.z);
+        gColor.setXYZ(g, c.r, c.g, c.b);
+        gSize.setXY(g, size, px);
+        g++;
+      };
+      list.forEach((s, i) => {
+        const at = s.object.position;
+        const sp = s.sparks();
+        const a = sparkMat.uniforms.uSiteA.value[i] as THREE.Vector4;
+        const b = sparkMat.uniforms.uSiteB.value[i] as THREE.Vector4;
+        if (sp) {
+          a.set(sp.at.x + at.x, sp.at.y + at.y, sp.at.z + at.z, sp.time);
+          b.set(at.x, at.z, sp.deck + at.y, sp.half);
+          const w = s.weld();
+          if (w && w.intensity > 0) put(new THREE.Vector3(a.x, a.y, a.z), col.copy(ARC_GLARE).multiplyScalar(w.intensity / FLICKER.peak), 0.35, 3);
+        } else b.set(0, 0, 0, 0);
+        for (const f of s.floods()) {
+          const p = f.add(at);
+          floodWorld.push(p);
+          put(p, FLOOD_GLARE, 0.9, 6);
+        }
+      });
+      for (let i = list.length; i < MAX_SITES; i++) (sparkMat.uniforms.uSiteB.value[i] as THREE.Vector4).set(0, 0, 0, 0);
+      glareGeo.instanceCount = g;
+      gPos.needsUpdate = gColor.needsUpdate = gSize.needsUpdate = true;
+      sparkGeo.instanceCount = sparkCount * list.length;
+      sparks.visible = list.some((s) => s.sparks() !== null);
+      glare.visible = g > 0;
+      if (sparks.parent !== group) group.add(sparks, glare);
+    },
+    draws() {
+      let n = 0;
+      group.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh && o.visible) n++;
+      });
+      return n;
+    },
+    dispose() {
+      clearBatches();
+      steelMat.dispose();
+      netMat.dispose();
+      net.map.dispose();
+      net.alpha.dispose();
+      lampMat.dispose();
+      sparkGeo.dispose();
+      sparkMat.dispose();
+      glareGeo.dispose();
+      glareMat.dispose();
+      group.clear();
     },
   };
 }

@@ -652,6 +652,7 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
  * galvanised steel of agent crowns and brackets: the swatch board builds repo towers, which never take a silhouette.
  * Restamped for Task 26, also without a re-measure: post.ts gained the flicker budget and names its bloom threshold
  * (the same 0.97), scene.ts reads its exposure from it (the same 0.85), and the welders' point lights stand dark
- * unless an arc burns on a job site, which the swatch board never has: every rendered value is unchanged.
+ * unless an arc burns on a job site, which the swatch board never has, and the floodlight budget lights only the
+ * construction's own materials: every rendered value is unchanged.
  */
-export const RENDERED_INPUTS = '932665a05b05ba8b';
+export const RENDERED_INPUTS = '39e2daeb5a99703c';
