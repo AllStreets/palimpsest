@@ -490,6 +490,18 @@ describe('the reaper by sandbox membership', () => {
     assert.ok(!existsSync(target), 'the daemon outlived its command');
   });
 
+  test('a daemon that first swaps the run tmp for a symlink is still killed', { skip }, async () => {
+    process.env.PALIMPSEST_SANDBOX = 'on';
+    const run = makeRun('run-esc4');
+    const target = join(run.dir, 'esc4.txt');
+    const inner = `use POSIX; exit if fork; POSIX::setsid(); exit if fork; chdir("/"); exec("/bin/sh", "-c", "sleep 3; echo alive >> ${target}")`;
+    const r = await execTool({ ...base(run, []), command: `/bin/mv ../tmp ./oldtmp && /bin/ln -s /usr ../tmp && env -i /usr/bin/perl -e '${inner}'; echo started`, timeoutMs: 20_000 });
+    assert.equal(r.refused, null);
+    assert.equal(r.code, 0, r.stderr);
+    await new Promise((res) => setTimeout(res, 4500));
+    assert.ok(!existsSync(target), 'the daemon outlived its command');
+  });
+
   test("a sandboxed process of a different run root is never killed, and its own run's reap finds it", { skip }, async () => {
     process.env.PALIMPSEST_SANDBOX = 'on';
     const a = makeRun('run-member-a');
@@ -504,6 +516,18 @@ describe('the reaper by sandbox membership', () => {
     assert.doesNotThrow(() => process.kill(child.pid as number, 0));
     const killedB = await reapRun(b.runRoot);
     assert.ok(killedB.includes(child.pid as number), `run b's reap missed it: ${killedB}`);
+  });
+});
+
+describe('the sandbox check helper', () => {
+  test('is built fresh by this process, owned by the user and writable by no one else', { skip: process.platform !== 'darwin' || !existsSync('/usr/bin/cc') ? 'cc is missing' : false }, async () => {
+    const { sandboxCheckBin } = await import('../engine/market/sandbox-check.js');
+    const bin = await sandboxCheckBin();
+    assert.ok(bin);
+    const st = statSync(bin as string);
+    assert.equal(st.uid, process.getuid?.());
+    assert.equal(st.mode & 0o022, 0);
+    assert.ok(bin!.includes(`-${process.pid}-`), 'the helper path is not this process\'s own build');
   });
 });
 

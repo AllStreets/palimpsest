@@ -27,7 +27,7 @@
  */
 import { execFile } from 'node:child_process';
 import { userInfo } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { mkdirSync } from 'node:fs';
 
@@ -198,10 +198,10 @@ async function scan(root: string, pids?: number[]): Promise<number[]> {
   const spare = new Set([...ancestors(all), ...protectedSet(all, root)]);
   const procs = pids ? all.filter((p) => pids.includes(p.pid)) : all;
   if (procs.length === 0) return [];
-  // sandbox_check needs both probe paths to exist; an agent may have removed tmp.
-  for (const d of ['tmp', 'ctl']) mkdirSync(join(root, d), { recursive: true });
+  // The probe is ctl: no sandboxed process can rename, replace or symlink it.
+  mkdirSync(join(root, 'ctl'), { recursive: true });
   const candidates = procs.filter((p) => !spare.has(p.pid)).map((p) => p.pid);
-  const members = await sandboxMembers(candidates, join(root, 'tmp'), join(root, 'ctl'));
+  const members = await sandboxMembers(candidates, join(root, 'ctl'), dirname(root));
   const files = await paths(pids ?? undefined);
   return belonging(procs, files, root, spare, members, engineDescendants(all));
 }
