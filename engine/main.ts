@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { baseline } from './guild/baseline.js';
 import { paths } from './home.js';
 import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
+import { inspect } from './guild/inspect.js';
 import { installDeps } from './market/install.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
@@ -24,15 +25,14 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`Palimpsest engine listening on 127.0.0.1:${port} (stop file ${stopped ? 'present' : 'absent'})`);
   // The scheduler always starts; each tick does nothing while the stop file is set, so clearing it
-  // resumes the market without a restart. Inspection (Task 15) and shipping (Task 16) are wired in
-  // when they exist; until then a run that reaches them ends crashed, never shipped.
+  // resumes the market without a restart. Shipping (Task 16) is wired in when it exists; until then a
+  // run that passes inspection ends crashed, never shipped.
   const scheduler = createScheduler({
     installDeps,
     // Ruling 12: the repo's checks at the run's base commit, cached per sha, in its own run root.
     baseline,
-    inspect: async () => {
-      throw new Error('The inspection guild is not built yet, so nothing is shipped.');
-    },
+    // Task 15: the inspection guild (checks against the baseline, scope, another firm's review, design).
+    inspect,
     ship: async () => {
       throw new Error('Shipping is not built yet.');
     },

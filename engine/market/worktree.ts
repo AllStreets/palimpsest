@@ -214,6 +214,27 @@ export async function createRunDir(repo: Repo, runId: string, branch: string): P
   return { runRoot, dir, baseSha };
 }
 
+/**
+ * Makes `<runRoot>/base`, a checkout of `sha` cloned from the repo's mirror
+ * without hardlinks (the design check builds and shoots the base side
+ * there, Task 15). Its push URL is invalid like the run's, and its
+ * `.git/config` hash is recorded so later engine git calls check it.
+ */
+export async function createBaseDir(repo: Repo, runId: string, sha: string): Promise<string> {
+  const runRoot = join(paths().runs, runId);
+  const dir = join(runRoot, 'base');
+  if (existsSync(dir)) throw new Error(`base dir already exists: ${dir}`);
+  mkdirSync(join(runRoot, 'ctl'), { recursive: true });
+  const ctl = controlFiles(runId);
+  if (!existsSync(ctl.gitconfig)) writeFileSync(ctl.gitconfig, '', { mode: 0o444 });
+  await gitOk(['clone', '--quiet', '--local', '--no-hardlinks', '--no-checkout', mirrorDir(repo.fullName), dir], runRoot, runRoot);
+  await gitOk(['remote', 'set-url', '--push', 'origin', PUSH_URL], dir, runRoot);
+  recordGitConfig(dir);
+  const co = await engineGit(dir, ['checkout', '--quiet', '--detach', sha]);
+  if (co.code !== 0) throw new Error(`The base could not check out ${sha.slice(0, 7)}: ${co.stderr.trim()}`);
+  return dir;
+}
+
 /** The run's change against its base: the patch (untracked files included), the files, the changed line count and the patch hash. */
 export async function diffOf(dir: string, baseSha: string): Promise<{ patch: string; files: string[]; lines: number; sha256: string }> {
   await engineGitOk(dir, ['add', '--all']);

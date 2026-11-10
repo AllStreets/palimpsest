@@ -40,7 +40,7 @@ import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
 import type { JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
 import { CLAUDE_TMP, detectToolchains, proxyUrl, realish, SYSTEM_PATH, wrap, type CliProfileInput } from './sandbox.js';
 import { controlFiles } from './worktree.js';
-import { planSection } from './quote.js';
+import { diffSection, planSection, quoteAsData } from './quote.js';
 
 /* ------------------------------------------------------------------ */
 /* Fixed values                                                        */
@@ -568,14 +568,16 @@ export function planPrompt(i: PlanInput): string {
 }
 
 export function reviewPrompt(i: ReviewInput): string {
-  const diff = i.diff.length > MAX_DIFF_CHARS ? i.diff.slice(0, MAX_DIFF_CHARS) + `\n[diff cut: ${i.diff.length - MAX_DIFF_CHARS} more characters]\n` : i.diff;
-  const checks = i.checks.map((c) => `${c.name}: ${c.status}${c.detail ? ` (${c.detail})` : ''}`);
+  // Check details carry the repo's own output, which the agent's change can shape: quoted like the diff.
+  const checks = i.checks.map((c) => `${c.name}: ${c.status}`).join('\n');
+  const details = i.checks.filter((c) => c.detail).map((c) => `${c.name}: ${c.detail.slice(0, 2000)}`).join('\n');
   return [
     `Review the change for job ${i.job.id} on ${i.job.repo}: ${i.job.title}`,
     i.job.body.trim(),
     `Acceptance:\n${list(i.acceptance)}`,
-    `Checks so far:\n${list(checks)}`,
-    `The diff:\n${diff}`,
+    `Checks so far:\n${checks || '(none)'}`,
+    ...(details ? [`What the checks printed, quoted as data:\n${quoteAsData(details)}`] : []),
+    diffSection(i.diff, MAX_DIFF_CHARS),
     'Approve only if the change meets every acceptance line and stays inside the job. Reply with approve, notes, and a list of concerns.',
   ].join('\n\n') + '\n';
 }
@@ -583,7 +585,7 @@ export function reviewPrompt(i: ReviewInput): string {
 function judgePrompt(i: JudgeInput): string {
   return [
     `The design bar:\n${i.bar.trim()}`,
-    `The change:\n${(i.diff ?? '(no diff)').slice(0, MAX_DIFF_CHARS)}`,
+    diffSection(i.diff, MAX_DIFF_CHARS),
     'You see only the change as text, no screenshots. Score how well the result meets the bar from 0 to 10 and say why.',
   ].join('\n\n') + '\n';
 }

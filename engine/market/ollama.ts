@@ -16,6 +16,7 @@ import { getRunner } from '../exec.js';
 import { getSettings } from '../settings.js';
 import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
 import { installedModels, resolveModel } from './firms.js';
+import { diffSection } from './quote.js';
 import type { JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
 import { runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ToolSpec } from './toolloop.js';
 
@@ -279,11 +280,11 @@ export function cleanImages(list: string[]): string[] {
 
 /** The judge's prompt: with screenshots, or the diff text alone (ruling 13). */
 export function judgeText(i: JudgeInput, before: number, after: number): string {
-  const diff = (i.diff ?? '(no diff)').slice(0, MAX_DIFF_CHARS);
+  const diff = diffSection(i.diff, MAX_DIFF_CHARS);
   if (before + after === 0) {
     return [
       `The design bar:\n${i.bar.trim()}`,
-      `The change:\n${diff}`,
+      diff,
       'There are no screenshots: you see only the change as text. Score how well the result meets the bar from 0 to 10.',
       'Answer only with a JSON object: {"after": number, "notes": string}.',
     ].join('\n\n');
@@ -291,7 +292,7 @@ export function judgeText(i: JudgeInput, before: number, after: number): string 
   return [
     `The design bar:\n${i.bar.trim()}`,
     `You get ${before + after} screenshots: the first ${before} show the interface before the change, the last ${after} after it.`,
-    `The change, for reference:\n${diff}`,
+    diff,
     `Score each side from 0 to 10 against the bar.${before ? '' : ' There is no before screenshot: set before to null.'}`,
     'Answer only with a JSON object: {"before": number | null, "after": number, "notes": string}.',
   ].join('\n\n');

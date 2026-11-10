@@ -46,6 +46,7 @@ import {
   type SchedulerDeps,
 } from '../engine/market/runs.js';
 import { patchSettings } from '../engine/settings.js';
+import { getRepo, updateRepoMarket } from '../engine/repos.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Agent, Bid, CheckResult, Firm, Inspection, Job, ModelRef, Repo, Run } from '../shared/types.js';
 
@@ -594,6 +595,37 @@ test('the runner hands the baseline its signal and the install its egress', asyn
   assert.equal(baselines[0].sha, r.baseSha);
   assert.equal(baselines[0].signal, ctxs[0].signal);
   assert.equal(typeof ctxs[0].egress?.setStage, 'function');
+});
+
+test('the real inspection is the default: a third failed inspection halts the repo, and its run still ends failed with a scar', async () => {
+  useScript({});
+  makeRepo();
+  updateRepoMarket(FULL, { strikes: 2 });
+  addAgent('rev', 'beta', 'claude:sonnet');
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  // The job's scope is docs only; the fake work writes src/header.ts.
+  const stored = job(j.id)!;
+  openDb().prepare('UPDATE jobs SET json = ? WHERE id = ?').run(JSON.stringify({ ...stored, scope: ['docs/**'] }), j.id);
+  const other = postJob(FULL, 'Another job on the same repo');
+  const d = deps().deps;
+  delete (d as Partial<SchedulerDeps>).inspect;
+  const s = createScheduler(d);
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(r.endedReason, 'The change failed inspection.');
+  assert.equal(r.outcome, 'failed', 'the run that halts its repo is not killed by its own halt');
+  assert.equal(r.scar, true);
+  assert.ok(r.inspectionId);
+  const verdict = entries().find((e) => e.kind === 'inspection.done')?.data as { reviewerFirmId: string; passed: boolean };
+  assert.equal(verdict.passed, false);
+  assert.equal(verdict.reviewerFirmId, 'beta');
+  const repo = getRepo(FULL)!;
+  assert.equal(repo.strikes, 3);
+  assert.ok(repo.halted);
+  assert.equal(job(j.id)?.status, 'halted', 'its job waits halted with an attempt left');
+  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(other.id)?.status, 'halted');
 });
 
 test('resuming a repo puts a halted waiting job back to waiting and does not re-bid it', async () => {

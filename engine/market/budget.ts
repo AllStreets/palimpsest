@@ -589,6 +589,17 @@ export function acquire(
 }
 
 /**
+ * Why a call on `model` costing `estimate` credits may not start now, or
+ * null: the same gate acquire() and Lease.sub() apply, without taking a
+ * lease (the reviewer pick reads it before the review takes its sub-lease).
+ */
+export function callPaused(model: ModelRef, estimate: number, now: number = Date.now()): Paused | null {
+  const c = core(now);
+  noteHard(c);
+  return gate(poolOf(model), estimate, c);
+}
+
+/**
  * Aborts a lease and every sub-lease under it (the runner's kill: the stop
  * file, him, a halt). The slot stays held until the holder releases it.
  */

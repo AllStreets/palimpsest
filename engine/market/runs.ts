@@ -78,6 +78,7 @@ import {
 } from './budget.js';
 import { hostsFor, startEgress, type Egress } from './egress.js';
 import { agent as storedAgent } from './firms.js';
+import { inspect as guildInspect, inspectionSummary, type InspectContext } from '../guild/inspect.js';
 import { installDeps as defaultInstallDeps, type InstallDeps, type RunContext } from './install.js';
 import { attachRun, job as storedJob, listJobs, pollJobs as defaultPollJobs, transition, type PollDeps } from './jobs.js';
 import type { Provider, RunLogLine, Usage, WorkInput } from './provider.js';
@@ -146,8 +147,12 @@ export interface RunDiff {
   patchPath: string;
 }
 
-/** Task 15: the inspection, under the run's work lease (its signal aborts every check). */
-export type InspectFn = (run: Run, job: Job, repo: Repo, diff: RunDiff, lease: Lease) => Promise<Inspection>;
+/**
+ * Task 15: the inspection, under the run's work lease (its signal aborts
+ * every check). `ctx` carries the run's log and its egress proxy (a
+ * reinstall opens it to the registries, then closes it again).
+ */
+export type InspectFn = (run: Run, job: Job, repo: Repo, diff: RunDiff, lease: Lease, ctx?: InspectContext) => Promise<Inspection>;
 /** Task 16: shipping. Returns the run as it stands after (stage `waiting`, or ended with an outcome). */
 export type ShipFn = (run: Run, job: Job, repo: Repo, inspection: Inspection, signal: AbortSignal) => Promise<Run>;
 
@@ -214,7 +219,8 @@ function defaults(): Config {
   return {
     now: () => Date.now(),
     installDeps: defaultInstallDeps,
-    inspect: notWired('The inspection guild'),
+    // Called through a wrapper: inspect.ts imports this module too (haltRepo), so the binding is read at call time.
+    inspect: (...a) => guildInspect(...a),
     ship: notWired('Shipping'),
     pollJobs: defaultPollJobs,
     quiet: runQuiet,
@@ -464,7 +470,7 @@ function syncWatcher(): void {
 // ---------------------------------------------------------------- jobs
 
 /** Moves the run's job as its end says, when the job still belongs to this run. */
-function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'fail', exclude: boolean): void {
+function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'fail', exclude: boolean, summary?: string): void {
   const r = st.run;
   const cur = storedJob(r.jobId);
   if (!cur || cur.runId !== r.id || !LIVE_JOB.includes(cur.status)) return;
@@ -475,8 +481,12 @@ function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'fail', exclude: 
       return;
     }
     const excludedFirms = exclude && !cur.excludedFirms.includes(r.firmId) ? [...cur.excludedFirms, r.firmId] : cur.excludedFirms;
-    const failed = transition(cur, 'failed', { excludedFirms });
-    if (failed.attempts < MAX_ATTEMPTS) transition(failed, 'open', reopen);
+    const failed = transition(cur, 'failed', { excludedFirms }, summary ? { summary } : {});
+    if (failed.attempts < MAX_ATTEMPTS) {
+      const open = transition(failed, 'open', reopen);
+      // The repo was halted while this run finished (its own third failed inspection): the job waits halted too.
+      if (getRepo(r.repo)?.halted) transition(open, 'halted');
+    }
   } catch (err) {
     console.error(`palimpsest: run ${r.id} could not settle job ${r.jobId}: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -503,13 +513,13 @@ function checkpoint(st: LiveRun): void {
   if (st.lease.signal.aborted) throw new Killed(reasonOf(st));
 }
 
-function end(st: LiveRun, outcome: RunOutcome, reason: string | null, o: { job: 'reopen' | 'fail' | 'none'; exclude?: boolean; scar?: boolean }): Run {
+function end(st: LiveRun, outcome: RunOutcome, reason: string | null, o: { job: 'reopen' | 'fail' | 'none'; exclude?: boolean; scar?: boolean; summary?: string }): Run {
   st.run = { ...st.run, outcome, endedReason: reason, endedAt: iso(), stage: 'done', scar: !!o.scar, summary: st.summary };
   saveRun(st.run);
   record('run.ended', { runId: st.run.id, jobId: st.run.jobId, outcome, reason, summary: st.summary, run: st.run });
   emit('run.ended', { runId: st.run.id, outcome, reason });
   updateSite(st, o.scar ? 'scar' : outcome === 'merged' ? 'curing' : 'teardown');
-  if (o.job !== 'none') settleJob(st, o.job, !!o.exclude);
+  if (o.job !== 'none') settleJob(st, o.job, !!o.exclude, o.summary);
   engineLog(st, `run ended ${outcome}${reason ? `: ${reason}` : ''}`);
   return st.run;
 }
@@ -725,11 +735,16 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     setStage(st, 'inspecting');
     st.toolStage = 'checks';
     st.egress.setStage('checks', hostsFor('checks', ecosystems, null));
-    const inspection = await guarded(st, config.inspect(st.run, st.job, st.repo, diff, st.lease));
+    const inspection = await guarded(st, config.inspect(st.run, st.job, st.repo, diff, st.lease, { log, egress: st.egress }));
+    // A failed inspection that halts the repo does not kill this run: it still ends failed, with its scar.
+    if (!inspection.passed && !st.lease.signal.aborted) {
+      st.run = { ...st.run, inspectionId: inspection.id };
+      saveRun(st.run);
+      return end(st, 'failed', 'The change failed inspection.', { job: 'fail', exclude: true, scar: true, summary: inspectionSummary(inspection) });
+    }
     checkpoint(st);
     st.run = { ...st.run, inspectionId: inspection.id };
     saveRun(st.run);
-    if (!inspection.passed) return end(st, 'failed', 'The change failed inspection.', { job: 'fail', exclude: true, scar: true });
 
     st.job = transition(storedJob(st.job.id) ?? st.job, 'shipping');
     setStage(st, 'shipping');
@@ -939,18 +954,21 @@ export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Pr
  * Records `repo.halted`. Tasks 15 and 16 call it for three failed
  * inspections and for a revert.
  */
-export function haltRepo(fullName: string, reason: string, at: string = new Date().toISOString()): Repo {
+export function haltRepo(fullName: string, reason: string, at: string = new Date().toISOString(), o: { exceptRun?: string } = {}): Repo {
   const repo = updateRepoMarket(fullName, { halted: { at, reason } });
   record('repo.halted', { repo: fullName, reason, at });
   emit('repo.halted', { repo });
+  const spared = o.exceptRun ? (live.get(o.exceptRun)?.run.jobId ?? run(o.exceptRun)?.jobId ?? null) : null;
   for (const j of listJobs({ repo: fullName, status: HALTABLE })) {
+    // The run that halts its own repo (its inspection was the third failure) settles its job itself.
+    if (j.id === spared) continue;
     try {
       transition(j, 'halted');
     } catch (err) {
       console.error(`palimpsest: could not halt job ${j.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  for (const st of [...live.values()]) if (st.run.repo === fullName) kill(st.run.id, `The market on ${fullName} is halted: ${reason}`);
+  for (const st of [...live.values()]) if (st.run.repo === fullName && st.run.id !== o.exceptRun) kill(st.run.id, `The market on ${fullName} is halted: ${reason}`);
   return repo;
 }
 
