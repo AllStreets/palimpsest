@@ -14,8 +14,8 @@ import { entries, record } from '../engine/ledger.js';
 import { charge } from '../engine/market/budget.js';
 import { hire, seedFirms } from '../engine/market/firms.js';
 import { postManualJob, proposeHarnessJob, transition } from '../engine/market/jobs.js';
-import { latestReport, writeDailyReport } from '../engine/market/report.js';
-import { haltRepo } from '../engine/market/runs.js';
+import { backfillReports, ensureDailyReport, latestReport, latestReportDay, writeDailyReport } from '../engine/market/report.js';
+import { createScheduler, haltRepo } from '../engine/market/runs.js';
 import { installTreasury } from '../engine/market/treasury.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Bid, Job, Repo, Run } from '../shared/types.js';
@@ -160,15 +160,22 @@ test('the daily report lists the day\'s merges and spend and says what waits on 
   assert.match(md, /assumed|measured/, 'the calibration');
   assert.match(md, /hired/i);
   // What waits on him.
-  const waits = md.slice(md.indexOf('## Waiting on you'));
   assert.ok(md.includes('## Waiting on you'), md);
+  const waits = md.slice(md.indexOf('## Waiting on you'), md.indexOf('## Jobs'));
   assert.match(waits, new RegExp(harness.title));
   assert.match(waits, /#41/);
   assert.match(waits, /acme\/gears is halted/);
-  assert.match(waits, /merged with his changes/);
-  assert.match(waits, /nobody was paid 40 credits/);
-  assert.match(waits, /needs a reviewer/);
+  assert.match(waits, /\*\*A login refresh was refused\.\*\*/, 'each note has a title line');
   assert.match(waits, /login refresh host refused/);
+  // Notes that ask nothing of him, or whose question is answered, are only in the day's history.
+  assert.doesNotMatch(waits, /merged with his changes|nobody was paid 40 credits|needs a reviewer/);
+  const history = md.slice(md.indexOf('## Notes'));
+  assert.ok(md.includes('## Notes'), md);
+  assert.match(history, /\*\*Merged with your changes\.\*\* acme\/widgets, "Fix the header"\./);
+  assert.match(history, /merged with his changes: 1 commit/);
+  assert.match(history, /\*\*Merged after its firm went bankrupt, so nobody was paid\.\*\*/);
+  assert.match(history, /nobody was paid 40 credits/);
+  assert.match(history, /\*\*Needs a reviewer\.\*\*/);
   assert.doesNotMatch(md, /recorded for push mode/, 'bookkeeping notes are not his');
   // Plain and in his style.
   assert.doesNotMatch(md, /\u2014|\u2013|--/);
@@ -192,4 +199,103 @@ test('a quiet day says so plainly and latestReport is null before any report', (
   assert.match(md, /Nothing waits on you\./);
   assert.match(md, /No jobs were posted/);
   assert.doesNotMatch(md, /\u2014|--/);
+});
+
+test('a note drops out of what waits on him once answered, and stays in that day\'s history', () => {
+  seedFirms([]);
+  addRepo(FULL);
+  let j = postManualJob({ repo: FULL, title: 'Fix the footer', body: 'Change it.', tier: 'normal' });
+  for (const to of ['bidding', 'awarded', 'running', 'inspecting'] as const) j = transition(j, to);
+  j = transition(j, 'halted', { haltNote: 'needs a reviewer: the third inspection in a row could not reach a verdict' });
+  record('run.note', { runId: 'run-q', jobId: j.id, repo: FULL, note: 'needs a reviewer: the third inspection in a row could not reach a verdict', inconclusive: 3, at: new Date().toISOString() });
+  record('run.note', { runId: 'run-w', jobId: j.id, repo: FULL, note: 'merged with changes: the PR head was 1234567, not the inspected 89abcde', at: new Date().toISOString() });
+  record('run.note', { runId: 'run-l', note: 'login refresh host refused: auth.example.com' });
+
+  const before = writeDailyReport(localDay());
+  const waitsBefore = before.slice(before.indexOf('## Waiting on you'), before.indexOf('## Jobs'));
+  assert.match(waitsBefore, /"Fix the footer" on acme\/widgets is halted/);
+  assert.match(waitsBefore, /Merged with changes the city did not make/);
+  assert.match(waitsBefore, /A login refresh was refused/);
+
+  // He resumes the job, and a later Claude run gets past its login.
+  transition(j, 'open', { haltNote: null });
+  record('run.ended', { runId: 'run-ok', jobId: 'job-z', outcome: 'merged', reason: null, summary: null, run: { id: 'run-ok', jobId: 'job-z', model: 'claude:sonnet' } });
+  const after = writeDailyReport(localDay());
+  const waitsAfter = after.slice(after.indexOf('## Waiting on you'), after.indexOf('## Jobs'));
+  assert.doesNotMatch(waitsAfter, /is halted|login refresh|Needs a reviewer/);
+  assert.match(waitsAfter, /Merged with changes the city did not make/, 'a note with no answer on record stays');
+  const history = after.slice(after.indexOf('## Notes'));
+  assert.match(history, /\*\*Needs a reviewer\.\*\*[^\n]*\n[^\n]*Answered since\./);
+  assert.match(history, /\*\*A login refresh was refused\.\*\*[^\n]*\n[^\n]*Answered since\./);
+});
+
+test('outside text is redacted and plain: tokens, home paths, long dashes, double hyphens and emojis', () => {
+  seedFirms([]);
+  addRepo(FULL);
+  const token = `ghp_${'A1b2C3d4'.repeat(4)}`;
+  const hostile = `Fix it \u2014 now -- with \u{1F680}\u{1F44D}\u{1F3FD} ${token} from /Users/someone/secret/notes.txt`;
+  let j = postManualJob({ repo: FULL, title: hostile, body: 'x', tier: 'normal' });
+  for (const to of ['bidding', 'awarded', 'running', 'inspecting'] as const) j = transition(j, to);
+  record('run.ended', { runId: 'run-h', jobId: j.id, outcome: 'failed', reason: `The run crashed \u2013 see /Users/someone/.ssh/id_rsa -- key sk-ant-${'x'.repeat(30)} \u{1F525}`, summary: null, run: { id: 'run-h', jobId: j.id } });
+  j = transition(j, 'failed');
+  haltRepo(FULL, `Halted \u2014 ${token} \u{1F6D1}`);
+  record('run.note', { runId: 'run-h', jobId: j.id, repo: FULL, note: `merged with changes -- ${token} at /Users/someone/x \u{1F600}`, at: new Date().toISOString() });
+
+  const md = writeDailyReport(localDay());
+  const stored = JSON.stringify(entries().filter((e) => e.kind === 'report.written').at(-1)?.data);
+  for (const [what, text] of [['the page', md], ['the ledger', stored]] as const) {
+    assert.ok(!text.includes(token), `${what} holds the token`);
+    assert.ok(!text.includes('sk-ant-'), `${what} holds the key`);
+    assert.ok(!/\/Users\/someone/.test(text), `${what} holds a home path`);
+    assert.doesNotMatch(text, /\u2014|\u2013|--/, `${what} holds a dash`);
+    assert.doesNotMatch(text, /\p{Extended_Pictographic}/u, `${what} holds an emoji`);
+  }
+  assert.match(md, /Fix it, now, with \[redacted\] from \[path\]/);
+  assert.match(md, /\[redacted\]/);
+});
+
+test('a day the engine was down across midnight is reported at the next start, and the scheduler picks up from the newest report', async () => {
+  const at = (y: number, m: number, d: number, h: number, min = 0) => new Date(y, m - 1, d, h, min).getTime();
+  const put = (ms: number, kind: string, data: object) =>
+    openDb().prepare('INSERT INTO ledger (at, kind, json) VALUES (?, ?, ?)').run(new Date(ms).toISOString(), kind, JSON.stringify(data));
+  // Day 7 was reported; day 8 the engine ran until 23:50 and stopped; day 9 nothing happened.
+  put(at(2026, 11, 7, 12), 'repo.connected', { repo: FULL });
+  put(at(2026, 11, 7, 23, 59), 'report.written', { day: '2026-11-07', path: null, data: {} });
+  put(at(2026, 11, 8, 23, 50), 'repo.analyzed', { repo: FULL, floors: 3 });
+  // The engine starts again on day 10 at 00:10.
+  const start = at(2026, 11, 10, 0, 10);
+  assert.deepEqual(backfillReports(start), ['2026-11-08']);
+  assert.ok(existsSync(join(paths().reports, '2026-11-08.md')));
+  assert.deepEqual(backfillReports(start), [], 'a second start writes nothing again');
+  assert.equal(latestReportDay(), '2026-11-08');
+
+  // The scheduler seeds its last day from the newest report: its first tick asks for day 8 again, which is already written.
+  let clock = start;
+  const asked: string[] = [];
+  const s = createScheduler({
+    now: () => clock,
+    lastDay: latestReportDay(),
+    installDeps: async () => ({ name: 'install', status: 'skipped', detail: '', durationMs: 0, logPath: null, testsRun: null }),
+    inspect: async () => {
+      throw new Error('no runs here');
+    },
+    ship: async () => {
+      throw new Error('no runs here');
+    },
+    pollJobs: async () => [],
+    preflight: async () => null,
+    watchMs: 0,
+    daily: async (day) => {
+      asked.push(day);
+      ensureDailyReport(day);
+    },
+  });
+  await s.tick();
+  // Midnight passes with the engine up: day 10 is reported once.
+  clock = at(2026, 11, 11, 0, 5);
+  await s.tick();
+  await s.stop();
+  assert.deepEqual(asked, ['2026-11-08', '2026-11-10']);
+  const days = entries().filter((e) => e.kind === 'report.written').map((e) => (e.data as { day: string }).day);
+  assert.deepEqual(days, ['2026-11-07', '2026-11-08', '2026-11-10']);
 });

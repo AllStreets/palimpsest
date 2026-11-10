@@ -20,7 +20,7 @@ import { listRepos } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
 import { listAgents, listFirms } from './firms.js';
-import { job as storedJob, listJobs } from './jobs.js';
+import { job as storedJob, listJobs, publicSummary } from './jobs.js';
 import { listRuns, run as storedRun } from './runs.js';
 
 export interface ReportJob {
@@ -59,12 +59,15 @@ export interface ReportData {
   bankruptcies: Array<{ firmId: string; name: string }>;
   sales: Array<{ agentId: string; from: string; to: string; price: number }>;
   hires: Array<{ agentId: string; name: string; firmId: string }>;
+  /** Every note the city wrote for him that day, answered or not. */
+  notes: ReportNote[];
   waiting: {
     prs: Array<ReportJob & { number: number; url: string | null; firmId: string; since: string }>;
     proposed: ReportJob[];
     haltedRepos: Array<{ repo: string; reason: string; at: string }>;
     haltedJobs: Array<ReportJob & { note: string }>;
-    notes: Array<{ repo: string | null; jobId: string | null; runId: string | null; title: string | null; note: string; at: string }>;
+    /** The day's notes that ask something of him and are not yet answered. */
+    notes: ReportNote[];
   };
 }
 
@@ -87,10 +90,27 @@ const num = (n: number) => round2(n).toLocaleString('en-US', { maximumFractionDi
 const usd = (n: number) => `$${round2(n).toFixed(2)}`;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** A cell or line of text from outside (an issue title, a model's note): one line, no table breaks. */
+/**
+ * Text from outside the city (a GitHub title, a model's summary, a run or
+ * halt reason, a note) as the report may hold it: redacted as a public
+ * comment is (home paths, token-shaped strings), with dashes used as
+ * punctuation turned into commas and emojis dropped, on one line.
+ */
+export function plain(text: string, max = 600): string {
+  const s = publicSummary(String(text ?? ''))
+    .replace(/\s*(?:\u2014|\u2013|\u2012|\u2015|-{2,})\s*/g, ', ')
+    .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u200D\uFE0F\u20E3]/gu, '')
+    .replace(/(?:,\s*){2,}/g, ', ')
+    .replace(/^\s*,\s*|\s*,\s*$/g, '')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s.length > max ? `${s.slice(0, max - 3).trimEnd()}...` : s;
+}
+
+/** A cell or line of outside text for the page: plain, and no table breaks. */
 function clean(s: string, max = 240): string {
-  const one = s.replace(/\s+/g, ' ').replace(/\|/g, '/').trim();
-  return one.length > max ? `${one.slice(0, max - 3)}...` : one;
+  return plain(s, max).replace(/\|/g, '/');
 }
 
 /** Text ending as a sentence does. */
@@ -105,7 +125,48 @@ function listOf(xs: string[]): string {
 }
 
 function jobRef(j: Pick<Job, 'id' | 'repo' | 'title'> | null, id: string): ReportJob {
-  return { id, repo: j?.repo ?? '', title: j?.title ?? id };
+  return { id, repo: j?.repo ?? '', title: plain(j?.title ?? id, 240) };
+}
+
+/** What kind of note the city wrote for him, its title line, and whether it asks something of him. */
+const NOTE_KINDS: Array<{ kind: string; test: RegExp; heading: string; asks: boolean }> = [
+  { kind: 'his-changes', test: /^merged with his changes/i, heading: 'Merged with your changes', asks: false },
+  { kind: 'merged-with-changes', test: /^merged with changes/i, heading: 'Merged with changes the city did not make, so nobody was paid', asks: true },
+  { kind: 'unpaid', test: /^merged after .* went bankrupt/i, heading: 'Merged after its firm went bankrupt, so nobody was paid', asks: false },
+  { kind: 'needs-reviewer', test: /needs a reviewer|could not reach a verdict/i, heading: 'Needs a reviewer', asks: true },
+  { kind: 'login-refresh', test: /login refresh host refused/i, heading: 'A login refresh was refused', asks: true },
+];
+
+export interface ReportNote {
+  kind: string;
+  heading: string;
+  repo: string | null;
+  jobId: string | null;
+  runId: string | null;
+  title: string | null;
+  note: string;
+  at: string;
+  /** Asks something of him. */
+  asks: boolean;
+  /** What it asked is already done (the job left its halt, a later Claude run logged in). */
+  resolved: boolean;
+}
+
+/** Whether a note's question has been answered since it was written. */
+function resolvedNote(kind: string, jobId: string | null, afterId: number): boolean {
+  if (kind === 'needs-reviewer') {
+    const j = jobId ? storedJob(jobId) : null;
+    // The halted job itself is listed while it waits; once it left the halt the note is history.
+    return !j || j.status !== 'halted' || !j.haltNote;
+  }
+  if (kind === 'login-refresh') {
+    // A later Claude run that got past its login answers it.
+    return query({ kind: 'run.ended', since: afterId }).some((e) => {
+      const d = e.data as { reason?: string | null; run?: { model?: string } };
+      return d.run?.model?.startsWith('claude:') === true && !/login refresh host refused/i.test(d.reason ?? '');
+    });
+  }
+  return false;
 }
 
 /** Gathers the day's data. */
@@ -190,12 +251,12 @@ export function reportData(day: string): ReportData {
   // Halts, reverts, firms.
   const halts = inDay('repo.halted').map((e) => {
     const d = e.data as { repo: string; reason: string; at?: string };
-    return { repo: d.repo, reason: d.reason, at: d.at ?? e.at };
+    return { repo: d.repo, reason: plain(d.reason ?? ''), at: d.at ?? e.at };
   });
   const resumes = inDay('repo.resumed').map((e) => ({ repo: (e.data as { repo: string }).repo, at: e.at }));
   const reverts = inDay('merge.reverted').map((e) => {
     const d = e.data as { repo: string; jobId?: string; mergeSha?: string };
-    return { repo: d.repo, jobId: d.jobId ?? null, title: d.jobId ? (storedJob(d.jobId)?.title ?? d.jobId) : 'a city merge', mergeSha: d.mergeSha ?? null };
+    return { repo: d.repo, jobId: d.jobId ?? null, title: plain(d.jobId ? (storedJob(d.jobId)?.title ?? d.jobId) : 'a city merge', 240), mergeSha: d.mergeSha ?? null };
   });
   const bankruptcies = inDay('firm.bankrupt').map((e) => {
     const id = (e.data as { firmId: string }).firmId;
@@ -218,18 +279,32 @@ export function reportData(day: string): ReportData {
   const proposed = listJobs({ status: 'proposed' }).map((j) => jobRef(j, j.id));
   const haltedRepos = listRepos()
     .filter((r) => r.halted)
-    .map((r) => ({ repo: r.fullName, reason: r.halted!.reason, at: r.halted!.at }));
+    .map((r) => ({ repo: r.fullName, reason: plain(r.halted!.reason), at: r.halted!.at }));
   const haltedJobs = listJobs({ status: 'halted' })
     .filter((j) => j.haltNote)
-    .map((j) => ({ ...jobRef(j, j.id), note: j.haltNote as string }));
-  const notes = inDay('run.note')
+    .map((j) => ({ ...jobRef(j, j.id), note: plain(j.haltNote as string) }));
+  const notes: ReportNote[] = inDay('run.note')
     .map((e) => ({ e, d: e.data as { repo?: string; jobId?: string; runId?: string; note?: string; internal?: boolean; at?: string } }))
     .filter(({ d }) => typeof d.note === 'string' && d.note && !isBookkeeping(d))
     .map(({ e, d }) => {
       // A note that names only its run (a refused login refresh) is placed by the run.
       const r = d.runId && (!d.repo || !d.jobId) ? storedRun(d.runId) : null;
       const jobId = d.jobId ?? r?.jobId ?? null;
-      return { repo: d.repo ?? r?.repo ?? null, jobId, runId: d.runId ?? null, title: jobId ? (storedJob(jobId)?.title ?? null) : null, note: d.note as string, at: d.at ?? e.at };
+      const title = jobId ? (storedJob(jobId)?.title ?? null) : null;
+      const k = NOTE_KINDS.find((x) => x.test.test(d.note as string));
+      const kind = k?.kind ?? 'note';
+      return {
+        kind,
+        heading: k?.heading ?? 'A note from the city',
+        repo: d.repo ?? r?.repo ?? null,
+        jobId,
+        runId: d.runId ?? null,
+        title: title === null ? null : plain(title, 240),
+        note: plain(d.note as string),
+        at: d.at ?? e.at,
+        asks: k?.asks ?? true,
+        resolved: resolvedNote(kind, jobId, e.id),
+      };
     });
 
   return {
@@ -258,7 +333,8 @@ export function reportData(day: string): ReportData {
     bankruptcies,
     sales,
     hires,
-    waiting: { prs, proposed, haltedRepos, haltedJobs, notes },
+    notes,
+    waiting: { prs, proposed, haltedRepos, haltedJobs, notes: notes.filter((n) => n.asks && !n.resolved) },
   };
 }
 
@@ -279,7 +355,7 @@ function whyFailed(jobId: string, beforeId: number): string {
     const summary = (insp?.data as { summary?: string; passed?: boolean } | undefined);
     if (summary && summary.passed === false && summary.summary) why += ` ${summary.summary.trim()}`;
   }
-  return why;
+  return plain(why);
 }
 
 // ---------------------------------------------------------------- the page
@@ -291,6 +367,12 @@ function longDay(day: string): string {
 
 function table(head: string[], body: string[][]): string[] {
   return [`| ${head.join(' | ')} |`, `|${head.map(() => ':-').join('|')}|`, ...body.map((r) => `| ${r.join(' | ')} |`)];
+}
+
+/** A note as two lines: its title, then where and what it says. */
+function noteLines(n: ReportNote, after: string | null = null): string[] {
+  const where = [n.repo, n.title ? `"${clean(n.title)}"` : null].filter(Boolean).join(', ');
+  return [`- **${n.heading}.**${where ? ` ${where}.` : ''}`, `  ${sentence(clean(n.note, 400))}${after ? ` ${after}` : ''}`];
 }
 
 /** The page he reads, from the day's data. */
@@ -320,7 +402,7 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
   for (const j of waiting.proposed) waits.push(`- A proposed job on ${j.repo}, "${clean(j.title)}". Nothing bids on it until you accept it on the job board or the district page.`);
   for (const h of waiting.haltedRepos) waits.push(`- ${h.repo} is halted: ${sentence(clean(h.reason))} The market there stays off until you resume it.`);
   for (const j of waiting.haltedJobs) waits.push(`- "${clean(j.title)}" on ${j.repo} is halted: ${sentence(clean(j.note))}`);
-  for (const n of waiting.notes) waits.push(`- ${[n.repo, n.title ? `"${clean(n.title)}"` : null].filter(Boolean).join(', ')}${n.repo || n.title ? ': ' : ''}${sentence(clean(n.note, 400))}`);
+  for (const n of waiting.notes) waits.push(...noteLines(n));
   out.push(...(waits.length ? waits : ['Nothing waits on you.']), '');
 
   // Jobs.
@@ -379,6 +461,13 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
   for (const h of r.resumes) hr.push(`- ${h.repo} was resumed.`);
   out.push(...(hr.length ? hr : ['No repo was halted and no merge was reverted.']), '');
 
+  // The day's notes, answered or not.
+  if (r.notes.length) {
+    out.push('## Notes', '');
+    for (const n of r.notes) out.push(...noteLines(n, n.asks && n.resolved ? 'Answered since.' : null));
+    out.push('');
+  }
+
   // Firms.
   out.push('## Firms', '');
   const fs: string[] = [];
@@ -416,4 +505,51 @@ export function latestReport(): { day: string; markdown: string; data: ReportDat
   const path = d.path ?? join(paths().reports, `${d.day}.md`);
   const markdown = existsSync(path) ? readFileSync(path, 'utf8') : '';
   return { day: d.day, markdown, data: d.data };
+}
+
+/** The local day (YYYY-MM-DD) that holds `ms`. */
+export function localDay(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Every day a report was written for. */
+function reportedDays(): Set<string> {
+  return new Set(query({ kind: 'report.written' }).map((e) => (e.data as { day: string }).day));
+}
+
+/** The day of the newest report written, or null: the scheduler's last day seen after a restart. */
+export function latestReportDay(): string | null {
+  return latestReport()?.day ?? null;
+}
+
+/** Writes the report for `day` unless one was already written; the Markdown, or null when it was there. */
+export function ensureDailyReport(day: string): string | null {
+  if (reportedDays().has(day)) return null;
+  return writeDailyReport(day);
+}
+
+/**
+ * At engine start (Task 18 ruling): every past local day that has ledger
+ * entries and no `report.written` gets its report, so a day the engine was
+ * stopped across midnight is never skipped. Today is left to the
+ * scheduler. Returns the days written, oldest first.
+ */
+export function backfillReports(now: number = Date.now()): string[] {
+  const first = openDb().prepare("SELECT MIN(at) AS at FROM ledger WHERE kind != 'report.written'").get() as { at: string | null } | undefined;
+  if (!first?.at) return [];
+  const today = localDay(now);
+  const done = reportedDays();
+  const has = openDb().prepare("SELECT 1 AS x FROM ledger WHERE at >= ? AND at < ? AND kind != 'report.written' LIMIT 1");
+  const written: string[] = [];
+  const t = new Date(Date.parse(first.at));
+  for (let d = new Date(t.getFullYear(), t.getMonth(), t.getDate()); localDay(d.getTime()) < today; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
+    const day = localDay(d.getTime());
+    if (done.has(day)) continue;
+    const { from, to } = bounds(day);
+    if (!has.get(from, to)) continue;
+    writeDailyReport(day);
+    written.push(day);
+  }
+  return written;
 }

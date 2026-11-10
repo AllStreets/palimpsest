@@ -173,6 +173,8 @@ export interface SchedulerDeps {
   watchReverts?: (now: number) => Promise<void>;
   /** Tasks 17 and 18: the daily tick, called once a local day has ended, with that day (YYYY-MM-DD). */
   daily?: (day: string) => Promise<void>;
+  /** The last local day already seen (the newest daily report's day after a restart), so the day that ended while the engine was down still gets its daily call. */
+  lastDay?: string | null;
   /** Kills the run's strays and confirms none is left (default runQuiet). */
   quiet?: (runRoot: string) => Promise<void>;
   /** Kills whatever of the run is left at its end (default reapRun). */
@@ -196,7 +198,7 @@ export interface Scheduler {
   watch(): void;
 }
 
-type Optional = 'baseline' | 'pollPRs' | 'watchReverts' | 'daily' | 'runWallMs';
+type Optional = 'baseline' | 'pollPRs' | 'watchReverts' | 'daily' | 'runWallMs' | 'lastDay';
 type Config = Required<Omit<SchedulerDeps, Optional>> & Pick<SchedulerDeps, Optional>;
 
 let preflightOk: Promise<string | null> | null = null;
@@ -1054,7 +1056,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
   const lastPoll = new Map<string, number>();
   const collecting = new Set<string>();
-  let lastDay: string | null = null;
+  let lastDay: string | null = config.lastDay ?? null;
   let lastRefusal: string | null = null;
   let timer: NodeJS.Timeout | null = null;
   let current: Promise<void> | null = null;

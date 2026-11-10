@@ -7,7 +7,7 @@ import { inspect } from './guild/inspect.js';
 import { installDeps } from './market/install.js';
 import { pollPRs, ship, watchReverts } from './market/ship.js';
 import { bankruptcyTick, dailyTick, DAY_MS, HOUR_MS, installTreasury } from './market/treasury.js';
-import { writeDailyReport } from './market/report.js';
+import { backfillReports, ensureDailyReport, latestReportDay } from './market/report.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { startServer } from './server.js';
@@ -45,7 +45,15 @@ async function main(): Promise<void> {
   console.log(`Palimpsest engine listening on 127.0.0.1:${port} (stop file ${stopped ? 'present' : 'absent'})`);
   // The scheduler always starts; each tick does nothing while the stop file is set, so clearing it
   // resumes the market without a restart.
+  // Task 18 ruling: a past day with ledger entries and no report (the engine was down at midnight) gets one now,
+  // and the scheduler's last day seen starts from the newest report, so the day in progress is reported when it ends.
+  try {
+    backfillReports();
+  } catch (err) {
+    console.error('palimpsest: the daily report backfill failed:', err);
+  }
   const scheduler = createScheduler({
+    lastDay: latestReportDay(),
     installDeps,
     // Ruling 12: the repo's checks at the run's base commit, cached per sha, in its own run root.
     baseline,
@@ -58,7 +66,7 @@ async function main(): Promise<void> {
     watchReverts,
     // Task 18: once a local day has ended, its report (reports/<day>.md) says what the market did and what waits on him.
     daily: async (day) => {
-      writeDailyReport(day);
+      ensureDailyReport(day);
     },
   });
   scheduler.start();
