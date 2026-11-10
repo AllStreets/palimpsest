@@ -1361,9 +1361,11 @@ const GLARE_VERT = /* glsl */ `
   varying float vSoft;
   void main() {
     vQuad = position.xy;
-    vColor = iColor;
     vSoft = iSize.z;
     vec4 c = viewMatrix * vec4(iPos, 1.0);
+    // A haze is lit air seen from afar: close to the site (or inside it) it fades out, or it would veil the whole view.
+    float far = -c.z;
+    vColor = iColor * mix(1.0, smoothstep(iSize.x * 3.0, iSize.x * 9.0, far), iSize.z);
     // A world size, but never under a few pixels: from across the city a lamp still reads as a lamp.
     float size = max(iSize.x, -c.z * uPixel * iSize.y);
     c.xy += position.xy * size;
@@ -1388,15 +1390,27 @@ const GLARE_FRAG = /* glsl */ `
   }
 `;
 
+/** How much of the budget's peak the floods use: lit steel by the heads keeps contrast, well under the threshold. */
+const FLOOD_GAIN = 0.55;
+/** Inside this the floods' light is held level (a head's lens is not a point); past the window it is gone. */
+const FLOOD_NEAR = 3;
+const FLOOD_WINDOW: [number, number] = [6, 14];
+/**
+ * The floods' colour on the steel: sodium-warm, mixed with white so it warms
+ * the paint without repainting it (primer stays red, the crane stays yellow).
+ */
+export const FLOOD_TINT = new THREE.Color(1, 1, 1).lerp(new THREE.Color(FLOOD.color), 0.6);
+
 /**
  * How bright steel of `albedo` looks `d` metres from a flood head, after
- * exposure: the shader's flood term in JS. A flood throws a beam, not a bare
- * bulb's sphere, so it falls off with distance rather than its square; up to
- * three metres it is held at the budget's level (post.ts FLOOD), so nothing
- * it lights ever blooms.
+ * exposure: the shader's flood term in JS. Inverse square, held level inside
+ * three metres and windowed away steeply past six, so a flood lights its
+ * deck and the frame round it and leaves the rest of the site night steel.
+ * At its brightest it is about half the budget (post.ts FLOOD).
  */
 export function floodRadiance(d: number, albedo: number): number {
-  return (FLOOD.peak / (3 * Math.max(d, 3))) * (albedo / Math.PI) * EXPOSURE;
+  const window = 1 - THREE.MathUtils.smoothstep(d, FLOOD_WINDOW[0], FLOOD_WINDOW[1]);
+  return ((FLOOD_GAIN * FLOOD.peak) / Math.max(d, FLOOD_NEAR) ** 2) * window * (albedo / Math.PI) * EXPOSURE;
 }
 
 /** The arc's glare colour at full burn, and the floodlights' (a warm sodium white). */
@@ -1407,7 +1421,7 @@ const FLOOD_GLARE = new THREE.Color(FLOOD.color).multiplyScalar(5.2);
  * brightest pixel well under the bloom threshold so it reads as lit air, not
  * as a lamp.
  */
-const DECK_HAZE = new THREE.Color(FLOOD.color).multiplyScalar(0.44);
+const DECK_HAZE = new THREE.Color(FLOOD.color).multiplyScalar(0.52);
 const FLOOR_HAZE = new THREE.Color(FLOOD.color).multiplyScalar(0.26);
 const MAX_FLOODS = MAX_SITES * 2;
 
@@ -1483,12 +1497,13 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: { pos: { v
           float d2 = max(dot(L, L), 1.0);
           float d = sqrt(d2);
           L /= d;
-          float reach = 1.0 - smoothstep(${(FLOOD.distance * 0.6).toFixed(1)}, ${FLOOD.distance.toFixed(1)}, d);
+          float reach = 1.0 - smoothstep(${FLOOD_WINDOW[0].toFixed(1)}, ${FLOOD_WINDOW[1].toFixed(1)}, d);
           float nl = max(dot(geometryNormal, L), 0.0);
           // A thin cloth or a beam seen from behind still glows a little with the light through it.
           nl = max(nl, 0.18 * max(dot(-geometryNormal, L), 0.0));
-          // A beam: it falls off with distance, held at the budget inside three metres (floodRadiance).
-          reflectedLight.directDiffuse += uFloodColor * (nl * reach / (3.0 * max(d, 3.0))) * BRDF_Lambert(material.diffuseColor);
+          // Inverse square, held level inside three metres and windowed away past six (floodRadiance).
+          float near = max(d, ${FLOOD_NEAR.toFixed(1)});
+          reflectedLight.directDiffuse += uFloodColor * (nl * reach / (near * near)) * BRDF_Lambert(material.diffuseColor);
         }`,
       );
   };
@@ -1531,7 +1546,7 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
   const group = new THREE.Group();
   group.name = 'construction-field';
   const sparkCount = quality === 'high' ? 720 : 300;
-  const floods = { pos: { value: Array.from({ length: MAX_FLOODS }, () => new THREE.Vector3()) }, count: { value: 0 }, color: { value: new THREE.Color(FLOOD.color).multiplyScalar(FLOOD.peak) } };
+  const floods = { pos: { value: Array.from({ length: MAX_FLOODS }, () => new THREE.Vector3()) }, count: { value: 0 }, color: { value: FLOOD_TINT.clone().multiplyScalar(FLOOD_GAIN * FLOOD.peak) } };
   const steelMat = floodLit(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.66, metalness: 0.35 }), floods, true);
   const net = netTextures();
   // White: each panel's own green comes in as its instance colour.

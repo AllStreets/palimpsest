@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { constructionState, floodRadiance, makeConstruction, makeConstructionField, makeHoist, netPanel, netTextures } from '../app/src/city/construction.js';
+import { constructionState, FLOOD_TINT, floodRadiance, makeConstruction, makeConstructionField, makeHoist, netPanel, netTextures } from '../app/src/city/construction.js';
 import { BLOOM_THRESHOLD, EXPOSURE, FLOOD } from '../app/src/city/post.js';
 import { workProgress } from '../engine/market/runs.js';
 import type { SiteStage, SiteState } from '../shared/types.js';
@@ -367,7 +367,17 @@ test('a lit site glows warm over its deck and top floors, and the floods light t
   let peak = 0;
   for (let d = 0.5; d < 40; d += 0.25) peak = Math.max(peak, floodRadiance(d, 0.6));
   assert.ok(peak <= BLOOM_THRESHOLD + 1e-9, `lit steel never blooms (${peak.toFixed(2)})`);
-  assert.ok(floodRadiance(10, 0.6) > 0.25, `the frame ten metres off is visibly lit (${floodRadiance(10, 0.6).toFixed(2)})`);
+  // Inverse square with a near clamp, windowed steeply past six metres: the deck and the near frame are lit, the rest stays night steel.
+  assert.ok(floodRadiance(4, 0.6) > 0.15, `steel by the floods is visibly lit (${floodRadiance(4, 0.6).toFixed(2)})`);
+  assert.ok(floodRadiance(10, 0.6) < 0.1 * floodRadiance(3, 0.6), `ten metres off it has fallen away (${floodRadiance(10, 0.6).toFixed(3)})`);
+  assert.equal(floodRadiance(16, 0.6), 0, 'and past its window it lights nothing');
+  for (let d = 3; d < 20; d += 0.5) assert.ok(floodRadiance(d + 0.5, 0.6) <= floodRadiance(d, 0.6), 'never brighter further off');
+  // Warm, but not so saturated that it repaints the steel: lit primer stays red and the crane stays yellow.
+  const hi = Math.max(FLOOD_TINT.r, FLOOD_TINT.g, FLOOD_TINT.b);
+  const sat = (hi - Math.min(FLOOD_TINT.r, FLOOD_TINT.g, FLOOD_TINT.b)) / hi;
+  const pure = new THREE.Color(FLOOD.color);
+  const pureSat = (Math.max(pure.r, pure.g, pure.b) - Math.min(pure.r, pure.g, pure.b)) / Math.max(pure.r, pure.g, pure.b);
+  assert.ok(sat < 0.6 && sat < pureSat * 0.7, `the flood's tint keeps the steel's own colour (saturation ${sat.toFixed(2)} against sodium ${pureSat.toFixed(2)})`);
   c.dispose();
   field.dispose();
 });
