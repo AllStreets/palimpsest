@@ -78,20 +78,27 @@ export const SEARCH_LIGHT = /* glsl */ `
     float sAlb = max(dot(material.diffuseColor, vec3(0.2126, 0.7152, 0.0722)), 0.04);
     float sE = min(uSearchCone[i].z * sSpot * sNl / (sNear * sNear), ${SEARCH_CAP.toExponential(4)} / sAlb);
     reflectedLight.directDiffuse += uSearchColor * sE * BRDF_Lambert(material.diffuseColor);
+    #ifdef SEARCH_GLINT
+      // Glass: the beam's glint, a broad sheen lobe of weathered, dusty glazing (a beam from the plaza below rakes the face, so the half vector to an eye out over the city sits well off the normal) (13% of the beam's irradiance about the
+      // half vector to the eye), held under 0.5 so it reads as a bright moving glint on the face and never burns out.
+      float sH = max(dot(geometryNormal, normalize(sL + geometryViewDir)), 0.0);
+      float sG = min(uSearchCone[i].z * sSpot / (sNear * sNear) * pow(sH, 4.0) * ${(SEARCH.peak * 0.13).toFixed(1)}, 0.5);
+      reflectedLight.directSpecular += normalize(uSearchColor) * 1.7 * sG;
+    #endif
   }
 `;
 
 /** Adds the searchlight term to a compiled shader, if it is a lit one. */
-export function injectSearch(shader: THREE.WebGLProgramParametersWithUniforms): void {
+export function injectSearch(shader: THREE.WebGLProgramParametersWithUniforms, glint = false): void {
   if (!shader.fragmentShader.includes('#include <lights_fragment_end>')) return;
   Object.assign(shader.uniforms, SEARCH_UNIFORMS);
   shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', `#include <common>\n${SEARCH_PARS}`)
+    .replace('#include <common>', `#include <common>\n${glint ? '#define SEARCH_GLINT\n' : ''}${SEARCH_PARS}`)
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${SEARCH_LIGHT}`);
 }
 
-/** The tower glass program is found by its key (batch.ts, the scene's window rows): it keeps it, and keeps its own light. */
-const KEEP = new Set(['palimpsest-tower-window']);
+/** Glossy, non-metal surfaces (glazing and curtain wall) show the beam's glint as well as its light. */
+const glossy = (m: THREE.MeshStandardMaterial): boolean => m.roughness < 0.25 && m.metalness < 0.5;
 
 /**
  * Lets a lit material take the searchlights: its own shader patch runs
@@ -102,13 +109,15 @@ export function searchLit(m: THREE.Material): void {
   if (m.userData.searchLit || !(m as THREE.MeshStandardMaterial).isMeshStandardMaterial) return;
   const own = m.customProgramCacheKey === THREE.Material.prototype.customProgramCacheKey ? null : m.customProgramCacheKey.bind(m);
   const ownKey = own ? own() : m.onBeforeCompile.toString();
-  if (KEEP.has(ownKey)) return;
+  const glint = glossy(m as THREE.MeshStandardMaterial);
   const prev = m.onBeforeCompile.bind(m);
   m.onBeforeCompile = (shader, renderer) => {
     prev(shader, renderer);
-    injectSearch(shader);
+    injectSearch(shader, glint);
   };
-  m.customProgramCacheKey = () => `${own ? own() : ownKey}|search`;
+  // A suffixed key, so the patched program is never one compiled before the patch (the tower glass is found by the
+  // prefix of its key: batch.ts, the scene's window rows).
+  m.customProgramCacheKey = () => `${own ? own() : ownKey}|search${glint ? '-glint' : ''}`;
   m.userData.searchLit = true;
   m.needsUpdate = true;
 }

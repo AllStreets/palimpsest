@@ -444,7 +444,8 @@ export function searchAims(clock: number, top: number, half: number, floorHeight
     const y = top + floorHeight * (0.55 + 0.22 * Math.sin((2 * Math.PI * clock) / (13 + 4 * i) + i * 1.9));
     const dir = new THREE.Vector3(x, y, z).sub(at).normalize();
     const length = enterBox(at, dir, min, max) ?? at.distanceTo(new THREE.Vector3(x, y, z));
-    out.push({ at, dir, length, r0: SEARCH_LENS_R, r1: Math.min(4.2, floorHeight * 0.85) });
+    // Focused wide enough that the spot covers the floor and, raking up the face from the plaza, the floors under it.
+    out.push({ at, dir, length, r0: SEARCH_LENS_R, r1: Math.min(7, floorHeight * 1.5) });
   }
   return out;
 }
@@ -2003,7 +2004,7 @@ const MAX_FLOODS = MAX_SITES * 2;
 /** The searchlights' lenses from in front, and the work lamp's, as glare; and the warm air round the work lamp. */
 const SEARCH_GLARE = new THREE.Color(1, 0.97, 0.92).multiplyScalar(9);
 const WORK_GLARE = new THREE.Color(WORK_LAMP.color).multiplyScalar(3.2);
-const WORK_HAZE = new THREE.Color(WORK_LAMP.color).multiplyScalar(0.42);
+const WORK_HAZE = new THREE.Color(WORK_LAMP.color).multiplyScalar(0.62);
 const SEARCH_HIT = new THREE.Color(1, 0.97, 0.92).multiplyScalar(0.24);
 
 /**
@@ -2589,7 +2590,7 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
           bShape.setXYZW(nb, l.length, l.r0, l.r1, 1);
           nb++;
           const half = Math.atan(l.r1 / l.length);
-          searchWorld.push({ at: from, dir: l.dir.clone(), cone: new THREE.Vector4(Math.cos(half), Math.cos(half * 0.45), searchThrow(l.length), l.length) });
+          searchWorld.push({ at: from, dir: l.dir.clone(), cone: new THREE.Vector4(Math.cos(half), Math.cos(half * 0.7), searchThrow(l.length), l.length) });
           const facing = eye ? Math.max(0, l.dir.dot(tmp.copy(eye).sub(from).normalize())) : 1;
           if (facing > 0.02) put(from.clone().addScaledVector(l.dir, 0.05), col.copy(SEARCH_GLARE).multiplyScalar(facing ** 3), 0.5, 5);
           // Where the beam meets the floor the haze round the spot is lit too: from across the city the floor reads as lit.
@@ -2598,10 +2599,11 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
         // The scar's work lamp: its lens and the warm air round it.
         const wl = s.workLamp();
         if (wl) {
-          // Sized for the distance: a lamp's core never under seven pixels, and the warm air round it a soft halo that
-          // reads from home and fades out as the camera comes close (the haze shader's near fade).
-          put(wl.at.clone().add(at), WORK_GLARE, 0.3, 7);
-          put(wl.light.clone().add(at), WORK_HAZE, 3.2, 22, 1);
+          // Sized for the distance: a lamp's core never under eight pixels, and the warm air round it a soft bloom whose
+          // visible glow is never under about sixteen pixels across, so it reads from home; it fades out as the camera
+          // comes close (the haze shader's near fade).
+          put(wl.at.clone().add(at), WORK_GLARE, 0.3, 8);
+          put(wl.light.clone().add(at), WORK_HAZE, 3.2, 20, 1);
         }
       });
       // The lamps, in world space, for every material the searchlights light (searchlight.ts).

@@ -592,7 +592,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const p = new THREE.Vector3();
     piece.object.traverse((o) => {
       const im = o as THREE.InstancedMesh;
-      if (!im.isInstancedMesh || !im.instanceColor || (im.material as THREE.Material).customProgramCacheKey?.() !== 'palimpsest-tower-window') return;
+      if (!im.isInstancedMesh || !im.instanceColor || !(im.material as THREE.Material).customProgramCacheKey?.().startsWith('palimpsest-tower-window')) return;
       for (let i = 0; i < im.count; i++) {
         im.getMatrixAt(i, m);
         p.setFromMatrixPosition(m).applyMatrix4(im.matrixWorld);

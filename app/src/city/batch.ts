@@ -70,7 +70,8 @@ function expand(im: THREE.InstancedMesh, world: THREE.Matrix4): THREE.BufferGeom
 /** The tower window glass draws each pane's room from its instance matrix (look.ts windowMaterial). */
 const WINDOW_PROGRAM = 'palimpsest-tower-window';
 function readsInstance(mat: THREE.Material): boolean {
-  return !!mat.userData.instanceData || mat.customProgramCacheKey() === WINDOW_PROGRAM;
+  // Matched by prefix: the city's searchlight pass suffixes the key (searchlight.ts).
+  return !!mat.userData.instanceData || mat.customProgramCacheKey().startsWith(WINDOW_PROGRAM);
 }
 
 /** True when `im` can be laid out as plain geometry and draw the same: see expand. */
