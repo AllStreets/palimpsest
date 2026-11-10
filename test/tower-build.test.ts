@@ -719,7 +719,8 @@ test('a scar floor has no panes', () => {
 
 test('a waiting floor has no lit panes', () => {
   for (const era of ERAS) {
-    const s = earnedSpec([earned(1, era, 'lit'), earned(2, era, 'waiting')]);
+    // A floor of another era above, so the waiting floor stands in its run's shaft rather than under a crown.
+    const s = earnedSpec([earned(1, era, 'lit'), earned(2, era, 'waiting'), earned(3, era === 'stone' ? 'glass' : 'stone', 'lit')]);
     const lay = layoutTower(s);
     const wait = lay.floors[s.datumIndex + 1];
     const t = buildTower(s, 'high', plainMaterials());
@@ -775,4 +776,80 @@ test('agent towers build at width 16', () => {
   const repo = buildTower(spec('chicago', 1), 'high', plainMaterials());
   const w3 = proxyBounds(proxyOf(repo, spec('chicago', 1).floors[0].id)).getSize(new THREE.Vector3()).x;
   assert.ok(w3 > FLOOR_WIDTH, 'a repo tower keeps the founding width');
+});
+
+// ---------------------------------------------------------------- controller rulings on Task 22
+
+/** Every vertex colour of merged meshes in the material named `name` whose vertex lies between y0 and y1. */
+function colorsBetween(o: THREE.Object3D, name: string, y0: number, y1: number): string[] {
+  o.updateMatrixWorld(true);
+  const out = new Set<string>();
+  const v = new THREE.Vector3();
+  o.traverse((c) => {
+    const m = c as THREE.Mesh;
+    if (!m.isMesh || (m.material as THREE.Material).name !== name) return;
+    const pos = m.geometry.getAttribute('position');
+    const col = m.geometry.getAttribute('color');
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+      if (v.y >= y0 - 1e-6 && v.y <= y1 + 1e-6 && col) out.add([col.getX(i), col.getY(i), col.getZ(i)].map((x) => x.toFixed(3)).join(','));
+    }
+  });
+  return [...out];
+}
+
+test("earned floors carry their firm's mark, never the Claude amber", () => {
+  const other = { jobId: 'job-2', runId: 'run-2', agentId: 'ines-ashlar', firmId: 'ashlar-vane', state: 'lit' as const, reverted: false };
+  const s = earnedSpec([earned(1, 'glass', 'lit', { claude: true }), earned(2, 'titanium', 'lit', { claude: true, earned: other })]);
+  const lay = layoutTower(s);
+  const [a, b] = [lay.floors[s.datumIndex], lay.floors[s.datumIndex + 1]];
+  const t = buildTower(s, 'high', plainMaterials(), lookFor(s.repo), { firmSlots: new Map([['quickset', 0], ['ashlar-vane', 1]]) });
+  assert.equal(namedVertsBetween(t.group, 'accent', lay.datumY + 0.01, lay.top), 0, 'no amber above the datum');
+  // Founding floors co-authored with Claude keep it.
+  assert.ok(namedVertsBetween(t.group, 'accent', 0, lay.datumY) > 0, 'the amber stays on Claude history');
+  const ca = colorsBetween(t.group, 'firmMark', a.y0, a.y0 + a.h - 0.01);
+  const cb = colorsBetween(t.group, 'firmMark', b.y0 + 0.01, b.y0 + b.h);
+  assert.equal(ca.length, 1, `one firm, one mark on the first floor (${ca.join(' ')})`);
+  assert.equal(cb.length, 1);
+  assert.notEqual(ca[0], cb[0], 'two firms, two marks');
+  // A dark tower keeps its firm's mark: paint, not light.
+  const dark = buildTower(s, 'high', plainMaterials(), lookFor(s.repo), { dark: true });
+  assert.ok(namedVertsBetween(dark.group, 'firmMark', lay.datumY, lay.top) > 0);
+});
+
+test('the family crown caps the true top over earned sci-fi floors', () => {
+  const s = earnedSpec([earned(1, 'glass', 'lit'), earned(2, 'scifi', 'lit'), earned(3, 'scifi', 'lit'), earned(4, 'scifi', 'lit')]);
+  const mats = plainMaterials();
+  const t = buildTower(s, 'high', mats, { ...lookFor(s.repo), scifi: familyVariant('deco') });
+  const lay = layoutTower(s);
+  const crownFrom = lay.floors[lay.floors.length - crownFloors(3)].y0;
+  // The deco crown lights its fin slots: they stand in the crown floors at the top, above every earned storey.
+  const slots = vertsOf(t.group, mats.vent);
+  assert.ok(slots.length > 0 && slots.every((v) => v.y >= crownFrom - 1e-3), 'the deco crown stands on the earned top');
+  assert.ok(Math.abs(bounds(t.group).max.y - lay.top) < 1e-3, 'and tops out at the tower top');
+  // Waiting on his review at the top, the crown stands but its slots stay dark.
+  const asleep = earnedSpec([earned(1, 'glass', 'lit'), earned(2, 'scifi', 'lit'), earned(3, 'scifi', 'lit'), earned(4, 'scifi', 'waiting')]);
+  const ma = plainMaterials();
+  const ta = buildTower(asleep, 'high', ma, { ...lookFor(asleep.repo), scifi: familyVariant('deco') });
+  assert.equal(vertsOf(ta.group, ma.vent).filter((v) => v.y >= crownFrom - 1e-3).length, 0, 'a waiting crown is not lit');
+  assert.ok(vertsOf(ta.group, ma.unlit).length > 0, 'its slots are there, unlit');
+  // A founding sci-fi top under earned glass carries no crown in the middle of the tower.
+  const mid = earnedSpec([earned(1, 'glass', 'lit'), earned(2, 'glass', 'lit')]);
+  const m2 = plainMaterials();
+  const t2 = buildTower(mid, 'high', m2, { ...lookFor(mid.repo), scifi: familyVariant('deco') });
+  const l2 = layoutTower(mid);
+  assert.equal(vertsOf(t2.group, m2.vent).filter((v) => v.y > l2.datumY - 6).length, 0, 'no crown under the earned floors');
+});
+
+test('earned floors of one era stand as one run, one width', () => {
+  const eras: Era[] = ['glass', 'glass', 'glass', 'titanium', 'titanium', 'brick', 'brick', 'brick', 'brick'];
+  const s = earnedSpec(eras.map((e, i) => earned(i, e, i === 5 ? 'scar' : 'lit')), 'chicago');
+  const t = buildTower(s, 'high', plainMaterials());
+  const w = (k: number): number => proxyBounds(proxyOf(t, s.floors[s.datumIndex + k].id)).getSize(new THREE.Vector3()).x;
+  assert.ok(Math.abs(w(0) - w(1)) < 1e-6 && Math.abs(w(1) - w(2)) < 1e-6, 'the glass run is one width');
+  assert.ok(Math.abs(w(6) - w(7)) < 1e-6 && Math.abs(w(7) - w(8)) < 1e-6, 'the brick run is one width');
+  // A scar inside a run takes the run's width: the stage was built, then failed.
+  const scar = proxyBounds(proxyOf(t, s.floors[s.datumIndex + 5].id)).getSize(new THREE.Vector3()).x - 0.4;
+  const brick = w(6) - 0.6;
+  assert.ok(Math.abs(scar - brick) < 1e-6, `the scar stands at its run's width (${scar.toFixed(2)} vs ${brick.toFixed(2)})`);
 });

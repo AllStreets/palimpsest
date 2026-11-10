@@ -4,7 +4,7 @@ import type { District } from '../../../../shared/types';
 import { materials, texture } from '../materials';
 import { ANISO_PATCH_OK, patchAnisotropy } from './aniso-patch';
 import type { Centerpiece } from '../scene';
-import { buildTower } from './build';
+import { type BuildOptions, buildTower } from './build';
 import type { EraMatKey, TowerMaterials } from './kit';
 import { type Finish, type Glazing, type Look, lookFor, lookKey, type Scan } from './variants';
 
@@ -676,6 +676,8 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     earnedLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.68, 0.95).multiplyScalar(1.1) }),
     // Warm ivory (about 3200 K), a pair of lines: his own hand in the floor, apart from the cool line and the amber.
     handLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.84, 0.62).multiplyScalar(0.78) }),
+    // Painted metal, satin: the firm's colour arrives as the vertex colour, so one material serves every firm.
+    firmMark: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.15, vertexColors: true, envMapIntensity: 0.8 }),
     // Shop primer: red iron oxide in a flat alkyd, matte and a little chalky, browner and darker than any brick
     // in the city, so it reads as a coat waiting for its finish rather than as paint.
     primer: new THREE.MeshStandardMaterial({ color: 0x5c2c22, roughness: 0.9, metalness: 0, vertexColors: true, envMapIntensity: 0.5 }),
@@ -695,8 +697,8 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
 }
 
 /** A district's Palimpsest tower as a city centerpiece: floors pick as themselves, the root picks as the district. */
-export function towerCenterpiece(d: District, quality: 'high' | 'medium', look: Look = lookFor(d.repo)): Centerpiece {
-  const t = buildTower(d.tower, quality, towerMaterials(look), look);
+export function towerCenterpiece(d: District, quality: 'high' | 'medium', look: Look = lookFor(d.repo), opts: BuildOptions = {}): Centerpiece {
+  const t = buildTower(d.tower, quality, towerMaterials(look), look, opts);
   const pickables = new Map<THREE.Object3D, string | null>(t.pickables);
   pickables.set(t.rootPick, null);
   return { object: t.group, pickables, dispose: () => t.dispose() };

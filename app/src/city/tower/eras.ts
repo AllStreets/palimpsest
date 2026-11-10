@@ -13,6 +13,7 @@ import {
   PANE_FULL,
   PANE_SASH,
   paneData,
+  rng,
   slot,
   squareSweep,
   unitBox,
@@ -898,6 +899,40 @@ export function earnedLine(k: Kit, edge: FloorShape['edge'], his: boolean): void
   }
   k.add('handLine', edgeSweep(edge, strip(0.0)), at);
   k.add('handLine', edgeSweep(edge, strip(0.2)), at);
+}
+
+/**
+ * Each firm's mark, by its slot among the firms (Task 4): six muted dusk
+ * colours, apart from the cool merged line, his ivory pair, the Claude
+ * amber and the bronze datum. Linear multipliers on a white painted metal.
+ */
+export const FIRM_MARKS: readonly THREE.Color[] = [
+  new THREE.Color(0.26, 0.55, 0.47), // verdigris
+  new THREE.Color(0.52, 0.29, 0.47), // heather
+  new THREE.Color(0.6, 0.52, 0.21), // ochre olive
+  new THREE.Color(0.72, 0.36, 0.26), // copper rose
+  new THREE.Color(0.27, 0.36, 0.58), // slate blue
+  new THREE.Color(0.19, 0.4, 0.24), // bottle green
+];
+
+/** A firm's mark colour: by its slot when known, else by its id, so a firm keeps one colour everywhere. */
+export function firmMarkColor(firmId: string, slots?: Map<string, number>): THREE.Color {
+  const slot = slots?.get(firmId);
+  const i = slot !== undefined ? slot : Math.floor(rng(firmId)() * FIRM_MARKS.length);
+  return FIRM_MARKS[((i % FIRM_MARKS.length) + FIRM_MARKS.length) % FIRM_MARKS.length];
+}
+
+/** The firm's mark: a painted strip just above the slab edge's line, in the firm's colour. */
+export function firmMark(k: Kit, edge: FloorShape['edge'], color: THREE.Color): void {
+  const was = k.tint;
+  k.tint = color.clone();
+  k.add('firmMark', edgeSweep(edge, [
+    [-0.12, 0.14],
+    [0.05, 0.14],
+    [0.05, 0.46],
+    [-0.12, 0.46],
+  ]), M(edge.cx, 0, edge.cz));
+  k.tint = was;
 }
 
 /**

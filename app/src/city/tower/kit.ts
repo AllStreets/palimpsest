@@ -62,6 +62,8 @@ export interface TowerMaterials extends Record<EraMatKey, THREE.Material> {
   earnedLine: THREE.Material;
   /** The line of a floor he merged with his own changes added: a warm ivory pair, apart from both the cool line and the amber. */
   handLine: THREE.Material;
+  /** A firm's mark on the floors it earned: a thin painted metal strip, its colour the vertex colour (the firm's). */
+  firmMark: THREE.Material;
   /** Matte rust-red primer: a scar floor, a failed inspection left standing as a deliberate wound. */
   primer: THREE.Material;
   /** Glass with nothing lit behind it: every pane of a dark tower. */

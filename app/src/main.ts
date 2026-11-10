@@ -141,11 +141,22 @@ async function main(): Promise<void> {
   const notice = createNotice(document.body);
   // The Blender-authored kits (masonry courses, crowns, roof pieces) load before anything is built from them.
   // Missing or corrupt, the city stands on plain stand-ins and says so, rather than going blank.
+  /** Each firm's slot, which picks the colour of its mark on the floors it earned. */
+  const firmSlots = new Map<string, number>();
+  let firmsKey = '';
+  const takeFirms = (firms: Array<{ id: string; slot: number }>): boolean => {
+    for (const f of firms) firmSlots.set(f.id, f.slot);
+    const key = [...firmSlots].sort().map(([id, slot]) => `${id}:${slot}`).join(',');
+    const changed = key !== firmsKey;
+    firmsKey = key;
+    return changed;
+  };
   const [settingsQuality] = await Promise.all([
     api.settings().then(
       (s) => s.quality,
       () => 'high' as const,
     ),
+    api.firms().then(takeFirms, () => false),
     loadKits().catch((err: unknown) => {
       console.warn('the architecture kits did not load; building from plain stand-ins', err);
       registerFallbackKits();
@@ -168,8 +179,8 @@ async function main(): Promise<void> {
   const city = createCity(host, {
     quality,
     autoQuality,
-    makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d)),
-    centerpieceKey: (d) => `${lookKey(lookOf(d))}|${quality}`,
+    makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d), { firmSlots }),
+    centerpieceKey: (d) => `${lookKey(lookOf(d))}|${quality}|${d.tower.floors.some((f) => f.earned) ? firmsKey : ''}`,
     districtTones: (d) => towerTones(lookOf(d)),
   });
 
@@ -267,6 +278,8 @@ async function main(): Promise<void> {
   const readNames = coalesced(async () => {
     try {
       const firms = await api.firms();
+      // A firm founded or hired since the city opened: its marks take their colour from its slot.
+      if (takeFirms(firms)) place();
       const agents = new Map<string, string>();
       for (const f of firms) for (const a of f.agents) agents.set(a.id, a.name);
       // A scar links to its inspection report: read the run once for each scar not yet known.
