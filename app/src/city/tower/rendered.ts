@@ -86,7 +86,7 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
     ],
     "shade": [
       38,
-      10.8,
+      10.9,
       6.1
     ]
   },
@@ -189,12 +189,12 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   "glass:black": {
     "sun": [
       41.1,
-      9,
+      9.1,
       9.5
     ],
     "shade": [
       43.6,
-      8.5,
+      8.4,
       9.3
     ]
   },
@@ -224,21 +224,21 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   },
   "titanium:zinc": {
     "sun": [
-      38.7,
-      10,
+      37.3,
+      9.9,
       4.4
     ],
     "shade": [
-      38.8,
-      10.2,
-      4.1
+      36.4,
+      10.1,
+      4.3
     ]
   },
   "titanium:copper": {
     "sun": [
       34.8,
-      8.7,
-      4.9
+      8.8,
+      4.8
     ],
     "shade": [
       39.4,
@@ -253,7 +253,7 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
       13.3
     ],
     "shade": [
-      35.4,
+      35.5,
       13.4,
       8.8
     ]
@@ -266,7 +266,7 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
     ],
     "shade": [
       29.4,
-      9.8,
+      9.9,
       4.6
     ]
   },
@@ -291,7 +291,7 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
     "shade": [
       48.6,
       11.4,
-      2.8
+      2.9
     ]
   },
   "scifi:carbon": {
@@ -308,7 +308,7 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   },
   "scifi:pearl": {
     "sun": [
-      47.9,
+      47.8,
       8.8,
       1.2
     ],

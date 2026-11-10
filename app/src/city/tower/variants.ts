@@ -323,8 +323,9 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'titanium:zinc',
       era: 'titanium',
       name: 'Pre-weathered zinc',
-      // Pre-weathered zinc wears a matte carbonate patina, a mineral layer rather than bare metal.
-      wall: { kind: 'solid', color: 0x7a838a, rough: 0.58, metal: 0.25 },
+      // Pre-weathered zinc: a soft blue-grey metal with a fine mill grain. Drawn as metal so it takes the cool
+      // sky rather than only the orange sun, which turned a matte patina into tan slats.
+      wall: { kind: 'brushed', color: 0x7e8a96, rough: 0.42, aniso: 0.2, env: 1.7 },
       trim: { kind: 'metal', color: 0x4c5257, rough: 0.5 },
       band: { kind: 'metal', color: 0x4c5257, rough: 0.5 },
       glass: { body: 0x04070a, tint: 0xeef2ff, env: 1.15 },
