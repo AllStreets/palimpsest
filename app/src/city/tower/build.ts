@@ -6,6 +6,7 @@ import { addDatum, type DatumPlan } from './datum.js';
 import { ERA_BUILDERS, type FloorShape, TITANIUM_TWIST } from './eras.js';
 import { Kit, M, rng, type TowerMaterials } from './kit.js';
 import { ROOT_BUILDERS, ROOT_TOP_HALF } from './roots.js';
+import { type Look, lookFor } from './variants.js';
 
 export type { TowerMaterials } from './kit.js';
 
@@ -27,12 +28,27 @@ export interface BuiltTower {
 }
 
 /**
- * A Palimpsest tower, read bottom to top: the root in its inherited
- * vernacular, one floor per merged change laid in the era it was earned in,
- * and the bronze datum line where the repo joined the city. Heights follow
- * layoutTower exactly. The tower stands centred on its local origin.
+ * The colour drift of a run of floors laid in one year: a few percent of
+ * value, alternating lighter and darker year on year so a long run reads as
+ * built over time rather than extruded, with a slight warm or cool lean (a
+ * new kiln batch, a new quarry bed). Deterministic per repo, era and year.
  */
-export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: TowerMaterials): BuiltTower {
+export function yearDrift(repo: string, era: string, year: number, firstYear: number): THREE.Color {
+  const r = rng(`${repo}|${era}|${year}`);
+  const sign = (year - firstYear) % 2 === 0 ? 1 : -1;
+  const v = 1 + sign * (0.022 + 0.022 * r());
+  const lean = (r() - 0.5) * 0.03;
+  return new THREE.Color(v * (1 + lean), v, v * (1 - lean));
+}
+
+/**
+ * A Palimpsest tower, read bottom to top: the root in its inherited
+ * vernacular, one floor per merged change laid in the era it was earned in
+ * (in the repo's own variant of that era's material), and the bronze datum
+ * line where the repo joined the city. Heights follow layoutTower exactly.
+ * The tower stands centred on its local origin.
+ */
+export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: TowerMaterials, look: Look = lookFor(spec.repo)): BuiltTower {
   const layout = layoutTower(spec);
   const kit = new Kit(mats);
   const detail = quality === 'high';
@@ -57,7 +73,10 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
   let width = FLOOR_WIDTH;
   let inRun = 0;
   let datumPlan: DatumPlan = { cx: 0, cz: 0, half: ROOT_TOP_HALF[spec.root] - 0.4, ry: 0 };
+  const yearOf = (at: string): number => new Date(at).getUTCFullYear() || 0;
+  const firstYear = layout.floors.length ? yearOf(layout.floors[0].floor.at) : 0;
   layout.floors.forEach(({ floor, y0, h }, i) => {
+    kit.tint = yearDrift(spec.repo, floor.era, yearOf(floor.at), firstYear);
     const prev = layout.floors[i - 1]?.floor.era;
     const next = layout.floors[i + 1]?.floor.era;
     inRun = prev === floor.era ? inRun + 1 : 0;
@@ -70,8 +89,11 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
       runStart: prev !== floor.era,
       runEnd: next !== floor.era,
       top: i === layout.floors.length - 1,
+      fromTop: layout.floors.length - 1 - i,
+      crown: look.crown,
       datum: i === spec.datumIndex - 1,
       rand: rng(floor.id),
+      variant: look[floor.era],
     });
     pickables.set(proxy(shape.cx, y0 + h / 2, shape.cz, shape.half * 2, h, ry), floor.id);
     if (i === spec.datumIndex - 1) {
@@ -81,6 +103,7 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
   });
 
   kit.base = new THREE.Matrix4();
+  kit.tint = new THREE.Color(1, 1, 1);
   addDatum(kit, layout.datumY, datumPlan);
 
   const group = kit.build();

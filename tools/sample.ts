@@ -96,18 +96,36 @@ export function sampleHistory(s: SampleRepo): { commits: Commit[]; prs: PR[] } {
   return { commits, prs };
 }
 
+/**
+ * The same six fictional repos in the shape of a working developer's city:
+ * four short towers of roughly 8 to 30 floors and two at the 120-floor cap.
+ * For captures that judge the look at that mix (CAPTURE_CITY=tall); the
+ * README and the UI test use SAMPLE.
+ */
+export const SAMPLE_TALL: SampleRepo[] = SAMPLE.map((s) => {
+  const shape: Record<string, Partial<SampleRepo>> = {
+    'tidewater/harbor-ledger': { commits: 1400, since: '2019-02-01T09:00:00Z' },
+    'kestrel/fieldnotes': { commits: 28 },
+    'lantern/assay-kit': { commits: 1500, since: '2021-05-01T09:00:00Z' },
+    'ferro/quarry': { commits: 14 },
+    'hoshi/kumo': { commits: 24 },
+    'alder/blank-slate': { commits: 11, since: '2026-06-02T09:00:00Z', until: '2026-10-30T09:00:00Z', prShare: 0.3, claudeShare: 0.7, authors: ['Wren Alder'], topics: ['scaffold', 'config', 'first screen'] },
+  };
+  return { ...s, ...shape[s.fullName] };
+});
+
 // ---------------------------------------------------------------- seeding
 
 /**
  * Writes the sample repos, their founding towers and a fresh usage reading
  * into the current PALIMPSEST_HOME. Call it after setting PALIMPSEST_HOME.
  */
-export async function seedSample(now: number = Date.now()): Promise<void> {
+export async function seedSample(now: number = Date.now(), repos: SampleRepo[] = SAMPLE): Promise<void> {
   const { openDb } = await import('../engine/db.js');
   const { paths } = await import('../engine/home.js');
   const { foundingFloors } = await import('../engine/history.js');
   const db = openDb();
-  for (const s of SAMPLE) {
+  for (const s of repos) {
     const { commits, prs } = sampleHistory(s);
     const floors = foundingFloors(s.fullName, commits, prs);
     const at = new Date(CONNECTED + s.slot * 60_000).toISOString();
@@ -158,20 +176,15 @@ export async function grownTower(fullName: string, commits: number): Promise<Tow
 }
 
 /**
- * Reshapes a seeded sample home for the view's framing rounds: `tall` raises
- * the two tallest towers to the 120 floor cap (a city like one with years of
- * history in two repos), `small` leaves one tower of 8 floors and nothing else.
+ * Shrinks a seeded sample home to the smallest city, for the view's framing
+ * rounds (CAPTURE_CITY=small): one tower of 8 floors and nothing else.
  */
-export async function reshapeSample(kind: 'tall' | 'small'): Promise<void> {
+export async function shrinkSample(): Promise<void> {
   const { openDb } = await import('../engine/db.js');
   const db = openDb();
   const setTower = (t: TowerSpec): void => {
     db.prepare('INSERT OR REPLACE INTO towers (repo, json) VALUES (?, ?)').run(t.repo, JSON.stringify(t));
   };
-  if (kind === 'tall') {
-    for (const fullName of ['tidewater/harbor-ledger', 'lantern/assay-kit']) setTower(await grownTower(fullName, 2000));
-    return;
-  }
   const keep = 'ferro/quarry';
   for (const s of SAMPLE) {
     if (s.fullName === keep) continue;

@@ -3,8 +3,9 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { buildTower } from '../app/src/city/tower/build.js';
-import type { TowerMaterials } from '../app/src/city/tower/kit.js';
+import { buildTower, FLOOR_WIDTH } from '../app/src/city/tower/build.js';
+import { PANE_CHANNEL, PANE_FULL, type TowerMaterials } from '../app/src/city/tower/kit.js';
+import { CROWNS, type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
 import { layoutTower, ROOT_HEIGHT } from '../shared/tower-layout.js';
 import type { Era, Floor, FloorSize, RootStyle, TowerSpec } from '../shared/types.js';
 
@@ -14,13 +15,16 @@ const SIZES: FloorSize[] = ['small', 'medium', 'large'];
 /** The ambient city keeps this far from a district's origin. */
 const RESERVE_RADIUS = 90;
 
-/** Plain materials: no textures, no DOM, so the tower builds in Node. */
+/** Plain materials: no textures, no DOM, so the tower builds in Node. One material per key, made on first use. */
 function plainMaterials(): TowerMaterials {
-  const keys: Array<keyof TowerMaterials> = [
-    'sand', 'travertine', 'gothic', 'limestone', 'granite', 'brick', 'bronze', 'datum', 'titanium', 'steel', 'graphite', 'slab',
-    'window', 'stained', 'roofTile', 'timber', 'plaster', 'lightLine', 'accent', 'pick',
-  ];
-  return Object.fromEntries(keys.map((k) => [k, new THREE.MeshStandardMaterial()])) as unknown as TowerMaterials;
+  const made = new Map<string | symbol, THREE.Material>();
+  return new Proxy({} as TowerMaterials, {
+    get(_, key) {
+      let m = made.get(key);
+      if (!m) made.set(key, (m = new THREE.MeshStandardMaterial({ name: String(key) })));
+      return m;
+    },
+  });
 }
 
 function floor(i: number, era: Era, claude = false): Floor {
@@ -172,7 +176,7 @@ test('a sci-fi datum below more floors never reaches past the slab above it', ()
     const band = vertsOf(t.group, mats.datum);
     assert.ok(band.length > 0, 'the datum band is drawn');
     // The slab of the floor directly above: titanium in the first metre over the datum line.
-    const slab = vertsOf(t.group, mats.titanium).filter((v) => v.y > lay.datumY - 1e-3 && v.y < lay.datumY + 0.96);
+    const slab = vertsOf(t.group, mats.scifiTrim).filter((v) => v.y > lay.datumY - 1e-3 && v.y < lay.datumY + 0.96);
     assert.ok(slab.length > 0, 'the floor above has a slab');
     const sx0 = Math.min(...slab.map((v) => v.x));
     const sx1 = Math.max(...slab.map((v) => v.x));
@@ -182,4 +186,255 @@ test('a sci-fi datum below more floors never reaches past the slab above it', ()
       assert.ok(v.x >= sx0 - 1e-3 && v.x <= sx1 + 1e-3 && v.z >= sz0 - 1e-3 && v.z <= sz1 + 1e-3, `datum ${datumIndex}: band at (${v.x.toFixed(2)}, ${v.z.toFixed(2)}) is past the slab above [${sx0.toFixed(2)}..${sx1.toFixed(2)}] x [${sz0.toFixed(2)}..${sz1.toFixed(2)}]`);
     }
   }
+});
+
+// ---------------------------------------------------------------- per-repo variants
+
+/** A look with `era` swapped to the named variant. */
+function lookWith(id: string): Look {
+  const era = id.split(':')[0] as Era;
+  const v = VARIANTS[era].find((x) => x.id === id);
+  if (!v) throw new Error(`no variant ${id}`);
+  return { ...lookFor('acme/widgets'), [era]: v };
+}
+
+function single(era: Era, n = 1): TowerSpec {
+  const floors = Array.from({ length: n }, (_, i) => floor(i, era));
+  return { id: 'acme/one#founding', repo: 'acme/one', kind: 'founding', root: 'chicago', floors, datumIndex: n };
+}
+
+const instances = (o: THREE.Object3D, name: string): THREE.InstancedMesh | undefined =>
+  o.getObjectByName(name) as THREE.InstancedMesh | undefined;
+
+test('every variant of every era builds inside its height and the city reserve', () => {
+  for (const era of ERAS) {
+    for (const v of VARIANTS[era]) {
+      const s = spec('beauxarts', 3);
+      const t = buildTower(s, 'high', plainMaterials(), lookWith(v.id));
+      const box = bounds(t.group);
+      assert.ok(Math.abs(box.max.y - t.top) < 1e-3, `${v.id}: top ${box.max.y} vs ${t.top}`);
+      const reach = Math.max(...[box.min.x, box.max.x].flatMap((x) => [box.min.z, box.max.z].map((z) => Math.hypot(x, z))));
+      assert.ok(reach < RESERVE_RADIUS, `${v.id}: footprint reaches ${reach.toFixed(1)} m`);
+      assert.equal(t.pickables.size, s.floors.length);
+      t.dispose();
+    }
+  }
+});
+
+test('each era draws its own slots: a tower uses one material per slot, never one per floor', () => {
+  const mats = plainMaterials();
+  const t = buildTower(spec('roman', 6), 'high', mats, lookWith('brick:ironspot'));
+  const used = new Map<THREE.Material, number>();
+  t.group.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh && m.material !== mats.pick && !(o as THREE.InstancedMesh).isInstancedMesh) used.set(m.material as THREE.Material, (used.get(m.material as THREE.Material) ?? 0) + 1);
+  });
+  for (const [m, n] of used) assert.equal(n, 1, `${m.name} is merged into one mesh, not ${n}`);
+  for (const key of ['stoneWall', 'brickWall', 'brickTrim', 'brickBand', 'glassWall', 'glassTrim', 'titaniumWall', 'scifiWall', 'scifiTrim'] as const) {
+    assert.ok(used.has(mats[key]) || [...t.group.children].some((c) => (c as THREE.Mesh).material === mats[key]), `${key} is drawn`);
+  }
+});
+
+test('glazed terracotta pairs its windows; ironspot runs tall and narrow', () => {
+  const panes = (id: string): THREE.InstancedMesh => {
+    const t = buildTower(single('brick'), 'high', plainMaterials(), lookWith(id));
+    const m = instances(t.group, 'tower:pane:brick');
+    assert.ok(m, `${id} has brick panes`);
+    return m!;
+  };
+  const bays = (bay: number): number => Math.max(3, Math.round(FLOOR_WIDTH / bay));
+  const red = VARIANTS.brick.find((v) => v.id === 'brick:red')!;
+  const tc = VARIANTS.brick.find((v) => v.id === 'brick:terracotta')!;
+  assert.equal(panes('brick:red').count, 4 * bays(red.masonry?.bay ?? 2.9));
+  assert.equal(panes('brick:terracotta').count, 8 * bays(tc.masonry!.bay!));
+  // Pairs: the two panes of a bay sit closer to each other than to the next bay's.
+  const m = panes('brick:terracotta');
+  const xs: number[] = [];
+  const p = new THREE.Vector3();
+  const mat = new THREE.Matrix4();
+  for (let i = 0; i < m.count; i++) {
+    m.getMatrixAt(i, mat);
+    p.setFromMatrixPosition(mat);
+    // The +z face: the panes just inside the wall line.
+    if (p.z > FLOOR_WIDTH / 2 - 1) xs.push(p.x);
+  }
+  xs.sort((a, b) => a - b);
+  const gaps = xs.slice(1).map((x, i) => x - xs[i]);
+  const inPair = gaps.filter((_, i) => i % 2 === 0);
+  const between = gaps.filter((_, i) => i % 2 === 1);
+  assert.ok(Math.max(...inPair) < Math.min(...between), `paired gaps ${inPair.map((g) => g.toFixed(2))} vs ${between.map((g) => g.toFixed(2))}`);
+  // Ironspot: windows taller than they are wide.
+  const iron = panes('brick:ironspot');
+  iron.getMatrixAt(0, mat);
+  const sc = new THREE.Vector3();
+  mat.decompose(new THREE.Vector3(), new THREE.Quaternion(), sc);
+  assert.ok(sc.y > sc.x * 2, `ironspot window ${sc.x.toFixed(2)} x ${sc.y.toFixed(2)}`);
+});
+
+test('ribbed channel glass marks its panes as channel glass', () => {
+  const t = buildTower(single('glass', 2), 'high', plainMaterials(), lookWith('glass:channel'));
+  const m = instances(t.group, 'tower:pane:glass')!;
+  assert.ok(m.instanceColor, 'pane data is set');
+  const c = new THREE.Color();
+  for (let i = 0; i < m.count; i++) {
+    m.getColorAt(i, c);
+    assert.ok(Math.abs(c.b - PANE_CHANNEL) < 1e-6, `pane ${i} style ${c.b}`);
+  }
+});
+
+test('dark carbon sets light seams into its masts', () => {
+  const lit = (id: string): number => {
+    const mats = plainMaterials();
+    const t = buildTower(single('scifi', 3), 'high', mats, lookWith(id));
+    return vertsOf(t.group, mats.lightLine).length;
+  };
+  assert.ok(lit('scifi:carbon') > lit('scifi:ceramic'), 'carbon has more light-line geometry than ceramic');
+});
+
+test('floors laid in different years drift a few percent in colour; one year matches itself', () => {
+  const floors = Array.from({ length: 6 }, (_, i) => ({ ...floor(i, 'brick'), at: new Date(Date.UTC(i < 3 ? 2019 : 2022, 3, 1 + i)).toISOString() }));
+  const s: TowerSpec = { id: 'acme/years#founding', repo: 'acme/years', kind: 'founding', root: 'chicago', floors, datumIndex: 6 };
+  const mats = plainMaterials();
+  const t = buildTower(s, 'high', mats, lookWith('brick:cream'));
+  const lay = layoutTower(s);
+  let wall: THREE.Mesh | null = null;
+  t.group.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh && (o as THREE.Mesh).material === mats.brickWall && !(o as THREE.InstancedMesh).isInstancedMesh) wall = o as THREE.Mesh;
+  });
+  assert.ok(wall, 'a brick wall mesh');
+  const g = (wall as unknown as THREE.Mesh).geometry;
+  const col = g.getAttribute('color');
+  assert.ok(col, 'the wall carries a per-floor colour');
+  const pos = g.getAttribute('position');
+  const tone = (fi: number): THREE.Color => {
+    const { y0, h } = lay.floors[fi];
+    // The floor's own tone is its brightest vertex: weathering stains only ever darken it.
+    const top = new THREE.Color(0, 0, 0);
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i);
+      if (y > y0 + 0.05 && y < y0 + h - 0.05 && col.getY(i) > top.g) top.setRGB(col.getX(i), col.getY(i), col.getZ(i));
+    }
+    return top;
+  };
+  const diff = (a: THREE.Color, b: THREE.Color): number => Math.max(Math.abs(a.r - b.r), Math.abs(a.g - b.g), Math.abs(a.b - b.b));
+  assert.ok(diff(tone(0), tone(2)) < 1e-6, 'one year, one tone');
+  const d = diff(tone(1), tone(4));
+  assert.ok(d > 0.01 && d < 0.1, `two years drift ${d.toFixed(3)}`);
+});
+
+test('instanced parts take the year drift too; window data never does', () => {
+  const floors = Array.from({ length: 4 }, (_, i) => ({ ...floor(i, 'glass'), at: new Date(Date.UTC(i < 2 ? 2019 : 2020, 3, 1 + i)).toISOString() }));
+  const s: TowerSpec = { id: 'acme/years#founding', repo: 'acme/years', kind: 'founding', root: 'chicago', floors, datumIndex: 4 };
+  const t = buildTower(s, 'high', plainMaterials(), lookWith('glass:blue'));
+  const sp = instances(t.group, 'tower:spandrel')!;
+  assert.ok(sp.instanceColor, 'spandrels carry a colour');
+  const c0 = new THREE.Color();
+  const c1 = new THREE.Color();
+  const perFloor = sp.count / 4;
+  sp.getColorAt(0, c0);
+  sp.getColorAt(perFloor * 3, c1);
+  assert.ok(Math.abs(c0.r - c1.r) > 0.01, `two years drift (${c0.r.toFixed(3)} vs ${c1.r.toFixed(3)})`);
+  const panes = instances(t.group, 'tower:pane:glass')!;
+  const c = new THREE.Color();
+  for (let i = 0; i < panes.count; i++) {
+    panes.getColorAt(i, c);
+    assert.ok(c.r <= 1 && c.g <= 1 && Math.abs(c.b - PANE_FULL) < 1e-6, 'pane data is untouched');
+  }
+});
+
+test('a curtain wall takes its spandrel height and mullion depth from the variant', () => {
+  const scaleOf = (m: THREE.InstancedMesh): THREE.Vector3 => {
+    const mat = new THREE.Matrix4();
+    m.getMatrixAt(0, mat);
+    const sc = new THREE.Vector3();
+    mat.decompose(new THREE.Vector3(), new THREE.Quaternion(), sc);
+    return sc;
+  };
+  const green = buildTower(single('glass'), 'high', plainMaterials(), lookWith('glass:green'));
+  assert.ok(Math.abs(scaleOf(instances(green.group, 'tower:spandrel')!).y - 1.5) < 1e-6, 'green runs ribbon spandrels 1.5 m tall');
+  const bronze = buildTower(single('glass'), 'high', plainMaterials(), lookWith('glass:bronze'));
+  const blue = buildTower(single('glass'), 'high', plainMaterials(), lookWith('glass:blue'));
+  assert.ok(scaleOf(instances(bronze.group, 'tower:mullion')!).z > scaleOf(instances(blue.group, 'tower:mullion')!).z * 1.8, 'bronze mullions stand twice as deep');
+});
+
+test("a variant's lights set how its windows burn", () => {
+  const warmShare = (id: string): number => {
+    const t = buildTower(single('glass', 30), 'high', plainMaterials(), lookWith(id));
+    const m = instances(t.group, 'tower:pane:glass')!;
+    const c = new THREE.Color();
+    let lit = 0;
+    let warm = 0;
+    for (let i = 0; i < m.count; i++) {
+      m.getColorAt(i, c);
+      if (c.r > 0.3) {
+        lit++;
+        if (c.g > 0.5) warm++;
+      }
+    }
+    return warm / Math.max(1, lit);
+  };
+  assert.ok(warmShare('glass:bronze') > warmShare('glass:blue') + 0.4, 'bronze glass burns warm, blue burns cool');
+});
+
+test('masonry weathers: stains run down from every sill and from a run-end cornice, darkest at the top', () => {
+  for (const id of ['stone:sandstone', 'brick:cream']) {
+    const mats = plainMaterials();
+    const era = id.split(':')[0] as Era;
+    const t = buildTower(single(era, 2), 'high', mats, lookWith(id));
+    const wall = [...t.group.children].find((c) => (c as THREE.Mesh).material === mats[`${era}Wall`] && !(c as THREE.InstancedMesh).isInstancedMesh) as THREE.Mesh;
+    const col = wall.geometry.getAttribute('color');
+    const pos = wall.geometry.getAttribute('position');
+    let dark = 0;
+    let darkTopY = -Infinity;
+    let darkBottomY = Infinity;
+    for (let i = 0; i < col.count; i++) {
+      if (col.getY(i) < 0.85) {
+        dark++;
+        darkTopY = Math.max(darkTopY, pos.getY(i));
+        darkBottomY = Math.min(darkBottomY, pos.getY(i));
+      }
+    }
+    const panes = instances(t.group, `tower:pane:${era}`)!.count;
+    // Eight box corners per stain, four of them on its dark top edge.
+    assert.ok(dark >= panes * 4, `${id}: ${dark} dark stain vertices for ${panes} windows`);
+    assert.ok(darkTopY > darkBottomY, `${id}: stains are darkest along their top edge`);
+  }
+});
+
+test('every sci-fi crown builds inside its height and reserve, and each draws its own silhouette', () => {
+  const profiles = new Set<string>();
+  for (const crown of CROWNS) {
+    const s = single('scifi', 6);
+    const look = { ...lookFor('acme/one'), crown };
+    const t = buildTower(s, 'high', plainMaterials(), look);
+    const box = bounds(t.group);
+    assert.ok(Math.abs(box.max.y - t.top) < 1e-3, `${crown}: top ${box.max.y} vs ${t.top}`);
+    const reach = Math.max(...[box.min.x, box.max.x].flatMap((x) => [box.min.z, box.max.z].map((z) => Math.hypot(x, z))));
+    assert.ok(reach < RESERVE_RADIUS, `${crown} reaches ${reach.toFixed(1)}`);
+    // The silhouette: how wide the drawn faces are just above each of the top three slabs and mid-way up the top floor.
+    const lay = layoutTower(s);
+    t.group.updateMatrixWorld(true);
+    const heights = [3, 4, 5].map((f) => lay.floors[f].y0 + 0.2).concat([lay.floors[5].y0 + lay.floors[5].h * 0.42 + 0.25, lay.top - 0.05]);
+    const widths = heights.map((y) => {
+      let lo = Infinity;
+      let hi = -Infinity;
+      t.group.traverseVisible((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || (m as THREE.InstancedMesh).isInstancedMesh) return;
+        const pos = m.geometry.getAttribute('position');
+        const v = new THREE.Vector3();
+        for (let i = 0; i < pos.count; i++) {
+          v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+          if (Math.abs(v.y - y) < 0.6) {
+            lo = Math.min(lo, v.x);
+            hi = Math.max(hi, v.x);
+          }
+        }
+      });
+      return (hi - lo).toFixed(0);
+    });
+    profiles.add(widths.join(','));
+    t.dispose();
+  }
+  assert.equal(profiles.size, CROWNS.length, `crown silhouettes: ${[...profiles].join(' | ')}`);
 });

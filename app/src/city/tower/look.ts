@@ -5,7 +5,8 @@ import { materials, texture } from '../materials';
 import { ANISO_PATCH_OK, patchAnisotropy } from './aniso-patch';
 import type { Centerpiece } from '../scene';
 import { buildTower } from './build';
-import type { TowerMaterials } from './kit';
+import type { EraMatKey, TowerMaterials } from './kit';
+import { type Finish, type Glazing, type Look, lookFor, lookKey, type Scan } from './variants';
 
 /**
  * The tower materials in the browser: the scanned stone, brick and metal
@@ -168,10 +169,11 @@ function brushedGrain(): { normal: THREE.Texture; rough: THREE.Texture } {
  * clearcoat, and enough reflection weight that the dusk sky's PMREM shows
  * as a gradient across every curved surface.
  */
-function brushed(color: number, rough: number, aniso: number, env: number, key: string): THREE.MeshPhysicalMaterial {
+function brushed(color: number, rough: number, aniso: number, env: number, vertexColors = false): THREE.MeshPhysicalMaterial {
   const g = brushedGrain();
   const m = new THREE.MeshPhysicalMaterial({
     color,
+    vertexColors,
     metalness: 1,
     roughness: rough,
     roughnessMap: g.rough,
@@ -184,7 +186,8 @@ function brushed(color: number, rough: number, aniso: number, env: number, key: 
   });
   // See aniso-patch.ts: keeps three's anisotropic path from producing NaN pixels.
   if (ANISO_PATCH_OK) {
-    m.customProgramCacheKey = () => `palimpsest-brushed-${key}`;
+    // One program for every brushed metal: the patch is the same text, and colour and grain strength are uniforms.
+    m.customProgramCacheKey = () => 'palimpsest-brushed';
     m.onBeforeCompile = (sh) => {
       sh.fragmentShader = patchAnisotropy(sh.fragmentShader);
     };
@@ -201,10 +204,15 @@ function brushed(color: number, rough: number, aniso: number, env: number, key: 
  * The glass itself is black and glossy, so the dusk sky reflects off it at
  * grazing angles.
  */
-function windowMaterial(): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.05, metalness: 0, envMapIntensity: 1.15 });
+function windowMaterial(glazing: Glazing = { body: 0x000000, tint: 0xffffff, env: 1.15 }): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 0.05, metalness: 0, envMapIntensity: glazing.env });
+  // Every variant's glass shares one program: the glass body and the tint it gives the rooms are uniforms.
+  const body = { value: new THREE.Color(glazing.body) };
+  const tint = { value: new THREE.Color(glazing.tint) };
   m.customProgramCacheKey = () => 'palimpsest-tower-window';
   m.onBeforeCompile = (sh) => {
+    sh.uniforms.uGlassBody = body;
+    sh.uniforms.uGlassTint = tint;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vRoomO; varying vec3 vRoomD; varying vec3 vPane;')
       .replace(
@@ -225,10 +233,12 @@ function windowMaterial(): THREE.MeshStandardMaterial {
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vRoomO; varying vec3 vRoomD; varying vec3 vPane;\nfloat rh(float x){ return fract(sin(x * 91.345) * 47453.5453); }')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vRoomO; varying vec3 vRoomD; varying vec3 vPane;\nuniform vec3 uGlassBody; uniform vec3 uGlassTint;\nfloat rh(float x){ return fract(sin(x * 91.345) * 47453.5453); }')
       .replace('#include <color_fragment>', '')
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${ROOM_GLSL}`)
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += roomLight;');
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += roomLight;')
+      // Coated glass tints what it reflects as well as what it lets through.
+      .replace('#include <aomap_fragment>', '#include <aomap_fragment>\nreflectedLight.indirectSpecular *= uGlassTint;\nreflectedLight.directSpecular *= uGlassTint;');
   };
   return m;
 }
@@ -290,8 +300,23 @@ const ROOM_GLSL = /* glsl */ `
     // under the bloom threshold, and the room keeps its contrast instead of clipping to white.
     float peak = max(roomLight.r, max(roomLight.g, roomLight.b));
     roomLight *= 1.0 / (1.0 + 0.45 * peak);
+    // Tinted glass colours the rooms seen through it, and shows its own body colour against the sky.
+    roomLight *= uGlassTint;
     roughnessFactor = 0.035;
-    diffuseColor.rgb = vec3(0.0);
+    diffuseColor.rgb = uGlassBody;
+    if (style > 0.15 && style < 0.35) {
+      // Channel glass: translucent U-profiles a third of a metre wide, standing side by side. The rooms behind
+      // read only as light through the milky glass, brightest at desk height; each channel's curved face takes
+      // the light a little differently, and the flanges where two channels meet stay darker.
+      vec2 q = ro.xy + 20.0;
+      float ch = fract(q.x / 0.34);
+      float rib = 0.8 + 0.2 * sin(ch * 3.14159);
+      float flange = 1.0 - smoothstep(0.0, 0.07, min(ch, 1.0 - ch));
+      vec3 glow = lc * uGlassTint * (0.1 + 0.9 * lit) * (0.5 + 0.5 * smoothstep(0.0, 1.0, 1.0 - abs(ny - 0.5) * 1.5));
+      diffuseColor.rgb = uGlassBody * rib * (1.0 - 0.35 * flange);
+      roughnessFactor = 0.3;
+      roomLight = glow * rib * (1.0 - 0.6 * flange) * 0.85;
+    }
     if (style > 0.6 && style < 0.9) {
       // Shoji: lit paper in a timber kumiko lattice; no room shows through.
       vec2 q = ro.xy + 20.0;
@@ -354,9 +379,237 @@ function stainedMaterial(): THREE.MeshBasicMaterial {
   return new THREE.MeshBasicMaterial({ map: t, color: new THREE.Color(1.4, 1.3, 1.2) });
 }
 
-let library: TowerMaterials | null = null;
+/**
+ * Each scan's split between body and joint in its linear luminance (from
+ * the 2k colour maps): at or past `lo` reads as body, at or past `hi` as
+ * joint. Brick and ironspot mortar is lighter than the brick; the joints of
+ * sandstone, granite tiles and ashlar are darker than the stone, so their
+ * split runs the other way, as does rust, whose dark streaks are the joint.
+ * `refBody` and `refJoint` are each part's typical luminance; `rough` is the
+ * mean of the scan's roughness map, so a finish's roughness is its true mean.
+ */
+const SCAN_STATS: Record<Scan, { lo: number; hi: number; refBody: number; refJoint: number; rough: number }> = {
+  brick: { lo: 0.13, hi: 0.22, refBody: 0.09, refJoint: 0.26, rough: 0.53 },
+  ironspot: { lo: 0.1, hi: 0.25, refBody: 0.04, refJoint: 0.31, rough: 0.81 },
+  sand: { lo: 0.268, hi: 0.24, refBody: 0.3, refJoint: 0.23, rough: 0.51 },
+  rust: { lo: 0.36, hi: 0.22, refBody: 0.37, refJoint: 0.2, rough: 0.42 },
+  granite: { lo: 0.06, hi: 0.05, refBody: 0.077, refJoint: 0.05, rough: 0.54 },
+  ashlar: { lo: 0.29, hi: 0.235, refBody: 0.35, refJoint: 0.21, rough: 0.51 },
+};
 
-export function towerMaterials(): TowerMaterials {
+/**
+ * A scanned masonry or patina set in a variant's colours. The scan's
+ * luminance splits it into body and joint (brick and mortar), each recoloured
+ * to the variant while the scan's own brick-to-brick variation and relief
+ * stay; with `keep` the scan's own colour shows under a tint instead. The
+ * plaza floodlights wash it near the ground, and the vertex colour carries
+ * the year drift. Every scan finish shares one program; its colours are
+ * uniforms.
+ */
+function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardMaterial {
+  const arm = texture(`${f.tex}_arm.jpg`);
+  const st = SCAN_STATS[f.tex];
+  const n = f.normal ?? 1;
+  const params: THREE.MeshPhysicalMaterialParameters = {
+    map: texture(`${f.tex}_diff.jpg`, true),
+    normalMap: texture(`${f.tex}_nor.jpg`),
+    aoMap: arm,
+    roughnessMap: arm,
+    color: f.keep ? f.body : 0xffffff,
+    roughness: Math.min(1, f.rough / st.rough),
+    metalness: 0,
+    vertexColors: true,
+    normalScale: new THREE.Vector2(n, n),
+  };
+  // Polished stone (granite, marble) carries a hard glassy skin over its grain that mirrors the sky; it is a
+  // clear coat over the stone rather than a lower roughness on it, so the grain stays matte underneath.
+  const m = f.polish
+    ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: f.polish, clearcoatRoughness: 0.04, envMapIntensity: 2.6 })
+    : new THREE.MeshStandardMaterial(params);
+  const u = {
+    uBody: { value: new THREE.Color(f.body) },
+    uJoint: { value: new THREE.Color(f.joint ?? f.body) },
+    uSplit: { value: new THREE.Vector4(st.lo, st.hi, st.refBody, st.refJoint) },
+    uKeep: { value: f.keep ? 1 : 0 },
+    // Cut stone weathers in patches and streaks; brick and patina carry their own variation in the scan.
+    uWeather: { value: f.tex === 'sand' || f.tex === 'ashlar' || f.tex === 'granite' ? 0.22 : 0 },
+    // How much of the scan's own grain shows through the recolour: granite's speckle is the point of it.
+    uDetail: { value: f.detail ?? (f.tex === 'granite' ? 1.0 : 0.8) },
+    uCourse: { value: f.courses ? new THREE.Vector4(f.courses.h, f.courses.l, f.courses.joint, f.courses.vary) : new THREE.Vector4(0, 1, 0, 0) },
+    uTexScale: { value: 1 / (f.scale ?? 1) },
+  };
+  m.customProgramCacheKey = () => 'palimpsest-scan';
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform float uTexScale;')
+      // Every map of a scan shares one scale, so its units can be enlarged or shrunk per finish.
+      .replace(
+        '#include <uv_vertex>',
+        `#include <uv_vertex>
+        #ifdef USE_MAP
+          vMapUv *= uTexScale;
+        #endif
+        #ifdef USE_NORMALMAP
+          vNormalMapUv *= uTexScale;
+        #endif
+        #ifdef USE_AOMAP
+          vAoMapUv *= uTexScale;
+        #endif
+        #ifdef USE_ROUGHNESSMAP
+          vRoughnessMapUv *= uTexScale;
+        #endif`,
+      )
+      .replace(
+        '#include <worldpos_vertex>',
+        `#include <worldpos_vertex>
+        {
+          mat4 fm = modelMatrix;
+          #ifdef USE_INSTANCING
+            fm = modelMatrix * instanceMatrix;
+          #endif
+          vTFP = (fm * vec4(transformed, 1.0)).xyz;
+          vTFN = normalize(mat3(fm) * objectNormal);
+        }`,
+      );
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
+      .replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+        #ifdef USE_MAP
+          {
+            vec3 tex = sampledDiffuseColor.rgb;
+            float l = dot(tex, vec3(0.299, 0.587, 0.114));
+            float t = clamp((l - uSplit.x) / (uSplit.y - uSplit.x), 0.0, 1.0);
+            t = t * t * (3.0 - 2.0 * t);
+            float ref = mix(uSplit.z, uSplit.w, t);
+            float d = clamp(l / max(ref, 0.01), 0.35, 2.0);
+            vec3 recolour = mix(uBody, uJoint, t) * mix(1.0, d, uDetail);
+            diffuseColor.rgb = mix(recolour, diffuse * tex, uKeep);
+          }
+        #endif
+        if (uWeather > 0.0) {
+          // Stone weathers unevenly: broad patches a few metres across where one bed or one batch of blocks runs
+          // lighter or darker, and rain streaks running down the face. No hard edges, so it never fights the
+          // scan's own joints.
+          vec3 an = abs(vTFN);
+          vec2 q = an.y > max(an.x, an.z) ? vTFP.xz : vec2(an.x > an.z ? vTFP.z : vTFP.x, vTFP.y);
+          float wPatch = wNoise(q / 9.0) * 0.6 + wNoise(q / 3.0 + 19.0) * 0.4;
+          float streak = wNoise(vec2(q.x / 0.9, q.y / 14.0) + 7.0);
+          diffuseColor.rgb *= 1.0 + uWeather * ((wPatch - 0.5) * 1.6 - max(streak - 0.5, 0.0) * 1.6);
+        }
+        if (uCourse.x > 0.0 && abs(vTFN.y) < 0.7) {
+          // Coursed ashlar: bed joints every course, head joints staggered half a block course to course, each block
+          // its own tone, and fine bedding in the stone running along the course. The joints widen into their
+          // screen footprint, so from afar they fade into the wall's average rather than shimmer.
+          vec3 an = abs(vTFN);
+          vec2 q = vec2(an.x > an.z ? vTFP.z : vTFP.x, vTFP.y);
+          float row = floor(q.y / uCourse.x);
+          float u = q.x / uCourse.y + 0.5 * mod(row, 2.0);
+          float col = floor(u);
+          vec2 g = vec2(fract(u) * uCourse.y, fract(q.y / uCourse.x) * uCourse.x);
+          vec2 e = min(g, vec2(uCourse.y, uCourse.x) - g);
+          vec2 aa = fwidth(q) * 1.5 + 1e-4;
+          float jx = 1.0 - smoothstep(0.012, 0.012 + aa.x, e.x);
+          float jy = 1.0 - smoothstep(0.014, 0.014 + aa.y, e.y);
+          float joint = max(jx, jy);
+          float hb = wHash(vec2(col, row) + 3.7);
+          float bed = 1.0 + 0.045 * sin(q.y * 23.0 + hb * 9.0) * (1.0 - smoothstep(0.0, 0.05, aa.y));
+          diffuseColor.rgb *= (1.0 + uCourse.w * (hb - 0.5) * 2.0) * bed * (1.0 - uCourse.z * joint);
+        }
+        // Soot and splash darken masonry toward the street, and the lowest floors most.
+        diffuseColor.rgb *= 1.0 - 0.2 * exp(-max(vTFP.y - 20.0, 0.0) / 45.0);`,
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        {
+          float side = 1.0 - abs(vTFN.y);
+          float up = max(-vTFN.y, 0.0);
+          float y = max(vTFP.y, 0.0);
+          float wash = side * (0.05 + 0.55 * exp(-y / 7.0)) + up * 0.25 * exp(-y / 12.0) + max(vTFN.y, 0.0) * (0.05 + 0.4 * exp(-y / 2.5));
+          wash *= 1.0 - smoothstep(30.0, 46.0, y);
+          totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.8, 0.6) * wash;
+        }`,
+      );
+  };
+  return m;
+}
+
+const finishes = new Map<string, THREE.Material>();
+
+/** The material for a finish, made once and shared by every tower and variant that uses it. */
+function finishMaterial(f: Finish): THREE.Material {
+  const key = JSON.stringify(f);
+  let m = finishes.get(key);
+  if (m) return m;
+  switch (f.kind) {
+    case 'scan':
+      m = scanMaterial(f);
+      break;
+    case 'metal': {
+      const mm = metal(f.color, f.rough, 0.35);
+      mm.vertexColors = true;
+      m = mm;
+      break;
+    }
+    case 'brushed':
+      m = brushed(f.color, f.rough, f.aniso, f.env, true);
+      break;
+    case 'solid':
+      m =
+        f.clearcoat || f.iridescence
+          ? new THREE.MeshPhysicalMaterial({
+              color: f.color,
+              roughness: f.rough,
+              metalness: f.metal ?? 0,
+              clearcoat: f.clearcoat ?? 0,
+              clearcoatRoughness: 0.12,
+              iridescence: f.iridescence ?? 0,
+              iridescenceIOR: 1.3,
+              iridescenceThicknessRange: [220, 420],
+              envMapIntensity: f.env ?? 1,
+              vertexColors: true,
+            })
+          : new THREE.MeshStandardMaterial({ color: f.color, roughness: f.rough, metalness: f.metal ?? 0, envMapIntensity: f.env ?? 1, vertexColors: true });
+      break;
+  }
+  finishes.set(key, m);
+  return m;
+}
+
+const glazings = new Map<string, THREE.Material>();
+
+function glazingMaterial(g: Glazing): THREE.Material {
+  const key = JSON.stringify(g);
+  let m = glazings.get(key);
+  if (!m) glazings.set(key, (m = windowMaterial(g)));
+  return m;
+}
+
+let library: Omit<TowerMaterials, EraMatKey> | null = null;
+const looks = new Map<string, TowerMaterials>();
+
+/** The tower materials for a look: the shared library, with each era's slots filled from the look's variants. */
+export function towerMaterials(look: Look): TowerMaterials {
+  const key = lookKey(look);
+  const hit = looks.get(key);
+  if (hit) return hit;
+  const eras = {} as Record<EraMatKey, THREE.Material>;
+  for (const era of ['stone', 'brick', 'glass', 'titanium', 'scifi'] as const) {
+    const v = look[era];
+    eras[`${v.era}Wall`] = finishMaterial(v.wall);
+    eras[`${v.era}Trim`] = finishMaterial(v.trim);
+    eras[`${v.era}Band`] = finishMaterial(v.band);
+    eras[`${v.era}Win`] = glazingMaterial(v.glass);
+  }
+  const out = { ...baseMaterials(), ...eras } as TowerMaterials;
+  looks.set(key, out);
+  return out;
+}
+
+function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
   if (library) return library;
   const lib = materials();
   library = {
@@ -365,12 +618,16 @@ export function towerMaterials(): TowerMaterials {
     gothic: stone(0xaeafb0, 'gothic', 1.0, 0.92),
     limestone: stone(0xe2ded6, 'limestone', 0.8, 0.85),
     granite: stone(0x8a8886, 'granite', 1.3, 0.9),
-    brick: lib.brick,
-    bronze: metal(0x6b4a2e, 0.42, 0.35),
     // Polished, lighter than the mullion bronze: it takes the sun on one side and the warm horizon on the other.
-    datum: metal(0xd9c26e, 0.34, 0.2),
-    titanium: brushed(0xa9afb7, 0.13, 0.6, 2.2, 'titanium'),
-    graphite: brushed(0x2e3136, 0.42, 0.4, 1.4, 'graphite'),
+    // A little diffuse response under the metal, so the band takes the low sun as bronze even where its mirror
+    // sees only the dark city below; the polish still catches the sky on top and on the chamfers.
+    datum: (() => {
+      const d = metal(0xd9c26e, 0.4, 0.2);
+      d.metalness = 0.8;
+      d.envMapIntensity = 1.4;
+      return d;
+    })(),
+    graphite: brushed(0x2e3136, 0.42, 0.4, 1.4),
     steel: lib.darkMetal,
     slab: lib.concrete,
     window: windowMaterial(),
@@ -388,8 +645,8 @@ export function towerMaterials(): TowerMaterials {
 }
 
 /** A district's Palimpsest tower as a city centerpiece: floors pick as themselves, the root picks as the district. */
-export function towerCenterpiece(d: District, quality: 'high' | 'medium'): Centerpiece {
-  const t = buildTower(d.tower, quality, towerMaterials());
+export function towerCenterpiece(d: District, quality: 'high' | 'medium', look: Look = lookFor(d.repo)): Centerpiece {
+  const t = buildTower(d.tower, quality, towerMaterials(look), look);
   const pickables = new Map<THREE.Object3D, string | null>(t.pickables);
   pickables.set(t.rootPick, null);
   return { object: t.group, pickables, dispose: () => t.dispose() };

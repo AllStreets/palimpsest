@@ -16,7 +16,6 @@ import {
   PANE_SHOJI,
   PANE_SILL,
   paneData,
-  paneGeometry,
   piercedWall,
   pointedArch,
   roundArch,
@@ -51,7 +50,7 @@ function warmLight(rand: () => number, style: number, on = 0.8): THREE.Color {
 }
 
 function pane(k: Kit, F: THREE.Matrix4, u: number, y: number, w: number, h: number, z: number, data: THREE.Color): void {
-  k.inst('pane', 'window', paneGeometry, F.clone().multiply(M(u, y, z, 0, w, h, 1)), data, false);
+  k.pane('pane', 'window', F.clone().multiply(M(u, y, z, 0, w, h, 1)), data);
 }
 
 interface Opening {

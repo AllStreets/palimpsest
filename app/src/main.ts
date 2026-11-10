@@ -10,6 +10,8 @@ import type { Plate } from './city/labels';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { createCity, type PickHit } from './city/scene';
 import { towerCenterpiece } from './city/tower/look';
+import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
+import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
 import { createInspector } from './ui/inspector';
@@ -40,6 +42,19 @@ interface DebugHandle {
   stats(): { calls: number; triangles: number };
   /** Plazas paved (the civic plaza included) and ambient buildings standing. */
   plots(): { plazas: number; buildings: number };
+  /**
+   * For captures that check a material against the datum and the Claude
+   * amber: rebuilds a repo's tower with the named variants (ids from
+   * variants.ts) and, if given, its datum after that many floors. Never
+   * written anywhere; a reload restores the real look.
+   */
+  restyle(repo: string, ids: string[], datumIndex?: number): void;
+  /**
+   * For the `swatches` capture shot: floats one short tower per variant at
+   * the overview's distance and bearing, moves the camera onto them, and
+   * returns where each one's sunlit and shaded face sit on screen.
+   */
+  swatchBoard(): Promise<SwatchPoint[]>;
 }
 
 declare global {
@@ -70,7 +85,20 @@ async function main(): Promise<void> {
     (s) => s.quality,
     () => 'high' as const,
   );
-  const city = createCity(host, { quality, makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality) });
+  /**
+   * Each tower's materials, picked over every repo that holds a slot,
+   * connected or not, so neighbouring towers differ and a tower keeps its
+   * look while a neighbour is switched off. Filled in by place().
+   */
+  let looks = new Map<string, Look>();
+  /** Debug restyles (captures only): a look and a datum height per repo. */
+  const restyled = new Map<string, { look: Look; datumIndex?: number }>();
+  const lookOf = (d: District): Look => restyled.get(d.repo)?.look ?? looks.get(d.repo) ?? lookFor(d.repo);
+  const city = createCity(host, {
+    quality,
+    makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d)),
+    centerpieceKey: (d) => lookKey(lookOf(d)),
+  });
 
   const debug: DebugHandle = {
     ready: false,
@@ -88,6 +116,21 @@ async function main(): Promise<void> {
     precompile: () => city.precompile(),
     stats: () => city.stats(),
     plots: () => city.plots(),
+    async swatchBoard() {
+      const board = swatchBoard(city.scene, city.camera, (e, t) => city.view(e, t));
+      await city.precompile();
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      return board.points(innerWidth, innerHeight);
+    },
+    restyle(repo, ids, datumIndex) {
+      const look = { ...lookOf(byRepo(repo) ?? ({ repo } as District)) };
+      for (const id of ids) {
+        const v = Object.values(VARIANTS).flat().find((x) => x.id === id);
+        if (v) look[v.era] = v;
+      }
+      restyled.set(repo, { look, datumIndex });
+      place();
+    },
   };
   window.__palimpsest = debug;
 
@@ -165,7 +208,15 @@ async function main(): Promise<void> {
    * gives its plot back to the ambient city; its slot stays its own.
    */
   function place(): void {
-    const occ = occupancy(known.values(), served);
+    const restyledServed = served.map((d) => {
+      const at = restyled.get(d.repo)?.datumIndex;
+      return at === undefined ? d : { ...d, tower: { ...d.tower, datumIndex: at } };
+    });
+    const occ = occupancy(known.values(), restyledServed);
+    const sites = new Map<string, number>();
+    for (const d of served) sites.set(d.repo, d.index);
+    for (const r of known.values()) sites.set(r.fullName, r.slot);
+    looks = pickLooks([...sites].map(([repo, slot]) => ({ repo, slot })));
     districts = occ.districts;
     debug.builds += city.setPlots(occ);
     debug.districts = occ.districts.length;

@@ -14,15 +14,20 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe. With no shots named, all but probe run.
+ * settings, flyover, rise, probe, swatches. With no shots named, all but
+ * probe and swatches run. swatches measures every material variant's
+ * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
+ * app/src/city/tower/rendered.ts).
  * The city-only shots hide the running head and the name plates; overview,
  * inspector, repos and settings show the app as it is.
  * Options (env): CAPTURE_FPS=30, CAPTURE_DPR=2, CAPTURE_KEEP=1 keeps the raw frames,
  * CAPTURE_OUT=<dir> writes somewhere other than docs/media (for probing),
  * PROBE='[[[eye],[target]], ...]' for quick stills in the probe shot, PROBE_CHROME=1
- * keeps the running head and plates in them. CAPTURE_CITY=tall raises the two
- * tallest sample towers to 120 floors, CAPTURE_CITY=small leaves one 8 floor
- * tower (for the view's framing rounds; use with CAPTURE_OUT).
+ * keeps the running head and plates in them, PROBE_RESTYLE (see the probe
+ * shot) rebuilds towers in named variants, CAPTURE_CITY=tall seeds the
+ * sample repos as four short towers and two at the 120-floor cap, and
+ * CAPTURE_CITY=small leaves one 8 floor tower (for the view's framing
+ * rounds; use with CAPTURE_OUT).
  *
  * Re-run it whenever the city changes, and add a shot here for each new
  * thing worth showing.
@@ -39,7 +44,8 @@ import type { Page } from 'playwright';
 import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District } from '../shared/types.js';
-import { reshapeSample, sampleGh, seedSample } from './sample.js';
+import { decodePng, labOf } from './png.js';
+import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -202,8 +208,73 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // One still per [eye, target] pair, written to probe-N.png for framing new shots.
       // PROBE_CHROME=1 keeps the running head and plates.
       await chrome(page, !!process.env.PROBE_CHROME);
+      // PROBE_RESTYLE='{"owner/repo": {"ids": ["brick:salmon"], "datum": 20}}' rebuilds towers in named variants first.
+      const restyles = JSON.parse(process.env.PROBE_RESTYLE ?? '{}') as Record<string, { ids: string[]; datum?: number }>;
+      for (const [repo, r] of Object.entries(restyles)) {
+        await page.evaluate(([rp, ids, at]) => (window as unknown as { __palimpsest: { restyle(r: string, i: string[], d?: number): void } }).__palimpsest.restyle(rp, ids, at), [repo, r.ids, r.datum] as [string, string[], number | undefined]);
+      }
+      if (Object.keys(restyles).length) await page.waitForTimeout(3000);
       const views = JSON.parse(process.env.PROBE ?? '[[[600,160,700],[0,80,0]]]') as [V3, V3][];
       for (const [i, [eye, target]] of views.entries()) await still(page, `probe-${i}`, eye, target);
+    },
+
+    async swatches(page) {
+      // Every variant's rendered colour in the real scene light, haze and tone mapping, at the overview's distance:
+      // the sunlit and shaded face of a short tower per variant, averaged over a patch and converted to Lab.
+      // SWATCH_WRITE=1 writes app/src/city/tower/rendered.ts, which the picker steers neighbours apart by.
+      await chrome(page, false);
+      type P = [number, number];
+      const points = (await page.evaluate(() => (window as unknown as { __palimpsest: { swatchBoard(): Promise<unknown> } }).__palimpsest.swatchBoard())) as Array<{ id: string; sun: P; shade: P; sunLow: P; shadeLow: P }>;
+      await page.waitForTimeout(2500);
+      await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+      const shot = await page.screenshot();
+      writeFileSync(join(MEDIA, 'swatches.png'), shot);
+      const img = decodePng(shot);
+      const scale = img.width / VIEWPORT.width;
+      const mean = ([cx, cy]: [number, number]): [number, number, number] => {
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let n = 0;
+        // A 7 x 9 css-pixel patch: several windows and the wall between them, as the eye averages them from afar.
+        for (let dy = -4; dy <= 4; dy++) {
+          for (let dx = -3; dx <= 3; dx++) {
+            const x = Math.round((cx + dx) * scale);
+            const y = Math.round((cy + dy) * scale);
+            if (x < 0 || y < 0 || x >= img.width || y >= img.height) continue;
+            const i = (y * img.width + x) * 4;
+            r += img.data[i];
+            g += img.data[i + 1];
+            b += img.data[i + 2];
+            n++;
+          }
+        }
+        return labOf(r / n, g / n, b / n).map((v) => Math.round(v * 10) / 10) as [number, number, number];
+      };
+      type Lab = [number, number, number];
+      const out: Record<string, { sun: Lab; shade: Lab; sunLow: Lab; shadeLow: Lab }> = {};
+      for (const p of points) out[p.id] = { sun: mean(p.sun), shade: mean(p.shade), sunLow: mean(p.sunLow), shadeLow: mean(p.shadeLow) };
+      const f = (v: Lab): string => `L${v[0]} a${v[1]} b${v[2]}`;
+      for (const [id, v] of Object.entries(out)) console.log(`  ${id.padEnd(26)} high sun ${f(v.sun)} shade ${f(v.shade)}   low sun ${f(v.sunLow)} shade ${f(v.shadeLow)}`);
+      const body = [
+        '/**',
+        " * Each variant's colour as the city renders it at the overview's distance",
+        ' * and bearing: CIE Lab of the sunlit and the shaded face, with floors at',
+        ' * tall-tower height (sun, shade) and at short-tower height over the street',
+        ' * (sunLow, shadeLow). Measured by tools/capture.ts, the swatches shot.',
+        ' *',
+        ' * VERSIONED DATA. pickLooks chooses every tower\'s materials from these',
+        ' * numbers, so regenerating this file is a city-wide look change: towers',
+        ' * people already know can change their materials. Nothing regenerates it',
+        ' * on its own (not the build, the tests or any default capture); only',
+        ' * `SWATCH_WRITE=1 node --import tsx tools/capture.ts swatches`, run by',
+        ' * hand as a deliberate change and committed with the reason.',
+        ' */',
+        `export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = ${JSON.stringify(out, null, 2)};`,
+        '',
+      ].join('\n');
+      // Writes the versioned data only when asked, by name, on the command line.
+      writeFileSync(process.env.SWATCH_WRITE === '1' ? join(ROOT, 'app', 'src', 'city', 'tower', 'rendered.ts') : join(MEDIA, 'rendered.ts'), body);
     },
 
     async hero(page) {
@@ -355,8 +426,10 @@ async function main(): Promise<void> {
   writeFileSync(claudeSettingsPath, '{}\n');
   mkdirSync(MEDIA, { recursive: true });
 
-  await seedSample();
-  if (process.env.CAPTURE_CITY) await reshapeSample(process.env.CAPTURE_CITY as 'tall' | 'small');
+  // CAPTURE_CITY=tall seeds the same repos in a working developer's shape (four short towers, two at the cap), for probes.
+  await seedSample(Date.now(), process.env.CAPTURE_CITY === 'tall' ? SAMPLE_TALL : SAMPLE);
+  // CAPTURE_CITY=small leaves one tower of 8 floors, for the view's framing rounds.
+  if (process.env.CAPTURE_CITY === 'small') await shrinkSample();
   // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
   const { setRunner } = await import('../engine/exec.js');
   setRunner(sampleGh());
