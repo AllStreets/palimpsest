@@ -13,6 +13,7 @@ import { towerCenterpiece } from './city/tower/look';
 import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
 import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
 import { towerTones } from './city/lots';
+import { loadKits } from './city/kits';
 import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
@@ -86,10 +87,14 @@ async function main(): Promise<void> {
   const veil = document.getElementById('veil');
   if (!host) throw new Error('missing #city');
 
-  const quality = await api.settings().then(
-    (s) => s.quality,
-    () => 'high' as const,
-  );
+  // The Blender-authored kits (masonry courses, crowns, roof pieces) load before anything is built from them.
+  const [quality] = await Promise.all([
+    api.settings().then(
+      (s) => s.quality,
+      () => 'high' as const,
+    ),
+    loadKits(),
+  ]);
   /**
    * Each tower's materials, picked over every repo that holds a slot,
    * connected or not, so neighbouring towers differ and a tower keeps its

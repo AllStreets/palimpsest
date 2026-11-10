@@ -440,6 +440,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
     uCourse: { value: f.courses ? new THREE.Vector4(f.courses.h, f.courses.l, f.courses.joint, f.courses.vary) : new THREE.Vector4(0, 1, 0, 0) },
     uGap: { value: f.courses?.gap ?? 0.012 },
     uTexScale: { value: 1 / (f.scale ?? 1) },
+    uWorldTile: { value: f.worldTile ?? 0 },
   };
   m.customProgramCacheKey = () => 'palimpsest-scan';
   m.onBeforeCompile = (sh) => {
@@ -476,11 +477,17 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse; uniform float uGap;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse; uniform float uGap; uniform float uWorldTile; uniform float uTexScale;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
         #ifdef USE_MAP
+          if (uWorldTile > 0.0) {
+            // Instanced kit blocks: the scan runs on in world space across them, as on the merged walls.
+            vec3 an0 = abs(vTFN);
+            vec2 wq = an0.y > max(an0.x, an0.z) ? vTFP.xz : vec2(an0.x > an0.z ? vTFP.z * sign(vTFN.x) : -vTFP.x * sign(vTFN.z), vTFP.y);
+            sampledDiffuseColor = texture2D(map, wq / uWorldTile * uTexScale);
+          }
           {
             vec3 tex = sampledDiffuseColor.rgb;
             float l = dot(tex, vec3(0.299, 0.587, 0.114));
@@ -600,6 +607,18 @@ function glazingMaterial(g: Glazing): THREE.Material {
   return m;
 }
 
+/**
+ * The wall finish on the coursed kit blocks: the same stone or brick, mapped
+ * by world position (the blocks are instanced), its joints and block tones
+ * left to the geometry (no shader coursing), its normal map turned down
+ * because the relief is real.
+ */
+function faceFinish(f: Finish, tile: number): Finish {
+  if (f.kind !== 'scan') return f;
+  const { courses: _courses, ...rest } = f;
+  return { ...rest, normal: (f.normal ?? 1) * 0.35, worldTile: tile };
+}
+
 let library: Omit<TowerMaterials, EraMatKey> | null = null;
 const looks = new Map<string, TowerMaterials>();
 
@@ -615,6 +634,7 @@ export function towerMaterials(look: Look): TowerMaterials {
     eras[`${v.era}Trim`] = finishMaterial(v.trim);
     eras[`${v.era}Band`] = finishMaterial(v.band);
     eras[`${v.era}Win`] = glazingMaterial(v.glass);
+    eras[`${v.era}Face`] = finishMaterial(faceFinish(v.wall, era === 'brick' ? 1.5 : 2.6));
   }
   const out = { ...baseMaterials(), ...eras } as TowerMaterials;
   looks.set(key, out);

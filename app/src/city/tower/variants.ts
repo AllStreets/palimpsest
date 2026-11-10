@@ -62,6 +62,12 @@ export type Finish =
        * scan's default is 0.22 for cut stone and none for brick or patina.
        */
       weather?: number;
+      /**
+       * Map the scan by world position at this tile size (metres) in the
+       * shader: the coursed kit blocks are instanced, so their own UVs carry
+       * nothing. Set only on the `Face` slot's copy of a wall finish.
+       */
+      worldTile?: number;
       seen?: number;
     }
   /** Cast or rolled metal under the scanned plate's normal and roughness. */
@@ -173,11 +179,14 @@ const VERDIGRIS = scan('rust', 0x6f8a7c, 0.5, { joint: 0x51665a, normal: 0.6 });
 const PATINA: Finish = { kind: 'solid', color: 0x628a86, rough: 0.6, metal: 0.15 };
 const TERRACOTTA = scan('brick', 0xd0d8e2, 0.2, { joint: 0x969ca3, normal: 0.55 });
 /**
- * Sintered ceramic cladding: cool white panels about 1.6 by 2.4 m with fine
- * dark joints, under a glazed skin that mirrors the sky. Cool on purpose, so
- * the orange key light leaves it white rather than salmon.
+ * Glazed ceramic cladding: a celadon-blue glaze over a grey body, panels
+ * 1.2 by 1.8 m with dark recessed seams, under a clear coat that mirrors the
+ * sky. The glaze is a blue of real stoneware rather than a white: under the
+ * orange dusk key a white surface goes peach, and only a body this far to
+ * the blue side lands on a cool grey-blue in the sun and a clear blue in
+ * shade, with the dusk sky's violet in its reflections.
  */
-const CERAMIC = scan('ashlar', 0x8e9db0, 0.2, { joint: 0x5a6472, normal: 0.12, polish: 1.0, detail: 0.2, weather: 0, courses: { h: 1.2, l: 1.8, joint: 0.6, vary: 0.05, gap: 0.045 }, seen: 0xb8c3d2 });
+const CERAMIC = scan('ashlar', 0x4a78ae, 0.16, { joint: 0x34414f, normal: 0.12, polish: 1.0, detail: 0.15, weather: 0, courses: { h: 1.2, l: 1.8, joint: 0.7, vary: 0.06, gap: 0.045 }, seen: 0x9fb4c8 });
 /** Pale cast stone for the deco shaft: cool grey-buff panels in wide courses, lightly weathered. */
 const CAST_STONE = scan('ashlar', 0xc3c1b9, 0.6, { joint: 0x8f8d86, normal: 0.6, weather: 0.12, courses: { h: 1.2, l: 2.6, joint: 0.5, vary: 0.05 } });
 /** Dark basalt-grey concrete for the ziggurat's sloped faces: board-marked, streaked by rain. */

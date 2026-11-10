@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { layoutTower } from '../../../../shared/tower-layout.js';
 import type { TowerSpec } from '../../../../shared/types.js';
 import { addDatum, type DatumPlan } from './datum.js';
-import { ERA_BUILDERS, type FloorShape, TITANIUM_TWIST } from './eras.js';
+import { crownFloors, ERA_BUILDERS, type FloorShape, TITANIUM_TWIST } from './eras.js';
 import { Kit, M, rng, type TowerMaterials } from './kit.js';
 import { ROOT_BUILDERS, ROOT_TOP_HALF } from './roots.js';
 import { type Look, lookFor } from './variants.js';
@@ -52,6 +52,7 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
   const layout = layoutTower(spec);
   const kit = new Kit(mats);
   const detail = quality === 'high';
+  kit.detail = detail;
 
   ROOT_BUILDERS[spec.root](kit, detail, rng(spec.id));
 
@@ -75,6 +76,19 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
   let datumPlan: DatumPlan = { cx: 0, cz: 0, half: ROOT_TOP_HALF[spec.root] - 0.4, ry: 0 };
   const yearOf = (at: string): number => new Date(at).getUTCFullYear() || 0;
   const firstYear = layout.floors.length ? yearOf(layout.floors[0].floor.at) : 0;
+  // The sci-fi run at the top carries its family's crown over its last few floors, starting above the datum line
+  // if the band falls inside them, so the band never cuts a crown in two.
+  const last = layout.floors.length - 1;
+  let crownStart = Infinity;
+  if (last >= 0 && layout.floors[last].floor.era === 'scifi') {
+    let start = last;
+    while (start > 0 && layout.floors[start - 1].floor.era === 'scifi') start--;
+    let n = crownFloors(last - start + 1);
+    const d = spec.datumIndex - 1;
+    if (d >= last - n + 1 && d < last) n = last - d;
+    crownStart = last - n + 1;
+  }
+  const crownHeight = crownStart <= last ? layout.top - layout.floors[crownStart].y0 : 0;
   layout.floors.forEach(({ floor, y0, h }, i) => {
     kit.tint = yearDrift(spec.repo, floor.era, yearOf(floor.at), firstYear);
     const prev = layout.floors[i - 1]?.floor.era;
@@ -93,6 +107,7 @@ export function buildTower(spec: TowerSpec, quality: 'high' | 'medium', mats: To
       datum: i === spec.datumIndex - 1,
       rand: rng(floor.id),
       variant: look[floor.era],
+      ...(i >= crownStart ? { crown: { stage: i - crownStart, height: crownHeight } } : {}),
     });
     pickables.set(proxy(shape.cx, y0 + h / 2, shape.cz, shape.half * 2, h, ry), floor.id);
     if (i === spec.datumIndex - 1) {

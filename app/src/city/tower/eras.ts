@@ -17,6 +17,7 @@ import {
   squareSweep,
   unitBox,
 } from './kit.js';
+import { hasKit, kitPiece } from '../kits.js';
 import type { Family, MasonryRhythm, Variant } from './variants.js';
 
 /** Where a floor sits in its tower and in its run of same-era floors. */
@@ -38,6 +39,13 @@ export interface FloorContext {
   rand: () => number;
   /** The repo's variant for this floor's era: its materials (through the era's slots) and its rhythm. */
   variant: Variant;
+  /**
+   * Set on the top floors of a sci-fi run that carry the family's crown
+   * instead of storeys: `stage` 0 is the crown's first floor (it builds the
+   * whole crown, `height` metres tall, up to the tower's top), later stages
+   * build nothing of their own.
+   */
+  crown?: { stage: number; height: number };
 }
 
 /** What a floor builder reports back: its plan centre and half-width (for the pick proxy), and where a datum band at its top would sit clear of its facade. */
@@ -111,6 +119,46 @@ const MASONRY: Record<'stone' | 'brick', MasonryRhythm> = {
 /** The pier between the two windows of a pair. */
 const PAIR_PIER = 0.5;
 
+/** The depth of the joints between the coursed blocks (kits.py JOINT): the wall behind them sits this far back. */
+const JOINT = 0.05;
+/** Coursed blocks: about this long (two to a kit course) and this tall per course. Glazed terracotta is laid in blocks; the other bricks in bands. */
+const COURSE = { stone: { l: 2.8, h: 0.62 }, terracotta: { l: 2.4, h: 0.7 }, brick: { l: 6, h: 0.95 } };
+
+/**
+ * Lays coursed blocks (the Blender kit's courses, kits.py) over the wall
+ * between u0..u1 and y0..y1 of face frame F: whole courses as near the
+ * course height as fit, running bond (each course offset half a block from
+ * the one below), a pier laid in alternate long and paired blocks. Brick is
+ * banded instead: a deep channel every metre or so, no head joints, the
+ * scan's own bricks between. The blocks carry their own tones; each course
+ * takes a few percent of drift on top, a batch of stone from one bed.
+ */
+function coursing(k: Kit, era: 'stone' | 'brick', v: Variant, F: THREE.Matrix4, u0: number, u1: number, y0: number, y1: number, seed: number): void {
+  const len = u1 - u0;
+  const tall = y1 - y0;
+  if (len < 0.2 || tall < 0.15) return;
+  const banded = era === 'brick' && !v.id.includes('terracotta');
+  const size = era === 'stone' ? COURSE.stone : banded ? COURSE.brick : COURSE.terracotta;
+  const rows = Math.max(1, Math.round(tall / size.h));
+  const ch = tall / rows;
+  const mat = slot(era, 'Face');
+  const pier = len < size.l * 0.8;
+  for (let r = 0; r < rows; r++) {
+    const y = y0 + r * ch;
+    const n = Math.max(1, Math.round(len / size.l));
+    const w = len / n;
+    // A batch of stone from one bed: a course a few percent lighter or darker than its neighbours.
+    const h1 = Math.sin((seed * 12.9898 + r * 78.233) * 1.7) * 43758.5453;
+    const drift = 1 + 0.1 * ((h1 - Math.floor(h1)) - 0.5);
+    const tone = new THREE.Color(drift, drift, drift);
+    const piece = banded ? 'band_course' : pier ? ((r + seed) % 2 === 0 ? 'pier_block' : 'course_a') : (r + seed) % 2 === 0 ? 'course_a' : 'course_b';
+    for (let i = 0; i < n; i++) {
+      const u = u0 + w * (i + 0.5);
+      k.instLod(`course:${era}:${piece}`, mat, () => kitPiece(`${piece}.hi`), () => kitPiece(`${piece}.lo`), F.clone().multiply(M(u, y, 0, 0, w, ch, 1)), tone);
+    }
+  }
+}
+
 /**
  * A load-bearing wall: piers between deep punched openings, solid spandrels
  * above and below, the glass set back the full reveal so each opening holds
@@ -145,13 +193,19 @@ function masonry(k: Kit, width: number, h: number, floor: Floor, c: FloorContext
   k.box('slab', width - 2 * r, h, width - 2 * r, M(0, h / 2, 0));
   for (let side = 0; side < 4; side++) {
     const F = face(side, half);
-    // Spandrels run the full face; piers stand between the openings.
-    k.box(wall, width, sillY, r, F.clone().multiply(M(0, sillY / 2, -r / 2)));
-    k.box(wall, width, h - headY, r, F.clone().multiply(M(0, (headY + h) / 2, -r / 2)));
+    // Spandrels run the full face; piers stand between the openings. Their faces sit a joint's depth back:
+    // the coursed blocks laid over them (coursing, below) stand in front with their joints touching them.
+    k.box(wall, width, sillY, r, F.clone().multiply(M(0, sillY / 2, -r / 2 - JOINT)));
+    k.box(wall, width, h - headY, r, F.clone().multiply(M(0, (headY + h) / 2, -r / 2 - JOINT)));
+    coursing(k, era, c.variant, F, -half, half, 0, sillY, c.index * 7 + side);
+    coursing(k, era, c.variant, F, -half, half, headY, h, c.index * 7 + side + 3);
     for (let i = 0; i <= openings.length; i++) {
       const a = i === 0 ? -half : openings[i - 1] + winW / 2;
       const b = i === openings.length ? half : openings[i] - winW / 2;
-      if (b - a > 1e-3) k.box(wall, b - a, winH, r, F.clone().multiply(M((a + b) / 2, sillY + winH / 2, -r / 2)));
+      if (b - a > 1e-3) {
+        k.box(wall, b - a, winH, r, F.clone().multiply(M((a + b) / 2, sillY + winH / 2, -r / 2 - JOINT)));
+        coursing(k, era, c.variant, F, a, b, sillY, headY, c.index * 7 + side + i * 13);
+      }
     }
     for (const [j, u] of openings.entries()) {
       k.pane(`pane:${era}`, slot(era, 'Win'), F.clone().multiply(M(u, sillY + winH / 2, -r + 0.02, 0, winW, winH, 1)), light(PANE_SASH));
@@ -380,6 +434,7 @@ const deco: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
   const run = runLength(c);
   const hs = Math.max(3.2, half * decoStep(c.fromTop, run));
+  if (c.crown) return crown(k, 'deco', Math.max(3.2, half * decoStep(c.fromTop + c.crown.stage, run)), c);
   const below = Math.max(3.2, half * decoStep(c.fromTop + 1, run));
   const setback = !c.runStart && below > hs + 0.3;
   const n = bays(hs * 2, c.variant.pitch ?? 2.4);
@@ -453,6 +508,7 @@ const ziggurat: EraBuilder = (k, w, h, f, c) => {
   const run = runLength(c);
   const batter = Math.min(0.42, (half * 0.6) / run);
   const h0 = Math.max(3.5, half - batter * c.inRun);
+  if (c.crown) return crown(k, 'ziggurat', Math.max(3.5, half - batter * (c.inRun - c.crown.stage)), c);
   const h1 = Math.max(3.2, h0 - batter);
   const terrace = c.inRun % 3 === 2;
   const sp = Math.min(h * 0.55, 2.4);
@@ -514,6 +570,7 @@ const needle: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
   const run = runLength(c);
   const hs = Math.max(2.8, half * (1 - (0.42 * c.inRun) / Math.max(1, run)));
+  if (c.crown) return crown(k, 'needle', Math.max(2.8, half * (1 - (0.42 * (c.inRun - c.crown.stage)) / Math.max(1, run))), c);
   const pod = run >= 9 && c.inRun % 9 === 5 && !c.top && !c.datum;
   const n = bays(hs * 2, c.variant.pitch ?? 0.8);
   const p = (hs * 2) / n;
@@ -567,6 +624,7 @@ const needle: EraBuilder = (k, w, h, f, c) => {
  */
 const arcology: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
+  if (c.crown) return crown(k, 'arcology', half, c);
   const over = 0.9;
   const recess = 1.3;
   const n = bays(w, c.variant.pitch ?? 4.6);
@@ -633,6 +691,7 @@ const organic: EraBuilder = (k, w, h, f, c) => {
     return Math.max(2.6, half * 0.96 * (1 + 0.14 * Math.sin(Math.PI * t)) * (1 - 0.3 * t));
   };
   const r0 = radius(c.inRun);
+  if (c.crown) return crown(k, 'organic', radius(c.inRun - c.crown.stage), c);
   const r1 = radius(c.inRun + 1);
   const rg = Math.min(r0, r1) - 0.4;
   const sp = 1.0;
@@ -686,6 +745,7 @@ const BEARINGS: Array<[number, number]> = [[1, 0], [0.7, 0.7], [0, 1], [-0.7, 0.
  */
 const cluster: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
+  if (c.crown) return crown(k, 'cluster', half, c);
   const core = Math.max(3, half * 0.44);
   const centred = c.datum || c.top;
   const [ox, oz] = centred ? [0, 0] : BEARINGS[(c.inRun * 3) % BEARINGS.length];
@@ -728,6 +788,62 @@ const cluster: EraBuilder = (k, w, h, f, c) => {
 };
 
 const FAMILY_BUILDERS: Record<Family, EraBuilder> = { deco, ziggurat, needle, arcology, organic, cluster };
+
+/**
+ * How many of a sci-fi run's top floors carry its crown: about a third of a
+ * short run (runs are five to twelve floors in most towers), so the crown is
+ * tall enough to read from the hero's distance, never all of a long run.
+ */
+export function crownFloors(run: number): number {
+  return run >= 12 ? 5 : run >= 8 ? 4 : run >= 5 ? 3 : run >= 3 ? 2 : 1;
+}
+
+/** Each crown piece's slot (kits.py) and the tower material it takes. */
+const CROWN_SLOT: Record<string, MatKey> = {
+  wall: 'scifiWall',
+  trim: 'scifiTrim',
+  band: 'scifiBand',
+  vent: 'vent',
+  light: 'lightLine',
+  roof: 'roof',
+  beacon: 'beacon',
+  glass: 'vent',
+};
+
+/**
+ * Each family's crown (kits.py crown_<family>): the half-width it starts
+ * from, as a share of the shaft below; how far its widest part reaches
+ * (for the pick proxy); and the half-width at its top, which a datum band
+ * on the tower's last floor wraps.
+ */
+const CROWNS: Record<Family, { base: number; reach: number; top: number; round?: boolean }> = {
+  deco: { base: 1.0, reach: 1.0, top: 0.6 },
+  ziggurat: { base: 1.0, reach: 1.0, top: 0.36 },
+  needle: { base: 1.0, reach: 1.12, top: 0.4 },
+  arcology: { base: 1.0, reach: 1.3, top: 1.07 },
+  organic: { base: 1.0, reach: 1.1, top: 0.47, round: true },
+  cluster: { base: 0.82, reach: 1.1, top: 0.78 },
+};
+
+/**
+ * A family's crown over the top floors of its run, authored in Blender
+ * (kits.py) and scaled to the shaft it caps: `half` is the shaft's
+ * half-width where the crown starts. The first crown floor lays the whole
+ * crown; the floors above it in the crown only report their shape.
+ */
+function crown(k: Kit, family: Family, half: number, c: FloorContext): FloorShape {
+  const spec = CROWNS[family];
+  const b = half * spec.base;
+  const H = c.crown!.height;
+  if (c.crown!.stage === 0) {
+    for (const [slotName, mat] of Object.entries(CROWN_SLOT)) {
+      const name = `crown_${family}.${slotName}`;
+      if (!hasKit(name)) continue;
+      k.add(mat, kitPiece(name), M(0, 0, 0, 0, b, H, b));
+    }
+  }
+  return { cx: 0, cz: 0, half: b * spec.reach + 0.3, datumHalf: b * spec.top + 0.12, round: spec.round };
+}
 
 /** Sci-fi: the floor is built in its variant's family (see FAMILIES in variants.ts). */
 const scifi: EraBuilder = (k, w, h, f, c) => FAMILY_BUILDERS[c.variant.family ?? 'cluster'](k, w, h, f, c);

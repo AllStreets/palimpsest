@@ -612,7 +612,6 @@ export type PartKind =
   | `wall:${Archetype}`
   | 'trim'
   | 'roofbox'
-  | 'louvre'
   | 'tank'
   | 'tankCap'
   | 'stand'
@@ -623,7 +622,15 @@ export type PartKind =
   | 'planter'
   | 'tree'
   | 'deckLight'
-  | 'pole';
+  | 'pole'
+  | 'bulkhead'
+  | 'penthouse'
+  | 'screen'
+  | 'unit'
+  | 'car'
+  | 'bay'
+  | 'bayGlass'
+  | 'bayLit';
 
 /** One box (or cylinder, prism, canopy) of a building: centre, size, a turn about y, and its colour. */
 export interface Part {
@@ -636,6 +643,8 @@ export interface Part {
   sz: number;
   rot?: number;
   colour?: THREE.Color;
+  /** A wall with its street corners cut (kits.py chamfer_box; rounded, round_box, on mid-century slabs) instead of a plain box. */
+  chamfer?: boolean;
 }
 
 /** Copings and cornices: stone on masonry, metal on offices and glass, concrete on concrete. */
@@ -706,10 +715,14 @@ export function lotParts(lot: Lot): Part[] {
       d *= inset;
     }
   }
+  // Corner lots of offices and slabs cut their street corners where two street fronts meet: a chamfer on offices
+  // and glass, a streamline curve on mid-century slabs.
+  const cut = (a === 'commercial' || a === 'midcentury' || a === 'glass') && lot.front.length > 1 && v > 0.45;
   for (const t of tiers) {
     const top = t === tiers[tiers.length - 1];
     const hh = t.y1 - t.y0 - (top ? 0.35 : 0);
     p(wall, t.x, t.y0 + hh / 2, t.z, t.w, hh, t.d, lot.colour);
+    if (cut) parts[parts.length - 1].chamfer = true;
     // A coping caps every tier.
     const cap = a === 'brutalist' ? 0 : 0.35;
     if (cap) p('trim', t.x, t.y1 - (top ? 0.35 : 0) + cap / 2, t.z, t.w + 0.14, cap, t.d + 0.14, trim);
@@ -721,6 +734,33 @@ export function lotParts(lot: Lot): Part[] {
       for (const f of lot.front) {
         if (f === 'px' || f === 'nx') p('trim', t.x + (f === 'px' ? 1 : -1) * (t.w / 2 + depth / 2 - 0.05), y, t.z, depth, tall, t.d, trim);
         else p('trim', t.x, y, t.z + (f === 'pz' ? 1 : -1) * (t.d / 2 + depth / 2 - 0.05), t.w, tall, depth, trim);
+      }
+    }
+    // Walk-ups throw a three-sided bay out over the street, storey by storey, from the first floor to the parapet.
+    if (a === 'walkup' && t === tiers[0] && v < 0.7) {
+      const storeys = Math.floor((t.y1 - s.ground - s.parapet - 0.35) / s.floor);
+      for (const f of lot.front) {
+        const along = f === 'px' || f === 'nx' ? t.d : t.w;
+        const n = along > 11 ? 2 : 1;
+        for (let b = 0; b < n; b++) {
+          const o = n === 1 ? (v - 0.35) * along * 0.3 : (b - 0.5) * along * 0.5;
+          const bw = 3.0;
+          const bd = 0.85;
+          for (let k = 0; k < storeys; k++) {
+            const y = s.ground + k * s.floor + s.floor / 2;
+            const lit = hash(Math.round(lot.x * 3 + b), Math.round(lot.z), k + 7) < 0.45;
+            const at = (dx: number, dz: number, rot: number, glass: boolean): void => {
+              if (glass) p(lit ? 'bayLit' : 'bayGlass', t.x + dx, y, t.z + dz, bw, s.floor, bd, lit ? colour(0xffffff) : undefined, rot);
+              else p('bay', t.x + dx, y, t.z + dz, bw, s.floor, bd, trim, rot);
+            };
+            for (const glass of [false, true]) {
+              if (f === 'pz') at(o, t.d / 2 + bd / 2, 0, glass);
+              else if (f === 'nz') at(-o, -t.d / 2 - bd / 2, Math.PI, glass);
+              else if (f === 'px') at(t.w / 2 + bd / 2, -o, Math.PI / 2, glass);
+              else at(-t.w / 2 - bd / 2, o, -Math.PI / 2, glass);
+            }
+          }
+        }
       }
     }
     // Brutalist: a deep cast cap over the top floor.
@@ -740,7 +780,7 @@ export function lotParts(lot: Lot): Part[] {
     case 'tank':
     case 'garden': {
       // A stair bulkhead, two chimney stacks on the party wall, and a tank or a planted roof.
-      box('roofbox', 0.18 - v * 0.2, -0.2, Math.min(3.0, tw * 0.28), Math.min(4.0, td * 0.28), 2.6, ROOFBOX[a]);
+      box('bulkhead', 0.18 - v * 0.2, -0.2, Math.min(3.0, tw * 0.28), Math.min(4.0, td * 0.28), 2.6, ROOFBOX[a]);
       // A chimney stack on the party wall.
       if (a === 'walkup') box('roofbox', v < 0.5 ? -0.42 : 0.42, 0.38, 0.7, 1.3, 1.4, lot.colour);
       if (lot.roof === 'tank' && tw > 7 && td > 7) {
@@ -758,8 +798,8 @@ export function lotParts(lot: Lot): Part[] {
       // A mechanical penthouse set back from the parapet, louvred, with a lift overrun beside it.
       const pw = Math.min(16, tw * (0.28 + v * 0.14));
       const pd = Math.min(12, td * (0.28 + v * 0.12));
-      box('louvre', -0.08, 0.04, pw, pd, 3.8, ROOFBOX[a]);
-      box('roofbox', 0.12, -0.1, Math.min(4.5, tw * 0.15), Math.min(4.5, td * 0.15), 5.6, ROOFBOX[a]);
+      box('penthouse', -0.08, 0.04, pw, pd, 3.8, ROOFBOX[a]);
+      box('bulkhead', 0.12, -0.1, Math.min(4.5, tw * 0.15), Math.min(4.5, td * 0.15), 5.6, ROOFBOX[a]);
       break;
     }
     case 'screen': {
@@ -767,15 +807,15 @@ export function lotParts(lot: Lot): Part[] {
       const sw = tw * 0.55;
       const sd = td * 0.55;
       box('roofbox', 0, 0, sw * 0.8, sd * 0.8, 3.0, ROOFBOX[a]);
-      p('louvre', tx, yr + 2.1, tz - sd / 2, sw, 4.2, 0.25, lot.accent);
-      p('louvre', tx, yr + 2.1, tz + sd / 2, sw, 4.2, 0.25, lot.accent);
-      p('louvre', tx - sw / 2, yr + 2.1, tz, 0.25, 4.2, sd, lot.accent);
-      p('louvre', tx + sw / 2, yr + 2.1, tz, 0.25, 4.2, sd, lot.accent);
+      p('screen', tx, yr + 2.1, tz - sd / 2, sw, 4.2, 0.25, lot.accent);
+      p('screen', tx, yr + 2.1, tz + sd / 2, sw, 4.2, 0.25, lot.accent);
+      p('screen', tx - sw / 2, yr + 2.1, tz, sd, 4.2, 0.25, lot.accent, Math.PI / 2);
+      p('screen', tx + sw / 2, yr + 2.1, tz, sd, 4.2, 0.25, lot.accent, Math.PI / 2);
       break;
     }
     case 'terrace': {
       // A terrace on the podium and the top: planters and small trees by the edge, a glass rail.
-      box('roofbox', 0.2, 0.2, tw * 0.3, td * 0.3, 3.6, ROOFBOX[a]);
+      box('bulkhead', 0.2, 0.2, tw * 0.3, td * 0.3, 3.6, ROOFBOX[a]);
       garden(p, tx - tw * 0.15, yr, tz - td * 0.1, tw * 0.5, td * 0.5, v);
       if (tiers.length > 1) {
         const pod = tiers[0];
@@ -802,7 +842,7 @@ export function lotParts(lot: Lot): Part[] {
       for (let k = 0; k < cars; k++) {
         const u = hash(Math.round(lot.x), Math.round(lot.z), k);
         const row = k % 2 === 0 ? -0.12 : 0.12;
-        p('roofbox', tx + (u - 0.5) * tw * 0.8, yr + 0.75, tz + row * td, 1.9, 1.5, 4.4, colour(CARS[Math.floor(hash(k, Math.round(lot.x), 3) * CARS.length)]));
+        p('car', tx + (u - 0.5) * tw * 0.8, yr + 0.75, tz + row * td, 1.9, 1.5, 4.4, colour(CARS[Math.floor(hash(k, Math.round(lot.x), 3) * CARS.length)]));
       }
       break;
     }
@@ -839,11 +879,11 @@ export function lotParts(lot: Lot): Part[] {
         if (alongX) p(lit ? 'glazeLit' : 'glazeDark', nave.x, low + 0.4 + gh / 2, nave.z + sgn * (nave.d / 2 + 0.03), nave.w - 2, gh, 0.08, lit ? colour(0xffffff) : undefined);
         else p(lit ? 'glazeLit' : 'glazeDark', nave.x + sgn * (nave.w / 2 + 0.03), low + 0.4 + gh / 2, nave.z, 0.08, gh, nave.d - 2, lit ? colour(0xffffff) : undefined);
       }
-      box('louvre', 0.3, 0.1, Math.min(4, tw * 0.2), Math.min(3, td * 0.2), 2.2, 0x55585c);
+      box('penthouse', 0.3, 0.1, Math.min(4, tw * 0.2), Math.min(3, td * 0.2), 2.2, 0x55585c);
       break;
     }
     case 'flat':
-      if (a === 'industrial' && tw > 10) box('louvre', -0.2, 0.15, Math.min(4, tw * 0.2), Math.min(3, td * 0.2), 2.0, 0x55585c);
+      if (a === 'industrial' && tw > 10) box('penthouse', -0.2, 0.15, Math.min(4, tw * 0.2), Math.min(3, td * 0.2), 2.0, 0x55585c);
       break;
   }
   if (a !== 'walkup' && a !== 'parking' && lot.roof !== 'garden' && tw > 12 && td > 12) {
@@ -851,7 +891,7 @@ export function lotParts(lot: Lot): Part[] {
     for (let k = 0; k < units; k++) {
       const ux = (hash(Math.round(lot.x), k, 41) - 0.5) * (tw - 5);
       const uz = (hash(Math.round(lot.z), k, 43) - 0.5) * (td - 5);
-      p('louvre', tx + ux, yr + 0.7, tz + uz, 1.4 + v, 1.4, 2.2, colour(0x8a8d90));
+      p('unit', tx + ux, yr + 0.7, tz + uz, 1.4 + v, 1.4, 2.2, colour(0x8a8d90));
     }
   }
   if (lot.stack > 0) {

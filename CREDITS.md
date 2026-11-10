@@ -23,6 +23,8 @@ The Palimpsest towers (`app/src/city/tower/`) are modelled in code, written for 
 
 The analyzing-site scaffold (`app/src/city/scaffold.ts`) is modelled in code, written for Palimpsest.
 
+The architecture kits in `app/public/kits/kits.glb` are own work, authored in Blender from code by `tools/kits/kits.py` (run headless; the script is the source): the coursed stone and banded brick blocks laid over the masonry floors, the six sci-fi family crowns (deco tiers, ziggurat summit, needle blades, arcology sky garden, ribbed dome, stacked pods), and the ambient city's roof and massing pieces (timber water tanks on braced stands, stair bulkheads, louvred penthouses, finned plant screens, rooftop units, cars, oriel bays, cut-corner walls). No third-party models or textures are in it.
+
 ## Type
 
 Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. The app's splash (`src-tauri/splash/`) shows before the engine can serve anything, so it carries its own copies of the same files in `src-tauri/splash/fonts/`. All under the [SIL Open Font License 1.1](https://openfontlicense.org).

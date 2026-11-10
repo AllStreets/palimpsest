@@ -7,10 +7,12 @@ import type { Era } from '../../../../shared/types.js';
  * The four surfaces every era is built from, filled per repo from its
  * variant (variants.ts): `Wall` the main surface, `Trim` the second one,
  * `Band` the accent on belt courses, cornices and the crown, `Win` the
- * window glass. So `brickWall` is common red on one tower and cream city
- * brick on the next.
+ * window glass, `Face` the wall finish on the Blender-authored coursed
+ * blocks (kits.ts), which carry their joints in geometry rather than in the
+ * shader. So `brickWall` is common red on one tower and cream city brick on
+ * the next.
  */
-export type EraSlot = 'Wall' | 'Trim' | 'Band' | 'Win';
+export type EraSlot = 'Wall' | 'Trim' | 'Band' | 'Win' | 'Face';
 export type EraMatKey = `${Era}${EraSlot}`;
 
 /** The material key of one of an era's slots. */
@@ -208,6 +210,8 @@ function worldUv(g: THREE.BufferGeometry, tile: number): void {
 interface Batch {
   mat: MatKey;
   geo: THREE.BufferGeometry;
+  /** The distant level of detail, drawn past LOD_FAR from the batch's centre. */
+  lo?: THREE.BufferGeometry;
   matrices: THREE.Matrix4[];
   colors: THREE.Color[] | null;
   shadow: boolean;
@@ -219,6 +223,9 @@ interface Batch {
  * repeated detail (columns, capitals, dentils, mullions, fins, panes) goes
  * into one InstancedMesh per part.
  */
+/** Past this distance (metres from a batch's centre) a kit part draws its distant level of detail. */
+export const LOD_FAR = 450;
+
 export class Kit {
   /** Applied to everything added; builders set it to the current floor or root stage. */
   base = new THREE.Matrix4();
@@ -230,6 +237,8 @@ export class Kit {
    * every material that draws an instanced part reads its instance colour.
    */
   tint = new THREE.Color(1, 1, 1);
+  /** High quality: kit parts carry their near level of detail too; medium draws only the distant one. */
+  detail = true;
   private merged = new Map<MatKey, THREE.BufferGeometry[]>();
   private batches = new Map<string, Batch>();
   private geos = new Map<string, THREE.BufferGeometry>();
@@ -291,6 +300,21 @@ export class Kit {
     this.instRaw(key, mat, make, local, (color ?? new THREE.Color(1, 1, 1)).clone().multiply(this.tint), shadow);
   }
 
+  /**
+   * One instance of a kit part with two levels of detail (kits.ts `<name>.hi`
+   * and `<name>.lo`): the near one carries the relief, the far one the same
+   * blocks as flat faces. At medium quality only the far one is built.
+   */
+  instLod(key: string, mat: MatKey, hi: () => THREE.BufferGeometry, lo: () => THREE.BufferGeometry, local: THREE.Matrix4, color?: THREE.Color): void {
+    if (!this.detail) {
+      this.inst(`${key}:lo`, mat, lo, local, color);
+      return;
+    }
+    this.inst(key, mat, hi, local, color);
+    const b = this.batches.get(key)!;
+    b.lo ??= lo();
+  }
+
   /** A window pane: its instance colour is data for the window shader (see paneData), so it is never tinted, and panes cast no shadow. */
   pane(key: string, mat: MatKey, local: THREE.Matrix4, data: THREE.Color): void {
     this.instRaw(key, mat, paneGeometry, local, data, false);
@@ -323,21 +347,53 @@ export class Kit {
       group.add(mesh);
     }
     for (const [key, b] of this.batches) {
-      const mesh = new THREE.InstancedMesh(b.geo, this.m[b.mat], b.matrices.length);
-      b.matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
-      if (b.colors) {
-        const white = new THREE.Color(1, 1, 1);
-        for (let i = 0; i < b.matrices.length; i++) mesh.setColorAt(i, b.colors[i] ?? white);
+      const mesh = this.instanced(key, b, b.geo);
+      if (!b.lo) {
+        group.add(mesh);
+        continue;
       }
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.computeBoundingBox();
-      mesh.computeBoundingSphere();
-      mesh.castShadow = b.shadow;
-      mesh.receiveShadow = true;
-      mesh.name = `tower:${key}`;
-      group.add(mesh);
+      // Near and far levels share one centre (the mean of the instances), so the switch follows the part, not the tower's foot.
+      const centre = new THREE.Vector3();
+      const p = new THREE.Vector3();
+      for (const m of b.matrices) centre.add(p.setFromMatrixPosition(m));
+      centre.divideScalar(b.matrices.length);
+      const shift = new THREE.Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z);
+      const far = this.instanced(`${key}:far`, b, b.lo);
+      for (const m of [mesh, far]) {
+        const t = new THREE.Matrix4();
+        for (let i = 0; i < m.count; i++) {
+          m.getMatrixAt(i, t);
+          m.setMatrixAt(i, shift.clone().multiply(t));
+        }
+        m.instanceMatrix.needsUpdate = true;
+        m.computeBoundingBox();
+        m.computeBoundingSphere();
+      }
+      far.castShadow = false;
+      const lod = new THREE.LOD();
+      lod.name = `tower:${key}:lod`;
+      lod.position.copy(centre);
+      lod.addLevel(mesh, 0);
+      lod.addLevel(far, LOD_FAR);
+      group.add(lod);
     }
     return group;
+  }
+
+  private instanced(key: string, b: Batch, geo: THREE.BufferGeometry): THREE.InstancedMesh {
+    const mesh = new THREE.InstancedMesh(geo, this.m[b.mat], b.matrices.length);
+    b.matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
+    if (b.colors) {
+      const white = new THREE.Color(1, 1, 1);
+      for (let i = 0; i < b.matrices.length; i++) mesh.setColorAt(i, b.colors[i] ?? white);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingBox();
+    mesh.computeBoundingSphere();
+    mesh.castShadow = b.shadow;
+    mesh.receiveShadow = true;
+    mesh.name = `tower:${key}`;
+    return mesh;
   }
 }
 

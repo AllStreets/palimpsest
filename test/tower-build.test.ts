@@ -1,9 +1,11 @@
+import './kit-setup.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import * as THREE from 'three';
 
 import { buildTower, FLOOR_WIDTH } from '../app/src/city/tower/build.js';
+import { crownFloors } from '../app/src/city/tower/eras.js';
 import { PANE_CHANNEL, PANE_FULL, type TowerMaterials } from '../app/src/city/tower/kit.js';
 import { FAMILIES, type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
 import { DATUM_HEIGHT } from '../app/src/city/tower/datum.js';
@@ -495,9 +497,11 @@ test('a ziggurat and a needle narrow as they rise; an arcology and a deco tower 
   assert.ok(dw[1] > dw[0] * 0.95, `deco shaft holds its width low down (${dw[0].toFixed(1)} vs ${dw[1].toFixed(1)})`);
   assert.ok(dw[1] > dw[2] + 1 && dw[2] > dw[3] + 1, `deco steps back toward the crown: ${dw.map((x) => x.toFixed(1)).join(' > ')}`);
   const arc = familyTower('arcology', 20);
-  const aw = [2, 10, 18].map((f) => floorWidth(arc.t, arc.lay, f));
-  // Only the tower's own taper between the first and the last: no setbacks, no batter.
+  const aw = [2, 10, 14].map((f) => floorWidth(arc.t, arc.lay, f));
+  // Only the tower's own taper between the first and the last storey under the crown: no setbacks, no batter.
   assert.ok(aw[2] > aw[0] * 0.9 && aw[1] > aw[2], `arcology keeps its mass: ${aw.map((x) => x.toFixed(1)).join(', ')}`);
+  // Its crown (the top five floors) throws a sky-garden deck out past the shaft.
+  assert.ok(widthBetween(arc.t, arc.lay.floors[15].y0, arc.lay.top) > aw[2] + 2, 'the arcology crown cantilevers its deck past the shaft');
 });
 
 test('an arcology hangs habitation pods clear of its piers; a cluster climbs its core in offset boxes', () => {
@@ -532,6 +536,40 @@ test('every family tops out with aircraft warning lights and never with a spire'
     // Nothing thin reaches the top alone: the top 0.5 m is at least 1.5 m wide (no needle).
     assert.ok(widthBetween(t, lay.top - 0.6, lay.top) >= 1.5, `${family}: the top is a crown, not a spire`);
   }
+});
+
+test('the top floors of every sci-fi run carry its family crown from the Blender kit, scaled to the shaft and inside the height', () => {
+  for (const family of FAMILIES) {
+    for (const n of [1, 5, 9]) {
+      const { t, lay } = familyTower(family, n);
+      const first = lay.floors.length - crownFloors(n);
+      // The crown floors draw no storey of their own: no window panes over the crown's first floor.
+      const panes = instances(t.group, 'pane:scifi');
+      const mat = new THREE.Matrix4();
+      const p = new THREE.Vector3();
+      let above = 0;
+      for (let i = 0; i < (panes?.count ?? 0); i++) {
+        panes!.getMatrixAt(i, mat);
+        if (p.setFromMatrixPosition(mat).y > lay.floors[first].y0 + 0.1) above++;
+      }
+      assert.equal(above, 0, `${family} x${n}: the crown replaces the storeys above floor ${first}`);
+      assert.ok(Math.abs(bounds(t.group).max.y - t.top) < 1e-3, `${family} x${n}: the crown tops out at the tower's own top`);
+      t.dispose();
+    }
+  }
+});
+
+test('a datum inside the crown floors moves the crown up above the band', () => {
+  const floors = Array.from({ length: 9 }, (_, i) => floor(i, 'scifi'));
+  const s: TowerSpec = { id: 'acme/c#founding', repo: 'acme/c', kind: 'founding', root: 'chicago', floors, datumIndex: 8 };
+  const mats = plainMaterials();
+  const t = buildTower(s, 'high', mats, { ...lookFor('acme/c'), scifi: familyVariant('deco') });
+  const lay = layoutTower(s);
+  // A run of nine would crown its top three floors; the band tops floor 7, so the crown is the top floor alone,
+  // and its lit slots all stand on floor 8, never across the band.
+  const slots = vertsOf(t.group, mats.vent);
+  assert.ok(slots.length > 0 && slots.every((v) => v.y >= lay.floors[8].y0 - 1e-3), 'the deco crown stands above the band');
+  t.dispose();
 });
 
 test('the organic family stands on a round plan and its datum wraps it as a ring', () => {

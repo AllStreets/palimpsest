@@ -14,8 +14,8 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe, swatches, families. With no shots named,
- * all but probe, swatches and families run. families rebuilds the tallest
+ * settings, flyover, rise, probe, swatches, families, fidelity. With no shots named,
+ * all but probe, swatches, families and fidelity run. families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
  * app/src/city/tower/rendered.ts).
@@ -55,6 +55,8 @@ const DIST = join(ROOT, 'dist');
 // CAPTURE_OUT sends everything elsewhere, for framing probes that should not touch docs/media.
 const MEDIA = process.env.CAPTURE_OUT ?? join(ROOT, 'docs', 'media');
 const PORT = 4789;
+/** The block pitch (lots.ts PITCH), for framing streets. */
+const PITCH_M = 80;
 const FFMPEG = existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg';
 const FPS = Number(process.env.CAPTURE_FPS ?? 30);
 const DPR = Number(process.env.CAPTURE_DPR ?? 2);
@@ -355,6 +357,37 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         await still(page, `family-${family}`, [x - dist * 0.72, mid + span * 0.12, z + dist * 0.72], [x, mid, z]);
       }
       await still(page, 'family-street', [x - 70, 2.5, z + 92], [x, tallLay.top * 0.86, z]);
+    },
+
+    async fidelity(page) {
+      // The architecture-fidelity rounds (use with CAPTURE_OUT): the overview and hero without chrome, the stone
+      // and brick shafts at 400 and 900 m, every tower's crown at 160 m, a street among the ambient blocks and
+      // an oblique over their roofs.
+      await chrome(page, false);
+      await still(page, 'af-overview', OVERVIEW.eye, OVERVIEW.target);
+      await still(page, 'af-hero', HERO.eye, HERO.target);
+      const k = pagoda.origin;
+      const ky = pagodaLay.top * 0.5;
+      await still(page, 'af-stone-400', [k.x - 380, ky * 0.6, k.z + 240], [k.x, ky, k.z]);
+      await still(page, 'af-stone-900', [k.x - 760, ky * 0.8, k.z + 480], [k.x, ky, k.z]);
+      // The masonry close (near level of detail) and at 600 m (far level), aimed at the first masonry run.
+      const firstStone = pagodaLay.floors.find((l) => l.floor.era === 'stone' || l.floor.era === 'brick');
+      const sy = firstStone ? firstStone.y0 + 20 : pagodaLay.rootHeight + 20;
+      await still(page, 'af-stone-150', [k.x - 110, sy + 6, k.z + 100], [k.x, sy, k.z]);
+      await still(page, 'af-stone-600', [k.x - 480, sy + 40, k.z + 360], [k.x, sy + 20, k.z]);
+      for (const d of city) {
+        const lay = layoutTower(d.tower);
+        const name = d.repo.split('/')[1];
+        await still(page, `af-crown-${name}`, [d.origin.x - 62, lay.top + 4, d.origin.z + 58], [d.origin.x, lay.top - 9, d.origin.z]);
+      }
+      // A street 1.7 m up among the ambient blocks off the gothic tower, looking along the avenue.
+      const g = gothic.origin;
+      const sx = Math.round(g.x / PITCH_M) * PITCH_M + PITCH_M * 2.5;
+      await still(page, 'af-street', [sx, 1.7, g.z + PITCH_M * 3], [sx + 6, 14, g.z - PITCH_M * 2]);
+      const kx = Math.round(k.x / PITCH_M) * PITCH_M - PITCH_M * 2.5;
+      await still(page, 'af-street2', [kx, 1.7, k.z - PITCH_M * 2], [kx - 4, 12, k.z + PITCH_M * 3]);
+      await still(page, 'af-roofs', [sx - 90, 70, g.z + PITCH_M * 3], [sx + 60, 10, g.z + PITCH_M * 0.5]);
+      await still(page, 'af-datum', [tall.origin.x - 260, tallLay.datumY + 20, tall.origin.z + 240], [tall.origin.x, tallLay.datumY - 10, tall.origin.z]);
     },
 
     async hero(page) {

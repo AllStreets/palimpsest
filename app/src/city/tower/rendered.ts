@@ -12,11 +12,16 @@
  * hand as a deliberate change and committed with the reason.
  *
  * Round 5 of Task B merged by hand (2026-11-09): the six sci-fi family
- * entries are new measurements. Every other entry is the round 4
- * measurement, kept on purpose so no known tower's stone or brick moved:
- * stone:sandstone and brick:cream were retinted that round by a few units
- * (sandstone sun L44.2 to 43.8, cream sun L55.0 to 52.8 when re-measured),
- * inside the margin PREFERRED leaves for a measurement to drift.
+ * entries were new measurements; every other entry is the round 4
+ * measurement, kept so no known tower's stone or brick moved.
+ *
+ * Architecture fidelity (2026-11-10): scifi:organic re-measured and merged
+ * by hand, for the new celadon-blue glaze (sun L39.6 a9.3 b1.9, shade
+ * L44.8 a10.7 b4.0, against L44.6 a8.6 b2.0 and L46.8 a11.2 b5.0 for the
+ * old ceramic). Every other entry is kept as it was, so no known tower
+ * changes its materials: the full re-measure moved them by up to 3.9 dE
+ * (travertine's sunlit face; most by about a unit), measurement drift
+ * rather than a change of material. The fingerprint is today's.
  */
 export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = {
   "stone:limestone": {
@@ -593,24 +598,24 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   },
   "scifi:organic": {
     "sun": [
-      44.6,
-      8.6,
-      2
-    ],
-    "shade": [
-      46.8,
-      11.2,
-      5
-    ],
-    "sunLow": [
-      46.6,
-      8.6,
+      39.6,
+      9.3,
       1.9
     ],
+    "shade": [
+      44.8,
+      10.7,
+      4
+    ],
+    "sunLow": [
+      42,
+      9.5,
+      2.3
+    ],
     "shadeLow": [
-      39.4,
-      11.5,
-      5.5
+      39.5,
+      10.9,
+      4.6
     ]
   },
   "scifi:cluster": {
@@ -638,4 +643,4 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
 };
 
 /** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */
-export const RENDERED_INPUTS = 'b493ff76e3c8562a';
+export const RENDERED_INPUTS = 'fbe18ba391251993';
