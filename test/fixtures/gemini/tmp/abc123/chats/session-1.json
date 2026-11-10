@@ -1,0 +1,6 @@
+{"messages":[
+ {"type":"user","timestamp":"2026-11-10T10:00:00Z","content":"hi"},
+ {"type":"gemini","timestamp":"2026-11-10T10:00:05Z","tokens":{"total":100}},
+ {"type":"gemini","timestamp":"2026-11-10T11:00:00Z","tokens":{"total":200}},
+ {"type":"gemini","timestamp":"2026-11-07T11:00:00Z","tokens":{"total":50}}
+]}
