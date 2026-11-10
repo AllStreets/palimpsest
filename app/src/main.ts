@@ -46,6 +46,8 @@ interface DebugHandle {
   project(p: number[]): number[];
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
+  /** The river's lanterns, its static draw calls and whether its water drew since last asked. */
+  river(): { lamps: number; meshes: number; drewWater: boolean };
   /** The quality the city draws at now (medium after an automatic drop). */
   quality(): 'high' | 'medium';
   /** Steps down to medium as the automatic drop does (tests). */
@@ -290,6 +292,7 @@ async function main(): Promise<void> {
     project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
+    river: () => city.river(),
     quality: () => city.quality(),
     dropQuality: () => city.dropQuality(),
     notice: () => notice.text(),

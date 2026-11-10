@@ -14,7 +14,7 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe, swatches, families, fidelity. With no shots named,
+ * settings, flyover, rise, probe, swatches, families, fidelity, river. With no shots named,
  * all but probe, swatches, families and fidelity run. families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
@@ -229,6 +229,24 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       if (Object.keys(restyles).length) await page.waitForTimeout(3000);
       const views = JSON.parse(process.env.PROBE ?? '[[[600,160,700],[0,80,0]]]') as [V3, V3][];
       for (const [i, [eye, target]] of views.entries()) await still(page, `probe-${i}`, eye, target);
+    },
+
+    async river(page) {
+      // The river (Task 29): the city from home, the river from the stone bridge, each bridge close, a quay at the
+      // water's level and a pier. RIVER_ONLY='home,stone' takes a subset.
+      await chrome(page, false);
+      const only = process.env.RIVER_ONLY?.split(',');
+      const views: Array<[string, V3, V3]> = [
+        ['river-home', OVERVIEW.eye, OVERVIEW.target],
+        ['river', [-353, 2.6, 11.5], [-368, -3, 320]],
+        ['river-high', [-150, 160, 560], [-360, -6, 40]],
+        ['bridge-stone', [-336, -4.4, 64], [-362, -2.5, 0]],
+        ['bridge-arch', [-334, -1.5, -420], [-360, 3, -480]],
+        ['bridge-stayed', [-372, 2, 410], [-344, 14, 480]],
+        ['quay-water', [-382, -5.3, 150], [-332, -3.2, 230]],
+        ['pier', [-358, -3.2, 52], [-340, -4.6, 82]],
+      ];
+      for (const [name, eye, target] of views) if (!only || only.includes(name)) await still(page, name, eye, target);
     },
 
     async swatches(page) {

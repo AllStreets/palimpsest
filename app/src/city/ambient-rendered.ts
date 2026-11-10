@@ -580,5 +580,8 @@ export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; s
  * Restamped for Task 26 without a re-measure: post.ts and scene.ts name the same bloom threshold and exposure, and
  * the welders' point lights stand dark with no job site, and the floods light only the construction's own materials,
  * so nothing the ambient board renders changed.
+ * Restamped for Task 29, also without a re-measure: sky.ts only exports its sky function (for the water) and post.ts
+ * gives the frame a depth texture and draws the river's water after the scene; the boards stand off the river, so
+ * no water is in their frame and every rendered value is unchanged.
  */
-export const AMBIENT_INPUTS = '601fd2e6882b1e24';
+export const AMBIENT_INPUTS = '4414d492f45c80c6';

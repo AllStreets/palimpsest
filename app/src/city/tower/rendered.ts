@@ -657,5 +657,8 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
  * Restamped for Task 28, also without a re-measure: look.ts gained the lights-out term (lightsout.ts) on the window
  * glass and the emitters, which changes a pixel only inside a bankrupt firm's quarter (no zone is set on the
  * swatch board, so the term reads 0 there): every rendered value is unchanged.
+ * Restamped for Task 29, also without a re-measure: sky.ts only exports its sky function (for the water) and post.ts
+ * gives the frame a depth texture and draws the river's water after the scene; the boards stand off the river, so
+ * no water is in their frame and every rendered value is unchanged.
  */
-export const RENDERED_INPUTS = '066edededd699be5';
+export const RENDERED_INPUTS = '5717d88fa66c0489';

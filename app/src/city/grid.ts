@@ -5,7 +5,8 @@ import { onExchange } from './exchange';
 import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade';
 import { kitShared } from './kits';
 import { lightsOutEmitter } from './lightsout.js';
-import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
+import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, farLotStands, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
+import { inChannel } from '../../../shared/commute.js';
 import { materials } from './materials';
 
 export { BLOCK, PITCH, STREET } from './lots';
@@ -276,7 +277,8 @@ export function createGrid(quality: 'high' | 'medium'): Grid {
     for (const b of batches) b.n = 0;
 
     const lamp = (x: number, z: number, dir: 'x' | 'z' | 'none', r: () => number): void => {
-      if (lenses.full) return;
+      // The river runs down the street at x = -360: no lamp stands in its channel (the quays carry their own).
+      if (lenses.full || inChannel(x, 2)) return;
       const h = 8;
       poles.add(x, h / 2, z, 1, h, 1);
       const reach = dir === 'none' ? 0 : 1.3;
@@ -315,6 +317,7 @@ export function createGrid(quality: 'high' | 'medium'): Grid {
     for (let i = -farRadius; i <= farRadius; i++) {
       for (let j = -farRadius; j <= farRadius; j++) {
         if (Math.max(Math.abs(i), Math.abs(j)) <= radius) continue;
+        if (!farLotStands(i, j)) continue;
         const lot = farLot(i, j);
         if (all.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
         draw({ walls, cuts, parts }, lot, true);

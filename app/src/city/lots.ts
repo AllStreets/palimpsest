@@ -18,6 +18,7 @@ import * as THREE from 'three';
 import { AMBIENT_RENDERED } from './ambient-rendered.js';
 import { ambientCap, cappedHeight, RESERVE_RADIUS, reserves, type CollarPlaza } from './collar.js';
 import { RENDERED } from './tower/rendered.js';
+import { onRiverGround } from '../../../shared/commute.js';
 import type { Look } from './tower/variants.js';
 
 /** One city block's buildable square, in metres. */
@@ -478,6 +479,19 @@ export function makeBlock(i: number, j: number): Lot[] {
 }
 
 /** The far ring: one building per block, low, carrying each neighbourhood's character into the haze. */
+/**
+ * How far a lot's parts (bays, cornices, fire escapes) may reach past its
+ * walls: the river's test widens each lot by this much, so nothing hangs
+ * over a quay.
+ */
+const LOT_REACH = 1.5;
+
+/** True when the far ring's lot for this block stands: not on the river, a quay or a bridge's approach. */
+export function farLotStands(i: number, j: number): boolean {
+  const l = farLot(i, j);
+  return !onRiverGround(l.x, l.z, l.w + 2 * LOT_REACH, l.d);
+}
+
 export function farLot(i: number, j: number): Lot {
   const r = rng(blockSeed(i, j));
   const hood = neighbourhood(i, j);
@@ -588,6 +602,8 @@ const FALLBACK: Record<Archetype, Archetype[]> = {
 export function standingLots(i: number, j: number, plazas: CollarPlaza[]): Lot[] {
   const out: Lot[] = [];
   for (const lot of blockLots(i, j)) {
+    // The river, its quays and its bridges' approaches take the lots they cross (shared/commute.ts).
+    if (onRiverGround(lot.x, lot.z, lot.w + 2 * LOT_REACH, lot.d)) continue;
     if (plazas.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
     const cap = ambientCap(lot.x, lot.z, plazas);
     // A factory stack stands only where nothing caps the skyline.

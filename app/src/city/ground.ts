@@ -21,6 +21,13 @@ import { OUT_PARS, OUT_UNIFORMS } from './lightsout.js';
 import { CIVIC_LAMPS, FOUNTAIN, HALL } from './exchange.js';
 import { AGENT_ROOT_SCALE } from '../../../shared/tower-layout.js';
 import { materials, texture, worldBox } from './materials';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { BANKS, BRIDGE_APPROACH, BRIDGES, PIERS, QUAY, RIVER } from '../../../shared/commute.js';
+import { COPING, QUAY_LAMP_CLEAR, QUAY_LAMP_IN, QUAY_LAMP_REACH, QUAY_LAMP_STEP } from './river.js';
+
+/** Across each quay, from the wall's face inland: the coping, then a promenade of granite setts, then the quay road to its far kerb. */
+const PROMENADE_TO = COPING + 4.2;
+const QUAY_ROAD_TO = QUAY - 1.2;
 
 /** Most plazas the ground shader tracks at once (the civic plaza plus districts). */
 export const MAX_PLAZAS = 64;
@@ -51,7 +58,15 @@ export interface Ground {
  * less light than stone.
  */
 export function createGround(): Ground {
-  const geo = new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE, 1, 1);
+  // Two halves either side of the river's channel (and its granite copings): the water lies below in the gap.
+  const holeW = BANKS.west - COPING;
+  const holeE = BANKS.east + COPING;
+  const half = GROUND_SIZE / 2;
+  const westG = new THREE.PlaneGeometry(holeW + half, GROUND_SIZE, 1, 1).translate((holeW - half) / 2, 0, 0);
+  const eastG = new THREE.PlaneGeometry(half - holeE, GROUND_SIZE, 1, 1).translate((holeE + half) / 2, 0, 0);
+  const geo = mergeGeometries([westG, eastG])!;
+  westG.dispose();
+  eastG.dispose();
   // UVs from position, centred on zero, so precision is best where the city is.
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const uv = geo.attributes.uv as THREE.BufferAttribute;
@@ -75,7 +90,7 @@ export function createGround(): Ground {
     uPlazaCount: { value: 1 },
   };
 
-  mat.customProgramCacheKey = () => 'palimpsest-ground';
+  mat.customProgramCacheKey = () => 'palimpsest-ground-river';
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms, OUT_UNIFORMS);
     sh.vertexShader = sh.vertexShader
@@ -111,6 +126,27 @@ export function createGround(): Ground {
         const float FOUNT_R = ${FOUNTAIN.radius.toFixed(1)};
         const float STAIR_FOOT = ${(HALL.z0 + HALL.depth + HALL.stair).toFixed(1)};
         const float HALL_HALF = ${(HALL.width / 2).toFixed(1)};
+        const float RIVER_X = ${RIVER.x.toFixed(1)};
+        const float RIVER_HALF = ${(RIVER.width / 2).toFixed(1)};
+        const float BANK_W = ${BANKS.west.toFixed(1)};
+        const float BANK_E = ${BANKS.east.toFixed(1)};
+        const float QUAY_W = ${QUAY.toFixed(1)};
+        const float PROM_TO = ${PROMENADE_TO.toFixed(2)};
+        const float QROAD_TO = ${QUAY_ROAD_TO.toFixed(2)};
+        const float APPROACH = ${BRIDGE_APPROACH.toFixed(1)};
+        const float BRIDGE_Z[3] = float[3](${BRIDGES.map((z) => z.toFixed(1)).join(', ')});
+        const float QLAMP_IN = ${QUAY_LAMP_IN.toFixed(2)};
+        const float QLAMP_STEP = ${QUAY_LAMP_STEP.toFixed(1)};
+        const float QLAMP_REACH = ${QUAY_LAMP_REACH.toFixed(1)};
+        const float QLAMP_CLEAR = ${QUAY_LAMP_CLEAR.toFixed(1)};
+        const vec2 PIER_AT[${PIERS.length}] = vec2[${PIERS.length}](${PIERS.map((p) => `vec2(${p.bank === 'west' ? '-1.0' : '1.0'}, ${p.z.toFixed(1)})`).join(', ')});
+        // True when a quay lamp stands at z on this bank (-1 west, 1 east): river.ts quayLampClear.
+        bool quayLamp(float side, float z) {
+          if (abs(z) > QLAMP_REACH + 0.5) return false;
+          for (int i = 0; i < 3; i++) if (abs(z - BRIDGE_Z[i]) < QLAMP_CLEAR) return false;
+          for (int i = 0; i < ${PIERS.length}; i++) if (PIER_AT[i].x == side && abs(z - PIER_AT[i].y) < QLAMP_CLEAR) return false;
+          return true;
+        }
         float gHash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
         // The plaza whose edge is nearest: its centre, its radius (a quarter's court half-side), whether it is a
         // district (index 0 is the civic plaza) and a quarter's standing plots. Returns the distance from its centre,
@@ -162,6 +198,20 @@ export function createGround(): Ground {
         float plaza = 1.0 - smoothstep(plazaR - 2.0, plazaR, plazaD);
         float edge = max(abs(lc.x), abs(lc.y));
         float road = smoothstep(HALF_BLOCK + 3.9, HALF_BLOCK + 4.1, edge) * (1.0 - plaza);
+        // The quays: inland from each wall's face, the coping (under granite), a promenade of setts, the quay road.
+        float dq = gp.x < RIVER_X ? BANK_W - gp.x : gp.x - BANK_E;
+        float onQuay = step(0.0, dq) * (1.0 - step(QUAY_W, dq));
+        float quayRoad = smoothstep(PROM_TO, PROM_TO + 0.15, dq) * (1.0 - smoothstep(QROAD_TO - 0.15, QROAD_TO, dq)) * (1.0 - plaza);
+        float prom = onQuay * (1.0 - smoothstep(PROM_TO - 0.1, PROM_TO, dq));
+        // Each bridge carries its carriageway on inland across the quay to the next street.
+        float approach = 0.0;
+        for (int i = 0; i < 3; i++) {
+          float az = abs(gp.y - BRIDGE_Z[i]);
+          approach = max(approach, (1.0 - smoothstep(7.8, 8.0, az)) * step(0.0, dq) * (1.0 - step(QUAY_W + APPROACH, dq)));
+        }
+        approach *= 1.0 - plaza;
+        float quayKerb = (onQuay * (smoothstep(PROM_TO - 0.25, PROM_TO - 0.1, dq) * (1.0 - smoothstep(PROM_TO, PROM_TO + 0.1, dq)) + smoothstep(QROAD_TO - 0.05, QROAD_TO + 0.05, dq) * (1.0 - smoothstep(QROAD_TO + 0.2, QROAD_TO + 0.3, dq)))) * (1.0 - approach) * (1.0 - plaza);
+        road = max(road, max(quayRoad, approach));
         float kerb = smoothstep(HALF_BLOCK + 3.6, HALF_BLOCK + 3.75, edge) * (1.0 - smoothstep(HALF_BLOCK + 3.85, HALF_BLOCK + 4.0, edge)) * (1.0 - plaza);
         // Asphalt: dark, faintly blue, worn smoother where tyres run, with fine grain.
         float grain = gHash(floor(gp * 9.0)) * 0.12 + gHash(floor(gp * 1.3)) * 0.08;
@@ -178,6 +228,15 @@ export function createGround(): Ground {
         diffuseColor.rgb *= 0.72 + 0.5 * stain;
         diffuseColor.rgb = mix(diffuseColor.rgb, asphalt, road);
         diffuseColor.rgb *= 1.0 - kerb * 0.35;
+        diffuseColor.rgb *= 1.0 - quayKerb * 0.3;
+        // The promenade: small granite setts in rows along the river, cooler and darker than the precast paving.
+        if (prom > 0.0 && approach < 0.5) {
+          vec2 sp = vec2(dq / 0.32, gp.y / 0.44 + 0.5 * mod(floor(dq / 0.32), 2.0));
+          vec2 sj = abs(fract(sp) - 0.5);
+          float sjoint = 1.0 - smoothstep(0.38, 0.47, max(sj.x, sj.y));
+          vec3 sett = vec3(0.34, 0.335, 0.33) * (0.82 + 0.3 * gHash(floor(sp))) * mix(0.55, 1.0, sjoint);
+          diffuseColor.rgb = mix(diffuseColor.rgb, sett, prom * (1.0 - plaza));
+        }
         // Plaza ring: a band of lighter dressed stone at the plaza's edge.
         float ring = smoothstep(plazaR - 4.0, plazaR - 3.6, plazaD) * (1.0 - smoothstep(plazaR - 1.2, plazaR - 0.8, plazaD));
         diffuseColor.rgb *= 1.0 + ring * 0.18;
@@ -241,11 +300,24 @@ export function createGround(): Ground {
             vec2 lamps[4] = vec2[4](vec2(o, LAMP_AT), vec2(LAMP_AT, o), vec2(o, LAMP_AT - PITCH), vec2(LAMP_AT - PITCH, o));
             for (int q = 0; q < 4; q++) {
               vec2 lp = lamps[q];
+              // No street lamp stands in the river's channel (grid.ts), so none lights the quay.
+              if (abs(cellId.x * PITCH + lp.x - RIVER_X) < RIVER_HALF + 2.0) continue;
               if (nearP) {
                 vec2 pole = cellId * PITCH + lp - (q % 2 == 0 ? vec2(0.0, ${LAMP_REACH.toFixed(2)}) : vec2(${LAMP_REACH.toFixed(2)}, 0.0));
                 if (inPlaza(pole)) continue;
               }
               light += pool(lc - lp);
+            }
+          }
+          // The quay lamps: warm white lanterns along both promenades (river.ts).
+          float quayLight = 0.0;
+          if (dq > -1.0 && dq < QUAY_W + 6.0) {
+            float side = gp.x < RIVER_X ? -1.0 : 1.0;
+            float lx = side < 0.0 ? BANK_W - QLAMP_IN : BANK_E + QLAMP_IN;
+            float zl = floor(gp.y / QLAMP_STEP + 0.5) * QLAMP_STEP;
+            for (int k = -1; k <= 1; k++) {
+              float z = zl + float(k) * QLAMP_STEP;
+              if (quayLamp(side, z)) quayLight += pool(gp - vec2(lx, z));
             }
           }
           // Lanterns around the nearest plaza, or lining a quarter's court.
@@ -309,6 +381,7 @@ export function createGround(): Ground {
           // A bankrupt firm's court: its lanterns and floodlights out with its towers (lightsout.ts), a re-clad tower's own spill back on.
           if (court > 0.0) light = streetLight + (light - streetLight) * (1.0 - lightsOut(vec3(gp.x, 0.0, gp.y)));
           totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.56, 0.22) * light * 2.6;
+          totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.74, 0.46) * quayLight * 2.4;
         }`,
       );
   };

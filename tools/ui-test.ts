@@ -1584,6 +1584,37 @@ async function reconnectChecks(page: Page, restart: (whileDown: () => Promise<vo
 
 // ---------------------------------------------------------------- main
 
+// ---------------------------------------------------------------- the river (Task 29)
+
+/**
+ * The river from the stone bridge at dusk (river.png) and a zoomed crop of
+ * the civic pier (river-pier.png): the water draws (its own pass), the quays,
+ * bridges and piers draw in one call per material, the lanterns stand, and
+ * the view holds its frame rate.
+ */
+async function riverChecks(page: Page): Promise<void> {
+  type R = { river(): { lamps: number; meshes: number; drewWater: boolean } };
+  const river = (): Promise<{ lamps: number; meshes: number; drewWater: boolean }> => page.evaluate(() => (window as unknown as { __palimpsest: R }).__palimpsest.river());
+  await setView(page, [-353, 2.6, 11.5], [-368, -3, 320]);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(1500);
+  await river();
+  await page.waitForTimeout(300);
+  const r = await river();
+  check(r.drewWater, 'the water draws, seen from the stone bridge');
+  check(r.meshes > 0 && r.meshes <= 20, `the quays, bridges and piers draw in one call per material (${r.meshes})`);
+  check(r.lamps >= 200, `lanterns stand along the quays, on the bridges and at the piers (${r.lamps})`);
+  await page.screenshot({ path: join(SHOTS, 'river.png') });
+  const fps = await pageFps(page);
+  const stats = await debug(page, (d) => d.stats());
+  console.log(`info  river from the stone bridge: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+  check(fps >= overviewFps - 5, `the river view holds the overview's frame rate (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  // A zoomed crop of the civic pier: its landing stage, shelter and lit sign.
+  await setView(page, [-358, -3.2, 52], [-340, -4.6, 82]);
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: join(SHOTS, 'river-pier.png'), clip: { x: VIEWPORT.width * 0.2, y: VIEWPORT.height * 0.2, width: VIEWPORT.width * 0.6, height: VIEWPORT.height * 0.6 } });
+}
+
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/index.html missing: run npm run build first');
@@ -1712,6 +1743,7 @@ async function main(): Promise<void> {
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);
+      await riverChecks(page);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);

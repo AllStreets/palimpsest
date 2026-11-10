@@ -19,6 +19,7 @@ import { lightsOutTree } from './lightsout.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
 import { quarterBuildKey, type QuarterShow } from './quarters.js';
 import { createPost, EXPOSURE, FLICKER } from './post';
+import { createRiver } from './river.js';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
 import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
@@ -129,6 +130,8 @@ export interface City {
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
   /** Draw calls and triangles in the last whole frame, every pass included. */
   stats(): { calls: number; triangles: number };
+  /** The river (river.ts): its lanterns, its static draw calls, and whether its water drew since last asked (tests). */
+  river(): { lamps: number; meshes: number; drewWater: boolean };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
   plots(): { plazas: number; buildings: number };
   /**
@@ -282,8 +285,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(ground.mesh);
   const grid = createGrid(quality);
   scene.add(grid.group);
+  // The river, its quays, bridges and piers (river.ts); its water is drawn by a pass straight after the scene.
+  const river = createRiver(quality);
+  scene.add(river.group);
 
-  let post = createPost(renderer, scene, camera, quality);
+  let post = createPost(renderer, scene, camera, quality, [river.pass(camera)]);
 
   // ---------------------------------------------------------------- the civic exchange
   // Built once on the plaza at the origin, and again at medium if the city steps down; it keeps the board and the switch.
@@ -1032,7 +1038,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     renderer.setPixelRatio(1);
     renderer.setSize(width(), height());
     post.dispose();
-    post = createPost(renderer, scene, camera, 'medium');
+    post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
     texel = (SHADOW_HALF * 2) / shadowSize;
     sun.shadow.map?.dispose();
@@ -1066,6 +1072,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     updateConstructions(dt);
     updateLife(dt);
     applyLimits();
+    river.update(dt, fog.density);
     fitMark();
     plates.update();
     sky.dome.position.copy(camera.position);
@@ -1105,7 +1112,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     setInset(px) {
       insetTarget = Math.max(0, Math.min(px, width() * 0.6));
     },
-    precompile: () => renderer.compileAsync(scene, camera).then(() => undefined),
+    precompile: () =>
+      renderer.compileAsync(scene, camera).then(() => {
+        river.compile(renderer, camera);
+      }),
     flyTo: (target, distance) => rig.flyTo(target, distance),
     home: () => rig.flyView(toV(limits.home.eye), toV(limits.home.target)),
     limits: () => ({
@@ -1119,6 +1129,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ready,
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
+    river: () => ({ lamps: river.lamps.length, ...river.view() }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     ambientBoard: (lots) => grid.board(lots),
     board(objects, spots) {
@@ -1165,6 +1176,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       rig.dispose();
       post.dispose();
       grid.dispose();
+      river.dispose();
       ground.dispose();
       sky.dispose();
       renderer.dispose();

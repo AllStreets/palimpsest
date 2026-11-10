@@ -32,7 +32,7 @@ const HAZE = 1.0;
  * map and the fog, so all three agree. `skyHaze` is the colour of the air at
  * the horizon in a given direction: warm toward the afterglow, violet away from it.
  */
-const SKY_GLSL = /* glsl */ `
+export const SKY_GLSL = /* glsl */ `
   const vec3 SKY_SUN = vec3(${SUN_DIRECTION.x.toFixed(5)}, ${SUN_DIRECTION.y.toFixed(5)}, ${SUN_DIRECTION.z.toFixed(5)});
   float skyHash(vec3 p){ return fract(sin(dot(p, vec3(127.1,311.7,74.7)))*43758.5453); }
   float skyNoise(vec3 p){ vec3 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);

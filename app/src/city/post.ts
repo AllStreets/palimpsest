@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import type { Pass } from 'three/addons/postprocessing/Pass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
@@ -91,6 +92,8 @@ export function createPost(
   scene: THREE.Scene,
   camera: THREE.PerspectiveCamera,
   quality: 'high' | 'medium',
+  /** Passes drawn straight after the scene, before AO and bloom (the river's water, which reads the frame and its depth). */
+  after: Pass[] = [],
 ): Post {
   const size = renderer.getSize(new THREE.Vector2());
   const ratio = renderer.getPixelRatio();
@@ -99,10 +102,13 @@ export function createPost(
     // At retina density the pixels themselves antialias; multisampling there costs a quarter of the frame rate.
     samples: quality === 'high' && ratio < 1.5 ? 4 : 0,
   });
+  // The frame keeps its depth, for the water's reflections (river.ts); the composer's second buffer gets its own copy.
+  target.depthTexture = new THREE.DepthTexture(size.x * ratio, size.y * ratio);
   const composer = new EffectComposer(renderer, target);
   composer.setPixelRatio(ratio);
   composer.setSize(size.x, size.y);
   composer.addPass(new RenderPass(scene, camera));
+  for (const p of after) composer.addPass(p);
 
   let gtao: GTAOPass | null = null;
   if (quality === 'high') {
@@ -125,6 +131,7 @@ export function createPost(
       composer.setSize(width, height);
     },
     dispose() {
+      for (const p of after) p.dispose();
       gtao?.dispose();
       bloom.dispose();
       composer.dispose();
