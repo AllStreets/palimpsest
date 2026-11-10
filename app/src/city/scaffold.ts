@@ -155,3 +155,116 @@ export function makeScaffold(): Scaffold {
     },
   };
 }
+
+/**
+ * A buyer's re-clad (Task 28): the same tube-and-board scaffold as a site's
+ * (the same tube, boards and netting), standing round a whole agent tower,
+ * `halfX` by `halfZ` from its centre to the inner row and `height` tall,
+ * wrapped in netting on every face. Every part is one lift or less tall and
+ * the parts are ordered from the ground up, so `setHeight` raises it lift by
+ * lift and strikes it from the top down by showing only the parts under a
+ * height: no geometry is rebuilt as it moves.
+ */
+export interface RecladScaffold {
+  object: THREE.Object3D;
+  /** Shows the scaffold up to this height in metres (0: none); true when what shows changed. */
+  setHeight(h: number): boolean;
+  readonly height: number;
+  dispose(): void;
+}
+
+export function makeRecladScaffold(halfX: number, halfZ: number, height: number): RecladScaffold {
+  const m = scaffoldMaterials();
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const lifts = Math.max(2, Math.ceil((height + 1.5) / LIFT));
+  const top = lifts * LIFT;
+  type Part = { m: THREE.Matrix4; y: number };
+  const tubes: Part[] = [];
+  const boards: Part[] = [];
+  const sheets: Part[] = [];
+
+  for (let side = 0; side < 4; side++) {
+    const rot = new THREE.Matrix4().makeRotationY((side * Math.PI) / 2);
+    // Faces 0 and 2 run along x at +-halfZ; 1 and 3 along z at +-halfX.
+    const half = side % 2 === 0 ? halfX : halfZ;
+    const reach = side % 2 === 0 ? halfZ : halfX;
+    const p = (u: number, y: number, out: number): THREE.Vector3 => new THREE.Vector3(u, y, out).applyMatrix4(rot);
+    const rows = [reach, reach + DEPTH];
+    const bays = Math.max(2, Math.round((half * 2) / BAY));
+    const bay = (half * 2) / bays;
+    const q = new THREE.Quaternion().setFromRotationMatrix(rot);
+    for (let l = 0; l < lifts; l++) {
+      const y0 = l * LIFT;
+      const y1 = y0 + LIFT;
+      for (let i = 0; i <= bays; i++) {
+        const u = -half + i * bay;
+        // Standards in lift-long lengths, joined at each lift as real tube is.
+        for (const r of rows) tubes.push({ m: bar(p(u, y0, r), p(u, y1, r), TUBE), y: y0 });
+        tubes.push({ m: bar(p(u, y1, rows[0]), p(u, y1, rows[1]), TUBE * 0.8), y: y1 - 0.01 });
+      }
+      for (const r of rows) tubes.push({ m: bar(p(-half - DEPTH, y1, r), p(half + DEPTH, y1, r), TUBE), y: y1 - 0.01 });
+      tubes.push({ m: bar(p(-half - DEPTH, y1 + 1, rows[1]), p(half + DEPTH, y1 + 1, rows[1]), TUBE * 0.8), y: y1 - 0.01 });
+      // A raker across every third bay in each lift, alternating, so the bracing zigzags up the face.
+      for (let i = 0; i + 3 <= bays; i += 3) {
+        const up = (i / 3 + l) % 2 === 0;
+        const u0 = -half + i * bay;
+        const u1 = u0 + 3 * bay;
+        tubes.push({ m: bar(p(up ? u0 : u1, y0 + 0.1, rows[1] + 0.1), p(up ? u1 : u0, y1, rows[1] + 0.1), TUBE), y: y0 });
+      }
+      if (l % 2 === 1 || l === lifts - 1) {
+        boards.push({ m: new THREE.Matrix4().compose(p(0, y1 + 0.03, reach + DEPTH / 2), q, new THREE.Vector3(half * 2 + DEPTH * 2, 0.06, DEPTH)), y: y1 - 0.01 });
+        boards.push({ m: new THREE.Matrix4().compose(p(0, y1 + 0.12, reach + DEPTH), q, new THREE.Vector3(half * 2 + DEPTH * 2, 0.18, 0.04)), y: y1 - 0.01 });
+      }
+      // Netting hung in strips two bays wide, a lift at a time, lapped loosely so the seams show.
+      for (let i = 0; i + 2 <= bays; i += 2) {
+        const u = -half + (i + 1) * bay;
+        const sag = (i / 2 + l) % 2 === 0 ? 0 : 0.06;
+        sheets.push({ m: new THREE.Matrix4().compose(p(u, y0 + LIFT / 2, reach + DEPTH + 0.22 + sag), q, new THREE.Vector3(bay * 2 - 0.12, LIFT + 0.08, 0.02)), y: y0 });
+      }
+    }
+  }
+
+  const group = new THREE.Group();
+  group.name = 'reclad-scaffold';
+  const meshes: Array<{ mesh: THREE.InstancedMesh; ys: number[] }> = [];
+  for (const [parts, mat, shadow] of [
+    [tubes, m.tube, true],
+    [boards, m.board, true],
+    [sheets, m.sheet, false],
+  ] as const) {
+    const sorted = [...parts].sort((a, b) => a.y - b.y);
+    const mesh = instanced(geo, mat, sorted.map((x) => x.m));
+    mesh.castShadow = shadow;
+    mesh.count = 0;
+    mesh.frustumCulled = false;
+    group.add(mesh);
+    meshes.push({ mesh, ys: sorted.map((x) => x.y) });
+  }
+
+  return {
+    object: group,
+    height: top,
+    setHeight(h) {
+      let changed = false;
+      for (const { mesh, ys } of meshes) {
+        // The parts whose foot is under the height: a binary search over the sorted feet.
+        let lo = 0;
+        let hi = ys.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (ys[mid] < h) lo = mid + 1;
+          else hi = mid;
+        }
+        if (mesh.count !== lo) {
+          mesh.count = lo;
+          changed = true;
+        }
+      }
+      return changed;
+    },
+    dispose() {
+      for (const { mesh } of meshes) mesh.dispose();
+      geo.dispose();
+    },
+  };
+}

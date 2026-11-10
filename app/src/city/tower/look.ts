@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import { lightsOutEmitter, OUT_PARS, OUT_UNIFORMS } from '../lightsout.js';
+
 import type { District } from '../../../../shared/types';
 import { materials, texture } from '../materials';
 import { ANISO_PATCH_OK, patchAnisotropy } from './aniso-patch';
@@ -211,10 +213,11 @@ function windowMaterial(glazing: Glazing = { body: 0x000000, tint: 0xffffff, env
   const tint = { value: new THREE.Color(glazing.tint) };
   m.customProgramCacheKey = () => 'palimpsest-tower-window';
   m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, OUT_UNIFORMS);
     sh.uniforms.uGlassBody = body;
     sh.uniforms.uGlassTint = tint;
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vRoomO; varying vec3 vRoomD; varying vec3 vPane;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vRoomO; varying vec3 vRoomD; varying vec3 vPane; varying vec3 vOutW; varying vec3 vPaneC; varying vec3 vPaneT;')
       .replace(
         '#include <project_vertex>',
         `#include <project_vertex>
@@ -230,10 +233,13 @@ function windowMaterial(glazing: Glazing = { body: 0x000000, tint: 0xffffff, env
           vRoomD = vec3(dot(pV, pT), dot(pV, pB), dot(pV, pN));
           vRoomO = vec3(transformed.x * psx, transformed.y * psy, 0.0);
           vPane = vec3(psx, psy, fract(sin(dot(pm[3].xyz, vec3(12.9898, 78.233, 37.719))) * 43758.5453));
+          vOutW = (pm * vec4(transformed, 1.0)).xyz;
+          vPaneC = pm[3].xyz;
+          vPaneT = pN;
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vRoomO; varying vec3 vRoomD; varying vec3 vPane;\nuniform vec3 uGlassBody; uniform vec3 uGlassTint;\nfloat rh(float x){ return fract(sin(x * 91.345) * 47453.5453); }')
+      .replace('#include <common>', `#include <common>\nvarying vec3 vRoomO; varying vec3 vRoomD; varying vec3 vPane; varying vec3 vOutW; varying vec3 vPaneC; varying vec3 vPaneT;\nuniform vec3 uGlassBody; uniform vec3 uGlassTint;\nfloat rh(float x){ return fract(sin(x * 91.345) * 47453.5453); }\n${OUT_PARS}`)
       .replace('#include <color_fragment>', '')
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${ROOM_GLSL}`)
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += roomLight;')
@@ -242,6 +248,58 @@ function windowMaterial(glazing: Glazing = { body: 0x000000, tint: 0xffffff, env
   };
   return m;
 }
+
+/**
+ * A window where the power is off (lightsout.ts): the room goes out with
+ * it. What is left is a dead building's glass: a film of dust, heaviest at
+ * the foot of each pane where the rain leaves it; the ground floor boarded
+ * in weathered plywood, and a pane here and there above it; the stair's
+ * battery luminaires burning on, one bay off the middle of the two faces
+ * that look toward the city, a few of them failed; and an exit sign in the
+ * odd room.
+ */
+const DEAD_GLSL = /* glsl */ `
+    {
+      vec4 oz = lightsOutZone(vOutW);
+      float dOut = oz.w;
+      if (dOut > 0.0) {
+        roomLight *= 1.0 - dOut;
+        float ny0 = clamp((ro.y / sz.y) + 0.5, 0.0, 1.0);
+        float grime = 0.5 + 0.5 * smoothstep(0.75, 0.0, ny0);
+        vec3 film = vec3(0.08, 0.074, 0.066) * (0.75 + 0.5 * rh(seed * 7.0));
+        diffuseColor.rgb = mix(diffuseColor.rgb, film, dOut * 0.75 * grime);
+        roughnessFactor = mix(roughnessFactor, 0.3 + 0.24 * grime, dOut);
+        // The pane's outward normal: the stair shows on the faces turned to the city's home bearing (+x and +z).
+        vec2 nrm = normalize(vPaneT.xz);
+        float u = dot(vPaneC.xz - oz.xy, vec2(-nrm.y, nrm.x));
+        bool toCity = nrm.y > 0.7 || nrm.x > 0.7;
+        bool stair = toCity && abs(u - 3.4) < sz.x * 0.5 && vOutW.y > 6.5;
+        bool boarded = vOutW.y < 6.0 || (!stair && rh(seed * 3.1) < 0.09);
+        if (boarded) {
+          vec2 q = ro.xy + 20.0;
+          float sheetId = floor(q.x / 1.22);
+          float sx = fract(q.x / 1.22);
+          float seam = 1.0 - smoothstep(0.0, 0.025, min(sx, 1.0 - sx));
+          float grain = 0.88 + 0.12 * sin(q.y * 31.0 + rh(sheetId + seed * 5.0) * 40.0 + sin(q.y * 3.0) * 2.0);
+          float age = rh(sheetId * 1.7 + seed * 9.0);
+          vec3 ply = mix(vec3(0.36, 0.27, 0.17), vec3(0.24, 0.23, 0.21), age) * grain * (1.0 - 0.55 * seam);
+          diffuseColor.rgb = mix(diffuseColor.rgb, ply, dOut);
+          roughnessFactor = mix(roughnessFactor, 0.93, dOut);
+          roomLight = vec3(0.0);
+        } else if (stair) {
+          float alive = step(0.28, rh(seed * 17.0));
+          vec2 c = ro.xy - vec2(0.0, sz.y * 0.22);
+          float spot = exp(-dot(c, c) * 1.6) + 0.18 * exp(-dot(c, c) * 0.12);
+          roomLight += vec3(0.6, 0.78, 0.74) * 0.36 * spot * alive * dOut;
+        } else if (rh(seed * 23.0) < 0.05) {
+          vec2 e = abs(ro.xy - vec2(0.0, sz.y * 0.3)) - vec2(0.2, 0.07);
+          float sign_ = 1.0 - smoothstep(0.0, 0.015, max(e.x, e.y));
+          float spill = exp(-dot(ro.xy - vec2(0.0, sz.y * 0.3), ro.xy - vec2(0.0, sz.y * 0.3)) * 2.2);
+          roomLight += vec3(0.1, 0.8, 0.3) * (0.75 * sign_ + 0.06 * spill) * dOut;
+        }
+      }
+    }
+`;
 
 const ROOM_GLSL = /* glsl */ `
   vec3 roomLight = vec3(0.0);
@@ -340,6 +398,7 @@ const ROOM_GLSL = /* glsl */ `
       roughnessFactor = mix(roughnessFactor, 0.6, b);
       roomLight *= 1.0 - b;
     }
+    ${DEAD_GLSL}
   }
 `;
 
@@ -663,19 +722,19 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     steel: lib.darkMetal,
     slab: lib.concrete,
     window: windowMaterial(),
-    stained: stainedMaterial(),
+    stained: lightsOutEmitter(stainedMaterial()),
     roofTile: new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.38, metalness: 0.1, envMapIntensity: 1.2 }),
     timber: floodlit(new THREE.MeshStandardMaterial({ color: 0x7a2416, roughness: 0.48 }), 'timber', 0.8),
     plaster: floodlit(new THREE.MeshStandardMaterial({ color: 0xe6dfd2, roughness: 0.92 }), 'plaster', 0.7),
     // Neutral white (about 4500 K), at a level that reads as a lit reveal rather than neon.
-    lightLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.88, 0.93, 1.0).multiplyScalar(1.0) }),
+    lightLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.88, 0.93, 1.0).multiplyScalar(1.0) })),
     // Saturated amber, a hue the architecture never uses, so a Claude floor reads apart from any light line.
-    accent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) }),
+    accent: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) })),
     // Cool moonlight blue-white, darker than the neutral light line: a merged floor's slab edge reads as lit
     // from the city's distance without reaching the bloom threshold (0.97), and never as the Claude amber.
-    earnedLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.68, 0.95).multiplyScalar(1.1) }),
+    earnedLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.68, 0.95).multiplyScalar(1.1) })),
     // Warm ivory (about 3200 K), a pair of lines: his own hand in the floor, apart from the cool line and the amber.
-    handLine: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.84, 0.62).multiplyScalar(0.78) }),
+    handLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.84, 0.62).multiplyScalar(0.78) })),
     // Painted metal, satin: the firm's colour arrives as the vertex colour, so one material serves every firm.
     firmMark: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.15, vertexColors: true, envMapIntensity: 0.8 }),
     // Shop primer: red iron oxide in a flat alkyd, matte and a little chalky, browner and darker than any brick
@@ -702,11 +761,11 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     // What a vent, a beacon or a stained window is with the power off: dark, matte.
     unlit: new THREE.MeshStandardMaterial({ color: 0x1c1d20, roughness: 0.7, metalness: 0.2 }),
     // Warm tungsten (about 2700 K) behind a louvre: a vent reads as fire-lit from across the city, never as neon.
-    vent: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.5, 0.16).multiplyScalar(0.95) }),
+    vent: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.5, 0.16).multiplyScalar(0.95) })),
     // Bituminous roofing: near black, matte, a little grit in the roughness map.
     roof: new THREE.MeshStandardMaterial({ color: 0x2b2d2f, roughness: 0.9, metalness: 0, roughnessMap: texture('metal_arm.jpg'), envMapIntensity: 0.6 }),
     // Aviation red, at a level that reads as a small hot lamp without a halo.
-    beacon: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.1, 0.05).multiplyScalar(1.25) }),
+    beacon: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.1, 0.05).multiplyScalar(1.25) })),
     pick: new THREE.MeshBasicMaterial({ visible: false }),
   };
   return library;

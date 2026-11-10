@@ -15,6 +15,9 @@ import type { Lot } from './lots';
 import { configureMaterials, texturesSettled } from './materials';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor } from './governor';
+import { lightsOutTree } from './lightsout.js';
+import { quarterLife, type QuarterEvent } from './quarter-life.js';
+import { quarterBuildKey, type QuarterShow } from './quarters.js';
 import { createPost, EXPOSURE, FLICKER } from './post';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
@@ -103,6 +106,10 @@ export interface City {
   site(repo: string): SiteView | null;
   /** Hides or shows every site's drawing (tests: what the sites cost in draw calls). */
   showSites(on: boolean): void;
+  /** A firm's bankruptcy or a tower's sale seen live: its lights go out, or its buyer's re-clad starts (Task 28). */
+  quarterEvent(e: QuarterEvent): void;
+  /** Each quarter as it shows now, by firm: its plate, its court's lamps, each tower's light and scaffold (tests and captures). */
+  quarterShows(): Map<string, QuarterShow>;
   /** Where an agent's tower stands, root to roof, for framing the camera on it. */
   agentFrame(agentId: string): Frame | null;
   /** Keeps the view centred in the part of the window not covered by a panel this wide on the right. */
@@ -409,7 +416,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const old = new Map(quarterPieces.map((c) => [c.firmId, c]));
     let built = 0;
     quarterPieces = quarters.map((q) => {
-      const key = JSON.stringify(q) + (opts.quarterKey?.(q) ?? '');
+      // Built the same lit or dark (the lights are a uniform): only what the build depends on rebuilds it.
+      const key = quarterBuildKey(q) + (opts.quarterKey?.(q) ?? '');
       const kept = old.get(q.firmId);
       if (kept && kept.key === key) {
         old.delete(q.firmId);
@@ -429,6 +437,35 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
     if (built > 0 || removed > 0) rebatchQuarters();
     return built;
+  }
+
+  /**
+   * The quarters over time (Task 28): a bankrupt firm's lights going out, a
+   * buyer's scaffold rising round the tower it bought, the floors rebuilt
+   * behind it, the scaffold struck and the windows relit.
+   */
+  const life = quarterLife((agentId) => {
+    const f = agentFrame(agentId);
+    if (!f) return null;
+    const h = new THREE.Vector3(f.width / 2, f.height / 2, f.width / 2);
+    return new THREE.Box3(f.center.clone().sub(h), f.center.clone().add(h));
+  });
+  scene.add(life.group);
+  /** Seconds since the scaffolds last asked for a shadow redraw: they move in steps, so the map follows in quarter seconds. */
+  let lifeShadow = 0;
+  function updateLife(dt: number): void {
+    const { draw, moved } = life.update(dt);
+    if (draw) {
+      placeQuarters(draw);
+      searchLitTree(districtGroup);
+      lightsOutTree(districtGroup);
+      sun.shadow.needsUpdate = true;
+    }
+    lifeShadow += dt;
+    if (moved && lifeShadow > 0.25) {
+      lifeShadow = 0;
+      sun.shadow.needsUpdate = true;
+    }
   }
 
   buildExchange();
@@ -719,13 +756,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let lastPlazas = '';
   function setPlots(occ: Occupancy): number {
     occNow = occ;
-    const built = placeDistricts(occ.districts) + placeQuarters(occ.quarters);
+    const built = placeDistricts(occ.districts) + placeQuarters(life.set(occ.quarters));
     reframe(occ);
     placeSites(occ.sites);
     // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
     placeConstructions();
     // The inspection's searchlights streak whatever they sweep: towers, quarters and the blocks round them.
     searchLitTree(districtGroup);
+    // A bankrupt firm's towers take a dead building's dust where the power is off (lightsout.ts).
+    lightsOutTree(districtGroup);
     // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
     const key = JSON.stringify(plazasOf(occ));
     if (key !== lastPlazas) {
@@ -1016,6 +1055,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     rig.update(dt);
     exchange?.update(dt);
     updateConstructions(dt);
+    updateLife(dt);
     applyLimits();
     fitMark();
     plates.update();
@@ -1043,6 +1083,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     },
     exchange: () => exchange,
     setSites,
+    quarterEvent: (e) => life.event(e),
+    quarterShows: () => life.shows(),
     site: siteView,
     showSites(on) {
       field.group.visible = on;
@@ -1106,6 +1148,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       constructions.clear();
       rows.clear();
       field.dispose();
+      life.dispose();
       plates.dispose();
       markBox.dispose();
       markMaterials.edge.dispose();

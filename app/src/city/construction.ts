@@ -1008,7 +1008,7 @@ function makeSparks(count: number): { mesh: THREE.Mesh; material: THREE.ShaderMa
 
 /** The world size of one pixel per metre of distance, for the shaders' pixel floors. */
 const bufferSize = new THREE.Vector2();
-function pixelScale(renderer: THREE.WebGLRenderer, camera: THREE.Camera): number {
+export function pixelScale(renderer: THREE.WebGLRenderer, camera: THREE.Camera): number {
   const cam = camera as THREE.PerspectiveCamera;
   renderer.getDrawingBufferSize(bufferSize);
   const fov = cam.isPerspectiveCamera ? cam.fov : 50;
@@ -1928,7 +1928,7 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
 const STEEL_KINDS = new Set(['yellow', 'dark', 'ballast', 'glass', 'primer', 'deck', 'rope']);
 const LAMP_KINDS = new Set(['lamp', 'flood', 'search', 'work']);
 
-const GLARE_VERT = /* glsl */ `
+export const GLARE_VERT = /* glsl */ `
   attribute vec3 iPos;
   attribute vec3 iColor;
   attribute vec3 iSize;
@@ -1951,7 +1951,7 @@ const GLARE_VERT = /* glsl */ `
   }
 `;
 
-const GLARE_FRAG = /* glsl */ `
+export const GLARE_FRAG = /* glsl */ `
   varying vec2 vQuad;
   varying vec3 vColor;
   varying float vSoft;

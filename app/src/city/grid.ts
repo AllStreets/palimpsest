@@ -4,6 +4,7 @@ import { reserves, type CollarPlaza } from './collar';
 import { onExchange } from './exchange';
 import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade';
 import { kitShared } from './kits';
+import { lightsOutEmitter } from './lightsout.js';
 import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
 import { materials } from './materials';
 
@@ -244,7 +245,8 @@ export function createGrid(quality: 'high' | 'medium'): Grid {
   const poleGeo = new THREE.CylinderGeometry(0.09, 0.14, 1, 8);
   const poles = new Batch(poleGeo, M.darkMetal, lampCap);
   const arms = new Batch(box, M.darkMetal, lampCap, false);
-  const lensMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  // A bankrupt firm's court lanterns go out with its towers (lightsout.ts).
+  const lensMat = lightsOutEmitter(new THREE.MeshBasicMaterial({ color: 0xffffff }));
   const lenses = new Batch(box, lensMat, lampCap, false);
   const bollardGeo = new THREE.CylinderGeometry(0.16, 0.18, 1, 10);
   const bollards = new Batch(bollardGeo, M.darkMetal, 64 * BOLLARDS, false);

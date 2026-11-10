@@ -17,6 +17,7 @@ import {
   type Plaza,
 } from './grid';
 import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
+import { OUT_PARS, OUT_UNIFORMS } from './lightsout.js';
 import { CIVIC_LAMPS, FOUNTAIN, HALL } from './exchange.js';
 import { AGENT_ROOT_SCALE } from '../../../shared/tower-layout.js';
 import { materials, texture, worldBox } from './materials';
@@ -76,7 +77,7 @@ export function createGround(): Ground {
 
   mat.customProgramCacheKey = () => 'palimpsest-ground';
   mat.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, uniforms);
+    Object.assign(sh.uniforms, uniforms, OUT_UNIFORMS);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vGP;')
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvGP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
@@ -86,6 +87,7 @@ export function createGround(): Ground {
         '#include <common>',
         `#include <common>
         varying vec3 vGP;
+        ${OUT_PARS}
         uniform vec4 uPlazas[${MAX_PLAZAS}];
         uniform int uPlazaCount;
         const float PITCH = ${PITCH.toFixed(1)};
@@ -181,10 +183,18 @@ export function createGround(): Ground {
         diffuseColor.rgb *= 1.0 + ring * 0.18;
         // Inside the plaza: warmer, paler dressed paving laid in concentric courses; a court is laid in a grid of
         // large slabs in staggered rows, and a little darker, so the quarter reads as one paved yard.
+        vec2 paveTilt = vec2(0.0);
         float course = 1.0 - 0.3 * (1.0 - smoothstep(0.02, 0.06, abs(fract(plazaD / 6.0) - 0.5) - 0.44));
         if (court > 0.0) {
           vec2 cl = gp - plazaC;
           float row = floor(cl.y / 3.0);
+          // Relief: each slab bedded a touch out of true, and its arrises worn round into the joint, so the court
+          // catches the lanterns slab by slab instead of lying flat as a printed grid.
+          vec2 sl = fract(vec2(cl.x / 6.0 + 0.5 * mod(row, 2.0), cl.y / 3.0)) - 0.5;
+          vec2 sid = vec2(floor(cl.x / 6.0 + 0.5 * mod(row, 2.0)), row);
+          paveTilt = (vec2(gHash(sid + 3.1), gHash(sid + 7.7)) - 0.5) * 0.07;
+          paveTilt += vec2(smoothstep(0.43, 0.5, abs(sl.x)) * sign(sl.x), smoothstep(0.4, 0.5, abs(sl.y)) * sign(sl.y)) * 0.45;
+          paveTilt *= plaza;
           vec2 slab = abs(fract(vec2(cl.x / 6.0 + 0.5 * mod(row, 2.0), cl.y / 3.0)) - 0.5);
           float joint = 1.0 - smoothstep(0.455, 0.48, max(slab.x * 1.0, slab.y * 0.5 + 0.25));
           course = (0.86 + 0.08 * gHash(vec2(floor(cl.x / 6.0 + 0.5 * mod(row, 2.0)), row))) * mix(0.72, 1.0, joint);
@@ -219,6 +229,7 @@ export function createGround(): Ground {
         diffuseColor.rgb *= mix(vec3(1.0), vec3(1.28, 1.2, 1.08) * course * civicTone, plaza * (1.0 - ring));
         roughnessFactor = mix(roughnessFactor, 0.74 + grain, road);`,
       )
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n        normal = normalize(normal + (viewMatrix * vec4(paveTilt.x, 0.0, paveTilt.y, 0.0)).xyz);')
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
@@ -238,6 +249,7 @@ export function createGround(): Ground {
             }
           }
           // Lanterns around the nearest plaza, or lining a quarter's court.
+          float streetLight = light;
           if (court > 0.0) {
             vec2 d = gp - plazaC;
             float l = court - LANTERN_IN;
@@ -294,6 +306,8 @@ export function createGround(): Ground {
             vec2 b = ringLight(d, BOLLARD_R, BOLLARD_N, 0.5);
             light += 1.6 * exp(-dot(b, b) / 5.0);
           }
+          // A bankrupt firm's court: its lanterns and floodlights out with its towers (lightsout.ts), a re-clad tower's own spill back on.
+          if (court > 0.0) light = streetLight + (light - streetLight) * (1.0 - lightsOut(vec3(gp.x, 0.0, gp.y)));
           totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.56, 0.22) * light * 2.6;
         }`,
       );

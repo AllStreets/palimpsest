@@ -243,7 +243,8 @@ async function kitFailureChecks(browser: Browser): Promise<void> {
  */
 async function earnedChecks(page: Page): Promise<void> {
   const { seedEconomy } = await import('../engine/market/sample-economy.js');
-  await seedEconomy();
+  // Lodestar's dark tower is held back from the daily tick's sale, so darkTowerChecks sees it dark and then sold live.
+  await seedEconomy(Date.now(), { holdSale: true });
   await page.reload();
   await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
   await page.waitForTimeout(2500);
@@ -433,7 +434,7 @@ async function quarterChecks(page: Page): Promise<void> {
     const f = firms.find((x) => x.id === q.firmId);
     const p = plates.find((x) => x.name === f?.name);
     check(!!p && p.shown, `${f?.name ?? q.firmId}'s plate reads in the quarters view`);
-    if (p) check(/^(\d+ agents?, -?\d+ credits|bankrupt)$/.test(p.sub), `its plate says "${p.sub}"`);
+    if (p) check(/^(\d+ agents?(, \d+ bought)?, -?\d+ credits|bankrupt)$/.test(p.sub), `its plate says "${p.sub}"`);
   }
   const bankrupt = firms.find((f) => f.status === 'bankrupt' && standing.some((q) => q.firmId === f.id));
   if (bankrupt) check(plates.some((p) => p.name === bankrupt.name && p.sub === 'bankrupt'), `${bankrupt.name}'s plate says bankrupt`);
@@ -460,6 +461,71 @@ async function quarterChecks(page: Page): Promise<void> {
     location.hash = '#/';
   });
   check((await debug(page, (x) => x.quality())) === 'high', 'the quarters hold high quality');
+}
+
+// ---------------------------------------------------------------- dark towers and the re-clad (Task 28)
+
+type QShow = { plate: string; court: number; settled: boolean; towers: Array<{ agentId: string; lit: number; scaffold: number; phase: string; root: string; firmId: string }> };
+const quarterShowOf = (page: Page, firmId: string): Promise<QShow | null> =>
+  page.evaluate((f) => (window as unknown as { __palimpsest: { quarterShow(f: string): QShow | null } }).__palimpsest.quarterShow(f), firmId);
+
+/**
+ * The sample economy's Lodestar, bankrupt with its tower not yet sold
+ * (seeded with holdSale): every pane out, its court's lamps out, its plate
+ * bankrupt, shot as dark-tower.png. Then the treasury sells the tower live
+ * (the same tower.sold a daily tick sends): the scaffold rises, the floors
+ * rebuild in the buyer's root, the scaffold comes down and the windows
+ * relight, shot as reclad.png; the buyer's plate counts the tower bought.
+ */
+async function darkTowerChecks(page: Page): Promise<void> {
+  const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const lode = qs.find((q) => q.firmId === 'lodestar');
+  check(!!lode && lode.dark && lode.towers.length === 1 && lode.towers[0].dark === true, 'the economy holds Lodestar bankrupt with its tower dark');
+  if (!lode) return;
+  const t = lode.towers[0];
+  const off = QUARTER_OFFSETS[t.towerIndex ?? 0];
+  const x = lode.origin.x + off.x;
+  const z = lode.origin.z + off.z;
+  const dark = await quarterShowOf(page, 'lodestar');
+  check(!!dark && dark.plate === 'bankrupt' && dark.court === 0 && dark.towers.every((x) => x.lit === 0), `its windows and court lamps are out (${JSON.stringify(dark)})`);
+  const plates = (await page.$$eval('.plate', (els) => els.map((e) => ({ name: e.querySelector('.plate-name')?.textContent ?? '', sub: e.querySelector('.plate-sub')?.textContent ?? '' })))) as Array<{ name: string; sub: string }>;
+  check(plates.some((p) => p.name === 'Lodestar' && p.sub === 'bankrupt'), 'its plate reads bankrupt');
+  await setView(page, [x + 95, 26, z + 120], [x - 2, 24, z]);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: join(SHOTS, 'dark-tower.png') });
+  const builds = await debug(page, (d) => d.builds);
+
+  const { sellDarkTowers } = await import('../engine/market/treasury.js');
+  sellDarkTowers(Date.now());
+  const sold = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const buyer = sold.find((q) => q.firmId === 'lodestar')?.towers[0];
+  check(!!buyer && buyer.firmId !== 'lodestar' && buyer.dark === false, `the tower is sold and stays on its plot (${buyer?.firmId})`);
+  const rose = await page
+    .waitForFunction(() => {
+      const s = (window as unknown as { __palimpsest: { quarterShow(f: string): { towers: Array<{ scaffold: number; phase: string }> } | null } }).__palimpsest.quarterShow('lodestar');
+      return !!s && s.towers.some((x) => x.phase === 'rising' && x.scaffold > 0.2);
+    }, null, { timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  check(rose, 'a scaffold rises up the dark tower');
+  const done = await page
+    .waitForFunction(() => (window as unknown as { __palimpsest: { quarterShow(f: string): { settled: boolean } | null } }).__palimpsest.quarterShow('lodestar')?.settled === true, null, { timeout: 40_000 })
+    .then(() => true)
+    .catch(() => false);
+  const end = await quarterShowOf(page, 'lodestar');
+  const tw = end?.towers[0];
+  const buyerQ = sold.find((q) => q.firmId === buyer?.firmId);
+  check(done && !!tw && tw.lit === 1 && tw.scaffold === 0 && tw.firmId === buyer?.firmId && tw.root === buyerQ?.root, `the re-clad ends in the buyer's root with its windows relit (${JSON.stringify(tw)})`);
+  check((await debug(page, (d) => d.builds)) - builds <= 2, 'the quarter rebuilt once, behind the scaffold');
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: join(SHOTS, 'reclad.png') });
+  const fps = await pageFps(page);
+  const stats = await debug(page, (d) => d.stats());
+  console.log(`info  re-clad: ${fps.toFixed(0)} fps, ${stats.calls} draw calls`);
+  await page.waitForTimeout(1200);
+  const after = (await page.$$eval('.plate', (els) => els.map((e) => ({ name: e.querySelector('.plate-name')?.textContent ?? '', sub: e.querySelector('.plate-sub')?.textContent ?? '' })))) as Array<{ name: string; sub: string }>;
+  check(after.some((p) => / 1 bought,/.test(p.sub)), `the buyer's plate lists the tower it bought (${after.map((p) => p.sub).join(' | ')})`);
 }
 
 // ---------------------------------------------------------------- live construction (Task 26)
@@ -1636,6 +1702,7 @@ async function main(): Promise<void> {
       await reconnectChecks(page, restart);
       await earnedChecks(page);
       await quarterChecks(page);
+      await darkTowerChecks(page);
       await exchangeChecks(page);
       await constructionChecks(page);
       await lifecycleChecks(page);

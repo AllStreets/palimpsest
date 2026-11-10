@@ -8,7 +8,8 @@ import { batchPieces, drawnMeshes } from '../app/src/city/batch.js';
 import { ambientCap, COURT_APRON } from '../app/src/city/collar.js';
 import { standingLots } from '../app/src/city/lots.js';
 import { occupancy, plazasOf } from '../app/src/city/occupancy.js';
-import { quarterCenterpiece, quarterLooks, QUARTER_OFFSETS } from '../app/src/city/quarters.js';
+import { lightsOutAt, quarterZones } from '../app/src/city/lightsout.js';
+import { agentLook, DARKEN_S, quarterBuildKey, quarterCenterpiece, quarterLooks, quarterShow, QUARTER_OFFSETS, RECLAD } from '../app/src/city/quarters.js';
 import { AGENT_FLOOR_WIDTH } from '../app/src/city/tower/build.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
 import { type Look, lookKey } from '../app/src/city/tower/variants.js';
@@ -257,4 +258,91 @@ test("the city's quarters draw in a bounded number of batches, and draw the same
   assert.ok(after.min.distanceTo(bounds.min) < 1e-3 && after.max.distanceTo(bounds.max) < 1e-3, 'and where it stood');
   batched.dispose();
   for (const p of pieces) p.dispose();
+});
+
+// ---------------------------------------------------------------- dark towers and the buyer's re-clad (Task 28)
+
+/** Lodestar as the sample economy leaves it between its bankruptcy and the sale: one dark tower, its court dark. */
+function bankruptQuarter(): Quarter {
+  const q = fullQuarter('beauxarts', 'plain', 9);
+  const firmId = 'lodestar';
+  return { ...q, firmId, dark: true, towers: q.towers.slice(0, 2).map((t) => ({ ...t, firmId, dark: true })) };
+}
+
+test('a dark quarter has no lit panes', () => {
+  const q = bankruptQuarter();
+  // Settled (no clock: the bankruptcy is long over): every window out, the court's lamps out, the plate bankrupt.
+  const settled = quarterShow(q);
+  assert.equal(settled.plate, 'bankrupt');
+  assert.equal(settled.court, 0, "the court's lamps are dark");
+  assert.ok(settled.towers.every((t) => t.lit === 0 && t.scaffold === 0), 'no tower has a lit pane');
+  // Every point of every tower and of the court is in the dark (the shader's term, in JS).
+  const zones = quarterZones(q.origin, settled);
+  for (const t of q.towers) {
+    const at = QUARTER_OFFSETS[t.towerIndex!];
+    assert.equal(lightsOutAt(zones, q.origin.x + at.x + 5, q.origin.z + at.z - 3), 1, `${t.id} is dark`);
+  }
+  assert.equal(lightsOutAt(zones, q.origin.x, q.origin.z + 40), 1, 'the court is dark');
+  // Next door is not.
+  assert.equal(lightsOutAt(zones, q.origin.x + DISTRICT_PITCH, q.origin.z), 0, 'the next plot keeps its lights');
+
+  // The windows go out over DARKEN_S from the event, evenly, never coming back.
+  const at = (s: number) => quarterShow(q, { bankrupt: s });
+  assert.equal(at(0).towers[0].lit, 1);
+  const mid = at(DARKEN_S / 2).towers[0].lit;
+  assert.ok(mid > 0 && mid < 1, `half way the panes are dimming (${mid})`);
+  assert.equal(at(DARKEN_S).towers[0].lit, 0);
+  let last = 1;
+  for (let s = 0; s <= DARKEN_S + 1; s += 0.1) {
+    const lit = at(s).towers[0].lit;
+    assert.ok(lit <= last + 1e-9, 'never relighting');
+    last = lit;
+  }
+  // Going dark never rebuilds the quarter: its build is the same lit or dark, and the light is a uniform.
+  const lit: Quarter = { ...q, dark: false, towers: q.towers.map((t) => ({ ...t, dark: false })) };
+  assert.equal(quarterBuildKey(settled.quarter), quarterBuildKey(quarterShow(lit).quarter));
+});
+
+test("a sold tower rebuilds with the buyer's look and root", () => {
+  const before = bankruptQuarter();
+  const sold = before.towers[0];
+  // The engine's quarter after the sale: the tower stays on its plot, its firm and root the buyer's, its lights on.
+  const after: Quarter = { ...before, towers: [{ ...sold, firmId: 'quickset', root: 'chicago', dark: false }, before.towers[1]] };
+  const clocks = (s: number) => ({ sold: new Map([[sold.agentId!, s]]) });
+  const drawn = (s: number) => quarterShow(after, clocks(s));
+
+  // The scaffold rises up the old dark tower over RECLAD.rise: the seller's root and look stand behind it, dark.
+  const rising = drawn(RECLAD.rise / 2).towers[0];
+  assert.ok(rising.scaffold > 0.3 && rising.scaffold < 0.7, `the scaffold is half way up (${rising.scaffold})`);
+  assert.equal(rising.spec.root, 'beauxarts');
+  assert.equal(rising.spec.firmId, 'lodestar');
+  assert.equal(rising.lit, 0);
+
+  // Wrapped to the top, the floors are rebuilt behind it in the buyer's root and look, with the agent's own silhouette.
+  const rebuilt = drawn(RECLAD.rise + 0.1);
+  const t = rebuilt.towers[0];
+  assert.equal(t.scaffold, 1);
+  assert.equal(t.spec.root, 'chicago');
+  assert.equal(t.spec.firmId, 'quickset');
+  assert.equal(t.spec.silhouette, sold.silhouette);
+  assert.deepEqual(quarterLooks(rebuilt.quarter).get(sold.id), agentLook('quickset', sold.towerIndex!));
+  assert.equal(t.lit, 0, 'still dark under the scaffold');
+
+  // The scaffold comes down, then the windows relight; the seller's other tower and its court stay dark.
+  const striking = drawn(RECLAD.rise + RECLAD.rebuild + RECLAD.strike / 2).towers[0];
+  assert.ok(striking.scaffold > 0 && striking.scaffold < 1 && striking.lit === 0, 'the scaffold comes down before the lights');
+  const end = quarterShow(after);
+  assert.equal(end.towers[0].scaffold, 0);
+  assert.equal(end.towers[0].lit, 1, 'the windows relight');
+  assert.equal(end.towers[0].spec.root, 'chicago');
+  assert.equal(end.towers[1].lit, 0);
+  assert.equal(end.plate, 'bankrupt');
+  const zones = quarterZones(after.origin, end);
+  const plot = (i: number) => QUARTER_OFFSETS[after.towers[i].towerIndex!];
+  assert.equal(lightsOutAt(zones, after.origin.x + plot(0).x, after.origin.z + plot(0).z), 0, "the buyer's tower is lit in the dark court");
+  assert.equal(lightsOutAt(zones, after.origin.x + plot(1).x, after.origin.z + plot(1).z), 1);
+  // The rebuild happens once, at the top of the rise: the drawn quarter is the same before it and the same after.
+  assert.equal(quarterBuildKey(drawn(0.5).quarter), quarterBuildKey(drawn(RECLAD.rise - 0.1).quarter));
+  assert.equal(quarterBuildKey(drawn(RECLAD.rise + 0.1).quarter), quarterBuildKey(end.quarter));
+  assert.notEqual(quarterBuildKey(drawn(0.5).quarter), quarterBuildKey(end.quarter));
 });

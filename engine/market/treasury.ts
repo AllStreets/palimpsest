@@ -416,10 +416,21 @@ export function bankruptcyTick(now: number | Date = clock()): void {
  * (re-clad in the buyer's root on its plot), then lets each active firm
  * that canHire() hire one specialist for HIRE_FEE.
  */
-export function dailyTick(now: number | Date = clock()): void {
+export function dailyTick(now: number | Date = clock(), opts: { sales?: boolean } = {}): void {
   const t = msOf(now);
   settle(t);
+  if (opts.sales !== false) sellDarkTowers(t);
+  hireSpecialists(t);
+}
 
+/**
+ * The daily tick's sales (ruling 6): every dark tower of a firm that went
+ * bankrupt before `now` and has no run left live goes to the richest active
+ * firm that holds its price plus SALE_MARGIN. The sample economy can hold
+ * them back and sell them live, so a capture sees the re-clad.
+ */
+export function sellDarkTowers(now: number | Date = clock()): void {
+  const t = msOf(now);
   // Sales: towers that went dark on an earlier tick, of firms with no run still winding down.
   for (const tower of darkTowers(liveFirmIds())) {
     const seller = firm(tower.firmId);
@@ -438,8 +449,10 @@ export function dailyTick(now: number | Date = clock()): void {
       later('tower.sold', { from: tower.firmId, to: richest.id, price, agentId: tower.agentId });
     });
   }
+}
 
-  // Hiring: one specialist per firm per tick.
+/** The daily tick's hiring: one specialist per firm per tick. */
+function hireSpecialists(t: number): void {
   const openJobs = (openDb().prepare("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('open', 'bidding')").get() as { n: number }).n;
   for (const f of listFirms()) {
     const b = balances();

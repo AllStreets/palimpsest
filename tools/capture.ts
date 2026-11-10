@@ -50,6 +50,7 @@ import { FAMILIES, VARIANTS } from '../app/src/city/tower/variants.js';
 import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District, Quarter } from '../shared/types.js';
+import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
 import { decodePng, labOf } from './png.js';
@@ -478,6 +479,89 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       }
     },
 
+    async dark(page) {
+      // Dark towers and the buyer's re-clad (Task 28; CAPTURE_ECONOMY=live CAPTURE_HOLD_SALE=1): Lodestar's tower
+      // dark on its plot between the bankruptcy and the sale, from home, close and at its boarded foot; Kiln's quarter
+      // going dark as a live bankruptcy shows it (the one debug override: the economy's story has no second
+      // bankruptcy); then the economy's clock sells Lodestar's tower live and the shots follow Quickset's re-clad:
+      // the scaffold rising, wrapped to the top with the floors rebuilt behind it, struck, and the windows relit.
+      type Show = { plate: string; court: number; settled: boolean; towers: Array<{ agentId: string; lit: number; scaffold: number; phase: string; root: string; firmId: string }> };
+      const show = (firm: string): Promise<Show | null> => page.evaluate((f) => (window as unknown as { __palimpsest: { quarterShow(f: string): Show | null } }).__palimpsest.quarterShow(f), firm);
+      const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+      const by = (id: string): Quarter => qs.find((q) => q.firmId === id) ?? qs[0];
+      const lode = by('lodestar');
+      const plot = QUARTER_OFFSETS_CAPTURE[lode.towers[0]?.towerIndex ?? 0];
+      const tx = lode.origin.x + plot.x;
+      const tz = lode.origin.z + plot.z;
+      console.log(`  lodestar ${JSON.stringify(await show('lodestar'))}`);
+      await chrome(page, true);
+      await page.evaluate(() => (window as unknown as { __palimpsest: { home(): void } }).__palimpsest.home());
+      await page.waitForTimeout(3200);
+      await shoot(page, 'dark-home');
+      await chrome(page, false);
+      await still(page, 'dark-tower', [tx + 95, 26, tz + 120], [tx - 2, 24, tz]);
+      await still(page, 'dark-far', [tx + 330, 110, tz + 420], [tx, 30, tz]);
+      await still(page, 'dark-foot', [tx + 26, 2.2, tz + 34], [tx - 4, 5, tz]);
+      await still(page, 'dark-court', [lode.origin.x + 40, 2, lode.origin.z + 96], [lode.origin.x - 20, 14, lode.origin.z - 30]);
+      // A live bankruptcy, at Kiln: the windows going out.
+      const kiln = by('kiln');
+      const kEye: V3 = [kiln.origin.x + 130, 40, kiln.origin.z + 170];
+      const kAt: V3 = [kiln.origin.x - 4, 22, kiln.origin.z];
+      await frame(page, kEye, kAt);
+      await page.waitForTimeout(600);
+      await save(page, 'darkening-before', 86);
+      await page.evaluate(() => (window as unknown as { __palimpsest: { darkQuarter(f: string): void } }).__palimpsest.darkQuarter('kiln'));
+      await page.waitForFunction(() => {
+        const s = (window as unknown as { __palimpsest: { quarterShow(f: string): { towers: Array<{ lit: number }> } | null } }).__palimpsest.quarterShow('kiln');
+        return !!s && s.towers.some((t) => t.lit < 0.6);
+      }, null, { timeout: 8000 });
+      await save(page, 'darkening', 86);
+      await page.waitForTimeout(2600);
+      await save(page, 'darkening-after', 86);
+      // The sale, live: Quickset buys Lodestar's tower and re-clads it.
+      economy?.tick(1000);
+      await economy?.idle();
+      const phase = async (want: string[], ms = 30_000): Promise<Show['towers'][number] | null> => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < ms) {
+          const s = await show('lodestar');
+          const t = s?.towers.find((x) => want.includes(x.phase));
+          if (t) return t;
+          await page.waitForTimeout(120);
+        }
+        return null;
+      };
+      const eye: V3 = [tx + 85, 30, tz + 110];
+      const at: V3 = [tx - 2, 24, tz];
+      await frame(page, eye, at);
+      const rising = await phase(['rising']);
+      console.log(`  rising ${JSON.stringify(rising)}`);
+      await page.waitForFunction(() => {
+        const s = (window as unknown as { __palimpsest: { quarterShow(f: string): { towers: Array<{ scaffold: number }> } | null } }).__palimpsest.quarterShow('lodestar');
+        return !!s && s.towers.some((t) => t.scaffold > 0.45);
+      }, null, { timeout: 20_000 });
+      await save(page, 'reclad-rising', 86);
+      console.log(`  rebuilt ${JSON.stringify(await phase(['rebuilding']))}`);
+      await page.waitForTimeout(400);
+      await save(page, 'reclad-wrapped', 86);
+      await page.waitForFunction(() => {
+        const s = (window as unknown as { __palimpsest: { quarterShow(f: string): { towers: Array<{ phase: string; scaffold: number }> } | null } }).__palimpsest.quarterShow('lodestar');
+        return !!s && s.towers.some((t) => t.phase === 'striking' && t.scaffold < 0.6);
+      }, null, { timeout: 20_000 });
+      await save(page, 'reclad-striking', 86);
+      await phase(['relighting']);
+      await page.waitForTimeout(500);
+      await save(page, 'reclad-relighting', 86);
+      await page.waitForFunction(() => (window as unknown as { __palimpsest: { quarterShow(f: string): { settled: boolean } | null } }).__palimpsest.quarterShow('lodestar')?.settled === true, null, { timeout: 20_000 });
+      await page.waitForTimeout(800);
+      await still(page, 'reclad-done', eye, at);
+      console.log(`  done ${JSON.stringify(await show('lodestar'))}`);
+      await chrome(page, true);
+      await page.evaluate(() => (window as unknown as { __palimpsest: { home(): void } }).__palimpsest.home());
+      await page.waitForTimeout(3200);
+      await shoot(page, 'reclad-home');
+    },
+
     async exchange(page) {
       // The civic exchange (CAPTURE_ECONOMY=1): the city from home, the hall from its forecourt and from across the
       // city, the tote board close with the economy's bidding jobs lit, the fountain at street level, and the fountain
@@ -829,7 +913,8 @@ async function main(): Promise<void> {
   // CAPTURE_ECONOMY=1: the sample economy on top, its firms' floors standing above every datum.
   if (process.env.CAPTURE_ECONOMY) {
     const { seedEconomy } = await import('../engine/market/sample-economy.js');
-    await seedEconomy();
+    // CAPTURE_HOLD_SALE=1: Lodestar's dark tower is not sold in the history, so the `dark` shot sees it dark and then sold live.
+    await seedEconomy(Date.now(), { holdSale: !!process.env.CAPTURE_HOLD_SALE });
   }
   // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
   const { setRunner } = await import('../engine/exec.js');
@@ -843,7 +928,7 @@ async function main(): Promise<void> {
     setMarketExtras({ sites: economySites, trips: economyTrips });
     // The lifecycle shot has the clock fail the inspecting repo's inspection, so a scar is struck (CAPTURE_FAIL overrides).
     const fail = process.env.CAPTURE_FAIL ? process.env.CAPTURE_FAIL.split(',') : wanted.includes('lifecycle') ? ['lantern/assay-kit'] : [];
-    economy = economyClock({ now: () => Date.now(), speed: 20, fail });
+    economy = economyClock({ now: () => Date.now(), speed: 20, fail, sell: process.env.CAPTURE_HOLD_SALE ? 5 : undefined });
   }
   const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   try {

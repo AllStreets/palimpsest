@@ -654,5 +654,8 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
  * (the same 0.97), scene.ts reads its exposure from it (the same 0.85), and the welders' point lights stand dark
  * unless an arc burns on a job site, which the swatch board never has, and the floodlight budget lights only the
  * construction's own materials: every rendered value is unchanged.
+ * Restamped for Task 28, also without a re-measure: look.ts gained the lights-out term (lightsout.ts) on the window
+ * glass and the emitters, which changes a pixel only inside a bankrupt firm's quarter (no zone is set on the
+ * swatch board, so the term reads 0 there): every rendered value is unchanged.
  */
-export const RENDERED_INPUTS = '39e2daeb5a99703c';
+export const RENDERED_INPUTS = '066edededd699be5';

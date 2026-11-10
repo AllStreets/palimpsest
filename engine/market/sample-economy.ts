@@ -78,7 +78,7 @@ import { reputation } from './reputation.js';
 import { localDay, writeDailyReport } from './report.js';
 import { haltRepo, listRuns, run as storedRun } from './runs.js';
 import { agentFloorId, layJobFloors, layScar, pollPRs, repoFloorId, repoTowerId, resetShipping } from './ship.js';
-import { bankruptcyTick, dailyTick, installTreasury, settle } from './treasury.js';
+import { bankruptcyTick, dailyTick, installTreasury, sellDarkTowers, settle } from './treasury.js';
 
 export { SAMPLE_INSTALLED } from '../sample.js';
 
@@ -1100,7 +1100,7 @@ function writeProviderFixtures(now: number): void {
  * state. gh and `ollama list` go to the sample stand-in unless a test has
  * installed its own runner.
  */
-export async function seedEconomy(now: number = Date.now()): Promise<void> {
+export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: boolean } = {}): Promise<void> {
   for (const s of SAMPLE) if (!getRepo(s.fullName)) throw new Error(`seedEconomy runs on top of seedSample(): ${s.fullName} is missing`);
   useSampleFolders();
   mkdirSync(sampleProjectsDir(), { recursive: true });
@@ -1111,7 +1111,7 @@ export async function seedEconomy(now: number = Date.now()): Promise<void> {
   let offTreasury: () => void = () => {};
   try {
     offTreasury = installTreasury({ now: () => Date.now() });
-    await writeHistory(now, start, time);
+    await writeHistory(now, start, time, opts.holdSale === true);
     await settleJobEffects();
   } finally {
     offTreasury();
@@ -1121,7 +1121,7 @@ export async function seedEconomy(now: number = Date.now()): Promise<void> {
   writeProviderFixtures(now);
 }
 
-async function writeHistory(now: number, start: number, time: { set(ms: number): void }): Promise<void> {
+async function writeHistory(now: number, start: number, time: { set(ms: number): void }, holdSale: boolean): Promise<void> {
   // One fixed story whatever the hour it is written: the same jobs, prices and books every time.
   const r = rng('sample-economy');
   const p = new Pipeline(r);
@@ -1274,7 +1274,8 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
   // Between the four jobs' bidding opening (15 s after posting) and their award (2 minutes later).
   q.push(at(BOARD_DAY) + 75_000, () => {
     if (process.env.PALIMPSEST_ECONOMY_DEBUG) console.log('balances at the daily tick', JSON.stringify(Object.fromEntries(listFirms().map((x) => [x.id, x.balance]))));
-    dailyTick(Date.now());
+    // Held back (holdSale), Lodestar's tower still stands dark at `now`, for economyClock's `sell` to sell live.
+    dailyTick(Date.now(), { sales: !holdSale });
   });
 
   // Three daily reports, each written ten minutes after its day ended.
@@ -1550,7 +1551,7 @@ export interface EconomyClock {
  * `fail` fails its next inspection instead (the guild's review rejects it):
  * its scar is laid and its site struck, as a failed run's is.
  */
-export function economyClock(opts: { now: () => number; speed: number; fail?: string[] }): EconomyClock {
+export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number }): EconomyClock {
   const S = 1000;
   const p = new Pipeline(rng('sample-clock'));
   const steps: Array<{ at: number; run: () => void | Promise<void> }> = [];
@@ -1652,6 +1653,10 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
       });
     }
   };
+
+  // A dark tower held back from the daily tick (seedEconomy's holdSale) is sold `sell` script seconds in: the
+  // richest firm buys it and re-clads it, with the same tower.sold a real daily tick sends.
+  if (opts.sell !== undefined) at(opts.sell, () => sellDarkTowers(opts.now()));
 
   // What is under way at the start, in script seconds.
   const live = listRuns().filter((r) => r.outcome === null);

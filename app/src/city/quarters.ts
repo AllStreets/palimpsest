@@ -7,8 +7,9 @@
  * Each tower stands on its firm's root at the agent scale (layoutTower),
  * shaped by its agent's silhouette (Task 23), carrying the floors its agent
  * earned (Task 22). A bankrupt firm's towers are dark until sold, and its
- * walk unlit; a sold tower stays on its plot re-clad in its buyer's root and
- * its buyer's materials. The paving, the lanterns round the court and the
+ * walk unlit (Task 28: the lights-out uniform, so the build is the same lit
+ * or dark); a sold tower stays on its plot re-clad in its buyer's root and
+ * its buyer's materials, behind a scaffold (quarterShow). The paving, the lanterns round the court and the
  * light pools on it are the ground's and the grid's (collar.ts `court`).
  */
 import * as THREE from 'three';
@@ -64,6 +65,97 @@ export function quarterLooks(q: Quarter): Map<string, Look> {
   return out;
 }
 
+// ---------------------------------------------------------------- the quarter as it shows: dark, re-clad, lit
+
+/** A bankrupt firm's windows go out over this many seconds from `firm.bankrupt`. */
+export const DARKEN_S = 2;
+/**
+ * The buyer's re-clad from `tower.sold`, in seconds: the scaffold rises up
+ * the dark tower, the floors are rebuilt behind it in the buyer's look, the
+ * scaffold is struck from the top down, then the windows relight.
+ */
+export const RECLAD = { rise: 8, rebuild: 1.4, strike: 5, relight: 2.4 } as const;
+const RECLAD_TOTAL = RECLAD.rise + RECLAD.rebuild + RECLAD.strike + RECLAD.relight;
+
+/** Seconds since each event the page saw live: the firm's bankruptcy, and each of its towers' sales by agent id. Left out, it is long over. */
+export interface QuarterClocks {
+  bankrupt?: number;
+  sold?: ReadonlyMap<string, number>;
+}
+
+export type TowerPhase = 'lit' | 'darkening' | 'dark' | 'rising' | 'rebuilding' | 'striking' | 'relighting';
+
+/** One agent tower as the city shows it now. */
+export interface TowerShow {
+  /** The tower as drawn: under a rising scaffold a bought tower still stands in its seller's root and look. */
+  spec: TowerSpec;
+  /** How lit its windows and lamps are, 0 (out) to 1. */
+  lit: number;
+  /** How far up the re-clad scaffold stands, 0 (none) to 1 (wrapped to the top). */
+  scaffold: number;
+  phase: TowerPhase;
+}
+
+export interface QuarterShow {
+  /** The quarter as drawn: built the same whether its lights are on or not (quarterBuildKey). */
+  quarter: Quarter;
+  /** The court's lamps and the walk's lanterns, 0 (out) to 1. */
+  court: number;
+  plate: 'bankrupt' | 'active';
+  towers: TowerShow[];
+  /** True when nothing in it is still moving. */
+  settled: boolean;
+}
+
+const ease = (x: number): number => {
+  const t = Math.min(1, Math.max(0, x));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * The quarter as the city shows it, from the engine's quarter and the
+ * events seen live. Pure: the scene turns `lit` and `court` into the
+ * lights-out uniform (lightsout.ts) and `scaffold` into the re-clad
+ * scaffold, and rebuilds only when `quarter` changes (once per re-clad, at
+ * the top of the rise).
+ */
+export function quarterShow(q: Quarter, clocks: QuarterClocks = {}): QuarterShow {
+  const b = clocks.bankrupt;
+  const fading = q.dark && b !== undefined && b < DARKEN_S;
+  // A bankrupt firm's own lights: going out over DARKEN_S, then out.
+  const own = q.dark ? (b === undefined ? 0 : 1 - ease(b / DARKEN_S)) : 1;
+  let settled = !fading;
+  const towers = q.towers.map((t): TowerShow => {
+    const bought = (t.firmId ?? q.firmId) !== q.firmId;
+    const s = t.agentId ? clocks.sold?.get(t.agentId) : undefined;
+    if (bought && s !== undefined && s < RECLAD_TOTAL) {
+      settled = false;
+      const seller: TowerSpec = { ...t, firmId: q.firmId, root: q.root, dark: true };
+      const buyer: TowerSpec = { ...t, dark: false };
+      if (s < RECLAD.rise) return { spec: seller, lit: 0, scaffold: ease(s / RECLAD.rise), phase: 'rising' };
+      const r = s - RECLAD.rise;
+      if (r < RECLAD.rebuild) return { spec: buyer, lit: 0, scaffold: 1, phase: 'rebuilding' };
+      const k = r - RECLAD.rebuild;
+      if (k < RECLAD.strike) return { spec: buyer, lit: 0, scaffold: 1 - ease(k / RECLAD.strike), phase: 'striking' };
+      return { spec: buyer, lit: ease((k - RECLAD.strike) / RECLAD.relight), scaffold: 0, phase: 'relighting' };
+    }
+    const dark = t.dark ?? (q.dark && !bought);
+    if (!dark) return { spec: t, lit: 1, scaffold: 0, phase: 'lit' };
+    return { spec: t, lit: own, scaffold: 0, phase: own > 0 ? 'darkening' : 'dark' };
+  });
+  return { quarter: { ...q, towers: towers.map((t) => t.spec) }, court: own, plate: q.dark ? 'bankrupt' : 'active', towers, settled };
+}
+
+/**
+ * What a quarter's build depends on: everything but whether its lights are
+ * on, which is a uniform (lightsout.ts). A quarter going dark or relighting
+ * keeps its batches; a re-clad rebuilds once, when its root and look change.
+ */
+export function quarterBuildKey(q: Quarter): string {
+  const { dark: _dark, ...rest } = q;
+  return JSON.stringify({ ...rest, towers: q.towers.map(({ dark: _d, ...t }) => t) });
+}
+
 export interface QuarterOptions {
   /** The firm's name, cut into the plinth. */
   name: string;
@@ -114,7 +206,8 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
     if (!at) return;
     plots.add(plot);
     const look = looks(t);
-    const built = buildTower(t, quality, mats(look), look, { firmSlots: opts.firmSlots } satisfies BuildOptions);
+    // Built lit whatever its state: a dark tower's lights are out by the lights-out uniform (lightsout.ts), so going dark never rebuilds.
+    const built = buildTower(t, quality, mats(look), look, { firmSlots: opts.firmSlots, dark: false } satisfies BuildOptions);
     built.group.name = `tower:${t.id}`;
     built.group.position.set(at.x, 0, at.z);
     group.add(built.group);
@@ -132,12 +225,11 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
   const firmMats = mats(lookFor(q.firmId));
   const kit = new Kit(firmMats);
   kit.detail = quality === 'high';
-  // A bankrupt firm's walk is unlit with its towers.
-  if (q.dark) kit.remap = { vent: 'unlit', lightLine: null };
   const lowest = Math.min(...q.towers.map((t) => agentRootHeight(t.root)));
   const spans = walks(kit, q.root, plots, Math.min(WALK_HEIGHT, lowest * 0.42));
   plinth(kit, q.root);
   garden(kit, q.root);
+  lanternColumn(kit, q.root);
   const court = kit.build();
   court.name = 'quarter:walks';
   court.userData.spans = spans;
@@ -164,7 +256,7 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
   group.add(trees.object);
   disposers.push(trees.dispose);
 
-  const letters = inscription(opts.name, q.dark);
+  const letters = inscription(opts.name);
   if (letters) {
     group.add(letters.object);
     disposers.push(letters.dispose);
@@ -269,7 +361,8 @@ const WALKS: Record<RootStyle, WalkBuilder> = {
       for (const side of [-1, 1]) {
         const z = side * (WALK_WIDTH / 2 - 0.4);
         k.box('travertine', 0.95, 0.3, 0.95, M(x, 0.15, z));
-        k.inst('quarter:column', 'travertine', () => flutedShaft(r, shaft, 16), M(x, 0.3 + shaft / 2, z));
+        // flutedShaft stands on its foot: the shaft rises from the base block.
+        k.inst('quarter:column', 'travertine', () => flutedShaft(r, shaft, 16), M(x, 0.3, z));
         k.box('travertine', 0.86, 0.26, 0.86, M(x, 0.3 + shaft + 0.13, z));
       }
     }
@@ -365,29 +458,151 @@ function garden(k: Kit, root: RootStyle): void {
   k.box('darkGlass', BASIN, 0.1, BASIN, M(0, h - 0.18, 0));
 }
 
+/**
+ * The court's lantern column (Task 28): the firm's mark on the city's
+ * skyline. A pedestal in the basin, a shaft in the root's stone (fluted for
+ * the classical roots, eight-sided for the rest), a capital, and a glazed
+ * lantern burning warm under a bronze cap, LANTERN_TOP high: above the
+ * agents' roots, well under every district tower. When the firm goes
+ * bankrupt its glass goes out with its towers (the lantern glass is the
+ * `vent` emitter, under the lights-out uniform).
+ */
+export const LANTERN_TOP = 36;
+/** The lantern's glass: its centre's height, and its half width. */
+export const LANTERN_GLASS = { y: 30.4, half: 0.8 };
+
+function lanternColumn(k: Kit, root: RootStyle): void {
+  const stone = STONE[root];
+  // Pedestal: a base course, the die, and a cornice, standing in the water.
+  k.box(stone, 3.6, 0.5, 3.6, M(0, 0.25, 0));
+  k.box(stone, 2.8, 2.2, 2.8, M(0, 0.5 + 1.1, 0));
+  k.box(stone, 3.2, 0.35, 3.2, M(0, 2.7 + 0.175, 0));
+  const foot = 3.05;
+  const shaft = 25;
+  if (root === 'beauxarts' || root === 'roman') {
+    // flutedShaft stands on its foot (y 0 to its height).
+    k.inst('quarter:column-shaft', stone, () => flutedShaft(0.82, shaft, 20), M(0, foot, 0));
+  } else {
+    k.add(stone, new THREE.CylinderGeometry(0.72, 0.92, shaft, 8), M(0, foot + shaft / 2, 0, Math.PI / 8));
+  }
+  // Necking band and a square capital.
+  const top = foot + shaft;
+  k.box('datum', 1.9, 0.22, 1.9, M(0, top + 0.11, 0));
+  k.box(stone, 2.5, 0.55, 2.5, M(0, top + 0.22 + 0.27, 0));
+  // The lantern: a glass core between four bronze posts, a sill and a lintel.
+  const y0 = top + 0.77;
+  const h = 3.1;
+  k.box('datum', 2.1, 0.16, 2.1, M(0, y0 + 0.08, 0));
+  k.box('vent', LANTERN_GLASS.half * 2, h - 0.3, LANTERN_GLASS.half * 2, M(0, y0 + 0.16 + (h - 0.3) / 2, 0));
+  for (const [x, z] of [
+    [-0.92, -0.92],
+    [0.92, -0.92],
+    [-0.92, 0.92],
+    [0.92, 0.92],
+  ]) {
+    k.box('steel', 0.2, h, 0.2, M(x, y0 + h / 2, z));
+  }
+  // Glazing bars across each face, so up close the glass reads as a lantern's and not a block of light.
+  for (const side of [-1, 1]) {
+    k.box('steel', 0.06, h - 0.3, LANTERN_GLASS.half * 2 + 0.04, M(side * (LANTERN_GLASS.half + 0.01), y0 + 0.16 + (h - 0.3) / 2, 0));
+    k.box('steel', LANTERN_GLASS.half * 2 + 0.04, h - 0.3, 0.06, M(0, y0 + 0.16 + (h - 0.3) / 2, side * (LANTERN_GLASS.half + 0.01)));
+  }
+  k.box('datum', 2.2, 0.22, 2.2, M(0, y0 + h + 0.11, 0));
+  // A pyramid cap in bronze and a finial ball.
+  const cap = LANTERN_TOP - (y0 + h + 0.22) - 0.5;
+  k.add('datum', new THREE.ConeGeometry(1.5, cap, 4, 1), M(0, y0 + h + 0.22 + cap / 2, 0, Math.PI / 4));
+  k.add('datum', new THREE.SphereGeometry(0.25, 12, 8), M(0, LANTERN_TOP - 0.25, 0));
+}
+
 let foliage: { leaf: THREE.Material; bark: THREE.Material } | null = null;
 
-/** Plane trees in leaf: a trunk forking into two limbs, and a broad crown of overlapping masses, instanced. */
-function plantTrees(): { object: THREE.Object3D; dispose(): void } {
-  foliage ??= {
-    leaf: new THREE.MeshStandardMaterial({ color: 0x55603f, roughness: 0.95, metalness: 0 }),
-    bark: new THREE.MeshStandardMaterial({ color: 0x6b6156, roughness: 0.9, metalness: 0 }),
+/** Value noise in 3D, for the crowns' clumps and the bark's patches. */
+function vnoise(x: number, y: number, z: number): number {
+  const h = (a: number, b: number, c: number): number => {
+    const s = Math.sin(a * 127.1 + b * 311.7 + c * 74.7) * 43758.5453;
+    return s - Math.floor(s);
   };
-  const trunkGeo = new THREE.CylinderGeometry(0.16, 0.3, 1, 8);
-  // A lumpy crown mass: an icosphere pushed in and out a little, so no two read as the same ball.
-  const crownGeo = new THREE.IcosahedronGeometry(1, 2);
-  const pos = crownGeo.attributes.position as THREE.BufferAttribute;
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const zi = Math.floor(z);
+  const f = (t: number): number => t * t * (3 - 2 * t);
+  const u = f(x - xi);
+  const v = f(y - yi);
+  const w = f(z - zi);
+  const l = (a: number, b: number, t: number): number => a + (b - a) * t;
+  return l(
+    l(l(h(xi, yi, zi), h(xi + 1, yi, zi), u), l(h(xi, yi + 1, zi), h(xi + 1, yi + 1, zi), u), v),
+    l(l(h(xi, yi, zi + 1), h(xi + 1, yi, zi + 1), u), l(h(xi, yi + 1, zi + 1), h(xi + 1, yi + 1, zi + 1), u), v),
+    w,
+  );
+}
+
+/**
+ * One crown mass of a London plane: a sphere broken into leaf clumps (two
+ * octaves of noise pushing it in and out), flatter and darker underneath
+ * where the light stops reaching, its normals bent toward the round of the
+ * mass so it shades as foliage, not as facets.
+ */
+function crownMass(): THREE.BufferGeometry {
+  const g = new THREE.IcosahedronGeometry(1, 3);
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const colors = new Float32Array(pos.count * 3);
   const v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i);
-    const k = 1 + 0.09 * Math.sin(v.x * 5.1 + v.y * 3.3) * Math.cos(v.z * 4.7 - v.y * 2.1);
-    // Flatter underneath, as a crown is where the light stops reaching.
+    const n = vnoise(v.x * 2.6 + 4, v.y * 2.6, v.z * 2.6) * 0.7 + vnoise(v.x * 6.1, v.y * 6.1 + 9, v.z * 6.1) * 0.3;
+    const k = 0.8 + 0.42 * n;
     v.multiplyScalar(k);
-    if (v.y < 0) v.y *= 0.62;
+    if (v.y < 0) v.y *= 0.58;
     pos.setXYZ(i, v.x, v.y, v.z);
+    // Light on top and on the clumps that stand out, dark in the hollows and underneath.
+    const shade = (0.55 + 0.45 * THREE.MathUtils.smoothstep(v.y, -0.5, 0.8)) * (0.78 + 0.32 * n);
+    colors.set([shade * 0.96, shade, shade * 0.9], i * 3);
   }
-  crownGeo.computeVertexNormals();
-  const MASSES = 4;
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  g.computeVertexNormals();
+  const nrm = g.attributes.normal as THREE.BufferAttribute;
+  const radial = new THREE.Vector3();
+  const nv = new THREE.Vector3();
+  for (let i = 0; i < nrm.count; i++) {
+    radial.fromBufferAttribute(pos, i).normalize();
+    nv.fromBufferAttribute(nrm, i).lerp(radial, 0.55).normalize();
+    nrm.setXYZ(i, nv.x, nv.y, nv.z);
+  }
+  return g;
+}
+
+/** A trunk or limb with the plane's camouflage bark: cream, olive and grey-brown plates where the old bark has shed. */
+function barkedLimb(): THREE.BufferGeometry {
+  const g = new THREE.CylinderGeometry(0.16, 0.3, 1, 12, 8);
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const colors = new Float32Array(pos.count * 3);
+  const v = new THREE.Vector3();
+  const cream = new THREE.Color(0.86, 0.83, 0.7);
+  const olive = new THREE.Color(0.55, 0.55, 0.44);
+  const brown = new THREE.Color(0.4, 0.35, 0.29);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const a = Math.atan2(v.z, v.x);
+    const n = vnoise(Math.cos(a) * 2.2 + 3, v.y * 3.4, Math.sin(a) * 2.2);
+    const m = vnoise(Math.cos(a) * 4.4, v.y * 7 + 5, Math.sin(a) * 4.4);
+    c.copy(n > 0.55 ? cream : n > 0.38 ? olive : brown).lerp(brown, m * 0.25);
+    colors.set([c.r, c.g, c.b], i * 3);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return g;
+}
+
+/** London planes in leaf: a mottled bole forking into two limbs and a broad crown of overlapping clumped masses, instanced. */
+function plantTrees(): { object: THREE.Object3D; dispose(): void } {
+  foliage ??= {
+    leaf: new THREE.MeshStandardMaterial({ color: 0x5b6740, roughness: 0.92, metalness: 0, vertexColors: true }),
+    bark: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0, vertexColors: true }),
+  };
+  const trunkGeo = barkedLimb();
+  const crownGeo = crownMass();
+  const MASSES = 7;
   const trunks = new THREE.InstancedMesh(trunkGeo, foliage.bark, TREES.length * 3);
   const crowns = new THREE.InstancedMesh(crownGeo, foliage.leaf, TREES.length * MASSES);
   const m = new THREE.Matrix4();
@@ -408,16 +623,14 @@ function plantTrees(): { object: THREE.Object3D; dispose(): void } {
       trunks.setMatrixAt(3 * i + 1 + side, m.compose(new THREE.Vector3(x + tip.x, 3.45 + tip.y, z + tip.z), q, new THREE.Vector3(0.62, 2.8, 0.62)));
     }
     for (let j = 0; j < MASSES; j++) {
-      const b = a + (j * Math.PI * 2) / MASSES + 0.4 * Math.sin(i + j);
-      const r = j === 0 ? 0 : 2.1;
-      const size = (j === 0 ? 3.6 : 2.5) * s;
-      q.setFromAxisAngle(up, b);
-      crowns.setMatrixAt(
-        MASSES * i + j,
-        m.compose(new THREE.Vector3(x + Math.cos(b) * r, (j === 0 ? 7.2 : 6.4 + 0.5 * Math.sin(i * 3 + j)) * s, z + Math.sin(b) * r), q, new THREE.Vector3(size * 1.08, size * 0.82, size)),
-      );
-      // Each mass a shade apart: the sunlit top of a crown and the shaded masses round it.
-      crowns.setColorAt(MASSES * i + j, tint.setRGB(0.92 + 0.12 * Math.sin(i * 1.3 + j * 2.1), 0.95 + 0.08 * Math.cos(i + j), 0.9));
+      // A high central mass, and six round it at two heights, leaning out over the limbs.
+      const b = a + (j * Math.PI * 2) / (MASSES - 1) + 0.5 * Math.sin(i * 1.3 + j);
+      const r = j === 0 ? 0 : 2.3 + 0.5 * Math.sin(i + j * 2.1);
+      const size = (j === 0 ? 3.0 : 2.1 + 0.35 * Math.cos(i * 0.7 + j)) * s;
+      const y = (j === 0 ? 7.6 : j % 2 ? 6.2 : 7.0) * s + 0.3 * Math.sin(i * 3 + j);
+      q.setFromAxisAngle(up, b * 1.7);
+      crowns.setMatrixAt(MASSES * i + j, m.compose(new THREE.Vector3(x + Math.cos(b) * r, y, z + Math.sin(b) * r), q, new THREE.Vector3(size * 1.08, size * 0.8, size)));
+      crowns.setColorAt(MASSES * i + j, tint.setRGB(0.92 + 0.1 * Math.sin(i * 1.3 + j * 2.1), 0.95 + 0.07 * Math.cos(i + j), 0.88));
     }
   });
   const g = new THREE.Group();
@@ -455,7 +668,7 @@ function plinth(k: Kit, root: RootStyle): void {
  * each letter a shadowed cut with its lower edge catching the light. Drawn
  * on a canvas, so only in the browser (null in node tests).
  */
-function inscription(name: string, dark: boolean): { object: THREE.Object3D; dispose(): void } | null {
+function inscription(name: string): { object: THREE.Object3D; dispose(): void } | null {
   if (typeof document === 'undefined') return null;
   const W = 2048;
   const H = 128;
@@ -485,7 +698,7 @@ function inscription(name: string, dark: boolean): { object: THREE.Object3D; dis
       // The lower lip of the cut catches the light; the cut itself holds shadow.
       g.fillStyle = 'rgba(255, 236, 205, 0.32)';
       g.fillText(ch, x, y + 2.2);
-      g.fillStyle = dark ? 'rgba(14, 12, 11, 0.8)' : 'rgba(26, 20, 16, 0.84)';
+      g.fillStyle = 'rgba(26, 20, 16, 0.84)';
       g.fillText(ch, x, y);
       x += g.measureText(ch).width + spacing * fit;
     }

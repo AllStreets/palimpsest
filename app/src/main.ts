@@ -87,6 +87,11 @@ interface DebugHandle {
    * Never written anywhere; a reload restores the real state.
    */
   darkQuarter(firmId: string): void;
+  /**
+   * A firm's quarter as the city shows it now (Task 28): its plate, its
+   * court's lamps, and each tower's light, scaffold, phase, root and firm.
+   */
+  quarterShow(firmId: string): { plate: string; court: number; settled: boolean; towers: Array<{ agentId: string; lit: number; scaffold: number; phase: string; root: string; firmId: string }> } | null;
   /** The exchange's tote board as it shows now, and whether its fountain runs. */
   exchange(): { slots: BoardSlot[]; running: boolean } | null;
   /** The job site on a repo's tower as the city shows it (crane, frame, arc), or null. */
@@ -251,8 +256,20 @@ async function main(): Promise<void> {
       return ex ? { slots: ex.slots(), running: ex.fountainRunning() } : null;
     },
     darkQuarter(firmId) {
+      // As a live bankruptcy shows: the windows going out over two seconds.
       darkened.add(firmId);
+      city.quarterEvent({ kind: 'bankrupt', firmId });
       place();
+    },
+    quarterShow(firmId) {
+      const q = city.quarterShows().get(firmId);
+      if (!q) return null;
+      return {
+        plate: q.plate,
+        court: q.court,
+        settled: q.settled,
+        towers: q.towers.map((t) => ({ agentId: t.spec.agentId ?? '', lit: t.lit, scaffold: t.scaffold, phase: t.phase, root: t.spec.root, firmId: t.spec.firmId ?? firmId })),
+      };
     },
     districts: 0,
     sites: 0,
@@ -527,14 +544,15 @@ async function main(): Promise<void> {
     }
     for (const q of occ.quarters) {
       const f = firmViews.get(q.firmId);
-      // Its own agents at work: towers it bought are counted with it, towers sold away with their buyer.
+      // Its own agents at work: towers sold away are listed with their buyer, as bought, wherever they stand.
       const own = f ? f.agents.filter((a) => !a.retired).length : q.towers.filter((t) => (t.firmId ?? q.firmId) === q.firmId && !t.dark).length;
+      const bought = occ.quarters.reduce((n, o) => n + (o.firmId === q.firmId ? 0 : o.towers.filter((t) => t.firmId === q.firmId).length), 0);
       const books = f ? `, ${Math.round(f.balance)} credits` : '';
       plates.push({
         key: `firm:${q.firmId}`,
         origin: q.origin,
         name: f?.name ?? q.firmId,
-        sub: q.dark || f?.status === 'bankrupt' ? 'bankrupt' : `${plural(own, 'agent')}${books}`,
+        sub: q.dark || f?.status === 'bankrupt' ? 'bankrupt' : `${plural(own, 'agent')}${bought ? `, ${bought} bought` : ''}${books}`,
         onActivate: () => openFirm(q.firmId),
       });
     }
@@ -648,6 +666,15 @@ async function main(): Promise<void> {
         liveSites.set(s.runId, s);
         showSites();
       }
+    }
+    // A bankruptcy puts the firm's lights out over two seconds; a sale starts its buyer's re-clad (Task 28).
+    if (e.type === 'firm.bankrupt') {
+      const firmId = (e.data as { firmId?: string } | null)?.firmId;
+      if (firmId) city.quarterEvent({ kind: 'bankrupt', firmId });
+    }
+    if (e.type === 'tower.sold') {
+      const agentId = (e.data as { agentId?: string } | null)?.agentId;
+      if (agentId) city.quarterEvent({ kind: 'sold', agentId });
     }
     if (LIVE_ON.has(e.type)) readLive();
     if (REFRESH_ON.has(e.type)) refresh();

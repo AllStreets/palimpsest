@@ -75,7 +75,7 @@ export function plazasOf(occ: Occupancy, tones?: (d: District) => { tones: Array
       rootHeight: Math.min(...q.towers.map((t) => agentRootHeight(t.root))),
       court: QUARTER_COURT,
       towers: plotsOf(q),
-      ...(q.dark ? { dark: true } : {}),
+      // A bankrupt firm's court goes dark by the lights-out uniform (lightsout.ts), not by a rebuild of the blocks round it.
     })),
   ];
 }
