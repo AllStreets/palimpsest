@@ -33,11 +33,12 @@ const MAX_TRIES = 3;
 /**
  * The most diff, in characters, each backend's reviewer reads whole: below
  * every cut a prompt makes (claude.ts and the API at 200,000 characters)
- * and, for Ollama, inside a default context window. A diff longer than a
+ * and, for Ollama, inside the 32,768-token context its review calls ask
+ * for (`num_ctx`, ollama.ts), with room for the prompt and the answer. A diff longer than a
  * reviewer's window is never handed to it cut: a padded diff could push the
  * real change past what the reviewer sees.
  */
-export const REVIEW_WINDOW = { claude: 150_000, anthropic: 150_000, ollama: 12_000, mlx: 12_000 } as const;
+export const REVIEW_WINDOW = { claude: 150_000, anthropic: 150_000, ollama: 80_000, mlx: 12_000 } as const;
 
 export function reviewWindow(model: string): number {
   const prefix = model.slice(0, model.indexOf(':')) as keyof typeof REVIEW_WINDOW;

@@ -29,15 +29,18 @@ import { addAgent, checks, makeRepo, makeRun, PNG, postJob, setUp, tearDown, wor
 let judged: JudgeInput[] = [];
 let commands: string[] = [];
 let shots: Array<{ side: string; routes: string[]; port: number; outDir: string }> = [];
+let scriptRuns: Array<{ cwd: string; lib: string | null }> = [];
 const SERVED_PORT = 43_210;
 
 /** A child that prints `out` and exits 0, or (for the static server) prints its port and runs until killed. */
-function fakeChild(command: string): Spawned {
+function fakeChild(command: string, cwd = ''): Spawned {
   let finish!: (d: { code: number | null; signal: string | null }) => void;
   const done = new Promise<{ code: number | null; signal: string | null }>((r) => (finish = r));
   const serving = command.includes('static-server.mjs');
   const shot = /PALIMPSEST_SHOT='([^']+)'/.exec(command);
   if (shot) {
+    const lib = join(cwd, 'tools', 'lib.mjs');
+    scriptRuns.push({ cwd, lib: existsSync(lib) ? readFileSync(lib, 'utf8') : null });
     mkdirSync(dirname(shot[1]), { recursive: true });
     writeFileSync(shot[1], PNG);
   }
@@ -79,10 +82,11 @@ beforeEach(() => {
   });
   setProvider('claude', p);
   setProvider('ollama', p);
-  setSpawner((cmd, args) => {
+  scriptRuns = [];
+  setSpawner((cmd, args, opts) => {
     const command = args.at(-1) ?? cmd;
     commands.push(command);
-    return fakeChild(command);
+    return fakeChild(command, opts.cwd ?? '');
   });
 });
 afterEach(tearDown);
@@ -474,17 +478,45 @@ test("a preview is always shot by the engine's Chromium, never the repo's script
   }
 });
 
-test('a screenshot script the diff touches fails design', { timeout: 60_000 }, async () => {
-  // The script itself.
+test("the head is shot with the base commit's copy of the screenshot script and its folder", { timeout: 60_000 }, async () => {
   const repo = makeRepo(checks({ screenshot: 'node tools/shot.mjs', shots: ['/'] }), {
-    'tools/shot.mjs': 'export {};\n',
+    'tools/shot.mjs': "import './lib.mjs';\n",
+    'tools/lib.mjs': 'export const honest = true;\n',
     'app.tsx': 'export const App = () => null;\n',
   });
   const { worker } = team();
   const job = postJob(['**']);
   const { run, diff } = await makeRun(repo, job, worker, (dir) => {
     write(dir, 'app.tsx', 'export const App = () => 1;\n');
-    write(dir, 'tools/shot.mjs', 'export {}; // writes a pretty picture\n');
+    // The helper the script imports now draws a pretty picture whatever the app looks like.
+    write(dir, 'tools/lib.mjs', 'export const honest = false;\n');
+    write(dir, 'tools/extra.mjs', 'export {};\n');
+  });
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
+    const head = scriptRuns.find((r) => r.cwd.endsWith('/ship'));
+    assert.ok(head, 'the script ran on the head side');
+    assert.equal(head!.lib, 'export const honest = true;\n', "the base commit's helper ran, not the agent's");
+    assert.equal(existsSync(join(head!.cwd, 'tools', 'extra.mjs')), false, 'the folder is exactly the base copy');
+    assert.equal(existsSync(join(head!.cwd, 'app.tsx')) && readFileSync(join(head!.cwd, 'app.tsx'), 'utf8').includes('=> 1'), true, 'the app is the head');
+    assert.equal(insp.checks.find((c) => c.name === 'design')?.status, 'pass');
+  } finally {
+    lease.release();
+  }
+});
+
+test('a root-level screenshot script fails design when any non-UI file changed', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks({ screenshot: 'node shot.mjs', shots: ['/'] }), {
+    'shot.mjs': "import './src/util.mjs';\n",
+    'src/util.mjs': 'export {};\n',
+    'app.tsx': 'export const App = () => null;\n',
+  });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, 'app.tsx', 'export const App = () => 1;\n');
+    write(dir, 'src/util.mjs', 'export const lie = 1;\n');
   });
   const lease = await workLease();
   try {
@@ -492,8 +524,31 @@ test('a screenshot script the diff touches fails design', { timeout: 60_000 }, a
     const d = insp.checks.find((c) => c.name === 'design')!;
     assert.equal(d.status, 'fail');
     assert.match(d.detail, /screenshot script/);
+    assert.match(d.detail, /src\/util\.mjs/);
     assert.equal(judged.length, 0);
-    assert.equal(commands.filter((c) => c.includes('tools/shot.mjs')).length, 0, 'a touched script is never run');
+  } finally {
+    lease.release();
+  }
+});
+
+test('a Makefile behind the screenshot command that the diff changes fails design', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks({ screenshot: 'make shot', shots: ['/'] }), {
+    Makefile: 'shot:\n\tnode tools/shot.mjs\n',
+    'tools/shot.mjs': 'export {};\n',
+    'app.tsx': 'export const App = () => null;\n',
+  }, 'acme/makers');
+  const { worker } = team();
+  const job = postJob(['**'], 'acme/makers');
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, 'app.tsx', 'export const App = () => 1;\n');
+    write(dir, 'Makefile', 'shot:\n\tcp pretty.png "$$PALIMPSEST_SHOT"\n');
+  });
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease, { screenshotter });
+    const d = insp.checks.find((c) => c.name === 'design')!;
+    assert.equal(d.status, 'fail');
+    assert.match(d.detail, /Makefile/);
   } finally {
     lease.release();
   }
@@ -553,4 +608,34 @@ test('ignored build output in the run dir is never served, and head code cannot 
   } finally {
     lease.release();
   }
+});
+
+test('the base side has its own home, cache and tmp, out of the head profile\'s reach', { timeout: 60_000 }, async (t) => {
+  const { childEnv, SANDBOX_EXEC, toolProfile } = await import('../engine/market/sandbox.js');
+  const root = join(paths().runs, 'run-sides');
+  for (const d of ['repo', 'base', 'ctl', 'home', 'cache', 'tmp', 'base-home', 'base-cache', 'base-tmp']) mkdirSync(join(root, d), { recursive: true });
+  const base = childEnv(root, { side: 'base' });
+  const head = childEnv(root);
+  assert.ok(base.HOME.endsWith('/base-home') && base.XDG_CACHE_HOME.endsWith('/base-cache') && base.TMPDIR.includes('/base-tmp'));
+  assert.ok(head.HOME.endsWith('/home') && head.XDG_CACHE_HOME.endsWith('/cache'));
+  const input = { runRoot: root, home: '/Users/nobody', dataHome: paths().runs, enginePort: 4770, proxyPort: 9, toolchains: [] };
+  const headText = toolProfile(input);
+  const baseText = toolProfile({ ...input, side: 'base' });
+  const writes = (text: string) => text.split('\n').filter((l) => l.startsWith('(allow file-write*')).join('\n');
+  assert.doesNotMatch(writes(headText), /base-home|base-cache|base-tmp|\/base"/);
+  assert.match(writes(baseText), /base-home/);
+  assert.doesNotMatch(writes(baseText), /\/home"|\/cache"|\/repo"|\/ship"/);
+
+  // By execution where sandbox-exec exists: a head-side command cannot write the base side's home.
+  if (!existsSync(SANDBOX_EXEC)) return t.skip('sandbox-exec is missing');
+  const { realSpawner } = await import('../engine/exec.js');
+  const { execTool } = await import('../engine/market/broker.js');
+  setSpawner(realSpawner);
+  delete process.env.PALIMPSEST_SANDBOX;
+  const run = (dir: string, command: string) =>
+    execTool({ runId: 'run-sides', runRoot: root, dir: join(root, dir), command, timeoutMs: 20_000, stage: 'checks', signal: new AbortController().signal, log: () => {} });
+  assert.notEqual((await run('repo', `touch '${join(root, 'base-home', 'poison')}'`)).code, 0);
+  assert.equal(existsSync(join(root, 'base-home', 'poison')), false);
+  assert.equal((await run('base', `touch '${join(root, 'base-home', 'ok')}'`)).code, 0);
+  assert.notEqual((await run('base', `touch '${join(root, 'home', 'poison')}'`)).code, 0);
 });

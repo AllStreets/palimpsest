@@ -5,19 +5,22 @@
  * `node --test` suite (rule 5), every model the fake provider (rule 6).
  */
 import assert from 'node:assert/strict';
-import { chmodSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
 import { realSpawner, setSpawner } from '../engine/exec.js';
 import { entries } from '../engine/ledger.js';
+import { paths } from '../engine/home.js';
 import { baseline } from '../engine/guild/baseline.js';
 import { canOpenPR, canPush, DENY_SCOPE, inspect, inspectionSummary, scopeCheck } from '../engine/guild/inspect.js';
 import { abortLease } from '../engine/market/budget.js';
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import { setProvider } from '../engine/market/providers.js';
 import { getRepo } from '../engine/repos.js';
+import { resolvedBids } from '../engine/market/reputation.js';
+import { record } from '../engine/ledger.js';
 import type { ReviewInput } from '../engine/market/provider.js';
 import type { CheckResult } from '../shared/types.js';
 import { addAgent, checks, FULL, git, makeRepo, makeRun, postJob, setUp, suite, tearDown, workLease, write } from './guild-fixtures.js';
@@ -400,6 +403,10 @@ test('a diff padded past the reviewer window fails as too large to review', { ti
     assert.match(r.detail, /too large to review/);
     assert.equal(reviewed.length, 0, 'no reviewer sees a cut diff');
     assert.equal(insp.passed, false);
+    // Not the agent's failure: no strike, and the verdict does not count against the firm.
+    assert.ok(insp.inconclusive);
+    assert.equal(getRepo(FULL)!.strikes, 0);
+    assert.equal(resolvedBids().length, 0);
   } finally {
     lease.release();
   }
@@ -418,6 +425,68 @@ test('tests that disappeared fail the test check', { timeout: 120_000 }, async (
     const t = insp.checks.find((c) => c.name === 'test')!;
     assert.equal(t.status, 'fail');
     assert.match(t.detail, /2 tests ran before the change, 1 after/);
+  } finally {
+    lease.release();
+  }
+});
+
+// ---------------------------------------------------------------- fix round 2
+
+test('no reviewer available is inconclusive: no strike, nothing against the firm', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), { 'src/a.ts': 'export const a = 1;\n' });
+  const worker = addAgent('wanda', 'alpha', 'claude:sonnet');
+  const job = postJob(['src/**']);
+  record('job.awarded', { jobId: job.id, tier: job.tier, considered: [], satOut: [], chosen: { id: 'b1', jobId: job.id, firmId: 'alpha', agentId: 'wanda', confidence: 0.8 }, why: 'test', at: new Date().toISOString(), coolOffUntil: null });
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'src/a.ts', 'export const a = 2;\n'));
+  const lease = await workLease();
+  try {
+    const insp = await inspect(run, job, repo, diff, lease);
+    assert.equal(insp.passed, false);
+    assert.match(insp.inconclusive ?? '', /reviewer/);
+    assert.equal(getRepo(FULL)!.strikes, 0);
+    assert.equal(resolvedBids().length, 0, 'the inconclusive verdict is no outcome for the firm');
+  } finally {
+    lease.release();
+  }
+});
+
+test('a real binary file shows in the review as a line, never as raw bytes', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), { 'src/a.ts': 'export const a = 1;\n' });
+  const { worker } = team();
+  const job = postJob(['**']);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => {
+    write(dir, 'src/a.ts', 'export const a = 2;\n');
+    mkdirSync(join(dir, 'assets'), { recursive: true });
+    writeFileSync(join(dir, 'assets/logo.png'), png);
+    // A NUL byte does not make a code file binary: its text is still shown.
+    write(dir, 'src/hidden.ts', 'export const x = 1;\u0000 stealTheKeys();\n');
+  });
+  const lease = await workLease();
+  try {
+    await inspect(run, job, repo, diff, lease);
+    const d = reviewed[0].diff;
+    assert.match(d, new RegExp(`binary file changed: assets/logo\\.png \\(${png.length} bytes\\)`));
+    assert.doesNotMatch(d, /IHDR/);
+    assert.match(d, /stealTheKeys/);
+    assert.match(d, /header|a = 2/);
+  } finally {
+    lease.release();
+  }
+});
+
+test('the same run can be inspected again', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), { 'src/a.ts': 'export const a = 1;\n' });
+  const { worker } = team();
+  const job = postJob(['src/**']);
+  const { run, diff } = await makeRun(repo, job, worker, (dir) => write(dir, 'src/a.ts', 'export const a = 2;\n'));
+  const lease = await workLease();
+  try {
+    assert.equal((await inspect(run, job, repo, diff, lease)).passed, true);
+    write(join(paths().runs, run.id, 'ship'), 'stale.txt', 'left over\n');
+    const again = await inspect(run, job, repo, diff, lease);
+    assert.equal(again.passed, true);
+    assert.equal(existsSync(join(paths().runs, run.id, 'ship', 'stale.txt')), false, 'the stale clone was replaced');
   } finally {
     lease.release();
   }

@@ -220,6 +220,8 @@ describe('ollama', () => {
     assert.equal(review.approve, true);
     assert.equal(bodies[0].format, 'json');
     assert.equal(bodies[0].stream, false);
+    // A review reads the whole diff: a 32k context, not Ollama's small default.
+    assert.equal((bodies[0].options as { num_ctx?: number } | undefined)?.num_ctx, 32768);
     await assert.rejects(p.plan({ job: makeJob(), agent, persona: 'Wren', repoSummary: '', examples: [] }, new AbortController().signal), /shape/);
   });
 
@@ -234,6 +236,7 @@ describe('ollama', () => {
     assert.equal(r.before, 5);
     assert.equal(r.after, 8);
     assert.equal(bodies[0].model, 'qwen2.5vl:7b-q4_K_M');
+    assert.equal((bodies[0].options as { num_ctx?: number } | undefined)?.num_ctx, 32768);
     const images = (bodies[0].messages as Array<{ images?: string[] }>).flatMap((m) => m.images ?? []);
     assert.deepEqual(images, [before, after]);
     assert.ok(calls.some((c) => c[1] === 'list'));

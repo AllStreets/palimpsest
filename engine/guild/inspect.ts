@@ -34,7 +34,7 @@
  * row halt the repo (`repo.halted`); a pass resets the strikes.
  */
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, rmSync } from 'node:fs';
+import { appendFileSync, lstatSync, mkdirSync, rmSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -50,7 +50,7 @@ import { installDeps as defaultInstallDeps, needsReinstall, type InstallDeps, ty
 import type { RunLogLine } from '../market/provider.js';
 import { haltRepo, type RunDiff } from '../market/runs.js';
 import { reapRun } from '../market/reaper.js';
-import { createShipDir, engineGit } from '../market/worktree.js';
+import { createShipDir, engineGit, removeOwned } from '../market/worktree.js';
 import { cachedBaseline } from './baseline.js';
 import { CHECK_ORDER, runCheck } from './checks.js';
 import { designPasses, judgeDesign, prepareBase, shoot, UI_FILES, type Screenshotter, type Shot } from './design.js';
@@ -201,7 +201,7 @@ export function inspectionSummary(i: Inspection): string {
   const by = (s: CheckResult['status']) => i.checks.filter((c) => c.status === s).map((c) => c.name);
   const failed = by('fail');
   const pre = by('preexisting');
-  const parts = [i.passed ? 'Passed.' : failed.length ? `Failed: ${failed.join(', ')}.` : 'Failed.'];
+  const parts = [i.passed ? 'Passed.' : i.inconclusive ? 'Inconclusive: no reviewer could read the change.' : failed.length ? `Failed: ${failed.join(', ')}.` : 'Failed.'];
   if (pre.length) parts.push(`Failing before the change too: ${pre.join(', ')}.`);
   if (i.design) parts.push(i.design.diffOnly ? `Design ${i.design.after} of 10 from the diff alone.` : `Design ${i.design.before ?? 'none'} before, ${i.design.after} after.`);
   return parts.join(' ');
@@ -267,13 +267,29 @@ function diffArgs(base: string): string[] {
 }
 const DIFF_FLAGS = ['--no-color', '--no-ext-diff', '--no-textconv', '--text', '--no-renames'];
 
-/** The committed change as the reviewer reads it: every changed file as text, with the base's attributes. */
-async function reviewDiff(dir: string, base: string, head: string): Promise<string> {
-  let r = await engineGit(dir, [...diffArgs(base), 'diff', ...DIFF_FLAGS, base, head, '--']);
+/**
+ * Files shown to the reviewer as one line, never as bytes: images, fonts,
+ * media, archives and other formats that are binary by their name. Every
+ * other file is shown as text whatever git thinks of its bytes (a NUL in a
+ * code file cannot hide it).
+ */
+export const BINARY_FILES = /\.(png|jpe?g|gif|webp|avif|ico|icns|bmp|tiff?|psd|heic|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|bz2|xz|7z|rar|jar|wasm|mp3|mp4|m4a|mov|webm|ogg|wav|flac|sqlite|db|bin|exe|dll|so|dylib|a|o|class|pyc)$/i;
+
+/** The committed change as the reviewer reads it: every changed file as text with the base's attributes, binary formats as one line each. */
+async function reviewDiff(dir: string, base: string, head: string, files: ChangedFile[]): Promise<string> {
+  const binary = files.filter((f) => !f.gitlink && BINARY_FILES.test(f.path)).map((f) => f.path);
+  const spec = ['--', '.', ...binary.map((p) => `:(exclude,literal)${p}`)];
+  let r = await engineGit(dir, [...diffArgs(base), 'diff', ...DIFF_FLAGS, base, head, ...spec]);
   // A git older than 2.40 has no --attr-source; --text alone still shows every line.
-  if (r.code !== 0 && /attr-source/.test(r.stderr)) r = await engineGit(dir, ['-c', 'core.attributesFile=/dev/null', 'diff', ...DIFF_FLAGS, base, head, '--']);
+  if (r.code !== 0 && /attr-source/.test(r.stderr)) r = await engineGit(dir, ['-c', 'core.attributesFile=/dev/null', 'diff', ...DIFF_FLAGS, base, head, ...spec]);
   if (r.code !== 0) throw new Error(`git diff failed: ${r.stderr.trim()}`);
-  return r.stdout;
+  const lines: string[] = [];
+  for (const p of binary) {
+    const at = await engineGit(dir, ['cat-file', '-s', `${head}:${p}`]);
+    const size = at.code === 0 ? `${at.stdout.trim()} bytes` : 'deleted';
+    lines.push(`binary file changed: ${p} (${size})`);
+  }
+  return lines.length ? `${r.stdout}${r.stdout && !r.stdout.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n` : r.stdout;
 }
 
 /** The changed files of `base..head` with their gitlink flags, from `git diff --raw`. */
@@ -339,8 +355,8 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
       moved = `The change could not be taken from the engine's commit: ${err instanceof Error ? err.message : String(err)}`;
     }
     if (ship) {
-      patch = await reviewDiff(ship, base, head);
       files = await changedFiles(ship, base, head);
+      patch = await reviewDiff(ship, base, head, files);
       if (diff.files.length && diff.files.slice().sort().join('\0') !== files.map((f) => f.path).sort().join('\0')) {
         note('the diff the runner kept differs from the commit; the commit is what is inspected');
       }
@@ -420,6 +436,11 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
   }
 
   const passed = canOpenPR(checks);
+  // Only the review failed, and no reviewer read the change: the city's limit, not the agent's failure.
+  const rvCheck = checks.find((c) => c.name === 'review');
+  const failing = checks.filter((c) => c.status === 'fail');
+  const inconclusive =
+    !passed && rvCheck?.status === 'fail' && reviewer.agentId === null && failing.every((c) => c.name === 'review') ? rvCheck.detail.slice(0, 600) : null;
   const inspection: Inspection = {
     id: `insp-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
     runId: run.id,
@@ -433,6 +454,7 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
     design,
     cost: Math.round(cost * 1e6) / 1e6,
     at: new Date().toISOString(),
+    inconclusive,
   };
   openDb().prepare('INSERT OR REPLACE INTO inspections (id, run_id, json) VALUES (?, ?, ?)').run(inspection.id, run.id, JSON.stringify(inspection));
   record('inspection.done', {
@@ -445,12 +467,13 @@ export async function inspect(run: Run, job: Job, repo: Repo, diff: RunDiff, lea
     reviewerFirmId: reviewer.firmId,
     passed: inspection.passed,
     pushable: inspection.pushable,
+    inconclusive,
     summary: inspectionSummary(inspection),
     inspection,
   });
   emit('inspection.done', { inspection });
   note(inspectionSummary(inspection));
-  strike(repo.fullName, passed, run.id);
+  if (!inconclusive) strike(repo.fullName, passed, run.id);
   return inspection;
 }
 
@@ -488,13 +511,14 @@ async function designCheck(
   const started = Date.now();
   const c = repo.checks;
   const renderable = !!c && (!!c.screenshot || !!c.preview);
-  // The repo's own script runs only when there is no preview for the engine's Chromium to shoot,
-  // and never when the change touches it: a script the agent wrote can draw any picture it likes.
+  // The repo's own script runs only when there is no preview for the engine's Chromium to shoot, and
+  // then the base commit's copy of it (and its folder) shoots the head: a script the agent wrote could
+  // draw any picture it likes. Where that cannot be arranged, the design fails.
   if (c?.screenshot && !c.preview) {
-    const touched = await scriptTouched(ctx.dir, run.baseSha as string, run.headSha as string, c.screenshot, files.map((f) => f.path));
-    if (touched.length) {
+    const refused = await useBaseScript(ctx.dir, run.baseSha as string, run.headSha as string, c.screenshot, files.map((f) => f.path));
+    if (refused) {
       return {
-        result: check('design', 'fail', `The change touches the screenshot script (${touched.join(', ')}), so its pictures cannot be trusted and the change is not judged.`, Date.now() - started),
+        result: check('design', 'fail', `${refused} The screenshot script's pictures cannot be trusted, so the change is not judged.`, Date.now() - started),
         design: { before: null, after: 0, diffOnly: false, shots: [] },
         credits: 0,
       };
@@ -509,17 +533,14 @@ async function designCheck(
   let before: Shot[] = [];
   let after: Shot[] = [];
   if (renderable) {
-    // The head first, from the engine's clone; then the run's processes are reaped and its scratch
-    // dirs emptied, so nothing the head's code left in the fake home or the caches reaches the base.
+    // The head from the engine's clone, then the base in its own clone with its own home, cache and
+    // tmp, which no head-side command can write (the tool profile's sides).
     try {
       after = await shoot(ctx, repo, run.headSha as string, routes, { side: 'after', screenshotter: ictx.screenshotter, built: headBuilt });
     } catch (err) {
       stoppedOr(err);
     }
     try {
-      await (ictx.reap ?? reapRun)(ctx.runRoot);
-      if (ctx.signal.aborted) throw new Error('The design check was stopped.');
-      wipeScratch(ctx.runRoot);
       const baseCtx = await prepareBase(ctx, repo, run.baseSha as string, { egress: ctx.egress, installDeps: ictx.installDeps });
       before = await shoot(baseCtx, repo, run.baseSha as string, routes, { side: 'before', screenshotter: ictx.screenshotter });
     } catch (err) {
@@ -576,29 +597,65 @@ async function packageScripts(dir: string, sha: string): Promise<Record<string, 
   }
 }
 
+const MAKEFILES = new Set(['Makefile', 'makefile', 'GNUmakefile']);
+
 /**
- * The changed paths that make up the repo's screenshot command: a file the
- * command or the package script it runs names (or a file under a folder it
- * names), and package.json when that package script changed. Empty when the
- * change leaves the script alone.
+ * Arranges for the head to be shot with the base commit's copy of the
+ * repo's screenshot script: every file or folder the command (or the
+ * package script it runs) names that exists at the base commit has its
+ * folder restored to the base copy in the ship clone, files the head added
+ * there removed. Returns why that cannot be done (and the design fails), or
+ * null: the package script behind the command changed; a Makefile behind
+ * it changed; the script sits at the repo root and a non-UI file changed
+ * anywhere (its folder is the whole tree); or a changed UI file sits in a
+ * folder that would be restored (the shot would not show it).
  */
-export async function scriptTouched(dir: string, base: string, head: string, command: string, changed: string[]): Promise<string[]> {
+export async function useBaseScript(dir: string, base: string, head: string, command: string, changed: string[]): Promise<string | null> {
   const named = new Set(words(command));
-  const out = new Set<string>();
   const run = /\b(?:npm|pnpm|yarn|bun)\s+(?:run(?:-script)?\s+)?([A-Za-z0-9:._-]+)/.exec(command);
   if (run) {
     const [b, h] = [await packageScripts(dir, base), await packageScripts(dir, head)];
     const name = run[1];
     for (const n of [name, `pre${name}`, `post${name}`]) {
-      if (b[n] !== h[n]) out.add('package.json');
-      for (const w of [...words(b[n] ?? ''), ...words(h[n] ?? '')]) named.add(w);
+      if (b[n] !== h[n]) return `The change edits the package script behind the screenshot script (package.json, "${n}").`;
+      for (const w of words(b[n] ?? '')) named.add(w);
     }
   }
-  for (const p of changed) {
-    for (const w of named) {
-      const d = w.replace(/\/+$/, '');
-      if (p === d || p.startsWith(`${d}/`)) out.add(p);
+  if (named.has('make') || /\bmake\b/.test(command)) {
+    const mk = changed.filter((p) => MAKEFILES.has(posix.basename(p)));
+    if (mk.length) return `The change edits a Makefile behind the screenshot script (${mk.join(', ')}).`;
+  }
+  const folders = new Set<string>();
+  const rootFiles: string[] = [];
+  for (const w of named) {
+    const p = posix.normalize(w).replace(/\/+$/, '');
+    if (!p || p === '.' || p.startsWith('..') || p.startsWith('/')) continue;
+    const t = (await engineGit(dir, ['cat-file', '-t', `${base}:${p}`])).stdout.trim();
+    if (t === 'tree') folders.add(p);
+    else if (t === 'blob') {
+      const d = posix.dirname(p);
+      if (d === '.') rootFiles.push(p);
+      else folders.add(d);
     }
   }
-  return [...out];
+  if (rootFiles.length) {
+    const nonUi = changed.filter((p) => !UI_FILES.test(p));
+    if (nonUi.length) return `The screenshot script sits at the repo root, so its folder is the whole tree, and the change touches files there that are not UI files (${nonUi.slice(0, 10).join(', ')}).`;
+  }
+  for (const f of folders) {
+    const ui = changed.filter((p) => p.startsWith(`${f}/`) && UI_FILES.test(p));
+    if (ui.length) return `The change touches UI files inside the screenshot script's folder ${f} (${ui.slice(0, 10).join(', ')}).`;
+  }
+  for (const f of [...folders, ...rootFiles]) {
+    // Never through a symlink the head put on the way: every parent must be a real folder of the clone.
+    const parts = f.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const st = lstatSync(join(dir, ...parts.slice(0, i)), { throwIfNoEntry: false });
+      if (st && !st.isDirectory()) return `The screenshot script's folder ${f} sits under something that is not a folder in the change.`;
+    }
+    removeOwned(join(dir, f));
+    const r = await engineGit(dir, ['checkout', base, '--', f]);
+    if (r.code !== 0) return `The base copy of the screenshot script's ${f} could not be restored: ${r.stderr.trim()}`;
+  }
+  return null;
 }

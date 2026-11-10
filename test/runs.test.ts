@@ -628,6 +628,26 @@ test('the real inspection is the default: a third failed inspection halts the re
   assert.equal(job(other.id)?.status, 'halted');
 });
 
+test('an inconclusive inspection (no reviewer) leaves no scar, spends no attempt and does not blame the firm', async () => {
+  useScript({});
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const d = deps().deps;
+  delete (d as Partial<SchedulerDeps>).inspect;
+  const s = createScheduler(d);
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(r.scar, false);
+  assert.notEqual(r.outcome, 'failed');
+  assert.match(r.endedReason ?? '', /verdict/);
+  assert.equal(job(j.id)?.attempts, 0);
+  assert.deepEqual(job(j.id)?.excludedFirms, []);
+  assert.ok(['open', 'bidding'].includes(job(j.id)!.status));
+  assert.equal(getRepo(FULL)!.strikes, 0);
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0);
+});
+
 test('resuming a repo puts a halted waiting job back to waiting and does not re-bid it', async () => {
   makeRepo();
   addAgent('a1', 'alpha', 'claude:sonnet');

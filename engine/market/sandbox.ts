@@ -36,6 +36,14 @@ export interface ProfileInput {
    * this run's own.
    */
   otherPorts?: number[];
+  /**
+   * Which side of the run the command belongs to (Task 15). `base` (the
+   * design check's base checkout) writes only the base clone and its own
+   * home, cache and tmp; `head` (default: the agent's run dir, the ship
+   * clone) writes only those and its own home, cache and tmp. Neither side
+   * can write the other's, so the head's code never reaches the before shot.
+   */
+  side?: 'head' | 'base';
 }
 
 export interface CliProfileInput extends ProfileInput {
@@ -112,11 +120,13 @@ export const CLAUDE_WRITE_DENIED = [
 export const CLAUDE_TMP = 'ctmp';
 
 /** Run root subdirectories the tool profile may read. */
-const RUN_READ = ['repo', 'ship', 'base', 'tmp', 'home', 'cache', 'ctl'] as const;
+const RUN_READ = ['repo', 'ship', 'base', 'tmp', 'home', 'cache', 'ctl', 'base-home', 'base-cache', 'base-tmp'] as const;
 /** Clones under the run root whose `.git` no sandboxed child may write. */
 const RUN_CLONES = ['repo', 'ship', 'base'] as const;
-/** Run root subdirectories the tool profile may write (the clones minus their .git). */
-const RUN_WRITE = ['repo', 'ship', 'base', 'tmp', 'home', 'cache'] as const;
+/** Run root subdirectories the tool profile may write (the clones minus their .git), by side. */
+const RUN_WRITE = { head: ['repo', 'ship', 'tmp', 'home', 'cache'], base: ['base', 'base-tmp', 'base-home', 'base-cache'] } as const;
+/** The base side's own home, cache and tmp under the run root. */
+export const BASE_SCRATCH = { home: 'base-home', cache: 'base-cache', tmp: 'base-tmp' } as const;
 
 /** System locations every child may read and execute from. */
 const BASE_SYSTEM_READ = ['/System', '/usr', '/bin', '/sbin', '/Library', '/opt/homebrew', '/private/etc', '/dev', '/private/var/db/dyld', '/private/var/db/timezone', '/private/var/select', '/private/var/db/xcode_select_link'];
@@ -361,7 +371,7 @@ export function toolProfile(o: ProfileInput): string {
   lines.push(...readRules(r));
 
   lines.push('; writes: the clones, tmp, the fake home and the caches; ctl stays read-only');
-  lines.push(`(allow file-write* ${RUN_WRITE.map((d) => sub(join(r.runRoot, d))).join(' ')})`);
+  lines.push(`(allow file-write* ${RUN_WRITE[o.side ?? 'head'].map((d) => sub(join(r.runRoot, d))).join(' ')})`);
   lines.push(...devWrites());
   lines.push("; no clone's .git is writable, after the allow");
   lines.push(cloneGitDenies(r, RUN_CLONES));
@@ -490,7 +500,7 @@ export function wrap(argv: string[], kind: 'tool' | 'cli', o: ProfileInput | Cli
   const text = kind === 'tool' ? toolProfile(o) : cliProfile(o as CliProfileInput);
   const ctl = join(o.runRoot, 'ctl');
   mkdirSync(ctl, { recursive: true });
-  const path = join(ctl, `${kind}.sb`);
+  const path = join(ctl, kind === 'tool' && (o as ProfileInput).side === 'base' ? 'tool-base.sb' : `${kind}.sb`);
   try {
     unlinkSync(path);
   } catch {
@@ -573,6 +583,8 @@ export interface ChildEnvExtra {
   toolchains?: string[];
   /** Extra variables the caller names explicitly. */
   env?: Record<string, string>;
+  /** The base side gets its own home, cache and tmp (see ProfileInput.side). */
+  side?: 'head' | 'base';
 }
 
 /** The URL a run's children use for their egress proxy, carrying the run's token. */
@@ -596,7 +608,10 @@ function readCtl(runRoot: string, name: string): string | null {
 export function childEnv(runRoot: string, extra: ChildEnvExtra = {}): Record<string, string> {
   const root = realish(runRoot);
   const ctl = join(root, 'ctl');
-  const cache = join(root, 'cache');
+  const based = extra.side === 'base';
+  const cache = join(root, based ? BASE_SCRATCH.cache : 'cache');
+  const homeDir = join(root, based ? BASE_SCRATCH.home : 'home');
+  const tmpDir = join(root, based ? BASE_SCRATCH.tmp : 'tmp');
   const toolchains = extra.toolchains ?? detectToolchains();
 
   let port = extra.proxyPort;
@@ -612,8 +627,8 @@ export function childEnv(runRoot: string, extra: ChildEnvExtra = {}): Record<str
   const proxy = proxyUrl(port ?? 9, token);
 
   const env: Record<string, string> = {
-    HOME: join(root, 'home'),
-    TMPDIR: join(root, 'tmp') + '/',
+    HOME: homeDir,
+    TMPDIR: tmpDir + '/',
     PATH: [...toolchainBins(toolchains), ...SYSTEM_PATH].join(':'),
     LANG: 'en_US.UTF-8',
     GIT_CONFIG_GLOBAL: join(ctl, 'gitconfig'),
@@ -629,7 +644,7 @@ export function childEnv(runRoot: string, extra: ChildEnvExtra = {}): Record<str
     npm_config_cache: join(cache, 'npm'),
     npm_config_userconfig: join(ctl, 'npmrc'),
     XDG_CACHE_HOME: cache,
-    XDG_CONFIG_HOME: join(root, 'home', '.config'),
+    XDG_CONFIG_HOME: join(homeDir, '.config'),
     PIP_CACHE_DIR: join(cache, 'pip'),
     CARGO_HOME: join(cache, 'cargo'),
     GOMODCACHE: join(cache, 'gomod'),

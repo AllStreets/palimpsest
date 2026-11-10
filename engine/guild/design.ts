@@ -26,7 +26,7 @@
  * (ruling 28) and is charged to the city, never to a firm.
  */
 import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { ModelRef, Repo } from '../../shared/types.js';
@@ -37,7 +37,8 @@ import type { Egress } from '../market/egress.js';
 import { installDeps as defaultInstallDeps, type InstallDeps, type RunContext } from '../market/install.js';
 import type { RunLogLine, Usage } from '../market/provider.js';
 import { providerFor } from '../market/providers.js';
-import { createBaseDir, engineGit } from '../market/worktree.js';
+import { BASE_SCRATCH } from '../market/sandbox.js';
+import { createBaseDir, engineGit, removeOwned } from '../market/worktree.js';
 import { CHECK_MS } from './checks.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -371,7 +372,8 @@ export async function shoot(ctx: RunContext, repo: Repo, sha: string, routes: st
   if (c.screenshot && !c.preview) {
     const out: Shot[] = [];
     for (const [i, route] of routes.entries()) {
-      const tmp = join(ctx.runRoot, 'tmp', 'shots', `${opts.side}-${i}.png`);
+      // Each side writes only its own tmp (the base side cannot write the head's, nor the head the base's).
+      const tmp = join(ctx.runRoot, basename(ctx.dir) === 'base' ? BASE_SCRATCH.tmp : 'tmp', 'shots', `${opts.side}-${i}.png`);
       mkdirSync(dirname(tmp), { recursive: true });
       rmSync(tmp, { force: true });
       const command = `PALIMPSEST_SHOT=${q(tmp)} PALIMPSEST_ROUTE=${q(route)} ${c.screenshot}`;
@@ -421,7 +423,10 @@ export async function prepareBase(
   baseSha: string,
   o: { egress?: Pick<Egress, 'setStage'>; installDeps?: InstallDeps } = {},
 ): Promise<RunContext> {
-  const dir = existsSync(join(ctx.runRoot, 'base')) ? join(ctx.runRoot, 'base') : await createBaseDir(repo, ctx.runId, baseSha);
+  // A base clone and scratch dirs left by an earlier inspection of this run are replaced, never reused.
+  for (const d of ['base', ...Object.values(BASE_SCRATCH)]) removeOwned(join(ctx.runRoot, d));
+  for (const d of Object.values(BASE_SCRATCH)) mkdirSync(join(ctx.runRoot, d), { recursive: true });
+  const dir = await createBaseDir(repo, ctx.runId, baseSha);
   const base: RunContext = { ...ctx, dir, egress: o.egress ?? ctx.egress };
   const c = repo.checks;
   const runs = !!c && (!!c.screenshot || (!!c.preview && !!c.build));

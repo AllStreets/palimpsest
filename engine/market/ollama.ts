@@ -200,7 +200,10 @@ export function ollamaTransport(model: string): ChatTransport {
 }
 
 /** One non-streaming call with `format: 'json'`: the parsed answer and its seconds. */
-async function jsonCall(model: string, messages: ChatMessage[], signal: AbortSignal): Promise<{ answer: Record<string, unknown> | null; seconds: number }> {
+/** The context window review and judge calls ask for: the whole diff must fit, never Ollama's small default. */
+export const REVIEW_NUM_CTX = 32_768;
+
+async function jsonCall(model: string, messages: ChatMessage[], signal: AbortSignal, numCtx?: number): Promise<{ answer: Record<string, unknown> | null; seconds: number }> {
   const started = Date.now();
   const ctl = new AbortController();
   const onAbort = () => ctl.abort();
@@ -208,7 +211,7 @@ async function jsonCall(model: string, messages: ChatMessage[], signal: AbortSig
   if (signal.aborted) ctl.abort();
   const timer = setTimeout(() => ctl.abort(), CALL_MAX_MS);
   try {
-    const res = await post({ model, messages: toOllamaMessages(messages), stream: false, format: 'json' }, ctl.signal);
+    const res = await post({ model, messages: toOllamaMessages(messages), stream: false, format: 'json', ...(numCtx ? { options: { num_ctx: numCtx } } : {}) }, ctl.signal);
     const text = await res.text();
     if (text.length > MAX_LINE_BYTES) throw new Error('ollama answered with too much');
     const body = JSON.parse(text) as OllamaLine;
@@ -339,7 +342,7 @@ export function ollamaProvider(): Provider {
     async review(i: ReviewInput, signal) {
       const model = modelName(i.agent.model);
       const gb = await modelGB(model);
-      const out = await jsonCall(model, [{ role: 'system', content: systemPrompt(i.persona, i.agent.instructions) }, { role: 'user', content: `${reviewPrompt(i)}\n${REVIEW_JSON}\n` }], signal);
+      const out = await jsonCall(model, [{ role: 'system', content: systemPrompt(i.persona, i.agent.instructions) }, { role: 'user', content: `${reviewPrompt(i)}\n${REVIEW_JSON}\n` }], signal, REVIEW_NUM_CTX);
       return { ...reviewAnswer(out.answer, 'ollama'), usage: usageOf(out.seconds, gb) };
     },
 
@@ -357,6 +360,7 @@ export function ollamaProvider(): Provider {
           { role: 'user', content: judgeText(i, before.length, after.length), ...(images.length ? { images } : {}) },
         ],
         signal,
+        REVIEW_NUM_CTX,
       );
       const a = judgeAnswer(out.answer, 'ollama', before.length > 0);
       const notes = images.length ? a.notes : `Scored from the diff text alone, with no screenshot to see. ${a.notes}`;

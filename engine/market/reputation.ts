@@ -58,7 +58,8 @@ function outcome(e: LedgerEntry): { jobId: string; passed: boolean; size: FloorS
     case 'inspection.done': {
       const i = (d.inspection ?? d) as Data;
       const jobId = str(i.jobId);
-      return jobId && i.passed === false ? { jobId, passed: false, size: floorSize } : null;
+      // An inconclusive inspection (no reviewer could read the change) is no outcome for the firm.
+      return jobId && i.passed === false && !i.inconclusive ? { jobId, passed: false, size: floorSize } : null;
     }
     case 'run.ended': {
       const r = (d.run ?? d) as Data;

@@ -5,7 +5,7 @@
  * hooks and fsmonitor off, no system config and an empty global config, and
  * refuse once `.git/config` no longer matches the hash recorded at creation.
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -236,6 +236,27 @@ export async function createBaseDir(repo: Repo, runId: string, sha: string): Pro
 }
 
 /**
+ * Removes a directory the engine made in a run root (a clone or scratch dir
+ * an earlier inspection left), never following a symlink: a symlink at the
+ * path is unlinked, not its target. A tree its code made unwritable is made
+ * writable first.
+ */
+export function removeOwned(path: string): void {
+  const st = lstatOrNull(path);
+  if (!st) return;
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    rmSync(path, { force: true });
+    return;
+  }
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch {
+    spawnSync('/bin/chmod', ['-R', 'u+rwx', path]);
+    rmSync(path, { recursive: true, force: true });
+  }
+}
+
+/**
  * Makes `<runRoot>/ship` (ruling 20): a fresh clone of the repo's mirror,
  * without hardlinks, into which the engine fetches the run branch from the
  * run dir as data, checks that its tip is `headSha` (the engine's own
@@ -247,7 +268,9 @@ export async function createBaseDir(repo: Repo, runId: string, sha: string): Pro
 export async function createShipDir(repo: Repo, runId: string, runDir: string, branch: string, headSha: string): Promise<string> {
   const runRoot = join(paths().runs, runId);
   const dir = join(runRoot, 'ship');
-  if (existsSync(dir)) throw new Error(`ship dir already exists: ${dir}`);
+  // A ship clone left by an earlier inspection of this run is replaced, never reused.
+  removeOwned(dir);
+  rmSync(join(runRoot, 'ctl', 'git-config.ship.sha'), { force: true });
   mkdirSync(join(runRoot, 'ctl'), { recursive: true });
   const ctl = controlFiles(runId);
   if (!existsSync(ctl.gitconfig)) writeFileSync(ctl.gitconfig, '', { mode: 0o444 });

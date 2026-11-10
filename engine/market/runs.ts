@@ -736,6 +736,12 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     st.toolStage = 'checks';
     st.egress.setStage('checks', hostsFor('checks', ecosystems, null));
     const inspection = await guarded(st, config.inspect(st.run, st.job, st.repo, diff, st.lease, { log, egress: st.egress }));
+    // No reviewer could read the change: not the agent's failure. No scar, no attempt, the firm not excluded.
+    if (!inspection.passed && inspection.inconclusive && !st.lease.signal.aborted) {
+      st.run = { ...st.run, inspectionId: inspection.id };
+      saveRun(st.run);
+      return end(st, 'crashed', `The inspection could not reach a verdict: ${inspection.inconclusive}`, { job: 'reopen' });
+    }
     // A failed inspection that halts the repo does not kill this run: it still ends failed, with its scar.
     if (!inspection.passed && !st.lease.signal.aborted) {
       st.run = { ...st.run, inspectionId: inspection.id };

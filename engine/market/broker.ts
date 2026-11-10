@@ -180,8 +180,9 @@ function egressPort(runRoot: string): number {
 }
 
 /** The tool profile's input for a run, from the run context alone. */
-function profileFor(runRoot: string): ProfileInput {
+function profileFor(runRoot: string, side: 'head' | 'base' = 'head'): ProfileInput {
   return {
+    side,
     runRoot,
     home: homedir(),
     dataHome: dataHomeDir(),
@@ -290,11 +291,13 @@ async function runSandboxed(
   outCap: number,
   spoolIt: boolean,
 ): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean; aborted: boolean }> {
-  const wrapped = wrap(argv, 'tool', profileFor(o.runRoot), (l) => o.log({ at: now(), kind: 'engine', text: l }));
+  // The design check's base checkout is its own side, with its own home, cache and tmp (Task 15).
+  const side = basename(o.dir) === 'base' ? 'base' : 'head';
+  const wrapped = wrap(argv, 'tool', profileFor(o.runRoot, side), (l) => o.log({ at: now(), kind: 'engine', text: l }));
   if (o.signal.aborted) return { code: null, stdout: '', stderr: 'aborted before the command ran\n', timedOut: false, aborted: true };
   const child: Spawned = getSpawner()(wrapped[0], wrapped.slice(1), {
     cwd: o.dir,
-    env: childEnv(o.runRoot),
+    env: childEnv(o.runRoot, { side }),
     clearEnv: true,
     maxMs,
     ...(stdin === undefined ? {} : { stdin }),

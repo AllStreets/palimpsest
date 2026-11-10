@@ -281,6 +281,13 @@ export interface Inspection {
   } | null;
   cost: number;
   at: string;
+  /**
+   * Why the inspection could not reach a verdict on the agent's work (the
+   * diff is too large for any reviewer, or no reviewer could take it).
+   * An inconclusive inspection is never a strike and never counts against
+   * the firm; the job returns to the board without spending an attempt.
+   */
+  inconclusive?: string | null;
 }
 
 export interface Reputation {

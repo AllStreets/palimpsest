@@ -158,12 +158,15 @@ describe('profile text', () => {
   });
 
   test('tool profile allows reads and writes of ship and base and denies their .git', () => {
-    const p = toolProfile(input);
-    for (const c of ['ship', 'base']) {
+    // The base checkout is its own side (Task 15): the head profile writes ship, the base profile writes base.
+    for (const [c, side] of [['ship', 'head'], ['base', 'base']] as const) {
+      const p = toolProfile({ ...input, side });
       const allowW = lineAt(p, '(allow file-write*', `(subpath "${ROOT}/${c}")`);
+      assert.ok(allowW >= 0);
       assert.ok(lineAt(p, '(allow file-read*', `(subpath "${ROOT}/${c}")`) >= 0);
       assert.ok(lineAt(p, '(deny file-write*', `(subpath "${ROOT}/${c}/.git")`) > allowW);
     }
+    assert.ok(!toolProfile(input).split('\n').some((l) => l.startsWith('(allow file-write*') && l.includes(`(subpath "${ROOT}/base")`)), 'the head side never writes the base clone');
   });
 
   test('tool profile denies mach-lookup of the security server', () => {
