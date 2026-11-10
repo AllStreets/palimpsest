@@ -227,6 +227,17 @@ export function viewLimits(e: CityExtent, aspect: number): ViewLimits {
 }
 
 /**
+ * True when this placement should open the city on its home framing: the
+ * first one that has districts. An empty first answer (the engine down, or
+ * nothing connected yet) leaves the camera where it is, so a city that
+ * arrives later still opens on its own framing; after that the city never
+ * moves the camera.
+ */
+export function opensHome(framed: boolean, districts: number): boolean {
+  return !framed && districts > 0;
+}
+
+/**
  * The haze density for an eye `cameraDistance` from the city's home target.
  * Up to the home distance it is the city's own; flown out past it, it thins
  * in step with the distance, so the city keeps the haze it has from home and

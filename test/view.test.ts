@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CROWN_ALLOWANCE, cityExtent, easeLimits, fogFor, FOV, HERO_FOG, viewLimits, type CityExtent, type V3 } from '../app/src/city/view.js';
+import { CROWN_ALLOWANCE, cityExtent, easeLimits, fogFor, FOV, HERO_FOG, opensHome, viewLimits, type CityExtent, type V3 } from '../app/src/city/view.js';
 import { FLOOR_HEIGHT, ROOT_HEIGHT } from '../shared/tower-layout.js';
 
 // ---------------------------------------------------------------- an independent pinhole camera
@@ -286,4 +286,14 @@ test('flown out past home, the haze thins so the city reads as it does from home
     // The horizon stays haze from anywhere: the ground's edge 8 km off is all but gone.
     assert.ok(fogAt(at(lim.maxDistance), lim.maxDistance + 8000) > 0.9, `${floors.join('/')}: the horizon shows through`);
   }
+});
+
+test('the city opens on its home framing at the first placement that has districts, not at an empty one', () => {
+  // An engine that answers with no districts first (down, or nothing connected yet) leaves the camera unframed.
+  assert.equal(opensHome(false, 0), false);
+  assert.equal(opensHome(false, 1), true);
+  assert.equal(opensHome(false, 6), true);
+  // Once framed, the city never moves the camera again.
+  assert.equal(opensHome(true, 0), false);
+  assert.equal(opensHome(true, 6), false);
 });

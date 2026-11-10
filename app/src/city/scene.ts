@@ -10,7 +10,7 @@ import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { createPost } from './post';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
-import { cityExtent, easeLimits, fogFor, viewLimits, type EasedLimits, type ViewLimits } from './view';
+import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
 
 export interface PickHit {
   kind: 'tower';
@@ -233,9 +233,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
     if (highlighted) applyHighlight();
     extent = cityExtent(districts);
-    // The city opens on its home framing with its limits in force at once; after that they ease.
-    relimit(!framed);
-    if (!framed) {
+    // The city opens on its home framing, with its limits in force at once, at the first placement that has
+    // districts (an empty first answer leaves the camera unframed); after that the limits ease.
+    const open = opensHome(framed, districts.length);
+    relimit(open);
+    if (open) {
       applyLimits();
       rig.view(toV(limits.home.eye), toV(limits.home.target));
       framed = true;
