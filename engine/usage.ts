@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, isAbsolute } from 'node:path';
 
 import { calibrate, DEFAULT_TOKENS_PER_PCT, weightedTokens } from '../shared/credits.js';
 import type { UsageReading, UsageWindow } from '../shared/types.js';
@@ -322,14 +322,43 @@ export function isStale(r: UsageReading, now: number = Date.now()): boolean {
 // ---------------------------------------------------------------- transcripts and calibration (ruling 2)
 
 const INTERACTIVE_MS = 10 * 60 * 1000;
-/** Weekly percentage points per percent of the five-hour window, until the readings measure it. */
-export const DEFAULT_WEEK_PER_WINDOW_PCT = 0.1;
+/** Weekly percentage points per percent of the five-hour window, until the readings measure it. Deliberately high, so an unmeasured week is overcounted rather than undercounted. */
+export const DEFAULT_WEEK_PER_WINDOW_PCT = 0.25;
 /** Five-hour percentage points the ratio needs before the measured one replaces the assumed one. */
 const WEEK_RATIO_MIN_PCT = 5;
 
-/** Where his Claude Code session transcripts live. Tests point PALIMPSEST_CLAUDE_PROJECTS at a temp dir. */
+/** His real transcripts folder. */
+function realProjectsRoot(): string {
+  return join(homedir(), '.claude', 'projects');
+}
+
+/** The real path of `p`, or `p` resolved when it does not exist. */
+function realOrResolved(p: string): string {
+  const abs = resolve(p);
+  try {
+    return realpathSync.native(abs);
+  } catch {
+    return abs;
+  }
+}
+
+/**
+ * Refuses a transcripts folder outside ~/.claude/projects (after resolving
+ * symlinks) unless PALIMPSEST_TEST_PROJECTS=1, which only tests set: the
+ * scan never reads anything but his session transcripts.
+ */
+function checkedProjectsDir(dir: string): string {
+  const abs = resolve(dir);
+  if (process.env.PALIMPSEST_TEST_PROJECTS === '1') return abs;
+  const root = realOrResolved(realProjectsRoot());
+  const rel = relative(root, realOrResolved(abs));
+  if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return abs;
+  throw new Error(`transcripts folder ${abs} is outside ${realProjectsRoot()}`);
+}
+
+/** Where his Claude Code session transcripts live. Tests point PALIMPSEST_CLAUDE_PROJECTS at a temp dir and set PALIMPSEST_TEST_PROJECTS=1. */
 export function projectsDir(): string {
-  return process.env.PALIMPSEST_CLAUDE_PROJECTS ?? join(homedir(), '.claude', 'projects');
+  return checkedProjectsDir(process.env.PALIMPSEST_CLAUDE_PROJECTS ?? realProjectsRoot());
 }
 
 /** Every reading in readings.jsonl taken at or after `sinceMs`, oldest first. Unparseable lines are skipped. */
@@ -349,26 +378,39 @@ export function readings(sinceMs: number): UsageReading[] {
   return out.sort((a, b) => a.at - b.at);
 }
 
-/** Every .jsonl file under `dir` with its mtime, or nothing when the dir is missing. */
+/** Every .jsonl file under `dir` with its mtime. Symlinks (files or folders) are never followed, so the scan stays inside `dir`. */
 function transcriptFiles(dir: string): Array<{ path: string; mtimeMs: number }> {
-  if (!existsSync(dir)) return [];
+  const root = checkedProjectsDir(dir);
   const out: Array<{ path: string; mtimeMs: number }> = [];
-  let names: string[];
+  const walk = (d: string, depth: number): void => {
+    if (depth > 8) return;
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const path = join(d, e.name);
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) walk(path, depth + 1);
+      else if (e.isFile() && e.name.endsWith('.jsonl')) {
+        try {
+          out.push({ path, mtimeMs: lstatSync(path).mtimeMs });
+        } catch {
+          // Removed while we looked.
+        }
+      }
+    }
+  };
+  // The root itself may be a symlink (checked above to resolve inside his projects folder); nothing under it is followed.
+  const realRoot = realOrResolved(root);
   try {
-    names = readdirSync(dir, { recursive: true, encoding: 'utf8' });
+    if (!lstatSync(realRoot).isDirectory()) return [];
   } catch {
     return [];
   }
-  for (const name of names) {
-    if (!name.endsWith('.jsonl')) continue;
-    const path = join(dir, name);
-    try {
-      const st = statSync(path);
-      if (st.isFile()) out.push({ path, mtimeMs: st.mtimeMs });
-    } catch {
-      // Removed while we looked.
-    }
-  }
+  walk(realRoot, 0);
   return out;
 }
 

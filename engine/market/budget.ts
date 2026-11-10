@@ -21,7 +21,15 @@ import type { BudgetWindow, ModelRef, TreasuryState, UsageReading } from '../../
 import { openDb } from '../db.js';
 import { paths } from '../home.js';
 import { getSettings } from '../settings.js';
-import { cityWeighted, interactiveActive, isStale, latestReading, storedCalibration, weekPerWindowPct } from '../usage.js';
+import {
+  cityWeighted,
+  interactiveActive,
+  isStale,
+  latestReading,
+  storedCalibration,
+  transcriptTokens,
+  weekPerWindowPct,
+} from '../usage.js';
 import type { Usage } from './provider.js';
 
 /** Credits a bid-time plan call is assumed to cost before it runs. */
@@ -38,6 +46,8 @@ const HOUR_MS = 60 * MIN_MS;
 const FIVE_HOURS_MS = 5 * HOUR_MS;
 const SEVEN_DAYS_MS = 7 * 24 * HOUR_MS;
 const UNATTENDED_MS = 30 * MIN_MS;
+/** How long past staleness a resume (`resumeStaleUntil`) can carry the city: a resume never outlives a reading by more than this. */
+export const MAX_RESUME_MS = 5 * HOUR_MS;
 /** How much the city's unmeasured spend is inflated per hour the reading is stale. */
 const STALE_MARGIN_PER_HOUR = 0.1;
 /** The credits row kinds this module writes: the city's spend on model calls. */
@@ -161,8 +171,12 @@ export function charge(o: {
   usage: Usage;
   unattended: boolean;
   at?: number;
+  /** The lease the call ran under: its reserved estimate is replaced by this real spend. */
+  lease?: Lease;
 }): number {
   const at = o.at ?? Date.now();
+  const leased = o.lease ? recOf.get(o.lease) : undefined;
+  if (leased) leased.reserved = 0;
   const pool = poolOf(o.model);
   const tokensPerPct = storedCalibration().value;
   const credits =
@@ -211,6 +225,7 @@ interface Core {
   fiveHour: BudgetWindow;
   sevenDay: BudgetWindow;
   nightUsedPct: number;
+  weekRatio: number;
   unattended: boolean;
   settings: ReturnType<typeof getSettings>;
 }
@@ -239,7 +254,11 @@ function windowOf(
   else if (reading && reset) since = Math.max(reading.at, resetsAtMs as number);
   else since = windowStart;
   const hoursStale = reading ? Math.max(0, (now - reading.at) / HOUR_MS) : 0;
-  const cityTokens = cityWeighted(since, now);
+  // When the reading cannot speak for his use (none, stale, or its window reset since), count his own
+  // transcripts since then, so the hard stop still sees him while a resume carries the city on.
+  const blind = !reading || w === null || reset || now - reading.at > FIVE_HOURS_MS;
+  const hisTokens = blind ? transcriptTokens(since, now).weighted : 0;
+  const cityTokens = cityWeighted(since, now) + hisTokens;
   const estimatedPct = round(base + (cityTokens / tokensPerPct) * pctPerWindowPct * (1 + STALE_MARGIN_PER_HOUR * hoursStale));
   const cityPct = round(pctFor(spentCredits(windowStart, now, 'claude:%')) * pctPerWindowPct);
   return {
@@ -262,7 +281,13 @@ function core(now: number): Core {
     reading?.sevenDay && reading.sevenDay.resetsAt * 1000 > now ? reading.sevenDay.resetsAt * 1000 - SEVEN_DAYS_MS : now - SEVEN_DAYS_MS;
   const nightUsedPct = round(pctFor(spentCredits(weekStart, now, 'claude:%', true)) * week);
   const resumeUntil = settings.resumeStaleUntil;
-  const stale = (reading === null || isStale(reading, now)) && !(resumeUntil !== null && resumeUntil > now);
+  const resumed =
+    resumeUntil !== null &&
+    resumeUntil > now &&
+    (reading ? now - reading.at < FIVE_HOURS_MS + MAX_RESUME_MS : resumeUntil - now <= MAX_RESUME_MS);
+  // A reading missing either window cannot be trusted any more than an old one.
+  const unreadable = reading === null || reading.fiveHour === null || reading.sevenDay === null || isStale(reading, now);
+  const stale = unreadable && !resumed;
   return {
     now,
     stopped: existsSync(paths().stop),
@@ -275,6 +300,7 @@ function core(now: number): Core {
     fiveHour,
     sevenDay,
     nightUsedPct,
+    weekRatio: week,
     unattended: unattended(now),
     settings,
   };
@@ -287,7 +313,7 @@ function gate(pool: Pool, estimate: number, c: Core): Paused | null {
     const api = c.settings.anthropicApi;
     if (!api.enabled) return { reason: 'cap', detail: 'The Anthropic API backend is off.' };
     const spent = spentUsd(localMidnight(c.now), c.now);
-    if (spent + estimate / CREDITS_PER_USD > api.dailyUsd) {
+    if (spent + (reservedCredits('api') + estimate) / CREDITS_PER_USD > api.dailyUsd + 1e-9) {
       return { reason: 'cap', detail: `API spend today is $${spent.toFixed(2)} of the $${api.dailyUsd} daily limit.` };
     }
     return null;
@@ -305,13 +331,14 @@ function gate(pool: Pool, estimate: number, c: Core): Paused | null {
       detail: c.reading ? 'The last usage reading is more than five hours old.' : 'No usage reading yet.',
     };
   }
-  if (c.fiveHour.cityPct + CREDIT_PCT * estimate > c.settings.dayCapPct + 1e-9) {
+  const reserved = reservedCredits('claude');
+  if (c.fiveHour.cityPct + CREDIT_PCT * (reserved + estimate) > c.settings.dayCapPct + 1e-9) {
     return {
       reason: 'cap',
       detail: `The city has spent ${c.fiveHour.cityPct.toFixed(1)}% of this window; the cap is ${c.settings.dayCapPct}%.`,
     };
   }
-  if (c.unattended && c.nightUsedPct >= c.settings.nightCapPct) {
+  if (c.unattended && c.nightUsedPct + pctFor(reserved) * c.weekRatio >= c.settings.nightCapPct - 1e-9) {
     return {
       reason: 'night',
       detail: `Unattended Claude use this week is ${c.nightUsedPct.toFixed(1)}% of the ${c.settings.nightCapPct}% night cap.`,
@@ -331,6 +358,8 @@ interface LeaseRec {
   children: Set<LeaseRec>;
   parent: LeaseRec | null;
   released: boolean;
+  /** Credits held against the caps until the call is charged or released. */
+  reserved: number;
   /** The injected clock at grant, and the wall clock then, so later checks advance the injected clock. */
   now0: number;
   real0: number;
@@ -347,6 +376,14 @@ interface Waiter {
 }
 
 const live = new Set<LeaseRec>();
+const recOf = new WeakMap<Lease, LeaseRec>();
+
+/** Credits reserved by live leases on `pool`: calls granted but not yet charged. */
+function reservedCredits(pool: Pool): number {
+  let n = 0;
+  for (const r of live) if (r.pool === pool) n += r.reserved;
+  return n;
+}
 const queues: Record<Pool, Waiter[]> = { claude: [], local: [], api: [] };
 
 function clockOf(x: { now0: number; real0: number }): number {
@@ -387,15 +424,35 @@ function release(rec: LeaseRec): void {
 
 function grant(rec: LeaseRec): Lease {
   live.add(rec);
-  return {
+  const lease: Lease = {
     signal: rec.controller.signal,
     sub: (kind, model, estimate) => sub(rec, kind, model, estimate),
     release: () => release(rec),
   };
+  recOf.set(lease, rec);
+  return lease;
 }
 
-function newRec(pool: Pool, kind: LeaseRec['kind'], holdsWork: boolean, now: number, parent: LeaseRec | null): LeaseRec {
-  return { pool, kind, holdsWork, controller: new AbortController(), children: new Set(), parent, released: false, now0: now, real0: Date.now() };
+function newRec(
+  pool: Pool,
+  kind: LeaseRec['kind'],
+  holdsWork: boolean,
+  now: number,
+  parent: LeaseRec | null,
+  estimate: number,
+): LeaseRec {
+  return {
+    pool,
+    kind,
+    holdsWork,
+    controller: new AbortController(),
+    children: new Set(),
+    parent,
+    released: false,
+    reserved: Math.max(0, estimate),
+    now0: now,
+    real0: Date.now(),
+  };
 }
 
 /** The pool a run's slot lives in: the root work lease's pool. */
@@ -417,7 +474,7 @@ function sub(parent: LeaseRec, kind: 'review' | 'judge', model: ModelRef, estima
   if (otherPool && workCount(pool) >= workMax(pool, c, now)) {
     return { ok: false, reason: { reason: 'busy', detail: `Every ${pool} slot is taken.` } };
   }
-  const rec = newRec(pool, kind, otherPool, now, parent);
+  const rec = newRec(pool, kind, otherPool, now, parent, estimate);
   parent.children.add(rec);
   // A sub-lease ends with its run.
   if (parent.controller.signal.aborted) rec.controller.abort(parent.controller.signal.reason);
@@ -439,7 +496,7 @@ function drain(pool: Pool): void {
       w.resolve({ ok: false, reason: paused });
       continue;
     }
-    w.resolve({ ok: true, lease: grant(newRec(pool, 'plan', false, now, null)) });
+    w.resolve({ ok: true, lease: grant(newRec(pool, 'plan', false, now, null, w.estimate)) });
   }
 }
 
@@ -497,11 +554,11 @@ export function acquire(
     if (workCount(pool) >= workMax(pool, c, now)) {
       return Promise.resolve({ ok: false, reason: { reason: 'busy', detail: `Every ${pool} run slot is taken.` } });
     }
-    return Promise.resolve({ ok: true, lease: grant(newRec(pool, 'work', true, now, null)) });
+    return Promise.resolve({ ok: true, lease: grant(newRec(pool, 'work', true, now, null, estimate)) });
   }
 
   if (queues[pool].length === 0 && planCount(pool) < planMax(pool)) {
-    return Promise.resolve({ ok: true, lease: grant(newRec(pool, 'plan', false, now, null)) });
+    return Promise.resolve({ ok: true, lease: grant(newRec(pool, 'plan', false, now, null, estimate)) });
   }
   const waitUntil = opts.waitUntil;
   if (waitUntil === undefined || waitUntil <= now) {

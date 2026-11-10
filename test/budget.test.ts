@@ -32,10 +32,13 @@ const NOW = new Date(2026, 10, 9, 14, 0, 0).getTime();
 let tempDir: string;
 let previousHome: string | undefined;
 let previousProjects: string | undefined;
+let previousFlag: string | undefined;
 
 beforeEach(() => {
   previousHome = process.env.PALIMPSEST_HOME;
   previousProjects = process.env.PALIMPSEST_CLAUDE_PROJECTS;
+  previousFlag = process.env.PALIMPSEST_TEST_PROJECTS;
+  process.env.PALIMPSEST_TEST_PROJECTS = '1';
   tempDir = mkdtempSync(join(tmpdir(), 'palimpsest-budget-test-'));
   process.env.PALIMPSEST_HOME = join(tempDir, 'home');
   process.env.PALIMPSEST_CLAUDE_PROJECTS = join(tempDir, 'projects');
@@ -46,6 +49,8 @@ beforeEach(() => {
 
 afterEach(() => {
   resetBudget();
+  if (previousFlag === undefined) delete process.env.PALIMPSEST_TEST_PROJECTS;
+  else process.env.PALIMPSEST_TEST_PROJECTS = previousFlag;
   if (previousHome === undefined) delete process.env.PALIMPSEST_HOME;
   else process.env.PALIMPSEST_HOME = previousHome;
   if (previousProjects === undefined) delete process.env.PALIMPSEST_CLAUDE_PROJECTS;
@@ -305,16 +310,16 @@ test('interactive activity drops claudeMax to 1', async () => {
 });
 
 test('night cap counts only unattended rows', async () => {
-  patchSettings({ nightCapPct: 2 });
+  patchSettings({ nightCapPct: 5 });
   reading({ five: 10, seven: 30 });
-  // 200 credits unattended this window (20% of a five-hour window, 2 weekly points at the assumed ratio).
+  // 200 credits unattended this window (20% of a five-hour window, 5 weekly points at the assumed ratio of 0.25).
   spend({ weighted: 1_200_000, at: NOW - HOUR, unattended: true });
   // 1,000 attended credits two days ago, inside the week.
   spend({ weighted: 6_000_000, at: NOW - 48 * HOUR, unattended: false });
 
   const attended = treasury(NOW);
-  near(attended.night.usedPct, 2);
-  assert.equal(attended.night.capPct, 2);
+  near(attended.night.usedPct, 5);
+  assert.equal(attended.night.capPct, 5);
   assert.equal(attended.night.unattended, false);
   assert.equal(attended.paused, null);
 
@@ -387,4 +392,92 @@ test('charge writes a credits row per call kind and sums city spend', () => {
   const t = treasury(NOW);
   near(t.citySpent.today, 12.5);
   near(t.citySpent.week, 12.5);
+});
+
+test('two concurrent claude calls that together cross the day cap: the second is refused', async () => {
+  reading({ five: 20 });
+  // 490 credits: 49% of the window.
+  spend({ weighted: 2_940_000, at: NOW - HOUR });
+  const first = await acquire('claude:opus', 'work', 6, { now: NOW });
+  assert.equal(first.ok, true);
+  const second = await acquire('claude:sonnet', 'plan', 6, { now: NOW });
+  assert.equal(second.ok, false, 'the first call\'s estimate is reserved');
+  if (!second.ok) assert.equal((second.reason as { reason: string }).reason, 'cap');
+  // A sub-lease reserves too.
+  if (first.ok) {
+    const review = first.lease.sub('review', 'claude:sonnet', 6);
+    assert.ok('ok' in review && review.ok === false);
+  }
+
+  // Charging the call through its lease swaps the reservation for the real spend.
+  if (first.ok) {
+    charge({
+      runId: 'r',
+      firmId: 'f',
+      model: 'claude:opus',
+      kind: 'run',
+      usage: { weightedTokens: 6_000, seconds: 1, usd: 0, credits: 0 },
+      unattended: false,
+      at: NOW,
+      lease: first.lease,
+    });
+  }
+  // 49% + 0.1% charged + 0.6% asked = 49.7%.
+  const third = await acquire('claude:sonnet', 'plan', 6, { now: NOW });
+  assert.equal(third.ok, true);
+});
+
+test('two concurrent api calls that together cross the dollar cap: the second is refused', async () => {
+  patchSettings({ anthropicApi: { enabled: true, dailyUsd: 5 } });
+  reading({ five: 10 });
+  // 60 credits is $3.
+  const first = await acquire('anthropic:claude-sonnet-4-5', 'work', 60, { now: NOW });
+  assert.equal(first.ok, true);
+  const second = await acquire('anthropic:claude-sonnet-4-5', 'work', 60, { now: NOW });
+  assert.equal(second.ok, false);
+  if (!second.ok) assert.equal((second.reason as { reason: string }).reason, 'cap');
+  if (first.ok) first.lease.release();
+  const third = await acquire('anthropic:claude-sonnet-4-5', 'work', 60, { now: NOW });
+  assert.equal(third.ok, true);
+});
+
+test('a reading missing a window counts as stale', () => {
+  writeFileSync(
+    join(paths().usage, 'latest.json'),
+    JSON.stringify({ at: Math.floor(NOW / 1000), rate_limits: { five_hour: { used_percentage: 10, resets_at: Math.floor((NOW + HOUR) / 1000) } } }),
+  );
+  assert.equal(treasury(NOW).paused?.reason, 'stale');
+  writeFileSync(join(paths().usage, 'latest.json'), JSON.stringify({ at: Math.floor(NOW / 1000) }));
+  assert.equal(treasury(NOW).paused?.reason, 'stale');
+});
+
+test('a resumed stale reading still counts his own transcript use toward the hard stop', () => {
+  // His last reading is six hours old; its five-hour window reset two hours ago.
+  reading({ at: NOW - 6 * HOUR, five: 80, fiveResets: Math.floor((NOW - 2 * HOUR) / 1000) });
+  patchSettings({ resumeStaleUntil: NOW + HOUR });
+  assert.equal(treasury(NOW).paused, null);
+
+  // Since the reset he has used about 90% of a window on his own.
+  const dir = join(tempDir, 'projects', '-Users-someone-code');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'session.jsonl'),
+    `${JSON.stringify({
+      type: 'assistant',
+      timestamp: new Date(NOW - HOUR).toISOString(),
+      requestId: 'r',
+      message: { id: 'm', model: 'claude-opus-4-1', usage: { input_tokens: 5_400_000, output_tokens: 0 } },
+    })}\n`,
+  );
+  const t = treasury(NOW);
+  assert.ok(t.fiveHour.estimatedPct >= 90, `estimated ${t.fiveHour.estimatedPct}`);
+  assert.equal(t.paused?.reason, 'hard');
+});
+
+test('a resume lasts at most five hours past a stale reading', () => {
+  reading({ at: NOW - 11 * HOUR, five: 10, fiveResets: Math.floor((NOW - 7 * HOUR) / 1000) });
+  patchSettings({ resumeStaleUntil: NOW + HOUR });
+  assert.equal(treasury(NOW).paused?.reason, 'stale');
+  reading({ at: NOW - 9 * HOUR, five: 10, fiveResets: Math.floor((NOW - 5 * HOUR) / 1000) });
+  assert.equal(treasury(NOW).paused, null);
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -23,11 +23,14 @@ import { DEFAULT_TOKENS_PER_PCT } from '../shared/credits.js';
 let tempDir: string;
 let previousHome: string | undefined;
 let previousProjects: string | undefined;
+let previousFlag: string | undefined;
 let projects: string;
 
 beforeEach(() => {
   previousHome = process.env.PALIMPSEST_HOME;
   previousProjects = process.env.PALIMPSEST_CLAUDE_PROJECTS;
+  previousFlag = process.env.PALIMPSEST_TEST_PROJECTS;
+  process.env.PALIMPSEST_TEST_PROJECTS = '1';
   tempDir = mkdtempSync(join(tmpdir(), 'palimpsest-usage-test-'));
   process.env.PALIMPSEST_HOME = tempDir;
   projects = join(tempDir, 'claude-projects');
@@ -38,6 +41,8 @@ beforeEach(() => {
 
 afterEach(() => {
   resetBudget();
+  if (previousFlag === undefined) delete process.env.PALIMPSEST_TEST_PROJECTS;
+  else process.env.PALIMPSEST_TEST_PROJECTS = previousFlag;
   if (previousProjects === undefined) delete process.env.PALIMPSEST_CLAUDE_PROJECTS;
   else process.env.PALIMPSEST_CLAUDE_PROJECTS = previousProjects;
   if (previousHome === undefined) {
@@ -490,4 +495,25 @@ test('projectsDir defaults under the home directory with no literal tilde', () =
   assert.ok(!dir.includes('~'));
   process.env.PALIMPSEST_CLAUDE_PROJECTS = projects;
   assert.equal(projectsDir(), projects);
+});
+
+test('projectsDir refuses a folder outside ~/.claude/projects without the test flag', () => {
+  delete process.env.PALIMPSEST_TEST_PROJECTS;
+  assert.throws(() => projectsDir(), /outside/);
+  assert.throws(() => transcriptTokens(0, Date.now(), projects), /outside/);
+  process.env.PALIMPSEST_TEST_PROJECTS = '1';
+  assert.equal(projectsDir(), projects);
+});
+
+test('the transcript scan does not follow directory symlinks out of the projects folder', () => {
+  const outside = join(tempDir, 'elsewhere');
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(
+    join(outside, 'leak.jsonl'),
+    `${assistantLine({ at: T0 + 60_000, id: 'x', requestId: 'x', model: 'claude-opus-4-1', input: 7777 })}\n`,
+  );
+  symlinkSync(outside, join(projects, 'linked'));
+  symlinkSync(join(outside, 'leak.jsonl'), join(projects, 'leak-link.jsonl'));
+  writeTranscript('own.jsonl', [assistantLine({ at: T0 + 60_000, id: 'm', requestId: 'r', model: 'claude-opus-4-1', input: 100 })]);
+  assert.deepEqual(transcriptTokens(T0, T0 + HOUR), { weighted: 100, messages: 1 });
 });

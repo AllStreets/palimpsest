@@ -292,6 +292,20 @@ test('SSE connects and disconnects update sseClientCount', async () => {
   resetBudget();
 });
 
+test('closing the server drops sseClientCount to zero', async () => {
+  resetBudget();
+  const server = await startServer({ port: 0, claudeSettingsPath: settingsPath });
+  const sse = await fetch(url(server, '/api/events'));
+  const reader = sse.body!.getReader();
+  await reader.read();
+  assert.equal(sseClientCount(), 1);
+  const closing = server.close();
+  assert.equal(sseClientCount(), 0);
+  await reader.cancel().catch(() => undefined);
+  await closing;
+  resetBudget();
+});
+
 test('unknown path serves index.html', async () => {
   // Build a fake dist with a marker index.html so the SPA fallback is observable.
   const fs = await import('node:fs');

@@ -488,6 +488,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Starte
           client.end();
         }
         sseClients.clear();
+        noteSseClients(0);
         server.close(() => resolveClose());
       }),
   };
