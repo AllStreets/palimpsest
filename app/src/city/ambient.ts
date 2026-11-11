@@ -133,6 +133,16 @@ function mulberry(seed: number): () => number {
 /** A normal deviate by Box-Muller, clamped to three deviations. */
 const gauss = (r: () => number): number => Math.max(-3, Math.min(3, Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r())));
 
+/** A seed from a few numbers (a street, a run, a side, a slot): the same numbers, the same seed. */
+function hashOf(...n: number[]): number {
+  let h = 0x811c9dc5;
+  for (const v of n) {
+    h = Math.imul(h ^ (Math.round(v * 16) | 0), 0x01000193);
+    h ^= h >>> 13;
+  }
+  return h >>> 0;
+}
+
 const dist = (a: V2, b: V2): number => Math.hypot(a.x - b.x, a.z - b.z);
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
@@ -597,7 +607,7 @@ function mayEnter(car: Car, env: Env): boolean {
   // Whatever its way, a car waits for an opposing left turn already in the box or committed to it.
   const opp = j.into.find((l) => l.dir.x === -lane.dir.x && l.dir.z === -lane.dir.z);
   if (opp) {
-    for (const c of opp.cars) if (c.s >= 0 && c.commit && c.next !== null && c.next.turn === 'left' && !(m.turn === 'left' && c.id > car.id && !c.commit)) return false;
+    for (const c of opp.cars) if (c.s >= 0 && c.commit && c.next !== null && c.next.turn === 'left') return false;
     for (const o of j.out) for (const c of o.cars) if (c.s < 0 && c.via && c.via.from === opp && c.via.turn === 'left' && c.s > -c.via.len - c.len) return false;
   }
   if (m.turn === 'left') {
@@ -707,8 +717,9 @@ const LANE_SHARE = 34;
 /** Metres of pavement per person at full density: an evening crowd near the plazas, room to pass. */
 const PAVE_SHARE = 8;
 
-/** Parked cars along the kerbs at each quality. */
-export const PARKED_CAP = { high: 2400, medium: 900 } as const;
+/** The share of the kerbs' parked cars each quality keeps (by each car's own hashed priority), and room for them. */
+export const PARKED_SHARE = { high: 0.38, medium: 0.15 } as const;
+const PARKED_ROOM = 4000;
 
 /** A car parked at a kerb: where, which way, its body and paint. */
 interface Parked {
@@ -718,7 +729,11 @@ interface Parked {
   model: Exclude<AmbientModel, 'cab'>;
   paint: [number, number, number];
   metal: number;
-  seen: boolean;
+  /** Two wheels up on the kerb (1), and the roll that gives its body. */
+  kerb: number;
+  roll: number;
+  /** Its place in the quality's choice: a quality keeps the cars under its share. */
+  priority: number;
 }
 
 const IDM = { accel: 1.5, decel: 2.2, gap: 2.2, headway: 1.25 } as const;
@@ -2214,6 +2229,8 @@ export interface Ambient {
    */
   setCabs(at: ReadonlyArray<CabPose>): void;
   cars(): AmbientCar[];
+  /** The cars parked at the kerbs the quality keeps: where, which way, their body, paint, and whether up on the kerb. */
+  parked(): Array<{ x: number; z: number; yaw: number; model: AmbientModel; paint: [number, number, number]; kerb: number }>;
   people(): AmbientPerson[];
   view(camera: THREE.Camera): AmbientView;
   /** Holds the clock (captures). */
@@ -2302,6 +2319,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       return true;
     };
     const out: Parked[] = [];
+    // Past the walkers' pavements a car may stand with two wheels up on the kerb.
+    const walked = tramHalf(net.blocks);
     for (let a = -reach; a <= reach + 1e-6; a += STREET_PITCH) {
       for (let b = -reach; b + STREET_PITCH <= reach + 1e-6; b += STREET_PITCH) {
         for (const along of ['x', 'z'] as Axis[]) {
@@ -2316,31 +2335,53 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
             // Nose the way that side's traffic would go (on the right).
             const dir = along === 'x' ? side : -side;
             const yaw = along === 'x' ? (dir > 0 ? 0 : Math.PI) : dir > 0 ? Math.PI / 2 : -Math.PI / 2;
-            let u = BOX + 3 + r() * 4;
-            while (u < STREET_PITCH - BOX - 3) {
+            // Each run's slots, and each slot's car, from a hash of where it is (street, run, side, slot): never
+            // from a stream its neighbours draw on, so a change anywhere else moves nothing here.
+            const run = mulberry(hashOf(seed, a, b, along === 'x' ? 1 : 2, side));
+            let u = BOX + 3 + run() * 4;
+            for (let k = 0; u < STREET_PITCH - BOX - 3; k++) {
+              const r = mulberry(hashOf(seed, a, b, along === 'x' ? 1 : 2, side, k + 1));
               const model = weighted(r, MIX.filter(([m]) => m !== 'cab')) as Exclude<AmbientModel, 'cab'>;
               const len = DIMS[model].len;
+              const gap = 0.7 + r() * 1.6;
+              const keep = r();
+              const hex = weighted(r, PAINTS.map(([h, , w]) => [h, w] as [string, number]));
+              const paint = vary(srgb(hex), r, 0.06);
+              // Some long parked and weathered: darker, duller, a little dusty.
+              const weathered = r() < 0.28;
+              const twist = (r() - 0.5) * 0.11;
+              const slide = (r() - 0.5) * 0.24;
+              const kerbRoll = r();
+              const priority = r();
               const c = u + len / 2;
+              u += len + gap;
               if (c + len / 2 > STREET_PITCH - BOX - 3) break;
-              const x = along === 'x' ? b + c : a + side * 3.05;
-              const z = along === 'x' ? a + side * 3.05 : b + c;
-              if (r() < 0.68 && ok(x, z)) {
-                const hex = weighted(r, PAINTS.map(([h, , w]) => [h, w] as [string, number]));
-                out.push({ x, z, yaw: yaw + (r() - 0.5) * 0.04, model, paint: vary(srgb(hex), r, 0.06), metal: PAINTS.find(([h]) => h === hex)?.[1] ?? 0.3, seen: false });
-              }
-              u += len + 0.7 + r() * 1.6;
+              const outside = Math.max(Math.abs(along === 'x' ? b + c : a), Math.abs(along === 'x' ? a : b + c)) > walked + 10;
+              const kerb = outside && kerbRoll < 0.14 ? 1 : 0;
+              const off = 3.05 + slide + kerb * 0.55;
+              const x = along === 'x' ? b + c : a + side * off;
+              const z = along === 'x' ? a + side * off : b + c;
+              if (keep >= 0.68 || !ok(x, z)) continue;
+              const metal = PAINTS.find(([h]) => h === hex)?.[1] ?? 0.3;
+              out.push({
+                x,
+                z,
+                yaw: yaw + twist,
+                model,
+                paint: weathered ? [paint[0] * 0.5 + 0.012, paint[1] * 0.5 + 0.011, paint[2] * 0.5 + 0.009] : paint,
+                metal: weathered ? metal * 0.25 : metal,
+                // Up on the kerb: the kerb-side wheels 12 cm higher, the body rolled away from it.
+                kerb,
+                roll: kerb * side * (along === 'x' ? 1 : -1) * 0.075,
+                priority,
+              });
             }
           }
         }
       }
     }
-    // Shuffled once, the same for every quality: medium keeps a subset of high's.
-    for (let i = out.length - 1; i > 0; i--) {
-      const k = Math.floor(r() * (i + 1));
-      [out[i], out[k]] = [out[k], out[i]];
-    }
     parkedAll = out;
-    parked = out.slice(0, PARKED_CAP[quality]);
+    parked = out.filter((c) => c.priority < PARKED_SHARE[quality]);
   }
 
   // ---- population
@@ -2360,6 +2401,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
    * the rest go, and the streets refill out of sight (drift).
    */
   function lay(keep = false): void {
+    // The junctions are laid afresh: none of the old ones may linger as keys.
+    inRoad.clear();
     const oldCars = keep ? cars : [];
     const oldPeople = keep ? people : [];
     const r = mulberry(seed * 7919 + 17);
@@ -3256,7 +3299,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     return { mesh, a };
   }
 
-  const carCap = AMBIENT_CAP.high.cars + PARKED_CAP.high;
+  const carCap = AMBIENT_CAP.high.cars + PARKED_ROOM;
   const personCap = AMBIENT_CAP.high.people;
   const nearCar = carMaterial(false);
   const farCar = carMaterial(true);
@@ -3304,6 +3347,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   const pos = new THREE.Vector3();
   const scl = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
+  const xAxis = new THREE.Vector3(1, 0, 0);
+  const rollQ = new THREE.Quaternion();
   const frustum = new THREE.Frustum();
   const MID = { x: 0, z: 0 };
   const lastEye = new THREE.Vector3(0, 1e5, 0);
@@ -3398,12 +3443,12 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     }
     // The parked cars: dark, their lamps off.
     for (const c of parked) {
-      c.seen = frustum.intersectsSphere(sphere.set(pos.set(c.x, 1, c.z), 3.4));
-      if (!c.seen) continue;
+      if (!frustum.intersectsSphere(sphere.set(pos.set(c.x, 1, c.z), 3.4))) continue;
       const d = Math.hypot(c.x - eye.x, eye.y, c.z - eye.z);
       const dim = DIMS[c.model];
-      pos.set(c.x, 0, c.z);
+      pos.set(c.x, c.kerb * 0.06, c.z);
       q.setFromAxisAngle(up, -c.yaw);
+      if (c.roll) q.multiply(rollQ.setFromAxisAngle(xAxis, c.roll));
       if (d < LIFE_LOD.car.far) {
         lampLight(lamps, c.x, 1.0, c.z, lampTmp);
         writeCar(carMeshes.get(c.model)!, 1, 1, 1, c.paint, c.metal, 0, 0, 0, 1);
@@ -3500,7 +3545,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     setQuality(qv) {
       if (qv === quality) return;
       quality = qv;
-      parked = parkedAll.slice(0, PARKED_CAP[quality]);
+      parked = parkedAll.filter((c) => c.priority < PARKED_SHARE[quality]);
       trim();
       refill = true;
     },
@@ -3528,6 +3573,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
         const m = c.s < 0 ? c.via : c.next;
         return { id: c.id, model: c.model, x: p.x, z: p.z, yaw: p.yaw, speed: c.v, lane: c.lane.key, s: c.s, length: c.len, junction: p.junction?.key ?? null, axis: p.axis, turn: m?.turn ?? 'straight', braking: c.brake, blinking: blinkerOf(c), hold: holdOf(c, time), width: c.width };
       }),
+    parked: () => parked.map((c) => ({ x: c.x, z: c.z, yaw: c.yaw, model: c.model, paint: [...c.paint] as [number, number, number], kerb: c.kerb })),
     people: () => people.map((p) => ({ id: p.id, state: p.state, x: p.x, z: p.z, yaw: p.yaw, speed: p.v, phase: p.phase % (Math.PI * 2), cadence: p.cadence, height: p.height, build: p.build, coat: [...p.coat] as [number, number, number], group: p.group })),
     view(camera) {
       void camera;

@@ -565,6 +565,24 @@ test('a plaza laid or a network relaid leaves the traffic and crowd elsewhere wh
     if (b && Math.hypot(b.x - p.x, b.z - p.z) < 1e-6) stayed++;
   }
   assert.ok(stayed > people.size * 0.8, `the crowd stays where it was (${stayed} of ${people.size})`);
+  // The parked cars: a site laid among them takes only those near it; every other stays exactly as it was.
+  const parked0 = new Map(a.parked().map((c) => [`${c.x.toFixed(3)},${c.z.toFixed(3)}`, c]));
+  const lot = { x: 960, z: -240 };
+  a.setPlazas([...plazas, { ...lot, kind: 'site' as const }]);
+  const parked1 = a.parked();
+  let gone = 0;
+  const now = new Set(parked1.map((c) => `${c.x.toFixed(3)},${c.z.toFixed(3)}`));
+  for (const [k, c] of parked0) if (!now.has(k)) gone++;
+  for (const c of parked1) {
+    const b = parked0.get(`${c.x.toFixed(3)},${c.z.toFixed(3)}`);
+    if (Math.hypot(c.x - lot.x, c.z - lot.z) < 120) continue;
+    assert.ok(b, `the parked car at ${c.x.toFixed(1)}, ${c.z.toFixed(1)} was there before`);
+    assert.deepEqual([c.yaw, c.model, c.paint, c.kerb], [b!.yaw, b!.model, b!.paint, b!.kerb], `and is the same car, parked the same way`);
+  }
+  for (const [, c] of parked0) {
+    if (Math.hypot(c.x - lot.x, c.z - lot.z) >= 120) assert.ok(now.has(`${c.x.toFixed(3)},${c.z.toFixed(3)}`), `the parked car at ${c.x.toFixed(1)}, ${c.z.toFixed(1)} away from the site stays`);
+  }
+  assert.ok(gone > 0, `the cars parked on the new site go (${gone})`);
   // The same network again moves nobody; the quality's step down keeps a subset in place.
   a.relay(NET);
   a.setQuality('medium');
