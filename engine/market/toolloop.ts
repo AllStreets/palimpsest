@@ -9,9 +9,16 @@
  * refusal or an invalid call goes back to the model as the tool result.
  * The loop ends on `finish`, on a reply with no tool call, or at the turn,
  * wall or credit cap, or on abort; the run is reaped at the end either way.
+ *
+ * `runLoop()` is the loop with its prompts, its tool list and its finish as
+ * parameters (Phase 3 ruling 13): a work run offers every tool and ends on a
+ * summary; a README audit offers the read tools alone, caps each result for
+ * a local model, lets `run` accept only the repository's own checks and ends
+ * when the model's text is a JSON object.
  */
 import { join } from 'node:path';
 
+import { AUDIT_LOOP_TOOLS, firstJsonBlock } from '../audit/schema.js';
 import { paths } from '../home.js';
 import { DEFAULT_TOOL_MS, execFileTool, execTool, reapRun, type FileOp, type ToolResult } from './broker.js';
 import type { RunLogLine, Usage, WorkInput } from './provider.js';
@@ -83,6 +90,25 @@ export interface LoopOptions {
 }
 
 export type WorkResult = { summary: string; usage: Usage; ended: 'finished' | 'capped' | 'aborted' | 'crashed'; reason: string | null };
+/** A loop's result: the work result, plus the parsed JSON object when the finish was `json` (null otherwise or when none came). */
+export type LoopResult = WorkResult & { answer: unknown };
+
+/** What `runLoop()` takes: the transport, the run, the prompts, the tools and how it ends. */
+export interface LoopInput extends LoopOptions, Pick<WorkInput, 'log' | 'onProgress' | 'signal' | 'caps'> {
+  transport: ChatTransport;
+  /** The run (or audit) id: its root is `<home>/runs/<runId>` and `dir` must be its `repo` clone. */
+  runId: string;
+  dir: string;
+  system: string;
+  user: string;
+  tools: ToolSpec[];
+  /** `summary`: `finish` or a reply without a tool call ends the loop; `json`: a reply whose text parses as an object ends it, with one retry. */
+  finish: 'summary' | 'json';
+  /** Characters a tool result may carry to the model (default MAX_RESULT_CHARS; `AUDIT_LOCAL_RESULT` for a local audit). */
+  resultCap?: number;
+  /** When given, the `run` tool accepts only these command lines (an audit: the repository's own checks). */
+  allowedCommands?: readonly string[];
+}
 
 /* ------------------------------------------------------------------ */
 /* The tools                                                           */
@@ -174,13 +200,32 @@ export const LOOP_TOOLS: ToolSpec[] = [
 
 const BY_NAME = new Map(LOOP_TOOLS.map((t) => [t.name, t]));
 
+/** How an audit's `run` tool describes itself: the declared checks, whole, and nothing else. */
+export function auditRunDescription(commands: readonly string[]): string {
+  const listed = commands.length ? commands.map((c) => `\`${c}\``).join(', ') : 'none: the repository declares no checks, so nothing can be run';
+  return `Run one of the repository's own checks, exactly as listed, in the repository: ${listed}. Any other command is refused.`;
+}
+
 /**
- * Checks a tool call against its tool's schema: a known tool, arguments
- * that are a JSON object, only declared keys, every required key, and each
- * value of its declared type and bounds. Returns the arguments or a reason.
+ * The tools of a README audit (ruling 3): `AUDIT_LOOP_TOOLS` looked up in
+ * `LOOP_TOOLS` by name, with `run` described as the declared checks alone.
  */
-export function validateCall(c: ToolCall): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } {
-  const spec = typeof c.name === 'string' ? BY_NAME.get(c.name) : undefined;
+export function auditLoopTools(commands: readonly string[]): ToolSpec[] {
+  return AUDIT_LOOP_TOOLS.map((name) => {
+    const spec = BY_NAME.get(name);
+    if (!spec) throw new Error(`no loop tool ${name}`);
+    return name === 'run' ? { ...spec, description: auditRunDescription(commands) } : spec;
+  });
+}
+
+/**
+ * Checks a tool call against its tool's schema: a tool among those offered
+ * (every loop tool unless `tools` says otherwise), arguments that are a JSON
+ * object, only declared keys, every required key, and each value of its
+ * declared type and bounds. Returns the arguments or a reason.
+ */
+export function validateCall(c: ToolCall, tools: ToolSpec[] = LOOP_TOOLS): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } {
+  const spec = typeof c.name === 'string' ? tools.find((t) => t.name === c.name) : undefined;
   if (!spec) return { ok: false, reason: `there is no tool named ${JSON.stringify(String(c.name).slice(0, 80))}` };
   let args = c.arguments;
   if (typeof args === 'string') {
@@ -283,21 +328,57 @@ function addUsage(total: ChatUsage, u: Partial<ChatUsage>): void {
   }
 }
 
-function fileResultText(r: ToolResult & { result: unknown }): { content: string; isError: boolean } {
+function fileResultText(r: ToolResult & { result: unknown }, cap: number): { content: string; isError: boolean } {
   if (r.refused) return { content: `Refused: ${r.refused}`, isError: true };
   const res = r.result as { ok?: unknown; error?: unknown } | null;
-  if (!res || typeof res !== 'object') return { content: clip(`The file tool failed.\n${r.stderr}`, MAX_RESULT_CHARS), isError: true };
+  if (!res || typeof res !== 'object') return { content: clip(`The file tool failed.\n${r.stderr}`, cap), isError: true };
   if (res.ok !== true) return { content: `Error: ${typeof res.error === 'string' ? res.error : 'the file tool failed'}`, isError: true };
   const { ok: _ok, ...rest } = res as Record<string, unknown>;
   const content = typeof rest.content === 'string' && rest.op === 'read' ? (rest.truncated ? `${rest.content}\n[file cut at 256 KB]` : rest.content) : JSON.stringify(rest);
-  return { content: clip(content, MAX_RESULT_CHARS), isError: false };
+  return { content: clip(content, cap), isError: false };
+}
+
+/** What the model is told when a `json` finish got prose: one retry, then the loop ends crashed. */
+export const JSON_RETRY = 'Your reply was not a JSON object. Answer only with the JSON object described in the instructions, nothing before or after it.';
+
+/** The model's text as a JSON object, or null: the whole text, else the first balanced block in it. */
+function jsonObjectOf(text: string): Record<string, unknown> | null {
+  const v = firstJsonBlock(text);
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
 /**
  * Runs the agent's work: one chat() per turn, each tool call validated and
- * run through the broker. See the file header for the endings.
+ * run through the broker. The work loop: every tool, the work prompts, a
+ * summary finish. See the file header for the endings.
  */
 export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: LoopOptions): Promise<WorkResult> {
+  const { answer: _answer, ...r } = await runLoop({
+    ...o,
+    transport,
+    runId: i.runId,
+    dir: i.dir,
+    system: loopSystemPrompt(i),
+    user: loopWorkPrompt(i),
+    tools: LOOP_TOOLS,
+    finish: 'summary',
+    log: i.log,
+    onProgress: i.onProgress,
+    signal: i.signal,
+    caps: i.caps,
+  });
+  return r;
+}
+
+/**
+ * The loop with its prompts, its tools and its finish as parameters. With
+ * `finish: 'json'` a reply without a tool call ends the loop when its text
+ * parses as a JSON object (`answer`); prose gets one retry asking for the
+ * object alone, and a second miss ends the loop `crashed`.
+ */
+export async function runLoop(i: LoopInput): Promise<LoopResult> {
+  const o = i;
+  const resultCap = Math.max(1, Math.min(i.resultCap ?? MAX_RESULT_CHARS, MAX_RESULT_CHARS));
   const total = emptyUsage();
   const usage = (): Usage => ({
     weightedTokens: o.weightedFor ? o.weightedFor(total) : 0,
@@ -305,9 +386,9 @@ export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: Loo
     usd: Math.round(total.usd * 1e6) / 1e6,
     credits: Math.round(o.creditsFor(total) * 1e6) / 1e6,
   });
-  const end = (ended: WorkResult['ended'], reason: string | null, summary = ''): WorkResult => {
+  const end = (ended: WorkResult['ended'], reason: string | null, summary = '', answer: unknown = null): LoopResult => {
     i.log({ at: now(), kind: ended === 'finished' ? 'result' : 'engine', text: ended === 'finished' ? clip(summary, LOG_CHARS) : `the loop ended ${ended}: ${reason}` });
-    return { summary, usage: usage(), ended, reason };
+    return { summary, usage: usage(), ended, reason, answer };
   };
 
   const runRoot = join(paths().runs, i.runId);
@@ -329,16 +410,17 @@ export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: Loo
   }, Math.max(1, maxMs));
   const maxTurns = Math.min(o.maxTurns, i.caps.maxTurns);
   const log = (l: RunLogLine) => i.log(l);
-  const stopped = (): WorkResult | null =>
+  const stopped = (): LoopResult | null =>
     why === 'signal' ? end('aborted', 'signal') : why === 'time' ? end('capped', `wall time cap of ${Math.round(maxMs / 1000)} s reached`) : null;
 
   const progress = { turns: 0, toolCalls: 0, refusals: 0, filesChanged: 0, testsRun: 0 };
   const changed = new Set<string>();
   const messages: ChatMessage[] = [
-    { role: 'system', content: loopSystemPrompt(i) },
-    { role: 'user', content: loopWorkPrompt(i) },
+    { role: 'system', content: i.system },
+    { role: 'user', content: i.user },
   ];
   const tick = () => i.onProgress({ ...progress, credits: usage().credits });
+  let jsonRetried = false;
 
   try {
     for (;;) {
@@ -375,7 +457,7 @@ export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: Loo
       capTimer.unref();
       let failure: unknown = null;
       try {
-        for await (const chunk of transport.chat(messages, LOOP_TOOLS, turnCtl.signal)) {
+        for await (const chunk of i.transport.chat(messages, i.tools, turnCtl.signal)) {
           if (chunk.type === 'usage') addUsage(turnUsage, chunk.usage);
           // After a cut or a cap the rest of the turn is drained and dropped.
           if (cut || capHit) continue;
@@ -418,7 +500,17 @@ export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: Loo
         });
         continue;
       }
-      if (calls.length === 0) return end('finished', null, text.trim());
+      if (calls.length === 0) {
+        if (i.finish === 'summary') return end('finished', null, text.trim());
+        const answer = jsonObjectOf(text);
+        if (answer) return end('finished', null, text.trim(), answer);
+        if (jsonRetried) return end('crashed', 'the answer was not a JSON object, after one retry');
+        jsonRetried = true;
+        log({ at: now(), kind: 'engine', text: 'the reply was not a JSON object; asking once more' });
+        messages.push({ role: 'assistant', content: text || '(empty)', toolCalls: [] });
+        messages.push({ role: 'user', content: JSON_RETRY });
+        continue;
+      }
 
       // Ids come from the model: make them unique so results pair with their calls.
       const seenIds = new Set<string>();
@@ -430,7 +522,7 @@ export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: Loo
 
       for (const c of calls) {
         progress.toolCalls += 1;
-        const v = validateCall(c);
+        const v = validateCall(c, i.tools);
         if (!v.ok) {
           log({ at: now(), kind: 'refused', text: `invalid tool call ${String(c.name).slice(0, 80)}: ${v.reason}` });
           progress.refusals += 1;
@@ -450,18 +542,18 @@ export async function runToolLoop(transport: ChatTransport, i: WorkInput, o: Loo
         let isError: boolean;
         if (c.name === 'run') {
           const timeoutMs = typeof args.timeout_seconds === 'number' ? args.timeout_seconds * 1000 : DEFAULT_TOOL_MS;
-          const r = await execTool({ ...base, command: args.command as string, timeoutMs });
+          const r = await execTool({ ...base, command: args.command as string, timeoutMs, ...(i.allowedCommands ? { allowedCommands: i.allowedCommands } : {}) });
           if (r.refused) {
             content = `Refused: ${r.refused}`;
             isError = true;
           } else {
-            content = clip(`exit ${r.code === null ? 'none' : r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`, MAX_RESULT_CHARS);
+            content = clip(`exit ${r.code === null ? 'none' : r.code}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`, resultCap);
             isError = r.code !== 0;
           }
         } else {
           const { op, fileArgs } = fileCall(c.name, args);
           const r = await execFileTool({ ...base, op, args: fileArgs });
-          ({ content, isError } = fileResultText(r));
+          ({ content, isError } = fileResultText(r, resultCap));
           if (!r.refused && !isError && (op === 'write' || op === 'edit')) changed.add(String(fileArgs.path));
         }
         if (content.startsWith('Refused:')) progress.refusals += 1;

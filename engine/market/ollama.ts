@@ -12,13 +12,15 @@
  * tool profile (toolloop.ts). Ollama is reached only on loopback.
  */
 import { localCredits } from '../../shared/credits.js';
+import { AUDIT_CAPS, AUDIT_LOCAL_RESULT } from '../../shared/market-rules.js';
+import { AUDIT_PERSONA, auditPrompt, checkCommands } from '../audit/schema.js';
 import { getRunner } from '../exec.js';
 import { getSettings } from '../settings.js';
 import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
 import { installedModels, resolveModel } from './firms.js';
 import { diffSection } from './quote.js';
-import type { JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
-import { runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ToolSpec } from './toolloop.js';
+import type { AuditInput, AuditResult, JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
+import { auditLoopTools, runLoop, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ToolSpec } from './toolloop.js';
 
 /** The vision model the design judge uses, by prefix. */
 export const VISION_MODEL_PREFIX = 'qwen2.5vl:7b';
@@ -165,12 +167,12 @@ function toOllamaTools(tools: ToolSpec[]): unknown[] {
   return tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
 }
 
-/** The streaming transport the tool loop talks through. */
-export function ollamaTransport(model: string): ChatTransport {
+/** The streaming transport the tool loop talks through; `numCtx` asks for a context window (an audit: the review window). */
+export function ollamaTransport(model: string, o: { numCtx?: number } = {}): ChatTransport {
   return {
     async *chat(messages, tools, signal): AsyncGenerator<ChatChunk> {
       const started = Date.now();
-      const res = await post({ model, messages: toOllamaMessages(messages), tools: toOllamaTools(tools), stream: true }, signal);
+      const res = await post({ model, messages: toOllamaMessages(messages), tools: toOllamaTools(tools), stream: true, ...(o.numCtx ? { options: { num_ctx: o.numCtx } } : {}) }, signal);
       let n = 0;
       let doneSeen = false;
       for await (const line of ndjson(res)) {
@@ -354,8 +356,44 @@ export function ollamaProvider(): Provider {
   return {
     kind: 'ollama',
 
-    async audit() {
-      throw new Error('not implemented');
+    /**
+     * The README audit (Phase 3 ruling 13) on a local model: the read tools
+     * alone, `run` limited to the repository's own checks, each result cut
+     * to AUDIT_LOCAL_RESULT, the review window as `num_ctx`, the local caps,
+     * and the model's JSON object as the answer.
+     */
+    async audit(i: AuditInput): Promise<AuditResult> {
+      const zero: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
+      let model: string;
+      try {
+        ollamaBase();
+        model = modelName(i.model);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        i.log({ at: new Date().toISOString(), kind: 'engine', text: `ollama audit crashed: ${reason}` });
+        return { answer: null, text: '', usage: zero, ended: 'crashed', reason };
+      }
+      const gb = await modelGB(model);
+      const commands = checkCommands(i.checks);
+      const r = await runLoop({
+        transport: ollamaTransport(model, { numCtx: REVIEW_NUM_CTX }),
+        runId: i.auditId,
+        dir: i.dir,
+        system: AUDIT_PERSONA,
+        user: auditPrompt(i),
+        tools: auditLoopTools(commands),
+        finish: 'json',
+        resultCap: AUDIT_LOCAL_RESULT,
+        allowedCommands: commands,
+        maxTurns: Math.min(i.caps.maxTurns, AUDIT_CAPS.local.maxTurns),
+        maxMs: Math.min(i.caps.maxMinutes, AUDIT_CAPS.local.maxMinutes) * 60_000,
+        creditsFor: (u) => localCredits(u.seconds, gb),
+        log: i.log,
+        onProgress: i.onProgress,
+        signal: i.signal,
+        caps: i.caps,
+      });
+      return { answer: r.answer, text: r.summary, usage: r.usage, ended: r.ended, reason: r.reason };
     },
 
     async work(i) {

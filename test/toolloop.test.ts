@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
-import { LOOP_TOOLS, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ToolSpec } from '../engine/market/toolloop.js';
+import { auditLoopTools, LOOP_TOOLS, runLoop, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ToolSpec } from '../engine/market/toolloop.js';
 import type { Agent, Job, RunProgress } from '../shared/types.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_SANDBOX'];
@@ -401,5 +401,99 @@ describe('runToolLoop', () => {
     const { transport } = scripted(() => [call('list_files', {})]);
     await runToolLoop(transport, input, { ...opts, maxTurns: 1, reap: async (root: string) => (reaped.push(root), []) });
     assert.deepEqual(reaped, [run.runRoot]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* runLoop (Phase 3): prompts and tools as parameters, a JSON finish   */
+/* ------------------------------------------------------------------ */
+
+const ANSWER = { claims: 1, findings: [{ claim: 'x', source: { file: 'README.md', line: 1 }, verdict: 'MISSING', tested: false, evidence: [], proposal: null }] };
+
+function loopInput(runId: string, over: Partial<WorkInput> = {}) {
+  const { input, logs, ticks, run } = workInput(runId, over);
+  return { base: { runId: input.runId, dir: input.dir, log: input.log, onProgress: input.onProgress, signal: input.signal, caps: input.caps, ...opts }, logs, ticks, run };
+}
+
+describe('runLoop', () => {
+  test('runLoop with finish json ends finished with the parsed object as the answer', async () => {
+    const { base } = loopInput('loop-json');
+    const { transport, seen } = scripted([[call('list_files', {})], [text('Here it is:\n```json\n' + JSON.stringify(ANSWER) + '\n```')]]);
+    const r = await runLoop({ ...base, transport, system: 'You survey.', user: 'Check the README.', tools: auditLoopTools([]), finish: 'json' });
+    assert.equal(r.ended, 'finished', r.reason ?? '');
+    assert.deepEqual(r.answer, ANSWER);
+    assert.match(r.summary, /Here it is/);
+    assert.equal((seen[0].messages[0] as { content: string }).content, 'You survey.');
+    assert.equal((seen[0].messages[1] as { content: string }).content, 'Check the README.');
+  });
+
+  test('runLoop with finish json retries once and then crashes', async () => {
+    const { base, logs } = loopInput('loop-retry');
+    const { transport, seen } = scripted([[text('I think the README is mostly right.')], [text('Still prose, sorry.')], [text(JSON.stringify(ANSWER))]]);
+    const r = await runLoop({ ...base, transport, system: 's', user: 'u', tools: auditLoopTools([]), finish: 'json' });
+    assert.equal(r.ended, 'crashed');
+    assert.match(r.reason ?? '', /JSON/);
+    assert.equal(r.answer, null);
+    assert.equal(seen.length, 2, 'one retry, then the loop ends');
+    const last = seen[1].messages.at(-1) as { role: string; content: string };
+    assert.equal(last.role, 'user');
+    assert.match(last.content, /only with the JSON object/);
+    assert.equal((seen[1].messages.at(-2) as { role: string; content: string }).content, 'I think the README is mostly right.');
+    assert.ok(logs.some((l) => l.kind === 'engine' && /crashed/.test(l.text)));
+    // a retry that answers in JSON finishes
+    const again = scripted([[text('prose')], [text(JSON.stringify(ANSWER))]]);
+    const ok = await runLoop({ ...loopInput('loop-retry-ok').base, transport: again.transport, system: 's', user: 'u', tools: auditLoopTools([]), finish: 'json' });
+    assert.equal(ok.ended, 'finished');
+    assert.deepEqual(ok.answer, ANSWER);
+  });
+
+  test('an audit loop offers only the read tools and caps each result', async () => {
+    const { base } = loopInput('loop-audit');
+    writeFileSync(join(base.dir, 'src', 'big.ts'), 'x'.repeat(20_000) + '\n');
+    const { transport, seen } = scripted([
+      [call('read_file', { path: 'src/big.ts' }), call('write_file', { path: 'src/new.ts', content: 'x' }), call('edit_file', { path: 'src/a.ts', old_text: '1', new_text: '2' }), call('finish', { summary: 'done' })],
+      [text(JSON.stringify(ANSWER))],
+    ]);
+    const tools = auditLoopTools(['npm test']);
+    assert.deepEqual(tools.map((t) => t.name), ['read_file', 'list_files', 'search', 'run']);
+    assert.match(tools.find((t) => t.name === 'run')!.description, /npm test/);
+    const r = await runLoop({ ...base, transport, system: 's', user: 'u', tools, finish: 'json', resultCap: 8000 });
+    assert.equal(r.ended, 'finished', r.reason ?? '');
+    assert.deepEqual(seen[0].tools.map((t) => t.name), ['read_file', 'list_files', 'search', 'run']);
+    const tms = toolMessages(seen, 1);
+    assert.equal(tms.length, 4);
+    assert.ok(tms[0].content.length <= 8000 + 80, `the read result is capped (${tms[0].content.length})`);
+    assert.match(tms[0].content, /cut/);
+    for (const tm of tms.slice(1)) {
+      assert.equal(tm.isError, true);
+      assert.match(tm.content, /no tool named/);
+    }
+    assert.ok(!fs.existsSync(join(base.dir, 'src', 'new.ts')));
+    assert.equal(readFileSync(join(base.dir, 'src', 'a.ts'), 'utf8'), 'export const a = 1;\n');
+  });
+
+  test("an audit loop's run tool accepts only the repo's declared checks", async () => {
+    const { base, logs } = loopInput('loop-checks');
+    const { transport, seen } = scripted([
+      [call('run', { command: 'echo checked' }), call('run', { command: 'echo nope' }), call('run', { command: 'echo checked; echo more' }), call('run', { command: '  echo checked  ' })],
+      [text(JSON.stringify(ANSWER))],
+    ]);
+    const r = await runLoop({ ...base, transport, system: 's', user: 'u', tools: auditLoopTools(['echo checked']), finish: 'json', allowedCommands: ['echo checked'] });
+    assert.equal(r.ended, 'finished', r.reason ?? '');
+    const tms = toolMessages(seen, 1);
+    assert.match(tms[0].content, /exit 0[\s\S]*checked/);
+    assert.equal(tms[0].isError, false);
+    assert.match(tms[1].content, /^Refused:.*own checks/);
+    assert.match(tms[2].content, /^Refused:/);
+    assert.match(tms[3].content, /exit 0/, 'surrounding whitespace is forgiven');
+    assert.equal(logs.filter((l) => l.kind === 'refused').length, 2);
+  });
+
+  test('runToolLoop is runLoop with the work prompts, every tool and a summary finish (pin)', async () => {
+    const { input } = workInput('loop-work');
+    const { transport, seen } = scripted([[call('finish', { summary: 'ok' })]]);
+    const r = await runToolLoop(transport, input, opts);
+    assert.equal(r.summary, 'ok');
+    assert.equal(seen[0].tools.length, 7);
   });
 });

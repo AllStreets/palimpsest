@@ -13,14 +13,15 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { realSpawner, setSpawner, type SpawnLine, type SpawnOpts, type Spawned } from '../engine/exec.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from '../engine/market/guard.js';
 import { BUILTIN_PLUGINS, CALL_DENY, CLAUDE_SANDBOX, HOOK_MATCHER, KILL_AFTER_MS, claudeProvider, type ClaudeOptions } from '../engine/market/claude.js';
-import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
+import type { AuditInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { startEgress } from '../engine/market/egress.js';
 import { entries } from '../engine/ledger.js';
 import { protectedPidsOf } from '../engine/market/reaper.js';
+import { AUDIT_SCHEMA } from '../engine/audit/schema.js';
 import { SANDBOX_EXEC } from '../engine/market/sandbox.js';
 import { weightedTokens, claudeCredits } from '../shared/credits.js';
-import type { Agent, Job, RunProgress } from '../shared/types.js';
+import type { Agent, Job, Repo, RunProgress } from '../shared/types.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_SANDBOX', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK'];
 let previousEnv: Record<string, string | undefined>;
@@ -832,5 +833,156 @@ describe('plan and review', () => {
     assert.deepEqual(Object.keys(JSON.parse(flagValue(a, '--json-schema')).properties).sort(), ['approve', 'concerns', 'notes']);
     assert.match(calls[0].opts.stdin ?? '', /CHANGELOG/);
     assert.match(flagValue(a, '--append-system-prompt'), /Bea reviews strictly\./);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* audit() (Phase 3)                                                   */
+/* ------------------------------------------------------------------ */
+
+const AUDIT_TOOL_LIST = ['Read', 'Glob', 'Grep', 'mcp__palimpsest__run'];
+const AUDIT_ANSWER = { claims: 1, findings: [{ claim: 'Supports hot reload', source: { file: 'README.md', line: 3 }, verdict: 'MISSING', tested: false, evidence: [{ file: 'src/index.ts', line: 1, note: 'no watcher' }], proposal: null }] };
+
+function auditInput(over: Partial<AuditInput> = {}) {
+  const run = makeRun(over.auditId ?? 'audit-1');
+  const logs: RunLogLine[] = [];
+  const ticks: Partial<RunProgress>[] = [];
+  const input: AuditInput = {
+    repo: { fullName: 'acme/widgets', defaultBranch: 'main' } as Repo,
+    auditId: run.runId,
+    dir: run.dir,
+    baseSha: 'b'.repeat(40),
+    readme: { path: 'README.md', text: '# Widgets\n\nSupports hot reload.\n' },
+    docs: [],
+    checks: { test: 'npm test', typecheck: null, lint: null, build: null, screenshot: null, preview: null, shots: [], install: 'npm ci', ecosystems: ['npm'], detected: true },
+    model: 'claude:sonnet',
+    log: (l) => logs.push(l),
+    onProgress: (p) => ticks.push(p),
+    signal: new AbortController().signal,
+    caps: { maxTurns: 60, maxMinutes: 25, maxCredits: 40 },
+    ...over,
+  };
+  return { input, logs, ticks, run };
+}
+
+function auditInit(over: Record<string, unknown> = {}) {
+  return init({ tools: AUDIT_TOOL_LIST, ...over });
+}
+
+describe('audit', () => {
+  test('audit builds the work argv with Read, Glob and Grep only, the run tool, --json-schema and a read-only hook, and reads structured_output', async () => {
+    const { calls } = fake([
+      auditInit(),
+      assistant('m1', [toolUse('t1', 'Read', { file_path: '/x/README.md' })]),
+      toolResult('t1', '# Widgets'),
+      assistant('m2', [toolUse('t2', 'mcp__palimpsest__run', { command: 'npm test' })]),
+      toolResult('t2', 'exit 0'),
+      assistant('m3', [{ type: 'text', text: 'Done.' }]),
+      result({ result: JSON.stringify(AUDIT_ANSWER), structured_output: AUDIT_ANSWER }),
+    ]);
+    const { p, quiets } = provider();
+    const { input, run, logs, ticks } = auditInput();
+    const out = await p.audit(input);
+    assert.equal(out.ended, 'finished', out.reason ?? '');
+    assert.deepEqual(out.answer, AUDIT_ANSWER);
+    assert.equal(out.text, JSON.stringify(AUDIT_ANSWER));
+    assert.equal(out.usage.weightedTokens, 1800);
+    const a = claudeArgs(calls[0]);
+    const ctl = join(run.runRoot, 'ctl');
+    assert.equal(a[0], '-p');
+    assert.equal(flagValue(a, '--model'), 'sonnet');
+    assert.equal(flagValue(a, '--setting-sources'), '');
+    assert.ok(a.includes('--strict-mcp-config'));
+    assert.equal(realpathSync(flagValue(a, '--settings')), realpathSync(join(ctl, 'settings.json')));
+    assert.equal(flagValue(a, '--permission-mode'), 'dontAsk');
+    assert.ok(a.includes('--include-hook-events'));
+    assert.equal(flagValue(a, '--tools'), 'Read,Glob,Grep');
+    assert.equal(flagValue(a, '--allowedTools'), 'mcp__palimpsest__run');
+    const dis = a.indexOf('--disallowedTools');
+    const disallowed = a.slice(dis + 1, a.indexOf('--json-schema'));
+    for (const t of [...CLI_DISALLOWED_TOOLS, 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']) assert.ok(disallowed.includes(t), t);
+    const schema = JSON.parse(flagValue(a, '--json-schema'));
+    assert.deepEqual(schema, AUDIT_SCHEMA);
+    assert.ok(!a.includes('--bare'));
+    assert.ok(!a.includes('--max-turns'));
+    assert.match(flagValue(a, '--append-system-prompt'), /change nothing/i);
+    assert.equal(realpathSync(calls[0].opts.cwd!), realpathSync(run.dir));
+    // the audit prompt goes in on stdin: the README quoted as data, the repo's checks named
+    const stdin = calls[0].opts.stdin ?? '';
+    assert.match(stdin, /acme\/widgets/);
+    assert.match(stdin, /Supports hot reload\./);
+    assert.match(stdin, /npm test/);
+    assert.match(stdin, /quoted from the repository's own files/);
+    // the settings: the read tools and the run tool allowed, the write tools denied, the hook read-only
+    const settings = JSON.parse(calls[0].seen['settings.json']!);
+    assert.deepEqual(settings.permissions.allow, AUDIT_TOOL_LIST);
+    for (const t of [...CLI_PERMISSIONS_DENY, 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']) assert.ok(settings.permissions.deny.includes(t), t);
+    assert.deepEqual(settings.sandbox, CLAUDE_SANDBOX);
+    const [entry] = settings.hooks.PreToolUse;
+    assert.equal(entry.matcher, HOOK_MATCHER);
+    const cmd: string = entry.hooks[0].command;
+    assert.ok(cmd.includes('guard-hook.mjs'));
+    assert.ok(cmd.endsWith("'--read-only'"), cmd);
+    // the environment and the MCP config as a work run's
+    const env = calls[0].opts.env ?? {};
+    assert.equal(calls[0].opts.clearEnv, true);
+    for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK']) assert.equal(env[k], undefined, k);
+    assert.match(env.HTTPS_PROXY, /^http:\/\/palimpsest:egress-token-1@127\.0\.0\.1:50102$/);
+    assert.deepEqual(Object.keys(JSON.parse(calls[0].seen['mcp.json']!).mcpServers), ['palimpsest']);
+    assert.match(calls[0].seen['persona.md'] ?? '', /change nothing/i);
+    // quiet before the start and before each tool turn
+    assert.equal(quiets.length, 3);
+    assert.ok(logs.some((l) => l.kind === 'system' && /apiKeySource none/.test(l.text)));
+    const last = Object.assign({}, ...ticks) as RunProgress;
+    assert.equal(last.toolCalls, 2);
+  });
+
+  test('an audit whose init lists Edit, or that would bill an API key, crashes before any tool runs', async () => {
+    for (const bad of [{ tools: [...AUDIT_TOOL_LIST, 'Edit'] }, { apiKeySource: 'ANTHROPIC_API_KEY' }]) {
+      const { calls } = fake([auditInit(bad), assistant('m1', [toolUse('t1', 'Read', { file_path: 'x' })]), toolResult('t1', 'x'), result({ structured_output: AUDIT_ANSWER })], { hang: true });
+      const { input } = auditInput({ auditId: `audit-${Object.keys(bad)[0]}` });
+      const out = await provider().p.audit(input);
+      assert.equal(out.ended, 'crashed');
+      assert.match(out.reason ?? '', bad.apiKeySource ? /API key/ : /unexpected tools/);
+      assert.equal(out.answer, null);
+      assert.ok(calls[0].kills.includes('SIGTERM'));
+    }
+  });
+
+  test('an audit over its credit cap ends capped', async () => {
+    const big = { input_tokens: 100_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    const { calls } = fake([auditInit(), assistant('m1', [{ type: 'text', text: 'reading' }], big)], { hang: true });
+    const { input } = auditInput({ caps: { maxTurns: 60, maxMinutes: 25, maxCredits: 1 } });
+    const out = await provider().p.audit(input);
+    assert.equal(out.ended, 'capped');
+    assert.match(out.reason ?? '', /credit cap of 1/);
+    assert.equal(out.answer, null);
+    assert.equal(calls[0].kills[0], 'SIGTERM');
+  });
+
+  test('an audit without structured output answers null and keeps the text; an aborted one never starts claude', async () => {
+    fake([auditInit(), result({ result: 'not json at all' })]);
+    const out = await provider().p.audit(auditInput().input);
+    assert.equal(out.ended, 'finished');
+    assert.equal(out.answer, null);
+    assert.equal(out.text, 'not json at all');
+    const { calls } = fake([auditInit()]);
+    const ac = new AbortController();
+    ac.abort();
+    const aborted = await provider().p.audit(auditInput({ auditId: 'audit-2', signal: ac.signal }).input);
+    assert.equal(aborted.ended, 'aborted');
+    assert.equal(calls.length, 0);
+  });
+
+  test('an audit whose dir is not its root repo, or whose broker is missing, crashes before claude starts', async () => {
+    const { calls } = fake([auditInit()]);
+    const { input } = auditInput();
+    assert.equal((await provider().p.audit({ ...input, dir: tempDir })).ended, 'crashed');
+    const second = auditInput({ auditId: 'audit-3' });
+    rmSync(join(second.run.runRoot, 'ctl', 'broker.json'));
+    const out = await provider().p.audit(second.input);
+    assert.equal(out.ended, 'crashed');
+    assert.match(out.reason ?? '', /broker/);
+    assert.equal(calls.length, 0);
   });
 });

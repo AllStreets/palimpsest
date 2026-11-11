@@ -24,15 +24,17 @@ import { homedir, tmpdir, userInfo } from 'node:os';
 import { isAbsolute, sep } from 'node:path';
 
 import { apiCredits, modelFamily, type ModelFamily } from '../../shared/credits.js';
+import { AUDIT_CAPS, AUDIT_LOCAL_RESULT } from '../../shared/market-rules.js';
 import type { ModelRef } from '../../shared/types.js';
+import { AUDIT_PERSONA, auditPrompt, checkCommands } from '../audit/schema.js';
 import { getRunner, getSpawner } from '../exec.js';
 import { record } from '../ledger.js';
 import { getSettings } from '../settings.js';
 import { acquire, charge, unattended, type Lease } from './budget.js';
 import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
 import { cleanImages, judgeAnswer, judgeText, parseAnswer, planAnswer, PLAN_JSON, reviewAnswer, REVIEW_JSON } from './ollama.js';
-import type { JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
-import { LoopCap, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ChatUsage, type ToolSpec } from './toolloop.js';
+import type { AuditInput, AuditResult, JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
+import { auditLoopTools, LoopCap, runLoop, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ChatUsage, type ToolSpec } from './toolloop.js';
 
 export const KEY_SERVICE = 'Palimpsest Anthropic API key';
 const KEY_ACCOUNT = 'palimpsest';
@@ -368,7 +370,7 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
   async function call(
     ref: ModelRef,
     body: Record<string, unknown>,
-    ctx: { kind: 'bid' | 'run' | 'review' | 'judge'; runId: string | null; firmId: string | null },
+    ctx: { kind: 'bid' | 'run' | 'review' | 'judge' | 'audit'; runId: string | null; firmId: string | null },
     signal: AbortSignal,
     onChunk: (c: ChatChunk) => void = () => {},
   ): Promise<CallResult> {
@@ -466,7 +468,8 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
     return { system, messages: out };
   }
 
-  function transport(ref: ModelRef, runId: string, firmId: string): ChatTransport {
+  /** The loop's transport: `kind` is what each turn is charged as (`run` for a firm's work, `audit` for the city's audit with no firm). */
+  function transport(ref: ModelRef, runId: string, firmId: string | null, kind: 'run' | 'audit' = 'run'): ChatTransport {
     const model = apiModel(ref);
     return {
       async *chat(messages, tools: ToolSpec[], signal) {
@@ -482,7 +485,7 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
         const chunks: ChatChunk[] = [];
         let res: CallResult;
         try {
-          res = await call(ref, body, { kind: 'run', runId, firmId }, signal, (c) => chunks.push(c));
+          res = await call(ref, body, { kind, runId, firmId }, signal, (c) => chunks.push(c));
         } catch (err) {
           for (const c of chunks) yield c;
           const spent = (err as { spent?: Partial<ChatUsage> }).spent;
@@ -520,8 +523,42 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
   return {
     kind: 'anthropic',
 
-    async audit() {
-      throw new Error('not implemented');
+    /**
+     * The README audit (Phase 3 ruling 13) through the API: the read tools
+     * alone, `run` limited to the repository's own checks, each result cut
+     * to AUDIT_LOCAL_RESULT, the local caps, every turn charged as `audit`
+     * under the city (no firm) and the model's JSON object as the answer.
+     */
+    async audit(i: AuditInput): Promise<AuditResult> {
+      const zero: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
+      try {
+        apiModel(i.model);
+        await ready();
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        i.log({ at: new Date().toISOString(), kind: 'engine', text: `api audit refused: ${reason}` });
+        return { answer: null, text: '', usage: zero, ended: 'crashed', reason };
+      }
+      const commands = checkCommands(i.checks);
+      const r = await runLoop({
+        transport: transport(i.model, i.auditId, null, 'audit'),
+        runId: i.auditId,
+        dir: i.dir,
+        system: AUDIT_PERSONA,
+        user: auditPrompt(i),
+        tools: auditLoopTools(commands),
+        finish: 'json',
+        resultCap: AUDIT_LOCAL_RESULT,
+        allowedCommands: commands,
+        maxTurns: Math.min(i.caps.maxTurns, AUDIT_CAPS.local.maxTurns),
+        maxMs: Math.min(i.caps.maxMinutes, AUDIT_CAPS.local.maxMinutes) * 60_000,
+        creditsFor: (u) => apiCredits(u.usd),
+        log: i.log,
+        onProgress: i.onProgress,
+        signal: i.signal,
+        caps: i.caps,
+      });
+      return { answer: r.answer, text: r.summary, usage: r.usage, ended: r.ended, reason: r.reason };
     },
 
     async work(i) {

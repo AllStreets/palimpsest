@@ -202,3 +202,49 @@ describe('guard hook', () => {
     }
   });
 });
+
+describe('guard hook, read-only (Phase 3)', () => {
+  const RO = () => [dir, dataHome, '--read-only'];
+
+  test('with --read-only it refuses Edit, Write, MultiEdit and NotebookEdit with exit 2 and allows Read, Glob, Grep and the run tool', async () => {
+    const inside = join(dir, 'src', 'a.ts');
+    for (const [tool, input] of [
+      ['Edit', { file_path: inside, old_string: '1', new_string: '2' }],
+      ['Write', { file_path: join(dir, 'new.ts'), content: 'x' }],
+      ['MultiEdit', { file_path: inside, edits: [{ old_string: '1', new_string: '2' }] }],
+      ['NotebookEdit', { notebook_path: join(dir, 'n.ipynb'), new_source: 'x' }],
+    ] as const) {
+      const r = await runHook(call(tool, input), RO());
+      assert.equal(r.code, 2, tool);
+      assert.match(r.stderr, /read-only/);
+    }
+    assert.equal((await runHook(call('Read', { file_path: inside }), RO())).code, 0);
+    assert.equal((await runHook(call('Glob', { pattern: 'src/**/*.ts' }), RO())).code, 0);
+    assert.equal((await runHook(call('Grep', { pattern: 'export', path: join(dir, 'src') }), RO())).code, 0);
+    assert.equal((await runHook(call('mcp__palimpsest__run', { command: 'npm test' }), RO())).code, 0);
+    assert.equal((await runHook(call('mcp__palimpsest__run', { command: 'git push origin main' }), RO())).code, 2);
+    assert.equal((await runHook(call('Bash', { command: 'ls' }), RO())).code, 2);
+    // without the flag an Edit inside dir is still allowed (pin)
+    assert.equal((await runHook(call('Edit', { file_path: inside, old_string: '1', new_string: '2' }))).code, 0);
+  });
+
+  test('a flag it does not know is refused, and guardHookCommand appends --read-only on request', async () => {
+    assert.equal((await runHook(call('Read', { file_path: join(dir, 'src', 'a.ts') }), [dir, dataHome, '--write-ok'])).code, 2);
+    const prev = process.env.PALIMPSEST_HOME;
+    process.env.PALIMPSEST_HOME = dataHome;
+    try {
+      const { guardHookCommand } = await import('../engine/market/broker.js');
+      const runRoot = join(dataHome, 'runs', 'run-1');
+      const plain = guardHookCommand(runRoot, dir);
+      const ro = guardHookCommand(runRoot, dir, { readOnly: true });
+      assert.deepEqual(plain.slice(2), [dir, dataHome]);
+      assert.deepEqual(ro.slice(2), [dir, dataHome, '--read-only']);
+      const hook = ro[1];
+      assert.equal((await runHook(call('Write', { file_path: join(dir, 'x.md'), content: 'x' }), ro.slice(2), {}, hook)).code, 2);
+      assert.equal((await runHook(call('Write', { file_path: join(dir, 'x.md'), content: 'x' }), plain.slice(2), {}, hook)).code, 0);
+    } finally {
+      if (prev === undefined) delete process.env.PALIMPSEST_HOME;
+      else process.env.PALIMPSEST_HOME = prev;
+    }
+  });
+});

@@ -45,6 +45,8 @@ const MAX_COMMAND_CHARS = 64 * 1024;
 const MAX_BODY_BYTES = 1024 * 1024;
 
 export type ToolStage = 'working' | 'install' | 'checks';
+/** How a command outside an audit's allow list is refused. */
+export const ALLOWED_ONLY = "The audit runs only the repository's own checks:";
 
 export interface ToolResult {
   code: number | null;
@@ -64,6 +66,12 @@ export interface ExecToolInput {
   log: (line: RunLogLine) => void;
   /** The side of the run (Task 15, default `head`): `base` runs only in `<runRoot>/base`, under its own profile. */
   side?: 'head' | 'base';
+  /**
+   * When given, the only command lines accepted, compared whole after
+   * trimming (a README audit: the repository's own checks, Phase 3). Anything
+   * else is refused before `forbidden()` is even asked.
+   */
+  allowedCommands?: readonly string[];
 }
 
 export type FileOp = 'read' | 'write' | 'edit' | 'list' | 'search';
@@ -129,10 +137,14 @@ export function brokerMcpServer(runRoot: string): { command: string; args: strin
   return { command: process.execPath, args: [scripts['broker-mcp.mjs'], join(runRoot, 'ctl', 'broker.json'), join(runRoot, 'ctl', 'broker.token')] };
 }
 
-/** How the claude CLI runs the PreToolUse hook (for the run's settings.json, Task 9). */
-export function guardHookCommand(runRoot: string, dir: string): string[] {
+/**
+ * How the claude CLI runs the PreToolUse hook (for the run's settings.json,
+ * Task 9). `readOnly` (a README audit, Phase 3) appends `--read-only`, under
+ * which the hook refuses Edit, Write, MultiEdit and NotebookEdit outright.
+ */
+export function guardHookCommand(runRoot: string, dir: string, o: { readOnly?: boolean } = {}): string[] {
   const scripts = installControlScripts(runRoot);
-  return [process.execPath, scripts['guard-hook.mjs'], dir, dataHomeDir()];
+  return [process.execPath, scripts['guard-hook.mjs'], dir, dataHomeDir(), ...(o.readOnly ? ['--read-only'] : [])];
 }
 
 /* ------------------------------------------------------------------ */
@@ -348,6 +360,9 @@ export async function execTool(o: ExecToolInput): Promise<ToolResult> {
   if (typeof o.command !== 'string' || o.command.length > MAX_COMMAND_CHARS) return refuse(o, String(o.command).slice(0, 200), 'The command is too long or not text.');
   const ctx = contextProblem(o.runRoot, o.dir, o.side);
   if (ctx) return refuse(o, o.command, ctx);
+  if (o.allowedCommands && !o.allowedCommands.includes(o.command.trim())) {
+    return refuse(o, o.command, `${ALLOWED_ONLY} ${o.allowedCommands.length ? o.allowedCommands.map((c) => JSON.stringify(c)).join(', ') : '(none declared)'}.`);
+  }
   // The engine's own port and every other live run's proxy and broker, beside 4770 and 11434.
   const reason = forbidden(o.command, o.dir, dataHomeDir(), [enginePort(), ...liveRunPorts(o.runId)]);
   if (reason) return refuse(o, o.command, reason);
@@ -395,6 +410,8 @@ export interface BrokerContext {
   signal: AbortSignal;
   /** The run's current stage (default `working`). */
   stage?: () => ToolStage;
+  /** The only command lines the run tool accepts (an audit: the repository's own checks). */
+  allowedCommands?: readonly string[];
 }
 
 export interface Broker {
@@ -502,6 +519,7 @@ export async function startBroker(runId: string, ctx: BrokerContext): Promise<Br
         stage: ctx.stage?.() ?? 'working',
         signal: ctx.signal,
         log: ctx.log,
+        ...(ctx.allowedCommands ? { allowedCommands: ctx.allowedCommands } : {}),
       })
         .then(
           (r) => send(res, 200, r),

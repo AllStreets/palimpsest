@@ -15,6 +15,11 @@
  *   command goes through the broker (ruling 19). A PreToolUse hook checks
  *   every file tool and the run tool; `--disallowedTools` and
  *   `permissions.deny` are a second layer should the hook not start.
+ * - audit(): the same session over an audit's clone (Phase 3 ruling 13),
+ *   with the read tools alone (`Read`, `Glob`, `Grep` and the run tool), the
+ *   write tools disallowed, denied and refused by the hook (`--read-only`),
+ *   the surveyor's persona as the system prompt, the audit prompt on stdin
+ *   and `--json-schema` for the answer. Both run through `drive()`.
  * - plan(), review(), judge(): no tools at all, an empty strict MCP config,
  *   in a scratch root of their own (`<home>/runs/call-<id>`) with their own
  *   egress proxy and CLI profile, removed when the call ends. Nothing of the
@@ -37,7 +42,8 @@ import { brokerMcpServer, enginePort, guardHookCommand, protectPids, reapRun, ru
 import { CLAUDE_HOSTS, isAnthropicHost, refusedHosts, startEgress } from './egress.js';
 import { record } from '../ledger.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
-import type { JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
+import { AUDIT_PERSONA, AUDIT_SCHEMA, AUDIT_TOOLS, auditPrompt } from '../audit/schema.js';
+import type { AuditInput, AuditResult, JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
 import { CLAUDE_TMP, detectToolchains, proxyUrl, realish, SYSTEM_PATH, wrap, type CliProfileInput } from './sandbox.js';
 import { controlFiles } from './worktree.js';
 import { diffSection, planSection, quoteAsData } from './quote.js';
@@ -48,6 +54,8 @@ import { diffSection, planSection, quoteAsData } from './quote.js';
 
 /** Claude's own file tools a work run gets (`--tools`). */
 export const WORK_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep'] as const;
+/** The tools that write: an audit disallows and denies them, and its hook refuses them (Phase 3 ruling 3). */
+export const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const;
 /** The broker's one MCP tool. */
 export const RUN_TOOL = 'mcp__palimpsest__run';
 /** The only MCP server a work run may list. */
@@ -645,17 +653,51 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     'dontAsk',
   ];
 
-  async function work(i: WorkInput) {
-    const zero: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
-    const crash = (reason: string) => {
-      i.log({ at: now(), kind: 'engine', text: `claude run crashed: ${reason}` });
-      return { summary: '', usage: zero, ended: 'crashed' as const, reason };
-    };
-    if (i.signal.aborted) return { summary: '', usage: zero, ended: 'aborted' as const, reason: 'signal' };
+  /** What one session takes: the run, the prompts, the tools and the answer's shape. */
+  interface DriveInput {
+    runId: string;
+    dir: string;
+    model: string;
+    /** The system prompt (`--append-system-prompt`). */
+    system: string;
+    /** What `ctl/persona.md` holds for the record; default the system prompt. */
+    persona?: string;
+    /** The prompt on stdin. */
+    prompt: string;
+    /** Claude's own tools (`--tools`); a list without a write tool makes the session read-only. */
+    tools: readonly string[];
+    /** The MCP tools allowed (`--allowedTools`). */
+    allowed: readonly string[];
+    /** The answer's JSON schema (`--json-schema`), or null for free text. */
+    schema: object | null;
+    log: (line: RunLogLine) => void;
+    onProgress: (p: Partial<RunProgress>) => void;
+    signal: AbortSignal;
+    caps: { maxTurns: number; maxMinutes: number; maxCredits: number };
+  }
 
-    const ctl = controlFiles(i.runId);
+  type Driven = SessionOut & {
+    /** The Anthropic host the run's egress refused, when the session did not finish: a login refresh the city blocked (Task 11). */
+    loginRefused: string | null;
+  };
+
+  /**
+   * One session in a run root (`<home>/runs/<runId>`): the control files,
+   * the hook (read-only when the tools cannot write), the nested sandbox,
+   * `--include-hook-events`, the CLI profile, `claudeEnv`, `runQuiet` before
+   * the start and before each tool turn. `work()` and `audit()` both call it.
+   */
+  async function drive(d: DriveInput): Promise<Driven> {
+    const zero: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
+    const crash = (reason: string): Driven => {
+      d.log({ at: now(), kind: 'engine', text: `claude run crashed: ${reason}` });
+      return { ended: 'crashed', reason, usage: zero, text: '', structured: null, loginRefused: null };
+    };
+    if (d.signal.aborted) return { ended: 'aborted', reason: 'signal', usage: zero, text: '', structured: null, loginRefused: null };
+
+    const ctl = controlFiles(d.runId);
     const runRoot = join(ctl.dir, '..');
-    if (realish(i.dir) !== realish(join(runRoot, 'repo'))) return crash('the work dir is not the run root repo');
+    if (realish(d.dir) !== realish(join(runRoot, 'repo'))) return crash('the work dir is not the run root repo');
     const brokerPort = readPort(ctl.brokerJson);
     const proxyPort = readPort(ctl.egressJson);
     let proxyToken: string | null = null;
@@ -666,23 +708,25 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     }
     if (brokerPort === null) return crash('the broker is not running');
     if (proxyPort === null || proxyToken === null) return crash('the egress proxy is not running');
-    if (settingSources === 'local' && existsSync(join(i.dir, '.claude', 'settings.local.json'))) return crash('the clone carries .claude/settings.local.json');
+    if (settingSources === 'local' && existsSync(join(d.dir, '.claude', 'settings.local.json'))) return crash('the clone carries .claude/settings.local.json');
     mkdirSync(join(runRoot, CLAUDE_TMP), { recursive: true });
 
     const claudeBin = bin();
-    const system = systemPrompt(i.persona, i.agent.instructions);
+    // A tool list without a write tool is a read-only session: the write tools are disallowed, denied and refused by the hook.
+    const readOnly = !d.tools.some((t) => (WRITE_TOOLS as readonly string[]).includes(t));
+    const writeTools: readonly string[] = readOnly ? WRITE_TOOLS : [];
     let argv: string[];
     try {
-      const allow = [...WORK_TOOLS, RUN_TOOL];
+      const allow = [...d.tools, ...d.allowed];
       writeCtl(
         ctl.settings,
         JSON.stringify(
           {
             ...(o.nestedSandbox !== false ? { sandbox: { ...CLAUDE_SANDBOX } } : {}),
             enabledPlugins: { ...PLUGINS_OFF },
-            permissions: { allow, deny: [...CLI_PERMISSIONS_DENY] },
+            permissions: { allow, deny: [...CLI_PERMISSIONS_DENY, ...writeTools] },
             hooks: {
-              PreToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: shellLine(guardHookCommand(runRoot, i.dir)), timeout: HOOK_TIMEOUT_S }] }],
+              PreToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: shellLine(guardHookCommand(runRoot, d.dir, { readOnly })), timeout: HOOK_TIMEOUT_S }] }],
             },
           },
           null,
@@ -690,20 +734,22 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
         ) + '\n',
       );
       writeCtl(ctl.mcp, JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: 'stdio', ...brokerMcpServer(runRoot) } } }, null, 2) + '\n');
-      writeCtl(ctl.persona, i.persona);
+      writeCtl(ctl.persona, d.persona ?? d.system);
       const args = [
-        ...head(i.agent.model, ctl.dir),
+        ...head(d.model, ctl.dir),
         '--include-hook-events',
         '--tools',
-        WORK_TOOLS.join(','),
+        d.tools.join(','),
         '--allowedTools',
-        RUN_TOOL,
+        d.allowed.join(','),
         '--disallowedTools',
         ...CLI_DISALLOWED_TOOLS,
+        ...writeTools,
+        ...(d.schema ? ['--json-schema', JSON.stringify(d.schema)] : []),
         '--append-system-prompt',
-        system,
+        d.system,
       ];
-      argv = wrap([claudeBin, ...args], 'cli', profileInput(runRoot, claudeBin, proxyPort, brokerPort), (l) => i.log({ at: now(), kind: 'engine', text: l }));
+      argv = wrap([claudeBin, ...args], 'cli', profileInput(runRoot, claudeBin, proxyPort, brokerPort), (l) => d.log({ at: now(), kind: 'engine', text: l }));
     } catch (err) {
       return crash(err instanceof Error ? err.message : String(err));
     }
@@ -716,26 +762,45 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
 
     const out = await session({
       argv,
-      cwd: i.dir,
+      cwd: d.dir,
       env: claudeEnv(runRoot, proxyPort, proxyToken),
-      stdin: workPrompt(i),
+      stdin: d.prompt,
       runRoot,
-      model: i.agent.model,
-      tools: [...WORK_TOOLS, RUN_TOOL],
+      model: d.model,
+      tools: [...d.tools, ...d.allowed],
       mcpServers: [MCP_SERVER],
-      caps: { maxTurns: i.caps.maxTurns, maxMs: i.caps.maxMinutes * 60_000, maxCredits: i.caps.maxCredits },
-      signal: i.signal,
-      log: i.log,
-      onProgress: i.onProgress,
+      caps: { maxTurns: d.caps.maxTurns, maxMs: d.caps.maxMinutes * 60_000, maxCredits: d.caps.maxCredits },
+      signal: d.signal,
+      log: d.log,
+      onProgress: d.onProgress,
       quiet,
       tokensPerPct: tokensPerPct(),
       killAfterMs,
     });
+    const refusedLogin = out.ended === 'finished' ? null : (refusedHosts(d.runId).find(isAnthropicHost) ?? null);
+    return { ...out, loginRefused: refusedLogin };
+  }
+
+  async function work(i: WorkInput) {
+    const out = await drive({
+      runId: i.runId,
+      dir: i.dir,
+      model: i.agent.model,
+      system: systemPrompt(i.persona, i.agent.instructions),
+      persona: i.persona,
+      prompt: workPrompt(i),
+      tools: WORK_TOOLS,
+      allowed: [RUN_TOOL],
+      schema: null,
+      log: i.log,
+      onProgress: i.onProgress,
+      signal: i.signal,
+      caps: i.caps,
+    });
     // A login refused because his refresh host is not allowed is the city's fault, not the firm's:
     // the run ends crashed without spending an attempt, and the ledger says which host (Task 11).
-    const refusedLogin = refusedHosts(i.runId).find(isAnthropicHost);
-    if (refusedLogin && out.ended !== 'finished') {
-      const note = `login refresh host refused: ${refusedLogin}`;
+    if (out.loginRefused) {
+      const note = `login refresh host refused: ${out.loginRefused}`;
       i.log({ at: now(), kind: 'engine', text: note });
       try {
         record('run.note', { runId: i.runId, note });
@@ -745,6 +810,37 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
       return { summary: out.text, usage: out.usage, ended: 'crashed' as const, reason: note, spendsAttempt: false as const };
     }
     return { summary: out.text, usage: out.usage, ended: out.ended, reason: out.reason };
+  }
+
+  /**
+   * The README audit (Phase 3 ruling 13): the read tools and the run tool
+   * in the audit's clone, the surveyor's persona as the system prompt, the
+   * audit prompt on stdin, the answer shaped by `AUDIT_SCHEMA`. `answer` is
+   * claude's `structured_output`, else null; `parseAudit()` reads it as data.
+   */
+  async function audit(i: AuditInput): Promise<AuditResult> {
+    const out = await drive({
+      runId: i.auditId,
+      dir: i.dir,
+      model: i.model,
+      system: AUDIT_PERSONA,
+      prompt: auditPrompt(i),
+      tools: AUDIT_TOOLS,
+      allowed: [RUN_TOOL],
+      schema: AUDIT_SCHEMA,
+      log: i.log,
+      onProgress: i.onProgress,
+      signal: i.signal,
+      caps: i.caps,
+    });
+    if (out.loginRefused) {
+      const note = `login refresh host refused: ${out.loginRefused}`;
+      i.log({ at: now(), kind: 'engine', text: note });
+      return { answer: null, text: out.text, usage: out.usage, ended: 'crashed', reason: note };
+    }
+    const structured = out.structured;
+    const answer = out.ended === 'finished' && structured && typeof structured === 'object' && !Array.isArray(structured) ? structured : null;
+    return { answer, text: out.text, usage: out.usage, ended: out.ended, reason: out.reason };
   }
 
   /**
@@ -832,10 +928,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
   return {
     kind: 'claude',
     work,
-
-    async audit() {
-      throw new Error('not implemented');
-    },
+    audit,
 
     async plan(i, signal) {
       const out = await call('plan', i.agent.model, i.persona, i.agent.instructions, planPrompt(i), PLAN_SCHEMA, signal);

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { fakeFileName, fakeProvider } from '../engine/market/fake-provider.js';
-import type { Provider, RunLogLine, WorkInput } from '../engine/market/provider.js';
+import type { AuditInput, Provider, RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor, resetProviders, setProvider } from '../engine/market/providers.js';
-import type { Agent, Job, RunProgress } from '../shared/types.js';
+import type { Agent, Job, Repo, RunProgress } from '../shared/types.js';
 
 let dir: string;
 
@@ -158,4 +158,53 @@ test('providerFor routes by prefix and setProvider overrides', () => {
   resetProviders();
   assert.notEqual(providerFor('claude:opus'), fake);
   assert.equal(providerFor('claude:opus').kind, 'claude');
+});
+
+function auditInput(over: Partial<AuditInput> = {}) {
+  const logs: RunLogLine[] = [];
+  const input: AuditInput = {
+    repo: { fullName: 'acme/widgets', defaultBranch: 'main' } as Repo,
+    auditId: 'audit-1',
+    dir,
+    baseSha: 'a'.repeat(40),
+    readme: { path: 'README.md', text: '# Widgets\n\nA widget library.\n\n## Hot reload\n\nEdits show up without a restart.\n' },
+    docs: [],
+    checks: null,
+    model: 'claude:sonnet',
+    log: (l) => logs.push(l),
+    onProgress: () => {},
+    signal: new AbortController().signal,
+    caps: { maxTurns: 10, maxMinutes: 5, maxCredits: 40 },
+    ...over,
+  };
+  return { input, logs };
+}
+
+test('the default fake audit answers one REAL and one MISSING finding and writes no file', async () => {
+  const before = readdirSync(dir);
+  const { input } = auditInput();
+  const r = await fakeProvider().audit(input);
+  assert.equal(r.ended, 'finished');
+  assert.equal(r.reason, null);
+  assert.ok(r.usage.credits > 0);
+  const a = r.answer as { claims: number; findings: Array<Record<string, unknown>> };
+  assert.equal(a.claims, 2);
+  assert.equal(a.findings.length, 2);
+  const [real, missing] = a.findings;
+  assert.equal(real.verdict, 'REAL');
+  assert.deepEqual((real.evidence as Array<{ file: string; line: number }>)[0], { file: 'README.md', line: 1, note: (real.evidence as Array<{ note: string }>)[0].note });
+  assert.equal(real.proposal, null);
+  assert.equal(missing.verdict, 'MISSING');
+  assert.match((missing.proposal as { title: string }).title, /Hot reload/);
+  assert.ok(Array.isArray((missing.proposal as { acceptance: string[] }).acceptance) && (missing.proposal as { acceptance: string[] }).acceptance.length >= 1);
+  assert.deepEqual(JSON.parse(r.text), a, 'the text is the answer as JSON');
+  assert.deepEqual(readdirSync(dir), before, 'nothing was written');
+  // a script replaces it, and no README means no findings
+  const scripted = await fakeProvider({ audit: () => ({ answer: { claims: 0, findings: [] }, text: '{}', usage: { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 }, ended: 'crashed', reason: 'scripted' }) }).audit(input);
+  assert.equal(scripted.ended, 'crashed');
+  const none = await fakeProvider().audit(auditInput({ readme: null }).input);
+  assert.deepEqual(none.answer, { claims: 0, findings: [] });
+  const ac = new AbortController();
+  ac.abort();
+  assert.equal((await fakeProvider().audit(auditInput({ signal: ac.signal }).input)).ended, 'aborted');
 });

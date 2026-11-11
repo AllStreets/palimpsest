@@ -4,19 +4,19 @@
  * `ollama list` and `ollama show`; no real model is ever called.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
-import { modelGBFromShow, ollamaProvider, resetOllamaCache } from '../engine/market/ollama.js';
-import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
+import { modelGBFromShow, ollamaProvider, resetOllamaCache, REVIEW_NUM_CTX } from '../engine/market/ollama.js';
+import type { AuditInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { patchSettings } from '../engine/settings.js';
 import { localCredits } from '../shared/credits.js';
-import type { Agent, Job, RunProgress } from '../shared/types.js';
+import type { Agent, Job, Repo, RunProgress } from '../shared/types.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_SANDBOX'];
 let previousEnv: Record<string, string | undefined>;
@@ -320,5 +320,59 @@ describe('ollama', () => {
     const r = await ollamaProvider().work(input);
     assert.equal(r.ended, 'crashed');
     assert.match(r.reason ?? '', /loopback/);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* audit() (Phase 3)                                                   */
+/* ------------------------------------------------------------------ */
+
+const AUDIT_ANSWER = { claims: 1, findings: [{ claim: 'Supports hot reload', source: { file: 'README.md', line: 3 }, verdict: 'MISSING', tested: false, evidence: [{ file: 'src/a.ts', line: 1, note: 'no watcher' }], proposal: null }] };
+
+function auditInput(auditId: string) {
+  const { dir, logs, ticks } = workInput(auditId);
+  const input: AuditInput = {
+    repo: { fullName: 'acme/widgets', defaultBranch: 'main' } as Repo,
+    auditId,
+    dir,
+    baseSha: 'b'.repeat(40),
+    readme: { path: 'README.md', text: '# Widgets\n\nSupports hot reload.\n' },
+    docs: [],
+    checks: { test: 'echo tested', typecheck: null, lint: null, build: null, screenshot: null, preview: null, shots: [], install: null, ecosystems: ['npm'], detected: true },
+    model: `ollama:${MODEL}`,
+    log: (l) => logs.push(l),
+    onProgress: (p) => ticks.push(p),
+    signal: new AbortController().signal,
+    caps: { maxTurns: 40, maxMinutes: 25, maxCredits: 40 },
+  };
+  return { input, logs, dir };
+}
+
+describe('ollama audit', () => {
+  test('audit runs the read-only loop with num_ctx, the four read tools, the local caps and a JSON finish', async () => {
+    fakeRunner();
+    const { bodies } = await fakeOllama([
+      { stream: [msg('', { tool_calls: [toolCall('read_file', { path: 'src/a.ts' }), toolCall('write_file', { path: 'src/b.ts', content: 'x' }), toolCall('run', { command: 'echo nope' })] }), done(2)] },
+      { stream: [msg(JSON.stringify(AUDIT_ANSWER)), done(1)] },
+    ]);
+    const { input, dir } = auditInput('audit-ollama');
+    const r = await ollamaProvider().audit(input);
+    assert.equal(r.ended, 'finished', r.reason ?? '');
+    assert.deepEqual(r.answer, AUDIT_ANSWER);
+    assert.equal(r.usage.seconds, 3);
+    assert.equal(r.usage.credits, Math.round(localCredits(3, GB_7B) * 1e6) / 1e6);
+    assert.equal(bodies.length, 2);
+    assert.deepEqual((bodies[0].options as { num_ctx: number }).num_ctx, REVIEW_NUM_CTX);
+    assert.deepEqual((bodies[0].tools as Array<{ function: { name: string } }>).map((t) => t.function.name), ['read_file', 'list_files', 'search', 'run']);
+    const first = bodies[0].messages as Array<{ role: string; content: string }>;
+    assert.match(first[0].content, /change nothing/i);
+    assert.match(first[1].content, /Supports hot reload\./);
+    assert.match(first[1].content, /echo tested/);
+    const tools = (bodies[1].messages as Array<{ role: string; content: string }>).filter((m) => m.role === 'tool');
+    assert.equal(tools.length, 3);
+    assert.match(tools[0].content, /export const a = 1/);
+    assert.match(tools[1].content, /no tool named/);
+    assert.match(tools[2].content, /^Refused:.*own checks/);
+    assert.ok(!existsSync(join(dir, 'src', 'b.ts')));
   });
 });

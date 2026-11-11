@@ -1,7 +1,9 @@
 /**
  * The PreToolUse hook every city claude run carries (Task 8). Run by the
- * CLI as `<node> guard-hook.mjs <dir> <dataHome>` with the hook JSON on
- * stdin. Exits 0 to let the call through and 2 (reason on stderr) to refuse.
+ * CLI as `<node> guard-hook.mjs <dir> <dataHome> [--read-only]` with the hook
+ * JSON on stdin. Exits 0 to let the call through and 2 (reason on stderr) to
+ * refuse. With `--read-only` (a README audit, Phase 3) the write tools are
+ * refused outright, whatever path they name.
  *
  * It fails closed: any exception, unparsable, empty or truncated stdin, a
  * missing or non-string path field, an unexpected input shape, a path it
@@ -40,6 +42,10 @@ const FILE_TOOLS = {
   Grep: { required: [], optional: ['path'], patterns: ['glob'] },
 };
 const PATHISH_KEY = /path|file|dir|glob|cwd|root|target|dest|src/i;
+/** The tools a read-only session never gets. */
+const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+/** The only flag the hook knows; any other word on the argv refuses every call. */
+const READ_ONLY_FLAG = '--read-only';
 
 /** The tool of the call being decided, for the marker line. */
 let markerTool = null;
@@ -94,7 +100,7 @@ function isPlainObject(v) {
 }
 
 /** The reason the call is refused, or null. Throws (and so refuses) on anything it did not expect. */
-function decide(raw, dir, dataHome) {
+function decide(raw, dir, dataHome, readOnly) {
   if (raw.trim() === '') throw new Error('empty');
   const msg = JSON.parse(raw);
   if (!isPlainObject(msg)) throw new Error('not an object');
@@ -113,6 +119,7 @@ function decide(raw, dir, dataHome) {
 
   const spec = FILE_TOOLS[tool];
   if (!spec) return 'tool not allowed in a city run';
+  if (readOnly && WRITE_TOOLS.includes(tool)) return `this session is read-only: ${tool} is refused`;
 
   const known = new Set([...spec.required, ...spec.optional, ...spec.patterns]);
   for (const k of Object.keys(input)) {
@@ -153,11 +160,16 @@ async function main() {
   const timer = setTimeout(() => refuse(`${COULD_NOT} (timed out)`), timeoutMs());
   try {
     await loadGuard();
-    const [dir, dataHome] = process.argv.slice(2);
+    const [dir, dataHome, ...flags] = process.argv.slice(2);
     if (typeof dir !== 'string' || typeof dataHome !== 'string' || !isAbsolute(dir) || !isAbsolute(dataHome)) {
       refuse(`${COULD_NOT} (no run directory)`);
       return;
     }
+    if (flags.some((f) => f !== READ_ONLY_FLAG)) {
+      refuse(`${COULD_NOT} (unknown argument)`);
+      return;
+    }
+    const readOnly = flags.includes(READ_ONLY_FLAG);
     if (!statSync(dir).isDirectory()) {
       refuse(`${COULD_NOT} (no run directory)`);
       return;
@@ -172,7 +184,7 @@ async function main() {
     process.stdin.on('error', () => refuse(COULD_NOT));
     process.stdin.on('end', () => {
       try {
-        const reason = decide(Buffer.concat(chunks).toString('utf8'), dir, dataHome);
+        const reason = decide(Buffer.concat(chunks).toString('utf8'), dir, dataHome, readOnly);
         clearTimeout(timer);
         if (reason) refuse(reason);
         else allow();

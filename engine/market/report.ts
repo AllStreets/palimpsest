@@ -20,9 +20,12 @@ import { listRepos } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
 import { listAgents, listFirms } from './firms.js';
-import { job as storedJob, listJobs, publicSummary } from './jobs.js';
+import { job as storedJob, listJobs, plain, publicSummary } from './jobs.js';
 import { listRuns, run as storedRun } from './runs.js';
 import { balances } from './treasury.js';
+
+/** `plain()` lives beside `publicSummary()` in jobs.ts, so the audit's page can import it without this module's graph; re-exported for the report's callers. */
+export { plain };
 
 export interface ReportJob {
   id: string;
@@ -91,23 +94,6 @@ export const num = (n: number): string => round2(n).toLocaleString('en-US', { ma
 const usd = (n: number) => `$${round2(n).toFixed(2)}`;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/**
- * Text from outside the city (a GitHub title, a model's summary, a run or
- * halt reason, a note) as the report may hold it: redacted as a public
- * comment is (home paths, token-shaped strings), with dashes used as
- * punctuation turned into commas and emojis dropped, on one line.
- */
-export function plain(text: string, max = 600): string {
-  const s = publicSummary(String(text ?? ''))
-    .replace(/\s*(?:\u2014|\u2013|\u2012|\u2015|-{2,})\s*/g, ', ')
-    .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u200D\uFE0F\u20E3]/gu, '')
-    .replace(/(?:,\s*){2,}/g, ', ')
-    .replace(/^\s*,\s*|\s*,\s*$/g, '')
-    .replace(/\s+([,.;:!?])/g, '$1')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return s.length > max ? `${s.slice(0, max - 3).trimEnd()}...` : s;
-}
 
 /** A cell or line of outside text for the page: plain, and no table breaks. */
 function clean(s: string, max = 240): string {

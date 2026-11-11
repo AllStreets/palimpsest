@@ -13,10 +13,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { AUDIT_MAX_EVIDENCE, AUDIT_MAX_FINDINGS, AUDIT_READ_CAPS, AUDIT_TEXT_CAPS, denied, proposalKey } from '../../shared/market-rules.js';
-import type { Audit, Evidence, Finding, ModelRef, Proposal, Tier, Verdict } from '../../shared/types.js';
-import { redact } from '../market/jobs.js';
+import type { Audit, Evidence, Finding, ModelRef, Proposal, RepoChecks, Tier, Verdict } from '../../shared/types.js';
+import { plain, redact } from '../market/jobs.js';
 import type { AuditInput } from '../market/provider.js';
-import { plain } from '../market/report.js';
 import { engineGit } from '../market/worktree.js';
 
 export const VERDICTS: readonly Verdict[] = ['REAL', 'PARTIAL', 'MISSING', 'STUBBED', 'BROKEN'];
@@ -31,6 +30,24 @@ export const AUDIT_LOOP_TOOLS = ['read_file', 'list_files', 'search', 'run'] as 
 export const DEFAULT_ACCEPTANCE = 'The claim in the README holds and a test shows it.';
 /** The error `parseAudit()` returns for anything that is not the answer's shape (ruling 15). */
 export const PARSE_ERROR = "the audit's answer did not parse";
+
+/** The surveyor's standing, the system prompt of every audit session (ruling 13: no agent, the engine's own persona). */
+export const AUDIT_PERSONA =
+  'You are the surveyor for Palimpsest: a careful engineer who reads what a README promises and checks what the code keeps. You change nothing in the repository, run only its own checks, and answer only in the JSON shape you are given.';
+
+/**
+ * The command lines an audit's run tool accepts: the repository's declared
+ * checks (install, test, typecheck, lint, build, as detected or set by him)
+ * and nothing else. The broker refuses any other command.
+ */
+export function checkCommands(checks: RepoChecks | null): string[] {
+  const out: string[] = [];
+  for (const c of [checks?.install, checks?.test, checks?.typecheck, checks?.lint, checks?.build]) {
+    const cmd = typeof c === 'string' ? c.trim() : '';
+    if (cmd && !out.includes(cmd)) out.push(cmd);
+  }
+  return out;
+}
 
 const EVIDENCE_SCHEMA = {
   type: 'object',
@@ -359,10 +376,14 @@ const TEST_FOLDERS = new Set(['test', 'tests', '__tests__', 'spec']);
 /** The file names that are tests: `*.test.*` and `*.spec.*`, Python's `test_*.py` and `*_test.py`, Go's `*_test.go`, Ruby's `*_spec.rb`, Java's `*Test.java`, C#'s `*Tests.cs`, Rust's `*_test.rs` and `tests.rs`. */
 const TEST_NAMES = [/\.(test|spec)\.[^.]+$/, /^test_.+\.py$/, /.+_test\.py$/, /.+_test\.go$/, /.+_spec\.rb$/, /.+Test\.java$/, /.+Tests\.cs$/, /.+_test\.rs$/, /^tests\.rs$/];
 
-/** A path that is a test by its folder or its name (ruling 2's first leg). */
+/** Prose never counts as a test, whatever folder holds it. */
+const PROSE = /\.(md|markdown|rst|txt)$/i;
+
+/** A path that is a test by its folder or its name (ruling 2's first leg); never a prose file. */
 export function isTestFile(path: string): boolean {
   const parts = path.split('/');
   const name = parts[parts.length - 1];
+  if (PROSE.test(name)) return false;
   return parts.slice(0, -1).some((p) => TEST_FOLDERS.has(p)) || TEST_NAMES.some((re) => re.test(name));
 }
 

@@ -257,14 +257,18 @@ export function todayCap(settings: Pick<Settings, 'dayCapPct' | 'hardStopPct' | 
 
 /**
  * The parameter tag of an Ollama model name, in billions: `qwen3-coder:30b-a3b`
- * is 30, `qwen2.5-coder:7b` is 7, `qwen3:1.7b` is 1.7, a name without a tag is 0.
+ * is 30, `qwen2.5-coder:7b` is 7, `qwen3:1.7b` is 1.7, `mixtral:8x7b` is 56 (a mixture
+ * loads every expert, so the product is its weight), a name without a tag is 0.
  * The first tag after the colon (or in the name) counts; an `a3b` active-parameter
  * tag does not outrank the total.
  */
 export function localSize(name: string): number {
   const tag = name.toLowerCase().split(':')[1] ?? name.toLowerCase();
-  const m = /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)b(?=$|[^a-z0-9])/.exec(tag) ?? /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)b(?=$|[^a-z0-9])/.exec(name.toLowerCase());
-  return m ? Number(m[1]) : 0;
+  // `30b`, `1.7b`, and a mixture's `8x7b`, which loads every expert and so weighs their product.
+  const re = /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)(?:x(\d+(?:\.\d+)?))?b(?=$|[^a-z0-9])/;
+  const m = re.exec(tag) ?? re.exec(name.toLowerCase());
+  if (!m) return 0;
+  return m[2] === undefined ? Number(m[1]) : Number(m[1]) * Number(m[2]);
 }
 
 // ---------------------------------------------------------------- scope globs

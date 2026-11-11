@@ -16,11 +16,11 @@ import { describeCommand, realRunner, realSpawner, setRunner, setSpawner, type R
 import { entries } from '../engine/ledger.js';
 import { API_PRICES, KEY_SERVICE, anthropicProvider, apiKey, removeApiKey, setApiKey, usdFor } from '../engine/market/anthropic-api.js';
 import { resetBudget } from '../engine/market/budget.js';
-import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
+import type { AuditInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { apiCredits } from '../shared/credits.js';
-import type { Agent, Job, RunProgress } from '../shared/types.js';
+import type { Agent, Job, Repo, RunProgress } from '../shared/types.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_SANDBOX', 'PALIMPSEST_CLAUDE_PROJECTS', 'PALIMPSEST_TEST_PROJECTS', 'ANTHROPIC_API_KEY'];
 let previousEnv: Record<string, string | undefined>;
@@ -443,5 +443,66 @@ describe('anthropic api', () => {
 
   test('only the real API base or loopback is accepted', () => {
     assert.throws(() => anthropicProvider({ baseUrl: 'https://evil.example.com' }), /base/);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* audit() (Phase 3)                                                   */
+/* ------------------------------------------------------------------ */
+
+const AUDIT_ANSWER = { claims: 1, findings: [{ claim: 'Supports hot reload', source: { file: 'README.md', line: 3 }, verdict: 'MISSING', tested: false, evidence: [{ file: 'src/a.ts', line: 1, note: 'no watcher' }], proposal: null }] };
+
+function auditInput(auditId: string) {
+  const { input: w, logs, ticks } = workInput(auditId);
+  const input: AuditInput = {
+    repo: { fullName: 'acme/widgets', defaultBranch: 'main' } as Repo,
+    auditId,
+    dir: w.dir,
+    baseSha: 'b'.repeat(40),
+    readme: { path: 'README.md', text: '# Widgets\n\nSupports hot reload.\n' },
+    docs: [],
+    checks: null,
+    model: MODEL,
+    log: (l) => logs.push(l),
+    onProgress: (p) => ticks.push(p),
+    signal: new AbortController().signal,
+    caps: { maxTurns: 40, maxMinutes: 25, maxCredits: 40 },
+  };
+  return { input, logs };
+}
+
+describe('anthropic api audit', () => {
+  test('audit runs the read-only loop and charges kind audit under the city, never a firm', async () => {
+    fakeSecurity();
+    const api = await fakeApi([
+      { blocks: [{ type: 'tool_use', name: 'read_file', input: { path: 'src/a.ts' } }, { type: 'tool_use', name: 'edit_file', input: { path: 'src/a.ts', old_text: '1', new_text: '2' } }] },
+      { blocks: [{ type: 'text', text: JSON.stringify(AUDIT_ANSWER) }] },
+    ]);
+    enable();
+    const { input } = auditInput('audit-api');
+    const r = await anthropicProvider({ baseUrl: api.base, keychain: fakeKc }).audit(input);
+    assert.equal(r.ended, 'finished', r.reason ?? '');
+    assert.deepEqual(r.answer, AUDIT_ANSWER);
+    assert.ok(r.usage.usd > 0);
+    assert.equal(api.requests.length, 2);
+    assert.deepEqual((api.requests[0].body.tools as Array<{ name: string }>).map((t) => t.name), ['read_file', 'list_files', 'search', 'run']);
+    assert.match(String(api.requests[0].body.system), /change nothing/i);
+    const results = (api.requests[1].body.messages as Array<{ role: string; content: Array<{ type: string; content?: string; is_error?: boolean }> }>).at(-1)!.content;
+    assert.equal(results.length, 2);
+    assert.match(results[0].content ?? '', /export const a = 1/);
+    assert.match(results[1].content ?? '', /no tool named/);
+    const rows = openDb().prepare('SELECT kind, firm_id, run_id FROM credits').all() as Array<{ kind: string; firm_id: string | null; run_id: string | null }>;
+    assert.equal(rows.length, 2);
+    for (const row of rows) assert.deepEqual({ ...row }, { kind: 'audit', firm_id: null, run_id: 'audit-api' });
+  });
+
+  test('an audit while the backend is off is crashed with the reason and calls nothing', async () => {
+    const sec = fakeSecurity();
+    const api = await fakeApi([]);
+    const r = await anthropicProvider({ baseUrl: api.base, keychain: fakeKc }).audit(auditInput('audit-off').input);
+    assert.equal(r.ended, 'crashed');
+    assert.match(r.reason ?? '', /off/);
+    assert.equal(api.requests.length, 0);
+    assert.equal(sec.calls.length, 0);
   });
 });

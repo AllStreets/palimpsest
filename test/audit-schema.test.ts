@@ -530,3 +530,8 @@ test('auditSlug is a file name without the slash or anything else', () => {
   assert.equal(auditSlug('acme/widgets', 'aud1'), 'acme-widgets-aud1');
   assert.equal(auditSlug('Acme/My.Repo', '../x y'), 'acme-my-repo-x-y');
 });
+
+test('isTestFile never counts prose in a test folder', () => {
+  for (const f of ['test/README.md', 'tests/notes.txt', 'spec/guide.rst', '__tests__/fixtures/cases.MD']) assert.ok(!isTestFile(f), f);
+  for (const f of ['test/readme.test.ts', 'spec/guide_spec.rb']) assert.ok(isTestFile(f), f);
+});

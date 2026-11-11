@@ -443,6 +443,24 @@ export function publicSummary(text: string): string {
 }
 
 /**
+ * Text from outside the city (a GitHub title, a model's summary, a run or
+ * halt reason, a note) as the report may hold it: redacted as a public
+ * comment is (home paths, token-shaped strings), with dashes used as
+ * punctuation turned into commas and emojis dropped, on one line.
+ */
+export function plain(text: string, max = 600): string {
+  const s = publicSummary(String(text ?? ''))
+    .replace(/\s*(?:\u2014|\u2013|\u2012|\u2015|-{2,})\s*/g, ', ')
+    .replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u200D\uFE0F\u20E3]/gu, '')
+    .replace(/(?:,\s*){2,}/g, ', ')
+    .replace(/^\s*,\s*|\s*,\s*$/g, '')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s.length > max ? `${s.slice(0, max - 3).trimEnd()}...` : s;
+}
+
+/**
  * Real GitHub writes happen only from the real data home. A temp or sample
  * home with the real runner (a test that forgot its fake, a capture) is
  * refused before any gh call.

@@ -242,3 +242,11 @@ test('the deny globs and their matcher live in shared and inspect.ts re-exports 
   assert.equal(inspect.globRegex, shared.globRegex);
   assert.equal(inspect.DENY_SCOPE, shared.DENY_SCOPE);
 });
+
+test('localSize reads an NxMb tag as the whole model: mixtral:8x7b ranks as 56', () => {
+  // A mixture of experts loads every expert, so its name's product is its weight for the rank (ruling 5).
+  assert.equal(localSize('mixtral:8x7b'), 56);
+  assert.equal(localSize('mixtral:8x22b-instruct-q4_K_M'), 176);
+  assert.ok(localSize('mixtral:8x7b') > localSize('qwen3-coder:30b-a3b'));
+  assert.equal(localSize('qwen2.5-coder:7b'), 7, 'a plain tag is unchanged');
+});
