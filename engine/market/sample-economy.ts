@@ -68,9 +68,10 @@ import { canPush, inspectionSummary } from '../guild/inspect.js';
 import { paths } from '../home.js';
 import { districtOrigin, quarterOrigin } from '../layout.js';
 import { query, record } from '../ledger.js';
-import { earnedFloors, getRepo, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
+import { earnedFloors, getRepo, listRepos, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
 import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, SAMPLE_TREES, useSampleFolders } from '../sample.js';
-import { award, NO_SLOT, openBidding } from './bids.js';
+import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
+import { getSettings } from '../settings.js';
 import { charge } from './budget.js';
 import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
@@ -1550,8 +1551,16 @@ export interface EconomyClock {
  * own record and event. `now` stamps trips and the PR poll. A repo named in
  * `fail` fails its next inspection instead (the guild's review rejects it):
  * its scar is laid and its site struck, as a failed run's is.
+ *
+ * With `board`, the clock also keeps the board as the scheduler would on a
+ * real engine (a sample engine has none): an open job on a repo with its
+ * market on opens a round whose window is `bidWindowSec` script seconds,
+ * the eligible agents answer one at a time (a bid on the job's own terms,
+ * or a local agent sitting out for want of a slot), and the round is
+ * awarded by the market's own rule once everyone has answered or the
+ * window it opened has closed.
  */
-export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number }): EconomyClock {
+export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number; board?: boolean }): EconomyClock {
   const S = 1000;
   const p = new Pipeline(rng('sample-clock'));
   const steps: Array<{ at: number; run: () => void | Promise<void> }> = [];
@@ -1579,6 +1588,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
           if (!r || r.stage !== 'working') return;
           const progress = { ...r.progress, turns: r.progress.turns + 1, toolCalls: r.progress.toolCalls + 2 };
           saveRun({ ...r, progress });
+          emit('run.progress', { runId, progress });
           const line = lines[i];
           if (line) writeLog(runId, [{ at: iso(opts.now()), kind: line[0], text: line[1] }], true);
           site(r, 'framing', Math.min(0.7, 0.3 + i * 0.035));
@@ -1706,6 +1716,45 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
     });
   }
 
+  // The board (opts.board): one answer per round every BID_EVERY script ms, on its own seed so the runs' story is unchanged.
+  const BID_EVERY = 15 * S;
+  const bp = new Pipeline(rng('sample-board'));
+  const sits = rng('sample-board-sit');
+  const lastAnswer = new Map<string, number>();
+  /** Rounds this clock opened, whose window runs in script time; a round seeded before it closes once everyone has answered. */
+  const opened = new Set<string>();
+  const board = (): void => {
+    const now = opts.now();
+    const market = new Set(listRepos().filter((r) => r.connected && r.market && !r.halted).map((r) => r.fullName));
+    const windowMs = getSettings().bidWindowSec * 1000;
+    for (const j of listJobs({ status: 'open' })) {
+      if (!market.has(j.repo)) continue;
+      const next = openBidding(j, now - windowMs + windowMs / opts.speed);
+      if (next.status === 'bidding') opened.add(`${next.id} ${next.bidsCloseAt}`);
+    }
+    for (const j of listJobs({ status: 'bidding' })) {
+      if (!market.has(j.repo) || !j.bidsCloseAt) continue;
+      const { bids, satOut } = bidList(j.id);
+      const answered = new Set([...bids.map((b) => b.agentId), ...satOut.map((x) => x.agentId)]);
+      const waiting = eligibleAgents(j).filter((a) => !answered.has(a.id));
+      const round = `${j.id} ${j.bidsCloseAt}`;
+      if (waiting.length === 0 || (opened.has(round) && now >= Date.parse(j.bidsCloseAt))) {
+        award(j, now);
+        opened.delete(round);
+        lastAnswer.delete(round);
+        continue;
+      }
+      if (elapsed - (lastAnswer.get(round) ?? -Infinity) < BID_EVERY) continue;
+      lastAnswer.set(round, elapsed);
+      const a = waiting[0];
+      if (a.model.startsWith('ollama:') && sits() < 0.3) bp.satOut(j, a, NO_SLOT);
+      else {
+        const q = bp.quote(a, j);
+        bp.bid(j, a, q.price, q.confidence);
+      }
+    }
+  };
+
   const due = () => {
     for (;;) {
       const i = steps.findIndex((s) => s.at <= elapsed);
@@ -1721,6 +1770,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
       elapsed += ms * opts.speed;
       chain = chain.then(() => {
         due();
+        if (opts.board) chain = chain.then(board).catch((err: unknown) => console.warn(`palimpsest: the sample board: ${err instanceof Error ? err.message : String(err)}`));
         // Trips end when their time is up.
         const t = opts.now();
         for (const trip of liveTrips()) if (Date.parse(trip.startedAt) + trip.ms <= t) endTrip(trip, t);

@@ -200,7 +200,24 @@ test('job detail carries bids, award, sat-out agents and ledger', async () => {
 
   const fresh = await call('GET', `/api/jobs/${postJob(['**']).id}`);
   assert.equal(fresh.json.award, null, 'a job never awarded has no award');
+  assert.deepEqual(fresh.json.satOut, [], 'a job with no round has no one sitting out');
   assert.equal((await call('GET', '/api/jobs/job-nope')).status, 404);
+});
+
+test('job detail names who sat out of the round still taking bids, before any award', async () => {
+  repoOf();
+  addAgent('l1', 'beta', 'ollama:qwen3');
+  const open = openBidding(postJob(['**']), Date.now());
+  const s = { jobId: open.id, agentId: 'l1', firmId: 'beta', reason: `no slot; see ${paths().runs}/x`, note: 'sat out: no slot', at: new Date().toISOString() };
+  openDb().prepare('INSERT INTO bids (id, job_id, json) VALUES (?, ?, ?)').run('sat-1', open.id, JSON.stringify({ round: open.bidsCloseAt, satOut: s }));
+  // A sit-out from an earlier round is not this round's.
+  openDb().prepare('INSERT INTO bids (id, job_id, json) VALUES (?, ?, ?)').run('sat-0', open.id, JSON.stringify({ round: '2020-01-01T00:00:00.000Z', satOut: { ...s, agentId: 'old' } }));
+  const d = await call('GET', `/api/jobs/${open.id}`);
+  assert.equal(d.json.award, null);
+  assert.deepEqual(d.json.satOut.map((x: { agentId: string }) => x.agentId), ['l1']);
+  assert.equal(d.json.satOut[0].firmId, 'beta');
+  assert.match(d.json.satOut[0].reason, /^no slot; see /);
+  assert.ok(!d.text.includes(paths().runs), 'the reason is redacted like everything else');
 });
 
 // ------------------------------------------------------------------ firms, agents

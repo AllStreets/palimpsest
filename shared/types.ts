@@ -428,6 +428,8 @@ export interface JobDetail {
   job: Job;
   bids: Bid[];
   award: Award | null;
+  /** Agents that sat out of the job's current round, with why (the round still taking bids included). */
+  satOut: Array<{ agentId: string; firmId: string; reason: string; at: string }>;
   runs: RunView[];
   inspections: InspectionView[];
   ledger: LedgerRow[];

@@ -17,7 +17,8 @@ import { getRunner, realRunner, realSpawner, setRunner, setSpawner, type Runner 
 import { paths } from '../engine/home.js';
 import { query } from '../engine/ledger.js';
 import { listAgents, quarters, firm } from '../engine/market/firms.js';
-import { listJobs } from '../engine/market/jobs.js';
+import { bidList } from '../engine/market/bids.js';
+import { acceptProposed, listJobs, postManualJob } from '../engine/market/jobs.js';
 import { resetProviders } from '../engine/market/providers.js';
 import { verifyReplay } from '../engine/market/replay.js';
 import { listRuns, resetRuns } from '../engine/market/runs.js';
@@ -224,6 +225,77 @@ test('the clock moves a running job to merged with a lit floor and a trip home',
     unsubscribe();
     off();
   }
+});
+
+test('the board clock opens accepted and posted jobs, takes bids one at a time and awards once everyone has answered', async () => {
+  await seed();
+  const off = installTreasury();
+  const seen: Array<{ type: string; data: any }> = [];
+  const unsubscribe = subscribe((e) => seen.push(e as { type: string; data: any }));
+  try {
+    const seeded = listJobs({ status: 'bidding' });
+    assert.equal(seeded.length, 2, 'two rounds open at the start');
+    const before = new Map(seeded.map((j) => [j.id, bidList(j.id).bids.length + bidList(j.id).satOut.length]));
+    const harness = listJobs({ status: 'proposed' })[0];
+    acceptProposed(harness.id);
+    const posted = postManualJob({ repo: harness.repo, title: 'Name the custody export columns in the CSV header', tier: 'low' });
+    let t = NOW;
+    const clock = economyClock({ now: () => t, speed: 20, board: true });
+    const tick = async () => {
+      t += 1000;
+      clock.tick(1000);
+      await clock.idle();
+    };
+    await tick();
+    for (const id of [harness.id, posted.id]) {
+      const j = listJobs().find((x) => x.id === id)!;
+      assert.equal(j.status, 'bidding', `${j.title} opens for bids on the next tick`);
+      // The window is bidWindowSec script seconds: 120 / 20 = 6 wall seconds.
+      assert.equal(Date.parse(j.bidsCloseAt!) - t, 6000);
+    }
+    for (const j of seeded) assert.equal(bidList(j.id).bids.length + bidList(j.id).satOut.length, before.get(j.id)! + 1, 'one more answer on each seeded round');
+    const placed = seen.filter((e) => e.type === 'bid.placed');
+    assert.ok(placed.length >= 3, `bids arrive live (${placed.length})`);
+    // One answer per round per tick at most.
+    const perJob = new Map<string, number>();
+    for (const e of seen.filter((x) => x.type === 'bid.placed' || x.type === 'bid.satOut')) {
+      const id = e.type === 'bid.placed' ? e.data.bid.jobId : e.data.satOut.jobId;
+      perJob.set(id, (perJob.get(id) ?? 0) + 1);
+    }
+    assert.ok([...perJob.values()].every((k) => k === 1), `one answer per round on the first tick (${[...perJob.values()].join(', ')})`);
+    for (let i = 0; i < 30 && listJobs({ status: 'bidding' }).length > 0; i++) await tick();
+    clock.stop();
+    for (const id of [...seeded.map((j) => j.id), harness.id, posted.id]) {
+      const j = listJobs().find((x) => x.id === id)!;
+      assert.ok(['awarded', 'open'].includes(j.status), `${j.title} was awarded (${j.status})`);
+      assert.ok(query({ kind: 'job.awarded', jobId: id }).length >= 1);
+    }
+    assert.ok(seen.some((e) => e.type === 'run.progress' && e.data.progress.toolCalls > 0), 'a working run reports its progress');
+    const v = verifyReplay();
+    assert.ok(v.ok, v.diffs.join('\n'));
+  } finally {
+    unsubscribe();
+    off();
+  }
+});
+
+test('without the board the clock places no bids', async () => {
+  await seed();
+  let t = NOW;
+  const placed: string[] = [];
+  const unsubscribe = subscribe((e) => {
+    if (e.type === 'bid.placed') placed.push(e.type);
+  });
+  const clock = economyClock({ now: () => t, speed: 20 });
+  for (let i = 0; i < 5; i++) {
+    t += 1000;
+    clock.tick(1000);
+    await clock.idle();
+  }
+  clock.stop();
+  unsubscribe();
+  assert.deepEqual(placed, []);
+  assert.equal(listJobs({ status: 'bidding' }).length, 2);
 });
 
 test('the sample stand-in never calls the network', async () => {

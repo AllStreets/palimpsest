@@ -21,6 +21,7 @@ import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/v
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
 import { createInspector, type MarketNames } from './ui/inspector';
+import { createJobs } from './ui/jobs';
 import { createRepos } from './ui/repos';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
@@ -369,6 +370,7 @@ async function main(): Promise<void> {
     city.setStopped(s);
   };
   const settings = createSettings(document.body, { listen, onDismiss: toCity, onStopped: setStopped });
+  const jobBoard = createJobs(document.body, { listen, onDismiss: toCity });
   void api.health().then((h) => setStopped(h.stopped), () => {});
 
   // ---------------------------------------------------------------- the inspector
@@ -715,9 +717,12 @@ async function main(): Promise<void> {
     }
   });
 
-  // Repos and Settings draw over the city, which keeps running beside them.
+  // Repos, Settings and the job board draw over the city, which keeps running beside them. A job's own
+  // address opens the board on that job until its page exists (Task 37); a place with no screen yet
+  // (a firm, an agent, a run, an inspection, the treasury, a district) leaves the city showing.
   let lastRoute = 'city';
-  onRoute((route) => {
+  onRoute((to, place) => {
+    const route = to === 'job' ? 'jobs' : to === 'repos' || to === 'settings' || to === 'jobs' ? to : 'city';
     document.body.dataset.route = route;
     runhead.setRoute(route);
     if (route !== 'city') inspector.close();
@@ -725,6 +730,8 @@ async function main(): Promise<void> {
     else repos.hide();
     if (route === 'settings') settings.show();
     else settings.hide();
+    if (route === 'jobs') jobBoard.show(to === 'job' ? place.id : null);
+    else jobBoard.hide();
     // Back in the city, focus returns to it rather than to a sheet that has gone.
     if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
     lastRoute = route;

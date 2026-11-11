@@ -220,7 +220,7 @@ function mustRun(id: string): Run {
 // ------------------------------------------------------------------ jobs
 
 function jobDetail(j: Job): JobDetail {
-  const { bids } = bidList(j.id);
+  const { bids, satOut } = bidList(j.id);
   const [awarded] = query({ kind: 'job.awarded', jobId: j.id, last: true });
   const a = awarded?.data as { chosen?: unknown; why?: unknown; satOut?: unknown } | undefined;
   const runs = listRuns({ jobId: j.id });
@@ -235,6 +235,7 @@ function jobDetail(j: Job): JobDetail {
           satOut: Array.isArray(a.satOut) ? (a.satOut as Array<{ agentId: string; reason: string }>).map((s) => ({ agentId: s.agentId, reason: redact(String(s.reason)) })) : [],
         }
       : null,
+    satOut: satOut.map((s) => ({ agentId: s.agentId, firmId: s.firmId, reason: redact(String(s.reason)), at: s.at })),
     runs: runs.map(publicRun),
     inspections: runs.flatMap((r) => inspectionsOfRun(r.id)).map((i) => inspectionView(i, false)),
     ledger,

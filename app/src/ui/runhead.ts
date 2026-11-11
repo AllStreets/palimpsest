@@ -10,7 +10,7 @@ export interface Runhead {
 
 /**
  * The running head, top left, as a book prints its title above the page:
- * the name in italic, then the three places, the current one ruled in
+ * the name in italic, then the places, the current one ruled in
  * bronze beneath. Plain links, so Tab and Enter reach them.
  */
 export function createRunhead(parent: HTMLElement): Runhead {
@@ -22,6 +22,7 @@ export function createRunhead(parent: HTMLElement): Runhead {
   nav.append(mark);
   for (const [route, text] of [
     ['city', 'City'],
+    ['jobs', 'Jobs'],
     ['repos', 'Repos'],
     ['settings', 'Settings'],
   ] as Array<[Route, string]>) {

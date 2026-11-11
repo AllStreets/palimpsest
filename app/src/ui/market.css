@@ -1,0 +1,560 @@
+/* The market's screens (Task 36 on): the job board first. Same sheet, type and rules as Repos and Settings. */
+
+/* ---------------------------------------------------------------- the head */
+
+.jobs-how {
+  margin-top: 6px;
+  max-width: 74ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.jobs-filter {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 20px;
+  row-gap: 6px;
+  margin-top: 22px;
+  padding-bottom: 2px;
+}
+.jobs-filter[hidden] {
+  display: none;
+}
+.jobs-pick {
+  all: unset;
+  position: relative;
+  padding: 3px 0 6px;
+  font-size: 13px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.jobs-pick:hover {
+  color: var(--ink-2);
+}
+.jobs-pick[aria-checked='true'] {
+  color: var(--ink);
+}
+.jobs-pick[aria-checked='true']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--bronze);
+}
+.jobs-pick:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.jobs-key {
+  margin-top: 10px;
+  max-width: 66ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.jobs-empty {
+  margin-top: 26px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-3);
+}
+.jobs-empty[hidden],
+.repos-trouble[hidden] {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- a job */
+
+.job-list {
+  list-style: none;
+}
+.job-row {
+  position: relative;
+  padding: 15px 0 15px;
+  border-bottom: 1px solid var(--rule);
+}
+.job-row[aria-busy='true'] {
+  cursor: progress;
+}
+.job-row[aria-busy='true'] .btn,
+.job-row[aria-busy='true'] .textbtn {
+  opacity: 0.55;
+  pointer-events: none;
+}
+/* The job the address names: a bronze rule in the margin. */
+.job-row.focus::before {
+  content: '';
+  position: absolute;
+  left: -16px;
+  top: 16px;
+  bottom: 16px;
+  width: 2px;
+  background: var(--bronze);
+}
+.job-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+}
+.job-title {
+  min-width: 0;
+  font-family: var(--serif);
+  font-size: 18.5px;
+  line-height: 1.25;
+  color: var(--ink);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+a.job-title:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+  text-underline-offset: 3px;
+}
+.job-title:focus-visible,
+.job-ref:focus-visible,
+.job-pr-link:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.job-meta {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.job-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.job-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.job-repo {
+  color: var(--ink-2);
+}
+.job-ref {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+a.job-ref:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.job-excerpt {
+  margin-top: 8px;
+  max-width: 64ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.job-note {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.job-note.inline {
+  margin-top: 0;
+}
+.job-error {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--err);
+  overflow-wrap: anywhere;
+}
+.job-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: 12px;
+}
+.job-withdraw {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-left: auto;
+  font-size: 12.5px;
+}
+.job-withdraw .textbtn {
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.job-withdraw .textbtn:hover {
+  color: var(--ink);
+}
+.job-ask {
+  color: var(--ink-2);
+}
+.job-withdraw .job-yes {
+  color: var(--err);
+  text-decoration-color: rgba(223, 138, 114, 0.4);
+}
+
+/* ---------------------------------------------------------------- the round */
+
+.round-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 11px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.round-wait {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14.5px;
+  color: var(--ink-3);
+}
+/* One lamp per agent that may answer, as the exchange's tote board lights them: lit for a bid, struck for a sit-out. */
+.round-lamps {
+  display: inline-flex;
+  gap: 3px;
+}
+.round-lamps i {
+  width: 7px;
+  height: 7px;
+  box-sizing: border-box;
+  border: 1px solid rgba(236, 230, 218, 0.28);
+}
+.round-lamps i.bid {
+  border-color: var(--bronze);
+  background: var(--bronze);
+}
+.round-lamps i.sat {
+  background: linear-gradient(to top right, transparent calc(50% - 0.6px), rgba(236, 230, 218, 0.45) 50%, transparent calc(50% + 0.6px));
+}
+.round-clock {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.round-clock-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.bids {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+/* The same columns on every job, so the bids of one round read against another's. */
+.bids .col-firm {
+  width: 25%;
+}
+.bids .col-agent {
+  width: 23%;
+}
+.bids .col-price {
+  width: 11%;
+}
+.bids .col-conf {
+  width: 14%;
+}
+.bids .col-est {
+  width: 16%;
+}
+.bids .col-ev {
+  width: 11%;
+}
+.bids-cap {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.bids th {
+  padding: 0 0 6px;
+  border-bottom: 1px solid var(--rule-strong);
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  text-align: left;
+  white-space: nowrap;
+}
+.bids td {
+  padding: 7px 0 6px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bids th.c-firm {
+  padding-left: 15px;
+}
+.bids td.none {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--ink-3);
+}
+.bids tr:last-child td {
+  border-bottom: none;
+}
+.bids .c-firm {
+  color: var(--ink);
+}
+.bids th.c-num,
+.bids td.c-num {
+  padding-left: 14px;
+  text-align: right;
+}
+.bids td.c-num {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.bids td.quiet,
+.bids td.neg {
+  color: var(--ink-3);
+}
+.bids td.c-agent {
+  padding-left: 14px;
+}
+.bids th.c-agent {
+  padding-left: 14px;
+}
+.bid-lamp {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 9px;
+  transform: translateY(-1px);
+}
+/* The bid the award would choose now. */
+.bids tr.lead .bid-lamp {
+  background: var(--bronze);
+}
+.bids tr.lead td.c-num:last-child {
+  color: #e2c39c;
+}
+/* A bid that has just come in: its row warms for a moment, then settles. */
+.bids tr.fresh td {
+  animation: bid-in 2.4s ease-out;
+}
+@keyframes bid-in {
+  from {
+    background: rgba(185, 140, 90, 0.16);
+  }
+  to {
+    background: transparent;
+  }
+}
+.bids-none td {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink-3);
+}
+
+.sat-out {
+  list-style: none;
+  margin-top: 6px;
+}
+.sat-out li {
+  padding: 2px 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.sat-who {
+  color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------- a run */
+
+.run-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 10px;
+}
+.job-ticks {
+  align-self: center;
+  transform: none;
+}
+.run-stage {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink);
+}
+.run-by {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.run-progress {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 14px;
+  margin-top: 5px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.run-counts {
+  color: var(--ink);
+}
+.run-spent {
+  color: var(--ink-3);
+}
+
+.job-pr {
+  margin-top: 9px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.job-pr-link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--bronze);
+  text-underline-offset: 3px;
+}
+.job-done,
+.job-failed {
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.job-done::before,
+.job-failed::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 5px;
+  margin-right: 8px;
+  transform: translateY(-1px);
+}
+/* Merged: the bronze foundation stone, as Repos marks a standing tower. Closed: an empty course. Failed: rust. */
+.job-done.merged::before {
+  background: var(--bronze);
+}
+.job-done.closed::before {
+  box-sizing: border-box;
+  border: 1px solid var(--ink-3);
+}
+.job-failed::before {
+  background: var(--err);
+}
+.halted-repo .job-title.plain {
+  font-size: 18.5px;
+}
+
+/* ---------------------------------------------------------------- post a job */
+
+.post-job {
+  margin-top: 8px;
+}
+.post-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  column-gap: 20px;
+  align-items: baseline;
+  padding: 13px 0 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.post-label {
+  font-size: 13.5px;
+  color: var(--ink);
+}
+.post-hint {
+  grid-column: 2;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.post-hint:empty {
+  display: none;
+}
+.post-input,
+.post-repo {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 2px 0 5px;
+  border-bottom: 1px solid var(--rule-strong);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.post-input::placeholder {
+  color: var(--ink-3);
+}
+.post-input:focus,
+.post-repo:focus {
+  border-bottom-color: var(--bronze);
+}
+.post-body {
+  min-height: 72px;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+.post-repo {
+  appearance: none;
+  cursor: pointer;
+  padding-right: 22px;
+  background: linear-gradient(45deg, transparent 50%, var(--ink-3) 50%) right 6px center / 5px 5px no-repeat,
+    linear-gradient(-45deg, transparent 50%, var(--ink-3) 50%) right 1px center / 5px 5px no-repeat;
+}
+.post-repo option {
+  background: #121318;
+  color: var(--ink);
+}
+.post-tiers {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 26px;
+}
+.post-tier .quality-name {
+  min-width: 0;
+}
+.post-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-top: 18px;
+}
+.post-said {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.post-said.err {
+  color: var(--err);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bids tr.fresh td {
+    animation: none;
+    background: rgba(185, 140, 90, 0.1);
+  }
+}

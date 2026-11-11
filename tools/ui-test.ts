@@ -26,6 +26,7 @@ import { layoutTower } from '../shared/tower-layout.js';
 import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../shared/types.js';
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
+import { jobBoardChecks } from './ui-test-jobs.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1754,6 +1755,12 @@ async function main(): Promise<void> {
       await quarterChecks(page);
       await darkTowerChecks(page);
       await exchangeChecks(page);
+      // The job board (Task 36): a refusal it provokes on purpose shows in the console as a failed 409, excused here.
+      const refusals = await jobBoardChecks(page, check, SHOTS);
+      for (let i = 0; i < refusals; i++) {
+        const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
+        if (k >= 0) consoleErrors.splice(k, 1);
+      }
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);
