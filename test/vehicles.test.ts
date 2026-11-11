@@ -417,18 +417,21 @@ test('a summons queued on a busy cab says it is queued and how long the wait rea
   for (let i = 0; i < NET.ranks.length * 3; i++) first.push(v.summonCab({ ...trip, id: `busy${i}` }, k));
   const mine = v.summonCab({ ...trip, id: 'mine' }, k);
   assert.equal(mine.phase(), 'queued', 'my summons waits for a cab to come free');
-  const busy = first.find((r) => r.id === mine.id.split('~')[0]) ?? first[0];
-  assert.notEqual(busy.phase(), 'queued');
+  // The cab it waits on is out on someone else's errand: that booking shows the errand; mine does not.
+  const busy = first.filter((r) => r.vehicle === mine.vehicle);
+  assert.equal(busy.length, 1, 'exactly one busy booking is on the cab I wait for');
+  assert.notEqual(busy[0].phase(), 'queued');
+  assert.notEqual(busy[0].phase(), mine.phase());
+  assert.notDeepEqual(mine.position(), busy[0].position(), 'while queued my booking is not where the busy cab is');
   const wait = mine.arrivesIn(kerbOf(start, NET));
-  // The cab it waits on is out on another errand: the wait covers that errand and the drive back to me.
   assert.ok(Number.isFinite(wait) && wait > 60, `a real wait (${wait} s)`);
-  let seen = mine.phase();
+  let t = 0;
   for (let i = 0; i < 40000 && mine.phase() !== 'pickup'; i++) {
     v.update(0.25);
-    if (mine.phase() !== seen) seen = mine.phase();
-    if (mine.phase() === 'queued') assert.ok(mine.arrivesIn(kerbOf(start, NET)) > 0);
+    t += 0.25;
   }
   assert.equal(mine.phase(), 'pickup', 'in the end my cab comes');
+  assert.ok(Math.abs(t - wait) < 3, `it comes when it said it would (${t} s against ${wait.toFixed(1)} s)`);
   assert.ok(dist(at(mine), kerbOf(start, NET)) < 0.5, 'to my kerb');
   v.dispose();
 });
@@ -456,3 +459,33 @@ test('relaying the network re-plans a cab caught mid-errand onto the new streets
   assert.ok(setDown && dist(setDown, kerbOf(end, bigger)) < 0.5, 'it sets down at the kerb the new network gives');
   v.dispose();
 });
+
+// ---------------------------------------------------------------- fix round 3
+
+for (const phase of ['to-pickup', 'returning'] as const) {
+  test(`relaying the network re-plans a cab caught ${phase} without a jump, and it still reaches its kerb or bay`, () => {
+    const v = createVehicles(NET, 'high');
+    const trip = tripOf({ x: 200, z: -40 }, { x: 1000, z: 260 });
+    const k = trip.legs.findIndex((l) => l.mode === 'cab');
+    const start = xz(trip.legs[k].path[0]);
+    const cab = v.summonCab(trip, k);
+    for (let i = 0; i < 40000 && cab.phase() !== phase; i++) v.update(0.25);
+    v.update(phase === 'to-pickup' ? 5 : 10);
+    assert.equal(cab.phase(), phase);
+    const before = at(cab);
+    const bigger = network({ blocks: 3, districts: [...SLOTS.slice(0, 6), { x: 960, z: 240 }] });
+    v.relay(bigger);
+    assert.ok(dist(at(cab), before) < 0.5, 'the cab does not jump');
+    assert.equal(cab.phase(), phase);
+    const phases: string[] = [phase];
+    let picked: P | null = null;
+    for (let i = 0; i < 40000 && cab.phase() !== 'parked'; i++) {
+      v.update(0.25);
+      if (phases[phases.length - 1] !== cab.phase()) phases.push(cab.phase());
+      if (cab.phase() === 'pickup') picked ??= at(cab);
+    }
+    assert.equal(phases[phases.length - 1], 'parked', `it gets back to its bay (${phases.join(', ')})`);
+    if (phase === 'to-pickup') assert.ok(picked && dist(picked, kerbOf(start, bigger)) < 0.5, 'it picks up at the kerb the new network gives');
+    v.dispose();
+  });
+}

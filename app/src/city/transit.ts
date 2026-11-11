@@ -396,6 +396,8 @@ interface TransitMaterials {
   paint: THREE.MeshStandardMaterial;
   timber: THREE.MeshStandardMaterial;
   glassWarm: THREE.MeshStandardMaterial;
+  paving: THREE.MeshStandardMaterial;
+  tactile: THREE.MeshStandardMaterial;
   glassCool: THREE.MeshStandardMaterial;
   glassClear: THREE.MeshStandardMaterial;
   podFloor: THREE.MeshStandardMaterial;
@@ -531,6 +533,51 @@ function shadedSteel(): THREE.MeshStandardMaterial {
           // Weathering: faintly darker toward the foot of each upright face.
           diffuseColor.rgb *= 0.92 + 0.08 * smoothstep(0.0, 6.0, fract(vSP.y / 6.0) * 6.0);
         }
+      }`,
+    );
+  };
+  return m;
+}
+
+/** Concrete paving slabs, 600 mm square on a running bond, each its own tone, with sunk joints and a little grit. */
+function pavingMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0x9a948a, roughness: 0.82, metalness: 0 });
+  m.name = 'paving';
+  m.customProgramCacheKey = () => 'palimpsest-transit-paving';
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vPP;').replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvPP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vPP;\nfloat pvHash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }').replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+      {
+        vec2 q = vPP.xz / 0.6;
+        q.x += 0.5 * mod(floor(q.y), 2.0);
+        vec2 f = fract(q);
+        vec2 cell = floor(q);
+        float joint = 1.0 - smoothstep(0.012, 0.03, min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)));
+        float tone = 0.86 + 0.24 * pvHash(cell);
+        float grit = 0.94 + 0.12 * pvHash(floor(vPP.xz * 60.0));
+        diffuseColor.rgb *= tone * grit * mix(1.0, 0.45, joint);
+      }`,
+    );
+  };
+  return m;
+}
+
+/** A tactile edge strip: safety yellow, its blisters standing in rows, catching the light. */
+function tactileMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0xc8a020, roughness: 0.55, metalness: 0 });
+  m.name = 'tactile';
+  m.customProgramCacheKey = () => 'palimpsest-transit-tactile';
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vTPp;').replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvTPp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vTPp;').replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+      {
+        vec2 f = fract(vTPp.xz / 0.066) - 0.5;
+        float blister = 1.0 - smoothstep(0.2, 0.32, length(f));
+        diffuseColor.rgb *= mix(0.72, 1.12, blister);
       }`,
     );
   };
@@ -1189,7 +1236,11 @@ function railStation(b: Build, M: TransitMaterials, s: Stop, uv: [number, number
   for (const side of [-1, 1]) {
     // Platform slab from the edge by the track to the windscreen.
     b.sweep(M.concrete, [[0, 0], [0, -0.45], [3.4, -0.45], [3.4, 0]].map(([l, h]) => [side * (3.55 + l), h] as [number, number]).map(([l, h]) => (side > 0 ? [l, h] : [l, h]) as [number, number]), f.at(f.u - half, 0), f.at(f.u + half, 0), plat, true);
-    b.beam(M.paint, L(-half, side * 3.85, plat + 0.005), L(half, side * 3.85, plat + 0.005), 0.55, 0.01);
+    // The platform's finish: paving slabs laid over the slab, and a yellow blister strip along the edge.
+    b.detail(() => {
+      b.beam(M.paving, L(-half, side * 5.55, plat + 0.006), L(half, side * 5.55, plat + 0.006), 2.75, 0.012);
+      b.beam(M.tactile, L(-half, side * 3.92, plat + 0.008), L(half, side * 3.92, plat + 0.008), 0.6, 0.016);
+    });
     // Windscreen and roof columns.
     b.beam(M.glassWarm, L(-half + 0.3, side * 6.9, plat + 1.25), L(half - 0.3, side * 6.9, plat + 1.25), 0.04, 2.5);
     for (let u = -half + 0.2; u <= half - 0.1; u += 6) b.beam(M.frame, L(u, side * 6.95, plat), L(u, side * 6.95, plat + 4.0), 0.22, 0.3);
@@ -1594,6 +1645,8 @@ export function createTransit(): Transit {
     paint: new THREE.MeshStandardMaterial({ color: 0xd8d2bf, roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
     timber: new THREE.MeshStandardMaterial({ color: 0x5a4532, roughness: 0.8 }),
     glassWarm: litGlass('glass-warm', new THREE.Color(1.0, 0.76, 0.5), 0.55),
+    paving: pavingMaterial(),
+    tactile: tactileMaterial(),
     glassCool: litGlass('glass-cool', new THREE.Color(1.0, 0.9, 0.76), 0.85),
     glassClear: new THREE.MeshStandardMaterial({ color: 0x8fa9a6, transparent: true, opacity: 0.2, roughness: 0.04, metalness: 0, envMapIntensity: 1.5, depthWrite: false }),
     podFloor: new THREE.MeshStandardMaterial({ color: 0xcfc9bd, roughness: 0.5, emissive: new THREE.Color(1.0, 0.86, 0.68), emissiveIntensity: 0.32 }),
@@ -1614,7 +1667,7 @@ export function createTransit(): Transit {
       .replace('#include <opaque_fragment>', `diffuseColor.a *= mix(1.0, 0.28, smoothstep(120.0, ${WIRE_FAR.toFixed(1)}, vWD));\n#include <opaque_fragment>`);
   };
   wireMat.customProgramCacheKey = () => 'palimpsest-transit-wires';
-  const noShadow = new Set<THREE.Material>([M.lampWarm, M.lampCool, M.red, M.sign, M.paint, M.glassWarm, M.glassCool, M.glassClear, M.ceiling, M.setts, M.deckTop]);
+  const noShadow = new Set<THREE.Material>([M.paving, M.tactile, M.lampWarm, M.lampCool, M.red, M.sign, M.paint, M.glassWarm, M.glassCool, M.glassClear, M.ceiling, M.setts, M.deckTop]);
 
   const group = new THREE.Group();
   group.name = 'transit';

@@ -794,7 +794,7 @@ def section(half, x_of, scale=1.0):
 
 
 # The train's section, as vehicles.ts's RAIL_RINGS: underframe at 0.85, sill 1.78, head 2.85, roof 3.75.
-RAIL_HALF = [(0.0, 0.85), (1.22, 0.85), (1.36, 0.92), (1.40, 1.02), (1.42, 1.45), (1.42, 1.78), (1.41, 2.3), (1.40, 2.85),
+RAIL_HALF = [(0.0, 0.85), (1.22, 0.85), (1.36, 0.92), (1.40, 1.02), (1.42, 1.45), (1.42, 1.6), (1.42, 1.78), (1.40, 2.85),
              (1.36, 3.3), (1.2, 3.55), (0.86, 3.68), (0.4, 3.75)]
 RAIL_DOORS = (3.4, -3.4)
 
@@ -807,10 +807,8 @@ def rail_end_body():
             b = max(0.0, min(1.0, (1.1 - y) / 0.25))
             return x0 - rake * t * t ** 0.0 - low * b
         return f
-    stations = [(-7.6, 1.0, 0.0, 0.0), (-7.5, 1.0, 0.0, 0.0), (-6.0, 1.0, 0.0, 0.0)]
-    for d in sorted(RAIL_DOORS):
-        stations += [(d - 0.7, 1.0, 0.0, 0.0), (d + 0.7, 1.0, 0.0, 0.0)]
-    stations += [(5.6, 1.0, 0.0, 0.0), (6.3, 1.0, 0.0, 0.0), (6.85, 0.97, 0.2, 0.02), (7.25, 0.88, 0.48, 0.06),
+    # The flank is straight from the gangway to the nose: its doors are drawn on it in relief (rail_end_gear).
+    stations = [(-7.6, 1.0, 0.0, 0.0), (-7.5, 1.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (6.3, 1.0, 0.0, 0.0), (6.85, 0.97, 0.2, 0.02), (7.25, 0.88, 0.48, 0.06),
                  (7.52, 0.7, 0.72, 0.1), (7.64, 0.42, 0.86, 0.14)]
     loops = [section(RAIL_HALF, x_at(x, rake, low), sc) for x, sc, rake, low in stations]
     def code(c, i, j):
@@ -830,10 +828,7 @@ def rail_end_body():
             return VEH['nose']
         if 1.78 < y < 2.85:
             return VEH['glass']
-        door = any(abs(x - d) < 0.69 for d in RAIL_DOORS)
-        if door and abs(z) > 1.0:
-            return VEH['teal']
-        if 1.45 < y < 1.6:
+        if 1.45 < y < 1.6 or 1.0 < y < 1.12:
             return VEH['teal']
         return VEH['steel_roof'] if y > 3.3 else VEH['steel']
     return sections_cage(loops, code)
@@ -857,8 +852,8 @@ def cab_body():
         return table[-1][1]
     def x_of(x):
         return lambda y: x * (reach(front if x > 0 else rear, y) / 1.98)
-    stations = [(-1.97, 0.5), (-1.9, 0.8), (-1.73, 0.95), (-1.4, 1.0), (-0.83, 1.0), (-0.75, 1.0), (-0.71, 1.0), (0.0, 1.0),
-                (0.6, 1.0), (0.64, 1.0), (0.83, 1.0), (1.4, 1.0), (1.73, 0.95), (1.9, 0.8), (1.97, 0.5)]
+    stations = [(-1.97, 0.5), (-1.9, 0.8), (-1.73, 0.95), (-1.4, 1.0), (-0.73, 1.0), (0.0, 1.0),
+                (0.62, 1.0), (1.4, 1.0), (1.73, 0.95), (1.9, 0.8), (1.97, 0.5)]
     loops = [section(CAB_HALF, x_of(x), sc) for x, sc in stations]
     def code(c, i, j):
         x, y, z = c
@@ -868,16 +863,11 @@ def cab_body():
             return VEH['glass']
         if y < 0.33:
             return VEH['graphite']
-        side = abs(z) > 0.6
-        if side and y < 0.66 and any(abs(abs(x) - 1.28) < 0.44 for _ in (0,)) and 0.83 < abs(x) < 1.73:
-            return VEH['graphite']
-        if side and (0.59 < x < 0.65 or -0.76 < x < -0.70):
-            return VEH['rubber']
         return VEH['cream']
     return sections_cage(loops, code)
 
 
-def wheel(r, w, flange=0.0, seg=16):
+def wheel(r, w, flange=0.0, seg=10):
     """A wheel on an axle along z: lathed about y, then turned onto z."""
     prof = [(0.0, -w / 2), (r * 0.6, -w / 2), (r, -w / 2 + 0.02), (r + flange, -w / 2 + 0.03), (r + flange, -w / 2 + 0.06), (r, -w / 2 + 0.08),
             (r, w / 2 - 0.02), (r * 0.62, w / 2), (r * 0.25, w / 2 + 0.03), (0.0, w / 2 + 0.03)]
@@ -959,7 +949,7 @@ def coded_object(name, piece, subsurf):
     mesh.update()
     for poly, sm in zip(mesh.polygons, piece.smooth):
         poly.use_smooth = sm
-    attr = mesh.color_attributes.new('Col', 'FLOAT_COLOR', 'CORNER')
+    attr = mesh.color_attributes.new('Col', 'BYTE_COLOR', 'CORNER')
     for poly, code in zip(mesh.polygons, piece.code):
         for li in poly.loop_indices:
             attr.data[li].color = ((code + 0.5) / 32.0, 0.0, 0.0, 1.0)
@@ -1007,14 +997,13 @@ def rail_end_gear(body):
         # Bogie: side frames, spring planks, axle boxes and springs, flanged wheelsets, brake units and a bolster.
         frame = Coded()
         for sz in (-1, 1):
-            frame.take(placed(round_box(0.2, 3), lambda q: (q[0] * 2.5 + bx, q[1] * 0.26 + 0.52, q[2] * 0.14 + sz * 1.02)), VEH['iron'])
-            frame.take(placed(round_box(0.2, 3), lambda q: (q[0] * 0.9 + bx, q[1] * 0.18 + 0.36, q[2] * 0.12 + sz * 1.02)), VEH['iron'])
+            frame.take(placed(round_box(0.2, 2), lambda q: (q[0] * 2.5 + bx, q[1] * 0.26 + 0.52, q[2] * 0.14 + sz * 1.02)), VEH['iron'])
+            frame.take(placed(round_box(0.2, 2), lambda q: (q[0] * 0.9 + bx, q[1] * 0.18 + 0.36, q[2] * 0.12 + sz * 1.02)), VEH['iron'])
             for ax in (-1.1, 1.1):
-                frame.take(placed(round_box(0.25, 3), lambda q: (q[0] * 0.34 + bx + ax, q[1] * 0.26 + 0.42, q[2] * 0.16 + sz * 1.1)), VEH['dark'])
+                frame.take(placed(round_box(0.25, 2), lambda q: (q[0] * 0.34 + bx + ax, q[1] * 0.26 + 0.42, q[2] * 0.16 + sz * 1.1)), VEH['dark'])
                 frame.take(placed(lathe([(0.0, 0.0), (0.07, 0.0), (0.07, 0.22), (0.0, 0.22)], 10), lambda q: (q[0] + bx + ax, q[1] + 0.55, q[2] + sz * 1.1)), VEH['chrome'])
                 frame.take(placed(wheel(0.42, 0.14, 0.03), lambda q: (q[0] + bx + ax, q[1] + 0.42, q[2] + sz * 0.72)), VEH['wheel'])
-            frame.take(placed(round_box(0.2, 3), lambda q: (q[0] * 0.5 + bx, q[1] * 0.3 + 0.48, q[2] * 0.3 + sz * 0.8)), VEH['dark'])
-        frame.take(placed(round_box(0.2, 3), lambda q: (q[0] * 0.6 + bx, q[1] * 0.2 + 0.7, q[2] * 2.0)), VEH['iron'])
+        frame.take(placed(round_box(0.2, 2), lambda q: (q[0] * 0.6 + bx, q[1] * 0.2 + 0.7, q[2] * 2.0)), VEH['iron'])
         for ax in (-1.1, 1.1):
             frame.take(rod_x(0.06, -0.9, 0.9).transform(lambda q: (q[2] + bx + ax, q[1] + 0.42, -q[0])), VEH['iron'])
         GEAR.append(frame)
@@ -1022,11 +1011,11 @@ def rail_end_gear(body):
     cases = Coded()
     for x0, x1 in ((-3.6, -1.0), (0.4, 3.4)):
         cases.take(placed(round_box(0.1, 2), lambda q: (q[0] * (x1 - x0) + (x0 + x1) / 2, q[1] * 0.42 + 0.66, q[2] * 2.2)), VEH['under'])
-        x = x0 + 0.15
-        while x < x1 - 0.1:
+        x = x0 + 0.3
+        while x < x1 - 0.2:
             for sz in (-1, 1):
-                cases.take(box(x, x + 0.03, 0.48, 0.84, sz * 1.1 - 0.012, sz * 1.1 + 0.012), VEH['dark'])
-            x += 0.3
+                cases.take(box(x, x + 0.04, 0.5, 0.82, sz * 1.1 - 0.012, sz * 1.1 + 0.012, sides=(True, True, True, False, sz > 0, sz < 0)), VEH['dark'])
+            x += 0.6
     GEAR.append(cases)
     # Coupler: draft gear pocket, shank, a rounded knuckle head with its guide horn, and the anticlimber over it.
     nose_x, nrm = surface_x(body, 1.0, 0.0)
@@ -1034,8 +1023,8 @@ def rail_end_gear(body):
     cp = Coded()
     cp.take(rod_x(0.075, nx - 0.3, nx + 0.42, 14).transform(lambda q: (q[0], q[1] + 0.98, q[2])), VEH['iron'])
     cp.take(placed(round_box(0.3, 4), lambda q: (q[0] * 0.16 + nx + 0.46, q[1] * 0.3 + 0.98, q[2] * 0.36)), VEH['iron'])
-    cp.take(placed(round_box(0.3, 3), lambda q: (q[0] * 0.18 + nx + 0.5, q[1] * 0.1 + 0.8, q[2] * 0.12 + 0.14)), VEH['iron'])
-    cp.take(placed(round_box(0.15, 3), lambda q: (q[0] * 0.3 + nx - 0.02, q[1] * 0.18 + 1.2, q[2] * 1.7)), VEH['dark'])
+    cp.take(placed(round_box(0.3, 2), lambda q: (q[0] * 0.18 + nx + 0.5, q[1] * 0.1 + 0.8, q[2] * 0.12 + 0.14)), VEH['iron'])
+    cp.take(placed(round_box(0.15, 2), lambda q: (q[0] * 0.3 + nx - 0.02, q[1] * 0.18 + 1.2, q[2] * 1.7)), VEH['dark'])
     # Obstacle deflector: a shallow vee plough under the nose.
     for sz in (-1, 1):
         a = (nx + 0.05, 0.42, 0.0)
@@ -1049,10 +1038,10 @@ def rail_end_gear(body):
             x, n = surface_x(body, 1.3, sz * zc)
             if x is None:
                 continue
-            lens = placed(round_box(0.35, 3), lambda q: (q[0] * 0.04, q[1] * 0.1 + 1.3, q[2] * w))
+            lens = placed(round_box(0.35, 2), lambda q: (q[0] * 0.04, q[1] * 0.1 + 1.3, q[2] * w))
             lens = facing(lens, n[0], n[2]).transform(lambda q, x=x, zc=zc, sz=sz: (q[0] + x + 0.01, q[1], q[2] + sz * zc))
             lamps.take(lens, VEH[kind])
-            bez = placed(round_box(0.35, 3), lambda q: (q[0] * 0.03, q[1] * 0.17 + 1.3, q[2] * (w + 0.08)))
+            bez = placed(round_box(0.35, 2), lambda q: (q[0] * 0.03, q[1] * 0.17 + 1.3, q[2] * (w + 0.08)))
             bez = facing(bez, n[0], n[2]).transform(lambda q, x=x, zc=zc, sz=sz: (q[0] + x, q[1], q[2] + sz * zc))
             lamps.take(bez, VEH['dark'])
     # The destination board over the windscreen: an LED panel under a glass cover, in a black surround.
@@ -1068,8 +1057,20 @@ def rail_end_gear(body):
     for sz in (-1, 1):
         zf = surface_z(body, 5.9, 2.0) or 1.42
         lamps.take(lathe([(0.0, 1.3), (0.018, 1.3), (0.018, 2.5), (0.0, 2.5)], 8).transform(lambda q, sz=sz, zf=zf: (q[0] + 5.85, q[1], sz * (zf + 0.05) + q[2])), VEH['chrome'])
+    # The doors in relief: a raised frame round each leaf pair, the meeting stile, and a frame round each door window.
+    for d in RAIL_DOORS:
+        for sz in (-1, 1):
+            zf = surface_z(body, d, 1.4) or 1.42
+            o = sz * (zf + 0.012)
+            for e in (-0.7, 0.0, 0.7):
+                lamps.take(box(d + e - 0.02, d + e + 0.02, 1.02, 2.86, o - 0.012, o + 0.012), VEH['dark'] if e == 0.0 else VEH['steel'])
+            lamps.take(box(d - 0.72, d + 0.72, 2.85, 2.9, o - 0.012, o + 0.012), VEH['steel'])
+            for e in (-0.35, 0.35):
+                lamps.take(box(d + e - 0.25, d + e + 0.25, 1.86, 1.89, o - 0.01, o + 0.014), VEH['dark'])
+                # The leaves themselves, teal, a shade proud of the steel below the window.
+                lamps.take(box(d + e - 0.33, d + e + 0.33, 1.04, 1.84, o - 0.008, o + 0.004), VEH['teal'])
     # Gangway bellows at the coupled end, and air-conditioning on the roof.
-    lamps.take(placed(round_box(0.2, 3), lambda q: (q[0] * 0.4 - 7.8, q[1] * 2.3 + 2.2, q[2] * 1.7)), VEH['dark'])
+    lamps.take(placed(round_box(0.2, 2), lambda q: (q[0] * 0.4 - 7.8, q[1] * 2.3 + 2.2, q[2] * 1.7)), VEH['dark'])
     for rx in (-4.2, 2.6):
         lamps.take(placed(round_box(0.3, 4), lambda q: (q[0] * 2.6 + rx, q[1] * 0.25 + 3.86, q[2] * 1.5)), VEH['steel_roof'])
     GEAR.append(lamps)
@@ -1080,9 +1081,9 @@ def cab_gear(body):
     g = Coded()
     for wx in (-1.28, 1.28):
         for sz in (-1, 1):
-            tyre = lathe([(0.0, -0.12), (0.24, -0.12), (0.31, -0.11), (0.335, -0.07), (0.335, 0.07), (0.31, 0.11), (0.24, 0.12), (0.0, 0.12)], 24)
+            tyre = lathe([(0.0, -0.12), (0.24, -0.12), (0.31, -0.11), (0.335, -0.07), (0.335, 0.07), (0.31, 0.11), (0.24, 0.12), (0.0, 0.12)], 16)
             g.take(tyre.transform(lambda q, wx=wx, sz=sz: (q[0] + wx, -q[2] + 0.335, q[1] + sz * 0.79)), VEH['tyre'])
-            rim = lathe([(0.0, 0.0), (0.235, 0.0), (0.225, 0.02), (0.08, 0.035), (0.0, 0.04)], 24)
+            rim = lathe([(0.0, 0.0), (0.235, 0.0), (0.225, 0.02), (0.08, 0.035), (0.0, 0.04)], 16)
             rim.transform(lambda q, wx=wx, sz=sz: (q[0] + wx, -q[2] + 0.335, sz * (0.91 + q[1])))
             if sz < 0:
                 rim.f = [tuple(reversed(f)) for f in rim.f]
@@ -1103,11 +1104,35 @@ def cab_gear(body):
             c, sn = math.cos(ang), math.sin(ang)
             g.take(seg.transform(lambda q, cx=cx, cz=cz, c=c, sn=sn: (cx + q[0] * c - q[2] * sn + e * 0.004, q[1], cz + q[0] * sn + q[2] * c)), VEH[kind])
     g.take(placed(round_box(0.3, 4), lambda q: (q[0] * 0.5 + 0.05, q[1] * 0.07 + 1.585, q[2] * 0.2)), VEH['amber'])
-    g.take(placed(round_box(0.3, 3), lambda q: (q[0] * 0.56 + 0.05, q[1] * 0.04 + 1.54, q[2] * 0.25)), VEH['graphite'])
-    g.take(lathe([(0.0, 1.52), (0.065, 1.52), (0.065, 1.6), (0.05, 1.62), (0.0, 1.625)], 16).transform(lambda q: (q[0] + 0.45, q[1], q[2])), VEH['rubber'])
+    g.take(placed(round_box(0.3, 2), lambda q: (q[0] * 0.56 + 0.05, q[1] * 0.04 + 1.54, q[2] * 0.25)), VEH['graphite'])
+    g.take(lathe([(0.0, 1.52), (0.065, 1.52), (0.065, 1.6), (0.05, 1.62), (0.0, 1.625)], 10).transform(lambda q: (q[0] + 0.45, q[1], q[2])), VEH['rubber'])
+    # The sliding door's seams, hugging the flank from sill to canopy, and a dark lip round each wheel arch.
+    for sz in (-1, 1):
+        for xs in (0.62, -0.73):
+            prev = None
+            for k in range(4):
+                y = 0.36 + (0.9 - 0.36) * k / 3
+                zf = surface_z(body, xs, y)
+                if zf is None:
+                    continue
+                q = (xs, y, sz * (zf + 0.003))
+                if prev:
+                    g.take(rod_x(0.008, 0.0, 1.0, 4).transform(lambda t, a=prev, b=q: (a[0] + t[0] * (b[0] - a[0]) + t[2], a[1] + t[0] * (b[1] - a[1]) + t[1], a[2] + t[0] * (b[2] - a[2]))), VEH['rubber'])
+                prev = q
+        for wx in (-1.28, 1.28):
+            pts = []
+            for k in range(7):
+                ang = math.pi * k / 6
+                x = wx + 0.42 * math.cos(ang)
+                y = 0.33 + 0.42 * math.sin(ang)
+                zf = surface_z(body, x, y)
+                if zf is not None:
+                    pts.append((x, y, sz * (zf + 0.004)))
+            for a, b in zip(pts, pts[1:]):
+                g.take(rod_x(0.022, 0.0, 1.0, 4).transform(lambda t, a=a, b=b: (a[0] + t[0] * (b[0] - a[0]) + t[2], a[1] + t[0] * (b[1] - a[1]) + t[1], a[2] + t[0] * (b[2] - a[2]))), VEH['graphite'])
     for sz in (-1, 1):
         zf = surface_z(body, 0.3, 0.7) or 0.905
-        g.take(placed(round_box(0.4, 3), lambda q, sz=sz, zf=zf: (q[0] * 0.18 + 0.35, q[1] * 0.035 + 0.74, sz * (zf + 0.012) + q[2] * 0.02)), VEH['chrome'])
+        g.take(placed(round_box(0.4, 2), lambda q, sz=sz, zf=zf: (q[0] * 0.18 + 0.35, q[1] * 0.035 + 0.74, sz * (zf + 0.012) + q[2] * 0.02)), VEH['chrome'])
     GEAR.append(g)
 
 

@@ -472,6 +472,8 @@ function cabFreeIn(cab: Cab, time: number): number {
 /** A vehicle as a rider sees it: where it is, which way it faces, and when it calls where. */
 export interface VehicleRef {
   id: string;
+  /** The vehicle itself (a cab booking's id names the booking; this names the cab). */
+  vehicle: string;
   kind: VehicleKind;
   /** The track it runs on: vehicles running the same way on the same line share it. */
   track: string;
@@ -1149,7 +1151,7 @@ class Kit {
     const n = idx ? idx.count : pos.count;
     for (let i = 0; i < n; i += 3) {
       const vs = [0, 1, 2].map((k) => (idx ? idx.getX(i + k) : i + k));
-      const code = Math.floor(col.getX(vs[0]) * 32);
+      const code = kitCode(col.getX(vs[0]));
       const spec = KIT_CODES[code];
       if (!spec) continue;
       const kind: RGB = spec.kind ? LAMP_CODE[spec.kind] : [0, 0, 0];
@@ -1249,9 +1251,9 @@ function smoothRings(keys: Ring[], per: number): Ring[] {
 const UNIT = new THREE.BoxGeometry(1, 1, 1);
 /** The kit pipeline's material codes (tools/kits/kits.py VEH): what each coded face is drawn in. */
 const KIT_CODES: Record<number, { part: Part; colour: RGB; surf: Surf; kind?: LampKind; own?: RGB }> = {
-  1: { part: 'body', colour: lin('#8d9093'), surf: [0.88, 0.3] },
+  1: { part: 'body', colour: lin('#8e959b'), surf: [0.9, 0.34] },
   2: { part: 'body', colour: lin('#777a7d'), surf: [0.85, 0.42] },
-  3: { part: 'body', colour: lin('#15191b'), surf: [0.2, 0.25] },
+  3: { part: 'body', colour: lin('#3a4348'), surf: [0.25, 0.32] },
   4: { part: 'body', colour: lin('#1f6b6e'), surf: [0.1, 0.32] },
   5: { part: 'trim', colour: lin('#24262a'), surf: [0.3, 0.7] },
   6: { part: 'glass', colour: [0, 0, 0], surf: [0, 0.05] },
@@ -1272,6 +1274,47 @@ const KIT_CODES: Record<number, { part: Part; colour: RGB; surf: Surf; kind?: La
   21: { part: 'trim', colour: lin('#151618'), surf: [0.2, 0.55] },
   22: { part: 'body', colour: lin('#3d5c62'), surf: [0.15, 0.3] },
 };
+
+/** How a modelled mesh's triangles split by its codes: per part, per lamp kind, and any whose code is unknown. */
+export function codedParts(g: THREE.BufferGeometry): { parts: Record<Part, number>; kinds: Record<string, number>; unknown: number; total: number } {
+  const col = g.attributes.color;
+  const idx = g.index;
+  const n = (idx ? idx.count : g.attributes.position.count) / 3;
+  const parts: Record<Part, number> = { body: 0, trim: 0, glass: 0, lamp: 0 };
+  const kinds: Record<string, number> = {};
+  let unknown = 0;
+  for (let i = 0; i < n; i++) {
+    const v = idx ? idx.getX(i * 3) : i * 3;
+    const spec = KIT_CODES[kitCode(col.getX(v))];
+    if (!spec) {
+      unknown++;
+      continue;
+    }
+    parts[spec.part]++;
+    if (spec.kind) kinds[spec.kind] = (kinds[spec.kind] ?? 0) + 1;
+  }
+  return { parts, kinds, unknown, total: n };
+}
+
+/** A face's code from its colour's red channel ((code + 0.5) / 32, as kits.py writes it). */
+function kitCode(r: number): number {
+  return Math.floor(r * 32);
+}
+
+/** Triangles per part of a model's near level as built now (tests: the kit meshes or the procedural stand-ins). */
+export function modelParts(name: ModelName): Record<Part, number> {
+  const kit = new Kit(false);
+  MODELS[name].build(kit);
+  const out: Record<Part, number> = { body: 0, trim: 0, glass: 0, lamp: 0 };
+  for (const p of PARTS) {
+    const g = kit.part(p);
+    if (g) {
+      out[p] = g.attributes.position.count / 3;
+      g.dispose();
+    }
+  }
+  return out;
+}
 
 /** A lifebuoy: 0.6 m across. */
 const RING = new THREE.TorusGeometry(0.26, 0.055, 6, 14);
@@ -1330,6 +1373,8 @@ interface Interior {
   crowd: number;
   /** A driver's cab behind the windscreen, past the saloon's front wall. */
   driver?: boolean;
+  /** Light lines down the ceiling (a cab's small cabin has a soft dome light instead). */
+  lines?: boolean;
 }
 
 const WARM: RGB = [1.0, 0.72, 0.46];
@@ -1856,7 +1901,8 @@ function cabModel(kit: Kit): void {
 const CAB_INTERIOR: Interior = {
   min: [-1.45, 0.42, -0.8],
   max: [1.1, 1.42, 0.8],
-  light: scale(WARM, 0.75),
+  light: scale(WARM, 0.32),
+  lines: false,
   seat: lin('#3b3632'),
   sill: 0.9,
   head: 1.45,
@@ -1929,16 +1975,36 @@ function surfaced(sh: THREE.WebGLProgramParametersWithUniforms): void {
 const LAMP_GLSL = /* glsl */ `
   varying vec3 vLampP;
   float ledHash(float n) { return fract(sin(n * 91.345 + 7.13) * 47453.5453); }
-  // A destination board's LED matrix: round dots on a 25 mm pitch, lit in five-by-seven characters with gaps.
+  // A destination board's LED matrix: round dots on a 22.5 mm pitch spelling the line's name, NORTHGATE, in a 5 by 7
+  // face, read the right way round from in front of the nose (the car faces +x, so the viewer's right is -z).
+  int ledGlyph(int ch, int row) {
+    // N O R T H G A T E, each seven rows of five bits, the left column the high bit.
+    int g[63] = int[63](
+      17, 25, 21, 19, 17, 17, 17,
+      14, 17, 17, 17, 17, 17, 14,
+      30, 17, 17, 30, 20, 18, 17,
+      31, 4, 4, 4, 4, 4, 4,
+      17, 17, 17, 31, 17, 17, 17,
+      14, 17, 16, 23, 17, 17, 15,
+      14, 17, 17, 31, 17, 17, 17,
+      31, 4, 4, 4, 4, 4, 4,
+      31, 16, 16, 30, 16, 16, 31);
+    return g[ch * 7 + row];
+  }
   float ledBoard() {
-    vec2 q = vec2(vLampP.z, vLampP.y) / 0.025;
-    vec2 cell = floor(q);
-    float dot = 1.0 - smoothstep(0.22, 0.38, length(fract(q) - 0.5));
-    float col = mod(cell.x + 200.0, 6.0);
-    float ch = floor((cell.x + 200.0) / 6.0);
-    float row = mod(cell.y, 8.0);
-    float on = step(col, 4.5) * step(row, 6.5) * step(0.5, row) * step(0.18, ledHash(ch * 3.1)) * step(0.45, ledHash(ch * 17.0 + col * 5.0 + row * 31.0));
-    return 0.05 + dot * (0.07 + 1.1 * on);
+    float pitch = 0.0225;
+    vec2 q = vec2(-vLampP.z, 3.142 - vLampP.y) / pitch;
+    vec2 cell = floor(q + vec2(27.5, 0.0));
+    float dot = 1.0 - smoothstep(0.24, 0.4, length(fract(q + vec2(27.5, 0.0)) - 0.5));
+    float on = 0.0;
+    int c = int(cell.x) - 1;
+    int row = int(cell.y);
+    if (c >= 0 && c < 54 && row >= 0 && row < 7) {
+      int ch = c / 6;
+      int col = c - ch * 6;
+      if (col < 5) on = float((ledGlyph(ch, row) >> (4 - col)) & 1);
+    }
+    return 0.04 + dot * (0.05 + 1.15 * on);
   }
   vec3 lampShow(vec3 kind, vec3 own, float lead, float brake) {
     float code = lead > 0.5 ? kind.x : kind.y;
@@ -2016,6 +2082,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
     uSeats: { value: i.seats ? 1 : 0 },
     uCrowd: { value: i.crowd },
     uDriver: { value: i.driver ? 1 : 0 },
+    uLines: { value: i.lines === false ? 0 : 1 },
   };
   m.userData.interior = uniforms;
   m.onBeforeCompile = (sh) => {
@@ -2057,6 +2124,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
         uniform float uSeats;
         uniform float uCrowd;
         uniform float uDriver;
+        uniform float uLines;
         float vgHash(float n) { return fract(sin(n * 12.9898 + 4.1414) * 43758.5453); }
         float pillarAt(float x) {
           if (uWin.w <= 0.0) return 0.0;
@@ -2087,7 +2155,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             // The ceiling: two light lines along it, the panels between lit by them.
             float line = 1.0 - smoothstep(0.05, 0.1, abs(abs(h.z) - hw * 0.45));
             float joint = 0.82 + 0.18 * step(0.03, fract(h.x / 1.25));
-            c = L * (0.5 * joint + 3.4 * line);
+            c = L * (0.5 * joint + 3.4 * line * uLines + 0.4 * (1.0 - uLines));
           } else if (tf.y <= t + 1e-5) {
             // The floor: dark, brighter down the aisle under the lights.
             c = L * 0.09 * (0.55 + 0.45 * (1.0 - smoothstep(0.1, hw, abs(h.z))));
@@ -2205,6 +2273,10 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             vec3 hb = vLP + d * tb;
             float desk = uBoxMin.y + 0.62;
             float td = (desk - vLP.y) / min(d.y, -1e-4);
+            // The driver's seat, its high back a dark shape against the bulkhead, to one side of the door.
+            float tsb = (uBoxMax.x + 0.75 - vLP.x) / d.x;
+            vec3 hsb = vLP + d * tsb;
+            float seat = step(abs(hsb.z - 0.55), 0.26) * step(uBoxMin.y + 0.5, hsb.y) * step(hsb.y, uBoxMin.y + 1.5);
             if (d.y < 0.0 && td < tb) {
               // The desk: dark, its screens and lamps small cool and amber points.
               vec3 hd = vLP + d * td;
@@ -2215,12 +2287,21 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             else {
               float win = step(abs(hb.z), 0.22) * step(uBoxMin.y + 1.05, hb.y) * step(hb.y, uBoxMin.y + 1.75);
               inside = mix(uLight * 0.006 * (0.6 + 0.4 * smoothstep(uBoxMin.y, uBoxMax.y, hb.y)), room(vec3(uBoxMax.x - 0.01, hb.y, hb.z), d), win);
+              // A faint lit panel over the door: the cab's own instruments light.
+              inside += vec3(0.25, 0.4, 0.5) * 0.05 * step(abs(hb.z + 0.6), 0.25) * step(abs(hb.y - (uBoxMin.y + 1.9)), 0.08);
             }
+            if (tsb > 0.0 && tsb < tb && seat > 0.5) inside = uLight * 0.012 + vec3(0.004);
           }
           vec3 V = normalize(vViewPosition);
           float NdV = clamp(abs(dot(normal, V)), 0.0, 1.0);
           float F = 0.04 + 0.96 * pow(1.0 - NdV, 5.0);
           totalEmissiveRadiance += inside * mask * (1.0 - F);
+          // The dusk sky in the glass: a band from the warm horizon up to the violet zenith, the street dark below,
+          // strongest at a glancing view, so the glass reads as glass and its curve shows.
+          vec3 Rw = inverseTransformDirection(reflect(-V, normalize(normal)), viewMatrix);
+          vec3 sky = mix(vec3(0.95, 0.56, 0.42), vec3(0.24, 0.2, 0.38), smoothstep(0.02, 0.55, Rw.y));
+          vec3 refl = mix(vec3(0.02, 0.018, 0.02), sky * 0.55, smoothstep(-0.06, 0.05, Rw.y));
+          totalEmissiveRadiance += refl * (0.03 + 0.85 * F) * mask;
           diffuseColor.rgb = mix(vec3(0.012), diffuseColor.rgb, mask);
         }`,
       );
@@ -2657,6 +2738,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     };
     r = {
       id,
+      vehicle: id,
       kind,
       track: byId.get(id)!.service.id,
       position: () => seen().p,
@@ -2696,6 +2778,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     };
     r = {
       id,
+      vehicle: id,
       kind: 'cab',
       track: `rank:${cab.rank.x},${cab.rank.z}`,
       position() {
@@ -2855,6 +2938,18 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
         if (mine()) return base.phase();
         return queued() ? 'queued' : 'parked';
       },
+      // Queued, the cab is still someone else's: this booking reports the kerb where it will pull in for this rider,
+      // never the other errand's whereabouts.
+      position() {
+        const c = now();
+        if (!c || mine() || !queued() || !c.queue) return base.position();
+        const k = kerbOf(c.queue.a, net);
+        return [k.x, roadY(k), k.z];
+      },
+      heading() {
+        return mine() ? base.heading() : 0;
+      },
+      speed: () => (mine() ? base.speed() : 0),
       arrivesIn(p) {
         const c = now();
         if (!c) return Infinity;

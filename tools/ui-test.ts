@@ -1818,6 +1818,19 @@ async function vehicleChecks(page: Page): Promise<void> {
   const running = await view();
   console.log(`info  by the lines with every vehicle running: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles (${running.near} cars near)`);
   check(fps >= overviewFps - 5, `the street by the lines holds the overview's frame rate with every vehicle running (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  // Close by a ferry under way, its wake and the other ferries' (up to four) drawn in the water.
+  const found = await call<boolean>('d.vehicleSeek([{ kind: "ferry", near: [-360, 210], radius: 50, moving: 5 }])');
+  check(found, 'a ferry comes under way in mid-river');
+  if (found) {
+    const ferries = await call<Probe[]>('d.vehicleKinds("ferry")');
+    const f = ferries.sort((a, b) => Math.hypot(a.position[0] + 360, a.position[2] - 210) - Math.hypot(b.position[0] + 360, b.position[2] - 210))[0];
+    await setView(page, around(f.position, f.heading, -70, 8, 9), around(f.position, f.heading, 6, 0, -5));
+    await page.waitForTimeout(1500);
+    const wakeFps = await pageFps(page);
+    const moving = ferries.filter((x) => x.speed > 0.2).length;
+    console.log(`info  close by a ferry under way, ${ferries.length} wakes fed (${moving} moving): ${wakeFps.toFixed(0)} fps`);
+    check(wakeFps >= overviewFps - 5, `the river holds the overview's frame rate with the ferries' wakes (${wakeFps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  }
   check((await debug(page, (d) => d.quality())) === 'high', 'the vehicles hold high quality');
 }
 
