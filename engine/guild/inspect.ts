@@ -152,31 +152,32 @@ const check = (name: CheckName, status: CheckResult['status'], detail: string, d
 export function scopeCheck(files: ChangedFile[], scope: string[]): CheckResult {
   const globs = (scope.length ? scope : ['**']).map(globRegex);
   const changed = new Set(files.map((f) => f.path));
-  const out: string[] = [];
+  const offenders: Array<{ path: string; why: string }> = [];
+  const out = (path: string, why: string) => offenders.push({ path, why });
   for (const f of files) {
     if (f.gitlink) {
-      out.push(`${f.path} is a nested repository (a gitlink), which no job may change`);
+      out(f.path, 'is a nested repository (a gitlink), which no job may change');
       continue;
     }
     if (posix.basename(f.path) === '.gitattributes') {
-      out.push(`${f.path} changes how git shows and filters files, which no job may change`);
+      out(f.path, 'changes how git shows and filters files, which no job may change');
       continue;
     }
     const deny = denied(f.path);
     if (deny) {
-      out.push(`${f.path} is never in scope (${deny})`);
+      out(f.path, `is never in scope (${deny})`);
       continue;
     }
     const manifest = LOCK_MANIFEST[posix.basename(f.path)];
     if (manifest) {
       const beside = posix.join(posix.dirname(f.path), manifest).replace(/^\.\//, '');
-      if (!changed.has(beside)) out.push(`${f.path} changed without its ${beside}`);
+      if (!changed.has(beside)) out(f.path, `changed without its ${beside}`);
       continue;
     }
-    if (!globs.some((re) => re.test(f.path))) out.push(`${f.path} is outside the job's scope (${scope.join(', ')})`);
+    if (!globs.some((re) => re.test(f.path))) out(f.path, `is outside the job's scope (${scope.join(', ')})`);
   }
-  if (out.length === 0) return check('scope', 'pass', `${files.length} file${files.length === 1 ? '' : 's'}, all inside ${scope.join(', ')}.`);
-  return check('scope', 'fail', out.join('\n'));
+  if (offenders.length === 0) return { ...check('scope', 'pass', `${files.length} file${files.length === 1 ? '' : 's'}, all inside ${scope.join(', ')}.`), offenders };
+  return { ...check('scope', 'fail', offenders.map((o) => `${o.path} ${o.why}`).join('\n')), offenders: offenders.slice(0, 200) };
 }
 
 // ---------------------------------------------------------------- the verdict
@@ -571,7 +572,7 @@ async function designCheck(
       ? 'Judged from the diff text alone: the repo has no screenshot script and nothing to preview.'
       : `Shot ${routes.length} route${routes.length === 1 ? '' : 's'} before and after at 1440 x 900.`;
     const detail = `${how} Before ${j.before ?? 'none'}, after ${j.after} of 10 (pass at 6, no more than a point below before). ${j.notes}`;
-    return { result: check('design', pass ? 'pass' : 'fail', detail, Date.now() - started), design: { before: j.before, after: j.after, diffOnly: j.diffOnly, shots }, credits: j.credits };
+    return { result: { ...check('design', pass ? 'pass' : 'fail', detail, Date.now() - started), notes: String(j.notes ?? '').slice(0, 2000) }, design: { before: j.before, after: j.after, diffOnly: j.diffOnly, shots }, credits: j.credits };
   } catch (err) {
     if (ctx.signal.aborted) throw err;
     return {

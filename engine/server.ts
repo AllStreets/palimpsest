@@ -545,7 +545,7 @@ function sampleSpeed(env: NodeJS.ProcessEnv = process.env): number {
  * every model backend is the scripted fake provider, the budget and Settings
  * read the sample home's own folders, and the live view carries the sample
  * economy's sites and trips. With PALIMPSEST_SAMPLE_ECONOMY=live the
- * economy's clock ticks once a second. A test that installed its own runner
+ * economy's clock ticks once a second and keeps the board (bids, awards). A test that installed its own runner
  * or spawner keeps it. Returns what undoes the clock.
  */
 function enterSampleMode(): () => void {
@@ -556,7 +556,7 @@ function enterSampleMode(): () => void {
   for (const kind of ['claude', 'ollama', 'anthropic'] as const) setProvider(kind, fake);
   setMarketExtras({ sites: economySites, trips: economyTrips, providers: { ollama: () => sampleOllamaUsage() } });
   if (process.env.PALIMPSEST_SAMPLE_ECONOMY !== 'live') return () => setMarketExtras({});
-  const clock = economyClock({ now: () => Date.now(), speed: sampleSpeed() });
+  const clock = economyClock({ now: () => Date.now(), speed: sampleSpeed(), board: true });
   const timer = setInterval(() => clock.tick(1000), 1000);
   timer.unref();
   return () => {

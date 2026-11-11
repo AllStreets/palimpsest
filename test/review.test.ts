@@ -60,6 +60,9 @@ test("the reviewer is never from the worker's firm", { timeout: 60_000 }, async 
     assert.equal(out.result.status, 'pass');
     assert.equal(reviewed.length, 1);
     assert.equal(reviewed[0].agent.id, 'bea');
+    // The notes and concerns travel as fields of their own beside the prose, for the report page.
+    assert.equal(out.result.notes, 'Fine.');
+    assert.deepEqual(out.result.concerns, []);
   } finally {
     lease.release();
   }

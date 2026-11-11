@@ -280,6 +280,12 @@ export interface CheckResult {
   durationMs: number;
   logPath: string | null;
   testsRun: number | null;
+  /** Scope: each changed file outside the job's scope and why, as the detail says it in prose. */
+  offenders?: Array<{ path: string; why: string }>;
+  /** Review: the reviewer's concerns, one each. */
+  concerns?: string[];
+  /** Review and design: the reviewer's or the judge's own notes. */
+  notes?: string;
 }
 
 export interface Inspection {
@@ -428,6 +434,8 @@ export interface JobDetail {
   job: Job;
   bids: Bid[];
   award: Award | null;
+  /** Agents that sat out of the job's current round, with why (the round still taking bids included). */
+  satOut: Array<{ agentId: string; firmId: string; reason: string; at: string }>;
   runs: RunView[];
   inspections: InspectionView[];
   ledger: LedgerRow[];

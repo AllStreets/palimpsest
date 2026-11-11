@@ -32,8 +32,9 @@
  * switches the seed and the clock to startTrip().
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { calibrated as calibrate, expectedValue, TIER_VALUE } from '../../shared/market-rules.js';
 import { silhouetteFor } from '../../shared/silhouette.js';
@@ -68,9 +69,10 @@ import { canPush, inspectionSummary } from '../guild/inspect.js';
 import { paths } from '../home.js';
 import { districtOrigin, quarterOrigin } from '../layout.js';
 import { query, record } from '../ledger.js';
-import { earnedFloors, getRepo, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
+import { earnedFloors, getRepo, listRepos, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
 import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, SAMPLE_TREES, useSampleFolders } from '../sample.js';
-import { award, NO_SLOT, openBidding } from './bids.js';
+import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
+import { getSettings } from '../settings.js';
 import { charge } from './budget.js';
 import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
@@ -667,31 +669,55 @@ class Pipeline {
       if (failing === name) out.push({ name, status: 'fail', detail: `${cmd}: 2 of ${tests ?? 0} tests failed, both in the file the change touched`, durationMs: ms(), logPath: null, testsRun: tests });
       else out.push({ name, status: 'pass', detail: cmd, durationMs: ms(), logPath: null, testsRun: tests });
     }
-    out.push({ name: 'scope', status: 'pass', detail: 'Every changed file is inside the job\'s scope.', durationMs: 3, logPath: null, testsRun: null });
+    out.push({ name: 'scope', status: 'pass', detail: 'Every changed file is inside the job\'s scope.', durationMs: 3, logPath: null, testsRun: null, offenders: [] });
     return out;
   }
 
-  /** Another firm's reviewer reads the change; the inspection is recorded as the guild records it. */
-  inspect(r: Run, o: { passed: boolean; reviewer: Agent; failing?: CheckName | null; concerns?: string[] }): Inspection {
+  /**
+   * Another firm's reviewer reads the change; the inspection is recorded as
+   * the guild records it. `outOfScope` fails the scope check with the
+   * guild's own words, and `design` adds the design judgement a change to
+   * the screens gets.
+   */
+  inspect(r: Run, o: { passed: boolean; reviewer: Agent; failing?: CheckName | null; concerns?: string[]; outOfScope?: Array<{ path: string; why: string }>; design?: { check: CheckResult; design: NonNullable<Inspection['design']> }; logs?: Partial<Record<CheckName, string>> }): Inspection {
     const checks = this.checks(r, o.failing ?? null);
-    const failedCheck = checks.some((x) => x.status === 'fail');
+    // Each check's output kept in the run's folder, as the guild keeps it.
+    for (const c of checks) {
+      const text = o.logs?.[c.name];
+      if (!text) continue;
+      const dir = join(runRoot(r.id), 'checks');
+      mkdirSync(dir, { recursive: true });
+      c.logPath = join(dir, `${c.name}.log`);
+      writeFileSync(c.logPath, text);
+    }
+    if (o.outOfScope?.length) {
+      const at = checks.findIndex((x) => x.name === 'scope');
+      checks[at] = { ...checks[at], status: 'fail', detail: o.outOfScope.map((x) => `${x.path} ${x.why}`).join('\n'), offenders: o.outOfScope };
+    }
+    // As the guild does: a failed repo check skips the review call; scope and design alone still get one.
+    const failedCheck = checks.some((x) => x.status === 'fail' && x.name !== 'scope');
     const reviewCost = round2(modelCost(o.reviewer.model).bid * 1.5);
     // The review call is skipped once a check has failed: the verdict is already decided (Task 15).
     if (!failedCheck) {
       charge({ runId: r.id, firmId: null, model: o.reviewer.model, kind: 'review', usage: usageOf(o.reviewer.model, reviewCost), unattended: r.unattended, at: Date.now(), minCredits: reviewCost });
       const approve = o.passed;
+      const concerns = approve ? [] : (o.concerns ?? ['the change rewrites far more than the issue asks for, and two existing tests were edited to pass']);
+      const notes = approve ? 'Reads right; the test covers the case in the issue.' : '';
       checks.push({
         name: 'review',
         status: approve ? 'pass' : 'fail',
-        detail: approve ? `${o.reviewer.name}: reads right; the test covers the case in the issue.` : `${o.reviewer.name}: ${(o.concerns ?? ['the change rewrites far more than the issue asks for, and two existing tests were edited to pass']).join('; ')}`,
+        detail: approve ? `${o.reviewer.name}: reads right; the test covers the case in the issue.` : `${o.reviewer.name}: ${concerns.join('; ')}`,
         durationMs: Math.round(this.between(40, 160) * 1000),
         logPath: null,
         testsRun: null,
+        notes,
+        concerns,
       });
     }
+    if (o.design) checks.push(o.design.check);
     const recorded = new Set(query({ kind: 'check.done', runId: r.id }).map((e) => (e.data as { check: CheckResult }).check.name));
     for (const check of checks) if (!recorded.has(check.name)) this.checkDone(r, check);
-    const passed = o.passed && !failedCheck;
+    const passed = o.passed && !checks.some((x) => x.status === 'fail');
     const i: Inspection = {
       id: `insp-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
       runId: r.id,
@@ -702,7 +728,7 @@ class Pipeline {
       checks,
       passed,
       pushable: passed && canPush(checks),
-      design: null,
+      design: o.design?.design ?? null,
       cost: failedCheck ? 0 : reviewCost,
       at: iso(),
       inconclusive: null,
@@ -962,6 +988,152 @@ const OLA_PATCH = `diff --git a/cache/tiles.go b/cache/tiles.go
 +}
 `;
 
+const SHOTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'sample-shots');
+
+/**
+ * Lodestar's first attempt at the search index, the sample's showcase scar
+ * (Task 37): Corin Hale rewrote the index, edited two tests to pass, raised
+ * the CI timeout and added a rebuild banner. Eight checks, two failed:
+ * scope (the CI file is never in scope) and the review. The banner is a
+ * change to the screens, so the design judge shot the search page and the
+ * berth board before and after (tools/sample-shots.ts drew them).
+ */
+const SEARCH_SCAR = {
+  title: 'Search index rebuild blocks the API for 40 seconds',
+  files: ['src/search/index.ts', 'test/search/index.test.ts', 'src/search/RebuildBanner.tsx', '.github/workflows/ci.yml'],
+  outOfScope: [{ path: '.github/workflows/ci.yml', why: 'is never in scope (.github/workflows/**)' }],
+  concerns: [
+    'the change rewrites far more than the issue asks for: the whole index module is replaced, not the blocking rebuild',
+    'two existing tests in test/search/index.test.ts were edited to pass instead of the code being fixed',
+    'the CI timeout was raised from 10 to 30 minutes, which hides the slow rebuild rather than ending it',
+  ],
+  logs: {
+    install: ['$ npm ci', '', 'added 412 packages, and audited 413 packages in 21s', '', '87 packages are looking for funding', '  run `npm fund` for details', '', 'found 0 vulnerabilities', ''].join('\n'),
+    test: [
+      '$ npm test',
+      '',
+      '> harbor-ledger@0.0.0 test',
+      '> node --test',
+      '',
+      '▶ search',
+      '  ✔ finds a vessel by IMO (3.1ms)',
+      '  ✔ a rebuild keeps answering (1.2ms)',
+      '  ✔ ranks exact names first (0.8ms)',
+      '✔ search (6.4ms)',
+      '▶ schedule',
+      '  ✔ arrivals group by day (1.9ms)',
+      '✔ schedule (2.3ms)',
+      'ℹ tests 99',
+      'ℹ suites 14',
+      'ℹ pass 99',
+      'ℹ fail 0',
+      'ℹ duration_ms 1873.4',
+      '',
+    ].join('\n'),
+    typecheck: ['$ npm run typecheck', '', '> harbor-ledger@0.0.0 typecheck', '> tsc --noEmit', ''].join('\n'),
+    lint: ['$ npm run lint', '', '> harbor-ledger@0.0.0 lint', '> eslint .', ''].join('\n'),
+    build: ['$ npm run build', '', '> harbor-ledger@0.0.0 build', '> vite build', '', 'vite v8.0.3 building for production...', '✓ 218 modules transformed.', 'dist/index.html                  0.61 kB', 'dist/assets/index-4f1c2a.css    14.20 kB', 'dist/assets/index-9b03e7.js    187.44 kB', '✓ built in 2.31s', ''].join('\n'),
+  } as Partial<Record<CheckName, string>>,
+  patch: `diff --git a/src/search/index.ts b/src/search/index.ts
+--- a/src/search/index.ts
++++ b/src/search/index.ts
+@@ -1,13 +1,22 @@
+ import { db } from '../db.js';
+ import { tokens } from './tokens.js';
++import { emitRebuild } from './events.js';
+
+-/** Rebuilds the vessel index in one transaction; readers wait for it. */
+-export function rebuild(): void {
+-  db.transaction(() => {
+-    db.exec('DELETE FROM search');
+-    for (const v of db.all('SELECT * FROM vessels')) db.insert('search', { id: v.id, terms: tokens(v) });
+-  })();
++/** A cleaner model: the index is a map kept in memory and swapped whole. */
++let index = new Map<string, Set<string>>();
++
++export async function rebuild(): Promise<void> {
++  emitRebuild('started');
++  const next = new Map<string, Set<string>>();
++  for (const v of await db.allAsync('SELECT * FROM vessels')) {
++    for (const t of tokens(v)) next.set(t, (next.get(t) ?? new Set()).add(v.id));
++  }
++  index = next;
++  emitRebuild('done');
+ }
+
+ export function search(q: string): string[] {
+-  return db.all('SELECT id FROM search WHERE terms MATCH ?', q).map((r) => r.id);
++  const hits = q.split(/\\s+/).map((t) => index.get(t.toLowerCase()) ?? new Set<string>());
++  return [...hits.reduce((a, b) => new Set([...a].filter((x) => b.has(x))))];
+ }
+diff --git a/test/search/index.test.ts b/test/search/index.test.ts
+--- a/test/search/index.test.ts
++++ b/test/search/index.test.ts
+@@ -12,11 +12,11 @@ test('finds a vessel by IMO', async () => {
+-  rebuild();
+-  assert.deepEqual(search('9411265'), ['maren-dahl']);
++  await rebuild();
++  assert.deepEqual(search('9411265').sort(), ['maren-dahl']);
+ });
+
+ test('a rebuild keeps answering', async () => {
+-  const during = searchWhile(rebuild, 'tern');
+-  assert.deepEqual(during, ['northern-tern']);
++  await rebuild();
++  assert.ok(search('tern').length >= 0);
+ });
+diff --git a/src/search/RebuildBanner.tsx b/src/search/RebuildBanner.tsx
+--- /dev/null
++++ b/src/search/RebuildBanner.tsx
+@@ -0,0 +1,12 @@
++import { useRebuild } from './events.js';
++
++export function RebuildBanner() {
++  const r = useRebuild();
++  if (r.state !== 'started') return null;
++  return (
++    <div className="banner">
++      <b>The search index is rebuilding.</b> Results may be up to 40 seconds old.
++      <span>Started {r.at}</span>
++    </div>
++  );
++}
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -9,7 +9,7 @@ jobs:
+   test:
+     runs-on: ubuntu-latest
+-    timeout-minutes: 10
++    timeout-minutes: 30
+     steps:
+       - uses: actions/checkout@v4
+`,
+};
+
+/** The design judgement of Lodestar's banner: two routes shot before and after, the shots kept in the run's folder. */
+function searchDesign(r: Run): { check: CheckResult; design: NonNullable<Inspection['design']> } {
+  const dir = join(runRoot(r.id), 'design');
+  mkdirSync(dir, { recursive: true });
+  const shot = (name: string, as: string): string | null => {
+    const from = join(SHOTS, `${name}.png`);
+    if (!existsSync(from)) return null;
+    const to = join(dir, `${as}.png`);
+    copyFileSync(from, to);
+    return to;
+  };
+  const shots = [
+    { route: '/search', before: shot('search-before', 'before-0'), after: shot('search-after', 'after-0') },
+    { route: '/berths', before: shot('berths', 'before-1'), after: shot('berths', 'after-1') },
+  ];
+  const notes = 'The rebuild banner is legible and honest about stale results, but it pushes the results down a row and its spinner never stops on a still page; the berth board is unchanged.';
+  const detail = `Shot 2 routes before and after at 1440 x 900. Before 7, after 6 of 10 (pass at 6, no more than a point below before). ${notes}`;
+  return {
+    check: { name: 'design', status: 'pass', detail, durationMs: 48_200, logPath: null, testsRun: null, notes },
+    design: { before: 7, after: 6, diffOnly: false, shots },
+  };
+}
+
 /** A short log for a run in the history: what a working run's log reads like, without the noise. */
 function shortLog(a: Agent, j: Job, files: string[], startedAt: number, endedAt: number, summary: string): RunLogLine[] {
   const repo = getRepo(j.repo);
@@ -1198,6 +1370,9 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
         const files = file.endsWith('.md') ? [file] : [file, testFor(file)];
         const lines = Math.round(s.tier === 'low' ? between(6, 40) : s.tier === 'normal' ? between(30, 220) : between(150, 520));
         const fails = a.end === 'failed';
+        // Lodestar's first go at the search index (Task 37's inspection report): it reached past its scope into CI and added a UI banner.
+        const showcase = k === 0 && s.title === SEARCH_SCAR.title;
+        if (showcase) files.splice(0, files.length, ...SEARCH_SCAR.files);
         const [clo, chi] = modelCost(winner.model).run;
         const credits = round2(between(clo, chi) * (WORKFLOW_COST[winner.workflow.shape] ?? 1) * (fails && winner.firmId === LODESTAR.id ? 1.9 : 1));
         let run: Run;
@@ -1215,13 +1390,13 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
             ? `Rewrote ${file} around a cleaner model of the data; updated the tests that assumed the old behaviour.`
             : `${s.title}: changed ${file}${files[1] && files[1] !== file ? ` and covered it in ${files[1]}` : ''}.`;
           writeLog(run.id, shortLog(winner, j, files, startAt + 3 * MIN, Date.now(), summary));
-          run = p.finishWork(run, { files, lines, credits, summary });
+          run = p.finishWork(run, { files, lines, credits, summary, ...(showcase ? { patch: SEARCH_SCAR.patch } : {}) });
         });
         q.push(startAt + 3 * MIN + work + insp, async () => {
           const reviewer = reviewerFor(winner);
           if (fails) {
             const failing: CheckName | null = winner.firmId === LODESTAR.id || r() < 0.5 ? null : 'test';
-            const i = p.inspect(run, { passed: false, reviewer, failing });
+            const i = p.inspect(run, showcase ? { passed: false, reviewer, failing: null, concerns: SEARCH_SCAR.concerns, outOfScope: SEARCH_SCAR.outOfScope, design: searchDesign(run), logs: SEARCH_SCAR.logs } : { passed: false, reviewer, failing });
             run = p.fail(run, i, lines);
             if (k + 1 < s.by.length) attempt(s, j, k + 1, Date.now() + between(5, 14) * HOUR);
             return;
@@ -1432,7 +1607,7 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
     for (const what of ['run git push origin HEAD', 'read_file ~/.npmrc']) {
       record('run.refused', { runId: priyaRun.id, stage: 'working', what, reason: what.startsWith('run git push') ? 'a run never pushes; the engine ships from its own clone' : 'outside the run' });
     }
-    priyaRun = { ...priyaRun, progress: { ...priyaRun.progress, turns: 19, toolCalls: 41, filesChanged: 2, testsRun: 286, refusals: 2 } };
+    priyaRun = { ...priyaRun, progress: { ...priyaRun.progress, turns: 19, toolCalls: 41, filesChanged: 2, testsRun: 286, refusals: 2, credits: 4.62 } };
     saveRun(priyaRun);
   });
   q.push(ago(25 * MIN), () => post(REPO.H, [221]));
@@ -1550,8 +1725,16 @@ export interface EconomyClock {
  * own record and event. `now` stamps trips and the PR poll. A repo named in
  * `fail` fails its next inspection instead (the guild's review rejects it):
  * its scar is laid and its site struck, as a failed run's is.
+ *
+ * With `board`, the clock also keeps the board as the scheduler would on a
+ * real engine (a sample engine has none): an open job on a repo with its
+ * market on opens a round whose window is `bidWindowSec` script seconds,
+ * the eligible agents answer one at a time (a bid on the job's own terms,
+ * or a local agent sitting out for want of a slot), and the round is
+ * awarded by the market's own rule once everyone has answered or the
+ * window it opened has closed.
  */
-export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number }): EconomyClock {
+export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number; board?: boolean }): EconomyClock {
   const S = 1000;
   const p = new Pipeline(rng('sample-clock'));
   const steps: Array<{ at: number; run: () => void | Promise<void> }> = [];
@@ -1577,8 +1760,10 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
         at(t + i * 18, () => {
           const r = fresh(runId);
           if (!r || r.stage !== 'working') return;
-          const progress = { ...r.progress, turns: r.progress.turns + 1, toolCalls: r.progress.toolCalls + 2 };
+          // What the work has cost so far grows with it; finishing charges the run's whole cost.
+          const progress = { ...r.progress, turns: r.progress.turns + 1, toolCalls: r.progress.toolCalls + 2, credits: Math.round((r.progress.credits + 0.17) * 100) / 100 };
           saveRun({ ...r, progress });
+          emit('run.progress', { runId, progress });
           const line = lines[i];
           if (line) writeLog(runId, [{ at: iso(opts.now()), kind: line[0], text: line[1] }], true);
           site(r, 'framing', Math.min(0.7, 0.3 + i * 0.035));
@@ -1706,6 +1891,45 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
     });
   }
 
+  // The board (opts.board): one answer per round every BID_EVERY script ms, on its own seed so the runs' story is unchanged.
+  const BID_EVERY = 15 * S;
+  const bp = new Pipeline(rng('sample-board'));
+  const sits = rng('sample-board-sit');
+  const lastAnswer = new Map<string, number>();
+  /** Rounds this clock opened, whose window runs in script time; a round seeded before it closes once everyone has answered. */
+  const opened = new Set<string>();
+  const board = (): void => {
+    const now = opts.now();
+    const market = new Set(listRepos().filter((r) => r.connected && r.market && !r.halted).map((r) => r.fullName));
+    const windowMs = getSettings().bidWindowSec * 1000;
+    for (const j of listJobs({ status: 'open' })) {
+      if (!market.has(j.repo)) continue;
+      const next = openBidding(j, now - windowMs + windowMs / opts.speed);
+      if (next.status === 'bidding') opened.add(`${next.id} ${next.bidsCloseAt}`);
+    }
+    for (const j of listJobs({ status: 'bidding' })) {
+      if (!market.has(j.repo) || !j.bidsCloseAt) continue;
+      const { bids, satOut } = bidList(j.id);
+      const answered = new Set([...bids.map((b) => b.agentId), ...satOut.map((x) => x.agentId)]);
+      const waiting = eligibleAgents(j).filter((a) => !answered.has(a.id));
+      const round = `${j.id} ${j.bidsCloseAt}`;
+      if (waiting.length === 0 || (opened.has(round) && now >= Date.parse(j.bidsCloseAt))) {
+        award(j, now);
+        opened.delete(round);
+        lastAnswer.delete(round);
+        continue;
+      }
+      if (elapsed - (lastAnswer.get(round) ?? -Infinity) < BID_EVERY) continue;
+      lastAnswer.set(round, elapsed);
+      const a = waiting[0];
+      if (a.model.startsWith('ollama:') && sits() < 0.3) bp.satOut(j, a, NO_SLOT);
+      else {
+        const q = bp.quote(a, j);
+        bp.bid(j, a, q.price, q.confidence);
+      }
+    }
+  };
+
   const due = () => {
     for (;;) {
       const i = steps.findIndex((s) => s.at <= elapsed);
@@ -1721,6 +1945,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
       elapsed += ms * opts.speed;
       chain = chain.then(() => {
         due();
+        if (opts.board) chain = chain.then(board).catch((err: unknown) => console.warn(`palimpsest: the sample board: ${err instanceof Error ? err.message : String(err)}`));
         // Trips end when their time is up.
         const t = opts.now();
         for (const trip of liveTrips()) if (Date.parse(trip.startedAt) + trip.ms <= t) endTrip(trip, t);
