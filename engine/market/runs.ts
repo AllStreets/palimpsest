@@ -36,7 +36,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { MAX_ATTEMPTS } from '../../shared/market-rules.js';
+import { LIVE_JOB_STATUSES, MAX_ATTEMPTS } from '../../shared/market-rules.js';
 import type {
   Agent,
   Bid,
@@ -125,7 +125,7 @@ export const HELPER_MISSING =
 /** Run stages in which a run is live (ruling 7: one per repo). */
 const LIVE_STAGES: RunStage[] = ['preparing', 'installing', 'working', 'inspecting', 'shipping'];
 /** Job statuses that belong to a live run. */
-const LIVE_JOB: JobStatus[] = ['awarded', 'running', 'inspecting', 'shipping'];
+const LIVE_JOB: JobStatus[] = LIVE_JOB_STATUSES;
 /** Job statuses a halt stops. */
 const HALTABLE: JobStatus[] = ['open', 'bidding', 'awarded', 'running', 'inspecting', 'shipping', 'waiting'];
 

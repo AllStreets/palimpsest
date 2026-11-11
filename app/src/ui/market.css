@@ -1614,6 +1614,10 @@ body[data-route='inspection'] {
   padding-right: 0;
   text-align: right;
 }
+/* An empty fold cell still stands a line tall on the row's baseline, so the hairline runs unbroken across it. */
+.checks td.c-fold:empty::before {
+  content: '\200b';
+}
 .checks .check-name {
   display: inline;
   padding: 0;

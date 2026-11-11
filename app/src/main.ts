@@ -153,12 +153,14 @@ const BOARD_ON = new Set(['job.posted', 'job.proposed', 'job.changed', 'job.awar
 
 /** How long a notice stands in the running head before it fades. */
 const NOTICE_MS = 6000;
+/** How many notices the recall mark keeps. */
+const NOTICES_KEPT = 3;
 
 /**
  * A one-line notice in the running head for what the city did by itself
  * (stood on plain stand-ins when the kits would not load, stepped down to
  * medium quality). It stands a few seconds and fades; a small mark stays at
- * the head's end to recall it, and a later notice takes the line.
+ * the head's end to recall it: the last three, joined, so none is lost.
  */
 function createNotice(head: HTMLElement): { add(text: string): void; text(): string } {
   const box = document.createElement('div');
@@ -173,7 +175,17 @@ function createNotice(head: HTMLElement): { add(text: string): void; text(): str
   recall.title = 'Show the last notice again';
   box.append(line, recall);
   head.append(box);
+  /** The last few notices, oldest first; the recall shows them all. */
+  const kept: string[] = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /** Sets the line's text so a screen reader announces it again, even when the words are the same. */
+  const announce = (text: string): void => {
+    line.textContent = '';
+    line.title = text;
+    requestAnimationFrame(() => {
+      line.textContent = text;
+    });
+  };
   const fade = (): void => {
     timer = null;
     delete box.dataset.shown;
@@ -185,11 +197,16 @@ function createNotice(head: HTMLElement): { add(text: string): void; text(): str
     if (timer) clearTimeout(timer);
     timer = setTimeout(fade, NOTICE_MS);
   };
-  recall.addEventListener('click', () => (box.dataset.shown === undefined ? show() : fade()));
+  recall.addEventListener('click', () => {
+    if (box.dataset.shown !== undefined) return fade();
+    announce(kept.join(' '));
+    show();
+  });
   return {
     add(text) {
-      line.textContent = text;
-      line.title = text;
+      kept.push(text);
+      if (kept.length > NOTICES_KEPT) kept.splice(0, kept.length - NOTICES_KEPT);
+      announce(text);
       box.hidden = false;
       show();
     },

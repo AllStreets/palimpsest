@@ -342,6 +342,20 @@ export function createSettings(
   const tokensText = (t: { today: number; week: number } | null): string =>
     t ? `${numberFormat.format(t.today)} tokens today, ${numberFormat.format(t.week)} this week` : 'No tokens read in the last 7 days.';
 
+  /** Claude's last answer from GET /api/providers, kept so a newer usage reading can redraw its state line. */
+  let lastClaude: ProviderUsage | null = null;
+
+  /** Claude's state line: what failed (the transcripts trend) apart from what held (the statusline percentages, and when they were read). */
+  function fillClaudeState(): void {
+    const c = lastClaude;
+    const trouble = c?.trouble ? cleanText(c.trouble, 400) : '';
+    claudeTrouble.textContent = trouble ? `${trouble}${/[.!?]$/.test(trouble) ? '' : '.'}` : '';
+    claudeTrouble.hidden = !trouble;
+    if (!c || c.status === 'unknown') return;
+    const held = `The statusline percentages held${readAt ? `, read ${ago(readAt)}` : ''}.`;
+    setState(claude, c.status, c.status !== 'ready' ? 'No usage reading yet.' : trouble ? held : `${cleanText(c.detail, 160).replace(/\d+(\.\d+)?/g, (n) => numberFormat.format(Number(n)))}.`);
+  }
+
   /** What each provider reads now, from GET /api/providers, and who works on it. */
   function fillProviders(list: ProviderUsage[] | null, firms: FirmView[] | null): void {
     const by = new Map((list ?? []).map((p) => [p.provider, p] as const));
@@ -351,15 +365,8 @@ export function createSettings(
       else if (p.status === 'unknown') setState(entries[id], 'unknown', cleanText(p.detail, 400));
     }
 
-    const c = by.get('claude');
-    // What failed (the transcripts trend) stands apart from what held (the statusline percentages, and when they were read).
-    const trouble = c?.trouble ? cleanText(c.trouble, 400) : '';
-    claudeTrouble.textContent = trouble ? `${trouble}${/[.!?]$/.test(trouble) ? '' : '.'}` : '';
-    claudeTrouble.hidden = !trouble;
-    if (c && c.status !== 'unknown') {
-      const held = `The statusline percentages held${readAt ? `, read ${ago(readAt)}` : ''}.`;
-      setState(claude, c.status, c.status !== 'ready' ? 'No usage reading yet.' : trouble ? held : `${cleanText(c.detail, 160).replace(/\d+(\.\d+)?/g, (n) => numberFormat.format(Number(n)))}.`);
-    }
+    lastClaude = by.get('claude') ?? null;
+    fillClaudeState();
     fillAgents(claude, 'claude', firms);
 
     const a = by.get('anthropic-api');
@@ -441,6 +448,7 @@ export function createSettings(
 
   function fillUsage(u: UsageState | null): void {
     readAt = u?.reading?.at ?? null;
+    if (lastClaude) fillClaudeState();
     fillWindow(fiveRow, u?.reading?.fiveHour);
     fillWindow(weekRow, u?.reading?.sevenDay);
     usageFoot.replaceChildren();

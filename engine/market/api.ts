@@ -12,7 +12,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 
-import { LEGAL_MOVES, MAX_ATTEMPTS, runsUnderWay } from '../../shared/market-rules.js';
+import { LEGAL_MOVES, LIVE_JOB_STATUSES, MAX_ATTEMPTS, runsUnderWay } from '../../shared/market-rules.js';
 import type {
   Agent,
   AgentDetail,
@@ -386,6 +386,18 @@ function readingUnreadable(now: number): boolean {
   return r === null || r.fiveHour === null || r.sevenDay === null || isStale(r, now);
 }
 
+/** The runs under way, asked of the store for the unended runs on live jobs only, never every row parsed. */
+function underWayNow(): TreasuryView['underWay'] {
+  const marks = LIVE_JOB_STATUSES.map(() => '?').join(', ');
+  const rows = openDb()
+    .prepare(`SELECT r.json AS run, j.id AS jobId, j.status AS status FROM runs r JOIN jobs j ON j.id = r.job_id WHERE j.status IN (${marks}) AND json_extract(r.json, '$.endedAt') IS NULL`)
+    .all(...LIVE_JOB_STATUSES) as Array<{ run: string; jobId: string; status: JobStatus }>;
+  return runsUnderWay(
+    rows.map((r) => JSON.parse(r.run) as Run),
+    rows.map((r) => ({ id: r.jobId, status: r.status })),
+  );
+}
+
 function treasuryView(): TreasuryView {
   const now = Date.now();
   const c = storedCalibration();
@@ -407,7 +419,7 @@ function treasuryView(): TreasuryView {
     spend: { today: spendBetween(today.from, today.to), week: spendBetween(week.from, week.to) },
     reports: [...new Set(query({ kind: 'report.written' }).map((e) => (e.data as { day?: string }).day).filter((d): d is string => typeof d === 'string' && DAY.test(d)))].sort().reverse(),
     // Counted from the runs store, as the board and the run pages count, never from the leases.
-    underWay: runsUnderWay(listRuns(), listJobs()),
+    underWay: underWayNow(),
   };
 }
 
