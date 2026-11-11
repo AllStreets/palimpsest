@@ -26,6 +26,8 @@ export interface Repo {
   strikes: number;
   /** The datum: set at the first successful analysis and never moved (ruling 17). */
   joinedAt: string | null;
+  /** When the README audit last ended on this repo (Phase 3); null until one has. */
+  auditedAt: string | null;
 }
 
 export interface RepoChecks {
@@ -121,12 +123,20 @@ export interface Settings {
   keepAwake: boolean;
   ollamaHost: string;
   anthropicApi: { enabled: boolean; dailyUsd: number };
+  /** Audit a repo once, by itself, when its market is first turned on (Phase 3 decision 1). */
+  auditOnConnect: boolean;
+  /** The audit's model: `auto` picks Claude when the caps allow, else the largest installed local coder (Phase 3 ruling 5). */
+  auditModel: 'auto' | ModelRef;
+  /** The most credits one audit may spend before it ends `capped`. */
+  auditMaxCredits: number;
+  /** Today's limit, set from the brief, in place of `dayCapPct` while `day` is today (Phase 3 ruling 10). */
+  todayCapPct: { day: string; pct: number } | null;
 }
 
 // ---------------------------------------------------------------- the market
 
 export type Tier = 'low' | 'normal' | 'high';
-export type JobSource = 'issue' | 'manual' | 'harness';
+export type JobSource = 'issue' | 'manual' | 'harness' | 'proposal' | 'brief';
 export type JobStatus =
   | 'proposed'
   | 'open'
@@ -168,6 +178,10 @@ export interface Job {
   inconclusive?: number;
   /** Why the job was halted on its own, for his daily brief; cleared on resume. */
   haltNote?: string | null;
+  /** The audit finding this job was proposed from (source `proposal`). */
+  proposal?: { auditId: string; findingId: string } | null;
+  /** The proposal's key (`proposalKey()` or `HARNESS_KEY()`): a key with a job is not proposed again by itself. */
+  key?: string | null;
 }
 
 export type ModelRef = `claude:${string}` | `ollama:${string}` | `anthropic:${string}` | `mlx:${string}`;
@@ -406,6 +420,133 @@ export interface ProviderUsage {
   models?: string[];
   /** Ollama: the host it was asked at (Settings' ollamaHost). */
   host?: string;
+}
+
+// ---------------------------------------------------------------- Phase 3: the audit, the brief, milestones and the tour
+
+export type Verdict = 'REAL' | 'PARTIAL' | 'MISSING' | 'STUBBED' | 'BROKEN';
+
+/** One piece of evidence for a finding, checked against the base commit (`verified`), never the working tree. */
+export interface Evidence {
+  file: string;
+  line: number | null;
+  note: string;
+  verified: boolean;
+}
+
+/** What the audit proposes the market build for a finding; `jobId` once posted as a `proposed` job. */
+export interface Proposal {
+  key: string;
+  title: string;
+  body: string;
+  scope: string[];
+  acceptance: string[];
+  tier: Tier;
+  jobId: string | null;
+}
+
+export interface Finding {
+  id: string;
+  claim: string;
+  source: { file: string; line: number | null };
+  verdict: Verdict;
+  tested: boolean;
+  evidence: Evidence[];
+  /** No piece of evidence verified against the base commit: the finding gets no proposal. */
+  unverified: boolean;
+  proposal: Proposal | null;
+}
+
+export type AuditStatus = 'waiting' | 'preparing' | 'installing' | 'reading' | 'done' | 'failed' | 'capped' | 'killed' | 'crashed';
+export type AuditTrigger = 'connect' | 'demand' | 'brief';
+
+export interface Audit {
+  id: string;
+  repo: string;
+  model: ModelRef | null;
+  trigger: AuditTrigger;
+  baseSha: string | null;
+  status: AuditStatus;
+  waitingReason: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  endedReason: string | null;
+  findings: Finding[];
+  counts: Record<Verdict, number>;
+  unverified: number;
+  claimsRead: number;
+  credits: number;
+  unattended: boolean;
+  markdownPath: string | null;
+}
+
+/** An audit as the API sends it: the page inline, its proposals as jobs, no path of this Mac. */
+export type AuditView = Omit<Audit, 'markdownPath'> & { markdown: string | null; proposals: Job[] };
+
+export type BriefItemKind = 'merged' | 'failed' | 'pr' | 'proposal' | 'halt' | 'revert' | 'note' | 'audit' | 'audit-due' | 'usage' | 'stale' | 'milestone' | 'tour';
+export type BriefAction = 'accept' | 'tier' | 'dismiss' | 'why' | 'diff' | 'fly' | 'retry' | 'resume' | 'open-pr' | 'cap' | 'audit' | 'tour';
+
+export interface BriefItem {
+  id: string;
+  kind: BriefItemKind;
+  repo: string | null;
+  title: string;
+  text: string;
+  at: string;
+  tier: Tier | null;
+  refs: { jobId?: string; runId?: string; inspectionId?: string; prUrl?: string; floorId?: string; auditId?: string; milestoneId?: string; firmId?: string };
+  actions: BriefAction[];
+  acted: { action: BriefAction; at: string } | null;
+}
+
+export interface Brief {
+  day: string;
+  since: string;
+  firstOpen: boolean;
+  due: boolean;
+  lead: string;
+  usage: { fiveHour: BudgetWindow; sevenDay: BudgetWindow; todayCapPct: number | null; paused: TreasuryState['paused'] };
+  sections: { waiting: BriefItem[]; overnight: BriefItem[]; recommendations: BriefItem[]; city: BriefItem[] };
+  tour: { week: string; stops: number } | null;
+}
+
+export type MilestoneKind = 'skyline' | 'founding-skyline' | 'revival' | 'ribbon';
+
+export interface Milestone {
+  id: string;
+  kind: MilestoneKind;
+  towerId: string;
+  repo: string | null;
+  firmId: string | null;
+  agentId: string | null;
+  floorId: string | null;
+  at: string;
+  until: string | null;
+  lit: boolean;
+  title: string;
+  detail: string;
+}
+
+export interface TourStop {
+  kind: 'merged' | 'scar' | 'skyline' | 'revival' | 'ribbon' | 'firm' | 'hire' | 'exchange';
+  towerId: string | null;
+  repo: string | null;
+  floorId: string | null;
+  agentId: string | null;
+  firmId: string | null;
+  title: string;
+  caption: string;
+  at: string;
+  dwell: number;
+  glide: number;
+}
+
+export interface Tour {
+  week: string;
+  from: string;
+  to: string;
+  stops: TourStop[];
+  seconds: number;
 }
 
 export type RunLogLine = {

@@ -520,6 +520,10 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
   return {
     kind: 'anthropic',
 
+    async audit() {
+      throw new Error('not implemented');
+    },
+
     async work(i) {
       const zero: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
       try {

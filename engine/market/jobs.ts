@@ -51,8 +51,8 @@ const LIVE: JobStatus[] = ['running', 'inspecting'];
 
 function save(j: Job): void {
   openDb()
-    .prepare('INSERT OR REPLACE INTO jobs (id, repo, status, json) VALUES (?, ?, ?, ?)')
-    .run(j.id, j.repo, j.status, JSON.stringify(j));
+    .prepare('INSERT OR REPLACE INTO jobs (id, repo, status, json, key) VALUES (?, ?, ?, ?, ?)')
+    .run(j.id, j.repo, j.status, JSON.stringify(j), j.key ?? null);
 }
 
 export function job(id: string): Job | null {

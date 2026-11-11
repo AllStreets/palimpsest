@@ -21,7 +21,9 @@ import {
   unattended,
 } from '../engine/market/budget.js';
 import type { Lease } from '../engine/market/budget.js';
+import { localDay } from '../engine/market/report.js';
 import { patchSettings } from '../engine/settings.js';
+import { openDb } from '../engine/db.js';
 import type { ModelRef } from '../shared/types.js';
 
 const MIN = 60_000;
@@ -480,4 +482,74 @@ test('a resume lasts at most five hours past a stale reading', () => {
   assert.equal(treasury(NOW).paused?.reason, 'stale');
   reading({ at: NOW - 9 * HOUR, five: 10, fiveResets: Math.floor((NOW - 5 * HOUR) / 1000) });
   assert.equal(treasury(NOW).paused, null);
+});
+
+// ---------------------------------------------------------------- Phase 3: the audit's spend and today's cap
+
+/** Pin: `credits.kind` has no CHECK, so the row was always accepted at runtime; the pin holds the type open to 'audit' with a null firm. */
+test('charge accepts kind audit with a null firm', () => {
+  reading({ five: 10 });
+  const credits = charge({
+    runId: 'audit-1',
+    firmId: null,
+    model: 'claude:sonnet',
+    kind: 'audit',
+    usage: { weightedTokens: 60_000, seconds: 0, usd: 0, credits: 0 },
+    unattended: false,
+    at: NOW - MIN,
+  });
+  assert.equal(credits, 10);
+  const row = openDb().prepare('SELECT firm_id, run_id, kind, amount FROM credits ORDER BY id DESC LIMIT 1').get() as { firm_id: string | null; run_id: string; kind: string; amount: number };
+  assert.deepEqual({ ...row }, { firm_id: null, run_id: 'audit-1', kind: 'audit', amount: 10 });
+});
+
+test('an audit charge counts in the five-hour window, the night cap and citySpent', () => {
+  reading({ five: 10, seven: 30 });
+  const before = treasury(NOW);
+  charge({
+    runId: 'audit-1',
+    firmId: null,
+    model: 'claude:sonnet',
+    kind: 'audit',
+    usage: { weightedTokens: 60_000, seconds: 0, usd: 0, credits: 0 },
+    unattended: true,
+    at: NOW - MIN,
+  });
+  const after = treasury(NOW);
+  near(after.fiveHour.cityPct - before.fiveHour.cityPct, 1);
+  // One window point is a quarter of a weekly point at the assumed ratio.
+  near(after.night.usedPct - before.night.usedPct, 0.25);
+  near(after.citySpent.today - before.citySpent.today, 10);
+  near(after.citySpent.week - before.citySpent.week, 10);
+});
+
+test("the treasury honours today's cap", async () => {
+  reading({ five: 10 });
+  const today = localDay(NOW);
+  patchSettings({ dayCapPct: 50, hardStopPct: 90, todayCapPct: { day: today, pct: 20 } });
+  // 19.8% of the window spent by the city: well under the 50% day cap, but a 3-credit plan call would cross today's 20%.
+  spend({ weighted: 1_188_000, at: NOW - MIN });
+  const t = treasury(NOW);
+  assert.equal(t.fiveHour.capPct, 20);
+  assert.equal(t.paused?.reason, 'cap');
+  assert.match(t.paused?.detail ?? '', /the cap is 20%/);
+  const refused = await acquire('claude:sonnet', 'work', 10, { now: NOW });
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.equal((refused.reason as { reason: string }).reason, 'cap');
+
+  // Raised above the day cap, for today only.
+  patchSettings({ dayCapPct: 15, todayCapPct: { day: today, pct: 70 } });
+  const raised = treasury(NOW);
+  assert.equal(raised.fiveHour.capPct, 70);
+  assert.equal(raised.paused, null);
+  const ok = await acquire('claude:sonnet', 'work', 10, { now: NOW });
+  assert.equal(ok.ok, true);
+  if (ok.ok) ok.lease.release();
+
+  // Yesterday's limit has expired: the day cap stands again.
+  patchSettings({ todayCapPct: { day: '2026-11-08', pct: 70 } });
+  const expired = treasury(NOW);
+  assert.equal(expired.fiveHour.capPct, 15);
+  assert.equal(expired.paused?.reason, 'cap');
+  assert.match(expired.paused?.detail ?? '', /the cap is 15%/);
 });

@@ -49,6 +49,13 @@ export const LEDGER_KINDS = [
   'api.key.set',
   'api.key.removed',
   'run.note',
+  // Phase 3: the audit, the brief and milestones
+  'audit.started',
+  'audit.stage',
+  'audit.ended',
+  'brief.opened',
+  'brief.action',
+  'milestone.reached',
 ] as const;
 
 export type LedgerKind = (typeof LEDGER_KINDS)[number];

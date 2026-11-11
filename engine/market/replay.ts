@@ -24,8 +24,12 @@
  *   `floor.removed`, `merge.reverted` (both floors of the job).
  * - halts and strikes: `repo.halted`, `repo.resumed`, and each conclusive
  *   `inspection.done` (a pass clears the strikes, a fail adds one).
+ * - audits (Phase 3): `audit.started { audit }` and `audit.ended { audit }`
+ *   hold the whole audit; `audit.stage { auditId, status, waitingReason? }`
+ *   moves one in flight. Milestones: `milestone.reached { milestone }`,
+ *   idempotent by id. `brief.opened` and `brief.action` carry no table.
  */
-import type { Agent, Bid, Firm, Floor, Inspection, Job, JobStatus, Run, RunStage } from '../../shared/types.js';
+import type { Agent, Audit, AuditStatus, Bid, Firm, Floor, Inspection, Job, JobStatus, Milestone, Run, RunStage } from '../../shared/types.js';
 import { isLedgerKind, type LedgerKind } from '../../shared/ledger-kinds.js';
 import { START_BALANCE } from '../../shared/market-rules.js';
 import { openDb } from '../db.js';
@@ -81,6 +85,10 @@ export interface MarketState {
   engine: { stopped: boolean };
   /** Trip ends recorded (the trips themselves are city state, Part B). */
   tripsEnded: string[];
+  /** Every README audit, from `audit.started` then `audit.ended` (Phase 3). */
+  audits: Record<string, Audit>;
+  /** Every milestone reached, by id (Phase 3). */
+  milestones: Record<string, Milestone>;
   /** Entries whose kind is outside LEDGER_KINDS (never written by record(); kept for the check). */
   unknown: number[];
   lastId: number;
@@ -121,6 +129,8 @@ export function emptyState(): MarketState {
     api: { keySet: false },
     engine: { stopped: false },
     tripsEnded: [],
+    audits: {},
+    milestones: {},
     unknown: [],
     lastId: 0,
   };
@@ -429,6 +439,31 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     case 'api.key.removed':
       s.api.keySet = false;
       return s;
+
+    // ------------------------------------------------------------ Phase 3: audits, the brief and milestones
+    case 'audit.started':
+    case 'audit.ended': {
+      const a = d.audit as Audit | undefined;
+      if (a?.id) s.audits[a.id] = clone(a);
+      return s;
+    }
+    case 'audit.stage': {
+      const a = s.audits[str(d.auditId) ?? ''];
+      if (a && str(d.status)) {
+        a.status = d.status as AuditStatus;
+        if ('waitingReason' in d) a.waitingReason = str(d.waitingReason);
+      }
+      return s;
+    }
+    case 'brief.opened':
+    case 'brief.action':
+      // His mornings are recorded for Triage; no table holds them.
+      return s;
+    case 'milestone.reached': {
+      const m = d.milestone as Milestone | undefined;
+      if (m?.id) s.milestones[m.id] = clone(m);
+      return s;
+    }
     default: {
       const missing: never = kind;
       throw new Error(`replay has no case for ${String(missing)}`);
@@ -469,11 +504,15 @@ function compare(label: string, stored: Record<string, unknown>, replayed: Recor
 
 /** The fields of a run still in flight that the ledger carries (the rest, such as progress, arrive whole with `run.ended`). */
 const LIVE_RUN_FIELDS: Array<keyof Run> = ['id', 'jobId', 'bidId', 'agentId', 'firmId', 'repo', 'model', 'branch', 'stage', 'outcome', 'headSha', 'prNumber', 'prUrl', 'inspectionId', 'startedAt', 'unattended'];
+/** The fields of an audit still in flight that the ledger carries (its findings and counts arrive whole with `audit.ended`). */
+const LIVE_AUDIT_FIELDS: Array<keyof Audit> = ['id', 'repo', 'model', 'trigger', 'baseSha', 'status', 'waitingReason', 'startedAt', 'unattended'];
+const ENDED_AUDIT: ReadonlySet<AuditStatus> = new Set<AuditStatus>(['done', 'failed', 'capped', 'killed', 'crashed']);
 
 /**
  * Replays the whole ledger and compares it with the tables: firms (with
- * their books), agents, jobs, bids, runs, inspections, earned floors, and
- * each repo's halt and strikes. `diffs` names every disagreement.
+ * their books), agents, jobs, bids, runs, inspections, earned floors, each
+ * repo's halt and strikes, and (Phase 3) the audits and the milestones.
+ * `diffs` names every disagreement.
  */
 export function verifyReplay(): { ok: boolean; diffs: string[] } {
   const s = replay(entries());
@@ -499,6 +538,15 @@ export function verifyReplay(): { ok: boolean; diffs: string[] } {
     return r;
   });
   compare('inspection', table('SELECT id, json FROM inspections'), s.inspections, diffs);
+  const storedAudits = table('SELECT id, json FROM audits') as Record<string, Audit>;
+  compare('audit', storedAudits, s.audits, diffs, (_id, x) => {
+    const a = x as Audit;
+    // An audit still in flight is compared on what the ledger carries; an ended one whole.
+    const live = (y: Audit | undefined) => y !== undefined && !ENDED_AUDIT.has(y.status);
+    if (live(storedAudits[a.id]) || live(s.audits[a.id])) return Object.fromEntries(LIVE_AUDIT_FIELDS.map((k) => [k, a[k] ?? null]));
+    return a;
+  });
+  compare('milestone', table('SELECT id, json FROM milestones'), s.milestones, diffs);
 
   const towers: Record<string, unknown> = {};
   for (const r of openDb().prepare('SELECT tower_id, json FROM earned_floors ORDER BY tower_id, seq').all() as Array<{ tower_id: string; json: string }>) {

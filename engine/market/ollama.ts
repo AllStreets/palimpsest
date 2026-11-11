@@ -354,6 +354,10 @@ export function ollamaProvider(): Provider {
   return {
     kind: 'ollama',
 
+    async audit() {
+      throw new Error('not implemented');
+    },
+
     async work(i) {
       const zero: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
       let model: string;

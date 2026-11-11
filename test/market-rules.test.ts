@@ -2,27 +2,42 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  AUDIT_CAPS,
+  AUDIT_ESTIMATE,
+  AUDIT_LOCAL_RESULT,
+  AUDIT_MAX_EVIDENCE,
+  AUDIT_MAX_FINDINGS,
+  AUDIT_READ_CAPS,
+  AUDIT_TEXT_CAPS,
   calibrated,
   canHire,
   CREDITS_PER_USD,
   eraForScore,
   expectedValue,
+  HARNESS_KEY,
   HIRE_FEE,
   isBankrupt,
   LEGAL_MOVES,
+  LIGHTS_DAYS,
+  localSize,
   PUSH_MODE_NEEDS,
   pushModeRefusal,
   legalMove,
   MAX_ATTEMPTS,
   NEW_FIRM_OVERCLAIM,
   overclaimOf,
+  proposalKey,
+  QUIET_DAYS,
   reputationScore,
   REVIEWER_SHARE,
+  RIBBON_DAYS,
   salePrice,
   START_BALANCE,
   TIER_LABELS,
   TIER_VALUE,
   tierFromLabels,
+  todayCap,
+  TOUR,
 } from '../shared/market-rules.js';
 
 test('constants', () => {
@@ -157,4 +172,55 @@ test('push mode needs a test and a build command, and says so', () => {
   assert.equal(pushModeRefusal({ test: 'npm test', build: null }), PUSH_MODE_NEEDS);
   assert.equal(pushModeRefusal({ test: null, build: 'vite build' }), PUSH_MODE_NEEDS);
   assert.equal(pushModeRefusal(null), PUSH_MODE_NEEDS);
+});
+
+// ---------------------------------------------------------------- Phase 3: the audit, the brief and the milestones
+
+test('the audit, milestone and tour constants', () => {
+  assert.equal(AUDIT_ESTIMATE, 20);
+  assert.equal(AUDIT_MAX_FINDINGS, 60);
+  assert.equal(AUDIT_MAX_EVIDENCE, 3);
+  assert.deepEqual(AUDIT_TEXT_CAPS, { claim: 400, note: 300, title: 120, body: 4000 });
+  assert.deepEqual(AUDIT_READ_CAPS, { claude: 200_000, local: 24_000 });
+  assert.equal(AUDIT_LOCAL_RESULT, 8_000);
+  assert.deepEqual(AUDIT_CAPS, { claude: { maxTurns: 60, maxMinutes: 25 }, local: { maxTurns: 40, maxMinutes: 25 } });
+  assert.equal(QUIET_DAYS, 90);
+  assert.equal(LIGHTS_DAYS, 7);
+  assert.equal(RIBBON_DAYS, 7);
+  assert.deepEqual(TOUR, { maxStops: 8, dwell: 6, glide: 4, exchange: 3, minStops: 2 });
+  assert.equal(HARNESS_KEY('acme/widgets'), 'acme/widgets#harness');
+});
+
+test('proposalKey is stable across whitespace and case', () => {
+  const a = proposalKey('acme/widgets', 'Supports  hot reload');
+  const b = proposalKey('acme/widgets', '  supports hot\treload \n');
+  const c = proposalKey('acme/widgets', 'SUPPORTS HOT RELOAD');
+  assert.equal(a, b);
+  assert.equal(a, c);
+  assert.match(a, /^acme\/widgets#[0-9a-f]{12}$/);
+  assert.notEqual(a, proposalKey('acme/widgets', 'Supports cold reload'), 'a different claim has a different key');
+  assert.notEqual(a, proposalKey('acme/gadgets', 'Supports hot reload'), 'the same claim on another repo has a different key');
+  // The first twelve hex digits of the sha1 of "supports hot reload": the key carries nothing of the claim itself.
+  assert.equal(a, 'acme/widgets#1299ebc1ff22');
+});
+
+test('todayCap clamps and expires at midnight', () => {
+  const base = { dayCapPct: 50, hardStopPct: 90 };
+  assert.equal(todayCap({ ...base, todayCapPct: null }, '2026-11-11'), 50);
+  assert.equal(todayCap({ ...base, todayCapPct: { day: '2026-11-10', pct: 30 } }, '2026-11-11'), 50, "yesterday's limit has expired");
+  assert.equal(todayCap({ ...base, todayCapPct: { day: '2026-11-11', pct: 30 } }, '2026-11-11'), 30);
+  assert.equal(todayCap({ ...base, todayCapPct: { day: '2026-11-11', pct: 2 } }, '2026-11-11'), 5, 'never under 5');
+  assert.equal(todayCap({ ...base, todayCapPct: { day: '2026-11-11', pct: 99 } }, '2026-11-11'), 85, 'never nearer than 5 to the hard stop');
+  assert.equal(todayCap({ ...base, todayCapPct: { day: '2026-11-11', pct: 70 } }, '2026-11-11'), 70, 'it may stand above the day cap');
+});
+
+test('localSize ranks 30b-a3b over 7b over a name without a tag', () => {
+  assert.equal(localSize('qwen3-coder:30b-a3b-q4_K_M'), 30);
+  assert.equal(localSize('qwen2.5-coder:7b'), 7);
+  assert.equal(localSize('gpt-oss:20b'), 20);
+  assert.equal(localSize('qwen3:1.7b'), 1.7);
+  assert.equal(localSize('deepseek-coder:latest'), 0);
+  assert.equal(localSize(''), 0);
+  assert.ok(localSize('qwen3-coder:30b-a3b') > localSize('qwen2.5-coder:7b'));
+  assert.ok(localSize('qwen2.5-coder:7b') > localSize('codellama'));
 });

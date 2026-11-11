@@ -23,7 +23,7 @@ afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-const MARKET_TABLES = ['jobs', 'firms', 'agents', 'bids', 'runs', 'inspections', 'baselines', 'earned_floors', 'trips', 'slots', 'credits'];
+const MARKET_TABLES = ['jobs', 'firms', 'agents', 'bids', 'runs', 'inspections', 'baselines', 'earned_floors', 'trips', 'slots', 'credits', 'audits', 'milestones'];
 
 function tables(dbPath: string): string[] {
   const db = new DatabaseSync(dbPath);
@@ -90,4 +90,27 @@ test('slots refuse two owners on one plot and the unique index is idempotent', a
   assert.throws(() => db.prepare("INSERT INTO slots (kind, owner, slot) VALUES ('firm', 'kiln', 4)").run(), /UNIQUE/);
   const idx = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'slots_slot'").all();
   assert.equal(idx.length, 1);
+});
+
+test('the db has audits and milestones tables and jobs.key', async () => {
+  // A Phase 2 database: a jobs table without the key column, with a job already in it.
+  const raw = new DatabaseSync(home.paths().db);
+  raw.exec('CREATE TABLE jobs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, status TEXT NOT NULL, json TEXT NOT NULL)');
+  raw.prepare('INSERT INTO jobs (id, repo, status, json) VALUES (?, ?, ?, ?)').run('job-1', 'acme/widgets', 'open', '{"id":"job-1"}');
+  raw.close();
+
+  const { migrate, openDb } = await import('../engine/db.js');
+  const db = openDb();
+  migrate(db);
+  const cols = (table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+  assert.deepEqual(cols('audits'), ['id', 'repo', 'status', 'started_at', 'json']);
+  assert.deepEqual(cols('milestones'), ['id', 'kind', 'tower_id', 'at', 'until', 'json']);
+  assert.ok(cols('jobs').includes('key'), 'the migration added jobs.key');
+  assert.equal((db.prepare('SELECT key FROM jobs WHERE id = ?').get('job-1') as { key: string | null }).key, null, 'an older job has no key');
+  const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name: string }>).map((r) => r.name);
+  for (const i of ['audits_repo', 'milestones_tower', 'jobs_key']) assert.ok(indexes.includes(i), i);
+  db.prepare('INSERT INTO audits (id, repo, status, started_at, json) VALUES (?, ?, ?, ?, ?)').run('audit-1', 'acme/widgets', 'done', '2026-11-11T08:00:00.000Z', '{}');
+  db.prepare('INSERT INTO milestones (id, kind, tower_id, at, until, json) VALUES (?, ?, ?, ?, ?, ?)').run('skyline:1', 'skyline', 'acme/widgets#founding', '2026-11-11T08:00:00.000Z', null, '{}');
+  db.prepare('UPDATE jobs SET key = ? WHERE id = ?').run('acme/widgets#abcdef012345', 'job-1');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM jobs WHERE key = ?').get('acme/widgets#abcdef012345') as { n: number }).n, 1);
 });

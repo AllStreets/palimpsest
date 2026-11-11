@@ -833,6 +833,10 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     kind: 'claude',
     work,
 
+    async audit() {
+      throw new Error('not implemented');
+    },
+
     async plan(i, signal) {
       const out = await call('plan', i.agent.model, i.persona, i.agent.instructions, planPrompt(i), PLAN_SCHEMA, signal);
       const a = answer(out);

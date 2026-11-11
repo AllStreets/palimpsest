@@ -15,6 +15,10 @@ const DEFAULTS: Settings = {
   keepAwake: false,
   ollamaHost: '127.0.0.1:11434',
   anthropicApi: { enabled: false, dailyUsd: 5 },
+  auditOnConnect: true,
+  auditModel: 'auto',
+  auditMaxCredits: 40,
+  todayCapPct: null,
 };
 
 /** Current settings, defaults filled in for any key not yet stored. */

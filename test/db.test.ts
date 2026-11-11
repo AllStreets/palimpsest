@@ -8,6 +8,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { home, paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
+import { isLedgerKind } from '../shared/ledger-kinds.js';
 
 let tempDir: string;
 let previousHome: string | undefined;
@@ -69,6 +70,18 @@ test('settings defaults', () => {
   assert.equal(settings.keepAwake, false);
   assert.equal(settings.ollamaHost, '127.0.0.1:11434');
   assert.deepEqual(settings.anthropicApi, { enabled: false, dailyUsd: 5 });
+  // Phase 3: the audit and today's cap.
+  assert.equal(settings.auditOnConnect, true);
+  assert.equal(settings.auditModel, 'auto');
+  assert.equal(settings.auditMaxCredits, 40);
+  assert.equal(settings.todayCapPct, null);
+});
+
+test('the ledger takes the audit, brief and milestone kinds', () => {
+  const kinds = ['audit.started', 'audit.stage', 'audit.ended', 'brief.opened', 'brief.action', 'milestone.reached'] as const;
+  for (const k of kinds) assert.ok(isLedgerKind(k), k);
+  const id = record('audit.started', { audit: { id: 'audit-1' } });
+  assert.equal(entries(id - 1)[0]?.kind, 'audit.started');
 });
 
 test('patchSettings persists across reopen', () => {

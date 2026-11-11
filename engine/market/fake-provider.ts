@@ -133,5 +133,9 @@ export function fakeProvider(script: FakeScript = {}): Provider {
     work: async (i) => (script.work ? script.work(i) : defaultWork(i, script.stepMs ?? 0)),
     review: async (i, signal) => (script.review ? script.review(i, signal) : defaultReview()),
     judge: async (i, signal) => (script.judge ? script.judge(i, signal) : defaultJudge()),
+    // Phase 3 Task 3 scripts the audit; until then no caller exists (ruling 13).
+    audit: async () => {
+      throw new Error('not implemented');
+    },
   };
 }

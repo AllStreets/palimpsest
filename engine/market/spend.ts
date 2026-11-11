@@ -9,9 +9,9 @@ import { CREDIT_PCT } from '../../shared/credits.js';
 import type { CreditEntry, SpendPeriod } from '../../shared/types.js';
 import { openDb } from '../db.js';
 
-/** The credits row kinds that are a model call. */
-const CALL_KINDS = "('bid', 'run', 'review', 'judge')";
-/** The firm a call is charged to, or '' for the city's own (reviews and design checks). */
+/** The credits row kinds that are a model call (an audit is one of the city's own, Phase 3). */
+const CALL_KINDS = "('bid', 'run', 'review', 'judge', 'audit')";
+/** The firm a call is charged to, or '' for the city's own (reviews, design checks and audits). */
 const PAYER = "CASE WHEN c.kind IN ('bid', 'run') AND c.firm_id IS NOT NULL THEN c.firm_id ELSE '' END";
 const MODEL = "COALESCE(json_extract(c.json, '$.model'), '')";
 /** The key the city's own calls are asked for by: a firm id never starts with '~', so no firm can take it. */

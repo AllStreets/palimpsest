@@ -13,7 +13,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { openDb } from '../engine/db.js';
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
-import { entries } from '../engine/ledger.js';
+import { entries, record } from '../engine/ledger.js';
 import { mirrorDir } from '../engine/mirror.js';
 import { inspect } from '../engine/guild/inspect.js';
 import { charge } from '../engine/market/budget.js';
@@ -27,7 +27,7 @@ import { balances, installTreasury, settle } from '../engine/market/treasury.js'
 import { replay, verifyReplay } from '../engine/market/replay.js';
 import { earnedFloors } from '../engine/repos.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { CheckResult, Repo } from '../shared/types.js';
+import type { Audit, CheckResult, Milestone, Repo } from '../shared/types.js';
 import { checks, FULL, git, setUp, tearDown, tempDir } from './guild-fixtures.js';
 
 let prStates = new Map<number, object>();
@@ -224,4 +224,94 @@ test("replay restores each run's diff hash and files", { timeout: 60_000 }, asyn
   assert.equal(state.runs[run.id].scar, true);
   assert.equal(state.floors[`${FULL}#founding`][0].earned?.state, 'scar');
   assert.deepEqual(verifyReplay().diffs, []);
+});
+
+test('replay rebuilds an audit and a milestone from their entries and verifyReplay compares them', () => {
+  const started: Audit = {
+    id: 'audit-1',
+    repo: FULL,
+    model: 'claude:sonnet',
+    trigger: 'connect',
+    baseSha: 'b'.repeat(40),
+    status: 'reading',
+    waitingReason: null,
+    startedAt: '2026-11-10T08:00:00.000Z',
+    endedAt: null,
+    endedReason: null,
+    findings: [],
+    counts: { REAL: 0, PARTIAL: 0, MISSING: 0, STUBBED: 0, BROKEN: 0 },
+    unverified: 0,
+    claimsRead: 0,
+    credits: 0,
+    unattended: false,
+    markdownPath: null,
+  };
+  const ended: Audit = {
+    ...started,
+    status: 'done',
+    endedAt: '2026-11-10T08:09:00.000Z',
+    endedReason: null,
+    findings: [
+      {
+        id: 'f1',
+        claim: 'Supports hot reload',
+        source: { file: 'README.md', line: 12 },
+        verdict: 'MISSING',
+        tested: false,
+        evidence: [{ file: 'src/server.ts', line: 40, note: 'the dev server has no watcher', verified: true }],
+        unverified: false,
+        proposal: { key: `${FULL}#1299ebc1ff22`, title: 'Add hot reload to the dev server', body: 'Build it.', scope: ['src/**'], acceptance: ['edits reload'], tier: 'normal', jobId: null },
+      },
+    ],
+    counts: { REAL: 0, PARTIAL: 0, MISSING: 1, STUBBED: 0, BROKEN: 0 },
+    claimsRead: 1,
+    credits: 4.5,
+    markdownPath: join(paths().reports, 'audits', 'acme-widgets-audit-1.md'),
+  };
+  const milestone: Milestone = {
+    id: `skyline:${FULL}#founding`,
+    kind: 'skyline',
+    towerId: `${FULL}#founding`,
+    repo: FULL,
+    firmId: null,
+    agentId: null,
+    floorId: `${FULL}#job-1`,
+    at: '2026-11-10T09:00:00.000Z',
+    until: null,
+    lit: true,
+    title: 'The skyline',
+    detail: 'widgets stands tallest above its datum.',
+  };
+  record('audit.started', { audit: started });
+  record('audit.stage', { auditId: started.id, status: 'reading' });
+  record('audit.ended', { audit: ended });
+  record('milestone.reached', { milestone });
+  record('brief.opened', { day: '2026-11-11', items: ['audit:audit-1', 'milestone:' + milestone.id] });
+  record('brief.action', { day: '2026-11-11', itemId: 'audit:audit-1', kind: 'audit', action: 'why', taught: false, at: '2026-11-11T08:00:00.000Z', patch: null });
+
+  const state = replay(entries());
+  assert.deepEqual(state.audits[started.id], ended);
+  assert.deepEqual(state.milestones[milestone.id], milestone);
+
+  const db = openDb();
+  db.prepare('INSERT INTO audits (id, repo, status, started_at, json) VALUES (?, ?, ?, ?, ?)').run(ended.id, ended.repo, ended.status, ended.startedAt, JSON.stringify(ended));
+  db.prepare('INSERT INTO milestones (id, kind, tower_id, at, until, json) VALUES (?, ?, ?, ?, ?, ?)').run(milestone.id, milestone.kind, milestone.towerId, milestone.at, milestone.until, JSON.stringify(milestone));
+  const ok = verifyReplay();
+  assert.deepEqual(ok.diffs, []);
+  assert.equal(ok.ok, true);
+
+  // Dropped rows: the ledger still says they exist.
+  db.exec('DELETE FROM audits; DELETE FROM milestones;');
+  const dropped = verifyReplay();
+  assert.equal(dropped.ok, false);
+  assert.ok(dropped.diffs.some((x) => /^audit audit-1: in the ledger but not in the tables/.test(x)), dropped.diffs.join('\n'));
+  assert.ok(dropped.diffs.some((x) => /^milestone skyline:.*in the ledger but not in the tables/.test(x)), dropped.diffs.join('\n'));
+
+  // A corrupt row: the tables disagree with the ledger.
+  db.prepare('INSERT INTO audits (id, repo, status, started_at, json) VALUES (?, ?, ?, ?, ?)').run(ended.id, ended.repo, ended.status, ended.startedAt, JSON.stringify({ ...ended, credits: 99 }));
+  db.prepare('INSERT INTO milestones (id, kind, tower_id, at, until, json) VALUES (?, ?, ?, ?, ?, ?)').run(milestone.id, milestone.kind, milestone.towerId, milestone.at, milestone.until, JSON.stringify({ ...milestone, lit: false }));
+  const corrupt = verifyReplay();
+  assert.equal(corrupt.ok, false);
+  assert.ok(corrupt.diffs.some((x) => /^audit audit-1: the tables hold/.test(x)), corrupt.diffs.join('\n'));
+  assert.ok(corrupt.diffs.some((x) => /^milestone skyline:.*the tables hold/.test(x)), corrupt.diffs.join('\n'));
 });

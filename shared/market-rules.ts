@@ -3,7 +3,7 @@
  * reputation score and era, firm money and the job transition table. Shared
  * by the engine and the UI; imports nothing from engine/.
  */
-import type { Era, JobStatus, Repo, RepoChecks, Reputation, Tier } from './types.js';
+import type { Era, JobStatus, Repo, RepoChecks, Reputation, Settings, Tier } from './types.js';
 
 /** A job's value (the bid ceiling) by tier, in credits (ruling 3). */
 export const TIER_VALUE: Record<Tier, number> = { low: 20, normal: 60, high: 150 };
@@ -112,8 +112,8 @@ export function canHire(balance: number, openJobs: number, idleAgents: number, t
 }
 
 /** The market fields a repo starts with, also filled in for rows written before Phase 2. */
-export function repoMarketDefaults(): Pick<Repo, 'market' | 'label' | 'checks' | 'halted' | 'strikes' | 'joinedAt'> {
-  return { market: false, label: 'palimpsest', checks: null, halted: null, strikes: 0, joinedAt: null };
+export function repoMarketDefaults(): Pick<Repo, 'market' | 'label' | 'checks' | 'halted' | 'strikes' | 'joinedAt' | 'auditedAt'> {
+  return { market: false, label: 'palimpsest', checks: null, halted: null, strikes: 0, joinedAt: null, auditedAt: null };
 }
 
 /** The registries a job may reach while it installs and works, by the repo's ecosystems (ruling 21). */
@@ -151,4 +151,118 @@ export const LEGAL_MOVES: Record<JobStatus, JobStatus[]> = {
 
 export function legalMove(from: JobStatus, to: JobStatus): boolean {
   return LEGAL_MOVES[from]?.includes(to) ?? false;
+}
+
+// ---------------------------------------------------------------- Phase 3: the audit, the brief, milestones and the tour
+
+/** Credits an audit is assumed to cost when it takes its lease (Phase 3 ruling 5). */
+export const AUDIT_ESTIMATE = 20;
+/** The most findings one audit keeps, and the most evidence lines per finding (ruling 15). */
+export const AUDIT_MAX_FINDINGS = 60;
+export const AUDIT_MAX_EVIDENCE = 3;
+/** The longest each string of the audit's answer may be, in characters. */
+export const AUDIT_TEXT_CAPS = { claim: 400, note: 300, title: 120, body: 4000 } as const;
+/** How much README and docs text the prompt carries, in characters, by the model's kind (ruling 1). */
+export const AUDIT_READ_CAPS = { claude: 200_000, local: 24_000 } as const;
+/** The most characters one tool result may carry to a local model. */
+export const AUDIT_LOCAL_RESULT = 8_000;
+/** The audit session's turn and wall caps, by the model's kind. */
+export const AUDIT_CAPS = { claude: { maxTurns: 60, maxMinutes: 25 }, local: { maxTurns: 40, maxMinutes: 25 } } as const;
+/** Days without a floor before a repo is quiet; the first merge after lights it for LIGHTS_DAYS (decision 4). */
+export const QUIET_DAYS = 90;
+export const LIGHTS_DAYS = 7;
+/** A firm's first PR keeps its ribbon until this many days after it merges. */
+export const RIBBON_DAYS = 7;
+/** The week tour: at most eight stops, six seconds each, four to glide between, three at the exchange each end; fewer than two stops is no tour (ruling 12). */
+export const TOUR = { maxStops: 8, dwell: 6, glide: 4, exchange: 3, minStops: 2 } as const;
+
+/** The harness proposal's key on a repo. */
+export function HARNESS_KEY(repo: string): string {
+  return `${repo}#harness`;
+}
+
+/**
+ * SHA-1 in plain JavaScript, so the key is the same in the engine and the
+ * app (shared/ runs in the browser, where node:crypto is not available).
+ */
+function sha1Hex(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  const bitLen = bytes.length * 8;
+  const padded = new Uint8Array(((bytes.length + 9 + 63) >> 6) << 6);
+  padded.set(bytes);
+  padded[bytes.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 8, Math.floor(bitLen / 0x100000000));
+  view.setUint32(padded.length - 4, bitLen >>> 0);
+  const h = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
+  const w = new Uint32Array(80);
+  const rotl = (x: number, n: number) => (x << n) | (x >>> (32 - n));
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4);
+    for (let i = 16; i < 80; i++) w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    let [a, b, c, d, e] = h;
+    for (let i = 0; i < 80; i++) {
+      let f: number;
+      let k: number;
+      if (i < 20) {
+        f = (b & c) | (~b & d);
+        k = 0x5a827999;
+      } else if (i < 40) {
+        f = b ^ c ^ d;
+        k = 0x6ed9eba1;
+      } else if (i < 60) {
+        f = (b & c) | (b & d) | (c & d);
+        k = 0x8f1bbcdc;
+      } else {
+        f = b ^ c ^ d;
+        k = 0xca62c1d6;
+      }
+      const t = (rotl(a, 5) + f + e + k + w[i]) >>> 0;
+      e = d;
+      d = c;
+      c = rotl(b, 30) >>> 0;
+      b = a;
+      a = t;
+    }
+    h[0] = (h[0] + a) >>> 0;
+    h[1] = (h[1] + b) >>> 0;
+    h[2] = (h[2] + c) >>> 0;
+    h[3] = (h[3] + d) >>> 0;
+    h[4] = (h[4] + e) >>> 0;
+  }
+  return h.map((x) => x.toString(16).padStart(8, '0')).join('');
+}
+
+/** The claim as the key hashes it: lower case, one space between words, trimmed. */
+export function normaliseClaim(claim: string): string {
+  return claim.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** A proposal's key: `<repo>#<sha1 of the normalised claim>[:12]` (ruling 4). The key carries nothing of the claim itself. */
+export function proposalKey(repo: string, claim: string): string {
+  return `${repo}#${sha1Hex(normaliseClaim(claim)).slice(0, 12)}`;
+}
+
+/**
+ * The five-hour cap that holds on `day` (YYYY-MM-DD, local): today's limit
+ * when he set one for that day, clamped to [5, hardStopPct - 5] and allowed
+ * above `dayCapPct`, else `dayCapPct` (ruling 10, decision 7).
+ */
+export function todayCap(settings: Pick<Settings, 'dayCapPct' | 'hardStopPct' | 'todayCapPct'>, day: string): number {
+  const t = settings.todayCapPct;
+  if (!t || t.day !== day || typeof t.pct !== 'number' || !Number.isFinite(t.pct)) return settings.dayCapPct;
+  const ceiling = Math.max(5, settings.hardStopPct - 5);
+  return Math.min(ceiling, Math.max(5, t.pct));
+}
+
+/**
+ * The parameter tag of an Ollama model name, in billions: `qwen3-coder:30b-a3b`
+ * is 30, `qwen2.5-coder:7b` is 7, `qwen3:1.7b` is 1.7, a name without a tag is 0.
+ * The first tag after the colon (or in the name) counts; an `a3b` active-parameter
+ * tag does not outrank the total.
+ */
+export function localSize(name: string): number {
+  const tag = name.toLowerCase().split(':')[1] ?? name.toLowerCase();
+  const m = /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)b(?=$|[^a-z0-9])/.exec(tag) ?? /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)b(?=$|[^a-z0-9])/.exec(name.toLowerCase());
+  return m ? Number(m[1]) : 0;
 }

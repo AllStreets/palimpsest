@@ -16,7 +16,7 @@
 import { existsSync } from 'node:fs';
 
 import { apiCredits, claudeCredits, CREDIT_PCT, pctFor } from '../../shared/credits.js';
-import { CREDITS_PER_USD } from '../../shared/market-rules.js';
+import { CREDITS_PER_USD, todayCap } from '../../shared/market-rules.js';
 import type { BudgetWindow, ModelRef, TreasuryState, UsageReading } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { paths } from '../home.js';
@@ -50,8 +50,8 @@ const UNATTENDED_MS = 30 * MIN_MS;
 export const MAX_RESUME_MS = 5 * HOUR_MS;
 /** How much the city's unmeasured spend is inflated per hour the reading is stale. */
 const STALE_MARGIN_PER_HOUR = 0.1;
-/** The credits row kinds this module writes: the city's spend on model calls. */
-const SPEND_KINDS = ['bid', 'run', 'review', 'judge'] as const;
+/** The credits row kinds this module writes: the city's spend on model calls (an audit is the city's own, Phase 3). */
+const SPEND_KINDS = ['bid', 'run', 'review', 'judge', 'audit'] as const;
 
 type Pool = 'claude' | 'local' | 'api';
 type Paused = NonNullable<TreasuryState['paused']>;
@@ -132,6 +132,12 @@ function localMidnight(now: number): number {
   return d.getTime();
 }
 
+/** The local day (YYYY-MM-DD) that holds `ms`, as report.ts `localDay()` writes it: the key today's cap is set under. */
+function dayOf(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 const KIND_LIST = SPEND_KINDS.map((k) => `'${k}'`).join(', ');
 
 /** Credits the city spent on models matching `pattern` since `fromMs`, optionally only unattended ones. */
@@ -175,7 +181,7 @@ export function charge(o: {
   runId: string | null;
   firmId: string | null;
   model: ModelRef;
-  kind: 'bid' | 'run' | 'review' | 'judge';
+  kind: 'bid' | 'run' | 'review' | 'judge' | 'audit';
   usage: Usage;
   unattended: boolean;
   at?: number;
@@ -234,6 +240,8 @@ interface Core {
   weekRatio: number;
   unattended: boolean;
   settings: ReturnType<typeof getSettings>;
+  /** The five-hour cap that holds now: today's limit when he set one, else `dayCapPct` (Phase 3 ruling 10). */
+  capPct: number;
 }
 
 /**
@@ -281,7 +289,8 @@ function core(now: number): Core {
   const reading = latestReading();
   const cal = storedCalibration();
   const week = weekPerWindowPct(cal);
-  const fiveHour = windowOf(reading?.fiveHour ?? null, reading, FIVE_HOURS_MS, 1, settings.dayCapPct, cal.value, now);
+  const capPct = todayCap(settings, dayOf(now));
+  const fiveHour = windowOf(reading?.fiveHour ?? null, reading, FIVE_HOURS_MS, 1, capPct, cal.value, now);
   const sevenDay = windowOf(reading?.sevenDay ?? null, reading, SEVEN_DAYS_MS, week, settings.hardStopPct, cal.value, now);
   const weekStart =
     reading?.sevenDay && reading.sevenDay.resetsAt * 1000 > now ? reading.sevenDay.resetsAt * 1000 - SEVEN_DAYS_MS : now - SEVEN_DAYS_MS;
@@ -309,6 +318,7 @@ function core(now: number): Core {
     weekRatio: week,
     unattended: unattended(now),
     settings,
+    capPct,
   };
 }
 
@@ -338,10 +348,10 @@ function gate(pool: Pool, estimate: number, c: Core): Paused | null {
     };
   }
   const reserved = reservedCredits('claude');
-  if (c.fiveHour.cityPct + CREDIT_PCT * (reserved + estimate) > c.settings.dayCapPct + 1e-9) {
+  if (c.fiveHour.cityPct + CREDIT_PCT * (reserved + estimate) > c.capPct + 1e-9) {
     return {
       reason: 'cap',
-      detail: `The city has spent ${c.fiveHour.cityPct.toFixed(1)}% of this window; the cap is ${c.settings.dayCapPct}%.`,
+      detail: `The city has spent ${c.fiveHour.cityPct.toFixed(1)}% of this window; the cap is ${c.capPct}%.`,
     };
   }
   if (c.unattended && c.nightUsedPct + pctFor(reserved) * c.weekRatio >= c.settings.nightCapPct - 1e-9) {

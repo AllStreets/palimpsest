@@ -32,7 +32,8 @@ const MARKET_SCHEMA = `
     id TEXT PRIMARY KEY,
     repo TEXT NOT NULL,
     status TEXT NOT NULL,
-    json TEXT NOT NULL
+    json TEXT NOT NULL,
+    key TEXT
   );
   CREATE INDEX IF NOT EXISTS jobs_repo ON jobs (repo);
   CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status);
@@ -105,6 +106,27 @@ const MARKET_SCHEMA = `
   CREATE INDEX IF NOT EXISTS credits_run ON credits (run_id);
 `;
 
+/** Phase 3: the README audits and the city's milestones. */
+const PHASE3_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS audits (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    json TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS audits_repo ON audits (repo, started_at);
+  CREATE TABLE IF NOT EXISTS milestones (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    tower_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    until TEXT,
+    json TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS milestones_tower ON milestones (tower_id);
+`;
+
 /**
  * Brings a database up to the current schema. Idempotent: every table and
  * index is created only when missing, and a repo row is rewritten only when
@@ -116,6 +138,8 @@ export function migrate(db: DatabaseSync): void {
   db.exec(SCHEMA);
   migrateLedgerIndex(db);
   db.exec(MARKET_SCHEMA);
+  migrateJobKey(db);
+  db.exec(PHASE3_SCHEMA);
 
   const rows = db.prepare('SELECT full_name, json FROM repos').all() as Array<{ full_name: string; json: string }>;
   const update = db.prepare('UPDATE repos SET json = ? WHERE full_name = ?');
@@ -176,6 +200,16 @@ function migrateLedgerIndex(db: DatabaseSync): void {
     -- A firm's books (Task 38): its credits.moved entries, read per firm.
     CREATE INDEX IF NOT EXISTS ledger_moved_firm ON ledger (json_extract(json, '$.firmId'), id) WHERE kind = 'credits.moved';
   `);
+}
+
+/**
+ * A proposal's key on its job row (Phase 3 Task 1): a jobs table written
+ * before the column existed gets it, empty, and the index on it.
+ */
+function migrateJobKey(db: DatabaseSync): void {
+  const cols = new Set((db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map((c) => c.name));
+  if (!cols.has('key')) db.exec('ALTER TABLE jobs ADD COLUMN key TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key)');
 }
 
 // Cached per resolved db file path, so a changed PALIMPSEST_HOME (as every
