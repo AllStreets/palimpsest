@@ -56,7 +56,7 @@ import { kill, killJob, listRuns, resumeJob, run, sites } from './runs.js';
 import { balances, negativeSinceOf } from './treasury.js';
 import { isStale, latestReading, storedCalibration } from '../usage.js';
 import { getSettings, patchSettings } from '../settings.js';
-import { creditEntries, periodBounds, spendBetween } from './spend.js';
+import { CITY_KEY, creditEntries, periodBounds, spendBetween } from './spend.js';
 
 /**
  * What a sample engine (Task 21) adds to the live view and Settings: the
@@ -380,6 +380,12 @@ function shot(res: ServerResponse, inspectionId: string, routeRaw: string, which
 
 // ------------------------------------------------------------------ treasury, reports
 
+/** Whether his reading cannot speak for his plan now (none, a window missing, or stale): the test the treasury's stale pause uses. */
+function readingUnreadable(now: number): boolean {
+  const r = latestReading();
+  return r === null || r.fiveHour === null || r.sevenDay === null || isStale(r, now);
+}
+
 function treasuryView(): TreasuryView {
   const now = Date.now();
   const c = storedCalibration();
@@ -388,7 +394,7 @@ function treasuryView(): TreasuryView {
   const t = treasury(now);
   const resumeUntil = settings.resumeStaleUntil;
   // A resume is carrying the city only while the reading would otherwise pause it.
-  const unreadable = r === null || r.fiveHour === null || r.sevenDay === null || isStale(r, now);
+  const unreadable = readingUnreadable(now);
   const today = periodBounds('today', now);
   const week = periodBounds('week', now);
   return {
@@ -409,7 +415,7 @@ function creditsFor(params: URLSearchParams): CreditEntries {
   if (period !== 'today' && period !== 'week') throw new HttpError(400, { error: 'period is today or week' });
   const firm = params.get('firm');
   const model = params.get('model');
-  if (firm !== null && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(firm)) throw new HttpError(400, { error: 'not a firm id' });
+  if (firm !== null && firm !== CITY_KEY && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(firm)) throw new HttpError(400, { error: 'not a firm id' });
   if (model !== null && !/^[A-Za-z0-9][A-Za-z0-9:._@/-]{0,127}$/.test(model)) throw new HttpError(400, { error: 'not a model' });
   const b = periodBounds(period, Date.now());
   return creditEntries({ fromMs: b.from, toMs: b.to, firm: firm ?? undefined, model: model ?? undefined });
@@ -550,6 +556,8 @@ export async function handleMarketApi(
   if (pathname === '/api/treasury' && method === 'GET') return send(200, treasuryView());
   if (pathname === '/api/treasury/credits' && method === 'GET') return send(200, creditsFor(search));
   if (pathname === '/api/treasury/resume-stale' && method === 'POST') {
+    // Only a stale or unreadable reading can be resumed past: a resume taken now must not carry the city past a later one.
+    if (!readingUnreadable(Date.now())) throw new HttpError(409, { error: 'not paused for a stale reading' });
     patchSettings({ resumeStaleUntil: Date.now() + MAX_RESUME_MS });
     return send(200, treasuryView());
   }

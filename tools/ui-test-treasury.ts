@@ -64,6 +64,19 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
       check(/resets /.test((await m.locator('.meter-reset').textContent()) ?? ''), `the ${name} meter says when it resets (${await m.locator('.meter-reset').textContent()})`);
     }
     check((await five.locator('svg.meter-rule .meter-cap').count()) === 1, 'the five-hour meter marks the city’s cap');
+    check(/of the window, against its 50% cap/.test((await five.locator('.meter-legend').textContent()) ?? ''), `the city's share is said against its cap (${await five.locator('.meter-legend').textContent()})`);
+    // The night cap measures unattended use alone: its own darker segment, set against the night mark.
+    const tNow = await api<TreasuryView>(page, '/api/treasury');
+    const night = seven.locator('svg.meter-rule .meter-night');
+    const nightMark = seven.locator('svg.meter-rule .meter-cap.night');
+    check((await night.count()) === 1 && (await nightMark.count()) === 1, 'the seven-day meter draws unattended use as its own segment, with the night mark');
+    check((await night.count()) === 1 && (await night.getAttribute('data-pct')) === String(tNow.night.usedPct), `measured from the night use, not the city's total (${(await night.count()) ? await night.getAttribute('data-pct') : 'none'} against ${tNow.night.usedPct}, city ${tNow.sevenDay.cityPct})`);
+    const onLine = (await night.count()) === 1 && (await nightMark.count()) === 1 && Number(await night.getAttribute('y')) >= (await nightMark.evaluate((e) => (e as SVGGraphicsElement).getBBox().y));
+    check(onLine, 'on the night mark’s own line');
+    for (const sel of ['.meter-num', '.meter-mark-label']) {
+      const style = await seven.locator(`svg.meter-rule ${sel}`).first().evaluate((e) => getComputedStyle(e).fontSize);
+      check(style === '11px', `${sel} is set at 11 px (${style})`);
+    }
     check((await text(page, '.treasury .calibration-line')) === '1% of the window is about 58,000 weighted tokens, measured from 14 pairs.', `the calibration line (${await text(page, '.treasury .calibration-line')})`);
     check((await sheet.locator('.treasury-pause[data-reason="stale"]').count()) === 0, 'a fresh reading does not pause the city');
     for (const key of ['concurrency', 'night', 'api', 'awake']) check((await sheet.locator(`.now-row[data-now="${key}"]`).count()) === 1, `it says the ${key} state now`);
@@ -77,6 +90,10 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     check(num(await qs.locator('.spend-bal').textContent()) === Math.round(t.balances.quickset * 100) / 100, `a firm's balance reads as the books (${await qs.locator('.spend-bal').textContent()} against ${t.balances.quickset})`);
     check(/^#\/firms\/quickset$/.test((await qs.locator('.spend-bal').getAttribute('href')) ?? ''), 'and links to its books');
     check((await sheet.locator('.spend-models .spend-row').count()) === t.spend.week.models.length, 'every model spent on this week has a row');
+    check((await sheet.locator('.spend-firms .spend-row[data-firm="~city"]').count()) === (t.spend.week.firms.some((f) => f.firmId === null) ? 1 : 0), 'the city’s own row has a key no firm can take');
+    check((await sheet.locator('.spend-th', { hasText: 'Last 7 days' }).count()) === 2, 'the rolling week is called the last 7 days');
+    check((await sheet.locator('.spend-table a[role]').count()) === 0, 'no link stands in for a cell');
+    check((await sheet.locator('.spend-table > :not([role="row"])').count()) === 0, 'every child of a spend table is a row: notes stand outside it');
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(shots, 'treasury.png') });
 
@@ -87,6 +104,12 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
       const entries = row.locator('xpath=following-sibling::*[1]').locator('.entry');
       check(await within(page, 5000, async () => (await entries.count()) > 0), `a firm's row opens to its credits entries (${await entries.count()})`);
       check((await row.locator('.spend-open').getAttribute('aria-expanded')) === 'true', 'and says it is open');
+      const block = row.locator('xpath=following-sibling::*[1]');
+      const cellOf = block.locator('> [role="cell"]');
+      const spanning = (await cellOf.count()) === 1;
+      check((await block.getAttribute('role')) === 'row' && spanning && (await cellOf.getAttribute('aria-colspan')) === '5', 'its entries sit in a row of their own, one cell spanning the table');
+      check(spanning && (await row.locator('.spend-open').getAttribute('aria-controls')) === (await cellOf.getAttribute('id')), 'and the row’s button names them');
+      check((await sheet.locator('.spend-table a[role]').count()) === 0 && (await sheet.locator('.spend-table > :not([role="row"])').count()) === 0, 'open, the table is still rows and cells');
       check(/^No\. \d+$/.test((await entries.first().locator('.entry-id').textContent()) ?? ''), `each entry names its credits row (${await entries.first().locator('.entry-id').textContent()})`);
       await row.scrollIntoViewIfNeeded();
       await page.waitForTimeout(300);
@@ -113,7 +136,8 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     // The report's head at the top of the sheet, as he would scroll to it.
     await sheet.locator('.treasury-report').evaluate((sec) => {
       const body = sec.closest('.sheet-body') as HTMLElement;
-      body.scrollTop += sec.getBoundingClientRect().top - body.getBoundingClientRect().top - 8;
+      // Exactly at the top: nothing of the section above shows through the fade under the head.
+      body.scrollTop += sec.getBoundingClientRect().top - body.getBoundingClientRect().top;
     });
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(shots, 'report.png') });
@@ -141,6 +165,8 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     await resume.click();
     check(await within(page, 5000, async () => (await pause.count()) === 0), 'Resume anyway clears the stale pause');
     const after = await api<TreasuryView>(page, '/api/treasury');
+    check(await within(page, 3000, async () => page.evaluate(() => document.activeElement?.classList.contains('treasury-resumed') === true)), 'focus moves to the line that says the city resumed');
+    check((await sheet.locator('.treasury-pause-host').count()) === 1 && (await sheet.locator('.treasury-pause-host').getAttribute('aria-live')) === 'polite', 'and the notice is announced politely as it changes');
     check(after.paused?.reason !== 'stale' && after.resumedUntil !== null, `and the engine carries on until ${after.resumedUntil ? new Date(after.resumedUntil).toLocaleTimeString('en-GB') : 'never'}`);
     check(/Resumed on your say-so until \d\d:\d\d/.test((await sheet.locator('.treasury-resumed').textContent()) ?? ''), `the page says until when (${await sheet.locator('.treasury-resumed').textContent()})`);
 

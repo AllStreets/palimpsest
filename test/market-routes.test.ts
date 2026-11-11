@@ -499,8 +499,12 @@ test('the treasury carries the hard stop, the reading, a resume, the report days
   assert.equal(rows.total, 14.3);
   assert.equal(typeof rows.rows[0].id, 'number');
   assert.equal(rows.rows[1].runId, 'run-a');
-  const cityRows = (await call('GET', '/api/treasury/credits?period=today&firm=city')).json;
-  assert.deepEqual(cityRows.rows.map((r: { kind: string; model: string }) => `${r.kind} ${r.model}`), ['review claude:haiku']);
+  const cityRows = (await call('GET', '/api/treasury/credits?period=today&firm=~city')).json;
+  assert.deepEqual(cityRows.rows.map((r: { kind: string; model: string }) => `${r.kind} ${r.model}`), ['review claude:haiku'], 'the city’s own calls are asked for by a key no firm id can take');
+  addFirm('city');
+  put.run(at(now - 20_000), 'city', 'run-c', 'run', 1.5, null, m('claude:haiku'));
+  assert.deepEqual((await call('GET', '/api/treasury/credits?period=today&firm=city')).json.rows.map((r: { firmId: string }) => r.firmId), ['city'], 'a firm named city is its own row, not the city');
+  assert.equal((await call('GET', '/api/treasury/credits?period=today&firm=~city')).json.count, 1);
   const byModel = (await call('GET', `/api/treasury/credits?period=today&model=${encodeURIComponent('claude:sonnet')}`)).json;
   assert.equal(byModel.count, 2);
   assert.equal((await call('GET', '/api/treasury/credits?period=year')).status, 400);
@@ -518,6 +522,14 @@ test('the treasury carries the hard stop, the reading, a resume, the report days
     record('report.written', { day, path: join(paths().reports, `${day}.md`), at: new Date().toISOString(), data: { day } });
   }
   assert.deepEqual((await call('GET', '/api/treasury')).json.reports, ['2026-11-09', '2026-11-08'], 'the days with a report, newest first');
+});
+
+test('resume-stale is refused while the reading is fresh, so it can never pre-authorise a later stale pause', async () => {
+  reading();
+  const r = await call('POST', '/api/treasury/resume-stale');
+  assert.equal(r.status, 409);
+  assert.deepEqual(r.json, { error: 'not paused for a stale reading' });
+  assert.equal(getSettings().resumeStaleUntil, null, 'nothing was stored');
 });
 
 test('reports serve the latest and a named day, and refuse a day that is not a day', async () => {

@@ -14,6 +14,8 @@ const CALL_KINDS = "('bid', 'run', 'review', 'judge')";
 /** The firm a call is charged to, or '' for the city's own (reviews and design checks). */
 const PAYER = "CASE WHEN c.kind IN ('bid', 'run') AND c.firm_id IS NOT NULL THEN c.firm_id ELSE '' END";
 const MODEL = "COALESCE(json_extract(c.json, '$.model'), '')";
+/** The key the city's own calls are asked for by: a firm id never starts with '~', so no firm can take it. */
+export const CITY_KEY = '~city';
 /** The most entries one row opens to. */
 export const ENTRY_ROWS = 50;
 
@@ -77,7 +79,7 @@ export function spendBetween(fromMs: number, toMs: number): SpendPeriod {
 
 /**
  * The credits entries behind one row of the spend tables, newest first:
- * a firm's bids and runs (`firm: 'city'` for the city's own reviews and
+ * a firm's bids and runs (`firm: CITY_KEY` for the city's own reviews and
  * design checks), or one model's calls, in a period.
  */
 export function creditEntries(q: { fromMs: number; toMs: number; firm?: string; model?: string; limit?: number }): { rows: CreditEntry[]; count: number; total: number } {
@@ -85,7 +87,7 @@ export function creditEntries(q: { fromMs: number; toMs: number; firm?: string; 
   const args: Array<string | number> = [iso(q.fromMs), iso(q.toMs)];
   if (q.firm !== undefined) {
     where.push(`${PAYER} = ?`);
-    args.push(q.firm === 'city' ? '' : q.firm);
+    args.push(q.firm === CITY_KEY ? '' : q.firm);
   }
   if (q.model !== undefined) {
     where.push(`${MODEL} = ?`);

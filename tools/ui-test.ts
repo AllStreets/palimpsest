@@ -14,7 +14,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inflateSync } from 'node:zlib';
 
@@ -1640,14 +1640,25 @@ async function main(): Promise<void> {
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-ui-test-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
   process.env.PALIMPSEST_DIST = DIST;
-  // The sample's transcripts folder lives under the temp home (useSampleFolders), never his own: as every
-  // test does, say so, so the treasury may read it (it counts his own use there while a reading is stale).
+  // The treasury reads a transcripts folder (his own use, while a reading is stale). seedSample() writes no
+  // sample marker, so the projects guard does not know this home as a sample's; as every test does, the run
+  // says it is a test. That switch drops the guard, so it is pinned below: the folder must be the sample's,
+  // inside the temp home, or the run stops before anything reads it.
   process.env.PALIMPSEST_TEST_PROJECTS = '1';
   const claudeSettingsPath = join(tmp, 'claude-settings.json');
   writeFileSync(claudeSettingsPath, '{}\n');
   mkdirSync(SHOTS, { recursive: true });
 
   await seedSample();
+  {
+    const { useSampleFolders } = await import('../engine/sample.js');
+    useSampleFolders();
+    const projects = process.env.PALIMPSEST_CLAUDE_PROJECTS;
+    const inside = projects ? relative(resolve(tmp), resolve(projects)) : '..';
+    if (!projects || inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+      throw new Error(`ui-test: the transcripts folder ${projects ?? '(unset)'} is not inside the temp home ${tmp}; refusing to run, so nothing reads ~/.claude/projects`);
+    }
+  }
   const { setRunner } = await import('../engine/exec.js');
   // Slow enough that each analysis step is visible, and never the network.
   setRunner(sampleGh(450));

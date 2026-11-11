@@ -2978,9 +2978,9 @@ a.pause-settings {
   stroke-width: 1;
 }
 .meter-num {
-  fill: var(--ink-3);
+  fill: var(--ink-2);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
 }
 .meter-stop {
   stroke: var(--rust);
@@ -2988,9 +2988,21 @@ a.pause-settings {
   stroke-dasharray: 3 2;
 }
 .meter-mark-label {
-  fill: #d9b48a;
+  fill: var(--ink-2);
   font-family: var(--sans);
-  font-size: 10.5px;
+  font-size: 11px;
+}
+/* Unattended use, on its own line: darker than the city's whole share, against the night mark. */
+.meter-night-bed {
+  stroke: rgba(150, 104, 74, 0.25);
+  stroke-width: 1;
+  stroke-dasharray: 1 3;
+}
+.meter-night {
+  fill: #96684a;
+}
+.meter-cap.night {
+  stroke: #96684a;
 }
 .meter-mark-label.stop {
   fill: var(--rust);
@@ -3018,6 +3030,11 @@ a.pause-settings {
 .meter-swatch.his {
   height: 7px;
   background: rgba(236, 230, 218, 0.78);
+}
+.meter-swatch.night {
+  height: 3px;
+  background: #96684a;
+  transform: translateY(-2px);
 }
 .meter-swatch.city {
   height: 3px;
@@ -3188,7 +3205,7 @@ a.pause-settings {
 .spend-cell.c-n {
   color: var(--ink-3);
 }
-.spend-cell.spend-bal {
+.spend-cell a.spend-bal {
   font-family: var(--serif);
   font-size: 17px;
   color: var(--ink);
@@ -3214,7 +3231,10 @@ a.spend-bal.gone {
 .spend-share {
   color: var(--ink-2);
 }
-/* A row's entries: indented beneath it like a sub-ledger, set small. */
+/* A row's entries: a row of their own, indented beneath it like a sub-ledger, set small. */
+.spend-entries-row {
+  display: block;
+}
 .spend-entries {
   margin: 0 0 4px 18px;
   padding: 8px 0 10px 14px;

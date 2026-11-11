@@ -18,6 +18,8 @@ export interface TreasuryScreen {
 const DAYS_SHOWN = 7;
 const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** The city's own reviews and design checks, asked for by a key no firm id can take (engine/market/spend.ts). */
+const CITY = '~city';
 const KIND_WORDS: Record<string, string> = { bid: 'Bid', run: 'Run', review: 'Review', judge: 'Design check' };
 
 /** A percentage of a window: whole when it is whole, else one decimal. */
@@ -46,6 +48,8 @@ function nightNote(now: number): string {
 // ---------------------------------------------------------------- the ruled meter
 
 const W = 640;
+/** Where the scale is ruled, beneath the bar, the city's line and the night line. */
+const BASE = 50.5;
 const x = (p: number): number => Math.round((Math.max(0, Math.min(100, p)) / 100) * W * 2) / 2;
 
 /**
@@ -54,8 +58,8 @@ const x = (p: number): number => Math.round((Math.max(0, Math.min(100, p)) / 100
  * spent since, hatched), the city's own share as a bronze line beneath it
  * against its cap, and the hard stop struck through both in rust.
  */
-function meterRule(w: BudgetWindow, o: { cap: number | null; capLabel: string; stop: number; label: string }): SVGSVGElement {
-  const svg = svgEl('svg', { viewBox: `-12 0 ${W + 24} 66`, role: 'img', 'aria-label': o.label, preserveAspectRatio: 'xMinYMid meet' }, 'meter-rule');
+function meterRule(w: BudgetWindow, o: { cap: number | null; capLabel: string; stop: number; label: string; night?: { usedPct: number; capPct: number } }): SVGSVGElement {
+  const svg = svgEl('svg', { viewBox: `-12 0 ${W + 24} ${BASE + 22}`, role: 'img', 'aria-label': o.label, preserveAspectRatio: 'xMinYMid meet' }, 'meter-rule');
   const defs = svgEl('defs');
   const pat = svgEl('pattern', { id: `meter-hatch-${o.capLabel.replace(/\W/g, '')}`, width: 4, height: 4, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' });
   pat.append(svgEl('line', { x1: 0, y1: 0, x2: 0, y2: 4 }, 'meter-hatch-line'));
@@ -73,25 +77,37 @@ function meterRule(w: BudgetWindow, o: { cap: number | null; capLabel: string; s
   if (o.cap !== null) {
     const cx = x(o.cap);
     svg.append(svgEl('path', { d: `M${cx} 26.5V36.5` }, 'meter-cap'));
-    const ct = svgEl('text', { x: cx + 4, y: 40 }, 'meter-mark-label');
+    const ct = svgEl('text', { x: cx + 4, y: 40.5 }, 'meter-mark-label');
     ct.textContent = o.capLabel;
     svg.append(ct);
   }
+  // Unattended use alone, on a line of its own, against the night cap (it is not the city's total).
+  if (o.night) {
+    svg.append(svgEl('line', { x1: 0, y1: 39.5, x2: W, y2: 39.5 }, 'meter-night-bed'));
+    const seg = svgEl('rect', { x: 0, y: 38, width: Math.max(o.night.usedPct > 0 ? 1.5 : 0, x(o.night.usedPct)), height: 3 }, 'meter-night');
+    seg.setAttribute('data-pct', String(o.night.usedPct));
+    svg.append(seg);
+    const nx = x(o.night.capPct);
+    svg.append(svgEl('path', { d: `M${nx} 34.5V44.5` }, 'meter-cap night'));
+    const nt = svgEl('text', { x: nx + 4, y: 43.5 }, 'meter-mark-label night');
+    nt.textContent = `night cap ${pctOf(o.night.capPct)}, unattended use`;
+    svg.append(nt);
+  }
   // The scale: a tick every tenth, longer at the quarters' halves, figures at the quarters.
-  svg.append(svgEl('line', { x1: 0, y1: 44.5, x2: W, y2: 44.5 }, 'meter-base'));
+  svg.append(svgEl('line', { x1: 0, y1: BASE, x2: W, y2: BASE }, 'meter-base'));
   for (let p = 0; p <= 100; p += 5) {
     const tx = x(p) + (p === 100 ? -0.5 : 0.5);
     const len = p % 50 === 0 ? 6 : p % 10 === 0 ? 4 : 2;
-    svg.append(svgEl('line', { x1: tx, y1: 44.5, x2: tx, y2: 44.5 + len }, 'meter-tick'));
+    svg.append(svgEl('line', { x1: tx, y1: BASE, x2: tx, y2: BASE + len }, 'meter-tick'));
     if (p % 25 === 0) {
-      const t = svgEl('text', { x: tx, y: 60, 'text-anchor': p === 0 ? 'start' : p === 100 ? 'end' : 'middle' }, 'meter-num');
+      const t = svgEl('text', { x: tx, y: BASE + 17, 'text-anchor': p === 0 ? 'start' : p === 100 ? 'end' : 'middle' }, 'meter-num');
       t.textContent = `${p}`;
       svg.append(t);
     }
   }
-  // The hard stop, through the bar and the city's line.
+  // The hard stop, through the bar and the lines beneath it.
   const sx = x(o.stop) + 0.5;
-  svg.append(svgEl('path', { d: `M${sx} 7V44.5` }, 'meter-stop'));
+  svg.append(svgEl('path', { d: `M${sx} 7V${BASE}` }, 'meter-stop'));
   const st = svgEl('text', { x: sx - 4, y: 6.5, 'text-anchor': 'end' }, 'meter-mark-label stop');
   st.textContent = `hard stop ${o.stop}%`;
   svg.append(st);
@@ -104,7 +120,7 @@ function meterRule(w: BudgetWindow, o: { cap: number | null; capLabel: string; s
  * The treasury (#/treasury): his plan's five-hour and seven-day windows as
  * two ruled meters, what the city has spent of them and how its own use is
  * measured, why it is paused (with the one action that clears it), what is
- * running now, the spend today and this week by firm and by model (each
+ * running now, the spend today and in the last 7 days by firm and by model (each
  * row opening to its credits entries), every firm's balance, and the daily
  * report below with a day picker. Updates from the event stream.
  */
@@ -116,8 +132,12 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
   const trouble = el('p', 'detail-trouble');
   trouble.hidden = true;
   sheet.body.append(trouble);
+  // The notice is announced as it comes and goes: a pause, or the line saying the city resumed.
+  const pauseHost = el('div', 'treasury-pause-host');
+  pauseHost.setAttribute('aria-live', 'polite');
+  sheet.body.append(pauseHost);
   const slots = {
-    pause: keyedSlot(sheet.body),
+    pause: keyedSlot(pauseHost),
     plan: keyedSlot(sheet.body),
     now: keyedSlot(sheet.body),
     spend: keyedSlot(sheet.body),
@@ -183,7 +203,6 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     }
     const box = el('div', `treasury-pause pause-${p.reason}`);
     box.dataset.reason = p.reason;
-    box.setAttribute('role', 'status');
     const mark = el('span', 'pause-mark');
     mark.setAttribute('aria-hidden', 'true');
     const words = el('div', 'pause-words');
@@ -219,7 +238,12 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
       resuming = false;
     }
     render();
-    sheet.root.querySelector<HTMLElement>('.treasury-resumed')?.setAttribute('tabindex', '-1');
+    // Focus goes to what took the button's place: the line saying until when the city carries on.
+    const done = sheet.root.querySelector<HTMLElement>('.treasury-resumed');
+    if (done) {
+      done.tabIndex = -1;
+      done.focus({ preventScroll: true });
+    }
   }
 
   // ---------------------------------------------------------------- his plan
@@ -237,10 +261,10 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const right = el('div', 'meter-draw');
     const head = el('div', 'meter-head');
     head.append(el('span', 'meter-reset', resetWords(w.resetsAt, now)));
-    const cap = which === 'five' ? w.capPct : v.night.capPct;
-    const capLabel = which === 'five' ? `city cap ${pctOf(cap)}` : `night cap ${pctOf(cap)}`;
-    const label = `${name}: ${w.usedPct === null ? 'unread' : `${pctOf(w.usedPct)} used`} by the last reading, about ${pctOf(w.estimatedPct)} now; the city's share ${pctOf(w.cityPct)}${which === 'five' ? ` of its ${pctOf(cap)} cap` : ''}; hard stop at ${v.hardStopPct}%; ${resetWords(w.resetsAt, now)}.`;
-    right.append(head, meterRule(w, { cap, capLabel, stop: v.hardStopPct, label }));
+    const cap = w.capPct;
+    const capLabel = which === 'five' ? `city cap ${pctOf(cap)}` : 'week';
+    const label = `${name}: ${w.usedPct === null ? 'unread' : `${pctOf(w.usedPct)} used`} by the last reading, about ${pctOf(w.estimatedPct)} now; the city's share ${pctOf(w.cityPct)}${which === 'five' ? ` against its ${pctOf(cap)} cap` : `, unattended ${pctOf(v.night.usedPct)} against the ${pctOf(v.night.capPct)} night cap`}; hard stop at ${v.hardStopPct}%; ${resetWords(w.resetsAt, now)}.`;
+    right.append(head, meterRule(w, which === 'five' ? { cap, capLabel, stop: v.hardStopPct, label } : { cap: null, capLabel, stop: v.hardStopPct, label, night: v.night }));
     const legend = el('p', 'meter-legend');
     const key = (cls: string, text: string): HTMLElement => {
       const k = el('span', 'meter-key');
@@ -252,7 +276,8 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const since = w.estimatedPct - (w.usedPct ?? 0);
     legend.append(
       key('his', `Your plan, about ${pctOf(w.estimatedPct)} now${since >= 0.05 ? ` with ${pctOf(since)} spent since the reading` : ''}`),
-      key('city', `The city’s share, ${pctOf(w.cityPct)}${which === 'five' ? ` of its ${pctOf(cap)} cap` : `; unattended ${pctOf(v.night.usedPct)} of the ${pctOf(cap)} night cap`}`),
+      key('city', `The city’s share, ${pctOf(w.cityPct)} of the window${which === 'five' ? `, against its ${pctOf(cap)} cap` : ''}`),
+      ...(which === 'seven' ? [key('night', `Unattended, ${pctOf(v.night.usedPct)} of the week, against the ${pctOf(v.night.capPct)} night cap`)] : []),
     );
     right.append(legend);
     box.append(fig, right);
@@ -360,7 +385,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
       return box;
     }
     if (got.rows.length === 0) {
-      box.append(el('p', 'entries-note', 'No entries this week.'));
+      box.append(el('p', 'entries-note', 'No entries in the last 7 days.'));
       return box;
     }
     const list = el('ol', 'entries');
@@ -383,7 +408,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     }
     box.append(list);
     const more = got.count - got.rows.length;
-    box.append(el('p', 'entries-note', `${got.count === 1 ? '1 entry' : `${got.count} entries`} this week, ${figure(got.total)} credits${more > 0 ? `; the newest ${got.rows.length} are shown` : ''}.`));
+    box.append(el('p', 'entries-note', `${got.count === 1 ? '1 entry' : `${got.count} entries`} in the last 7 days, ${figure(got.total)} credits${more > 0 ? `; the newest ${got.rows.length} are shown` : ''}.`));
     return box;
   }
 
@@ -400,7 +425,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const caret = el('i', 'spend-caret');
     caret.setAttribute('aria-hidden', 'true');
     b.append(caret, typeof label === 'string' ? document.createTextNode(label) : label);
-    b.title = entries > 0 ? `Open its ${entries === 1 ? 'credits entry' : `${entries} credits entries`} this week` : 'No entries this week';
+    b.title = entries > 0 ? `Open its ${entries === 1 ? 'credits entry' : `${entries} credits entries`} from the last 7 days` : 'No entries in the last 7 days';
     b.disabled = entries === 0;
     b.addEventListener('click', () => {
       if (open.has(key)) open.delete(key);
@@ -420,15 +445,21 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     };
     r.append(first, cell('c-fig', spendFigure(today)), cell('c-fig', spendFigure(week)), cell('c-n', entries ? String(entries) : '·'), last);
     if (!isOpen) return [r];
+    // The entries sit in a row of their own: one cell spanning the table, named by the row's button.
     const e = entriesBlock(key, names, byModel);
+    const wrap = el('div', 'spend-entries-row');
+    wrap.setAttribute('role', 'row');
+    e.setAttribute('role', 'cell');
+    e.setAttribute('aria-colspan', '5');
+    wrap.append(e);
     b.setAttribute('aria-controls', e.id);
-    return [r, e];
+    return [r, wrap];
   }
 
   function spendBlock(v: TreasuryView): HTMLElement {
     const names = namesOf(firms);
     const sec = el('section', 'treasury-spend');
-    sec.append(secHead('Spend and balances', `${spendFigure(v.spend.today.total)} today, ${spendFigure(v.spend.week.total)} this week`));
+    sec.append(secHead('Spend and balances', `${spendFigure(v.spend.today.total)} today, ${spendFigure(v.spend.week.total)} in the last 7 days`));
     const find = (p: SpendPeriod, id: string | null) => p.firms.find((f) => f.firmId === id);
 
     // By firm: every firm, with its balance from the books.
@@ -446,24 +477,26 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
       for (const [cls, text] of cols) h.append(th(cls, text));
       return h;
     };
-    byFirm.append(headRow([['c-name', 'By firm, credits'], ['c-fig', 'Today'], ['c-fig', 'This week'], ['c-n', 'Entries'], ['c-fig', 'Balance']]));
+    byFirm.append(headRow([['c-name', 'By firm, credits'], ['c-fig', 'Today'], ['c-fig', 'Last 7 days'], ['c-n', 'Entries'], ['c-fig', 'Balance']]));
     const ids = firms.length ? firms.map((f) => f.id) : Object.keys(v.balances);
     for (const id of ids) {
       const f = firms.find((x) => x.id === id);
       const bal = v.balances[id] ?? f?.balance ?? 0;
-      const a = el('a', `spend-cell c-fig spend-bal${bal < 0 ? ' neg' : ''}${f?.status === 'bankrupt' ? ' gone' : ''}`, figure(bal));
-      a.setAttribute('role', 'cell');
+      const balCell = el('div', 'spend-cell c-fig');
+      balCell.setAttribute('role', 'cell');
+      const a = el('a', `spend-bal${bal < 0 ? ' neg' : ''}${f?.status === 'bankrupt' ? ' gone' : ''}`, figure(bal));
+      balCell.append(a);
       a.href = placeHref('firm', id);
       a.title = `${names.firm(id)}’s books`;
       const name = el('span', 'spend-name', names.firm(id));
       if (f?.status === 'bankrupt') name.append(el('span', 'spend-gone', f.bankruptAt ? ` bankrupt ${shortDate(f.bankruptAt)}` : ' bankrupt'));
-      byFirm.append(...spendRow(entryKey('firm', id), name, find(v.spend.today, id)?.credits ?? 0, find(v.spend.week, id)?.credits ?? 0, find(v.spend.week, id)?.entries ?? 0, a, names, false, { firm: id }));
+      byFirm.append(...spendRow(entryKey('firm', id), name, find(v.spend.today, id)?.credits ?? 0, find(v.spend.week, id)?.credits ?? 0, find(v.spend.week, id)?.entries ?? 0, balCell, names, false, { firm: id }));
     }
     const city = find(v.spend.week, null);
     if (city) {
-      const blank = el('span', 'spend-cell c-fig');
+      const blank = el('div', 'spend-cell c-fig');
       blank.setAttribute('role', 'cell');
-      byFirm.append(...spendRow(entryKey('firm', 'city'), el('span', 'spend-name city', 'The city’s reviews and design checks'), find(v.spend.today, null)?.credits ?? 0, city.credits, city.entries, blank, names, false, { firm: 'city' }));
+      byFirm.append(...spendRow(entryKey('firm', CITY), el('span', 'spend-name city', 'The city’s reviews and design checks'), find(v.spend.today, null)?.credits ?? 0, city.credits, city.entries, blank, names, false, { firm: CITY }));
     }
     sec.append(byFirm);
 
@@ -471,16 +504,16 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const byModel = el('div', 'spend-table spend-models');
     byModel.setAttribute('role', 'table');
     byModel.setAttribute('aria-label', 'Spend by model');
-    byModel.append(headRow([['c-name', 'By model, credits'], ['c-fig', 'Today'], ['c-fig', 'This week'], ['c-n', 'Entries'], ['c-fig', 'Of a window today']]));
+    byModel.append(headRow([['c-name', 'By model, credits'], ['c-fig', 'Today'], ['c-fig', 'Last 7 days'], ['c-n', 'Entries'], ['c-fig', 'Of a window today']]));
     for (const m of v.spend.week.models) {
       const today = v.spend.today.models.find((x) => x.model === m.model);
-      const share = el('span', 'spend-cell c-fig spend-share', today?.windowPct != null ? pctOf(today.windowPct) : m.windowPct === null ? (m.usd > 0 || m.model.startsWith('anthropic:') ? `API $${(today?.usd ?? 0).toFixed(2)}` : 'local') : '·');
+      const share = el('div', 'spend-cell c-fig spend-share', today?.windowPct != null ? pctOf(today.windowPct) : m.windowPct === null ? (m.usd > 0 || m.model.startsWith('anthropic:') ? `API $${(today?.usd ?? 0).toFixed(2)}` : 'local') : '·');
       share.setAttribute('role', 'cell');
       const label = el('code', 'spend-model', cleanText(m.model, 60));
       byModel.append(...spendRow(entryKey('model', m.model), label, today?.credits ?? 0, m.credits, m.entries, share, names, true, { model: m.model }));
     }
-    if (v.spend.week.models.length === 0) byModel.append(el('p', 'entries-note', 'No model was called this week.'));
     sec.append(byModel);
+    if (v.spend.week.models.length === 0) sec.append(el('p', 'entries-note', 'No model was called in the last 7 days.'));
     sec.append(el('p', 'jobs-key', 'Bids and runs are charged to the firm whose agent made them; reviews and design checks are the city’s own cost. A credit is a tenth of a percent of a five-hour window. Open a row for the entries that make it up.'));
     return sec;
   }
