@@ -24,6 +24,7 @@ import { createInspector, type MarketNames } from './ui/inspector';
 import { createAgentPage } from './ui/agent';
 import { createFirmPage } from './ui/firm';
 import { createFirms } from './ui/firms';
+import { createTreasury } from './ui/treasury';
 import { createInspectionPage } from './ui/inspection';
 import { createJobPage } from './ui/job';
 import { createJobs } from './ui/jobs';
@@ -774,10 +775,13 @@ async function main(): Promise<void> {
     rideUp: () => {},
   });
 
+  // The treasury: his plan's windows, what the city spends of them, and the daily report (Task 39).
+  const treasuryPage = createTreasury(document.body, { listen, onDismiss: toCity });
+
   // Repos, Settings, the job board, the job, run and inspection pages, the firms and a firm's and an
-  // agent's page draw over the city, which keeps running beside them. A place with no screen yet (the
-  // treasury, a district) leaves the city showing.
-  const SCREENS = new Set(['repos', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent']);
+  // agent's page and the treasury draw over the city, which keeps running beside them. A place with no
+  // screen yet (a district) leaves the city showing.
+  const SCREENS = new Set(['repos', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent', 'treasury']);
   let lastRoute = 'city';
   onRoute((to, place) => {
     const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent'].includes(to)) ? to : 'city';
@@ -802,6 +806,8 @@ async function main(): Promise<void> {
     else firmPage.hide();
     if (route === 'agent') agentPage.show(place.id!);
     else agentPage.hide();
+    if (route === 'treasury') treasuryPage.show();
+    else treasuryPage.hide();
     // Back in the city, focus returns to it rather than to a sheet that has gone.
     if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
     lastRoute = route;

@@ -25,7 +25,7 @@ import { getRepo } from '../engine/repos.js';
 import { startServer, type StartedServer } from '../engine/server.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import type { Bid, Inspection, Job, Run } from '../shared/types.js';
-import { FULL, PNG, addAgent, addFirm, checks, git, makeRepo, makeRun, noReading, postJob, reading, setUp, tearDown, tempDir, write } from './guild-fixtures.js';
+import { FULL, HOUR, PNG, addAgent, addFirm, checks, git, makeRepo, makeRun, noReading, postJob, reading, setUp, tearDown, tempDir, write } from './guild-fixtures.js';
 
 let server: StartedServer | null = null;
 let fakeKc = '';
@@ -259,6 +259,19 @@ test('the list, a firm and an agent’s firm read one balance, charges not yet s
   assert.ok(list.negativeSince && one.negativeSince && ag.firm.negativeSince);
 });
 
+test('a firm below zero with no stored negativeSince reads one stable time: the charge that took it there', async () => {
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  const at = new Date(Date.now() - 5 * 60_000).toISOString();
+  openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'alpha', 'run-x', 'run', 320, NULL, '{}')").run(at);
+  const first = (await call('GET', '/api/firms')).json.find((f: { id: string }) => f.id === 'alpha');
+  await new Promise((r) => setTimeout(r, 20));
+  const again = (await call('GET', '/api/firms/alpha')).json;
+  const ag = (await call('GET', '/api/agents/a1')).json;
+  assert.equal(first.negativeSince, at, 'since the charge, not since the request');
+  assert.equal(again.negativeSince, at, 'and the same on the next request');
+  assert.equal(ag.firm.negativeSince, at);
+});
+
 test('agent detail carries genome and lineage', async () => {
   const repo = repoOf();
   const parent = addAgent('p1', 'alpha', 'claude:sonnet');
@@ -446,6 +459,65 @@ test('treasury reports paused reasons, and resume-stale lets a stale reading car
   reading();
   writeFileSync(paths().stop, 'stop\n');
   assert.equal((await call('GET', '/api/treasury')).json.paused.reason, 'stopped');
+});
+
+test('the treasury carries the hard stop, the reading, a resume, the report days and the spend by firm and model, each row reaching its credits entries', async () => {
+  addFirm('alpha');
+  const put = openDb().prepare('INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const now = Date.now();
+  const at = (ms: number) => new Date(ms).toISOString();
+  const m = (model: string) => JSON.stringify({ model, pool: model.split(':')[0] === 'anthropic' ? 'api' : model.split(':')[0] });
+  put.run(at(now - 60_000), 'alpha', 'run-a', 'run', 4.1, null, m('claude:sonnet'));
+  put.run(at(now - 50_000), 'alpha', null, 'bid', 0.2, null, m('claude:sonnet'));
+  put.run(at(now - 40_000), 'alpha', 'run-a', 'review', 2, null, m('claude:haiku'));
+  put.run(at(now - 3 * 24 * HOUR), 'alpha', 'run-old', 'run', 10, null, m('ollama:qwen2.5-coder:7b'));
+  put.run(at(now - 9 * 24 * HOUR), 'alpha', 'run-older', 'run', 99, null, m('claude:opus'));
+  put.run(at(now - 30_000), 'alpha', null, 'pay', 50, null, '{}');
+
+  const t = (await call('GET', '/api/treasury')).json;
+  assert.equal(t.hardStopPct, 90);
+  assert.equal(t.reading.stale, false);
+  assert.equal(typeof t.reading.at, 'number');
+  assert.equal(t.resumedUntil, null);
+  assert.deepEqual(t.reports, []);
+  const today = t.spend.today;
+  const alphaToday = today.firms.find((f: { firmId: string }) => f.firmId === 'alpha');
+  assert.equal(alphaToday.credits, 4.3, 'bids and runs, summed exactly: not the pay, not the review');
+  assert.equal(alphaToday.entries, 2);
+  const city = today.firms.find((f: { firmId: string | null }) => f.firmId === null);
+  assert.equal(city.credits, 2, 'reviews and design checks are the city’s own cost');
+  assert.equal(today.total, 6.3);
+  const sonnet = today.models.find((x: { model: string }) => x.model === 'claude:sonnet');
+  assert.equal(sonnet.credits, 4.3);
+  assert.equal(sonnet.windowPct, 0.43);
+  assert.equal(t.spend.week.firms.find((f: { firmId: string }) => f.firmId === 'alpha').credits, 14.3, 'the week holds the older run, not the one nine days back');
+  assert.equal(t.spend.week.models.find((x: { model: string }) => x.model === 'ollama:qwen2.5-coder:7b').windowPct, null, 'a local model is no share of his window');
+
+  const rows = (await call('GET', '/api/treasury/credits?period=week&firm=alpha')).json;
+  assert.deepEqual(rows.rows.map((r: { kind: string }) => r.kind), ['bid', 'run', 'run'], 'its entries, newest first');
+  assert.equal(rows.count, 3);
+  assert.equal(rows.total, 14.3);
+  assert.equal(typeof rows.rows[0].id, 'number');
+  assert.equal(rows.rows[1].runId, 'run-a');
+  const cityRows = (await call('GET', '/api/treasury/credits?period=today&firm=city')).json;
+  assert.deepEqual(cityRows.rows.map((r: { kind: string; model: string }) => `${r.kind} ${r.model}`), ['review claude:haiku']);
+  const byModel = (await call('GET', `/api/treasury/credits?period=today&model=${encodeURIComponent('claude:sonnet')}`)).json;
+  assert.equal(byModel.count, 2);
+  assert.equal((await call('GET', '/api/treasury/credits?period=year')).status, 400);
+  assert.equal((await call('GET', '/api/treasury/credits?period=week&firm=..%2Fx')).status, 400);
+
+  // A stale reading resumed on his say-so says until when.
+  noReading();
+  assert.equal((await call('GET', '/api/treasury')).json.reading, null);
+  const resumed = (await call('POST', '/api/treasury/resume-stale')).json;
+  assert.ok(resumed.resumedUntil > now, 'the resume says until when it carries the city');
+
+  mkdirSync(paths().reports, { recursive: true });
+  for (const day of ['2026-11-08', '2026-11-09']) {
+    writeFileSync(join(paths().reports, `${day}.md`), `# ${day}\n`);
+    record('report.written', { day, path: join(paths().reports, `${day}.md`), at: new Date().toISOString(), data: { day } });
+  }
+  assert.deepEqual((await call('GET', '/api/treasury')).json.reports, ['2026-11-09', '2026-11-08'], 'the days with a report, newest first');
 });
 
 test('reports serve the latest and a named day, and refuse a day that is not a day', async () => {

@@ -11,7 +11,7 @@ import { emit, subscribe, type Event } from '../engine/events.js';
 import { entries } from '../engine/ledger.js';
 import { charge } from '../engine/market/budget.js';
 import { agentTowerId, firm, listAgents, quarters, seedFirms, BANKRUPT_REASON } from '../engine/market/firms.js';
-import { balances, bankruptcyTick, cityLedger, dailyTick, installTreasury, replayBalances } from '../engine/market/treasury.js';
+import { balances, bankruptcyTick, cityLedger, dailyTick, installTreasury, negativeSinceOf, replayBalances } from '../engine/market/treasury.js';
 import { job as storedJob } from '../engine/market/jobs.js';
 import { layEarnedFloor } from '../engine/repos.js';
 import { HIRE_FEE, START_BALANCE } from '../shared/market-rules.js';
@@ -461,4 +461,50 @@ test('a hire whose fee cannot be written is undone with it', () => {
   dailyTick(T0 + 2 * HOUR);
   assert.equal(listAgents('ashlar-vane').length, before + 1);
   assert.equal(creditRows('hire').length, 1);
+});
+
+// ---------------------------------------------------------------- Task 39: one read of the books
+
+test('balances are one sum per firm in micro-credits, with the openings read in one indexed query', () => {
+  spend('quickset', 'run', 0.1, 'run-a');
+  spend('quickset', 'run', 0.2, 'run-a');
+  spend('kiln', 'bid', 3.333333);
+  const db = openDb();
+  const seen: string[] = [];
+  const prepare = db.prepare;
+  db.prepare = ((sql: string) => {
+    seen.push(sql);
+    return prepare.call(db, sql);
+  }) as typeof db.prepare;
+  let live: Record<string, number>;
+  try {
+    live = balances();
+  } finally {
+    db.prepare = prepare;
+  }
+  assert.equal(seen.length, 2, `two statements, not a row walk in JS (${seen.join(' ;; ')})`);
+  const sums = seen.find((s) => /GROUP BY/i.test(s));
+  assert.ok(sums && /SUM\(/i.test(sums) && /1000000/.test(sums), `one GROUP BY sum per firm, in micro-credits (${sums})`);
+  const openings = seen.find((s) => /firm\.seeded/.test(s))!;
+  assert.ok(openings, 'the openings come from firm.seeded');
+  const plan = (db.prepare(`EXPLAIN QUERY PLAN ${openings}`).all() as Array<{ detail: string }>).map((r) => r.detail).join(' ');
+  assert.match(plan, /ledger_kind/, `the openings are read through the kind index (${plan})`);
+  assert.equal(live!.quickset, START_BALANCE - 0.3, 'exact: 0.1 + 0.2 is 0.3');
+  assert.equal(live!.kiln, START_BALANCE - 3.333333);
+  assert.equal(Object.keys(live!).length, 5, 'every firm, those with no rows too');
+});
+
+test('a firm below zero has been so since the charge that took it there, however often it is asked', () => {
+  const at = (h: number) => T0 + h * HOUR;
+  clock = at(1);
+  spend('kiln', 'run', 200, 'run-1');
+  clock = at(2);
+  spend('kiln', 'run', 150, 'run-2'); // 300 - 350: below zero from here
+  clock = at(3);
+  openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'kiln', NULL, 'pay', 100, NULL, '{}')").run(new Date(at(3)).toISOString()); // back to 50
+  clock = at(4);
+  spend('kiln', 'run', 80, 'run-3'); // -30 again: the streak starts over here
+  assert.equal(negativeSinceOf('kiln'), new Date(at(4)).toISOString());
+  assert.equal(negativeSinceOf('kiln'), new Date(at(4)).toISOString(), 'the same answer on every read');
+  assert.equal(negativeSinceOf('quickset'), null, 'a firm at or above zero is not below it');
 });

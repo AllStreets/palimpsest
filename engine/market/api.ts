@@ -17,6 +17,7 @@ import type {
   Agent,
   AgentDetail,
   CheckView,
+  CreditEntries,
   Firm,
   FirmDetail,
   FirmView,
@@ -52,9 +53,10 @@ import { latestReport } from './report.js';
 import { firmBooks, firmDeals, firmRounds } from './firm-story.js';
 import { reputation, reputationLine, reputationLog } from './reputation.js';
 import { kill, killJob, listRuns, resumeJob, run, sites } from './runs.js';
-import { balances } from './treasury.js';
-import { storedCalibration } from '../usage.js';
-import { patchSettings } from '../settings.js';
+import { balances, negativeSinceOf } from './treasury.js';
+import { isStale, latestReading, storedCalibration } from '../usage.js';
+import { getSettings, patchSettings } from '../settings.js';
+import { creditEntries, periodBounds, spendBetween } from './spend.js';
 
 /**
  * What a sample engine (Task 21) adds to the live view and Settings: the
@@ -300,7 +302,8 @@ async function withdraw(j: Job): Promise<Job> {
  */
 function liveFirm<T extends Firm>(f: T, b: Record<string, number> = balances()): T {
   const balance = b[f.id] ?? f.balance;
-  const negativeSince = balance < 0 ? (f.negativeSince ?? new Date().toISOString()) : f.status === 'bankrupt' ? f.negativeSince : null;
+  // Below zero with nothing stored yet (a charge not yet settled took it there): since that charge, the same on every read.
+  const negativeSince = balance < 0 ? (f.negativeSince ?? negativeSinceOf(f.id) ?? f.createdAt) : f.status === 'bankrupt' ? f.negativeSince : null;
   return { ...f, balance, negativeSince };
 }
 
@@ -378,8 +381,38 @@ function shot(res: ServerResponse, inspectionId: string, routeRaw: string, which
 // ------------------------------------------------------------------ treasury, reports
 
 function treasuryView(): TreasuryView {
+  const now = Date.now();
   const c = storedCalibration();
-  return { ...treasury(), balances: balances(), calibration: { tokensPerPct: c.value, samples: c.samples, calibrated: c.samples > 0 } };
+  const settings = getSettings();
+  const r = latestReading();
+  const t = treasury(now);
+  const resumeUntil = settings.resumeStaleUntil;
+  // A resume is carrying the city only while the reading would otherwise pause it.
+  const unreadable = r === null || r.fiveHour === null || r.sevenDay === null || isStale(r, now);
+  const today = periodBounds('today', now);
+  const week = periodBounds('week', now);
+  return {
+    ...t,
+    balances: balances(),
+    calibration: { tokensPerPct: c.value, samples: c.samples, calibrated: c.samples > 0 },
+    hardStopPct: settings.hardStopPct,
+    reading: r ? { at: r.at, stale: unreadable } : null,
+    resumedUntil: unreadable && t.paused?.reason !== 'stale' && resumeUntil !== null && resumeUntil > now ? resumeUntil : null,
+    spend: { today: spendBetween(today.from, today.to), week: spendBetween(week.from, week.to) },
+    reports: [...new Set(query({ kind: 'report.written' }).map((e) => (e.data as { day?: string }).day).filter((d): d is string => typeof d === 'string' && DAY.test(d)))].sort().reverse(),
+  };
+}
+
+/** The credits entries behind a row of the treasury's spend tables. */
+function creditsFor(params: URLSearchParams): CreditEntries {
+  const period = params.get('period') ?? 'today';
+  if (period !== 'today' && period !== 'week') throw new HttpError(400, { error: 'period is today or week' });
+  const firm = params.get('firm');
+  const model = params.get('model');
+  if (firm !== null && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(firm)) throw new HttpError(400, { error: 'not a firm id' });
+  if (model !== null && !/^[A-Za-z0-9][A-Za-z0-9:._@/-]{0,127}$/.test(model)) throw new HttpError(400, { error: 'not a model' });
+  const b = periodBounds(period, Date.now());
+  return creditEntries({ fromMs: b.from, toMs: b.to, firm: firm ?? undefined, model: model ?? undefined });
 }
 
 function reportFor(day: string): ReportView {
@@ -515,6 +548,7 @@ export async function handleMarketApi(
 
   // treasury, reports, providers
   if (pathname === '/api/treasury' && method === 'GET') return send(200, treasuryView());
+  if (pathname === '/api/treasury/credits' && method === 'GET') return send(200, creditsFor(search));
   if (pathname === '/api/treasury/resume-stale' && method === 'POST') {
     patchSettings({ resumeStaleUntil: Date.now() + MAX_RESUME_MS });
     return send(200, treasuryView());

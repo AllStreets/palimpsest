@@ -28,6 +28,7 @@ import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../share
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { detailChecks } from './ui-test-detail.js';
 import { firmChecks } from './ui-test-firms.js';
+import { treasuryChecks } from './ui-test-treasury.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
@@ -1639,6 +1640,9 @@ async function main(): Promise<void> {
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-ui-test-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
   process.env.PALIMPSEST_DIST = DIST;
+  // The sample's transcripts folder lives under the temp home (useSampleFolders), never his own: as every
+  // test does, say so, so the treasury may read it (it counts his own use there while a reading is stale).
+  process.env.PALIMPSEST_TEST_PROJECTS = '1';
   const claudeSettingsPath = join(tmp, 'claude-settings.json');
   writeFileSync(claudeSettingsPath, '{}\n');
   mkdirSync(SHOTS, { recursive: true });
@@ -1767,6 +1771,8 @@ async function main(): Promise<void> {
       await detailChecks(page, check, SHOTS);
       // The firms list, a firm's page and the agent page (Task 38).
       await firmChecks(page, check, SHOTS);
+      // The treasury and the daily report (Task 39).
+      await treasuryChecks(page, check, SHOTS);
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);

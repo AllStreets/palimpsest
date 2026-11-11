@@ -299,3 +299,15 @@ test('a day the engine was down across midnight is reported at the next start, a
   const days = entries().filter((e) => e.kind === 'report.written').map((e) => (e.data as { day: string }).day);
   assert.deepEqual(days, ['2026-11-07', '2026-11-08', '2026-11-10']);
 });
+
+test('the balance a report gives each firm is the one every screen reads, charges not yet settled included', async () => {
+  const { balances } = await import('../engine/market/treasury.js');
+  seedFirms(['qwen2.5-coder:7b'], new Date(Date.now() - 3_600_000));
+  // A run cost charged as the model was called and not yet settled into the stored books.
+  charge({ runId: 'run-unsettled', firmId: 'quickset', model: 'claude:sonnet', kind: 'run', usage: { weightedTokens: 6000 * 12.5, seconds: 0, usd: 0, credits: 0 }, unattended: false });
+  writeDailyReport(localDay());
+  const data = latestReport()!.data;
+  const row = data.spend.firms.find((f) => f.firmId === 'quickset')!;
+  assert.equal(row.balance, Math.round(balances().quickset * 100) / 100);
+  assert.notEqual(row.balance, 300, 'not the stored balance the last settle wrote');
+});

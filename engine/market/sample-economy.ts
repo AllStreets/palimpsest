@@ -32,10 +32,11 @@
  * switches the seed and the clock to startTrip().
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CREDIT_PCT } from '../../shared/credits.js';
 import { calibrated as calibrate, expectedValue, TIER_VALUE } from '../../shared/market-rules.js';
 import { silhouetteFor } from '../../shared/silhouette.js';
 import type {
@@ -73,6 +74,7 @@ import { earnedFloors, getRepo, listRepos, nextSlot, updateEarnedFloor, updateRe
 import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, SAMPLE_TREES, useSampleFolders } from '../sample.js';
 import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
 import { getSettings } from '../settings.js';
+import { storedCalibration } from '../usage.js';
 import { charge } from './budget.js';
 import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
@@ -87,8 +89,13 @@ export { SAMPLE_INSTALLED } from '../sample.js';
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
-/** Weighted tokens per credit at the default calibration (60,000 tokens per percent, 0.1% per credit). */
-const TOKENS_PER_CREDIT = 6_000;
+/**
+ * His plan as the sample has measured it (Task 39): 1% of the five-hour
+ * window is about 58,000 weighted tokens, from 14 pairs of readings.
+ */
+export const SAMPLE_CALIBRATION = { value: 58_000, samples: 14 } as const;
+/** Weighted tokens per credit at the stored calibration (a credit is 0.1% of the window). */
+const tokensPerCredit = (): number => storedCalibration().value * CREDIT_PCT;
 
 const iso = (ms: number = Date.now()) => new Date(ms).toISOString();
 const sha = (seed: string) => createHash('sha1').update(seed).digest('hex');
@@ -460,11 +467,11 @@ function familyOf(model: ModelRef): string {
   return model.startsWith('ollama:') ? model.slice('ollama:'.length) : model.slice(model.indexOf(':') + 1);
 }
 
-/** A model call's usage that charge() turns into exactly `credits` at the default calibration. */
+/** A model call's usage that charge() turns into exactly `credits` at the stored calibration. */
 function usageOf(model: ModelRef, credits: number) {
   return model.startsWith('ollama:')
     ? { weightedTokens: 0, seconds: Math.round(credits / 0.002), usd: 0, credits }
-    : { weightedTokens: Math.round(credits * TOKENS_PER_CREDIT), seconds: 0, usd: 0, credits };
+    : { weightedTokens: credits * tokensPerCredit(), seconds: 0, usd: 0, credits };
 }
 
 // ---------------------------------------------------------------- one job, step by step
@@ -634,7 +641,7 @@ class Pipeline {
       filesChanged: o.files.length,
       testsRun: counted ? r.progress.testsRun : Math.round(this.between(12, 320)),
       turns: counted ? r.progress.turns : turns,
-      weightedTokens: r.model.startsWith('ollama:') ? 0 : Math.round(credits * TOKENS_PER_CREDIT),
+      weightedTokens: r.model.startsWith('ollama:') ? 0 : Math.round(credits * tokensPerCredit()),
       credits,
       refusals: r.progress.refusals,
     };
@@ -1293,6 +1300,19 @@ export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: b
   writeProviderFixtures(now);
 }
 
+/**
+ * His usage reading as the statusline hook writes it: fresh (taken eight
+ * minutes ago, 34% of the five-hour window and 21% of the week, as
+ * seedSample writes it) or, with `stale`, the variant the treasury pauses
+ * on: the same reading taken six hours ago, its five-hour window reset since.
+ */
+export function sampleReading(now: number = Date.now(), opts: { stale?: boolean } = {}): void {
+  const sec = Math.floor(now / 1000) - (opts.stale ? 6 * 3600 : 8 * 60);
+  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 34, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
+  rmSync(join(paths().usage, 'latest.json'), { force: true });
+  writeFileSync(join(paths().usage, 'readings.jsonl'), `${JSON.stringify(reading)}\n`);
+}
+
 async function writeHistory(now: number, start: number, time: { set(ms: number): void }, holdSale: boolean): Promise<void> {
   // One fixed story whatever the hour it is written: the same jobs, prices and books every time.
   const r = rng('sample-economy');
@@ -1308,6 +1328,11 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
     const repo = getRepo(fullName)!;
     openDb().prepare('UPDATE repos SET json = ? WHERE full_name = ?').run(JSON.stringify({ ...repo, market: true, checks } satisfies Repo), fullName);
   }
+
+  // His plan, measured before the first call is charged, so every charge and report reads it.
+  openDb()
+    .prepare('INSERT INTO settings (key, json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET json = excluded.json')
+    .run('tokensPerPct', JSON.stringify({ ...SAMPLE_CALIBRATION, through: 0, fiveSum: 0, weekSum: 0 }));
 
   // The five firms, then the sixth.
   seedFirms(SAMPLE_INSTALLED, new Date(start));

@@ -168,7 +168,11 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     {
       const { openDb } = await import('../engine/db.js');
       const { balances } = await import('../engine/market/treasury.js');
+      const { entries } = await import('../engine/ledger.js');
       const was = JSON.stringify(balances());
+      // Nothing may book while the charge is planted (no economy clock runs here): if the ledger moves, a
+      // settle could have booked the planted row, and deleting it after would leave the books unbalanced.
+      const ledgerAt = entries().length;
       const id = Number(openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'quickset', 'run-unsettled', 'run', 12.5, NULL, '{}')").run(new Date().toISOString()).lastInsertRowid);
       try {
         const want = balances().quickset;
@@ -182,6 +186,8 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
       } finally {
         openDb().prepare('DELETE FROM credits WHERE id = ?').run(id);
       }
+      const moved = entries().length - ledgerAt;
+      check(moved === 0, `the ledger stood still while the unsettled charge was planted (${moved} entries written meanwhile: something settled or ticked inside the window, so the planted row may have been booked)`);
       check(JSON.stringify(balances()) === was, 'and the unsettled charge leaves nothing behind');
     }
 
@@ -211,8 +217,9 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
       openDb().prepare('DELETE FROM credits WHERE id = ?').run(debtRow);
       openDb().prepare('DELETE FROM firms WHERE id = ?').run(overdraft.id);
     }
+    const movedMeanwhile = entries().length - ledgerBefore;
+    check(movedMeanwhile === 0, `the ledger stood still while the overdraft's charge was planted (${movedMeanwhile} entries written meanwhile: something settled or ticked inside the window, so the planted row may have been booked)`);
     check(JSON.stringify(balances()) === booksBefore, 'every firm’s books are as they were before the check');
-    check(entries().length === ledgerBefore, 'and the check wrote nothing to the ledger');
     const replayed = replayBalances(entries());
     const now = balances();
     check(Object.keys(now).every((id) => Math.abs((replayed[id] ?? NaN) - now[id]) < 1e-9), `and the ledger replays to the same balances (${JSON.stringify(replayed)} against ${JSON.stringify(now)})`);

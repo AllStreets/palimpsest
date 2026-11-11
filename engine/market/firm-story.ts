@@ -27,6 +27,11 @@ export const ROUND_ROWS = 400;
 
 type Row = { id: number | bigint; at: string; json: string };
 
+/** A firm's newest book movements, through the ledger's per-firm index on credits.moved (test/ledger.test.ts pins the plan). */
+export const BOOKS_SQL = "SELECT id, at, json FROM ledger WHERE kind = 'credits.moved' AND json_extract(json, '$.firmId') = ? ORDER BY id DESC LIMIT ?";
+/** How many of a firm's movements are older than the page kept, and what they sum to in micro-credits, through the same index. */
+export const OLDER_SQL = "SELECT COUNT(*) AS n, COALESCE(SUM(CAST(ROUND(json_extract(json, '$.delta') * 1000000) AS INTEGER)), 0) AS micro FROM ledger WHERE kind = 'credits.moved' AND json_extract(json, '$.firmId') = ? AND id < ?";
+
 /** The firm's balance as `firm.seeded` set it (the start balance for a firm seeded before that was recorded). */
 function openingOf(firmId: string): number {
   const row = openDb()
@@ -55,12 +60,12 @@ export function firmBooks(firmId: string, limit = BOOK_ROWS): FirmBooks {
   const opening = openingOf(firmId);
   const recent = (
     db
-      .prepare("SELECT id, at, json FROM ledger WHERE kind = 'credits.moved' AND json_extract(json, '$.firmId') = ? ORDER BY id DESC LIMIT ?")
+      .prepare(BOOKS_SQL)
       .all(firmId, limit) as Row[]
   ).reverse();
   const firstKept = recent.length ? Number(recent[0].id) : Number.MAX_SAFE_INTEGER;
   const older = db
-    .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(CAST(ROUND(json_extract(json, '$.delta') * 1000000) AS INTEGER)), 0) AS micro FROM ledger WHERE kind = 'credits.moved' AND json_extract(json, '$.firmId') = ? AND id < ?")
+    .prepare(OLDER_SQL)
     .get(firmId, firstKept) as { n: number; micro: number | bigint };
   let micro = toMicro(opening) + Number(older.micro);
   const out: BookRow[] = [];
