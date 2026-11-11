@@ -1047,8 +1047,9 @@ def rail_end_gear(body):
     # The destination board over the windscreen: an LED panel under a glass cover, in a black surround.
     x, n = surface_x(body, 3.05, 0.0)
     if x is not None:
-        lamps.take(facing(box(-0.02, 0.0, 2.95, 3.15, -0.62, 0.62), n[0], n[2]).transform(lambda q: (q[0] + x + 0.012, q[1], q[2])), VEH['board'])
-        lamps.take(facing(box(-0.02, 0.0, 2.9, 3.2, -0.7, 0.7), n[0], n[2]).transform(lambda q: (q[0] + x + 0.004, q[1], q[2])), VEH['dark'])
+        # Proud of the raked nose by enough that its lowest row stands clear of the surface leaning out beneath it.
+        lamps.take(facing(box(-0.02, 0.0, 2.95, 3.15, -0.62, 0.62), n[0], n[2]).transform(lambda q: (q[0] + x + 0.06, q[1], q[2])), VEH['board'])
+        lamps.take(facing(box(-0.1, 0.0, 2.9, 3.2, -0.7, 0.7), n[0], n[2]).transform(lambda q: (q[0] + x + 0.052, q[1], q[2])), VEH['dark'])
     # A wiper parked on the windscreen, and the cab door's handle and grab rail on the flank behind the nose.
     x0, n0 = surface_x(body, 1.9, -0.1)
     x1, n1 = surface_x(body, 2.45, 0.42)

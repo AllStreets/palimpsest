@@ -1163,27 +1163,32 @@ function waterFragment(steps: number): string {
       float wander = 0.3 + 0.02 * b;
       // Close to the boat the arms stand up: a V that reads behind it, not only the churn in its track.
       float close = 1.0 + 1.6 * exp(-b / 45.0);
-      // The arms: the divergent crests run as slanted lines, en echelon along each arm of the 19.5 degree wedge,
-      // continuous, thinning and settling with distance astern; a gentle swell rises under them.
-      if (abs(aa - edge0) < 3.0 * width + wander) {
-        float flow = wNoise(vec2(aa * 0.15 + uTime * 0.1, b * 0.06 - uTime * 0.15));
+      // The arms: divergent crests as continuous ridge lines running in across each arm of the 19.5 degree wedge,
+      // their spacing and strength wandering with noise and fading astern and with distance; only the foam breaks up.
+      float band = 2.6 * width;
+      if (b < 150.0 && abs(aa - edge0) < band + wander + width) {
+        // One slow noise steers the arm's line, its ridges' spacing and their strength.
+        float flow = wNoise(vec2(aa * 0.05 + uTime * 0.05, b * 0.04 - uTime * 0.08));
         float edge = edge0 + (flow - 0.5) * wander;
         float armD = aa - edge;
-        float arm = exp(-armD * armD / (width * width));
-        // Crest lines cross the arm at about 35 degrees to the track; their phase runs along it.
-        float ph = (aa * 0.82 + b * 0.57) * 1.25 - uTime * 2.2 + flow * 1.5;
-        float crestFade = (1.0 - smoothstep(0.5, 1.4, 1.25 * footprint)) * near;
-        float c0 = 0.5 + 0.5 * sin(ph);
-        // Sharper crests near the boat, rounder ones far astern: the lines thin as they spread.
-        float sharp = mix(4.0, 1.5, smoothstep(10.0, 120.0, b));
-        float crest = pow(c0, sharp);
+        // A broad, one-sided envelope: the ridges reach in from the arm's line toward the track, not out past it.
+        float env = exp(-armD * armD / (band * band)) * smoothstep(width * 1.2, -width * 0.2, armD);
+        // The ridge lines cross the arm at about 35 degrees; their spacing stretches and squeezes slowly.
+        float spacing = 1.0 + 0.35 * (flow - 0.5);
+        float ph = (aa * 0.82 + b * 0.57) * 1.15 / spacing - uTime * 2.0;
+        float crestFade = (1.0 - smoothstep(0.5, 1.4, 1.15 * footprint)) * near;
+        float strength = 0.6 + 0.8 * fract(flow * 3.7 + 0.21);
+        float s0 = sin(ph);
+        float c0 = 0.5 + 0.5 * s0;
+        float sharp = mix(3.0, 1.4, smoothstep(10.0, 140.0, b));
         float dcrest = sharp * pow(c0, sharp - 1.0) * cos(ph) * 0.5;
-        vec2 across = normalize(side * sign(a) * 0.82 + dir * -0.57);
-        g += across * dcrest * arm * decay * 0.1 * close * crestFade;
-        // The swell under the arm: the gradient of a smooth ridge, no edges.
-        g += side * sign(a) * (-2.0 * armD / (width * width)) * arm * decay * 0.12 * close;
-        // Feathered foam on the crests close to the boat, fading out along the arm.
-        foam += crest * arm * decay * 0.55 * close * smoothstep(90.0, 4.0, b) * crestFade * smoothstep(0.1, 0.9, flow + 0.3);
+        vec2 across = normalize(side * sign(a) * 0.82 - dir * 0.57);
+        g += across * dcrest * env * decay * 0.17 * close * strength * crestFade;
+        // The swell under the arm: the gradient of a smooth ridge.
+        g += side * sign(a) * (-2.0 * armD / (width * width)) * exp(-armD * armD / (width * width)) * decay * 0.1 * close;
+        // Foam only on the ridge tops near the boat, broken up by its own noise.
+        float tip = pow(c0, 6.0) * env * smoothstep(80.0, 4.0, b) * crestFade;
+        if (tip > 0.01) foam += tip * decay * 0.5 * close * smoothstep(0.45, 0.85, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2)));
       }
       // The churn astern of the hull (its stern stands 11 m behind the middle), and white water along its sides.
       float s = u - 10.5;

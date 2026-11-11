@@ -1971,41 +1971,97 @@ function surfaced(sh: THREE.WebGLProgramParametersWithUniforms): void {
     .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vSurf.x;');
 }
 
-/** What a lamp shows: white or red by whether its car's nose leads (aLead), brighter red braking (aBrake), or its own colour. */
-const LAMP_GLSL = /* glsl */ `
+// ---------------------------------------------------------------- the destination board
+
+/** The destinations the trains' boards spell: the elevated loop's gates. The board shows the first. */
+export const LED_DESTINATIONS = ['NORTHGATE', 'SOUTHGATE', 'WESTGATE'] as const;
+
+/** A 5 by 7 dot-matrix face, top row first, # lit. */
+const LED_FONT: Record<string, string> = {
+  A: '.###. #...# #...# ##### #...# #...# #...#',
+  B: '####. #...# #...# ####. #...# #...# ####.',
+  C: '.###. #...# #.... #.... #.... #...# .###.',
+  D: '####. #...# #...# #...# #...# #...# ####.',
+  E: '##### #.... #.... ####. #.... #.... #####',
+  F: '##### #.... #.... ####. #.... #.... #....',
+  G: '.###. #...# #.... #.### #...# #...# .####',
+  H: '#...# #...# #...# ##### #...# #...# #...#',
+  I: '.###. ..#.. ..#.. ..#.. ..#.. ..#.. .###.',
+  J: '..### ...#. ...#. ...#. ...#. #..#. .##..',
+  K: '#...# #..#. #.#.. ##... #.#.. #..#. #...#',
+  L: '#.... #.... #.... #.... #.... #.... #####',
+  M: '#...# ##.## #.#.# #.#.# #...# #...# #...#',
+  N: '#...# ##..# #.#.# #..## #...# #...# #...#',
+  O: '.###. #...# #...# #...# #...# #...# .###.',
+  P: '####. #...# #...# ####. #.... #.... #....',
+  Q: '.###. #...# #...# #...# #.#.# #..#. .##.#',
+  R: '####. #...# #...# ####. #.#.. #..#. #...#',
+  S: '.#### #.... #.... .###. ....# ....# ####.',
+  T: '##### ..#.. ..#.. ..#.. ..#.. ..#.. ..#..',
+  U: '#...# #...# #...# #...# #...# #...# .###.',
+  V: '#...# #...# #...# #...# #...# .#.#. ..#..',
+  W: '#...# #...# #...# #.#.# #.#.# #.#.# .#.#.',
+  X: '#...# #...# .#.#. ..#.. .#.#. #...# #...#',
+  Y: '#...# #...# .#.#. ..#.. ..#.. ..#.. ..#..',
+  Z: '##### ....# ...#. ..#.. .#... #.... #####',
+  ' ': '..... ..... ..... ..... ..... ..... .....',
+};
+
+/** A letter's seven rows of five dots. */
+export function ledGlyph(ch: string): string[] {
+  return (LED_FONT[ch] ?? LED_FONT[' ']).split(' ');
+}
+
+/** The board's width in dot columns (1.24 m at a 22.5 mm pitch). */
+const LED_COLS = 55;
+
+/** A destination laid out on the board: a seven-bit mask per column (bit 0 the top row), centred, a dark column between letters. */
+export function ledColumns(text: string): { columns: number[]; start: number; width: number } {
+  const width = text.length * 6 - 1;
+  const start = Math.floor((LED_COLS - width) / 2);
+  const columns = new Array<number>(LED_COLS).fill(0);
+  [...text].forEach((ch, i) => {
+    const rows = ledGlyph(ch);
+    for (let col = 0; col < 5; col++) {
+      let mask = 0;
+      for (let row = 0; row < 7; row++) if (rows[row][col] === '#') mask |= 1 << row;
+      columns[start + i * 6 + col] = mask;
+    }
+  });
+  return { columns, start, width };
+}
+
+/**
+ * The board in the lamp shader: the first destination's column masks
+ * written out as constants (no array indexing in the shader), dots on a
+ * 22.5 mm pitch read the right way round from in front of the nose (the
+ * car faces +x, so the viewer's right is -z).
+ */
+const LED_GLSL = (() => {
+  const { columns } = ledColumns(LED_DESTINATIONS[0]);
+  const lines = columns.map((m, c) => (m ? `  if (c == ${c}) return ${m};` : '')).filter(Boolean);
+  return `
   varying vec3 vLampP;
-  float ledHash(float n) { return fract(sin(n * 91.345 + 7.13) * 47453.5453); }
-  // A destination board's LED matrix: round dots on a 22.5 mm pitch spelling the line's name, NORTHGATE, in a 5 by 7
-  // face, read the right way round from in front of the nose (the car faces +x, so the viewer's right is -z).
-  int ledGlyph(int ch, int row) {
-    // N O R T H G A T E, each seven rows of five bits, the left column the high bit.
-    int g[63] = int[63](
-      17, 25, 21, 19, 17, 17, 17,
-      14, 17, 17, 17, 17, 17, 14,
-      30, 17, 17, 30, 20, 18, 17,
-      31, 4, 4, 4, 4, 4, 4,
-      17, 17, 17, 31, 17, 17, 17,
-      14, 17, 16, 23, 17, 17, 15,
-      14, 17, 17, 31, 17, 17, 17,
-      31, 4, 4, 4, 4, 4, 4,
-      31, 16, 16, 30, 16, 16, 31);
-    return g[ch * 7 + row];
+  int ledColumn(int c) {
+${lines.join('\n')}
+    return 0;
   }
   float ledBoard() {
     float pitch = 0.0225;
-    vec2 q = vec2(-vLampP.z, 3.142 - vLampP.y) / pitch;
-    vec2 cell = floor(q + vec2(27.5, 0.0));
-    float dot = 1.0 - smoothstep(0.24, 0.4, length(fract(q + vec2(27.5, 0.0)) - 0.5));
-    float on = 0.0;
-    int c = int(cell.x) - 1;
+    vec2 q = vec2(-vLampP.z + ${(LED_COLS * 0.0225 / 2).toFixed(5)}, 3.1355 - vLampP.y) / pitch;
+    vec2 cell = floor(q);
+    float dot = 1.0 - smoothstep(0.24, 0.4, length(fract(q) - 0.5));
+    int c = int(cell.x);
     int row = int(cell.y);
-    if (c >= 0 && c < 54 && row >= 0 && row < 7) {
-      int ch = c / 6;
-      int col = c - ch * 6;
-      if (col < 5) on = float((ledGlyph(ch, row) >> (4 - col)) & 1);
-    }
+    float on = 0.0;
+    if (c >= 0 && c < ${LED_COLS} && row >= 0 && row < 7) on = float((ledColumn(c) >> row) & 1);
     return 0.04 + dot * (0.05 + 1.15 * on);
-  }
+  }`;
+})();
+
+/** What a lamp shows: white or red by whether its car's nose leads (aLead), brighter red braking (aBrake), or its own colour. */
+const LAMP_GLSL = /* glsl */ `
+${LED_GLSL}
   vec3 lampShow(vec3 kind, vec3 own, float lead, float brake) {
     float code = lead > 0.5 ? kind.x : kind.y;
     vec3 c = vec3(0.0);
@@ -2285,8 +2341,9 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
               inside = vec3(0.006, 0.006, 0.007) + uLight * 0.012 + vec3(0.1, 0.22, 0.3) * scr + vec3(0.5, 0.25, 0.05) * pip * 0.3;
             }
             else {
-              float win = step(abs(hb.z), 0.22) * step(uBoxMin.y + 1.05, hb.y) * step(hb.y, uBoxMin.y + 1.75);
-              inside = mix(uLight * 0.006 * (0.6 + 0.4 * smoothstep(uBoxMin.y, uBoxMax.y, hb.y)), room(vec3(uBoxMax.x - 0.01, hb.y, hb.z), d), win);
+                // The door's window into the saloon: dimmed through two panes, its edges soft in a dark surround.
+              float wedge = smoothstep(0.22, 0.12, abs(hb.z)) * smoothstep(uBoxMin.y + 1.05, uBoxMin.y + 1.2, hb.y) * smoothstep(uBoxMin.y + 1.75, uBoxMin.y + 1.6, hb.y);
+              inside = mix(uLight * 0.006 * (0.6 + 0.4 * smoothstep(uBoxMin.y, uBoxMax.y, hb.y)), room(vec3(uBoxMax.x - 0.01, hb.y, hb.z), d) * 0.3, wedge);
               // A faint lit panel over the door: the cab's own instruments light.
               inside += vec3(0.25, 0.4, 0.5) * 0.05 * step(abs(hb.z + 0.6), 0.25) * step(abs(hb.y - (uBoxMin.y + 1.9)), 0.08);
             }
@@ -2301,7 +2358,11 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
           vec3 Rw = inverseTransformDirection(reflect(-V, normalize(normal)), viewMatrix);
           vec3 sky = mix(vec3(0.95, 0.56, 0.42), vec3(0.24, 0.2, 0.38), smoothstep(0.02, 0.55, Rw.y));
           vec3 refl = mix(vec3(0.02, 0.018, 0.02), sky * 0.55, smoothstep(-0.06, 0.05, Rw.y));
-          totalEmissiveRadiance += refl * (0.03 + 0.85 * F) * mask;
+          // On a windscreen the sky lies across its upper third as a warm-to-violet band.
+          float front = smoothstep(0.5, 0.8, abs(nL.x));
+          float upper = smoothstep(uWin.x + 0.55 * (uWin.y - uWin.x), uWin.y - 0.05, vLP.y);
+          vec3 band = mix(vec3(1.0, 0.58, 0.4), vec3(0.42, 0.32, 0.62), smoothstep(uWin.y - 0.45, uWin.y - 0.05, vLP.y));
+          totalEmissiveRadiance += refl * (0.05 + 0.9 * F) * mask + band * 0.22 * front * upper * mask * uDriver;
           diffuseColor.rgb = mix(vec3(0.012), diffuseColor.rgb, mask);
         }`,
       );

@@ -469,6 +469,7 @@ for (const phase of ['to-pickup', 'returning'] as const) {
     const k = trip.legs.findIndex((l) => l.mode === 'cab');
     const start = xz(trip.legs[k].path[0]);
     const cab = v.summonCab(trip, k);
+    const bay = at(cab);
     for (let i = 0; i < 40000 && cab.phase() !== phase; i++) v.update(0.25);
     v.update(phase === 'to-pickup' ? 5 : 10);
     assert.equal(cab.phase(), phase);
@@ -485,6 +486,7 @@ for (const phase of ['to-pickup', 'returning'] as const) {
       if (cab.phase() === 'pickup') picked ??= at(cab);
     }
     assert.equal(phases[phases.length - 1], 'parked', `it gets back to its bay (${phases.join(', ')})`);
+    assert.ok(dist(at(cab), bay) < 0.5, `it stands in the very bay it left (${dist(at(cab), bay).toFixed(2)} m off)`);
     if (phase === 'to-pickup') assert.ok(picked && dist(picked, kerbOf(start, bigger)) < 0.5, 'it picks up at the kerb the new network gives');
     v.dispose();
   });
