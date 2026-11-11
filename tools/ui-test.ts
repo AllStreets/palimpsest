@@ -538,6 +538,32 @@ async function darkTowerChecks(page: Page): Promise<void> {
  * construction.png close on the crane mid-weld, a four-frame strip of real
  * progress steps, and the frame rate held within 5 of the overview.
  */
+/**
+ * The city's frame budget from home (task PERF): later tasks (transit,
+ * vehicles, crowds) add to it, and this check fails if the city outgrows it
+ * silently. The governor's own budget is 24M (governor.ts).
+ */
+const HOME_TRIANGLES = 17_000_000;
+const HOME_CALLS = 900;
+
+/** A frame from the home framing with the shadow map redrawn: its draw calls and triangles, and the biggest subsystems. */
+async function homeBudget(page: Page): Promise<{ calls: number; triangles: number; parts: string }> {
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(1200);
+  type T = { calls: number; triangles: number };
+  const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
+  const sum = (p: Record<string, T>): T => Object.values(p).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  const total = sum(Object.fromEntries(Object.entries(b).map(([k, v]) => [k, sum(v)])));
+  const parts = Object.entries(b)
+    .map(([k, v]) => [k, sum(v)] as const)
+    .sort((x, y) => y[1].triangles - x[1].triangles)
+    .slice(0, 4)
+    .map(([k, t]) => `${k} ${(t.triangles / 1e6).toFixed(2)}M/${t.calls}`)
+    .join(', ');
+  return { ...total, parts };
+}
+
 async function constructionChecks(page: Page): Promise<void> {
   type SV = { stage: string; progress: number; beams: number; beamsTotal: number; columns: number; crane: number[]; weld: number[] | null; arc: number; top: number; floorHeight: number; centre: number[] };
   type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): SV | null };
@@ -616,6 +642,12 @@ async function constructionChecks(page: Page): Promise<void> {
     const homeFps = await pageFps(page);
     console.log(`info  city from home with live sites: ${homeFps.toFixed(0)} fps, ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
     check(homeFps >= overviewFps - 5, `the city from home holds its frame rate with live sites (${homeFps.toFixed(0)} fps)`);
+    // The city's budget from home (task PERF): a frame with the shadow map redrawn, every pass counted.
+    const full = await homeBudget(page);
+    console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
+    check(full.triangles <= HOME_TRIANGLES, `the city from home draws at most ${HOME_TRIANGLES / 1e6}M triangles with live sites and the shadow map redrawn (${(full.triangles / 1e6).toFixed(2)}M)`);
+    check(full.calls < HOME_CALLS, `the city from home draws in under ${HOME_CALLS} calls with live sites and the shadow map redrawn (${full.calls})`);
+    check((await debug(page, (x) => x.quality())) === 'high', 'the quality governor has not stepped the city down');
     // What the sites cost from home: every site is drawn in a few batches, so all of them together add under 60 calls.
     const nSites = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length)) as number;
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(false));
