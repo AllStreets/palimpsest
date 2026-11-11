@@ -41,6 +41,7 @@ import { appendFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+import { DENY_SCOPE, denied, globRegex } from '../../shared/market-rules.js';
 import type { CheckName, CheckResult, Inspection, Job, ModelRef, Repo, Run } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
@@ -59,8 +60,7 @@ import { CHECK_ORDER, runCheck } from './checks.js';
 import { designPasses, judgeDesign, prepareBase, shoot, UI_FILES, type Screenshotter, type Shot } from './design.js';
 import { isTooLarge, review } from './review.js';
 
-/** Paths no job may change, whatever its scope. */
-export const DENY_SCOPE = ['.github/workflows/**', '.env', '.env.*', '**/*.pem', '**/*.key', '**/id_rsa*', '.claude/**', '.git/**'];
+export { DENY_SCOPE, denied, globRegex } from '../../shared/market-rules.js';
 
 /** Each lockfile and the manifest beside it that must change with it. */
 export const LOCK_MANIFEST: Record<string, string> = {
@@ -91,54 +91,7 @@ const CHECK_NAMES: ReadonlySet<CheckName> = new Set(['install', 'test', 'typeche
 /** The run's scratch dirs: its fake home, caches and tmp, emptied before each clean install. */
 const SCRATCH = ['home', 'cache', 'tmp'] as const;
 
-// ---------------------------------------------------------------- globs and scope
-
-/** A glob as a whole-path regex: `**` crosses folders (dot folders too), `*` and `?` stay in one, `{a,b}` alternates. */
-export function globRegex(glob: string): RegExp {
-  let re = '';
-  let i = 0;
-  let depth = 0;
-  const g = glob.replace(/^\.\//, '').replace(/^\/+/, '');
-  while (i < g.length) {
-    const ch = g[i];
-    if (ch === '*') {
-      if (g[i + 1] === '*') {
-        const slashAfter = g[i + 2] === '/';
-        const atStart = i === 0 || g[i - 1] === '/';
-        if (atStart && slashAfter) {
-          re += '(?:.*/)?';
-          i += 3;
-        } else {
-          re += '.*';
-          i += 2;
-        }
-        continue;
-      }
-      re += '[^/]*';
-    } else if (ch === '?') re += '[^/]';
-    else if (ch === '{') {
-      re += '(?:';
-      depth++;
-    } else if (ch === '}' && depth > 0) {
-      re += ')';
-      depth--;
-    } else if (ch === ',' && depth > 0) re += '|';
-    else re += ch.replace(/[.+^$()|[\]\\]/g, '\\$&');
-    i++;
-  }
-  return new RegExp(`^${re}${')'.repeat(depth)}$`);
-}
-
-const denyRes = DENY_SCOPE.map((g) => ({ g, re: globRegex(g), anywhere: !g.includes('/') }));
-
-/** The deny pattern `path` matches, or null. A pattern without a slash matches the file name at any depth; `.git` and `.claude` folders are out at any depth. */
-export function denied(path: string): string | null {
-  const parts = path.split('/');
-  if (parts.includes('.git')) return '.git/**';
-  if (parts.slice(0, -1).includes('.claude')) return '.claude/**';
-  for (const d of denyRes) if (d.re.test(path) || (d.anywhere && d.re.test(posix.basename(path)))) return d.g;
-  return null;
-}
+// ---------------------------------------------------------------- scope
 
 export interface ChangedFile {
   path: string;

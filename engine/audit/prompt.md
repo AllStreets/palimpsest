@@ -26,6 +26,6 @@ Real and tested: race engine, sealed sets, bootstrap CIs, re-grade, designer, an
 Broken or missing: breeding outside geotag (a hardcoded tool allow-list in src/genome.ts rejects coding tools), no parent-versus-child significance test, geotag-specific self-check prompt, no sandbox, fossils are an MLP over embeddings for geotag only, no LoRA anywhere.
 ```
 
-Answer only with JSON in the shape you were given: `claims` and `findings`, each finding with `claim`, `source` (the README or docs file and line the claim sits on), `verdict`, `tested`, `evidence` and `proposal`. No prose around it.
+Answer only with JSON in the shape you were given: `claims` and `findings`, each finding with `claim`, `source` (the README or docs file and line the claim sits on), `verdict`, `tested`, `evidence` and `proposal`. No prose around it. The files follow.
 
 {{text}}

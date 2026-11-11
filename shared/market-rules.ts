@@ -266,3 +266,61 @@ export function localSize(name: string): number {
   const m = /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)b(?=$|[^a-z0-9])/.exec(tag) ?? /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)b(?=$|[^a-z0-9])/.exec(name.toLowerCase());
   return m ? Number(m[1]) : 0;
 }
+
+// ---------------------------------------------------------------- scope globs
+
+/** Paths no job may change, whatever its scope; the audit drops them from a proposal's scope too. */
+export const DENY_SCOPE = ['.github/workflows/**', '.env', '.env.*', '**/*.pem', '**/*.key', '**/id_rsa*', '.claude/**', '.git/**'];
+
+/** A glob as a whole-path regex: `**` crosses folders (dot folders too), `*` and `?` stay in one, `{a,b}` alternates. */
+export function globRegex(glob: string): RegExp {
+  let re = '';
+  let i = 0;
+  let depth = 0;
+  const g = glob.replace(/^\.\//, '').replace(/^\/+/, '');
+  while (i < g.length) {
+    const ch = g[i];
+    if (ch === '*') {
+      if (g[i + 1] === '*') {
+        const slashAfter = g[i + 2] === '/';
+        const atStart = i === 0 || g[i - 1] === '/';
+        if (atStart && slashAfter) {
+          re += '(?:.*/)?';
+          i += 3;
+        } else {
+          re += '.*';
+          i += 2;
+        }
+        continue;
+      }
+      re += '[^/]*';
+    } else if (ch === '?') re += '[^/]';
+    else if (ch === '{') {
+      re += '(?:';
+      depth += 1;
+    } else if (ch === '}' && depth > 0) {
+      re += ')';
+      depth -= 1;
+    } else if (ch === ',' && depth > 0) re += '|';
+    else re += ch.replace(/[.+^$()|[\]\\]/g, '\\$&');
+    i += 1;
+  }
+  return new RegExp(`^${re}${')'.repeat(depth)}$`);
+}
+
+const denyRes = DENY_SCOPE.map((g) => ({ g, re: globRegex(g), anywhere: !g.includes('/') }));
+
+/** The last segment of a slash path (no `node:path`, so the app can import this file). */
+function lastSegment(path: string): string {
+  const i = path.lastIndexOf('/');
+  return i < 0 ? path : path.slice(i + 1);
+}
+
+/** The deny pattern `path` matches, or null. A pattern without a slash matches the file name at any depth; `.git` and `.claude` folders are out at any depth. */
+export function denied(path: string): string | null {
+  const parts = path.split('/');
+  if (parts.includes('.git')) return '.git/**';
+  if (parts.slice(0, -1).includes('.claude')) return '.claude/**';
+  for (const d of denyRes) if (d.re.test(path) || (d.anywhere && d.re.test(lastSegment(path)))) return d.g;
+  return null;
+}

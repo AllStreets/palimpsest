@@ -224,3 +224,21 @@ test('localSize ranks 30b-a3b over 7b over a name without a tag', () => {
   assert.ok(localSize('qwen3-coder:30b-a3b') > localSize('qwen2.5-coder:7b'));
   assert.ok(localSize('qwen2.5-coder:7b') > localSize('codellama'));
 });
+
+test('the deny globs and their matcher live in shared and inspect.ts re-exports them', async () => {
+  const shared = await import('../shared/market-rules.js');
+  const inspect = await import('../engine/guild/inspect.js');
+  assert.ok(Array.isArray(shared.DENY_SCOPE) && shared.DENY_SCOPE.includes('.git/**'));
+  assert.equal(shared.denied('**/.env'), '.env');
+  assert.equal(shared.denied('deep/.env.local'), '.env.*');
+  assert.equal(shared.denied('a/.git/HEAD'), '.git/**');
+  assert.equal(shared.denied('.claude/settings.json'), '.claude/**');
+  assert.equal(shared.denied('keys/id_rsa.pub'), '**/id_rsa*');
+  assert.equal(shared.denied('src/env.ts'), null);
+  assert.ok(shared.globRegex('src/**/*.ts').test('src/a/b.ts'));
+  assert.ok(!shared.globRegex('src/*.ts').test('src/a/b.ts'));
+  assert.ok(shared.globRegex('{a,b}.md').test('b.md'));
+  assert.equal(inspect.denied, shared.denied);
+  assert.equal(inspect.globRegex, shared.globRegex);
+  assert.equal(inspect.DENY_SCOPE, shared.DENY_SCOPE);
+});
