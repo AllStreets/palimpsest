@@ -352,16 +352,18 @@ function panelTone(rand: () => number): THREE.Color {
 }
 
 /**
- * Titanium: dark brushed blade fins with a curved section, angled a few
- * degrees either way so neighbours take different slices of the dusk sky,
- * a rounded titanium slab nose, and deep-set dark glass; the run twists as
- * it rises.
+ * Titanium: brushed blade fins with a curved section, angled a few degrees
+ * either way so neighbours take different slices of the dusk sky, a dark
+ * slab nose, and floor-height glass just behind the fins' roots over lit
+ * rooms (look.ts windowMaterial), so from the city a floor reads as glazing
+ * drawn in metal lines, as the glass era below it does, and not as a rank
+ * of lit fins. The run twists as it rises.
  */
 const titanium: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
   const n = bays(w, c.variant.pitch ?? 2.0);
-  // How far the fins stand out: a multiple of the 1.3 m blade.
-  const fin = c.variant.depth ?? 1;
+  // How far the fins stand out: a multiple of the 1.3 m blade, held under a metre so the glass stays the read.
+  const fin = Math.min(c.variant.depth ?? 1, 0.7);
   const pitch = w / n;
   const edge = 0.55;
   const light = lighter(f.era, c.rand, c.variant.lights, c.asleep);
@@ -372,14 +374,14 @@ const titanium: EraBuilder = (k, w, h, f, c) => {
     const F = face(side, half);
     for (let i = 0; i < n; i++) {
       const u = -half + pitch * (i + 0.5);
-      k.pane('pane:titanium', 'titaniumWin', F.clone().multiply(M(u, (edge + h) / 2, -0.4, 0, pitch, h - edge, 1)), light(PANE_FULL));
+      k.pane('pane:titanium', 'titaniumWin', F.clone().multiply(M(u, (edge + h) / 2, -0.14, 0, pitch, h - edge, 1)), light(PANE_FULL));
     }
     for (let i = 1; i < n; i++) {
       const u = -half + pitch * i;
       const a = (i % 2 === 0 ? 1 : -1) * 0.14;
-      k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32 * fin, a, 1, h - edge, fin)), panelTone(c.rand));
+      k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(u, (edge + h) / 2, 0.32 * fin, a, 0.36, h - edge, fin)), panelTone(c.rand));
     }
-    k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32 * fin, 0, 1, h - edge, fin)), panelTone(c.rand));
+    k.inst('blade', 'titaniumWall', blade, F.clone().multiply(M(half - 0.12, (edge + h) / 2, 0.32 * fin, 0, 0.36, h - edge, fin)), panelTone(c.rand));
   }
   claudeAccent(k, f, half + 0.38, edge / 2 - 0.05, 0.1, 0.1);
   if (c.runEnd && !c.datum) {

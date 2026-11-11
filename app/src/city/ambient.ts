@@ -87,6 +87,15 @@ export const AMBIENT_CAP = {
 
 /** The near and far levels' dissolve bands, in metres from the eye, and where the far crowd fades out. */
 export const LIFE_LOD = { car: { near: 190, far: 240 }, person: { near: 70, far: 95 }, crowdEnd: { near: 430, far: 520 } } as const;
+/**
+ * The lamp streams (one call of points) fade in from this far off: beyond
+ * it a car is a lamp or two, so the streams carry the avenues' traffic
+ * where the simulated cars thin out, and from home the headlamp and tail
+ * lamp strings along every avenue read as the city's traffic moving.
+ */
+export const STREAM_LOD = { near: 260, far: 430 } as const;
+/** One stream lamp per this many metres of lane; lanes shorter than twice it carry none. */
+const STREAM_SPACING = 13;
 
 /**
  * How busy the streets are at a local hour (0 to 24): quiet in the small
@@ -1889,8 +1898,8 @@ function carMaterial(far: boolean): THREE.MeshPhysicalMaterial {
             float d = distance(cameraPosition, cw.xyz);
             float r0 = code == 6 ? 0.11 : 0.09;
             // Parked, the lamp is out: its quad shrinks to nothing.
-            float r = aState.w > 0.5 ? 0.0 : max(r0, d * uPixel * 2.0);
-            vEmit = (code == 6 ? vec3(5.2, 4.9, 4.3) : vec3(2.2, 0.07, 0.035) * (1.0 + 1.8 * brake)) * show * clamp(pow(r0 / max(r, 1e-4), 0.75), 0.32, 1.0) * (1.0 - aState.w);
+            float r = aState.w > 0.5 ? 0.0 : max(r0, d * uPixel * 2.2);
+            vEmit = (code == 6 ? vec3(5.2, 4.9, 4.3) : vec3(2.4, 0.08, 0.04) * (1.0 + 1.8 * brake)) * show * clamp(pow(r0 / max(r, 1e-4), 0.75), 0.42, 1.0) * (1.0 - aState.w);
             transformed = position;
             vLampQuad = aExtra;
             vLampR = r;
@@ -1928,6 +1937,9 @@ function carMaterial(far: boolean): THREE.MeshPhysicalMaterial {
         `#include <emissivemap_fragment>
         totalEmissiveRadiance += vEmit${far ? ' * (1.0 - smoothstep(0.35, 1.0, length(vLampQuad)))' : ''};`,
       )
+      // A lamp is a small bright source: the haze dims it far less than it dims a lit surface, which is what lets
+      // the headlamp and tail lamp streams along the avenues read from home.
+      .replace('#include <fog_fragment>', far ? 'vec3 preFog = gl_FragColor.rgb;\n#include <fog_fragment>\ngl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.7 * step(1e-5, vLampR));' : '#include <fog_fragment>')
       .replace(
         '#include <lights_fragment_end>',
         `#include <lights_fragment_end>
@@ -2106,6 +2118,63 @@ function figureMaterial(far: boolean): THREE.MeshStandardMaterial {
 }
 
 /** A pool of headlamp light on the road ahead (or a tail lamp's red behind): an additive fan, brightest near the lamps. */
+/**
+ * The lamp streams: points carried along each lane by the clock in the
+ * vertex shader (no work per frame on the CPU), white toward the eye and
+ * red away from it as a car's lamps are, at least a few pixels across and
+ * dimmed by the haze far less than a lit surface, which is what lets them
+ * read from home. A share goes dark with the density.
+ */
+function streamMaterial(): THREE.ShaderMaterial {
+  const m = new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uPixel: { value: 0.001 }, uDensity: { value: 1 } }]),
+    vertexShader: /* glsl */ `
+      attribute vec4 aLane;
+      attribute vec4 aRun;
+      uniform float uTime;
+      uniform float uPixel;
+      uniform float uDensity;
+      varying float vShow;
+      varying vec3 vCol;
+      #include <common>
+      #include <fog_pars_vertex>
+      void main() {
+        float s = mod(aRun.y + aRun.z * uTime, aRun.x);
+        vec3 wp = vec3(aLane.x + aLane.z * s, 0.7, aLane.y + aLane.w * s);
+        vec4 mvPosition = viewMatrix * vec4(wp, 1.0);
+        float d = -mvPosition.z;
+        float toEye = dot(normalize(cameraPosition - wp), vec3(aLane.z, 0.0, aLane.w));
+        float head = smoothstep(-0.15, 0.3, toEye);
+        vCol = mix(vec3(3.2, 0.14, 0.05), vec3(4.4, 4.1, 3.5), head);
+        vShow = smoothstep(${STREAM_LOD.near.toFixed(1)}, ${STREAM_LOD.far.toFixed(1)}, d) * step(aRun.w, uDensity);
+        gl_PointSize = clamp(1.6 / max(d * uPixel, 1e-4), 5.5, 10.0);
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: /* glsl */ `
+      varying float vShow;
+      varying vec3 vCol;
+      #include <common>
+      #include <fog_pars_fragment>
+      void main() {
+        if (vShow < 0.02) discard;
+        float a = 1.0 - smoothstep(0.2, 0.5, length(gl_PointCoord - 0.5));
+        if (a < 0.02) discard;
+        gl_FragColor = vec4(vCol, a * vShow);
+        vec3 preFog = gl_FragColor.rgb;
+        #include <fog_fragment>
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.7);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    transparent: true,
+    depthWrite: false,
+    fog: true,
+  });
+  m.name = 'ambient-streams';
+  return m;
+}
+
 function poolMaterial(): THREE.MeshBasicMaterial {
   const m = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, fog: true });
   m.name = 'ambient-pool';
@@ -2192,6 +2261,8 @@ export interface AmbientView {
   waiting: number;
   nearCars: number;
   farCars: number;
+  /** Lamps in the streams far off, when they draw. */
+  streams: number;
   nearPeople: number;
   farPeople: number;
   /** Draw calls of the main pass and the triangles they draw. */
@@ -2422,6 +2493,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     const oldPeople = keep ? people : [];
     const r = mulberry(seed * 7919 + 17);
     roads = layRoads(net, plazas, r);
+    layStreams(r);
     walk = layWalkway(net, plazas, roads);
     posts = [];
     for (const p of plazas) {
@@ -3387,6 +3459,40 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     group.add(m);
   }
 
+  // The lamp streams: rebuilt with the roads.
+  const streamMat = streamMaterial();
+  mats.push(streamMat);
+  let streams: THREE.Points | null = null;
+  let streamN = 0;
+  function layStreams(r: () => number): void {
+    if (streams) {
+      group.remove(streams);
+      streams.geometry.dispose();
+      streams = null;
+    }
+    const lane: number[] = [];
+    const run: number[] = [];
+    for (const l of roads.lanes) {
+      const k = Math.floor(l.len / STREAM_SPACING);
+      if (k < 2) continue;
+      for (let i = 0; i < k; i++) {
+        lane.push(l.start.x, l.start.z, l.dir.x, l.dir.z);
+        run.push(l.len, (i + r()) * (l.len / k), 8 + 5 * r(), r());
+      }
+    }
+    streamN = run.length / 4;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(streamN * 3), 3));
+    g.setAttribute('aLane', new THREE.Float32BufferAttribute(lane, 4));
+    g.setAttribute('aRun', new THREE.Float32BufferAttribute(run, 4));
+    streams = new THREE.Points(g, streamMat);
+    streams.name = 'ambient:streams';
+    streams.frustumCulled = false;
+    streams.renderOrder = 2;
+    setLayers(streams, LAYER.view);
+    group.add(streams);
+  }
+
   const m4 = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const e = new THREE.Euler();
@@ -3454,6 +3560,10 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     (nearCar.userData.uniforms as { uTime: { value: number } }).uTime.value = time;
     (farCar.userData.uniforms as { uTime: { value: number }; uPixel: { value: number } }).uTime.value = time;
     (farCar.userData.uniforms as { uPixel: { value: number } }).uPixel.value = pixel;
+    streamMat.uniforms.uTime.value = time;
+    streamMat.uniforms.uPixel.value = pixel;
+    streamMat.uniforms.uDensity.value = density * (quality === 'high' ? 1 : 0.6);
+    if (streams) streams.visible = density > 0.02 && streamN > 0;
     for (const d of carMeshes.values()) d.n = 0;
     farCars.n = 0;
     nearPeople.n = 0;
@@ -3644,9 +3754,11 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
         meshes++;
         triangles += 2 * m.count;
       }
+      if (streams?.visible) meshes++;
       return {
         cars: cars.length,
         people: people.length,
+        streams: streams?.visible ? streamN : 0,
         walking: people.filter((p) => p.state === 'walking' || p.state === 'crossing').length,
         waiting: people.filter((p) => p.state === 'waiting').length,
         nearCars: nc,
@@ -3666,6 +3778,10 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       for (let t = 0; t < seconds; t += 0.1) step(0.1);
     },
     dispose() {
+      if (streams) {
+        group.remove(streams);
+        streams.geometry.dispose();
+      }
       for (const g of owned) g.dispose();
       for (const m of mats) m.dispose();
       for (const m of [...carMeshes.values()].map((d) => d.mesh).concat([farCars.mesh, nearPeople.mesh, farPeople.mesh, pools, shades])) {

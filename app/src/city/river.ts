@@ -1200,6 +1200,9 @@ function waterFragment(steps: number): string {
         float n1 = wNoise(q);
         float n = n1 * 0.55 + wNoise(q * 2.1 + 7.1) * 0.3 + wNoise(q * 4.3 + 2.0) * 0.15;
         foam += churn * sp * smoothstep(0.15, 0.85, n + 0.35 * exp(-max(s, 0.0) / 10.0));
+        // Far off the churn's noise is finer than a pixel; a broad pale track stays, catching the sky, so the
+        // ferry's wake reads from home.
+        foam += churn * sp * 0.4 * smoothstep(140.0, 420.0, dist);
         g += vec2(n - 0.5, n1 - n) * churn * sp * 0.5 * near;
         foam += sideF * sp * 0.5 * smoothstep(0.2, 0.8, n);
       }

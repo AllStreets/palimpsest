@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { ARCHETYPES, SECTIONS, sectionHeight, TONES, type Lot } from './lots';
+import { packShopfront, shopfrontPlan } from './shopfronts.js';
 
 /**
  * A measuring board for the ambient city's tones, beside the towers' own
@@ -67,6 +68,8 @@ export function ambientBoard(
       front: ['px', 'nx', 'pz', 'nz'],
       stack: 0,
       index: i,
+      // A plain shut front on every board building: the samples read the upper floors, not the shops.
+      shop: packShopfront(shopfrontPlan({ archetype: a, hood: 'midtown', w: SIZE, d: SIZE, front: [], seed: 0.5 })),
     });
     // Upper floors, clear of the shopfronts and the parapet, just proud of the wall.
     const y = lift + Math.max(s.ground + 2, h * 0.6);

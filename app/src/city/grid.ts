@@ -10,6 +10,7 @@ import { lodDepthMaterial, lodMaterial, LOD_EYE } from './lod-shader.js';
 import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, farLotStands, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
 import { inChannel } from '../../../shared/commute.js';
 import { materials } from './materials';
+import { AWNING, STRIPED } from './shopfronts.js';
 
 export { BLOCK, LAMP_EDGE, LAMP_OFFSETS, PITCH, STREET } from './lots';
 
@@ -107,14 +108,17 @@ class Batch {
   runs: number[] = [];
   accent: THREE.InstancedBufferAttribute | null = null;
   style: THREE.InstancedBufferAttribute | null = null;
+  shop: THREE.InstancedBufferAttribute | null = null;
   constructor(geo: THREE.BufferGeometry, mat: THREE.Material, cap: number, shadows = true, styled = false) {
     if (styled) {
       // Facades read an accent colour and a style per building: the geometry is the batch's own, to carry them.
       geo = geo.clone();
       this.accent = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
       this.style = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+      this.shop = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
       geo.setAttribute('aAccent', this.accent);
       geo.setAttribute('aStyle', this.style);
+      geo.setAttribute('aShop', this.shop);
     }
     this.mesh = new THREE.InstancedMesh(geo, mat, Math.max(1, cap));
     this.mesh.castShadow = this.mesh.receiveShadow = shadows;
@@ -137,10 +141,11 @@ class Batch {
     this.runs = [];
   }
   /** Sets the accent and style of the instance just added. */
-  dress(accent: THREE.Color, style: [number, number, number, number]): void {
-    if (!this.accent || !this.style || this.n === 0) return;
+  dress(accent: THREE.Color, style: [number, number, number, number], shop: [number, number, number, number]): void {
+    if (!this.accent || !this.style || !this.shop || this.n === 0) return;
     this.accent.setXYZ(this.n - 1, accent.r, accent.g, accent.b);
     this.style.setXYZW(this.n - 1, style[0], style[1], style[2], style[3]);
+    this.shop.setXYZW(this.n - 1, shop[0], shop[1], shop[2], shop[3]);
   }
   finish(): void {
     this.mesh.count = this.n;
@@ -148,11 +153,75 @@ class Batch {
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     if (this.accent) this.accent.needsUpdate = true;
     if (this.style) this.style.needsUpdate = true;
+    if (this.shop) this.shop.needsUpdate = true;
     this.mesh.computeBoundingSphere();
   }
 }
 
 /** A triangular prism a unit each way, its steep face at -z and its slope falling to +z: a sawtooth roof's tooth. */
+/**
+ * Awning cloth: matte canvas in the front's own colour (instance colour; a
+ * red past STRIPED marks a striped cloth, cream stripes across it), its
+ * underside warmed by the shop light it hangs over.
+ */
+function awningMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
+  m.customProgramCacheKey = () => 'palimpsest-awning';
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vCloth;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCloth = vec2(position.x * length(instanceMatrix[0].xyz), position.z);');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vCloth;')
+      .replace(
+        '#include <color_fragment>',
+        `{
+          float striped = step(${(STRIPED - 0.5).toFixed(1)}, vColor.r);
+          vec3 cloth = vec3(vColor.r - ${STRIPED.toFixed(1)} * striped, vColor.g, vColor.b);
+          float stripe = striped * step(0.5, fract(vCloth.x / 0.36));
+          diffuseColor.rgb = mix(cloth, vec3(0.62, 0.58, 0.5), stripe);
+        }`,
+      )
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.8, 0.6) * 0.3 * (1.0 - smoothstep(-0.3, 0.5, vCloth.y));');
+  };
+  return m;
+}
+
+/**
+ * An awning in its own frame: a unit width along x, a unit reach along +z
+ * from the wall at z = -0.5, a unit drop from the wall's edge to the outer
+ * edge, with a valance hanging from that edge and a cloth fill at each side.
+ * Scaled to the plan's bay, AWNING.drop and AWNING.reach by its instance.
+ */
+function awningGeometry(): THREE.BufferGeometry {
+  const v = AWNING.valance / AWNING.drop;
+  const P: number[] = [];
+  const tri = (a: number[], b: number[], c: number[]): void => {
+    P.push(...a, ...b, ...c);
+  };
+  const wl = [-0.5, 0.5, -0.5];
+  const wr = [0.5, 0.5, -0.5];
+  const ol = [-0.5, -0.5, 0.5];
+  const or = [0.5, -0.5, 0.5];
+  const vl = [-0.5, -0.5 - v, 0.5];
+  const vr = [0.5, -0.5 - v, 0.5];
+  // The slope.
+  tri(wl, ol, or);
+  tri(wl, or, wr);
+  // The valance.
+  tri(ol, vl, vr);
+  tri(ol, vr, or);
+  // The sides, from the wall's edge down the slope to the valance's foot.
+  tri(wl, [-0.5, -0.5 - v, -0.5], vl);
+  tri(wl, vl, ol);
+  tri(wr, vr, [0.5, -0.5 - v, -0.5]);
+  tri(wr, or, vr);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
 function prismGeometry(): THREE.BufferGeometry {
   const fb = (x: number): number[] => [x, -0.5, -0.5];
   const bb = (x: number): number[] => [x, -0.5, 0.5];
@@ -236,6 +305,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const planterMat = new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.95 });
   const treeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true });
   const deckLightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.3, 2.5) });
+  // Awning cloth: matte canvas, seen from under as much as from above, in each front's own colour (instance colour).
+  const awningMat = awningMaterial();
+  const awningGeo = awningGeometry();
 
   type Batches = { walls: Record<Archetype, Batch>; cuts: Record<Archetype, Batch>; parts: PartBatches };
   function batchesFor(capOf: (k: PartKind) => number, shadows: boolean, cutOf: (a: Archetype) => number): Batches {
@@ -262,6 +334,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       planter: new Batch(box, planterMat, capOf('planter'), false),
       tree: new Batch(treeGeo, treeMat, capOf('tree'), shadows),
       deckLight: new Batch(box, deckLightMat, capOf('deckLight'), false),
+      awning: new Batch(awningGeo, awningMat, capOf('awning'), shadows),
       pole: new Batch(box, M.darkMetal, capOf('pole'), false),
     };
     return { walls, cuts, parts };
@@ -556,11 +629,11 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     const blk = blockOf(lot.x, lot.z);
     for (const p of lotParts(lot)) {
       // Bays and rooftop units are street- and roof-scale detail: drawn only in the nearer city.
-      if (!near && (p.kind === 'bay' || p.kind === 'bayGlass' || p.kind === 'bayLit' || p.kind === 'unit')) continue;
+      if (!near && (p.kind === 'bay' || p.kind === 'bayGlass' || p.kind === 'bayLit' || p.kind === 'unit' || p.kind === 'awning')) continue;
       if (p.kind.startsWith('wall:')) {
         const b = (p.chamfer ? into.cuts : into.walls)[lot.archetype];
         b.add(p.x, p.y, p.z, p.sx, p.sy, p.sz, p.colour, 0, blk);
-        b.dress(lot.accent, lot.style);
+        b.dress(lot.accent, lot.style, lot.shop);
       } else if (!wallsOnly) {
         const kind = p.kind as keyof PartBatches;
         // In the city the roof kit's parts go to both levels: the near kit's source and the far boxes.

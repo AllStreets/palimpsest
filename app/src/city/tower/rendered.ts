@@ -12,16 +12,17 @@
  * hand as a deliberate change and committed with the reason.
  *
  * Round 5 of Task B merged by hand (2026-11-09): the six sci-fi family
- * entries were new measurements; every other entry is the round 4
- * measurement, kept so no known tower's stone or brick moved.
+ * entries were new measurements; every other entry was the round 4
+ * measurement. Architecture fidelity (2026-11-10): scifi:organic
+ * re-measured and merged by hand for the celadon-blue glaze; the rest kept.
  *
- * Architecture fidelity (2026-11-10): scifi:organic re-measured and merged
- * by hand, for the new celadon-blue glaze (sun L39.6 a9.3 b1.9, shade
- * L44.8 a10.7 b4.0, against L44.6 a8.6 b2.0 and L46.8 a11.2 b5.0 for the
- * old ceramic). Every other entry is kept as it was, so no known tower
- * changes its materials: the full re-measure moved them by up to 3.9 dE
- * (travertine's sunlit face; most by about a unit), measurement drift
- * rather than a change of material. The fingerprint is today's.
+ * Audit fix AUD-C (2026-11-11): the five titanium entries re-measured and
+ * merged by hand, for the duller zinc, bronze and titanium cladding (their
+ * fins took the whole orange dusk and read as lit copper strips from across
+ * the city; the floors now carry their light in the rooms behind the
+ * glass). They moved by 0.4 to 3.2 dE. Every other entry is kept as it was:
+ * the full re-measure moved them by up to 3.9 dE (travertine again), the
+ * same drift as last time. The fingerprint is today's.
  */
 export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = {
   "stone:limestone": {
@@ -400,112 +401,112 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   },
   "titanium:titanium": {
     "sun": [
-      41.5,
-      9.8,
-      6.1
+      43,
+      8.6,
+      5.9
     ],
     "shade": [
-      38.5,
-      10.9,
-      1.7
+      40.9,
+      11.3,
+      3.1
     ],
     "sunLow": [
-      42.5,
-      9.3,
-      5.7
+      41.9,
+      9,
+      6.1
     ],
     "shadeLow": [
-      39.1,
-      10.9,
-      1.4
+      40.3,
+      11.3,
+      2.9
     ]
   },
   "titanium:zinc": {
     "sun": [
-      37.5,
-      9.1,
-      2.9
+      39.9,
+      8.3,
+      2.4
     ],
     "shade": [
-      33,
-      9.9,
-      3.3
+      35.5,
+      10.5,
+      4.8
     ],
     "sunLow": [
-      39.5,
-      8.9,
-      2.2
+      41.3,
+      8.1,
+      1.5
     ],
     "shadeLow": [
-      34.1,
-      10.1,
-      3.5
+      37.5,
+      10.8,
+      5.3
     ]
   },
   "titanium:copper": {
     "sun": [
-      34.3,
-      9.4,
-      5.7
+      33.3,
+      9.8,
+      6.2
     ],
     "shade": [
-      38.2,
+      40.4,
       6.6,
-      4.7
+      6.2
     ],
     "sunLow": [
-      35.7,
-      9.2,
-      5.8
+      34.4,
+      10.1,
+      6.4
     ],
     "shadeLow": [
-      39.3,
-      6.7,
-      5
+      40.5,
+      6.9,
+      6
     ]
   },
   "titanium:bronze": {
     "sun": [
-      43.2,
-      12.6,
-      12
+      44.8,
+      11,
+      13.9
     ],
     "shade": [
-      35,
-      13.2,
-      8.5
+      32.3,
+      12,
+      7.2
     ],
     "sunLow": [
       46.1,
-      12.4,
-      14.4
+      11.2,
+      14.3
     ],
     "shadeLow": [
-      35.5,
-      12.9,
-      7.9
+      33.3,
+      12.1,
+      7
     ]
   },
   "titanium:black": {
     "sun": [
-      31.7,
-      10.2,
-      5.4
+      31.4,
+      10.1,
+      5.6
     ],
     "shade": [
-      29.3,
-      9.7,
+      30.1,
+      9.9,
       4.3
     ],
     "sunLow": [
-      31.9,
-      10,
-      5.1
+      32.2,
+      10.1,
+      5.3
     ],
     "shadeLow": [
-      30.2,
-      9.8,
-      4.5
+      30.8,
+      9.9,
+      4.4
     ]
   },
   "scifi:deco": {
@@ -642,33 +643,4 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   }
 };
 
-/**
- * The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it.
- * Restamped without a re-measure for Task 22, whose change to look.ts only adds materials the swatch board never
- * draws (the earned and hand lines, the firm mark, primer, dark glass, unlit): no measured value can move with it. A full
- * re-measure, run and reviewed for that task, changes six titanium and stone picks across the pinned towers
- * (the stone and brick entries predate the coursed Face slot), so it stays with the Phase 5 re-measure.
- * Restamped again, also without a re-measure, for Task 23, whose change to look.ts only adds the lens glass and the
- * galvanised steel of agent crowns and brackets: the swatch board builds repo towers, which never take a silhouette.
- * Restamped for Task 26, also without a re-measure: post.ts gained the flicker budget and names its bloom threshold
- * (the same 0.97), scene.ts reads its exposure from it (the same 0.85), and the welders' point lights stand dark
- * unless an arc burns on a job site, which the swatch board never has, and the floodlight budget lights only the
- * construction's own materials: every rendered value is unchanged.
- * Restamped for Task 28, also without a re-measure: look.ts gained the lights-out term (lightsout.ts) on the window
- * glass and the emitters, which changes a pixel only inside a bankrupt firm's quarter (no zone is set on the
- * swatch board, so the term reads 0 there): every rendered value is unchanged.
- * Restamped for Task 29, also without a re-measure: sky.ts only exports its sky function (for the water) and post.ts
- * gives the frame a depth texture and draws the river's water after the scene; the boards stand off the river, so
- * no water is in their frame and every rendered value is unchanged. Restamped again in its fix round: post.ts leaves
- * meshes marked noAO (far river chunks) out of the AO pass, and the boards carry none.
- * Restamped for the city performance task, also without a re-measure: post.ts draws the AO's normals and depth
- * through its own camera on the AO's layers (lod.ts) instead of hiding noAO meshes, and leaves out only what lies
- * past AO_NEAR, where the AO has already faded to nothing; its fade runs on distance from the eye rather than depth
- * (the same 350 to 1200 m), which moves it only toward the frame's edges, and where the tower board stands (the
- * overview's distance) the AO is under 4% of its strength either way; the boards stand on the default layer, which every pass draws, so every rendered value is unchanged.
- * Restamped for Task 32, also without a re-measure: post.ts gained the headlamp budget (HEADLAMP, constants only,
- * read by the ambient traffic's pools), and nothing in the scene's light, grade or materials changed; the ambient
- * traffic and crowd draw nothing while a board is measured (main.ts holds their density at 0 for the swatch and
- * ambient boards), so every rendered value is unchanged.
- */
-export const RENDERED_INPUTS = '1e2e9aff45873fd8';
+export const RENDERED_INPUTS = 'b1113d7d8fdd3878';

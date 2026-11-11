@@ -171,7 +171,7 @@ const ROSE_GRANITE = scan('granite', 0x8e6a76, 0.3, { normal: 0.5, joint: 0x5e44
 const BRONZE: Finish = { kind: 'brushed', color: 0x8f6c4a, rough: 0.24, aniso: 0.45, env: 1.9 };
 const DARK_BRONZE: Finish = { kind: 'metal', color: 0x4a3324, rough: 0.5 };
 const GRAPHITE: Finish = { kind: 'brushed', color: 0x2e3136, rough: 0.42, aniso: 0.4, env: 1.4 };
-const TITANIUM: Finish = { kind: 'brushed', color: 0xa9afb7, rough: 0.13, aniso: 0.6, env: 2.2 };
+const TITANIUM: Finish = { kind: 'brushed', color: 0xa9afb7, rough: 0.2, aniso: 0.6, env: 1.5 };
 const ALUMINIUM: Finish = { kind: 'metal', color: 0xaab0b5, rough: 0.36 };
 const BLACK_STEEL: Finish = { kind: 'metal', color: 0x17181a, rough: 0.34 };
 const VERDIGRIS = scan('rust', 0x6f8a7c, 0.5, { joint: 0x51665a, normal: 0.6 });
@@ -396,14 +396,16 @@ export const VARIANTS: Record<Era, Variant[]> = {
       name: 'Pre-weathered zinc',
       // Pre-weathered zinc: a soft blue-grey metal with a fine mill grain. Drawn as metal so it takes the cool
       // sky rather than only the orange sun, which turned a matte patina into tan slats.
-      wall: { kind: 'brushed', color: 0x7e8a96, rough: 0.42, aniso: 0.2, env: 1.7 },
+      // Its environment weight is kept low: at this env a fin took the whole orange dusk and read as a lit copper
+      // strip from across the city, over glass it hid. The rooms behind the glass carry the floor's light instead.
+      wall: { kind: 'brushed', color: 0x7e8a96, rough: 0.52, aniso: 0.2, env: 0.8 },
       trim: { kind: 'metal', color: 0x4c5257, rough: 0.5 },
       band: { kind: 'metal', color: 0x4c5257, rough: 0.5 },
       glass: { body: 0x04070a, tint: 0xeef2ff, env: 1.15 },
       // Flat standing-seam panels: close, shallow fins.
       pitch: 1.2,
       depth: 0.45,
-      lights: { lit: 0.7, warm: 0.3 },
+      lights: { lit: 0.8, warm: 0.35 },
     },
     {
       id: 'titanium:copper',
@@ -421,12 +423,14 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'titanium:bronze',
       era: 'titanium',
       name: 'Bronze cladding',
-      wall: { kind: 'brushed', color: 0xad8762, rough: 0.16, aniso: 0.7, env: 2.5 },
+      // Darker and duller than the first cut: at 0xad8762 and env 2.5 the fins took the dusk and read as lit copper
+      // strips from across the city; the floor's light now comes from the rooms behind its glass.
+      wall: { kind: 'brushed', color: 0x6b5238, rough: 0.4, aniso: 0.5, env: 1.0 },
       trim: GRAPHITE,
       band: GRAPHITE,
       glass: { body: 0x0a0604, tint: 0xffe2c4, env: 1.2 },
-      depth: 1.25,
-      lights: { lit: 0.6, warm: 0.75 },
+      depth: 1.0,
+      lights: { lit: 0.7, warm: 0.75 },
     },
     {
       id: 'titanium:black',

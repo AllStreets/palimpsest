@@ -943,9 +943,9 @@ type Surf = [number, number];
  * nose, 'aft' on the tail) change between white and red; a cab's 'white'
  * and 'red' bars never change; 'always' shows its own colour.
  */
-type LampKind = 'head' | 'tail' | 'fore' | 'aft' | 'white' | 'red' | 'always' | 'board';
+type LampKind = 'head' | 'tail' | 'fore' | 'aft' | 'white' | 'red' | 'always' | 'board' | 'tramBoard';
 /** Per kind: what it shows leading and trailing (0 dark, 1 white, 2 red), and whether it shows its own colour. */
-const LAMP_CODE: Record<LampKind, RGB> = { head: [1, 0, 0], tail: [0, 2, 0], fore: [1, 2, 0], aft: [2, 1, 0], white: [1, 1, 0], red: [2, 2, 0], always: [0, 0, 1], board: [0, 0, 2] };
+const LAMP_CODE: Record<LampKind, RGB> = { head: [1, 0, 0], tail: [0, 2, 0], fore: [1, 2, 0], aft: [2, 1, 0], white: [1, 1, 0], red: [2, 2, 0], always: [0, 0, 1], board: [0, 0, 2], tramBoard: [0, 0, 3] };
 
 const lin = (hex: string): RGB => {
   const c = new THREE.Color(hex);
@@ -1488,7 +1488,9 @@ function tramModel(kit: Kit): void {
     noseLamp(kit, low, sz * 0.74, 0.66, 0.3, 0.11, 'head', [1, 1, 1]);
     noseLamp(kit, low, sz * 1.0, 0.66, 0.1, 0.13, 'tail', [1, 1, 1]);
   }
-  noseLamp(kit, TRAM_RINGS[8], 0, 2.53, 1.25, 0.2, 'always', [2.4, 1.15, 0.25]);
+  // The destination display: an amber dot-matrix board (the lamp shader's ledBoard), not a lit slab; a slab at
+  // that size and level bloomed to a white billboard over the windscreen.
+  noseLamp(kit, TRAM_RINGS[8], 0, 2.53, 1.25, 0.2, 'tramBoard', [1.5, 0.72, 0.16]);
   if (!kit.lo) {
     // Two wipers parked at the foot of the windscreen.
     for (const sz of [-0.45, 0.35]) kit.bar('trim', [7.08, 1.06, sz - 0.3], [7.0, 1.42, sz + 0.25], 0.03, 0.02, lin('#0b0b0c'), [0.3, 0.5]);
@@ -2046,9 +2048,9 @@ const LED_GLSL = (() => {
 ${lines.join('\n')}
     return 0;
   }
-  float ledBoard() {
+  float ledBoard(float top) {
     float pitch = 0.0225;
-    vec2 q = vec2(-vLampP.z + ${(LED_COLS * 0.0225 / 2).toFixed(5)}, 3.1355 - vLampP.y) / pitch;
+    vec2 q = vec2(-vLampP.z + ${(LED_COLS * 0.0225 / 2).toFixed(5)}, top - vLampP.y) / pitch;
     vec2 cell = floor(q);
     float dot = 1.0 - smoothstep(0.24, 0.4, length(fract(q) - 0.5));
     int c = int(cell.x);
@@ -2065,7 +2067,8 @@ ${LED_GLSL}
   vec3 lampShow(vec3 kind, vec3 own, float lead, float brake) {
     float code = lead > 0.5 ? kind.x : kind.y;
     vec3 c = vec3(0.0);
-    if (kind.z > 1.5) return own * ledBoard();
+    // The trains' board sits with its top at 3.1355 m; the tram's display over its windscreen at 2.61 m.
+    if (kind.z > 1.5) return own * ledBoard(kind.z > 2.5 ? 2.61 : 3.1355);
     if (code > 1.5) c = vec3(3.2, 0.16, 0.06) * (1.0 + 1.6 * brake);
     else if (code > 0.5) c = vec3(4.6, 4.3, 3.9);
     else if (kind.x + kind.y > 0.5) c = (kind.x > 1.5 || kind.y > 1.5) ? vec3(0.06, 0.008, 0.006) : vec3(0.05, 0.05, 0.052);
@@ -2392,6 +2395,14 @@ function farMaterial(): THREE.MeshStandardMaterial {
           diffuseColor.rgb = vec3(0.0);
         }
         totalEmissiveRadiance += vGlow;`,
+      )
+      // Lit glazing and lamps are small bright sources: the haze dims them far less than a painted side, so the
+      // tram's lit cars on the viaduct and the ferry's lamps read from home.
+      .replace(
+        '#include <fog_fragment>',
+        `vec3 preFog = gl_FragColor.rgb;
+        #include <fog_fragment>
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.6 * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
       );
   };
   m.customProgramCacheKey = () => 'palimpsest-vehicle-far';

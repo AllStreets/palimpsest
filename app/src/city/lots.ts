@@ -20,6 +20,7 @@ import { ambientCap, cappedHeight, RESERVE_RADIUS, reserves, type CollarPlaza } 
 import { RENDERED } from './tower/rendered.js';
 import { onRiverGround } from '../../../shared/commute.js';
 import type { Look } from './tower/variants.js';
+import { AWNING, packShopfront, PALETTES, SHOP_SLOTS, shopBays, shopfrontPlan, STRIPED, unpackShopfront } from './shopfronts.js';
 
 /** One city block's buildable square, in metres. */
 export const BLOCK = 64;
@@ -307,6 +308,8 @@ export interface Lot {
   stack: number;
   /** Where the lot stands on its block, for the touching check and the tone pass. */
   index: number;
+  /** The ground storey's shopfronts, packed for the facade shader (shopfronts.ts). */
+  shop: [number, number, number, number];
 }
 
 const FLOOR = 3.6;
@@ -394,7 +397,9 @@ export function makeBlock(i: number, j: number): Lot[] {
       front,
       stack: a === 'industrial' && r() < 0.14 ? 16 + r() * 18 : 0,
       index: lots.length,
+      shop: [0, 0, 0, 0],
     };
+    lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w, d, front, seed: r() }));
     lots.push(lot);
     return lot;
   };
@@ -519,7 +524,10 @@ export function farLot(i: number, j: number): Lot {
     front: ['nx', 'px', 'nz', 'pz'],
     stack: 0,
     index: 0,
+    shop: [0, 0, 0, 0],
   };
+  // The far ring is drawn without its street detail, but its walls read the same shader: a plain shut front.
+  lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w, d, front: [], seed: lot.style[1] }));
   assignTones(i, j, [lot], []);
   return lot;
 }
@@ -574,6 +582,8 @@ function assignTones(i: number, j: number, lots: Lot[], plazas: CollarPlaza[]): 
           lot.archetype = a;
           lot.h = sectionHeight(a, Math.max(1, Math.round((lot.h - SECTIONS[a].ground) / SECTIONS[a].floor)));
           lot.roof = a === 'industrial' ? 'flat' : roofFor(a, lot.h, lot.w, lot.d, () => lot.style[3]);
+          // A new type is a new frontage: the same seed, replanned as the type it now is.
+          lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood: lot.hood, w: lot.w, d: lot.d, front: lot.front, seed: lot.style[1] }));
           break;
         }
       }
@@ -650,7 +660,8 @@ export type PartKind =
   | 'car'
   | 'bay'
   | 'bayGlass'
-  | 'bayLit';
+  | 'bayLit'
+  | 'awning';
 
 /** One box (or cylinder, prism, canopy) of a building: centre, size, a turn about y, and its colour. */
 export interface Part {
@@ -754,6 +765,33 @@ export function lotParts(lot: Lot): Part[] {
       for (const f of lot.front) {
         if (f === 'px' || f === 'nx') p('trim', t.x + (f === 'px' ? 1 : -1) * (t.w / 2 + depth / 2 - 0.05), y, t.z, depth, tall, t.d, trim);
         else p('trim', t.x, y, t.z + (f === 'pz' ? 1 : -1) * (t.d / 2 + depth / 2 - 0.05), t.w, tall, depth, trim);
+      }
+    }
+    // Awnings over the shopfronts' glass on the street fronts, one per awning bay of the plan (shopfronts.ts): a
+    // canvas hung at the head of the glass, under the fascia, in the front's own cloth.
+    if (t === tiers[0] && a !== 'parking' && a !== 'industrial') {
+      const nx = Math.min(SHOP_SLOTS, shopBays(t.d, (lot.shop[3] % 1000) / 100));
+      const nz = Math.min(SHOP_SLOTS, shopBays(t.w, (lot.shop[3] % 1000) / 100));
+      const plan = unpackShopfront(lot.shop, nx, nz);
+      const scheme = PALETTES[plan.palette];
+      const cloth = colour(0xffffff).setRGB(scheme.cloth[0] + (scheme.striped ? STRIPED : 0), scheme.cloth[1], scheme.cloth[2]);
+      const y = s.ground - 1.05 + 0.02 - AWNING.drop / 2;
+      for (const f of lot.front) {
+        const onX = f === 'px' || f === 'nx';
+        const along = onX ? t.d : t.w;
+        const n = shopBays(along, plan.bay);
+        const cw = along / n;
+        const awnings = onX ? plan.awningsX : plan.awningsZ;
+        const out = (onX ? t.w : t.d) / 2 + AWNING.reach / 2;
+        const sign = f === 'px' || f === 'pz' ? 1 : -1;
+        for (let i = 0; i < n; i++) {
+          if (!awnings[i % SHOP_SLOTS]) continue;
+          const u = -along / 2 + cw * (i + 0.5);
+          const w = cw - 0.5;
+          // The awning's width lies along its own x and its reach along its own z (grid.ts awningGeometry), turned to the face.
+          if (onX) p('awning', t.x + sign * out, y, t.z + u, w, AWNING.drop, AWNING.reach, cloth, sign > 0 ? Math.PI / 2 : -Math.PI / 2);
+          else p('awning', t.x + u, y, t.z + sign * out, w, AWNING.drop, AWNING.reach, cloth, sign > 0 ? 0 : Math.PI);
+        }
       }
     }
     // Walk-ups throw a three-sided bay out over the street, storey by storey, from the first floor to the parapet.

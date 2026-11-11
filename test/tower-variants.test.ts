@@ -220,18 +220,21 @@ test('the picker takes the margin whenever a variant clears it: PREFERRED from n
 const PINNED: Record<string, string> = {
   // Round 5: the four crowns became the six sci-fi families, so every sci-fi id here is new. Stone, brick, glass and
   // titanium are the round 4 pins, unchanged.
+  // AUD-C (2026-11-11): the titanium cladding was dulled (its fins read as lit copper strips) and re-measured, and
+  // the duller bronze now renders within SEPARATION of black, so five towers' titanium picks moved: ONEXUS and
+  // assay-kit to zinc, quarry and blank-slate to bronze, kumo to black. Deliberate; every other era holds.
   'AllStreets/beagle': 'stone:marble,brick:green-terracotta,glass:blue,titanium:titanium,scifi:deco',
   'AllStreets/palimpsest': 'stone:dark-granite,brick:salmon,glass:channel,titanium:black,scifi:organic',
   'AllStreets/teardown': 'stone:pink-granite,brick:terracotta,glass:bronze,titanium:copper,scifi:arcology',
   'AllStreets/understudy': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:needle',
-  'AllStreets/ONEXUS': 'stone:dark-granite,brick:cream,glass:channel,titanium:black,scifi:cluster',
+  'AllStreets/ONEXUS': 'stone:dark-granite,brick:cream,glass:channel,titanium:zinc,scifi:cluster',
   'AllStreets/Chicago-Open-World': 'stone:limestone,brick:red,glass:green,titanium:bronze,scifi:ziggurat',
   'tidewater/harbor-ledger': 'stone:pink-granite,brick:green-terracotta,glass:green,titanium:bronze,scifi:ziggurat',
   'kestrel/fieldnotes': 'stone:marble,brick:salmon,glass:channel,titanium:copper,scifi:organic',
-  'lantern/assay-kit': 'stone:dark-granite,brick:terracotta,glass:bronze,titanium:black,scifi:needle',
-  'ferro/quarry': 'stone:limestone,brick:red,glass:blue,titanium:titanium,scifi:arcology',
-  'hoshi/kumo': 'stone:sandstone,brick:cream,glass:channel,titanium:bronze,scifi:deco',
-  'alder/blank-slate': 'stone:marble,brick:ironspot,glass:green,titanium:black,scifi:cluster',
+  'lantern/assay-kit': 'stone:dark-granite,brick:terracotta,glass:bronze,titanium:zinc,scifi:needle',
+  'ferro/quarry': 'stone:limestone,brick:red,glass:blue,titanium:bronze,scifi:arcology',
+  'hoshi/kumo': 'stone:sandstone,brick:cream,glass:channel,titanium:black,scifi:deco',
+  'alder/blank-slate': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:cluster',
 };
 
 test('a re-measure never silently changes the look of a known tower', () => {
