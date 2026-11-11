@@ -453,7 +453,66 @@ export interface CreditRow {
   usd: number | null;
 }
 
-export type FirmDetail = FirmView & { jobs: Job[]; credits: CreditRow[] };
+/** One movement on a firm's books, with the balance it left (a `credits.moved` entry, signed for the firm). */
+export interface BookRow {
+  at: string;
+  kind: string;
+  delta: number;
+  balance: number;
+  runId: string | null;
+  jobId: string | null;
+  agentId: string | null;
+  /** The job's title, when the movement was for a job. */
+  title: string | null;
+}
+
+/** A round a firm bid in: its best bid of the round, and the bid that won it (null when nobody did). */
+export interface FirmRound {
+  jobId: string;
+  title: string;
+  repo: string;
+  tier: Tier;
+  value: number;
+  at: string;
+  won: boolean;
+  bid: Bid;
+  winner: Bid | null;
+  /** What became of the work when the firm won: the run's outcome, `live` while it runs, null before it starts. */
+  outcome: RunOutcome | 'live' | null;
+}
+
+/** The firm's reputation after each resolved bid (and each revert), oldest first. */
+export interface ReputationPoint {
+  at: string;
+  /** What moved it: a resolved bid that passed or failed, or a merge reverted. */
+  event: 'pass' | 'fail' | 'revert';
+  score: number;
+  passRate: number | null;
+  /** 1 minus the Brier score so far: higher is better calibrated. */
+  calibration: number | null;
+  durability: number | null;
+  samples: number;
+}
+
+/** A specialist hired, or a dark tower bought or sold. `other` is the firm on the other side of a sale. */
+export interface FirmDeal {
+  kind: 'hired' | 'bought' | 'sold';
+  at: string;
+  agentId: string;
+  other: string | null;
+  price: number;
+}
+
+export type FirmDetail = FirmView & {
+  jobs: Job[];
+  /** What the firm opened with (its `firm.seeded` balance), and whether older movements were left out of `books`. */
+  opening: number;
+  truncated: boolean;
+  books: BookRow[];
+  rounds: FirmRound[];
+  reputationLine: ReputationPoint[];
+  deals: FirmDeal[];
+};
 
 export interface Genome {
   id: string;
@@ -473,6 +532,10 @@ export interface AgentDetail {
   runs: RunView[];
   genome: Genome;
   lineage: { agent: Agent['lineage']; parents: Agent[]; children: Agent[] };
+  /** Its firm's reputation, the calibration its bids are trimmed by. */
+  reputation: Reputation | null;
+  /** The firm whose root its tower stands in now: its own, or the buyer of its dark tower. */
+  towerFirmId: string | null;
 }
 
 export type RunDetail = RunView & { job: Job | null; inspection: InspectionView | null };

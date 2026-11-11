@@ -1929,3 +1929,874 @@ a.job-issue-link:hover {
 .prop-line .job-error {
   flex-basis: 100%;
 }
+
+/* ================================================================ the firms, a firm and an agent (Task 38) */
+
+/* A firm's ledger row carries three gauges and its books: the wide sheet of the detail pages. */
+body[data-route='firms'],
+body[data-route='firm'],
+body[data-route='agent'] {
+  --sheet-w: clamp(680px, 58vw, 980px);
+  --rust: #d07a62;
+}
+
+/* ---------------------------------------------------------------- the engraved scale */
+
+.gauge {
+  display: block;
+  overflow: visible;
+}
+.gauge-rule {
+  stroke: rgba(236, 230, 218, 0.28);
+  stroke-width: 1;
+}
+.gauge-rule.none {
+  stroke-dasharray: 1 2.5;
+}
+.gauge-tick {
+  stroke: rgba(236, 230, 218, 0.3);
+  stroke-width: 1;
+}
+.gauge-fill {
+  stroke: var(--bronze);
+  stroke-width: 2;
+}
+.gauge-pointer {
+  fill: #d9b48a;
+}
+
+/* ---------------------------------------------------------------- the firms list */
+
+.firm-ledger {
+  margin-top: 26px;
+}
+.firm-head,
+.firm-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 88px 88px 52px 52px 128px;
+  column-gap: 14px;
+  align-items: start;
+  padding: 16px 0 17px;
+  border-bottom: 1px solid var(--rule);
+}
+.firm-head {
+  padding: 0 0 8px;
+  align-items: end;
+  border-bottom: 1px solid var(--rule-strong);
+}
+.firm-th {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.firm-th.c-n,
+.firm-th.c-bal,
+.firm-cell.c-n,
+.firm-cell.c-bal {
+  text-align: right;
+}
+.firm-name-line {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+.firm-name {
+  font-family: var(--serif);
+  font-size: 21px;
+  line-height: 1.2;
+  color: var(--ink);
+  text-decoration: none;
+}
+.firm-name:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+  text-underline-offset: 4px;
+}
+.firm-name:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.firm-motto {
+  margin-top: 3px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink-3);
+}
+/* The dark marker: a tower with every window out, as its quarter stood the night it failed. */
+.firm-dark {
+  display: block;
+  margin-bottom: 4px;
+}
+.firm-dark .silhouette {
+  display: block;
+  width: 14px;
+  height: 26px;
+}
+.firm-dark .silhouette .sil-body {
+  stroke: rgba(236, 230, 218, 0.5);
+}
+.firm-row.bankrupt .firm-name-line {
+  align-items: flex-end;
+}
+/* A closed account: the row ruled through with a faint hatch, as a clerk strikes a page. */
+.firm-row.bankrupt {
+  background: repeating-linear-gradient(135deg, rgba(236, 230, 218, 0.03) 0 1px, transparent 1px 7px);
+}
+.firm-towers {
+  margin-top: 7px;
+  max-width: 46ch;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+.firm-row.bankrupt .firm-name {
+  color: var(--ink-2);
+}
+.firm-row.bankrupt .c-g,
+.firm-row.bankrupt .c-n {
+  opacity: 0.42;
+}
+.firm-cell.c-g {
+  padding-top: 5px;
+}
+.firm-g-num {
+  display: block;
+  margin-bottom: 5px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.firm-cell.c-n {
+  padding-top: 5px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.firm-bal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.firm-bal-num {
+  font-family: var(--serif);
+  font-size: 21px;
+  line-height: 1.2;
+  color: var(--ink);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.firm-bal-note {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.firm-bal.neg .firm-bal-num,
+.firm-bal.neg .firm-bal-note {
+  color: var(--rust);
+}
+.firm-bal.gone .firm-bal-num {
+  color: rgba(208, 122, 98, 0.7);
+}
+.firms-key {
+  margin-top: 22px;
+}
+
+/* ---------------------------------------------------------------- a firm's head */
+
+.firm-motto-big {
+  margin-top: 6px;
+  max-width: 60ch;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 18px;
+  line-height: 1.35;
+  color: var(--ink-2);
+}
+.firm-motto-big:empty {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- standing */
+
+.standing-grid {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.82fr) minmax(0, 1.4fr);
+  column-gap: 40px;
+  margin-top: 20px;
+}
+.standing-bal {
+  align-items: flex-start;
+}
+.standing-bal .firm-bal-num {
+  font-size: 46px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.standing-bal .firm-bal-note {
+  margin-top: 6px;
+  font-size: 12.5px;
+}
+.standing-since {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.standing-measures {
+  margin-top: 22px;
+  border-top: 1px solid var(--rule);
+}
+.measure {
+  display: grid;
+  grid-template-columns: 92px 46px auto;
+  align-items: center;
+  column-gap: 12px;
+  padding: 8px 0 9px;
+  border-bottom: 1px solid var(--rule);
+}
+.measure-name {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.measure-val {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.measure-gauge {
+  padding-bottom: 3px;
+}
+.standing-trim {
+  margin-top: 12px;
+  max-width: 42ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.standing-line {
+  margin: 4px 0 0;
+}
+.repline {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.repline-era {
+  stroke: rgba(236, 230, 218, 0.1);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+.repline-era-name,
+.repline-axis {
+  fill: var(--ink-3);
+  font-family: var(--sans);
+  font-size: 10.5px;
+}
+.repline-era-name {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 11.5px;
+}
+.repline-base {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+}
+.repline-line {
+  fill: none;
+  stroke: #d9b48a;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.repline-dot {
+  fill: #d9b48a;
+}
+.repline-tick {
+  stroke-width: 1;
+}
+.repline-tick.pass {
+  stroke: rgba(185, 140, 90, 0.75);
+}
+.repline-tick.fail,
+.repline-tick.revert {
+  stroke: var(--rust);
+  fill: none;
+}
+.repline-end {
+  stroke: var(--rust);
+  stroke-width: 1.5;
+}
+.repline-axis.ended {
+  fill: var(--rust);
+}
+.repline-now {
+  fill: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.standing-cap {
+  margin-top: 8px;
+  max-width: 64ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+/* ---------------------------------------------------------------- people */
+
+.people {
+  list-style: none;
+  margin-top: 6px;
+}
+.person {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  column-gap: 14px;
+  padding: 14px 0 15px;
+  border-bottom: 1px solid var(--rule);
+}
+.person:last-child {
+  border-bottom: none;
+}
+.person-glyph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.person-sil {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+.silhouette .sil-body {
+  fill: rgba(236, 230, 218, 0.07);
+  stroke: rgba(236, 230, 218, 0.62);
+  stroke-width: 1;
+  stroke-linejoin: round;
+}
+.silhouette .sil-floor {
+  stroke: rgba(236, 230, 218, 0.16);
+  stroke-width: 1;
+}
+.silhouette .sil-ring {
+  fill: none;
+  stroke: #d9b48a;
+  stroke-width: 1;
+  opacity: 0.75;
+}
+.silhouette .sil-ground {
+  stroke: var(--bronze);
+  stroke-width: 1;
+}
+.silhouette.dark .sil-body {
+  fill: #030304;
+  stroke: rgba(236, 230, 218, 0.3);
+}
+.silhouette.dark .sil-ring,
+.silhouette.dark .sil-floor {
+  opacity: 0.25;
+}
+.person-top {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.person-name {
+  font-family: var(--serif);
+  font-size: 19px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.person-name:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+  text-underline-offset: 4px;
+}
+.person-name:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.person-tag {
+  font-size: 11.5px;
+  color: #d9b48a;
+}
+.person-line {
+  margin-top: 3px;
+  max-width: 68ch;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.person-meta {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 16px;
+  row-gap: 2px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.person-model {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.person-retired {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--rust);
+}
+.person.retired .person-name {
+  color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------- rounds, and an agent's runs */
+
+.rounds-filter {
+  margin-top: 14px;
+}
+.rounds {
+  list-style: none;
+  margin-top: 6px;
+}
+.round-row,
+.agent-run {
+  display: grid;
+  grid-template-columns: 12px 50px minmax(0, 1fr) 118px;
+  column-gap: 12px;
+  padding: 11px 0 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.round-mark {
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border: 1px solid rgba(236, 230, 218, 0.42);
+}
+.round-row.won .round-mark,
+.agent-run.merged .round-mark {
+  border-color: var(--bronze);
+  background: var(--bronze);
+}
+.round-row.none .round-mark {
+  width: 7px;
+  height: 0;
+  margin-top: 9px;
+  border-width: 1px 0 0;
+}
+.agent-run.failed .round-mark,
+.agent-run.crashed .round-mark {
+  border-color: var(--rust);
+  background: linear-gradient(to top right, transparent 45%, var(--rust) 45% 58%, transparent 58%);
+}
+.agent-run.live .round-mark {
+  border-color: var(--amber);
+}
+.round-when {
+  padding-top: 2px;
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.round-title {
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--ink);
+  text-decoration: none;
+}
+.round-title:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+  text-underline-offset: 3px;
+}
+.round-title:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.round-said {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.round-row.lost .round-said {
+  color: var(--ink-2);
+}
+.round-ev {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding-top: 2px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.round-ev-ours {
+  color: var(--ink);
+}
+.round-row.won .round-ev-ours {
+  color: #d9b48a;
+}
+/* The winner's figure under its own, struck through by the hairline of a ledger's total. */
+.round-ev-vs {
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid var(--rule-strong);
+  color: var(--ink-3);
+}
+.round-ev-vs::before {
+  content: 'won at ';
+  font-family: var(--sans);
+  font-size: 11px;
+}
+.rounds-more,
+.books-more {
+  margin-top: 14px;
+}
+
+/* ---------------------------------------------------------------- books */
+
+.balance-trace {
+  display: block;
+  width: 100%;
+  height: 46px;
+  margin-top: 16px;
+}
+.trace-line {
+  fill: none;
+  stroke: #d9b48a;
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+}
+.trace-zero {
+  stroke: var(--rust);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.books {
+  margin-top: 14px;
+}
+.books-head,
+.books-row {
+  display: grid;
+  grid-template-columns: 50px minmax(0, 1fr) 104px 112px;
+  column-gap: 14px;
+  align-items: baseline;
+}
+.books-head {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule-strong);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.books-head .books-amt,
+.books-head .books-bal {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.books-day {
+  padding: 14px 0 3px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+.books-row {
+  padding: 5px 0 5px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.books-time {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.books-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.books-job {
+  color: inherit;
+  text-decoration: none;
+}
+.books-job:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.books-amt,
+.books-bal {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.books-amt {
+  color: var(--ink-3);
+}
+.books-row.in .books-amt {
+  color: #d9b48a;
+}
+.books-row.in .books-text {
+  color: var(--ink);
+}
+.books-bal {
+  color: var(--ink);
+}
+.books-bal.neg {
+  color: var(--rust);
+}
+.books-row.k-bid .books-text {
+  color: var(--ink-3);
+}
+
+/* ---------------------------------------------------------------- deals */
+
+.deals {
+  list-style: none;
+  margin-top: 8px;
+}
+.deal {
+  display: grid;
+  grid-template-columns: 50px minmax(0, 1fr);
+  column-gap: 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.deal-when {
+  font-size: 12px;
+  color: var(--ink-3);
+  padding-top: 1px;
+}
+.deal a,
+.lineage-link,
+.cal-firm {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.deal a:hover,
+.lineage-link:hover,
+.cal-firm:hover {
+  text-decoration-color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------- an agent */
+
+.agent-line {
+  max-width: 64ch;
+}
+.persona-md .md-h {
+  font-style: italic;
+}
+.persona-md .md-pre {
+  font-size: 11.5px;
+}
+.design {
+  margin-top: 6px;
+}
+.design-row {
+  display: grid;
+  grid-template-columns: 150px minmax(120px, auto) minmax(0, 1fr);
+  column-gap: 20px;
+  align-items: baseline;
+  padding: 10px 0 11px;
+  border-bottom: 1px solid var(--rule);
+}
+.design-key {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.design-val {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+.design-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 6px;
+}
+.design-tool {
+  padding: 0 6px 1px;
+  border: 1px solid var(--rule-strong);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.design-gloss {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.design-market {
+  margin-top: 12px;
+  max-width: 70ch;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-3);
+}
+.lineage-origin {
+  margin-top: 14px;
+  font-family: var(--serif);
+  font-size: 18px;
+  color: var(--ink);
+}
+.lineage-chain {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 16px;
+}
+.lineage-cell {
+  position: relative;
+  padding: 10px 18px 12px 0;
+  border-top: 1px solid var(--rule-strong);
+}
+/* The line of descent: a bronze tick where each generation meets the next. */
+.lineage-cell + .lineage-cell::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -4px;
+  width: 1px;
+  height: 7px;
+  background: var(--bronze);
+}
+.lineage-cell.self {
+  border-top-color: var(--bronze);
+}
+.lineage-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.lineage-self {
+  font-family: var(--serif);
+  font-size: 15.5px;
+  color: #d9b48a;
+}
+.lineage-kin {
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.lineage-none {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14.5px;
+  color: var(--ink-3);
+}
+.cal-said {
+  margin-top: 14px;
+  max-width: 66ch;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.cal-measures {
+  max-width: 330px;
+  margin-top: 14px;
+}
+.tower-top {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  column-gap: 14px;
+  align-items: end;
+  margin-top: 14px;
+}
+.tower-said {
+  max-width: 64ch;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+/* The inspector's floor list, set into the page: no panel of its own, no scroll of its own. */
+.agent-tower .insp-floors {
+  flex: none;
+  overflow: visible;
+  padding: 0;
+  margin-top: 6px;
+}
+.agent-tower .insp-floor,
+.agent-tower .insp-era,
+.agent-tower .insp-datum,
+.agent-tower .insp-empty {
+  margin-left: 0;
+  margin-right: 0;
+}
+.insp-floor.still {
+  cursor: default;
+}
+.insp-floor.still:hover::after {
+  background: none;
+}
+.insp-agent {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(236, 230, 218, 0.18);
+}
+.insp-agent:hover {
+  color: var(--ink);
+  border-bottom-color: var(--ink-2);
+}
+
+/* Links on the firm and agent pages take the same focus ring as a firm's name. */
+.books-job:focus-visible,
+.lineage-link:focus-visible,
+.cal-firm:focus-visible,
+.deal a:focus-visible,
+.agent-tower .insp-ref a:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+/* Follow and Ride up stand ready but quiet until the city tour arrives. */
+.detail-actions-row .btn[aria-disabled='true'] {
+  color: var(--ink-2);
+  border-color: rgba(236, 230, 218, 0.16);
+  cursor: default;
+}
+.repline-era-now {
+  fill: var(--ink-3);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 11.5px;
+}
+.persona .repos-sec:focus {
+  outline: none;
+}
+
+.agent-firm-bal {
+  margin-top: 10px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.agent-firm-bal-num {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.agent-firm-bal.neg .agent-firm-bal-num {
+  color: var(--rust);
+}

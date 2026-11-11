@@ -27,6 +27,7 @@ import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../shared/types.js';
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { detailChecks } from './ui-test-detail.js';
+import { firmChecks } from './ui-test-firms.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
@@ -1994,6 +1995,8 @@ async function main(): Promise<void> {
       }
       // The job, run and inspection pages (Task 37).
       await detailChecks(page, check, SHOTS);
+      // The firms list, a firm's page and the agent page (Task 38).
+      await firmChecks(page, check, SHOTS);
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);

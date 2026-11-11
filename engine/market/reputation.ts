@@ -16,7 +16,7 @@
  * awarded job's tier (low small, normal medium, high large), else medium.
  */
 import { eraForScore, ERA_ORDER, overclaimOf, reputationScore } from '../../shared/market-rules.js';
-import type { Agent, Bid, Era, FloorSize, Reputation, Tier } from '../../shared/types.js';
+import type { Agent, Bid, Era, FloorSize, Reputation, ReputationPoint, Tier } from '../../shared/types.js';
 import { query, type LedgerEntry, type LedgerKind } from '../ledger.js';
 import { listAgents } from './firms.js';
 
@@ -35,6 +35,11 @@ export interface Resolved {
   passed: boolean;
   size: FloorSize;
   reverted: boolean;
+  /** When the outcome landed, and when the merge was reverted (null while it stands), as ledger times and ids. */
+  at: string;
+  seq: number;
+  revertedAt: string | null;
+  revertedSeq: number | null;
 }
 
 const TIER_SIZE: Record<Tier, FloorSize> = { low: 'small', normal: 'medium', high: 'large' };
@@ -100,7 +105,11 @@ export function resolvedBids(log: LedgerEntry[] = reputationLog()): Resolved[] {
     }
     if (e.kind === 'merge.reverted') {
       const merged = merges.get(str(d.jobId) ?? '');
-      if (merged) merged.reverted = true;
+      if (merged && !merged.reverted) {
+        merged.reverted = true;
+        merged.revertedAt = e.at;
+        merged.revertedSeq = e.id;
+      }
       continue;
     }
     const o = outcome(e);
@@ -115,6 +124,10 @@ export function resolvedBids(log: LedgerEntry[] = reputationLog()): Resolved[] {
       passed: o.passed,
       size: o.size ?? (held.tier ? TIER_SIZE[held.tier] : 'medium'),
       reverted: false,
+      at: e.at,
+      seq: e.id,
+      revertedAt: null,
+      revertedSeq: null,
     };
     resolved.push(r);
     if (r.passed) merges.set(r.jobId, r);
@@ -167,4 +180,43 @@ export function reputation(firmId: string, log: LedgerEntry[] = reputationLog())
 /** The era an agent builds in now: its firm's score, capped by what its model can reach. */
 export function eraFor(a: Agent, log: LedgerEntry[] = reputationLog()): Era {
   return eraForScore(reputation(a.firmId, log).score, a.capability);
+}
+
+/** The most points of a firm's reputation line its page is sent (the newest). */
+export const LINE_POINTS = 300;
+
+/**
+ * `firmId`'s reputation as it stood after each of its resolved bids and
+ * each revert of one of its merges, in ledger order: the page's line. The
+ * last point is the reputation now. Kept to the newest `limit` points, in
+ * one pass with running sums. Empty for a firm with no resolved bids.
+ */
+export function reputationLine(firmId: string, log: LedgerEntry[] = reputationLog(), limit = LINE_POINTS): ReputationPoint[] {
+  const mine = resolvedBids(log).filter((r) => r.firmId === firmId);
+  const moments: Array<{ seq: number; at: string; event: ReputationPoint['event']; r: Resolved }> = [
+    ...mine.map((r) => ({ seq: r.seq, at: r.at, event: r.passed ? ('pass' as const) : ('fail' as const), r })),
+    ...mine.flatMap((r) => (r.revertedSeq !== null ? [{ seq: r.revertedSeq, at: r.revertedAt ?? r.at, event: 'revert' as const, r }] : [])),
+  ].sort((a, b) => a.seq - b.seq);
+  let n = 0;
+  let passed = 0;
+  let brierSum = 0;
+  let merges = 0;
+  let reverted = 0;
+  const out: ReputationPoint[] = [];
+  for (const m of moments) {
+    if (m.event === 'revert') reverted++;
+    else {
+      n++;
+      brierSum += (m.r.confidence - (m.r.passed ? 1 : 0)) ** 2;
+      if (m.r.passed) {
+        passed++;
+        merges++;
+      }
+    }
+    const brier = tidy(brierSum / n);
+    const durability = merges === 0 ? null : tidy((merges - reverted) / merges);
+    const passRate = tidy(passed / n);
+    out.push({ at: m.at, event: m.event, score: reputationScore({ passRateAll: passRate, brier, durability }), passRate, calibration: tidy(1 - brier), durability, samples: n });
+  }
+  return out.slice(-limit);
 }

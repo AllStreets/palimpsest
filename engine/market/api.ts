@@ -17,7 +17,7 @@ import type {
   Agent,
   AgentDetail,
   CheckView,
-  CreditRow,
+  Firm,
   FirmDetail,
   FirmView,
   Inspection,
@@ -49,7 +49,8 @@ import { MAX_RESUME_MS, treasury } from './budget.js';
 import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
 import { job, listJobs, postManualJob, redact, setTier, transition, withdrawable } from './jobs.js';
 import { latestReport } from './report.js';
-import { reputation, reputationLog } from './reputation.js';
+import { firmBooks, firmDeals, firmRounds } from './firm-story.js';
+import { reputation, reputationLine, reputationLog } from './reputation.js';
 import { kill, killJob, listRuns, resumeJob, run, sites } from './runs.js';
 import { balances } from './treasury.js';
 import { storedCalibration } from '../usage.js';
@@ -87,7 +88,6 @@ const DIFF_CAP = 2 * 1024 * 1024;
 const LOG_FILE_CAP = 16 * 1024 * 1024;
 const LOG_PAGE = 2000;
 const LEDGER_CAP = 500;
-const CREDIT_ROWS = 200;
 
 /** Keys whose values are places on this Mac. */
 const PATH_KEYS = new Set(['dir', 'logPath', 'patchPath', 'runRoot']);
@@ -292,16 +292,22 @@ async function withdraw(j: Job): Promise<Job> {
 
 // ------------------------------------------------------------------ firms, agents
 
-function firmView(f: ReturnType<typeof listFirms>[number], log = reputationLog()): FirmView {
-  return { ...f, reputation: reputation(f.id, log), agents: listAgents(f.id) };
+/**
+ * A firm as every screen shows it: its balance from the treasury's rows
+ * (charges not yet settled included), and whether and since when it is below
+ * zero by that same balance. The stored balance and negativeSince are what
+ * the treasury last wrote at a settle; the report and replay keep reading those.
+ */
+function liveFirm<T extends Firm>(f: T, b: Record<string, number> = balances()): T {
+  const balance = b[f.id] ?? f.balance;
+  const negativeSince = balance < 0 ? (f.negativeSince ?? new Date().toISOString()) : f.status === 'bankrupt' ? f.negativeSince : null;
+  return { ...f, balance, negativeSince };
 }
 
-function creditRows(firmId: string): CreditRow[] {
-  const rows = openDb()
-    .prepare('SELECT id, at, firm_id, run_id, kind, amount, usd FROM credits WHERE firm_id = ? ORDER BY id DESC LIMIT ?')
-    .all(firmId, CREDIT_ROWS) as Array<{ id: number; at: string; firm_id: string | null; run_id: string | null; kind: string; amount: number; usd: number | null }>;
-  return rows.map((r) => ({ id: Number(r.id), at: r.at, firmId: r.firm_id, runId: r.run_id, kind: r.kind, amount: r.amount, usd: r.usd }));
+function firmView(f: ReturnType<typeof listFirms>[number], log = reputationLog(), b: Record<string, number> = balances()): FirmView {
+  return { ...liveFirm(f, b), reputation: reputation(f.id, log), agents: listAgents(f.id) };
 }
+
 
 function agentDetail(a: Agent): AgentDetail {
   const parents = a.lineage.parents.map((p) => agent(p)).filter((x): x is Agent => x !== null);
@@ -309,11 +315,13 @@ function agentDetail(a: Agent): AgentDetail {
   const tower = quarters().flatMap((q) => q.towers).find((t) => t.agentId === a.id) ?? null;
   return {
     agent: a,
-    firm: firm(a.firmId),
+    firm: ((f) => (f ? liveFirm(f) : null))(firm(a.firmId)),
     tower,
     runs: listRuns().filter((r) => r.agentId === a.id).map(publicRun),
     genome: toGenome(a),
     lineage: { agent: a.lineage, parents, children },
+    reputation: firm(a.firmId) ? reputation(a.firmId) : null,
+    towerFirmId: tower?.firmId ?? null,
   };
 }
 
@@ -446,13 +454,24 @@ export async function handleMarketApi(
   // firms and agents
   if (pathname === '/api/firms' && method === 'GET') {
     const log = reputationLog();
-    return send(200, listFirms().map((f) => firmView(f, log)));
+    const b = balances();
+    return send(200, listFirms().map((f) => firmView(f, log, b)));
   }
   if ((m = pathname.match(/^\/api\/firms\/([^/]+)$/)) && method === 'GET') {
     const f = firm(idOf(m[1], 'firm'));
     if (!f) throw new HttpError(404, { error: 'unknown firm' });
     const ids = [...new Set(listRuns().filter((r) => r.firmId === f.id).map((r) => r.jobId))];
-    const detail: FirmDetail = { ...firmView(f), jobs: ids.map((id) => job(id)).filter((x): x is Job => x !== null), credits: creditRows(f.id) };
+    const books = firmBooks(f.id);
+    const detail: FirmDetail = {
+      ...firmView(f),
+      jobs: ids.map((id) => job(id)).filter((x): x is Job => x !== null),
+      opening: books.opening,
+      truncated: books.truncated,
+      books: books.rows,
+      rounds: firmRounds(f.id),
+      reputationLine: reputationLine(f.id),
+      deals: firmDeals(f.id),
+    };
     return send(200, detail);
   }
   if ((m = pathname.match(/^\/api\/agents\/([^/]+)$/)) && method === 'GET') {

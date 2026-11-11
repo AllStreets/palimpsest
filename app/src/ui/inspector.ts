@@ -175,6 +175,163 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 const CLOSE_ICON =
   '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg>';
 
+export interface FloorListOptions {
+  names: MarketNames;
+  /** The list's accessible name. */
+  label: string;
+  /** A row was clicked: the inspector selects it and flies to it. Without it the rows only read. */
+  onPick?(floorId: string): void;
+  /** Builders' names link to their agent's page (the agent page itself leaves them plain). */
+  linkAgents?: boolean;
+}
+
+/** A link that opens beside the city, never selecting the row it sits in. */
+function link(text: string, href: string, title: string, external: boolean, className?: string, tabbable = false): HTMLAnchorElement {
+  const a = el('a', className, text);
+  a.href = href;
+  if (external) {
+    a.target = '_blank';
+    a.rel = 'noopener';
+  }
+  a.title = title;
+  // In a listbox the row is the tab stop and its links are reached by pointer; in a plain list they are tab stops of their own.
+  if (!tabbable) a.tabIndex = -1;
+  a.addEventListener('click', (ev) => ev.stopPropagation());
+  return a;
+}
+
+/**
+ * A tower floor by floor, as the inspector lists it: the market's floors
+ * newest first under their heading, the datum line, the founding floors
+ * under their eras, and the root. The inspector and the agent page (Task
+ * 38) both draw it; the rows it returns are the floors, top to bottom.
+ */
+export function floorList(tower: TowerSpec, opts: FloorListOptions): { list: HTMLOListElement; rows: HTMLElement[] } {
+  const rows: HTMLElement[] = [];
+  const names = opts.names;
+  // With nothing to pick, the list is a plain ordered list: no listbox, no options, every link a tab stop.
+  const picking = !!opts.onPick;
+  const list = el('ol', 'insp-floors');
+  if (picking) list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', opts.label);
+  const role = (e: HTMLElement, r: 'option' | 'presentation'): void => {
+    if (picking) e.setAttribute('role', r);
+  };
+  const tab = !picking;
+  const pickable = (r: HTMLElement, id: string): void => {
+    if (!picking) {
+      r.classList.add('still');
+      r.removeAttribute('tabindex');
+      return;
+    }
+    r.addEventListener('click', () => opts.onPick!(id));
+  };
+
+  /** An earned floor: its job, who built it for which firm, its PR (or its inspection report), how it stands. */
+  function earnedFloorRow(f: Floor, n: number): HTMLElement {
+    const e = earnedRow(f, names);
+    const r = el('li', 'insp-floor insp-earned');
+    r.dataset.floor = encodeURIComponent(f.id);
+    role(r, 'option');
+    r.tabIndex = -1;
+    if (e.failed) r.classList.add('scar');
+    if (f.earned?.state === 'waiting') r.classList.add('waiting');
+    if (f.claude) r.classList.add('claude');
+
+    const title = el('span', 'insp-title', e.job);
+    title.title = e.job;
+    const ref = el('span', 'insp-ref');
+    if (e.pr) ref.append(link(e.pr.text, e.pr.href, `Open ${e.pr.text} on GitHub`, true, undefined, tab));
+    else if (e.report) ref.append(link('Report', e.report, 'Open the inspection report', false, undefined, tab));
+
+    const meta = el('span', 'insp-meta');
+    const who = el('span', 'insp-who');
+    // An agent's tower is its own page's: the builder's name opens it (Task 38).
+    const agentHref = f.earned && opts.linkAgents !== false ? `#/agents/${encodeURIComponent(f.earned.agentId)}` : null;
+    if (agentHref) who.append(link(e.agent, agentHref, `Open ${e.agent}’s page (Shift+Enter on the row)`, false, 'insp-agent', tab), document.createTextNode(`, ${e.firm}`));
+    else who.textContent = `${e.agent}, ${e.firm}`;
+    meta.append(who);
+    if (f.claude) meta.append(el('span', 'insp-claude', 'with Claude'));
+
+    r.append(el('span', 'insp-n', String(n)), title, ref, meta, el('span', 'insp-date', floorDate(f.at)));
+    // How it stands, on a line of its own so the builder's name never gives way to it.
+    if (e.state) r.append(el('span', e.failed ? 'insp-state insp-failed' : 'insp-state', e.state));
+    r.setAttribute('aria-label', `Floor ${n}, ${e.job}, built by ${e.agent} of ${e.firm}${e.state ? `, ${e.state.toLowerCase()}` : ''}, ${floorDate(f.at)}${agentHref && picking ? `. Shift+Enter opens ${e.agent}’s page` : ''}`);
+    if (agentHref && picking) {
+      // The builder's link is not a tab stop inside the listbox: Shift+Enter on the row reaches it.
+      r.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' || !ev.shiftKey) return;
+        ev.preventDefault();
+        location.hash = agentHref;
+      });
+    }
+    pickable(r, f.id);
+    rows.push(r);
+    return r;
+  }
+
+  function row(f: Floor, n: number): HTMLElement {
+    const r = el('li', 'insp-floor');
+    r.dataset.floor = encodeURIComponent(f.id);
+    role(r, 'option');
+    r.tabIndex = -1;
+    if (f.claude) r.classList.add('claude');
+
+    const num = el('span', 'insp-n', String(n));
+    const title = el('span', 'insp-title', f.title);
+    title.title = f.title;
+
+    const fl = floorLink(f);
+    const ref = el('span', 'insp-ref');
+    if (fl.href) ref.append(link(fl.text, fl.href, `Open ${fl.text} on GitHub`, true, undefined, tab));
+    else ref.textContent = fl.text;
+    if (fl.more > 0) {
+      const more = el('span', 'insp-more', `+${fl.more}`);
+      more.title = `${plural(fl.more, 'more change')} merged into this floor`;
+      ref.append(more);
+    }
+
+    const meta = el('span', 'insp-meta');
+    meta.append(el('span', 'insp-size', `${SIZE_NAMES[f.size]}, ${plural(f.lines, 'line')}`));
+    if (f.claude) meta.append(el('span', 'insp-claude', 'with Claude'));
+    const date = el('span', 'insp-date', floorDate(f.at));
+
+    r.append(num, title, ref, meta, date);
+    const label = `Floor ${n}, ${f.title}, ${ERA_NAMES[f.era]} era, ${SIZE_NAMES[f.size].toLowerCase()} change, ${floorDate(f.at)}${f.claude ? ', with Claude' : ''}`;
+    r.setAttribute('aria-label', label);
+    pickable(r, f.id);
+    rows.push(r);
+    return r;
+  }
+
+  for (const e of inspectorEntries(tower)) {
+    if (e.type === 'datum') {
+      const datum = el('li', 'insp-datum');
+      role(datum, 'presentation');
+      datum.append(el('span', 'insp-datum-name', 'Datum line'), el('span', 'insp-datum-note', tower.kind === 'agent' ? 'where the agent joined the city' : 'where the repo joined the city'));
+      list.append(datum);
+    } else if (e.type === 'heading') {
+      const eh = el('li', e.market ? 'insp-era insp-market' : 'insp-era');
+      role(eh, 'presentation');
+      eh.append(el('span', 'insp-era-name', e.text), el('span', 'insp-era-count', plural(e.count, 'floor')));
+      list.append(eh);
+    } else if (e.type === 'floor') {
+      list.append(e.floor.founding ? row(e.floor, e.n) : earnedFloorRow(e.floor, e.n));
+    }
+  }
+
+  const root = el('li', 'insp-era insp-root');
+  role(root, 'presentation');
+  root.append(el('span', 'insp-era-name', `${ROOT_NAMES[tower.root]} root`), el('span', 'insp-era-count', 'inherited'));
+  list.append(root);
+  if (tower.floors.length === 0) {
+    const empty = el('li', 'insp-empty', tower.kind === 'agent' ? 'No floors yet. The tower is its root until its first job merges.' : 'No merged changes yet. The tower is its root until the first one lands.');
+    role(empty, 'presentation');
+    list.append(empty);
+  }
+  return { list, rows };
+}
+
 /**
  * The tower inspector: a printed index beside the city. The repo's name
  * set in Newsreader, its root and founding floor count, then every floor
@@ -231,132 +388,18 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
         : `${ROOT_NAMES[d.tower.root]} root, ${plural(d.tower.datumIndex, 'founding floor')}${floors.length > d.tower.datumIndex ? `, ${floors.length - d.tower.datumIndex} earned` : ''}`;
     head.append(close, el('p', 'insp-owner', owner ?? ''), title, el('p', 'insp-facts', facts));
 
-    const list = el('ol', 'insp-floors');
-    list.setAttribute('role', 'listbox');
-    list.setAttribute('aria-label', `Floors of ${name ?? d.repo}, top to bottom`);
-    rows = [];
-
-    for (const e of inspectorEntries(d.tower)) {
-      if (e.type === 'datum') {
-        const datum = el('li', 'insp-datum');
-        datum.setAttribute('role', 'presentation');
-        datum.append(el('span', 'insp-datum-name', 'Datum line'), el('span', 'insp-datum-note', d.tower.kind === 'agent' ? 'where the agent joined the city' : 'where the repo joined the city'));
-        list.append(datum);
-      } else if (e.type === 'heading') {
-        const eh = el('li', e.market ? 'insp-era insp-market' : 'insp-era');
-        eh.setAttribute('role', 'presentation');
-        eh.append(el('span', 'insp-era-name', e.text), el('span', 'insp-era-count', plural(e.count, 'floor')));
-        list.append(eh);
-      } else if (e.type === 'floor') {
-        list.append(e.floor.founding ? row(e.floor, e.n) : earnedFloorRow(e.floor, e.n));
-      }
-    }
-
-    const root = el('li', 'insp-era insp-root');
-    root.setAttribute('role', 'presentation');
-    root.append(el('span', 'insp-era-name', `${ROOT_NAMES[d.tower.root]} root`), el('span', 'insp-era-count', 'inherited'));
-    list.append(root);
-    if (floors.length === 0) {
-      const empty = el('li', 'insp-empty', 'No merged changes yet. The tower is its root until the first one lands.');
-      empty.setAttribute('role', 'presentation');
-      list.append(empty);
-    }
+    const built = floorList(d.tower, {
+      names,
+      label: `Floors of ${name ?? d.repo}, top to bottom`,
+      onPick(id) {
+        select(id, { focus: true });
+        if (district) h.onFly(district.repo, id);
+      },
+    });
+    const list = built.list;
+    rows = built.rows;
 
     panel.append(head, list);
-  }
-
-  /** A link that opens beside the city, never selecting the row it sits in. */
-  function link(text: string, href: string, title: string, external: boolean): HTMLAnchorElement {
-    const a = el('a', undefined, text);
-    a.href = href;
-    if (external) {
-      a.target = '_blank';
-      a.rel = 'noopener';
-    }
-    a.title = title;
-    a.tabIndex = -1;
-    a.addEventListener('click', (ev) => ev.stopPropagation());
-    return a;
-  }
-
-  /** An earned floor: its job, who built it for which firm, its PR (or its inspection report), how it stands. */
-  function earnedFloorRow(f: Floor, n: number): HTMLElement {
-    const e = earnedRow(f, names);
-    const r = el('li', 'insp-floor insp-earned');
-    r.dataset.floor = encodeURIComponent(f.id);
-    r.setAttribute('role', 'option');
-    r.tabIndex = -1;
-    if (e.failed) r.classList.add('scar');
-    if (f.earned?.state === 'waiting') r.classList.add('waiting');
-    if (f.claude) r.classList.add('claude');
-
-    const title = el('span', 'insp-title', e.job);
-    title.title = e.job;
-    const ref = el('span', 'insp-ref');
-    if (e.pr) ref.append(link(e.pr.text, e.pr.href, `Open ${e.pr.text} on GitHub`, true));
-    else if (e.report) ref.append(link('Report', e.report, 'Open the inspection report', false));
-
-    const meta = el('span', 'insp-meta');
-    meta.append(el('span', 'insp-who', `${e.agent}, ${e.firm}`));
-    if (f.claude) meta.append(el('span', 'insp-claude', 'with Claude'));
-
-    r.append(el('span', 'insp-n', String(n)), title, ref, meta, el('span', 'insp-date', floorDate(f.at)));
-    // How it stands, on a line of its own so the builder's name never gives way to it.
-    if (e.state) r.append(el('span', e.failed ? 'insp-state insp-failed' : 'insp-state', e.state));
-    r.setAttribute('aria-label', `Floor ${n}, ${e.job}, built by ${e.agent} of ${e.firm}${e.state ? `, ${e.state.toLowerCase()}` : ''}, ${floorDate(f.at)}`);
-    r.addEventListener('click', () => {
-      select(f.id, { focus: true });
-      if (district) h.onFly(district.repo, f.id);
-    });
-    rows.push(r);
-    return r;
-  }
-
-  function row(f: Floor, n: number): HTMLElement {
-    const r = el('li', 'insp-floor');
-    r.dataset.floor = encodeURIComponent(f.id);
-    r.setAttribute('role', 'option');
-    r.tabIndex = -1;
-    if (f.claude) r.classList.add('claude');
-
-    const num = el('span', 'insp-n', String(n));
-    const title = el('span', 'insp-title', f.title);
-    title.title = f.title;
-
-    const link = floorLink(f);
-    const ref = el('span', 'insp-ref');
-    if (link.href) {
-      const a = el('a', undefined, link.text);
-      a.href = link.href;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      a.title = `Open ${link.text} on GitHub`;
-      a.tabIndex = -1;
-      a.addEventListener('click', (e) => e.stopPropagation());
-      ref.append(a);
-    } else {
-      ref.textContent = link.text;
-    }
-    if (link.more > 0) {
-      const more = el('span', 'insp-more', `+${link.more}`);
-      more.title = `${plural(link.more, 'more change')} merged into this floor`;
-      ref.append(more);
-    }
-
-    const meta = el('span', 'insp-meta');
-    meta.append(el('span', 'insp-size', `${SIZE_NAMES[f.size]}, ${plural(f.lines, 'line')}`));
-    if (f.claude) meta.append(el('span', 'insp-claude', 'with Claude'));
-    const date = el('span', 'insp-date', floorDate(f.at));
-
-    r.append(num, title, ref, meta, date);
-    const label = `Floor ${n}, ${f.title}, ${ERA_NAMES[f.era]} era, ${SIZE_NAMES[f.size].toLowerCase()} change, ${floorDate(f.at)}${f.claude ? ', with Claude' : ''}`;
-    r.setAttribute('aria-label', label);
-    r.addEventListener('click', () => {
-      select(f.id, { focus: true });
-      if (district) h.onFly(district.repo, f.id);
-    });
-    rows.push(r);
-    return r;
   }
 
   panel.addEventListener('keydown', (e) => {
@@ -390,6 +433,8 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
         go(rows.length - 1);
         break;
       case 'Enter':
+        // Shift+Enter belongs to the row: it opens the builder's page.
+        if (e.shiftKey || e.defaultPrevented) break;
         if (selected && (e.target as HTMLElement).classList.contains('insp-floor')) {
           e.preventDefault();
           h.onFly(district.repo, selected);

@@ -238,9 +238,25 @@ test('firms list reputations and agents, and a firm carries its jobs and credit 
   const one = await call('GET', '/api/firms/alpha');
   assert.equal(one.status, 200);
   assert.deepEqual(one.json.jobs.map((x: Job) => x.id), [j.id]);
-  assert.equal(one.json.credits.length, 1);
-  assert.equal(one.json.credits[0].kind, 'run');
+  assert.ok(!('credits' in one.json), 'the raw credit rows are not sent twice: the books carry them');
+  assert.equal(one.json.opening, 300, 'the firm opened with its seeded balance');
+  assert.equal(one.json.truncated, false);
+  // The story its page tells (Task 38): books, rounds, reputation over time and deals, all arrays.
+  for (const key of ['books', 'rounds', 'reputationLine', 'deals']) assert.ok(Array.isArray(one.json[key]), `a firm carries its ${key}`);
   assert.equal((await call('GET', '/api/firms/nobody')).status, 404);
+});
+
+test('the list, a firm and an agent’s firm read one balance, charges not yet settled included', async () => {
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'alpha', 'run-x', 'run', 320, NULL, '{}')").run(new Date().toISOString());
+  const list = (await call('GET', '/api/firms')).json.find((f: { id: string }) => f.id === 'alpha');
+  const one = (await call('GET', '/api/firms/alpha')).json;
+  const ag = (await call('GET', '/api/agents/a1')).json;
+  assert.equal(list.balance, -20);
+  assert.equal(one.balance, -20);
+  assert.equal(ag.firm.balance, -20);
+  // Below zero by that balance: the hours left count from a negativeSince all three share.
+  assert.ok(list.negativeSince && one.negativeSince && ag.firm.negativeSince);
 });
 
 test('agent detail carries genome and lineage', async () => {
@@ -262,6 +278,8 @@ test('agent detail carries genome and lineage', async () => {
   assert.equal(d.json.runs.length, 1);
   assert.ok(!('dir' in d.json.runs[0]), 'a run dir is never sent');
   assert.equal(d.json.tower?.agentId, 'c1');
+  assert.equal(d.json.reputation?.firmId, 'alpha', 'an agent carries its firm’s reputation, for the calibration');
+  assert.equal(d.json.towerFirmId, 'alpha', 'its tower stands in its own firm’s root');
 
   const p = await call('GET', `/api/agents/${parent.id}`);
   assert.deepEqual(p.json.lineage.children.map((c: { id: string }) => c.id), ['c1']);
