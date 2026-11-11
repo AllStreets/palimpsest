@@ -253,7 +253,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // The transit network (Task 30), on the sample city (its loops at extent 2: the tram on the streets at 600 m,
       // the rail at 680 m, the pod lines on z 120 and x 120): the city from home, a tram stop with the viaduct
       // behind, a rail station from its platform end and from the street, the elevated line crossing the river, a
-      // pod station at height, the interchange, a cab rank. TRANSIT_ONLY='home,station' takes a subset.
+      // pod station at height and inside, the interchange, a cab rank, the tram's own bridge over the river. TRANSIT_ONLY='home,station' takes a subset.
       await chrome(page, false);
       const only = process.env.TRANSIT_ONLY?.split(',');
       const views: Array<[string, V3, V3]> = [
@@ -266,6 +266,10 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         ['pod-station', [264, 21, 152], [240, 19, 120]],
         ['interchange', [165, 32, 175], [120, 18, 120]],
         ['cab-rank', [279.5, 2.5, 352], [284, 1, 318]],
+        ['tram-bridge', [-322, 2.2, 652], [-366, 1.4, 682]],
+        ['tram-bridge-high', [-250, 45, 590], [-370, 4, 700]],
+        ['pod-interior', [227, 20.2, 123.6], [252, 19.6, 122.6]],
+        ['pod-street', [262, 2, 104], [240, 17, 122]],
       ];
       for (const [name, eye, target] of views) if (!only || only.includes(name)) await still(page, name, eye, target);
     },

@@ -162,71 +162,53 @@ export function extentBlocks(origins: ReadonlyArray<P>): number {
   return e;
 }
 
-/** Drops repeated points and points that lie on a straight run between their neighbours (closed loop). */
-function simplify(pts: Array<[number, number]>): Array<[number, number]> {
-  let out = pts.filter((p, i) => {
-    const q = pts[(i + pts.length - 1) % pts.length];
-    return i === 0 ? !(p[0] === pts[pts.length - 1][0] && p[1] === pts[pts.length - 1][1]) : !(p[0] === q[0] && p[1] === q[1]);
-  });
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (let i = 0; i < out.length; i++) {
-      const a = out[(i + out.length - 1) % out.length];
-      const b = out[i];
-      const c = out[(i + 1) % out.length];
-      const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
-      if (Math.abs(cross) < 1e-9) {
-        out = out.filter((_, k) => k !== i);
-        changed = true;
-        break;
-      }
-    }
-  }
-  return out;
-}
-
-/** The bridge nearest z, the outer one on a tie. */
-function bridgeNear(z: number): number {
-  let best: number = BRIDGES[0];
-  for (const b of BRIDGES) if (Math.abs(b - z) < Math.abs(best - z) || (Math.abs(b - z) === Math.abs(best - z) && Math.abs(b) > Math.abs(best))) best = b;
-  return best;
-}
-
-/** Half the side of the tram loop's square, on the street 120 m out from the outermost ring of districts. */
+/**
+ * Half the side of the tram loop's square: the street 200 m out from the
+ * outermost ring of districts. That street lies 80 m past the ring's own
+ * edge street, so no part of the loop touches a plaza or a court, and where
+ * it meets the river (at 20 m past a multiple of 30) it keeps 10 m off the
+ * quay lamps and clear of the road bridges and the piers.
+ */
 export function tramHalf(extentBlocks: number): number {
-  return DISTRICT * extentBlocks + DISTRICT / 2;
+  return DISTRICT * extentBlocks + 200;
 }
 
 /**
- * The tram: a loop on the streets 120 m outside the outermost ring of
- * districts, growing with the spiral. Its west side never runs along the
- * river (a loop whose side would fall on it steps out to the street beyond),
- * and where its north and south sides meet the river they turn along the
- * street by the bridge's east end, cross on the nearest bridge's deck, and
- * come back on the street by its west end. Corners as [x, z], clockwise from
- * the north-east seen from above.
+ * The tram: a square loop on the streets 200 m outside the outermost ring
+ * of districts, growing with the spiral. Its north and south sides cross the
+ * river on the tram's own low bridges, the deck riding over the quay
+ * parapets (tramHeight). Corners as [x, z], clockwise from the north-east
+ * seen from above.
  */
 export function tramLoop(extentBlocks: number): Array<[number, number]> {
   const h = tramHalf(extentBlocks);
   let west = -h;
-  if (Math.abs(west - RIVER.x) < 60) west = BRIDGE_ENDS.west;
-  const bS = bridgeNear(h);
-  const bN = bridgeNear(-h);
-  return simplify([
+  while (Math.abs(west - RIVER.x) < 60) west -= STREET_PITCH;
+  return [
     [h, -h],
     [h, h],
-    [BRIDGE_ENDS.east, h],
-    [BRIDGE_ENDS.east, bS],
-    [BRIDGE_ENDS.west, bS],
-    [BRIDGE_ENDS.west, h],
     [west, h],
     [west, -h],
-    [BRIDGE_ENDS.west, -h],
-    [BRIDGE_ENDS.west, bN],
-    [BRIDGE_ENDS.east, bN],
-    [BRIDGE_ENDS.east, -h],
-  ]);
+  ];
+}
+
+/** The tram's deck over the river: its height over the water and quays, and how far inland its ramp runs. */
+export const TRAM_DECK = { height: 1.1, flat: 2.5, ramp: 20 } as const;
+
+/**
+ * The tram's rail height at a point of its loop: street level, except where
+ * its street crosses the river, where the deck rises over the quay's
+ * parapet (flat over the water and the coping) and ramps back down to the
+ * street 20 m inland of the quay wall.
+ */
+export function tramHeight(x: number, z: number): number {
+  const off = Math.abs(((((z - STREET_AT) % STREET_PITCH) + STREET_PITCH) % STREET_PITCH + STREET_PITCH / 2) % STREET_PITCH - STREET_PITCH / 2);
+  if (off > 9) return 0;
+  const dq = x < RIVER.x ? BANKS.west - x : x - BANKS.east;
+  if (dq <= TRAM_DECK.flat) return TRAM_DECK.height;
+  if (dq >= TRAM_DECK.ramp) return 0;
+  const t = (dq - TRAM_DECK.flat) / (TRAM_DECK.ramp - TRAM_DECK.flat);
+  return TRAM_DECK.height * (1 - t * t * (3 - 2 * t));
 }
 
 /** A stop or station on a line: where it stands, how far along the line from its first point, and which way the line runs there. */
@@ -285,10 +267,10 @@ export function tramStops(loop: ReadonlyArray<readonly [number, number]>): Stop[
   return stopsOn(loop, true, DISTRICT, 100, 60);
 }
 
-/** Half the side of the rail loop's square: a street out past the tram's widest reach, never on the river. */
+/** Half the side of the rail loop's square: a street out past the tram (280 m past the outer ring), never on the river. */
 export function railHalf(extentBlocks: number): number {
   const reach = Math.max(...tramLoop(extentBlocks).map(([x, z]) => Math.max(Math.abs(x), Math.abs(z))));
-  let h = streetOut(Math.max(DISTRICT * extentBlocks + 200, reach + 80));
+  let h = streetOut(Math.max(DISTRICT * extentBlocks + 280, reach + 80));
   while (Math.abs(-h - RIVER.x) < 100) h += STREET_PITCH;
   return h;
 }
@@ -498,22 +480,24 @@ function ridePath(line: Line, from: number, to: number): P[] {
 }
 
 /** Rides a line: walk to the stop that is nearest on foot, ride, walk from the one nearest the far end. Null when both are the same stop. */
+/** The stop on a line nearest a point on foot. */
+function nearestStop(line: Line, p: P, toStop: boolean): Stop {
+  let best = line.stops[0];
+  let bestLen = Infinity;
+  for (const s of line.stops) {
+    const len = lengthOf(toStop ? streetWay(p, s) : streetWay(s, p));
+    if (len < bestLen) {
+      best = s;
+      bestLen = len;
+    }
+  }
+  return best;
+}
+
 function ride(line: Line, from: P, to: P): Leg[] | null {
   if (!line.stops.length) return null;
-  const nearest = (p: P, toStop: boolean): Stop => {
-    let best = line.stops[0];
-    let bestLen = Infinity;
-    for (const s of line.stops) {
-      const len = lengthOf(toStop ? streetWay(p, s) : streetWay(s, p));
-      if (len < bestLen) {
-        best = s;
-        bestLen = len;
-      }
-    }
-    return best;
-  };
-  const on = nearest(from, true);
-  const off = nearest(to, false);
+  const on = nearestStop(line, from, true);
+  const off = nearestStop(line, to, false);
   if (on === off) return null;
   return [leg('walk', streetWay(from, on), 0), leg(line.mode, ridePath(line, on.at, off.at), line.y), leg('walk', streetWay(off, to), 0)];
 }
@@ -547,8 +531,11 @@ function fromLine(p: P, pts: ReadonlyArray<readonly number[]>): number {
  * line passes within 300 m of both ends, else by the elevated rail. Walking
  * keeps to the street grid and crosses the river only on a bridge; a cab
  * drives the same streets. A ride whose nearest stops at both ends are the
- * same stop is no ride: the tram falls back to walking, the rail and the pods
- * to a cab. Each boarding waits 20 s (a cab 30 s, and it comes to the door).
+ * same stop is no ride, and a ride is taken only when it beats walking:
+ * otherwise the trip walks, or takes a cab when the walk is long (over 700
+ * m). Pod riders whose ends lie by different lines change at the
+ * interchange. Each boarding waits 20 s (a cab 30 s, and it comes to the
+ * door).
  */
 export function route(from: P, to: P, net: Network): Leg[] {
   const d = dist(from, to);
@@ -570,14 +557,45 @@ export function route(from: P, to: P, net: Network): Leg[] {
       return [leg('walk', streetWay(from, a), 0), leg('ferry', tidy(water), FERRY_Y), leg('walk', streetWay(b, to), 0)];
     }
   }
-  if (d < TRAM_MAX) return ride(net.tram, from, to) ?? walk();
+  const way = streetWay(from, to);
+  const walkMs = (lengthOf(way) / SPEED.walk) * 1000;
+  // A ride is taken only when it beats walking; otherwise walk, or take a cab when the walk is long.
+  const beats = (legs: Leg[] | null): Leg[] | null => (legs && total(legs) < walkMs ? legs : null);
+  const fallback = (): Leg[] => (lengthOf(way) > TRAM_MAX ? cab() : walk());
+  if (d < TRAM_MAX) return beats(ride(net.tram, from, to)) ?? fallback();
   if (d <= CAB_MAX) return cab();
-  const pods = net.pods.filter((l) => fromLine(from, l.path) <= POD_REACH && fromLine(to, l.path) <= POD_REACH);
+  const near = (p: P, l: Line): boolean => fromLine(p, l.path) <= POD_REACH;
+  const pods = net.pods.filter((l) => near(from, l) && near(to, l));
   for (const l of pods.sort((p, q) => fromLine(from, p.path) + fromLine(to, p.path) - (fromLine(from, q.path) + fromLine(to, q.path)))) {
-    const legs = ride(l, from, to);
+    const legs = beats(ride(l, from, to));
     if (legs) return legs;
   }
-  return ride(net.rail, from, to) ?? cab();
+  // Each end by a different pod line: ride one to the interchange and change.
+  const a = net.pods.find((l) => near(from, l) && !near(to, l));
+  const b = net.pods.find((l) => l !== a && near(to, l) && !near(from, l));
+  if (a && b) {
+    const legs = beats(transfer(a, b, from, to));
+    if (legs) return legs;
+  }
+  return beats(ride(net.rail, from, to)) ?? fallback();
+}
+
+const total = (legs: Leg[]): number => legs.reduce((s, l) => s + l.ms, 0);
+
+/** Two pod lines with a change at the interchange: walk to line a's nearest station, ride to the interchange, change, ride line b, walk. */
+function transfer(a: Line, b: Line, from: P, to: P): Leg[] | null {
+  const ia = a.stops.find((s) => s.interchange);
+  const ib = b.stops.find((s) => s.interchange);
+  if (!ia || !ib) return null;
+  const on = nearestStop(a, from, true);
+  const off = nearestStop(b, to, false);
+  if (on === ia || off === ib) return null;
+  return [
+    leg('walk', streetWay(from, on), 0),
+    leg('pod', ridePath(a, on.at, ia.at), a.y),
+    leg('pod', ridePath(b, ib.at, off.at), b.y),
+    leg('walk', streetWay(off, to), 0),
+  ];
 }
 
 // ---------------------------------------------------------------- where the structures stand
@@ -611,3 +629,4 @@ export function spanSupports(a: P, b: P, offsets: readonly number[] = SPAN_OFFSE
 
 /** The block-centre rhythm: centre and a third of the pitch either side. */
 export const SPAN_OFFSETS = [0, STREET_PITCH / 3, (2 * STREET_PITCH) / 3] as const;
+

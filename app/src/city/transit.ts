@@ -3,7 +3,10 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import {
   BANKS,
-  BRIDGES,
+  crossesRiver,
+  RIVER,
+  TRAM_DECK,
+  tramHeight,
   inChannel,
   network,
   POD_Y,
@@ -206,7 +209,8 @@ class Build {
     g.dispose();
   }
   /** A flat strip w wide along the polyline at height y, its UVs in world metres scaled by `uv`. */
-  strip(mat: THREE.Material, pts: V2[], w: number, y: number, uvScale = 1): void {
+  strip(mat: THREE.Material, pts: V2[], w: number, yAt: number | ((p: V2) => number), uvScale = 1): void {
+    const yOf = (p: V2): number => (typeof yAt === 'number' ? yAt : yAt(p));
     const pos: number[] = [];
     const uv: number[] = [];
     const normals = miters(pts, false);
@@ -215,7 +219,7 @@ class Build {
       const b = pts[i];
       const na = normals[i - 1];
       const nb = normals[i];
-      const L = (p: V2, n: V2, s: number): V3 => [p.x + n.x * s, y, p.z + n.z * s];
+      const L = (p: V2, n: V2, s: number): V3 => [p.x + n.x * s, yOf(p), p.z + n.z * s];
       const a0 = L(a, na, -w / 2);
       const a1 = L(a, na, w / 2);
       const b0 = L(b, nb, -w / 2);
@@ -226,8 +230,29 @@ class Build {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(new Float32Array(pos.length).map((_, k) => (k % 3 === 1 ? 1 : 0)), 3));
-    // Split by chunk so a long strip culls.
+    g.computeVertexNormals();
+    this.add(mat, g);
+    g.dispose();
+  }
+  /**
+   * A slab from a to b, `half` either side of the run, its top and bottom
+   * heights given at each end (a ramp or a deck), sides and ends closed.
+   */
+  prism(mat: THREE.Material, a: V2, b: V2, half: number, topA: number, topB: number, botA: number, botB: number): void {
+    const t = norm({ x: b.x - a.x, z: b.z - a.z });
+    if (!t) return;
+    const n = { x: -t.z, z: t.x };
+    const P = (p: V2, l: number, y: number): V3 => [p.x + n.x * l, y, p.z + n.z * l];
+    const quad = (q0: V3, q1: V3, q2: V3, q3: V3): number[] => [...q0, ...q1, ...q2, ...q0, ...q2, ...q3];
+    const pos = [
+      ...quad(P(a, -half, botA), P(b, -half, botB), P(b, -half, topB), P(a, -half, topA)),
+      ...quad(P(a, half, botA), P(a, half, topA), P(b, half, topB), P(b, half, botB)),
+      ...quad(P(a, -half, topA), P(b, -half, topB), P(b, half, topB), P(a, half, topA)),
+      ...quad(P(a, -half, botA), P(a, half, botA), P(b, half, botB), P(b, -half, botB)),
+    ];
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.computeVertexNormals();
     this.add(mat, g);
     g.dispose();
   }
@@ -414,10 +439,6 @@ function frameOf(a: V2, b: V2): { t: V2; n: V2; at(u: number, l?: number): V2; d
   };
 }
 
-/** True when a point of a run lies on a bridge's deck or its quays (no poles, no wires). */
-function onBridge(p: V2): boolean {
-  return (BRIDGES as readonly number[]).some((bz) => Math.abs(p.z - bz) < 11) && inChannel(p.x, QUAY - 0.6);
-}
 
 // ---------------------------------------------------------------- materials
 
@@ -434,6 +455,9 @@ interface TransitMaterials {
   timber: THREE.MeshStandardMaterial;
   glassWarm: THREE.MeshStandardMaterial;
   glassCool: THREE.MeshStandardMaterial;
+  glassClear: THREE.MeshStandardMaterial;
+  podFloor: THREE.MeshStandardMaterial;
+  ceiling: THREE.MeshStandardMaterial;
   lampWarm: THREE.MeshBasicMaterial;
   lampCool: THREE.MeshBasicMaterial;
   red: THREE.MeshBasicMaterial;
@@ -535,6 +559,38 @@ function litGlass(name: string, tint: THREE.Color, strength: number): THREE.Mesh
           diffuseColor.rgb = mix(vec3(0.05), diffuseColor.rgb, mull * tr);
         }`,
       );
+  };
+  return m;
+}
+
+/**
+ * The pods' white steel: a warm off-white painted finish whose faces read
+ * apart (tops catch the sky, undersides fall into shade) with fine panel
+ * joints every 1.5 m on the upright faces.
+ */
+function shadedSteel(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0xd2cec5, metalness: 0.2, roughness: 0.42 });
+  m.name = 'podSteel';
+  m.customProgramCacheKey = () => 'palimpsest-transit-pod-steel';
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSP; varying vec3 vSN;')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvSP = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvSN = normalize(mat3(modelMatrix) * objectNormal);');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vSP; varying vec3 vSN;').replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+      {
+        float up = vSN.y;
+        diffuseColor.rgb *= mix(0.62, 1.0, smoothstep(-0.9, 0.6, up));
+        if (abs(up) < 0.5) {
+          float along = abs(vSN.x) > abs(vSN.z) ? vSP.z : vSP.x;
+          float j = abs(fract(along / 1.5 + 0.5) - 0.5) * 1.5;
+          diffuseColor.rgb *= mix(0.78, 1.0, smoothstep(0.008, 0.02, j));
+          // Weathering: faintly darker toward the foot of each upright face.
+          diffuseColor.rgb *= 0.92 + 0.08 * smoothstep(0.0, 6.0, fract(vSP.y / 6.0) * 6.0);
+        }
+      }`,
+    );
   };
   return m;
 }
@@ -723,18 +779,91 @@ function subdivide(pts: V2[], max: number, step = 0): V2[] {
   return out;
 }
 
+/** A closed polyline with every piece near where `near` holds cut to at most `max` metres. */
+function refineNear(pts: V2[], near: (p: V2) => boolean, max: number): V2[] {
+  const out: V2[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const c = pts[(i + 1) % pts.length];
+    out.push(a);
+    const len = Math.hypot(c.x - a.x, c.z - a.z);
+    if (!(near(a) || near(c) || near({ x: (a.x + c.x) / 2, z: (a.z + c.z) / 2 }))) {
+      // A long piece may pass the river without either end near it: cut it where it does.
+      if (len > max && Math.abs(c.z - a.z) < 1e-6 && (a.x - RIVER.x) * (c.x - RIVER.x) < 0) {
+        const n = Math.ceil(len / max);
+        for (let k = 1; k < n; k++) out.push({ x: a.x + ((c.x - a.x) * k) / n, z: a.z });
+      }
+      continue;
+    }
+    const n = Math.ceil(len / max);
+    for (let k = 1; k < n; k++) out.push({ x: a.x + ((c.x - a.x) * k) / n, z: a.z + ((c.z - a.z) * k) / n });
+  }
+  return out;
+}
+
+/**
+ * The tram's own bridge where its street crosses the river: two riveted
+ * plate girders with stiffeners from quay wall to quay wall under the deck,
+ * bearing on the walls' copings, cross girders between them, and a railing
+ * with posts along each edge of the deck and down the ramps over the quays.
+ */
+function tramBridge(b: Build, M: TransitMaterials, z: number): void {
+  const x0 = BANKS.west - 1.2;
+  const x1 = BANKS.east + 1.2;
+  const top = TRAM_DECK.height - 0.45;
+  for (const s of [-1, 1]) {
+    const gz = z + s * 3.5;
+    b.beam(M.truss, [x0, top - 0.9, gz], [x1, top - 0.9, gz], 0.5, 1.8);
+    // Flanges proud of the web.
+    for (const y of [top - 0.02, top - 1.78]) b.beam(M.truss, [x0, y, gz], [x1, y, gz], 0.7, 0.08);
+    b.detail(() => {
+      for (let x = x0 + 2; x < x1 - 1; x += 2.2) b.beam(M.truss, [x, top - 1.75, gz + s * 0.27], [x, top - 0.05, gz + s * 0.27], 0.12, 0.06);
+    });
+    // Bearings on the copings.
+    for (const x of [x0 + 0.6, x1 - 0.6]) b.box(M.frame, x, top - 1.95, gz, 0.8, 0.3, 0.9);
+  }
+  for (let x = x0 + 4; x < x1 - 2; x += 6.5) b.beam(M.truss, [x, top - 0.7, z - 3.5], [x, top - 0.7, z + 3.5], 0.3, 1.0);
+  // The railing: a top rail, a mid rail and posts, over the river and down both ramps.
+  const rx0 = BANKS.west - TRAM_DECK.ramp;
+  const rx1 = BANKS.east + TRAM_DECK.ramp;
+  for (const s of [-1, 1]) {
+    const rz = z + s * 3.95;
+    const pts: V3[] = [];
+    for (let x = rx0; x <= rx1 + 0.01; x += 1.0) pts.push([x, tramHeight(x, z) + 0.075, rz]);
+    for (let i = 1; i < pts.length; i++) {
+      const [a, c] = [pts[i - 1], pts[i]];
+      b.beam(M.frame, [a[0], a[1] + 1.05, a[2]], [c[0], c[1] + 1.05, c[2]], 0.07, 0.06);
+      b.detail(() => b.beam(M.frame, [a[0], a[1] + 0.55, a[2]], [c[0], c[1] + 0.55, c[2]], 0.03, 0.03));
+      if (i % 2 === 0) b.detail(() => b.beam(M.frame, [a[0], a[1], a[2]], [a[0], a[1] + 1.05, a[2]], 0.05, 0.05));
+    }
+  }
+}
+
 /** The pole rhythm: a pole every 80/3 m along a straight run. */
 const POLE_STEP = 80 / 3;
 
 function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas, names: Set<string>): { poles: number; stops: number } {
   const corners = net.tram.path.map(([x, , z]) => ({ x, z }));
-  const centre = subdivide(filleted(corners, TRAM_R), 40);
-  // The reservation: a raised sett bed under both tracks, edged in granite 8 cm proud of the asphalt.
+  // Fine pieces where the tram climbs over the quays to its bridge, 40 m pieces elsewhere.
+  const centre = refineNear(subdivide(filleted(corners, TRAM_R), 40), (p) => Math.abs(p.x - RIVER.x) < RIVER.width / 2 + TRAM_DECK.ramp + 6, 2);
+  const lift = (p: V2): number => tramHeight(p.x, p.z);
+  // The reservation: a raised sett bed under both tracks, edged in granite 8 cm proud of the asphalt; over the
+  // river it is the bridge's deck slab, and over the quays a solid ramp down to the street.
   for (let i = 0; i < centre.length; i++) {
     const a = centre[i];
     const c = centre[(i + 1) % centre.length];
-    b.sweep(M.concrete, [[-3.05, -0.05], [3.05, -0.05], [3.05, 0.075], [-3.05, 0.075]], a, c, 0);
-    b.strip(M.setts, [a, c], 5.9, 0.087, 1 / 4.2);
+    const water = (p: V2): boolean => inChannel(p.x, -TRAM_DECK.flat);
+    const top = (p: V2): number => lift(p) + 0.075;
+    const bot = (p: V2): number => (water(p) ? top(p) - 0.5 : -0.05);
+    // Over the river and up the ramps the deck widens past the trams' sweep to carry its railings.
+    const half = lift(a) > 0 || lift(c) > 0 ? 4.1 : 3.05;
+    b.prism(M.concrete, a, c, half, top(a), top(c), bot(a), bot(c));
+    b.strip(M.setts, [a, c], 5.9, (p) => lift(p) + 0.087, 1 / 4.2);
+  }
+  // The tram's own bridges: plate girders from quay wall to quay wall under the deck, railings along both edges.
+  for (const sd of sides(corners)) {
+    if (!crossesRiver(sd.a, sd.b)) continue;
+    tramBridge(b, M, sd.a.z);
   }
   // The rails, grooved in the bed: two per track, their heads 7 cm wide and polished.
   b.detail(() => {
@@ -744,8 +873,8 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
         for (let i = 0; i < line.length; i++) {
           const p = line[i];
           const q = line[(i + 1) % line.length];
-          b.beam(M.railSteel, [p.x, 0.092, p.z], [q.x, 0.092, q.z], 0.07, 0.012);
-          b.beam(M.deckTop, [p.x, 0.089, p.z], [q.x, 0.089, q.z], 0.16, 0.006);
+          b.beam(M.railSteel, [p.x, 0.092 + lift(p), p.z], [q.x, 0.092 + lift(q), q.z], 0.07, 0.012);
+          b.beam(M.deckTop, [p.x, 0.089 + lift(p), p.z], [q.x, 0.089 + lift(q), q.z], 0.16, 0.006);
         }
       }
     }
@@ -757,11 +886,13 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
     const f = frameOf(sd.a, sd.b);
     const u0 = f.dir === 'x' ? sd.a.x : sd.a.z;
     const u1 = f.dir === 'x' ? sd.b.x : sd.b.z;
-    for (const u of spanSupports(sd.a, sd.b)) {
+    // On the tram's own bridge the poles stand on the deck at the same rhythm.
+    const us = [...spanSupports(sd.a, sd.b)];
+    if (crossesRiver(sd.a, sd.b)) for (const u of [RIVER.x - 80 / 6, RIVER.x + 80 / 6]) us.push(u);
+    for (const u of us) {
       if (Math.abs(u - u0) < TRAM_R + 4 || Math.abs(u - u1) < TRAM_R + 4) continue;
       const p = f.at(u);
-      if (onBridge(p)) continue;
-      centrePole(b, M, p, f.t, f.n);
+      centrePole(b, M, p, f.t, f.n, lift(p));
       poles++;
     }
   }
@@ -774,7 +905,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
     const d1 = norm({ x: q.x - c.x, z: q.z - c.z })!;
     const out = norm({ x: d0.x - d1.x, z: d0.z - d1.z })!;
     const at = { x: c.x + out.x * 9.5, z: c.z + out.z * 9.5 };
-    if (onBridge(at) || inChannel(at.x, QUAY + 2)) continue;
+    if (inChannel(at.x, QUAY + 2)) continue;
     b.rod(M.frame, [at.x, 0, at.z], [at.x, 7.6, at.z], 0.15, 10, 0.72);
     for (const side of [-1, 1]) {
       const tr = offsetLoop(filleted([p, c, q], TRAM_R), side * TRAM_TRACK).slice(11 + 5, 11 + 6)[0];
@@ -788,7 +919,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   }
 
   // The wires: over each track a contact wire zigzagging 20 cm either way from pole to pole, a messenger sagging
-  // between the poles and droppers between them; none over a bridge's deck.
+  // between the poles and droppers between them, carried across the river on the tram's bridge.
   const phase = (p: V2, q: V2): number => {
     const u = Math.abs(q.x - p.x) > Math.abs(q.z - p.z) ? p.x : p.z;
     return (((u / POLE_STEP) % 1) + 1) % 1;
@@ -796,7 +927,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   const poleIndex = (p: V2, q: V2): number => Math.floor((Math.abs(q.x - p.x) > Math.abs(q.z - p.z) ? p.x : p.z) / POLE_STEP + 1e-6);
   for (const side of [-1, 1]) {
     const track = subdivide(offsetLoop(filleted(corners, TRAM_R), side * TRAM_TRACK), 7, POLE_STEP / 4);
-    const runs = closedRuns(track, (a, c) => !onBridge(a) && !onBridge(c));
+    const runs = closedRuns(track, () => true);
     for (const run of runs) {
       const contact: V3[] = [];
       const messenger: V3[] = [];
@@ -808,13 +939,14 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
         const k = poleIndex(p, q);
         const s0 = k % 2 ? 0.2 : -0.2;
         const stagger = s0 + (-2 * s0) * ph;
-        contact.push([p.x + n.x * stagger, CONTACT_Y, p.z + n.z * stagger]);
-        messenger.push([p.x, MESSENGER_Y - 0.8 * Math.sin(Math.PI * ph), p.z]);
+        const y = lift(p);
+        contact.push([p.x + n.x * stagger, CONTACT_Y + y, p.z + n.z * stagger]);
+        messenger.push([p.x, MESSENGER_Y + y - 0.8 * Math.sin(Math.PI * ph), p.z]);
       });
       b.wire(contact);
       b.wire(messenger);
       for (let i = 0; i < run.length; i++) {
-        if (Math.abs(messenger[i][1] - MESSENGER_Y) < 0.05) continue;
+        if (Math.abs(messenger[i][1] - contact[i][1] - (MESSENGER_Y - CONTACT_Y)) < 0.05) continue;
         b.wire([contact[i], messenger[i]]);
       }
     }
@@ -843,20 +975,20 @@ function frameFor(s: { x: number; z: number; dir: 'x' | 'z' }): { t: V2; n: V2; 
 const at3 = (p: V2, y: number): V3 => [p.x, y, p.z];
 
 /** A centre pole: a tapered steel tube on a base plate, two cantilever arms over the tracks with stays, insulators and registration arms. */
-function centrePole(b: Build, M: TransitMaterials, p: V2, t: V2, n: V2): void {
-  b.rod(M.frame, [p.x, 0, p.z], [p.x, 7.7, p.z], 0.14, 10, 0.68);
+function centrePole(b: Build, M: TransitMaterials, p: V2, t: V2, n: V2, y0 = 0): void {
+  b.rod(M.frame, [p.x, y0 + 0, p.z], [p.x, y0 + 7.7, p.z], 0.14, 10, 0.68);
   b.detail(() => {
-    b.rod(M.frame, [p.x, 0, p.z], [p.x, 0.55, p.z], 0.22, 10, 0.85);
-    b.box(M.concrete, p.x, 0.04, p.z, 0.8, 0.12, 0.8);
-    b.rod(M.frame, [p.x, 7.7, p.z], [p.x, 7.95, p.z], 0.07, 8, 0.35);
+    b.rod(M.frame, [p.x, y0 + 0, p.z], [p.x, y0 + 0.55, p.z], 0.22, 10, 0.85);
+    b.box(M.concrete, p.x, y0 + 0.04, p.z, 0.8, 0.12, 0.8);
+    b.rod(M.frame, [p.x, y0 + 7.7, p.z], [p.x, y0 + 7.95, p.z], 0.07, 8, 0.35);
     for (const s of [-1, 1]) {
       const tip = { x: p.x + n.x * s * 2.45, z: p.z + n.z * s * 2.45 };
-      b.rod(M.frame, [p.x, 6.85, p.z], [tip.x, 6.85, tip.z], 0.045, 6);
-      b.rod(M.frame, [p.x, 7.55, p.z], [tip.x - n.x * s * 0.3, 6.88, tip.z - n.z * s * 0.3], 0.03, 5);
+      b.rod(M.frame, [p.x, y0 + 6.85, p.z], [tip.x, y0 + 6.85, tip.z], 0.045, 6);
+      b.rod(M.frame, [p.x, y0 + 7.55, p.z], [tip.x - n.x * s * 0.3, y0 + 6.88, tip.z - n.z * s * 0.3], 0.03, 5);
       // The insulator and the registration arm down to the contact wire.
-      b.rod(M.timber, [p.x + n.x * s * 0.35, 6.85, p.z + n.z * s * 0.35], [p.x + n.x * s * 0.62, 6.85, p.z + n.z * s * 0.62], 0.055, 8);
+      b.rod(M.timber, [p.x + n.x * s * 0.35, y0 + 6.85, p.z + n.z * s * 0.35], [p.x + n.x * s * 0.62, y0 + 6.85, p.z + n.z * s * 0.62], 0.055, 8);
       const reg = { x: p.x + n.x * s * TRAM_TRACK, z: p.z + n.z * s * TRAM_TRACK };
-      b.rod(M.frame, [reg.x, 6.85, reg.z], [reg.x + t.x * 0.7, CONTACT_Y + 0.02, reg.z + t.z * 0.7], 0.018, 4);
+      b.rod(M.frame, [reg.x, y0 + 6.85, reg.z], [reg.x + t.x * 0.7, y0 + CONTACT_Y + 0.02, reg.z + t.z * 0.7], 0.018, 4);
     }
   });
 }
@@ -1294,77 +1426,149 @@ function podBowstring(b: Build, M: TransitMaterials, p: V2, q: V2, f: { t: V2; n
 }
 
 /**
- * A pod station (original): a glass box straddling both beams, lit from
- * within, on four slender columns, under a thin white roof with a lit
- * reveal, and a glazed lift shaft on the lamp-free pavement joined to it by
- * a short bridge. The interchange is a square box over the crossing.
+ * A pod station (original): a glass box straddling both guideways, its
+ * glass clear and faintly green so the room reads through it. Inside, a
+ * platform along each side at the pods' floor with a stone floor, timber
+ * benches, a glazed screen with handrail along the track edge, a lit
+ * ceiling with luminaire rows, and hanging name boards; between the
+ * platforms the beams run through open. Under it, a dark soffit with
+ * downlights on two median columns; on the lamp-free pavement, a glass lift
+ * with its car and a bridge across. The interchange is a square hall over
+ * the crossing with a platform round all four sides, its corner piers
+ * carried up through the roof, and a lit lantern over the middle.
  */
 function podStation(b: Build, M: TransitMaterials, s: Stop, f: { t: V2; n: V2; dir: 'x' | 'z' }, uv: [number, number, number, number]): void {
   const ff = frameFor(s);
   const L = (u: number, l: number, y: number): V3 => at3(ff.at(ff.u + u, l), y);
-  const half = s.interchange ? 11 : 15;
-  const wide = s.interchange ? 11 : 4.6;
+  /** A box by its extent along the line (su) and across it (sl). */
+  const bx = (mat: THREE.Material, u: number, l: number, y: number, su: number, sy: number, sl: number): void => b.box(mat, ...L(u, l, y), f.dir === 'x' ? su : sl, sy, f.dir === 'x' ? sl : su);
+  const ix = !!s.interchange;
+  const half = ix ? 11 : 15;
+  const wide = ix ? 11 : 4.6;
   const floor = POD_Y + 0.35;
   const y0 = POD_Y - 1.6;
   const y1 = floor + 3.6;
-  // Floor and underside fascia, the roof slab with its overhang, and the lit reveal between roof and glass.
-  b.box(M.podSteel, ...L(0, 0, floor - 0.3), f.dir === 'x' ? 2 * half : 2 * wide, 0.6, f.dir === 'x' ? 2 * wide : 2 * half);
-  b.box(M.frame, ...L(0, 0, (y0 + floor - 0.6) / 2), f.dir === 'x' ? 2 * half - 0.8 : 2 * wide - 0.8, floor - 0.6 - y0, f.dir === 'x' ? 2 * wide - 0.8 : 2 * half - 0.8);
-  b.box(M.podSteel, ...L(0, 0, y1 + 0.25), f.dir === 'x' ? 2 * half + 1.4 : 2 * wide + 1.4, 0.5, f.dir === 'x' ? 2 * wide + 1.4 : 2 * half + 1.4);
-  b.box(M.lampCool, ...L(0, 0, y1 - 0.02), f.dir === 'x' ? 2 * half + 0.1 : 2 * wide + 0.1, 0.06, f.dir === 'x' ? 2 * wide + 0.1 : 2 * half + 0.1);
-  // The soffit: a dark plate under the floor with a row of downlights over the street.
-  b.box(M.frame, ...L(0, 0, y0 - 0.02), f.dir === 'x' ? 2 * half - 0.6 : 2 * wide - 0.6, 0.04, f.dir === 'x' ? 2 * wide - 0.6 : 2 * half - 0.6);
-  for (let u = -half + 2.5; u < half - 1; u += 5) for (const l of [-wide + 1.4, wide - 1.4]) b.box(M.lampWarm, ...L(u, l, y0 - 0.05), 0.35, 0.03, 0.35);
-  // A dark reveal where the glass meets the floor, and slim fins standing proud of the glass every 3 m.
-  b.box(M.frame, ...L(0, 0, floor + 0.05), f.dir === 'x' ? 2 * half + 0.12 : 2 * wide + 0.12, 0.1, f.dir === 'x' ? 2 * wide + 0.12 : 2 * half + 0.12);
-  for (const side of [-1, 1]) {
-    for (let u = -half; u <= half + 0.01; u += 3) b.beam(M.podSteel, L(u, side * (wide + 0.12), floor + 0.1), L(u, side * (wide + 0.12), y1), 0.22, 0.12);
-    for (let l = -wide; l <= wide + 0.01; l += 3) if (Math.abs(l) > 1.2 || s.interchange) b.beam(M.podSteel, L(side * (half + 0.12), l, floor + 0.1), L(side * (half + 0.12), l, y1), 0.12, 0.22);
+  const inner = 2.75;
+  // The platforms: a stone floor along each side (round all four in the interchange), its fascia and soffit below.
+  const platforms: Array<{ u: number; l: number; su: number; sl: number }> = [];
+  for (const side of [-1, 1]) platforms.push({ u: 0, l: side * (inner + wide) / 2, su: 2 * half, sl: wide - inner });
+  if (ix) for (const e of [-1, 1]) platforms.push({ u: e * (inner + half) / 2, l: 0, su: half - inner, sl: 2 * inner });
+  for (const p of platforms) {
+    bx(M.podFloor, p.u, p.l, floor - 0.15, p.su, 0.3, p.sl);
+    bx(M.podSteel, p.u, p.l, floor - 0.6, p.su, 0.6, p.sl);
+    bx(M.frame, p.u, p.l, (y0 + floor - 0.9) / 2, p.su - 0.6, floor - 0.9 - y0, p.sl - 0.6);
+    // Downlights in the soffit over the street.
+    const n = Math.max(1, Math.floor(p.su / 5));
+    for (let k = 0; k < n; k++) bx(M.lampWarm, p.u - p.su / 2 + (k + 0.5) * (p.su / n), p.l, y0 - 0.03, 0.35, 0.03, 0.35);
   }
-  // The glass on all four sides.
+  // The roof, its lit ceiling and the reveal between roof and glass.
+  bx(M.podSteel, 0, 0, y1 + 0.3, 2 * half + 1.4, 0.6, 2 * wide + 1.4);
+  bx(M.ceiling, 0, 0, y1 - 0.03, 2 * half, 0.06, 2 * wide);
+  bx(M.lampCool, 0, 0, y1 + 0.02, 2 * half + 0.15, 0.05, 2 * wide + 0.15);
   for (const side of [-1, 1]) {
-    b.beam(M.glassCool, L(-half, side * wide, (floor + y1) / 2), L(half, side * wide, (floor + y1) / 2), 0.05, y1 - floor);
-    b.beam(M.glassCool, L(side * half, -wide, (floor + y1) / 2), L(side * half, wide, (floor + y1) / 2), 0.05, y1 - floor);
+    const l = side * (inner + wide) / 2;
+    if (ix) {
+      for (const e of [-1, 1]) bx(M.lampWarm, 0, e * (inner + wide) / 2, y1 - 0.08, 2 * half - 1.5, 0.04, 0.22);
+      bx(M.lampWarm, side * (inner + half) / 2, 0, y1 - 0.08, 0.22, 0.04, 2 * inner);
+    } else bx(M.lampWarm, 0, l, y1 - 0.08, 2 * half - 1.5, 0.04, 0.22);
   }
-  // Columns.
-  if (s.interchange) {
-    for (const su of [-1, 1]) for (const sl of [-1, 1]) b.rod(M.podSteel, L(su * 6, sl * 6, 0), L(su * 6, sl * 6, y0), 0.38, 14, 0.8);
+  // Clear glass on all four sides, with slim fins outside every 3 m and a dark sill.
+  for (const side of [-1, 1]) {
+    b.beam(M.glassClear, L(-half, side * wide, (floor + y1) / 2), L(half, side * wide, (floor + y1) / 2), 0.04, y1 - floor);
+    b.beam(M.glassClear, L(side * half, -wide, (floor + y1) / 2), L(side * half, wide, (floor + y1) / 2), 0.04, y1 - floor);
+    for (let u = -half; u <= half + 0.01; u += 3) bx(M.podSteel, u, side * (wide + 0.1), (floor + y1) / 2, 0.14, y1 - floor, 0.24);
+    for (let l = -wide; l <= wide + 0.01; l += 3) if (ix || Math.abs(l) > inner) bx(M.podSteel, side * (half + 0.1), l, (floor + y1) / 2, 0.24, y1 - floor, 0.14);
+    bx(M.frame, 0, side * wide, floor + 0.06, 2 * half, 0.12, 0.2);
+  }
+  // Along each track edge: a glazed screen with doors every 5 m, a steel handrail, and benches against the glass.
+  const edges: Array<{ along: 'u' | 'l'; at: number; from: number; to: number }> = [];
+  for (const side of [-1, 1]) edges.push({ along: 'u', at: side * inner, from: -half, to: half });
+  if (ix) for (const e of [-1, 1]) edges.push({ along: 'l', at: e * inner, from: -inner, to: inner });
+  for (const e of edges) {
+    const P = (v: number, y: number): V3 => (e.along === 'u' ? L(v, e.at, y) : L(e.at, v, y));
+    const span = e.to - e.from;
+    if (ix && e.along === 'u') {
+      // In the interchange the cross line passes through the middle of these edges: screens either side of it.
+      for (const [a0, a1] of [[e.from, -inner], [inner, e.to]] as Array<[number, number]>) {
+        b.beam(M.glassClear, P(a0, floor + 1.1), P(a1, floor + 1.1), 0.03, 2.2);
+        b.beam(M.frame, P(a0, floor + 2.25), P(a1, floor + 2.25), 0.1, 0.1);
+      }
+    } else {
+      b.beam(M.glassClear, P(e.from, floor + 1.1), P(e.to, floor + 1.1), 0.03, 2.2);
+      b.beam(M.frame, P(e.from, floor + 2.25), P(e.to, floor + 2.25), 0.1, 0.1);
+    }
+    b.detail(() => {
+      for (let v = e.from; v <= e.to + 0.01; v += 2.5) b.beam(M.frame, P(v, floor), P(v, floor + 2.2), 0.06, 0.06);
+      b.beam(M.railSteel, P(e.from, floor + 1.0), P(e.to, floor + 1.0), 0.05, 0.05);
+    });
+    void span;
+  }
+  b.detail(() => {
+    for (const side of [-1, 1]) {
+      const l = side * (wide - 0.55);
+      for (let u = -half + 4; u < half - 3; u += 8) {
+        bx(M.timber, u, l, floor + 0.45, 2.4, 0.06, 0.5);
+        bx(M.timber, u, side * (wide - 0.32), floor + 0.75, 2.4, 0.5, 0.05);
+        for (const d of [-0.9, 0.9]) bx(M.frame, u + d, l, floor + 0.22, 0.06, 0.44, 0.45);
+      }
+    }
+  });
+  // Wayfinding: a lit board hung from the ceiling over each platform, facing along it, and a totem at each end.
+  for (const side of [-1, 1]) {
+    const l = side * (inner + wide) / 2;
+    for (const e of [-1, 1]) {
+      const face = { x: f.t.x * e, z: f.t.z * e };
+      const p = L(e * 0.04, l, y1 - 0.75);
+      signPanel(b, M.sign, p, face, 1.7, 1.7 * SIGN_ASPECT * 1.6, uv);
+    }
+    b.beam(M.frame, L(0, l, y1 - 0.62), L(0, l, y1 - 0.05), 0.03, 0.03);
+    bx(M.frame, half - 1.2, side * (wide - 0.6), floor + 1.0, 0.35, 2.0, 0.12);
+    signPanel(b, M.sign, L(half - 1.4, side * (wide - 0.6), floor + 1.7), { x: -f.t.x, z: -f.t.z }, 0.9, 0.9 * SIGN_ASPECT * 1.6, uv);
+  }
+  // Columns: two in the median under crossheads; in the interchange four corner piers carried up through the roof.
+  if (ix) {
+    for (const su of [-1, 1]) for (const sl of [-1, 1]) bx(M.podSteel, su * 6.4, sl * 6.4, (y1 + 2.2) / 2, 0.9, y1 + 2.2, 0.9);
+    // The lantern: a lit glass clerestory over the middle with its own thin roof.
+    for (const side of [-1, 1]) {
+      b.beam(M.glassWarm, L(-4.5, side * 4.5, y1 + 1.6), L(4.5, side * 4.5, y1 + 1.6), 0.05, 2.0);
+      b.beam(M.glassWarm, L(side * 4.5, -4.5, y1 + 1.6), L(side * 4.5, 4.5, y1 + 1.6), 0.05, 2.0);
+    }
+    bx(M.podSteel, 0, 0, y1 + 2.75, 10.6, 0.3, 10.6);
+    bx(M.lampCool, 0, 0, y1 + 2.58, 9.2, 0.04, 9.2);
   } else {
-    // Two columns in the median, each under a crosshead that carries the box.
     for (const su of [-1, 1]) {
       b.rod(M.podSteel, L(su * 9, 0, 0), L(su * 9, 0, y0 - 0.6), 0.7, 16, 0.75);
       b.beam(M.podSteel, L(su * 9, -wide + 0.4, y0 - 0.35), L(su * 9, wide - 0.4, y0 - 0.35), 1.0, 0.7);
     }
   }
-  // The lift: a glass shaft on the lamp-free pavement, a white crown, a bridge across to the box.
-  const lu = s.interchange ? 6.2 : -12;
-  const ll = s.interchange ? 6.2 : 6.2;
+  // The lift: a clear shaft on the lamp-free pavement, its car halfway up, a white crown, a bridge across.
+  const lu = ix ? 8.6 : -12;
+  const ll = ix ? 8.6 : 6.2;
   const sh = 1.25;
   for (const side of [-1, 1]) {
-    b.beam(M.glassCool, L(lu - sh, ll + side * sh, (y1 + 0.5) / 2), L(lu + sh, ll + side * sh, (y1 + 0.5) / 2), 0.04, y1 - 0.5);
-    b.beam(M.glassCool, L(lu + side * sh, ll - sh, (y1 + 0.5) / 2), L(lu + side * sh, ll + sh, (y1 + 0.5) / 2), 0.04, y1 - 0.5);
+    b.beam(M.glassClear, L(lu - sh, ll + side * sh, (y1 + 0.5) / 2), L(lu + sh, ll + side * sh, (y1 + 0.5) / 2), 0.04, y1 - 0.5);
+    b.beam(M.glassClear, L(lu + side * sh, ll - sh, (y1 + 0.5) / 2), L(lu + side * sh, ll + sh, (y1 + 0.5) / 2), 0.04, y1 - 0.5);
   }
   for (const su of [-1, 1]) for (const sl of [-1, 1]) b.beam(M.podSteel, L(lu + su * sh, ll + sl * sh, 0), L(lu + su * sh, ll + sl * sh, y1 + 0.6), 0.14, 0.14);
-  b.box(M.podSteel, ...L(lu, ll, y1 + 0.75), 2 * sh + 0.5, 0.5, 2 * sh + 0.5);
-  b.box(M.podSteel, ...L(lu, ll, 0.15), 2 * sh + 0.4, 0.3, 2 * sh + 0.4);
-  if (!s.interchange) {
-    b.box(M.podSteel, ...L(lu, (wide + ll - sh) / 2, floor - 0.15), f.dir === 'x' ? 2.2 : ll - sh - wide, 0.3, f.dir === 'x' ? ll - sh - wide : 2.2);
-    b.box(M.glassCool, ...L(lu, (wide + ll - sh) / 2, floor + 1.3), f.dir === 'x' ? 2.2 : ll - sh - wide, 2.6, f.dir === 'x' ? ll - sh - wide : 2.2);
+  bx(M.podSteel, lu, ll, y1 + 0.75, 2 * sh + 0.5, 0.5, 2 * sh + 0.5);
+  bx(M.podSteel, lu, ll, 0.15, 2 * sh + 0.4, 0.3, 2 * sh + 0.4);
+  bx(M.podSteel, lu, ll, 9.5, 1.8, 2.4, 1.8);
+  bx(M.lampWarm, lu, ll, 10.66, 1.4, 0.04, 1.4);
+  if (!ix) {
+    bx(M.podFloor, lu, (wide + ll - sh) / 2, floor - 0.15, 2.2, 0.3, ll - sh - wide);
+    bx(M.glassClear, lu, (wide + ll - sh) / 2, floor + 1.3, 2.2, 2.6, ll - sh - wide);
+    bx(M.podSteel, lu, (wide + ll - sh) / 2, floor + 2.7, 2.4, 0.2, ll - sh - wide);
   }
-  // The name on each end's fascia, and on the street side.
+  // The name on each end's roof fascia, and on the street sides.
   for (const e of [-1, 1]) {
     const face = { x: f.t.x * e, z: f.t.z * e };
-    const p = L(e * (half + 0.03), 0, y0 + 0.75);
-    signPanel(b, M.sign, p, face, 4.6, 4.6 * SIGN_ASPECT, uv);
+    signPanel(b, M.sign, L(e * (half + 0.72), 0, y1 + 0.3), face, 4.6, 4.6 * SIGN_ASPECT, uv);
   }
-  {
-    const p = L(0, wide + 0.04, y0 + 0.75);
-    signPanel(b, M.sign, p, f.n, 6.0, 6.0 * SIGN_ASPECT, uv);
+  for (const side of [-1, 1]) {
+    if (!ix && side < 0) continue;
+    const face = { x: f.n.x * side, z: f.n.z * side };
+    signPanel(b, M.sign, L(0, side * (wide + 0.72), y1 + 0.3), face, 6.0, 6.0 * SIGN_ASPECT, uv);
   }
-  b.detail(() => {
-    // Platform screen doors' frames inside the glass, and the box's mullion caps.
-    for (const side of [-1, 1]) for (let u = -half + 2.5; u < half - 1; u += 5) b.beam(M.podSteel, L(u, side * 2.55, floor), L(u, side * 2.55, floor + 2.3), 0.08, 0.08);
-  });
 }
 
 // ---------------------------------------------------------------- cab ranks
@@ -1442,13 +1646,16 @@ export function createTransit(): Transit {
     railSteel: new THREE.MeshStandardMaterial({ color: 0xa29a90, metalness: 1, roughness: 0.3 }),
     frame: L.darkMetal,
     truss: upwashed(new THREE.MeshStandardMaterial({ color: 0x4a5c58, metalness: 0.5, roughness: 0.45 }), 'truss', 10.5, 7, 0.4),
-    podSteel: new THREE.MeshStandardMaterial({ color: 0xdedbd3, metalness: 0.25, roughness: 0.32 }),
+    podSteel: shadedSteel(),
     roof: new THREE.MeshStandardMaterial({ color: 0x2b2c2e, metalness: 0.6, roughness: 0.5 }),
     setts: new THREE.MeshStandardMaterial({ map: setts, color: 0x9a948c, roughness: 0.82 }),
     paint: new THREE.MeshStandardMaterial({ color: 0xd8d2bf, roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
     timber: new THREE.MeshStandardMaterial({ color: 0x5a4532, roughness: 0.8 }),
     glassWarm: litGlass('glass-warm', new THREE.Color(1.0, 0.76, 0.5), 0.55),
     glassCool: litGlass('glass-cool', new THREE.Color(1.0, 0.9, 0.76), 0.85),
+    glassClear: new THREE.MeshStandardMaterial({ color: 0x8fa9a6, transparent: true, opacity: 0.2, roughness: 0.04, metalness: 0, envMapIntensity: 1.5, depthWrite: false }),
+    podFloor: new THREE.MeshStandardMaterial({ color: 0xcfc9bd, roughness: 0.5, emissive: new THREE.Color(1.0, 0.86, 0.68), emissiveIntensity: 0.32 }),
+    ceiling: new THREE.MeshStandardMaterial({ color: 0xe6e1d6, roughness: 0.7, emissive: new THREE.Color(1.0, 0.9, 0.76), emissiveIntensity: 0.18 }),
     lampWarm: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.8, 0.56).multiplyScalar(2.8) }),
     lampCool: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.78, 0.9, 1.0).multiplyScalar(2.6) }),
     red: new THREE.MeshBasicMaterial({ color: new THREE.Color(4.0, 0.25, 0.12) }),
@@ -1465,7 +1672,7 @@ export function createTransit(): Transit {
       .replace('#include <opaque_fragment>', `diffuseColor.a *= mix(1.0, 0.28, smoothstep(120.0, ${WIRE_FAR.toFixed(1)}, vWD));\n#include <opaque_fragment>`);
   };
   wireMat.customProgramCacheKey = () => 'palimpsest-transit-wires';
-  const noShadow = new Set<THREE.Material>([M.lampWarm, M.lampCool, M.red, M.sign, M.paint, M.glassWarm, M.glassCool, M.setts, M.deckTop]);
+  const noShadow = new Set<THREE.Material>([M.lampWarm, M.lampCool, M.red, M.sign, M.paint, M.glassWarm, M.glassCool, M.glassClear, M.ceiling, M.setts, M.deckTop]);
 
   const group = new THREE.Group();
   group.name = 'transit';

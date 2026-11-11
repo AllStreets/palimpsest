@@ -11,6 +11,9 @@ import {
   extentBlocks,
   inChannel,
   network,
+  POD_STREET,
+  streetWay,
+  tramHeight,
   PIERS,
   POD_Y,
   podRail,
@@ -24,7 +27,7 @@ import {
   tramLoop,
   tramStops,
 } from '../shared/commute.js';
-import { districtOrigin } from '../shared/district-layout.js';
+import { districtOrigin, QUARTER_COURT } from '../shared/district-layout.js';
 import type { Trip } from '../shared/types.js';
 
 type Leg = Trip['legs'][number];
@@ -232,23 +235,101 @@ test('the tram loop and the rail loop enclose every district slot used', () => {
   }
 });
 
-test('the tram runs on street lines, crosses the river only on a bridge and never runs along the channel', () => {
-  for (const e of [1, 2, 3, 4]) {
+test('the tram runs on street lines and crosses the river on its own bridge, clear of the road bridges, piers and quay lamps', () => {
+  for (const e of [1, 2, 3, 4, 5]) {
     const loop = tramLoop(e);
     for (const [x, z] of loop) {
-      // Every corner is a street crossing, or a bridge's end where its road meets the street.
       assert.ok(((x - 40) / 80) % 1 === 0, `x ${x} is a street line`);
-      assert.ok(((z - 40) / 80) % 1 === 0 || (BRIDGES as readonly number[]).includes(z), `z ${z} is a street line or a bridge`);
+      assert.ok(((z - 40) / 80) % 1 === 0, `z ${z} is a street line`);
     }
     const closed = [...loop, loop[0]];
+    let crossings = 0;
     for (let i = 1; i < closed.length; i++) {
       const a = { x: closed[i - 1][0], z: closed[i - 1][1] };
       const b = { x: closed[i][0], z: closed[i][1] };
-      if (crossesRiver(a, b)) assert.ok(a.z === b.z && (BRIDGES as readonly number[]).includes(a.z), `extent ${e}: crosses on a bridge, not at z ${a.z}`);
       if (a.x === b.x) assert.ok(!inChannel(a.x, 12), `extent ${e}: never runs along the river at x ${a.x}`);
+      if (!crossesRiver(a, b)) continue;
+      crossings++;
+      for (const bz of BRIDGES) assert.ok(Math.abs(a.z - bz) >= 30, `extent ${e}: its bridge at z ${a.z} stands clear of the road bridge at ${bz}`);
+      for (const p of PIERS) assert.ok(Math.abs(a.z - p.z) >= 30, `extent ${e}: its bridge at z ${a.z} stands clear of the pier at ${p.z}`);
+      // Quay lamps stand every 30 m (river.ts): the deck keeps 8 m off them.
+      const lamp = Math.abs(a.z - Math.round(a.z / 30) * 30);
+      assert.ok(lamp >= 8, `extent ${e}: its bridge at z ${a.z} keeps off the quay lamps (${lamp} m)`);
+      assert.ok(tramHeight(RIVER.x, a.z) > 0.95, 'the deck rides over the quay parapets');
     }
+    assert.equal(crossings, 2, `extent ${e}: the loop crosses the river twice`);
     for (const s of tramStops(loop)) assert.ok(!inChannel(s.x, 60), `extent ${e}: no stop on the river (${s.x})`);
   }
+  assert.equal(tramHeight(0, 0), 0, 'off the river the tram runs at street level');
+});
+
+test('no line runs across a district plaza, a quarter court or the exchange', () => {
+  for (const n of [1, 5, 9, 13, 25, 49, 80]) {
+    const used = Array.from({ length: n }, (_, i) => districtOrigin(i));
+    const net = network({ blocks: extentBlocks(used), districts: used });
+    const lines: Array<[string, Array<readonly number[]>, boolean]> = [
+      ['tram', net.tram.path, true],
+      ['rail', net.rail.path, true],
+      ...net.pods.map((l, i) => [`pod ${i}`, l.path, false] as [string, Array<readonly number[]>, boolean]),
+    ];
+    for (const [name, path, closed] of lines) {
+      const m = closed ? path.length : path.length - 1;
+      for (let i = 0; i < m; i++) {
+        const a = xz(path[i]);
+        const b = xz(path[(i + 1) % path.length]);
+        const len = Math.hypot(b.x - a.x, b.z - a.z);
+        for (let t = 0; t <= len; t += 2) {
+          const p = { x: a.x + ((b.x - a.x) * t) / len, z: a.z + ((b.z - a.z) * t) / len };
+          assert.ok(Math.hypot(p.x, p.z) >= 72, `${n} slots: the ${name} crosses the exchange's plaza at ${p.x},${p.z}`);
+          for (const o of used) {
+            // A slot is a district's round plaza or a firm's square court: both are kept clear.
+            assert.ok(Math.hypot(p.x - o.x, p.z - o.z) >= 72, `${n} slots: the ${name} crosses the plaza at ${o.x},${o.z} (${p.x},${p.z})`);
+            assert.ok(Math.max(Math.abs(p.x - o.x), Math.abs(p.z - o.z)) >= QUARTER_COURT, `${n} slots: the ${name} crosses the court at ${o.x},${o.z}`);
+          }
+        }
+      }
+    }
+  }
+});
+
+test('a ride is taken only when it beats walking: two interior districts walk', () => {
+  const walkMs = (a: P, b: P): number => (length(streetWay(a, b).map((p) => [p.x, p.z])) / SPEED.walk) * 1000;
+  const a = { x: 240, z: 0 };
+  const b = { x: 240, z: -240 };
+  const legs = route(a, b, NET);
+  assert.deepEqual(
+    legs.map((l) => l.mode),
+    ['walk'],
+  );
+  wellFormed(legs, a, b);
+  // Wherever a ride is taken under 700 m it is quicker than the walk.
+  for (const [p, q] of [
+    [{ x: 0, z: 0 }, { x: 480, z: 0 }],
+    [{ x: 240, z: 240 }, { x: -240, z: 240 }],
+    [{ x: 560, z: -300 }, { x: 680, z: 200 }],
+  ] as Array<[P, P]>) {
+    const r = route(p, q, NET);
+    const ms = r.reduce((s, l) => s + l.ms, 0);
+    if (r.some((l) => l.mode === 'tram')) assert.ok(ms < walkMs(p, q), `the tram beats walking ${JSON.stringify([p, q])}`);
+  }
+});
+
+test('pod riders change lines at the interchange when the ends lie by different lines', () => {
+  const big = network({ blocks: 4, districts: [] });
+  const [xLine, zLine] = big.pods;
+  const from = { x: -1150, z: 150 };
+  const to = { x: 150, z: 1150 };
+  assert.ok(Math.hypot(to.x - from.x, to.z - from.z) > 1500);
+  const legs = route(from, to, big);
+  assert.deepEqual(
+    legs.map((l) => l.mode),
+    ['walk', 'pod', 'pod', 'walk'],
+  );
+  wellFormed(legs, from, to);
+  const ix = { x: POD_STREET, z: POD_STREET };
+  assert.ok(near(last(legs[1]), ix) && near(first(legs[2]), ix), 'they change at the interchange');
+  for (const p of legs[1].path) assert.equal(p[2], xLine.path[0][2], 'the first ride runs along the x line');
+  for (const p of legs[2].path) assert.equal(p[0], zLine.path[0][0], 'the second runs along the z line');
 });
 
 test('stations stand along their lines: rail stations clear of the river, pod stations every 240 m', () => {
