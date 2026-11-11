@@ -7,6 +7,7 @@
  * engine's own git and never the working tree (ruling 3), the clean check of
  * the clone, and the Beagle-style page (ruling 7).
  */
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -112,9 +113,23 @@ export const DATA_LABEL =
 /** The line after the last file. */
 export const DATA_END = 'That is all of the files. Answer only with the JSON described above.';
 
-/** A file's text inside its `<file>` tag: a closing tag in the text cannot end the quote. */
+/** A fresh tag nonce per prompt, so a README cannot write the closing tag; from the crypto source where it exists. */
+function nonce(): string {
+  try {
+    return randomBytes(4).toString('hex');
+  } catch {
+    return Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
+  }
+}
+
+/** A file's text inside its tag: any closing file tag in the text, this prompt's or a guessed one, is neutralised. */
 function quoted(text: string): string {
-  return text.replace(/<\/(file)\s*>/gi, '<\\/$1>');
+  return text.replace(/<\/(file(?:-[A-Za-z0-9]+)?)\s*>/gi, '<\\/$1>');
+}
+
+/** A path as the tag's attribute: anything outside `[A-Za-z0-9._/-]` percent-encoded, so it cannot break the tag. */
+function attr(path: string): string {
+  return path.replace(/[^A-Za-z0-9._/-]/g, (c) => encodeURIComponent(c).replace(/[^%A-Za-z0-9]/g, (d) => `%${d.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`));
 }
 
 /**
@@ -129,16 +144,18 @@ function readingOf(i: Pick<AuditInput, 'readme' | 'docs' | 'model'>): string {
   if (files.length === 0) return 'There is no README in this repository, and nothing under docs/. If that is so, answer with zero claims and no findings.';
   const out: string[] = [];
   let left = cap;
+  const tag = `file-${nonce()}`;
+  const close = `</${tag}>`;
   for (const f of files) {
     const text = f.text ?? '';
-    const open = `<file path="${f.path.replace(/"/g, '')}">`;
+    const open = `<${tag} path="${attr(f.path)}">`;
     if (left <= 0) {
-      out.push(open, `(${kb(text.length)}, left out: the reading was cut at ${kb(cap)}.)`, '</file>', '');
+      out.push(open, `(${kb(text.length)}, left out: the reading was cut at ${kb(cap)}.)`, close, '');
       continue;
     }
     const shown = text.length > left ? text.slice(0, left) : text;
     const cut = shown.length < text.length ? `\n\n(cut at ${kb(cap)}; the file goes on for ${kb(text.length - shown.length)} more.)` : '';
-    out.push(open, quoted(shown) + cut, '</file>', '');
+    out.push(open, quoted(shown) + cut, close, '');
     left -= shown.length;
   }
   return [DATA_LABEL, '', ...out, DATA_END].join('\n');
@@ -269,16 +286,24 @@ function findingOf(x: unknown, repo: string): Omit<Finding, 'id'> | null {
   return { claim, source, verdict, tested: x.tested === true, evidence, unverified: false, proposal };
 }
 
-/** The first `{...}` block of `text` that parses as JSON, read with a brace count that skips strings; a block that fails is skipped and the next `{` tried. */
+/**
+ * The first `{...}` block of `text` that parses as JSON, read with a brace
+ * count that skips strings. A block that fails to parse is skipped whole and
+ * the next `{` after its end is tried, so the scan is one pass over the text.
+ */
 export function firstJsonBlock(text: string): unknown {
-  for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
-    const found = blockFrom(text, start);
-    if (found !== null) return found;
+  let start = text.indexOf('{');
+  while (start >= 0) {
+    const { value, end } = blockFrom(text, start);
+    if (value !== null) return value;
+    if (end < 0) return null;
+    start = text.indexOf('{', end + 1);
   }
   return null;
 }
 
-function blockFrom(text: string, start: number): unknown {
+/** The balanced block at `start`: its parsed value (null when it does not parse) and the index of its closing brace, or -1 when the text ends first. */
+function blockFrom(text: string, start: number): { value: unknown; end: number } {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -296,14 +321,14 @@ function blockFrom(text: string, start: number): unknown {
       depth -= 1;
       if (depth === 0) {
         try {
-          return JSON.parse(text.slice(start, i + 1));
+          return { value: JSON.parse(text.slice(start, i + 1)), end: i };
         } catch {
-          return null;
+          return { value: null, end: i };
         }
       }
     }
   }
-  return null;
+  return { value: null, end: -1 };
 }
 
 /**
@@ -329,11 +354,16 @@ export function parseAudit(answer: unknown, text: string, repo: string): Parsed 
 
 // ---------------------------------------------------------------- the base commit
 
-/** A path that is a test by its folder or its name: `test/`, `tests/`, `__tests__/`, `*.test.*` or `*.spec.*`. */
+/** The folders that hold tests, at any depth. */
+const TEST_FOLDERS = new Set(['test', 'tests', '__tests__', 'spec']);
+/** The file names that are tests: `*.test.*` and `*.spec.*`, Python's `test_*.py` and `*_test.py`, Go's `*_test.go`, Ruby's `*_spec.rb`, Java's `*Test.java`, C#'s `*Tests.cs`, Rust's `*_test.rs` and `tests.rs`. */
+const TEST_NAMES = [/\.(test|spec)\.[^.]+$/, /^test_.+\.py$/, /.+_test\.py$/, /.+_test\.go$/, /.+_spec\.rb$/, /.+Test\.java$/, /.+Tests\.cs$/, /.+_test\.rs$/, /^tests\.rs$/];
+
+/** A path that is a test by its folder or its name (ruling 2's first leg). */
 export function isTestFile(path: string): boolean {
   const parts = path.split('/');
   const name = parts[parts.length - 1];
-  return parts.slice(0, -1).some((p) => p === 'test' || p === 'tests' || p === '__tests__') || /\.(test|spec)\.[^.]+$/.test(name);
+  return parts.slice(0, -1).some((p) => TEST_FOLDERS.has(p)) || TEST_NAMES.some((re) => re.test(name));
 }
 
 /** The modes a cited file may have at the base commit: a regular blob, plain or executable (ruling 3). */
@@ -344,10 +374,14 @@ const FILE_MODES = new Set(['100644', '100755']);
  * git, never the working tree: the path must be a regular file in that
  * tree (`ls-tree`), and the line, when given, within its line count
  * (`show`). Each file is asked once. A finding with no verified piece is
- * marked `unverified` and loses its proposal. A throw from `engineGit` (the
- * clone's `.git/config` changed) passes to the caller.
+ * marked `unverified` and loses its proposal. A REAL finding keeps REAL and
+ * `tested` only on ruling 2's two legs: a verified evidence line in a test
+ * file, or `checksPassed` (the repo's own check passed in the session, which
+ * Task 4 reports) with any verified evidence; otherwise it becomes PARTIAL.
+ * A throw from `engineGit` (the clone's `.git/config` changed) passes to the
+ * caller.
  */
-export async function verifyEvidence(findings: Finding[], dir: string, baseSha: string): Promise<Finding[]> {
+export async function verifyEvidence(findings: Finding[], dir: string, baseSha: string, o: { checksPassed?: boolean } = {}): Promise<Finding[]> {
   const isFile = new Map<string, boolean>();
   const lines = new Map<string, number | null>();
 
@@ -397,8 +431,8 @@ export async function verifyEvidence(findings: Finding[], dir: string, baseSha: 
       evidence.push({ ...e, verified });
     }
     const unverified = !evidence.some((e) => e.verified);
-    // REAL means a test exercises it: without verified evidence in a test file the claim is PARTIAL (ruling 2).
-    const testBacked = evidence.some((e) => e.verified && isTestFile(e.file));
+    // REAL means a test exercises it: a verified line in a test file, or the repo's own check passed and something verified.
+    const testBacked = evidence.some((e) => e.verified && isTestFile(e.file)) || (o.checksPassed === true && !unverified);
     const verdict: Verdict = f.verdict === 'REAL' && !testBacked ? 'PARTIAL' : f.verdict;
     const tested = f.verdict === 'REAL' ? testBacked : f.tested;
     out.push({ ...f, verdict, tested, evidence, unverified, proposal: unverified ? null : f.proposal });
