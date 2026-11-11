@@ -46,6 +46,8 @@ interface DebugHandle {
   project(p: number[]): number[];
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
+  /** The next frame's draw calls and triangles by subsystem and pass, the shadow map redrawn in it. */
+  breakdown(detail?: boolean): ReturnType<ReturnType<typeof createCity>['breakdown']>;
   /** The river's lanterns, its static draw calls and whether its water drew since last asked. */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** The quality the city draws at now (medium after an automatic drop). */
@@ -292,6 +294,7 @@ async function main(): Promise<void> {
     project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
+    breakdown: (detail) => city.breakdown(detail),
     river: () => city.river(),
     quality: () => city.quality(),
     dropQuality: () => city.dropQuality(),
