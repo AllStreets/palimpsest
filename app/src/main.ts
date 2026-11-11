@@ -21,7 +21,10 @@ import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/v
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
 import { createInspector, type MarketNames } from './ui/inspector';
+import { createInspectionPage } from './ui/inspection';
+import { createJobPage } from './ui/job';
 import { createJobs } from './ui/jobs';
+import { createRunPage } from './ui/run';
 import { createRepos } from './ui/repos';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
@@ -717,21 +720,43 @@ async function main(): Promise<void> {
     }
   });
 
-  // Repos, Settings and the job board draw over the city, which keeps running beside them. A job's own
-  // address opens the board on that job until its page exists (Task 37); a place with no screen yet
-  // (a firm, an agent, a run, an inspection, the treasury, a district) leaves the city showing.
+  // A job, a run and an inspection report each have a page (Task 37). The job's floor flies the city to it.
+  const jobPage = createJobPage(document.body, {
+    listen,
+    onDismiss: toCity,
+    floorStands: (repo, floorId) => city.floorFrame(repo, floorId) !== null,
+    flyToFloor(repo, floorId) {
+      navigate('city');
+      inspect(repo, floorId);
+      const f = city.floorFrame(repo, floorId);
+      if (f) city.flyTo(f.center, Math.max(90, f.width * 4.4));
+    },
+  });
+  const runPage = createRunPage(document.body, { listen, onDismiss: toCity });
+  const inspectionPage = createInspectionPage(document.body, { listen, onDismiss: toCity });
+
+  // Repos, Settings, the job board and the job, run and inspection pages draw over the city, which keeps
+  // running beside them. A place with no screen yet (a firm, an agent, the treasury, a district) leaves
+  // the city showing.
+  const SCREENS = new Set(['repos', 'settings', 'jobs', 'job', 'run', 'inspection']);
   let lastRoute = 'city';
   onRoute((to, place) => {
-    const route = to === 'job' ? 'jobs' : to === 'repos' || to === 'settings' || to === 'jobs' ? to : 'city';
+    const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection'].includes(to)) ? to : 'city';
     document.body.dataset.route = route;
-    runhead.setRoute(route);
+    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route);
     if (route !== 'city') inspector.close();
     if (route === 'repos') repos.show();
     else repos.hide();
     if (route === 'settings') settings.show();
     else settings.hide();
-    if (route === 'jobs') jobBoard.show(to === 'job' ? place.id : null);
+    if (route === 'jobs') jobBoard.show(null);
     else jobBoard.hide();
+    if (route === 'job') jobPage.show(place.id!);
+    else jobPage.hide();
+    if (route === 'run') runPage.show(place.id!);
+    else runPage.hide();
+    if (route === 'inspection') inspectionPage.show(place.id!);
+    else inspectionPage.hide();
     // Back in the city, focus returns to it rather than to a sheet that has gone.
     if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
     lastRoute = route;

@@ -158,12 +158,12 @@ export async function jobBoardChecks(page: Page, check: Check, shots: string): P
     check(onlyKumo && (await page.locator('.job-row[data-job]').count()) > 0, 'the filter shows one repo’s jobs');
     await page.locator('.jobs-filter [data-repo=""]').click();
 
-    // A job's own address opens the board on that job.
-    await page.evaluate((id) => {
-      location.hash = `#/jobs/${id}`;
-    }, ids[0]);
-    const marked = await within(page, 3000, async () => (await page.locator(`.job-row.focus[data-job="${ids[0]}"]`).count()) === 1);
-    check(marked, 'a job’s address opens the board with that job marked');
+    // A job's title opens its own page (Task 37), and the trail leads back to the board.
+    await page.locator(`.job-row[data-job="${ids[0]}"] .job-title`).click();
+    const opened2 = await within(page, 4000, async () => (await page.evaluate(() => location.hash)) === `#/jobs/${ids[0]}` && (await page.locator('.sheet.jobpage:not([hidden]) .sheet-title').textContent()) !== '');
+    check(opened2, 'a job’s title opens its own page');
+    await page.locator('.jobpage .detail-trail-link', { hasText: 'Jobs' }).click();
+    check(await within(page, 3000, async () => (await page.evaluate(() => location.hash)) === '#/jobs'), 'the page’s trail leads back to the board');
     check((await page.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload)) === true, 'nothing on the board reloaded the page');
     await page.keyboard.press('Escape');
     check(await within(page, 3000, async () => (await page.evaluate(() => document.body.dataset.route)) === 'city'), 'Escape returns to the city');

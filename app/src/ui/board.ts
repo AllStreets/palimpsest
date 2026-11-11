@@ -168,8 +168,8 @@ export function pct(x: number | null | undefined): string {
 
 /** Control characters (newlines and tabs are folded with the other whitespace). */
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
-/** Characters that hide or reorder text: zero widths, bidi overrides and isolates, the byte order mark. */
-const HIDDEN = /[​-‏‪-‮⁠-⁤⁦-⁩﻿]/g;
+/** Characters that hide or reorder text: zero widths, bidi marks, overrides and isolates, the Arabic letter mark, the soft hyphen, the Mongolian vowel separator, the grapheme joiner, word joiners and the byte order mark. */
+export const HIDDEN = /[\u00AD\u034F\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
 
 /**
  * Text written on GitHub (titles, bodies) is untrusted: it is only ever set

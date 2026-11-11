@@ -26,6 +26,7 @@ import { layoutTower } from '../shared/tower-layout.js';
 import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../shared/types.js';
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
+import { detailChecks } from './ui-test-detail.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
@@ -1761,6 +1762,8 @@ async function main(): Promise<void> {
         const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
         if (k >= 0) consoleErrors.splice(k, 1);
       }
+      // The job, run and inspection pages (Task 37).
+      await detailChecks(page, check, SHOTS);
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);

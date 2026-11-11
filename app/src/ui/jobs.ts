@@ -28,6 +28,8 @@ export interface JobsScreen {
 }
 
 interface Detail {
+  /** The round the bids belong to (the job's bidsCloseAt when they were read). */
+  round: string | null;
   bids: Bid[];
   satOut: JobDetail['satOut'];
   runs: RunView[];
@@ -128,7 +130,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
       .job(id)
       .then((d) => {
         jobs.set(id, d.job);
-        details.set(id, { bids: d.bids, satOut: d.satOut ?? [], runs: d.runs });
+        details.set(id, { round: d.job.bidsCloseAt, bids: d.bids, satOut: d.satOut ?? [], runs: d.runs });
         for (const r of d.runs) runJob.set(r.id, id);
       })
       .catch(() => {})
@@ -173,6 +175,16 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
     }, () => {});
   };
 
+  /**
+   * Whether an answer can join the bids already shown: the job is taking bids
+   * and its round is the one they were read in. An answer from another round
+   * (a repost, a new window) reads the job's bids again instead.
+   */
+  function inRound(jobId: string, d: Detail): boolean {
+    const j = jobs.get(jobId);
+    return !!j && j.status === 'bidding' && j.bidsCloseAt === d.round;
+  }
+
   function onEvent(e: EngineEvent): void {
     if (e.type === 'engine.reconnected') {
       void load();
@@ -199,7 +211,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
         const b = data.bid as Bid | undefined;
         if (!b?.jobId) return;
         const d = details.get(b.jobId);
-        if (!d) {
+        if (!d || !inRound(b.jobId, d)) {
           void readDetail(b.jobId);
           return;
         }
@@ -216,7 +228,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
         const s = data.satOut as (JobDetail['satOut'][number] & { jobId: string }) | undefined;
         if (!s?.jobId) return;
         const d = details.get(s.jobId);
-        if (!d) {
+        if (!d || !inRound(s.jobId, d)) {
           void readDetail(s.jobId);
           return;
         }
@@ -705,10 +717,16 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
     renderForm();
   }
 
-  /** The clocks count down every second without a rebuild. */
+  let minuteShown = Math.floor(Date.now() / 60_000);
+  /** The clocks count down every second without a rebuild; once a minute the rows redraw, so "4 minutes ago" moves on. */
   function tickClocks(): void {
     const now = Date.now();
     for (const c of boardEl.querySelectorAll<HTMLElement>('.round-clock')) setClock(c, now);
+    const minute = Math.floor(now / 60_000);
+    if (minute !== minuteShown) {
+      minuteShown = minute;
+      render();
+    }
   }
 
   /** "closes in" in the text face, the minutes and seconds in figures. */
