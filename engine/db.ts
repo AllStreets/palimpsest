@@ -173,6 +173,8 @@ function migrateLedgerIndex(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ledger_job ON ledger (job_id, id);
     CREATE INDEX IF NOT EXISTS ledger_run ON ledger (run_id, id);
     CREATE INDEX IF NOT EXISTS ledger_at ON ledger (at);
+    -- A firm's books (Task 38): its credits.moved entries, read per firm.
+    CREATE INDEX IF NOT EXISTS ledger_moved_firm ON ledger (json_extract(json, '$.firmId'), id) WHERE kind = 'credits.moved';
   `);
 }
 

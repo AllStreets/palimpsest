@@ -79,20 +79,18 @@ export function firmBooks(firmId: string, limit = BOOK_ROWS): FirmBooks {
   // Bid and run costs are charged as the models are called and settled into the ledger afterwards:
   // what is charged but not yet settled closes the books as one pending line, so they end where the
   // treasury's rows do.
-  // A row is settled when a credits.moved entry names it; another firm's or a later row being booked says nothing about it.
-  const settled = new Set(
-    (
-      db
-        .prepare("SELECT CAST(r.value AS INTEGER) AS id FROM ledger, json_each(ledger.json, '$.rowIds') AS r WHERE ledger.kind = 'credits.moved' AND json_extract(ledger.json, '$.firmId') = ? AND r.type = 'integer'")
-        .all(firmId) as Array<{ id: number | bigint }>
-    ).map((r) => Number(r.id)),
-  );
-  const pending = { micro: 0, at: null as string | null };
-  for (const r of db.prepare("SELECT id, at, amount FROM credits WHERE firm_id = ? AND kind IN ('bid', 'run') ORDER BY id").all(firmId) as Array<{ id: number | bigint; at: string; amount: number }>) {
-    if (settled.has(Number(r.id))) continue;
-    pending.micro += toMicro(r.amount);
-    pending.at = r.at;
-  }
+  // A row is settled when a credits.moved entry of its firm names it (one anti-join on the ledger's per-firm index, its list built once; a later row booked first says nothing about it).
+  const p = db
+    .prepare(
+      `SELECT COALESCE(SUM(CAST(ROUND(c.amount * 1000000) AS INTEGER)), 0) AS micro, MAX(c.at) AS at FROM credits c
+       WHERE c.firm_id = ? AND c.kind IN ('bid', 'run') AND c.id NOT IN (
+         SELECT CAST(r.value AS INTEGER) FROM ledger l, json_each(l.json, '$.rowIds') AS r
+         WHERE l.kind = 'credits.moved' AND json_extract(l.json, '$.firmId') = ? AND r.type = 'integer')`,
+    )
+    .get(firmId, firmId) as { micro: number | bigint; at: string | null };
+  // Stamped no earlier than the last booked line, so newest first it heads the books and never repeats a day.
+  const lastAt = out.at(-1)?.at ?? '';
+  const pending = { micro: Number(p.micro), at: p.at && p.at > lastAt ? p.at : lastAt || p.at };
   if (pending.micro > 0) {
     micro -= pending.micro;
     out.push({ at: pending.at ?? new Date().toISOString(), kind: 'pending', delta: -fromMicro(pending.micro), balance: fromMicro(micro), runId: null, jobId: null, agentId: null, title: null });

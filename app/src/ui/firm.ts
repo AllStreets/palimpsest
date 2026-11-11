@@ -507,6 +507,13 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
       unlisten = null;
       if (timer) clearInterval(timer);
       timer = null;
+      // Emptied, so reopening never shows the last firm's books before its own arrive.
+      id = null;
+      detail = null;
+      sheet.title.textContent = '';
+      sheet.sub.textContent = '';
+      motto.textContent = '';
+      for (const s of Object.values(slots)) s('', () => null);
     },
   };
 }

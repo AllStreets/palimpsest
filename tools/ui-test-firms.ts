@@ -75,12 +75,14 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     check(await within(page, 5000, async () => (await page.locator('.firmpage .books-row').count()) > 3), `the firm page shows its books (${await page.locator('.firmpage .books-row').count()} lines)`);
     // The page reads its books once and again on each change: wait for it to agree with the engine read beside it.
     let last: string | null = null;
+    let first: string | null = null;
     let detail = await api<FirmDetail>(page, '/api/firms/quickset');
     const agrees = await within(page, 5000, async () => {
       [last, detail] = await Promise.all([page.locator('.firmpage .books-row').first().locator('.books-bal').textContent(), api<FirmDetail>(page, '/api/firms/quickset')]);
+      first ??= last;
       return num(last) === detail.balance;
     });
-    check(agrees, `the running balance ends at the firm's balance (${last} against ${detail.balance})`);
+    check(agrees, `the running balance ends at the firm's balance (${last} against ${detail.balance}; first drawn ${first})`);
     check((await page.locator('.firmpage .person').count()) === detail.agents.length, `its people are listed (${await page.locator('.firmpage .person').count()})`);
     check((await page.locator('.firmpage .person svg.silhouette').count()) === detail.agents.length, 'each with its tower’s silhouette drawn');
     check((await page.locator('.firmpage .round-row.lost .round-ev').count()) > 0, 'a lost round shows the expected value that lost it');
@@ -137,7 +139,12 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     await page.locator('.agentpage .sheet-body').evaluate((b) => {
       b.scrollTop = 0;
     });
+    // With reduced motion asked for, the jump lands at once rather than gliding.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.locator('.agentpage .agent-jump').click();
+    const landed = await page.locator('.agentpage .persona').evaluate((e) => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight / 2; });
+    check(landed, 'with reduced motion the persona jump lands at once');
+    await page.emulateMedia({ reducedMotion: null });
     check(await within(page, 2000, async () => (await page.locator('.agentpage .persona').evaluate((e) => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight / 2; }))), 'a jump link brings the persona into view');
 
     // A seeded agent says so.
@@ -151,9 +158,36 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(shots, 'firm-bankrupt.png') });
 
+    // Leaving a firm's page empties it, so reopening never shows the last firm's books first.
+    await go(page, '#/');
+    check(await within(page, 3000, async () => (await page.locator('.firmpage .books-row').count()) === 0 && ((await page.locator('.firmpage .sheet-title').textContent()) ?? '') === ''), 'a firm page left behind is emptied');
+
+    // One balance on every screen: charges written but not yet settled count on the list, the firm's
+    // page and the agent page's firm alike. The charge is a credits row the treasury never settles
+    // here; it is removed after, before anything settles it.
+    {
+      const { openDb } = await import('../engine/db.js');
+      const { balances } = await import('../engine/market/treasury.js');
+      const was = JSON.stringify(balances());
+      const id = Number(openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'quickset', 'run-unsettled', 'run', 12.5, NULL, '{}')").run(new Date().toISOString()).lastInsertRowid);
+      try {
+        const want = balances().quickset;
+        await go(page, '#/firms');
+        const onList = await within(page, 5000, async () => num(await page.locator('.sheet.firms .firm-row[data-firm="quickset"] .firm-bal-num').textContent()) === want);
+        await go(page, '#/firms/quickset');
+        const onPage = await within(page, 5000, async () => num(await page.locator('.firmpage .standing-bal .firm-bal-num').textContent()) === want);
+        await go(page, '#/agents/mack-quickset');
+        const onAgent = await within(page, 5000, async () => num(await page.locator('.agentpage .agent-firm-bal-num').textContent()) === want);
+        check(onList && onPage && onAgent, `the list, the firm page and the agent page show one balance with charges unsettled (${want}: ${onList}, ${onPage}, ${onAgent})`);
+      } finally {
+        openDb().prepare('DELETE FROM credits WHERE id = ?').run(id);
+      }
+      check(JSON.stringify(balances()) === was, 'and the unsettled charge leaves nothing behind');
+    }
+
     // A firm below zero: its balance in rust, and the hours it has left. A throwaway firm, written
-    // straight into the firms table for this check alone and removed after it: nothing reaches the
-    // credits rows or the ledger, so no other firm's books move and replay still holds.
+    // straight into the firms table with one unsettled charge for this check alone and both removed
+    // after it: nothing reaches the ledger, so no other firm's books move and replay still holds.
     const { openDb } = await import('../engine/db.js');
     const { balances, replayBalances, settle } = await import('../engine/market/treasury.js');
     const { entries } = await import('../engine/ledger.js');
@@ -164,6 +198,8 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     const ledgerBefore = entries().length;
     const overdraft: Firm = { id: 'overdraft-check', name: 'Overdraft & Sons', root: 'roman', motto: 'Everything on account.', slot: 990, balance: -40.21, status: 'active', negativeSince: new Date().toISOString(), bankruptAt: null, createdAt: new Date().toISOString() };
     openDb().prepare('INSERT INTO firms (id, json) VALUES (?, ?)').run(overdraft.id, JSON.stringify(overdraft));
+    // Its debt is an unsettled charge, the way a firm goes below zero between settles; removed with the firm.
+    const debtRow = Number(openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, ?, NULL, 'run', 340.21, NULL, '{}')").run(new Date().toISOString(), overdraft.id).lastInsertRowid);
     try {
       await go(page, '#/firms');
       const srow = page.locator(`.sheet.firms .firm-row[data-firm="${overdraft.id}"]`);
@@ -172,6 +208,7 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
       await page.waitForTimeout(300);
       await page.screenshot({ path: join(shots, 'firms-negative.png') });
     } finally {
+      openDb().prepare('DELETE FROM credits WHERE id = ?').run(debtRow);
       openDb().prepare('DELETE FROM firms WHERE id = ?').run(overdraft.id);
     }
     check(JSON.stringify(balances()) === booksBefore, 'every firm’s books are as they were before the check');

@@ -319,10 +319,16 @@ export function installTreasury(o: { now?: () => number } = {}): () => void {
   return off;
 }
 
-/** Every firm's balance, rebuilt from the credits rows alone. */
+/** Every firm's balance, rebuilt from the credits rows and each firm's seeded balance. */
 export function balances(): Record<string, number> {
   const micro: Record<string, number> = {};
-  for (const f of listFirms()) micro[f.id] = toMicro(START_BALANCE);
+  // Each firm starts where it was seeded (the start balance for a firm with no seed on record), as replay does.
+  const seeded = new Map<string, number>();
+  for (const e of query({ kind: 'firm.seeded' })) {
+    const f = (e.data as { firm?: { id?: string; balance?: number } }).firm;
+    if (f?.id && typeof f.balance === 'number' && !seeded.has(f.id)) seeded.set(f.id, f.balance);
+  }
+  for (const f of listFirms()) micro[f.id] = toMicro(seeded.get(f.id) ?? START_BALANCE);
   const rows = openDb()
     .prepare(`SELECT firm_id, kind, amount FROM credits WHERE firm_id IS NOT NULL AND kind IN (${MONEY_KINDS.map((k) => `'${k}'`).join(', ')})`)
     .all() as Array<{ firm_id: string; kind: MoneyKind; amount: number }>;

@@ -246,6 +246,19 @@ test('firms list reputations and agents, and a firm carries its jobs and credit 
   assert.equal((await call('GET', '/api/firms/nobody')).status, 404);
 });
 
+test('the list, a firm and an agent’s firm read one balance, charges not yet settled included', async () => {
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'alpha', 'run-x', 'run', 320, NULL, '{}')").run(new Date().toISOString());
+  const list = (await call('GET', '/api/firms')).json.find((f: { id: string }) => f.id === 'alpha');
+  const one = (await call('GET', '/api/firms/alpha')).json;
+  const ag = (await call('GET', '/api/agents/a1')).json;
+  assert.equal(list.balance, -20);
+  assert.equal(one.balance, -20);
+  assert.equal(ag.firm.balance, -20);
+  // Below zero by that balance: the hours left count from a negativeSince all three share.
+  assert.ok(list.negativeSince && one.negativeSince && ag.firm.negativeSince);
+});
+
 test('agent detail carries genome and lineage', async () => {
   const repo = repoOf();
   const parent = addAgent('p1', 'alpha', 'claude:sonnet');

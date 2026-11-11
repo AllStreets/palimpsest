@@ -17,6 +17,7 @@ import type {
   Agent,
   AgentDetail,
   CheckView,
+  Firm,
   FirmDetail,
   FirmView,
   Inspection,
@@ -291,8 +292,20 @@ async function withdraw(j: Job): Promise<Job> {
 
 // ------------------------------------------------------------------ firms, agents
 
-function firmView(f: ReturnType<typeof listFirms>[number], log = reputationLog()): FirmView {
-  return { ...f, reputation: reputation(f.id, log), agents: listAgents(f.id) };
+/**
+ * A firm as every screen shows it: its balance from the treasury's rows
+ * (charges not yet settled included), and whether and since when it is below
+ * zero by that same balance. The stored balance and negativeSince are what
+ * the treasury last wrote at a settle; the report and replay keep reading those.
+ */
+function liveFirm<T extends Firm>(f: T, b: Record<string, number> = balances()): T {
+  const balance = b[f.id] ?? f.balance;
+  const negativeSince = balance < 0 ? (f.negativeSince ?? new Date().toISOString()) : f.status === 'bankrupt' ? f.negativeSince : null;
+  return { ...f, balance, negativeSince };
+}
+
+function firmView(f: ReturnType<typeof listFirms>[number], log = reputationLog(), b: Record<string, number> = balances()): FirmView {
+  return { ...liveFirm(f, b), reputation: reputation(f.id, log), agents: listAgents(f.id) };
 }
 
 
@@ -302,7 +315,7 @@ function agentDetail(a: Agent): AgentDetail {
   const tower = quarters().flatMap((q) => q.towers).find((t) => t.agentId === a.id) ?? null;
   return {
     agent: a,
-    firm: firm(a.firmId),
+    firm: ((f) => (f ? liveFirm(f) : null))(firm(a.firmId)),
     tower,
     runs: listRuns().filter((r) => r.agentId === a.id).map(publicRun),
     genome: toGenome(a),
@@ -441,7 +454,8 @@ export async function handleMarketApi(
   // firms and agents
   if (pathname === '/api/firms' && method === 'GET') {
     const log = reputationLog();
-    return send(200, listFirms().map((f) => firmView(f, log)));
+    const b = balances();
+    return send(200, listFirms().map((f) => firmView(f, log, b)));
   }
   if ((m = pathname.match(/^\/api\/firms\/([^/]+)$/)) && method === 'GET') {
     const f = firm(idOf(m[1], 'firm'));
@@ -450,8 +464,6 @@ export async function handleMarketApi(
     const books = firmBooks(f.id);
     const detail: FirmDetail = {
       ...firmView(f),
-      // The balance its books end at: the treasury's rows, charges not yet settled included.
-      balance: balances()[f.id] ?? f.balance,
       jobs: ids.map((id) => job(id)).filter((x): x is Job => x !== null),
       opening: books.opening,
       truncated: books.truncated,

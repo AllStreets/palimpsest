@@ -7,7 +7,7 @@ import { issueBlocks } from './detail';
 import { gauge, measures, silhouetteGlyph } from './firms';
 import { ERA_NAMES, floorList, ROOT_NAMES, type MarketNames } from './inspector';
 import { blockNodes, coalesce, detailSheet, keyedSlot, pageLink, secHead, setTrail } from './pages';
-import { lineageWords, shortDate, workflowWords } from './story';
+import { figure, lineageWords, shortDate, workflowWords } from './story';
 import './market.css';
 
 export interface AgentPage {
@@ -118,7 +118,8 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
     jump.type = 'button';
     jump.addEventListener('click', () => {
       const p = body.querySelector<HTMLElement>('.persona');
-      p?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      p?.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' });
       p?.querySelector<HTMLElement>('.repos-sec')?.focus({ preventScroll: true });
     });
     row.append(follow, ride, jump);
@@ -241,6 +242,12 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
           : `${firm} has no resolved bids yet, so every claim it makes is trimmed by ${Math.round(r.overclaim * 100)}% until its record says otherwise.`,
       ),
     );
+    if (d.firm) {
+      // The firm's books, read as the firms list and its page read them.
+      const bal = el('p', `agent-firm-bal${d.firm.balance < 0 ? ' neg' : ''}`);
+      bal.append(`${firm} holds `, el('span', 'agent-firm-bal-num', figure(d.firm.balance)), ' credits.');
+      sec.append(bal);
+    }
     const ms = el('dl', 'standing-measures cal-measures');
     for (const m of measures(r)) {
       const row = el('div', `measure m-${m.key}`);
@@ -349,7 +356,7 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
     slots.persona(JSON.stringify([a.id, a.instructions]), () => personaSection(a));
     slots.design(JSON.stringify([d.genome, a.bidsOn, a.maxTurns, a.capability]), () => designSection(d));
     slots.lineage(JSON.stringify([a.lineage, d.lineage.parents.map((x) => x.id), d.lineage.children.map((x) => x.id)]), () => lineageSection(d));
-    slots.calibration(JSON.stringify([d.reputation, d.firm?.name]), () => calibrationSection(d));
+    slots.calibration(JSON.stringify([d.reputation, d.firm?.name, d.firm?.balance]), () => calibrationSection(d));
     slots.tower(JSON.stringify([d.tower, d.towerFirmId, firms.length, d.runs.map((r) => r.inspectionId)]), () => towerSection(d));
     slots.runs(JSON.stringify([d.runs.map((r) => [r.id, r.outcome, r.stage, r.progress.credits]), jobs.size, allRuns]), () => runsSection(d));
   }
@@ -377,6 +384,13 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
       sheet.hide();
       unlisten?.();
       unlisten = null;
+      // Emptied, so the next agent shown never flashes this one first.
+      id = null;
+      detail = null;
+      sheet.title.textContent = '';
+      sheet.sub.textContent = '';
+      line.textContent = '';
+      for (const s of Object.values(slots)) s('', () => null);
     },
   };
 }

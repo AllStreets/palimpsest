@@ -15,6 +15,8 @@ import { record } from '../engine/ledger.js';
 import { firmBooks, firmDeals, firmRounds } from '../engine/market/firm-story.js';
 import { seedFirms } from '../engine/market/firms.js';
 import { reputation, reputationLine } from '../engine/market/reputation.js';
+import { balances, replayBalances } from '../engine/market/treasury.js';
+import { entries } from '../engine/ledger.js';
 import { START_BALANCE } from '../shared/market-rules.js';
 import type { Bid, Job } from '../shared/types.js';
 
@@ -197,4 +199,26 @@ test('a charge stays pending until its own row is settled, even when a later row
   const rows = firmBooks('quickset').rows;
   assert.equal(rows.at(-1)!.kind, 'pending', 'the run’s cost is not in the ledger yet');
   assert.equal(rows.at(-1)!.balance, START_BALANCE + 20 - 4);
+});
+
+test('a firm seeded with another balance opens the books and the treasury’s balance alike', () => {
+  const f = { id: 'harrow', name: 'Harrow', root: 'roman', motto: '', slot: 40, balance: 250, status: 'active', negativeSince: null, bankruptAt: null, createdAt: new Date().toISOString() };
+  openDb().prepare('INSERT INTO firms (id, json) VALUES (?, ?)').run(f.id, JSON.stringify(f));
+  record('firm.seeded', { firm: f });
+  const id = Number(openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'harrow', NULL, 'pay', 10, NULL, '{}')").run(new Date().toISOString()).lastInsertRowid);
+  moved('harrow', 'pay', 10, { rowIds: [id] });
+  assert.equal(firmBooks('harrow').opening, 250);
+  assert.equal(firmBooks('harrow').rows.at(-1)!.balance, 260);
+  assert.equal(balances().harrow, 260, 'the treasury starts it where it was seeded, not at the start balance');
+  assert.equal(replayBalances(entries()).harrow, 260);
+});
+
+test('the pending line is never older than the last booked line', () => {
+  const ins = openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'quickset', ?, ?, ?, NULL, '{}')");
+  ins.run('2026-11-01T10:00:00.000Z', 'run-a', 'run', 4);
+  const later = Number(ins.run('2026-11-05T10:00:00.000Z', null, 'pay', 20).lastInsertRowid);
+  moved('quickset', 'pay', 20, { rowIds: [later], at: '2026-11-05T10:00:00.000Z' });
+  const rows = firmBooks('quickset').rows;
+  assert.equal(rows.at(-1)!.kind, 'pending');
+  assert.ok(rows.at(-1)!.at >= rows.at(-2)!.at, `the pending line stands after the last booked one (${rows.at(-1)!.at})`);
 });
