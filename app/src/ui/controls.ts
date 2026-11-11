@@ -79,6 +79,8 @@ export interface Switch {
   el: HTMLButtonElement;
   on: boolean;
   set(on: boolean): void;
+  /** Holds the switch where it is: it stays focusable and says it is disabled, and a click changes nothing. */
+  setDisabled(disabled: boolean): void;
 }
 
 /**
@@ -98,9 +100,14 @@ export function createSwitch(className: string, label: string, onChange: (on: bo
       sw.on = on;
       b.setAttribute('aria-checked', String(on));
     },
+    setDisabled(disabled) {
+      if (disabled) b.setAttribute('aria-disabled', 'true');
+      else b.removeAttribute('aria-disabled');
+    },
   };
   sw.set(false);
   b.addEventListener('click', () => {
+    if (b.getAttribute('aria-disabled') === 'true') return;
     sw.set(!sw.on);
     onChange(sw.on);
   });

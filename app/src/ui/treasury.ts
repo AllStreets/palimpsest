@@ -52,6 +52,14 @@ const W = 640;
 const BASE = 50.5;
 const x = (p: number): number => Math.round((Math.max(0, Math.min(100, p)) / 100) * W * 2) / 2;
 
+/** Past this share of the scale a mark's label reads to the left of its mark, so it never runs into the hard stop. */
+const LABEL_FLIP_PCT = 60;
+
+/** Where a cap mark's label stands: to the right of its mark, or to the left once the mark sits past LABEL_FLIP_PCT. */
+function markLabelAt(pct: number, markX: number, y: number): Record<string, string | number> {
+  return pct > LABEL_FLIP_PCT ? { x: markX - 4, y, 'text-anchor': 'end' } : { x: markX + 4, y };
+}
+
 /**
  * One window as a ruled meter, drawn as an engineer rules a scale: his plan
  * as the heavy bar (what the last reading said, solid; what the city has
@@ -77,7 +85,7 @@ function meterRule(w: BudgetWindow, o: { cap: number | null; capLabel: string; s
   if (o.cap !== null) {
     const cx = x(o.cap);
     svg.append(svgEl('path', { d: `M${cx} 26.5V36.5` }, 'meter-cap'));
-    const ct = svgEl('text', { x: cx + 4, y: 40.5 }, 'meter-mark-label');
+    const ct = svgEl('text', markLabelAt(o.cap, cx, 40.5), 'meter-mark-label');
     ct.textContent = o.capLabel;
     svg.append(ct);
   }
@@ -89,7 +97,7 @@ function meterRule(w: BudgetWindow, o: { cap: number | null; capLabel: string; s
     svg.append(seg);
     const nx = x(o.night.capPct);
     svg.append(svgEl('path', { d: `M${nx} 34.5V44.5` }, 'meter-cap night'));
-    const nt = svgEl('text', { x: nx + 4, y: 43.5 }, 'meter-mark-label night');
+    const nt = svgEl('text', markLabelAt(o.night.capPct, nx, 43.5), 'meter-mark-label night');
     nt.textContent = `night cap ${pctOf(o.night.capPct)}, unattended use`;
     svg.append(nt);
   }

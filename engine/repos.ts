@@ -1,5 +1,5 @@
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { District, Floor, Repo, RepoChecks, RootStyle, TowerSpec } from '../shared/types.js';
+import type { CheckField, District, Floor, Repo, RepoChecks, RootStyle, TowerSpec } from '../shared/types.js';
 import { openDb } from './db.js';
 import { emit } from './events.js';
 import { GhError, mergedPRs, repoMeta } from './github.js';
@@ -435,6 +435,9 @@ export function updateRepoMarket(fullName: string, p: Partial<Pick<Repo, 'halted
 /** The fields of RepoChecks that name a command or what to render; a change to any of them invalidates baselines. */
 const COMMAND_FIELDS = ['test', 'typecheck', 'lint', 'build', 'screenshot', 'install', 'preview', 'ecosystems'] as const;
 
+/** The checks the district page lets him set. */
+const SETTABLE: CheckField[] = ['install', 'test', 'typecheck', 'lint', 'build', 'screenshot', 'preview', 'shots'];
+
 function commandsChanged(a: RepoChecks | null, b: RepoChecks | null): boolean {
   if (!a || !b) return a !== b;
   return COMMAND_FIELDS.some((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
@@ -487,6 +490,10 @@ export function patchRepo(fullName: string, p: RepoPatch): Repo {
     const base = repo.checks ?? emptyChecks();
     const merged: RepoChecks = { ...base, ...checksPatch };
     const changed = commandsChanged(base, merged);
+    // Which of them he set by hand, one by one: the district page says "set by you" beside each.
+    const mine = new Set<CheckField>(base.setByYou ?? []);
+    for (const k of SETTABLE) if (k in checksPatch && JSON.stringify(base[k]) !== JSON.stringify(merged[k])) mine.add(k);
+    if (mine.size) merged.setByYou = [...mine].sort();
     if (checksPatch.detected === undefined && changed) merged.detected = false;
     if (commandsChanged(repo.checks, merged)) clearBaselines(fullName);
     checks = merged;

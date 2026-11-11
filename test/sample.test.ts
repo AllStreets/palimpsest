@@ -62,3 +62,34 @@ test('the sample tool marks the home it writes as a sample home', () => {
   assert.equal(existsSync(join(dir, SAMPLE_MARKER)), true);
   assert.equal(existsSync(join(dir, 'palimpsest.db')), true);
 });
+
+test('the sample stand-in keeps an API key in memory: security never runs, and no keychain is touched', async () => {
+  const { sampleGh, sampleSpawner, sampleKeychain } = await import('../engine/sample.js');
+  const { getRunner, getSpawner, setRunner, setSpawner } = await import('../engine/exec.js');
+  const { apiKey, removeApiKey, setApiKey } = await import('../engine/market/anthropic-api.js');
+  const { writeFileSync } = await import('node:fs');
+  process.env.PALIMPSEST_HOME = join(tempDir, 'home');
+  const kc = join(tempDir, 'stand-in.keychain-db');
+  writeFileSync(kc, '');
+  const KEY = 'sk-ant-api03-SAMPLEKEYONLY0000';
+  const [runner, spawner] = [getRunner(), getSpawner()];
+  setRunner(sampleGh());
+  setSpawner(sampleSpawner);
+  try {
+    sampleKeychain.reset();
+    assert.equal(await apiKey({ keychain: kc }), null);
+    await setApiKey(KEY, { keychain: kc });
+    assert.equal(await apiKey({ keychain: kc }), KEY, 'held by the stand-in');
+    assert.equal(sampleKeychain.isSet(), true);
+    await removeApiKey({ keychain: kc });
+    assert.equal(await apiKey({ keychain: kc }), null, 'and gone once removed');
+    // Anything but security still starts nothing in a sample engine.
+    const other = await sampleSpawner('claude', ['-p'], {}).done;
+    assert.match(other.error ?? '', /not started in a sample engine/);
+  } finally {
+    setRunner(runner);
+    setSpawner(spawner);
+    sampleKeychain.reset();
+    delete process.env.PALIMPSEST_HOME;
+  }
+});

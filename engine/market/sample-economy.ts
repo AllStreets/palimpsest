@@ -1723,6 +1723,8 @@ export function sampleOllamaUsage(now: number = Date.now()): ProviderUsage {
     tokens: null,
     spendUsd: null,
     detail: `${SAMPLE_INSTALLED.length} models installed; local credits ${since(midnight.getTime())} today, ${since(now - 7 * DAY)} this week`,
+    models: [...SAMPLE_INSTALLED],
+    host: getSettings().ollamaHost,
   };
 }
 

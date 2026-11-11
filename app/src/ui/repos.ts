@@ -1,7 +1,9 @@
-import type { District, Repo, RootStyle } from '../../../shared/types';
+import type { District, Job, Repo, RootStyle } from '../../../shared/types';
 import { pushModeRefusal } from '../../../shared/market-rules';
 import { api, ApiError, type AvailableRepo, type EngineEvent } from '../api';
+import { placeHref } from '../router';
 import {
+  ago,
   button,
   checkRadio,
   createSheet,
@@ -16,6 +18,7 @@ import {
   textButton,
 } from './controls';
 import { ROOT_NAMES } from './inspector';
+import { coalesce } from './pages';
 
 const ROOTS: RootStyle[] = ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago'];
 
@@ -51,6 +54,14 @@ const STEPS: Array<[string, string]> = [
   ['floors', 'Laying out floors'],
 ];
 
+/** What push mode does, beside its switch. */
+export const PUSH_NOTE = 'merges to main after inspection; needs a test and a build command';
+
+/** What the market switch does on a repo, with its label. */
+export function marketNote(label: string): string {
+  return `issues labelled ${label} post jobs`;
+}
+
 /** gh's not-found text quotes GraphQL; say what it means instead. Every other engine message is already plain. */
 function plainError(message: string): string {
   if (/^Repository not found/i.test(message)) return 'GitHub could not find this repo, or your gh login cannot read it.';
@@ -69,6 +80,7 @@ interface Row {
   /** One request at a time per control, the user's last choice winning: connect, push mode, root. */
   connectSync: LatestWins<boolean>;
   pushSync: LatestWins<boolean> | null;
+  marketSync: LatestWins<boolean> | null;
   rootSync: LatestWins<RootStyle> | null;
   /** The status line: what the analysis says (rebuilt only when it changes), then Disconnect at the right. */
   status: HTMLElement;
@@ -77,6 +89,12 @@ interface Row {
   disconnect: HTMLButtonElement;
   controls: HTMLElement | null;
   push: Switch | null;
+  market: Switch | null;
+  /** The name: a link to the district page while the repo is in the city. */
+  name: HTMLAnchorElement;
+  /** A halt with Resume, or a harness job waiting on him; rebuilt only when what it says changes. */
+  alerts: HTMLElement;
+  alertsKey: string;
   roots: HTMLElement | null;
   /** Text the search matches against. */
   haystack: string;
@@ -86,7 +104,9 @@ interface Row {
  * Every repo gh can see, one hairline row each, with a connect switch.
  * Connected repos stand first, under "In the city", each with its status
  * (the analysis step, ready with its floor count, or an error and Retry),
- * its root, push mode and Disconnect.
+ * a halt (with Resume) or a harness job waiting on him, its market and push
+ * mode switches, its root and Disconnect. A connected repo's name opens its
+ * district page.
  */
 export function createRepos(
   parent: HTMLElement,
@@ -125,6 +145,8 @@ export function createRepos(
   const callErrors = new Map<string, string>();
   /** Why push mode is off where he asked for it on. */
   const pushWhy = new Map<string, string>();
+  /** Harness jobs proposed and waiting on him, by repo. */
+  const harness = new Map<string, Job>();
   const rows = new Map<string, Row>();
   let unlisten: (() => void) | null = null;
 
@@ -139,7 +161,7 @@ export function createRepos(
 
   async function load(): Promise<void> {
     notice.replaceChildren(el('p', 'repos-waiting', 'Asking GitHub for your repos'));
-    await loadStored();
+    await Promise.all([loadStored(), loadProposals()]);
     render();
     try {
       available = await api.available();
@@ -158,6 +180,18 @@ export function createRepos(
     readFloors(districts);
   }
 
+  /** The harness jobs proposed and waiting on him (ruling 23), one per repo at most. */
+  async function loadProposals(): Promise<void> {
+    const jobs = await api.jobs({ status: 'proposed' }).catch(() => null);
+    if (!jobs) return;
+    harness.clear();
+    for (const j of jobs) if (j.source === 'harness' && !harness.has(j.repo)) harness.set(j.repo, j);
+  }
+  const reloadProposals = coalesce(async () => {
+    await loadProposals();
+    render();
+  });
+
   function readFloors(districts: District[]): void {
     floors.clear();
     for (const d of districts) floors.set(d.repo, d.tower.floors.length);
@@ -166,6 +200,14 @@ export function createRepos(
   function onEvent(e: EngineEvent): void {
     if (e.type === 'engine.reconnected') {
       // The stream was down, so events may have been missed: take the engine's record as it is now.
+      void Promise.all([loadStored(), loadProposals()]).then(render);
+      return;
+    }
+    if (e.type.startsWith('job.')) {
+      reloadProposals();
+      return;
+    }
+    if (e.type === 'repo.halted' || e.type === 'repo.resumed') {
       void loadStored().then(render);
       return;
     }
@@ -254,7 +296,19 @@ export function createRepos(
     render();
   }
 
-  async function patch(fullName: string, p: Partial<Pick<Repo, 'pushMode' | 'root'>>): Promise<void> {
+  async function resume(fullName: string): Promise<void> {
+    callErrors.delete(fullName);
+    try {
+      stored.set(fullName, await api.resumeRepo(fullName));
+    } catch (err) {
+      callErrors.set(fullName, err instanceof Error ? err.message : String(err));
+    }
+    render();
+    // Resume removes the button that was pressed: focus goes to the row's market switch.
+    if (!sheet.root.contains(document.activeElement)) rows.get(fullName)?.market?.el.focus({ preventScroll: true });
+  }
+
+  async function patch(fullName: string, p: Partial<Pick<Repo, 'pushMode' | 'root' | 'market'>>): Promise<void> {
     try {
       stored.set(fullName, await api.patchRepo(fullName, p));
     } catch (err) {
@@ -274,7 +328,7 @@ export function createRepos(
     const connect = createSwitch('connect', `Connect ${fullName}`, (on) => row.connectSync.set(on));
 
     const head = el('div', 'repo-head');
-    const title = el('span', 'repo-name', name ?? fullName);
+    const title = el('a', 'repo-name', name ?? fullName);
     head.append(title, el('span', 'repo-owner', owner ?? ''));
     if (meta.private) {
       const p = el('span', 'repo-private');
@@ -294,7 +348,10 @@ export function createRepos(
     disconnect.setAttribute('aria-label', `Disconnect ${fullName}`);
     const desc = el('p', 'repo-desc', meta.description ?? '');
     if (!meta.description) desc.hidden = true;
-    li.append(connect.el, head, lang, desc, status);
+    const alerts = el('div', 'repo-alerts');
+    alerts.setAttribute('aria-live', 'polite');
+    alerts.hidden = true;
+    li.append(connect.el, head, lang, desc, status, alerts);
 
     const row: Row = {
       fullName,
@@ -308,6 +365,7 @@ export function createRepos(
         },
       ),
       pushSync: null,
+      marketSync: null,
       rootSync: null,
       status,
       statusBody,
@@ -315,6 +373,10 @@ export function createRepos(
       disconnect,
       controls: null,
       push: null,
+      market: null,
+      name: title,
+      alerts,
+      alertsKey: '',
       roots: null,
       haystack: `${fullName} ${meta.description ?? ''} ${meta.language ?? ''}`.toLowerCase(),
     };
@@ -352,6 +414,21 @@ export function createRepos(
     rovingRadios(group, choose);
     rootWrap.append(rootLabel, group, rootName);
 
+    const switches = el('div', 'repo-switches');
+    const marketWrap = el('div', 'repo-market');
+    const market = createSwitch('market', `Market for ${row.fullName}`, (on) => row.marketSync?.set(on));
+    row.marketSync = latestWins<boolean>(
+      (on) => (stored.get(row.fullName)?.market === on ? Promise.resolve() : patch(row.fullName, { market: on })),
+      (busy) => {
+        markBusy(market.el, busy);
+        if (!busy) render();
+      },
+    );
+    const marketText = el('span', 'repo-push-text');
+    marketText.append(el('span', 'repo-ctl-label', 'Market'), el('span', 'repo-push-note repo-market-note', marketNote(stored.get(row.fullName)?.label ?? 'palimpsest')));
+    marketText.addEventListener('click', () => market.el.click());
+    marketWrap.append(market.el, marketText);
+
     const pushWrap = el('div', 'repo-push');
     const push = createSwitch('push', `Push mode for ${row.fullName}`, (on) => row.pushSync?.set(on));
     row.pushSync = latestWins<boolean>(
@@ -369,15 +446,19 @@ export function createRepos(
       },
     );
     const pushText = el('span', 'repo-push-text');
-    pushText.append(el('span', 'repo-ctl-label', 'Push mode'), el('span', 'repo-push-note', 'takes effect when the market opens'));
+    pushText.append(el('span', 'repo-ctl-label', 'Push mode'), el('span', 'repo-push-note', PUSH_NOTE));
     pushText.addEventListener('click', () => push.el.click());
     const why = el('span', 'repo-push-why');
+    why.id = `push-why-${row.fullName.replace(/[^A-Za-z0-9_-]/g, '-')}`;
     why.setAttribute('aria-live', 'polite');
+    push.el.setAttribute('aria-describedby', why.id);
     pushWrap.append(push.el, pushText, why);
+    switches.append(marketWrap, pushWrap);
 
-    c.append(rootWrap, pushWrap);
+    c.append(switches, rootWrap);
     row.controls = c;
     row.push = push;
+    row.market = market;
     row.roots = group;
     return c;
   }
@@ -424,6 +505,45 @@ export function createRepos(
     row.status.hidden = !on && !callError;
   }
 
+  /** The halt (with Resume) and the harness job waiting on him, each a line of its own. */
+  function fillAlerts(row: Row, repo: Repo | undefined): void {
+    const on = !!repo?.connected;
+    const halted = on ? repo!.halted : null;
+    const proposal = on ? harness.get(row.fullName) : undefined;
+    const key = JSON.stringify([halted, proposal?.id ?? null, proposal?.title ?? null]);
+    if (key === row.alertsKey) return;
+    row.alertsKey = key;
+    row.alerts.replaceChildren();
+    if (halted) {
+      const block = el('div', 'repo-halt');
+      const head = el('p', 'repo-halt-head');
+      head.append(el('span', 'repo-halt-word', `Halted ${ago(Date.parse(halted.at))}`));
+      const b = textButton('repo-resume', 'Resume', () => void resume(row.fullName));
+      b.setAttribute('aria-label', `Resume the market on ${row.fullName}`);
+      head.append(b);
+      block.append(head, el('p', 'repo-halt-reason', `${halted.reason.replace(/\.?$/, '.')} No jobs open here until you resume.`));
+      row.alerts.append(block);
+    }
+    if (proposal) {
+      const line = el('p', 'repo-harness');
+      const a = el('a', 'repo-harness-link', proposal.title);
+      a.href = placeHref('job', proposal.id);
+      line.append(el('span', 'repo-harness-word', 'Harness proposed'), document.createTextNode(' '), a);
+      row.alerts.append(line);
+    }
+    row.alerts.hidden = !halted && !proposal;
+  }
+
+  /** Push mode needs a test and a build command (ruling 23): without them the switch is held off, and says why. */
+  function fillPush(row: Row, repo: Repo): void {
+    const refusal = repo.pushMode ? null : pushModeRefusal(repo.checks);
+    row.push?.setDisabled(refusal !== null);
+    row.push?.set(refusal ? false : (row.pushSync?.want ?? repo.pushMode));
+    const why = row.controls?.querySelector('.repo-push-why');
+    const text = refusal ?? pushWhy.get(row.fullName) ?? '';
+    if (why && why.textContent !== text) why.textContent = text;
+  }
+
   // ---------------------------------------------------------------- render
 
   function render(): void {
@@ -449,19 +569,24 @@ export function createRepos(
         if (on) {
           const c = controlsFor(row);
           if (c.parentElement !== row.el) row.el.append(c);
-          row.push?.set(row.pushSync?.want ?? repo.pushMode);
-          const why = row.controls?.querySelector('.repo-push-why');
-          if (why && why.textContent !== (pushWhy.get(fullName) ?? '')) why.textContent = pushWhy.get(fullName) ?? '';
+          fillPush(row, repo);
+          row.market?.set(row.marketSync?.want ?? repo.market);
+          const note = row.controls?.querySelector('.repo-market-note');
+          if (note && note.textContent !== marketNote(repo.label)) note.textContent = marketNote(repo.label);
+          const href = placeHref('repo', fullName);
+          if (row.name.getAttribute('href') !== href) row.name.setAttribute('href', href);
           const root = row.rootSync?.want ?? repo.root;
           const chosen = row.roots?.querySelector<HTMLElement>(`[data-root="${root}"]`) ?? null;
           // Re-checking moves the tab stop; leave a radio the user is on alone.
           if (row.roots && chosen?.getAttribute('aria-checked') !== 'true') checkRadio(row.roots, chosen);
           const nameEl = row.controls?.querySelector('.root-name');
           if (nameEl) nameEl.textContent = ROOT_NAMES[root];
-        } else if (row.controls?.parentElement === row.el) {
-          row.controls.remove();
+        } else {
+          if (row.controls?.parentElement === row.el) row.controls.remove();
+          row.name.removeAttribute('href');
         }
         fillStatus(row, repo);
+        fillAlerts(row, repo);
         const match = !q || row.haystack.includes(q);
         row.el.hidden = !match;
         if (match) shown++;

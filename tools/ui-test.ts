@@ -5,7 +5,10 @@
  * city renders without console errors. Saves screenshots to shots/.
  *
  * The Repos and Settings checks fake every gh/git call in-process (setRunner),
- * and the usage hook buttons write only to a temp claude settings file.
+ * and the usage hook buttons write only to a temp claude settings file. The
+ * API key field goes to the sample keychain, held in this process's memory:
+ * `security` never runs, and the engine is named a keychain file in the temp
+ * dir besides, so no keychain on this Mac is ever touched.
  *
  * Run after `npm run build`: `npm run ui-test`. Optional: UI_DPR=2 renders
  * at retina density, UI_QUALITY=medium switches the quality setting first,
@@ -28,6 +31,7 @@ import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../share
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { detailChecks } from './ui-test-detail.js';
 import { firmChecks } from './ui-test-firms.js';
+import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
@@ -1662,13 +1666,18 @@ async function main(): Promise<void> {
   const { setRunner } = await import('../engine/exec.js');
   // Slow enough that each analysis step is visible, and never the network.
   setRunner(sampleGh(450));
+  // The API key routes: the sample keychain answers every `security` call (the runner above, the spawner here),
+  // and the keychain the engine names is a file in the temp dir, never his login keychain.
+  await installKeychainStandIn();
+  const keychain = join(tmp, 'ui-test.keychain-db');
+  writeFileSync(keychain, '');
   const { startServer } = await import('../engine/server.js');
-  let server = await startServer({ port: PORT, claudeSettingsPath });
+  let server = await startServer({ port: PORT, claudeSettingsPath, keychain });
   const restart = async (whileDown: () => Promise<void>): Promise<void> => {
     await server.close();
     await whileDown();
     await new Promise((r) => setTimeout(r, 500));
-    server = await startServer({ port: PORT, claudeSettingsPath });
+    server = await startServer({ port: PORT, claudeSettingsPath, keychain });
   };
 
   const browser = await chromium.launch({
@@ -1784,6 +1793,8 @@ async function main(): Promise<void> {
       await firmChecks(page, check, SHOTS);
       // The treasury and the daily report (Task 39).
       await treasuryChecks(page, check, SHOTS);
+      // The market switches on Repos, the district page and the provider settings (Task 40).
+      await marketChecks(page, check, SHOTS);
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);

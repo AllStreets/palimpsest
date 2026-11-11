@@ -3449,3 +3449,523 @@ a.spend-bal.gone {
   font-family: var(--sans);
   font-size: 11.5px;
 }
+
+/* ================================================================ a district's page (Task 40) */
+
+body[data-route='repo'] {
+  --sheet-w: clamp(680px, 58vw, 980px);
+}
+
+.district-sec {
+  margin-top: 6px;
+}
+.district-facts {
+  column-gap: 0;
+}
+.district-fact {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.district-fact + .district-fact::before,
+.district-facts .district-github::before {
+  content: '/';
+  margin: 0 10px;
+  color: rgba(236, 230, 218, 0.22);
+  text-decoration: none;
+  display: inline-block;
+}
+.district-facts .district-github {
+  margin-left: 0;
+}
+.district-sec[hidden] {
+  display: none;
+}
+
+/* A row of the ledger: an italic name at the left, what it does and why in the middle, its control at the right. */
+.district-row {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) 48px;
+  column-gap: 26px;
+  align-items: start;
+  padding: 14px 0 15px;
+  border-bottom: 1px solid var(--rule);
+}
+.district-row[hidden] {
+  display: none;
+}
+.district-row > .slide {
+  justify-self: end;
+  margin-top: 1px;
+}
+.district-row-name {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 16px;
+  line-height: 1.25;
+  color: var(--ink);
+  cursor: pointer;
+}
+.district-row-main {
+  min-width: 0;
+}
+.district-what {
+  max-width: 64ch;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.district-switch.held .district-what {
+  color: var(--ink-2);
+}
+.district-why {
+  margin-top: 4px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #d9b48a;
+}
+.district-why:empty {
+  display: none;
+}
+
+/* An editable command or name: set in mono on a hairline, the way a value is written into a printed form. */
+.mono-field {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  height: 28px;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--rule-strong);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  cursor: text;
+}
+.mono-field::placeholder {
+  color: rgba(236, 230, 218, 0.26);
+  font-style: italic;
+}
+.mono-field:hover {
+  border-bottom-color: rgba(236, 230, 218, 0.34);
+}
+.mono-field:focus {
+  border-bottom-color: var(--bronze);
+}
+.district-label {
+  max-width: 280px;
+}
+.district-tiers {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 18px;
+  row-gap: 4px;
+  margin-top: 9px;
+}
+.district-tier {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.district-tier-label {
+  padding: 1px 6px 2px;
+  border: 1px solid rgba(185, 140, 90, 0.42);
+  border-radius: 9px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: #e2c39c;
+}
+.district-tier-name {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.district-foot {
+  max-width: 74ch;
+  margin-top: 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-3);
+}
+
+/* ---------------------------------------------------------------- the checks */
+
+.check-row {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) 84px;
+  column-gap: 26px;
+  align-items: start;
+  padding: 11px 0 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.check-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+  cursor: pointer;
+}
+.check-name-word {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 16px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.check-name-what {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ink-3);
+}
+.check-main {
+  min-width: 0;
+}
+.check-row[data-src='none'] .check-cmd {
+  color: var(--ink-3);
+}
+/* Where a check came from, as a quiet word at the right: detected, set by you (in bronze), or none. */
+.check-src {
+  padding-top: 7px;
+  justify-self: end;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--ink-3);
+}
+.check-src[data-src='set by you'] {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13.5px;
+  letter-spacing: 0;
+  color: #d9b48a;
+}
+.check-src[data-src='none'] {
+  color: rgba(236, 230, 218, 0.26);
+}
+.check-why {
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--err);
+}
+.check-why:empty {
+  display: none;
+}
+.preview-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 26px;
+  row-gap: 8px;
+  min-height: 28px;
+}
+.preview-kind {
+  display: flex;
+  gap: 14px;
+}
+.preview-choice {
+  all: unset;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 3px 0;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.preview-choice[aria-checked='true'] {
+  color: var(--ink);
+}
+.preview-choice[aria-checked='true'] .quality-mark {
+  border-color: var(--bronze);
+  background: radial-gradient(var(--bronze) 0 2.5px, transparent 3px);
+}
+.preview-choice:hover {
+  color: var(--ink);
+}
+.preview-choice:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 2px;
+}
+.preview-out-wrap {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.preview-out-wrap[hidden] {
+  display: none;
+}
+.preview-out-word {
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.preview-out {
+  width: 140px;
+}
+.shot-routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-bottom: 8px;
+  list-style: none;
+}
+.shot-route {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 2px 4px 3px 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 2px;
+}
+.shot-path {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+.shot-remove {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  text-decoration: none;
+}
+.shot-remove:hover {
+  color: var(--err);
+}
+.shot-none {
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.shot-add {
+  max-width: 320px;
+}
+
+/* ---------------------------------------------------------------- the network */
+
+.net-list {
+  margin-top: 2px;
+}
+.net-row {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  column-gap: 26px;
+  align-items: baseline;
+  padding: 10px 0 11px;
+  border-bottom: 1px solid var(--rule);
+}
+.net-eco {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 16px;
+  color: var(--ink);
+}
+.net-hosts {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 18px;
+  row-gap: 4px;
+}
+.net-host {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.net-host::before {
+  /* An arrow leaving the sandbox: the one way out a job has. */
+  content: '\2197';
+  margin-right: 6px;
+  font-family: var(--sans);
+  color: var(--bronze);
+}
+
+/* ---------------------------------------------------------------- standing */
+
+.halt-row {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) auto;
+  column-gap: 26px;
+  align-items: start;
+  padding: 16px 0 17px;
+  border-bottom: 1px solid var(--rule);
+}
+/* Three strikes as three stones in a row: filled for each failed inspection, a third halts the repo. */
+.district-strikes {
+  display: flex;
+  gap: 6px;
+  padding-top: 5px;
+}
+.strike {
+  width: 18px;
+  height: 9px;
+  border: 1px solid rgba(236, 230, 218, 0.26);
+}
+.strike.on {
+  border-color: var(--err);
+  background: var(--err);
+}
+.halt-row.halted .strike.on {
+  border-color: var(--amber);
+  background: var(--amber);
+}
+.halt-title {
+  font-family: var(--serif);
+  font-size: 18px;
+  line-height: 1.25;
+  color: var(--ink);
+}
+.halt-row.halted .halt-title {
+  color: var(--amber);
+}
+.halt-reason {
+  max-width: 62ch;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------- jobs */
+
+.djob-list {
+  list-style: none;
+}
+.djob {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) auto;
+  column-gap: 26px;
+  align-items: baseline;
+  padding: 11px 0 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.djob-status {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-2);
+}
+.djob.status-proposed .djob-status {
+  color: #d9b48a;
+}
+.djob.status-merged .djob-status {
+  color: var(--ink);
+}
+.djob.status-failed .djob-status,
+.djob.status-halted .djob-status {
+  color: var(--err);
+}
+.djob-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.djob-title {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--ink);
+  text-decoration: none;
+}
+.djob-title:hover {
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.35);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.djob-title:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.djob-meta {
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.djob-accept {
+  align-self: center;
+}
+.district-more {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.district-more-link {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+/* ---------------------------------------------------------------- floors earned */
+
+.floors-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 14px 0 6px;
+}
+.floors-n {
+  font-family: var(--serif);
+  font-size: 46px;
+  line-height: 1;
+  color: var(--ink);
+  font-variant-numeric: lining-nums;
+}
+.floors-what {
+  max-width: 60ch;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.floor-list {
+  list-style: none;
+  margin-top: 6px;
+}
+.dfloor {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: baseline;
+  padding: 6px 0;
+  font-size: 13px;
+}
+/* A floor's state as a small slab: lit bronze, waiting hollow, a scar struck through. */
+.dfloor-mark {
+  width: 12px;
+  height: 5px;
+  border: 1px solid var(--bronze);
+  transform: translateY(-2px);
+}
+.dfloor.lit .dfloor-mark {
+  background: var(--bronze);
+}
+.dfloor.scar .dfloor-mark {
+  border-color: var(--err);
+  background: linear-gradient(to bottom right, transparent 45%, var(--err) 45% 60%, transparent 60%);
+}
+.dfloor-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  text-decoration: none;
+}
+.dfloor-title:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.dfloor-meta {
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.district-note {
+  margin-top: 34px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule-strong);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-3);
+}
+.district-note[hidden] {
+  display: none;
+}

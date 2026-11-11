@@ -9,8 +9,8 @@ import { join } from 'node:path';
 
 import type { ProviderUsage } from '../shared/types.js';
 import { openDb } from './db.js';
+import { getRunner } from './exec.js';
 import { treasury } from './market/budget.js';
-import { ollamaBase } from './market/ollama.js';
 import { getSettings } from './settings.js';
 import { latestReading } from './usage.js';
 
@@ -204,24 +204,40 @@ function localCredits(now: number): { today: number; week: number } {
   return { today: round(creditsSince(localMidnight(now), 'ollama:%', 'amount')), week: round(creditsSince(now - WEEK_MS, 'ollama:%', 'amount')) };
 }
 
-/** Whether Ollama answers at the configured host, its installed models, and the local credits spent. The two are separate: a database error never reads as "not reachable". */
+/** Model names from `ollama list` output: the first column of every row under the header. */
+export function parseOllamaList(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/)[0])
+    .filter((name): name is string => Boolean(name));
+}
+
+/**
+ * Whether Ollama answers at the configured host and its installed models,
+ * from `ollama list` through the engine's runner with OLLAMA_HOST set to that
+ * host (the sample stand-in answers it; under tests the real runner refuses
+ * it), and the local credits spent. The two are separate: a database error
+ * never reads as "not reachable".
+ */
 export async function ollamaUsage(now: number = Date.now(), credits: (now: number) => { today: number; week: number } = localCredits): Promise<ProviderUsage> {
-  const base: ProviderUsage = { provider: 'ollama', status: 'not-found', windows: [], tokens: null, spendUsd: null, detail: '' };
-  let count: number;
+  const host = getSettings().ollamaHost;
+  const base: ProviderUsage = { provider: 'ollama', status: 'not-found', windows: [], tokens: null, spendUsd: null, detail: '', host };
+  let models: string[];
   try {
-    const res = await fetch(`${ollamaBase()}/api/tags`, { signal: AbortSignal.timeout(2000) });
-    if (!res.ok) return { ...base, detail: `Ollama answered ${res.status}` };
-    const body = (await res.json()) as { models?: Array<{ name?: string }> };
-    count = (body.models ?? []).filter((m) => typeof m.name === 'string').length;
+    const env: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: homedir(), OLLAMA_HOST: `http://${host}` };
+    const { stdout, code } = await getRunner()('ollama', ['list'], { timeoutMs: 5000, env });
+    if (code !== 0) return { ...base, detail: `Ollama is not reachable at ${host}` };
+    models = parseOllamaList(stdout);
   } catch {
-    return { ...base, detail: 'Ollama is not reachable' };
+    return { ...base, detail: `Ollama is not reachable at ${host}` };
   }
-  const models = `${count} ${count === 1 ? 'model' : 'models'} installed`;
+  const count = `${models.length} ${models.length === 1 ? 'model' : 'models'} installed`;
   try {
     const c = credits(now);
-    return { ...base, status: 'ready', detail: `${models}; local credits ${c.today} today, ${c.week} this week` };
+    return { ...base, status: 'ready', models, detail: `${count}; local credits ${c.today} today, ${c.week} this week` };
   } catch {
-    return { ...base, status: 'ready', detail: `${models}; local credits unknown` };
+    return { ...base, status: 'ready', models, detail: `${count}; local credits unknown` };
   }
 }
 

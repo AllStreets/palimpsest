@@ -44,7 +44,7 @@ import { query } from '../ledger.js';
 import { paths } from '../home.js';
 import { getRepo, isValidFullName, BAD_NAME } from '../repos.js';
 import { providerUsages } from '../providers-usage.js';
-import { setApiKey, removeApiKey } from './anthropic-api.js';
+import { apiKey, setApiKey, removeApiKey } from './anthropic-api.js';
 import { bidList } from './bids.js';
 import { MAX_RESUME_MS, treasury } from './budget.js';
 import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
@@ -568,6 +568,16 @@ export async function handleMarketApi(
   }
   if ((m = pathname.match(/^\/api\/report\/([^/]+)$/)) && method === 'GET') return send(200, reportFor(m[1]));
   if (pathname === '/api/providers' && method === 'GET') return send(200, await providerUsages(extras.providers ?? {}));
+  // Whether a key is stored, and nothing else: the key itself never leaves the keychain through this engine.
+  if (pathname === '/api/providers/anthropic/key' && method === 'GET') {
+    let set = false;
+    try {
+      set = (await apiKey({ keychain: opts.keychain })) !== null;
+    } catch {
+      set = false;
+    }
+    return send(200, { set });
+  }
   if (pathname === '/api/providers/anthropic/key' && method === 'POST') {
     const b = await readObjectBody(req);
     const key = b.key;

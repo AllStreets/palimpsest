@@ -6,7 +6,7 @@
  * and Ollama's host points at a closed local port.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -562,18 +562,30 @@ test('providers list the six, and quarters and the live view answer', async () =
   assert.deepEqual((await call('GET', '/api/live')).json, { sites: [], trips: [] });
 });
 
-test('the api key route never echoes the key', async () => {
+test('the api key route never echoes the key, and says only whether one is set', async () => {
   const KEY = 'sk-ant-api03-ABCDEFGHIJKLMNOP1234';
   const stdins: string[] = [];
+  // A fake keychain in memory: the stand-in file is never opened, and real security never runs.
+  let stored: string | null = null;
   setSpawner((_cmd, _args, opts): Spawned => {
-    stdins.push(String((opts as { stdin?: string }).stdin ?? ''));
+    const stdin = String((opts as { stdin?: string }).stdin ?? '');
+    stdins.push(stdin);
+    const m = / -w "([^"]+)"/.exec(stdin);
+    if (m) stored = m[1];
     return { pid: 1, lines: (async function* () {})(), kill() {}, done: Promise.resolve({ code: 0, signal: null }) };
   });
-  const deleted: string[][] = [];
+  const runs: string[][] = [];
   setRunner(async (_cmd, args) => {
-    deleted.push(args);
+    runs.push(args);
+    if (args[0] === 'find-generic-password') return stored ? { stdout: `${stored}\n`, stderr: '', code: 0 } : { stdout: '', stderr: 'not found', code: 44 };
+    if (args[0] === 'delete-generic-password') stored = null;
     return { stdout: '', stderr: '', code: 0 };
   });
+
+  const none = await call('GET', '/api/providers/anthropic/key');
+  assert.equal(none.status, 200);
+  assert.deepEqual(none.json, { set: false });
+  assert.ok(runs.length > 0 && runs.every((a) => a.includes(realpathSync(fakeKc))), 'every keychain call names the stand-in keychain');
 
   const ok = await call('POST', '/api/providers/anthropic/key', { key: KEY });
   assert.equal(ok.status, 200);
@@ -583,19 +595,24 @@ test('the api key route never echoes the key', async () => {
   assert.ok(!JSON.stringify(entries()).includes(KEY), 'the ledger never holds it');
   assert.ok(entries().some((e) => e.kind === 'api.key.set'));
 
+  const set = await call('GET', '/api/providers/anthropic/key');
+  assert.equal(set.status, 200);
+  assert.deepEqual(set.json, { set: true }, 'only whether a key is stored, never the key');
+  assert.ok(!set.text.includes(KEY) && !set.text.includes('sk-ant'));
+  for (const path of ['/api/providers', '/api/settings']) assert.ok(!(await call('GET', path)).text.includes(KEY), `${path} never carries the key`);
+
   const bad = await call('POST', '/api/providers/anthropic/key', { key: 'not a key sk-ant-' });
   assert.equal(bad.status, 400);
   assert.ok(!bad.text.includes('not a key'));
   assert.equal((await call('POST', '/api/providers/anthropic/key', {})).status, 400);
   assert.equal((await call('POST', '/api/providers/anthropic/key', { key: 5 })).status, 400);
-  const got = await call('GET', '/api/providers/anthropic/key');
-  assert.equal(got.status, 404, 'the key can be set and removed but never read back');
 
   const gone = await call('DELETE', '/api/providers/anthropic/key');
   assert.equal(gone.status, 200);
   assert.deepEqual(gone.json, { ok: true });
-  assert.ok(deleted.length >= 1);
+  assert.ok(runs.some((a) => a[0] === 'delete-generic-password'));
   assert.ok(entries().some((e) => e.kind === 'api.key.removed'));
+  assert.deepEqual((await call('GET', '/api/providers/anthropic/key')).json, { set: false }, 'cleared, it reads as not set');
 });
 
 // ------------------------------------------------------------------ repos and settings

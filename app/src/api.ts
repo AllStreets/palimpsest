@@ -194,6 +194,8 @@ export const api = {
   /** A day's report, or the newest with `'latest'`. */
   report: (day: string) => request<ReportView>('GET', `/api/report/${enc(day)}`),
   providers: () => request<ProviderUsage[]>('GET', '/api/providers'),
+  /** Whether a key is stored, and nothing more: the engine never sends the key. */
+  apiKeySet: () => request<{ set: boolean }>('GET', '/api/providers/anthropic/key'),
   /** Stores the Anthropic API key in his keychain; the engine never sends it back. */
   setApiKey: (key: string) => request<{ ok: boolean }>('POST', '/api/providers/anthropic/key', { key }),
   removeApiKey: () => request<{ ok: boolean }>('DELETE', '/api/providers/anthropic/key'),

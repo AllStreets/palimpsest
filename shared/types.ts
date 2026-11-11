@@ -39,7 +39,12 @@ export interface RepoChecks {
   install: string | null;
   ecosystems: Array<'npm' | 'python' | 'rust' | 'go'>;
   detected: boolean;
+  /** The checks he changed by hand, in name order; any other was detected (or is unset). Absent on checks nobody has touched. */
+  setByYou?: CheckField[];
 }
+
+/** A check he may set on the district page. */
+export type CheckField = 'install' | 'test' | 'typecheck' | 'lint' | 'build' | 'screenshot' | 'preview' | 'shots';
 
 export interface Floor {
   id: string;
@@ -397,6 +402,10 @@ export interface ProviderUsage {
   tokens: { today: number; week: number } | null;
   spendUsd: { today: number; week: number } | null;
   detail: string;
+  /** Ollama: the models installed, as `ollama list` names them. */
+  models?: string[];
+  /** Ollama: the host it was asked at (Settings' ollamaHost). */
+  host?: string;
 }
 
 export type RunLogLine = {

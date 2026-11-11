@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 
+import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { claudeUsage, codexHome, geminiHome, geminiUsage, mlxUsage, ollamaUsage, openaiUsage, anthropicApiUsage, providerUsages } from '../engine/providers-usage.js';
 import { patchSettings } from '../engine/settings.js';
 
@@ -32,6 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setRunner(realRunner);
   if (server) await new Promise((r) => server!.close(r));
   server = null;
   for (const k of ENV_KEYS) {
@@ -40,6 +42,15 @@ afterEach(async () => {
   }
   rmSync(tempDir, { recursive: true, force: true });
 });
+
+/** A stand-in that answers `ollama list` with `models`, as the CLI prints them; nothing real runs. */
+function ollamaList(models: string[]): Runner {
+  return async (cmd, args) => {
+    if (cmd !== 'ollama' || args[0] !== 'list') throw new Error(`unexpected ${cmd} ${args.join(' ')}`);
+    const rows = models.map((m) => `${m.padEnd(32)}5a17c0de1234    4.7 GB    3 weeks ago`);
+    return { stdout: `NAME                            ID              SIZE      MODIFIED\n${rows.join('\n')}\n`, stderr: '', code: 0 };
+  };
+}
 
 function codexFixture(): string {
   const dest = join(tempDir, 'codex');
@@ -153,9 +164,7 @@ describe('provider usage', () => {
   });
 
   test('an ollama database error is not reported as unreachable', async () => {
-    server = createServer((req, res) => res.end(JSON.stringify({ models: [] })));
-    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
-    patchSettings({ ollamaHost: `127.0.0.1:${(server.address() as { port: number }).port}` });
+    setRunner(ollamaList(['qwen3:1.7b']));
     const u = await ollamaUsage(NOW, () => { throw new Error('db down'); });
     assert.equal(u.status, 'ready');
     assert.match(u.detail, /credits unknown/);
@@ -190,20 +199,31 @@ describe('provider usage', () => {
     assert.equal(u.detail, 'arrives with the school');
   });
 
-  test('ollama is reported unreachable, then reachable with its models', async () => {
-    patchSettings({ ollamaHost: '127.0.0.1:1' });
-    assert.equal((await ollamaUsage()).status, 'not-found');
-    server = createServer((req, res) => {
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ models: [{ name: 'qwen3:1.7b' }, { name: 'gpt-oss:20b' }] }));
+  test('ollama is read through `ollama list` at his host: unreachable, then reachable with its models', async () => {
+    patchSettings({ ollamaHost: '127.0.0.1:11500' });
+    const calls: Array<{ cmd: string; args: string[]; env?: Record<string, string> }> = [];
+    setRunner(async (cmd, args, opts) => {
+      calls.push({ cmd, args, env: opts?.env });
+      return { stdout: '', stderr: 'Error: could not connect to ollama app, is it running?', code: 1 };
     });
-    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
-    const port = (server.address() as { port: number }).port;
-    patchSettings({ ollamaHost: `127.0.0.1:${port}` });
+    const down = await ollamaUsage();
+    assert.equal(down.status, 'not-found');
+    assert.equal(down.host, '127.0.0.1:11500');
+    assert.match(down.detail, /not reachable at 127\.0\.0\.1:11500/);
+    assert.deepEqual(calls.map((c) => [c.cmd, ...c.args]), [['ollama', 'list']]);
+    assert.equal(calls[0].env?.OLLAMA_HOST, 'http://127.0.0.1:11500', 'asked at his configured host');
+
+    setRunner(ollamaList(['qwen3:1.7b', 'gpt-oss:20b']));
     const u = await ollamaUsage();
     assert.equal(u.status, 'ready');
-    assert.match(u.detail, /2 models/);
+    assert.deepEqual(u.models, ['qwen3:1.7b', 'gpt-oss:20b']);
+    assert.match(u.detail, /2 models installed/);
     assert.deepEqual(u.tokens, null);
+
+    setRunner(async () => {
+      throw new Error('spawn ollama ENOENT');
+    });
+    assert.equal((await ollamaUsage()).status, 'not-found', 'no ollama on this Mac reads as not reachable');
   });
 
   test('the list is in the fixed order', async () => {

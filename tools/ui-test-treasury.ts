@@ -73,6 +73,27 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     check((await night.count()) === 1 && (await night.getAttribute('data-pct')) === String(tNow.night.usedPct), `measured from the night use, not the city's total (${(await night.count()) ? await night.getAttribute('data-pct') : 'none'} against ${tNow.night.usedPct}, city ${tNow.sevenDay.cityPct})`);
     const onLine = (await night.count()) === 1 && (await nightMark.count()) === 1 && Number(await night.getAttribute('y')) >= (await nightMark.evaluate((e) => (e as SVGGraphicsElement).getBBox().y));
     check(onLine, 'on the night mark’s own line');
+    // A night cap past about 60% of the scale reads to the left of its mark, so its label never runs into the hard stop.
+    const stopAt = async (): Promise<number> => seven.locator('svg.meter-rule .meter-stop').evaluate((e) => (e as SVGGraphicsElement).getBBox().x);
+    const nightLabel = seven.locator('svg.meter-rule .meter-mark-label.night');
+    check((await nightLabel.getAttribute('text-anchor')) !== 'end', `at the default 20% the night label reads to the right of its mark (${await nightLabel.getAttribute('text-anchor')})`);
+    patchSettings({ nightCapPct: 80 });
+    try {
+      await go(page, '#/');
+      await go(page, '#/treasury');
+      check(await within(page, 6000, async () => (await nightLabel.getAttribute('text-anchor')) === 'end'), `a night cap at 80% sets its label to the left of its mark (${await nightLabel.getAttribute('text-anchor').catch(() => null)})`);
+      const box = await nightLabel.evaluate((e) => {
+        const b = (e as SVGGraphicsElement).getBBox();
+        return { x: b.x, right: b.x + b.width };
+      });
+      const markX = await seven.locator('svg.meter-rule .meter-cap.night').evaluate((e) => (e as SVGGraphicsElement).getBBox().x);
+      check(box.right <= markX && box.right < (await stopAt()), `and clear of the hard stop (label ends at ${box.right.toFixed(1)}, mark at ${markX.toFixed(1)}, stop at ${(await stopAt()).toFixed(1)})`);
+    } finally {
+      patchSettings({ nightCapPct: 20 });
+      await go(page, '#/');
+      await go(page, '#/treasury');
+      await within(page, 6000, async () => (await sheet.locator('.meter').count()) === 2);
+    }
     for (const sel of ['.meter-num', '.meter-mark-label']) {
       const style = await seven.locator(`svg.meter-rule ${sel}`).first().evaluate((e) => getComputedStyle(e).fontSize);
       check(style === '11px', `${sel} is set at 11 px (${style})`);

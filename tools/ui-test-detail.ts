@@ -196,7 +196,10 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     check(await within(page, 5000, async () => (await page.locator('.runpage .diff-file').count()) === 4), `the run shows its diff by file (${await page.locator('.runpage .diff-file').count()})`);
     const heads = await page.locator('.runpage .diff-path').allTextContents();
     check(heads.includes('.github/workflows/ci.yml') && heads.includes('src/search/index.ts'), `the file headers name the files (${heads.join(', ')})`);
-    check((await page.locator('.runpage .diff-line.add').count()) > 10 && (await page.locator('.runpage .diff-line.del').count()) > 5, 'added and removed lines are marked');
+    // Long diffs draw in blocks: wait for enough of them, as for the file headers above.
+    const add = async (): Promise<number> => page.locator('.runpage .diff-line.add').count();
+    const del = async (): Promise<number> => page.locator('.runpage .diff-line.del').count();
+    check(await within(page, 5000, async () => (await add()) > 10 && (await del()) > 5), `added and removed lines are marked (${await add()} added, ${await del()} removed)`);
     check(/Failed: scope, review/.test((await page.locator('.runpage .run-verdict-line').textContent()) ?? ''), 'the run says its verdict');
     check((await page.locator('.runpage .log-hold').isHidden()) && /ended/.test((await page.locator('.runpage .log-state').textContent()) ?? ''), 'an ended run has no hold and says it ended');
     await page.locator('.runpage .run-diff').scrollIntoViewIfNeeded();
