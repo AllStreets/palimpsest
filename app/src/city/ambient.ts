@@ -719,7 +719,8 @@ const PAVE_SHARE = 8;
 
 /** The share of the kerbs' parked cars each quality keeps (by each car's own hashed priority), and room for them. */
 export const PARKED_SHARE = { high: 0.38, medium: 0.15 } as const;
-const PARKED_ROOM = 4000;
+/** The most parked cars any city keeps (a city grown very large keeps the lowest priorities). */
+export const PARKED_CEILING = 12000;
 
 /** A car parked at a kerb: where, which way, its body and paint. */
 interface Parked {
@@ -2229,6 +2230,8 @@ export interface Ambient {
    */
   setCabs(at: ReadonlyArray<CabPose>): void;
   cars(): AmbientCar[];
+  /** How many cars, moving and parked, the car buffers hold now (tests: every kept car has room). */
+  carRoom(): number;
   /** The cars parked at the kerbs the quality keeps: where, which way, their body, paint, and whether up on the kerb. */
   parked(): Array<{ x: number; z: number; yaw: number; model: AmbientModel; paint: [number, number, number]; kerb: number }>;
   people(): AmbientPerson[];
@@ -2381,7 +2384,19 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       }
     }
     parkedAll = out;
-    parked = out.filter((c) => c.priority < PARKED_SHARE[quality]);
+    keepParked();
+  }
+
+  /**
+   * The parked cars the quality keeps: those under its share by their own
+   * priority, and past the ceiling (a city grown very large) the lowest
+   * priorities first, so the choice stays the same car for car. The buffers
+   * grow to hold them all.
+   */
+  function keepParked(): void {
+    parked = parkedAll.filter((c) => c.priority < PARKED_SHARE[quality]);
+    if (parked.length > PARKED_CEILING) parked = parked.sort((a, b) => a.priority - b.priority).slice(0, PARKED_CEILING);
+    sizeCars(AMBIENT_CAP.high.cars + parked.length);
   }
 
   // ---- population
@@ -3299,7 +3314,6 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     return { mesh, a };
   }
 
-  const carCap = AMBIENT_CAP.high.cars + PARKED_ROOM;
   const personCap = AMBIENT_CAP.high.people;
   const nearCar = carMaterial(false);
   const farCar = carMaterial(true);
@@ -3310,29 +3324,61 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   mats.push(nearCar, farCar, nearFig, farFig, pool, shade);
   const CAR_ATTRS = { aPaint: 4, aState: 4, aLampL: 4 };
   const BODY_MODELS: Array<Exclude<AmbientModel, 'cab'>> = ['saloon', 'hatch', 'estate', 'van'];
+  /**
+   * The cars' buffers (every body near, the far level, and the contact
+   * shadows, which cars share with people), sized for the moving cars and the
+   * parked set as laid: laid again larger when a relay's parked set outgrows
+   * them, so no car the quality keeps is ever left out of a frame.
+   */
   const carMeshes = new Map<string, { mesh: THREE.InstancedMesh; a: Record<string, THREE.InstancedBufferAttribute>; tris: number; n: number }>();
-  for (const m of BODY_MODELS) {
-    const { geo } = carModel(m);
-    const inst = instanced(geo, nearCar, carCap, CAR_ATTRS, `ambient:car:${m}`);
-    carMeshes.set(m, { ...inst, tris: geo.attributes.position.count / 3, n: 0 });
+  let carCap = 0;
+  let farCars!: { mesh: THREE.InstancedMesh; a: Record<string, THREE.InstancedBufferAttribute>; tris: number; n: number };
+  let shades!: THREE.InstancedMesh;
+  let shadeCap = 0;
+  function sizeCars(need: number): void {
+    if (need <= carCap) return;
+    const was = carCap > 0;
+    carCap = Math.ceil((need * 1.2) / 256) * 256;
+    for (const d of [...carMeshes.values(), ...(was ? [farCars] : [])]) {
+      group.remove(d.mesh);
+      d.mesh.geometry.dispose();
+      d.mesh.dispose();
+    }
+    carMeshes.clear();
+    for (const m of BODY_MODELS) {
+      const { geo } = carModel(m);
+      const inst = instanced(geo, nearCar, carCap, CAR_ATTRS, `ambient:car:${m}`);
+      carMeshes.set(m, { ...inst, tris: geo.attributes.position.count / 3, n: 0 });
+    }
+    const farGeo = farCarModel();
+    farCars = { ...instanced(farGeo, farCar, carCap, CAR_ATTRS, 'ambient:car:far'), tris: farGeo.attributes.position.count / 3, n: 0 };
+    if (was) {
+      group.remove(shades);
+      shades.dispose();
+    }
+    shadeCap = carCap + personCap;
+    shades = new THREE.InstancedMesh(shadeGeo, shade, shadeCap);
+    shades.name = 'ambient:shades';
+    shades.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    shades.frustumCulled = false;
+    shades.count = 0;
+    shades.visible = false;
+    setLayers(shades, LAYER.view);
+    group.add(shades);
   }
-  const farGeo = farCarModel();
-  const farCars = { ...instanced(farGeo, farCar, carCap, CAR_ATTRS, 'ambient:car:far'), tris: farGeo.attributes.position.count / 3, n: 0 };
   const FIG_ATTRS = { aAnim: 4, aLook: 4, aCoat: 3, aLegs: 3, aLampL: 4 };
   const figGeo = figureModel(false);
   const figFarGeo = figureModel(true);
   const nearPeople = { ...instanced(figGeo, nearFig, personCap, FIG_ATTRS, 'ambient:people'), tris: figGeo.attributes.position.count / 3, n: 0 };
   const farPeople = { ...instanced(figFarGeo, farFig, personCap, FIG_ATTRS, 'ambient:people:far'), tris: figFarGeo.attributes.position.count / 3, n: 0 };
   const poolGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0.5, 0, 0);
+  const shadeGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
   const pools = new THREE.InstancedMesh(poolGeo, pool, HEADLAMP.pools);
   pools.name = 'ambient:pools';
   pools.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(HEADLAMP.pools * 3), 3);
-  const shadeGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-  const shadeCap = carCap + personCap;
-  const shades = new THREE.InstancedMesh(shadeGeo, shade, shadeCap);
-  shades.name = 'ambient:shades';
   owned.push(poolGeo, shadeGeo);
-  for (const m of [pools, shades]) {
+  sizeCars(AMBIENT_CAP.high.cars + 1024);
+  for (const m of [pools]) {
     m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     m.frustumCulled = false;
     m.count = 0;
@@ -3545,7 +3591,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     setQuality(qv) {
       if (qv === quality) return;
       quality = qv;
-      parked = parkedAll.filter((c) => c.priority < PARKED_SHARE[quality]);
+      keepParked();
       trim();
       refill = true;
     },
@@ -3573,6 +3619,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
         const m = c.s < 0 ? c.via : c.next;
         return { id: c.id, model: c.model, x: p.x, z: p.z, yaw: p.yaw, speed: c.v, lane: c.lane.key, s: c.s, length: c.len, junction: p.junction?.key ?? null, axis: p.axis, turn: m?.turn ?? 'straight', braking: c.brake, blinking: blinkerOf(c), hold: holdOf(c, time), width: c.width };
       }),
+    carRoom: () => carCap,
     parked: () => parked.map((c) => ({ x: c.x, z: c.z, yaw: c.yaw, model: c.model, paint: [...c.paint] as [number, number, number], kerb: c.kerb })),
     people: () => people.map((p) => ({ id: p.id, state: p.state, x: p.x, z: p.z, yaw: p.yaw, speed: p.v, phase: p.phase % (Math.PI * 2), cadence: p.cadence, height: p.height, build: p.build, coat: [...p.coat] as [number, number, number], group: p.group })),
     view(camera) {

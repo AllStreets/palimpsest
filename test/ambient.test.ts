@@ -252,7 +252,8 @@ test("a tower's look changing retones only the blocks in its ring; every block o
 // ---------------------------------------------------------------- ambient traffic and crowds (Task 32)
 
 import { readFileSync } from 'node:fs';
-import { extentBlocks, inChannel, network, streetLine } from '../shared/commute.js';
+import { extentBlocks, inChannel, network, streetLine, tramHalf } from '../shared/commute.js';
+import * as THREE from 'three';
 import { ambientDensity, ambientModels, createAmbient, AMBIENT_CAP, type Ambient } from '../app/src/city/ambient.js';
 
 /** The sample city's network, as the commute and vehicle tests lay it. */
@@ -595,5 +596,47 @@ test('a plaza laid or a network relaid leaves the traffic and crowd elsewhere wh
   const n0 = a.cars().length;
   run(a, 3, 0.1);
   assert.ok(a.cars().length >= n0, 'the streets refill out of sight');
+  a.dispose();
+});
+
+test('every parked car the quality keeps has room to be drawn, on a large city too', () => {
+  const big = network({ blocks: 5, districts: SLOTS.slice(0, 6) });
+  const a = createAmbient(big, 'high', { seed: 29 });
+  a.setDensity(1);
+  const parked = a.parked();
+  assert.ok(parked.length > 4000, `a large city parks more than the old room held (${parked.length})`);
+  assert.ok(a.carRoom() >= a.cars().length + parked.length, `the buffers hold every car (${a.carRoom()} for ${a.cars().length} + ${parked.length})`);
+  // Seen all at once from high above, every car is drawn at the far level: none dropped.
+  const cam = new THREE.PerspectiveCamera(36, 1, 1, 30000);
+  cam.position.set(0, 12000, 1);
+  cam.lookAt(0, 0, 0);
+  cam.updateMatrixWorld();
+  a.update(0.05, cam, 1000);
+  const v = a.view(cam);
+  assert.equal(v.farCars, a.cars().length + parked.length, 'every car drawn');
+  // Two wheels up on the kerb only past the walkers' pavements.
+  const walked = tramHalf(big.blocks);
+  for (const c of parked) if (c.kerb) assert.ok(Math.max(Math.abs(c.x), Math.abs(c.z)) > walked + 10, `kerb-mounted at ${c.x.toFixed(1)}, ${c.z.toFixed(1)} lies past the pavements`);
+  assert.ok(parked.some((c) => c.kerb), 'some stand on the kerb');
+  a.dispose();
+});
+
+test('a network grown a ring keeps the parked cars inside the old reach where they were', () => {
+  const small = network({ blocks: 1, districts: SLOTS.slice(0, 6) });
+  const grown = network({ blocks: 2, districts: SLOTS.slice(0, 6) });
+  const a = createAmbient(small, 'high', { seed: 31 });
+  const key = (c: { x: number; z: number }): string => `${c.x.toFixed(3)},${c.z.toFixed(3)}`;
+  const inside = (c: { x: number; z: number }): boolean => Math.max(Math.abs(c.x), Math.abs(c.z)) < 400;
+  const before = new Map(a.parked().filter(inside).map((c) => [key(c), c]));
+  assert.ok(before.size > 20, `cars parked inside the old reach (${before.size})`);
+  a.relay(grown);
+  const after = new Map(a.parked().filter(inside).map((c) => [key(c), c]));
+  for (const [k, c] of before) {
+    const b = after.get(k);
+    assert.ok(b, `the car parked at ${k} stays`);
+    assert.deepEqual([b!.yaw, b!.model, b!.paint, b!.kerb], [c.yaw, c.model, c.paint, c.kerb]);
+  }
+  for (const k of after.keys()) assert.ok(before.has(k), `no new car appears inside the old reach (${k})`);
+  assert.ok(a.parked().length > before.size, 'the grown ring parks its own');
   a.dispose();
 });
