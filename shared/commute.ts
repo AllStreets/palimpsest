@@ -354,6 +354,13 @@ export interface Line {
   /** The running height: 0 for the tram, 12 for the rail, 18 for the pods. */
   y: number;
   path: Array<[number, number, number]>;
+  /**
+   * The path at its running height, point by point: for the tram, refined
+   * every 2 m where it climbs onto its bridges over the river (tramHeight),
+   * so whatever runs on it rides the deck; for the rail and the pods, the
+   * path itself. Vehicles (vehicles.ts) run on this.
+   */
+  track: Array<[number, number, number]>;
   /** A loop closes from its last point back to its first. */
   loop: boolean;
   stops: Stop[];
@@ -373,9 +380,16 @@ export function network(extent: NetworkExtent): Network {
   const rail = railLoop(extent.blocks);
   return {
     blocks: extent.blocks,
-    tram: { mode: 'tram', y: 0, path: loop.map(([x, z]) => [x, 0, z] as [number, number, number]), loop: true, stops: tramStops(loop) },
-    rail: { mode: 'rail', y: RAIL_Y, path: rail, loop: true, stops: railStations(rail) },
-    pods: podRail(extent.blocks).map((path) => ({ mode: 'pod' as const, y: POD_Y, path, loop: false, stops: podStations(path) })),
+    tram: {
+      mode: 'tram',
+      y: 0,
+      path: loop.map(([x, z]) => [x, 0, z] as [number, number, number]),
+      track: onDeck(loop.map(([x, z]) => ({ x, z })), true).map((p) => [p.x, tramHeight(p.x, p.z), p.z] as [number, number, number]),
+      loop: true,
+      stops: tramStops(loop),
+    },
+    rail: { mode: 'rail', y: RAIL_Y, path: rail, track: rail.map((p) => [...p] as [number, number, number]), loop: true, stops: railStations(rail) },
+    pods: podRail(extent.blocks).map((path) => ({ mode: 'pod' as const, y: POD_Y, path, track: path.map((p) => [...p] as [number, number, number]), loop: false, stops: podStations(path) })),
     ranks: cabRanks(extent),
     piers: PIERS,
   };
@@ -439,9 +453,10 @@ export function streetWay(a: P, b: P): P[] {
 
 const lengthOf = (pts: P[]): number => pts.reduce((s, p, i) => (i ? s + dist(pts[i - 1], p) : 0), 0);
 
-function leg(mode: TripMode, pts: P[], y: number): Leg {
+function leg(mode: TripMode, pts: P[], y: number | ((p: P) => number)): Leg {
   const wait = mode === 'walk' ? 0 : mode === 'cab' ? CAB_WAIT_S : BOARD_WAIT_S;
-  const path = pts.map((p) => [round(p.x), y, round(p.z)] as [number, number, number]);
+  const height = typeof y === 'number' ? () => y : y;
+  const path = pts.map((p) => [round(p.x), round(height(p)), round(p.z)] as [number, number, number]);
   let len = 0;
   for (let i = 1; i < path.length; i++) len += Math.hypot(path[i][0] - path[i - 1][0], path[i][2] - path[i - 1][2]);
   return { mode, path, ms: Math.round((wait + len / SPEED[mode]) * 1000) };
@@ -499,7 +514,44 @@ function ride(line: Line, from: P, to: P): Leg[] | null {
   const on = nearestStop(line, from, true);
   const off = nearestStop(line, to, false);
   if (on === off) return null;
-  return [leg('walk', streetWay(from, on), 0), leg(line.mode, ridePath(line, on.at, off.at), line.y), leg('walk', streetWay(off, to), 0)];
+  return [leg('walk', streetWay(from, on), 0), rideLeg(line, ridePath(line, on.at, off.at)), leg('walk', streetWay(off, to), 0)];
+}
+
+/**
+ * A ride along a line at its running height: the tram's legs climb onto its
+ * bridges' decks (refined every 2 m over the ramps, so a rider following
+ * the leg rides with the tram, not through the deck).
+ */
+function rideLeg(line: Line, pts: P[]): Leg {
+  if (line.mode !== 'tram') return leg(line.mode, pts, line.y);
+  return leg('tram', onDeck(pts, false), (p) => tramHeight(p.x, p.z));
+}
+
+/** How far either side of the river's centre the tram's deck and ramps reach. */
+const DECK_REACH = RIVER.width / 2 + TRAM_DECK.ramp + 1;
+
+/**
+ * A polyline with a point every 2 m where it runs over the river and the
+ * tram's ramps, so its heights follow the deck's profile; elsewhere as it was.
+ */
+function onDeck(pts: P[], closed: boolean): P[] {
+  const out: P[] = [];
+  const n = closed ? pts.length : pts.length - 1;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    out.push(a);
+    if (a.z !== b.z) continue;
+    const lo = Math.max(Math.min(a.x, b.x), RIVER.x - DECK_REACH);
+    const hi = Math.min(Math.max(a.x, b.x), RIVER.x + DECK_REACH);
+    if (hi <= lo) continue;
+    const xs: number[] = [];
+    for (let x = Math.ceil(lo / 2) * 2; x <= hi; x += 2) if (Math.abs(x - a.x) > 1e-6 && Math.abs(x - b.x) > 1e-6) xs.push(x);
+    if (b.x < a.x) xs.reverse();
+    for (const x of xs) out.push({ x, z: a.z });
+  }
+  if (!closed) out.push(pts[pts.length - 1]);
+  return out;
 }
 
 /** The pier on p's own bank nearest it, if one is within PIER_REACH. */
@@ -592,8 +644,8 @@ function transfer(a: Line, b: Line, from: P, to: P): Leg[] | null {
   if (on === ia || off === ib) return null;
   return [
     leg('walk', streetWay(from, on), 0),
-    leg('pod', ridePath(a, on.at, ia.at), a.y),
-    leg('pod', ridePath(b, ib.at, off.at), b.y),
+    rideLeg(a, ridePath(a, on.at, ia.at)),
+    rideLeg(b, ridePath(b, ib.at, off.at)),
     leg('walk', streetWay(off, to), 0),
   ];
 }

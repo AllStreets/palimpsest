@@ -11,6 +11,9 @@ import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } f
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
+import type { VehicleRef, VehiclesView } from './city/vehicles.js';
+import { route } from '../../shared/commute.js';
+import type { Trip } from '../../shared/types';
 import { towerCenterpiece, towerMaterials } from './city/tower/look';
 import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
 import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
@@ -28,6 +31,18 @@ import { createRunPage } from './ui/run';
 import { createRepos } from './ui/repos';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
+
+/** A vehicle as the debug handle reports it. */
+interface VehicleProbe {
+  id: string;
+  kind: string;
+  position: number[];
+  heading: number;
+  speed: number;
+  floorY: number;
+  phase: string;
+}
+const probe = (r: VehicleRef): VehicleProbe => ({ id: r.id, kind: r.kind, position: r.position(), heading: r.heading(), speed: r.speed(), floorY: r.floorY(), phase: r.phase() });
 
 interface DebugHandle {
   ready: boolean;
@@ -56,6 +71,23 @@ interface DebugHandle {
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** The transit network: what of it draws from this camera, and how many stops, stations, poles, bents, pylons and ranks stand. */
   transit(): ReturnType<ReturnType<typeof createCity>['transit']>;
+  /** The vehicles: how many run, and what of them draws from this camera (null before the network is laid). */
+  vehicles(): VehiclesView | null;
+  /** Holds or releases the vehicles' clock, or moves it on (captures and tests). */
+  vehicleHold(on: boolean): void;
+  vehicleSkip(seconds: number): void;
+  /** Moves the clock on until a vehicle of the kind stands at a stop (the one nearest `near`): where it stands and which way it faces. */
+  vehicleStage(kind: 'tram' | 'rail' | 'pod' | 'ferry', near?: number[]): VehicleProbe | null;
+  /** Rides a synthetic trip from one point to another: each leg's vehicle (a cab summoned for a cab leg), and when it boards and alights. */
+  vehicleTrip(from: number[], to: number[]): Array<{ mode: string; id: string | null; boardsIn: number; alightsIn: number }>;
+  /** Moves the vehicles' clock on until each condition holds (a vehicle of a kind near a point, moving if asked). */
+  vehicleSeek(conds: Array<{ kind: 'tram' | 'rail' | 'pod' | 'ferry'; near: number[]; radius: number; moving?: number }>, horizon?: number): boolean;
+  /** A vehicle by id, as it stands now. */
+  vehicle(id: string): VehicleProbe | null;
+  /** Every vehicle of a kind, as each stands now. */
+  vehicleKinds(kind: 'tram' | 'rail' | 'pod' | 'ferry' | 'cab'): VehicleProbe[];
+  /** A stand-in rider at a point facing a heading, or none. */
+  vehicleRider(at: number[] | null, heading?: number): void;
   /** The quality the city draws at now (medium after an automatic drop). */
   quality(): 'high' | 'medium';
   /** Steps down to medium as the automatic drop does (tests). */
@@ -303,6 +335,43 @@ async function main(): Promise<void> {
     breakdown: (detail) => city.breakdown(detail),
     river: () => city.river(),
     transit: () => city.transit(),
+    vehicles: () => city.vehicles()?.view(city.camera) ?? null,
+    vehicleHold: (on) => city.vehicles()?.hold(on),
+    vehicleSkip: (s) => city.vehicles()?.skip(s),
+    vehicleStage(kind, near) {
+      const r = city.vehicles()?.stage(kind, near ? { x: near[0], z: near[1] } : undefined);
+      return r ? probe(r) : null;
+    },
+    vehicleTrip(from, to) {
+      const v = city.vehicles();
+      const net = city.transitNetwork();
+      if (!v || !net) return [];
+      const legs = route({ x: from[0], z: from[1] }, { x: to[0], z: to[1] }, net);
+      const trip: Trip = { id: 'probe', agentId: 'probe', firmId: 'probe', reason: 'home', jobId: null, from: { x: from[0], z: from[1] }, to: { x: to[0], z: to[1] }, legs, startedAt: new Date().toISOString(), ms: 0, endedAt: null };
+      return legs.map((l, i) => {
+        if (l.mode === 'walk') return { mode: l.mode, id: null, boardsIn: 0, alightsIn: 0 };
+        if (l.mode === 'cab') {
+          const cab = v.summonCab(trip, i);
+          return { mode: l.mode, id: cab.id, boardsIn: cab.arrivesIn({ x: l.path[0][0], z: l.path[0][2] }), alightsIn: Infinity };
+        }
+        const ride = v.board(trip, i);
+        return { mode: l.mode, id: ride?.id ?? null, boardsIn: ride?.boardsIn() ?? -1, alightsIn: ride?.alightsIn() ?? -1 };
+      });
+    },
+    vehicleSeek: (conds, horizon) => city.vehicles()?.seek(conds.map((c) => ({ ...c, near: { x: c.near[0], z: c.near[1] } })), horizon) ?? false,
+    vehicleKinds(kind: 'tram' | 'rail' | 'pod' | 'ferry' | 'cab') {
+      return city.vehicles()?.vehicles(kind).map(probe) ?? [];
+    },
+    vehicle(id) {
+      const v = city.vehicles();
+      if (!v) return null;
+      for (const k of ['tram', 'rail', 'pod', 'ferry', 'cab'] as const) {
+        const r = v.vehicles(k).find((x) => x.id === id);
+        if (r) return probe(r);
+      }
+      return null;
+    },
+    vehicleRider: (at, heading) => city.vehicles()?.rider(at ? [at[0], at[1], at[2]] : null, heading),
     quality: () => city.quality(),
     dropQuality: () => city.dropQuality(),
     notice: () => notice.text(),

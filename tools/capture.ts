@@ -14,7 +14,7 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe, swatches, families, fidelity, river, transit. With no shots named,
+ * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles. With no shots named,
  * all but probe, swatches, families and fidelity run. families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
@@ -60,7 +60,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 // CAPTURE_OUT sends everything elsewhere, for framing probes that should not touch docs/media.
 const MEDIA = process.env.CAPTURE_OUT ?? join(ROOT, 'docs', 'media');
-const PORT = 4789;
+const PORT = Number(process.env.CAPTURE_PORT ?? 4789);
 /** The sample economy's clock (CAPTURE_ECONOMY=live), ticked on demand by the shots that show it moving. */
 let economy: { tick(ms: number): void; idle(): Promise<void> } | null = null;
 /** The block pitch (lots.ts PITCH), for framing streets. */
@@ -272,6 +272,94 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         ['pod-street', [262, 2, 104], [240, 17, 122]],
       ];
       for (const [name, eye, target] of views) if (!only || only.includes(name)) await still(page, name, eye, target);
+    },
+
+    async vehicles(page) {
+      // The vehicles (Task 31) on the sample city's network: a tram standing at a stop, a train at a station, a pod at
+      // its station at height, a ferry alongside a pier, a cab pulled up for a rider at the kerb, and the city at dusk
+      // with everything running. Each vehicle is staged (the clock moved on until it stands) and the clock held for
+      // the still. VEHICLE_ONLY='tram,cab' takes a subset.
+      await chrome(page, false);
+      const only = process.env.VEHICLE_ONLY?.split(',');
+      type Probe = { id: string; position: number[]; heading: number; phase: string };
+      type VD = {
+        vehicleHold(on: boolean): void;
+        vehicleSkip(s: number): void;
+        vehicleStage(kind: string, near?: number[]): Probe | null;
+        vehicleTrip(from: number[], to: number[]): Array<{ mode: string; id: string | null }>;
+        vehicle(id: string): Probe | null;
+        vehicleRider(at: number[] | null, heading?: number): void;
+        vehicleSeek(conds: Array<{ kind: string; near: number[]; radius: number; moving?: number }>, horizon?: number): boolean;
+        vehicleKinds(kind: string): Probe[];
+      };
+      const d = <T>(fn: (v: VD, a: unknown) => T, arg?: unknown): Promise<T> => page.evaluate(`(${fn.toString()})(window.__palimpsest, ${JSON.stringify(arg ?? null)})`) as Promise<T>;
+      const around = (p: number[], h: number, fwd: number, right: number, y: number): V3 => [p[0] + Math.cos(h) * fwd - Math.sin(h) * right, y, p[2] + Math.sin(h) * fwd + Math.cos(h) * right];
+      const want = (name: string): boolean => !only || only.includes(name);
+      await d((v) => v.vehicleHold(true));
+      const views = JSON.parse(process.env.VEHICLE_VIEWS ?? '{}') as Record<string, [number, number, number, number, number, number]>;
+      const stageShot = async (name: string, kind: string, near: number[], def: [number, number, number, number, number, number]): Promise<void> => {
+        if (!want(name)) return;
+        const p = await d((v, a) => v.vehicleStage((a as [string, number[]])[0], (a as [string, number[]])[1]), [kind, near]);
+        if (!p) return console.log(`  no ${kind} to stage`);
+        const [ef, er, ey, tf, tr, ty] = views[name] ?? def;
+        await still(page, name, around(p.position, p.heading, ef, er, p.position[1] + ey), around(p.position, p.heading, tf, tr, p.position[1] + ty));
+      };
+      await stageShot('tram', 'tram', [680, 240], [21, 5.2, 1.7, 0, -0.5, 1.7]);
+      await stageShot('train', 'rail', [0, -760], [30, 2.6, 2.6, 0, 0, 2.0]);
+      await stageShot('pod', 'pod', [240, 120], [12, -6, 2.4, 0, 0, 1.3]);
+      await stageShot('ferry', 'ferry', [-332, 72], [26, 16, 6.5, 0, 0, 0.5]);
+      if (want('cab')) {
+        const trip = await d((v) => v.vehicleTrip([446.5, 330], [1100, -200]));
+        const cab = trip.find((l) => l.mode === 'cab');
+        if (cab?.id) {
+          for (let i = 0; i < 400; i++) {
+            const c = await d((v, id) => v.vehicle(id as string), cab.id);
+            if (!c || c.phase === 'pickup') break;
+            await d((v) => v.vehicleSkip(1));
+          }
+          await d((v) => v.vehicleSkip(2));
+          const c = (await d((v, id) => v.vehicle(id as string), cab.id))!;
+          // The rider at the kerb beside the cab's rear door, turning to step in.
+          const kerb = around(c.position, c.heading, -0.35, 1.45, c.position[1]);
+          await d((v, a) => v.vehicleRider((a as number[][])[0], (a as number[][])[1][0]), [kerb, [c.heading - Math.PI / 2 - 0.5]]);
+          const [ef, er, ey, tf, tr, ty] = views.cab ?? [6.5, 4.4, 1.45, -0.3, 0.7, 0.95];
+          await still(page, 'cab', around(c.position, c.heading, ef, er, ey), around(c.position, c.heading, tf, tr, ty));
+          await d((v) => v.vehicleRider(null));
+        }
+      }
+      if (want('ferry-wake')) {
+        // A ferry under way in mid-river, from the stone bridge's parapet behind it: its wake spreading astern.
+        if (await d((v) => v.vehicleSeek([{ kind: 'ferry', near: [-360, 210], radius: 50, moving: 5.5 }]))) {
+          const f = (await d((v) => v.vehicleKinds('ferry'))).sort((a, b) => Math.hypot(a.position[0] + 360, a.position[2] - 210) - Math.hypot(b.position[0] + 360, b.position[2] - 210))[0];
+          const go = f.heading;
+          const [ef, er, ey, tf, tr, ty] = views['ferry-wake'] ?? [-70, 8, 9, 6, 0, -5];
+          await still(page, 'ferry-wake', around(f.position, go, ef, er, ey), around(f.position, go, tf, tr, ty));
+        }
+      }
+      if (want('home')) await still(page, 'home', OVERVIEW.eye, OVERVIEW.target);
+      if (want('dusk')) {
+        // The river at dusk looking south to the tram's bridge and the elevated line's truss: a train crossing, a tram
+        // on its bridge and a ferry on the water, when the timetable brings them together (else as many as it can).
+        const blocks = (await page.evaluate('window.__palimpsest.transit().blocks')) as number;
+        const h = 240 * blocks + 200;
+        const rz = Math.ceil((Math.max(240 * blocks + 280, h + 80) - 40) / 80) * 80 + 40;
+        const tries = [
+          [
+            { kind: 'rail', near: [-360, rz + 2], radius: 50, moving: 4 },
+            { kind: 'tram', near: [-360, h], radius: 80 },
+            { kind: 'ferry', near: [-360, h - 70], radius: 90, moving: 3 },
+          ],
+          [
+            { kind: 'rail', near: [-360, rz + 2], radius: 50, moving: 4 },
+            { kind: 'ferry', near: [-360, h - 70], radius: 120 },
+          ],
+          [{ kind: 'rail', near: [-360, rz + 2], radius: 50, moving: 4 }],
+        ];
+        for (const t of tries) if (await d((v, c) => v.vehicleSeek(c as never, 6000), t)) break;
+        const [e, t] = (process.env.DUSK_VIEW ? JSON.parse(process.env.DUSK_VIEW) : [[-368, 21, h - 160], [-354, 5, h + 80]]) as [V3, V3];
+        await still(page, 'dusk', e, t);
+      }
+      await d((v) => v.vehicleHold(false));
     },
 
     async swatches(page) {

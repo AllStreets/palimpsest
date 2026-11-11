@@ -23,7 +23,8 @@ import { quarterBuildKey, type QuarterShow } from './quarters.js';
 import { createPost, EXPOSURE, FLICKER } from './post';
 import { createRiver } from './river.js';
 import { createTransit, type TransitView } from './transit.js';
-import { extentBlocks } from '../../../shared/commute.js';
+import { createVehicles, type Vehicles } from './vehicles.js';
+import { extentBlocks, type Network } from '../../../shared/commute.js';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
 import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
@@ -142,6 +143,10 @@ export interface City {
   plots(): { plazas: number; buildings: number };
   /** The transit network (transit.ts): what of it the camera draws now, and how much of it stands (tests and captures). */
   transit(): TransitView;
+  /** The trams, trains, pods, ferries and cabs running on the network (vehicles.ts), or null before it is laid. */
+  vehicles(): Vehicles | null;
+  /** The network as laid now (shared/commute.ts), or null before the city has districts. */
+  transitNetwork(): Network | null;
   /**
    * Stands objects at spots in the city outside the plots, each spot paved
    * and cleared of ambient blocks like a district (captures and the UI test:
@@ -307,6 +312,17 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   // The tram, the elevated rail, the pods and the cab ranks (transit.ts), laid for the city as it stands.
   const transit = createTransit();
   scene.add(transit.group);
+  // Its vehicles (vehicles.ts), timetabled on the network as laid; replaced when the network is laid again.
+  const vehicleRoot = new THREE.Group();
+  vehicleRoot.name = 'vehicles';
+  scene.add(vehicleRoot);
+  let vehicles: Vehicles | null = null;
+  function layVehicles(): void {
+    const net = transit.network();
+    vehicles?.dispose();
+    vehicles = net ? createVehicles(net, quality) : null;
+    if (vehicles) vehicleRoot.add(vehicles.group);
+  }
 
   // ---------------------------------------------------------------- the civic exchange
   // Built once on the plaza at the origin, and again at medium if the city steps down; it keeps the board and the switch.
@@ -797,7 +813,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     placeSites(occ.sites);
     // The network grows with the city: its loops enclose every district, quarter and site, a rank at each plaza.
     const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin)];
-    if (standing.length && transit.set({ blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) })) sun.shadow.needsUpdate = true;
+    if (standing.length && transit.set({ blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) })) {
+      sun.shadow.needsUpdate = true;
+      layVehicles();
+    }
     // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
     placeConstructions();
     // The inspection's searchlights streak whatever they sweep: towers, quarters and the blocks round them.
@@ -1109,6 +1128,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ['ambient', grid.group],
     ['river', river.group],
     ['transit', transit.group],
+    ['vehicles', vehicleRoot],
     ['ground', ground.mesh],
     ['sky', sky.dome],
     ['construction', field.group],
@@ -1165,6 +1185,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     // Each chunk of the river draws its detail, casts its shadow and joins the AO pass only near the eye.
     if (river.update(dt, fog.density, camera.position)) sun.shadow.needsUpdate = true;
     if (transit.update(camera.position, fog.density)) sun.shadow.needsUpdate = true;
+    // The vehicles move every frame; they cast no sun shadow, so the shadow map is not redrawn for them.
+    if (vehicles) {
+      if (vehicles.update(dt, camera.position)) sun.shadow.needsUpdate = true;
+      river.setWakes(vehicles.wakes());
+    }
     fitMark();
     plates.update();
     sky.dome.position.copy(camera.position);
@@ -1233,6 +1258,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     river: () => ({ lamps: river.lamps.length, ...river.view(camera) }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     transit: () => transit.view(camera),
+    vehicles: () => vehicles,
+    transitNetwork: () => transit.network(),
     ambientBoard: (lots) => grid.board(lots),
     board(objects, spots) {
       const group = new THREE.Group();
@@ -1280,6 +1307,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       grid.dispose();
       river.dispose();
       transit.dispose();
+      vehicles?.dispose();
       ground.dispose();
       sky.dispose();
       renderer.dispose();

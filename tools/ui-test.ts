@@ -1725,6 +1725,102 @@ async function transitChecks(page: Page): Promise<void> {
   check((await debug(page, (d) => d.quality())) === 'high', 'the network holds high quality');
 }
 
+// ---------------------------------------------------------------- the vehicles (Task 31)
+
+/** From home the vehicles draw every car at its far level: one call per model, a few tens of thousands of triangles. */
+const VEHICLE_HOME_CALLS = 8;
+const VEHICLE_HOME_TRIANGLES = 80_000;
+
+/**
+ * The trams, trains, pods, ferries and cabs: how many run on the sample
+ * city's network, what they cost from home, a synthetic trip boarding its
+ * tram and summoning its cab, the stills (tram.png: a tram standing at a
+ * stop, close; ferry.png: a ferry alongside a pier; cab.png: a rider at the
+ * kerb stepping into a summoned cab), and the frame rate by the lines with
+ * every vehicle running.
+ */
+async function vehicleChecks(page: Page): Promise<void> {
+  type VV = { trams: number; trains: number; pods: number; ferries: number; cabs: number; near: number; far: number; meshes: number; triangles: number; time: number };
+  type Probe = { id: string; kind: string; position: number[]; heading: number; speed: number; floorY: number; phase: string };
+  const call = <T>(js: string): Promise<T> => page.evaluate(`(function (d) { return ${js}; })(window.__palimpsest)`) as Promise<T>;
+  const view = (): Promise<VV> => call<VV>('d.vehicles()');
+  const around = (p: number[], h: number, fwd: number, right: number, y: number): number[] => [p[0] + Math.cos(h) * fwd - Math.sin(h) * right, y, p[2] + Math.sin(h) * fwd + Math.cos(h) * right];
+
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(800);
+  const far = await view();
+  const ranks = (await page.evaluate(() => (window as unknown as { __palimpsest: { transit(): { ranks: number } } }).__palimpsest.transit().ranks)) as number;
+  console.log(`info  vehicles: ${far.trams} trams, ${far.trains} trains, ${far.pods} pods, ${far.ferries} ferries, ${far.cabs} cabs; from home ${far.meshes} calls, ${(far.triangles / 1000).toFixed(0)}k triangles (${far.near} near, ${far.far} far)`);
+  check(far.trams >= 8 && far.trains >= 4 && far.pods >= 4 && far.ferries === 2, `trams, trains, pods and ferries run on the network (${far.trams}, ${far.trains}, ${far.pods}, ${far.ferries})`);
+  check(far.cabs === ranks * 2, `two cabs wait at each of the ${ranks} ranks (${far.cabs})`);
+  check(far.near === 0, 'from home every vehicle draws at its far level');
+  check(far.meshes > 0 && far.meshes <= VEHICLE_HOME_CALLS, `from home the vehicles draw in at most ${VEHICLE_HOME_CALLS} calls (${far.meshes})`);
+  check(far.triangles <= VEHICLE_HOME_TRIANGLES, `from home the vehicles draw at most ${VEHICLE_HOME_TRIANGLES / 1000}k triangles (${(far.triangles / 1000).toFixed(0)}k)`);
+  const t0 = far.time;
+  await page.waitForTimeout(500);
+  check((await view()).time > t0, 'the vehicles run on their clock');
+
+  // A synthetic trip (persona trips are Task 33's): it boards the next tram on its leg, and a long one summons a cab.
+  const tramTrip = await call<Array<{ mode: string; id: string | null; boardsIn: number; alightsIn: number }>>('d.vehicleTrip([560, -300], [600, 200])');
+  const tramLeg = tramTrip.find((l) => l.mode === 'tram');
+  check(!!tramLeg?.id && tramLeg.boardsIn >= 0 && tramLeg.alightsIn > tramLeg.boardsIn, `a trip boards the next tram on its leg (${JSON.stringify(tramLeg)})`);
+
+  await call('d.vehicleHold(true)');
+  // A tram standing at a stop on the east side of the loop, close from the platform: its nose three-quarters on.
+  const tram = await call<Probe | null>('d.vehicleStage("tram", [680, 240])');
+  check(!!tram && tram.speed < 0.01, 'a tram stands at its stop');
+  if (tram) {
+    await setView(page, around(tram.position, tram.heading, 21, 5.2, tram.position[1] + 1.7), around(tram.position, tram.heading, 0, -0.5, tram.position[1] + 1.7));
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(900);
+    const near = await view();
+    check(near.near > 0 && near.meshes > far.meshes, `close by, the vehicles draw their near level (${near.near} cars, ${near.meshes} calls, ${(near.triangles / 1000).toFixed(0)}k triangles)`);
+    await page.screenshot({ path: join(SHOTS, 'tram.png') });
+  }
+  // A ferry alongside the pier at the foot of the civic axis, from above the quay.
+  const ferry = await call<Probe | null>('d.vehicleStage("ferry", [-332, 72])');
+  check(!!ferry && Math.abs(ferry.position[1] - -5.2) < 0.01, 'a ferry stands at a pier on the water');
+  if (ferry) {
+    await setView(page, around(ferry.position, ferry.heading, 26, 16, ferry.position[1] + 6.5), around(ferry.position, ferry.heading, 0, 0, ferry.position[1] + 0.5));
+    await page.waitForTimeout(900);
+    await page.screenshot({ path: join(SHOTS, 'ferry.png') });
+  }
+  // A cab summoned to a rider at the kerb: it drives from the nearest rank, pulls up, and the rider steps in.
+  const cabTrip = await call<Array<{ mode: string; id: string | null }>>('d.vehicleTrip([446.5, 330], [1100, -200])');
+  const cabLeg = cabTrip.find((l) => l.mode === 'cab');
+  check(!!cabLeg?.id, `a long trip summons a cab (${cabTrip.map((l) => l.mode).join(', ')})`);
+  if (cabLeg?.id) {
+    let cab = await call<Probe | null>(`d.vehicle(${JSON.stringify(cabLeg.id)})`);
+    check(cab?.phase === 'to-pickup', `the cab sets off from its rank (${cab?.phase})`);
+    for (let i = 0; i < 600 && cab && cab.phase !== 'pickup'; i++) {
+      await call('d.vehicleSkip(1)');
+      cab = await call<Probe | null>(`d.vehicle(${JSON.stringify(cabLeg.id)})`);
+    }
+    check(cab?.phase === 'pickup' && Math.hypot(cab.position[0] - 446.5, cab.position[2] - 330) < 0.5, 'the cab pulls up where the rider waits');
+    if (cab) {
+      await call('d.vehicleSkip(2)');
+      const kerb = around(cab.position, cab.heading, -0.35, 1.45, cab.position[1]);
+      await call(`d.vehicleRider(${JSON.stringify(kerb)}, ${cab.heading - Math.PI / 2 - 0.5})`);
+      await setView(page, around(cab.position, cab.heading, 6.5, 4.4, 1.45), around(cab.position, cab.heading, -0.3, 0.7, 0.95));
+      await page.waitForTimeout(900);
+      await page.screenshot({ path: join(SHOTS, 'cab.png') });
+      await call('d.vehicleRider(null)');
+    }
+  }
+  await call('d.vehicleHold(false)');
+
+  // By the lines with every vehicle running: trams through the stop, trains overhead, the shadow map following them.
+  await setView(page, [603.5, 3.2, 436], [598, 7.5, 640]);
+  await page.waitForTimeout(1500);
+  const fps = await pageFps(page);
+  const stats = await debug(page, (d) => d.stats());
+  const running = await view();
+  console.log(`info  by the lines with every vehicle running: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles (${running.near} cars near)`);
+  check(fps >= overviewFps - 5, `the street by the lines holds the overview's frame rate with every vehicle running (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  check((await debug(page, (d) => d.quality())) === 'high', 'the vehicles hold high quality');
+}
+
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/index.html missing: run npm run build first');
@@ -1863,6 +1959,7 @@ async function main(): Promise<void> {
       await silhouetteChecks(page);
       await riverChecks(page);
       await transitChecks(page);
+      await vehicleChecks(page);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);
