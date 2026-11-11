@@ -576,3 +576,17 @@ test('scar ends with a primer floor and a work lamp', () => {
   assert.equal(t.finish()?.floor ?? null, null);
   t.dispose();
 });
+
+test('a scar first seen by a fresh construction (the quality drop rebuilds every site) stands its work lamp without a crane', () => {
+  // The city's step down to medium makes every site's construction anew and sets it straight to the site's stage: a
+  // scar has a work lamp and no crane, and must build from nothing without reading a crane that is not there.
+  for (const quality of ['medium', 'high'] as const) {
+    const c = makeConstruction(quality);
+    assert.doesNotThrow(() => c.set(site('scar', 1), TOP, HALF, FH), `${quality}: a fresh scar builds`);
+    run(c, 1);
+    const s = c.state()!;
+    assert.equal(s.crane, null, 'no crane stands on a scar');
+    assert.ok(s.workLamp, 'its work lamp burns');
+    c.dispose();
+  }
+});

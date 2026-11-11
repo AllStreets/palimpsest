@@ -1834,6 +1834,32 @@ async function vehicleChecks(page: Page): Promise<void> {
   check((await debug(page, (d) => d.quality())) === 'high', 'the vehicles hold high quality');
 }
 
+/**
+ * The governor's step down to medium, taken on purpose at the river (where the water's own settings change with it)
+ * and then the views the city is most often seen from: the drop must leave no error behind, whatever is on screen.
+ * Runs last, since it leaves the city at medium.
+ */
+async function qualityDropChecks(page: Page, errors: string[]): Promise<void> {
+  const before = errors.length;
+  await setView(page, [-353, 2.6, 11.5], [-368, -3, 320]);
+  await page.evaluate('window.__palimpsest.dropQuality()');
+  await page.waitForTimeout(1500);
+  check((await debug(page, (d) => d.quality())) === 'medium', "the governor's step down takes the city to medium");
+  const home = await debug(page, (d) => d.limits().home);
+  for (const [eye, target] of [
+    [[-353, 2.6, 11.5], [-368, -3, 320]],
+    [[603.5, 3.2, 436], [598, 7.5, 640]],
+    [[-368, 21, 520], [-354, 5, 760]],
+    [home.eye, home.target],
+  ] as Array<[number[], number[]]>) {
+    await setView(page, eye, target);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(700);
+  }
+  const fresh = errors.slice(before);
+  check(fresh.length === 0, `stepping down to medium leaves no errors${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
+}
+
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/index.html missing: run npm run build first');
@@ -1869,7 +1895,8 @@ async function main(): Promise<void> {
     page.on('console', (m) => {
       if (m.type() === 'error' && !(abortingRequests && /net::ERR_(FAILED|CONNECTION_REFUSED)/.test(m.text()))) consoleErrors.push(m.text());
     });
-    page.on('pageerror', (e) => consoleErrors.push(String(e)));
+    // With the stack, so an error in the page says where it was thrown.
+    page.on('pageerror', (e) => consoleErrors.push(e.stack ?? String(e)));
 
     if (process.env.UI_QUALITY) {
       await fetch(`http://127.0.0.1:${PORT}/api/settings`, {
@@ -1973,6 +2000,7 @@ async function main(): Promise<void> {
       await riverChecks(page);
       await transitChecks(page);
       await vehicleChecks(page);
+      await qualityDropChecks(page, consoleErrors);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);

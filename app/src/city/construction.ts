@@ -223,6 +223,13 @@ const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 /** The jib's angle so that it points from the mast at a plan point. */
 const aim = (from: { x: number; z: number }, x: number, z: number): number => Math.atan2(-(z - from.z), x - from.x);
 
+/** The crane a site of this size raises: where its mast stands, how tall it is, its jib and counter-jib. */
+function craneFor(half: number, floorHeight: number): { x: number; z: number; height: number; jib: number; counter: number } {
+  const lay = frameLayout(half);
+  const jib = Math.max(26, Math.round(half * 3 + 6));
+  return { x: lay.mast.x, z: lay.mast.z, height: floorHeight + MAST_CLEAR, jib, counter: Math.round(jib * 0.32) };
+}
+
 /**
  * What the site shows for a stage and progress: a pure function, so the same
  * event always draws the same frame and nothing moves between events.
@@ -232,8 +239,8 @@ const aim = (from: { x: number; z: number }, x: number, z: number): number => Ma
 export function constructionState(site: SiteState, top: number, half: number, floorHeight: number, clocks: StageClocks = {}, before?: Before): ConstructionState {
   const lay = frameLayout(half);
   const p = clamp01(site.progress);
-  const jib = Math.max(26, Math.round(half * 3 + 6));
-  const crane = { x: lay.mast.x, z: lay.mast.z, height: floorHeight + MAST_CLEAR, jib, counter: Math.round(jib * 0.32) };
+  const crane = craneFor(half, floorHeight);
+  const jib = crane.jib;
   const cTotal = lay.columns.length;
   const bTotal = lay.beams.length;
   const dTotal = lay.decks.length;
@@ -1171,12 +1178,15 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       return m;
     };
 
-    const H = state.crane!.height;
-    const L = state.crane!.jib;
-    const C = state.crane!.counter;
+    // A site first seen with its crane already gone (a scar, when the quality drop builds every site afresh) still
+    // builds the crane it had, so the parts the rest of the site hangs off exist; it is struck straight away (set).
+    const cr = state.crane ?? craneFor(half, fh);
+    const H = cr.height;
+    const L = cr.jib;
+    const C = cr.counter;
     const crane = new THREE.Group();
     crane.name = 'construction:crane';
-    crane.position.set(state.crane!.x, top, state.crane!.z);
+    crane.position.set(cr.x, top, cr.z);
 
     // the cross base on the roof and the mast
     const base = new Parts();
