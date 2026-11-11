@@ -1134,9 +1134,14 @@ function waterFragment(steps: number): string {
     vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
     return mix(mix(wHash(i), wHash(i + vec2(1, 0)), f.x), mix(wHash(i + vec2(0, 1)), wHash(i + vec2(1, 1)), f.x), f.y);
   }
-  vec3 wakes(vec2 p) {
+  vec3 wakes(vec2 p, float dist, float vy) {
     vec2 g = vec2(0.0);
     float foam = 0.0;
+    // Crests finer than a few pixels only alias: they fade with distance, and with how far their phase runs across
+    // one pixel (the pixel's footprint on the water, stretched at a glancing view), leaving the wake's broad shape
+    // and its foam. Worked out rather than taken from derivatives, which are not defined past the discard above.
+    float near = 1.0 - smoothstep(90.0, 260.0, dist);
+    float footprint = dist * 0.0007 / max(vy, 0.04);
     for (int i = 0; i < ${WAKES}; i++) {
       if (i >= uWakeN) break;
       vec4 w = uWakes[i];
@@ -1151,29 +1156,34 @@ function waterFragment(steps: number): string {
       float b = u + 10.0;
       if (b < 0.0 || b > 220.0) continue;
       float decay = sp * exp(-b / 90.0);
-      // The divergent crests: short waves stacked along each arm of the wedge, their crests slanting back.
-      float edge = 2.4 + 0.354 * b;
+      // Flow noise: the arms wander and break into patches rather than running as ruled lines.
+      float flow = wNoise(vec2(aa * 0.22 + uTime * 0.15, b * 0.11 - uTime * 0.25));
+      float flow2 = wNoise(vec2(aa * 0.6 - uTime * 0.2, b * 0.35 + 5.0));
+      // The divergent crests: short waves stacked en echelon along each arm of the 19.5 degree wedge.
+      float edge = 2.4 + 0.354 * b + (flow - 0.5) * (0.6 + 0.04 * b);
       float armD = aa - edge;
-      float width = 0.9 + 0.035 * b;
-      float arm = exp(-armD * armD / (width * width)) + 0.45 * exp(-(armD + width * 1.6) * (armD + width * 1.6) / (width * width));
-      float crest = sin((aa * 0.94 + b * 0.34) * 3.4 - uTime * 3.6);
-      float patchy = 0.55 + 0.45 * wNoise(vec2(aa * 0.35, b * 0.2 - uTime * 0.2));
-      g += (side * sign(a) * 0.8 + dir * 0.6) * crest * arm * decay * 0.11 * patchy;
-      // The transverse waves inside the wedge, curving across the track astern.
-      float inside = smoothstep(edge + 1.0, edge - 4.0, aa);
-      g += dir * sin(b * 0.9 + aa * aa * 0.006 - uTime * 2.8) * inside * decay * 0.025 * smoothstep(90.0, 20.0, b);
+      float width = 1.1 + 0.05 * b;
+      float arm = exp(-armD * armD / (width * width));
+      float ph = (aa * 0.94 + b * 0.34) * 1.6 - uTime * 2.4;
+      float rate = 1.6 * footprint;
+      float crestFade = (1.0 - smoothstep(0.6, 1.6, rate)) * near;
+      float crest = sin(ph + flow2 * 2.5);
+      float patchy = smoothstep(0.25, 0.75, flow);
+      g += (side * sign(a) * 0.8 + dir * 0.6) * crest * arm * decay * 0.14 * patchy * crestFade;
+      // The arms' broad swell, which still reads where the crests are too fine to draw.
+      g += side * sign(a) * arm * decay * 0.025 * (1.0 - crestFade);
       // The churn astern of the hull (its stern stands 11 m behind the middle): white water, widening and breaking up.
       float s = u - 10.5;
-      vec2 q = vec2(a * 0.9, s * 0.45 - uTime * 0.5);
-      float n = wNoise(q) * 0.6 + wNoise(q * 2.3 + 7.1) * 0.4;
-      float churn = s > -1.0 ? exp(-aa * aa / (2.6 + 0.18 * max(s, 0.0))) * exp(-max(s, 0.0) / (22.0 + 40.0 * sp)) : 0.0;
-      foam += churn * sp * 1.3 * smoothstep(0.2, 0.7, n + 0.3 * exp(-max(s, 0.0) / 10.0));
-      g += vec2(wNoise(q * 1.7) - 0.5, wNoise(q * 1.7 + 3.3) - 0.5) * churn * sp * 0.5;
-      // White water along the hull's sides from the bow, and the arms' breaking crests near the boat.
+      vec2 q = vec2(a * 0.7, s * 0.32 - uTime * 0.45);
+      float n = wNoise(q) * 0.55 + wNoise(q * 2.1 + 7.1) * 0.3 + wNoise(q * 4.3 + 2.0) * 0.15;
+      float churn = s > -1.0 ? exp(-aa * aa / (2.4 + 0.2 * max(s, 0.0))) * exp(-max(s, 0.0) / (24.0 + 40.0 * sp)) : 0.0;
+      foam += churn * sp * smoothstep(0.15, 0.85, n + 0.35 * exp(-max(s, 0.0) / 10.0));
+      g += vec2(n - 0.5, wNoise(q * 1.7 + 3.3) - 0.5) * churn * sp * 0.35 * near;
+      // White water curling off the bow along the hull's sides, and the arms' crests breaking near the boat.
       float hullW = 3.15 * sqrt(max(0.0, 1.0 - (u / 11.2) * (u / 11.2)));
-      float sideF = exp(-pow(aa - hullW - 0.3, 2.0) / 0.2) * step(-11.3, u) * step(u, 11.0) * smoothstep(-11.3, -6.0, u);
-      foam += sideF * sp * 0.6 * smoothstep(0.3, 0.7, n);
-      foam += arm * decay * 0.5 * smoothstep(0.55, 1.0, crest) * smoothstep(70.0, 8.0, b) * smoothstep(0.35, 0.65, wNoise(vec2(aa, b) * 0.8));
+      float sideF = exp(-pow(aa - hullW - 0.35, 2.0) / 0.35) * smoothstep(-11.6, -9.0, u) * (1.0 - smoothstep(6.0, 12.0, u));
+      foam += sideF * sp * 0.5 * smoothstep(0.2, 0.8, n);
+      foam += arm * decay * 0.35 * smoothstep(0.2, 1.0, crest * 0.5 + 0.5) * smoothstep(60.0, 6.0, b) * smoothstep(0.3, 0.8, flow2);
     }
     return vec3(g, foam);
   }
@@ -1234,7 +1244,7 @@ function waterFragment(steps: number): string {
     // Ripples fade with distance (they would only alias) and at grazing angles, where water reads as a mirror.
     float fade = 1.0 / (1.0 + dist / 260.0);
     vec3 N = waterNormal(vW.xz, uTime, fade);
-    vec3 wk = wakes(vW.xz);
+    vec3 wk = wakes(vW.xz, dist, V.y);
     N = normalize(vec3(N.x - wk.x, N.y, N.z - wk.y));
     vec3 R = reflect(-V, N);
     R.y = max(R.y, 0.004);
@@ -1276,7 +1286,7 @@ function waterFragment(steps: number): string {
 
     // Foam: broken white water lit by the dusk sky above it.
     float foam = clamp(wk.z, 0.0, 1.0);
-    col = mix(col, skyHaze(vec3(0.0, 1.0, 0.0)) * 0.5 + refl * 0.25 + vec3(0.01, 0.011, 0.012), foam * 0.85);
+    col = mix(col, skyHaze(vec3(0.0, 1.0, 0.0)) * 0.5 + refl * 0.25 + vec3(0.01, 0.011, 0.012), smoothstep(0.0, 1.0, foam) * 0.75);
 
     // The same sky-coloured haze the scene's fog draws.
     float ff = 1.0 - exp(-uFog * uFog * dist * dist);

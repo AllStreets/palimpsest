@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { BANKS, FERRY_Y, inChannel, PIERS, POD_Y, RAIL_Y, RIVER, SPEED, streetWay, tramHeight, type Line, type Network, type Rank } from '../../../shared/commute.js';
+import { BANKS, FERRY_Y, inChannel, PIERS, POD_Y, RAIL_Y, RIVER, SPEED, STREET_AT, streetLine, streetWay, tramHeight, type Line, type Network, type Rank } from '../../../shared/commute.js';
 import type { Trip, TripMode } from '../../../shared/types.js';
 import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
@@ -451,6 +451,17 @@ interface Cab {
   run: { track: Track; plan: Plan } | null;
   since: number;
   legs: { pickup: { track: Track; plan: Plan }; carry: { track: Track; plan: Plan }; back: { track: Track; plan: Plan } } | null;
+  /** An errand waiting for this cab to be back at its bay (when every bay in the city was out). */
+  queue?: { start: { kerb: V2; via: V2 }; end: { kerb: V2; via: V2 } } | null;
+}
+
+/** Seconds until a cab is back at its bay. */
+function cabFreeIn(cab: Cab, time: number): number {
+  const legs = cab.legs;
+  if (cab.phase === 'parked' || !legs) return 0;
+  const t = time - cab.since;
+  const rest = { 'to-pickup': [legs.pickup.plan.period, CAB_BOARD_S, legs.carry.plan.period, CAB_ALIGHT_S, legs.back.plan.period], pickup: [CAB_BOARD_S, legs.carry.plan.period, CAB_ALIGHT_S, legs.back.plan.period], carrying: [legs.carry.plan.period, CAB_ALIGHT_S, legs.back.plan.period], setdown: [CAB_ALIGHT_S, legs.back.plan.period], returning: [legs.back.plan.period] }[cab.phase];
+  return rest.reduce((a, b) => a + b, 0) - t + (cab.queue ? 1e6 : 0);
 }
 
 /** A vehicle as a rider sees it: where it is, which way it faces, and when it calls where. */
@@ -470,12 +481,20 @@ export interface VehicleRef {
   arrivesIn(p: V2): number;
   /** A cab's errand; a line's vehicle is always 'running'. */
   phase(): CabPhase | 'running';
+  /**
+   * True once the vehicle no longer runs: the network was laid again
+   * without it. A retired ref stands where it was last seen; its rider
+   * boards again.
+   */
+  retired(): boolean;
 }
 
 /** A boarded vehicle: the ref, and when this rider boards and alights on its leg (seconds from now). */
 export interface Ride extends VehicleRef {
   boardsIn(): number;
   alightsIn(): number;
+  /** Also true once the network this ride was timetabled on has been laid anew: its rider boards again. */
+  retired(): boolean;
 }
 
 /** How long a unit waits, from time `now`, until it stands at a call. */
@@ -520,6 +539,9 @@ function railTracks(net: Network): Track[] {
   const lay = (pts: V2[]): Track => trackOf(pts.map((p) => [p.x, RAIL_Y, p.z] as V3), true);
   return [lay(offsetLoop(centre, RAIL_TRACK)), lay(offsetLoop(centre, -RAIL_TRACK).reverse())];
 }
+
+/** The ferries on the river (at most river.ts's WAKES, so every one can trail its wake). */
+const FERRIES = 3;
 
 /** How far before each terminus the pods cross over between the beams, and where they stand at it. */
 const POD_CROSS = { start: 46, end: 18, stand: 4 } as const;
@@ -659,7 +681,7 @@ function makeFleet(net: Network): Fleet {
       null,
       ferry.calls.map((c) => ({ s: c.s, x: c.pier.x, z: c.pier.z })),
       { speed: SPEED.ferry, accel: 0.22, decel: 0.28, lateral: 0.35, dwell: 25 },
-      2,
+      FERRIES,
       0.1,
       { x: 0, z: 1 },
     ),
@@ -711,14 +733,127 @@ function roadY(p: V2): number {
   return inChannel(p.x, 2) ? 0.08 : 0;
 }
 
-/** A cab's drive along a way on the street grid: right of the centre line, corners rounded, a stand at each end. */
-function drive(way: V2[]): { track: Track; plan: Plan } {
-  const pts = rounded(laneOf(densify(way, false, 1e9), CAB_LANE), 7);
+/** A cab's drive along a way on the street grid: round the plazas, right of the centre line, corners rounded, a stand at each end. */
+function drive(way: V2[], plazas: readonly V2[] = []): { track: Track; plan: Plan } {
+  const pts = rounded(laneOf(aroundPlazas(densify(way, false, 1e9), plazas), CAB_LANE), 7);
   const track = trackOf(
     pts.map((p) => [p.x, roadY(p), p.z] as V3),
     false,
   );
   return { track, plan: motionPlan(track, [], CAB_OPTS) };
+}
+
+/** Where a cab pulls in to the kerb: this far from the street's centre line. */
+const KERB = 6.4;
+/** Plazas are paved this far round each district's centre (and the exchange's): no cab drives or stops inside. */
+const PLAZA_R = 72;
+const PLAZA_CLEAR = 74.5;
+
+/** The plazas a network serves: the exchange's and each district's, found from their ranks (commute.ts cabRanks). */
+function plazasOf(net: Network): V2[] {
+  return net.ranks.map((r) => ({ x: r.x - STREET_AT - 2, z: r.z - 84 }));
+}
+
+/**
+ * Where a cab pulls in for a rider at p: the kerb of the street nearest p,
+ * slid along that street out of any plaza it would stand in.
+ */
+export function kerbOf(p: V2, net: Network): V2 {
+  return kerbPlan(p, net).kerb;
+}
+
+/**
+ * The kerb for p (kerbOf), and where on its street's centre line a cab
+ * comes to it from: from outside the plaza it was slid clear of, so the
+ * approach never crosses the paving.
+ */
+function kerbPlan(p: V2, net: Network): { kerb: V2; via: V2 } {
+  const plazas = plazasOf(net);
+  const along = (k: V2, axis: 'x' | 'z'): { kerb: V2; via: V2 } => {
+    let q = { ...k };
+    let out = 0;
+    for (let pass = 0; pass < 4; pass++) {
+      let moved = false;
+      for (const o of plazas) {
+        if (dist(q, o) >= PLAZA_CLEAR) continue;
+        // Out along the street to the nearer edge of the plaza.
+        const off = axis === 'z' ? q.x - o.x : q.z - o.z;
+        const half = Math.sqrt(Math.max(0, PLAZA_CLEAR * PLAZA_CLEAR - off * off)) + 0.5;
+        const u = axis === 'z' ? q.z - o.z : q.x - o.x;
+        const to = (u >= 0 ? 1 : -1) * half;
+        q = axis === 'z' ? { x: q.x, z: o.z + to } : { x: o.x + to, z: q.z };
+        out = Math.sign(to);
+        moved = true;
+      }
+      if (!moved) break;
+    }
+    const line = axis === 'z' ? streetLine(q.x) : streetLine(q.z);
+    const via = axis === 'z' ? { x: line, z: q.z + out * 40 } : { x: q.x + out * 40, z: line };
+    return { kerb: q, via };
+  };
+  const sx = streetLine(p.x);
+  const sz = streetLine(p.z);
+  const onZ = along({ x: sx + (p.x >= sx ? 1 : -1) * KERB, z: p.z }, 'z');
+  const onX = along({ x: p.x, z: sz + (p.z >= sz ? 1 : -1) * KERB }, 'x');
+  return dist(onZ.kerb, p) <= dist(onX.kerb, p) ? onZ : onX;
+}
+
+/**
+ * A way on the street grid with every run that would cross a plaza taken
+ * round it on the streets a block out (120 m from the plaza's centre).
+ */
+function aroundPlazas(way: V2[], plazas: readonly V2[]): V2[] {
+  let pts = way;
+  for (let pass = 0; pass < 6; pass++) {
+    const out: V2[] = [pts[0]];
+    let changed = false;
+    for (let i = 1; i < pts.length; i++) {
+      const a = out[out.length - 1];
+      const b = pts[i];
+      const alongZ = Math.abs(a.x - b.x) < 1e-6;
+      const alongX = Math.abs(a.z - b.z) < 1e-6;
+      let hit: V2 | null = null;
+      if (alongZ || alongX) {
+        for (const o of plazas) {
+          // The lane and the rounded corners can bring the cab a few metres in: keep that much clear too.
+          const r = PLAZA_R + 5;
+          const off = alongZ ? Math.abs(a.x - o.x) : Math.abs(a.z - o.z);
+          if (off >= r) continue;
+          const half = Math.sqrt(r * r - off * off);
+          const u0 = alongZ ? a.z : a.x;
+          const u1 = alongZ ? b.z : b.x;
+          const c = alongZ ? o.z : o.x;
+          if (Math.max(u0, u1) > c - half && Math.min(u0, u1) < c + half) {
+            hit = o;
+            break;
+          }
+        }
+      }
+      if (!hit) {
+        out.push(b);
+        continue;
+      }
+      changed = true;
+      // Round it: out to the cross street before the plaza, along the parallel street 120 m out, back after it.
+      const sg = alongZ ? Math.sign(b.z - a.z) || 1 : Math.sign(b.x - a.x) || 1;
+      const side = alongZ ? (a.x >= hit.x ? 1 : -1) : a.z >= hit.z ? 1 : -1;
+      const c = alongZ ? hit.z : hit.x;
+      const par = (alongZ ? hit.x : hit.z) + side * 120;
+      const u0 = alongZ ? a.z : a.x;
+      const u1 = alongZ ? b.z : b.x;
+      const e0 = (u0 - c) * sg < -120 ? c - sg * 120 : u0;
+      const e1 = (u1 - c) * sg > 120 ? c + sg * 120 : u1;
+      const P = (u: number, l: number): V2 => (alongZ ? { x: l, z: u } : { x: u, z: l });
+      const lane = alongZ ? a.x : a.z;
+      if (Math.abs(e0 - u0) > 1e-6) out.push(P(e0, lane));
+      out.push(P(e0, par), P(e1, par));
+      if (Math.abs(e1 - u1) > 1e-6) out.push(P(e1, lane));
+      out.push(b);
+    }
+    pts = out;
+    if (!changed) break;
+  }
+  return pts.filter((q, i) => i === 0 || dist(q, pts[i - 1]) > 1e-6);
 }
 
 /** Where a cab stands in its bay: in the kerb lane, nose the way the lane's traffic goes. */
@@ -896,9 +1031,10 @@ class Kit {
    * at its middle; the top and bottom are closed flat.
    */
   loft(rings: Ring[], xs: number[], paint: (x: number, y: number, z: number, n: V3) => Paint | null, arc = 6, caps: { top: Paint | null; bottom: Paint | null } = { top: null, bottom: null }): void {
-    const a = this.lo ? Math.max(2, Math.round(arc / 3)) : arc;
-    // Far off a door's edges need no faces of their own.
+    const a = this.lo ? Math.max(2, Math.round(arc / 3)) : Math.round(arc * 1.7);
+    // Far off a door's edges need no faces of their own; near, the rings are eased into a smooth section.
     if (this.lo) xs = [];
+    else rings = smoothRings(rings, 4);
     const outline = (r: Ring): V2[] => {
       const half: V2[] = [];
       const fx = r.front - r.rf;
@@ -1051,6 +1187,39 @@ class Kit {
   }
 }
 
+/**
+ * Rings eased between the given ones (Catmull-Rom on each measure, kept
+ * between its two neighbours so nothing bulges), `per` steps per pair: a
+ * roof's turn, a skirt's tuck and a windscreen's rake read as curves, not
+ * as steps. The given rings stay, so a band of paint still starts and ends
+ * at their heights.
+ */
+function smoothRings(keys: Ring[], per: number): Ring[] {
+  if (keys.length < 2 || per < 2) return keys;
+  const out: Ring[] = [];
+  const fields: Array<'front' | 'rear' | 'w' | 'rf' | 'rr'> = ['front', 'rear', 'w', 'rf', 'rr'];
+  for (let i = 0; i + 1 < keys.length; i++) {
+    const p0 = keys[Math.max(i - 1, 0)];
+    const p1 = keys[i];
+    const p2 = keys[i + 1];
+    const p3 = keys[Math.min(i + 2, keys.length - 1)];
+    out.push(p1);
+    for (let k = 1; k < per; k++) {
+      const t = k / per;
+      const r = { y: p1.y + (p2.y - p1.y) * t } as Ring;
+      for (const f of fields) {
+        const v = 0.5 * (2 * p1[f] + (-p0[f] + p2[f]) * t + (2 * p0[f] - 5 * p1[f] + 4 * p2[f] - p3[f]) * t * t + (-p0[f] + 3 * p1[f] - 3 * p2[f] + p3[f]) * t * t * t);
+        r[f] = Math.min(Math.max(v, Math.min(p1[f], p2[f])), Math.max(p1[f], p2[f]));
+      }
+      r.rf = Math.min(r.rf, r.w * 0.999, r.front);
+      r.rr = Math.min(r.rr, r.w * 0.999, r.rear);
+      out.push(r);
+    }
+  }
+  out.push(keys[keys.length - 1]);
+  return out;
+}
+
 const UNIT = new THREE.BoxGeometry(1, 1, 1);
 /** A lifebuoy: 0.6 m across. */
 const RING = new THREE.TorusGeometry(0.26, 0.055, 6, 14);
@@ -1118,7 +1287,8 @@ const scale = (c: RGB, k: number): RGB => [c[0] * k, c[1] * k, c[2] * k];
 // ---- the tram: two low-floor sections, oxblood under a cream upper, a gold line, a raked windscreen.
 
 const TRAM_RINGS: Ring[] = [
-  { y: 0.12, front: 6.92, rear: 7.04, w: 1.17, rf: 0.92, rr: 0.1 },
+  { y: 0.1, front: 6.86, rear: 7.0, w: 1.12, rf: 0.88, rr: 0.1 },
+  { y: 0.2, front: 6.98, rear: 7.06, w: 1.2, rf: 0.95, rr: 0.11 },
   { y: 0.38, front: 7.05, rear: 7.1, w: 1.245, rf: 1.0, rr: 0.12 },
   { y: 0.66, front: 7.1, rear: 7.1, w: 1.265, rf: 1.03, rr: 0.12 },
   { y: 0.92, front: 7.12, rear: 7.1, w: 1.27, rf: 1.05, rr: 0.12 },
@@ -1149,7 +1319,7 @@ function tramModel(kit: Kit): void {
     TRAM_RINGS,
     xs,
     (x, y, z, n) => {
-      if (y < 0.38) return { part: 'trim', colour: skirt, surf: [0.2, 0.7] };
+      if (y < 0.38) return { part: 'body', colour: skirt, surf: [0.15, 0.55] };
       const rearFace = x < -6.98 && n[0] < -0.5;
       if (!rearFace && y > 1.02 && y < 2.32) return { part: 'glass', colour: [0, 0, 0], surf: [0, 0.05] };
       if (!rearFace && Math.abs(z) > 0.9 && door(x) && y > 0.38 && y < 2.32) return { part: 'glass', colour: [0, 0, 0], surf: [0, 0.05] };
@@ -1191,6 +1361,7 @@ function tramModel(kit: Kit): void {
         for (const e of [-TRAM_DOOR_W / 2, TRAM_DOOR_W / 2]) kit.box('trim', [d + e, 1.35, z], [0.05, 1.95, 0.02], dark, [0, 0.6]);
         kit.box('trim', [d, 2.33, z], [TRAM_DOOR_W + 0.05, 0.05, 0.02], dark, [0, 0.6]);
         kit.box('lamp', [d + TRAM_DOOR_W / 2 + 0.09, 1.25, sz * 1.282], [0.05, 0.05, 0.01], [0.2, 1.6, 0.5], [0, 1], 'always');
+        kit.box('trim', [d, 0.36, sz * 1.25], [TRAM_DOOR_W, 0.03, 0.06], lin('#8a8780'), [0.9, 0.35]);
       }
     }
     // Camera arms instead of mirrors, either side of the windscreen.
@@ -1200,6 +1371,17 @@ function tramModel(kit: Kit): void {
     }
     // The coupler cover under the nose.
     kit.box('trim', [6.95, 0.3, 0], [0.3, 0.16, 0.7], skirt, [0.2, 0.6]);
+  }
+  if (!kit.lo) {
+    // Panel seams down the lower body and the cant rail, where the sections' side panels meet.
+    for (const sz of [-1, 1]) {
+      for (const x of [5.4, 1.2, -1.6, -5.5]) {
+        kit.box('trim', [x, 0.65, sz * 1.268], [0.012, 0.5, 0.008], lin('#2a0c0a'), [0, 0.5]);
+        kit.box('trim', [x, 2.55, sz * 1.238], [0.012, 0.3, 0.008], lin('#8f877a'), [0, 0.5]);
+      }
+      // The skirt's lip.
+      kit.box('trim', [-0.2, 0.38, sz * 1.25], [13.2, 0.025, 0.012], lin('#121314'), [0.3, 0.5]);
+    }
   }
   // The bogies' running gear, shadowed under the skirt.
   for (const bx of [-4.3, 4.3]) kit.box('trim', [bx, 0.11, 0], [2.0, 0.22, 1.9], lin('#0d0d0e'), [0.3, 0.8]);
@@ -1256,7 +1438,7 @@ const RAIL_DOOR_W = 1.4;
 
 function railModel(kit: Kit, nose: boolean): void {
   const steel = lin('#8d9093');
-  const mask = lin('#142328');
+  const mask = lin('#2b3d42');
   const teal = lin('#1f6b6e');
   const under = lin('#24262a');
   const rings = RAIL_RINGS(nose);
@@ -1302,9 +1484,10 @@ function railModel(kit: Kit, nose: boolean): void {
   }
   // Roof: air-conditioning units.
   for (const rx of [-4.2, 4.2]) kit.box('body', [rx, 3.86, 0], [2.6, 0.25, 1.5], lin('#7d8083'), [0.7, 0.45]);
-  // Door seams.
+  // Door seams, and a grab rail beside each doorway.
   if (!kit.lo) {
     for (const d of RAIL_DOORS) for (const sz of [-1, 1]) {
+      for (const e of [-1, 1]) kit.rod('trim', [d + e * (RAIL_DOOR_W / 2 + 0.12), 1.3, sz * 1.46], [d + e * (RAIL_DOOR_W / 2 + 0.12), 2.4, sz * 1.46], 0.018, lin('#b9b7b2'), [0.9, 0.25], 8);
       kit.box('trim', [d, 1.95, sz * 1.425], [0.03, 1.9, 0.02], dark);
       for (const e of [-RAIL_DOOR_W / 2, RAIL_DOOR_W / 2]) kit.box('trim', [d + e, 1.95, sz * 1.425], [0.04, 1.9, 0.02], dark);
     }
@@ -1327,9 +1510,30 @@ function railModel(kit: Kit, nose: boolean): void {
         noseBar(kit, r, y, 0.05, lin('#08090a'));
       kit.bar('trim', [7.6, 1.86, -0.15], [7.48, 2.3, 0.45], 0.03, 0.02, lin('#0b0b0c'), [0.3, 0.5]);
     }
-    // The obstacle deflector under the nose, and the coupler in its pocket.
+    // The obstacle deflector under the nose, and the coupler: a shank out of its pocket and a head with its horn.
     kit.box('trim', [7.3, 0.62, 0], [0.22, 0.44, 2.3], lin('#202225'), [0.4, 0.55]);
-    kit.box('trim', [7.48, 0.95, 0], [0.3, 0.2, 0.42], dark, [0.6, 0.4]);
+    kit.box('trim', [7.52, 1.02, 0], [0.12, 0.3, 0.5], lin('#0c0c0d'), [0.2, 0.8]);
+    kit.rod('trim', [7.4, 0.98, 0], [7.95, 0.98, 0], 0.07, lin('#3c3a37'), [0.8, 0.4], 10);
+    kit.box('trim', [7.98, 0.98, 0], [0.12, 0.26, 0.34], lin('#4a4743'), [0.85, 0.35]);
+    kit.box('trim', [8.02, 0.86, 0.12], [0.1, 0.12, 0.08], lin('#4a4743'), [0.85, 0.35]);
+    if (!kit.lo) {
+      // The front's detrainment door: its seams up the nose either side of the middle, and its handle.
+      for (const z of [-0.42, 0.42]) {
+        const pts: V3[] = [];
+        for (let k = 0; k <= 8; k++) {
+          const y = 1.05 + (2.82 - 1.05) * (k / 8);
+          const r = rings.reduce((a, b) => (Math.abs(b.y - y) < Math.abs(a.y - y) ? b : a));
+          pts.push([noseAt(r, z).x + 0.008, y, z]);
+        }
+        for (let k = 1; k < pts.length; k++) kit.bar('trim', pts[k - 1], pts[k], 0.018, 0.012, lin('#0a0b0c'), [0.2, 0.5]);
+      }
+      kit.box('trim', [noseAt(rings[3], 0.3).x + 0.02, 1.62, 0.3], [0.03, 0.05, 0.14], lin('#9a9893'), [0.9, 0.3]);
+      // Bezels round the headlamps.
+      for (const sz of [-1, 1]) {
+        const at = noseAt(rings[2], sz * 0.98);
+        kit.box('trim', [at.x - 0.004, 1.28, sz * 0.98], [0.02, 0.16, 0.5], lin('#0d0e0f'), [0.5, 0.3], undefined, at.yaw);
+      }
+    }
   }
 }
 
@@ -1528,6 +1732,7 @@ const CAB_RINGS: Ring[] = [
   { y: 1.34, front: 0.98, rear: 1.4, w: 0.77, rf: 0.56, rr: 0.56 },
   { y: 1.45, front: 0.72, rear: 1.18, w: 0.68, rf: 0.5, rr: 0.5 },
   { y: 1.5, front: 0.5, rear: 0.95, w: 0.5, rf: 0.42, rr: 0.42 },
+  { y: 1.53, front: 0.32, rear: 0.75, w: 0.3, rf: 0.28, rr: 0.28 },
 ];
 
 function cabModel(kit: Kit): void {
@@ -1538,12 +1743,13 @@ function cabModel(kit: Kit): void {
     CAB_RINGS,
     [1.72, 1.28 + 0.44, 1.28 - 0.44, 0.3, -0.3, -1.28 + 0.44, -1.28 - 0.44, -1.72],
     (x, y) => {
+      if (y > 1.43) return { part: 'body', colour: lin('#1c1e21'), surf: [0.2, 0.18] };
       if (y > 0.9) return { part: 'glass', colour: [0, 0, 0], surf: [0, 0.05] };
-      if (y < 0.32 || arch(x, y)) return { part: 'trim', colour: graphite, surf: [0.1, 0.6] };
+      if (y < 0.32 || arch(x, y)) return { part: 'body', colour: graphite, surf: [0.1, 0.45] };
       return { part: 'body', colour: cream, surf: [0, 0.3] };
     },
     8,
-    { top: { part: 'glass', colour: [0, 0, 0], surf: [0, 0.05] }, bottom: { part: 'trim', colour: graphite, surf: [0.1, 0.8] } },
+    { top: { part: 'body', colour: lin('#1c1e21'), surf: [0.2, 0.18] }, bottom: { part: 'trim', colour: graphite, surf: [0.1, 0.8] } },
   );
   // Wheels: tyres, and pale hubs.
   for (const wx of [-1.28, 1.28]) {
@@ -1843,8 +2049,26 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
               }
             }
           }
+          {
+            // Grab poles down the aisle by each doorway, catching the ceiling's light.
+            float tz0 = -p.z / d.z;
+            if (tz0 > 0.0 && tz0 < t) {
+              vec3 hp = p + d * tz0;
+              for (int i = 0; i < 4; i++) {
+                if (uDoors[i] < -90.0) continue;
+                for (int e = -1; e <= 1; e += 2) {
+                  float px = uDoors[i] + float(e) * (uDoorW * 0.5 + 0.25);
+                  float dx = abs(hp.x - px);
+                  if (dx < 0.022 && hp.y > fl && hp.y < bmax.y) {
+                    c = mix(vec3(0.9, 0.62, 0.12) * 0.55, vec3(0.95), 0.25) * L * (0.35 + 0.65 * (1.0 - dx / 0.022));
+                    t = tz0;
+                  }
+                }
+              }
+            }
+          }
           if (uCrowd > 0.0) {
-            // Passengers standing down the aisle, dark against the lit far side.
+            // Passengers standing down the aisle, lit from the ceiling: coats in a few muted colours, faces warm.
             float tz = -p.z / d.z;
             if (tz > 0.0 && tz < t) {
               vec3 hz = p + d * tz;
@@ -1858,7 +2082,11 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
                 float torso = step(dx, 0.21 - 0.07 * shoulders) * step(y, top - 0.24) * step(fl, y);
                 float head = step(length(vec2(dx, (y - (top - 0.12)) * 0.82)), 0.105);
                 if (torso + head > 0.5) {
-                  c = L * 0.03 + uSeatCol * L * 0.02 * vgHash(slot + 9.0);
+                  float hh = vgHash(slot * 2.7 + vInst * 1.3);
+                  vec3 coat = hh < 0.25 ? vec3(0.05, 0.06, 0.09) : hh < 0.5 ? vec3(0.09, 0.08, 0.07) : hh < 0.75 ? vec3(0.16, 0.11, 0.07) : vec3(0.12, 0.04, 0.05);
+                  float lit = 0.35 + 0.9 * smoothstep(fl + 0.6, top, y);
+                  float edge = smoothstep(0.0, 0.06, 0.21 - dx);
+                  c = head > 0.5 ? vec3(0.42, 0.28, 0.2) * L * (0.35 + 0.4 * smoothstep(top - 0.2, top, y)) : coat * L * lit * (0.55 + 0.45 * edge);
                   t = tz;
                 }
               }
@@ -2017,18 +2245,33 @@ export interface Vehicles {
   /**
    * Advances the clock by dt seconds, moves every vehicle, and draws each
    * car at its level from the eye. The cars cast no sun shadow (a moving
-   * caster would redraw the city's shadow map every frame), so this is
-   * always false: nothing here asks for the shadow map to be redrawn.
+   * caster would redraw the city's shadow map every frame).
    */
-  update(dt: number, eye?: THREE.Vector3): boolean;
+  update(dt: number, eye?: THREE.Vector3): void;
   /** The next vehicle on a trip's leg (tram, rail, pod or ferry) that calls at its start going its way, or null. */
   board(trip: Trip, leg: number): Ride | null;
-  /** A cab from the nearest rank, sent to carry a trip's cab leg. */
+  /**
+   * A cab from the nearest rank with one free, sent to carry a trip's cab
+   * leg: it pulls in at the kerb nearest the leg's start (kerbOf), drives
+   * the streets round the plazas, and sets down at the kerb nearest its
+   * end. A second summons for the same leg brings the same cab. Throws for
+   * a leg that is not a cab leg.
+   */
   summonCab(trip: Trip, leg: number): VehicleRef;
+  /**
+   * Lays the fleet on a network laid again, keeping the clock: on the same
+   * network nothing moves; on a new one each vehicle runs its new timetable
+   * from the same moment. Refs resolve by id (a vehicle the new network has
+   * no place for is retired) and rides timetabled on another network are
+   * retired, so their riders board again.
+   */
+  relay(net: Network): void;
+  /** The quality the city draws at (the governor's step down reaches the vehicles: no headlamp pools at medium). */
+  setQuality(q: 'high' | 'medium'): void;
   /** Every vehicle of a kind. */
   vehicles(kind: VehicleKind): VehicleRef[];
   /** The ferries' wakes: where each is, which way it moves, and how fast against its service speed (river.ts draws them). */
-  wakes(): Array<{ x: number; z: number; heading: number; speed: number }>;
+  wakes(eye?: { x: number; z: number }): ReadonlyArray<{ x: number; z: number; heading: number; speed: number }>;
   view(camera: THREE.Camera): VehiclesView;
   /** Holds the clock (captures): vehicles stand where they are until released. */
   hold(on: boolean): void;
@@ -2052,12 +2295,12 @@ export interface Vehicles {
   dispose(): void;
 }
 
-/** How many cars of each model the fleet can draw at once. */
-function capacity(fleet: Fleet, name: ModelName): number {
+/** How many cars of each model the fleet's instance buffers hold: twice what it runs, so a network grown a ring still fits. */
+function capacity(fleet: { services: Service[]; cabs: unknown[] }, name: ModelName): number {
   let n = 0;
   for (const s of fleet.services) for (const m of CONSIST[s.kind].models) if (m.model === name) n += s.units.length;
-  if (name === 'cab') n = fleet.cabs.length + 24;
-  return Math.max(n, 1);
+  if (name === 'cab') n = fleet.cabs.length * 2;
+  return Math.max(n * 2, 8);
 }
 
 interface Drawn {
@@ -2071,8 +2314,27 @@ interface Drawn {
   tris: { near: number; far: number };
 }
 
+/** A network's identity for its timetables: its lines' tracks and stops. */
+function netKey(net: Network): string {
+  return JSON.stringify([net.tram.path, net.rail.path, net.pods.map((l) => l.path), net.tram.stops.length, net.rail.stops.length, net.ranks.map((r) => [r.x, r.z])]);
+}
+
+/** The most cabs a rank keeps: one in each bay. */
+const RANK_CABS = 3;
+
 export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicles {
-  const fleet = makeFleet(net);
+  let fleet = makeFleet(net);
+  let key = netKey(net);
+  let plazas = plazasOf(net);
+  const byId = new Map<string, Unit>();
+  const index = (): void => {
+    byId.clear();
+    for (const u of fleet.units) byId.set(u.id, u);
+  };
+  index();
+  /** Each cab leg already served, so a second summons brings the same cab. */
+  const errands = new Map<string, Cab>();
+  let disposed = false;
   const group = new THREE.Group();
   group.name = 'vehicles';
   const body = bodyMaterial();
@@ -2084,6 +2346,17 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
   const owned: THREE.BufferGeometry[] = [];
 
   const drawn = new Map<ModelName, Drawn>();
+  const drawnGeos: THREE.BufferGeometry[] = [];
+  /** Each model's near and far instances, sized for the fleet; laid again only when a relaid fleet outgrows them. */
+  function buildDrawn(): void {
+  for (const d of drawn.values()) {
+    for (const m of [...d.near, d.far]) {
+      group.remove(m);
+      m.dispose();
+    }
+  }
+  for (const g of drawnGeos.splice(0)) g.dispose();
+  drawn.clear();
   for (const name of Object.keys(MODELS) as ModelName[]) {
     const spec = MODELS[name];
     const cap = capacity(fleet, name);
@@ -2091,7 +2364,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     spec.build(nearKit);
     const farKit = new Kit(true);
     spec.build(farKit);
-    const gm = glassMaterial(spec.interior);
+    const gm = glass.get(name) ?? glassMaterial(spec.interior);
     glass.set(name, gm);
     const mats: Record<Part, THREE.Material> = { body, trim, glass: gm, lamp };
     const near: THREE.InstancedMesh[] = [];
@@ -2101,7 +2374,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     for (const p of PARTS) {
       const g = nearKit.part(p);
       if (!g) continue;
-      owned.push(g);
+      drawnGeos.push(g);
       if (p === 'lamp') {
         const la = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
         const ba = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
@@ -2129,7 +2402,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       group.add(mesh);
     }
     const fg = farKit.merged(spec.glow);
-    owned.push(fg);
+    drawnGeos.push(fg);
     const fl = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
     const fb = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
     fl.setUsage(THREE.DynamicDrawUsage);
@@ -2150,6 +2423,8 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     group.add(farMesh);
     drawn.set(name, { name, near, far: farMesh, lead, brake, nearCount: 0, farCount: 0, tris: { near: nearTris, far: fg.attributes.position.count / 3 } });
   }
+  }
+  buildDrawn();
 
   // Headlamp pools on the road ahead of the trams and cabs near the eye.
   const poolGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0.5, 0, 0);
@@ -2171,6 +2446,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
   const e = new THREE.Euler(0, 0, 0, 'YZX');
   const pos = new THREE.Vector3();
   const one = new THREE.Vector3(1, 1, 1);
+  const size = new THREE.Vector3();
 
   /** Lays one car into its model's near and far instances by its distance from the eye. */
   function place(name: ModelName, x: number, y: number, z: number, yaw: number, pitch: number, roll: number, lead: number, brake: number): void {
@@ -2205,7 +2481,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     if (pos.distanceTo(eyeAt) > 320) return;
     e.set(0, -yaw, 0, 'YZX');
     q.setFromEuler(e);
-    m4.compose(pos, q, new THREE.Vector3(length, 1, width));
+    m4.compose(pos, q, size.set(length, 1, width));
     pools.setMatrixAt(poolCount, m4);
     pools.setColorAt(poolCount, poolColour.setRGB(1.0 * strength, 0.9 * strength, 0.74 * strength));
     poolCount++;
@@ -2228,7 +2504,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     if (pos.distanceTo(eyeAt) > VEHICLE_LOD.far) return;
     e.set(0, -yaw, 0, 'YZX');
     q.setFromEuler(e);
-    m4.compose(pos, q, new THREE.Vector3(length, 1, width));
+    m4.compose(pos, q, size.set(length, 1, width));
     shades.setMatrixAt(shadeCount++, m4);
   }
 
@@ -2286,66 +2562,91 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
   }
 
   const refs = new Map<string, VehicleRef>();
-  function unitRef(u: Unit): VehicleRef {
-    let r = refs.get(u.id);
+  /** Where each ref was last seen, so a retired one stands still rather than vanishing. */
+  const lastSeen = new Map<string, { p: V3; h: number }>();
+  function unitRef(id: string): VehicleRef {
+    let r = refs.get(id);
     if (r) return r;
-    const svc = u.service;
-    const state = (): { s: number; v: number } => svc.plan.at(fleet.time + u.offset);
+    const kind = byId.get(id)!.service.kind;
+    // Resolved through the fleet as laid now: a relay keeps the ref, its vehicle runs on.
+    const unit = (): Unit | undefined => byId.get(id);
+    const seen = (): { p: V3; h: number } => {
+      const u = unit();
+      if (!u) return lastSeen.get(id) ?? { p: [0, 0, 0], h: 0 };
+      const st = u.service.plan.at(fleet.time + u.offset);
+      const pt = u.service.track.point(st.s);
+      const t = u.service.track.tangent(st.s);
+      const out = { p: [pt.x, pt.y, pt.z] as V3, h: Math.atan2(t.z, t.x) };
+      lastSeen.set(id, out);
+      return out;
+    };
     r = {
-      id: u.id,
-      kind: svc.kind,
-      track: svc.id,
-      position() {
-        const p = svc.track.point(state().s);
-        return [p.x, p.y, p.z];
+      id,
+      kind,
+      track: byId.get(id)!.service.id,
+      position: () => seen().p,
+      heading: () => seen().h,
+      speed() {
+        const u = unit();
+        return u ? u.service.plan.at(fleet.time + u.offset).v : 0;
       },
-      heading() {
-        const t = svc.track.tangent(state().s);
-        return Math.atan2(t.z, t.x);
-      },
-      speed: () => state().v,
-      floorY() {
-        return svc.track.point(state().s).y + RAIL_HEAD[svc.kind] + CONSIST[svc.kind].floor;
-      },
+      floorY: () => seen().p[1] + RAIL_HEAD[kind] + CONSIST[kind].floor,
       arrivesIn(p) {
+        const u = unit();
+        if (!u) return Infinity;
         let best = Infinity;
-        for (const c of svc.calls) if (dist(c, p) < 6) best = Math.min(best, waitFor(u, c, fleet.time));
+        for (const c of u.service.calls) if (dist(c, p) < 6) best = Math.min(best, waitFor(u, c, fleet.time));
         return best;
       },
       phase: () => 'running',
+      retired: () => !unit(),
     };
-    refs.set(u.id, r);
+    refs.set(id, r);
     return r;
   }
   function cabRef(cab: Cab): VehicleRef {
     let r = refs.get(cab.id);
     if (r) return r;
+    const id = cab.id;
+    const now = (): Cab | undefined => fleet.cabs.find((c) => c.id === id);
+    const pose = (): { x: number; y: number; z: number; yaw: number; v: number } => {
+      const c = now();
+      if (!c) {
+        const l = lastSeen.get(id) ?? { p: [0, 0, 0] as V3, h: 0 };
+        return { x: l.p[0], y: l.p[1], z: l.p[2], yaw: l.h, v: 0 };
+      }
+      const p = cabPose(c, fleet.time);
+      lastSeen.set(id, { p: [p.x, p.y, p.z], h: p.yaw });
+      return p;
+    };
     r = {
-      id: cab.id,
+      id,
       kind: 'cab',
       track: `rank:${cab.rank.x},${cab.rank.z}`,
       position() {
-        const p = cabPose(cab, fleet.time);
+        const p = pose();
         return [p.x, p.y, p.z];
       },
-      heading: () => cabPose(cab, fleet.time).yaw,
-      speed: () => cabPose(cab, fleet.time).v,
-      floorY: () => cabPose(cab, fleet.time).y + CAB_FLOOR,
+      heading: () => pose().yaw,
+      speed: () => pose().v,
+      floorY: () => pose().y + CAB_FLOOR,
       arrivesIn(p) {
         // The kerb it is heading for: the pickup on the way there, the set-down while carrying.
-        const legs = cab.legs;
-        const t = fleet.time - cab.since;
-        if (!legs) return Infinity;
+        const c = now();
+        const legs = c?.legs;
+        if (!c || !legs) return Infinity;
+        const t = fleet.time - c.since;
         const end = (run: { track: Track }): V2 => run.track.point(run.track.length);
-        if (cab.phase === 'to-pickup' && dist(end(legs.pickup), p) < 6) return Math.max(0, legs.pickup.plan.period - t);
-        if ((cab.phase === 'pickup' && dist(end(legs.pickup), p) < 6) || (cab.phase === 'setdown' && dist(end(legs.carry), p) < 6)) return 0;
-        if (cab.phase === 'pickup' && dist(end(legs.carry), p) < 6) return CAB_BOARD_S - t + legs.carry.plan.period;
-        if (cab.phase === 'carrying' && dist(end(legs.carry), p) < 6) return Math.max(0, legs.carry.plan.period - t);
+        if (c.phase === 'to-pickup' && dist(end(legs.pickup), p) < 6) return Math.max(0, legs.pickup.plan.period - t);
+        if ((c.phase === 'pickup' && dist(end(legs.pickup), p) < 6) || (c.phase === 'setdown' && dist(end(legs.carry), p) < 6)) return 0;
+        if (c.phase === 'pickup' && dist(end(legs.carry), p) < 6) return CAB_BOARD_S - t + legs.carry.plan.period;
+        if (c.phase === 'carrying' && dist(end(legs.carry), p) < 6) return Math.max(0, legs.carry.plan.period - t);
         return Infinity;
       },
-      phase: () => cab.phase,
+      phase: () => now()?.phase ?? 'parked',
+      retired: () => !now(),
     };
-    refs.set(cab.id, r);
+    refs.set(id, r);
     return r;
   }
 
@@ -2378,7 +2679,8 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     }
     if (!best) return null;
     const { u, c } = best;
-    const ref = unitRef(u);
+    const ref = unitRef(u.id);
+    const laidOn = key;
     const P = u.service.plan.period;
     const boardAt = fleet.time + best.wait;
     // The first call at the leg's end after boarding.
@@ -2389,38 +2691,110 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       if (dt > 1e-6) ride = Math.min(ride, dt);
     }
     const alightAt = boardAt + ride;
-    return { ...ref, boardsIn: () => Math.max(0, boardAt - fleet.time), alightsIn: () => Math.max(0, alightAt - fleet.time) };
+    return { ...ref, boardsIn: () => Math.max(0, boardAt - fleet.time), alightsIn: () => Math.max(0, alightAt - fleet.time), retired: () => key !== laidOn || ref.retired() };
   }
 
   function summonCab(trip: Trip, k: number): VehicleRef {
     const leg = trip.legs[k];
+    if (!leg || leg.mode !== 'cab' || leg.path.length < 2) throw new Error(`summonCab: leg ${k} of trip ${trip.id} is not a cab leg`);
+    const errand = `${trip.id}#${k}`;
+    const known = errands.get(errand);
+    if (known && fleet.cabs.includes(known) && known.phase !== 'parked') return cabRef(known);
     const way = leg.path.map(xz);
-    const start = way[0];
-    const end = way[way.length - 1];
+    const start = kerbPlan(way[0], net);
+    const end = kerbPlan(way[way.length - 1], net);
     const bayOf = (cab: Cab): V2 => bayPose(cab.rank, cab.bay);
-    const free = fleet.cabs.filter((c) => c.phase === 'parked');
     let cab: Cab | undefined;
     let bestLen = Infinity;
-    for (const c of free) {
-      const len = pathLength(streetWay(bayOf(c), start));
+    for (const c of fleet.cabs) {
+      if (c.phase !== 'parked') continue;
+      const len = pathLength(streetWay(bayOf(c), start.kerb));
       if (len < bestLen) {
         bestLen = len;
         cab = c;
       }
     }
     if (!cab) {
-      // Every cab is out: the nearest rank sends another from its last bay.
-      const rank = [...net.ranks].sort((a, b) => pathLength(streetWay(a, start)) - pathLength(streetWay(b, start)))[0];
-      const n = fleet.cabs.filter((c) => c.rank === rank).length;
-      cab = { id: `cab:extra:${fleet.cabs.length}`, rank, bay: Math.min(n, BAYS.length - 1), phase: 'parked', run: null, since: 0, legs: null };
-      fleet.cabs.push(cab);
+      // Every cab is out: the nearest rank with a bay to spare sends another from it.
+      const ranks = [...net.ranks].sort((a, b) => pathLength(streetWay(a, start.kerb)) - pathLength(streetWay(b, start.kerb)));
+      for (const rank of ranks) {
+        const taken = new Set(fleet.cabs.filter((c) => c.rank === rank).map((c) => c.bay));
+        if (taken.size >= RANK_CABS) continue;
+        const bay = [0, 1, 2].find((b) => !taken.has(b))!;
+        cab = { id: `cab:extra:${fleet.cabs.length}`, rank, bay, phase: 'parked', run: null, since: 0, legs: null };
+        fleet.cabs.push(cab);
+        break;
+      }
     }
-    const bay = bayOf(cab);
-    cab.legs = { pickup: drive(streetWay(bay, start)), carry: drive(way), back: drive(streetWay(end, bay)) };
+    if (!cab) {
+      // Every bay in the city is out on an errand: the cab whose errand ends soonest takes this one next.
+      cab = [...fleet.cabs].sort((a, b) => cabFreeIn(a, fleet.time) - cabFreeIn(b, fleet.time))[0];
+      cab.queue = { start, end };
+      errands.set(errand, cab);
+      return cabRef(cab);
+    }
+    sendCab(cab, start, end);
+    errands.set(errand, cab);
+    return cabRef(cab);
+  }
+
+  function sendCab(cab: Cab, start: { kerb: V2; via: V2 }, end: { kerb: V2; via: V2 }): void {
+    const bay = bayPose(cab.rank, cab.bay);
+    const to = (a: V2, k: { kerb: V2; via: V2 }): V2[] => [...streetWay(a, k.via), k.kerb];
+    const from = (k: { kerb: V2; via: V2 }, b: V2): V2[] => [k.kerb, ...streetWay(k.via, b)];
+    cab.legs = {
+      pickup: drive(to(bay, start), plazas),
+      carry: drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas),
+      back: drive(from(end, bay), plazas),
+    };
     cab.phase = 'to-pickup';
     cab.since = fleet.time;
     cab.run = cab.legs.pickup;
-    return cabRef(cab);
+  }
+
+  /** Each cab moves on through its errand; one back at its bay with another queued sets off again. */
+  function advanceCabs(): void {
+    for (const c of fleet.cabs) {
+      advanceCab(c, fleet.time);
+      if (c.phase === 'parked' && c.queue) {
+        const q = c.queue;
+        c.queue = null;
+        sendCab(c, q.start, q.end);
+      }
+    }
+  }
+
+  /** Lays the fleet on a network laid again, keeping the clock and every cab's errand at a rank that still stands. */
+  function relay(next: Network): void {
+    const time = fleet.time;
+    const old = fleet;
+    fleet = makeFleet(next);
+    fleet.time = time;
+    net = next;
+    key = netKey(next);
+    plazas = plazasOf(next);
+    const rankAt = (r: Rank): Rank | undefined => next.ranks.find((n) => n.x === r.x && n.z === r.z);
+    const cabs: Cab[] = [];
+    for (const c of old.cabs) {
+      const rank = rankAt(c.rank);
+      if (rank) cabs.push({ ...c, rank });
+    }
+    for (const c of fleet.cabs) if (!cabs.some((o) => o.id === c.id)) cabs.push(c);
+    fleet.cabs = cabs;
+    // Keep the old cab objects' identities for the errands map.
+    for (const [k, c] of errands) {
+      const n = cabs.find((o) => o.id === c.id);
+      if (n) errands.set(k, n);
+      else errands.delete(k);
+    }
+    index();
+    const outgrown = (Object.keys(MODELS) as ModelName[]).some((m) => {
+      const d = drawn.get(m);
+      const need = m === 'cab' ? fleet.cabs.length : capacity(fleet, m) / 2;
+      return !d || need > d.far.instanceMatrix.count;
+    });
+    if (outgrown) buildDrawn();
+    draw();
   }
 
   draw();
@@ -2438,31 +2812,49 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
   group.add(riderMesh);
 
   const frustumCount = (mesh: THREE.InstancedMesh): number => (mesh.visible ? mesh.count : 0);
+  const wakeSlots: Array<{ x: number; z: number; heading: number; speed: number; d: number }> = [];
+  const wakeOut: Array<{ x: number; z: number; heading: number; speed: number }> = [];
 
   return {
     group,
     update(dt, eye) {
+      if (disposed) return;
       if (!held) fleet.time += dt;
-      for (const c of fleet.cabs) advanceCab(c, fleet.time);
+      advanceCabs();
       if (eye) eyeAt.copy(eye);
       draw();
-      return false;
     },
     board,
     summonCab,
+    relay,
+    setQuality(q) {
+      quality = q;
+    },
     vehicles(kind) {
       if (kind === 'cab') return fleet.cabs.map(cabRef);
-      return fleet.units.filter((u) => u.service.kind === kind).map(unitRef);
+      return fleet.units.filter((u) => u.service.kind === kind).map((u) => unitRef(u.id));
     },
-    wakes() {
-      return fleet.units
-        .filter((u) => u.service.kind === 'ferry')
-        .map((u) => {
-          const { s, v } = u.service.plan.at(fleet.time + u.offset);
-          const p = u.service.track.point(s);
-          const t = u.service.track.tangent(s);
-          return { x: p.x, z: p.z, heading: Math.atan2(t.z, t.x), speed: v / SPEED.ferry };
-        });
+    wakes(eye) {
+      // The boats nearest the eye, in slots kept from frame to frame.
+      let n = 0;
+      for (const u of fleet.units) {
+        if (u.service.kind !== 'ferry') continue;
+        const { s, v } = u.service.plan.at(fleet.time + u.offset);
+        const p = u.service.track.point(s);
+        const t = u.service.track.tangent(s);
+        const w = wakeSlots[n] ?? (wakeSlots[n] = { x: 0, z: 0, heading: 0, speed: 0, d: 0 });
+        w.x = p.x;
+        w.z = p.z;
+        w.heading = Math.atan2(t.z, t.x);
+        w.speed = v / SPEED.ferry;
+        w.d = eye ? Math.hypot(p.x - eye.x, p.z - eye.z) : 0;
+        n++;
+      }
+      wakeSlots.length = n;
+      wakeSlots.sort((a, b) => a.d - b.d);
+      wakeOut.length = 0;
+      for (let i = 0; i < Math.min(n, 4); i++) wakeOut.push(wakeSlots[i]);
+      return wakeOut;
     },
     view() {
       let meshes = 0;
@@ -2495,7 +2887,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     },
     skip(seconds) {
       fleet.time += seconds;
-      for (const c of fleet.cabs) advanceCab(c, fleet.time);
+      advanceCabs();
       draw();
     },
     stage(kind, near) {
@@ -2511,9 +2903,9 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       if (!best) return null;
       // A few seconds into its dwell: stood, doors open, not yet pulling away.
       fleet.time += best.w + 4;
-      for (const c of fleet.cabs) advanceCab(c, fleet.time);
+      advanceCabs();
       draw();
-      return unitRef(best.u);
+      return unitRef(best.u.id);
     },
     seek(conds, horizon = 4000) {
       const holds = (t: number): boolean =>
@@ -2528,7 +2920,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       for (let dt = 0; dt <= horizon; dt += 0.5) {
         if (!holds(fleet.time + dt)) continue;
         fleet.time += dt;
-        for (const c of fleet.cabs) advanceCab(c, fleet.time);
+        advanceCabs();
         draw();
         return true;
       }
@@ -2544,8 +2936,10 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       riderMesh.visible = true;
     },
     dispose() {
+      if (disposed) return;
+      disposed = true;
       group.removeFromParent();
-      for (const g of owned) g.dispose();
+      for (const g of [...owned, ...drawnGeos]) g.dispose();
       for (const d of drawn.values()) {
         for (const m of d.near) m.dispose();
         d.far.dispose();

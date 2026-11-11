@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import { extentBlocks, network, RIVER, route, streetWay, TRAM_DECK, tramHeight, type Leg } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
 import type { Trip } from '../shared/types.js';
-import { createVehicles, motionPlan, trackOf, type VehicleRef } from '../app/src/city/vehicles.js';
+import { createVehicles, kerbOf, motionPlan, trackOf, type VehicleRef } from '../app/src/city/vehicles.js';
+import { PIERS, RIVER as RIVER_, streetLine } from '../shared/commute.js';
 
 type P = { x: number; z: number };
 
@@ -164,9 +165,242 @@ test('a summoned cab drives from the nearest rank and ends at the leg\'s end', (
     if (ph === 'setdown') setDown = at(cab);
   }
   assert.deepEqual(phases, ['to-pickup', 'pickup', 'carrying', 'setdown', 'returning', 'parked']);
-  assert.ok(picked && dist(picked, start) < 0.5, 'it stops for the rider at the leg\'s start');
-  assert.ok(setDown && dist(setDown, end) < 0.5, `it sets down at the leg's end (${setDown && dist(setDown, end).toFixed(2)} m off)`);
+  assert.ok(picked && dist(picked, kerbOf(start, NET)) < 0.5, 'it stops for the rider at the kerb by the leg\'s start');
+  assert.ok(setDown && dist(setDown, kerbOf(end, NET)) < 0.5, `it sets down at the kerb by the leg's end (${setDown && dist(setDown, kerbOf(end, NET)).toFixed(2)} m off)`);
   assert.ok(dist(at(cab), nearest) < 12, 'and goes back to its rank');
   assert.equal(v.vehicles('cab').length, parked, 'the rank keeps its cabs');
+  v.dispose();
+});
+
+// ---------------------------------------------------------------- fix round 1
+
+type Mode = Trip['legs'][number]['mode'];
+const legTrip = (mode: Mode, path: Array<[number, number, number]>): Trip => ({ id: `syn:${mode}:${path[0]?.join(',') ?? 'none'}`, agentId: 'a', firmId: 'f', reason: 'home', jobId: null, from: path.length ? xz(path[0]) : { x: 0, z: 0 }, to: path.length ? xz(path[path.length - 1]) : { x: 0, z: 0 }, legs: [{ mode, path, ms: 0 }], startedAt: '', ms: 0, endedAt: null });
+/** A leg along a straight line from stop a to stop b (the second point a few metres on, so the leg's way reads). */
+const straightLeg = (mode: Mode, a: P, b: P, y: number): Trip => {
+  const l = dist(a, b);
+  const step = { x: a.x + ((b.x - a.x) / l) * 5, z: a.z + ((b.z - a.z) / l) * 5 };
+  return legTrip(mode, [
+    [a.x, y, a.z],
+    [step.x, y, step.z],
+    [b.x, y, b.z],
+  ]);
+};
+
+/** Boards, waits for the vehicle, rides, and checks it stands at each end: returns the ride. */
+function rideThrough(v: ReturnType<typeof createVehicles>, trip: Trip, kind: string): { ref: VehicleRef; at: P } {
+  const ride = v.board(trip, 0);
+  assert.ok(ride, `a ${kind} is boarded`);
+  assert.equal(ride.kind, kind);
+  const leg = trip.legs[0];
+  const a = xz(leg.path[0]);
+  const b = xz(leg.path[leg.path.length - 1]);
+  const wait = ride.boardsIn();
+  const ride0 = ride.alightsIn();
+  assert.ok(wait >= 0 && ride0 > wait, `boards in ${wait} s and alights after (${ride0} s)`);
+  v.update(wait + 1);
+  const at = at2(ride);
+  const tol = kind === 'ferry' ? 24 : 4;
+  assert.ok(dist(at, a) < tol, `${kind} stands at the boarding stop (${dist(at, a).toFixed(1)} m off)`);
+  assert.ok(ride.speed() < 0.01);
+  v.update(ride.alightsIn() + 1);
+  assert.ok(dist(at2(ride), b) < tol, `${kind} stands at the alighting stop (${dist(at2(ride), b).toFixed(1)} m off)`);
+  return { ref: ride, at };
+}
+const at2 = (r: VehicleRef): P => ({ x: r.position()[0], z: r.position()[2] });
+
+test('board takes the train either way round the elevated loop', () => {
+  const v = createVehicles(NET, 'high');
+  const [s0, s1] = NET.rail.stops;
+  const out = rideThrough(v, straightLeg('rail', s0, s1, 12), 'rail');
+  const back = rideThrough(v, straightLeg('rail', s1, s0, 12), 'rail');
+  assert.notEqual(out.ref.track, back.ref.track, 'the two ways run on their own tracks');
+  v.dispose();
+});
+
+test('board takes a pod out on one beam and back on the other', () => {
+  const v = createVehicles(NET, 'high');
+  const line = NET.pods[0];
+  const inner = line.stops.filter((s) => !s.interchange).slice(1, 3);
+  const out = rideThrough(v, straightLeg('pod', inner[0], inner[1], 18), 'pod');
+  const back = rideThrough(v, straightLeg('pod', inner[1], inner[0], 18), 'pod');
+  // The line runs along x on z = 120: one way stands either side of it.
+  const side = (p: P): number => Math.sign(p.z - line.path[0][2]);
+  assert.notEqual(side(out.at), side(back.at), 'outbound and inbound run on the two beams');
+  v.dispose();
+});
+
+test('board takes the ferry down the river and back up it', () => {
+  const v = createVehicles(NET, 'high');
+  const piers = [...PIERS].sort((a, b) => a.z - b.z);
+  const path = (a: (typeof PIERS)[number], b: (typeof PIERS)[number]): Array<[number, number, number]> => {
+    const sa = a.bank === 'west' ? -1 : 1;
+    const sb = b.bank === 'west' ? -1 : 1;
+    return [
+      [a.x, -5.2, a.z],
+      [RIVER_.x + sa * 12, -5.2, a.z],
+      [RIVER_.x + sb * 12, -5.2, b.z],
+      [b.x, -5.2, b.z],
+    ];
+  };
+  const down = v.board(legTrip('ferry', path(piers[2], piers[3])), 0);
+  const up = v.board(legTrip('ferry', path(piers[3], piers[2])), 0);
+  assert.ok(down && up);
+  rideThrough(v, legTrip('ferry', path(piers[2], piers[3])), 'ferry');
+  rideThrough(v, legTrip('ferry', path(piers[3], piers[2])), 'ferry');
+  v.dispose();
+});
+
+test('board returns null for a walk, a cab, or a stop no line calls at', () => {
+  const v = createVehicles(NET, 'high');
+  assert.equal(v.board(legTrip('walk', [[0, 0, 0], [40, 0, 0]]), 0), null);
+  assert.equal(v.board(legTrip('cab', [[0, 0, 0], [40, 0, 0]]), 0), null);
+  assert.equal(v.board(straightLeg('tram', { x: 3, z: 3 }, { x: 300, z: 3 }, 0), 0), null);
+  assert.equal(v.board(legTrip('tram', [[0, 0, 0]]), 0), null);
+  assert.equal(v.board(legTrip('tram', []), 0), null);
+  v.dispose();
+});
+
+test('a transfer rides one pod line to the interchange and boards the other', () => {
+  const big = network({ blocks: 4, districts: [] });
+  const legs = route({ x: -1150, z: 150 }, { x: 150, z: 1150 }, big);
+  assert.deepEqual(legs.map((l) => l.mode), ['walk', 'pod', 'pod', 'walk']);
+  const trip: Trip = { id: 'x', agentId: 'a', firmId: 'f', reason: 'home', jobId: null, from: { x: -1150, z: 150 }, to: { x: 150, z: 1150 }, legs, startedAt: '', ms: 0, endedAt: null };
+  const v = createVehicles(big, 'high');
+  const first = v.board(trip, 1);
+  assert.ok(first);
+  v.update(first.alightsIn() + 1);
+  const second = v.board(trip, 2);
+  assert.ok(second);
+  assert.notEqual(first.track, second.track, 'the change is onto the other line');
+  v.update(second.boardsIn() + 1);
+  assert.ok(dist(at2(second), { x: 120, z: 120 }) < 4, 'the second pod stands at the interchange');
+  v.dispose();
+});
+
+test("a ride that passes the loop's seam alights after it boards, the short way round", () => {
+  const v = createVehicles(NET, 'high');
+  // The last stop in the loop's order to the first: forward round the loop through its start.
+  const stops = NET.tram.stops;
+  const a = stops[stops.length - 1];
+  const b = stops[0];
+  const corners = NET.tram.path.map(xz);
+  const loopDir = (p: P): P => {
+    for (let i = 0; i < corners.length; i++) {
+      const c0 = corners[i];
+      const c1 = corners[(i + 1) % corners.length];
+      const onX = c0.z === c1.z && Math.abs(p.z - c0.z) < 1e-6 && (p.x - c0.x) * (p.x - c1.x) <= 0;
+      const onZ = c0.x === c1.x && Math.abs(p.x - c0.x) < 1e-6 && (p.z - c0.z) * (p.z - c1.z) <= 0;
+      if (onX || onZ) {
+        const l = dist(c0, c1);
+        return { x: (c1.x - c0.x) / l, z: (c1.z - c0.z) / l };
+      }
+    }
+    throw new Error('stop off the loop');
+  };
+  const d = loopDir(a);
+  const trip = legTrip('tram', [
+    [a.x, 0, a.z],
+    [a.x + d.x * 5, 0, a.z + d.z * 5],
+    [b.x, 0, b.z],
+  ]);
+  const ride = v.board(trip, 0);
+  assert.ok(ride);
+  const span = ride.alightsIn() - ride.boardsIn();
+  assert.ok(span > 0 && span < 600, `it rides the short way (${span.toFixed(0)} s)`);
+  v.update(ride.alightsIn() + 1);
+  assert.ok(dist(at2(ride), b) < 3, 'and alights at the first stop past the seam');
+  v.dispose();
+});
+
+test('with every cab out the nearest rank sends another, in a bay of its own', () => {
+  const v = createVehicles(NET, 'high');
+  const cabs = v.vehicles('cab').length;
+  const trip = tripOf({ x: 200, z: -40 }, { x: 1000, z: 300 });
+  const k = trip.legs.findIndex((l) => l.mode === 'cab');
+  const sent: VehicleRef[] = [];
+  for (let i = 0; i < cabs + 4; i++) sent.push(v.summonCab({ ...trip, id: `t${i}` }, k));
+  assert.equal(new Set(sent.map((r) => r.id)).size, sent.length, 'every summons sends its own cab');
+  const all = v.vehicles('cab');
+  assert.ok(all.length > cabs && all.length <= NET.ranks.length * 3, `the extra cabs are capped at three a rank (${all.length})`);
+  // No two cabs stand in the same bay.
+  const parked = all.filter((c) => c.phase() === 'parked').map((c) => c.position().map((n) => n.toFixed(1)).join(','));
+  assert.equal(new Set(parked).size, parked.length);
+  v.dispose();
+});
+
+test('a second summons for the same trip leg brings the same cab', () => {
+  const v = createVehicles(NET, 'high');
+  const trip = tripOf({ x: 200, z: -40 }, { x: 1000, z: 300 });
+  const k = trip.legs.findIndex((l) => l.mode === 'cab');
+  const a = v.summonCab(trip, k);
+  const b = v.summonCab(trip, k);
+  assert.equal(a.id, b.id);
+  assert.throws(() => v.summonCab(trip, trip.legs.findIndex((l) => l.mode === 'walk')), /cab leg/);
+  v.dispose();
+});
+
+test('a cab picks up and sets down at the kerb, never in a plaza', () => {
+  const plazas = [{ x: 0, z: 0 }, ...SLOTS.slice(0, 6)];
+  for (const p of [{ x: 0, z: 0 }, { x: 240, z: 240 }, { x: 20, z: 300 }, { x: 446.5, z: 330 }, { x: -480, z: 0 }, { x: 1000, z: 300 }]) {
+    const k = kerbOf(p, NET);
+    for (const o of plazas) assert.ok(dist(k, o) >= 74, `kerb ${k.x},${k.z} for ${p.x},${p.z} is clear of the plaza at ${o.x},${o.z}`);
+    const offX = Math.abs(k.x - streetLine(k.x));
+    const offZ = Math.abs(k.z - streetLine(k.z));
+    assert.ok(Math.abs(Math.min(offX, offZ) - 6.4) < 0.01, `on a street's kerb lane (${offX}, ${offZ})`);
+  }
+  const v = createVehicles(NET, 'high');
+  const trip = tripOf({ x: 20, z: 60 }, { x: 900, z: 400 });
+  const k = trip.legs.findIndex((l) => l.mode === 'cab');
+  assert.ok(k >= 0);
+  const cab = v.summonCab(trip, k);
+  for (let i = 0; i < 20000 && cab.phase() !== 'parked'; i++) {
+    v.update(0.25);
+    for (const o of plazas) assert.ok(dist(at2(cab), o) >= 72, `the cab keeps out of the plaza at ${o.x},${o.z} (${cab.phase()} at ${at2(cab).x.toFixed(0)},${at2(cab).z.toFixed(0)})`);
+  }
+  v.dispose();
+});
+
+test('laying the fleet again keeps its clock: nothing jumps, and held refs carry on or say they are retired', () => {
+  const v = createVehicles(NET, 'high');
+  v.update(123.4);
+  const tram = v.vehicles('tram')[3];
+  const before = tram.position();
+  const ride = v.board(tripOf({ x: 560, z: -300 }, { x: 600, z: 200 }), 1);
+  assert.ok(ride);
+  v.relay(NET);
+  assert.deepEqual(tram.position(), before, 'the same network: every tram stays where it was');
+  assert.equal(tram.retired(), false);
+  assert.equal(ride.retired(), false, 'a ride on the same network carries on');
+  v.update(2);
+  assert.notDeepEqual(tram.position(), before, 'and the held ref keeps moving');
+  const bigger = network({ blocks: 3, districts: SLOTS.slice(0, 6) });
+  v.relay(bigger);
+  assert.equal(ride.retired(), true, 'a ride on a network laid anew is retired: its rider boards again');
+  const p = tram.position();
+  v.update(2);
+  assert.ok(tram.retired() || tram.position().join() !== p.join(), 'a held ref either moves on the new loop or says it is retired');
+  v.dispose();
+});
+
+test('dispose removes the vehicles from the scene and frees their geometry', () => {
+  const v = createVehicles(NET, 'high');
+  let freed = 0;
+  v.group.traverse((o) => (o as unknown as { geometry?: { addEventListener(t: string, f: () => void): void } }).geometry?.addEventListener('dispose', () => freed++));
+  const parent = { children: [] as unknown[] };
+  void parent;
+  v.dispose();
+  assert.ok(freed > 10, `geometries freed (${freed})`);
+  assert.equal(v.group.parent, null);
+  assert.doesNotThrow(() => v.dispose(), 'a second dispose is harmless');
+});
+
+test('three or more ferries run, and the wakes go to those nearest the eye in reused slots', () => {
+  const v = createVehicles(NET, 'high');
+  assert.ok(v.vehicles('ferry').length >= 3 && v.vehicles('ferry').length <= 4);
+  const a = v.wakes({ x: -360, y: 10, z: 0 } as never);
+  const b = v.wakes({ x: -360, y: 10, z: 0 } as never);
+  assert.equal(a, b, 'the same array each frame');
+  assert.ok(a.length <= 4);
   v.dispose();
 });

@@ -319,9 +319,13 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let vehicles: Vehicles | null = null;
   function layVehicles(): void {
     const net = transit.network();
-    vehicles?.dispose();
-    vehicles = net ? createVehicles(net, quality) : null;
-    if (vehicles) vehicleRoot.add(vehicles.group);
+    if (!net) return;
+    // Laid again on the new network, keeping the clock: nothing jumps, and riders' refs resolve on.
+    if (vehicles) vehicles.relay(net);
+    else {
+      vehicles = createVehicles(net, quality);
+      vehicleRoot.add(vehicles.group);
+    }
   }
 
   // ---------------------------------------------------------------- the civic exchange
@@ -1148,6 +1152,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     renderer.setSize(width(), height());
     post.dispose();
     river.setQuality('medium');
+    vehicles?.setQuality('medium');
     post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
     texel = (SHADOW_HALF * 2) / shadowSize;
@@ -1187,8 +1192,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (transit.update(camera.position, fog.density)) sun.shadow.needsUpdate = true;
     // The vehicles move every frame; they cast no sun shadow, so the shadow map is not redrawn for them.
     if (vehicles) {
-      if (vehicles.update(dt, camera.position)) sun.shadow.needsUpdate = true;
-      river.setWakes(vehicles.wakes());
+      vehicles.update(dt, camera.position);
+      river.setWakes(vehicles.wakes(camera.position));
     }
     fitMark();
     plates.update();

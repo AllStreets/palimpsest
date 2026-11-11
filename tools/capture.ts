@@ -336,6 +336,25 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
           await still(page, 'ferry-wake', around(f.position, go, ef, er, ey), around(f.position, go, tf, tr, ty));
         }
       }
+      if (want('dusk-close')) {
+        // Close by the tram's bridge at dusk: a lit tram crossing over the river and a ferry coming up to pass under.
+        const blocks = (await page.evaluate('window.__palimpsest.transit().blocks')) as number;
+        const h = 240 * blocks + 200;
+        const tries = [
+          [
+            { kind: 'tram', near: [-360, h], radius: 20 },
+            { kind: 'ferry', near: [-360, h - 70], radius: 45 },
+          ],
+          [
+            { kind: 'tram', near: [-360, h], radius: 25 },
+            { kind: 'ferry', near: [-360, h - 70], radius: 90 },
+          ],
+          [{ kind: 'tram', near: [-360, h], radius: 25 }],
+        ];
+        for (const t of tries) if (await d((v, c) => v.vehicleSeek(c as never, 30000), t)) break;
+        const [e, t] = (process.env.DUSK_CLOSE_VIEW ? JSON.parse(process.env.DUSK_CLOSE_VIEW) : [[-336, 4.5, h - 92], [-366, -0.5, h - 2]]) as [V3, V3];
+        await still(page, 'dusk-close', e, t);
+      }
       if (want('home')) await still(page, 'home', OVERVIEW.eye, OVERVIEW.target);
       if (want('dusk')) {
         // The river at dusk looking south to the tram's bridge and the elevated line's truss: a train crossing, a tram

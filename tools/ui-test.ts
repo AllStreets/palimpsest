@@ -1752,7 +1752,7 @@ async function vehicleChecks(page: Page): Promise<void> {
   const far = await view();
   const ranks = (await page.evaluate(() => (window as unknown as { __palimpsest: { transit(): { ranks: number } } }).__palimpsest.transit().ranks)) as number;
   console.log(`info  vehicles: ${far.trams} trams, ${far.trains} trains, ${far.pods} pods, ${far.ferries} ferries, ${far.cabs} cabs; from home ${far.meshes} calls, ${(far.triangles / 1000).toFixed(0)}k triangles (${far.near} near, ${far.far} far)`);
-  check(far.trams >= 8 && far.trains >= 4 && far.pods >= 4 && far.ferries === 2, `trams, trains, pods and ferries run on the network (${far.trams}, ${far.trains}, ${far.pods}, ${far.ferries})`);
+  check(far.trams >= 8 && far.trains >= 4 && far.pods >= 4 && far.ferries >= 3, `trams, trains, pods and ferries run on the network (${far.trams}, ${far.trains}, ${far.pods}, ${far.ferries})`);
   check(far.cabs === ranks * 2, `two cabs wait at each of the ${ranks} ranks (${far.cabs})`);
   check(far.near === 0, 'from home every vehicle draws at its far level');
   check(far.meshes > 0 && far.meshes <= VEHICLE_HOME_CALLS, `from home the vehicles draw in at most ${VEHICLE_HOME_CALLS} calls (${far.meshes})`);
