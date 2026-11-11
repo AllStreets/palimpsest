@@ -2761,3 +2761,28 @@ body[data-route='agent'] {
   color: var(--ink);
   border-bottom-color: var(--ink-2);
 }
+
+/* Links on the firm and agent pages take the same focus ring as a firm's name. */
+.books-job:focus-visible,
+.lineage-link:focus-visible,
+.cal-firm:focus-visible,
+.deal a:focus-visible,
+.agent-tower .insp-ref a:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+/* Follow and Ride up stand ready but quiet until the city tour arrives. */
+.detail-actions-row .btn[aria-disabled='true'] {
+  color: var(--ink-2);
+  border-color: rgba(236, 230, 218, 0.16);
+  cursor: default;
+}
+.repline-era-now {
+  fill: var(--ink-3);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 11.5px;
+}
+.persona .repos-sec:focus {
+  outline: none;
+}

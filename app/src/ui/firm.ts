@@ -36,7 +36,7 @@ const ERA_LINES: Array<[number, string]> = [
 const ROUNDS_SHOWN = 14;
 const BOOK_DAYS_SHOWN = 3;
 
-type RoundFilter = 'all' | 'won' | 'lost';
+type RoundFilter = 'all' | 'won' | 'lost' | 'none';
 
 /** A signed amount for the books: a true minus, and a plus on money coming in. */
 function signed(n: number): string {
@@ -73,6 +73,7 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
   let firms: FirmView[] = [];
   let quarters: Quarter[] = [];
   let unlisten: (() => void) | null = null;
+  let timer: ReturnType<typeof setInterval> | null = null;
   let filter: RoundFilter = 'all';
   let allRounds = false;
   let allBooks = false;
@@ -184,8 +185,12 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
     svg.append(svgEl('path', { d: stepPath(pts, box) }, 'repline-line'));
     if (endedAt) svg.append(svgEl('line', { x1: W - 0.5, y1: y(now) - 6, x2: W - 0.5, y2: H }, 'repline-end'));
     else svg.append(svgEl('circle', { cx: W, cy: y(now), r: 2.6 }, 'repline-dot'));
+    // The score now, and beside it the era it builds in, so no era rule can crowd it out.
     const lbl = svgEl('text', { x: W + 8, y: y(now) + 4 }, 'repline-now');
     lbl.textContent = now.toFixed(2);
+    const era = svgEl('tspan', { dx: 5 }, 'repline-era-now');
+    era.textContent = ERA_LINES.find(([v]) => now >= v)?.[1] ?? 'Stone';
+    lbl.append(era);
     svg.append(lbl);
     return svg;
   }
@@ -198,9 +203,8 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
     const bal = balanceCell(d, Date.now(), { always: true });
     bal.classList.add('standing-bal');
     left.append(bal);
-    const opened = d.books.length ? d.books[0].balance - d.books[0].delta : 300;
-    const change = Math.round((d.balance - opened) * 100) / 100;
-    left.append(el('p', 'standing-since', `${change === 0 ? 'Level' : signed(change)} since it opened with ${money(opened)}.`));
+    const change = Math.round((d.balance - d.opening) * 100) / 100;
+    left.append(el('p', 'standing-since', `${change === 0 ? 'Level' : signed(change)} since it opened with ${figure(d.opening)}.`));
     const ms = el('dl', 'standing-measures');
     for (const m of measures(d.reputation)) {
       const row = el('div', `measure m-${m.key}`);
@@ -284,7 +288,10 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
   function roundsSection(d: FirmDetail): HTMLElement {
     const sec = el('section', 'detail-sec firm-rounds');
     const won = d.rounds.filter((r) => r.won).length;
-    sec.append(secHead('Jobs won and lost', `${won} won, ${d.rounds.length - won} lost`));
+    // A round nobody won is no loss: no bid in it was worth its price.
+    const lost = d.rounds.filter((r) => !r.won && r.winner).length;
+    const none = d.rounds.length - won - lost;
+    sec.append(secHead('Jobs won and lost', `${won} won, ${lost} lost, ${none} unawarded`));
     sec.append(el('p', 'jobs-key', 'Each round the firm bid in, newest first. The figure on the right is its expected value: the job’s worth times its calibrated chance, less its price. A lost round sets it against the bid that won.'));
     const group = el('div', 'jobs-filter rounds-filter');
     group.setAttribute('role', 'radiogroup');
@@ -292,7 +299,8 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
     for (const [k, text] of [
       ['all', `All ${d.rounds.length}`],
       ['won', `Won ${won}`],
-      ['lost', `Lost ${d.rounds.length - won}`],
+      ['lost', `Lost ${lost}`],
+      ['none', `Unawarded ${none}`],
     ] as Array<[RoundFilter, string]>) {
       const b = el('button', 'jobs-pick', text);
       b.type = 'button';
@@ -310,7 +318,7 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
     rovingRadios(group, pick);
     checkRadio(group, group.querySelector(`[data-filter="${filter}"]`));
     sec.append(group);
-    const shown = [...d.rounds].reverse().filter((r) => (filter === 'all' ? true : filter === 'won' ? r.won : !r.won));
+    const shown = [...d.rounds].reverse().filter((r) => (filter === 'all' ? true : filter === 'won' ? r.won : filter === 'lost' ? !r.won && !!r.winner : !r.winner));
     if (!shown.length) {
       sec.append(el('p', 'detail-quiet', d.rounds.length ? 'None of these.' : 'It has not bid on a job yet.'));
       return sec;
@@ -336,7 +344,10 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
     if (d.books.length < 2) return null;
     const W = 640;
     const H = 46;
-    const pts = d.books.map((b) => ({ t: Date.parse(b.at), v: b.balance }));
+    // The left edge: what it opened with, or, when older movements were left out, where they left it.
+    const first = d.books[0];
+    const start = d.truncated ? { t: Date.parse(first.at), v: first.balance - first.delta } : { t: Math.min(Date.parse(d.createdAt) || Date.parse(first.at), Date.parse(first.at)), v: d.opening };
+    const pts = [start, ...d.books.map((b) => ({ t: Date.parse(b.at), v: b.balance }))];
     const lo = Math.min(0, ...pts.map((p) => p.v));
     const hi = Math.max(...pts.map((p) => p.v), 1);
     const box = { w: W, h: H, t0: pts[0].t, t1: Math.max(pts.at(-1)!.t, pts[0].t + 1), v0: lo, v1: hi };
@@ -354,6 +365,7 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
     sec.append(secHead('Books', `${grouped(d.balance)} credits`));
     const trace = balanceTrace(d);
     if (trace) sec.append(trace);
+    if (d.truncated) sec.append(el('p', 'jobs-key books-truncated', `The newest ${plural(d.books.length, 'movement')} of a longer book; the balances still count every one before them.`));
     sec.append(el('p', 'jobs-key', 'Every credit in and out, newest first, with the balance it left. Bids and work are paid for as the models are called; a merged job pays the winning price; reviewing another firm’s work pays a twentieth of the job.'));
     const lines = bookLines(d.books, names(), { newestFirst: true });
     if (!lines.length) {
@@ -483,6 +495,8 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
       if (!sheet.shown) {
         sheet.show();
         unlisten = opts.listen(onEvent);
+        // "bankrupt in N h" counts down by itself, as on the firms list.
+        timer = setInterval(render, 60_000);
       }
       if (changed) sheet.body.scrollTop = 0;
       read();
@@ -491,6 +505,8 @@ export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): Firm
       sheet.hide();
       unlisten?.();
       unlisten = null;
+      if (timer) clearInterval(timer);
+      timer = null;
     },
   };
 }

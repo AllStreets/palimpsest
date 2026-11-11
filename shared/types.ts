@@ -505,7 +505,9 @@ export interface FirmDeal {
 
 export type FirmDetail = FirmView & {
   jobs: Job[];
-  credits: CreditRow[];
+  /** What the firm opened with (its `firm.seeded` balance), and whether older movements were left out of `books`. */
+  opening: number;
+  truncated: boolean;
   books: BookRow[];
   rounds: FirmRound[];
   reputationLine: ReputationPoint[];

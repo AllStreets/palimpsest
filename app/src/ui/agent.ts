@@ -109,7 +109,19 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
     const ride = button('agent-ride', 'Ride up', () => opts.rideUp(a.id));
     ride.dataset.ride = a.id;
     ride.setAttribute('aria-label', `Ride up ${cleanText(a.name, 80)}’s tower`);
-    row.append(follow, ride);
+    // Until the city tour lands (Tasks 34 and 35) both are in place but say they are not ready.
+    for (const b of [follow, ride]) {
+      b.setAttribute('aria-disabled', 'true');
+      b.title = 'Arrives with the city tour';
+    }
+    const jump = el('button', 'textbtn agent-jump', 'Read its persona');
+    jump.type = 'button';
+    jump.addEventListener('click', () => {
+      const p = body.querySelector<HTMLElement>('.persona');
+      p?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      p?.querySelector<HTMLElement>('.repos-sec')?.focus({ preventScroll: true });
+    });
+    row.append(follow, ride, jump);
     wrap.append(row);
     return wrap;
   }
@@ -128,7 +140,9 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
 
   function personaSection(a: Agent): HTMLElement {
     const sec = el('section', 'detail-sec persona');
-    sec.append(secHead('Persona', `personas/${a.id}.md`));
+    const head = secHead('Persona');
+    head.tabIndex = -1;
+    sec.append(head);
     const prose = el('div', 'md persona-md');
     // The persona's own first heading is its name, already the page's title.
     const blocks = issueBlocks(a.instructions).filter((b, i) => !(i === 0 && b.kind === 'heading'));
@@ -155,14 +169,14 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
       r.append(el('dt', 'design-key', field), v, el('dd', 'design-gloss', gloss));
       dl.append(r);
     };
-    row('model', cleanText(g.model, 80), g.note ? cleanText(g.note, 200) : a.model.startsWith('ollama:') ? 'A local model, run by Ollama on this Mac.' : 'A Claude model, run on his plan through Claude Code.');
+    row('model', cleanText(g.model, 80), g.note ? cleanText(g.note, 200) : a.model.startsWith('ollama:') ? 'A local model, run by Ollama on this Mac.' : 'A Claude model, run on your plan through Claude Code.');
     const tools = el('span', 'design-tools');
     for (const t of g.tools) tools.append(el('code', 'design-tool', cleanText(t, 40)));
     row('tools', tools, g.tools.length ? `It may ${g.tools.map((t) => TOOL_WORDS[t] ?? t).join(', ').replace(/, ([^,]*)$/, ' and $1')}.` : 'No tools: it answers from what it is shown.');
     row('workflow.shape', g.workflow.shape, workflowWords(g.workflow.shape, g.workflow.n));
     if (g.workflow.shape === 'vote') row('workflow.n', String(g.workflow.n ?? 3), 'Plans written per bid.');
     row('memory.examples', String(g.memory.examples), g.memory.examples ? `Shown its firm’s ${plural(g.memory.examples, 'last merged job')} as worked examples when it bids.` : 'Shown no worked examples.');
-    row('instructions', `${a.instructions.length.toLocaleString('en-GB')} characters`, 'The persona above, given to it word for word.');
+    row('instructions', `${a.instructions.length.toLocaleString('en-GB')} characters`, 'The persona below, given to it word for word.');
     sec.append(dl);
     const market = el('p', 'design-market');
     market.textContent = `In the market it bids on ${a.bidsOn.join(', ')} tier jobs, takes at most ${a.maxTurns} turns on a job, and its model can build as high as the ${ERA_NAMES[a.capability]} era.`;

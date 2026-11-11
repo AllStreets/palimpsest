@@ -58,6 +58,12 @@ export interface BookLine {
 }
 
 const MICRO = 1_000_000;
+
+/** The local calendar day an instant falls on. */
+function localDay(at: string): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
 const micro = (x: number): number => Math.round(x * MICRO);
 
 function bookText(r: BookRow, count: number, names: StoryNames): string {
@@ -74,6 +80,8 @@ function bookText(r: BookRow, count: number, names: StoryNames): string {
       return title ? `Review of ${title}` : 'Review fee';
     case 'hire':
       return r.agentId ? `Hired ${names.agent(r.agentId)} from the roster` : 'Hired from the roster';
+    case 'pending':
+      return 'Work and bids under way, not yet settled';
     case 'sale':
       return r.agentId ? `Bought ${names.agent(r.agentId)}’s tower` : 'Bought a dark tower';
     default:
@@ -83,7 +91,7 @@ function bookText(r: BookRow, count: number, names: StoryNames): string {
 
 /**
  * The books for reading: each run of bid costs in a row folds into one
- * line (summed in micro-credits, carrying the balance its last movement
+ * line within a day (summed in micro-credits, carrying the balance its last movement
  * left), every other movement is a line of its own. The balances are the
  * books' own, so the last line ends where the books do. Oldest first, or
  * newest first for the page.
@@ -92,7 +100,8 @@ export function bookLines(books: BookRow[], names: StoryNames, opts: { newestFir
   const out: BookLine[] = [];
   let open: { line: BookLine; first: BookRow; sum: number } | null = null;
   for (const r of books) {
-    if (r.kind === 'bid' && open) {
+    // A fold never crosses midnight, so each day's heading keeps its own bidding.
+    if (r.kind === 'bid' && open && localDay(r.at) === localDay(open.first.at)) {
       open.sum += micro(r.delta);
       open.line.count += 1;
       open.line.delta = open.sum / MICRO;

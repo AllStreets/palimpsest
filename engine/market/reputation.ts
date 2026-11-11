@@ -182,23 +182,41 @@ export function eraFor(a: Agent, log: LedgerEntry[] = reputationLog()): Era {
   return eraForScore(reputation(a.firmId, log).score, a.capability);
 }
 
+/** The most points of a firm's reputation line its page is sent (the newest). */
+export const LINE_POINTS = 300;
+
 /**
  * `firmId`'s reputation as it stood after each of its resolved bids and
  * each revert of one of its merges, in ledger order: the page's line. The
- * last point is the reputation now. Empty for a firm with no resolved bids.
+ * last point is the reputation now. Kept to the newest `limit` points, in
+ * one pass with running sums. Empty for a firm with no resolved bids.
  */
-export function reputationLine(firmId: string, log: LedgerEntry[] = reputationLog()): ReputationPoint[] {
+export function reputationLine(firmId: string, log: LedgerEntry[] = reputationLog(), limit = LINE_POINTS): ReputationPoint[] {
   const mine = resolvedBids(log).filter((r) => r.firmId === firmId);
-  const moments: Array<{ seq: number; at: string; event: ReputationPoint['event'] }> = [
-    ...mine.map((r) => ({ seq: r.seq, at: r.at, event: r.passed ? ('pass' as const) : ('fail' as const) })),
-    ...mine.flatMap((r) => (r.revertedSeq !== null ? [{ seq: r.revertedSeq, at: r.revertedAt ?? r.at, event: 'revert' as const }] : [])),
+  const moments: Array<{ seq: number; at: string; event: ReputationPoint['event']; r: Resolved }> = [
+    ...mine.map((r) => ({ seq: r.seq, at: r.at, event: r.passed ? ('pass' as const) : ('fail' as const), r })),
+    ...mine.flatMap((r) => (r.revertedSeq !== null ? [{ seq: r.revertedSeq, at: r.revertedAt ?? r.at, event: 'revert' as const, r }] : [])),
   ].sort((a, b) => a.seq - b.seq);
-  return moments.map(({ seq, at, event }) => {
-    const sofar = mine.filter((r) => r.seq <= seq);
-    const merges = sofar.filter((r) => r.passed);
-    const brier = tidy(sofar.reduce((s, r) => s + (r.confidence - (r.passed ? 1 : 0)) ** 2, 0) / sofar.length);
-    const durability = merges.length === 0 ? null : tidy(merges.filter((r) => !(r.revertedSeq !== null && r.revertedSeq <= seq)).length / merges.length);
-    const passRate = rate(sofar);
-    return { at, event, score: reputationScore({ passRateAll: passRate, brier, durability }), passRate, calibration: tidy(1 - brier), durability, samples: sofar.length };
-  });
+  let n = 0;
+  let passed = 0;
+  let brierSum = 0;
+  let merges = 0;
+  let reverted = 0;
+  const out: ReputationPoint[] = [];
+  for (const m of moments) {
+    if (m.event === 'revert') reverted++;
+    else {
+      n++;
+      brierSum += (m.r.confidence - (m.r.passed ? 1 : 0)) ** 2;
+      if (m.r.passed) {
+        passed++;
+        merges++;
+      }
+    }
+    const brier = tidy(brierSum / n);
+    const durability = merges === 0 ? null : tidy((merges - reverted) / merges);
+    const passRate = tidy(passed / n);
+    out.push({ at: m.at, event: m.event, score: reputationScore({ passRateAll: passRate, brier, durability }), passRate, calibration: tidy(1 - brier), durability, samples: n });
+  }
+  return out.slice(-limit);
 }

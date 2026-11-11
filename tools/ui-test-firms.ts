@@ -15,7 +15,7 @@ import { join } from 'node:path';
 
 import type { Page } from 'playwright';
 
-import type { AgentDetail, FirmDetail, FirmView } from '../shared/types.js';
+import type { AgentDetail, Firm, FirmDetail, FirmView } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
 
@@ -62,7 +62,9 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     check((await page.locator('.sheet.firms .firm-row').first().locator('svg.gauge').count()) === 3, 'each firm shows three hand-drawn gauges: pass rate, calibration, durability');
     const qs = firms.find((f) => f.id === 'quickset')!;
     const qrow = page.locator('.sheet.firms .firm-row[data-firm="quickset"]');
-    check(num(await qrow.locator('.firm-bal-num').textContent()) === qs.balance, `a firm's balance reads as its books do (${await qrow.locator('.firm-bal-num').textContent()})`);
+    // The balance as the engine has it now, read beside the page's figure.
+    const [shownBal, nowBal] = await Promise.all([qrow.locator('.firm-bal-num').textContent(), api<FirmView[]>(page, '/api/firms').then((fs) => fs.find((f) => f.id === 'quickset')!.balance)]);
+    check(num(shownBal) === nowBal, `a firm's balance reads as its books do (${shownBal} against ${nowBal})`);
     check((await qrow.locator('.firm-motto').textContent()) === qs.motto, 'and its motto');
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(shots, 'firms.png') });
@@ -70,14 +72,27 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     // ------------------------------------------------------------ a firm's page
     await qrow.locator('.firm-name').click();
     check(await within(page, 6000, async () => (await page.evaluate(() => location.hash)) === '#/firms/quickset' && (await page.locator('.sheet.firmpage .sheet-title').textContent()) === 'Quickset'), 'a firm’s name opens its page');
-    const detail = await api<FirmDetail>(page, '/api/firms/quickset');
     check(await within(page, 5000, async () => (await page.locator('.firmpage .books-row').count()) > 3), `the firm page shows its books (${await page.locator('.firmpage .books-row').count()} lines)`);
-    const last = await page.locator('.firmpage .books-row').first().locator('.books-bal').textContent();
-    check(num(last) === detail.balance, `the running balance ends at the firm's balance (${last} against ${detail.balance})`);
+    // The page reads its books once and again on each change: wait for it to agree with the engine read beside it.
+    let last: string | null = null;
+    let detail = await api<FirmDetail>(page, '/api/firms/quickset');
+    const agrees = await within(page, 5000, async () => {
+      [last, detail] = await Promise.all([page.locator('.firmpage .books-row').first().locator('.books-bal').textContent(), api<FirmDetail>(page, '/api/firms/quickset')]);
+      return num(last) === detail.balance;
+    });
+    check(agrees, `the running balance ends at the firm's balance (${last} against ${detail.balance})`);
     check((await page.locator('.firmpage .person').count()) === detail.agents.length, `its people are listed (${await page.locator('.firmpage .person').count()})`);
     check((await page.locator('.firmpage .person svg.silhouette').count()) === detail.agents.length, 'each with its tower’s silhouette drawn');
     check((await page.locator('.firmpage .round-row.lost .round-ev').count()) > 0, 'a lost round shows the expected value that lost it');
     check((await page.locator('.firmpage svg.repline path.repline-line').count()) === 1, 'reputation over time is drawn as a line');
+    check(((await page.locator('.firmpage .repline-era-now').textContent()) ?? '') === 'Sci-fi', 'with the era its score builds in named beside it');
+    check(((await page.locator('.firmpage .standing-since').textContent()) ?? '').includes(`opened with ${detail.opening.toFixed(2)}`), `it says what it opened with, from its seeded balance (${await page.locator('.firmpage .standing-since').textContent()})`);
+    const tally = (await page.locator('.firmpage .firm-rounds .repos-sec-count').textContent()) ?? '';
+    const won = detail.rounds.filter((r) => r.won).length;
+    const lost = detail.rounds.filter((r) => !r.won && r.winner).length;
+    const none = detail.rounds.length - won - lost;
+    check(tally === `${won} won, ${lost} lost, ${none} unawarded`, `rounds nobody won are not counted as lost (${tally})`);
+    check((await page.locator('.firmpage .rounds-filter [data-filter="none"]').count()) === 1, 'and have a filter of their own');
     check(/Dagny Hollis/.test((await page.locator('.firmpage .deals').textContent()) ?? '') && /Corin Hale/.test((await page.locator('.firmpage .deals').textContent()) ?? ''), 'its hires and the tower it bought are listed');
     check((await page.locator('.firmpage .firm-fly').count()) === 1, 'it offers to fly to its quarter');
     await page.waitForTimeout(400);
@@ -99,7 +114,17 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     const follow = page.locator('.agentpage .agent-follow');
     check((await follow.count()) === 1 && (await follow.getAttribute('data-follow')) === 'dagny-hollis' && /Dagny Hollis/.test((await follow.getAttribute('aria-label')) ?? ''), 'Follow is present and points at the persona');
     check((await page.locator('.agentpage .agent-ride').getAttribute('data-ride')) === 'dagny-hollis', 'Ride up points at its tower');
+    for (const sel of ['.agent-follow', '.agent-ride']) {
+      const b = page.locator(`.agentpage ${sel}`);
+      check((await b.getAttribute('aria-disabled')) === 'true' && (await b.getAttribute('title')) === 'Arrives with the city tour', `${sel} says it is not ready yet`);
+    }
+    check(!/\.md/.test((await page.locator('.agentpage .persona .repos-sec').textContent()) ?? ''), 'the persona heading names no file path');
+    check(/persona below/.test((await page.locator('.agentpage .design-row[data-field="instructions"] .design-gloss').textContent()) ?? ''), 'the design points down to the persona');
+    check(!/his plan/.test((await page.locator('.agentpage .agent-design').textContent()) ?? ''), 'and speaks to you, not about you');
     check((await page.locator('.agentpage .agent-tower .insp-floor').count()) === dagny.tower!.floors.length, 'its tower lists floor by floor, as the inspector does');
+    check((await page.locator('.agentpage .agent-tower [role]').count()) === 0, 'as a plain list: no listbox or option roles where nothing can be picked');
+    const refs = await page.locator('.agentpage .agent-tower .insp-ref a').evaluateAll((as) => as.map((a) => (a as HTMLAnchorElement).tabIndex));
+    check(refs.length > 0 && refs.every((t) => t >= 0), `and its PR and report links can be reached with Tab (${refs.join(',')})`);
     check(/Quickset/.test((await page.locator('.agentpage .agent-calibration').textContent()) ?? ''), 'and its firm’s calibration');
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(shots, 'agent.png') });
@@ -109,6 +134,11 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     await page.locator('.agentpage .agent-tower').scrollIntoViewIfNeeded();
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(shots, 'agent-tower.png') });
+    await page.locator('.agentpage .sheet-body').evaluate((b) => {
+      b.scrollTop = 0;
+    });
+    await page.locator('.agentpage .agent-jump').click();
+    check(await within(page, 2000, async () => (await page.locator('.agentpage .persona').evaluate((e) => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight / 2; }))), 'a jump link brings the persona into view');
 
     // A seeded agent says so.
     await go(page, '#/agents/ines-ashlar');
@@ -121,26 +151,34 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(shots, 'firm-bankrupt.png') });
 
-    // A firm below zero: its balance in rust, and the hours it has left.
+    // A firm below zero: its balance in rust, and the hours it has left. A throwaway firm, written
+    // straight into the firms table for this check alone and removed after it: nothing reaches the
+    // credits rows or the ledger, so no other firm's books move and replay still holds.
     const { openDb } = await import('../engine/db.js');
-    const { settle } = await import('../engine/market/treasury.js');
-    const sp = firms.find((f) => f.id === 'sparrow')!;
-    const debt = Math.ceil(sp.balance) + 40;
-    const at = new Date().toISOString();
-    openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'sparrow', NULL, 'run', ?, NULL, '{}')").run(at, debt);
+    const { balances, replayBalances, settle } = await import('../engine/market/treasury.js');
+    const { entries } = await import('../engine/ledger.js');
+    // The economy's clock (the job pages' checks) charged run costs it never settled: book those
+    // first, as the treasury's hourly tick would, so the ledger and the rows agree before this check.
     settle(Date.now());
+    const booksBefore = JSON.stringify(balances());
+    const ledgerBefore = entries().length;
+    const overdraft: Firm = { id: 'overdraft-check', name: 'Overdraft & Sons', root: 'roman', motto: 'Everything on account.', slot: 990, balance: -40.21, status: 'active', negativeSince: new Date().toISOString(), bankruptAt: null, createdAt: new Date().toISOString() };
+    openDb().prepare('INSERT INTO firms (id, json) VALUES (?, ?)').run(overdraft.id, JSON.stringify(overdraft));
     try {
       await go(page, '#/firms');
-      const srow = page.locator('.sheet.firms .firm-row[data-firm="sparrow"]');
+      const srow = page.locator(`.sheet.firms .firm-row[data-firm="${overdraft.id}"]`);
       check(await within(page, 5000, async () => /bankrupt in 72 h/.test((await srow.locator('.firm-bal').textContent()) ?? '')), `a firm below zero says how long it has (${await srow.locator('.firm-bal').textContent()})`);
       check((await srow.locator('.firm-bal.neg').count()) === 1, 'its balance is set in rust');
       await page.waitForTimeout(300);
       await page.screenshot({ path: join(shots, 'firms-negative.png') });
     } finally {
-      // Put Sparrow's books back as they were, through the treasury's own rows.
-      openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'sparrow', NULL, 'pay', ?, NULL, '{}')").run(new Date().toISOString(), debt);
-      settle(Date.now());
+      openDb().prepare('DELETE FROM firms WHERE id = ?').run(overdraft.id);
     }
+    check(JSON.stringify(balances()) === booksBefore, 'every firm’s books are as they were before the check');
+    check(entries().length === ledgerBefore, 'and the check wrote nothing to the ledger');
+    const replayed = replayBalances(entries());
+    const now = balances();
+    check(Object.keys(now).every((id) => Math.abs((replayed[id] ?? NaN) - now[id]) < 1e-9), `and the ledger replays to the same balances (${JSON.stringify(replayed)} against ${JSON.stringify(now)})`);
 
     // Fly to its quarter: the city comes back and goes there.
     await go(page, '#/firms/kiln');
@@ -158,7 +196,14 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
       const who = page.locator('.inspector .insp-who a.insp-agent').first();
       check(await within(page, 6000, async () => (await who.count()) > 0), 'the inspector names each builder as a link');
       check(/^#\/agents\//.test((await who.getAttribute('href')) ?? ''), 'to the agent page');
-      await page.keyboard.press('Escape');
+      // From the keyboard: Shift+Enter on a floor's row opens its builder's page, and the row says so.
+      const row = page.locator('.inspector .insp-earned').first();
+      const href = await row.locator('a.insp-agent').getAttribute('href');
+      check(/Shift\+Enter opens .*’s page/.test((await row.getAttribute('aria-label')) ?? ''), `an earned floor's label tells of Shift+Enter (${await row.getAttribute('aria-label')})`);
+      await row.focus();
+      await page.keyboard.press('Shift+Enter');
+      check(await within(page, 3000, async () => (await page.evaluate(() => location.hash)) === href), `Shift+Enter on the row opens the builder's page (${href})`);
+      await go(page, '#/');
     }
   } finally {
     if (before) await page.setViewportSize(before);

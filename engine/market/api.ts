@@ -17,7 +17,6 @@ import type {
   Agent,
   AgentDetail,
   CheckView,
-  CreditRow,
   FirmDetail,
   FirmView,
   Inspection,
@@ -88,10 +87,6 @@ const DIFF_CAP = 2 * 1024 * 1024;
 const LOG_FILE_CAP = 16 * 1024 * 1024;
 const LOG_PAGE = 2000;
 const LEDGER_CAP = 500;
-const CREDIT_ROWS = 200;
-/** The most movements of a firm's books, and of its rounds, a firm's page carries (the newest). */
-const BOOK_ROWS = 1000;
-const ROUND_ROWS = 400;
 
 /** Keys whose values are places on this Mac. */
 const PATH_KEYS = new Set(['dir', 'logPath', 'patchPath', 'runRoot']);
@@ -300,12 +295,6 @@ function firmView(f: ReturnType<typeof listFirms>[number], log = reputationLog()
   return { ...f, reputation: reputation(f.id, log), agents: listAgents(f.id) };
 }
 
-function creditRows(firmId: string): CreditRow[] {
-  const rows = openDb()
-    .prepare('SELECT id, at, firm_id, run_id, kind, amount, usd FROM credits WHERE firm_id = ? ORDER BY id DESC LIMIT ?')
-    .all(firmId, CREDIT_ROWS) as Array<{ id: number; at: string; firm_id: string | null; run_id: string | null; kind: string; amount: number; usd: number | null }>;
-  return rows.map((r) => ({ id: Number(r.id), at: r.at, firmId: r.firm_id, runId: r.run_id, kind: r.kind, amount: r.amount, usd: r.usd }));
-}
 
 function agentDetail(a: Agent): AgentDetail {
   const parents = a.lineage.parents.map((p) => agent(p)).filter((x): x is Agent => x !== null);
@@ -458,12 +447,16 @@ export async function handleMarketApi(
     const f = firm(idOf(m[1], 'firm'));
     if (!f) throw new HttpError(404, { error: 'unknown firm' });
     const ids = [...new Set(listRuns().filter((r) => r.firmId === f.id).map((r) => r.jobId))];
+    const books = firmBooks(f.id);
     const detail: FirmDetail = {
       ...firmView(f),
+      // The balance its books end at: the treasury's rows, charges not yet settled included.
+      balance: balances()[f.id] ?? f.balance,
       jobs: ids.map((id) => job(id)).filter((x): x is Job => x !== null),
-      credits: creditRows(f.id),
-      books: firmBooks(f.id).slice(-BOOK_ROWS),
-      rounds: firmRounds(f.id).slice(-ROUND_ROWS),
+      opening: books.opening,
+      truncated: books.truncated,
+      books: books.rows,
+      rounds: firmRounds(f.id),
       reputationLine: reputationLine(f.id),
       deals: firmDeals(f.id),
     };

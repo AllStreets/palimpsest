@@ -238,8 +238,9 @@ test('firms list reputations and agents, and a firm carries its jobs and credit 
   const one = await call('GET', '/api/firms/alpha');
   assert.equal(one.status, 200);
   assert.deepEqual(one.json.jobs.map((x: Job) => x.id), [j.id]);
-  assert.equal(one.json.credits.length, 1);
-  assert.equal(one.json.credits[0].kind, 'run');
+  assert.ok(!('credits' in one.json), 'the raw credit rows are not sent twice: the books carry them');
+  assert.equal(one.json.opening, 300, 'the firm opened with its seeded balance');
+  assert.equal(one.json.truncated, false);
   // The story its page tells (Task 38): books, rounds, reputation over time and deals, all arrays.
   for (const key of ['books', 'rounds', 'reputationLine', 'deals']) assert.ok(Array.isArray(one.json[key]), `a firm carries its ${key}`);
   assert.equal((await call('GET', '/api/firms/nobody')).status, 404);

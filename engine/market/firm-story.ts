@@ -7,6 +7,7 @@
  */
 import { HIRE_FEE, START_BALANCE } from '../../shared/market-rules.js';
 import type { Bid, BookRow, FirmDeal, FirmRound, Tier } from '../../shared/types.js';
+import { openDb } from '../db.js';
 import { query } from '../ledger.js';
 import { job } from './jobs.js';
 import { listRuns } from './runs.js';
@@ -20,22 +21,54 @@ type Data = Record<string, unknown>;
 const str = (x: unknown): string | null => (typeof x === 'string' ? x : null);
 const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null);
 
+/** The most movements of a firm's books, and of its rounds, its page is sent (the newest). */
+export const BOOK_ROWS = 1000;
+export const ROUND_ROWS = 400;
+
+type Row = { id: number | bigint; at: string; json: string };
+
+/** The firm's balance as `firm.seeded` set it (the start balance for a firm seeded before that was recorded). */
+function openingOf(firmId: string): number {
+  const row = openDb()
+    .prepare("SELECT json FROM ledger WHERE kind = 'firm.seeded' AND json_extract(json, '$.firm.id') = ? ORDER BY id LIMIT 1")
+    .get(firmId) as { json: string } | undefined;
+  return num(row ? (JSON.parse(row.json) as { firm?: Data }).firm?.balance : null) ?? START_BALANCE;
+}
+
+export interface FirmBooks {
+  /** What the firm opened with: its `firm.seeded` balance. */
+  opening: number;
+  /** True when older movements were left out; the first row kept still starts where they left the balance. */
+  truncated: boolean;
+  rows: BookRow[];
+}
+
 /**
- * The firm's books: every `credits.moved` entry for it, oldest first, each
- * with the balance it left. The balance starts where `firm.seeded` set it
- * and is summed in micro-credits, as the treasury sums it, so the last row's
- * balance is the treasury's.
+ * The firm's books: its newest `limit` `credits.moved` entries, oldest
+ * first, each with the balance it left. Read per firm through the ledger's
+ * kind index; the balance starts from `firm.seeded` plus everything older
+ * than the rows kept, summed in micro-credits as the treasury sums it, so the
+ * last row's balance is the treasury's.
  */
-export function firmBooks(firmId: string): BookRow[] {
-  const seeded = query({ kind: 'firm.seeded' }).find((e) => ((e.data as Data).firm as Data | undefined)?.id === firmId);
-  let micro = toMicro(num(((seeded?.data as Data | undefined)?.firm as Data | undefined)?.balance) ?? START_BALANCE);
+export function firmBooks(firmId: string, limit = BOOK_ROWS): FirmBooks {
+  const db = openDb();
+  const opening = openingOf(firmId);
+  const recent = (
+    db
+      .prepare("SELECT id, at, json FROM ledger WHERE kind = 'credits.moved' AND json_extract(json, '$.firmId') = ? ORDER BY id DESC LIMIT ?")
+      .all(firmId, limit) as Row[]
+  ).reverse();
+  const firstKept = recent.length ? Number(recent[0].id) : Number.MAX_SAFE_INTEGER;
+  const older = db
+    .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(CAST(ROUND(json_extract(json, '$.delta') * 1000000) AS INTEGER)), 0) AS micro FROM ledger WHERE kind = 'credits.moved' AND json_extract(json, '$.firmId') = ? AND id < ?")
+    .get(firmId, firstKept) as { n: number; micro: number | bigint };
+  let micro = toMicro(opening) + Number(older.micro);
   const out: BookRow[] = [];
   // A run's cost names its run, not its job: the page says which job the work was for.
   const titles = new Map<string, string | null>();
   const jobOfRun = new Map(listRuns().filter((r) => r.firmId === firmId).map((r) => [r.id, r.jobId] as const));
-  for (const e of query({ kind: 'credits.moved' })) {
-    const d = e.data as Data;
-    if (d.firmId !== firmId) continue;
+  for (const e of recent) {
+    const d = JSON.parse(e.json) as Data;
     const delta = num(d.delta);
     if (delta === null) continue;
     micro += toMicro(delta);
@@ -43,7 +76,28 @@ export function firmBooks(firmId: string): BookRow[] {
     if (jobId && !titles.has(jobId)) titles.set(jobId, job(jobId)?.title ?? null);
     out.push({ at: str(d.at) ?? e.at, kind: str(d.kind) ?? 'other', delta, balance: fromMicro(micro), runId: str(d.runId), jobId, agentId: str(d.agentId), title: jobId ? (titles.get(jobId) ?? null) : null });
   }
-  return out;
+  // Bid and run costs are charged as the models are called and settled into the ledger afterwards:
+  // what is charged but not yet settled closes the books as one pending line, so they end where the
+  // treasury's rows do.
+  // A row is settled when a credits.moved entry names it; another firm's or a later row being booked says nothing about it.
+  const settled = new Set(
+    (
+      db
+        .prepare("SELECT CAST(r.value AS INTEGER) AS id FROM ledger, json_each(ledger.json, '$.rowIds') AS r WHERE ledger.kind = 'credits.moved' AND json_extract(ledger.json, '$.firmId') = ? AND r.type = 'integer'")
+        .all(firmId) as Array<{ id: number | bigint }>
+    ).map((r) => Number(r.id)),
+  );
+  const pending = { micro: 0, at: null as string | null };
+  for (const r of db.prepare("SELECT id, at, amount FROM credits WHERE firm_id = ? AND kind IN ('bid', 'run') ORDER BY id").all(firmId) as Array<{ id: number | bigint; at: string; amount: number }>) {
+    if (settled.has(Number(r.id))) continue;
+    pending.micro += toMicro(r.amount);
+    pending.at = r.at;
+  }
+  if (pending.micro > 0) {
+    micro -= pending.micro;
+    out.push({ at: pending.at ?? new Date().toISOString(), kind: 'pending', delta: -fromMicro(pending.micro), balance: fromMicro(micro), runId: null, jobId: null, agentId: null, title: null });
+  }
+  return { opening, truncated: Number(older.n) > 0, rows: out };
 }
 
 /** The highest expected value first, then the earlier bid. */
@@ -54,11 +108,19 @@ const better = (a: Bid, b: Bid): number => b.ev - a.ev || a.at.localeCompare(b.a
  * bid that won it (null when no bid was worth taking) and, for a round it
  * won, what became of the work.
  */
-export function firmRounds(firmId: string): FirmRound[] {
+export function firmRounds(firmId: string, limit = ROUND_ROWS): FirmRound[] {
+  // Only the rounds this firm bid in, newest first, capped before any job is read.
+  const rows = (
+    openDb()
+      .prepare(
+        "SELECT id, at, json FROM ledger WHERE kind = 'job.awarded' AND EXISTS (SELECT 1 FROM json_each(ledger.json, '$.considered') AS c WHERE json_extract(c.value, '$.firmId') = ?) ORDER BY id DESC LIMIT ?",
+      )
+      .all(firmId, limit) as Row[]
+  ).reverse();
   const outcomes = new Map(listRuns().filter((r) => r.firmId === firmId).map((r) => [r.bidId, r.outcome ?? (r.stage === 'done' ? null : 'live')] as const));
   const out: FirmRound[] = [];
-  for (const e of query({ kind: 'job.awarded' })) {
-    const d = e.data as Data;
+  for (const e of rows) {
+    const d = JSON.parse(e.json) as Data;
     const considered = Array.isArray(d.considered) ? (d.considered as Bid[]) : [];
     const mine = considered.filter((b) => b && b.firmId === firmId).sort(better);
     if (!mine.length) continue;
@@ -86,11 +148,21 @@ export function firmRounds(firmId: string): FirmRound[] {
 /** The firm's hires, purchases and sales, oldest first. */
 export function firmDeals(firmId: string): FirmDeal[] {
   const out: FirmDeal[] = [];
+  // What each hire cost, from the treasury's own movement when the hire event does not say.
+  const fees = new Map<string, number>();
+  for (const r of openDb()
+    .prepare("SELECT json FROM ledger WHERE kind = 'credits.moved' AND json_extract(json, '$.firmId') = ? AND json_extract(json, '$.kind') = 'hire'")
+    .all(firmId) as Array<{ json: string }>) {
+    const m = JSON.parse(r.json) as Data;
+    const agentId = str(m.agentId);
+    const amount = num(m.amount);
+    if (agentId && amount !== null) fees.set(agentId, amount);
+  }
   for (const e of query({ kind: ['agent.hired', 'tower.sold'] })) {
     const d = e.data as Data;
     if (e.kind === 'agent.hired') {
       const a = d.agent as Data | undefined;
-      if (a?.firmId === firmId && typeof a.id === 'string') out.push({ kind: 'hired', at: e.at, agentId: a.id, other: null, price: HIRE_FEE });
+      if (a?.firmId === firmId && typeof a.id === 'string') out.push({ kind: 'hired', at: e.at, agentId: a.id, other: null, price: num(d.fee) ?? fees.get(a.id) ?? HIRE_FEE });
       continue;
     }
     const agentId = str(d.agentId);

@@ -91,3 +91,12 @@ test('a sum of credits reads as the books set it', () => {
   assert.equal(figure(-419.42), '−419.42');
   assert.equal(figure(12345.6), '12,345.60');
 });
+
+test('a fold of bid costs never crosses midnight', () => {
+  const names = { agent: (id: string) => id, firm: (id: string) => id, job: () => null };
+  const late = new Date(2026, 10, 9, 23, 50).toISOString();
+  const early = new Date(2026, 10, 10, 0, 10).toISOString();
+  const lines = bookLines([row('bid', -1, 299, { at: late }), row('bid', -1, 298, { at: early })], names);
+  assert.equal(lines.length, 2, 'each day keeps its own bidding line');
+  assert.deepEqual(lines.map((l) => l.balance), [299, 298]);
+});

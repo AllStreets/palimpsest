@@ -77,7 +77,10 @@ test('the books run from the seeded balance through every movement, in micro-cre
   moved('quickset', 'pay', 31.5, { jobId: 'job-1' });
   moved('ashlar-vane', 'pay', 99);
   moved('quickset', 'hire', -80, { agentId: 'dagny-hollis' });
-  const rows = firmBooks('quickset');
+  const books = firmBooks('quickset');
+  assert.equal(books.opening, START_BALANCE, 'it opened with its seeded balance');
+  assert.equal(books.truncated, false);
+  const rows = books.rows;
   assert.deepEqual(rows.map((r) => r.kind), ['bid', 'bid', 'pay', 'hire']);
   assert.deepEqual(rows.map((r) => r.delta), [-0.1, -0.2, 31.5, -80]);
   assert.equal(rows[1].balance, START_BALANCE - 0.3, '0.1 + 0.2 is 0.3 on these books');
@@ -135,6 +138,9 @@ test('reputation over time: a point per resolved bid, ending at the firm’s rep
 
 test('a firm’s deals: the specialists it hired, the towers it bought and the towers sold from it', () => {
   record('agent.hired', { agent: { id: 'dagny-hollis', firmId: 'quickset', name: 'Dagny Hollis' } });
+  // A hire whose event names its fee is priced at it.
+  record('agent.hired', { agent: { id: 'sabine-okoro', firmId: 'kiln', name: 'Sabine Okoro' }, fee: 95 });
+  assert.deepEqual(firmDeals('kiln').map((d) => d.price), [95]);
   record('tower.sold', { from: 'kiln', to: 'quickset', price: 34, agentId: 'oskar-kiln' });
   moved('quickset', 'hire', -80, { agentId: 'dagny-hollis' });
   const q = firmDeals('quickset');
@@ -142,6 +148,53 @@ test('a firm’s deals: the specialists it hired, the towers it bought and the t
     ['hired', 'dagny-hollis', null, 80],
     ['bought', 'oskar-kiln', 'kiln', 34],
   ]);
-  const k = firmDeals('kiln');
+  const k = firmDeals('kiln').filter((d) => d.kind !== 'hired');
   assert.deepEqual(k.map((d) => [d.kind, d.agentId, d.other, d.price]), [['sold', 'oskar-kiln', 'quickset', 34]]);
+});
+
+test('a firm with a long history returns capped payloads, newest kept, the balance still exact', () => {
+  for (let i = 0; i < 1200; i++) moved('quickset', 'bid', -0.01);
+  for (let i = 0; i < 30; i++) moved('kiln', 'bid', -1);
+  const books = firmBooks('quickset', 1000);
+  assert.equal(books.rows.length, 1000);
+  assert.equal(books.truncated, true);
+  assert.equal(books.opening, START_BALANCE);
+  assert.equal(books.rows.at(-1)!.balance, START_BALANCE - 12, 'the last balance counts every movement, kept or not');
+  assert.equal(Math.round((books.rows[0].balance - books.rows[0].delta) * 100) / 100, START_BALANCE - 2, 'the first row kept starts where the dropped ones left it');
+
+  for (let i = 0; i < 450; i++) {
+    const b = bid(`job-${i}`, 'quickset', 'mack-quickset', 5);
+    record('job.awarded', { jobId: `job-${i}`, tier: 'normal', considered: [b], satOut: [], chosen: b, why: '' });
+    record('merge.detected', { jobId: `job-${i}` });
+  }
+  const rounds = firmRounds('quickset', 400);
+  assert.equal(rounds.length, 400);
+  assert.equal(rounds.at(-1)!.jobId, 'job-449', 'the newest rounds are kept, oldest first');
+  assert.equal(rounds[0].jobId, 'job-50');
+  const line = reputationLine('quickset');
+  assert.equal(line.length, 300, 'the reputation line keeps its newest 300 points');
+  assert.equal(line.at(-1)!.samples, 450, 'and still counts every resolved bid');
+  assert.equal(line.at(-1)!.score, reputation('quickset').score);
+});
+
+test('charges written but not yet settled close the books as one pending line, so they end at the treasury’s balance', () => {
+  moved('quickset', 'pay', 10);
+  // A run's cost is charged at call time and settled into the ledger later.
+  openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'quickset', 'run-x', 'run', 3.25, NULL, '{}')").run(new Date().toISOString());
+  const rows = firmBooks('quickset').rows;
+  assert.equal(rows.at(-1)!.kind, 'pending');
+  assert.equal(rows.at(-1)!.delta, -3.25);
+  assert.equal(rows.at(-1)!.balance, START_BALANCE + 10 - 3.25);
+  // Settled books have no pending line.
+  assert.ok(!firmBooks('kiln').rows.some((r) => r.kind === 'pending'));
+});
+
+test('a charge stays pending until its own row is settled, even when a later row was booked first', () => {
+  const ins = openDb().prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'quickset', ?, ?, ?, NULL, '{}')");
+  ins.run(new Date().toISOString(), 'run-a', 'run', 4);
+  const later = Number(ins.run(new Date().toISOString(), null, 'pay', 20).lastInsertRowid);
+  moved('quickset', 'pay', 20, { rowIds: [later] });
+  const rows = firmBooks('quickset').rows;
+  assert.equal(rows.at(-1)!.kind, 'pending', 'the run’s cost is not in the ledger yet');
+  assert.equal(rows.at(-1)!.balance, START_BALANCE + 20 - 4);
 });
