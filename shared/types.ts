@@ -402,6 +402,8 @@ export interface ProviderUsage {
   tokens: { today: number; week: number } | null;
   spendUsd: { today: number; week: number } | null;
   detail: string;
+  /** What could not be read while the rest held (Claude: the transcripts trend), in a sentence with its reason. */
+  trouble?: string;
   /** Ollama: the models installed, as `ollama list` names them. */
   models?: string[];
   /** Ollama: the host it was asked at (Settings' ollamaHost). */
@@ -562,6 +564,12 @@ export type TreasuryView = TreasuryState & {
   spend: { today: SpendPeriod; week: SpendPeriod };
   /** Days with a daily report, newest first. */
   reports: string[];
+  /**
+   * The runs under way on the books (no end yet), by pool: the same runs the
+   * job board and the run pages show. `concurrency` is the slots the runner
+   * holds for them, which the sample economy's runs never take.
+   */
+  underWay: { total: number; claude: number; local: number; api: number };
 };
 
 /** One row of the spend tables: what its calls cost, in credits, and how many entries make it up. */

@@ -16,7 +16,7 @@
 import { existsSync } from 'node:fs';
 
 import { apiCredits, claudeCredits, CREDIT_PCT, pctFor } from '../../shared/credits.js';
-import { CREDITS_PER_USD } from '../../shared/market-rules.js';
+import { CREDITS_PER_USD, poolOfModel } from '../../shared/market-rules.js';
 import type { BudgetWindow, ModelRef, TreasuryState, UsageReading } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { paths } from '../home.js';
@@ -69,11 +69,7 @@ function round(n: number): number {
   return Math.round(n * 1e9) / 1e9;
 }
 
-function poolOf(model: ModelRef): Pool {
-  if (model.startsWith('claude:')) return 'claude';
-  if (model.startsWith('anthropic:')) return 'api';
-  return 'local';
-}
+const poolOf = (model: ModelRef): Pool => poolOfModel(model);
 
 // ---------------------------------------------------------------- SSE clients and unattended (ruling 11)
 

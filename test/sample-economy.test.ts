@@ -30,6 +30,8 @@ import { earnedFloors } from '../engine/repos.js';
 import { SAMPLE_INSTALLED, SAMPLE_ISSUES, SAMPLE_MARKER, sampleCodexHome, sampleGh, samplePRs } from '../engine/sample.js';
 import type { JobStatus, RunLogLine, Silhouette, Trip } from '../shared/types.js';
 import { seedSample } from '../tools/sample.js';
+import { boardSections } from '../app/src/ui/board.js';
+import { runsUnderWay } from '../shared/market-rules.js';
 
 const NOW = Date.parse('2026-11-10T12:00:00Z');
 const ENV = ['PALIMPSEST_HOME', 'PALIMPSEST_CLAUDE_PROJECTS', 'PALIMPSEST_TEST_PROJECTS', 'PALIMPSEST_CODEX_HOME', 'PALIMPSEST_GEMINI_HOME'];
@@ -404,4 +406,20 @@ test('the economy reads his plan as measured, and has a stale reading to pause o
   assert.equal(stale.sevenDay.usedPct, 21, 'the week has not reset since');
   sampleReading(NOW);
   assert.notEqual(treasury(NOW).paused?.reason, 'stale', 'and a fresh one carries on');
+});
+
+test('the board, the run pages and the treasury count the same runs under way', async () => {
+  const { listRepos } = await import('../engine/repos.js');
+  await seed();
+  const running = boardSections(listJobs(), listRepos(), NOW).find((s) => s.key === 'running')?.jobs ?? [];
+  const under = runsUnderWay(listRuns(), listJobs());
+  assert.ok(under.total > 0, 'the sample has runs under way');
+  // The board's running section holds the jobs with a run under way, and may hold an awarded job whose run has not started.
+  const withRun = running.filter((j) => !!j.runId);
+  assert.equal(under.total, withRun.length, `the treasury counts ${under.total} runs under way against ${withRun.length} running on the board`);
+  assert.equal(under.claude + under.local + under.api, under.total);
+  for (const j of withRun) assert.ok(listRuns().some((r) => r.jobId === j.id && r.endedAt === null), `${j.id} (${j.status}) has a run under way`);
+  // A run whose PR waits on him keeps no end, but the board shows its job as waiting and the treasury does not count it.
+  const waiting = listJobs({ status: 'waiting' }).filter((j) => listRuns().some((r) => r.jobId === j.id && r.endedAt === null));
+  assert.ok(waiting.length > 0, 'the sample has a run waiting on his review');
 });

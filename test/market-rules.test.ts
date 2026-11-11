@@ -10,6 +10,8 @@ import {
   HIRE_FEE,
   isBankrupt,
   LEGAL_MOVES,
+  poolOfModel,
+  runsUnderWay,
   PUSH_MODE_NEEDS,
   pushModeRefusal,
   legalMove,
@@ -157,4 +159,29 @@ test('push mode needs a test and a build command, and says so', () => {
   assert.equal(pushModeRefusal({ test: 'npm test', build: null }), PUSH_MODE_NEEDS);
   assert.equal(pushModeRefusal({ test: null, build: 'vite build' }), PUSH_MODE_NEEDS);
   assert.equal(pushModeRefusal(null), PUSH_MODE_NEEDS);
+});
+
+test('runs under way are the runs with no end, counted by the pool their model draws on', () => {
+  assert.equal(poolOfModel('claude:sonnet'), 'claude');
+  assert.equal(poolOfModel('anthropic:claude-sonnet-4-5'), 'api');
+  assert.equal(poolOfModel('ollama:qwen2.5-coder:7b'), 'local');
+  const jobs = [
+    { id: 'j1', status: 'running' as const },
+    { id: 'j2', status: 'inspecting' as const },
+    { id: 'j3', status: 'awarded' as const },
+    { id: 'j4', status: 'shipping' as const },
+    { id: 'j5', status: 'merged' as const },
+    { id: 'j6', status: 'waiting' as const },
+  ];
+  const runs = [
+    { model: 'claude:sonnet' as const, endedAt: null, jobId: 'j1' },
+    { model: 'claude:opus' as const, endedAt: null, jobId: 'j2' },
+    { model: 'ollama:qwen2.5-coder:7b' as const, endedAt: null, jobId: 'j3' },
+    { model: 'anthropic:claude-sonnet-4-5' as const, endedAt: null, jobId: 'j4' },
+    { model: 'claude:sonnet' as const, endedAt: '2026-11-10T14:00:00.000Z', jobId: 'j5' },
+    // Its PR waits on him: no end yet, but nothing works on it.
+    { model: 'claude:sonnet' as const, endedAt: null, jobId: 'j6' },
+  ];
+  assert.deepEqual(runsUnderWay(runs, jobs), { total: 4, claude: 2, local: 1, api: 1 });
+  assert.deepEqual(runsUnderWay([], []), { total: 0, claude: 0, local: 0, api: 0 });
 });

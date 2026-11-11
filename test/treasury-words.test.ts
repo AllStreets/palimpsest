@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { calibrationLine, pauseWords, reportBlocks, resetWords, spendFigure } from '../app/src/ui/treasury-words.js';
+import { calibrationLine, pauseWords, reportBlocks, resetWords, runningWords, spendFigure } from '../app/src/ui/treasury-words.js';
 
 const H = 3_600_000;
 /** A Tuesday afternoon, local time. */
@@ -92,4 +92,15 @@ test('the report reads into headings, paragraphs, notes and tables, as text', ()
   assert.deepEqual(table.numeric, [false, true, true, true, true], 'figures set right');
   const last = b[6];
   assert.ok(last.kind === 'para' && last.inline.every((s) => !s.text.includes('<')), 'tags are taken out, never markup');
+});
+
+test('the Running row counts the runs under way, as the board does, and names the slots the runner holds apart', () => {
+  const slots = { claude: 0, local: 0, api: 0, claudeMax: 2, localMax: 1 };
+  const three = runningWords({ total: 3, claude: 2, local: 1, api: 0 }, slots);
+  assert.equal(three.runs, '3 runs under way: Claude 2, local 1.');
+  assert.equal(three.slots, 'Slots the runner holds: Claude 0 of 2, local 0 of 1, API 0.');
+  const one = runningWords({ total: 1, claude: 0, local: 0, api: 1 }, { ...slots, api: 1 });
+  assert.equal(one.runs, '1 run under way: API 1.');
+  assert.equal(one.slots, 'Slots the runner holds: Claude 0 of 2, local 0 of 1, API 1.');
+  assert.equal(runningWords({ total: 0, claude: 0, local: 0, api: 0 }, slots).runs, 'No run under way.');
 });

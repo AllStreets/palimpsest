@@ -12,7 +12,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 
-import { LEGAL_MOVES, MAX_ATTEMPTS } from '../../shared/market-rules.js';
+import { LEGAL_MOVES, MAX_ATTEMPTS, runsUnderWay } from '../../shared/market-rules.js';
 import type {
   Agent,
   AgentDetail,
@@ -406,6 +406,8 @@ function treasuryView(): TreasuryView {
     resumedUntil: unreadable && t.paused?.reason !== 'stale' && resumeUntil !== null && resumeUntil > now ? resumeUntil : null,
     spend: { today: spendBetween(today.from, today.to), week: spendBetween(week.from, week.to) },
     reports: [...new Set(query({ kind: 'report.written' }).map((e) => (e.data as { day?: string }).day).filter((d): d is string => typeof d === 'string' && DAY.test(d)))].sort().reverse(),
+    // Counted from the runs store, as the board and the run pages count, never from the leases.
+    underWay: runsUnderWay(listRuns(), listJobs()),
   };
 }
 

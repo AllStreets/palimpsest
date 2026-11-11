@@ -168,6 +168,11 @@ export function createSettings(
 
   // Claude, through his own Claude Code: the two windows the usage hook reads, and the hook itself.
   const claude = provEntry('claude');
+  /** What could not be read while the percentages held (the transcripts trend), on its own wrapped line. */
+  const claudeTrouble = el('p', 'prov-trouble');
+  claudeTrouble.hidden = true;
+  /** When his newest statusline reading was taken, for the state line when the trend fails. */
+  let readAt: number | null = null;
   const windows = el('div', 'usage-windows');
   const fiveRow = usageRow('Five hours', 'usage-five');
   const weekRow = usageRow('Week', 'usage-week');
@@ -186,7 +191,7 @@ export function createSettings(
   const hookText = el('div', 'prov-hook-text');
   hookText.append(hookState, hookNote, hookError);
   hookLine.append(hookText, install, remove);
-  claude.main.append(windows, usageFoot, hookLine, claude.agents);
+  claude.main.append(claudeTrouble, windows, usageFoot, hookLine, claude.agents);
 
   function usageRow(label: string, cls: string): { row: HTMLElement; main: HTMLElement } {
     const r = el('div', `usage-row ${cls}`);
@@ -343,11 +348,18 @@ export function createSettings(
     for (const id of ORDER) {
       const p = by.get(id);
       if (!p) setState(entries[id], 'unknown', list ? 'Not read.' : 'The engine did not answer.');
-      else if (p.status === 'unknown') setState(entries[id], 'unknown', cleanText(p.detail, 160));
+      else if (p.status === 'unknown') setState(entries[id], 'unknown', cleanText(p.detail, 400));
     }
 
     const c = by.get('claude');
-    if (c && c.status !== 'unknown') setState(claude, c.status, c.status === 'ready' ? `${cleanText(c.detail, 160).replace(/\d+(\.\d+)?/g, (n) => numberFormat.format(Number(n)))}.` : 'No usage reading yet.');
+    // What failed (the transcripts trend) stands apart from what held (the statusline percentages, and when they were read).
+    const trouble = c?.trouble ? cleanText(c.trouble, 400) : '';
+    claudeTrouble.textContent = trouble ? `${trouble}${/[.!?]$/.test(trouble) ? '' : '.'}` : '';
+    claudeTrouble.hidden = !trouble;
+    if (c && c.status !== 'unknown') {
+      const held = `The statusline percentages held${readAt ? `, read ${ago(readAt)}` : ''}.`;
+      setState(claude, c.status, c.status !== 'ready' ? 'No usage reading yet.' : trouble ? held : `${cleanText(c.detail, 160).replace(/\d+(\.\d+)?/g, (n) => numberFormat.format(Number(n)))}.`);
+    }
     fillAgents(claude, 'claude', firms);
 
     const a = by.get('anthropic-api');
@@ -428,6 +440,7 @@ export function createSettings(
   }
 
   function fillUsage(u: UsageState | null): void {
+    readAt = u?.reading?.at ?? null;
     fillWindow(fiveRow, u?.reading?.fiveHour);
     fillWindow(weekRow, u?.reading?.sevenDay);
     usageFoot.replaceChildren();

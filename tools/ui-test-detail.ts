@@ -213,8 +213,49 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     check(JSON.stringify(fails) === JSON.stringify(['scope', 'review']), `fail on two: scope and review (${fails.join(', ')})`);
     check((await page.locator('.insppage .check-row.s-fail .status-word').first().textContent()) === 'fail' && (await page.locator('.insppage .check-row.s-fail .status-shape').count()) === 2, 'each status is a word with a small shape');
     check(((await page.locator('.insppage .sheet-title').textContent()) ?? '').trim() === 'Failed: scope, review', 'the verdict line reads Failed: scope, review');
+    // The table keeps its cells on fixed column tracks: nothing is drawn over its neighbour, Took stands under Took, and the rows do not overlap.
+    const tracks = await page.locator('.insppage .checks .check-row').evaluateAll((rows) =>
+      rows.map((tr) => {
+        // No function is defined in here: the bundler's name helper would not exist in the page.
+        const st = tr.querySelector('.c-status')!.getBoundingClientRect();
+        const nm = tr.querySelector('.c-name')!.getBoundingClientRect();
+        const dt = tr.querySelector('.c-detail')!.getBoundingClientRect();
+        const tm = tr.querySelector('.c-time')!.getBoundingClientRect();
+        return { apart: nm.left >= st.right - 1 && dt.left >= nm.right - 1 && tm.left >= dt.right - 1 && tm.width > 30, top: Math.min(st.top, nm.top, dt.top, tm.top), bottom: Math.max(st.bottom, nm.bottom, dt.bottom, tm.bottom), time: tm.left };
+      }),
+    );
+    const tookLeft = await page.locator('.insppage .checks th.c-time').evaluate((th) => th.getBoundingClientRect().left);
+    check(tracks.length === 8 && tracks.every((t) => t.apart), 'each check keeps its result, name, finding and time in their own column tracks');
+    check(tracks.every((t) => Math.abs(t.time - tookLeft) < 1), 'the Took column stands under its head');
+    check(tracks.every((t, i) => i === 0 || t.top >= tracks[i - 1].bottom - 1), 'the rows stand one under the next, with no two drawn together');
     await page.locator('.insppage .check-row[data-check="test"] .check-log-btn').click();
     check(/ℹ pass 99/.test((await page.locator('.insppage .check-log').first().textContent()) ?? ''), 'a check folds open to its log');
+    const span = await page.locator('.insppage .checks .check-log-row td').evaluate((td) => {
+      const t = td.closest('table')!.getBoundingClientRect();
+      const b = td.getBoundingClientRect();
+      return { full: b.left <= t.left + 1 && b.right >= t.right - 1, below: b.top >= (td.closest('tbody')!.querySelector('.check-row[data-check="test"] .c-name') as HTMLElement).getBoundingClientRect().bottom - 1 };
+    });
+    check(span.full && span.below, 'the open Log row spans every track, under its check');
+
+    // A notice the city makes for itself stands as one line in the running head, over no part of the sheet, and fades.
+    await page.evaluate(() => (window as unknown as { __palimpsest: { say(t: string): void } }).__palimpsest.say('The city stepped down to medium quality to hold its frame rate. Settings can set it back to high for the next time it opens.'));
+    const headNotice = page.locator('.runhead .city-notice');
+    const placed = await headNotice.locator('p').evaluate((p) => {
+      const b = p.getBoundingClientRect();
+      const body = document.querySelector('.insppage .sheet-body')!.getBoundingClientRect();
+      const head = document.querySelector('.runhead')!.getBoundingClientRect();
+      return { shown: getComputedStyle(p).visibility === 'visible', oneLine: b.height < 24, inHead: b.top >= head.top - 1 && b.bottom <= head.bottom + 1, clear: b.bottom <= body.top + 1, width: b.width };
+    });
+    check(placed.shown && placed.oneLine && placed.inHead, `the notice is one line in the running head (${placed.width.toFixed(0)} px wide)`);
+    check(placed.clear, 'and covers no part of the sheet');
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(shots, 'inspection-notice.png') });
+    check(await within(page, 9000, async () => (await headNotice.locator('p').evaluate((p) => getComputedStyle(p).visibility)) === 'hidden'), 'it fades after a few seconds');
+    check(await headNotice.locator('.city-notice-recall').isVisible(), 'and a small mark stays to recall it');
+    await headNotice.locator('.city-notice-recall').click();
+    check(await within(page, 1500, async () => (await headNotice.locator('p').evaluate((p) => getComputedStyle(p).visibility)) === 'visible'), 'the mark shows the line again');
+    await headNotice.locator('.city-notice-recall').click();
+    await within(page, 1500, async () => (await headNotice.locator('p').evaluate((p) => getComputedStyle(p).visibility)) === 'hidden');
     check((await page.locator('.insppage .insp-concerns li').count()) === 3, 'the reviewer’s concerns are listed');
     check((await page.locator('.insppage .insp-out-path').allTextContents()).join('|') === '.github/workflows/ci.yml' && (await page.locator('.insppage .insp-out-why').textContent())?.trim() === 'is never in scope (.github/workflows/**)', 'the scope names the file outside it, from the check\u2019s own field');
     check(/rebuild banner is legible/.test((await page.locator('.insppage .insp-design .insp-note').textContent()) ?? ''), 'the judge\u2019s notes show from the check\u2019s own field');

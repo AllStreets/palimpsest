@@ -1554,24 +1554,36 @@ body[data-route='inspection'] {
   color: #f1d2c7;
 }
 
+/* The table is laid on fixed column tracks of its own (result, check, what it found, took, the fold), so no
+   other row rule can reflow its cells; every tr is display: contents and the open Log row spans the tracks. */
 .checks {
+  display: grid;
+  grid-template-columns: 112px 118px minmax(0, 1fr) 78px 60px;
+  align-items: baseline;
   width: 100%;
   margin-top: 12px;
   border-collapse: collapse;
-  table-layout: fixed;
   font-size: 13px;
 }
-.checks .col-status {
-  width: 17%;
+.checks caption {
+  grid-column: 1 / -1;
 }
-.checks .col-name {
-  width: 13%;
+.checks colgroup {
+  display: none;
 }
-.checks .col-time {
-  width: 10%;
+.checks thead,
+.checks tbody,
+.checks tr {
+  display: contents;
 }
-.checks .col-fold {
-  width: 8%;
+.checks tr.check-row,
+.checks tr.check-log-row {
+  display: contents;
+  padding: 0;
+  border: 0;
+}
+.checks .check-log-row td {
+  grid-column: 1 / -1;
 }
 .checks th {
   padding: 0 12px 6px 0;
@@ -1602,8 +1614,11 @@ body[data-route='inspection'] {
   padding-right: 0;
   text-align: right;
 }
-.check-name {
+.checks .check-name {
+  display: inline;
+  padding: 0;
   color: var(--ink);
+  cursor: default;
 }
 .check-detail {
   overflow-wrap: anywhere;
@@ -3587,9 +3602,9 @@ body[data-route='repo'] {
   color: var(--ink-3);
 }
 
-/* ---------------------------------------------------------------- the checks */
+/* ---------------------------------------------------------------- the checks (the district page's rows; the inspection's table is above) */
 
-.check-row {
+.district-checks .check-row {
   display: grid;
   grid-template-columns: 168px minmax(0, 1fr) 84px;
   column-gap: 26px;
@@ -3597,7 +3612,7 @@ body[data-route='repo'] {
   padding: 11px 0 12px;
   border-bottom: 1px solid var(--rule);
 }
-.check-name {
+.district-checks .check-name {
   display: flex;
   flex-direction: column;
   gap: 2px;

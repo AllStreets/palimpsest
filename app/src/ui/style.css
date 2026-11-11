@@ -394,22 +394,17 @@
 
 /* ---------------------------------------------------------------- the city's own notices */
 
-/* What the city did by itself (plain blocks without the kits, a step down in quality): a printed slip at the foot. */
+/* What the city did by itself (plain blocks without the kits, a step down in quality): one line at the end
+   of the running head, ruled in bronze, that fades after a few seconds; the small mark after it recalls it. */
 .city-notice {
-  position: fixed;
-  left: var(--gutter, 28px);
-  bottom: 22px;
-  z-index: 6;
-  display: flex;
+  display: inline-flex;
   align-items: baseline;
-  gap: 18px;
-  max-width: min(620px, calc(100vw - 56px));
-  padding: 11px 16px 12px 14px;
-  border-left: 2px solid var(--bronze);
-  background: var(--paper);
+  gap: 12px;
+  min-width: 0;
+  margin-left: 6px;
   font-family: var(--sans);
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: 12.5px;
+  line-height: 1.3;
   color: var(--ink-2);
 }
 .city-notice[hidden] {
@@ -417,19 +412,42 @@
 }
 .city-notice p {
   margin: 0;
+  max-width: min(44vw, 560px);
+  padding-left: 10px;
+  border-left: 2px solid var(--bronze);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.7s ease, visibility 0s linear 0.7s;
 }
-.city-notice-close {
+.city-notice[data-shown] p {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.25s ease;
+}
+.city-notice-recall {
   all: unset;
-  flex-shrink: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
   color: var(--ink-3);
-  border-bottom: 1px solid rgba(236, 230, 218, 0.22);
 }
-.city-notice-close:hover {
+.city-notice-recall::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: var(--bronze);
+  transform: translateY(-1px);
+}
+.city-notice-recall:hover {
   color: var(--ink);
 }
-.city-notice-close:focus-visible {
+.city-notice-recall:focus-visible {
   outline: 1px solid var(--ink-2);
   outline-offset: 3px;
 }

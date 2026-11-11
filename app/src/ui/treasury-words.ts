@@ -15,6 +15,18 @@ const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
 
 const grouped = (n: number): string => Math.round(n).toLocaleString('en-US');
 
+/**
+ * The Now block's Running row. `runs` counts the runs under way on the books,
+ * the same runs the job board and the run pages show; `slots` says what the
+ * runner holds for them, which the sample economy's runs never take.
+ */
+export function runningWords(u: TreasuryView['underWay'], c: TreasuryView['concurrency']): { runs: string; slots: string } {
+  const by = [u.claude && `Claude ${u.claude}`, u.local && `local ${u.local}`, u.api && `API ${u.api}`].filter(Boolean).join(', ');
+  const runs = u.total === 0 ? 'No run under way.' : `${u.total} ${u.total === 1 ? 'run' : 'runs'} under way: ${by}.`;
+  const slots = `Slots the runner holds: Claude ${c.claude} of ${c.claudeMax}, local ${c.local} of ${c.localMax}, API ${c.api}.`;
+  return { runs, slots };
+}
+
 /** "1% of the window is about 58,000 weighted tokens, measured from 14 pairs." or the assumed figure. */
 export function calibrationLine(c: TreasuryView['calibration']): string {
   if (!c.calibrated || c.samples <= 0) return `1% of the window is assumed to be about ${grouped(c.tokensPerPct)} weighted tokens until two readings measure it.`;
