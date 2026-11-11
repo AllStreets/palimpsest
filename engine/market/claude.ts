@@ -655,6 +655,8 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
 
   /** What one session takes: the run, the prompts, the tools and the answer's shape. */
   interface DriveInput {
+    /** What the session is, for its log lines: a firm's `run` or the city's `audit`. */
+    what: 'run' | 'audit';
     runId: string;
     dir: string;
     model: string;
@@ -664,8 +666,10 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     persona?: string;
     /** The prompt on stdin. */
     prompt: string;
-    /** Claude's own tools (`--tools`); a list without a write tool makes the session read-only. */
+    /** Claude's own tools (`--tools`). */
     tools: readonly string[];
+    /** A read-only session (an audit): the write tools disallowed, denied and refused by the hook. `tools` must then hold no writer. */
+    readOnly: boolean;
     /** The MCP tools allowed (`--allowedTools`). */
     allowed: readonly string[];
     /** The answer's JSON schema (`--json-schema`), or null for free text. */
@@ -683,14 +687,14 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
 
   /**
    * One session in a run root (`<home>/runs/<runId>`): the control files,
-   * the hook (read-only when the tools cannot write), the nested sandbox,
+   * the hook (read-only for an audit), the nested sandbox,
    * `--include-hook-events`, the CLI profile, `claudeEnv`, `runQuiet` before
    * the start and before each tool turn. `work()` and `audit()` both call it.
    */
   async function drive(d: DriveInput): Promise<Driven> {
     const zero: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
     const crash = (reason: string): Driven => {
-      d.log({ at: now(), kind: 'engine', text: `claude run crashed: ${reason}` });
+      d.log({ at: now(), kind: 'engine', text: `claude ${d.what} crashed: ${reason}` });
       return { ended: 'crashed', reason, usage: zero, text: '', structured: null, loginRefused: null };
     };
     if (d.signal.aborted) return { ended: 'aborted', reason: 'signal', usage: zero, text: '', structured: null, loginRefused: null };
@@ -712,8 +716,8 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     mkdirSync(join(runRoot, CLAUDE_TMP), { recursive: true });
 
     const claudeBin = bin();
-    // A tool list without a write tool is a read-only session: the write tools are disallowed, denied and refused by the hook.
-    const readOnly = !d.tools.some((t) => (WRITE_TOOLS as readonly string[]).includes(t));
+    const readOnly = d.readOnly;
+    if (readOnly && d.tools.some((t) => (WRITE_TOOLS as readonly string[]).includes(t))) throw new Error('a read-only session cannot carry a write tool');
     const writeTools: readonly string[] = readOnly ? WRITE_TOOLS : [];
     let argv: string[];
     try {
@@ -783,6 +787,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
 
   async function work(i: WorkInput) {
     const out = await drive({
+      what: 'run',
       runId: i.runId,
       dir: i.dir,
       model: i.agent.model,
@@ -790,6 +795,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
       persona: i.persona,
       prompt: workPrompt(i),
       tools: WORK_TOOLS,
+      readOnly: false,
       allowed: [RUN_TOOL],
       schema: null,
       log: i.log,
@@ -820,12 +826,14 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
    */
   async function audit(i: AuditInput): Promise<AuditResult> {
     const out = await drive({
+      what: 'audit',
       runId: i.auditId,
       dir: i.dir,
       model: i.model,
       system: AUDIT_PERSONA,
       prompt: auditPrompt(i),
       tools: AUDIT_TOOLS,
+      readOnly: true,
       allowed: [RUN_TOOL],
       schema: AUDIT_SCHEMA,
       log: i.log,

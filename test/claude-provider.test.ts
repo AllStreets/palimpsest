@@ -984,5 +984,10 @@ describe('audit', () => {
     assert.equal(out.ended, 'crashed');
     assert.match(out.reason ?? '', /broker/);
     assert.equal(calls.length, 0);
+    assert.ok(second.logs.some((l) => l.kind === 'engine' && /^claude audit crashed:/.test(l.text)), 'the crash line names the audit');
+    const work = workInput({ runId: 'run-noun' });
+    rmSync(join(work.run.runRoot, 'ctl', 'broker.json'));
+    await provider().p.work(work.input);
+    assert.ok(work.logs.some((l) => l.kind === 'engine' && /^claude run crashed:/.test(l.text)), 'the crash line names the run');
   });
 });

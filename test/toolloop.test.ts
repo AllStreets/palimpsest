@@ -445,6 +445,12 @@ describe('runLoop', () => {
     const ok = await runLoop({ ...loopInput('loop-retry-ok').base, transport: again.transport, system: 's', user: 'u', tools: auditLoopTools([]), finish: 'json' });
     assert.equal(ok.ended, 'finished');
     assert.deepEqual(ok.answer, ANSWER);
+    // an object without both claims and findings is not the answer: it takes the retry
+    const wrong = scripted([[text('{"foo": 1, "findings": []}')], [text(JSON.stringify(ANSWER))]]);
+    const fixed = await runLoop({ ...loopInput('loop-retry-shape').base, transport: wrong.transport, system: 's', user: 'u', tools: auditLoopTools([]), finish: 'json' });
+    assert.equal(fixed.ended, 'finished');
+    assert.deepEqual(fixed.answer, ANSWER);
+    assert.equal(wrong.seen.length, 2);
   });
 
   test('an audit loop offers only the read tools and caps each result', async () => {

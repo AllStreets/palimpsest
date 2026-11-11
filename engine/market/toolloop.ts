@@ -341,10 +341,15 @@ function fileResultText(r: ToolResult & { result: unknown }, cap: number): { con
 /** What the model is told when a `json` finish got prose: one retry, then the loop ends crashed. */
 export const JSON_RETRY = 'Your reply was not a JSON object. Answer only with the JSON object described in the instructions, nothing before or after it.';
 
-/** The model's text as a JSON object, or null: the whole text, else the first balanced block in it. */
+/** The keys the audit's answer must carry; a block without both is prose to the loop and takes the retry. */
+const ANSWER_KEYS = ['claims', 'findings'] as const;
+
+/** The model's text as the answer object, or null: the whole text, else the first balanced block in it, and only with every answer key. */
 function jsonObjectOf(text: string): Record<string, unknown> | null {
   const v = firstJsonBlock(text);
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  return ANSWER_KEYS.every((k) => Object.prototype.hasOwnProperty.call(o, k)) ? o : null;
 }
 
 /**

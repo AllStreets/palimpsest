@@ -15,6 +15,7 @@ import {
   AUDIT_TOOLS,
   auditPrompt,
   auditSlug,
+  checkCommands,
   cloneClean,
   firstJsonBlock,
   isTestFile,
@@ -534,4 +535,19 @@ test('auditSlug is a file name without the slash or anything else', () => {
 test('isTestFile never counts prose in a test folder', () => {
   for (const f of ['test/README.md', 'tests/notes.txt', 'spec/guide.rst', '__tests__/fixtures/cases.MD']) assert.ok(!isTestFile(f), f);
   for (const f of ['test/readme.test.ts', 'spec/guide_spec.rb']) assert.ok(isTestFile(f), f);
+});
+
+test('checkCommands never includes install, and a repo with no checks is told the run tool refuses everything', () => {
+  const base: RepoChecks = { test: null, typecheck: null, lint: null, build: null, screenshot: null, preview: null, shots: [], install: null, ecosystems: ['npm'], detected: true };
+  assert.deepEqual(checkCommands({ ...base, install: 'npm ci', test: 'npm test' }), ['npm test']);
+  assert.deepEqual(checkCommands({ ...base, install: 'npm ci', test: ' npm test ', lint: 'npm test', build: 'npm run build' }), ['npm test', 'npm run build']);
+  assert.deepEqual(checkCommands(null), []);
+  const none = auditPrompt({ repo, readme: { path: 'README.md', text: '# W\n' }, docs: [], checks: null, model: 'claude:sonnet' });
+  assert.match(none, /declares no checks/);
+  assert.match(none, /run tool will refuse every command/);
+  assert.match(none, /code and its tests alone/);
+  assert.doesNotMatch(none, /you may run it/);
+  const some = auditPrompt({ repo, readme: { path: 'README.md', text: '# W\n' }, docs: [], checks: { ...base, test: 'npm test' }, model: 'claude:sonnet' });
+  assert.match(some, /`npm test`/);
+  assert.doesNotMatch(some, /refuse every command/);
 });

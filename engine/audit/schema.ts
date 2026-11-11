@@ -37,12 +37,13 @@ export const AUDIT_PERSONA =
 
 /**
  * The command lines an audit's run tool accepts: the repository's declared
- * checks (install, test, typecheck, lint, build, as detected or set by him)
- * and nothing else. The broker refuses any other command.
+ * checks (test, typecheck, lint, build, as detected or set by him) and
+ * nothing else. Never the install: the runner installs before the session,
+ * and the audit must not write. The broker refuses any other command.
  */
 export function checkCommands(checks: RepoChecks | null): string[] {
   const out: string[] = [];
-  for (const c of [checks?.install, checks?.test, checks?.typecheck, checks?.lint, checks?.build]) {
+  for (const c of [checks?.test, checks?.typecheck, checks?.lint, checks?.build]) {
     const cmd = typeof c === 'string' ? c.trim() : '';
     if (cmd && !out.includes(cmd)) out.push(cmd);
   }
@@ -185,7 +186,9 @@ function checksOf(i: Pick<AuditInput, 'checks'>): string {
   if (c?.typecheck) named.push(`the type check is \`${c.typecheck}\``);
   if (c?.lint) named.push(`the lint is \`${c.lint}\``);
   if (c?.build) named.push(`the build is \`${c.build}\``);
-  if (named.length === 0) return 'The repository has no checks I know of; if you find a test command in its manifest, you may run it.';
+  if (named.length === 0) {
+    return 'The repository declares no checks, so the run tool will refuse every command. Rest each verdict on the code and its tests alone, read through the read tools.';
+  }
   return `The repository's own checks, already installed: ${listOf(named)}. Run them through the run tool when a claim turns on them.`;
 }
 
