@@ -1666,8 +1666,10 @@ async function main(): Promise<void> {
   const { setRunner } = await import('../engine/exec.js');
   // Slow enough that each analysis step is visible, and never the network.
   setRunner(sampleGh(450));
-  // The API key routes: the sample keychain answers every `security` call (the runner above, the spawner here),
-  // and the keychain the engine names is a file in the temp dir, never his login keychain.
+  // The API key routes. This home has no sample marker (seedSample writes none), so the engine does not enter
+  // sample mode and would keep the real spawner: the sample keychain is installed in front of it here, and
+  // sampleGh (the runner above) answers `security` too, so no `security` process ever starts. The keychain the
+  // engine names is a file in the temp dir besides, never his login keychain.
   await installKeychainStandIn();
   const keychain = join(tmp, 'ui-test.keychain-db');
   writeFileSync(keychain, '');

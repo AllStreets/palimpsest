@@ -614,7 +614,11 @@ export const sampleKeychain = {
   /** A runner answer for a `security` call, or null for any other command. */
   answer(cmd: string, args: string[]): { stdout: string; stderr: string; code: number } | null {
     if (!isSecurity(cmd)) return null;
-    if (args[0] === 'find-generic-password') return heldKey ? { stdout: `${heldKey}\n`, stderr: '', code: 0 } : { stdout: '', stderr: 'The specified item could not be found in the keychain.', code: 44 };
+    // With -w security prints the secret; without it, only the item's attributes (never the key).
+    if (args[0] === 'find-generic-password') {
+      if (!heldKey) return { stdout: '', stderr: 'The specified item could not be found in the keychain.', code: 44 };
+      return { stdout: args.includes('-w') ? `${heldKey}\n` : 'class: "genp"\nattributes:\n    "svce"<blob>="Palimpsest Anthropic API key"\n', stderr: '', code: 0 };
+    }
     if (args[0] === 'delete-generic-password') {
       const had = heldKey !== null;
       heldKey = null;
@@ -638,7 +642,12 @@ export const sampleKeychain = {
   },
 };
 
-/** `next` with every `security` child answered by the sample keychain instead: for the UI test's engine, which keeps its own spawner. */
+/**
+ * `next` with every `security` child answered by the sample keychain instead.
+ * For the UI test's engine: its home has no sample marker, so it never enters
+ * sample mode and keeps the real spawner; this wrapper is what stops a real
+ * `security -i` from starting there.
+ */
 export function withSampleKeychain(next: Spawner): Spawner {
   return (cmd, args, opts) => (isSecurity(cmd) ? sampleKeychain.spawn(args, opts.stdin) : next(cmd, args, opts));
 }

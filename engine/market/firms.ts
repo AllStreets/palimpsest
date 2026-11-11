@@ -9,6 +9,7 @@
  * never calls seedFirms, so no server test ever runs `ollama list`.
  */
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +21,7 @@ import { getRunner } from '../exec.js';
 import { quarterOrigin } from '../layout.js';
 import { record } from '../ledger.js';
 import { earnedFloors, nextSlot } from '../repos.js';
+import { SYSTEM_PATH } from './sandbox.js';
 
 const PERSONA_DIR = join(dirname(fileURLToPath(import.meta.url)), 'personas');
 
@@ -147,19 +149,37 @@ export function resolveModel(prefix: string, installed: string[]): string | null
   return installed.find((tag) => tag.startsWith(prefix)) ?? null;
 }
 
+/** A model row of `ollama list`: a name (name:tag) followed by its id; warnings and errors are not. */
+const MODEL_ROW = /^([A-Za-z0-9][A-Za-z0-9._\/-]*(?::[A-Za-z0-9._-]+)?)\s+[0-9a-f]{6,}\s/;
+
+/** Model names from `ollama list` output: the first column of each model row under the header. */
+export function parseOllamaList(stdout: string): string[] {
+  const out: string[] = [];
+  for (const line of stdout.split('\n').slice(1)) {
+    const m = MODEL_ROW.exec(line.trim());
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+/**
+ * The environment `ollama list` runs in: the system PATH (where Homebrew and
+ * the Ollama app put the CLI, whatever PATH the engine was started with), his
+ * home, and the host to ask when one is given.
+ */
+export function ollamaListEnv(host?: string): Record<string, string> {
+  return { PATH: SYSTEM_PATH.join(':'), HOME: homedir(), ...(host ? { OLLAMA_HOST: `http://${host}` } : {}) };
+}
+
 /**
  * The Ollama models installed on this Mac, from `ollama list` through the
  * runner. Empty when Ollama is missing, not running or answers with an error.
  */
 export async function installedModels(): Promise<string[]> {
   try {
-    const { stdout, code } = await getRunner()('ollama', ['list'], { timeoutMs: 10_000 });
+    const { stdout, code } = await getRunner()('ollama', ['list'], { timeoutMs: 10_000, env: ollamaListEnv() });
     if (code !== 0) return [];
-    return stdout
-      .split('\n')
-      .slice(1)
-      .map((line) => line.trim().split(/\s+/)[0])
-      .filter((name): name is string => Boolean(name));
+    return parseOllamaList(stdout);
   } catch {
     return [];
   }

@@ -525,3 +525,10 @@ test('the same run can be inspected again', { timeout: 60_000 }, async () => {
     lease.release();
   }
 });
+
+test('the design check shoots only routes from the site root: no host, no backslash', async () => {
+  const { routesOf } = await import('../engine/guild/inspect.js');
+  const shots = (list: string[]) => routesOf({ checks: { shots: list } } as Parameters<typeof routesOf>[0]);
+  assert.deepEqual(shots(['/about', '//evil.example', '/\\evil.example', '/a\\b', 'pricing']), ['/about', '/pricing']);
+  assert.deepEqual(shots(['/\\x']), ['/'], 'nothing left: the root alone');
+});

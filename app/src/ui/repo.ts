@@ -1,10 +1,11 @@
 import { pushModeRefusal, REGISTRY_HOSTS, TIER_LABELS } from '../../../shared/market-rules';
-import type { CheckField, District, FirmView, Floor, Job, JobStatus, Repo, RepoChecks } from '../../../shared/types';
+import type { District, FirmView, Floor, Job, JobStatus, Repo, RepoChecks } from '../../../shared/types';
 import { api, ApiError, type EngineEvent, type RepoPatchBody } from '../api';
 import { placeHref } from '../router';
 import { cleanText, money } from './board';
 import { ago, button, checkRadio, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton, type Switch } from './controls';
 import { ROOT_NAMES } from './inspector';
+import { isRoute, sourceOf } from './district-words';
 import { coalesce, detailSheet, keyedSlot, outLink, secHead, setTrail } from './pages';
 import { marketNote, PUSH_NOTE } from './repos';
 import { longDate, shortDate } from './story';
@@ -53,24 +54,12 @@ const JOB_WORDS: Record<JobStatus, string> = {
   withdrawn: 'withdrawn',
 };
 
-/** A route to shoot: a path from the site's root, as the engine accepts it. */
-const ROUTE = /^\/[^\x00-\x1f\x7f\s]{0,199}$/;
 /** A label, as the engine accepts it. */
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
 const JOBS_SHOWN = 10;
 const FLOORS_SHOWN = 6;
 
 const emptyChecks = (): RepoChecks => ({ test: null, typecheck: null, lint: null, build: null, screenshot: null, preview: null, shots: [], install: null, ecosystems: [], detected: false });
-
-/** Where a check came from: he set it, it was detected, or there is none. */
-function sourceOf(checks: RepoChecks | null, field: CheckField): 'set by you' | 'detected' | 'none' {
-  if (checks?.setByYou?.includes(field)) return 'set by you';
-  const v = checks?.[field];
-  const has = Array.isArray(v) ? v.length > 0 : v !== null && v !== undefined;
-  if (!has) return 'none';
-  // Checks set by hand before the engine kept track of each one: say so for all of them.
-  return checks?.detected === false && !checks.setByYou ? 'set by you' : 'detected';
-}
 
 /**
  * A district's own page (#/repos/:owner/:name): the switches that put its
@@ -85,6 +74,7 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
   const sheet = detailSheet(parent, 'district', opts.onDismiss);
   const body = sheet.body;
   const trouble = el('p', 'detail-trouble');
+  trouble.setAttribute('aria-live', 'polite');
   trouble.hidden = true;
   body.append(trouble);
 
@@ -306,8 +296,12 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     input.maxLength = 500;
     input.placeholder = 'not set';
     const src = el('span', 'check-src');
+    src.id = `check-src-${key}`;
     const w = el('p', 'check-why');
+    w.id = `check-why-${key}`;
     w.setAttribute('aria-live', 'polite');
+    // A screen reader hears where the command came from (detected, set by you, none) and any refusal with it.
+    input.setAttribute('aria-describedby', `${src.id} ${w.id}`);
     const main = el('div', 'check-main');
     main.append(input, w);
     row.append(label, main, src);
@@ -429,8 +423,8 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     const v = addInput.value.trim();
     if (!v) return;
     const cur = repo?.checks?.shots ?? [];
-    if (!ROUTE.test(v)) {
-      shotWhy.textContent = 'A route starts with / and has no spaces, such as /settings.';
+    if (!isRoute(v)) {
+      shotWhy.textContent = 'A route starts with / and has no spaces or backslashes, such as /settings.';
       return;
     }
     if (cur.includes(v)) {

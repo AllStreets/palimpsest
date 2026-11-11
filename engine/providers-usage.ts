@@ -3,26 +3,66 @@
  * Read only: nothing here writes to another tool's folder, and the Codex
  * reader looks only at session logs, never at `auth.json` or any credential.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ProviderUsage } from '../shared/types.js';
 import { openDb } from './db.js';
 import { getRunner } from './exec.js';
 import { treasury } from './market/budget.js';
+import { ollamaListEnv, parseOllamaList } from './market/firms.js';
 import { getSettings } from './settings.js';
 import { latestReading } from './usage.js';
 
 const DAY_MS = 24 * 3600_000;
 const WEEK_MS = 7 * DAY_MS;
 
-export function codexHome(): string {
-  return process.env.PALIMPSEST_CODEX_HOME ?? join(homedir(), '.codex');
+/**
+ * Where another CLI keeps its logs: the variable when set, else its own
+ * folder in his home. Under `node --test` an unset variable names a folder
+ * in the temp dir that does not exist, so no test can ever read his
+ * ~/.codex or ~/.gemini, even one that forgets to point the reader at a fixture.
+ */
+function cliHome(env: NodeJS.ProcessEnv, key: string, folder: string): string {
+  const set = env[key];
+  if (set) return set;
+  if (env.NODE_TEST_CONTEXT) return join(tmpdir(), `palimpsest-tests-never-read-${folder.slice(1)}`, 'absent');
+  return join(homedir(), folder);
 }
 
-export function geminiHome(): string {
-  return process.env.PALIMPSEST_GEMINI_HOME ?? join(homedir(), '.gemini');
+export function codexHome(env: NodeJS.ProcessEnv = process.env): string {
+  return cliHome(env, 'PALIMPSEST_CODEX_HOME', '.codex');
+}
+
+export function geminiHome(env: NodeJS.ProcessEnv = process.env): string {
+  return cliHome(env, 'PALIMPSEST_GEMINI_HOME', '.gemini');
+}
+
+/**
+ * What one read of another CLI's logs may take: the newest `files` within
+ * the week, and at most `bytes` of each (a Codex log's tail, since its token
+ * lines are cumulative; a Gemini chat over the cap is skipped), so Settings
+ * never stalls the engine on a long history.
+ */
+export const READ_CAP = { files: 40, bytes: 2 * 1024 * 1024 };
+
+/** The last `READ_CAP.bytes` of a file as text, from its first whole line; null when it cannot be read. */
+function readTail(path: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const size = statSync(path).size;
+    const len = Math.min(size, READ_CAP.bytes);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const text = buf.toString('utf8');
+    return size > len ? text.slice(text.indexOf('\n') + 1) : text;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
 }
 
 function localMidnight(now: number): number {
@@ -101,7 +141,8 @@ export function openaiUsage(now: number = Date.now()): ProviderUsage {
   const files = [...walk(join(root, 'sessions'), isLog), ...walk(join(root, 'archived_sessions'), isLog)]
     .map((path) => ({ path, at: mtime(path) }))
     .filter((f) => f.at >= now - WEEK_MS)
-    .sort((a, b) => b.at - a.at);
+    .sort((a, b) => b.at - a.at)
+    .slice(0, READ_CAP.files);
 
   const midnight = localMidnight(now);
   let today = 0;
@@ -110,12 +151,8 @@ export function openaiUsage(now: number = Date.now()): ProviderUsage {
   let windowsSeen = false;
   let readAny = false;
   for (const f of files) {
-    let text: string;
-    try {
-      text = readFileSync(f.path, 'utf8');
-    } catch {
-      continue;
-    }
+    const text = readTail(f.path);
+    if (text === null) continue;
     readAny = true;
     let prevTotal = 0;
     let last: Json | null = null;
@@ -163,12 +200,17 @@ export function geminiUsage(now: number = Date.now()): ProviderUsage {
   let today = 0;
   let week = 0;
   let readAny = false;
-  const chats = walk(join(root, 'tmp'), (n) => n.endsWith('.json'), 3).filter((p) => /[\\/]chats[\\/][^\\/]+$/.test(p));
-  for (const path of chats) {
-    const fileAt = mtime(path);
-    if (fileAt < now - WEEK_MS) continue;
+  const chats = walk(join(root, 'tmp'), (n) => n.endsWith('.json'), 3)
+    .filter((p) => /[\\/]chats[\\/][^\\/]+$/.test(p))
+    .map((path) => ({ path, at: mtime(path) }))
+    .filter((f) => f.at >= now - WEEK_MS)
+    .sort((a, b) => b.at - a.at)
+    .slice(0, READ_CAP.files);
+  for (const { path, at: fileAt } of chats) {
     let doc: Json;
     try {
+      // A chat is one JSON document: one over the cap is skipped rather than read whole.
+      if (statSync(path).size > READ_CAP.bytes) continue;
       doc = JSON.parse(readFileSync(path, 'utf8'));
     } catch {
       continue;
@@ -204,14 +246,7 @@ function localCredits(now: number): { today: number; week: number } {
   return { today: round(creditsSince(localMidnight(now), 'ollama:%', 'amount')), week: round(creditsSince(now - WEEK_MS, 'ollama:%', 'amount')) };
 }
 
-/** Model names from `ollama list` output: the first column of every row under the header. */
-export function parseOllamaList(stdout: string): string[] {
-  return stdout
-    .split('\n')
-    .slice(1)
-    .map((line) => line.trim().split(/\s+/)[0])
-    .filter((name): name is string => Boolean(name));
-}
+export { parseOllamaList };
 
 /**
  * Whether Ollama answers at the configured host and its installed models,
@@ -225,7 +260,7 @@ export async function ollamaUsage(now: number = Date.now(), credits: (now: numbe
   const base: ProviderUsage = { provider: 'ollama', status: 'not-found', windows: [], tokens: null, spendUsd: null, detail: '', host };
   let models: string[];
   try {
-    const env: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: homedir(), OLLAMA_HOST: `http://${host}` };
+    const env = ollamaListEnv(host);
     const { stdout, code } = await getRunner()('ollama', ['list'], { timeoutMs: 5000, env });
     if (code !== 0) return { ...base, detail: `Ollama is not reachable at ${host}` };
     models = parseOllamaList(stdout);
@@ -280,14 +315,35 @@ export function mlxUsage(): ProviderUsage {
 
 type Reader = () => ProviderUsage | Promise<ProviderUsage>;
 
+/** How long a read of another CLI's logs stands before Settings reads them again. */
+const CACHE_MS = 60_000;
+const cache = new Map<string, { at: number; value: ProviderUsage }>();
+
+/** `read`, answered from the last read of the same folder within the minute. */
+function cachedRead(key: () => string, read: () => ProviderUsage): Reader {
+  return () => {
+    const k = key();
+    const hit = cache.get(k);
+    if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+    const value = read();
+    cache.set(k, { at: Date.now(), value });
+    return value;
+  };
+}
+
+/** Forgets every cached read (tests). */
+export function resetProviderCache(): void {
+  cache.clear();
+}
+
 /** Every provider, in the fixed order Settings shows them. A reader that throws shows as unknown with a short reason; it never empties the list. */
 export async function providerUsages(overrides: Partial<Record<ProviderUsage['provider'], Reader>> = {}): Promise<ProviderUsage[]> {
   const readers: Array<[ProviderUsage['provider'], Reader]> = [
     ['claude', claudeUsage],
     ['anthropic-api', anthropicApiUsage],
     ['ollama', ollamaUsage],
-    ['openai', openaiUsage],
-    ['gemini', geminiUsage],
+    ['openai', cachedRead(() => `openai:${codexHome()}`, () => openaiUsage())],
+    ['gemini', cachedRead(() => `gemini:${geminiHome()}`, () => geminiUsage())],
     ['mlx', mlxUsage],
   ];
   const out: ProviderUsage[] = [];

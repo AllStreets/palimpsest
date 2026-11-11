@@ -65,9 +65,11 @@ const repoOf = async (page: Page, fullName: string): Promise<Repo | undefined> =
 const rowSel = (fullName: string): string => `.sheet.repos .repo-row[data-repo="${fullName}"]`;
 
 /**
- * Installs the sample keychain in front of whatever spawner the UI test's
- * engine runs with, so the API key route's `security -i` never starts. The
- * runner side is already the sample stand-in (sampleGh answers `security`).
+ * Installs the sample keychain in front of the UI test engine's spawner. Its
+ * home has no sample marker, so the engine never enters sample mode and keeps
+ * the real spawner: without this the API key route's `security -i` would
+ * start. The runner side is already the sample stand-in (sampleGh answers
+ * `security`).
  */
 export async function installKeychainStandIn(): Promise<void> {
   const { getSpawner, setSpawner } = await import('../engine/exec.js');
@@ -144,7 +146,7 @@ async function repoChecks(
   const why = ((await page.locator(`${rowSel(assay)} .repo-push-why`).textContent()) ?? '').trim();
   check(why === PUSH_MODE_NEEDS, `and says why beside it (${why})`);
   const describedBy = (await assayPush.getAttribute('aria-describedby')) ?? '';
-  check(describedBy !== '' && (await page.locator(`[id="${describedBy}"]`).textContent())?.trim() === PUSH_MODE_NEEDS, 'the reason is the switch’s description');
+  check(describedBy !== '' && (await page.locator(`[id="${describedBy}"]`).textContent())?.trim() === PUSH_MODE_NEEDS, "the reason is the switch's description");
   await assayPush.click({ force: true });
   await page.waitForTimeout(300);
   check((await assayPush.getAttribute('aria-checked')) === 'false' && (await repoOf(page, assay))?.pushMode === false, 'clicking the disabled switch changes nothing');
@@ -193,7 +195,7 @@ async function districtChecks(page: Page, check: Check, shots: string): Promise<
   const shown = await within(page, 6000, async () => (await sheet.locator('.check-row[data-check]').count()) === 6);
   check(shown, `the district page lists six checks (${await sheet.locator('.check-row[data-check]').count()})`);
   if (!shown) return;
-  check(((await sheet.locator('.sheet-title').textContent()) ?? '').trim() === 'harbor-ledger', 'titled with the repo’s name');
+  check(((await sheet.locator('.sheet-title').textContent()) ?? '').trim() === 'harbor-ledger', "titled with the repo's name");
   check((await page.locator('.runhead-link[data-route="repos"]').getAttribute('aria-current')) === 'page', 'the running head marks Repos');
   check((await sheet.locator('.detail-trail a').first().getAttribute('href')) === '#/repos', 'the trail leads back to Repos');
   for (const k of ['connect', 'market', 'push']) check((await sheet.locator(`.district-switches [role="switch"].${k}`).count()) === 1, `it carries the ${k} switch`);
@@ -226,6 +228,14 @@ async function districtChecks(page: Page, check: Check, shots: string): Promise<
   check(await within(page, 4000, async () => (await repoOf(page, harbour))?.checks?.test === cmd), 'a test command typed and Entered is stored');
   check(await within(page, 3000, async () => ((await testRow.locator('.check-src').textContent()) ?? '').trim() === 'set by you'), `and the row says set by you (${await testRow.locator('.check-src').textContent()})`);
   check(((await sheet.locator('.check-row[data-check="build"] .check-src').textContent()) ?? '').trim() === 'detected', 'the others still say detected');
+  check(((await input.getAttribute('aria-describedby')) ?? '').split(' ').includes((await testRow.locator('.check-src').getAttribute('id')) ?? '-'), 'the input is described by where its command came from');
+
+  // Emptying a command leaves nothing to call his: it reads none.
+  const lint = sheet.locator('.check-row[data-check="lint"]');
+  await lint.locator('input.check-cmd').fill('');
+  await lint.locator('input.check-cmd').press('Enter');
+  check(await within(page, 4000, async () => (await repoOf(page, harbour))?.checks?.lint === null), 'an emptied command is stored as none');
+  check(await within(page, 3000, async () => ((await lint.locator('.check-src').textContent()) ?? '').trim() === 'none'), `and the row says none, not set by you (${await lint.locator('.check-src').textContent()})`);
 
   // Add a screenshot route.
   const routes = (await repoOf(page, harbour))?.checks?.shots ?? [];
@@ -284,7 +294,7 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
   check(/Gemini/.test((await sheet.locator('.prov[data-provider="gemini"]').textContent()) ?? '') && /tokens/i.test((await sheet.locator('.prov[data-provider="gemini"]').textContent()) ?? ''), 'Gemini shows its tokens');
   check(/arrives with the school/i.test((await sheet.locator('.prov[data-provider="mlx"]').textContent()) ?? ''), 'MLX arrives with the school');
   const apiProv = sheet.locator('.prov[data-provider="anthropic-api"]');
-  check((await apiProv.textContent())?.includes('Spends your API key’s dollars, not your Claude plan') || (await apiProv.textContent())?.includes("Spends your API key's dollars, not your Claude plan") || false, 'the API key says whose dollars it spends');
+  check(((await apiProv.locator('.prov-line').textContent()) ?? '').trim() === "Spends your API key's dollars, not your Claude plan.", 'the API key says whose dollars it spends');
   check((await apiProv.locator('[role="switch"].apikey-enable').getAttribute('aria-checked')) === 'false', 'the Anthropic API is off by default');
   check((await apiProv.locator('input.apikey-daily').count()) === 1, 'with a daily dollar limit');
   await sheet.locator('.sheet-body').evaluate((b) => {

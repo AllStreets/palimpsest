@@ -15,7 +15,7 @@ export const LEAVES =
 const PRIVACY: Array<[string, string]> = [
   ['Leaves this Mac', LEAVES],
   ['Stays here', 'Repo mirrors, the city, the ledger, every job and its work, and usage readings, all in ~/Library/Application Support/Palimpsest.'],
-  ['Never read', 'Your Claude, Codex and Gemini logins. Claude usage comes from the statusline hook; Codex and Gemini usage from those CLIs’ own logs, read only. Palimpsest keeps no GitHub token.'],
+  ['Never read', "Your Claude, Codex and Gemini logins. Claude usage comes from the statusline hook; Codex and Gemini usage from those CLIs' own logs, read only. Palimpsest keeps no GitHub token."],
   ['Never shown', 'Your API key. It lives in your keychain, is read there only to make a call, and never comes back to this page.'],
   ['Never sent', 'No analytics, no telemetry, no account.'],
 ];
@@ -25,8 +25,8 @@ const PROVIDER_HOW: Record<ProviderUsage['provider'], [string, string]> = {
   claude: ['Claude', 'through your Claude Code'],
   'anthropic-api': ['Anthropic API', 'on a key of your own'],
   ollama: ['Ollama', 'local models on this Mac'],
-  openai: ['OpenAI', 'the Codex CLI’s own logs, read only'],
-  gemini: ['Gemini', 'the Gemini CLI’s own logs, read only'],
+  openai: ['OpenAI', "the Codex CLI's own logs, read only"],
+  gemini: ['Gemini', "the Gemini CLI's own logs, read only"],
   mlx: ['MLX', 'on-device, Apple silicon'],
 };
 
@@ -85,7 +85,7 @@ export function createSettings(
   opts: { listen(fn: (e: EngineEvent) => void): () => void; onDismiss(): void; onStopped(stopped: boolean): void },
 ): SettingsScreen {
   const sheet = createSheet(parent, 'settings', 'Settings', opts.onDismiss);
-  const facts = el('p', 'sheet-facts', 'Where the city’s work runs, what it may spend, and what leaves this Mac.');
+  const facts = el('p', 'sheet-facts', "Where the city's work runs, what it may spend, and what leaves this Mac.");
   sheet.root.querySelector('.sheet-head')?.append(facts);
   let unlisten: (() => void) | null = null;
 
@@ -218,6 +218,7 @@ export function createSettings(
   keySave.type = 'submit';
   keyForm.append(keyInput, keySave);
   const keyError = el('p', 'set-error apikey-error');
+  keyError.setAttribute('aria-live', 'polite');
   keyError.hidden = true;
   const apiControls = el('div', 'apikey-controls');
   const enable = createSwitch('apikey-enable', 'Let firms work on the Anthropic API', (on) => apiSync.set({ enabled: on }));

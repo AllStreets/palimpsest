@@ -6,12 +6,13 @@ import assert from 'node:assert/strict';
 import fs, { chmodSync, cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { createServer, type Server } from 'node:http';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
-import { claudeUsage, codexHome, geminiHome, geminiUsage, mlxUsage, ollamaUsage, openaiUsage, anthropicApiUsage, providerUsages } from '../engine/providers-usage.js';
+import { claudeUsage, codexHome, geminiHome, geminiUsage, mlxUsage, ollamaUsage, openaiUsage, anthropicApiUsage, parseOllamaList, providerUsages, READ_CAP, resetProviderCache } from '../engine/providers-usage.js';
+import { SYSTEM_PATH } from '../engine/market/sandbox.js';
 import { patchSettings } from '../engine/settings.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_CODEX_HOME', 'PALIMPSEST_GEMINI_HOME', 'PALIMPSEST_CLAUDE_PROJECTS', 'PALIMPSEST_TEST_PROJECTS', 'PALIMPSEST_CLAUDE_SETTINGS'];
@@ -22,6 +23,7 @@ let server: Server | null = null;
 const NOW = Date.parse('2026-11-10T15:00:00Z');
 
 beforeEach(() => {
+  resetProviderCache();
   previousEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   tempDir = realpathSync(mkdtempSync(join(tmpdir(), 'palimpsest-provusage-test-')));
   process.env.PALIMPSEST_HOME = join(tempDir, 'data');
@@ -67,6 +69,77 @@ describe('provider usage', () => {
     process.env.PALIMPSEST_GEMINI_HOME = '/x/g';
     assert.equal(codexHome(), '/x/c');
     assert.equal(geminiHome(), '/x/g');
+  });
+
+  test('under tests an unset home is a missing folder in the temp dir, never ~/.codex or ~/.gemini', () => {
+    delete process.env.PALIMPSEST_CODEX_HOME;
+    delete process.env.PALIMPSEST_GEMINI_HOME;
+    for (const home of [codexHome(), geminiHome()]) {
+      assert.ok(home.startsWith(realpathSync(tmpdir())) || home.startsWith(tmpdir()), `${home} lies in the temp dir`);
+      assert.ok(!home.startsWith(homedir()), `${home} is not under his home`);
+      assert.equal(fs.existsSync(home), false);
+    }
+    assert.equal(openaiUsage(NOW).status, 'not-found');
+    assert.equal(geminiUsage(NOW).status, 'not-found');
+    // Outside a test run the defaults are the CLIs' own folders.
+    assert.equal(codexHome({}), join(homedir(), '.codex'));
+    assert.equal(geminiHome({}), join(homedir(), '.gemini'));
+  });
+
+  test('the readers are bounded: the tail of a big Codex log, a capped number of files, oversized Gemini chats skipped', () => {
+    const dir = join(tempDir, 'big-codex');
+    const day = join(dir, 'sessions', '2026', '11', '10');
+    mkdirSync(day, { recursive: true });
+    const line = (pct: number, total: number) => JSON.stringify({ timestamp: '2026-11-10T14:00:00Z', type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { total_tokens: total } }, rate_limits: { primary: { used_percent: pct, window_minutes: 300 }, secondary: { used_percent: 1, window_minutes: 10080 } } } });
+    // A token line at the head, then more than the cap of padding, then the latest line: only the tail is read.
+    const pad = `${JSON.stringify({ type: 'other', text: 'x'.repeat(1000) })}\n`.repeat(Math.ceil((READ_CAP.bytes * 1.5) / 1000));
+    const big = join(day, 'rollout-big.jsonl');
+    writeFileSync(big, `${line(99, 10)}\n${pad}${line(33, 500)}\n`);
+    const at = new Date(NOW - 60_000);
+    utimesSync(big, at, at);
+    const readSpy = mock.method(fs, 'readFileSync');
+    syncBuiltinESMExports();
+    process.env.PALIMPSEST_CODEX_HOME = dir;
+    try {
+      const u = openaiUsage(NOW);
+      assert.equal(u.windows[0]?.usedPct, 33, 'the windows come from the tail');
+      assert.ok(readSpy.mock.calls.every((c) => !String(c.arguments[0]).endsWith('rollout-big.jsonl')), 'the big file is never read whole');
+    } finally {
+      readSpy.mock.restore();
+      syncBuiltinESMExports();
+    }
+
+    // More session files than the cap: only the newest are read.
+    const many = join(tempDir, 'many-codex', 'sessions', '2026', '11', '10');
+    mkdirSync(many, { recursive: true });
+    for (let i = 0; i < READ_CAP.files + 15; i++) {
+      const f = join(many, `rollout-${i}.jsonl`);
+      writeFileSync(f, `${line(5, 100)}\n`);
+      const t = new Date(NOW - (i + 1) * 60_000);
+      utimesSync(f, t, t);
+    }
+    process.env.PALIMPSEST_CODEX_HOME = join(tempDir, 'many-codex');
+    assert.equal(openaiUsage(NOW).tokens?.week, READ_CAP.files * 100, `at most ${READ_CAP.files} files are read`);
+
+    // A Gemini chat over the cap is skipped, not parsed.
+    const chats = join(tempDir, 'big-gemini', 'tmp', 'p', 'chats');
+    mkdirSync(chats, { recursive: true });
+    const chat = join(chats, 'session-big.json');
+    writeFileSync(chat, JSON.stringify({ messages: [{ timestamp: '2026-11-10T14:00:00Z', tokens: { total: 7 } }], pad: 'y'.repeat(READ_CAP.bytes + 10) }));
+    utimesSync(chat, at, at);
+    process.env.PALIMPSEST_GEMINI_HOME = join(tempDir, 'big-gemini');
+    assert.equal(geminiUsage(NOW).tokens, null, 'nothing read from a chat over the cap');
+  });
+
+  test('Settings reads the CLIs at most once a minute', async () => {
+    process.env.PALIMPSEST_CODEX_HOME = codexFixture();
+    patchSettings({ ollamaHost: '127.0.0.1:1' });
+    const first = (await providerUsages()).find((p) => p.provider === 'openai');
+    assert.equal(first?.status, 'ready');
+    rmSync(process.env.PALIMPSEST_CODEX_HOME, { recursive: true, force: true });
+    assert.deepEqual((await providerUsages()).find((p) => p.provider === 'openai'), first, 'a second read within the minute is the cached one');
+    resetProviderCache();
+    assert.equal((await providerUsages()).find((p) => p.provider === 'openai')?.status, 'not-found');
   });
 
   test('codex windows come from the last token_count line', () => {
@@ -224,6 +297,18 @@ describe('provider usage', () => {
       throw new Error('spawn ollama ENOENT');
     });
     assert.equal((await ollamaUsage()).status, 'not-found', 'no ollama on this Mac reads as not reachable');
+  });
+
+  test('`ollama list` is run on the system PATH, and rows that are not models are skipped', async () => {
+    let env: Record<string, string> | undefined;
+    setRunner(async (_cmd, _args, opts) => {
+      env = opts?.env;
+      return { stdout: 'NAME    ID    SIZE    MODIFIED\nqwen3:1.7b    8f68893c685c    1.4 GB    3 weeks ago\nWarning: could not connect to a running Ollama instance\n\nerror: something\n', stderr: '', code: 0 };
+    });
+    const u = await ollamaUsage();
+    assert.equal(env?.PATH, SYSTEM_PATH.join(':'));
+    assert.deepEqual(u.models, ['qwen3:1.7b']);
+    assert.deepEqual(parseOllamaList('NAME ID SIZE MODIFIED\nWARNING: old client\ngpt-oss:20b  aa70e1f3bc2d  13 GB  now\n'), ['gpt-oss:20b']);
   });
 
   test('the list is in the fixed order', async () => {

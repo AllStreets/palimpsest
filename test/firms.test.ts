@@ -27,6 +27,7 @@ import {
   toGenome,
 } from '../engine/market/firms.js';
 import { readPersona } from '../engine/market/firms.js';
+import { SYSTEM_PATH } from '../engine/market/sandbox.js';
 import { layEarnedFloor } from '../engine/repos.js';
 import { startServer } from '../engine/server.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
@@ -218,12 +219,15 @@ test('resolveModel picks the installed tag', () => {
 
 test('installedModels reads ollama list through the runner and is empty when Ollama is not running', async () => {
   const calls: string[][] = [];
-  setRunner(async (cmd, args) => {
+  const paths: Array<string | undefined> = [];
+  setRunner(async (cmd, args, opts) => {
     calls.push([cmd, ...args]);
+    paths.push(opts?.env?.PATH);
     return {
       stdout:
         'NAME                          ID              SIZE      MODIFIED\n' +
         'qwen3-coder:30b-a3b-q4_K_M    06c1097efce0    18 GB     3 weeks ago\n' +
+        'Warning: client version is 0.12.1, server version is 0.12.3\n' +
         'gpt-oss:20b                   aa4295ac10c3    13 GB     2 months ago\n',
       stderr: '',
       code: 0,
@@ -231,6 +235,7 @@ test('installedModels reads ollama list through the runner and is empty when Oll
   });
   assert.deepEqual(await installedModels(), ['qwen3-coder:30b-a3b-q4_K_M', 'gpt-oss:20b']);
   assert.deepEqual(calls, [['ollama', 'list']]);
+  assert.deepEqual(paths, [SYSTEM_PATH.join(':')], "run on the system PATH, not the engine's own");
 
   setRunner(async () => {
     throw new Error('spawn ollama ENOENT');

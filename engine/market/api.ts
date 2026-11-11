@@ -44,7 +44,7 @@ import { query } from '../ledger.js';
 import { paths } from '../home.js';
 import { getRepo, isValidFullName, BAD_NAME } from '../repos.js';
 import { providerUsages } from '../providers-usage.js';
-import { apiKey, setApiKey, removeApiKey } from './anthropic-api.js';
+import { apiKeyStored, setApiKey, removeApiKey } from './anthropic-api.js';
 import { bidList } from './bids.js';
 import { MAX_RESUME_MS, treasury } from './budget.js';
 import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
@@ -572,7 +572,7 @@ export async function handleMarketApi(
   if (pathname === '/api/providers/anthropic/key' && method === 'GET') {
     let set = false;
     try {
-      set = (await apiKey({ keychain: opts.keychain })) !== null;
+      set = await apiKeyStored({ keychain: opts.keychain });
     } catch {
       set = false;
     }

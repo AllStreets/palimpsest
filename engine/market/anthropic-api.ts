@@ -149,6 +149,21 @@ export async function apiKey(o: KeychainOptions = {}): Promise<string | null> {
 }
 
 /**
+ * Whether a key is stored, without reading it: `find-generic-password`
+ * without -w prints only the item's attributes, so the secret never leaves
+ * the keychain to answer a yes or no.
+ */
+export async function apiKeyStored(o: KeychainOptions = {}): Promise<boolean> {
+  const kc = keychainOf(o);
+  try {
+    const { code } = await getRunner()(SECURITY, ['find-generic-password', '-s', KEY_SERVICE, ...(kc ? [kc] : [])], { timeoutMs: 15_000 });
+    return code === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Stores the key (Settings), replacing any earlier one. The key never goes
  * on an argv: the command is fed to `security -i` on stdin, and nothing
  * security prints is kept. Records `api.key.set`, never the key.

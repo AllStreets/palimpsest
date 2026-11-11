@@ -577,7 +577,8 @@ test('the api key route never echoes the key, and says only whether one is set',
   const runs: string[][] = [];
   setRunner(async (_cmd, args) => {
     runs.push(args);
-    if (args[0] === 'find-generic-password') return stored ? { stdout: `${stored}\n`, stderr: '', code: 0 } : { stdout: '', stderr: 'not found', code: 44 };
+    // With -w security prints the secret; without it, only the item's attributes (never the key).
+    if (args[0] === 'find-generic-password') return stored ? { stdout: args.includes('-w') ? `${stored}\n` : 'keychain: "fake"\nclass: "genp"\n', stderr: '', code: 0 } : { stdout: '', stderr: 'not found', code: 44 };
     if (args[0] === 'delete-generic-password') stored = null;
     return { stdout: '', stderr: '', code: 0 };
   });
@@ -595,7 +596,10 @@ test('the api key route never echoes the key, and says only whether one is set',
   assert.ok(!JSON.stringify(entries()).includes(KEY), 'the ledger never holds it');
   assert.ok(entries().some((e) => e.kind === 'api.key.set'));
 
+  const before = runs.length;
   const set = await call('GET', '/api/providers/anthropic/key');
+  const asked = runs.slice(before);
+  assert.ok(asked.length > 0 && asked.every((a) => a[0] === 'find-generic-password' && !a.includes('-w')), `the GET asks only whether the item exists, never for the secret (${JSON.stringify(asked)})`);
   assert.equal(set.status, 200);
   assert.deepEqual(set.json, { set: true }, 'only whether a key is stored, never the key');
   assert.ok(!set.text.includes(KEY) && !set.text.includes('sk-ant'));
@@ -613,6 +617,8 @@ test('the api key route never echoes the key, and says only whether one is set',
   assert.ok(runs.some((a) => a[0] === 'delete-generic-password'));
   assert.ok(entries().some((e) => e.kind === 'api.key.removed'));
   assert.deepEqual((await call('GET', '/api/providers/anthropic/key')).json, { set: false }, 'cleared, it reads as not set');
+  const gets = runs.filter((a) => a[0] === 'find-generic-password');
+  assert.ok(gets.every((a) => !a.includes('-w')), 'no GET ever read the key itself');
 });
 
 // ------------------------------------------------------------------ repos and settings
@@ -680,6 +686,8 @@ test('a repo patch takes market, label and checks, validates them, and refuses p
   assert.equal((await call('PATCH', base, { checks: { test: 'a\nb' } })).status, 400);
   assert.equal((await call('PATCH', base, { checks: { preview: { kind: 'vite', outDir: '../../etc' } } })).status, 400);
   assert.equal((await call('PATCH', base, { checks: { shots: ['about'] } })).status, 400, 'a route starts with a slash');
+  assert.equal((await call('PATCH', base, { checks: { shots: ['/a\\b'] } })).status, 400, 'a route holds no backslash');
+  assert.equal((await call('PATCH', base, { checks: { shots: ['/\\evil.example'] } })).status, 400, 'nor a backslash that would read as another host');
   assert.equal((await call('PATCH', base, { checks: { ecosystems: ['cobol'] } })).status, 400);
 
   // Ruling 23, server side too: no push mode while a test or a build command is missing.
