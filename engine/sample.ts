@@ -553,6 +553,8 @@ function flag(args: string[], name: string): string | null {
  */
 function marketAnswer(cmd: string, args: string[]): { stdout: string; stderr: string; code: number } | null {
   const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
+  const keychain = sampleKeychain.answer(cmd, args);
+  if (keychain) return keychain;
   if (cmd === 'ollama' && args[0] === 'list') {
     const rows = SAMPLE_INSTALLED.map((m, i) => `${m.padEnd(32)}${(0x5a17c0de + i).toString(16).slice(0, 12)}    ${[18, 13, 4.7, 1.4, 6][i] ?? 1} GB    3 weeks ago`);
     return ok(`NAME                            ID              SIZE      MODIFIED\n${rows.join('\n')}\n`);
@@ -592,12 +594,72 @@ function marketAnswer(cmd: string, args: string[]): { stdout: string; stderr: st
   return null;
 }
 
+// ---------------------------------------------------------------- the sample keychain
+
+/** True for `security` however it is named (`/usr/bin/security` in anthropic-api.ts). */
+function isSecurity(cmd: string): boolean {
+  return basename(cmd) === 'security';
+}
+
+let heldKey: string | null = null;
+
+/**
+ * The keychain a sample engine and the UI test use: the API key Settings
+ * stores is held in this process's memory and nowhere else. `security` never
+ * runs, so no keychain on this Mac (his login keychain least of all) is read
+ * or written. The runner side answers find and delete; the spawner side takes
+ * the `security -i` add command from stdin, as anthropic-api.ts sends it.
+ */
+export const sampleKeychain = {
+  /** A runner answer for a `security` call, or null for any other command. */
+  answer(cmd: string, args: string[]): { stdout: string; stderr: string; code: number } | null {
+    if (!isSecurity(cmd)) return null;
+    // With -w security prints the secret; without it, only the item's attributes (never the key).
+    if (args[0] === 'find-generic-password') {
+      if (!heldKey) return { stdout: '', stderr: 'The specified item could not be found in the keychain.', code: 44 };
+      return { stdout: args.includes('-w') ? `${heldKey}\n` : 'class: "genp"\nattributes:\n    "svce"<blob>="Palimpsest Anthropic API key"\n', stderr: '', code: 0 };
+    }
+    if (args[0] === 'delete-generic-password') {
+      const had = heldKey !== null;
+      heldKey = null;
+      return had ? { stdout: '', stderr: '', code: 0 } : { stdout: '', stderr: 'The specified item could not be found in the keychain.', code: 44 };
+    }
+    return { stdout: '', stderr: `security ${args[0] ?? ''} is not answered in a sample engine`, code: 1 };
+  },
+  /** A `security -i` child: stores the key an add command carries, prints nothing. */
+  spawn(args: string[], stdin: string | undefined): Spawned {
+    const m = args[0] === '-i' ? /^add-generic-password .* -w "([^"\\]*)"/.exec(stdin ?? '') : null;
+    if (m) heldKey = m[1];
+    const done: Spawned['done'] = Promise.resolve(m ? { code: 0, signal: null } : { code: 1, signal: null });
+    return { pid: null, lines: { [Symbol.asyncIterator]: async function* () {} }, kill: () => {}, done };
+  },
+  isSet(): boolean {
+    return heldKey !== null;
+  },
+  /** Forgets the key (tests). */
+  reset(): void {
+    heldKey = null;
+  },
+};
+
+/**
+ * `next` with every `security` child answered by the sample keychain instead.
+ * For the UI test's engine: its home has no sample marker, so it never enters
+ * sample mode and keeps the real spawner; this wrapper is what stops a real
+ * `security -i` from starting there.
+ */
+export function withSampleKeychain(next: Spawner): Spawner {
+  return (cmd, args, opts) => (isSecurity(cmd) ? sampleKeychain.spawn(args, opts.stdin) : next(cmd, args, opts));
+}
+
 /**
  * The spawner a sample engine runs with: it starts nothing. Every child the
  * market would start (claude, a check, caffeinate) ends at once as not
  * started, so nothing in a sample engine runs on this Mac or reaches out.
+ * A `security -i` child goes to the sample keychain.
  */
-export const sampleSpawner: Spawner = (cmd) => {
+export const sampleSpawner: Spawner = (cmd, args = [], opts = {}) => {
+  if (isSecurity(cmd)) return sampleKeychain.spawn(args, opts.stdin);
   const done: Spawned['done'] = Promise.resolve({ code: null, signal: null, error: `${cmd.split('/').pop()} is not started in a sample engine` });
   return {
     pid: null,

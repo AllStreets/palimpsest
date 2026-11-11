@@ -98,3 +98,11 @@ test('a ledger written before the index gets its job and run columns filled in',
   const cols = (openDb().prepare('PRAGMA table_info(ledger)').all() as Array<{ name: string }>).map((c) => c.name);
   assert.ok(cols.includes('job_id') && cols.includes('run_id'));
 });
+
+test("a firm's books are read through the per-firm index on credits.moved", async () => {
+  const { BOOKS_SQL, OLDER_SQL } = await import('../engine/market/firm-story.js');
+  record('credits.moved', { kind: 'run', firmId: 'kiln', delta: -2, rowIds: [1] });
+  const plan = (sql: string, ...args: Array<string | number>) => (openDb().prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as Array<{ detail: string }>).map((r) => r.detail).join(' ');
+  assert.match(plan(BOOKS_SQL, 'kiln', 10), /ledger_moved_firm/, 'the newest movements of one firm');
+  assert.match(plan(OLDER_SQL, 'kiln', 5), /ledger_moved_firm/, 'and the sum of those older than the page');
+});

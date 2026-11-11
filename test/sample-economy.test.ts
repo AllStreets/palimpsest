@@ -382,3 +382,26 @@ test('the hire does not depend on the seed time: the same books and one speciali
   assert.equal(books[0], books[2], 'the same floors');
   assert.equal(books[1], books[3], 'the same balances');
 });
+
+test('the economy reads his plan as measured, and has a stale reading to pause on', async () => {
+  const { storedCalibration } = await import('../engine/usage.js');
+  const { treasury } = await import('../engine/market/budget.js');
+  const { latestReport } = await import('../engine/market/report.js');
+  const { sampleReading } = await import('../engine/market/sample-economy.js');
+  await seed();
+  const cal = storedCalibration();
+  assert.equal(cal.value, 58_000, '1% of the window is about 58,000 weighted tokens');
+  assert.equal(cal.samples, 14, 'measured from 14 pairs');
+  assert.match(latestReport()!.markdown, /about 58,000 weighted tokens, measured from 14 pairs/, 'the reports say so too');
+  const fresh = treasury(NOW);
+  assert.equal(fresh.fiveHour.usedPct, 34);
+  assert.equal(fresh.sevenDay.usedPct, 21);
+  assert.notEqual(fresh.paused?.reason, 'stale');
+
+  sampleReading(NOW, { stale: true });
+  const stale = treasury(NOW);
+  assert.equal(stale.paused?.reason, 'stale', 'six hours without a reading pauses Claude work');
+  assert.equal(stale.sevenDay.usedPct, 21, 'the week has not reset since');
+  sampleReading(NOW);
+  assert.notEqual(treasury(NOW).paused?.reason, 'stale', 'and a fresh one carries on');
+});

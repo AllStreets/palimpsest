@@ -498,9 +498,10 @@ function strike(fullName: string, passed: boolean, runId: string): void {
 }
 
 /** The routes to shoot: his list, each made a path on the served origin. */
-function routesOf(repo: Repo): string[] {
+/** The routes the design check shoots: paths from the site root only, never a host (`//x` or `/\x`, which browsers read as one) and never a backslash. */
+export function routesOf(repo: Pick<Repo, 'checks'>): string[] {
   const list = (repo.checks?.shots ?? []).filter((r) => typeof r === 'string' && r.trim());
-  const out = (list.length ? list : ['/']).map((r) => (r.startsWith('/') ? r : `/${r}`)).filter((r) => !r.startsWith('//'));
+  const out = (list.length ? list : ['/']).map((r) => (r.startsWith('/') ? r : `/${r}`)).filter((r) => !r.startsWith('//') && !r.includes('\\'));
   return out.length ? [...new Set(out)].slice(0, 12) : ['/'];
 }
 

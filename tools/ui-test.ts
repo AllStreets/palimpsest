@@ -5,7 +5,10 @@
  * city renders without console errors. Saves screenshots to shots/.
  *
  * The Repos and Settings checks fake every gh/git call in-process (setRunner),
- * and the usage hook buttons write only to a temp claude settings file.
+ * and the usage hook buttons write only to a temp claude settings file. The
+ * API key field goes to the sample keychain, held in this process's memory:
+ * `security` never runs, and the engine is named a keychain file in the temp
+ * dir besides, so no keychain on this Mac is ever touched.
  *
  * Run after `npm run build`: `npm run ui-test`. Optional: UI_DPR=2 renders
  * at retina density, UI_QUALITY=medium switches the quality setting first,
@@ -14,7 +17,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inflateSync } from 'node:zlib';
 
@@ -28,6 +31,8 @@ import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../share
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { detailChecks } from './ui-test-detail.js';
 import { firmChecks } from './ui-test-firms.js';
+import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
+import { treasuryChecks } from './ui-test-treasury.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
@@ -1930,21 +1935,42 @@ async function main(): Promise<void> {
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-ui-test-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
   process.env.PALIMPSEST_DIST = DIST;
+  // The treasury reads a transcripts folder (his own use, while a reading is stale). seedSample() writes no
+  // sample marker, so the projects guard does not know this home as a sample's; as every test does, the run
+  // says it is a test. That switch drops the guard, so it is pinned below: the folder must be the sample's,
+  // inside the temp home, or the run stops before anything reads it.
+  process.env.PALIMPSEST_TEST_PROJECTS = '1';
   const claudeSettingsPath = join(tmp, 'claude-settings.json');
   writeFileSync(claudeSettingsPath, '{}\n');
   mkdirSync(SHOTS, { recursive: true });
 
   await seedSample();
+  {
+    const { useSampleFolders } = await import('../engine/sample.js');
+    useSampleFolders();
+    const projects = process.env.PALIMPSEST_CLAUDE_PROJECTS;
+    const inside = projects ? relative(resolve(tmp), resolve(projects)) : '..';
+    if (!projects || inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+      throw new Error(`ui-test: the transcripts folder ${projects ?? '(unset)'} is not inside the temp home ${tmp}; refusing to run, so nothing reads ~/.claude/projects`);
+    }
+  }
   const { setRunner } = await import('../engine/exec.js');
   // Slow enough that each analysis step is visible, and never the network.
   setRunner(sampleGh(450));
+  // The API key routes. This home has no sample marker (seedSample writes none), so the engine does not enter
+  // sample mode and would keep the real spawner: the sample keychain is installed in front of it here, and
+  // sampleGh (the runner above) answers `security` too, so no `security` process ever starts. The keychain the
+  // engine names is a file in the temp dir besides, never his login keychain.
+  await installKeychainStandIn();
+  const keychain = join(tmp, 'ui-test.keychain-db');
+  writeFileSync(keychain, '');
   const { startServer } = await import('../engine/server.js');
-  let server = await startServer({ port: PORT, claudeSettingsPath });
+  let server = await startServer({ port: PORT, claudeSettingsPath, keychain });
   const restart = async (whileDown: () => Promise<void>): Promise<void> => {
     await server.close();
     await whileDown();
     await new Promise((r) => setTimeout(r, 500));
-    server = await startServer({ port: PORT, claudeSettingsPath });
+    server = await startServer({ port: PORT, claudeSettingsPath, keychain });
   };
 
   const browser = await chromium.launch({
@@ -2061,6 +2087,10 @@ async function main(): Promise<void> {
       await detailChecks(page, check, SHOTS);
       // The firms list, a firm's page and the agent page (Task 38).
       await firmChecks(page, check, SHOTS);
+      // The treasury and the daily report (Task 39).
+      await treasuryChecks(page, check, SHOTS);
+      // The market switches on Repos, the district page and the provider settings (Task 40).
+      await marketChecks(page, check, SHOTS);
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);

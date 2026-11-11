@@ -1,5 +1,6 @@
 import type {
   AgentDetail,
+  CreditEntries,
   District,
   FirmDetail,
   FirmView,
@@ -188,9 +189,13 @@ export const api = {
   shotUrl: (inspectionId: string, route: string, which: 'before' | 'after') => `/api/inspections/${enc(inspectionId)}/shot/${enc(route)}/${which}`,
   treasury: () => request<TreasuryView>('GET', '/api/treasury'),
   resumeStale: () => request<TreasuryView>('POST', '/api/treasury/resume-stale'),
+  /** The credits entries behind a row of the treasury's spend tables: a firm's (or 'city') or a model's, today or this week. */
+  credits: (q: { period: 'today' | 'week'; firm?: string; model?: string }) => request<CreditEntries>('GET', `/api/treasury/credits${queryOf(q)}`),
   /** A day's report, or the newest with `'latest'`. */
   report: (day: string) => request<ReportView>('GET', `/api/report/${enc(day)}`),
   providers: () => request<ProviderUsage[]>('GET', '/api/providers'),
+  /** Whether a key is stored, and nothing more: the engine never sends the key. */
+  apiKeySet: () => request<{ set: boolean }>('GET', '/api/providers/anthropic/key'),
   /** Stores the Anthropic API key in his keychain; the engine never sends it back. */
   setApiKey: (key: string) => request<{ ok: boolean }>('POST', '/api/providers/anthropic/key', { key }),
   removeApiKey: () => request<{ ok: boolean }>('DELETE', '/api/providers/anthropic/key'),

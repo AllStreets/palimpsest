@@ -218,7 +218,7 @@ function validateChecksPatch(v: unknown): Partial<RepoChecks> | null {
   }
   if ('shots' in c) {
     const s = c.shots;
-    if (!Array.isArray(s) || s.length > 20 || s.some((r) => typeof r !== 'string' || !/^\/[^\x00-\x1f\x7f\s]{0,199}$/.test(r))) return null;
+    if (!Array.isArray(s) || s.length > 20 || s.some((r) => typeof r !== 'string' || !/^\/[^\x00-\x1f\x7f\s\\]{0,199}$/.test(r))) return null;
     out.shots = s as string[];
   }
   if ('ecosystems' in c) {

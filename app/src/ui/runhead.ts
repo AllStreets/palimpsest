@@ -24,6 +24,7 @@ export function createRunhead(parent: HTMLElement): Runhead {
     ['city', 'City'],
     ['jobs', 'Jobs'],
     ['firms', 'Firms'],
+    ['treasury', 'Treasury'],
     ['repos', 'Repos'],
     ['settings', 'Settings'],
   ] as Array<[Route, string]>) {

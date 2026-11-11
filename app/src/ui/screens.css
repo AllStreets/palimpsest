@@ -225,6 +225,22 @@ body[data-route='city'] .runhead-count {
   outline: 1px solid var(--focus);
   outline-offset: 3px;
 }
+/* Held where it is, with the reason beside it: a faint track and a knob that does not answer the hover. */
+.slide[aria-disabled='true'] {
+  cursor: not-allowed;
+  border-style: dashed;
+  border-color: rgba(236, 230, 218, 0.14);
+  background: transparent;
+  box-shadow: none;
+}
+.slide[aria-disabled='true'] .slide-knob,
+.slide[aria-disabled='true']:hover .slide-knob {
+  background: rgba(236, 230, 218, 0.16);
+  box-shadow: none;
+}
+.slide[hidden] {
+  display: none;
+}
 
 /* A square-cornered action, set like a printed form's stamp box. */
 .btn {
@@ -349,6 +365,7 @@ body[data-route='city'] .runhead-count {
     'sw head lang'
     '. desc desc'
     '. status status'
+    '. alerts alerts'
     '. ctl ctl';
   column-gap: 18px;
   padding: 14px 0 13px;
@@ -376,6 +393,22 @@ body[data-route='city'] .runhead-count {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+a.repo-name {
+  text-decoration: none;
+}
+a.repo-name[href] {
+  cursor: pointer;
+}
+a.repo-name[href]:hover {
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.35);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+a.repo-name:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
 }
 .repo-row:not(.on) .repo-name {
   color: #d8d1c4;
@@ -484,11 +517,112 @@ body[data-route='city'] .runhead-count {
 .repo-controls {
   grid-area: ctl;
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+}
+/* The market and push mode, a line each: the switch, its name, what it does; a reason beneath when it is held. */
+.repo-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+}
+.repo-switches .repo-market,
+.repo-switches .repo-push {
+  display: grid;
+  grid-template-columns: 34px 72px minmax(0, 1fr);
+  grid-template-areas:
+    'sw label note'
+    '. . why';
+  column-gap: 10px;
   align-items: center;
+}
+.repo-switches .repo-push-text {
+  display: contents;
+}
+.repo-switches .slide {
+  grid-area: sw;
+}
+.repo-switches .repo-ctl-label {
+  grid-area: label;
+  cursor: pointer;
+}
+.repo-switches .repo-push-note {
+  grid-area: note;
+  font-size: 12px;
+  cursor: pointer;
+}
+.repo-switches .repo-push-why {
+  grid-area: why;
+}
+.repo-alerts {
+  grid-area: alerts;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 7px;
+}
+.repo-alerts[hidden] {
+  display: none;
+}
+.repo-harness,
+.repo-halt-head {
+  display: flex;
+  align-items: baseline;
   flex-wrap: wrap;
-  column-gap: 26px;
-  row-gap: 8px;
-  margin-top: 10px;
+  column-gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.repo-halt-reason {
+  max-width: 62ch;
+  margin-top: 1px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.repo-halt-word,
+.repo-harness-word {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14.5px;
+}
+.repo-halt-word {
+  color: var(--amber);
+}
+.repo-halt-word::before {
+  /* Two short bars: the city paused here. */
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 9px;
+  margin-right: 7px;
+  background: linear-gradient(to right, var(--amber) 0 2px, transparent 2px 5px, var(--amber) 5px 7px);
+}
+.repo-resume {
+  margin-left: 4px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.repo-harness-word {
+  color: #d9b48a;
+}
+.repo-harness-link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.repo-harness-link:hover {
+  text-decoration-color: var(--ink-2);
+}
+.repo-harness-link:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
 }
 .repo-ctl-label {
   font-size: 12.5px;
@@ -551,13 +685,15 @@ body[data-route='city'] .runhead-count {
 }
 .repo-push-note {
   font-size: 11.5px;
+  line-height: 1.4;
   color: var(--ink-3);
-  white-space: nowrap;
 }
 .repo-push-why {
-  max-width: 260px;
-  font-size: 11.5px;
-  color: var(--ink-2);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #d9b48a;
 }
 .repo-push-why:empty {
   display: none;
@@ -693,21 +829,286 @@ body[data-route='city'] .runhead-count {
   background: var(--bronze);
 }
 
-.set-later {
-  list-style: none;
+/* ---------------------------------------------------------------- providers */
+
+/* A provider: its name and how it reaches its models on the left, what it reads now and its controls on the right. */
+.prov {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  column-gap: 24px;
+  padding: 16px 0 18px;
+  border-bottom: 1px solid var(--rule);
 }
-.set-later li {
+.prov-label {
   display: flex;
-  gap: 10px;
-  padding: 3px 0;
-  font-size: 13px;
+  flex-direction: column;
+  gap: 3px;
 }
-.set-later-name {
-  min-width: 128px;
+.prov-name {
+  font-family: var(--serif);
+  font-size: 18px;
+  line-height: 1.15;
+  color: var(--ink);
+}
+.prov-how {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-3);
+}
+.prov[data-status='later'] .prov-name,
+.prov[data-status='not-found'] .prov-name {
   color: var(--ink-2);
 }
-.set-later-what {
+.prov-main {
+  min-width: 0;
+}
+.prov-state-line {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.prov[data-status='not-found'] .prov-state-line,
+.prov[data-status='later'] .prov-state-line,
+.prov[data-status='off'] .prov-state-line {
+  color: var(--ink-2);
+}
+/* The provider's state as a small square: bronze filled for ready, hollow for off or missing, hatched for later, amber for unknown. */
+.prov-mark {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--ink-3);
+  transform: translateY(-1px);
+}
+.prov-mark.ready {
+  border-color: var(--bronze);
+  background: var(--bronze);
+}
+.prov-mark.later {
+  background: repeating-linear-gradient(135deg, var(--ink-3) 0 1px, transparent 1px 3px);
+}
+.prov-mark.unknown {
+  border-color: var(--amber);
+}
+.prov-line {
+  margin-top: 4px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.4;
+  color: #d9b48a;
+}
+.prov-agents {
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
   color: var(--ink-3);
+}
+.prov-agents[hidden] {
+  display: none;
+}
+.prov-agents-word {
+  color: var(--ink-2);
+}
+.prov-tokens {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.prov-tokens:empty {
+  display: none;
+}
+.prov-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 6px;
+  margin-top: 9px;
+  list-style: none;
+}
+.prov-models[hidden] {
+  display: none;
+}
+.prov-model {
+  padding: 2px 7px 3px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.prov-none {
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+/* Claude's two windows: a label, then the figure and its reset on a line, and a ruled meter beneath. */
+.usage-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+.usage-row {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  column-gap: 14px;
+  align-items: baseline;
+}
+.usage-label {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.usage-row .usage-pct {
+  font-size: 26px;
+}
+.prov-hook {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--rule);
+}
+.prov-hook-text {
+  flex: 1;
+  min-width: 0;
+}
+.prov-hook .set-note {
+  max-width: 52ch;
+}
+
+/* A CLI's own windows, set small: label, figure, a short meter, its reset. */
+.prov-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.prov-windows[hidden] {
+  display: none;
+}
+.prov-window {
+  display: grid;
+  grid-template-columns: 82px 44px minmax(60px, 120px) auto;
+  column-gap: 14px;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.prov-window-pct {
+  font-family: var(--serif);
+  font-size: 17px;
+  text-align: right;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.prov-window-meter {
+  position: relative;
+  height: 3px;
+  background: rgba(236, 230, 218, 0.1);
+}
+.prov-window-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(201, 162, 122, 0.75);
+}
+.prov-window-reset {
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The API key: a stored-or-not line, a password field with its button, the switch and the daily limit. */
+.apikey-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 34px;
+  row-gap: 10px;
+  margin-top: 14px;
+}
+.apikey-controls[hidden] {
+  display: none;
+}
+.apikey-enable-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.apikey-enable-text {
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.apikey-daily-line {
+  display: flex;
+  align-items: baseline;
+}
+.apikey-daily-wrap .cap-unit {
+  margin-right: 2px;
+}
+.apikey-daily-wrap .apikey-daily {
+  width: 3.4ch;
+  text-align: left;
+  font-size: 22px;
+}
+.apikey-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-top: 16px;
+}
+.apikey-state {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.apikey-clear {
+  font-size: 12.5px;
+}
+.apikey-clear[hidden] {
+  display: none;
+}
+.apikey-form {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 9px;
+  max-width: 440px;
+}
+.apikey-input {
+  all: unset;
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--rule-strong);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+.apikey-input::placeholder {
+  color: var(--ink-3);
+  letter-spacing: 0;
+}
+.apikey-input:focus {
+  border-bottom-color: var(--bronze);
+}
+.awake-text {
+  color: var(--ink);
+  cursor: pointer;
 }
 
 .usage-line {
@@ -786,6 +1187,12 @@ body[data-route='city'] .runhead-count {
   font-family: var(--serif);
   font-size: 18px;
   color: var(--ink-2);
+}
+/* In Caps every field takes the same measure, so what each number is of starts on one line down the page. */
+.set-sec.caps .cap-field {
+  box-sizing: border-box;
+  width: 74px;
+  justify-content: flex-end;
 }
 .cap-of {
   margin-left: 12px;

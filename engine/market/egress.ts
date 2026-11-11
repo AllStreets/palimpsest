@@ -12,6 +12,7 @@ import { connect, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { Duplex } from 'node:stream';
 
+import { REGISTRY_HOSTS } from '../../shared/market-rules.js';
 import { paths } from '../home.js';
 import type { RunLogLine } from './provider.js';
 import { registerRunPorts, unregisterRunPorts } from './sandbox.js';
@@ -40,13 +41,8 @@ export function refusedHosts(runId: string): string[] {
  */
 export const CLAUDE_HOSTS: string[] = ['api.anthropic.com'];
 
-/** Registries by ecosystem (ruling 21). */
-export const REGISTRY_HOSTS: Record<'npm' | 'python' | 'rust' | 'go', string[]> = {
-  npm: ['registry.npmjs.org'],
-  python: ['pypi.org', 'files.pythonhosted.org'],
-  rust: ['index.crates.io', 'static.crates.io', 'crates.io'],
-  go: ['proxy.golang.org', 'sum.golang.org'],
-};
+/** Registries by ecosystem (ruling 21); kept in shared/ so the district page names the same hosts. */
+export { REGISTRY_HOSTS };
 
 /**
  * The hosts a stage allows (ruling 21): `install` the ecosystems'

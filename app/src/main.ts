@@ -28,10 +28,12 @@ import { createInspector, type MarketNames } from './ui/inspector';
 import { createAgentPage } from './ui/agent';
 import { createFirmPage } from './ui/firm';
 import { createFirms } from './ui/firms';
+import { createTreasury } from './ui/treasury';
 import { createInspectionPage } from './ui/inspection';
 import { createJobPage } from './ui/job';
 import { createJobs } from './ui/jobs';
 import { createRunPage } from './ui/run';
+import { createDistrictPage } from './ui/repo';
 import { createRepos } from './ui/repos';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
@@ -881,15 +883,21 @@ async function main(): Promise<void> {
     rideUp: () => {},
   });
 
+  // The treasury: his plan's windows, what the city spends of them, and the daily report (Task 39).
+  const treasuryPage = createTreasury(document.body, { listen, onDismiss: toCity });
+
+  // A district's own page: its market switches, label, checks, network, halt, jobs and floors (Task 40).
+  const districtPage = createDistrictPage(document.body, { listen, onDismiss: toCity });
+
   // Repos, Settings, the job board, the job, run and inspection pages, the firms and a firm's and an
-  // agent's page draw over the city, which keeps running beside them. A place with no screen yet (the
-  // treasury, a district) leaves the city showing.
-  const SCREENS = new Set(['repos', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent']);
+  // agent's page and the treasury draw over the city, which keeps running beside them. A place with no
+  // screen yet (a district) leaves the city showing.
+  const SCREENS = new Set(['repos', 'repo', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent', 'treasury']);
   let lastRoute = 'city';
   onRoute((to, place) => {
-    const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent'].includes(to)) ? to : 'city';
+    const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent', 'repo'].includes(to)) ? to : 'city';
     document.body.dataset.route = route;
-    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route);
+    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route === 'repo' ? 'repos' : route);
     if (route !== 'city') inspector.close();
     if (route === 'repos') repos.show();
     else repos.hide();
@@ -909,6 +917,10 @@ async function main(): Promise<void> {
     else firmPage.hide();
     if (route === 'agent') agentPage.show(place.id!);
     else agentPage.hide();
+    if (route === 'treasury') treasuryPage.show();
+    else treasuryPage.hide();
+    if (route === 'repo') districtPage.show(place.id!);
+    else districtPage.hide();
     // Back in the city, focus returns to it rather than to a sheet that has gone.
     if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
     lastRoute = route;

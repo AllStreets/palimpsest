@@ -22,6 +22,7 @@ import { storedCalibration } from '../usage.js';
 import { listAgents, listFirms } from './firms.js';
 import { job as storedJob, listJobs, publicSummary } from './jobs.js';
 import { listRuns, run as storedRun } from './runs.js';
+import { balances } from './treasury.js';
 
 export interface ReportJob {
   id: string;
@@ -174,6 +175,8 @@ export function reportData(day: string): ReportData {
   const { from, to } = bounds(day);
   const inDay = (kinds: Parameters<typeof query>[0]['kind']) => query({ kind: kinds, from, to });
   const firms = listFirms();
+  // The balance every screen reads: the rows, charges not yet settled included.
+  const live = balances();
   const firmName = new Map(firms.map((f) => [f.id, f.name]));
   const agentName = new Map(listAgents().map((a) => [a.id, a.name]));
   const jobOf = (id: string, e?: LedgerEntry) => storedJob(id) ?? ((e?.data as { job?: Job } | undefined)?.job ?? null);
@@ -314,7 +317,7 @@ export function reportData(day: string): ReportData {
     jobs: { posted, awarded, merged, failed, closed },
     spend: {
       firms: [...byFirm.entries()]
-        .map(([firmId, f]) => ({ firmId, name: firmName.get(firmId) ?? firmId, bids: round2(f.bids), runs: round2(f.runs), paid: round2(f.paid), balance: round2(firms.find((x) => x.id === firmId)?.balance ?? 0) }))
+        .map(([firmId, f]) => ({ firmId, name: firmName.get(firmId) ?? firmId, bids: round2(f.bids), runs: round2(f.runs), paid: round2(f.paid), balance: round2(live[firmId] ?? firms.find((x) => x.id === firmId)?.balance ?? 0) }))
         .sort((a, b) => b.bids + b.runs - (a.bids + a.runs) || a.name.localeCompare(b.name)),
       models: [...byModel.entries()]
         .map(([model, m]) => ({ model, credits: round2(m.credits), windowPct: m.claude ? round2(m.credits * CREDIT_PCT) : null, usd: round2(m.usd) }))

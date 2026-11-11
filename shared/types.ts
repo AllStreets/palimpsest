@@ -39,7 +39,12 @@ export interface RepoChecks {
   install: string | null;
   ecosystems: Array<'npm' | 'python' | 'rust' | 'go'>;
   detected: boolean;
+  /** The checks he changed by hand, in name order; any other was detected (or is unset). Absent on checks nobody has touched. */
+  setByYou?: CheckField[];
 }
+
+/** A check he may set on the district page. */
+export type CheckField = 'install' | 'test' | 'typecheck' | 'lint' | 'build' | 'screenshot' | 'preview' | 'shots';
 
 export interface Floor {
   id: string;
@@ -397,6 +402,10 @@ export interface ProviderUsage {
   tokens: { today: number; week: number } | null;
   spendUsd: { today: number; week: number } | null;
   detail: string;
+  /** Ollama: the models installed, as `ollama list` names them. */
+  models?: string[];
+  /** Ollama: the host it was asked at (Settings' ollamaHost). */
+  host?: string;
 }
 
 export type RunLogLine = {
@@ -543,7 +552,54 @@ export type RunDetail = RunView & { job: Job | null; inspection: InspectionView 
 export type TreasuryView = TreasuryState & {
   balances: Record<string, number>;
   calibration: { tokensPerPct: number; samples: number; calibrated: boolean };
+  /** Either window's estimate at or over this stops all Claude work. */
+  hardStopPct: number;
+  /** His newest usage reading: when it was taken (ms) and whether it is too old to trust. Null before the first. */
+  reading: { at: number; stale: boolean } | null;
+  /** While a resume is carrying the city past a stale reading: until when (ms). */
+  resumedUntil: number | null;
+  /** The city's model calls today (from local midnight) and over the last seven days. */
+  spend: { today: SpendPeriod; week: SpendPeriod };
+  /** Days with a daily report, newest first. */
+  reports: string[];
 };
+
+/** One row of the spend tables: what its calls cost, in credits, and how many entries make it up. */
+export interface SpendRow {
+  credits: number;
+  usd: number;
+  entries: number;
+}
+
+export interface SpendPeriod {
+  from: string;
+  to: string;
+  total: number;
+  /** By the firm charged; `firmId` null is the city's own reviews and design checks. */
+  firms: Array<SpendRow & { firmId: string | null }>;
+  /** By model; `windowPct` is the share of a five-hour window for a Claude model, else null. */
+  models: Array<SpendRow & { model: string; windowPct: number | null }>;
+}
+
+/** One credits row, as a spend row opens to it. */
+export interface CreditEntry {
+  id: number;
+  at: string;
+  kind: string;
+  firmId: string | null;
+  runId: string | null;
+  jobId: string | null;
+  model: string;
+  credits: number;
+  usd: number | null;
+  unattended: boolean;
+}
+
+export interface CreditEntries {
+  rows: CreditEntry[];
+  count: number;
+  total: number;
+}
 
 export interface LiveView {
   sites: SiteState[];

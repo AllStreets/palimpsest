@@ -1016,3 +1016,28 @@ test('patchRepo takes checks, market and label; hand-set checks survive a re-ana
   assert.throws(() => patchRepo(fullName, { label: '--force' }));
   assert.throws(() => patchRepo(fullName, { label: 'a b' }));
 });
+
+test('patchRepo remembers which checks he set by hand, one by one', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(treeRunner(fullName, { 'go.mod': 'module x\n', 'go.sum': '' }));
+  const analyzed = waitForEvent('repo.analyzed');
+  await connect(fullName);
+  await analyzed;
+  assert.deepEqual(listRepos()[0].checks?.setByYou ?? [], [], 'detected checks are set by nobody');
+
+  // The same value again is not a change of his.
+  const same = patchRepo(fullName, { checks: { build: 'go build ./...' } });
+  assert.deepEqual(same.checks?.setByYou ?? [], []);
+
+  const t = patchRepo(fullName, { checks: { test: 'go test -race ./...', shots: ['/', '/radar'] } });
+  assert.deepEqual(t.checks?.setByYou, ['shots', 'test']);
+  const b = patchRepo(fullName, { checks: { build: null, preview: { kind: 'static', outDir: 'public' } } });
+  assert.deepEqual(b.checks?.setByYou, ['build', 'preview', 'shots', 'test'], 'each later change joins the earlier ones');
+  assert.equal(b.checks?.typecheck, null);
+
+  // A re-analysis keeps his own checks and what he set.
+  const again = waitForEvent('repo.analyzed');
+  void analyze(fullName);
+  await again;
+  assert.deepEqual(listRepos()[0].checks?.setByYou, ['build', 'preview', 'shots', 'test']);
+});

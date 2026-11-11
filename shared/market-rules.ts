@@ -116,6 +116,14 @@ export function repoMarketDefaults(): Pick<Repo, 'market' | 'label' | 'checks' |
   return { market: false, label: 'palimpsest', checks: null, halted: null, strikes: 0, joinedAt: null };
 }
 
+/** The registries a job may reach while it installs and works, by the repo's ecosystems (ruling 21). */
+export const REGISTRY_HOSTS: Record<'npm' | 'python' | 'rust' | 'go', string[]> = {
+  npm: ['registry.npmjs.org'],
+  python: ['pypi.org', 'files.pythonhosted.org'],
+  rust: ['index.crates.io', 'static.crates.io', 'crates.io'],
+  go: ['proxy.golang.org', 'sum.golang.org'],
+};
+
 /** Why push mode cannot be on (ruling 23). */
 export const PUSH_MODE_NEEDS = 'Push mode needs both a test command and a build command on this repo.';
 

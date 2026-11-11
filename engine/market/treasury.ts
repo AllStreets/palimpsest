@@ -319,24 +319,58 @@ export function installTreasury(o: { now?: () => number } = {}): () => void {
   return off;
 }
 
-/** Every firm's balance, rebuilt from the credits rows and each firm's seeded balance. */
-export function balances(): Record<string, number> {
-  const micro: Record<string, number> = {};
-  // Each firm starts where it was seeded (the start balance for a firm with no seed on record), as replay does.
-  const seeded = new Map<string, number>();
-  for (const e of query({ kind: 'firm.seeded' })) {
-    const f = (e.data as { firm?: { id?: string; balance?: number } }).firm;
-    if (f?.id && typeof f.balance === 'number' && !seeded.has(f.id)) seeded.set(f.id, f.balance);
-  }
-  for (const f of listFirms()) micro[f.id] = toMicro(seeded.get(f.id) ?? START_BALANCE);
+/** The SQL sign of each money kind for the firm on the row, as FIRM_SIGN has it. */
+const SIGN_SQL = `CASE c.kind ${MONEY_KINDS.map((k) => `WHEN '${k}' THEN ${FIRM_SIGN[k]}`).join(' ')} ELSE 0 END`;
+const KIND_SQL = MONEY_KINDS.map((k) => `'${k}'`).join(', ');
+
+/** Every firm's opening, from its first `firm.seeded` entry, read in one pass through the ledger's kind index. */
+function openings(): Map<string, number> {
   const rows = openDb()
-    .prepare(`SELECT firm_id, kind, amount FROM credits WHERE firm_id IS NOT NULL AND kind IN (${MONEY_KINDS.map((k) => `'${k}'`).join(', ')})`)
-    .all() as Array<{ firm_id: string; kind: MoneyKind; amount: number }>;
+    .prepare("SELECT json_extract(json, '$.firm.id') AS firm, json_extract(json, '$.firm.balance') AS balance FROM ledger WHERE kind = 'firm.seeded' ORDER BY id")
+    .all() as Array<{ firm: string | null; balance: number | null }>;
+  const out = new Map<string, number>();
+  for (const r of rows) if (r.firm && typeof r.balance === 'number' && !out.has(r.firm)) out.set(r.firm, r.balance);
+  return out;
+}
+
+/**
+ * Every firm's balance, rebuilt from the credits rows and each firm's seeded
+ * balance (the start balance for a firm with no seed on record), as replay
+ * does: one signed sum per firm in integer micro-credits, so it stays exact.
+ */
+export function balances(): Record<string, number> {
+  const seeded = openings();
+  const rows = openDb()
+    .prepare(
+      `SELECT f.id AS firm, COALESCE(SUM(${SIGN_SQL} * CAST(ROUND(c.amount * 1000000) AS INTEGER)), 0) AS micro
+       FROM firms f LEFT JOIN credits c ON c.firm_id = f.id AND c.kind IN (${KIND_SQL})
+       GROUP BY f.id`,
+    )
+    .all() as Array<{ firm: string; micro: number | bigint }>;
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r.firm] = fromMicro(toMicro(seeded.get(r.firm) ?? START_BALANCE) + Number(r.micro));
+  return out;
+}
+
+/**
+ * Since when a firm has been below zero by its rows (charges not yet
+ * settled included): the time of the row that took it below zero this
+ * time, or null when it stands at or above zero. Stable across reads.
+ */
+export function negativeSinceOf(firmId: string): string | null {
+  const opening = openings().get(firmId) ?? START_BALANCE;
+  const rows = openDb()
+    .prepare(`SELECT c.at AS at, ${SIGN_SQL} * CAST(ROUND(c.amount * 1000000) AS INTEGER) AS micro FROM credits c WHERE c.firm_id = ? AND c.kind IN (${KIND_SQL}) ORDER BY c.id`)
+    .all(firmId) as Array<{ at: string; micro: number | bigint }>;
+  let micro = toMicro(opening);
+  let since: string | null = null;
   for (const r of rows) {
-    if (!(r.firm_id in micro)) continue;
-    micro[r.firm_id] += FIRM_SIGN[r.kind] * toMicro(r.amount);
+    const was = micro;
+    micro += Number(r.micro);
+    if (micro < 0 && was >= 0) since = r.at;
+    else if (micro >= 0) since = null;
   }
-  return Object.fromEntries(Object.entries(micro).map(([k, v]) => [k, fromMicro(v)]));
+  return micro < 0 ? since : null;
 }
 
 /** Every firm's balance, rebuilt from the ledger alone: each firm's seeded balance plus its `credits.moved` deltas. */
