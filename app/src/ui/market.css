@@ -1860,3 +1860,72 @@ a.job-issue-link:hover {
   margin-top: 12px;
   font-size: 16px;
 }
+
+/* A live run's first view holds its stage, its figures and the top of its transcript together. */
+.sheet.runpage .sheet-title {
+  font-size: 28px;
+}
+.run-gauge .run-stages {
+  margin-top: 20px;
+}
+.run-gauge .run-stage-help {
+  margin-top: 8px;
+}
+.run-gauge .run-figures {
+  grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(0, 1.7fr);
+  margin-top: 14px;
+}
+.run-fig-of {
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.run-fig-credits .run-meter {
+  order: -1;
+  max-width: none;
+  margin-top: 7px;
+}
+.run-transcript .repos-sec {
+  padding-top: 22px;
+}
+
+/* One proposal the city made for several repos: one row, a line per repo. */
+.prop-lines {
+  list-style: none;
+  margin-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+.prop-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.prop-line[aria-busy='true'] .btn,
+.prop-line[aria-busy='true'] .textbtn {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.prop-repo {
+  min-width: 140px;
+  font-size: 13.5px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.prop-repo:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prop-repo:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.prop-age {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.prop-line .job-error {
+  flex-basis: 100%;
+}

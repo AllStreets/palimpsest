@@ -88,9 +88,15 @@ export async function jobBoardChecks(page: Page, check: Check, shots: string): P
     check(moved, `the running job's progress text changes live (${said} then ${await running.textContent().catch(() => '')})`);
 
     // The proposed harness job: Accept, and the next tick opens its round under Bidding.
-    const proposed = page.locator('.sec-proposed .job-row').first();
-    const harness = await proposed.getAttribute('data-job');
-    check(!!harness && (await proposed.locator('.job-title').textContent()) === 'Add a baseline test and build harness', 'the harness job waits under Proposed');
+    // The same proposal on several repos stands as one row with a line per repo.
+    const proposals = (await page.evaluate(() => fetch('/api/jobs?status=proposed').then((r) => r.json()))) as Array<{ id: string; repo: string; title: string }>;
+    const harnesses = proposals.filter((j) => j.title === 'Add a baseline test and build harness');
+    const groupRow = page.locator('.sec-proposed .job-row.group');
+    check(harnesses.length < 2 || ((await groupRow.count()) === 1 && (await groupRow.locator('.prop-line').count()) === harnesses.length), `identical proposals stand as one row naming each repo (${harnesses.length} proposals, ${await groupRow.locator('.prop-line').count()} lines)`);
+    const harness = harnesses.find((j) => j.repo === 'lantern/assay-kit')?.id ?? null;
+    const proposed = page.locator(`.sec-proposed [data-job="${harness}"]`);
+    const proposedTitle = harnesses.length > 1 ? await groupRow.locator('.job-title').textContent() : await proposed.locator('.job-title').textContent();
+    check(!!harness && (await proposed.count()) === 1 && proposedTitle === 'Add a baseline test and build harness', 'the harness job waits under Proposed');
     await proposed.locator('.job-accept').click();
     const accepted = await within(page, 4000, async () => (await page.locator(`.sec-bidding .job-row[data-job="${harness}"]`).count()) === 1);
     check(accepted, 'Accept moves the harness job under Bidding');

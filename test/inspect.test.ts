@@ -174,6 +174,13 @@ test('workflow and .claude files always fail scope', { timeout: 60_000 }, async 
   assert.equal(scopeCheck([f('package.json'), f('package-lock.json')], ['package.json']).status, 'pass', 'with its manifest it rides along');
   assert.equal(scopeCheck([f('web/package.json'), f('package-lock.json')], ['**']).status, 'fail', 'the manifest must sit beside it');
   assert.equal(scopeCheck([f('vendor/lib', true)], ['**']).status, 'fail', 'a gitlink is out of scope');
+  // Each offender travels as a field of its own beside the prose, for the report page.
+  const out = scopeCheck([f('src/a.ts'), f('.github/workflows/ci.yml'), f('docs/x.md')], ['src/**']);
+  assert.deepEqual(out.offenders, [
+    { path: '.github/workflows/ci.yml', why: 'is never in scope (.github/workflows/**)' },
+    { path: 'docs/x.md', why: "is outside the job's scope (src/**)" },
+  ]);
+  assert.deepEqual(scopeCheck([f('src/a.ts')], ['src/**']).offenders, []);
 });
 
 test('three failures halt the repo and a pass resets strikes', { timeout: 120_000 }, async () => {

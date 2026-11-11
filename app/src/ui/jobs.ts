@@ -64,15 +64,10 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
   const sheet = createSheet(parent, 'jobs', 'Job board', opts.onDismiss);
   const head = sheet.root.querySelector('.sheet-head')!;
   const facts = el('p', 'sheet-facts');
-  const how = el(
-    'p',
-    'jobs-how',
-    'Jobs come from issues labelled palimpsest, or from you below. Firms bid, the bid worth most to the city wins, and finished work is inspected before it waits for your merge.',
-  );
   const filter = el('div', 'jobs-filter');
   filter.setAttribute('role', 'radiogroup');
   filter.setAttribute('aria-label', 'Show jobs on');
-  head.append(facts, how, filter);
+  head.append(facts, filter);
 
   const boardEl = el('div', 'jobs-board');
   const empty = el('p', 'jobs-empty');
@@ -594,6 +589,71 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
     return li;
   }
 
+  /**
+   * Proposals the city made more than once (the same harness job on several
+   * repos) stand as one row naming each repo, with Accept and Dismiss per
+   * repo; a proposal of its own keeps its own row.
+   */
+  function proposedRows(list: Job[], live: Set<string>): HTMLElement[] {
+    const groups = new Map<string, Job[]>();
+    for (const j of list) {
+      const k = `${j.source}|${cleanText(j.title, 160)}`;
+      groups.set(k, [...(groups.get(k) ?? []), j]);
+    }
+    return [...groups.entries()].map(([k, js]) => {
+      if (js.length === 1) return jobRow('proposed', js[0]);
+      live.add(`group:${k}`);
+      return proposalGroup(k, js);
+    });
+  }
+
+  function proposalGroup(k: string, js: Job[]): HTMLElement {
+    const key = JSON.stringify([js, js.map((j) => [errors.get(j.id), busy.has(j.id)]), Math.floor(Date.now() / 60_000)]);
+    const id = `group:${k}`;
+    const cached = rows.get(id);
+    if (cached && cached.key === key) return cached.el;
+    const first = js[0];
+    const li = el('li', 'job-row proposed group');
+    li.dataset.group = cleanText(first.title, 160);
+    const h = el('div', 'job-head');
+    h.append(el('span', 'job-title plain', cleanText(first.title, 160) || 'Untitled'));
+    const meta = el('div', 'job-meta');
+    const value = el('span', 'job-value');
+    value.append(el('span', 'job-num', money(first.value)), document.createTextNode(' credits each'));
+    meta.append(value);
+    h.append(meta);
+    li.append(h);
+    li.append(el('div', 'job-line', `proposed by the city for ${plural(js.length, 'repo')}`));
+    const ex = excerpt(first.body, 220);
+    if (ex) li.append(el('p', 'job-excerpt', ex));
+    const ul = el('ul', 'prop-lines');
+    for (const j of js) {
+      const row = el('li', 'prop-line');
+      row.dataset.job = j.id;
+      if (busy.has(j.id)) row.setAttribute('aria-busy', 'true');
+      const name = el('a', 'prop-repo', shortName(j.repo));
+      name.href = placeHref('job', j.id);
+      name.title = j.repo;
+      row.append(
+        name,
+        el('span', 'prop-age', ago(Date.parse(j.postedAt))),
+        button('job-accept', 'Accept', () => void act(j.id, 'Accept', () => api.acceptJob(j.id), takeJob)),
+        textButton('job-dismiss', 'Dismiss', () => void act(j.id, 'Dismiss', () => api.dismissJob(j.id), takeJob)),
+      );
+      const err = errorLine(j.id);
+      if (err) row.append(err);
+      ul.append(row);
+    }
+    li.append(ul, el('p', 'job-note', 'No firm bids on any of them until you accept it for that repo.'));
+    const had = cached?.el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+    const hadJob = had?.closest<HTMLElement>('.prop-line')?.dataset.job;
+    const hadClass = had?.className ?? '';
+    if (cached) cached.el.replaceWith(li);
+    rows.set(id, { el: li, key });
+    if (hadJob && hadClass) li.querySelector<HTMLElement>(`.prop-line[data-job="${CSS.escape(hadJob)}"] .${hadClass.split(' ').filter(Boolean).join('.')}`)?.focus({ preventScroll: true });
+    return li;
+  }
+
   function haltedRepoRow(r: Repo): HTMLElement {
     const li = el('li', 'job-row halted-repo');
     li.dataset.repo = r.fullName;
@@ -687,7 +747,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
       const x = sectionEl(s);
       const n = s.jobs.length + s.repos.length;
       x.count.textContent = s.key === 'halted' && s.repos.length ? `${plural(s.repos.length, 'repo')}${s.jobs.length ? `, ${plural(s.jobs.length, 'job')}` : ''}` : plural(n, 'job');
-      const items = [...s.repos.map((r) => haltedRepoRow(r)), ...s.jobs.map((j) => jobRow(s.key, j))];
+      const items = [...s.repos.map((r) => haltedRepoRow(r)), ...(s.key === 'proposed' ? proposedRows(s.jobs, live) : s.jobs.map((j) => jobRow(s.key, j)))];
       for (const j of s.jobs) live.add(j.id);
       items.forEach((item, i) => {
         if (x.list.children[i] !== item) x.list.insertBefore(item, x.list.children[i] ?? null);

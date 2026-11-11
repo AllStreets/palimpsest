@@ -3,7 +3,7 @@ import { api, ApiError, type EngineEvent } from '../api';
 import { placeHref } from '../router';
 import { cleanText, githubUrl, LIVE_STAGES, money } from './board';
 import { ago, button, el, plural, textButton } from './controls';
-import { clock, type DiffFile, type Entry, parseDiff, Transcript, verdict } from './detail';
+import { blockRanges, clock, type DiffFile, type Entry, parseDiff, Transcript, verdict } from './detail';
 import { coalesce, detailSheet, keyedSlot, namesOf, outLink, pageLink, refusal, secHead, setTrail } from './pages';
 import './market.css';
 
@@ -199,7 +199,23 @@ class LogView {
 
 // ---------------------------------------------------------------- the diff's view
 
-function diffFile(f: DiffFile, open: boolean): HTMLElement {
+/** Diff rows per block; a block far from view is emptied to its height and filled again as it scrolls near. */
+const DIFF_BLOCK = 200;
+/** A diff row's height before it has been drawn (12 px type at a 1.6 line height). */
+const DIFF_ROW_PX = 19.2;
+
+function diffRow(l: DiffFile['lines'][number]): HTMLElement {
+  const row = el('div', `diff-line ${l.kind}`);
+  row.append(el('span', 'diff-n', l.a !== undefined && l.kind !== 'add' ? String(l.a) : ''), el('span', 'diff-n', l.b !== undefined && l.kind !== 'del' ? String(l.b) : ''), el('span', 'diff-sign', l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ''), el('span', 'diff-text', l.text));
+  return row;
+}
+
+/**
+ * One file of the diff: its header, and its lines in blocks of DIFF_BLOCK
+ * that are drawn only near the view (`root` is the scrolling sheet), so a
+ * patch of tens of thousands of lines keeps a few hundred rows in the page.
+ */
+function diffFile(f: DiffFile, open: boolean, root: HTMLElement): HTMLElement {
   const box = el('section', `diff-file${open ? ' open' : ''}`);
   const head = el('button', 'diff-head');
   head.type = 'button';
@@ -215,12 +231,42 @@ function diffFile(f: DiffFile, open: boolean): HTMLElement {
   head.append(fold, name, counts);
   box.append(head);
   const body = el('div', 'diff-body');
+  const filled = new Set<HTMLElement>();
+  const fill = (b: HTMLElement): void => {
+    if (filled.has(b)) return;
+    const from = Number(b.dataset.from);
+    const to = Number(b.dataset.to);
+    b.style.height = '';
+    for (let i = from; i < to; i++) b.append(diffRow(f.lines[i]));
+    filled.add(b);
+  };
+  const empty = (b: HTMLElement): void => {
+    if (!filled.has(b)) return;
+    // A folded file measures nothing: it keeps the height it last had.
+    const h = b.offsetHeight;
+    if (h) b.style.height = `${h}px`;
+    b.replaceChildren();
+    filled.delete(b);
+  };
+  let io: IntersectionObserver | null = null;
   const fillBody = (): void => {
-    if (body.childElementCount) return;
-    for (const l of f.lines) {
-      const row = el('div', `diff-line ${l.kind}`);
-      row.append(el('span', 'diff-n', l.a !== undefined && l.kind !== 'add' ? String(l.a) : ''), el('span', 'diff-n', l.b !== undefined && l.kind !== 'del' ? String(l.b) : ''), el('span', 'diff-sign', l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ''), el('span', 'diff-text', l.text));
-      body.append(row);
+    if (io) return;
+    io = new IntersectionObserver(
+      (seen) => {
+        for (const s of seen) {
+          if (s.isIntersecting) fill(s.target as HTMLElement);
+          else empty(s.target as HTMLElement);
+        }
+      },
+      { root, rootMargin: '1500px 0px' },
+    );
+    for (const [from, to] of blockRanges(f.lines.length, DIFF_BLOCK)) {
+      const b = el('div', 'diff-block');
+      b.dataset.from = String(from);
+      b.dataset.to = String(to);
+      b.style.height = `${(to - from) * DIFF_ROW_PX}px`;
+      body.append(b);
+      io.observe(b);
     }
   };
   if (open) fillBody();
@@ -394,7 +440,7 @@ export function createRunPage(parent: HTMLElement, opts: { listen(fn: (e: Engine
     }
     diffSec.append(el('p', 'jobs-key', 'The change as a unified patch: removed lines marked −, added lines +, with the line numbers before and after. It is the repo’s own code, shown as text.'));
     const wrap = el('div', 'diff');
-    for (const f of files) wrap.append(diffFile(f, total <= DIFF_OPEN_LINES || files.length === 1));
+    for (const f of files) wrap.append(diffFile(f, total <= DIFF_OPEN_LINES || files.length === 1, body));
     diffSec.append(wrap);
   }
 
@@ -526,15 +572,15 @@ export function createRunPage(parent: HTMLElement, opts: { listen(fn: (e: Engine
     fig(String(p.testsRun), p.testsRun === 1 ? 'test run' : 'tests run');
     fig(String(p.turns), p.turns === 1 ? 'turn' : 'turns');
     fig(String(p.refusals), 'refused', p.refusals ? 'refused' : '');
-    sec.append(figs);
 
-    // Credits so far against the bid.
+    // Credits so far against the bid, as the last figure with its meter.
     const bid = bidOf();
     const spent = Math.round(p.credits * 100) / 100;
-    const credits = el('div', 'run-credits');
-    const words = el('p', 'run-credits-said');
-    words.append(el('span', 'run-credits-num', money(spent)), document.createTextNode(bid ? ` of the ${money(bid.price)} credits ${names.firm(r.firmId)} bid` : ' credits spent'));
-    credits.append(words);
+    const credits = el('div', 'run-fig run-fig-credits');
+    const num = el('dd', 'run-fig-num');
+    num.append(document.createTextNode(money(spent)));
+    if (bid) num.append(el('span', 'run-fig-of', ` / ${money(bid.price)}`));
+    credits.append(el('dt', 'run-fig-label', bid ? `credits of ${names.firm(r.firmId)}’s bid` : 'credits spent'), num);
     if (bid && bid.price > 0) {
       const bar = el('div', 'run-meter');
       bar.setAttribute('role', 'meter');
@@ -546,9 +592,10 @@ export function createRunPage(parent: HTMLElement, opts: { listen(fn: (e: Engine
       fill.style.width = `${Math.min(100, (spent / bid.price) * 100)}%`;
       bar.append(fill);
       credits.append(bar);
-      credits.append(el('p', 'run-credits-note', spent > bid.price ? 'Over its bid: the firm pays the difference from its own books.' : 'What the work has cost so far. The firm is paid its price only if the change merges.'));
+      credits.title = spent > bid.price ? 'Over its bid: the firm pays the difference from its own books.' : 'What the work has cost so far. The firm is paid its price only if the change merges.';
     }
-    sec.append(credits);
+    figs.append(credits);
+    sec.append(figs);
     return sec;
   }
 
@@ -588,8 +635,9 @@ export function createRunPage(parent: HTMLElement, opts: { listen(fn: (e: Engine
     if (r.endedAt && r.outcome) {
       const mins = Math.max(1, Math.round((Date.parse(r.endedAt) - Date.parse(r.startedAt)) / 60_000));
       const span = mins < 90 ? plural(mins, 'minute') : `${Math.round(mins / 60)} hours`;
-      when = `It ran for ${span} on the branch ${cleanText(r.branch, 120)}, ${ago(Date.parse(r.startedAt))}, and ${ENDED[r.outcome] ?? `ended ${r.outcome}`}.`;
-    } else when = `It started ${ago(Date.parse(r.startedAt))} on the branch ${cleanText(r.branch, 120)}.`;
+      when = `It ran for ${span}, ${ago(Date.parse(r.startedAt))}, and ${ENDED[r.outcome] ?? `ended ${r.outcome}`}.`;
+    } else when = `It started ${ago(Date.parse(r.startedAt))}.`;
+    sheet.sub.title = `On the branch ${cleanText(r.branch, 120)}`;
     sheet.sub.textContent = `${by}. ${when}`;
     sheet.root.dataset.stage = r.stage;
     slots.head(JSON.stringify([r.stage, r.outcome, asking, busy, error]), headActions);

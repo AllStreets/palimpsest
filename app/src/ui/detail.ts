@@ -297,6 +297,13 @@ export function parseDiff(text: string): DiffFile[] {
   return files.filter((x) => x.path || x.from);
 }
 
+/** `total` rows as half-open blocks of at most `size`, for a view that fills and empties a block at a time. */
+export function blockRanges(total: number, size: number): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let from = 0; from < total; from += size) out.push([from, Math.min(total, from + size)]);
+  return out;
+}
+
 // ---------------------------------------------------------------- the issue as markdown
 
 export type InlineKind = 'text' | 'em' | 'strong' | 'code' | 'link';

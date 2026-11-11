@@ -159,23 +159,19 @@ export function createInspectionPage(parent: HTMLElement, opts: { listen(fn: (e:
       sec.append(el('p', 'detail-quiet', failedCheck ? 'No review: a check had already failed, so no reviewer’s time was spent on it.' : 'No review was made.'));
       return sec;
     }
-    // "Name: concern one; concern two" as the guild records it.
-    let said = cleanLog(redactLog(c.detail ?? '')).replace(/\s+/g, ' ').trim();
-    if (i.reviewerAgentId) {
-      const n = names.agent(i.reviewerAgentId);
-      if (said.startsWith(`${n}:`)) said = said.slice(n.length + 1).trim();
-    }
-    const concerns = said.split(/;\s+/).map((s) => s.trim()).filter(Boolean);
-    const verdictWord = c.status === 'pass' ? 'Approved the change.' : 'Asked for changes.';
-    sec.append(el('p', `insp-review-verdict ${c.status}`, verdictWord));
-    if (c.status === 'pass' || concerns.length <= 1) {
-      sec.append(el('blockquote', 'insp-note', said ? `${said.charAt(0).toUpperCase()}${said.slice(1)}` : 'No notes.'));
-    } else {
-      sec.append(el('p', 'insp-note-lead', 'Concerns'));
+    // The reviewer's notes and concerns as the guild carries them; an older record has only its prose.
+    const concerns = (c.concerns ?? []).map((x) => cleanText(redactLog(x), 500)).filter(Boolean);
+    const notes = cleanText(redactLog(c.notes ?? ''), 2000);
+    sec.append(el('p', `insp-review-verdict ${c.status}`, c.status === 'pass' ? 'Approved the change.' : 'Asked for changes.'));
+    const cap = (x: string) => `${x.charAt(0).toUpperCase()}${x.slice(1)}`;
+    if (notes) sec.append(el('blockquote', 'insp-note', cap(notes)));
+    if (concerns.length) {
+      sec.append(el('p', 'insp-note-lead', concerns.length === 1 ? 'Concern' : 'Concerns'));
       const ol = el('ol', 'insp-concerns');
-      for (const x of concerns) ol.append(el('li', '', `${x.charAt(0).toUpperCase()}${x.slice(1)}`));
+      for (const x of concerns) ol.append(el('li', '', cap(x)));
       sec.append(ol);
     }
+    if (!notes && !concerns.length) sec.append(el('pre', 'check-detail-full insp-prose', cleanLog(redactLog(c.detail ?? '')) || 'No notes.'));
     return sec;
   }
 
@@ -196,15 +192,15 @@ export function createInspectionPage(parent: HTMLElement, opts: { listen(fn: (e:
     found.append(el('h3', 'job-term-head', c?.status === 'fail' ? 'Outside it' : 'The change'));
     if (!c) found.append(el('p', 'detail-quiet', 'Scope was not checked.'));
     else if (c.status === 'fail') {
-      const list = el('ul', 'insp-out');
-      for (const line of cleanLog(redactLog(c.detail ?? '')).split('\n').filter(Boolean)) {
-        const m = /^(\S+) (is .*|changed .*|changes .*)$/.exec(line);
-        const li = el('li');
-        if (m) li.append(el('code', 'insp-out-path', m[1]), el('span', 'insp-out-why', ` ${m[2]}`));
-        else li.append(document.createTextNode(line));
-        list.append(li);
-      }
-      found.append(list);
+      if (c.offenders?.length) {
+        const list = el('ul', 'insp-out');
+        for (const o of c.offenders) {
+          const li = el('li');
+          li.append(el('code', 'insp-out-path', cleanText(redactLog(o.path), 300)), el('span', 'insp-out-why', ` ${cleanText(redactLog(o.why), 300)}`));
+          list.append(li);
+        }
+        found.append(list);
+      } else found.append(el('pre', 'check-detail-full insp-prose', cleanLog(redactLog(c.detail ?? ''))));
     } else found.append(el('p', 'insp-scope-ok', cleanText(c.detail, 240) || 'Every changed file is inside the scope.'));
     grid.append(allowed, found);
     sec.append(grid);
@@ -232,8 +228,8 @@ export function createInspectionPage(parent: HTMLElement, opts: { listen(fn: (e:
       ),
     );
     sec.append(scores);
-    // The judge's own notes follow its scores in the check's detail.
-    const notes = /of 10 \([^)]*\)\.\s*(.+)$/s.exec(cleanText(c?.detail, 600))?.[1];
+    // The judge's own notes, as the guild carries them.
+    const notes = cleanText(redactLog(c?.notes ?? ''), 2000);
     if (notes) sec.append(el('blockquote', 'insp-note', notes));
     if (!d.diffOnly) {
       if (!d.shots.length) sec.append(el('p', 'detail-quiet', 'No screenshots were kept.'));

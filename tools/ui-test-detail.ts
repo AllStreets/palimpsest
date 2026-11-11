@@ -8,10 +8,10 @@
  * and who sat out; and a hostile log line reaches the page only as cleaned,
  * redacted text.
  *
- * Saves job.png, job-rounds.png, run-live.png, run-diff.png, inspection.png
+ * Saves job.png, job-rounds.png, run-live.png, run-log.png, run-diff.png, inspection-report.png
  * and inspection-design.png at 1600 x 1000 for the quality rounds.
  */
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { Page } from 'playwright';
@@ -108,6 +108,15 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     const pane = page.locator('.runpage .run-log');
     const atEnd = () => pane.evaluate((p) => p.scrollTop + p.clientHeight >= p.scrollHeight - 30);
     check(await within(page, 2000, atEnd), 'the transcript opens on its tail');
+    // The first view holds the stage, the figures and the top of the transcript together, below the head.
+    const firstView = (await page.evaluate(`(() => {
+      const top = (sel) => document.querySelector('.runpage ' + sel)?.getBoundingClientRect().top ?? -1;
+      const head = document.querySelector('.runpage .sheet-head').getBoundingClientRect().bottom;
+      return { head, stages: top('.run-stages'), figures: top('.run-figures'), log: top('.run-log'), h: innerHeight };
+    })()`)) as { head: number; stages: number; figures: number; log: number; h: number };
+    check(firstView.stages >= firstView.head && firstView.figures > firstView.stages && firstView.log > firstView.figures && firstView.log < firstView.h - 160, `a live run's first view shows its stage, figures and transcript together (${JSON.stringify(firstView)})`);
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: join(shots, 'run-live.png') });
     check((await page.locator('.runpage .log-hold').getAttribute('aria-pressed')) === 'false' && /Following/.test((await page.locator('.runpage .log-state').textContent()) ?? ''), 'it follows the live tail');
 
     // Refusals and network decisions as their own ruled lines, with the reason.
@@ -158,7 +167,7 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     check(!said.includes('‮') && !said.includes('/Users/someone') && !said.includes('ghp_') && !said.includes('\u001b') && (await page.locator('.runpage .run-log img').count()) === 0 && (await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)) === undefined, `a log line shows only as cleaned, redacted text (${said.slice(0, 80)})`);
     await page.locator('.runpage .run-transcript').scrollIntoViewIfNeeded();
     await page.waitForTimeout(300);
-    await page.screenshot({ path: join(shots, 'run-live.png') });
+    await page.screenshot({ path: join(shots, 'run-log.png') });
 
     // ------------------------------------------------------------ the scarred job: its rounds, its run, its inspection
     const scarred = jobs.find((j) => j.title === 'Search index rebuild blocks the API for 40 seconds');
@@ -204,14 +213,31 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     await page.locator('.insppage .check-row[data-check="test"] .check-log-btn').click();
     check(/ℹ pass 99/.test((await page.locator('.insppage .check-log').first().textContent()) ?? ''), 'a check folds open to its log');
     check((await page.locator('.insppage .insp-concerns li').count()) === 3, 'the reviewer’s concerns are listed');
-    check(/\.github\/workflows\/ci\.yml/.test((await page.locator('.insppage .insp-out').textContent()) ?? ''), 'the scope names the file outside it');
+    check((await page.locator('.insppage .insp-out-path').allTextContents()).join('|') === '.github/workflows/ci.yml' && (await page.locator('.insppage .insp-out-why').textContent())?.trim() === 'is never in scope (.github/workflows/**)', 'the scope names the file outside it, from the check\u2019s own field');
+    check(/rebuild banner is legible/.test((await page.locator('.insppage .insp-design .insp-note').textContent()) ?? ''), 'the judge\u2019s notes show from the check\u2019s own field');
     await page.waitForTimeout(300);
-    await page.screenshot({ path: join(shots, 'inspection.png') });
+    await page.screenshot({ path: join(shots, 'inspection-report.png') });
     await page.locator('.insppage .insp-design').scrollIntoViewIfNeeded();
     const loaded = await within(page, 5000, async () => (await page.locator('.insppage .insp-img').evaluateAll((imgs) => imgs.filter((i) => (i as HTMLImageElement).naturalWidth > 0).length)) === 4);
     check(loaded, 'the design shows before and after side by side for each route');
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(shots, 'inspection-design.png') });
+
+    // A 20,000 line patch keeps only the rows near the view in the page.
+    const other = sd.runs.find((r) => r.outcome === 'merged');
+    if (other) {
+      const big = ['diff --git a/src/big.ts b/src/big.ts', '--- a/src/big.ts', '+++ b/src/big.ts', '@@ -0,0 +1,20000 @@', ...Array.from({ length: 20_000 }, (_, i) => `+export const line${i} = ${i};`)].join('\n');
+      writeFileSync(join(paths().runs, other.id, 'diff.patch'), `${big}\n`);
+      await go(page, `#/runs/${other.id}`);
+      check(await within(page, 6000, async () => (await page.locator('.runpage .diff-block').count()) === 101), `a 20,000 line diff stands as blocks (${await page.locator('.runpage .diff-block').count()})`);
+      const drawn = await page.locator('.runpage .diff-line').count();
+      check(drawn > 0 && drawn <= 1200, `only the blocks near the view are drawn (${drawn} rows)`);
+      await page.locator('.runpage .sheet-body').evaluate((b) => {
+        b.scrollTop = b.scrollHeight;
+      });
+      check(await within(page, 4000, async () => (await page.locator('.runpage .diff-text', { hasText: 'line19999 ' }).count()) === 1), 'scrolling to its end draws the last line');
+      check((await page.locator('.runpage .diff-line').count()) <= 1200, `and the top blocks are emptied again (${await page.locator('.runpage .diff-line').count()} rows)`);
+    }
 
     // Fly to the floor: the city comes back and goes to it.
     await go(page, `#/jobs/${scarred.id}`);

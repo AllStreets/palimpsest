@@ -280,6 +280,12 @@ export interface CheckResult {
   durationMs: number;
   logPath: string | null;
   testsRun: number | null;
+  /** Scope: each changed file outside the job's scope and why, as the detail says it in prose. */
+  offenders?: Array<{ path: string; why: string }>;
+  /** Review: the reviewer's concerns, one each. */
+  concerns?: string[];
+  /** Review and design: the reviewer's or the judge's own notes. */
+  notes?: string;
 }
 
 export interface Inspection {

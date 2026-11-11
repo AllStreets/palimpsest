@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import { cleanText } from '../app/src/ui/board.js';
 import {
   awardRounds,
+  blockRanges,
   cleanLog,
   dayHeading,
   issueBlocks,
@@ -285,6 +286,19 @@ test('the ledger trail is a dated list of plain sentences', () => {
   assert.equal(dayHeading('2026-11-10T09:00:00', Date.parse('2026-11-10T15:00:00')), 'Today');
   assert.equal(dayHeading('2026-11-09T09:00:00', Date.parse('2026-11-10T15:00:00')), 'Yesterday');
   assert.equal(dayHeading('2026-11-04T09:00:00', Date.parse('2026-11-10T15:00:00')), 'Wednesday 4 November');
+});
+
+test('a long diff splits into blocks the page can fill and empty one at a time', () => {
+  assert.deepEqual(blockRanges(0, 200), []);
+  assert.deepEqual(blockRanges(5, 200), [[0, 5]]);
+  assert.deepEqual(blockRanges(450, 200), [
+    [0, 200],
+    [200, 400],
+    [400, 450],
+  ]);
+  const big = parseDiff(['diff --git a/big.ts b/big.ts', '--- a/big.ts', '+++ b/big.ts', '@@ -0,0 +1,20000 @@', ...Array.from({ length: 20_000 }, (_, i) => `+line ${i}`)].join('\n'));
+  assert.equal(big[0].added, 20_000);
+  assert.equal(blockRanges(big[0].lines.length, 200).length, 101);
 });
 
 test('the verdict line says passed and pushable, or which checks failed', () => {

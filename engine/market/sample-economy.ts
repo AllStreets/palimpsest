@@ -669,7 +669,7 @@ class Pipeline {
       if (failing === name) out.push({ name, status: 'fail', detail: `${cmd}: 2 of ${tests ?? 0} tests failed, both in the file the change touched`, durationMs: ms(), logPath: null, testsRun: tests });
       else out.push({ name, status: 'pass', detail: cmd, durationMs: ms(), logPath: null, testsRun: tests });
     }
-    out.push({ name: 'scope', status: 'pass', detail: 'Every changed file is inside the job\'s scope.', durationMs: 3, logPath: null, testsRun: null });
+    out.push({ name: 'scope', status: 'pass', detail: 'Every changed file is inside the job\'s scope.', durationMs: 3, logPath: null, testsRun: null, offenders: [] });
     return out;
   }
 
@@ -679,7 +679,7 @@ class Pipeline {
    * guild's own words, and `design` adds the design judgement a change to
    * the screens gets.
    */
-  inspect(r: Run, o: { passed: boolean; reviewer: Agent; failing?: CheckName | null; concerns?: string[]; outOfScope?: string[]; design?: { check: CheckResult; design: NonNullable<Inspection['design']> }; logs?: Partial<Record<CheckName, string>> }): Inspection {
+  inspect(r: Run, o: { passed: boolean; reviewer: Agent; failing?: CheckName | null; concerns?: string[]; outOfScope?: Array<{ path: string; why: string }>; design?: { check: CheckResult; design: NonNullable<Inspection['design']> }; logs?: Partial<Record<CheckName, string>> }): Inspection {
     const checks = this.checks(r, o.failing ?? null);
     // Each check's output kept in the run's folder, as the guild keeps it.
     for (const c of checks) {
@@ -692,7 +692,7 @@ class Pipeline {
     }
     if (o.outOfScope?.length) {
       const at = checks.findIndex((x) => x.name === 'scope');
-      checks[at] = { ...checks[at], status: 'fail', detail: o.outOfScope.join('\n') };
+      checks[at] = { ...checks[at], status: 'fail', detail: o.outOfScope.map((x) => `${x.path} ${x.why}`).join('\n'), offenders: o.outOfScope };
     }
     // As the guild does: a failed repo check skips the review call; scope and design alone still get one.
     const failedCheck = checks.some((x) => x.status === 'fail' && x.name !== 'scope');
@@ -701,13 +701,17 @@ class Pipeline {
     if (!failedCheck) {
       charge({ runId: r.id, firmId: null, model: o.reviewer.model, kind: 'review', usage: usageOf(o.reviewer.model, reviewCost), unattended: r.unattended, at: Date.now(), minCredits: reviewCost });
       const approve = o.passed;
+      const concerns = approve ? [] : (o.concerns ?? ['the change rewrites far more than the issue asks for, and two existing tests were edited to pass']);
+      const notes = approve ? 'Reads right; the test covers the case in the issue.' : '';
       checks.push({
         name: 'review',
         status: approve ? 'pass' : 'fail',
-        detail: approve ? `${o.reviewer.name}: reads right; the test covers the case in the issue.` : `${o.reviewer.name}: ${(o.concerns ?? ['the change rewrites far more than the issue asks for, and two existing tests were edited to pass']).join('; ')}`,
+        detail: approve ? `${o.reviewer.name}: reads right; the test covers the case in the issue.` : `${o.reviewer.name}: ${concerns.join('; ')}`,
         durationMs: Math.round(this.between(40, 160) * 1000),
         logPath: null,
         testsRun: null,
+        notes,
+        concerns,
       });
     }
     if (o.design) checks.push(o.design.check);
@@ -997,7 +1001,7 @@ const SHOTS = join(dirname(fileURLToPath(import.meta.url)), '..', 'sample-shots'
 const SEARCH_SCAR = {
   title: 'Search index rebuild blocks the API for 40 seconds',
   files: ['src/search/index.ts', 'test/search/index.test.ts', 'src/search/RebuildBanner.tsx', '.github/workflows/ci.yml'],
-  outOfScope: ['.github/workflows/ci.yml is never in scope (.github/workflows/**)'],
+  outOfScope: [{ path: '.github/workflows/ci.yml', why: 'is never in scope (.github/workflows/**)' }],
   concerns: [
     'the change rewrites far more than the issue asks for: the whole index module is replaced, not the blocking rebuild',
     'two existing tests in test/search/index.test.ts were edited to pass instead of the code being fixed',
@@ -1122,10 +1126,10 @@ function searchDesign(r: Run): { check: CheckResult; design: NonNullable<Inspect
     { route: '/search', before: shot('search-before', 'before-0'), after: shot('search-after', 'after-0') },
     { route: '/berths', before: shot('berths', 'before-1'), after: shot('berths', 'after-1') },
   ];
-  const detail =
-    'Shot 2 routes before and after at 1440 x 900. Before 7, after 6 of 10 (pass at 6, no more than a point below before). The rebuild banner is legible and honest about stale results, but it pushes the results down a row and its spinner never stops on a still page; the berth board is unchanged.';
+  const notes = 'The rebuild banner is legible and honest about stale results, but it pushes the results down a row and its spinner never stops on a still page; the berth board is unchanged.';
+  const detail = `Shot 2 routes before and after at 1440 x 900. Before 7, after 6 of 10 (pass at 6, no more than a point below before). ${notes}`;
   return {
-    check: { name: 'design', status: 'pass', detail, durationMs: 48_200, logPath: null, testsRun: null },
+    check: { name: 'design', status: 'pass', detail, durationMs: 48_200, logPath: null, testsRun: null, notes },
     design: { before: 7, after: 6, diffOnly: false, shots },
   };
 }

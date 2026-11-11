@@ -169,7 +169,7 @@ export async function review(run: Run, job: Job, diff: string, checks: CheckResu
       const notes = String(out.notes ?? '').slice(0, 2000);
       const detail = [`${a.name} (${a.firmId}) ${out.approve ? 'approved' : 'did not approve'}.`, notes, ...concerns.map((c) => `Concern: ${c}`)].filter(Boolean).join('\n');
       return {
-        result: { name: 'review', status: out.approve === true ? 'pass' : 'fail', detail: detail.slice(0, 4000), durationMs: Date.now() - started, logPath: null, testsRun: null },
+        result: { name: 'review', status: out.approve === true ? 'pass' : 'fail', detail: detail.slice(0, 4000), durationMs: Date.now() - started, logPath: null, testsRun: null, notes, concerns },
         reviewerAgentId: a.id,
         reviewerFirmId: a.firmId,
         usage,
