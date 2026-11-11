@@ -49,7 +49,8 @@ import { MAX_RESUME_MS, treasury } from './budget.js';
 import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
 import { job, listJobs, postManualJob, redact, setTier, transition, withdrawable } from './jobs.js';
 import { latestReport } from './report.js';
-import { reputation, reputationLog } from './reputation.js';
+import { firmBooks, firmDeals, firmRounds } from './firm-story.js';
+import { reputation, reputationLine, reputationLog } from './reputation.js';
 import { kill, killJob, listRuns, resumeJob, run, sites } from './runs.js';
 import { balances } from './treasury.js';
 import { storedCalibration } from '../usage.js';
@@ -88,6 +89,9 @@ const LOG_FILE_CAP = 16 * 1024 * 1024;
 const LOG_PAGE = 2000;
 const LEDGER_CAP = 500;
 const CREDIT_ROWS = 200;
+/** The most movements of a firm's books, and of its rounds, a firm's page carries (the newest). */
+const BOOK_ROWS = 1000;
+const ROUND_ROWS = 400;
 
 /** Keys whose values are places on this Mac. */
 const PATH_KEYS = new Set(['dir', 'logPath', 'patchPath', 'runRoot']);
@@ -314,6 +318,8 @@ function agentDetail(a: Agent): AgentDetail {
     runs: listRuns().filter((r) => r.agentId === a.id).map(publicRun),
     genome: toGenome(a),
     lineage: { agent: a.lineage, parents, children },
+    reputation: firm(a.firmId) ? reputation(a.firmId) : null,
+    towerFirmId: tower?.firmId ?? null,
   };
 }
 
@@ -452,7 +458,15 @@ export async function handleMarketApi(
     const f = firm(idOf(m[1], 'firm'));
     if (!f) throw new HttpError(404, { error: 'unknown firm' });
     const ids = [...new Set(listRuns().filter((r) => r.firmId === f.id).map((r) => r.jobId))];
-    const detail: FirmDetail = { ...firmView(f), jobs: ids.map((id) => job(id)).filter((x): x is Job => x !== null), credits: creditRows(f.id) };
+    const detail: FirmDetail = {
+      ...firmView(f),
+      jobs: ids.map((id) => job(id)).filter((x): x is Job => x !== null),
+      credits: creditRows(f.id),
+      books: firmBooks(f.id).slice(-BOOK_ROWS),
+      rounds: firmRounds(f.id).slice(-ROUND_ROWS),
+      reputationLine: reputationLine(f.id),
+      deals: firmDeals(f.id),
+    };
     return send(200, detail);
   }
   if ((m = pathname.match(/^\/api\/agents\/([^/]+)$/)) && method === 'GET') {

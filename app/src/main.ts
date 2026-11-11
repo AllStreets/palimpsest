@@ -21,6 +21,9 @@ import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/v
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
 import { createInspector, type MarketNames } from './ui/inspector';
+import { createAgentPage } from './ui/agent';
+import { createFirmPage } from './ui/firm';
+import { createFirms } from './ui/firms';
 import { createInspectionPage } from './ui/inspection';
 import { createJobPage } from './ui/job';
 import { createJobs } from './ui/jobs';
@@ -39,6 +42,8 @@ interface DebugHandle {
   lastPick: PickHit | null;
   /** Opens the inspector on a repo's tower, as clicking its plate does. */
   inspect(repo: string): void;
+  /** Opens an agent's page and comes to its tower, as clicking the tower does. */
+  openAgent(agentId: string): void;
   highlight: { repo: string; floorId: string } | null;
   view(eye: number[], target: number[]): void;
   camera(): number[];
@@ -288,6 +293,7 @@ async function main(): Promise<void> {
     builds: 0,
     lastPick: null,
     inspect: (repo) => inspect(repo, null),
+    openAgent: (agentId) => openAgent(agentId),
     highlight: null,
     view: (e, t) => city.view(new THREE.Vector3(e[0], e[1], e[2]), new THREE.Vector3(t[0], t[1], t[2])),
     camera: () => city.camera.position.toArray(),
@@ -447,10 +453,7 @@ async function main(): Promise<void> {
     if (inspector.repo) city.setInset(inspector.width);
   });
 
-  /**
-   * An agent's tower or a firm's plinth opens its page (Task 38 draws them;
-   * until then the address changes and the camera comes to the tower).
-   */
+  /** An agent's tower or a firm's plinth opens its page (Task 38), and the camera comes to the tower. */
   function openAgent(agentId: string): void {
     debug.opened = `#/agents/${encodeURIComponent(agentId)}`;
     location.hash = debug.opened;
@@ -735,15 +738,51 @@ async function main(): Promise<void> {
   const runPage = createRunPage(document.body, { listen, onDismiss: toCity });
   const inspectionPage = createInspectionPage(document.body, { listen, onDismiss: toCity });
 
-  // Repos, Settings, the job board and the job, run and inspection pages draw over the city, which keeps
-  // running beside them. A place with no screen yet (a firm, an agent, the treasury, a district) leaves
-  // the city showing.
-  const SCREENS = new Set(['repos', 'settings', 'jobs', 'job', 'run', 'inspection']);
+  // The firms, a firm's page and an agent's page (Task 38). A firm's quarter flies the city to it.
+  /** Where a firm's quarter stands: round its standing towers, else its plot's centre. */
+  function quarterFrame(firmId: string): { center: THREE.Vector3; size: number } | null {
+    const q = servedQuarters.find((x) => x.firmId === firmId);
+    if (!q) return null;
+    const box = new THREE.Box3();
+    for (const t of q.towers) {
+      const f = t.agentId ? city.agentFrame(t.agentId) : null;
+      if (f) box.expandByPoint(f.center.clone().setY(0)).expandByPoint(f.center.clone().setY(f.height));
+    }
+    if (box.isEmpty()) return { center: new THREE.Vector3(q.origin.x, 10, q.origin.z), size: 60 };
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    return { center: center.setY(Math.min(center.y, 40)), size: Math.max(size.x, size.z, size.y * 0.8) };
+  }
+  const firmsList = createFirms(document.body, { listen, onDismiss: toCity });
+  const firmPage = createFirmPage(document.body, {
+    listen,
+    onDismiss: toCity,
+    quarterStands: (firmId) => servedQuarters.some((q) => q.firmId === firmId),
+    flyToQuarter(firmId) {
+      navigate('city');
+      const f = quarterFrame(firmId);
+      // The same glide the inspector and a picked tower use.
+      if (f) city.flyTo(f.center, Math.max(160, f.size * 2.6));
+    },
+  });
+  const agentPage = createAgentPage(document.body, {
+    listen,
+    onDismiss: toCity,
+    // TODO(Task 34): follow the agent through the city; until Follow lands the button does nothing.
+    follow: () => {},
+    // TODO(Task 35): ride the lift up the agent's tower; until Ride up lands the button does nothing.
+    rideUp: () => {},
+  });
+
+  // Repos, Settings, the job board, the job, run and inspection pages, the firms and a firm's and an
+  // agent's page draw over the city, which keeps running beside them. A place with no screen yet (the
+  // treasury, a district) leaves the city showing.
+  const SCREENS = new Set(['repos', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent']);
   let lastRoute = 'city';
   onRoute((to, place) => {
-    const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection'].includes(to)) ? to : 'city';
+    const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent'].includes(to)) ? to : 'city';
     document.body.dataset.route = route;
-    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route);
+    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route);
     if (route !== 'city') inspector.close();
     if (route === 'repos') repos.show();
     else repos.hide();
@@ -757,6 +796,12 @@ async function main(): Promise<void> {
     else runPage.hide();
     if (route === 'inspection') inspectionPage.show(place.id!);
     else inspectionPage.hide();
+    if (route === 'firms') firmsList.show();
+    else firmsList.hide();
+    if (route === 'firm') firmPage.show(place.id!);
+    else firmPage.hide();
+    if (route === 'agent') agentPage.show(place.id!);
+    else agentPage.hide();
     // Back in the city, focus returns to it rather than to a sheet that has gone.
     if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
     lastRoute = route;

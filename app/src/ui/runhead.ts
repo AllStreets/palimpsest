@@ -23,6 +23,7 @@ export function createRunhead(parent: HTMLElement): Runhead {
   for (const [route, text] of [
     ['city', 'City'],
     ['jobs', 'Jobs'],
+    ['firms', 'Firms'],
     ['repos', 'Repos'],
     ['settings', 'Settings'],
   ] as Array<[Route, string]>) {
