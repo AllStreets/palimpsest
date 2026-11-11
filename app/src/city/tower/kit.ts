@@ -231,7 +231,38 @@ interface Batch {
   matrices: THREE.Matrix4[];
   colors: THREE.Color[] | null;
   shadow: boolean;
+  /** Part of the crown (or anything else that must keep its silhouette): never hidden with distance. */
+  keep?: boolean;
 }
+
+/**
+ * A repeated part's typical width: the middle of its three dimensions (a
+ * mullion's depth, a dentil's height, a fin's reach out from the face), the
+ * median over its instances. What scene.ts hides once it is under half a
+ * pixel (lod.ts detailHidden).
+ */
+function partWidth(geo: THREE.BufferGeometry, matrices: THREE.Matrix4[]): number {
+  geo.computeBoundingBox();
+  const size = geo.boundingBox!.getSize(new THREE.Vector3());
+  const col = new THREE.Vector3();
+  const widths = matrices.map((m) => {
+    const d = [0, 1, 2].map((k) => col.setFromMatrixColumn(m, k).length() * size.getComponent(k)).sort((a, b) => a - b);
+    return d[1];
+  });
+  widths.sort((a, b) => a - b);
+  return widths[Math.floor(widths.length / 2)] ?? 0;
+}
+
+/** Repeated parts narrower than this may hide with distance; anything wider is massing and always draws. */
+const DETAIL_WIDTH = 1;
+/**
+ * Parts that set a face's tone from afar, however thin: the mullions, fins,
+ * ribs and piers ruling a curtain wall over its lit panes. Even under a
+ * pixel they darken the glass between them, so they always draw; the stone
+ * ornament (dentils, colonnettes, balusters, crockets, brackets) is the
+ * wall's own colour and leaves no trace when it hides.
+ */
+const FACE_PARTS = /mullion|transom|spandrel|fin|blade|rib|pier|pod|lens/;
 
 /**
  * Collects a tower's pieces and turns them into few draw calls: unique
@@ -261,6 +292,8 @@ export class Kit {
    * tower's light lines). Empty for a lit tower.
    */
   remap: Partial<Record<MatKey, MatKey | null>> = {};
+  /** While true, the repeated parts added keep their silhouette at any distance (the crown). */
+  keep = false;
   private merged = new Map<MatKey, THREE.BufferGeometry[]>();
   private batches = new Map<string, Batch>();
   private geos = new Map<string, THREE.BufferGeometry>();
@@ -369,6 +402,7 @@ export class Kit {
       this.batches.set(key, b);
     }
     b.matrices.push(this.base.clone().multiply(local));
+    if (this.keep) b.keep = true;
     b.colors ??= [];
     b.colors[b.matrices.length - 1] = color;
   }
@@ -388,6 +422,10 @@ export class Kit {
     for (const [key, b] of this.batches) {
       const mesh = this.instanced(key, b, b.geo);
       if (!b.lo) {
+        // Thin repeated parts (mullions, colonnettes, dentils, brackets) may hide once under half a pixel;
+        // window panes are the lit windows and never do, nor does the crown.
+        const width = partWidth(b.geo, b.matrices);
+        if (!b.keep && b.shadow && width < DETAIL_WIDTH && !FACE_PARTS.test(key)) mesh.userData.detailWidth = width;
         group.add(mesh);
         continue;
       }

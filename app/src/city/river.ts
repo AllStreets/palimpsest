@@ -24,6 +24,7 @@ import { CopyShader } from 'three/addons/shaders/CopyShader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { BANKS, BRIDGE_DECK, BRIDGES, PIER_HALF, PIERS, QUAY, RIVER, type Pier } from '../../../shared/commute.js';
+import { LAYER, setLayers } from './lod.js';
 import { materials, texture } from './materials';
 import { chunkAt, chunkLod, chunks, waterSettings, type Chunk } from './river-lod.js';
 import { SKY_GLSL, SUN_DIRECTION } from './sky';
@@ -336,7 +337,7 @@ class Build {
         const core = new THREE.Group();
         const detail = new THREE.Group();
         group.add(core, detail);
-        out.set(index, (rc = { chunk: all[index], group, core, detail, casters: [], triangles: { core: 0, detail: 0 }, lod: null }));
+        out.set(index, (rc = { chunk: all[index], group, core, detail, casters: [], coreGeos: new Map(), triangles: { core: 0, detail: 0 }, lod: null }));
       }
       for (const [mat, list] of mats) {
         const geo = mergeGeometries(list, false);
@@ -348,6 +349,7 @@ class Build {
         if (mesh.castShadow) rc.casters.push(mesh);
         mesh.name = `river:${mat.name || mat.type}`;
         (tier === 'core' ? rc.core : rc.detail).add(mesh);
+        if (tier === 'core') rc.coreGeos.set(mat, geo);
         rc.triangles[tier] += geo.attributes.position.count / 3;
       }
     }
@@ -363,8 +365,56 @@ interface RiverChunk {
   core: THREE.Group;
   detail: THREE.Group;
   casters: THREE.Mesh[];
+  /** The chunk's core, merged, by material (the far core copies it). */
+  coreGeos: Map<THREE.Material, THREE.BufferGeometry>;
   triangles: { core: number; detail: number };
   lod: { detail: boolean; shadow: boolean; ao: boolean } | null;
+}
+
+/**
+ * The far core: every chunk's core merged into one mesh per material, in
+ * chunk order, with each chunk's span. Chunks past the detail distance draw
+ * from it in at most two runs per material (those before the near chunks and
+ * those after), so the river far off costs a few calls, not one per material
+ * per chunk; the near chunks draw their own meshes and the frustum culls them.
+ */
+interface FarCore {
+  mesh: THREE.Mesh;
+  /** Each chunk's first vertex and vertex count in the merged mesh, by its index in the sorted chunks (absent: none). */
+  spans: Array<{ start: number; count: number } | null>;
+}
+
+function farCores(parts: RiverChunk[]): FarCore[] {
+  const mats = new Set<THREE.Material>();
+  for (const c of parts) for (const m of c.coreGeos.keys()) mats.add(m);
+  const out: FarCore[] = [];
+  for (const mat of mats) {
+    const list: THREE.BufferGeometry[] = [];
+    const spans: FarCore['spans'] = [];
+    let at = 0;
+    for (const c of parts) {
+      const g = c.coreGeos.get(mat);
+      if (!g) {
+        spans.push(null);
+        continue;
+      }
+      const n = g.attributes.position.count;
+      spans.push({ start: at, count: n });
+      at += n;
+      list.push(g);
+    }
+    const geo = mergeGeometries(list, false);
+    if (!geo) continue;
+    geo.computeBoundingSphere();
+    // One material slot, drawn in the runs set as groups (river update).
+    const mesh = new THREE.Mesh(geo, [mat]);
+    mesh.name = `river-far:${mat.name || mat.type}`;
+    mesh.receiveShadow = true;
+    // Far off it neither casts (river-lod.ts SHADOW_NEAR) nor joins the AO (AO_NEAR): the view draws it alone.
+    setLayers(mesh, LAYER.view);
+    out.push({ mesh, spans });
+  }
+  return out;
 }
 
 const Y = new THREE.Vector3(0, 1, 0);
@@ -1301,6 +1351,29 @@ export function createRiver(quality: 'high' | 'medium'): River {
   const noShadow = new Set<THREE.Material>([M.lantern, M.lampHead, M.red, M.sign, M.glass, M.cable]);
   const parts = b.chunks((m) => !noShadow.has(m));
   for (const c of parts) group.add(c.group);
+  const far = farCores(parts);
+  for (const f of far) group.add(f.mesh);
+  /** Draws the chunks past the near run [i0, i1) (no near run: i0 = i1) from the far core, in at most two runs. */
+  function farRuns(i0: number, i1: number): void {
+    for (const f of far) {
+      const g = f.mesh.geometry;
+      g.clearGroups();
+      const run = (a: number, z: number): void => {
+        let start = -1;
+        let end = 0;
+        for (let k = a; k < z; k++) {
+          const sp = f.spans[k];
+          if (!sp) continue;
+          if (start < 0) start = sp.start;
+          end = sp.start + sp.count;
+        }
+        if (start >= 0) g.addGroup(start, end - start, 0);
+      };
+      run(0, i0);
+      run(i1, parts.length);
+      f.mesh.visible = g.groups.length > 0;
+    }
+  }
 
   // The water: one plane the length of the river, drawn by its own pass.
   const waterGeo = new THREE.PlaneGeometry(RIVER.width + 1, LENGTH, 1, 1).rotateX(-Math.PI / 2);
@@ -1348,6 +1421,7 @@ export function createRiver(quality: 'high' | 'medium'): River {
       let meshes = 0;
       let triangles = 0;
       for (const c of parts) {
+        if (!c.group.visible) continue;
         for (const tier of [c.core, c.detail]) {
           if (!tier.visible) continue;
           for (const o of tier.children) {
@@ -1356,6 +1430,14 @@ export function createRiver(quality: 'high' | 'medium'): River {
             meshes++;
             triangles += m.geometry.attributes.position.count / 3;
           }
+        }
+      }
+      // The far core: one call per run.
+      for (const f of far) {
+        if (!f.mesh.visible) continue;
+        for (const gr of f.mesh.geometry.groups) {
+          meshes++;
+          triangles += gr.count / 3;
         }
       }
       const out = { meshes, triangles, drewWater: drew, ...settings };
@@ -1374,6 +1456,18 @@ export function createRiver(quality: 'high' | 'medium'): River {
       if (eye.distanceToSquared(lodAt) < 25) return false;
       lodAt.copy(eye);
       let shadows = false;
+      // The chunks near enough to draw their detail draw their own core too; the rest draw from the far core.
+      let i0 = parts.length;
+      let i1 = parts.length;
+      parts.forEach((c, k) => {
+        if (!chunkLod(eye, c.chunk).detail) return;
+        if (i0 === parts.length) i0 = k;
+        i1 = k + 1;
+      });
+      parts.forEach((c, k) => {
+        c.group.visible = k >= i0 && k < i1;
+      });
+      farRuns(i0, i1);
       for (const c of parts) {
         const lod = chunkLod(eye, c.chunk);
         if (c.lod && c.lod.detail === lod.detail && c.lod.shadow === lod.shadow && c.lod.ao === lod.ao) continue;
@@ -1381,8 +1475,11 @@ export function createRiver(quality: 'high' | 'medium'): River {
         c.lod = lod;
         c.detail.visible = lod.detail;
         for (const m of c.casters) m.castShadow = lod.shadow;
-        // post.ts leaves meshes marked noAO out of the ambient occlusion pass.
-        for (const tier of [c.core, c.detail]) for (const o of tier.children) o.userData.noAO = !lod.ao;
+        // Past the AO's reach a chunk draws in the view and the shadow map only (lod.ts LAYER).
+        for (const tier of [c.core, c.detail]) for (const o of tier.children) {
+          if (lod.ao) o.layers.set(0);
+          else setLayers(o, LAYER.view, LAYER.shadow);
+        }
       }
       return shadows;
     },
@@ -1391,6 +1488,7 @@ export function createRiver(quality: 'high' | 'medium'): River {
     },
     dispose() {
       for (const c of parts) for (const tier of [c.core, c.detail]) for (const o of tier.children) (o as THREE.Mesh).geometry.dispose();
+      for (const f of far) f.mesh.geometry.dispose();
       for (const m of Object.values(M)) if (m !== L.darkMetal && m !== L.glass) m.dispose();
       signs.dispose();
       waterGeo.dispose();

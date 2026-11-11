@@ -4,6 +4,7 @@ import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Era, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
+import { frameBreakdown, type Breakdown } from './breakdown.js';
 import { createCameraRig } from './camera';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
@@ -16,6 +17,7 @@ import { configureMaterials, texturesSettled } from './materials';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor } from './governor';
 import { lightsOutTree } from './lightsout.js';
+import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
 import { quarterBuildKey, type QuarterShow } from './quarters.js';
 import { createPost, EXPOSURE, FLICKER } from './post';
@@ -130,6 +132,8 @@ export interface City {
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
   /** Draw calls and triangles in the last whole frame, every pass included. */
   stats(): { calls: number; triangles: number };
+  /** The next frame's draw calls and triangles by subsystem and pass, with the shadow map redrawn in it (debug and tests). */
+  breakdown(detail?: boolean): Promise<Breakdown>;
   /** The river (river.ts): its lanterns, its static draw calls, and whether its water drew since last asked (tests). */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
@@ -211,6 +215,8 @@ export function plinthCenterpiece(): Centerpiece {
 }
 
 const SHADOW_HALF = 320;
+/** The sun's shadow camera stands this far up the sun's direction from the shadow's centre. */
+const SUN_OFFSET = 800;
 /** Below this eye height the skyline hides name plates behind it. */
 const STREET_EYE = 80;
 
@@ -248,6 +254,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   const rig = createCameraRig(renderer.domElement, width() / height());
   const camera = rig.camera;
+  // Each pass sees its own layers (lod.ts): the view, the sun's shadow map and the AO (post.ts) skip what the others own.
+  const layers = passLayers();
+  camera.layers.mask = layers.view.mask;
 
   const sky = createSky(renderer);
   scene.add(sky.dome);
@@ -263,6 +272,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   sun.shadow.normalBias = 0.6;
   Object.assign(sun.shadow.camera, { left: -SHADOW_HALF, right: SHADOW_HALF, top: SHADOW_HALF, bottom: -SHADOW_HALF, near: 10, far: 1600 });
   sun.shadow.camera.updateProjectionMatrix();
+  sun.shadow.camera.layers.mask = layers.shadow.mask;
   sun.shadow.autoUpdate = false;
   sun.shadow.needsUpdate = true;
   scene.add(sun, sun.target);
@@ -275,7 +285,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     scene.add(l);
     return l;
   });
-  const sunOffset = SUN_DIRECTION.clone().multiplyScalar(800);
+  const sunOffset = SUN_DIRECTION.clone().multiplyScalar(SUN_OFFSET);
   let texel = (SHADOW_HALF * 2) / shadowSize;
 
   const sunNeedsUpdate = (): void => {
@@ -283,7 +293,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   };
   const ground = createGround();
   scene.add(ground.mesh);
-  const grid = createGrid(quality);
+  const grid = createGrid(quality, { sun: SUN_DIRECTION, half: SHADOW_HALF, offset: SUN_OFFSET, near: 10, far: 1600 });
   scene.add(grid.group);
   // The river, its quays, bridges and piers (river.ts); its water is drawn by a pass straight after the scene.
   const river = createRiver(quality);
@@ -316,6 +326,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(districtGroup);
   let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece }> = [];
   let quarterPieces: Array<{ firmId: string; key: string; piece: Centerpiece }> = [];
+  /** Bumped whenever what stands in the districts changes, so the distance pass (districtLod) judges it afresh. */
+  let lodRevision = 0;
   /** Every pickable part in the city: towers' floors and roots, quarters' towers and plinths. */
   const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : [])];
   let scaffolds = new Map<string, Scaffold>();
@@ -389,6 +401,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
+    if (built > 0 || old.size > 0) lodRevision++;
     if (highlighted) applyHighlight();
     return built;
   }
@@ -414,6 +427,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     exchange?.object.updateMatrixWorld(true);
     quarterBatch = batchPieces(roots);
     quarterBatch.group.name = 'quarters';
+    lodRevision++;
     for (const r of roots) r.visible = false;
     districtGroup.add(quarterBatch.group);
   }
@@ -933,6 +947,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   // ---------------------------------------------------------------- picking
   const pickListeners: Array<(hit: PickHit) => void> = [];
   const raycaster = new THREE.Raycaster();
+  // Parts past the AO's reach draw on the view's and shadow's layers only (lod.ts): picking tests every layer.
+  raycaster.layers.enableAll();
   const pointer = new THREE.Vector2();
   let downAt: { x: number; y: number } | null = null;
 
@@ -1028,7 +1044,69 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     framesAfterLoad = 0;
   });
 
+  // ---------------------------------------------------------------- towers by distance (lod.ts)
+  /**
+   * What stands in the districts, judged from the eye each time it moves a
+   * few metres: a tower's thin repeated parts hide once under half a pixel
+   * wide (never its crown or its lit panes), and anything past AO_NEAR draws
+   * in the view and the shadow map but not the AO's normal pass.
+   */
+  const lodEye = new THREE.Vector3(Infinity, 0, 0);
+  let lodSeen = -1;
+  const lodSphere = new THREE.Sphere();
+  function districtLod(): boolean {
+    if (lodSeen === lodRevision && camera.position.distanceToSquared(lodEye) < 25) return false;
+    lodSeen = lodRevision;
+    lodEye.copy(camera.position);
+    const picks = new Set(allPickables());
+    let shadowChanged = false;
+    districtGroup.updateMatrixWorld();
+    // Every mesh, shown or not: an LOD level switching in, or a part coming back, carries the layers it should.
+    districtGroup.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || picks.has(o)) return;
+      const inst = mesh as THREE.InstancedMesh;
+      if (inst.isInstancedMesh && !inst.boundingSphere) inst.computeBoundingSphere();
+      if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+      const own = inst.isInstancedMesh ? inst.boundingSphere : mesh.geometry.boundingSphere;
+      if (!own) return;
+      lodSphere.copy(own).applyMatrix4(mesh.matrixWorld);
+      const d = Math.max(0, lodSphere.distanceToPoint(camera.position));
+      if (d > AO_NEAR) setLayers(mesh, LAYER.view, LAYER.shadow);
+      else mesh.layers.set(0);
+    });
+    // Thin parts, judged whether shown or hidden now.
+    for (const { piece } of centerpieces) {
+      piece.object.traverse((o) => {
+        const width = o.userData.detailWidth as number | undefined;
+        if (width === undefined) return;
+        const mesh = o as THREE.InstancedMesh;
+        if (!mesh.boundingSphere) mesh.computeBoundingSphere();
+        lodSphere.copy(mesh.boundingSphere!).applyMatrix4(mesh.matrixWorld);
+        const hidden = detailHidden({ size: width, distance: Math.max(0, lodSphere.distanceToPoint(camera.position)), hidden: !mesh.visible, viewHeight: height() });
+        if (hidden === mesh.visible) {
+          mesh.visible = !hidden;
+          if (mesh.castShadow) shadowChanged = true;
+        }
+      });
+    }
+    return shadowChanged;
+  }
+
   const lastFrame = { calls: 0, triangles: 0 };
+  const breakdownWanted: Array<{ detail: boolean; resolve: (b: Breakdown) => void }> = [];
+  const breakdownRoots = (): Array<[string, THREE.Object3D]> => [
+    ['ambient', grid.group],
+    ['river', river.group],
+    ['ground', ground.mesh],
+    ['sky', sky.dome],
+    ['construction', field.group],
+    ['quarters', quarterBatch?.group ?? new THREE.Object3D()],
+    ['quarters', life.group],
+    ...(exchange ? [['exchange', exchange.object] as [string, THREE.Object3D]] : []),
+    ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
+    ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
+  ];
   const clock = new THREE.Clock();
   const dropListeners: Array<() => void> = [];
   const governor = qualityGovernor({ start: opts.autoQuality === false ? 'medium' : quality });
@@ -1079,8 +1157,16 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     plates.update();
     sky.dome.position.copy(camera.position);
     followShadow();
+    // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
+    if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
+    if (districtLod()) sun.shadow.needsUpdate = true;
     renderer.info.reset();
-    post.render();
+    if (breakdownWanted.length) {
+      sun.shadow.needsUpdate = true;
+      const asks = breakdownWanted.splice(0);
+      const b = frameBreakdown(renderer, scene, camera, breakdownRoots, () => post.render(), asks.some((a) => a.detail));
+      for (const a of asks) a.resolve(b);
+    } else post.render();
     lastFrame.calls = renderer.info.render.calls;
     lastFrame.triangles = renderer.info.render.triangles;
     if (framesAfterLoad >= 0 && ++framesAfterLoad === 3) resolveReady();
@@ -1131,6 +1217,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ready,
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
+    breakdown: (detail = false) => new Promise<Breakdown>((resolve) => breakdownWanted.push({ detail, resolve })),
     river: () => ({ lamps: river.lamps.length, ...river.view(camera) }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     ambientBoard: (lots) => grid.board(lots),

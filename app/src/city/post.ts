@@ -6,9 +6,11 @@ import type { Pass } from 'three/addons/postprocessing/Pass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
-/** AO fades out between these view distances, in metres. */
+import { passLayers } from './lod.js';
+
+/** AO fades out between these view distances, in metres (lod.ts AO_NEAR leaves out what lies past the end). */
 const AO_FADE_START = 350;
-const AO_FADE_END = 1200;
+export const AO_FADE_END = 1200;
 
 /**
  * Screen-space AO has nothing to say about a building a kilometre away, and
@@ -35,26 +37,6 @@ function fadeWithDistance(gtao: GTAOPass, camera: THREE.PerspectiveCamera): void
       gl_FragColor = vec4(mix(vec3(1.0), texel.rgb, k), texel.a);
     }`;
   m.needsUpdate = true;
-}
-
-/**
- * Leaves meshes marked `userData.noAO` (the river's chunks far from the eye,
- * river.ts) out of the AO pass's normal and depth render: AO has faded out
- * there anyway (fadeWithDistance), so drawing them again costs triangles for
- * nothing. GTAOPass already hides points and lines the same way.
- */
-function skipFarMeshes(gtao: GTAOPass): void {
-  const pass = gtao as unknown as { _overrideVisibility(): void; _visibilityCache: THREE.Object3D[]; scene: THREE.Scene };
-  const base = pass._overrideVisibility.bind(gtao);
-  pass._overrideVisibility = () => {
-    base();
-    pass.scene.traverseVisible((o) => {
-      if (o.userData.noAO && (o as THREE.Mesh).isMesh) {
-        o.visible = false;
-        pass._visibilityCache.push(o);
-      }
-    });
-  };
 }
 
 /** Bloom catches only what is brighter than this in the linear HDR frame: real emitters, never lit paint. */
@@ -131,14 +113,17 @@ export function createPost(
   for (const p of after) composer.addPass(p);
 
   let gtao: GTAOPass | null = null;
+  // The AO draws its normals and depth through its own camera, which follows the view's but sees the AO's
+  // layers (lod.ts): the blocks near enough for it to show, never what only the view or the shadow map draws.
+  const aoCamera = new THREE.PerspectiveCamera();
+  const aoLayers = passLayers().ao;
   if (quality === 'high') {
-    gtao = new GTAOPass(scene, camera, size.x, size.y);
+    gtao = new GTAOPass(scene, aoCamera, size.x, size.y);
     gtao.output = GTAOPass.OUTPUT.Default;
     gtao.blendIntensity = 0.85;
     // City scale: a metre and a half of reach finds the contact shadow where walls meet pavement.
     gtao.updateGtaoMaterial({ radius: 1.5, distanceExponent: 2, thickness: 3, scale: 1 });
     fadeWithDistance(gtao, camera);
-    skipFarMeshes(gtao);
     composer.addPass(gtao);
   }
 
@@ -147,7 +132,14 @@ export function createPost(
   composer.addPass(new OutputPass());
 
   return {
-    render: () => composer.render(),
+    render() {
+      if (gtao) {
+        camera.updateMatrixWorld();
+        aoCamera.copy(camera, false);
+        aoCamera.layers.mask = aoLayers.mask;
+      }
+      composer.render();
+    },
     setSize(width, height) {
       composer.setSize(width, height);
     },

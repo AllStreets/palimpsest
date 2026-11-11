@@ -661,5 +661,9 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
  * gives the frame a depth texture and draws the river's water after the scene; the boards stand off the river, so
  * no water is in their frame and every rendered value is unchanged. Restamped again in its fix round: post.ts leaves
  * meshes marked noAO (far river chunks) out of the AO pass, and the boards carry none.
+ * Restamped for the city performance task, also without a re-measure: post.ts draws the AO's normals and depth
+ * through its own camera on the AO's layers (lod.ts) instead of hiding noAO meshes, and leaves out only what lies
+ * past AO_NEAR, where the AO has already faded to nothing; the boards stand on the default layer, which every pass
+ * draws, so every rendered value is unchanged.
  */
-export const RENDERED_INPUTS = 'b3ce0ba3cae8d21c';
+export const RENDERED_INPUTS = '3c7bb485662b3a93';

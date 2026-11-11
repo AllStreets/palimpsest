@@ -51,6 +51,8 @@ export function createPlates(
   let live: Live[] = [];
   let frame = 0;
   const raycaster = new THREE.Raycaster();
+  // The ambient blocks draw on the view's own layer (lod.ts): the plates test against every layer.
+  raycaster.layers.enableAll();
   const at = new THREE.Vector3();
   const ndc = new THREE.Vector3();
   const toward = new THREE.Vector3();
