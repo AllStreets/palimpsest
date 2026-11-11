@@ -1155,35 +1155,45 @@ function waterFragment(steps: number): string {
       float aa = abs(a);
       float b = u + 10.0;
       if (b < 0.0 || b > 220.0) continue;
+      // Outside the wedge (its arms at their widest wander) nothing of the wake reaches: skip the noise there.
+      if (aa > 2.4 + 0.394 * b + 3.0 * (1.1 + 0.05 * b) + 3.0) continue;
       float decay = sp * exp(-b / 90.0);
-      // Flow noise: the arms wander and break into patches rather than running as ruled lines.
-      float flow = wNoise(vec2(aa * 0.22 + uTime * 0.15, b * 0.11 - uTime * 0.25));
-      float flow2 = wNoise(vec2(aa * 0.6 - uTime * 0.2, b * 0.35 + 5.0));
-      // The divergent crests: short waves stacked en echelon along each arm of the 19.5 degree wedge.
-      float edge = 2.4 + 0.354 * b + (flow - 0.5) * (0.6 + 0.04 * b);
-      float armD = aa - edge;
       float width = 1.1 + 0.05 * b;
-      float arm = exp(-armD * armD / (width * width));
-      float ph = (aa * 0.94 + b * 0.34) * 1.6 - uTime * 2.4;
-      float rate = 1.6 * footprint;
-      float crestFade = (1.0 - smoothstep(0.6, 1.6, rate)) * near;
-      float crest = sin(ph + flow2 * 2.5);
-      float patchy = smoothstep(0.25, 0.75, flow);
-      g += (side * sign(a) * 0.8 + dir * 0.6) * crest * arm * decay * 0.14 * patchy * crestFade;
-      // The arms' broad swell, which still reads where the crests are too fine to draw.
-      g += side * sign(a) * arm * decay * 0.025 * (1.0 - crestFade);
-      // The churn astern of the hull (its stern stands 11 m behind the middle): white water, widening and breaking up.
+      float edge0 = 2.4 + 0.354 * b;
+      float wander = 0.3 + 0.02 * b;
+      // Close to the boat the arms stand up: a V that reads behind it, not only the churn in its track.
+      float close = 1.0 + 1.6 * exp(-b / 45.0);
+      // The arms: only near them is their noise worth working out.
+      if (abs(aa - edge0) < 3.0 * width + wander) {
+        // Flow noise: the arms wander and break into patches rather than running as ruled lines.
+        float flow = wNoise(vec2(aa * 0.22 + uTime * 0.15, b * 0.11 - uTime * 0.25));
+        float flow2 = wNoise(vec2(aa * 0.6 - uTime * 0.2, b * 0.35 + 5.0));
+        // The divergent crests: short waves stacked en echelon along each arm of the 19.5 degree wedge.
+        float edge = edge0 + (flow - 0.5) * 2.0 * wander;
+        float armD = aa - edge;
+        float arm = exp(-armD * armD / (width * width));
+        float ph = (aa * 0.94 + b * 0.34) * 1.6 - uTime * 2.4;
+        float crestFade = (1.0 - smoothstep(0.6, 1.6, 1.6 * footprint)) * near;
+        float crest = sin(ph + flow2 * 2.5);
+        float patchy = smoothstep(0.25, 0.75, flow);
+        g += (side * sign(a) * 0.8 + dir * 0.6) * crest * arm * decay * 0.2 * close * (0.45 + 0.55 * patchy) * crestFade;
+        // The arms' broad swell (a long ridge along each arm), which still reads where the crests are too fine to draw.
+        g += side * sign(a) * (armD < 0.0 ? 1.0 : -0.6) * arm * decay * 0.06 * close;
+        foam += arm * decay * 0.5 * close * smoothstep(0.45, 1.0, crest * 0.5 + 0.5) * smoothstep(80.0, 6.0, b) * smoothstep(0.25, 0.8, flow2) * crestFade;
+      }
+      // The churn astern of the hull (its stern stands 11 m behind the middle), and white water along its sides.
       float s = u - 10.5;
-      vec2 q = vec2(a * 0.7, s * 0.32 - uTime * 0.45);
-      float n = wNoise(q) * 0.55 + wNoise(q * 2.1 + 7.1) * 0.3 + wNoise(q * 4.3 + 2.0) * 0.15;
       float churn = s > -1.0 ? exp(-aa * aa / (2.4 + 0.2 * max(s, 0.0))) * exp(-max(s, 0.0) / (24.0 + 40.0 * sp)) : 0.0;
-      foam += churn * sp * smoothstep(0.15, 0.85, n + 0.35 * exp(-max(s, 0.0) / 10.0));
-      g += vec2(n - 0.5, wNoise(q * 1.7 + 3.3) - 0.5) * churn * sp * 0.35 * near;
-      // White water curling off the bow along the hull's sides, and the arms' crests breaking near the boat.
       float hullW = 3.15 * sqrt(max(0.0, 1.0 - (u / 11.2) * (u / 11.2)));
       float sideF = exp(-pow(aa - hullW - 0.35, 2.0) / 0.35) * smoothstep(-11.6, -9.0, u) * (1.0 - smoothstep(6.0, 12.0, u));
-      foam += sideF * sp * 0.5 * smoothstep(0.2, 0.8, n);
-      foam += arm * decay * 0.35 * smoothstep(0.2, 1.0, crest * 0.5 + 0.5) * smoothstep(60.0, 6.0, b) * smoothstep(0.3, 0.8, flow2);
+      if (churn + sideF > 0.01) {
+        vec2 q = vec2(a * 0.7, s * 0.32 - uTime * 0.45);
+        float n1 = wNoise(q);
+        float n = n1 * 0.55 + wNoise(q * 2.1 + 7.1) * 0.3 + wNoise(q * 4.3 + 2.0) * 0.15;
+        foam += churn * sp * smoothstep(0.15, 0.85, n + 0.35 * exp(-max(s, 0.0) / 10.0));
+        g += vec2(n - 0.5, n1 - n) * churn * sp * 0.5 * near;
+        foam += sideF * sp * 0.5 * smoothstep(0.2, 0.8, n);
+      }
     }
     return vec3(g, foam);
   }

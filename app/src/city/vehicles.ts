@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { BANKS, FERRY_Y, inChannel, PIERS, POD_Y, RAIL_Y, RIVER, SPEED, STREET_AT, streetLine, streetWay, tramHeight, type Line, type Network, type Rank } from '../../../shared/commute.js';
 import type { Trip, TripMode } from '../../../shared/types.js';
 import { LAYER, setLayers } from './lod.js';
+import { hasKit, kitShared } from './kits.js';
 import { LOD_EYE } from './lod-shader.js';
 import { CONTACT_Y, filleted, offsetLoop, POD_BEAM, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK } from './lines.js';
 
@@ -433,7 +434,8 @@ interface Unit {
   lead: number;
 }
 
-export type CabPhase = 'parked' | 'to-pickup' | 'pickup' | 'carrying' | 'setdown' | 'returning';
+/** A cab's errand, as its rider sees it: 'queued' while the cab it waits for is still out on someone else's. */
+export type CabPhase = 'queued' | 'parked' | 'to-pickup' | 'pickup' | 'carrying' | 'setdown' | 'returning';
 /** Seconds a cab stands at the kerb for its rider to get in, and to get out. */
 const CAB_BOARD_S = 7;
 const CAB_ALIGHT_S = 6;
@@ -452,16 +454,19 @@ interface Cab {
   since: number;
   legs: { pickup: { track: Track; plan: Plan }; carry: { track: Track; plan: Plan }; back: { track: Track; plan: Plan } } | null;
   /** An errand waiting for this cab to be back at its bay (when every bay in the city was out). */
-  queue?: { start: { kerb: V2; via: V2 }; end: { kerb: V2; via: V2 } } | null;
+  queue?: { token: string; a: V2; b: V2; est: { pickup: number; carry: number } } | null;
+  /** The errand it is on (its booking's token) and that errand's own ends, as the trip gave them. */
+  errand?: string;
+  ends?: { a: V2; b: V2 };
 }
 
 /** Seconds until a cab is back at its bay. */
 function cabFreeIn(cab: Cab, time: number): number {
   const legs = cab.legs;
-  if (cab.phase === 'parked' || !legs) return 0;
+  if (cab.phase === 'parked' || cab.phase === 'queued' || !legs) return 0;
   const t = time - cab.since;
   const rest = { 'to-pickup': [legs.pickup.plan.period, CAB_BOARD_S, legs.carry.plan.period, CAB_ALIGHT_S, legs.back.plan.period], pickup: [CAB_BOARD_S, legs.carry.plan.period, CAB_ALIGHT_S, legs.back.plan.period], carrying: [legs.carry.plan.period, CAB_ALIGHT_S, legs.back.plan.period], setdown: [CAB_ALIGHT_S, legs.back.plan.period], returning: [legs.back.plan.period] }[cab.phase];
-  return rest.reduce((a, b) => a + b, 0) - t + (cab.queue ? 1e6 : 0);
+  return Math.max(0, rest.reduce((a, b) => a + b, 0) - t);
 }
 
 /** A vehicle as a rider sees it: where it is, which way it faces, and when it calls where. */
@@ -936,9 +941,9 @@ type Surf = [number, number];
  * nose, 'aft' on the tail) change between white and red; a cab's 'white'
  * and 'red' bars never change; 'always' shows its own colour.
  */
-type LampKind = 'head' | 'tail' | 'fore' | 'aft' | 'white' | 'red' | 'always';
+type LampKind = 'head' | 'tail' | 'fore' | 'aft' | 'white' | 'red' | 'always' | 'board';
 /** Per kind: what it shows leading and trailing (0 dark, 1 white, 2 red), and whether it shows its own colour. */
-const LAMP_CODE: Record<LampKind, RGB> = { head: [1, 0, 0], tail: [0, 2, 0], fore: [1, 2, 0], aft: [2, 1, 0], white: [1, 1, 0], red: [2, 2, 0], always: [0, 0, 1] };
+const LAMP_CODE: Record<LampKind, RGB> = { head: [1, 0, 0], tail: [0, 2, 0], fore: [1, 2, 0], aft: [2, 1, 0], white: [1, 1, 0], red: [2, 2, 0], always: [0, 0, 1], board: [0, 0, 2] };
 
 const lin = (hex: string): RGB => {
   const c = new THREE.Color(hex);
@@ -1131,6 +1136,27 @@ class Kit {
     cap(0, false, caps.bottom);
   }
 
+  /**
+   * A mesh modelled in the kit pipeline (tools/kits/kits.py `veh_*`): each
+   * face's material code in its colour's red channel ((code + 0.5) / 32),
+   * split into the parts and painted by KIT_CODES.
+   */
+  coded(g: THREE.BufferGeometry): void {
+    const pos = g.attributes.position;
+    const nor = g.attributes.normal;
+    const col = g.attributes.color;
+    const idx = g.index;
+    const n = idx ? idx.count : pos.count;
+    for (let i = 0; i < n; i += 3) {
+      const vs = [0, 1, 2].map((k) => (idx ? idx.getX(i + k) : i + k));
+      const code = Math.floor(col.getX(vs[0]) * 32);
+      const spec = KIT_CODES[code];
+      if (!spec) continue;
+      const kind: RGB = spec.kind ? LAMP_CODE[spec.kind] : [0, 0, 0];
+      for (const v of vs) this.vert(spec.part, [pos.getX(v), pos.getY(v), pos.getZ(v)], [nor.getX(v), nor.getY(v), nor.getZ(v)], spec.kind ? (spec.own ?? [1, 1, 1]) : spec.colour, spec.surf, kind);
+    }
+  }
+
   /** The gathered part as a geometry: position, normal, colour, surface, and for lamps their kind. */
   part(p: Part): THREE.BufferGeometry | null {
     const d = this.data.get(p)!;
@@ -1221,6 +1247,32 @@ function smoothRings(keys: Ring[], per: number): Ring[] {
 }
 
 const UNIT = new THREE.BoxGeometry(1, 1, 1);
+/** The kit pipeline's material codes (tools/kits/kits.py VEH): what each coded face is drawn in. */
+const KIT_CODES: Record<number, { part: Part; colour: RGB; surf: Surf; kind?: LampKind; own?: RGB }> = {
+  1: { part: 'body', colour: lin('#8d9093'), surf: [0.88, 0.3] },
+  2: { part: 'body', colour: lin('#777a7d'), surf: [0.85, 0.42] },
+  3: { part: 'body', colour: lin('#15191b'), surf: [0.2, 0.25] },
+  4: { part: 'body', colour: lin('#1f6b6e'), surf: [0.1, 0.32] },
+  5: { part: 'trim', colour: lin('#24262a'), surf: [0.3, 0.7] },
+  6: { part: 'glass', colour: [0, 0, 0], surf: [0, 0.05] },
+  7: { part: 'trim', colour: lin('#0c0d0e'), surf: [0.3, 0.55] },
+  8: { part: 'trim', colour: lin('#2f2d2a'), surf: [0.55, 0.55] },
+  9: { part: 'trim', colour: lin('#4a4540'), surf: [0.9, 0.32] },
+  10: { part: 'lamp', colour: [1, 1, 1], surf: [0, 1], kind: 'head' },
+  11: { part: 'lamp', colour: [1, 1, 1], surf: [0, 1], kind: 'tail' },
+  12: { part: 'lamp', colour: [1, 1, 1], surf: [0, 1], kind: 'board', own: [2.6, 1.15, 0.2] },
+  13: { part: 'body', colour: lin('#ddd4bf'), surf: [0, 0.28] },
+  14: { part: 'body', colour: lin('#25272a'), surf: [0.1, 0.42] },
+  15: { part: 'body', colour: lin('#1c1e21'), surf: [0.2, 0.16] },
+  16: { part: 'trim', colour: lin('#a3a19c'), surf: [0.92, 0.25] },
+  17: { part: 'lamp', colour: [1, 1, 1], surf: [0, 1], kind: 'white' },
+  18: { part: 'lamp', colour: [1, 1, 1], surf: [0, 1], kind: 'red' },
+  19: { part: 'lamp', colour: [1, 1, 1], surf: [0, 1], kind: 'always', own: [1.3, 0.62, 0.12] },
+  20: { part: 'trim', colour: lin('#111112'), surf: [0, 0.85] },
+  21: { part: 'trim', colour: lin('#151618'), surf: [0.2, 0.55] },
+  22: { part: 'body', colour: lin('#3d5c62'), surf: [0.15, 0.3] },
+};
+
 /** A lifebuoy: 0.6 m across. */
 const RING = new THREE.TorusGeometry(0.26, 0.055, 6, 14);
 const CYLS = new Map<number, THREE.BufferGeometry>();
@@ -1437,6 +1489,12 @@ const RAIL_DOORS = [3.4, -3.4];
 const RAIL_DOOR_W = 1.4;
 
 function railModel(kit: Kit, nose: boolean): void {
+  // Near, the cab car is the modelled one from the kit pipeline (its shell subdivided, its gear and lamps on it).
+  if (nose && !kit.lo && hasKit('veh_railEnd')) {
+    kit.coded(kitShared('veh_railEnd'));
+    kit.coded(kitShared('veh_railEnd_gear'));
+    return;
+  }
   const steel = lin('#8d9093');
   const mask = lin('#2b3d42');
   const teal = lin('#1f6b6e');
@@ -1736,6 +1794,11 @@ const CAB_RINGS: Ring[] = [
 ];
 
 function cabModel(kit: Kit): void {
+  if (!kit.lo && hasKit('veh_cab')) {
+    kit.coded(kitShared('veh_cab'));
+    kit.coded(kitShared('veh_cab_gear'));
+    return;
+  }
   const cream = lin('#ddd4bf');
   const graphite = lin('#25272a');
   const arch = (x: number, y: number): boolean => y < 0.72 && (Math.abs(x - 1.28) < 0.44 || Math.abs(x + 1.28) < 0.44);
@@ -1864,9 +1927,23 @@ function surfaced(sh: THREE.WebGLProgramParametersWithUniforms): void {
 
 /** What a lamp shows: white or red by whether its car's nose leads (aLead), brighter red braking (aBrake), or its own colour. */
 const LAMP_GLSL = /* glsl */ `
+  varying vec3 vLampP;
+  float ledHash(float n) { return fract(sin(n * 91.345 + 7.13) * 47453.5453); }
+  // A destination board's LED matrix: round dots on a 25 mm pitch, lit in five-by-seven characters with gaps.
+  float ledBoard() {
+    vec2 q = vec2(vLampP.z, vLampP.y) / 0.025;
+    vec2 cell = floor(q);
+    float dot = 1.0 - smoothstep(0.22, 0.38, length(fract(q) - 0.5));
+    float col = mod(cell.x + 200.0, 6.0);
+    float ch = floor((cell.x + 200.0) / 6.0);
+    float row = mod(cell.y, 8.0);
+    float on = step(col, 4.5) * step(row, 6.5) * step(0.5, row) * step(0.18, ledHash(ch * 3.1)) * step(0.45, ledHash(ch * 17.0 + col * 5.0 + row * 31.0));
+    return 0.05 + dot * (0.07 + 1.1 * on);
+  }
   vec3 lampShow(vec3 kind, vec3 own, float lead, float brake) {
     float code = lead > 0.5 ? kind.x : kind.y;
     vec3 c = vec3(0.0);
+    if (kind.z > 1.5) return own * ledBoard();
     if (code > 1.5) c = vec3(3.2, 0.16, 0.06) * (1.0 + 1.6 * brake);
     else if (code > 0.5) c = vec3(4.6, 4.3, 3.9);
     else if (kind.x + kind.y > 0.5) c = (kind.x > 1.5 || kind.y > 1.5) ? vec3(0.06, 0.008, 0.006) : vec3(0.05, 0.05, 0.052);
@@ -1879,8 +1956,8 @@ function lampMaterial(): THREE.MeshBasicMaterial {
   m.onBeforeCompile = (sh) => {
     dither(sh, 'near');
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 lampKind;\nattribute vec3 color;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKind = lampKind;\nvOwn = color;\nvLead = aLead;\nvBrake = aBrake;');
+      .replace('#include <common>', '#include <common>\nattribute vec3 lampKind;\nattribute vec3 color;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKind = lampKind;\nvOwn = color;\nvLead = aLead;\nvBrake = aBrake;\nvLampP = position;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;\n${LAMP_GLSL}`)
       .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = lampShow(vKind, vOwn, vLead, vBrake);');
@@ -2160,8 +2237,8 @@ function farMaterial(): THREE.MeshStandardMaterial {
     dither(sh, 'far');
     surfaced(sh);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 glow;\nattribute vec3 lampKind;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = glow;\nvKind = lampKind;\nvLead = aLead;\nvBrake = aBrake;');
+      .replace('#include <common>', '#include <common>\nattribute vec3 glow;\nattribute vec3 lampKind;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = glow;\nvKind = lampKind;\nvLead = aLead;\nvBrake = aBrake;\nvLampP = position;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\n${LAMP_GLSL}`)
       .replace(
@@ -2332,8 +2409,6 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     for (const u of fleet.units) byId.set(u.id, u);
   };
   index();
-  /** Each cab leg already served, so a second summons brings the same cab. */
-  const errands = new Map<string, Cab>();
   let disposed = false;
   const group = new THREE.Group();
   group.name = 'vehicles';
@@ -2697,17 +2772,18 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
   function summonCab(trip: Trip, k: number): VehicleRef {
     const leg = trip.legs[k];
     if (!leg || leg.mode !== 'cab' || leg.path.length < 2) throw new Error(`summonCab: leg ${k} of trip ${trip.id} is not a cab leg`);
-    const errand = `${trip.id}#${k}`;
-    const known = errands.get(errand);
-    if (known && fleet.cabs.includes(known) && known.phase !== 'parked') return cabRef(known);
+    const token = `${trip.id}#${k}`;
+    const known = bookings.get(token);
+    if (known && known.phase() !== 'parked') return known;
     const way = leg.path.map(xz);
-    const start = kerbPlan(way[0], net);
-    const end = kerbPlan(way[way.length - 1], net);
+    const a = way[0];
+    const b = way[way.length - 1];
+    const start = kerbPlan(a, net);
     const bayOf = (cab: Cab): V2 => bayPose(cab.rank, cab.bay);
     let cab: Cab | undefined;
     let bestLen = Infinity;
     for (const c of fleet.cabs) {
-      if (c.phase !== 'parked') continue;
+      if (c.phase !== 'parked' || c.queue) continue;
       const len = pathLength(streetWay(bayOf(c), start.kerb));
       if (len < bestLen) {
         bestLen = len;
@@ -2716,40 +2792,83 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     }
     if (!cab) {
       // Every cab is out: the nearest rank with a bay to spare sends another from it.
-      const ranks = [...net.ranks].sort((a, b) => pathLength(streetWay(a, start.kerb)) - pathLength(streetWay(b, start.kerb)));
+      const ranks = [...net.ranks].sort((p, q) => pathLength(streetWay(p, start.kerb)) - pathLength(streetWay(q, start.kerb)));
       for (const rank of ranks) {
         const taken = new Set(fleet.cabs.filter((c) => c.rank === rank).map((c) => c.bay));
         if (taken.size >= RANK_CABS) continue;
-        const bay = [0, 1, 2].find((b) => !taken.has(b))!;
+        const bay = [0, 1, 2].find((n) => !taken.has(n))!;
         cab = { id: `cab:extra:${fleet.cabs.length}`, rank, bay, phase: 'parked', run: null, since: 0, legs: null };
         fleet.cabs.push(cab);
         break;
       }
     }
     if (!cab) {
-      // Every bay in the city is out on an errand: the cab whose errand ends soonest takes this one next.
-      cab = [...fleet.cabs].sort((a, b) => cabFreeIn(a, fleet.time) - cabFreeIn(b, fleet.time))[0];
-      cab.queue = { start, end };
-      errands.set(errand, cab);
-      return cabRef(cab);
+      // Every bay in the city is out: the cab whose errand ends soonest (and has none waiting) takes this one next.
+      // Its rider's booking says 'queued' and counts the real wait: that errand's end, then the drive from the bay.
+      cab = [...fleet.cabs].sort((p, q) => cabFreeIn(p, fleet.time) + (p.queue ? 1e6 : 0) - (cabFreeIn(q, fleet.time) + (q.queue ? 1e6 : 0)))[0];
+      const plan = errandLegs(cab, a, b);
+      cab.queue = { token, a, b, est: { pickup: plan.pickup.plan.period, carry: plan.carry.plan.period } };
+      return booking(cab, token);
     }
-    sendCab(cab, start, end);
-    errands.set(errand, cab);
-    return cabRef(cab);
+    sendCab(cab, a, b, token);
+    return booking(cab, token);
   }
 
-  function sendCab(cab: Cab, start: { kerb: V2; via: V2 }, end: { kerb: V2; via: V2 }): void {
+  /** The three drives of an errand for a cab from its bay: to the kerb by a, on to the kerb by b, and back. */
+  function errandLegs(cab: Cab, a: V2, b: V2): NonNullable<Cab['legs']> {
+    const start = kerbPlan(a, net);
+    const end = kerbPlan(b, net);
     const bay = bayPose(cab.rank, cab.bay);
-    const to = (a: V2, k: { kerb: V2; via: V2 }): V2[] => [...streetWay(a, k.via), k.kerb];
-    const from = (k: { kerb: V2; via: V2 }, b: V2): V2[] => [k.kerb, ...streetWay(k.via, b)];
-    cab.legs = {
-      pickup: drive(to(bay, start), plazas),
+    return {
+      pickup: drive([...streetWay(bay, start.via), start.kerb], plazas),
       carry: drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas),
-      back: drive(from(end, bay), plazas),
+      back: drive([end.kerb, ...streetWay(end.via, bay)], plazas),
     };
+  }
+
+  function sendCab(cab: Cab, a: V2, b: V2, token: string): void {
+    cab.legs = errandLegs(cab, a, b);
+    cab.errand = token;
+    cab.ends = { a, b };
     cab.phase = 'to-pickup';
     cab.since = fleet.time;
     cab.run = cab.legs.pickup;
+  }
+
+  /**
+   * A rider's booking: the cab, seen only through this rider's errand. While
+   * the cab is out on someone else's it is 'queued', and its waits count
+   * that errand's end and the drive back; once it is on this one it is the
+   * cab itself.
+   */
+  const bookings = new Map<string, VehicleRef>();
+  function booking(cab: Cab, token: string): VehicleRef {
+    const id = cab.id;
+    const now = (): Cab | undefined => fleet.cabs.find((c) => c.id === id);
+    const mine = (): boolean => now()?.errand === token;
+    const queued = (): boolean => now()?.queue?.token === token;
+    const base = cabRef(cab);
+    const ref: VehicleRef = {
+      ...base,
+      id: queued() ? `${id}~${token}` : id,
+      phase() {
+        if (mine()) return base.phase();
+        return queued() ? 'queued' : 'parked';
+      },
+      arrivesIn(p) {
+        const c = now();
+        if (!c) return Infinity;
+        if (mine()) return base.arrivesIn(p);
+        const q = c.queue;
+        if (!q || q.token !== token) return Infinity;
+        const free = cabFreeIn(c, fleet.time);
+        if (dist(kerbOf(q.a, net), p) < 6) return free + q.est.pickup;
+        if (dist(kerbOf(q.b, net), p) < 6) return free + q.est.pickup + CAB_BOARD_S + q.est.carry;
+        return Infinity;
+      },
+    };
+    bookings.set(token, ref);
+    return ref;
   }
 
   /** Each cab moves on through its errand; one back at its bay with another queued sets off again. */
@@ -2759,8 +2878,41 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       if (c.phase === 'parked' && c.queue) {
         const q = c.queue;
         c.queue = null;
-        sendCab(c, q.start, q.end);
+        sendCab(c, q.a, q.b, q.token);
       }
+    }
+  }
+
+  /**
+   * A cab caught mid-errand by a relay: the rest of its errand planned again
+   * on the new network, from where it stands now (the kerbs re-snapped to
+   * the new plazas), so it neither jumps nor drives the old streets.
+   */
+  function replan(c: Cab, time: number): void {
+    if (!c.legs || !c.ends || c.phase === 'parked') return;
+    const here = cabPose(c, time);
+    const pos = { x: here.x, z: here.z };
+    const start = kerbPlan(c.ends.a, net);
+    const end = kerbPlan(c.ends.b, net);
+    const bay = bayPose(c.rank, c.bay);
+    const toEnd = (from: V2): { track: Track; plan: Plan } => drive([from, ...streetWay(from, end.via), end.kerb], plazas);
+    const back = drive([end.kerb, ...streetWay(end.via, bay)], plazas);
+    if (c.phase === 'to-pickup') {
+      c.legs = { pickup: drive([pos, ...streetWay(pos, start.via), start.kerb], plazas), carry: drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas), back };
+      c.run = c.legs.pickup;
+      c.since = time;
+    } else if (c.phase === 'pickup') {
+      c.legs = { ...c.legs, carry: toEnd(pos), back };
+    } else if (c.phase === 'carrying') {
+      c.legs = { ...c.legs, carry: toEnd(pos), back };
+      c.run = c.legs.carry;
+      c.since = time;
+    } else if (c.phase === 'setdown') {
+      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas) };
+    } else if (c.phase === 'returning') {
+      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas) };
+      c.run = c.legs.back;
+      c.since = time;
     }
   }
 
@@ -2777,16 +2929,13 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     const cabs: Cab[] = [];
     for (const c of old.cabs) {
       const rank = rankAt(c.rank);
-      if (rank) cabs.push({ ...c, rank });
+      if (!rank) continue;
+      const kept = { ...c, rank };
+      replan(kept, time);
+      cabs.push(kept);
     }
     for (const c of fleet.cabs) if (!cabs.some((o) => o.id === c.id)) cabs.push(c);
     fleet.cabs = cabs;
-    // Keep the old cab objects' identities for the errands map.
-    for (const [k, c] of errands) {
-      const n = cabs.find((o) => o.id === c.id);
-      if (n) errands.set(k, n);
-      else errands.delete(k);
-    }
     index();
     const outgrown = (Object.keys(MODELS) as ModelName[]).some((m) => {
       const d = drawn.get(m);
