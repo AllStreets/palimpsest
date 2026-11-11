@@ -47,7 +47,7 @@ interface DebugHandle {
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
   /** The river's lanterns, its static draw calls and whether its water drew since last asked. */
-  river(): { lamps: number; meshes: number; drewWater: boolean };
+  river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** The quality the city draws at now (medium after an automatic drop). */
   quality(): 'high' | 'medium';
   /** Steps down to medium as the automatic drop does (tests). */

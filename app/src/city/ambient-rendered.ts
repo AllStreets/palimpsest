@@ -582,6 +582,7 @@ export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; s
  * so nothing the ambient board renders changed.
  * Restamped for Task 29, also without a re-measure: sky.ts only exports its sky function (for the water) and post.ts
  * gives the frame a depth texture and draws the river's water after the scene; the boards stand off the river, so
- * no water is in their frame and every rendered value is unchanged.
+ * no water is in their frame and every rendered value is unchanged. Restamped again in its fix round: post.ts leaves
+ * meshes marked noAO (far river chunks) out of the AO pass, and the boards carry none.
  */
-export const AMBIENT_INPUTS = '4414d492f45c80c6';
+export const AMBIENT_INPUTS = '324ff50736747b8a';

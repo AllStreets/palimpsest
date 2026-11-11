@@ -131,7 +131,7 @@ export interface City {
   /** Draw calls and triangles in the last whole frame, every pass included. */
   stats(): { calls: number; triangles: number };
   /** The river (river.ts): its lanterns, its static draw calls, and whether its water drew since last asked (tests). */
-  river(): { lamps: number; meshes: number; drewWater: boolean };
+  river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
   plots(): { plazas: number; buildings: number };
   /**
@@ -1038,6 +1038,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     renderer.setPixelRatio(1);
     renderer.setSize(width(), height());
     post.dispose();
+    river.setQuality('medium');
     post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
     texel = (SHADOW_HALF * 2) / shadowSize;
@@ -1072,7 +1073,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     updateConstructions(dt);
     updateLife(dt);
     applyLimits();
-    river.update(dt, fog.density);
+    // Each chunk of the river draws its detail, casts its shadow and joins the AO pass only near the eye.
+    if (river.update(dt, fog.density, camera.position)) sun.shadow.needsUpdate = true;
     fitMark();
     plates.update();
     sky.dome.position.copy(camera.position);
@@ -1129,7 +1131,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ready,
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
-    river: () => ({ lamps: river.lamps.length, ...river.view() }),
+    river: () => ({ lamps: river.lamps.length, ...river.view(camera) }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     ambientBoard: (lots) => grid.board(lots),
     board(objects, spots) {

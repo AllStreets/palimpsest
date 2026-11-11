@@ -478,7 +478,6 @@ export function makeBlock(i: number, j: number): Lot[] {
   return lots;
 }
 
-/** The far ring: one building per block, low, carrying each neighbourhood's character into the haze. */
 /**
  * How far a lot's parts (bays, cornices, fire escapes) may reach past its
  * walls: the river's test widens each lot by this much, so nothing hangs
@@ -492,6 +491,7 @@ export function farLotStands(i: number, j: number): boolean {
   return !onRiverGround(l.x, l.z, l.w + 2 * LOT_REACH, l.d);
 }
 
+/** The far ring: one building per block, low, carrying each neighbourhood's character into the haze. */
 export function farLot(i: number, j: number): Lot {
   const r = rng(blockSeed(i, j));
   const hood = neighbourhood(i, j);

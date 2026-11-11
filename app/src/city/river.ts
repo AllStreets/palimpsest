@@ -25,6 +25,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { BANKS, BRIDGE_DECK, BRIDGES, PIER_HALF, PIERS, QUAY, RIVER, type Pier } from '../../../shared/commute.js';
 import { materials, texture } from './materials';
+import { chunkAt, chunkLod, chunks, waterSettings, type Chunk } from './river-lod.js';
 import { SKY_GLSL, SUN_DIRECTION } from './sky';
 
 /** The water's surface, metres below the quays. */
@@ -258,9 +259,22 @@ interface RiverMaterials {
 
 type V3 = [number, number, number];
 
-/** Geometry gathered by material in world space, merged into one mesh per material at the end. */
+/**
+ * Geometry gathered in world space by chunk (river-lod.ts), by tier (the
+ * core, drawn at any distance, or the detail, drawn only near) and by
+ * material, merged into one mesh per material in each chunk and tier.
+ */
 class Build {
-  private by = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  private by = new Map<string, Map<THREE.Material, THREE.BufferGeometry[]>>();
+  /** The tier the next parts go into. */
+  tier: 'core' | 'detail' = 'core';
+  /** Adds the parts `fn` builds to the detail tier. */
+  detail(fn: () => void): void {
+    const was = this.tier;
+    this.tier = 'detail';
+    fn();
+    this.tier = was;
+  }
   /** Adds a geometry, transformed by `m` when given. */
   add(mat: THREE.Material, g: THREE.BufferGeometry, m?: THREE.Matrix4): void {
     let geo = g.index ? g.toNonIndexed() : g.clone();
@@ -269,9 +283,14 @@ class Build {
     if (!geo.attributes.normal) geo.computeVertexNormals();
     if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(geo.attributes.position.count * 2), 2));
     geo = geo.index ? geo.toNonIndexed() : geo;
-    const list = this.by.get(mat) ?? [];
+    geo.computeBoundingBox();
+    const zc = (geo.boundingBox!.min.z + geo.boundingBox!.max.z) / 2;
+    const key = `${chunkAt(zc)}|${this.tier}`;
+    let mats = this.by.get(key);
+    if (!mats) this.by.set(key, (mats = new Map()));
+    const list = mats.get(mat) ?? [];
     list.push(geo);
-    this.by.set(mat, list);
+    mats.set(mat, list);
   }
   /** A box centred at (x, y, z), turned ry about the vertical. */
   box(mat: THREE.Material, x: number, y: number, z: number, sx: number, sy: number, sz: number, ry = 0): void {
@@ -303,21 +322,49 @@ class Build {
   put(mat: THREE.Material, g: THREE.BufferGeometry, x: number, y: number, z: number, ry = 0, s: V3 = [1, 1, 1]): void {
     this.add(mat, g, new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromAxisAngle(Y, ry), new THREE.Vector3(...s)));
   }
-  meshes(shadows: (m: THREE.Material) => boolean): THREE.Mesh[] {
-    const out: THREE.Mesh[] = [];
-    for (const [mat, list] of this.by) {
-      const geo = mergeGeometries(list, false);
-      for (const g of list) g.dispose();
-      if (!geo) continue;
-      geo.computeBoundingSphere();
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.castShadow = mesh.receiveShadow = shadows(mat);
-      mesh.name = `river:${mat.name || mat.type}`;
-      out.push(mesh);
+  /** One group per chunk that holds anything, with its core and detail meshes. */
+  chunks(shadows: (m: THREE.Material) => boolean): RiverChunk[] {
+    const all = chunks();
+    const out = new Map<number, RiverChunk>();
+    for (const [key, mats] of this.by) {
+      const [ci, tier] = key.split('|') as [string, 'core' | 'detail'];
+      const index = Number(ci);
+      let rc = out.get(index);
+      if (!rc) {
+        const group = new THREE.Group();
+        group.name = `river-chunk-${index}`;
+        const core = new THREE.Group();
+        const detail = new THREE.Group();
+        group.add(core, detail);
+        out.set(index, (rc = { chunk: all[index], group, core, detail, casters: [], triangles: { core: 0, detail: 0 }, lod: null }));
+      }
+      for (const [mat, list] of mats) {
+        const geo = mergeGeometries(list, false);
+        for (const g of list) g.dispose();
+        if (!geo) continue;
+        geo.computeBoundingSphere();
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.castShadow = mesh.receiveShadow = shadows(mat);
+        if (mesh.castShadow) rc.casters.push(mesh);
+        mesh.name = `river:${mat.name || mat.type}`;
+        (tier === 'core' ? rc.core : rc.detail).add(mesh);
+        rc.triangles[tier] += geo.attributes.position.count / 3;
+      }
     }
     this.by.clear();
-    return out;
+    return [...out.values()].sort((a, b) => a.chunk.z0 - b.chunk.z0);
   }
+}
+
+/** A chunk of the river as built: its core and detail meshes, the meshes that cast shadows, its triangles per tier. */
+interface RiverChunk {
+  chunk: Chunk;
+  group: THREE.Group;
+  core: THREE.Group;
+  detail: THREE.Group;
+  casters: THREE.Mesh[];
+  triangles: { core: number; detail: number };
+  lod: { detail: boolean; shadow: boolean; ao: boolean } | null;
 }
 
 const Y = new THREE.Vector3(0, 1, 0);
@@ -346,15 +393,17 @@ function lathe(profile: Array<[number, number]>, seg = 12): THREE.BufferGeometry
  * crown and a finial. 5.6 m to the finial. Returns the lantern's centre height.
  */
 function quayLamp(b: Build, M: RiverMaterials, x: number, z: number, lamps: THREE.Vector4[]): void {
-  b.put(M.iron, LAMP_BASE, x, 0, z);
-  b.put(M.iron, LAMP_SHAFT, x, 0, z);
   b.put(M.lantern, LAMP_GLASS, x, 4.62, z, Math.PI / 4);
-  b.put(M.iron, LAMP_CROWN, x, 5.02, z, Math.PI / 4);
-  // The lantern's four corner bars.
-  for (let k = 0; k < 4; k++) {
-    const a = (k / 4) * Math.PI * 2;
-    b.rod(M.iron, [x + Math.cos(a) * 0.2, 4.28, z + Math.sin(a) * 0.2], [x + Math.cos(a) * 0.27, 4.98, z + Math.sin(a) * 0.27], 0.022, 4);
-  }
+  b.detail(() => {
+    b.put(M.iron, LAMP_BASE, x, 0, z);
+    b.put(M.iron, LAMP_SHAFT, x, 0, z);
+    b.put(M.iron, LAMP_CROWN, x, 5.02, z, Math.PI / 4);
+    // The lantern's four corner bars.
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2;
+      b.rod(M.iron, [x + Math.cos(a) * 0.2, 4.28, z + Math.sin(a) * 0.2], [x + Math.cos(a) * 0.27, 4.98, z + Math.sin(a) * 0.27], 0.022, 4);
+    }
+  });
   lamps.push(new THREE.Vector4(x, 4.62, z, 1));
 }
 
@@ -365,6 +414,9 @@ const LAMP_CROWN = lathe([[0, 0], [0.36, 0], [0.33, 0.06], [0.08, 0.32], [0.05, 
 
 /** The stone bridge's candelabrum: a cast-iron column on a stone pedestal, three lanterns on a crossbar and the column's head. */
 function candelabrum(b: Build, M: RiverMaterials, x: number, y: number, z: number, along: number, lamps: THREE.Vector4[]): void {
+  // The ironwork and pedestal are near detail; the lanterns' glass is core, so the lamps read from afar.
+  const was = b.tier;
+  b.tier = 'detail';
   b.box(M.balustrade, x, y + 0.7, z, 1.2, 1.4, 1.2);
   b.box(M.balustrade, x, y + 1.46, z, 1.36, 0.12, 1.36);
   b.put(M.iron, LAMP_BASE, x, y + 1.52, z, 0, [1.3, 1.1, 1.3]);
@@ -378,10 +430,13 @@ function candelabrum(b: Build, M: RiverMaterials, x: number, y: number, z: numbe
     const lx = x + ax * 0.95 * s;
     const lz = z + az * 0.95 * s;
     const ly = s === 0 ? top + 0.55 : top - 0.08;
+    b.tier = 'core';
     b.put(M.lantern, LAMP_GLASS, lx, ly, lz, Math.PI / 4, [1.1, 1.1, 1.1]);
+    b.tier = 'detail';
     b.put(M.iron, LAMP_CROWN, lx, ly + 0.42, lz, Math.PI / 4, [1.1, 1.0, 1.1]);
     lamps.push(new THREE.Vector4(lx, ly, lz, 1.1));
   }
+  b.tier = was;
 }
 const CANDLE_SHAFT = lathe([[0, 0.7], [0.14, 0.7], [0.1, 2.0], [0.13, 2.08], [0.09, 2.2], [0.07, 4.6], [0.12, 4.68], [0.12, 4.78], [0.06, 4.86], [0.06, 5.5], [0, 5.5]], 10);
 
@@ -389,72 +444,68 @@ const CANDLE_SHAFT = lathe([[0, 0.7], [0.14, 0.7], [0.1, 2.0], [0.13, 2.08], [0.
 
 /** The quay walls, copings, parapets, mooring rings, drains and lamps along both banks. */
 function buildQuays(b: Build, M: RiverMaterials, lamps: THREE.Vector4[]): void {
-  const h = -WALL_FOOT;
   for (const bank of ['west', 'east'] as const) {
     const s = bank === 'west' ? -1 : 1; // outward from the river
     const face = BANKS[bank];
-    // The wall: 3 m of masonry behind its face, its face slightly battered (it leans back 1 in 30).
-    const wall = new THREE.BufferGeometry();
-    {
-      const top = -0.62;
-      const lean = (top - WALL_FOOT) / 30;
-      const x0 = face - s * 0.0;
-      const x1 = face + s * lean;
-      const back = face + s * 3;
-      const z0 = -LENGTH / 2;
-      const z1 = LENGTH / 2;
-      // Face quad (toward the river) and the hidden back, as a closed prism.
-      const shape = new THREE.Shape([new THREE.Vector2(x0, WALL_FOOT), new THREE.Vector2(back, WALL_FOOT), new THREE.Vector2(back, top), new THREE.Vector2(x1, top)]);
-      const ex = new THREE.ExtrudeGeometry(shape, { depth: z1 - z0, bevelEnabled: false });
-      ex.translate(0, 0, z0);
-      wall.copy(ex);
-      ex.dispose();
-    }
-    b.add(M.wall, wall);
-    wall.dispose();
-    void h;
-    // The granite string course and coping at the wall head, oversailing the face.
-    b.box(M.granite, face + s * (COPING - 0.22) / 2, -0.31, 0, COPING + 0.22, 0.62, LENGTH);
-    b.box(M.granite, face - s * 0.12, -0.7, 0, 0.5, 0.16, LENGTH);
-    // Parapet with a rounded coping, broken at each bridge and each pier's stair.
+    // Parapet runs, broken at each bridge and each pier's stair.
     const gaps: Array<[number, number]> = [];
     for (const bz of BRIDGES) gaps.push([bz - BRIDGE_DECK / 2 - 0.6, bz + BRIDGE_DECK / 2 + 0.6]);
     for (const p of PIERS) if (p.bank === bank) gaps.push([p.z - 1.6, p.z + 1.6]);
     gaps.sort((a, c) => a[0] - c[0]);
-    let from = -LENGTH / 2;
     const px = face + s * (PARAPET_W / 2 + 0.05);
-    const runs: Array<[number, number]> = [];
-    for (const [g0, g1] of [...gaps, [LENGTH / 2, LENGTH / 2] as [number, number]]) {
-      if (g0 > from) runs.push([from, g0]);
-      from = Math.max(from, g1);
-    }
-    for (const [r0, r1] of runs) {
-      const len = r1 - r0;
-      const zc = (r0 + r1) / 2;
-      b.box(M.granite, px, PARAPET_H / 2 - 0.02, zc, PARAPET_W, PARAPET_H, len);
-      b.put(M.granite, PARAPET_CAP, px, PARAPET_H - 0.02, zc, 0, [1, 1, len]);
-      // Piers in the parapet every 15 m, a course proud.
-      for (let z = Math.ceil(r0 / 15) * 15; z < r1 - 1; z += 15) if (z > r0 + 1) b.box(M.granite, px, PARAPET_H / 2 + 0.04, z, PARAPET_W + 0.12, PARAPET_H + 0.12, 0.9);
-    }
-    // Mooring rings on the wall face a metre and a half above the water, every 18 m, on their plates.
-    for (let z = -QUAY_LAMP_REACH; z <= QUAY_LAMP_REACH; z += 18) {
-      if (BRIDGES.some((bz) => Math.abs(z - bz) < 16)) continue;
-      const y = WATER_Y + 1.6;
-      b.box(M.iron, face - s * 0.04, y + 0.18, z, 0.06, 0.34, 0.26);
-      b.put(M.iron, RING, face - s * 0.12, y, z, 0);
-    }
-    // Storm outfalls every 240 m: a dark arched mouth with a stone ring of voussoirs.
-    for (let z = -1680; z <= 1680; z += 240) {
-      if (BRIDGES.some((bz) => Math.abs(z - bz) < 40) || PIERS.some((p) => Math.abs(z - p.z) < 30)) continue;
-      const zc = z + 120;
-      const yc = WATER_Y + 1.1;
-      b.box(M.hull, face - s * 0.02, yc - 0.3, zc, 0.06, 1.4, 1.8);
-      for (let k = 0; k <= 8; k++) {
-        const a = (k / 8) * Math.PI;
-        b.box(M.granite, face - s * 0.06, yc + 0.4 + Math.sin(a) * 1.05, zc + Math.cos(a) * 1.05, 0.14, 0.42, 0.34, 0);
+    // Everything that runs the river's length is laid chunk by chunk (river-lod.ts), so the frustum culls it.
+    for (const { z0, z1 } of chunks()) {
+      // The wall: 3 m of masonry behind its face, its face slightly battered (it leans back 1 in 30).
+      const top = -0.62;
+      const lean = (top - WALL_FOOT) / 30;
+      const shape = new THREE.Shape([new THREE.Vector2(face, WALL_FOOT), new THREE.Vector2(face + s * 3, WALL_FOOT), new THREE.Vector2(face + s * 3, top), new THREE.Vector2(face + s * lean, top)]);
+      const wall = new THREE.ExtrudeGeometry(shape, { depth: z1 - z0, bevelEnabled: false });
+      wall.translate(0, 0, z0);
+      b.add(M.wall, wall);
+      wall.dispose();
+      const zc = (z0 + z1) / 2;
+      // The granite string course and coping at the wall head, oversailing the face.
+      b.box(M.granite, face + (s * (COPING - 0.22)) / 2, -0.31, zc, COPING + 0.22, 0.62, z1 - z0);
+      b.box(M.granite, face - s * 0.12, -0.7, zc, 0.5, 0.16, z1 - z0);
+      // The parapet with its rounded coping, clipped to this chunk.
+      let from = z0;
+      const runs: Array<[number, number]> = [];
+      for (const [g0, g1] of [...gaps.filter(([g0, g1]) => g1 > z0 && g0 < z1), [z1, z1] as [number, number]]) {
+        if (Math.min(g0, z1) > from) runs.push([from, Math.min(g0, z1)]);
+        from = Math.max(from, g1);
+      }
+      for (const [r0, r1] of runs) {
+        const len = r1 - r0;
+        const rc = (r0 + r1) / 2;
+        b.box(M.granite, px, PARAPET_H / 2 - 0.02, rc, PARAPET_W, PARAPET_H, len);
+        b.put(M.granite, PARAPET_CAP, px, PARAPET_H - 0.02, rc, 0, [1, 1, len]);
+        // Piers in the parapet every 15 m, a course proud: near detail.
+        b.detail(() => {
+          for (let z = Math.ceil(r0 / 15) * 15; z < r1 - 1; z += 15) if (z > r0 + 1) b.box(M.granite, px, PARAPET_H / 2 + 0.04, z, PARAPET_W + 0.12, PARAPET_H + 0.12, 0.9);
+        });
       }
     }
-    // Lamps on the promenade, a step back from the parapet.
+    b.detail(() => {
+      // Mooring rings on the wall face a metre and a half above the water, every 18 m, on their plates.
+      for (let z = -QUAY_LAMP_REACH; z <= QUAY_LAMP_REACH; z += 18) {
+        if (BRIDGES.some((bz) => Math.abs(z - bz) < 16)) continue;
+        const y = WATER_Y + 1.6;
+        b.box(M.iron, face - s * 0.04, y + 0.18, z, 0.06, 0.34, 0.26);
+        b.put(M.iron, RING, face - s * 0.12, y, z, 0);
+      }
+      // Storm outfalls every 240 m: a dark arched mouth with a stone ring of voussoirs.
+      for (let z = -1680; z <= 1680; z += 240) {
+        if (BRIDGES.some((bz) => Math.abs(z - bz) < 40) || PIERS.some((p) => Math.abs(z - p.z) < 30)) continue;
+        const zc = z + 120;
+        const yc = WATER_Y + 1.1;
+        b.box(M.hull, face - s * 0.02, yc - 0.3, zc, 0.06, 1.4, 1.8);
+        for (let k = 0; k <= 8; k++) {
+          const a = (k / 8) * Math.PI;
+          b.box(M.granite, face - s * 0.06, yc + 0.4 + Math.sin(a) * 1.05, zc + Math.cos(a) * 1.05, 0.14, 0.42, 0.34, 0);
+        }
+      }
+    });
+    // Lamps on the promenade, a step back from the parapet: the glass is core (the lamp lines read from afar), the ironwork detail.
     for (let z = -QUAY_LAMP_REACH; z <= QUAY_LAMP_REACH; z += QUAY_LAMP_STEP) {
       if (!quayLampClear(bank, z)) continue;
       quayLamp(b, M, face + s * QUAY_LAMP_IN, z, lamps);
@@ -521,7 +572,8 @@ function stoneBridge(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vecto
   b.add(M.bridgeStone, body);
   body.dispose();
 
-  // Arch rings: voussoirs proud of each face, alternating long and short, a keystone at the crown.
+  // Arch rings: voussoirs proud of each face, alternating long and short, a keystone at the crown (near detail).
+  b.tier = 'detail';
   for (const [a, c, h] of spans) {
     const s = segment(a, c, spring, h);
     const n = 23;
@@ -539,6 +591,7 @@ function stoneBridge(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vecto
     }
   }
 
+  b.tier = 'core';
   // Cutwaters: pointed noses up and downstream of each pier, capped with a stepped stone hood, and a pilaster above.
   for (const px of piers) {
     for (const face of [-1, 1]) {
@@ -562,7 +615,9 @@ function stoneBridge(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vecto
     const fz = bz + face * (half + 0.18);
     b.box(M.granite, (x0 + x1) / 2, -0.32, fz, x1 - x0, 0.46, 0.5);
     b.box(M.granite, (x0 + x1) / 2, -0.62, bz + face * (half + 0.06), x1 - x0, 0.14, 0.3);
-    for (let x = x0 + 0.4; x < x1 - 0.2; x += 0.6) b.box(M.balustrade, x, -0.62, bz + face * (half + 0.2), 0.28, 0.16, 0.2);
+    b.detail(() => {
+      for (let x = x0 + 0.4; x < x1 - 0.2; x += 0.6) b.box(M.balustrade, x, -0.62, bz + face * (half + 0.2), 0.28, 0.16, 0.2);
+    });
   }
 
   // The deck: carriageway between kerbs, a footway each side.
@@ -577,7 +632,7 @@ function stoneBridge(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vecto
     b.box(M.balustrade, (x0 + x1) / 2, DECK_TOP + 1.12, fz, x1 - x0, 0.16, 0.48);
     for (let x = x0 + 1.2; x < x1 - 1.0; x += 0.34) {
       if (posts.some((p) => Math.abs(x - p) < 0.95)) continue;
-      b.put(M.balustrade, BALUSTER, x, DECK_TOP + 0.4, fz);
+      b.detail(() => b.put(M.balustrade, BALUSTER, x, DECK_TOP + 0.4, fz));
     }
     for (const p of posts) {
       const end = p < piers[0] - 1 || p > piers[1] + 1;
@@ -638,7 +693,9 @@ function steelArch(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vector4
     b.box(M.steel, (xa + xb) / 2, (tieTop - 1.68) / 2, z, span + 3, tieTop + 1.68, 0.7);
     b.box(M.steel, (xa + xb) / 2, tieTop + 0.02, z, span + 3, 0.06, 0.95);
     b.box(M.steel, (xa + xb) / 2, -1.68, z, span + 3, 0.06, 0.95);
-    for (let x = xa - 1.2; x <= xb + 1.2; x += 1.625) b.box(M.steel, x, -0.55, z + side * 0.38, 0.05, 2.1, 0.1);
+    b.detail(() => {
+      for (let x = xa - 1.2; x <= xb + 1.2; x += 1.625) b.box(M.steel, x, -0.55, z + side * 0.38, 0.05, 2.1, 0.1);
+    });
   }
   // The ribs: welded box sections swept along the parabola, 0.9 wide, 1.25 deep.
   for (const side of [-1, 1]) {
@@ -650,7 +707,8 @@ function steelArch(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vector4
       b.beam(M.steel, [u0, ribAt(u0) + 0.62, z], [u1, ribAt(u1) + 0.62, z], 0.9, 1.25);
     }
   }
-  // Hangers, with a clevis plate top and bottom.
+  // Hangers, with a clevis plate top and bottom (near detail; the ribs and ties carry the far view).
+  b.tier = 'detail';
   for (let x = xa + 3.25; x < xb - 1; x += 3.25) {
     for (const side of [-1, 1]) {
       const z = bz + side * zr;
@@ -661,6 +719,7 @@ function steelArch(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vector4
     // A cross girder under the deck at every hanger.
     b.box(M.steel, x, -1.1, bz, 0.5, 1.0, 2 * zr);
   }
+  b.tier = 'core';
   // Wind bracing over the road: struts where the ribs stand high enough, X braces between them, portals at the ends.
   const clear = DECK_TOP + 6.2;
   const xs: number[] = [];
@@ -675,8 +734,10 @@ function steelArch(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vector4
     b.beam(M.steel, [x, y, bz - zr], [x, y, bz + zr], k === 0 || k === bays ? 0.7 : 0.4, k === 0 || k === bays ? 1.1 : 0.45);
     if (prev) {
       const [px, py] = prev;
-      b.beam(M.steel, [px, py, bz - zr], [x, y, bz + zr], 0.22, 0.22);
-      b.beam(M.steel, [px, py, bz + zr], [x, y, bz - zr], 0.22, 0.22);
+      b.detail(() => {
+        b.beam(M.steel, [px, py, bz - zr], [x, y, bz + zr], 0.22, 0.22);
+        b.beam(M.steel, [px, py, bz + zr], [x, y, bz - zr], 0.22, 0.22);
+      });
     }
     prev = [x, y];
   }
@@ -685,20 +746,24 @@ function steelArch(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vector4
   for (const side of [-1, 1]) {
     const zf = bz + side * (zr + 1.15);
     b.box(M.footway, (xa + xb) / 2, DECK_TOP - 0.12, zf, span + 12, 0.24, 1.6);
+    b.tier = 'detail';
     for (let x = xa; x <= xb; x += 3.25) b.beam(M.steel, [x, DECK_TOP - 0.25, bz + side * (zr + 0.35)], [x, -0.95, bz + side * (zr + 0.35)], 0.1, 0.12);
     for (let x = xa; x <= xb; x += 3.25) b.beam(M.steel, [x, -0.95, bz + side * (zr + 0.35)], [x, DECK_TOP - 0.25, bz + side * (zr + 1.9)], 0.1, 0.14);
     // Railing: posts, a top rail and two mid rails.
     const zr2 = bz + side * (zr + 1.95);
     for (let x = xa - 6; x <= xb + 6; x += 1.6) b.box(M.iron, x, DECK_TOP + 0.55, zr2, 0.06, 1.1, 0.06);
     for (const y of [1.1, 0.75, 0.4]) b.box(M.iron, (xa + xb) / 2, DECK_TOP + y, zr2, span + 12, 0.05, 0.05);
+    b.tier = 'core';
   }
   // Lanterns on the tie girders, at the quarter points and the ends.
   for (const x of [xa - 2, xa + span / 4, xb - span / 4, xb + 2]) {
     for (const side of [-1, 1]) {
       const z = bz + side * (zr + 0.0);
-      b.put(M.iron, LAMP_SHAFT, x, tieTop - 0.6, z, 0, [0.9, 0.95, 0.9]);
+      b.detail(() => {
+        b.put(M.iron, LAMP_SHAFT, x, tieTop - 0.6, z, 0, [0.9, 0.95, 0.9]);
+        b.put(M.iron, LAMP_CROWN, x, tieTop - 0.6 + 4.62 * 0.95 + 0.35, z, Math.PI / 4);
+      });
       b.put(M.lantern, LAMP_GLASS, x, tieTop - 0.6 + 4.62 * 0.95 - 0.05, z, Math.PI / 4);
-      b.put(M.iron, LAMP_CROWN, x, tieTop - 0.6 + 4.62 * 0.95 + 0.35, z, Math.PI / 4);
       const l = new THREE.Vector4(x, tieTop - 0.6 + 4.4, z, 1);
       lamps.push(l);
       deckLamps.push(l);
@@ -777,7 +842,7 @@ function stayedBridge(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vect
     const ax = px - 9 - k * 5.4;
     const ty = anchorsTop(k, mains);
     b.rod(M.cable, [px - 0.55, ty, bz], [ax, DECK_TOP + 0.3, bz], 0.085, 6);
-    b.rod(M.steel, [ax, DECK_TOP + 0.2, bz], [ax + (px - ax) * 0.02, DECK_TOP + 0.2 + (ty - DECK_TOP) * 0.02, bz], 0.2, 8);
+    b.detail(() => b.rod(M.steel, [ax, DECK_TOP + 0.2, bz], [ax + (px - ax) * 0.02, DECK_TOP + 0.2 + (ty - DECK_TOP) * 0.02, bz], 0.2, 8));
   }
   const backs = 5;
   const block = px + 28;
@@ -789,14 +854,18 @@ function stayedBridge(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vect
   // Railings and lamp columns: steel posts, a flat top rail, infill bars; columns every 11 m with a slim head.
   for (const side of [-1, 1]) {
     const zr = bz + side * (half - 0.12);
-    for (let x = x0; x <= x1; x += 1.4) b.box(M.steel, x, DECK_TOP + 0.6, zr, 0.07, 1.2, 0.05);
+    b.detail(() => {
+      for (let x = x0; x <= x1; x += 1.4) b.box(M.steel, x, DECK_TOP + 0.6, zr, 0.07, 1.2, 0.05);
+    });
     b.box(M.steel, (x0 + x1) / 2, DECK_TOP + 1.18, zr, x1 - x0, 0.06, 0.16);
     for (const y of [0.3, 0.55, 0.8]) b.box(M.steel, (x0 + x1) / 2, DECK_TOP + y, zr, x1 - x0, 0.02, 0.02);
     for (let x = x0 + 4; x <= x1 - 4; x += 11) {
       if (Math.abs(x - px) < 3) continue;
       const zc = bz + side * (half - 0.5);
-      b.rod(M.steel, [x, DECK_TOP, zc], [x, DECK_TOP + 6.8, zc], 0.07, 8);
-      b.box(M.steel, x, DECK_TOP + 6.85, zc - side * 0.45, 0.32, 0.1, 1.1);
+      b.detail(() => {
+        b.rod(M.steel, [x, DECK_TOP, zc], [x, DECK_TOP + 6.8, zc], 0.07, 8);
+        b.box(M.steel, x, DECK_TOP + 6.85, zc - side * 0.45, 0.32, 0.1, 1.1);
+      });
       b.box(M.lampHead, x, DECK_TOP + 6.79, zc - side * 0.5, 0.22, 0.02, 0.9);
       const l = new THREE.Vector4(x, DECK_TOP + 6.8, zc - side * 0.5, 1.2);
       lamps.push(l);
@@ -832,6 +901,7 @@ function ferryPier(b: Build, M: RiverMaterials, p: Pier, row: number, lamps: THR
   // The stair's outer wall and handrail.
   b.beam(M.granite, [face + s * (sw + 0.18), 0.45, p.z - 1.6], [face + s * (sw + 0.18), 0.45, p.z + 1.2], 0.36, 0.9);
   b.beam(M.granite, [face + s * (sw + 0.18), 0.45, p.z + 1.2], [face + s * (sw + 0.18), WATER_Y + 1.35, p.z + 1.2 + steps * run], 0.36, 0.9);
+  b.tier = 'detail';
   b.beam(M.iron, [face + s * (sw - 0.05), 0.9, p.z + 1.2], [face + s * (sw - 0.05), WATER_Y + 1.9, p.z + 1.2 + steps * run], 0.05, 0.05);
   // Pontoon: 28 m by 7 m, off the stairs' landing.
   const gx0 = face + s * (sw + 0.4);
@@ -839,8 +909,10 @@ function ferryPier(b: Build, M: RiverMaterials, p: Pier, row: number, lamps: THR
   const pcx = gx0 + s * (3.2 + pw / 2);
   const pz = landZ - 3;
   const deckY = WATER_Y + 0.85;
+  b.tier = 'core';
   b.box(M.hull, pcx, WATER_Y + 0.1, pz, pw, 1.5, PIER_HALF * 2);
   b.box(M.timber, pcx, deckY + 0.04, pz, pw - 0.2, 0.08, PIER_HALF * 2 - 0.2);
+  b.tier = 'detail';
   // Rubbing strake round the hull, a shade lighter.
   for (const side of [-1, 1]) b.box(M.timber, pcx + side * (pw / 2 + 0.1), deckY - 0.25, pz, 0.22, 0.24, PIER_HALF * 2);
   // Gangway from the landing to the pontoon, with its side rails.
@@ -865,9 +937,10 @@ function ferryPier(b: Build, M: RiverMaterials, p: Pier, row: number, lamps: THR
     b.box(M.steel, sx - s * 1.6, deckY + 1.35, z, 0.14, 2.7, 0.14);
   }
   b.box(M.glass, sx - s * 1.62, deckY + 1.25, pz, 0.03, 2.2, len);
+  b.box(M.timber, sx - s * 1.25, deckY + 0.48, pz, 0.45, 0.08, len - 2);
+  b.tier = 'core';
   b.box(M.steel, sx, deckY + 2.78, pz, 3.8, 0.16, len + 1.2);
   b.box(M.lampHead, sx, deckY + 2.69, pz, 2.6, 0.02, len - 1);
-  b.box(M.timber, sx - s * 1.25, deckY + 0.48, pz, 0.45, 0.08, len - 2);
   // The sign: a lit enamel panel along the canopy's fascia, on both faces.
   const signW = 6.4;
   const signH = 0.8;
@@ -883,7 +956,9 @@ function ferryPier(b: Build, M: RiverMaterials, p: Pier, row: number, lamps: THR
   }
   sg.dispose();
   // Two posts carry the sign on the canopy.
-  for (const dz of [-signW / 2 + 0.5, signW / 2 - 0.5]) b.box(M.steel, sx, deckY + 2.95, pz + dz, 0.12, 0.34, 0.12);
+  b.detail(() => {
+    for (const dz of [-signW / 2 + 0.5, signW / 2 - 0.5]) b.box(M.steel, sx, deckY + 2.95, pz + dz, 0.12, 0.34, 0.12);
+  });
   pontoonLamps.push(new THREE.Vector4(sx, deckY + 2.6, pz - 3, 0.5), new THREE.Vector4(sx, deckY + 2.6, pz + 3, 0.5));
   lamps.push(new THREE.Vector4(sx, deckY + 2.6, pz, 0.8));
 }
@@ -953,6 +1028,7 @@ function waterFragment(steps: number): string {
   uniform float uTime;
   uniform float uFog;
   uniform mat4 uProj;
+  uniform int uSteps;
   varying vec3 vW;
   ${SKY_GLSL}
   const float WEST = ${BANKS.west.toFixed(2)};
@@ -960,6 +1036,8 @@ function waterFragment(steps: number): string {
   const vec3 SUN = vec3(${SUN_DIRECTION.x.toFixed(5)}, ${SUN_DIRECTION.y.toFixed(5)}, ${SUN_DIRECTION.z.toFixed(5)});
   const float BRIDGE_Z[3] = float[3](${BRIDGES.map((z) => z.toFixed(1)).join(', ')});
   const float BRIDGE_HALF = ${(BRIDGE_DECK / 2).toFixed(2)};
+  const float FAR_FROM = 260.0;
+  const float FAR_FULL = 900.0;
 
   float wHash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
   // Slopes of a field of small waves: wind ripples across the channel and longer swells running with the current.
@@ -1006,6 +1084,7 @@ function waterFragment(steps: number): string {
     float t = 0.4;
     float prev = 0.0;
     for (int i = 0; i < ${steps}; i++) {
+      if (i >= uSteps) break;
       vec3 S = P + R * t;
       vec4 vs = viewMatrix * vec4(S, 1.0);
       if (vs.z > -uNear) break;
@@ -1055,6 +1134,10 @@ function waterFragment(steps: number): string {
     R = normalize(R);
     float NdV = clamp(dot(N, V), 0.0, 1.0);
     float F = 0.02 + 0.98 * pow(1.0 - NdV, 5.0);
+    // Far off, the ripples are finer than a pixel: the water reflects as a rough surface, whose mean reflectance
+    // at a glancing view runs well above a smooth one's. Under FAR_FROM metres nothing changes.
+    float far = smoothstep(FAR_FROM, FAR_FULL, dist);
+    F = mix(F, min(1.0, F * 2.2 + 0.035), far);
 
     float hit;
     vec3 seen = trace(vW, R, hit);
@@ -1079,6 +1162,10 @@ function waterFragment(steps: number): string {
     // Along each wall the water lies in the wall's shadow and takes its dark reflection: a darker line at the foot.
     float dw = min(vW.x - WEST, EAST - vW.x);
     col *= mix(0.5, 1.0, smoothstep(0.0, 4.0, dw));
+    // From afar each row of quay lamps lays a warm band down the water beside its wall: the sum of streaks too fine
+    // for the march to find at that distance (close up the march draws each one itself).
+    float row = exp(-max(dw - 0.5, 0.0) / 4.5) * (1.0 - smoothstep(${QUAY_LAMP_REACH.toFixed(1)} - 60.0, ${QUAY_LAMP_REACH.toFixed(1)}, abs(vW.z)));
+    col += vec3(1.0, 0.72, 0.42) * 0.75 * row * far;
 
     // The same sky-coloured haze the scene's fog draws.
     float ff = 1.0 - exp(-uFog * uFog * dist * dist);
@@ -1093,8 +1180,10 @@ function waterFragment(steps: number): string {
  */
 class WaterPass extends Pass {
   private copy: FullScreenQuad;
+  /** The frame at reduced resolution, which the reflections read from when the settings ask for it (medium). */
+  private small: THREE.WebGLRenderTarget | null = null;
   constructor(
-    private water: { scene: THREE.Scene; material: THREE.ShaderMaterial },
+    private water: { scene: THREE.Scene; material: THREE.ShaderMaterial; settings: { steps: number; colourScale: number } },
     private camera: THREE.PerspectiveCamera,
   ) {
     super();
@@ -1103,22 +1192,35 @@ class WaterPass extends Pass {
   }
   render(renderer: THREE.WebGLRenderer, writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget): void {
     const copy = this.copy.material as THREE.ShaderMaterial;
+    const u = this.water.material.uniforms;
+    const scale = this.water.settings.colourScale;
+    u.tScene.value = readBuffer.texture;
+    if (scale < 1) {
+      const w = Math.max(1, Math.round(readBuffer.width * scale));
+      const h = Math.max(1, Math.round(readBuffer.height * scale));
+      if (!this.small) this.small = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false });
+      if (this.small.width !== w || this.small.height !== h) this.small.setSize(w, h);
+      copy.uniforms.tDiffuse.value = readBuffer.texture;
+      renderer.setRenderTarget(this.small);
+      this.copy.render(renderer);
+      u.tScene.value = this.small.texture;
+    }
     copy.uniforms.tDiffuse.value = readBuffer.texture;
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     this.copy.render(renderer);
-    const u = this.water.material.uniforms;
-    u.tScene.value = readBuffer.texture;
     u.tDepth.value = readBuffer.depthTexture;
     u.uRes.value.set(readBuffer.width, readBuffer.height);
     u.uNear.value = this.camera.near;
     u.uFar.value = this.camera.far;
     u.uProj.value.copy(this.camera.projectionMatrix);
+    u.uSteps.value = this.water.settings.steps;
     const auto = renderer.autoClear;
     renderer.autoClear = false;
     renderer.render(this.water.scene, this.camera);
     renderer.autoClear = auto;
   }
   dispose(): void {
+    this.small?.dispose();
     this.copy.material.dispose();
     this.copy.dispose();
   }
@@ -1127,18 +1229,28 @@ class WaterPass extends Pass {
 // ---------------------------------------------------------------- the river
 
 export interface River {
-  /** The quays, bridges and piers: one mesh per material. */
+  /** The quays, bridges and piers: one group per chunk along the river (river-lod.ts), a core and a detail tier in each. */
   group: THREE.Group;
   /** A post pass that draws the water over the frame (post.ts puts it straight after the scene). */
   pass(camera: THREE.PerspectiveCamera): Pass;
-  /** Advances the ripples and takes the scene's haze this frame. */
-  update(dt: number, fogDensity: number): void;
+  /**
+   * Advances the ripples, takes the scene's haze, and sets each chunk's
+   * detail, shadow and AO from where the camera stands. Returns true when a
+   * chunk's shadow casting changed (the shadow map must be redrawn).
+   */
+  update(dt: number, fogDensity: number, eye: THREE.Vector3): boolean;
+  /** The march's steps and the resolution of its colour source (river-lod.ts waterSettings); the quality drop lowers them. */
+  setQuality(q: 'high' | 'medium'): void;
   /** Compiles the water's shader (it is not in the scene). */
   compile(renderer: THREE.WebGLRenderer, camera: THREE.Camera): void;
   /** Every lantern on the quays, bridges and piers, in the world (tests and captures). */
   lamps: THREE.Vector4[];
-  /** What stands: draw calls the static river takes, and whether the water drew in the last frame. */
-  view(): { meshes: number; drewWater: boolean };
+  /**
+   * What draws from this camera: the river's meshes and triangles in the
+   * camera's frustum (the main pass), the water's settings, and whether the
+   * water drew since last asked (tests).
+   */
+  view(camera: THREE.Camera): { meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   dispose(): void;
 }
 
@@ -1150,7 +1262,7 @@ export function createRiver(quality: 'high' | 'medium'): River {
   const signs = signAtlas();
   const M: RiverMaterials = {
     wall: riverStone('ashlar', 2.4, 0x8d8982, 'wall', 0.5, { h: 0.62, l: 1.5 }),
-    granite: riverStone('granite', 1.6, 0x9a9792, 'granite', 0.8),
+    granite: riverStone('granite', 1.6, 0x7f7c77, 'granite', 0.8),
     bridgeStone: riverStone('ashlar', 2.0, 0xb9b2a4, 'bridge', 0.5, { h: 0.48, l: 1.1 }),
     balustrade: riverStone('sand', 2.2, 0xe9dfcc, 'balustrade', 0.7),
     iron: L.darkMetal,
@@ -1187,14 +1299,16 @@ export function createRiver(quality: 'high' | 'medium'): River {
   const group = new THREE.Group();
   group.name = 'river';
   const noShadow = new Set<THREE.Material>([M.lantern, M.lampHead, M.red, M.sign, M.glass, M.cable]);
-  for (const mesh of b.meshes((m) => !noShadow.has(m))) group.add(mesh);
+  const parts = b.chunks((m) => !noShadow.has(m));
+  for (const c of parts) group.add(c.group);
 
   // The water: one plane the length of the river, drawn by its own pass.
   const waterGeo = new THREE.PlaneGeometry(RIVER.width + 1, LENGTH, 1, 1).rotateX(-Math.PI / 2);
   waterGeo.translate(RIVER.x, WATER_Y, 0);
+  const settings = { ...waterSettings(quality) };
   const material = new THREE.ShaderMaterial({
     vertexShader: WATER_VERTEX,
-    fragmentShader: waterFragment(quality === 'high' ? 64 : 40),
+    fragmentShader: waterFragment(64),
     uniforms: {
       tScene: { value: null },
       tDepth: { value: null },
@@ -1204,6 +1318,7 @@ export function createRiver(quality: 'high' | 'medium'): River {
       uTime: { value: 0 },
       uFog: { value: 0 },
       uProj: { value: new THREE.Matrix4() },
+      uSteps: { value: settings.steps },
     },
     depthTest: false,
     depthWrite: false,
@@ -1213,32 +1328,69 @@ export function createRiver(quality: 'high' | 'medium'): River {
   waterMesh.name = 'water';
   const waterScene = new THREE.Scene();
   waterScene.add(waterMesh);
-  const water = { scene: waterScene, material };
+  const water = { scene: waterScene, material, settings };
   let time = 0;
   let drew = false;
   waterMesh.onAfterRender = () => {
     drew = true;
   };
+  /** Where the LOD was last set from: it is set again only once the eye has moved a few metres. */
+  const lodAt = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const frustum = new THREE.Frustum();
+  const vp = new THREE.Matrix4();
 
   return {
     group,
     lamps,
-    view() {
-      const out = { meshes: group.children.length, drewWater: drew };
+    view(camera) {
+      camera.updateMatrixWorld();
+      frustum.setFromProjectionMatrix(vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+      let meshes = 0;
+      let triangles = 0;
+      for (const c of parts) {
+        for (const tier of [c.core, c.detail]) {
+          if (!tier.visible) continue;
+          for (const o of tier.children) {
+            const m = o as THREE.Mesh;
+            if (!frustum.intersectsObject(m)) continue;
+            meshes++;
+            triangles += m.geometry.attributes.position.count / 3;
+          }
+        }
+      }
+      const out = { meshes, triangles, drewWater: drew, ...settings };
       drew = false;
       return out;
     },
     pass: (camera) => new WaterPass(water, camera),
-    update(dt, fogDensity) {
+    setQuality(q) {
+      Object.assign(settings, waterSettings(q));
+      material.uniforms.uSteps.value = settings.steps;
+    },
+    update(dt, fogDensity, eye) {
       time += dt;
       material.uniforms.uTime.value = time;
       material.uniforms.uFog.value = fogDensity;
+      if (eye.distanceToSquared(lodAt) < 25) return false;
+      lodAt.copy(eye);
+      let shadows = false;
+      for (const c of parts) {
+        const lod = chunkLod(eye, c.chunk);
+        if (c.lod && c.lod.detail === lod.detail && c.lod.shadow === lod.shadow && c.lod.ao === lod.ao) continue;
+        if (c.lod?.shadow !== lod.shadow) shadows = true;
+        c.lod = lod;
+        c.detail.visible = lod.detail;
+        for (const m of c.casters) m.castShadow = lod.shadow;
+        // post.ts leaves meshes marked noAO out of the ambient occlusion pass.
+        for (const tier of [c.core, c.detail]) for (const o of tier.children) o.userData.noAO = !lod.ao;
+      }
+      return shadows;
     },
     compile(renderer, camera) {
       renderer.compile(waterScene, camera);
     },
     dispose() {
-      for (const o of group.children) (o as THREE.Mesh).geometry.dispose();
+      for (const c of parts) for (const tier of [c.core, c.detail]) for (const o of tier.children) (o as THREE.Mesh).geometry.dispose();
       for (const m of Object.values(M)) if (m !== L.darkMetal && m !== L.glass) m.dispose();
       signs.dispose();
       waterGeo.dispose();

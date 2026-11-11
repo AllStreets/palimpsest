@@ -37,6 +37,26 @@ function fadeWithDistance(gtao: GTAOPass, camera: THREE.PerspectiveCamera): void
   m.needsUpdate = true;
 }
 
+/**
+ * Leaves meshes marked `userData.noAO` (the river's chunks far from the eye,
+ * river.ts) out of the AO pass's normal and depth render: AO has faded out
+ * there anyway (fadeWithDistance), so drawing them again costs triangles for
+ * nothing. GTAOPass already hides points and lines the same way.
+ */
+function skipFarMeshes(gtao: GTAOPass): void {
+  const pass = gtao as unknown as { _overrideVisibility(): void; _visibilityCache: THREE.Object3D[]; scene: THREE.Scene };
+  const base = pass._overrideVisibility.bind(gtao);
+  pass._overrideVisibility = () => {
+    base();
+    pass.scene.traverseVisible((o) => {
+      if (o.userData.noAO && (o as THREE.Mesh).isMesh) {
+        o.visible = false;
+        pass._visibilityCache.push(o);
+      }
+    });
+  };
+}
+
 /** Bloom catches only what is brighter than this in the linear HDR frame: real emitters, never lit paint. */
 export const BLOOM_THRESHOLD = 0.97;
 /** The renderer's exposure (scene.ts), which the threshold is measured after. */
@@ -118,6 +138,7 @@ export function createPost(
     // City scale: a metre and a half of reach finds the contact shadow where walls meet pavement.
     gtao.updateGtaoMaterial({ radius: 1.5, distanceExponent: 2, thickness: 3, scale: 1 });
     fadeWithDistance(gtao, camera);
+    skipFarMeshes(gtao);
     composer.addPass(gtao);
   }
 

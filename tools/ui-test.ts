@@ -1592,9 +1592,22 @@ async function reconnectChecks(page: Page, restart: (whileDown: () => Promise<vo
  * bridges and piers draw in one call per material, the lanterns stand, and
  * the view holds its frame rate.
  */
+/** The most river triangles the main pass may draw from the home framing. */
+const RIVER_HOME_TRIANGLES = 120_000;
+
 async function riverChecks(page: Page): Promise<void> {
-  type R = { river(): { lamps: number; meshes: number; drewWater: boolean } };
-  const river = (): Promise<{ lamps: number; meshes: number; drewWater: boolean }> => page.evaluate(() => (window as unknown as { __palimpsest: R }).__palimpsest.river());
+  type RV = { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
+  type R = { river(): RV };
+  const river = (): Promise<RV> => page.evaluate(() => (window as unknown as { __palimpsest: R }).__palimpsest.river());
+  // From home the river draws only its chunks' core (walls, copings, parapets, decks, the bridges' bodies and the
+  // lanterns' glass): its detail, shadows and AO stay near the eye (river-lod.ts).
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(600);
+  const far = await river();
+  check(far.triangles > 0 && far.triangles <= RIVER_HOME_TRIANGLES, `the river draws at most ${RIVER_HOME_TRIANGLES / 1000}k triangles from home (${(far.triangles / 1000).toFixed(0)}k in ${far.meshes} meshes)`);
+  const homeStats = await debug(page, (d) => d.stats());
+  console.log(`info  city from home with the river: ${homeStats.calls} draw calls, ${(homeStats.triangles / 1e6).toFixed(2)}M triangles`);
   await setView(page, [-353, 2.6, 11.5], [-368, -3, 320]);
   await debug(page, (d) => d.precompile());
   await page.waitForTimeout(1500);
@@ -1602,7 +1615,8 @@ async function riverChecks(page: Page): Promise<void> {
   await page.waitForTimeout(300);
   const r = await river();
   check(r.drewWater, 'the water draws, seen from the stone bridge');
-  check(r.meshes > 0 && r.meshes <= 20, `the quays, bridges and piers draw in one call per material (${r.meshes})`);
+  check(r.meshes > 0 && r.meshes <= 90, `the quays, bridges and piers in view draw in at most 90 calls, one per material per chunk (${r.meshes}, ${(r.triangles / 1000).toFixed(0)}k triangles)`);
+  check(r.steps === 64 && r.colourScale === 1, `at high quality the water marches 64 steps over the full-resolution frame (${r.steps}, ${r.colourScale})`);
   check(r.lamps >= 200, `lanterns stand along the quays, on the bridges and at the piers (${r.lamps})`);
   await page.screenshot({ path: join(SHOTS, 'river.png') });
   const fps = await pageFps(page);
