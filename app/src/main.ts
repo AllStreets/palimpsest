@@ -50,6 +50,8 @@ interface DebugHandle {
   breakdown(detail?: boolean): ReturnType<ReturnType<typeof createCity>['breakdown']>;
   /** The river's lanterns, its static draw calls and whether its water drew since last asked. */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
+  /** The transit network: what of it draws from this camera, and how many stops, stations, poles, bents, pylons and ranks stand. */
+  transit(): ReturnType<ReturnType<typeof createCity>['transit']>;
   /** The quality the city draws at now (medium after an automatic drop). */
   quality(): 'high' | 'medium';
   /** Steps down to medium as the automatic drop does (tests). */
@@ -296,6 +298,7 @@ async function main(): Promise<void> {
     stats: () => city.stats(),
     breakdown: (detail) => city.breakdown(detail),
     river: () => city.river(),
+    transit: () => city.transit(),
     quality: () => city.quality(),
     dropQuality: () => city.dropQuality(),
     notice: () => notice.text(),

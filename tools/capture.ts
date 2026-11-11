@@ -14,7 +14,7 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe, swatches, families, fidelity, river. With no shots named,
+ * settings, flyover, rise, probe, swatches, families, fidelity, river, transit. With no shots named,
  * all but probe, swatches, families and fidelity run. families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
@@ -245,6 +245,27 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         ['bridge-stayed', [-372, 2, 410], [-344, 14, 480]],
         ['quay-water', [-382, -5.3, 150], [-332, -3.2, 230]],
         ['pier', [-358, -3.2, 52], [-340, -4.6, 82]],
+      ];
+      for (const [name, eye, target] of views) if (!only || only.includes(name)) await still(page, name, eye, target);
+    },
+
+    async transit(page) {
+      // The transit network (Task 30), on the sample city (its loops at extent 2: the tram on the streets at 600 m,
+      // the rail at 680 m, the pod lines on z 120 and x 120): the city from home, a tram stop with the viaduct
+      // behind, a rail station from its platform end and from the street, the elevated line crossing the river, a
+      // pod station at height, the interchange, a cab rank. TRANSIT_ONLY='home,station' takes a subset.
+      await chrome(page, false);
+      const only = process.env.TRANSIT_ONLY?.split(',');
+      const views: Array<[string, V3, V3]> = [
+        ['transit-home', OVERVIEW.eye, OVERVIEW.target],
+        ['tram-stop', [603.5, 3.2, 436], [598, 7.5, 640]],
+        ['station', [-40, 15.2, -683], [10, 14, -679]],
+        ['station-street', [-40, 2.0, -716], [2, 9, -680]],
+        ['rail-river', [-292, 4, -566], [-372, 10, -680]],
+        ['rail-river-high', [-260, 60, -520], [-400, 8, -690]],
+        ['pod-station', [264, 21, 152], [240, 19, 120]],
+        ['interchange', [165, 32, 175], [120, 18, 120]],
+        ['cab-rank', [279.5, 2.5, 352], [284, 1, 318]],
       ];
       for (const [name, eye, target] of views) if (!only || only.includes(name)) await still(page, name, eye, target);
     },

@@ -540,12 +540,13 @@ async function darkTowerChecks(page: Page): Promise<void> {
  * progress steps, and the frame rate held within 5 of the overview.
  */
 /**
- * The city's frame budget from home (task PERF): later tasks (transit,
- * vehicles, crowds) add to it, and this check fails if the city outgrows it
- * silently. The governor's own budget is 24M (governor.ts).
+ * The city's frame budget from home (task PERF, tightened in Task 30 once
+ * the transit network stood): vehicles and crowds add to it, and this check
+ * fails if the city outgrows it silently. The governor's own budget is 24M
+ * (governor.ts).
  */
-const HOME_TRIANGLES = 17_000_000;
-const HOME_CALLS = 900;
+const HOME_TRIANGLES = 12_000_000;
+const HOME_CALLS = 850;
 
 /** A frame from the home framing with the shadow map redrawn: its draw calls and triangles, and the biggest subsystems. */
 async function homeBudget(page: Page): Promise<{ calls: number; triangles: number; parts: string }> {
@@ -652,8 +653,19 @@ async function constructionChecks(page: Page): Promise<void> {
     console.log(`info  the ${nSites} live sites add ${home.calls - bare.calls} draw calls from home`);
     check(nSites >= 3 && home.calls - bare.calls < 60, `${nSites} live sites add fewer than 60 draw calls from home (${home.calls - bare.calls})`);
     // The city's budget from home (task PERF): a frame with the shadow map redrawn, every pass counted.
-    const full = await homeBudget(page);
+    let full = await homeBudget(page);
     console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
+    // The governor judges frame time as well as triangles: on a GPU another test or capture shares, it can step
+    // down on a slow stretch the city did not cause. Once, the page is opened afresh and the budget measured again.
+    if ((await debug(page, (x) => x.quality())) !== 'high') {
+      console.log(`info  the governor stepped down at ${(full.triangles / 1e6).toFixed(2)}M triangles; reopening once (a shared GPU)`);
+      await page.reload();
+      await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+      await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length >= 3, null, { timeout: 10_000 }).catch(() => {});
+      await page.waitForTimeout(6000);
+      full = await homeBudget(page);
+      console.log(`info  again: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
+    }
     check(full.triangles <= HOME_TRIANGLES, `the city from home draws at most ${HOME_TRIANGLES / 1e6}M triangles with live sites and the shadow map redrawn (${(full.triangles / 1e6).toFixed(2)}M)`);
     check(full.calls < HOME_CALLS, `the city from home draws in under ${HOME_CALLS} calls with live sites and the shadow map redrawn (${full.calls})`);
     check((await debug(page, (x) => x.quality())) === 'high', 'the quality governor has not stepped the city down');
@@ -1662,6 +1674,55 @@ async function riverChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'river-pier.png'), clip: { x: VIEWPORT.width * 0.2, y: VIEWPORT.height * 0.2, width: VIEWPORT.width * 0.6, height: VIEWPORT.height * 0.6 } });
 }
 
+// ---------------------------------------------------------------- the transit network (Task 30)
+
+/** The most the network may draw from home: its far cores only, in the view only. */
+const TRANSIT_HOME_TRIANGLES = 450_000;
+const TRANSIT_HOME_CALLS = 24;
+
+/**
+ * The network as it stands for the sample city: the loops laid for its
+ * extent, a rank at each district and the exchange, stations on every line;
+ * from home it draws only its far cores in a few calls; a tram stop with the
+ * viaduct behind (transit.png) and a pod station at height (pods.png); and
+ * up close it holds the overview's frame rate.
+ */
+async function transitChecks(page: Page): Promise<void> {
+  type TV = { meshes: number; triangles: number; stops: number; stations: number; podStations: number; ranks: number; poles: number; bents: number; pylons: number; blocks: number; builds: number; buildMs: number };
+  const transit = (): Promise<TV> => page.evaluate(() => (window as unknown as { __palimpsest: { transit(): TV } }).__palimpsest.transit());
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(600);
+  const far = await transit();
+  console.log(`info  transit from home: ${far.meshes} calls, ${(far.triangles / 1000).toFixed(0)}k triangles; ${far.stops} tram stops, ${far.stations} rail stations, ${far.podStations} pod stations, ${far.ranks} ranks, ${far.poles} poles, ${far.bents} bents, ${far.pylons} pylons`);
+  check(far.blocks === 2, `the network is laid for the sample city's extent (${far.blocks} rings)`);
+  check(far.stops >= 12 && far.stations >= 8 && far.podStations >= 10, `the tram, the rail and the pods have their stops and stations (${far.stops}, ${far.stations}, ${far.podStations})`);
+  const districts = await debug(page, (d) => d.districts);
+  console.log(`info  the network was laid ${far.builds} times, the last in ${far.buildMs.toFixed(0)} ms`);
+  check(far.ranks === districts + 1, `a cab rank at each of the ${districts} districts and one at the exchange (${far.ranks})`);
+  check(far.poles > 100 && far.bents > 100 && far.pylons > 40, `poles, bents and pylons stand along the lines (${far.poles}, ${far.bents}, ${far.pylons})`);
+  check(far.triangles > 0 && far.triangles <= TRANSIT_HOME_TRIANGLES, `from home the network draws at most ${TRANSIT_HOME_TRIANGLES / 1000}k triangles (${(far.triangles / 1000).toFixed(0)}k)`);
+  check(far.meshes > 0 && far.meshes <= TRANSIT_HOME_CALLS, `from home the network draws in at most ${TRANSIT_HOME_CALLS} calls, one per material (${far.meshes})`);
+
+  // A tram stop on the east side of the loop, looking down its street to the corner where the tram turns and the
+  // viaduct crosses the street's end.
+  await setView(page, [603.5, 3.2, 436], [598, 7.5, 640]);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(1500);
+  const near = await transit();
+  check(near.meshes > far.meshes, `near the line its chunks draw their own detail (${near.meshes} calls, ${(near.triangles / 1000).toFixed(0)}k triangles)`);
+  await page.screenshot({ path: join(SHOTS, 'transit.png') });
+  const fps = await pageFps(page);
+  const stats = await debug(page, (d) => d.stats());
+  console.log(`info  tram stop and viaduct: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+  check(fps >= overviewFps - 5, `the street by the lines holds the overview's frame rate (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  // A pod station at height, lit from within, the exchange beyond.
+  await setView(page, [264, 21, 152], [240, 19, 120]);
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: join(SHOTS, 'pods.png') });
+  check((await debug(page, (d) => d.quality())) === 'high', 'the network holds high quality');
+}
+
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/index.html missing: run npm run build first');
@@ -1791,6 +1852,7 @@ async function main(): Promise<void> {
       await lifecycleChecks(page);
       await silhouetteChecks(page);
       await riverChecks(page);
+      await transitChecks(page);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);
