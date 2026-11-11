@@ -14,7 +14,7 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles. With no shots named,
+ * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles, life (the ambient traffic and crowd). With no shots named,
  * all but probe, swatches, families and fidelity run. families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
@@ -379,6 +379,69 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         await still(page, 'dusk', e, t);
       }
       await d((v) => v.vehicleHold(false));
+    },
+
+    async life(page) {
+      // The ambient traffic and crowd (Task 32) at full density, the clock run on until the lights have queued
+      // traffic: a street at dusk at a person's height by a plaza (street), a junction with traffic queued at its
+      // lights (junction), the crowd on a tram platform (stop), and the streets from a rooftop (rooftop).
+      // LIFE_ONLY='street,stop' takes a subset; LIFE_VIEWS='{"street": [[eye], [target]]}' overrides a view.
+      await chrome(page, false);
+      const only = process.env.LIFE_ONLY?.split(',');
+      const views = JSON.parse(process.env.LIFE_VIEWS ?? '{}') as Record<string, [V3, V3]>;
+      const call = <T>(js: string): Promise<T> => page.evaluate(`(function (d) { return ${js}; })(window.__palimpsest)`) as Promise<T>;
+      if (process.env.LIFE_FPS) {
+        // LIFE_FPS='[[eye],[target]]': frames per second there with the streets full, then empty (tuning).
+        const [e, t] = JSON.parse(process.env.LIFE_FPS) as [V3, V3];
+        const fps = (): Promise<number> => page.evaluate(`new Promise((r) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 3000) requestAnimationFrame(f); else r((n * 1000) / (performance.now() - t0)); }; requestAnimationFrame(f); })`) as Promise<number>;
+        await frame(page, e, t);
+        for (const n of [1, 0, 1, 0]) {
+          await call(`d.ambientDensity(${n})`);
+          await page.waitForTimeout(1500);
+          console.log(`  density ${n}: ${(await fps()).toFixed(1)} fps`);
+        }
+      }
+      if (process.env.LIFE_BREAKDOWN) {
+        // The traffic and crowd's share of a frame from home, every pass (tuning).
+        await call('d.ambientDensity(1)');
+        await call('d.home()');
+        await page.waitForTimeout(4000);
+        const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, unknown>;
+        console.log(`  breakdown traffic ${JSON.stringify(b.traffic)} keys ${Object.keys(b).join(',')} ambient ${JSON.stringify(await call('d.ambient()'))}`);
+      }
+      await call('d.ambientDensity(1)');
+      const info = await page.evaluate(`(async function (d) { const city = await fetch('/api/city').then((r) => r.json()); return { blocks: d.transit().blocks, districts: city.map((c) => [c.origin.x, c.origin.z]), ambient: d.ambient() }; })(window.__palimpsest)`);
+      console.log(`  ${JSON.stringify(info)}`);
+      await call(`d.ambientSkip(${Number(process.env.LIFE_SKIP ?? 90)})`);
+      await call('d.ambientHold(true)');
+      const want = (n: string): boolean => !only || only.includes(n);
+      const shot = async (name: string, def: [V3, V3]): Promise<void> => {
+        if (!want(name)) return;
+        const [eye, target] = views[name] ?? def;
+        await still(page, name, eye, target);
+        console.log(`  ${name}: ${JSON.stringify(await call('d.ambient()'))}`);
+      };
+      await shot('street', [[195.4, 1.62, -145], [207, 1.45, -30]]);
+      if (want('junction')) {
+        // The junction near the plaza with the most cars standing at its lines, seen from a corner above the kerb.
+        const q = await call<Array<{ x: number; z: number; held: number }>>('d.ambientQueues([280, -120], 130)');
+        const j = q[0] ?? { x: 280, z: -120, held: 0 };
+        console.log(`  junction ${j.x},${j.z} with ${j.held} held`);
+        await shot('junction', [[j.x + 6.5, 4.5, j.z + 30], [j.x - 2, 0.5, j.z - 6]]);
+      }
+      await shot('stop', [[435.5, 1.6, -20], [442, 1.3, 4]]);
+      await shot('rooftop', [[287, 64, -430], [276, 0, -150]]);
+      // LIFE_STRIP='[[eye],[target]]': four frames 0.12 s apart from one view, for the walk cycle (walk-0..3).
+      if (process.env.LIFE_STRIP) {
+        const [e, t] = JSON.parse(process.env.LIFE_STRIP) as [V3, V3];
+        for (let i = 0; i < 4; i++) {
+          await still(page, `walk-${i}`, e, t);
+          await call('d.ambientSkip(0.12)');
+        }
+      }
+      // Any other named view in LIFE_VIEWS, for framing.
+      for (const [name, v] of Object.entries(views)) if (!['street', 'junction', 'stop', 'rooftop'].includes(name)) await still(page, name, v[0], v[1]);
+      await call('d.ambientHold(false)');
     },
 
     async swatches(page) {

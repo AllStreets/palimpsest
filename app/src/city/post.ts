@@ -83,6 +83,22 @@ export const FLOOD = (() => {
   return { peak, distance: 34, color: 0xffb066 } as const;
 })();
 
+/**
+ * The ambient traffic's headlamps (Task 32): how many pools of light the
+ * streets carry at once, how far from the eye they are laid, and how bright
+ * one lays on the road. Pools are additive; four overlapping (a queue at a
+ * light, nose to tail) stay under the bloom threshold, so a lit road never
+ * glows like an emitter: only the lamps themselves bloom. The colour is a
+ * warm LED white, a touch cooler than the sodium street lamps.
+ */
+export const HEADLAMP = (() => {
+  const pools = 160;
+  const reach = 240;
+  const overlap = 4;
+  const peak = Math.floor((BLOOM_THRESHOLD / (EXPOSURE * overlap)) * 1000) / 1000;
+  return { pools, reach, peak, colour: [1.0, 0.92, 0.8] as [number, number, number] } as const;
+})();
+
 export interface Post {
   render(): void;
   setSize(width: number, height: number): void;

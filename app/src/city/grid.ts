@@ -7,18 +7,14 @@ import { kitShared } from './kits';
 import { lightsOutEmitter } from './lightsout.js';
 import { AMBIENT_LOD, AO_NEAR, boxDistance, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
 import { lodDepthMaterial, lodMaterial, LOD_EYE } from './lod-shader.js';
-import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, farLotStands, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
+import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, farLotStands, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
 import { inChannel } from '../../../shared/commute.js';
 import { materials } from './materials';
 
-export { BLOCK, PITCH, STREET } from './lots';
+export { BLOCK, LAMP_EDGE, LAMP_OFFSETS, PITCH, STREET } from './lots';
 
 /** Blocks within this many of the centre (Chebyshev) carry bays and rooftop units; past it they would be sub-pixel. */
 export const DETAIL_RADIUS = 10;
-/** Lamp heads sit this far from a block's centre along its south (+z) and east (+x) edges. */
-export const LAMP_EDGE = BLOCK / 2 + 2;
-/** Lamp positions along a block edge, from the block centre. */
-export const LAMP_OFFSETS = [-24, -8, 8, 24];
 /** Inside this radius the street grid gives way to an open paved plaza with no street lamps. */
 export const PLAZA_RADIUS = 72;
 /** Lanterns ring each plaza at this radius. */

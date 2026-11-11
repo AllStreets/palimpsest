@@ -666,5 +666,9 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
  * past AO_NEAR, where the AO has already faded to nothing; its fade runs on distance from the eye rather than depth
  * (the same 350 to 1200 m), which moves it only toward the frame's edges, and where the tower board stands (the
  * overview's distance) the AO is under 4% of its strength either way; the boards stand on the default layer, which every pass draws, so every rendered value is unchanged.
+ * Restamped for Task 32, also without a re-measure: post.ts gained the headlamp budget (HEADLAMP, constants only,
+ * read by the ambient traffic's pools), and nothing in the scene's light, grade or materials changed; the ambient
+ * traffic and crowd draw nothing while a board is measured (main.ts holds their density at 0 for the swatch and
+ * ambient boards), so every rendered value is unchanged.
  */
-export const RENDERED_INPUTS = 'e4c3b351a57714c7';
+export const RENDERED_INPUTS = '1e2e9aff45873fd8';

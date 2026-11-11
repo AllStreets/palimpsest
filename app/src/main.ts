@@ -12,6 +12,7 @@ import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
 import type { VehicleRef, VehiclesView } from './city/vehicles.js';
+import type { AmbientView } from './city/ambient.js';
 import { route } from '../../shared/commute.js';
 import type { Trip } from '../../shared/types';
 import { towerCenterpiece, towerMaterials } from './city/tower/look';
@@ -93,6 +94,15 @@ interface DebugHandle {
   vehicleKinds(kind: 'tram' | 'rail' | 'pod' | 'ferry' | 'cab'): VehicleProbe[];
   /** A stand-in rider at a point facing a heading, or none. */
   vehicleRider(at: number[] | null, heading?: number): void;
+  /** The ambient traffic and crowd: how many, and what of them draws from this camera (null before the network is laid). */
+  ambient(): AmbientView | null;
+  /** Holds the ambient density at n (0 to 1), or follows the hour again with null. */
+  ambientDensity(n: number | null): void;
+  /** Holds or releases the ambient clock, or moves it on (captures and tests). */
+  ambientHold(on: boolean): void;
+  ambientSkip(seconds: number): void;
+  /** Junctions near a point with cars standing at their lines, the most first: where, and how many (captures). */
+  ambientQueues(near: number[], radius: number): Array<{ x: number; z: number; held: number }>;
   /** The quality the city draws at now (medium after an automatic drop). */
   quality(): 'high' | 'medium';
   /** Steps down to medium as the automatic drop does (tests). */
@@ -342,6 +352,25 @@ async function main(): Promise<void> {
     river: () => city.river(),
     transit: () => city.transit(),
     vehicles: () => city.vehicles()?.view(city.camera) ?? null,
+    ambient: () => city.ambient()?.view(city.camera) ?? null,
+    ambientDensity: (n) => city.ambientDensity(n),
+    ambientHold: (on) => city.ambient()?.hold(on),
+    ambientSkip: (s) => city.ambient()?.skip(s),
+    ambientQueues(near, radius) {
+      const held = new Map<string, number>();
+      for (const c of city.ambient()?.cars() ?? []) {
+        if (c.speed > 0.3 || c.junction) continue;
+        const to = c.lane.split('>')[1];
+        held.set(to, (held.get(to) ?? 0) + 1);
+      }
+      return [...held.entries()]
+        .map(([k, n]) => {
+          const [x, z] = k.split(',').map(Number);
+          return { x, z, held: n };
+        })
+        .filter((j) => Math.hypot(j.x - near[0], j.z - near[1]) < radius)
+        .sort((a, b) => b.held - a.held);
+    },
     vehicleHold: (on) => city.vehicles()?.hold(on),
     vehicleSkip: (s) => city.vehicles()?.skip(s),
     vehicleStage(kind, near) {
@@ -383,6 +412,8 @@ async function main(): Promise<void> {
     notice: () => notice.text(),
     plots: () => city.plots(),
     async ambientBoard() {
+      // A board is measured with the streets empty: no car or person passes in front of it.
+      city.ambientDensity(0);
       const board = ambientBoard(city.scene, city.camera, (lots) => city.ambientBoard(lots), (e, t) => city.view(e, t));
       await city.precompile();
       await texturesSettled();
@@ -400,6 +431,7 @@ async function main(): Promise<void> {
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
     async swatchBoard() {
+      city.ambientDensity(0);
       const board = swatchBoard(city.scene, city.camera, (e, t) => city.view(e, t));
       await city.precompile();
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));

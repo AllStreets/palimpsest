@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
+import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Era, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
@@ -24,6 +24,7 @@ import { createPost, EXPOSURE, FLICKER } from './post';
 import { createRiver } from './river.js';
 import { createTransit, type TransitView } from './transit.js';
 import { createVehicles, type Vehicles } from './vehicles.js';
+import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza } from './ambient.js';
 import { extentBlocks, type Network } from '../../../shared/commute.js';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
@@ -147,6 +148,10 @@ export interface City {
   vehicles(): Vehicles | null;
   /** The network as laid now (shared/commute.ts), or null before the city has districts. */
   transitNetwork(): Network | null;
+  /** The ambient traffic and crowd (ambient.ts), or null before the network is laid. */
+  ambient(): Ambient | null;
+  /** Holds the ambient density where a test or capture puts it (0 to 1), or null to follow the hour again. */
+  ambientDensity(n: number | null): void;
   /**
    * Stands objects at spots in the city outside the plots, each spot paved
    * and cleared of ambient blocks like a district (captures and the UI test:
@@ -326,7 +331,27 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       vehicles = createVehicles(net, quality);
       vehicleRoot.add(vehicles.group);
     }
+    // The unlabelled traffic and crowd on the streets inside the loop (ambient.ts).
+    if (ambient) ambient.relay(net);
+    else {
+      ambient = createAmbient(net, quality, { plazas: ambientPlazas });
+      ambient.setDensity(forcedDensity ?? hourDensity());
+      ambientRoot.add(ambient.group);
+    }
   }
+  // ---------------------------------------------------------------- the ambient life
+  // Unlabelled cars and people (ambient.ts). Their density follows the local hour, drifting out of sight.
+  const ambientRoot = new THREE.Group();
+  ambientRoot.name = 'traffic';
+  scene.add(ambientRoot);
+  let ambient: Ambient | null = null;
+  let ambientPlazas: AmbientPlaza[] = [{ x: 0, z: 0, kind: 'civic' }];
+  let forcedDensity: number | null = null;
+  let densityClock = 0;
+  const hourDensity = (): number => {
+    const now = new Date();
+    return ambientDensity(now.getHours() + now.getMinutes() / 60);
+  };
 
   // ---------------------------------------------------------------- the civic exchange
   // Built once on the plaza at the origin, and again at medium if the city steps down; it keeps the board and the switch.
@@ -401,6 +426,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const plazas = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z }))];
     grid.setPlazas(plazas);
     ground.setPlazas(plazas);
+    // The ambient traffic keeps off every plaza, court and site; the crowd walks the districts' and the civic plaza's.
+    ambientPlazas = [
+      { x: 0, z: 0, kind: 'civic' },
+      ...occ.districts.map((d) => ({ x: d.origin.x, z: d.origin.z, kind: 'district' as const })),
+      ...occ.sites.map((st) => ({ ...st.origin, kind: 'site' as const })),
+      ...occ.quarters.map((q) => ({ x: q.origin.x, z: q.origin.z, kind: 'court' as const, court: QUARTER_COURT })),
+      ...boardSpots.map((b) => ({ x: b.x, z: b.z, kind: 'site' as const })),
+    ];
+    ambient?.setPlazas(ambientPlazas);
     searchLitTree(grid.group);
     // Towers, scaffolds and the skyline around them may all have changed.
     sun.shadow.needsUpdate = true;
@@ -1133,6 +1167,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ['river', river.group],
     ['transit', transit.group],
     ['vehicles', vehicleRoot],
+    ['traffic', ambientRoot],
     ['ground', ground.mesh],
     ['sky', sky.dome],
     ['construction', field.group],
@@ -1153,6 +1188,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     post.dispose();
     river.setQuality('medium');
     vehicles?.setQuality('medium');
+    ambient?.setQuality('medium');
     post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
     texel = (SHADOW_HALF * 2) / shadowSize;
@@ -1194,6 +1230,19 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (vehicles) {
       vehicles.update(dt, camera.position);
       river.setWakes(vehicles.wakes(camera.position));
+    }
+    if (ambient) {
+      // Once a minute the streets drift toward the hour's density, out of sight.
+      if (forcedDensity === null && (densityClock += dt) > 60) {
+        densityClock = 0;
+        ambient.setDensity(hourDensity(), true);
+      }
+      // Cars give way to the trams at the tram's crossings.
+      if (vehicles) ambient.setTrams(vehicles.vehicles('tram').map((t) => {
+        const p = t.position();
+        return { x: p[0], z: p[2] };
+      }));
+      ambient.update(dt, camera, renderer.domElement.height);
     }
     fitMark();
     plates.update();
@@ -1265,6 +1314,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     transit: () => transit.view(camera),
     vehicles: () => vehicles,
     transitNetwork: () => transit.network(),
+    ambient: () => ambient,
+    ambientDensity(n) {
+      forcedDensity = n === null ? null : Math.max(0, Math.min(1, n));
+      ambient?.setDensity(forcedDensity ?? hourDensity());
+    },
     ambientBoard: (lots) => grid.board(lots),
     board(objects, spots) {
       const group = new THREE.Group();
@@ -1313,6 +1367,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       river.dispose();
       transit.dispose();
       vehicles?.dispose();
+      ambient?.dispose();
       ground.dispose();
       sky.dispose();
       renderer.dispose();

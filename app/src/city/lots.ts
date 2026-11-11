@@ -27,6 +27,10 @@ export const BLOCK = 64;
 export const STREET = 16;
 /** Block centre to block centre. DISTRICT_PITCH (240) is three of these, so districts sit on block centres. */
 export const PITCH = BLOCK + STREET;
+/** Street lamp heads sit this far from a block's centre along its south (+z) and east (+x) edges (grid.ts lays them; the ambient crowd and traffic are lit by them). */
+export const LAMP_EDGE = BLOCK / 2 + 2;
+/** Lamp positions along a block edge, from the block centre. */
+export const LAMP_OFFSETS = [-24, -8, 8, 24];
 
 /** A small deterministic generator, seeded per block so adding a district never reshuffles the rest of the city. */
 export function rng(seed: number): () => number {

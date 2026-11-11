@@ -137,6 +137,14 @@ interface Debug {
   lastPick: { kind: string; agentId?: string; firmId?: string; repo?: string } | null;
 }
 
+/** Holds the ambient traffic and crowd at full density (once the network is laid), so every budget sees its worst. */
+async function fullDensity(page: Page): Promise<void> {
+  await page
+    .waitForFunction('window.__palimpsest.ambient() !== null', null, { timeout: 30_000 })
+    .then(() => page.evaluate('window.__palimpsest.ambientDensity(1)'))
+    .catch(() => {});
+}
+
 function debug<T>(page: Page, read: (d: Debug) => T): Promise<T> {
   return page.evaluate(`(${read.toString()})(window.__palimpsest)`) as Promise<T>;
 }
@@ -251,6 +259,7 @@ async function earnedChecks(page: Page): Promise<void> {
   await seedEconomy(Date.now(), { holdSale: true });
   await page.reload();
   await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+  await fullDensity(page);
   await page.waitForTimeout(2500);
   const ds = await cityOf(page);
   const states = (d: District): Set<string> => new Set(d.tower.floors.map((f) => f.earned?.state ?? '').filter(Boolean));
@@ -579,6 +588,7 @@ async function constructionChecks(page: Page): Promise<void> {
   try {
     await page.reload();
     await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+    await fullDensity(page);
     const found = await page
       .waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().some((s) => s.stage === 'framing'), null, { timeout: 10_000 })
       .then(() => true)
@@ -664,6 +674,7 @@ async function constructionChecks(page: Page): Promise<void> {
       console.log(`info  the governor stepped down at ${(full.triangles / 1e6).toFixed(2)}M triangles; reopening once (a shared GPU)`);
       await page.reload();
       await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+      await fullDensity(page);
       await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length >= 3, null, { timeout: 10_000 }).catch(() => {});
       await page.waitForTimeout(6000);
       full = await homeBudget(page);
@@ -1835,6 +1846,57 @@ async function vehicleChecks(page: Page): Promise<void> {
   check((await debug(page, (d) => d.quality())) === 'high', 'the vehicles hold high quality');
 }
 
+// ---------------------------------------------------------------- the ambient traffic and crowd (Task 32)
+
+/** From home the ambient life draws its far levels only: a few calls, and its share of the home budget's room. */
+const AMBIENT_HOME_CALLS = 8;
+const AMBIENT_HOME_TRIANGLES = 600_000;
+
+/**
+ * The unlabelled cars and people at full density: how many, what they cost
+ * from home, that they run and that the lights hold them in turn, the still
+ * street.png (dusk, at a person's height by a plaza, the streets full), and
+ * the frame rate there held within 5 of the overview at high quality.
+ */
+async function ambientChecks(page: Page): Promise<void> {
+  type AV = { cars: number; people: number; walking: number; waiting: number; nearCars: number; farCars: number; nearPeople: number; farPeople: number; meshes: number; triangles: number; density: number; time: number };
+  const call = <T>(js: string): Promise<T> => page.evaluate(`(function (d) { return ${js}; })(window.__palimpsest)`) as Promise<T>;
+  await call('d.ambientDensity(1)');
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(800);
+  const far = await call<AV>('d.ambient()');
+  type T = { calls: number; triangles: number };
+  const parts = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
+  const share = Object.values(parts.traffic ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  console.log(`info  the traffic and crowd's share of the home frame, every pass: ${share.calls} calls, ${(share.triangles / 1000).toFixed(0)}k triangles`);
+  check(share.calls >= 1 && share.calls <= AMBIENT_HOME_CALLS, `from home the traffic and crowd draw, in at most ${AMBIENT_HOME_CALLS} calls over every pass (${share.calls})`);
+  console.log(`info  ambient: ${far.cars} cars, ${far.people} people (${far.walking} walking, ${far.waiting} waiting); from home ${far.meshes} calls, ${(far.triangles / 1000).toFixed(0)}k triangles (${far.nearCars} cars near, ${far.farCars} far)`);
+  check(far.cars > 200 && far.people > 500, `cars and people fill the streets at full density (${far.cars}, ${far.people})`);
+  check(far.meshes <= AMBIENT_HOME_CALLS, `from home the ambient life draws in at most ${AMBIENT_HOME_CALLS} calls (${far.meshes})`);
+  check(far.triangles <= AMBIENT_HOME_TRIANGLES, `from home the ambient life draws at most ${AMBIENT_HOME_TRIANGLES / 1000}k triangles (${(far.triangles / 1000).toFixed(0)}k)`);
+  const t0 = far.time;
+  await page.waitForTimeout(600);
+  check((await call<AV>('d.ambient()')).time > t0, 'the ambient clock runs');
+  const queues = await call<Array<{ x: number; z: number; held: number }>>('d.ambientQueues([0, 0], 2000)');
+  check(queues.length > 3, `cars stand at the lights at several junctions (${queues.length})`);
+
+  // A street at dusk by the district plaza east of the exchange: at a person's height on the pavement, looking up
+  // the street into the plaza, traffic crossing at the junction ahead and people on both pavements.
+  await setView(page, [195.4, 1.62, -145], [207, 1.45, -30]);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(1500);
+  const near = await call<AV>('d.ambient()');
+  console.log(`info  street by a plaza: ${near.nearCars} cars and ${near.nearPeople} people near, ${near.meshes} calls, ${(near.triangles / 1000).toFixed(0)}k triangles`);
+  check(near.nearCars > 0 && near.nearPeople > 0, `at street level the near cars and figures draw (${near.nearCars}, ${near.nearPeople})`);
+  await page.screenshot({ path: join(SHOTS, 'street.png') });
+  const fps = await pageFps(page);
+  const stats = await debug(page, (d) => d.stats());
+  console.log(`info  street by a plaza: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+  check(fps >= overviewFps - 5, `the street by a plaza holds the overview's frame rate with the traffic and crowd (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  check((await debug(page, (d) => d.quality())) === 'high', 'the ambient life holds high quality');
+}
+
 /**
  * The governor's step down to medium, taken on purpose at the river (where the water's own settings change with it)
  * and then the views the city is most often seen from: the drop must leave no error behind, whatever is on screen.
@@ -1919,6 +1981,8 @@ async function main(): Promise<void> {
       .then(() => true)
       .catch(() => false);
     check(ready, 'city reports ready');
+    // The ambient life at full density throughout, whatever the hour: every budget is measured at its worst.
+    if (ready) await fullDensity(page);
     await page.waitForTimeout(3000);
 
     const canvas = await page.$('canvas');
@@ -2003,6 +2067,7 @@ async function main(): Promise<void> {
       await riverChecks(page);
       await transitChecks(page);
       await vehicleChecks(page);
+      await ambientChecks(page);
       await qualityDropChecks(page, consoleErrors);
     }
 

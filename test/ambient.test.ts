@@ -248,3 +248,173 @@ test("a tower's look changing retones only the blocks in its ring; every block o
   assert.ok(outside > 100, `blocks outside the ring checked: ${outside}`);
   assert.ok(retoned > 0, 'a different tower look retones some lots in its ring');
 });
+
+// ---------------------------------------------------------------- ambient traffic and crowds (Task 32)
+
+import { readFileSync } from 'node:fs';
+import { extentBlocks, inChannel, network, streetLine } from '../shared/commute.js';
+import { ambientDensity, ambientModels, createAmbient, AMBIENT_CAP, type Ambient } from '../app/src/city/ambient.js';
+
+/** The sample city's network, as the commute and vehicle tests lay it. */
+const SLOTS = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
+const NET = network({ blocks: extentBlocks(SLOTS), districts: SLOTS.slice(0, 6) });
+const PLAZAS = [{ x: 0, z: 0 }, ...SLOTS.slice(0, 6)];
+
+/** Runs the ambient clock on in steps, calling `each` after every one. */
+function run(a: Ambient, seconds: number, step: number, each: (t: number) => void = () => {}): void {
+  for (let t = 0; t < seconds; t += step) {
+    a.update(step);
+    each(t);
+  }
+}
+
+test('ambient vehicles never leave the street grid', () => {
+  const a = createAmbient(NET, 'high', { seed: 7 });
+  a.setDensity(1);
+  const cars0 = a.cars();
+  assert.ok(cars0.length > 200, `a city's worth of traffic (${cars0.length})`);
+  let stopped = 0;
+  let moving = 0;
+  let turning = 0;
+  /** Junctions by key: which axes' traffic stood in the box at once. */
+  let clash = '';
+  run(a, 240, 0.1, (t) => {
+    const inBox = new Map<string, Set<string>>();
+    for (const c of a.cars()) {
+      const dx = Math.abs(c.x - streetLine(c.x));
+      const dz = Math.abs(c.z - streetLine(c.z));
+      // On a carriageway: within 4 m of a street's centre line (its two 4 m lanes), or in a junction's box.
+      assert.ok(Math.min(dx, dz) <= 4.05, `car ${c.id} on the carriageway at ${c.x.toFixed(1)}, ${c.z.toFixed(1)} (t ${t.toFixed(1)})`);
+      assert.ok(!inChannel(c.x, 1), `car ${c.id} off the river at ${c.x.toFixed(1)}`);
+      for (const p of PLAZAS) assert.ok(Math.hypot(c.x - p.x, c.z - p.z) > 72, `car ${c.id} outside the plaza at ${p.x}, ${p.z}`);
+      if (c.speed < 0.05) stopped++;
+      else moving++;
+      if (c.junction) {
+        if (c.turn !== 'straight') turning++;
+        const s = inBox.get(c.junction) ?? new Set<string>();
+        s.add(c.axis);
+        inBox.set(c.junction, s);
+      }
+    }
+    for (const [k, s] of inBox) if (s.size > 1 && !clash) clash = `${k} at ${t.toFixed(1)}`;
+  });
+  assert.ok(stopped > 0 && moving > stopped, `traffic moves and queues (${moving} moving, ${stopped} standing)`);
+  assert.ok(turning > 0, 'cars turn at junctions');
+  assert.equal(clash, '', 'a junction passes one axis at a time (in turn)');
+  // Cars keep their distance: nobody stands closer than a metre behind the car ahead in its lane.
+  const byLane = new Map<string, Array<{ s: number; len: number }>>();
+  for (const c of a.cars()) {
+    const l = byLane.get(c.lane) ?? [];
+    l.push({ s: c.s, len: c.length });
+    byLane.set(c.lane, l);
+  }
+  for (const [lane, cars] of byLane) {
+    cars.sort((p, q) => p.s - q.s);
+    for (let i = 1; i < cars.length; i++) assert.ok(cars[i].s - cars[i].len - cars[i - 1].s > 1, `gap on ${lane}: ${(cars[i].s - cars[i].len - cars[i - 1].s).toFixed(2)}`);
+  }
+  a.dispose();
+});
+
+test('density follows the quality setting', () => {
+  const high = createAmbient(NET, 'high', { seed: 3 });
+  const medium = createAmbient(NET, 'medium', { seed: 3 });
+  high.setDensity(1);
+  medium.setDensity(1);
+  const h = { cars: high.cars().length, people: high.people().length };
+  const m = { cars: medium.cars().length, people: medium.people().length };
+  assert.ok(h.cars <= AMBIENT_CAP.high.cars && h.people <= AMBIENT_CAP.high.people, `high stays within its cap (${h.cars}, ${h.people})`);
+  assert.ok(m.cars <= AMBIENT_CAP.medium.cars && m.people <= AMBIENT_CAP.medium.people, `medium stays within its cap (${m.cars}, ${m.people})`);
+  assert.ok(h.cars > m.cars * 1.6 && h.people > m.people * 1.6, `high fills the streets fuller than medium (${h.cars}/${m.cars} cars, ${h.people}/${m.people} people)`);
+  // The governor's step down reaches it at once, and does not throw.
+  high.setQuality('medium');
+  assert.equal(high.cars().length, m.cars);
+  assert.equal(high.people().length, m.people);
+  high.update(0.1);
+  // Density scales the population; none at all leaves the streets empty.
+  medium.setDensity(0.5);
+  assert.ok(Math.abs(medium.cars().length - m.cars / 2) <= 1 && Math.abs(medium.people().length - m.people / 2) <= 1, 'half the density, half the population');
+  // By the hour (scene.ts) the change drifts in a car and a person at a time, never all at once.
+  medium.setDensity(1);
+  const full = medium.cars().length;
+  medium.setDensity(0.5, true);
+  medium.update(0.5);
+  const after = medium.cars().length;
+  assert.ok(after < full && after > full * 0.8, `the drift is gradual (${full} to ${after})`);
+  medium.setDensity(0);
+  medium.update(0.1);
+  assert.equal(medium.cars().length + medium.people().length, 0);
+  // The time of day: the small hours are quiet, the evening rush is full.
+  assert.ok(ambientDensity(3.5) < 0.3, `3:30 am is quiet (${ambientDensity(3.5)})`);
+  assert.ok(ambientDensity(18) > 0.9 && ambientDensity(8.5) > 0.85, 'the rush hours are busy');
+  for (let hr = 0; hr < 24; hr += 0.25) assert.ok(ambientDensity(hr) > 0 && ambientDensity(hr) <= 1, `${hr}`);
+  high.dispose();
+  medium.dispose();
+});
+
+test('no ambient object carries a plate', () => {
+  const a = createAmbient(NET, 'high', { seed: 5 });
+  a.setDensity(1);
+  a.update(0.5);
+  a.group.traverse((o) => {
+    assert.ok(!/plate|label|persona|trip/i.test(o.name), `${o.name} is unlabelled`);
+    assert.equal(o.userData.plate, undefined, `${o.name} carries no plate`);
+    assert.equal(o.userData.pick, undefined, `${o.name} is not pickable`);
+  });
+  // Its cabs carry no roof light: every lamp on every model sits well under its roof, and none shows a light of its own.
+  for (const [name, m] of Object.entries(ambientModels())) {
+    assert.ok(m.lampTop < m.roof - 0.03, `${name}: lamps under the roof (${m.lampTop.toFixed(2)} against ${m.roof.toFixed(2)})`);
+    assert.equal(m.ownLights, 0, `${name}: no lamp of its own colour (a roof sign)`);
+  }
+  assert.ok(a.cars().some((c) => c.model === 'cab'), 'ambient cabs run');
+  // Ambient code never imports trips, the plates, or the persona vehicles.
+  const src = readFileSync(new URL('../app/src/city/ambient.ts', import.meta.url), 'utf8');
+  const imports = src.split('\n').filter((l) => /^import /.test(l)).join('\n');
+  assert.doesNotMatch(imports, /Trip|trips|labels|vehicles|people/);
+  a.dispose();
+});
+
+test('pedestrians keep to the pavements, plazas, stops and crossings', () => {
+  const a = createAmbient(NET, 'high', { seed: 11 });
+  a.setDensity(1);
+  const states = new Set<string>();
+  run(a, 120, 0.1, () => {
+    for (const p of a.people()) {
+      states.add(p.state);
+      const dx = Math.abs(p.x - streetLine(p.x));
+      const dz = Math.abs(p.z - streetLine(p.z));
+      const inPlaza = PLAZAS.some((q) => Math.hypot(p.x - q.x, p.z - q.z) < 70);
+      const onRoad = (dz < 4 && dx > 8) || (dx < 4 && dz > 8);
+      // A tram platform stands in the street's kerb lane, from 3.45 m out.
+      const onPlatform = p.state === 'waiting' && Math.min(dx, dz) >= 3.5;
+      assert.ok(inPlaza || !onRoad || onPlatform, `${p.id} (${p.state}) off the carriageway at ${p.x.toFixed(1)}, ${p.z.toFixed(1)}`);
+      assert.ok(!inChannel(p.x, 0), `${p.id} off the river`);
+    }
+  });
+  for (const s of ['walking', 'crossing', 'waiting', 'standing']) assert.ok(states.has(s), `someone is ${s} (${[...states].join(', ')})`);
+  a.dispose();
+});
+
+test('the crowd does not walk in step', () => {
+  const a = createAmbient(NET, 'high', { seed: 13 });
+  a.setDensity(1);
+  run(a, 20, 0.1);
+  const walking = a.people().filter((p) => p.state === 'walking');
+  assert.ok(walking.length > 200, `a crowd walks (${walking.length})`);
+  // Their strides are out of step: the phases spread round the circle.
+  const cx = walking.reduce((s, p) => s + Math.cos(p.phase), 0) / walking.length;
+  const sx = walking.reduce((s, p) => s + Math.sin(p.phase), 0) / walking.length;
+  assert.ok(Math.hypot(cx, sx) < 0.15, `stride phases spread (resultant ${Math.hypot(cx, sx).toFixed(3)})`);
+  const sd = (v: number[]): number => {
+    const m = v.reduce((s, x) => s + x, 0) / v.length;
+    return Math.sqrt(v.reduce((s, x) => s + (x - m) ** 2, 0) / v.length);
+  };
+  assert.ok(sd(walking.map((p) => p.cadence)) > 0.06, 'cadence varies');
+  assert.ok(sd(walking.map((p) => p.speed)) > 0.08, 'pace varies');
+  assert.ok(sd(walking.map((p) => p.height)) > 0.05, 'height varies');
+  assert.ok(sd(walking.map((p) => p.build)) > 0.04, 'build varies');
+  assert.ok(new Set(walking.map((p) => p.coat.join())).size >= 10, 'coats differ');
+  const groups = new Map<number, number>();
+  for (const p of a.people()) if (p.group >= 0) groups.set(p.group, (groups.get(p.group) ?? 0) + 1);
+  assert.ok([...groups.values()].filter((n) => n >= 2).length > 20, 'people go about in twos and threes');
+  a.dispose();
+});
