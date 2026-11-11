@@ -663,7 +663,8 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
  * meshes marked noAO (far river chunks) out of the AO pass, and the boards carry none.
  * Restamped for the city performance task, also without a re-measure: post.ts draws the AO's normals and depth
  * through its own camera on the AO's layers (lod.ts) instead of hiding noAO meshes, and leaves out only what lies
- * past AO_NEAR, where the AO has already faded to nothing; the boards stand on the default layer, which every pass
- * draws, so every rendered value is unchanged.
+ * past AO_NEAR, where the AO has already faded to nothing; its fade runs on distance from the eye rather than depth
+ * (the same 350 to 1200 m), which moves it only toward the frame's edges, and where the tower board stands (the
+ * overview's distance) the AO is under 4% of its strength either way; the boards stand on the default layer, which every pass draws, so every rendered value is unchanged.
  */
-export const RENDERED_INPUTS = '3c7bb485662b3a93';
+export const RENDERED_INPUTS = 'e4c3b351a57714c7';

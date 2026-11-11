@@ -21,12 +21,12 @@ import * as THREE from 'three';
 export const AMBIENT_LOD = { near: 450, far: 600 } as const;
 
 /**
- * Past this distance from the eye nothing joins the AO pass. GTAO has faded
- * out by 1200 m of view depth (post.ts AO_FADE_END); at the corner of the
- * frame a point that deep lies farther: about 1.19 times at 1600 x 940, 1.3
- * at a 2.4:1 window. Nothing that could show any AO is left out.
+ * Past this distance from the eye nothing joins the AO pass. GTAO fades out
+ * by 1200 m from the eye (post.ts AO_FADE_END, measured as distance, not
+ * depth, so the same across the frame): nothing that could show any AO is
+ * left out.
  */
-export const AO_NEAR = 1600;
+export const AO_NEAR = 1250;
 
 /** Layers past the default (0, which every pass draws): what only the view, only the shadow map or only the AO draws. */
 export const LAYER = { view: 1, shadow: 2, ao: 3 } as const;

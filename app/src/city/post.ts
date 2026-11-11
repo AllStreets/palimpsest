@@ -22,6 +22,7 @@ function fadeWithDistance(gtao: GTAOPass, camera: THREE.PerspectiveCamera): void
   m.uniforms.tDepth = { value: gtao.depthTexture };
   m.uniforms.cameraNear = { value: camera.near };
   m.uniforms.cameraFar = { value: camera.far };
+  m.uniforms.uTan = { value: new THREE.Vector2() };
   m.fragmentShader = /* glsl */ `
     #include <packing>
     uniform float intensity;
@@ -29,11 +30,16 @@ function fadeWithDistance(gtao: GTAOPass, camera: THREE.PerspectiveCamera): void
     uniform sampler2D tDepth;
     uniform float cameraNear;
     uniform float cameraFar;
+    uniform vec2 uTan;
     varying vec2 vUv;
     void main() {
       vec4 texel = texture2D(tDiffuse, vUv);
       float viewZ = -perspectiveDepthToViewZ(texture2D(tDepth, vUv).x, cameraNear, cameraFar);
-      float k = intensity * (1.0 - smoothstep(${AO_FADE_START.toFixed(1)}, ${AO_FADE_END.toFixed(1)}, viewZ));
+      // Distance from the eye, not depth: the AO is gone at the same range across the frame, so what lies past
+      // that range can leave the AO pass (lod.ts AO_NEAR).
+      vec2 ndc = vUv * 2.0 - 1.0;
+      float dist = viewZ * length(vec3(1.0, ndc * uTan));
+      float k = intensity * (1.0 - smoothstep(${AO_FADE_START.toFixed(1)}, ${AO_FADE_END.toFixed(1)}, dist));
       gl_FragColor = vec4(mix(vec3(1.0), texel.rgb, k), texel.a);
     }`;
   m.needsUpdate = true;
@@ -137,6 +143,9 @@ export function createPost(
         camera.updateMatrixWorld();
         aoCamera.copy(camera, false);
         aoCamera.layers.mask = aoLayers.mask;
+        const t = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+        (gtao.blendMaterial.uniforms.uTan.value as THREE.Vector2).set(t * camera.aspect, t);
+        gtao.blendMaterial.uniforms.cameraFar.value = camera.far;
       }
       composer.render();
     },

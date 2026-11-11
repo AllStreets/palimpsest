@@ -31,7 +31,8 @@ import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from '
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 const SHOTS = join(ROOT, 'shots');
-const PORT = 4779;
+// UI_PORT moves it off 4779 when another checkout's UI test is running (never 4770, the real engine).
+const PORT = Number(process.env.UI_PORT ?? 4779);
 const VIEWPORT = { width: 1600, height: 940 };
 
 const failures: string[] = [];
@@ -642,12 +643,6 @@ async function constructionChecks(page: Page): Promise<void> {
     const homeFps = await pageFps(page);
     console.log(`info  city from home with live sites: ${homeFps.toFixed(0)} fps, ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
     check(homeFps >= overviewFps - 5, `the city from home holds its frame rate with live sites (${homeFps.toFixed(0)} fps)`);
-    // The city's budget from home (task PERF): a frame with the shadow map redrawn, every pass counted.
-    const full = await homeBudget(page);
-    console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
-    check(full.triangles <= HOME_TRIANGLES, `the city from home draws at most ${HOME_TRIANGLES / 1e6}M triangles with live sites and the shadow map redrawn (${(full.triangles / 1e6).toFixed(2)}M)`);
-    check(full.calls < HOME_CALLS, `the city from home draws in under ${HOME_CALLS} calls with live sites and the shadow map redrawn (${full.calls})`);
-    check((await debug(page, (x) => x.quality())) === 'high', 'the quality governor has not stepped the city down');
     // What the sites cost from home: every site is drawn in a few batches, so all of them together add under 60 calls.
     const nSites = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length)) as number;
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(false));
@@ -656,6 +651,12 @@ async function constructionChecks(page: Page): Promise<void> {
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(true));
     console.log(`info  the ${nSites} live sites add ${home.calls - bare.calls} draw calls from home`);
     check(nSites >= 3 && home.calls - bare.calls < 60, `${nSites} live sites add fewer than 60 draw calls from home (${home.calls - bare.calls})`);
+    // The city's budget from home (task PERF): a frame with the shadow map redrawn, every pass counted.
+    const full = await homeBudget(page);
+    console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
+    check(full.triangles <= HOME_TRIANGLES, `the city from home draws at most ${HOME_TRIANGLES / 1e6}M triangles with live sites and the shadow map redrawn (${(full.triangles / 1e6).toFixed(2)}M)`);
+    check(full.calls < HOME_CALLS, `the city from home draws in under ${HOME_CALLS} calls with live sites and the shadow map redrawn (${full.calls})`);
+    check((await debug(page, (x) => x.quality())) === 'high', 'the quality governor has not stepped the city down');
   } finally {
     clock.stop();
     setMarketExtras({});

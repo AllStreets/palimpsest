@@ -65,11 +65,12 @@ test('the near set holds every block with any point inside the far edge of the b
   assert.ok(boxDistance(HOME, block(0, 0)) > AMBIENT_LOD.far);
 });
 
-test('AO keeps everything that can show any: the near limit lies past where the AO has faded at the frame edge', () => {
-  // GTAO fades out by 1200 m of view depth (post.ts); at the frame's corner a point that deep is farther still.
-  const fovH = 2 * Math.atan(Math.tan((36 / 2) * (Math.PI / 180)) * (1600 / 940));
-  const corner = Math.hypot(1, Math.tan(fovH / 2), Math.tan((36 / 2) * (Math.PI / 180)));
-  assert.ok(AO_NEAR >= 1200 * corner, `${AO_NEAR} against ${(1200 * corner).toFixed(0)}`);
+test('AO keeps everything that can show any: the near limit lies past where the AO has faded, measured from the eye', () => {
+  const post = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'app', 'src', 'city', 'post.ts'), 'utf8');
+  const end = Number(/AO_FADE_END = (\d+)/.exec(post)![1]);
+  assert.ok(AO_NEAR >= end, `${AO_NEAR} against ${end}`);
+  // The fade runs on distance from the eye, so a frame corner fades no later than its centre.
+  assert.match(post, /AO_FADE_END\.toFixed\(1\)\}, dist\)/);
 });
 
 test('the shadow column takes what stands round the target and what can throw a shadow into it, and nothing else', () => {
