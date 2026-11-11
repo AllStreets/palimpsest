@@ -15,7 +15,7 @@
  * UI_TOWER_SHOTS=all adds close shots of every root and era for the quality
  * rounds.
  */
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -1931,6 +1931,13 @@ async function qualityDropChecks(page: Page, errors: string[]): Promise<void> {
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/index.html missing: run npm run build first');
+  }
+  // A bundle older than the app's sources tests code that is no longer there (a merge after the last build, say).
+  const newest = (dir: string): number =>
+    readdirSync(dir, { withFileTypes: true }).reduce((m, e) => Math.max(m, e.isDirectory() ? newest(join(dir, e.name)) : statSync(join(dir, e.name)).mtimeMs), 0);
+  const built = statSync(join(DIST, 'index.html')).mtimeMs;
+  if (newest(join(ROOT, 'app', 'src')) > built || newest(join(ROOT, 'shared')) > built) {
+    throw new Error('dist is older than app/src or shared: run npm run build first');
   }
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-ui-test-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');

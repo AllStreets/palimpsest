@@ -24,7 +24,7 @@ import { createPost, EXPOSURE, FLICKER } from './post';
 import { createRiver } from './river.js';
 import { createTransit, type TransitView } from './transit.js';
 import { createVehicles, type Vehicles } from './vehicles.js';
-import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza } from './ambient.js';
+import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza, type CabPose } from './ambient.js';
 import { extentBlocks, type Network } from '../../../shared/commute.js';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
@@ -150,8 +150,8 @@ export interface City {
   transitNetwork(): Network | null;
   /** The ambient traffic and crowd (ambient.ts), or null before the network is laid. */
   ambient(): Ambient | null;
-  /** Holds the ambient density where a test or capture puts it (0 to 1), or null to follow the hour again. */
-  ambientDensity(n: number | null): void;
+  /** Holds the ambient density where a test or capture puts it (0 to 1), or null to follow the hour again; returns the hold it replaces. */
+  ambientDensity(n: number | null): number | null;
   /**
    * Stands objects at spots in the city outside the plots, each spot paved
    * and cleared of ambient blocks like a district (captures and the UI test:
@@ -347,6 +347,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let ambient: Ambient | null = null;
   let ambientPlazas: AmbientPlaza[] = [{ x: 0, z: 0, kind: 'civic' }];
   let forcedDensity: number | null = null;
+  const tramAt: Array<{ x: number; z: number }> = [];
+  const cabAt: CabPose[] = [];
   let densityClock = 0;
   const hourDensity = (): number => {
     const now = new Date();
@@ -1237,11 +1239,30 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         densityClock = 0;
         ambient.setDensity(hourDensity(), true);
       }
-      // Cars give way to the trams at the tram's crossings.
-      if (vehicles) ambient.setTrams(vehicles.vehicles('tram').map((t) => {
-        const p = t.position();
-        return { x: p[0], z: p[2] };
-      }));
+      // Cars give way to the trams at the tram's crossings, and keep clear of the persona cabs (vehicles.ts),
+      // read into arrays kept from frame to frame.
+      if (vehicles) {
+        const trams = vehicles.vehicles('tram');
+        while (tramAt.length < trams.length) tramAt.push({ x: 0, z: 0 });
+        tramAt.length = trams.length;
+        trams.forEach((t, i) => {
+          const p = t.position();
+          tramAt[i].x = p[0];
+          tramAt[i].z = p[2];
+        });
+        const cabs = vehicles.vehicles('cab');
+        while (cabAt.length < cabs.length) cabAt.push({ x: 0, z: 0, heading: 0, speed: 0 });
+        cabAt.length = cabs.length;
+        cabs.forEach((c, i) => {
+          const p = c.position();
+          cabAt[i].x = p[0];
+          cabAt[i].z = p[2];
+          cabAt[i].heading = c.heading();
+          cabAt[i].speed = c.speed();
+        });
+        ambient.setTrams(tramAt);
+        ambient.setCabs(cabAt);
+      }
       ambient.update(dt, camera, renderer.domElement.height);
     }
     fitMark();
@@ -1316,8 +1337,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     transitNetwork: () => transit.network(),
     ambient: () => ambient,
     ambientDensity(n) {
+      const was = forcedDensity;
       forcedDensity = n === null ? null : Math.max(0, Math.min(1, n));
       ambient?.setDensity(forcedDensity ?? hourDensity());
+      return was;
     },
     ambientBoard: (lots) => grid.board(lots),
     board(objects, spots) {

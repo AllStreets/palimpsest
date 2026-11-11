@@ -658,6 +658,8 @@ const SIGN_W = 1024;
 const SIGN_H = 96;
 const SIGN_COLS = 2;
 const SIGN_ROWS = 40;
+/** The signs' brightness: the plates are drawn dim and the lettering near white, so lifted, only the letters bloom. */
+const SIGN_LIFT = 1.45;
 /** A sign's height for its width: one atlas row. */
 const SIGN_ASPECT = SIGN_H / SIGN_W;
 
@@ -683,46 +685,61 @@ class SignAtlas {
     const v1 = 1 - row / SIGN_ROWS;
     return [u0 + 0.002, v1 - 1 / SIGN_ROWS + 0.004, u0 + 1 / SIGN_COLS - 0.002, v1 - 0.004];
   }
+  /**
+   * Every sign in the app's own faces (style.css: Newsreader for the name,
+   * IBM Plex Mono capitals for the line it serves, both at weights the app
+   * ships), on an enamel plate with an inset frame: a dark border, a hairline
+   * rule inside it in the livery's metal. The plate is drawn dim and the
+   * lettering bright, and the sign material lifts the whole (SIGN_LIFT), so
+   * at dusk the letters read as lit from behind and only they bloom.
+   */
   draw(): void {
     const g = this.canvas.getContext('2d');
     if (!g) return;
-    const livery: Record<SignStyle, { bg: string; fg: string; rule: string; weight: string }> = {
-      tram: { bg: '#1d3a31', fg: '#efe6cc', rule: '#c9b98a', weight: '600' },
-      rail: { bg: '#4a1d1a', fg: '#f1e7d0', rule: '#d8c39a', weight: '600' },
-      pod: { bg: '#d3d1c9', fg: '#1d2328', rule: '#2f7f9f', weight: '500' },
-      cab: { bg: '#d39a36', fg: '#1b1712', rule: '#1b1712', weight: '600' },
+    const livery: Record<SignStyle, { plate: string; edge: string; rule: string; ink: string; label: string }> = {
+      tram: { plate: '#14291f', edge: '#0a1510', rule: '#a8976a', ink: '#f4ead2', label: '#cbbd94' },
+      rail: { plate: '#341412', edge: '#1a0908', rule: '#b39a6c', ink: '#f6ecd6', label: '#d6bf96' },
+      pod: { plate: '#1b2226', edge: '#0c1013', rule: '#3d93b4', ink: '#eef3f4', label: '#8fc6d8' },
+      cab: { plate: '#3a2a10', edge: '#1a1206', rule: '#d9a441', ink: '#ffd88a', label: '#d9a441' },
     };
+    const name = (px: number): string => `500 ${px}px Newsreader, "Iowan Old Style", Georgia, serif`;
+    const mono = (px: number): string => `400 ${px}px "IBM Plex Mono", ui-monospace, Menlo, monospace`;
+    const spaced = (t: string): string => t.toUpperCase().split('').join('\u2009');
     this.rows.forEach((r, i) => {
       const x = (i % SIGN_COLS) * SIGN_W;
       const y = Math.floor(i / SIGN_COLS) * SIGN_H;
       const l = livery[r.style];
-      g.fillStyle = l.bg;
+      // The plate, its dark border, and the inset hairline frame.
+      g.fillStyle = l.edge;
       g.fillRect(x, y, SIGN_W, SIGN_H);
-      g.fillStyle = l.rule;
-      if (r.style === 'pod') g.fillRect(x + 28, y + 16, 6, SIGN_H - 32);
-      else {
-        g.fillRect(x + 14, y + 10, SIGN_W - 28, 3);
-        g.fillRect(x + 14, y + SIGN_H - 13, SIGN_W - 28, 3);
-      }
-      g.fillStyle = l.fg;
+      g.fillStyle = l.plate;
+      g.fillRect(x + 7, y + 7, SIGN_W - 14, SIGN_H - 14);
+      g.strokeStyle = l.rule;
+      g.lineWidth = 2;
+      g.strokeRect(x + 14, y + 14, SIGN_W - 28, SIGN_H - 28);
       g.textBaseline = 'middle';
       if (r.style === 'cab') {
-        // A cab sign is read through its middle third (cabRank): the word large and centred.
-        g.fillStyle = l.bg;
-        g.fillRect(x, y, SIGN_W, SIGN_H);
-        g.fillStyle = l.fg;
-        g.font = '700 64px "IBM Plex Sans", Helvetica, Arial, sans-serif';
+        // A cab sign is read through its middle third (cabRank): the word large and centred, lit amber.
+        g.fillStyle = l.ink;
+        g.font = name(60);
         g.textAlign = 'center';
-        g.fillText(r.text, x + SIGN_W / 2, y + SIGN_H / 2 + 3);
+        g.fillText(r.text, x + SIGN_W / 2, y + SIGN_H / 2 + 2);
         g.textAlign = 'left';
         return;
       }
-      g.font = `${l.weight} 50px "IBM Plex Sans", Helvetica, Arial, sans-serif`;
+      if (r.style === 'pod') {
+        // The pods' mark: a short upright bar in the line's blue before the name.
+        g.fillStyle = l.rule;
+        g.fillRect(x + 34, y + 26, 6, SIGN_H - 52);
+      }
+      g.fillStyle = l.ink;
+      g.font = name(52);
       g.textAlign = 'left';
-      g.fillText(r.text, x + (r.style === 'pod' ? 56 : 40), y + SIGN_H / 2 + 2);
-      g.font = '500 28px "IBM Plex Sans", Helvetica, Arial, sans-serif';
+      g.fillText(r.text, x + (r.style === 'pod' ? 60 : 42), y + SIGN_H / 2 + 3);
+      g.fillStyle = l.label;
+      g.font = mono(24);
       g.textAlign = 'right';
-      g.fillText(r.small, x + SIGN_W - 40, y + SIGN_H / 2 + 3);
+      g.fillText(spaced(r.small), x + SIGN_W - 42, y + SIGN_H / 2 + 2);
     });
     this.texture.needsUpdate = true;
   }
@@ -1654,7 +1671,7 @@ export function createTransit(): Transit {
     lampWarm: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.8, 0.56).multiplyScalar(2.8) }),
     lampCool: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.78, 0.9, 1.0).multiplyScalar(2.6) }),
     red: new THREE.MeshBasicMaterial({ color: new THREE.Color(4.0, 0.25, 0.12) }),
-    sign: new THREE.MeshBasicMaterial({ map: signs.texture, color: new THREE.Color(1.08, 1.08, 1.08), side: THREE.DoubleSide }),
+    sign: new THREE.MeshBasicMaterial({ map: signs.texture, color: new THREE.Color(SIGN_LIFT, SIGN_LIFT, SIGN_LIFT), side: THREE.DoubleSide }),
   };
   for (const [k, m] of Object.entries(M)) if (!m.name) m.name = k;
   const wireMat = new THREE.LineBasicMaterial({ color: 0x15171a, transparent: true, opacity: 0.85, fog: true });
@@ -1706,7 +1723,8 @@ export function createTransit(): Transit {
     const pods = buildPods(b, M, net, signs, names);
     for (const r of net.ranks) cabRank(b, M, r, signs.add('Cabs', r.exchange ? 'Exchange' : 'Rank', 'cab'));
     signs.draw();
-    void document.fonts?.load('600 50px "IBM Plex Sans"').then(() => signs.draw(), () => {});
+    // Drawn again once the app's faces have loaded (the first draw may fall back while they arrive).
+    void Promise.all([document.fonts?.load('500 52px Newsreader'), document.fonts?.load('400 24px "IBM Plex Mono"')]).then(() => signs.draw(), () => {});
     counts = { stops: tram.stops, stations: rail.stations, podStations: pods.stations, ranks: net.ranks.length, poles: tram.poles, bents: rail.bents, pylons: pods.pylons };
     parts = b.finish((m) => !noShadow.has(m), wireMat);
     for (const c of parts) group.add(c.group);

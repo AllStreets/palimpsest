@@ -260,6 +260,39 @@ const SLOTS = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
 const NET = network({ blocks: extentBlocks(SLOTS), districts: SLOTS.slice(0, 6) });
 const PLAZAS = [{ x: 0, z: 0 }, ...SLOTS.slice(0, 6)];
 
+type Footprint = { x: number; z: number; yaw: number; length: number; width: number };
+/** Whether a point lies within a car's footprint, grown by `pad`. */
+function insideCar(c: Footprint, x: number, z: number, pad: number): boolean {
+  const dx = x - c.x;
+  const dz = z - c.z;
+  const u = dx * Math.cos(c.yaw) + dz * Math.sin(c.yaw);
+  const v = -dx * Math.sin(c.yaw) + dz * Math.cos(c.yaw);
+  return Math.abs(u) < c.length / 2 + pad && Math.abs(v) < c.width / 2 + pad;
+}
+/** Whether two cars' footprints, scaled by k, overlap (separating axes). */
+function boxesOverlap(p: Footprint, q: Footprint, k: number): boolean {
+  const axes = [p.yaw, p.yaw + Math.PI / 2, q.yaw, q.yaw + Math.PI / 2].map((a) => [Math.cos(a), Math.sin(a)]);
+  const corners = (c: Footprint): number[][] =>
+    [
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1],
+    ].map(([a, b]) => {
+      const u = (a * c.length * k) / 2;
+      const v = (b * c.width * k) / 2;
+      return [c.x + u * Math.cos(c.yaw) - v * Math.sin(c.yaw), c.z + u * Math.sin(c.yaw) + v * Math.cos(c.yaw)];
+    });
+  const P = corners(p);
+  const Q = corners(q);
+  for (const [ax, az] of axes) {
+    const pr = P.map(([x, z]) => x * ax + z * az);
+    const qr = Q.map(([x, z]) => x * ax + z * az);
+    if (Math.max(...pr) < Math.min(...qr) || Math.max(...qr) < Math.min(...pr)) return false;
+  }
+  return true;
+}
+
 /** Runs the ambient clock on in steps, calling `each` after every one. */
 function run(a: Ambient, seconds: number, step: number, each: (t: number) => void = () => {}): void {
   for (let t = 0; t < seconds; t += step) {
@@ -278,8 +311,57 @@ test('ambient vehicles never leave the street grid', () => {
   let turning = 0;
   /** Junctions by key: which axes' traffic stood in the box at once. */
   let clash = '';
+  let overlap = '';
+  let struck = '';
+  let inLane = '';
   run(a, 240, 0.1, (t) => {
     const inBox = new Map<string, Set<string>>();
+    const cars = a.cars();
+    // No two cars overlap, in a junction's box or anywhere (their footprints, a touch inset).
+    for (let i = 0; i < cars.length && !overlap; i++) {
+      for (let k = i + 1; k < cars.length; k++) {
+        const p = cars[i];
+        const q = cars[k];
+        if (Math.abs(p.x - q.x) > 6 || Math.abs(p.z - q.z) > 6) continue;
+        if (boxesOverlap(p, q, 0.9)) {
+          overlap = `${p.id} (${p.turn} on ${p.lane}) and ${q.id} (${q.turn} on ${q.lane}) at ${p.x.toFixed(1)}, ${p.z.toFixed(1)}, t ${t.toFixed(1)}`;
+          break;
+        }
+      }
+    }
+    // Nobody crossing walks into the lane of a car moving on, just ahead of it or alongside.
+    if (!inLane) {
+      for (const p of a.people()) {
+        if (p.state !== 'crossing') continue;
+        // On the carriageway itself, not on a kerb's edge.
+        if (Math.min(Math.abs(p.x - streetLine(p.x)), Math.abs(p.z - streetLine(p.z))) >= 4.2) continue;
+        for (const c of cars) {
+          if (c.speed < 1.5 || Math.abs(p.x - c.x) > 9 || Math.abs(p.z - c.z) > 9) continue;
+          const dx = p.x - c.x;
+          const dz = p.z - c.z;
+          const along = dx * Math.cos(c.yaw) + dz * Math.sin(c.yaw);
+          const lat = -dx * Math.sin(c.yaw) + dz * Math.cos(c.yaw);
+          if (Math.abs(lat) < c.width / 2 + 0.6 && along > -c.length / 2 - 0.5 && along < c.length / 2 + 3) {
+            inLane = `person ${p.id} in car ${c.id}'s lane (${c.turn}, ${c.speed.toFixed(1)} m/s) at ${p.x.toFixed(1)}, ${p.z.toFixed(1)}, t ${t.toFixed(1)}`;
+            break;
+          }
+        }
+        if (inLane) break;
+      }
+    }
+    // No moving car runs over a person.
+    if (!struck) {
+      for (const p of a.people()) {
+        for (const c of cars) {
+          if (c.speed < 0.3 || Math.abs(p.x - c.x) > 4 || Math.abs(p.z - c.z) > 4) continue;
+          if (insideCar(c, p.x, p.z, 0.25)) {
+            struck = `car ${c.id} (${c.turn}) over person ${p.id} (${p.state}) at ${p.x.toFixed(1)}, ${p.z.toFixed(1)}, t ${t.toFixed(1)}`;
+            break;
+          }
+        }
+        if (struck) break;
+      }
+    }
     for (const c of a.cars()) {
       const dx = Math.abs(c.x - streetLine(c.x));
       const dz = Math.abs(c.z - streetLine(c.z));
@@ -301,6 +383,9 @@ test('ambient vehicles never leave the street grid', () => {
   assert.ok(stopped > 0 && moving > stopped, `traffic moves and queues (${moving} moving, ${stopped} standing)`);
   assert.ok(turning > 0, 'cars turn at junctions');
   assert.equal(clash, '', 'a junction passes one axis at a time (in turn)');
+  assert.equal(overlap, '', 'no two cars overlap');
+  assert.equal(struck, '', 'no car drives through a person');
+  assert.equal(inLane, '', 'nobody crosses in the lane of a moving car');
   // Cars keep their distance: nobody stands closer than a metre behind the car ahead in its lane.
   const byLane = new Map<string, Array<{ s: number; len: number }>>();
   for (const c of a.cars()) {
@@ -416,5 +501,81 @@ test('the crowd does not walk in step', () => {
   const groups = new Map<number, number>();
   for (const p of a.people()) if (p.group >= 0) groups.set(p.group, (groups.get(p.group) ?? 0) + 1);
   assert.ok([...groups.values()].filter((n) => n >= 2).length > 20, 'people go about in twos and threes');
+  a.dispose();
+});
+
+test('ambient traffic gives way to the persona cabs', () => {
+  const a = createAmbient(NET, 'high', { seed: 17 });
+  a.setDensity(1);
+  run(a, 20, 0.1);
+  // A cab standing in a car's lane ahead of it: the car stops behind it and never runs into it.
+  const car = a.cars().find((c) => c.s > 8 && c.s < 25 && !c.junction && c.speed > 2)!;
+  assert.ok(car, 'a car under way early in its lane');
+  const cab = { x: car.x + Math.cos(car.yaw) * 30, z: car.z + Math.sin(car.yaw) * 30, heading: car.yaw, speed: 0 };
+  a.setCabs([cab]);
+  let closest = Infinity;
+  run(a, 25, 0.1, () => {
+    const c = a.cars().find((x) => x.id === car.id)!;
+    closest = Math.min(closest, Math.hypot(c.x - cab.x, c.z - cab.z));
+  });
+  const now = a.cars().find((x) => x.id === car.id)!;
+  assert.ok(now.speed < 0.2, `the car stands behind the cab (${now.speed.toFixed(2)} m/s)`);
+  assert.ok(closest > car.length / 2 + 2.2 + 0.5, `and keeps its distance (${closest.toFixed(2)} m between middles)`);
+  // A cab in a junction's box: nobody goes in until it has gone.
+  a.setCabs([]);
+  run(a, 10, 0.1);
+  const held = a.cars().find((c) => c.hold === 'signal' || c.speed < 0.2 && !c.junction && c.s > 55)!;
+  const lane = held.lane.split('>')[1].split(',').map(Number);
+  const key = `${lane[0]},${lane[1]}`;
+  // Those already past the line when the cab stopped there carry on out; nobody else goes in.
+  const already = new Set(a.cars().filter((c) => c.junction === key || (c.lane.endsWith(`>${key}`) && c.s > 60)).map((c) => c.id));
+  a.setCabs([{ x: lane[0], z: lane[1], heading: 0, speed: 0 }]);
+  let entered = 0;
+  run(a, 60, 0.1, () => {
+    for (const c of a.cars()) if (c.junction === key && !already.has(c.id)) entered++;
+  });
+  assert.equal(entered, 0, 'no car enters a box a cab stands in');
+  a.dispose();
+});
+
+test('a plaza laid or a network relaid leaves the traffic and crowd elsewhere where they are', () => {
+  const a = createAmbient(NET, 'high', { seed: 19 });
+  a.setDensity(1);
+  run(a, 10, 0.1);
+  const before = new Map(a.cars().map((c) => [c.id, c]));
+  const people = new Map(a.people().map((p) => [p.id, p]));
+  // A new job site on a plot in the east: only the cars and people near it go.
+  const site = { x: 480, z: -240 };
+  const plazas = [{ x: 0, z: 0, kind: 'civic' as const }, ...SLOTS.slice(0, 6).map((o) => ({ ...o, kind: 'district' as const })), { ...site, kind: 'site' as const }];
+  a.setPlazas(plazas);
+  let kept = 0;
+  let far = 0;
+  for (const c of a.cars()) {
+    const b = before.get(c.id);
+    if (!b) continue;
+    kept++;
+    assert.ok(Math.hypot(b.x - c.x, b.z - c.z) < 1e-6, `car ${c.id} stays where it was`);
+  }
+  for (const b of before.values()) if (Math.hypot(b.x - site.x, b.z - site.z) > 150) far++;
+  assert.ok(kept >= far, `every car away from the site stays (${kept} kept, ${far} away from it)`);
+  assert.ok(kept < before.size, 'the cars on the site go');
+  let stayed = 0;
+  for (const p of a.people()) {
+    const b = people.get(p.id);
+    if (b && Math.hypot(b.x - p.x, b.z - p.z) < 1e-6) stayed++;
+  }
+  assert.ok(stayed > people.size * 0.8, `the crowd stays where it was (${stayed} of ${people.size})`);
+  // The same network again moves nobody; the quality's step down keeps a subset in place.
+  a.relay(NET);
+  a.setQuality('medium');
+  const after = new Map(a.cars().map((c) => [c.id, c]));
+  for (const [id, c] of after) {
+    const b = before.get(id);
+    if (b) assert.ok(Math.hypot(b.x - c.x, b.z - c.z) < 1e-6, `car ${id} stays through the step down`);
+  }
+  // Out of sight the streets fill again toward the density.
+  const n0 = a.cars().length;
+  run(a, 3, 0.1);
+  assert.ok(a.cars().length >= n0, 'the streets refill out of sight');
   a.dispose();
 });

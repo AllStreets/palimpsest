@@ -99,7 +99,7 @@ interface DebugHandle {
   /** The ambient traffic and crowd: how many, and what of them draws from this camera (null before the network is laid). */
   ambient(): AmbientView | null;
   /** Holds the ambient density at n (0 to 1), or follows the hour again with null. */
-  ambientDensity(n: number | null): void;
+  ambientDensity(n: number | null): number | null;
   /** Holds or releases the ambient clock, or moves it on (captures and tests). */
   ambientHold(on: boolean): void;
   ambientSkip(seconds: number): void;
@@ -414,13 +414,22 @@ async function main(): Promise<void> {
     notice: () => notice.text(),
     plots: () => city.plots(),
     async ambientBoard() {
-      // A board is measured with the streets empty: no car or person passes in front of it.
-      city.ambientDensity(0);
-      const board = ambientBoard(city.scene, city.camera, (lots) => city.ambientBoard(lots), (e, t) => city.view(e, t));
-      await city.precompile();
-      await texturesSettled();
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      return board.points(innerWidth, innerHeight);
+      // A board is measured with the streets empty: no car or person passes in front of it. The board stands on
+      // (the capture reads it after this returns), so the streets stay empty with it; if laying it fails, the
+      // density the city had comes back.
+      const was = city.ambientDensity(0);
+      let ok = false;
+      try {
+        const board = ambientBoard(city.scene, city.camera, (lots) => city.ambientBoard(lots), (e, t) => city.view(e, t));
+        await city.precompile();
+        await texturesSettled();
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const points = board.points(innerWidth, innerHeight);
+        ok = true;
+        return points;
+      } finally {
+        if (!ok) city.ambientDensity(was);
+      }
     },
     async agentBoard(towers, spots) {
       const pieces = towers.map((t, i) => {
@@ -433,11 +442,19 @@ async function main(): Promise<void> {
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
     async swatchBoard() {
-      city.ambientDensity(0);
-      const board = swatchBoard(city.scene, city.camera, (e, t) => city.view(e, t));
-      await city.precompile();
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      return board.points(innerWidth, innerHeight);
+      // As the ambient board: empty streets while the board stands, the density restored if laying it fails.
+      const was = city.ambientDensity(0);
+      let ok = false;
+      try {
+        const board = swatchBoard(city.scene, city.camera, (e, t) => city.view(e, t));
+        await city.precompile();
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const points = board.points(innerWidth, innerHeight);
+        ok = true;
+        return points;
+      } finally {
+        if (!ok) city.ambientDensity(was);
+      }
     },
     restyle(repo, ids, datumIndex) {
       const look = { ...lookOf(byRepo(repo) ?? ({ repo } as District)) };

@@ -27,7 +27,19 @@ import { HEADLAMP } from './post.js';
  * the box before the other way's green. Turning cars blink and yield to
  * people on the crossing they cut. A driver whose exit stays full takes
  * another way, and every driver leans away from streets already full, so the
- * grid flows in platoons rather than locking.
+ * grid flows in platoons rather than locking. Opposing left turns go in
+ * turn, a car follows whoever left its lane ahead of it through the box,
+ * brakes for anyone moving in the road, and treats a persona's cab (setCabs)
+ * as a car: one ahead in its lane is followed, one in a box keeps it out.
+ *
+ * Parked cars, dark, their lamps off, line the kerbs of the streets no
+ * ambient car drives and no persona cab pulls in at: the dead ends by the
+ * plazas (not within 30 m of a plaza's edge or 25 m of a rank) and the
+ * streets in a ring past the traffic's reach.
+ *
+ * A plaza laid or the network relaid keeps everyone whose lane, pavement,
+ * plaza or platform still stands exactly where they are; the rest go and
+ * the streets refill out of sight.
  *
  * Crowd. People walk the pavements near the plazas and the stops: each picks
  * a way at every corner, waits at the kerb for its signal and crosses with
@@ -74,7 +86,7 @@ export const AMBIENT_CAP = {
 } as const;
 
 /** The near and far levels' dissolve bands, in metres from the eye, and where the far crowd fades out. */
-export const AMBIENT_LOD = { car: { near: 190, far: 240 }, person: { near: 70, far: 95 }, crowdEnd: { near: 430, far: 520 } } as const;
+export const LIFE_LOD = { car: { near: 190, far: 240 }, person: { near: 70, far: 95 }, crowdEnd: { near: 430, far: 520 } } as const;
 
 /**
  * How busy the streets are at a local hour (0 to 24): quiet in the small
@@ -235,19 +247,21 @@ function moveOf(from: Lane, to: Lane): Move {
   return { from, to, turn, p0, q, p1, len: lut[16], lut };
 }
 
-function bez(a: V2, q: V2, b: V2, t: number): V2 {
+function bez(a: V2, q: V2, b: V2, t: number, out: V2 = { x: 0, z: 0 }): V2 {
   const u = 1 - t;
-  return { x: u * u * a.x + 2 * u * t * q.x + t * t * b.x, z: u * u * a.z + 2 * u * t * q.z + t * t * b.z };
+  out.x = u * u * a.x + 2 * u * t * q.x + t * t * b.x;
+  out.z = u * u * a.z + 2 * u * t * q.z + t * t * b.z;
+  return out;
 }
 
 /** The point at arc length `s` along a move. */
-function movePoint(m: Move, s: number): V2 {
+function movePoint(m: Move, s: number, out: V2 = { x: 0, z: 0 }): V2 {
   const L = m.lut;
   const v = clamp(s, 0, m.len);
   let k = 1;
   while (k < 16 && L[k] < v) k++;
   const t = (k - 1 + (L[k] > L[k - 1] ? (v - L[k - 1]) / (L[k] - L[k - 1]) : 0)) / 16;
-  return bez(m.p0, m.q, m.p1, t);
+  return bez(m.p0, m.q, m.p1, t, out);
 }
 
 /**
@@ -359,21 +373,27 @@ function layRoads(net: Network, plazas: readonly AmbientPlaza[], r: () => number
 }
 
 /** A junction's signals at time t: which axis may go, whether its amber shows, and seconds left in that state. */
-function signalAt(j: Junction, t: number): { green: Axis | null; amber: boolean; left: number } {
+function signalAt(j: Junction, t: number, out: { green: Axis | null; amber: boolean; left: number } = { green: null, amber: false, left: 0 }): { green: Axis | null; amber: boolean; left: number } {
+  const set = (green: Axis | null, amber: boolean, left: number): typeof out => {
+    out.green = green;
+    out.amber = amber;
+    out.left = left;
+    return out;
+  };
   const s = j.signal;
-  if (!s) return { green: null, amber: false, left: Infinity };
+  if (!s) return set(null, false, Infinity);
   const cycle = s.gx + s.gz + 2 * (AMBER + ALL_RED);
   let u = (((t + s.offset) % cycle) + cycle) % cycle;
-  if (u < s.gx) return { green: 'x', amber: false, left: s.gx - u };
+  if (u < s.gx) return set('x', false, s.gx - u);
   u -= s.gx;
-  if (u < AMBER) return { green: 'x', amber: true, left: AMBER - u };
+  if (u < AMBER) return set('x', true, AMBER - u);
   u -= AMBER;
-  if (u < ALL_RED) return { green: null, amber: false, left: ALL_RED - u };
+  if (u < ALL_RED) return set(null, false, ALL_RED - u);
   u -= ALL_RED;
-  if (u < s.gz) return { green: 'z', amber: false, left: s.gz - u };
+  if (u < s.gz) return set('z', false, s.gz - u);
   u -= s.gz;
-  if (u < AMBER) return { green: 'z', amber: true, left: AMBER - u };
-  return { green: null, amber: false, left: Math.max(0, ALL_RED - (u - AMBER)) };
+  if (u < AMBER) return set('z', true, AMBER - u);
+  return set(null, false, Math.max(0, ALL_RED - (u - AMBER)));
 }
 
 // ---------------------------------------------------------------- the cars
@@ -444,82 +464,159 @@ interface Car {
   seen: boolean;
 }
 
-/** A car's view of the street ahead: the gap to what it must not run into, and that thing's speed. */
-function aheadOf(car: Car, idx: number, t: number, ped: (j: Junction, axis: Axis) => number): { gap: number; vl: number } {
-  const lane = car.lane;
-  let gap = Infinity;
-  let vl = 0;
-  const lead = lane.cars[idx - 1];
-  if (lead) {
-    gap = lead.s - lead.len - car.s;
-    vl = lead.v;
-    return { gap, vl };
-  }
-  if (car.s < 0) return { gap, vl };
-  const m = car.next;
-  if (!m) return { gap: lane.len - car.s, vl: 0 };
-  // Past the junction: the last car in the lane it turns into, measured through the box.
-  const tail = m.to.cars[m.to.cars.length - 1];
-  if (tail) {
-    gap = tail.s - tail.len - (car.s - lane.len - m.len);
-    vl = tail.v;
-  }
-  if (!car.commit) {
-    const may = mayEnter(car, t, ped);
-    if (!may) {
-      const line = lane.len - car.s;
-      if (line < gap) return { gap: line, vl: 0 };
-    }
-  }
-  return { gap, vl };
+/** A persona's cab as the traffic sees it (scene.ts reads them off vehicles.ts): where it is, which way it faces, how fast. */
+export interface CabPose {
+  x: number;
+  z: number;
+  heading: number;
+  speed: number;
 }
 
-/** Whether a car at its lane's end may go into the box now. Commits it when it may and is close enough. */
-/** Trams on the street now (scene.ts feeds them, from the persona vehicles it draws): cars give way to them at the tram's crossings. */
-let TRAMS: ReadonlyArray<V2> = [];
+/** What the traffic reads of the world each step: the clock, people on the crossings, the trams and the persona cabs. */
+interface Env {
+  t: number;
+  ped(j: Junction, axis: Axis): number;
+  trams: ReadonlyArray<V2>;
+  cabs: ReadonlyArray<CabPose>;
+}
 
-function mayEnter(car: Car, t: number, ped: (j: Junction, axis: Axis) => number): boolean {
+/** A persona cab's half length, and how near the middle of a car's lane one must stand to be in it. */
+const CAB_HALF = 2.1;
+const CAB_IN_LANE = 1.5;
+const other = (a: Axis): Axis => (a === 'x' ? 'z' : 'x');
+/** The speed a move through a box is taken at: a right turn tight, a left wider, straight on at the car's own pace. */
+const turnCap = (m: Move, v0: number): number => (m.turn === 'right' ? 4.3 : m.turn === 'left' ? 5.6 : v0);
+
+/** Scratch results, so a step allocates nothing: the gap ahead and its speed; a signal's state; a pose. */
+const AHEAD = { gap: 0, vl: 0 };
+const SIG: { green: Axis | null; amber: boolean; left: number } = { green: null, amber: false, left: 0 };
+
+/** A car's view of the street ahead (into AHEAD): the gap to what it must not run into, and that thing's speed. */
+function aheadOf(car: Car, idx: number, env: Env): typeof AHEAD {
+  const lane = car.lane;
+  AHEAD.gap = Infinity;
+  AHEAD.vl = 0;
+  const lead = lane.cars[idx - 1];
+  if (lead) {
+    AHEAD.gap = lead.s - lead.len - car.s;
+    AHEAD.vl = lead.v;
+  } else if (car.s >= 0) {
+    const m = car.next;
+    if (!m) {
+      AHEAD.gap = lane.len - car.s;
+    } else {
+      // Past the junction: the last car in the lane it turns into, measured through the box.
+      const tail = m.to.cars[m.to.cars.length - 1];
+      if (tail) {
+        AHEAD.gap = tail.s - tail.len - (car.s - lane.len - m.len);
+        AHEAD.vl = tail.v;
+      }
+      if ((!car.commit && !mayEnter(car, env)) || cabHolds(car, env)) {
+        const line = lane.len - car.s;
+        if (line < AHEAD.gap) {
+          AHEAD.gap = line;
+          AHEAD.vl = 0;
+        }
+      }
+    }
+  }
+  // Whoever left the same lane ahead of it and is still in the box is followed too, whatever way each turns.
+  const from = car.s >= 0 ? lane : car.via ? car.via.from : null;
+  if (from && (car.s < 0 || lane.len - car.s < 30)) {
+    const mine = car.s >= 0 ? car.s - lane.len : car.via!.len + car.s;
+    for (const o of from.to.out) {
+      for (const c of o.cars) {
+        if (c === car || !c.via || c.via.from !== from || c.s - c.len > 1) continue;
+        const theirs = c.via.len + c.s;
+        if (theirs <= mine) continue;
+        const gap = theirs - c.len - mine;
+        if (gap < AHEAD.gap) {
+          AHEAD.gap = gap;
+          AHEAD.vl = c.v;
+        }
+      }
+    }
+  }
+  // A persona's cab in the lane ahead is followed like any car.
+  for (const cab of env.cabs) {
+    const dx = cab.x - lane.start.x;
+    const dz = cab.z - lane.start.z;
+    const u = dx * lane.dir.x + dz * lane.dir.z;
+    if (u < car.s - car.len * 0.5 || u > lane.len + 2) continue;
+    const lat = -dx * lane.dir.z + dz * lane.dir.x;
+    if (Math.abs(lat) > CAB_IN_LANE) continue;
+    const gap = u - CAB_HALF - car.s;
+    if (gap < AHEAD.gap) {
+      AHEAD.gap = gap;
+      AHEAD.vl = Math.max(0, cab.speed * (Math.cos(cab.heading) * lane.dir.x + Math.sin(cab.heading) * lane.dir.z));
+    }
+  }
+  return AHEAD;
+}
+
+/** Whether a persona's cab stands in the box ahead of a car that can still stop for it (committed or not). */
+function cabHolds(car: Car, env: Env): boolean {
+  if (car.s < 0 || !env.cabs.length) return false;
+  const j = car.lane.to;
+  const line = car.lane.len - car.s;
+  if ((car.v * car.v) / (2 * 6) > line - 0.2) return false;
+  for (const cab of env.cabs) if (Math.abs(cab.x - j.x) < BOX + 1.5 && Math.abs(cab.z - j.z) < BOX + 1.5) return true;
+  return false;
+}
+
+/**
+ * Whether a car at its lane's end may go into the box now. Commits it when
+ * it may and is close enough to have to.
+ */
+function mayEnter(car: Car, env: Env): boolean {
   const lane = car.lane;
   const m = car.next;
   if (!m) return false;
   const j = lane.to;
-  if (j.tram) for (const tr of TRAMS) if (Math.abs(tr.x - j.x) < 38 && Math.abs(tr.z - j.z) < 38) return false;
+  if (j.tram) for (const tr of env.trams) if (Math.abs(tr.x - j.x) < 38 && Math.abs(tr.z - j.z) < 38) return false;
+  // A persona's cab in the box: nobody goes in until it has gone.
+  for (const cab of env.cabs) if (Math.abs(cab.x - j.x) < BOX + 1.5 && Math.abs(cab.z - j.z) < BOX + 1.5) return false;
   const line = lane.len - car.s;
-  const sig = signalAt(j, t);
   if (j.signal) {
+    const sig = signalAt(j, env.t, SIG);
     if (sig.green !== lane.axis) return false;
     // Only a car that clears the box before the other way's green goes in, unless it cannot stop at all; on
     // amber, only one that cannot stop comfortably.
     const hardStop = (car.v * car.v) / (2 * 6) > line - 0.2;
     // The time to clear it, pulling away at the cars' comfortable acceleration.
     const D = Math.max(line, 0) + m.len + car.len * 0.6;
-    const clear = (-car.v + Math.sqrt(car.v * car.v + 2 * IDM.accel * D)) / IDM.accel;
+    const clear = Math.max((-car.v + Math.sqrt(car.v * car.v + 2 * IDM.accel * D)) / IDM.accel, D / turnCap(m, car.v0));
     if (!hardStop && clear > sig.left + (sig.amber ? 0 : AMBER) + ALL_RED - 0.6) return false;
     if (sig.amber && !hardStop && (car.v * car.v) / (2 * 3.5) < line - 0.3) return false;
-  } else {
-    // No signals (a street running straight on): give way to people on the crossing.
-    if (ped(j, lane.axis === 'x' ? 'z' : 'x') > 0) return false;
   }
+  // People on a crossing the car would cut go first: the crossings of the street it leaves and the one it takes.
+  if (env.ped(j, other(lane.axis)) > 0 || env.ped(j, other(m.to.axis)) > 0) return false;
   // Never into a box whose exit is full.
   const tail = m.to.cars[m.to.cars.length - 1];
   if (tail && tail.s - tail.len < car.len + 3 + (tail.v < 0.5 ? 2 : 0)) return false;
-  if (m.turn !== 'straight') {
-    // Turning cuts a crossing: people on it go first.
-    if (ped(j, m.to.axis === 'x' ? 'z' : 'x') > 0) return false;
+  // Whatever its way, a car waits for an opposing left turn already in the box or committed to it.
+  const opp = j.into.find((l) => l.dir.x === -lane.dir.x && l.dir.z === -lane.dir.z);
+  if (opp) {
+    for (const c of opp.cars) if (c.s >= 0 && c.commit && c.next !== null && c.next.turn === 'left' && !(m.turn === 'left' && c.id > car.id && !c.commit)) return false;
+    for (const o of j.out) for (const c of o.cars) if (c.s < 0 && c.via && c.via.from === opp && c.via.turn === 'left' && c.s > -c.via.len - c.len) return false;
   }
   if (m.turn === 'left') {
-    // A left turn gives way to oncoming traffic: anything coming on, or in the box from the other side.
+    // A left turn gives way to oncoming traffic: anything coming on, or in the box from the other side. Two
+    // opposing left turns go in turn: the one in the box first, else the one that has waited (the lower id).
     const on = j.into.find((l) => l.dir.x === -lane.dir.x && l.dir.z === -lane.dir.z);
     if (on) {
       for (const c of on.cars) {
         if (c.s < 0) continue;
         const d = on.len - c.s;
-        if (d < 32 && (c.v > 0.8 || (d < 4 && c.next && c.next.turn !== 'left'))) return false;
+        const turnsLeft = c.next !== null && c.next.turn === 'left';
+        if (d < 45 && c.v > 0.8 && !turnsLeft) return false;
+        if (d < 4 && !turnsLeft) return false;
+        if (turnsLeft && (c.commit || (d < 25 && c.id < car.id))) return false;
       }
-      for (const o of j.out) for (const c of o.cars) if (c.s < 0 && c.via && c.via.from === on && c.via.turn !== 'left') return false;
+      for (const o of j.out) for (const c of o.cars) if (c.s < 0 && c.via && c.via.from === on && c.s > -c.via.len - c.len) return false;
     }
   }
-  if (line < car.v * car.v / (2 * 2.2) + 3) car.commit = true;
+  if (line < (car.v * car.v) / (2 * 2.2) + 3) car.commit = true;
   return true;
 }
 
@@ -533,35 +630,47 @@ function holdOf(car: Car, t: number): string | null {
   if (j.signal) {
     const sig = signalAt(j, t);
     if (sig.green !== lane.axis || sig.amber) return 'signal';
-  } else if (j.walkers[lane.axis === 'x' ? 'z' : 'x'] > 0) return 'people';
+  }
+  if (j.walkers[other(lane.axis)] > 0 || j.walkers[other(m.to.axis)] > 0) return 'people';
   const tail = m.to.cars[m.to.cars.length - 1];
   if (tail && tail.s - tail.len < car.len + 3 + (tail.v < 0.5 ? 2 : 0)) return 'exit full';
-  if (m.turn !== 'straight' && j.walkers[m.to.axis === 'x' ? 'z' : 'x'] > 0) return 'people';
   if (m.turn === 'left') return 'oncoming';
   return 'other';
 }
 
-/** Where a car's point `back` metres behind its front stands, along its lane, through the box, or in the lane it came from. */
-function carPoint(car: Car, back: number): V2 {
+/** Where a car's point `back` metres behind its front stands (into `out`): along its lane, through the box, or in the lane it came from. */
+function carPoint(car: Car, back: number, out: V2): V2 {
   const s = car.s - back;
   const lane = car.lane;
-  if (s >= 0 || !car.via) return { x: lane.start.x + lane.dir.x * s, z: lane.start.z + lane.dir.z * s };
+  if (s >= 0 || !car.via) {
+    out.x = lane.start.x + lane.dir.x * s;
+    out.z = lane.start.z + lane.dir.z * s;
+    return out;
+  }
   const m = car.via;
-  if (s >= -m.len) return movePoint(m, m.len + s);
+  if (s >= -m.len) return movePoint(m, m.len + s, out);
   const f = m.from;
   const u = f.len + (s + m.len);
-  return { x: f.start.x + f.dir.x * u, z: f.start.z + f.dir.z * u };
+  out.x = f.start.x + f.dir.x * u;
+  out.z = f.start.z + f.dir.z * u;
+  return out;
 }
 
-/** A car's pose: its middle, heading, and whether it stands in a junction's box (and which way it came in). */
-function carPose(car: Car): { x: number; z: number; yaw: number; junction: Junction | null; axis: Axis } {
-  const f = carPoint(car, car.len * 0.18);
-  const b = carPoint(car, car.len * 0.82);
-  const c = carPoint(car, car.len / 2);
-  const yaw = Math.atan2(f.z - b.z, f.x - b.x);
+const PF = { x: 0, z: 0 };
+const PB = { x: 0, z: 0 };
+const POSE: { x: number; z: number; yaw: number; junction: Junction | null; axis: Axis } = { x: 0, z: 0, yaw: 0, junction: null, axis: 'x' };
+
+/** A car's pose (into a shared scratch: copy what you keep): its middle, heading, and the junction whose box it stands in. */
+function carPose(car: Car): typeof POSE {
+  carPoint(car, car.len * 0.18, PF);
+  carPoint(car, car.len * 0.82, PB);
+  carPoint(car, car.len / 2, POSE);
+  POSE.yaw = Math.atan2(PF.z - PB.z, PF.x - PB.x);
   const mid = car.s - car.len / 2;
   const inBox = car.via !== null && mid < 0 && mid > -car.via.len;
-  return { x: c.x, z: c.z, yaw, junction: inBox ? car.lane.from : null, axis: inBox ? car.via!.from.axis : car.lane.axis };
+  POSE.junction = inBox ? car.lane.from : null;
+  POSE.axis = inBox ? car.via!.from.axis : car.lane.axis;
+  return POSE;
 }
 
 /** Which blinker a car shows: right (+1) or left (-1) for the last 40 m before a turn and through it, else none. */
@@ -597,6 +706,20 @@ function chooseMove(lane: Lane, r: () => number, not: Move | null = null): Move 
 const LANE_SHARE = 34;
 /** Metres of pavement per person at full density: an evening crowd near the plazas, room to pass. */
 const PAVE_SHARE = 8;
+
+/** Parked cars along the kerbs at each quality. */
+export const PARKED_CAP = { high: 2400, medium: 900 } as const;
+
+/** A car parked at a kerb: where, which way, its body and paint. */
+interface Parked {
+  x: number;
+  z: number;
+  yaw: number;
+  model: Exclude<AmbientModel, 'cab'>;
+  paint: [number, number, number];
+  metal: number;
+  seen: boolean;
+}
 
 const IDM = { accel: 1.5, decel: 2.2, gap: 2.2, headway: 1.25 } as const;
 
@@ -790,6 +913,8 @@ interface Person {
   seen: boolean;
   /** What it last decided in giving way: how it steers, and the pace it allows itself. */
   gave: [number, number];
+  /** How far a follower turns from its leader's facing when they stand. */
+  jit: number;
 }
 
 const srgb = (hex: string): [number, number, number] => {
@@ -881,63 +1006,84 @@ function newPerson(id: number, r: () => number): Person {
     lamp: [0, 1, 0, 0],
     seen: false,
     gave: [0, pace],
+    jit: (r() - 0.5) * 0.6,
   };
 }
 
 // ---------------------------------------------------------------- street lamps
 
+/** Street lamps by block: each a lamp head's position and its strength (lampLight reads the 3 by 3 blocks round a point). */
+type Lamps = Map<number, number[]>;
+const blockOf = (i: number, j: number): number => (i + 4096) * 8192 + (j + 4096);
+
 /**
- * The street lamp nearest a point that lights it, as grid.ts lays them (on
- * the south and east edges of every block, a head 8 m up reaching 1.3 m over
- * the road, none on a plaza, where lanterns ring it instead): the direction
- * from the point to the lamp's head and the irradiance it lays there.
+ * The street lamps as grid.ts lays them, once per lay: on the south and east
+ * edges of every block, a head 8 m up reaching 1.3 m over the road, none on
+ * a plaza or in the river; each plaza's ring of 24 lanterns at 66 m (off the
+ * exchange's steps); the civic lamp standards.
  */
-function lampLight(x: number, y: number, z: number, plazas: readonly AmbientPlaza[], out: [number, number, number, number]): void {
-  let best = 0;
-  let bx = 0;
-  let by = 1;
-  let bz = 0;
-  const consider = (lx: number, ly: number, lz: number, k: number): void => {
-    const dx = lx - x;
-    const dy = ly - y;
-    const dz = lz - z;
-    const d2 = dx * dx + dy * dy + dz * dz;
-    const e = (k * 26) / (d2 + 6);
-    if (e > best) {
-      const d = Math.sqrt(d2);
-      best = e;
-      bx = dx / d;
-      by = dy / d;
-      bz = dz / d;
-    }
+function layLampsFor(plazas: readonly AmbientPlaza[], reach: number): Lamps {
+  const out: Lamps = new Map();
+  const put = (x: number, y: number, z: number, k: number): void => {
+    const key = blockOf(Math.round(x / PITCH), Math.round(z / PITCH));
+    (out.get(key) ?? out.set(key, []).get(key)!).push(x, y, z, k);
   };
   const paved = (lx: number, lz: number): boolean => plazas.some((p) => inPlaza(p, lx, lz, 0));
-  const ci = Math.round(x / PITCH);
-  const cj = Math.round(z / PITCH);
-  for (let i = ci - 1; i <= ci + 1; i++) {
-    for (let j = cj - 1; j <= cj + 1; j++) {
+  const n = Math.ceil(reach / PITCH) + 2;
+  for (let i = -n; i <= n; i++) {
+    for (let j = -n; j <= n; j++) {
       for (const off of LAMP_OFFSETS) {
         const sx = i * PITCH + off;
         const sz = j * PITCH + LAMP_EDGE;
-        if (Math.abs(sx - x) < 30 && Math.abs(sz - z) < 30 && !paved(sx, sz) && !inChannel(sx, 2)) consider(sx, 7.9, sz + 1.3, 1);
+        if (!paved(sx, sz) && !inChannel(sx, 2)) put(sx, 7.9, sz + 1.3, 1);
         const ex = i * PITCH + LAMP_EDGE;
         const ez = j * PITCH + off;
-        if (Math.abs(ex - x) < 30 && Math.abs(ez - z) < 30 && !paved(ex, ez) && !inChannel(ex, 2)) consider(ex + 1.3, 7.9, ez, 1);
+        if (!paved(ex, ez) && !inChannel(ex, 2)) put(ex + 1.3, 7.9, ez, 1);
       }
     }
   }
   for (const p of plazas) {
-    if (p.court !== undefined || Math.abs(Math.hypot(x - p.x, z - p.z) - 66) > 22) continue;
-    // The plaza's ring of lanterns, the nearest of 24 at 66 m.
-    const a = Math.atan2(z - p.z, x - p.x);
-    const st = (Math.PI * 2) / 24;
-    const k = Math.round(a / st) * st;
-    const lx = p.x + Math.cos(k) * 66;
-    const lz = p.z + Math.sin(k) * 66;
-    if (p.kind === 'civic' && onExchange(lx - p.x, lz - p.z, 3)) continue;
-    consider(lx, 7.9, lz, 0.9);
+    if (p.court !== undefined) continue;
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2;
+      const lx = p.x + Math.cos(a) * 66;
+      const lz = p.z + Math.sin(a) * 66;
+      if (p.kind === 'civic' && onExchange(lx - p.x, lz - p.z, 3)) continue;
+      put(lx, 7.9, lz, 0.9);
+    }
+    if (p.kind === 'civic') for (const l of CIVIC_LAMPS) put(p.x + l.x, 6.5, p.z + l.z, 1.1);
   }
-  for (const l of CIVIC_LAMPS) if (Math.abs(l.x - x) < 25 && Math.abs(l.z - z) < 25) consider(l.x, 6.5, l.z, 1.1);
+  return out;
+}
+
+/** The lamp that lights a point most (into `out`): the direction from the point to its head, and the irradiance it lays. */
+function lampLight(lamps: Lamps, x: number, y: number, z: number, out: [number, number, number, number]): void {
+  let best = 0;
+  let bx = 0;
+  let by = 1;
+  let bz = 0;
+  const ci = Math.round(x / PITCH);
+  const cj = Math.round(z / PITCH);
+  for (let i = ci - 1; i <= ci + 1; i++) {
+    for (let j = cj - 1; j <= cj + 1; j++) {
+      const l = lamps.get(blockOf(i, j));
+      if (!l) continue;
+      for (let k = 0; k < l.length; k += 4) {
+        const dx = l[k] - x;
+        const dy = l[k + 1] - y;
+        const dz = l[k + 2] - z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        const e = (l[k + 3] * 26) / (d2 + 6);
+        if (e > best) {
+          const d = Math.sqrt(d2);
+          best = e;
+          bx = dx / d;
+          by = dy / d;
+          bz = dz / d;
+        }
+      }
+    }
+  }
   out[0] = bx;
   out[1] = by;
   out[2] = bz;
@@ -1267,8 +1413,44 @@ function carModel(m: AmbientModel): { geo: THREE.BufferGeometry; stats: ModelSta
     b.box([sp.secs[5].front - 0.15, sp.sill + 0.05, z * (sp.secs[3].w + 0.1)], [0.14, 0.11, 0.18], [C.paint]);
     b.box([sp.secs[5].front - 0.12, sp.sill + 0.0, z * (sp.secs[3].w + 0.02)], [0.06, 0.04, 0.14], [C.plastic]);
   }
-  // Door seams and handles, and a bright line along the glass's sill.
   const side = sp.secs[2];
+  // Lamp units: each headlamp in a dark housing with a bright bezel, each tail lamp in a dark red housing.
+  for (const z of [-1, 1]) {
+    const hx = noseX(front, sp.lampZ, true);
+    b.box([hx - 0.045, sp.lampY, z * sp.lampZ], [0.05, 0.15, 0.46], [C.plastic]);
+    b.box([hx - 0.03, sp.lampY + 0.08, z * sp.lampZ], [0.04, 0.012, 0.47], [C.metal]);
+    b.box([hx - 0.03, sp.lampY - 0.08, z * sp.lampZ], [0.04, 0.012, 0.47], [C.metal]);
+    const tx = noseX(rear, sp.lampZ, false);
+    b.box([-tx + 0.045, sp.tailY, z * sp.lampZ], [0.05, 0.14, 0.4], [C.plastic]);
+  }
+  // The grille: a bright frame round dark slats.
+  {
+    const gx0 = noseX(front, 0, true) - 0.02;
+    const gw = front.w * 0.9;
+    const gy = sp.lampY - 0.18;
+    for (const dy of [-0.09, 0.09]) b.box([gx0 + 0.005, gy + dy, 0], [0.03, 0.018, gw], [C.metal]);
+    for (const dz of [-1, 1]) b.box([gx0 + 0.005, gy, (dz * gw) / 2], [0.03, 0.19, 0.018], [C.metal]);
+    for (const dy of [-0.045, 0, 0.045]) b.box([gx0 + 0.012, gy + dy, 0], [0.02, 0.012, gw - 0.04], [C.plastic]);
+  }
+  // Window frames: a black rubber line round the side glass's head and down each door's edge.
+  for (const z of [-1, 1]) {
+    const head = sp.secs.reduce((a2, q) => (Math.abs(q.y - sp.head) < Math.abs(a2.y - sp.head) ? q : a2), sp.secs[0]);
+    b.box([(head.front - head.rear) / 2, sp.head - 0.01, z * (head.w + 0.004)], [head.front + head.rear - 0.25, 0.03, 0.012], [C.plastic]);
+  }
+  // Wheel arches: a dark lip round each arch on the flank, and the well's shadow behind the wheel.
+  for (const x of [-wx, wx]) {
+    for (const z of [-1, 1]) {
+      const r = sp.wheel + 0.1;
+      for (let k = 0; k < 7; k++) {
+        const a0 = (k / 7) * Math.PI;
+        const a1 = ((k + 1) / 7) * Math.PI;
+        const am = (a0 + a1) / 2;
+        b.box([x + Math.cos(am) * r, sp.wheel + Math.sin(am) * r, z * (side.w + 0.006)], [0.05, r * (a1 - a0) + 0.01, 0.014], [C.plastic], 0, am);
+      }
+      b.tube([x, sp.wheel, z * (sp.track - 0.16)], [x, sp.wheel, z * (sp.track - 0.13)], sp.wheel + 0.05, sp.wheel + 0.05, 10, [C.tyre]);
+    }
+  }
+  // Door seams and handles, and a bright line along the glass's sill.
   const doors = m === 'van' ? [1.05, -0.2] : m === 'hatch' ? [0.75, -0.42] : [0.86, -0.2, -1.12];
   for (const z of [-1, 1]) {
     for (const x of doors) b.box([x, (0.4 + sp.sill) / 2, z * (side.w + 0.004)], [0.012, sp.sill - 0.42, 0.006], [C.plastic]);
@@ -1632,7 +1814,7 @@ function carMaterial(far: boolean): THREE.MeshPhysicalMaterial {
   m.userData.uniforms = uniforms;
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
-    dissolve(sh, AMBIENT_LOD.car, far ? 'far' : 'near');
+    dissolve(sh, LIFE_LOD.car, far ? 'far' : 'near');
     sh.vertexShader = sh.vertexShader
       .replace(
         '#include <common>',
@@ -1666,14 +1848,15 @@ function carMaterial(far: boolean): THREE.MeshPhysicalMaterial {
           else if (code == 4) { alb = vec3(0.012); surf = vec3(0.0, 0.88, 0.0); }
           else if (code == 5) { alb = vec3(0.24, 0.245, 0.25); surf = vec3(0.85, 0.36, 0.0); }
           else if (code == 6) { alb = vec3(0.4); surf = vec3(0.0, 0.1, 1.0); emit = vec3(5.2, 4.9, 4.3); }
-          else if (code == 7) { alb = vec3(0.12, 0.0, 0.0); surf = vec3(0.0, 0.2, 1.0); emit = vec3(1.15, 0.035, 0.02) * (1.0 + 2.4 * brake); }
+          else if (code == 7) { alb = vec3(0.12, 0.0, 0.0); surf = vec3(0.0, 0.2, 1.0); emit = vec3(0.6, 0.006, 0.003) * (1.0 + 3.2 * brake); }
           else if (code == 8) { alb = vec3(0.2, 0.1, 0.0); surf = vec3(0.0, 0.2, 1.0); emit = vec3(3.4, 1.3, 0.05) * blink * step(0.5, sig) + vec3(0.04, 0.015, 0.0); }
           else if (code == 9) { alb = vec3(0.2, 0.1, 0.0); surf = vec3(0.0, 0.2, 1.0); emit = vec3(3.4, 1.3, 0.05) * blink * step(0.5, -sig) + vec3(0.04, 0.015, 0.0); }
           else if (code == 10) { alb = vec3(0.05, 0.0, 0.0); surf = vec3(0.0, 0.2, 1.0); emit = vec3(3.6, 0.1, 0.05) * brake; }
           else if (code == 11) { alb = vec3(0.012); surf = vec3(0.4, 0.4, 0.0); }
           vAlb = alb;
           vSurf = surf;
-          vEmit = emit;
+          // A parked car's lamps are off.
+          vEmit = emit * (1.0 - aState.w);
           ${LAMP_VERT_MAIN}
           ${
             far
@@ -1689,8 +1872,9 @@ function carMaterial(far: boolean): THREE.MeshPhysicalMaterial {
             float show = smoothstep(-0.25, 0.45, facing);
             float d = distance(cameraPosition, cw.xyz);
             float r0 = code == 6 ? 0.11 : 0.09;
-            float r = max(r0, d * uPixel * 2.0);
-            vEmit = (code == 6 ? vec3(5.2, 4.9, 4.3) : vec3(2.2, 0.07, 0.035) * (1.0 + 1.8 * brake)) * show * clamp(pow(r0 / r, 0.75), 0.32, 1.0);
+            // Parked, the lamp is out: its quad shrinks to nothing.
+            float r = aState.w > 0.5 ? 0.0 : max(r0, d * uPixel * 2.0);
+            vEmit = (code == 6 ? vec3(5.2, 4.9, 4.3) : vec3(2.2, 0.07, 0.035) * (1.0 + 1.8 * brake)) * show * clamp(pow(r0 / max(r, 1e-4), 0.75), 0.32, 1.0) * (1.0 - aState.w);
             transformed = position;
             vLampQuad = aExtra;
             vLampR = r;
@@ -1794,8 +1978,10 @@ const FIGURE_GLSL = /* glsl */ `
     // Walking: the hips swing the legs, the knee folds through the swing, the arms swing against the legs.
     float hipL = A * s;
     float hipR = -A * s;
-    float kneeL = 0.07 + 1.05 * pow(max(0.0, cos(ph + 0.45)), 1.6) + 0.12 * max(0.0, -sin(ph + 0.3));
-    float kneeR = 0.07 + 1.05 * pow(max(0.0, -cos(ph + 0.45)), 1.6) + 0.12 * max(0.0, sin(ph + 0.3));
+    // The knee folds in proportion to the stride: a stroll lifts the foot only so far (a deep fold reads as a jog).
+    float fold = 0.8 * clamp(A / 0.48, 0.35, 1.0);
+    float kneeL = 0.07 + fold * pow(max(0.0, cos(ph + 0.45)), 1.6) + 0.1 * max(0.0, -sin(ph + 0.3));
+    float kneeR = 0.07 + fold * pow(max(0.0, -cos(ph + 0.45)), 1.6) + 0.1 * max(0.0, sin(ph + 0.3));
     float swing = style == 1 ? 0.12 : style == 3 ? 0.45 : 0.8;
     float armL = -A * swing * s - 0.04;
     float armR = A * swing * s - 0.04;
@@ -1856,7 +2042,7 @@ function figureMaterial(far: boolean): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0, envMapIntensity: 0.6 });
   m.name = far ? 'ambient-figure-far' : 'ambient-figure';
   m.onBeforeCompile = (sh) => {
-    dissolve(sh, AMBIENT_LOD.person, far ? 'far' : 'near', far ? AMBIENT_LOD.crowdEnd : undefined);
+    dissolve(sh, LIFE_LOD.person, far ? 'far' : 'near', far ? LIFE_LOD.crowdEnd : undefined);
     sh.vertexShader = sh.vertexShader
       .replace(
         '#include <common>',
@@ -1965,6 +2151,7 @@ export interface AmbientCar {
   blinking: number;
   /** Why it stands at its line, when it does. */
   hold: string | null;
+  width: number;
 }
 
 export interface AmbientPerson {
@@ -2021,6 +2208,11 @@ export interface Ambient {
   relay(net: Network): void;
   /** Where the trams are now (scene.ts reads them off the transit vehicles): cars wait for one at its crossings. */
   setTrams(at: ReadonlyArray<V2>): void;
+  /**
+   * Where the persona cabs are now (scene.ts reads them off vehicles.ts):
+   * a car follows one ahead in its lane and keeps out of a box one is in.
+   */
+  setCabs(at: ReadonlyArray<CabPose>): void;
   cars(): AmbientCar[];
   people(): AmbientPerson[];
   view(camera: THREE.Camera): AmbientView;
@@ -2063,13 +2255,93 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   let held = false;
   /** Whether the population moves toward its density out of sight (scene.ts, by the hour) rather than at once. */
   let drifting = false;
-  let trams: ReadonlyArray<V2> = [];
+  /** After a relay, until the streets are back to their numbers. */
+  let refill = false;
   let roads: Roads;
   let walk: Walkway;
   let cars: Car[] = [];
   let people: Person[] = [];
   /** Plaza walkers' lanterns and lamp posts, which they walk round. */
   let posts: V2[] = [];
+  /** The street lamps, by block, as they stand now. */
+  let lamps: Lamps = new Map();
+  /** Cars parked along kerbs no traffic or persona cab uses, the most of them each quality keeps. */
+  let parkedAll: Parked[] = [];
+  let parked: Parked[] = [];
+
+  function layLamps(): void {
+    lamps = layLampsFor(plazas, railHalf(net.blocks) + 6 * STREET_PITCH);
+  }
+
+  /**
+   * Parked cars along the kerbs of streets no ambient car drives and no
+   * persona cab comes to: the dead ends the plazas leave and the streets past
+   * the traffic's reach (out a ring of blocks); never on the tram's or the
+   * rail's streets, in a junction, in a plaza or a court, within 30 m of a
+   * plaza's edge (where kerbOf brings a persona's cab in) or 25 m of a rank.
+   * Shuffled once, so the quality keeps the first of them.
+   */
+  function layParked(): void {
+    const r = mulberry(seed * 4241 + 29);
+    const inner = railHalf(net.blocks) + 2 * STREET_PITCH;
+    const reach = inner + 3 * STREET_PITCH;
+    const driven = new Set<string>();
+    for (const l of roads.lanes) {
+      const a = jkey(l.from.x, l.from.z);
+      const b = jkey(l.to.x, l.to.z);
+      driven.add(a < b ? `${a}|${b}` : `${b}|${a}`);
+    }
+    const loops = [net.tram.path, net.rail.path].map((pts) => ({ x: pts.map((p) => p[0]), z: pts.map((p) => p[2]) }));
+    const onLoop = (along: Axis, line: number): boolean => loops.some((l) => (along === 'z' ? l.x : l.z).some((v) => Math.abs(v - line) < 1));
+    const centres = plazas.filter((p) => p.court === undefined);
+    const ok = (x: number, z: number): boolean => {
+      if (inChannel(x, 8)) return false;
+      for (const p of plazas) if (inPlaza(p, x, z, 3)) return false;
+      for (const p of centres) if (Math.hypot(x - p.x, z - p.z) < PLAZA_R + 30) return false;
+      for (const k of net.ranks) if (Math.hypot(x - k.x, z - k.z) < 25) return false;
+      return true;
+    };
+    const out: Parked[] = [];
+    for (let a = -reach; a <= reach + 1e-6; a += STREET_PITCH) {
+      for (let b = -reach; b + STREET_PITCH <= reach + 1e-6; b += STREET_PITCH) {
+        for (const along of ['x', 'z'] as Axis[]) {
+          // The run from b to b + 80 along `along`, on the street at `a`.
+          if (onLoop(along, a)) continue;
+          const p0 = along === 'x' ? { x: b, z: a } : { x: a, z: b };
+          const p1 = along === 'x' ? { x: b + STREET_PITCH, z: a } : { x: a, z: b + STREET_PITCH };
+          const k0 = jkey(p0.x, p0.z);
+          const k1 = jkey(p1.x, p1.z);
+          if (driven.has(k0 < k1 ? `${k0}|${k1}` : `${k1}|${k0}`)) continue;
+          for (const side of [-1, 1]) {
+            // Nose the way that side's traffic would go (on the right).
+            const dir = along === 'x' ? side : -side;
+            const yaw = along === 'x' ? (dir > 0 ? 0 : Math.PI) : dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+            let u = BOX + 3 + r() * 4;
+            while (u < STREET_PITCH - BOX - 3) {
+              const model = weighted(r, MIX.filter(([m]) => m !== 'cab')) as Exclude<AmbientModel, 'cab'>;
+              const len = DIMS[model].len;
+              const c = u + len / 2;
+              if (c + len / 2 > STREET_PITCH - BOX - 3) break;
+              const x = along === 'x' ? b + c : a + side * 3.05;
+              const z = along === 'x' ? a + side * 3.05 : b + c;
+              if (r() < 0.68 && ok(x, z)) {
+                const hex = weighted(r, PAINTS.map(([h, , w]) => [h, w] as [string, number]));
+                out.push({ x, z, yaw: yaw + (r() - 0.5) * 0.04, model, paint: vary(srgb(hex), r, 0.06), metal: PAINTS.find(([h]) => h === hex)?.[1] ?? 0.3, seen: false });
+              }
+              u += len + 0.7 + r() * 1.6;
+            }
+          }
+        }
+      }
+    }
+    // Shuffled once, the same for every quality: medium keeps a subset of high's.
+    for (let i = out.length - 1; i > 0; i--) {
+      const k = Math.floor(r() * (i + 1));
+      [out[i], out[k]] = [out[k], out[i]];
+    }
+    parkedAll = out;
+    parked = out.slice(0, PARKED_CAP[quality]);
+  }
 
   // ---- population
 
@@ -2081,7 +2353,15 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     return { cars: Math.min(cap.cars, Math.floor(roads.length / LANE_SHARE)), people: Math.min(cap.people, Math.round(room * (cap.people / AMBIENT_CAP.high.people))) };
   }
 
-  function lay(): void {
+  /**
+   * Lays the streets and pavements for the network and plazas as they are
+   * now. Laid afresh, it populates them; laid again (`keep`), everyone whose
+   * lane, pavement, plaza or stop still stands stays exactly where they are,
+   * the rest go, and the streets refill out of sight (drift).
+   */
+  function lay(keep = false): void {
+    const oldCars = keep ? cars : [];
+    const oldPeople = keep ? people : [];
     const r = mulberry(seed * 7919 + 17);
     roads = layRoads(net, plazas, r);
     walk = layWalkway(net, plazas, roads);
@@ -2094,7 +2374,95 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       }
       if (p.kind === 'civic') for (const l of CIVIC_LAMPS) posts.push({ x: p.x + l.x, z: p.z + l.z });
     }
-    populate();
+    layLamps();
+    layParked();
+    if (!keep) {
+      populate();
+      return;
+    }
+    keepCars(oldCars);
+    keepPeople(oldPeople);
+    trim();
+    refill = true;
+  }
+
+  /** The cars whose lane (and, in a box, whose way through it) still stands, as they were. */
+  function keepCars(old: Car[]): void {
+    const byKey = new Map(roads.lanes.map((l) => [l.key, l]));
+    cars = [];
+    for (const c of old) {
+      const lane = byKey.get(c.lane.key);
+      if (!lane) continue;
+      if (c.via) {
+        const from = byKey.get(c.via.from.key);
+        const via = from?.moves.find((m) => m.to === lane) ?? null;
+        if (!via && c.s - c.len < 0) continue;
+        c.via = via;
+      }
+      c.lane = lane;
+      const next = c.next ? lane.moves.find((m) => m.to.key === c.next!.to.key) : undefined;
+      c.next = next ?? chooseMove(lane, rCar);
+      lane.cars.push(c);
+      cars.push(c);
+    }
+    for (const l of roads.lanes) l.cars.sort(bySDesc);
+  }
+
+  /** The people whose pavement, crossing, plaza or platform still stands, as they were; none in a new court or site. */
+  function keepPeople(old: Person[]): void {
+    const edges = new Map(walk.all.map((e) => [e.key, e]));
+    const squares = plazas.filter((p) => p.kind === 'district' || p.kind === 'civic');
+    const shut = plazas.filter((p) => p.kind === 'court' || p.kind === 'site');
+    const kept = new Set<Person>();
+    for (const p of old) {
+      if (p.leader) continue;
+      if (shut.some((q) => inPlaza(q, p.x, p.z, 3))) continue;
+      if (p.plaza) {
+        const pl = squares.find((q) => q.x === p.plaza!.x && q.z === p.plaza!.z);
+        if (!pl) continue;
+        p.plaza = pl;
+      } else if (p.seg && p.seg.kind === 'cross') {
+        if (!p.at || !walk.corners.has(p.at)) continue;
+        if (p.seg.junction) p.seg.junction = roads.junctions.get(p.seg.junction.key) ?? null;
+      } else if (p.seg) {
+        const e = edges.get(p.seg.bucket);
+        const at = p.at ? walk.corners.get(p.at) : undefined;
+        if (!e || !at) continue;
+        // Its plan at the far corner, made again on the pavements as they stand now.
+        if (p.state === 'waiting' && p.plan && p.plan.kind === 'cross') p.plan.j = walk.junction(at.j.x, at.j.z);
+        else p.plan = planAt(p, at, e, rStep);
+      } else if (p.state === 'waiting') {
+        if (!net.tram.stops.some((st) => Math.abs(st.x - p.x) < 16 && Math.abs(st.z - p.z) < 16)) continue;
+      }
+      kept.add(p);
+    }
+    people = old.filter((p) => (p.leader ? kept.has(p.leader) : kept.has(p)));
+  }
+
+  /** Down to the quality's numbers at once, out of sight first: lone walkers, then followers, then anyone. */
+  function trim(): void {
+    const want = targets();
+    if (cars.length > want.cars) {
+      const order = [...cars].sort((a, b) => Number(a.seen) - Number(b.seen));
+      const drop = new Set(order.slice(0, cars.length - want.cars));
+      for (const c of drop) c.lane.cars.splice(c.lane.cars.indexOf(c), 1);
+      cars = cars.filter((c) => !drop.has(c));
+    }
+    if (people.length > want.people) {
+      const rank = (p: Person): number => (p.seen ? 4 : 0) + (p.group < 0 ? 0 : p.leader ? 1 : 2);
+      const order = [...people].sort((a, b) => rank(a) - rank(b));
+      const drop = new Set<Person>();
+      for (const p of order) {
+        if (people.length - drop.size <= want.people) break;
+        if (drop.has(p)) continue;
+        // A leader goes with its group (counted as they go).
+        const group = p.leader === null && p.group >= 0 ? people.filter((q) => q.leader === p) : [];
+        if (people.length - drop.size - 1 - group.length < want.people && group.length) continue;
+        drop.add(p);
+        for (const q of group) drop.add(q);
+      }
+      people = people.filter((p) => !drop.has(p));
+    }
   }
 
   let nextCar = 0;
@@ -2149,6 +2517,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   const rDrift = mulberry(seed * 977 + 1);
   function drift(): void {
     const want = targets();
+    if (refill && cars.length >= want.cars && people.length >= want.people) refill = false;
     const hidden = (x: number, z: number): boolean => !frustum.containsPoint(pos.set(x, 1, z)) || Math.hypot(x - lastEye.x, z - lastEye.z) > 600;
     if (cars.length > want.cars) {
       const i = cars.findIndex((c) => !c.seen && c.s >= 0);
@@ -2316,6 +2685,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       f.state = lead.state;
       f.pace = lead.pace;
       f.cadence = lead.pace / f.step;
+      // Dressed apart from the leader: a coat of another colour, not a twin.
+      for (let k = 0; k < 6 && Math.hypot(f.coat[0] - lead.coat[0], f.coat[1] - lead.coat[1], f.coat[2] - lead.coat[2]) < 0.06; k++) f.coat = vary(srgb(weighted(r, COATS)), r);
     }
     return group + 1;
   }
@@ -2437,23 +2808,42 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     return opts[0].plan;
   }
 
-  /** Whether a walker may start across a street now: its signal green the way it walks with time to cross, or no traffic near. */
-  function mayCross(j: Junction | null, axis: Axis): boolean {
+  /**
+   * Whether a walker may start across a street now, `need` seconds to cross
+   * it at its pace: its signal green the way it walks with the time to get
+   * over before the other way's green, and no car in the box cutting its
+   * crossing; or, without signals, no traffic near.
+   */
+  const XSIG = { green: null as Axis | null, amber: false, left: 0 };
+  function mayCross(j: Junction | null, axis: Axis, need: number): boolean {
     if (!j) return true;
+    const crossed = other(axis);
+    // A car in the box going along the street it would cross.
+    // (Its rear still over the crossing, which reaches a metre and a half past the box.)
+    for (const o of j.out) for (const c of o.cars) if (c.via && c.s - c.len < 2 && c.s > -c.via.len - c.len && (c.via.from.axis === crossed || c.via.to.axis === crossed)) return false;
+    // A car committed to the box whose way runs along that street, or one still rolling up to it.
+    for (const l of j.into) {
+      for (const c of l.cars) {
+        if (c.s < 0 || !c.next || (l.axis !== crossed && c.next.to.axis !== crossed)) continue;
+        if (c.commit || (c.v > 1 && l.len - c.s < 8 + 2.2 * c.v)) return false;
+      }
+    }
+    // A car moving off along that street, its rear not yet clear of the crossing.
+    for (const o of j.out) if (o.axis === crossed) for (const c of o.cars) if (c.v > 1 && c.s - c.len < 4 && c.s >= 0) return false;
     if (j.signal) {
-      const s = signalAt(j, time);
-      return s.green === axis && !s.amber && s.left > 7;
+      const s = signalAt(j, time, XSIG);
+      return s.green === axis && !s.amber && s.left > need + ALL_RED;
     }
     // No signals: across a street with traffic only when nothing comes within 30 m.
-    const crossed: Axis = axis === 'x' ? 'z' : 'x';
     if (!j.axes[crossed]) return true;
     for (const l of j.into) {
       if (l.axis !== crossed) continue;
       for (const c of l.cars) if (c.s >= 0 && l.len - c.s < 30) return false;
     }
-    for (const o of j.out) for (const c of o.cars) if (c.s < 0) return false;
     return true;
   }
+  /** The seconds a walker needs to get across a street from its corner, at its pace. */
+  const crossTime = (p: Person): number => (2 * p.o + 1) / Math.max(0.6, (p.leader ?? p).pace * 0.9);
 
   // ---- the plazas
 
@@ -2498,6 +2888,25 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   const rStep = mulberry(seed * 31 + 9);
   const buckets = new Map<string, Person[]>();
 
+  /** What a walker decides as it looks round (giveWay): which way it steers and the pace it allows itself. */
+  const GW = { steer: 0, want: 0 };
+  /** One person or post near a walker on its piece of way: step aside for it within the band, or fall in behind it. */
+  function giveWay(p: Person, s: Seg, ox: number, oz: number, ovx: number, ovz: number, still: boolean): void {
+    const rx = ox - p.x;
+    const rz = oz - p.z;
+    const along = rx * s.dir.x + rz * s.dir.z;
+    const lat = -rx * s.dir.z + rz * s.dir.x;
+    if (along <= 0.05 || along > 2.4 || Math.abs(lat) > 0.62) return;
+    const closing = ovx * s.dir.x + ovz * s.dir.z;
+    const oncoming = closing < -0.3;
+    // Oncoming: both keep right. Ahead and slower: round it on the side with room, else fall in behind.
+    let dirSide = oncoming ? 1 : lat > 0 ? -1 : 1;
+    if (!oncoming && ((dirSide > 0 && p.sh > s.hi - 0.3) || (dirSide < 0 && p.sh < s.lo + 0.3))) dirSide = -dirSide;
+    const blocked = (dirSide > 0 && p.sh > s.hi - 0.1) || (dirSide < 0 && p.sh < s.lo + 0.1);
+    GW.steer += dirSide * (1 - along / 2.4);
+    if (!oncoming && (blocked || still) && along < 1.4) GW.want = Math.min(GW.want, Math.max(0, closing) * 0.95);
+  }
+
   let tick = 0;
   function stepPeople(dt: number): void {
     tick++;
@@ -2528,7 +2937,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       if (p.state === 'waiting') {
         // At the kerb: across when its way goes green (or the street is clear).
         const plan = p.plan;
-        if (plan && plan.kind === 'cross' && mayCross(plan.j, plan.axis)) startCross(p);
+        if (plan && plan.kind === 'cross' && mayCross(plan.j, plan.axis, crossTime(p))) startCross(p);
         else {
           p.v = 0;
           continue;
@@ -2542,31 +2951,20 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       let steer = 0;
       const look = (p.id + tick) % 2 === 0;
       const others = buckets.get(s.bucket) ?? [];
-      const right = { x: -s.dir.z, z: s.dir.x };
-      const consider = (ox: number, oz: number, ov: V2, still: boolean): void => {
-        const rx = ox - p.x;
-        const rz = oz - p.z;
-        const along = rx * s.dir.x + rz * s.dir.z;
-        const lat = rx * right.x + rz * right.z;
-        if (along <= 0.05 || along > 2.4 || Math.abs(lat) > 0.62) return;
-        const oncoming = ov.x * s.dir.x + ov.z * s.dir.z < -0.3;
-        // Oncoming: both keep right. Ahead and slower: round it on the side with room, else fall in behind.
-        let dirSide = oncoming ? 1 : lat > 0 ? -1 : 1;
-        if (!oncoming && ((dirSide > 0 && p.sh > s.hi - 0.3) || (dirSide < 0 && p.sh < s.lo + 0.3))) dirSide = -dirSide;
-        const blocked = (dirSide > 0 && p.sh > s.hi - 0.1) || (dirSide < 0 && p.sh < s.lo + 0.1);
-        steer += dirSide * (1 - along / 2.4);
-        const closing = ov.x * s.dir.x + ov.z * s.dir.z;
-        if (!oncoming && (blocked || still) && along < 1.4) want = Math.min(want, Math.max(0, closing) * 0.95);
-      };
       if (look) {
+        GW.steer = 0;
+        GW.want = p.pace;
         for (const o of others) {
           if (o === p || (o.group >= 0 && o.group === p.group)) continue;
           if (Math.abs(o.x - p.x) > 2.5 || Math.abs(o.z - p.z) > 2.5) continue;
-          const ov = o.seg && (o.state === 'walking' || o.state === 'crossing') ? { x: o.seg.dir.x * o.v, z: o.seg.dir.z * o.v } : { x: 0, z: 0 };
-          consider(o.x, o.z, ov, o.v < 0.05);
+          const moving = o.seg !== null && (o.state === 'walking' || o.state === 'crossing');
+          giveWay(p, s, o.x, o.z, moving ? o.seg!.dir.x * o.v : 0, moving ? o.seg!.dir.z * o.v : 0, o.v < 0.05);
         }
-        if (s.kind === 'plaza') for (const q of posts) if (Math.abs(q.x - p.x) < 3 && Math.abs(q.z - p.z) < 3) consider(q.x, q.z, { x: 0, z: 0 }, false);
-        p.gave = [steer, want];
+        if (s.kind === 'plaza') for (const q of posts) if (Math.abs(q.x - p.x) < 3 && Math.abs(q.z - p.z) < 3) giveWay(p, s, q.x, q.z, 0, 0, false);
+        steer = GW.steer;
+        want = GW.want;
+        p.gave[0] = steer;
+        p.gave[1] = want;
       } else {
         steer = p.gave[0];
         want = Math.min(p.pace, p.gave[1]);
@@ -2610,12 +3008,34 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
         const k = offRoad(p.x, p.z);
         p.x = k.x;
         p.z = k.z;
+        // At a corner and not crossing, on the corner's paving, never in either road.
+        if (l.state !== 'crossing') {
+          const sx = streetLine(p.x);
+          const sz = streetLine(p.z);
+          const dx = p.x - sx;
+          const dz = p.z - sz;
+          if (Math.abs(dx) < PAVE.hi && Math.abs(dz) < PAVE.hi && Math.min(Math.abs(dx), Math.abs(dz)) < PAVE.lo) {
+            if (Math.abs(dx) < PAVE.lo) p.x = sx + (dx < 0 ? -1 : 1) * PAVE.lo;
+            if (Math.abs(dz) < PAVE.lo) p.z = sz + (dz < 0 ? -1 : 1) * PAVE.lo;
+          }
+        }
+        // On a crossing, beside the leader but never off the crossing's side into the street it runs along.
+        if (l.state === 'crossing' && l.seg.axis) {
+          if (l.seg.axis === 'x') {
+            const sz = streetLine(p.z);
+            if (Math.abs(p.z - sz) < PAVE.lo) p.z = sz + (p.z < sz ? -1 : 1) * PAVE.lo;
+          } else {
+            const sx = streetLine(p.x);
+            if (Math.abs(p.x - sx) < PAVE.lo) p.x = sx + (p.x < sx ? -1 : 1) * PAVE.lo;
+          }
+        }
       }
       // Its pace for its stride follows its leader's.
       p.v += clamp((l.state === 'walking' || l.state === 'crossing' ? l.v : 0) - p.v, -2.5 * dt, 1.5 * dt);
       p.state = l.state === 'paused' ? 'walking' : l.state;
       if (l.state === 'paused') p.state = 'paused';
-      p.face = l.state === 'waiting' ? Math.atan2(d.z, d.x) : p.face;
+      // Standing with the leader, each faces a little its own way (toward the others, at the kerb).
+      if (l.state === 'waiting' || l.state === 'paused' || l.state === 'standing') p.face = Math.atan2(d.z, d.x) + p.jit;
     }
   }
 
@@ -2629,6 +3049,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     const s = seg(a, b, 'cross', `cross:${plan.from}>${plan.to}`, -0.5, 0.5);
     s.junction = plan.j;
     s.axis = plan.axis;
+    // Counted at once, so a car deciding in this same step sees them on the crossing.
+    if (plan.j) plan.j.walkers[plan.axis]++;
     p.seg = s;
     p.u = 0;
     p.sh = 0;
@@ -2673,7 +3095,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       p.state = 'waiting';
       p.v = 0;
       p.face = Math.atan2(crossDir(at, plan.axis).z, crossDir(at, plan.axis).x);
-      if (mayCross(plan.j, plan.axis)) startCross(p);
+      if (mayCross(plan.j, plan.axis, crossTime(p))) startCross(p);
       return;
     }
     if (plan && plan.kind === 'pave') {
@@ -2688,20 +3110,72 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   // ---- stepping the traffic
 
   const rCar = mulberry(seed * 131 + 5);
-  const pedOn = (j: Junction, axis: Axis): number => j.walkers[axis];
+  const env: Env = { t: 0, ped: (j, axis) => j.walkers[axis], trams: [], cabs: [] };
+  const movedCars: Car[] = [];
+  const movedLanes: Lane[] = [];
+  const bySDesc = (a: Car, b: Car): number => b.s - a.s;
+
+  /** People on the carriageway near each junction (on a crossing, or strayed into the road): every car brakes for them. */
+  const inRoad = new Map<Junction, Person[]>();
+  function gatherInRoad(): void {
+    for (const l of inRoad.values()) l.length = 0;
+    for (const p of people) {
+      if (p.y > 0.1 || p.v < 0.05) continue;
+      const sx = streetLine(p.x);
+      const sz = streetLine(p.z);
+      const dx = Math.abs(p.x - sx);
+      const dz = Math.abs(p.z - sz);
+      if (Math.min(dx, dz) > 4.2 || Math.max(dx, dz) > 16) continue;
+      const j = roads.junctions.get(jkey(sx, sz));
+      if (!j) continue;
+      (inRoad.get(j) ?? inRoad.set(j, []).get(j)!).push(p);
+    }
+  }
+  const FRONT = { x: 0, z: 0 };
+  /** The gap to the nearest person on the road ahead of a car near a junction, or Infinity. */
+  function personAhead(car: Car): number {
+    const j = car.s < 0 || car.s < 6 ? (car.via ? car.lane.from : null) : car.lane.len - car.s < 16 ? car.lane.to : null;
+    const near = j ? inRoad.get(j) : undefined;
+    if (!near || !near.length) return Infinity;
+    const pose = carPose(car);
+    const hx = Math.cos(pose.yaw);
+    const hz = Math.sin(pose.yaw);
+    carPoint(car, 0, FRONT);
+    let best = Infinity;
+    for (const p of near) {
+      const rx = p.x - FRONT.x;
+      const rz = p.z - FRONT.z;
+      const along = rx * hx + rz * hz;
+      if (along < -0.6 || along > 14) continue;
+      const lat = -rx * hz + rz * hx;
+      if (Math.abs(lat) > car.width / 2 + 0.7) continue;
+      best = Math.min(best, Math.max(0, along - 0.7));
+    }
+    return best;
+  }
 
   function stepCars(dt: number): void {
-    for (const lane of roads.lanes) lane.cars.sort((a, b) => b.s - a.s);
-    const moved: Array<[Car, Lane]> = [];
+    env.t = time;
+    gatherInRoad();
+    for (const lane of roads.lanes) if (lane.cars.length > 1) lane.cars.sort(bySDesc);
+    movedCars.length = 0;
+    movedLanes.length = 0;
     for (const lane of roads.lanes) {
       for (let i = 0; i < lane.cars.length; i++) {
         const car = lane.cars[i];
-        const { gap, vl } = aheadOf(car, i, time, pedOn);
+        const ahead = aheadOf(car, i, env);
+        let gap = ahead.gap;
+        let vl = ahead.vl;
+        const person = personAhead(car);
+        if (person < gap) {
+          gap = person;
+          vl = 0;
+        }
         let v0 = car.v0;
         // Slow for the turn ahead, and through it.
         const m = car.s < 0 ? car.via : car.next;
         if (m && m.turn !== 'straight') {
-          const cap = m.turn === 'right' ? 4.3 : 5.6;
+          const cap = turnCap(m, v0);
           const toTurn = car.s < 0 ? 0 : lane.len - car.s;
           v0 = Math.min(v0, cap + toTurn * 0.22);
         }
@@ -2727,15 +3201,20 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
           } else car.stuck = 0;
         }
         if (car.s >= lane.len && car.next && car.s >= 0) {
-          const blocked = !car.commit && !mayEnter(car, time, pedOn);
+          const blocked = (!car.commit && !mayEnter(car, env)) || cabHolds(car, env);
           if (blocked) {
             car.s = lane.len - 0.01;
             car.v = 0;
-          } else moved.push([car, lane]);
+          } else {
+            movedCars.push(car);
+            movedLanes.push(lane);
+          }
         }
       }
     }
-    for (const [car, lane] of moved) {
+    for (let k = 0; k < movedCars.length; k++) {
+      const car = movedCars[k];
+      const lane = movedLanes[k];
       const m = car.next!;
       lane.cars.splice(lane.cars.indexOf(car), 1);
       car.s = car.s - lane.len - m.len;
@@ -2777,7 +3256,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     return { mesh, a };
   }
 
-  const carCap = AMBIENT_CAP.high.cars;
+  const carCap = AMBIENT_CAP.high.cars + PARKED_CAP.high;
   const personCap = AMBIENT_CAP.high.people;
   const nearCar = carMaterial(false);
   const farCar = carMaterial(true);
@@ -2826,6 +3305,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   const scl = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
   const frustum = new THREE.Frustum();
+  const MID = { x: 0, z: 0 };
   const lastEye = new THREE.Vector3(0, 1e5, 0);
   const sphere = new THREE.Sphere();
   const projView = new THREE.Matrix4();
@@ -2833,13 +3313,13 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   let poolN = 0;
   let shadeN = 0;
 
-  function addPool(x: number, z: number, yaw: number, length: number, width: number, rgb: [number, number, number]): void {
+  function addPool(x: number, z: number, yaw: number, length: number, width: number, r: number, g: number, bl: number): void {
     if (poolN >= HEADLAMP.pools) return;
     pos.set(x, 0.03, z);
     q.setFromAxisAngle(up, -yaw);
     m4.compose(pos, q, scl.set(length, 1, width));
     pools.setMatrixAt(poolN, m4);
-    pools.instanceColor!.setXYZ(poolN, rgb[0], rgb[1], rgb[2]);
+    pools.instanceColor!.setXYZ(poolN, r, g, bl);
     poolN++;
   }
   function addShade(x: number, y: number, z: number, yaw: number, length: number, width: number): void {
@@ -2848,6 +3328,30 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     q.setFromAxisAngle(up, -yaw);
     m4.compose(pos, q, scl.set(length, 1, width));
     shades.setMatrixAt(shadeN++, m4);
+  }
+
+  type Drawn = { mesh: THREE.InstancedMesh; a: Record<string, THREE.InstancedBufferAttribute>; n: number };
+  /** One car into a level's instances, at the pose in pos and q: its paint, brake, blinker, blink phase, and whether it is parked (lamps off). */
+  function writeCar(d0: Drawn, sx: number, sy: number, sz: number, paint: [number, number, number], metal: number, brake: number, sig: number, blink: number, parkedCar: number): void {
+    if (d0.n >= d0.mesh.instanceMatrix.count) return;
+    const i = d0.n++;
+    m4.compose(pos, q, scl.set(sx, sy, sz));
+    d0.mesh.setMatrixAt(i, m4);
+    d0.a.aPaint.setXYZW(i, paint[0], paint[1], paint[2], metal);
+    d0.a.aState.setXYZW(i, brake, sig, blink, parkedCar);
+    d0.a.aLampL.setXYZW(i, lampTmp[0], lampTmp[1], lampTmp[2], lampTmp[3]);
+  }
+
+  /** One figure into a level's instances, at the matrix in m4: its stride's phase, walk, stride and style, and its looks. */
+  function writePerson(d0: Drawn, p: Person, wv: number, stride: number): void {
+    if (d0.n >= d0.mesh.instanceMatrix.count) return;
+    const i = d0.n++;
+    d0.mesh.setMatrixAt(i, m4);
+    d0.a.aAnim.setXYZW(i, p.phase, wv, stride, p.style);
+    d0.a.aLook.setXYZW(i, p.skin, p.hair, p.coatLen, p.hat);
+    d0.a.aCoat.setXYZ(i, p.coat[0], p.coat[1], p.coat[2]);
+    d0.a.aLegs.setXYZ(i, p.legs[0], p.legs[1], p.legs[2]);
+    d0.a.aLampL.setXYZW(i, p.lamp[0], p.lamp[1], p.lamp[2], p.lamp[3]);
   }
 
   function draw(camera: THREE.PerspectiveCamera, viewHeight: number): void {
@@ -2870,7 +3374,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     lastEye.copy(eye);
     for (const car of cars) {
       // Culled by its middle first; the full pose only for a car the eye can see.
-      const mid = carPoint(car, car.len / 2);
+      const mid = carPoint(car, car.len / 2, MID);
       car.seen = frustum.intersectsSphere(sphere.set(pos.set(mid.x, 1, mid.z), 3.4));
       if (!car.seen) continue;
       const p = carPose(car);
@@ -2879,30 +3383,35 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       const sig = blinkerOf(car);
       pos.set(p.x, 0, p.z);
       q.setFromAxisAngle(up, -p.yaw);
-      const writeCar = (d0: { mesh: THREE.InstancedMesh; a: Record<string, THREE.InstancedBufferAttribute>; n: number }, sx: number, sy: number, sz: number): void => {
-        const i = d0.n++;
-        m4.compose(pos, q, scl.set(sx, sy, sz));
-        d0.mesh.setMatrixAt(i, m4);
-        d0.a.aPaint.setXYZW(i, car.paint[0], car.paint[1], car.paint[2], car.metal);
-        d0.a.aState.setXYZW(i, car.brake ? 1 : 0, sig, car.blink, 0);
-        d0.a.aLampL.setXYZW(i, lampTmp[0], lampTmp[1], lampTmp[2], lampTmp[3]);
-      };
-      if (d < AMBIENT_LOD.car.far) {
-        lampLight(p.x, 1.0, p.z, plazas, lampTmp);
-        writeCar(carMeshes.get(car.model === 'cab' ? 'saloon' : car.model)!, 1, 1, 1);
+      if (d < LIFE_LOD.car.far) {
+        lampLight(lamps, p.x, 1.0, p.z, lampTmp);
+        writeCar(carMeshes.get(car.model === 'cab' ? 'saloon' : car.model)!, 1, 1, 1, car.paint, car.metal, car.brake ? 1 : 0, sig, car.blink, 0);
         addShade(p.x, 0, p.z, p.yaw, dim.len + 0.3, dim.width + 0.35);
-      } else {
-        lampTmp[3] = 0;
-      }
-      if (d > AMBIENT_LOD.car.near) writeCar(farCars, dim.len / 4.6, dim.height / 1.46, dim.width / 1.84);
+      } else lampTmp[3] = 0;
+      if (d > LIFE_LOD.car.near) writeCar(farCars, dim.len / 4.6, dim.height / 1.46, dim.width / 1.84, car.paint, car.metal, car.brake ? 1 : 0, sig, car.blink, 0);
       if (poolsOn && d < HEADLAMP.reach) {
         const k = HEADLAMP.peak * 0.26;
-        addPool(p.x + Math.cos(p.yaw) * (dim.len / 2 - 0.1), p.z + Math.sin(p.yaw) * (dim.len / 2 - 0.1), p.yaw, 11, 3.4, [pc[0] * k, pc[1] * k, pc[2] * k]);
+        addPool(p.x + Math.cos(p.yaw) * (dim.len / 2 - 0.1), p.z + Math.sin(p.yaw) * (dim.len / 2 - 0.1), p.yaw, 11, 3.4, pc[0] * k, pc[1] * k, pc[2] * k);
         const tk = HEADLAMP.peak * (car.brake ? 0.16 : 0.07);
-        addPool(p.x - Math.cos(p.yaw) * (dim.len / 2 - 0.1), p.z - Math.sin(p.yaw) * (dim.len / 2 - 0.1), p.yaw + Math.PI, 2.6, 2.2, [tk, tk * 0.04, tk * 0.02]);
+        addPool(p.x - Math.cos(p.yaw) * (dim.len / 2 - 0.1), p.z - Math.sin(p.yaw) * (dim.len / 2 - 0.1), p.yaw + Math.PI, 2.6, 2.2, tk, tk * 0.04, tk * 0.02);
       }
     }
-    const end = AMBIENT_LOD.crowdEnd.far;
+    // The parked cars: dark, their lamps off.
+    for (const c of parked) {
+      c.seen = frustum.intersectsSphere(sphere.set(pos.set(c.x, 1, c.z), 3.4));
+      if (!c.seen) continue;
+      const d = Math.hypot(c.x - eye.x, eye.y, c.z - eye.z);
+      const dim = DIMS[c.model];
+      pos.set(c.x, 0, c.z);
+      q.setFromAxisAngle(up, -c.yaw);
+      if (d < LIFE_LOD.car.far) {
+        lampLight(lamps, c.x, 1.0, c.z, lampTmp);
+        writeCar(carMeshes.get(c.model)!, 1, 1, 1, c.paint, c.metal, 0, 0, 0, 1);
+        addShade(c.x, 0, c.z, c.yaw, dim.len + 0.3, dim.width + 0.35);
+      } else lampTmp[3] = 0;
+      if (d > LIFE_LOD.car.near) writeCar(farCars, dim.len / 4.6, dim.height / 1.46, dim.width / 1.84, c.paint, c.metal, 0, 0, 0, 1);
+    }
+    const end = LIFE_LOD.crowdEnd.far;
     for (const p of people) {
       const d = Math.hypot(p.x - eye.x, p.y + 1 - eye.y, p.z - eye.z);
       p.seen = d < end + 80 && frustum.intersectsSphere(sphere.set(pos.set(p.x, p.y + 0.9, p.z), 1.2));
@@ -2914,21 +3423,12 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       q.setFromAxisAngle(up, -p.yaw);
       m4.compose(pos, q, scl.set(k * (0.94 + 0.06 * p.build), k, k * p.build));
       const stride = Math.asin(clamp((p.step * Math.max(0.55, wv)) / (2 * 0.86 * k), 0, 0.62));
-      const write = (d0: { mesh: THREE.InstancedMesh; a: Record<string, THREE.InstancedBufferAttribute>; n: number }): void => {
-        const i = d0.n++;
-        d0.mesh.setMatrixAt(i, m4);
-        d0.a.aAnim.setXYZW(i, p.phase, wv, stride, p.style);
-        d0.a.aLook.setXYZW(i, p.skin, p.hair, p.coatLen, p.hat);
-        d0.a.aCoat.setXYZ(i, p.coat[0], p.coat[1], p.coat[2]);
-        d0.a.aLegs.setXYZ(i, p.legs[0], p.legs[1], p.legs[2]);
-        d0.a.aLampL.setXYZW(i, p.lamp[0], p.lamp[1], p.lamp[2], p.lamp[3]);
-      };
-      if (d < AMBIENT_LOD.person.far) {
-        lampLight(p.x, p.y + 1.3, p.z, plazas, p.lamp);
-        write(nearPeople);
+      if (d < LIFE_LOD.person.far) {
+        lampLight(lamps, p.x, p.y + 1.3, p.z, p.lamp);
+        writePerson(nearPeople, p, wv, stride);
         addShade(p.x, p.y, p.z, p.yaw, 0.62 * k, 0.5 * k * p.build);
       } else p.lamp[3] = 0;
-      if (d > AMBIENT_LOD.person.near) write(farPeople);
+      if (d > LIFE_LOD.person.near) writePerson(farPeople, p, wv, stride);
     }
     // Only what is drawn goes up to the GPU: each buffer's first n instances, and nothing for an empty level.
     const upload = (a: THREE.BufferAttribute, n: number): void => {
@@ -2955,8 +3455,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   /** Moves everyone on by dt, and turns each figure toward the way it goes and its stride on. */
   function step(dt: number): void {
     time += dt;
-    TRAMS = trams;
-    if (drifting) drift();
+    if (drifting || refill) drift();
     stepPeople(dt);
     stepCars(dt);
     for (const p of people) {
@@ -3001,28 +3500,33 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     setQuality(qv) {
       if (qv === quality) return;
       quality = qv;
-      populate();
+      parked = parkedAll.slice(0, PARKED_CAP[quality]);
+      trim();
+      refill = true;
     },
     setPlazas(p) {
       const next = [...p];
       if (!next.some((x) => x.kind === 'civic')) next.unshift({ x: 0, z: 0, kind: 'civic' });
       if (JSON.stringify(next) === JSON.stringify(plazas)) return;
       plazas = next;
-      lay();
+      lay(true);
     },
     setTrams(at) {
-      trams = at;
+      env.trams = at;
+    },
+    setCabs(at) {
+      env.cabs = at;
     },
     relay(n) {
       if (n.blocks === net.blocks && JSON.stringify(n.ranks) === JSON.stringify(net.ranks)) return;
       net = n;
-      lay();
+      lay(true);
     },
     cars: () =>
       cars.map((c) => {
         const p = carPose(c);
         const m = c.s < 0 ? c.via : c.next;
-        return { id: c.id, model: c.model, x: p.x, z: p.z, yaw: p.yaw, speed: c.v, lane: c.lane.key, s: c.s, length: c.len, junction: p.junction?.key ?? null, axis: p.axis, turn: m?.turn ?? 'straight', braking: c.brake, blinking: blinkerOf(c), hold: holdOf(c, time) };
+        return { id: c.id, model: c.model, x: p.x, z: p.z, yaw: p.yaw, speed: c.v, lane: c.lane.key, s: c.s, length: c.len, junction: p.junction?.key ?? null, axis: p.axis, turn: m?.turn ?? 'straight', braking: c.brake, blinking: blinkerOf(c), hold: holdOf(c, time), width: c.width };
       }),
     people: () => people.map((p) => ({ id: p.id, state: p.state, x: p.x, z: p.z, yaw: p.yaw, speed: p.v, phase: p.phase % (Math.PI * 2), cadence: p.cadence, height: p.height, build: p.build, coat: [...p.coat] as [number, number, number], group: p.group })),
     view(camera) {
