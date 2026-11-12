@@ -179,6 +179,8 @@ export interface City {
   redrawShadows(): void;
   /** Glides to an eye and a target. */
   flyView(eye: THREE.Vector3, target: THREE.Vector3): void;
+  /** Tints and fades the floor mark (the ride's bronze, with its caption), or null for the inspector's own. */
+  highlightLook(look: { color: THREE.Color; alpha: number } | null): void;
   /** What the view looks at now (the orbit's centre). */
   viewTarget(): THREE.Vector3;
   /** Flies to and follows an agent's figure, 12 m behind and above, until a drag, Escape, the trip's end or null. */
@@ -1024,7 +1026,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let mark: THREE.Group | null = null;
   const markMaterials = {
     // Pale warm white, under the bloom threshold: it reads as a lit edge, never as neon.
-    edge: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.95, 0.82, 0.62) }),
+    edge: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.95, 0.82, 0.62), transparent: true }),
     // A faint warm wash on the slice itself, as if that floor were caught in a little more light.
     wash: new THREE.MeshBasicMaterial({
       color: new THREE.Color(1.0, 0.78, 0.5),
@@ -1107,6 +1109,16 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const d = mark.getWorldPosition(markAt).distanceTo(camera.position);
     const px = (2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / Math.max(1, height());
     (mark.userData.fit as (t: number) => void)(THREE.MathUtils.clamp(px * 2.5, 0.015, 1.4));
+  }
+
+  const MARK_EDGE = markMaterials.edge.color.clone();
+  const MARK_WASH = markMaterials.wash.color.clone();
+  /** The ride's own look for the mark (a bronze tint, faded with its caption), or null for the inspector's. */
+  function highlightLook(look: { color: THREE.Color; alpha: number } | null): void {
+    markMaterials.edge.color.copy(look ? look.color : MARK_EDGE);
+    markMaterials.edge.opacity = look ? look.alpha : 1;
+    markMaterials.wash.color.copy(look ? look.color : MARK_WASH);
+    markMaterials.wash.opacity = 0.1 * (look ? look.alpha : 1);
   }
 
   function highlightFloor(repo: string, floorId: string | null): void {
@@ -1511,6 +1523,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       sun.shadow.needsUpdate = true;
     },
     flyView: (eye, target) => rig.flyView(eye, target),
+    highlightLook,
     viewTarget: () => rig.controls.target.clone(),
     ambientDensity(n) {
       const was = forcedDensity;

@@ -240,6 +240,40 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       const want = (k: string): boolean => !only || only.includes(k);
       await chrome(page, true);
       type Riding = { length: number; stops: Array<{ t: number; dwell: number; mark: string | null }> };
+      const seekShot = async (key: string, name: string, at: (r: Riding) => number): Promise<void> => {
+        if (!(await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(key)})`))) throw new Error(`no ride up ${key}`);
+        await page.evaluate('window.__palimpsest.rideHold(true)');
+        const rr = (await page.evaluate('window.__palimpsest.riding()')) as Riding;
+        for (let i = 0; i < 2; i++) {
+          await page.evaluate(`window.__palimpsest.rideSeek(${at(rr)})`);
+          await page.waitForTimeout(900);
+        }
+        await shoot(page, name);
+        await page.evaluate('window.__palimpsest.ride(null)');
+        await page.waitForTimeout(2000);
+      };
+      // The crew's hoist on a tower at work (CAPTURE_ECONOMY=live): the car at the new floor, the frame going up over it.
+      if (only?.includes('hoist')) {
+        await page.waitForFunction('window.__palimpsest.liveSites().some((s) => s.stage === "framing")', null, { timeout: 15_000 }).catch(() => {});
+        const sites = (await page.evaluate('window.__palimpsest.liveSites()')) as Array<{ repo: string; stage: string }>;
+        const framing = sites.find((x) => x.stage === 'framing');
+        if (!framing) throw new Error('no framing site to ride');
+        await page.waitForTimeout(2500);
+        await seekShot(framing.repo, 'ride-hoist', (rr) => rr.stops[rr.stops.length - 1].t + 3);
+      }
+      // An agent tower's crown, from the end of its ride (CAPTURE_ECONOMY=1): a lens or a spire where one stands.
+      if (only?.includes('crown')) {
+        const quarters = (await page.evaluate(() => fetch('/api/quarters').then((x) => x.json()))) as Quarter[];
+        const towers = quarters.flatMap((q) => q.towers).filter((t) => t.agentId && !t.dark);
+        const crowned = towers.find((t) => t.silhouette === 'lens' || t.silhouette === 'needle') ?? towers[0];
+        if (!crowned) throw new Error('no agent tower to ride');
+        console.log(`  crown: ${crowned.agentId} (${crowned.silhouette ?? 'plain'}, ${crowned.floors.length} floors)`);
+        await seekShot(`agent:${crowned.agentId}`, 'ride-agent-crown', (rr) => {
+          const roof = rr.stops[rr.stops.length - 1];
+          return roof.t + roof.dwell * 0.6;
+        });
+      }
+      if (only && !only.some((k) => ['street', 'mid', 'top', 'clip'].includes(k))) return;
       const ok = await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(tall.repo)})`);
       if (!ok) throw new Error('the ride did not start');
       await page.evaluate('window.__palimpsest.rideHold(true)');

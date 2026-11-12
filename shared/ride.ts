@@ -16,6 +16,10 @@ import type { TowerLayout } from './tower-layout.js';
 export const RIDE = {
   /** Floors a second at cruise. */
   speed: 3,
+  /** A ride longer than this many seconds climbs faster at cruise... */
+  longest: 45,
+  /** ...up to this many floors a second. */
+  fastest: 6,
   /** Floors a second over the datum, a scar and Claude's floors. */
   slow: 0.8,
   /** Seconds the car waits at a captioned floor. */
@@ -108,6 +112,29 @@ interface Stop {
  * time from one key to the next (after each key's dwell).
  */
 export function ridePlan(layout: TowerLayout, floors: Floor[], opts: RideOptions): RideKey[] {
+  const keys = planAt(layout, floors, opts, RIDE.speed);
+  if (rideLength(keys) <= RIDE.longest) return keys;
+  // Too long at three floors a second: the cruise alone quickens (the stops and the slow floors keep their pace),
+  // as little as brings the ride within its length, and never past six floors a second.
+  const top = planAt(layout, floors, opts, RIDE.fastest);
+  if (rideLength(top) >= RIDE.longest) return top;
+  let lo: number = RIDE.speed;
+  let hi: number = RIDE.fastest;
+  let best = top;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    const k = planAt(layout, floors, opts, mid);
+    if (rideLength(k) <= RIDE.longest) {
+      hi = mid;
+      best = k;
+    } else lo = mid;
+  }
+  return best;
+}
+
+/** The ride at a cruise of `speed` floors a second. */
+function planAt(layout: TowerLayout, floors: Floor[], opts: RideOptions, speed: number): RideKey[] {
+  void floors;
   const names = opts.names;
   const nameOf = (m: Map<string, string> | undefined, id: string): string => m?.get(id) ?? id;
   const laid = layout.floors;
@@ -132,7 +159,7 @@ export function ridePlan(layout: TowerLayout, floors: Floor[], opts: RideOptions
   const rate = (y: number): number => {
     const l = laid.find((x) => y >= x.y0 - 1e-9 && y < x.y0 + x.h - 1e-9);
     const h = l ? l.h : RIDE.rootFloor;
-    return (isSlow(y) ? RIDE.slow : RIDE.speed) * h;
+    return (isSlow(y) ? RIDE.slow : speed) * h;
   };
 
   // ---------------------------------------------------------------- the stops
@@ -269,6 +296,12 @@ function yIntegral(keys: RideKey[], t: number): number {
     if (t <= n.t) return s;
   }
   return s;
+}
+
+/** When the car reaches the next stop after `t` (a key it waits at), or null past the last: Space and Right skip there. */
+export function rideNextStop(keys: RideKey[], t: number): number | null {
+  for (const k of keys) if (k.dwell > 0 && k.t > t + 1e-6) return k.t;
+  return null;
 }
 
 /** When the ride is over: the last key's dwell is done. */

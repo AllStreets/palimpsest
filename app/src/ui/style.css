@@ -525,7 +525,10 @@ body[data-riding] .runhead {
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.6s ease;
-  text-shadow: 0 1px 2px rgba(4, 5, 7, 0.55);
+  /* A hairline of shade round every letter, and a softer one under it: the type holds on a lit roof or bright glass. */
+  text-shadow:
+    0 0 1px rgba(4, 5, 7, 0.9),
+    0 1px 3px rgba(4, 5, 7, 0.6);
 }
 .ride.on {
   opacity: 1;
@@ -535,10 +538,10 @@ body[data-riding] .runhead {
   position: fixed;
   left: 0;
   bottom: 0;
-  width: min(980px, 80vw);
-  height: 420px;
+  width: min(1040px, 82vw);
+  height: 460px;
   z-index: -1;
-  background: radial-gradient(ellipse 100% 100% at 0% 100%, rgba(5, 6, 8, 0.66) 0%, rgba(5, 6, 8, 0.38) 42%, rgba(5, 6, 8, 0) 74%);
+  background: radial-gradient(ellipse 100% 100% at 0% 100%, rgba(5, 6, 8, 0.8) 0%, rgba(5, 6, 8, 0.6) 34%, rgba(5, 6, 8, 0.26) 58%, rgba(5, 6, 8, 0) 78%);
 }
 .ride-floor {
   display: flex;
@@ -637,12 +640,31 @@ body[data-riding] .runhead {
   display: none;
 }
 .ride-keys {
-  margin-top: 18px;
-  font-size: 12px;
-  color: var(--ink-3);
+  display: flex;
+  gap: 18px;
+  margin-top: 14px;
+}
+/* Plain lines with their key, tappable: a touch screen has no Escape. */
+.ride-keys button {
+  all: unset;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: baseline;
+  padding: 6px 0;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.ride-keys button:hover {
+  color: var(--ink);
+}
+.ride-keys button:focus-visible {
+  outline: 1px solid var(--bronze);
+  outline-offset: 3px;
 }
 .ride-keys kbd {
-  margin-right: 6px;
+  margin-right: 7px;
   font-family: var(--mono);
   font-size: 10.5px;
   padding: 1px 4px;

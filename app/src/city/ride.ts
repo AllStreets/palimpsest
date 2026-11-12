@@ -14,7 +14,7 @@
  */
 import * as THREE from 'three';
 
-import { RIDE, rideAt, rideLength, rideSway, type RideCaption, type RideKey } from '../../../shared/ride.js';
+import { RIDE, rideAt, rideLength, rideNextStop, rideSway, type RideCaption, type RideKey } from '../../../shared/ride.js';
 import type { ScriptPose } from './camera';
 import { Parts } from './construction.js';
 
@@ -40,6 +40,9 @@ export interface RideHost {
   highlightFloor(repo: string, floorId: string | null): void;
   redrawShadows(): void;
   flyView(eye: THREE.Vector3, target: THREE.Vector3): void;
+  /** Jumps the camera to an eye and a target (reduced motion's way back). */
+  view(eye: THREE.Vector3, target: THREE.Vector3): void;
+  highlightLook(look: { color: THREE.Color; alpha: number } | null): void;
   /** What the view looks at now (the orbit's centre). */
   viewTarget(): THREE.Vector3;
 }
@@ -93,6 +96,8 @@ export interface Ride {
   seek(t: number): void;
   /** Ends the ride: Escape's way, the view going back where it was. */
   stop(): void;
+  /** On to the next stop at once, as Space and Right do. */
+  next(): void;
 }
 
 /** The camera rides this far out from the facade... */
@@ -126,6 +131,9 @@ const STEP_RISE = 2.8;
 const STILL_STOP = 2.6;
 /** The orbit's sweep over the roof, in radians. */
 const ORBIT_SWEEP = 0.8;
+
+/** The ride's mark on a floor: the datum's bronze, under the bloom threshold. */
+const MARK_BRONZE = new THREE.Color(0.86, 0.6, 0.34);
 
 const smooth = (x: number): number => {
   const t = Math.min(1, Math.max(0, x));
@@ -393,7 +401,8 @@ function buildCar(rail: Rail): Rig {
   frame.box(0, H + 0.62, -0.1, 0.18, 0.18, D * 0.6);
   const frameMesh = new THREE.Mesh(frame.build(), paint);
   frameMesh.name = 'ride:car-frame';
-  frameMesh.castShadow = true;
+  // The car casts no shadow: a moving caster would have the city's whole shadow map redrawn every frame.
+  frameMesh.castShadow = false;
   frameMesh.receiveShadow = true;
   car.add(frameMesh);
 
@@ -491,7 +500,7 @@ const MARK_WORDS: Record<NonNullable<RideCaption['mark']>, string> = {
   live: 'At work now',
 };
 
-function captions(parent: HTMLElement, dossier: RideOptions['dossier']): Captions {
+function captions(parent: HTMLElement, dossier: RideOptions['dossier'], act: { off(): void; next(): void }): Captions {
   const el = document.createElement('div');
   el.className = 'ride';
   const floor = document.createElement('p');
@@ -521,7 +530,19 @@ function captions(parent: HTMLElement, dossier: RideOptions['dossier']): Caption
   cap.append(mark, title, line, slot);
   const keys = document.createElement('p');
   keys.className = 'ride-keys';
-  keys.innerHTML = '<kbd>Esc</kbd> steps off';
+  // Tappable as well as keyed: a touch screen has no Escape.
+  const keyed = (cls: string, kbd: string, word: string, label: string, fn: () => void): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    const k = document.createElement('kbd');
+    k.textContent = kbd;
+    b.append(k, document.createTextNode(word));
+    b.setAttribute('aria-label', label);
+    b.addEventListener('click', fn);
+    return b;
+  };
+  keys.append(keyed('ride-off', 'Esc', 'Step off', 'Step off the ride', act.off), keyed('ride-next', 'Space', 'Next stop', 'Go on to the next stop', act.next));
   el.append(floor, cap, keys);
   parent.append(el);
   requestAnimationFrame(() => el.classList.add('on'));
@@ -613,8 +634,9 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
   let held = false;
   let ended = false;
   let floorNow: string | null | undefined;
+  let markedNow: string | null = null;
   let stopNow = -1;
-  const cap = captions(opts.parent, opts.dossier);
+  const cap = captions(opts.parent, opts.dossier, { off: () => api.stop(), next: () => skip() });
   const eye = new THREE.Vector3();
   const target = new THREE.Vector3();
   let carY = 0;
@@ -683,9 +705,9 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
         const ox = e.x - rail.ax;
         const oz = e.z - rail.az;
         const r = Math.hypot(ox, oz) || 1;
-        e.x += (ox / r) * 4 * blend;
-        e.z += (oz / r) * 4 * blend;
-        e.y += 1.5 * blend;
+        e.x += (ox / r) * 9 * blend;
+        e.z += (oz / r) * 9 * blend;
+        e.y += 3 * blend;
         g.lerp(new THREE.Vector3(rail.ax, rail.top + 3.5, rail.az), blend);
       }
     }
@@ -697,26 +719,51 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
     ended = true;
     removeEventListener('keydown', onKey, true);
     city.highlightFloor(key, null);
+    city.highlightLook(null);
     cap.dispose();
     rig?.dispose();
-    if (hoist) {
-      hoist.setCar(0);
-      city.redrawShadows();
+    city.redrawShadows();
+    if (hoist) hoist.setCar(0);
+    // With reduced motion the view cuts straight back; otherwise it glides.
+    if (why !== 'user') {
+      if (still) city.view(fromEye, fromTarget);
+      else city.flyView(fromEye, fromTarget);
     }
-    if (why !== 'user') city.flyView(fromEye, fromTarget);
     opts.onEnd?.(why);
   };
 
+  /** Space or Right: on to the next stop at once. */
+  const skip = (): void => {
+    if (ended) return;
+    if (still) {
+      t = Math.min(stillLength - 1e-3, (Math.floor(Math.max(0, t) / STILL_STOP) + 1) * STILL_STOP);
+      return;
+    }
+    const next = rideNextStop(plan, Math.max(0, t));
+    if (next !== null) t = next;
+  };
   const onKey = (e: KeyboardEvent): void => {
-    if (e.key !== 'Escape' || ended) return;
-    e.preventDefault();
-    e.stopPropagation();
-    city.unscript();
+    if (ended || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      city.unscript();
+    } else if (e.key === ' ' || e.key === 'ArrowRight') {
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(tgt.tagName))) return;
+      e.preventDefault();
+      e.stopPropagation();
+      skip();
+    }
   };
   addEventListener('keydown', onKey, true);
 
   /** Why the script let go, as the ride ends: Escape and the end both unscript ('end'); a drag or a scroll is 'user'. */
   let reason: RideEnd = 'escape';
+  let shadowAt = -Infinity;
+  let shadowClock = Infinity;
+  // The rail stands for the whole ride: the shadow map takes it once.
+  city.redrawShadows();
   const step = (dt: number): ScriptPose | null => {
     if (ended) return null;
     if (!held) t += dt;
@@ -737,12 +784,16 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
       eye.copy(pose.eye);
       target.copy(pose.target);
     }
-    if (rig) {
-      rig.place(carY, pose.roll, pose.bounce);
-      city.redrawShadows();
-    } else if (hoist) {
+    if (rig) rig.place(carY, pose.roll, pose.bounce);
+    else if (hoist) {
       hoist.setCar(carY + pose.bounce);
-      city.redrawShadows();
+      // The hoist casts its shadow (it is the site's steel): the shadow map follows it in half metres, ten times a second at most.
+      shadowClock += dt;
+      if (Math.abs(carY - shadowAt) > 0.5 && shadowClock >= 0.1) {
+        shadowAt = carY;
+        shadowClock = 0;
+        city.redrawShadows();
+      }
     }
     // The floor the eye looks across, outlined as the inspector outlines a floor.
     const look = eyeY + CAMERA_LIFT + 1.2;
@@ -750,8 +801,19 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
     const id = at?.id ?? null;
     if (id !== floorNow) {
       floorNow = id;
-      city.highlightFloor(key, id);
       opts.onFloor?.(id, at ? numbered.indexOf(at) + 1 : 0);
+    }
+    // The floor a caption speaks of is marked in bronze, fading in and out with its caption.
+    const ck = pose.captionKey >= 0 ? plan[pose.captionKey] : null;
+    const marked = ck?.floorId ?? null;
+    if (marked !== markedNow) {
+      markedNow = marked;
+      city.highlightFloor(key, marked);
+    }
+    if (ck && marked) {
+      const since = still ? 1 : (t - ck.t) / 0.45;
+      const until = ck === last ? Infinity : ck.t + ck.dwell + RIDE.hold - t;
+      city.highlightLook({ color: MARK_BRONZE, alpha: smooth(since) * smooth(until / 0.45) });
     }
     const n = at ? numbered.indexOf(at) + 1 : 0;
     cap.floor(at ? String(n) : eyeY > rail.top ? 'Roof' : 'Street', at ? `of ${total}` : total ? `${total} floors` : 'root only');
@@ -766,7 +828,7 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
   };
   city.script(step, (why) => end(why === 'user' ? 'user' : reason));
 
-  return {
+  const api: Ride = {
     key,
     state: () => ({
       key,
@@ -791,5 +853,7 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
       reason = 'escape';
       city.unscript();
     },
+    next: skip,
   };
+  return api;
 }

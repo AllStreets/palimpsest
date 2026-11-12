@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { RIDE, rideAt, ridePlan, type RideKey } from '../shared/ride.js';
+import { RIDE, rideAt, rideLength, rideNextStop, ridePlan, type RideKey } from '../shared/ride.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { Floor, SiteState, TowerSpec } from '../shared/types.js';
 
@@ -149,4 +149,38 @@ test('an agent tower ends over its crown', () => {
   const lay = layoutTower(tower(floors, 0, 'agent'));
   const keys = ridePlan(lay, floors, { live: null, crown: 9 });
   assert.ok(keys[keys.length - 1].y >= lay.top + 9 * 0.5, 'the orbit looks across the crown');
+});
+
+test('a long ride climbs faster at cruise to keep within 45 s, never past 6 floors a second', () => {
+  const plain = Array.from({ length: 120 }, (_, i) => floor(i));
+  const lay = layoutTower(tower(plain));
+  const keys = ridePlan(lay, plain, { live: null });
+  assert.ok(rideLength(keys) <= RIDE.longest + 0.05, `a 120 floor tower rides in ${rideLength(keys).toFixed(1)} s`);
+  // A short tower keeps three floors a second.
+  const short = Array.from({ length: 12 }, (_, i) => floor(i));
+  const sl = layoutTower(tower(short));
+  const sk = ridePlan(sl, short, { live: null });
+  const h = sl.floors[3].h;
+  const t = travel(sk, sl.floors[2].y0 + h / 2, sl.floors[5].y0 + h / 2);
+  assert.ok(Math.abs(t - 1) < 0.05, `three floors a second on a short tower (${t.toFixed(2)} s)`);
+  // A tower too long even at six floors a second rides at six, and the slow floors stay at 0.8.
+  const huge = Array.from({ length: 400 }, (_, i) => floor(i, i % 40 === 5 ? { claude: true } : {}));
+  const hl = layoutTower(tower(huge));
+  const hk = ridePlan(hl, huge, { live: null });
+  const fh = hl.floors[10].h;
+  const cruise = travel(hk, hl.floors[10].y0, hl.floors[16].y0);
+  assert.ok(Math.abs(cruise - 6 / RIDE.fastest) < 0.05, `six floors take a second at the cap (${cruise.toFixed(2)} s)`);
+  const c = hl.floors[5];
+  assert.ok(Math.abs(travel(hk, c.y0, c.y0 + fh) - 1 / RIDE.slow) < 0.05, 'the Claude floor still passes at 0.8');
+});
+
+test('skipping goes to the next stop', () => {
+  const floors = Array.from({ length: 20 }, (_, i) => floor(i, i === 8 ? { claude: true } : {}));
+  const keys = ridePlan(layoutTower(tower(floors)), floors, { live: null });
+  const claude = keys.find((k) => k.caption?.mark === 'claude')!;
+  assert.equal(rideNextStop(keys, 0.2), claude.t, 'from the street, the Claude floor');
+  const datum = keys.find((k) => k.caption?.mark === 'datum')!;
+  assert.equal(rideNextStop(keys, claude.t + 0.1), datum.t, 'waiting there, the next stop');
+  const last = keys[keys.length - 1];
+  assert.equal(rideNextStop(keys, last.t + 1), null, 'nothing past the last stop');
 });

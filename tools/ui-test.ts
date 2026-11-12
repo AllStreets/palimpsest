@@ -622,6 +622,23 @@ async function constructionChecks(page: Page): Promise<void> {
     const held = await view();
     check(held?.beams === s.beams && held?.progress === s.progress, 'between events the frame holds still');
 
+    // The ride up a framing tower takes the crew's hoist and ends at the work (Task 35).
+    check(await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(repo)})`) === true, 'a framing tower can be ridden');
+    await page.evaluate('window.__palimpsest.rideHold(true)');
+    const hr = await ridingNow(page);
+    check(hr?.hoist === true, 'the ride up a framing tower takes the crew’s hoist');
+    if (hr) {
+      const work = hr.stops[hr.stops.length - 1];
+      await page.evaluate(`window.__palimpsest.rideSeek(${work.t + 2})`);
+      await page.waitForTimeout(600);
+      const at = await ridingNow(page);
+      check(/is framing floor \d+$/.test(at?.caption ?? ''), `and ends with the framing caption (${at?.caption})`);
+      check(!!at && Math.abs(at.car - s.top) < 0.6, `the hoist car ends at the work on its mast (${at?.car.toFixed(1)} m against the roof at ${s.top.toFixed(1)} m)`);
+      await page.screenshot({ path: join(SHOTS, 'ride-hoist.png') });
+    }
+    await page.evaluate('window.__palimpsest.ride(null)');
+    await page.waitForTimeout(2000);
+
     const [cx, , cz] = s.crane;
     const eye: [number, number, number] = [cx - 70, s.top + 22, cz + 62];
     const target: [number, number, number] = [cx + 4, s.top + 12, cz - 2];
@@ -1006,7 +1023,7 @@ async function inspectorChecks(page: Page): Promise<void> {
 
 // ---------------------------------------------------------------- the ride up a tower (Task 35)
 
-type RideProbe = { key: string; t: number; length: number; car: number; eye: number; floorId: string | null; caption: string | null; held: boolean; hoist: boolean };
+type RideProbe = { key: string; t: number; length: number; car: number; eye: number; floorId: string | null; caption: string | null; held: boolean; hoist: boolean; stops: Array<{ t: number; dwell: number; mark: string | null; title: string | null }> };
 const ridingNow = (page: Page): Promise<RideProbe | null> => page.evaluate('window.__palimpsest.riding()') as Promise<RideProbe | null>;
 
 /**
@@ -1044,6 +1061,16 @@ async function rideChecks(page: Page): Promise<void> {
   const shown = await page.locator('.ride .ride-title').textContent();
   check(captioned, `the caption shows a floor title (${shown})`);
   await page.screenshot({ path: join(SHOTS, 'ride-mid.png') });
+  const rideFps = await pageFps(page);
+  console.log(`info  riding: ${rideFps.toFixed(0)} fps`);
+  check(rideFps >= overviewFps - 5, `a ride holds the overview's frame rate (${rideFps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  // Space goes on to the next stop at once.
+  const beforeSkip = await ridingNow(page);
+  const nextStop = beforeSkip?.stops.find((x) => x.t > beforeSkip.t + 1e-3);
+  await page.keyboard.press(' ');
+  await page.waitForTimeout(150);
+  const afterSkip = await ridingNow(page);
+  check(!!nextStop && !!afterSkip && afterSkip.t >= nextStop.t && afterSkip.t < nextStop.t + 0.6, `Space skips to the next stop (${beforeSkip?.t.toFixed(1)} to ${afterSkip?.t.toFixed(1)} s, the stop at ${nextStop?.t.toFixed(1)})`);
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
   check((await ridingNow(page)) === null, 'Escape ends the ride');
@@ -1056,6 +1083,7 @@ async function rideChecks(page: Page): Promise<void> {
 
   // With reduced motion the ride cuts from stop to stop: the car stands still at each, then is at the next.
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  const stillFrom = await debug(page, (x) => x.camera());
   await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(d.repo)})`);
   await page.waitForTimeout(900);
   const s0 = await ridingNow(page);
@@ -1065,8 +1093,12 @@ async function rideChecks(page: Page): Promise<void> {
   const s2 = await ridingNow(page);
   check(s0 !== null && s1 !== null && s0.car === s1.car && s2 !== null && s2.car > s1.car + 2, `with reduced motion the ride cuts from stop to stop (${s0?.car.toFixed(1)}, ${s1?.car.toFixed(1)}, ${s2?.car.toFixed(1)} m)`);
   await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  const stillBack = await debug(page, (x) => x.camera());
+  const cut = Math.hypot(stillBack[0] - stillFrom[0], stillBack[1] - stillFrom[1], stillBack[2] - stillFrom[2]);
+  check(cut < 0.5, `with reduced motion Escape cuts straight back (${cut.toFixed(2)} m off after 0.15 s)`);
   await page.emulateMedia({ reducedMotion: null });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(500);
 
   // R rides the open tower from the keyboard.
   await page.locator('.inspector .insp-ride').focus();
@@ -1107,9 +1139,11 @@ async function rideAgentChecks(page: Page): Promise<void> {
   const route = await page.evaluate(() => document.body.dataset.route);
   const a = await ridingNow(page);
   check(route === 'city' && a?.key === `agent:${agent.id}`, `the agent page's Ride up rides its tower (${route}, ${a?.key ?? 'no ride'})`);
-  await page.keyboard.press('Escape');
+  // Step off is a tap too: a touch screen has no Escape.
+  await page.locator('.ride .ride-off').click();
   await page.waitForTimeout(300);
-  check((await ridingNow(page)) === null, 'and Escape steps off it');
+  check((await ridingNow(page)) === null, 'and tapping Step off steps off it');
+  await page.waitForTimeout(1800);
 }
 
 // ---------------------------------------------------------------- an analyzing site

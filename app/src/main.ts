@@ -661,6 +661,7 @@ async function main(): Promise<void> {
     const opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     const hoist = live && city.siteHoist(key) ? key : null;
     city.followAgent(null);
+    // Phase 3 hangs its floor dossier here: `dossier(floorId)` fills the slot under each stop's caption.
     const started = startRide(city, key, plan, {
       parent: document.body,
       still: matchMedia('(prefers-reduced-motion: reduce)').matches,
