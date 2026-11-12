@@ -222,10 +222,12 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
         const dt = tr.querySelector('.c-detail')!.getBoundingClientRect();
         const tm = tr.querySelector('.c-time')!.getBoundingClientRect();
         const fd = tr.querySelector('.c-fold')!.getBoundingClientRect();
-        return { apart: nm.left >= st.right - 1 && dt.left >= nm.right - 1 && tm.left >= dt.right - 1 && tm.width > 30, level: Math.abs(fd.bottom - st.bottom) < 1, top: Math.min(st.top, nm.top, dt.top, tm.top), bottom: Math.max(st.bottom, nm.bottom, dt.bottom, tm.bottom), time: tm.left };
+        // The head's Took cell, read in the same frame as the row: a sheet still sliding in moves both alike.
+        const head = tr.closest('table')!.querySelector('th.c-time')!.getBoundingClientRect();
+        return { apart: nm.left >= st.right - 1 && dt.left >= nm.right - 1 && tm.left >= dt.right - 1 && tm.width > 30, level: Math.abs(fd.bottom - st.bottom) < 1, top: Math.min(st.top, nm.top, dt.top, tm.top), bottom: Math.max(st.bottom, nm.bottom, dt.bottom, tm.bottom), time: tm.left - head.left };
       }),
     );
-    const tookLeft = await page.locator('.insppage .checks th.c-time').evaluate((th) => th.getBoundingClientRect().left);
+    const tookLeft = 0;
     check(tracks.length === 8 && tracks.every((t) => t.apart), 'each check keeps its result, name, finding and time in their own column tracks');
     check(tracks.every((t) => Math.abs(t.time - tookLeft) < 1), 'the Took column stands under its head');
     check(tracks.every((t, i) => i === 0 || t.top >= tracks[i - 1].bottom - 1), 'the rows stand one under the next, with no two drawn together');

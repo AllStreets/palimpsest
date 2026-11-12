@@ -15,7 +15,8 @@
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
  * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles, life (the ambient traffic and crowd),
- * ride (the lift up the harbour tower, datum to roof), market-overview, screens (jobs, job,
+ * ride (the lift up the harbour tower, datum to roof), week (week.mp4: the week tour, forty-five
+ * seconds; CAPTURE_ECONOMY=1), market-overview, screens (jobs, job,
  * run-log, inspection, firms, agent, treasury, each also a shot of its own),
  * construction-clip (construction.mp4: forty seconds of the economy's clock,
  * crane to cure) and commute (commute.mp4: a tram rider and a cab). With no
@@ -439,6 +440,38 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await page.evaluate('window.__palimpsest.ride(null)');
       // The ride's last caption holds a moment after the ride ends: let it go before the next shot.
       await page.waitForTimeout(4000);
+    },
+
+    async week(page) {
+      // The week tour (Phase 3 Task 17): the camera's walk through the economy's week, exchange to exchange, its
+      // captions at the lower left. Forty-five seconds: the walk's ninety on the virtual clock at twice its pace,
+      // encoded as lean as the ride (an mp4, and the avif the README plays inline).
+      await chrome(page, true);
+      const ok = (await page.evaluate('window.__palimpsest.tourStart()')) as boolean;
+      if (!ok) throw new Error('the week has no tour to walk');
+      await page.evaluate('window.__palimpsest.tourHold(true)');
+      const tour = (await page.evaluate('window.__palimpsest.tour()')) as { length: number };
+      const speed = Number(process.env.WEEK_SPEED ?? 2);
+      const n = Math.round((tour.length / speed) * FPS);
+      const dir = mkdtempSync(join(tmpdir(), 'palimpsest-week-'));
+      console.log(`week: ${n} frames`);
+      const clock = await virtualClock(page);
+      try {
+        for (let i = 0; i < n; i++) {
+          await page.evaluate(`window.__palimpsest.tourSeek(${(i * speed) / FPS})`);
+          await clock.tick(1 / FPS);
+          await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
+          if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
+        }
+      } finally {
+        await clock.off();
+      }
+      encodeClip(dir, 'week', true, Number(process.env.WEEK_POSTER ?? 0.45));
+      if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
+      else rmSync(dir, { recursive: true, force: true });
+      await page.evaluate('window.__palimpsest.tourHold(false)');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(3000);
     },
 
     async river(page) {

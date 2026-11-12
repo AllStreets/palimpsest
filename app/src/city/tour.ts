@@ -32,6 +32,8 @@ export interface TourKey {
   eye: THREE.Vector3;
   target: THREE.Vector3;
   t: number;
+  /** How high the glide into this key arcs at its middle (metres over the path), enough to clear every tower it passes. */
+  lift: number;
 }
 
 /**
@@ -57,18 +59,35 @@ function quarter(theta: number): number {
   return ((base + Math.min(hi, Math.max(lo, off))) * Math.PI) / 180;
 }
 
-function insideAny(p: THREE.Vector3, towers: ReadonlyArray<TourFrame>): boolean {
+/** Whether a point stands inside any tower's frame, grown by the eye's clearance. */
+export function insideAny(p: THREE.Vector3, towers: ReadonlyArray<TourFrame>): boolean {
   return towers.some((t) => Math.abs(p.x - t.center.x) < t.width / 2 + TOUR_EYE.clear && Math.abs(p.z - t.center.z) < t.width / 2 + TOUR_EYE.clear && p.y < t.center.y + t.height / 2 + TOUR_EYE.clear);
+}
+
+/**
+ * Whether the eye sees its target past every other tower: the sight line,
+ * sampled, never passes through a tower's frame (the target's own tower
+ * aside, which the line ends in).
+ */
+export function sightClear(eye: THREE.Vector3, target: THREE.Vector3, towers: ReadonlyArray<TourFrame>): boolean {
+  const others = towers.filter((t) => !(Math.abs(target.x - t.center.x) <= t.width / 2 + 1 && Math.abs(target.z - t.center.z) <= t.width / 2 + 1));
+  const p = new THREE.Vector3();
+  for (let i = 1; i < 20; i++) {
+    p.lerpVectors(eye, target, i / 20);
+    if (others.some((t) => Math.abs(p.x - t.center.x) < t.width / 2 && Math.abs(p.z - t.center.z) < t.width / 2 && p.y < t.center.y + t.height / 2)) return false;
+  }
+  return true;
 }
 
 /** The eye for a target seen from `theta` at `dist`, moved round or out until it stands clear of every tower, else lifted over them. */
 function placeEye(target: THREE.Vector3, theta: number, dist: number, up: number, towers: ReadonlyArray<TourFrame>): THREE.Vector3 {
   const at = (th: number, d: number): THREE.Vector3 => new THREE.Vector3(target.x + Math.cos(th) * d, target.y + up, target.z + Math.sin(th) * d);
+  // Round first (the view keeps its distance), then out: the first place clear of the towers and in sight of the target.
   for (let extra = 0; extra <= 200; extra += 20) {
-    for (const turn of [0, 15, -15, 30, -30, 45, -45]) {
+    for (const turn of [0, 15, -15, 30, -30, 45, -45, 60, -60, 90, -90]) {
       const th = quarter(theta + (turn * Math.PI) / 180);
       const p = at(th, dist + extra);
-      if (!insideAny(p, towers)) return p;
+      if (!insideAny(p, towers) && sightClear(p, target, towers)) return p;
     }
   }
   const p = at(quarter(theta), dist);
@@ -98,12 +117,34 @@ export function tourKeys(tour: Tour, frames: (stop: TourStop) => TourFrame | nul
     const theta = stop.kind === 'exchange' || away < 1 ? Math.PI / 3 : Math.atan2(prev.z - target.z, prev.x - target.x);
     const up = Math.max(TOUR_EYE.up, dist * 0.3);
     const eye = placeEye(target, theta, dist, up, towers);
-    keys.push({ stop, eye, target, t });
+    keys.push({ stop, eye, target, t, lift: GLIDE.base });
     t += stop.glide + stop.dwell;
     prev = target;
   }
+  // Each glide arcs high enough over its path to clear every tower it passes, sampled along tourPose's own curve.
+  if (keys.length > 1) {
+    const curve = new THREE.CatmullRomCurve3(keys.map((x) => x.eye.clone()), false, 'centripetal');
+    for (let i = 1; i < keys.length; i++) {
+      const base = Math.max(GLIDE.base, keys[i - 1].eye.distanceTo(keys[i].eye) * 0.12);
+      let lift = base;
+      for (let j = 0; j <= GLIDE.samples; j++) {
+        const s = 0.1 + (0.8 * j) / GLIDE.samples;
+        const p = curve.getPoint((i - 1 + s) / (keys.length - 1));
+        const arc = Math.sin(Math.PI * s);
+        for (const tw of towers) {
+          if (Math.abs(p.x - tw.center.x) >= tw.width / 2 + TOUR_EYE.clear || Math.abs(p.z - tw.center.z) >= tw.width / 2 + TOUR_EYE.clear) continue;
+          const needed = tw.center.y + tw.height / 2 + TOUR_EYE.clear + 2 - p.y;
+          if (needed > 0) lift = Math.max(lift, needed / arc);
+        }
+      }
+      keys[i].lift = Math.min(GLIDE.cap, lift);
+    }
+  }
   return keys;
 }
+
+/** A glide's arc: at least this high, sampled this many times along its path for towers, never higher than the cap. */
+const GLIDE = { base: 20, samples: 24, cap: 420 } as const;
 
 /** The walk's seconds: every glide and every dwell. */
 export function tourLength(keys: ReadonlyArray<TourKey>): number {
@@ -136,8 +177,8 @@ export function tourPose(keys: ReadonlyArray<TourKey>, time: number, still = fal
     const s = ease(local / k.stop.glide);
     const eye = curve.getPoint((i - 1 + s) / (keys.length - 1));
     const from = keys[i - 1];
-    // Over the towers between, not through them: the glide rises with how far it goes.
-    eye.y += Math.sin(Math.PI * s) * Math.max(20, from.eye.distanceTo(k.eye) * 0.12);
+    // Over the towers between, not through them: the arc tourKeys worked out for this glide.
+    eye.y += Math.sin(Math.PI * s) * k.lift;
     const target = from.target.clone().lerp(k.target, s);
     return { eye, target, index: i, dwelling: false };
   }
@@ -300,6 +341,9 @@ export function startTour(city: TourHost, keys: TourKey[], opts: TourOptions): T
   };
   const onKey = (e: KeyboardEvent): void => {
     if (ended || e.metaKey || e.ctrlKey || e.altKey) return;
+    // A sheet over the city keeps its own keys: Escape there closes the sheet, not the walk.
+    const route = document.body.dataset.route;
+    if (route && route !== 'city') return;
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();

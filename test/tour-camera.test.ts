@@ -8,7 +8,7 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { TOUR_EYE, tourKeys, tourLength, tourPose, type TourFrame } from '../app/src/city/tour.js';
+import { insideAny, sightClear, TOUR_EYE, tourKeys, tourLength, tourPose, type TourFrame } from '../app/src/city/tour.js';
 import { TOUR } from '../shared/market-rules.js';
 import type { Tour, TourStop } from '../shared/types.js';
 
@@ -75,10 +75,14 @@ test("a stop whose tower is gone is passed over, and the tour's keys keep their 
 });
 
 test("an eye inside a tower's frame moves out", () => {
-  // A tower standing right where the eye would go for a/one's floor, between it and the exchange.
-  const blocker: TourFrame = { center: new THREE.Vector3(240, 80, 0), width: 40, height: 160 };
+  // A tower standing right where the eye for a/one's floor stands without it.
   const tr = tour();
+  const free = tourKeys(tr, frames, EXCHANGE, Object.values(TOWERS));
+  const was = free[1].eye;
+  const blocker: TourFrame = { center: new THREE.Vector3(was.x, 80, was.z), width: 40, height: 200 };
+  assert.ok(insideAny(was, [blocker]), 'the blocker stands where the eye stood');
   const keys = tourKeys(tr, frames, EXCHANGE, [...Object.values(TOWERS), blocker]);
+  assert.ok(keys[1].eye.distanceTo(was) > 5, `the eye moved (${keys[1].eye.distanceTo(was).toFixed(1)} m)`);
   for (const k of keys) {
     for (const t of [...Object.values(TOWERS), blocker]) {
       const inside = Math.abs(k.eye.x - t.center.x) < t.width / 2 + TOUR_EYE.clear && Math.abs(k.eye.z - t.center.z) < t.width / 2 + TOUR_EYE.clear && k.eye.y < t.center.y + t.height / 2 + TOUR_EYE.clear;
@@ -97,13 +101,47 @@ test("glides sum to the tour's seconds, and the walk passes every key", () => {
     assert.ok(p.eye.distanceTo(k.eye) < 6, `${k.stop.caption}: the eye stands at its key while it dwells, drifting a little (${p.eye.distanceTo(k.eye).toFixed(1)} m)`);
     assert.ok(p.dwelling);
   }
-  // Mid-glide the eye rises over the line between two keys, so it never swings low through the towers.
   const k = keys[2];
-  const mid = tourPose(keys, k.t + k.stop.glide / 2);
-  assert.equal(mid.dwelling, false);
-  assert.ok(mid.eye.y > (keys[1].eye.y + k.eye.y) / 2 + 5, `the glide arcs up (${mid.eye.y.toFixed(0)} m)`);
   // Reduced motion: no glide, only the stops, cut from one to the next.
   const still = tourPose(keys, k.t + 0.1, true);
   assert.equal(still.index, 2);
   assert.ok(still.eye.distanceTo(k.eye) < 1e-6, 'cut straight to the stop');
+});
+
+test('every glide passes over the towers between its stops, a tall one included', () => {
+  // Two low stops with a tall tower standing on the line between them.
+  const low1: TourFrame = { center: new THREE.Vector3(-260, 20, 0), width: 24, height: 40 };
+  const low2: TourFrame = { center: new THREE.Vector3(260, 20, 0), width: 24, height: 40 };
+  const tall: TourFrame = { center: new THREE.Vector3(0, 160, 0), width: 40, height: 320 };
+  const set: Record<string, TourFrame> = { 'b/low1': low1, 'b/low2': low2, 'b/tall': tall };
+  const stops = [
+    stop('exchange', null, null, '2026-11-09T06:00:00Z'),
+    stop('skyline', 'b/low1', null, '2026-11-10T09:00:00Z'),
+    stop('skyline', 'b/low2', null, '2026-11-11T09:00:00Z'),
+    stop('exchange', null, null, '2026-11-16T06:00:00Z'),
+  ];
+  const tr: Tour = { week: '2026-11-09', from: stops[0].at, to: stops[3].at, stops, seconds: stops.reduce((n, x) => n + x.dwell + x.glide, 0) };
+  const towers = [...Object.values(set), ...Object.values(TOWERS)];
+  const ex: TourFrame = { center: new THREE.Vector3(0, 10, 400), width: 60, height: 20 };
+  const keys = tourKeys(tr, (x) => (x.repo ? set[x.repo] : null), ex, towers);
+  assert.equal(keys.length, 4);
+  for (const k of keys.slice(1)) {
+    assert.ok(k.lift >= 20, 'every glide lifts at least a little');
+    for (let i = 0; i <= 48; i++) {
+      const p = tourPose(keys, k.t + (k.stop.glide * i) / 48);
+      if (!p.dwelling) assert.ok(!insideAny(p.eye, towers), `${k.stop.caption}: the glide clears every tower (${p.eye.toArray().map((v) => v.toFixed(0)).join(', ')} at ${i}/48)`);
+    }
+  }
+});
+
+test('each stop sees its target past its neighbours', () => {
+  // A tower standing between a/one's floor and where its eye would stand without it.
+  const tr = tour();
+  const free = tourKeys(tr, frames, EXCHANGE, Object.values(TOWERS));
+  const mid = free[1].eye.clone().lerp(free[1].target, 0.5);
+  const screen: TourFrame = { center: new THREE.Vector3(mid.x, 90, mid.z), width: 22, height: 180 };
+  const towers = [...Object.values(TOWERS), screen];
+  assert.equal(sightClear(free[1].eye, free[1].target, towers), false, 'the screen stands in the way of the old eye');
+  const keys = tourKeys(tr, frames, EXCHANGE, towers);
+  assert.ok(sightClear(keys[1].eye, keys[1].target, towers), 'the eye turns to see round it');
 });

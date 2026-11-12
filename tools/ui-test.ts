@@ -657,6 +657,36 @@ async function tourChecks(page: Page): Promise<void> {
   check((await tourOf()) === null, 'Escape ends the tour');
   const back = await debug(page, (d) => d.camera());
   check(Math.hypot(back[0] - home[0], back[1] - home[1], back[2] - home[2]) < 5, `and the view returns home (${Math.hypot(back[0] - home[0], back[1] - home[1], back[2] - home[2]).toFixed(1)} m off)`);
+  // A sheet opened mid-tour ends the tour; Escape then closes the sheet alone.
+  const notice = (): Promise<string> => page.evaluate('window.__palimpsest.notice()') as Promise<string>;
+  await page.locator('#city canvas').focus();
+  // Two quick presses of T start one walk, not two.
+  await page.keyboard.press('t');
+  await page.keyboard.press('t');
+  await page.waitForFunction('window.__palimpsest.tour() !== null', null, { timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(600);
+  check((await page.locator('.ride.tour').count()) === 1, `two quick presses of T start one walk (${await page.locator('.ride.tour').count()} caption sets)`);
+  await page.evaluate(() => {
+    location.hash = '#/jobs';
+  });
+  check(await page.waitForFunction('window.__palimpsest.tour() === null', null, { timeout: 3000 }).then(() => true).catch(() => false), 'a sheet opened mid-tour ends the tour');
+  await page.waitForSelector('.sheet.jobs, .sheet .sec-bidding', { state: 'attached', timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(600);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(800);
+  check((await page.evaluate(() => document.body.dataset.route)) === 'city' && (await tourOf()) === null, 'Escape on the sheet closes the sheet, the tour already over');
+  // Walking the week again while a walk is under way starts it afresh, never saying there is nothing to walk.
+  await page.locator('#city canvas').focus();
+  await page.keyboard.press('t');
+  await page.waitForFunction('window.__palimpsest.tour() !== null', null, { timeout: 8000 }).catch(() => {});
+  await page.evaluate('window.__palimpsest.tourSeek(30)');
+  const again = (await page.evaluate('window.__palimpsest.tourStart()')) as boolean;
+  await page.waitForTimeout(400);
+  const restarted = await tourOf();
+  check(again && !!restarted && restarted.t < 10 && !/Not enough happened/.test(await notice()), `walking the week during a walk starts it afresh (${again}, t ${restarted?.t.toFixed(1) ?? 'none'})`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(2600);
+
   // Reduced motion: the walk cuts, so the eye stands still through what would be a glide.
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.evaluate('window.__palimpsest.tourStart()');

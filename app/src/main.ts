@@ -636,6 +636,8 @@ async function main(): Promise<void> {
    * roof or at the live work; the city draws the car and holds the camera.
    */
   function rideUp(key: string): boolean {
+    // The ride takes the camera: a tour under way ends first.
+    tourWalk?.stop();
     const agentId = key.startsWith('agent:') ? key.slice(6) : null;
     const spec = agentId ? servedQuarters.flatMap((q) => q.towers).find((t) => t.agentId === agentId && !t.dark) : byRepo(key)?.tower;
     if (!spec) {
@@ -1123,6 +1125,8 @@ async function main(): Promise<void> {
     // F follows the selected agent's figure (Task 34); Escape in the city lets go of it.
     if ((e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city' && selectedAgent) {
       e.preventDefault();
+      // Following takes the camera: a tour under way ends first.
+      tourWalk?.stop();
       followAgent(selectedAgent);
     }
     if (e.key === 'Escape' && !e.defaultPrevented && document.body.dataset.route === 'city' && city.following()) city.followAgent(null);
@@ -1203,8 +1207,18 @@ async function main(): Promise<void> {
    * true once it walks; a week with fewer than two stops says so and
    * resolves false.
    */
+  let tourStarting = false;
   const startTour = async (week: string): Promise<boolean> => {
-    if (ride || tourWalk) return false;
+    // A second press while the first is still reading the week starts nothing more: one walk at a time.
+    if (tourStarting) return true;
+    tourStarting = true;
+    try {
+      return await beginTour(week);
+    } finally {
+      tourStarting = false;
+    }
+  };
+  const beginTour = async (week: string): Promise<boolean> => {
     let tour: Tour | null;
     try {
       tour = await api.tour(week);
@@ -1212,6 +1226,9 @@ async function main(): Promise<void> {
       notice.add("The engine did not answer with the week's tour.", { key: 'tour' });
       return false;
     }
+    // A walk (or a ride) under way gives way to the new one: walking the week again starts it afresh.
+    tourWalk?.stop();
+    ride?.stop();
     const ex = city.exchange();
     const exFrame: TourFrame = { center: ex ? ex.object.getWorldPosition(new THREE.Vector3()).setY(14) : new THREE.Vector3(0, 14, 0), width: 90, height: 28 };
     const towers: TourFrame[] = [
@@ -1278,8 +1295,9 @@ async function main(): Promise<void> {
     runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route === 'repo' || route === 'audit' ? 'repos' : route);
     if (route !== 'city') {
       inspector.close();
-      // A sheet opened over the city ends a ride under way.
+      // A sheet opened over the city ends a ride or a tour under way.
       ride?.stop();
+      tourWalk?.stop();
     }
     if (route === 'repos') repos.show();
     else repos.hide();
