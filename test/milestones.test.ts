@@ -14,7 +14,7 @@ import { query, record } from '../engine/ledger.js';
 import { agentTowerId } from '../engine/market/firms.js';
 import { backfillMilestones, installMilestones, listMilestones, milestonesOf, weekTour } from '../engine/market/milestones.js';
 import { layEarnedFloor, updateEarnedFloor } from '../engine/repos.js';
-import { LIGHTS_DAYS, RIBBON_DAYS } from '../shared/market-rules.js';
+import { LIGHTS_DAYS, QUIET_DAYS, RIBBON_DAYS } from '../shared/market-rules.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Floor, FloorSize, Job, Milestone, Repo, TowerSpec } from '../shared/types.js';
 import { addAgent, addFirm, checks, setUp, tearDown } from './guild-fixtures.js';
@@ -398,4 +398,49 @@ test('the week tour reads the week from the ledger and the standing towers from 
   assert.deepEqual(weekTour('2026-11-09'), t);
   // A week with nothing is no tour.
   assert.equal(weekTour(NOW - 14 * DAY), null);
+});
+
+test('an older PR merging while a newer one still waits does not mask a revival', () => {
+  firmWithAgent('quickset', 'ola', 100);
+  addAgent('rin', 'quickset', 'claude:sonnet', { towerIndex: 1 });
+  addTower('acme/quiet', ['small'], NOW - 100 * DAY, 0);
+  layJob('acme/quiet', 'j1', 'ola', 'quickset', 'small', 'waiting', NOW - 2 * DAY);
+  layJob('acme/quiet', 'j2', 'rin', 'quickset', 'small', 'waiting', NOW - DAY);
+  light('acme/quiet', 'j1', 'ola', NOW);
+  const r = stored('revival:acme/quiet#job-j1');
+  assert.ok(r, 'the waiting floor j2 is not a floor the repo had');
+  assert.match(r.detail, /100 days/);
+  // j2 merging a day later is no second revival: j1 stands lit before it.
+  light('acme/quiet', 'j2', 'rin', NOW + DAY);
+  assert.equal(stored('revival:acme/quiet#job-j2'), null);
+});
+
+test('a skyline tie leaves the holder unchanged', () => {
+  // Pin: equal earned heights never move the spire.
+  firmWithAgent('quickset', 'ola', 100);
+  addAgent('rin', 'quickset', 'claude:sonnet', { towerIndex: 1 });
+  addTower('acme/a', ['small'], NOW - 30 * DAY, 0);
+  addTower('acme/b', ['large', 'large'], NOW - 30 * DAY, 1);
+  layJob('acme/a', 'j1', 'ola', 'quickset', 'medium', 'waiting', NOW - 2 * DAY);
+  light('acme/a', 'j1', 'ola', NOW - DAY);
+  assert.equal(stored('skyline:acme/a#founding')?.lit, true);
+  const before = reached().filter((m) => m.kind === 'skyline').length;
+  layJob('acme/b', 'j2', 'rin', 'quickset', 'medium', 'waiting', NOW - DAY);
+  light('acme/b', 'j2', 'rin', NOW);
+  assert.equal(stored('skyline:acme/a#founding')?.lit, true, 'the holder keeps a tie');
+  assert.equal(stored('skyline:acme/b#founding'), null, 'a level tower gets no spire row');
+  assert.equal(reached().filter((m) => m.kind === 'skyline').length, before, 'nothing is written on a tie');
+});
+
+test('a revival reaches exactly on the 90-day boundary and not an hour short of it', () => {
+  // Pin: QUIET_DAYS is inclusive.
+  firmWithAgent('quickset', 'ola', 100);
+  addTower('acme/edge', ['small'], NOW - QUIET_DAYS * DAY, 0);
+  addTower('acme/short', ['small'], NOW - QUIET_DAYS * DAY + 3_600_000, 1);
+  layJob('acme/edge', 'j1', 'ola', 'quickset', 'small', 'waiting', NOW - DAY);
+  light('acme/edge', 'j1', 'ola', NOW);
+  assert.ok(stored('revival:acme/edge#job-j1'), 'ninety days exactly is quiet');
+  layJob('acme/short', 'j2', 'ola', 'quickset', 'small', 'waiting', NOW - DAY);
+  light('acme/short', 'j2', 'ola', NOW);
+  assert.equal(stored('revival:acme/short#job-j2'), null, 'an hour short of ninety days is not');
 });

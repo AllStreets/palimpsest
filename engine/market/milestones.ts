@@ -200,11 +200,16 @@ function settleSkylines(now: number, cause?: { towerId: string; floorId: string 
 
 // ---------------------------------------------------------------- revival and ribbon
 
-/** The newest time of any other floor on the tower before `floor`, in ms, or null when it is the first. */
+/**
+ * The newest time of any other floor the tower had before `floor`, in ms,
+ * or null when it is the first. A waiting floor is a PR not yet merged, not
+ * a floor the repo had, so an older PR merging while newer ones still wait
+ * is still the first floor after a quiet spell.
+ */
 function previousFloorAt(t: TowerSpec, floor: Floor): number | null {
   let prev: number | null = null;
   for (const f of t.floors) {
-    if (f.id === floor.id || f.at >= floor.at) continue;
+    if (f.id === floor.id || f.at >= floor.at || f.earned?.state === 'waiting') continue;
     const ms = Date.parse(f.at);
     if (Number.isFinite(ms) && (prev === null || ms > prev)) prev = ms;
   }
@@ -251,6 +256,7 @@ function reachRibbon(towerId: string, floor: Floor, n: Names, o: { until?: strin
   if (loadRow(ribbonId(e.firmId, e.jobId))) return;
   const rows = allRows();
   if (rows.some((m) => m.kind === 'ribbon' && m.firmId === e.firmId)) return;
+  // A scar is a failed inspection, never a PR, so it does not make a firm's first PR its second.
   const earlier = districtEarned().some(({ floor: f }) => f.earned && f.earned.firmId === e.firmId && f.earned.jobId !== e.jobId && f.earned.state !== 'scar' && f.at < floor.at);
   if (earlier) return;
   const firm = n.firm(e.firmId);
@@ -316,7 +322,7 @@ function handle(e: Event, now: number): void {
       return;
     case 'job.changed': {
       const j = d.job as Job | undefined;
-      if (j?.status === 'closed' && j.id) endRibbons((m) => m.id.endsWith(`:${j.id}`), iso(now));
+      if (j?.status === 'closed' && j.id) endRibbons((m) => m.firmId !== null && m.id === ribbonId(m.firmId, j.id), iso(now));
       return;
     }
     case 'firm.bankrupt': {
