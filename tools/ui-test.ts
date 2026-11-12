@@ -486,7 +486,7 @@ async function spireChecks(page: Page): Promise<void> {
   const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
   const own = Object.values(b.milestones ?? {}).reduce((acc, t) => ({ calls: acc.calls + t.calls, triangles: acc.triangles + t.triangles }), { calls: 0, triangles: 0 });
   console.log(`info  the skyline from home: ${own.calls} draw calls, ${(own.triangles / 1000).toFixed(1)}k triangles; the city ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles`);
-  check(own.calls > 0 && own.calls <= 32, `the spires, the finial and any revival draw in at most 32 calls from home, every pass counted (${own.calls})`);
+  check(own.calls > 0 && own.calls <= 36, `the milestones (spires, finial, revival, ribbons) draw in at most 36 calls from home, every pass counted (${own.calls})`);
   check(budget.triangles <= HOME_TRIANGLES && budget.calls < HOME_CALLS, `the city from home stays within ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M triangles with the spires (${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
@@ -533,7 +533,51 @@ async function revivalChecks(page: Page): Promise<void> {
   const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
   const own = Object.values(b.milestones ?? {}).reduce((acc, t) => acc + t.calls, 0);
   console.log(`info  the milestones from home with the revival: ${own} calls; the city ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles`);
-  check(own <= 32 && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `the spires and the revival draw in at most 32 calls and the city keeps its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+  check(own <= 36 && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `the milestones draw in at most 36 calls and the city keeps its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+}
+
+/**
+ * The ribbon on a new firm's first PR floor (Phase 3 Task 16): every ribbon
+ * the engine holds active is tied round its floor just under the slab edge,
+ * and the inspector's row names the firm. Shots: ribbon.png close at dusk,
+ * ribbon-crop.png, ribbon-home.png. Runs with the economy seeded.
+ */
+async function ribbonChecks(page: Page): Promise<void> {
+  type M = { id: string; kind: string; towerId: string; floorId: string | null; firmId: string | null; title: string };
+  const active = (await page.evaluate(() => fetch('/api/milestones?active=1').then((r) => r.json()))) as M[];
+  const ribbons = active.filter((m) => m.kind === 'ribbon');
+  check(ribbons.length > 0, `the economy flies a ribbon (${ribbons.map((m) => `${m.firmId} on ${m.towerId}`).join(', ') || 'none'})`);
+  await page.waitForFunction(`window.__palimpsest.milestones().some((m) => m.kind === 'ribbon')`, null, { timeout: 10_000 }).catch(() => {});
+  const shows = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
+  const ds = await cityOf(page);
+  for (const r of ribbons) {
+    const show = shows.find((m) => m.id === r.id);
+    const d = ds.find((x) => x.tower.id === r.towerId);
+    const f = d ? layoutTower(d.tower).floors.find((x) => x.floor.id === r.floorId) : undefined;
+    check(!!show && !!f && show.y > f.y0 && show.y < f.y0 + f.h, `${r.title.replace(/^The /, '')}: its floor on ${d?.repo ?? r.towerId} carries the ribbon (${show?.y.toFixed(1) ?? 'none'} in ${f ? `${f.y0.toFixed(1)} to ${(f.y0 + f.h).toFixed(1)}` : '?'} m)`);
+  }
+  const r = ribbons[0];
+  const d = r ? ds.find((x) => x.tower.id === r.towerId) : undefined;
+  const show = r ? shows.find((m) => m.id === r.id) : undefined;
+  if (!r || !d || !show) return;
+  // The inspector's row for the floor says whose first PR it is.
+  await page.evaluate((repo) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(repo), d.repo);
+  await page.waitForSelector('.inspector.open', { timeout: 5000 }).catch(() => {});
+  const mark = await page.locator(`.insp-floor[data-floor="${encodeURIComponent(r.floorId ?? '')}"] .insp-mark`).textContent({ timeout: 3000 }).catch(() => null);
+  check(mark === r.title.replace(/^The /, ''), `the inspector's row reads "${mark}"`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  // Close, from the street corner the bow faces, a little below the band.
+  await setView(page, [d.origin.x + 30, show.y - 3, d.origin.z + 34], [d.origin.x + 4, show.y - 0.5, d.origin.z + 4]);
+  await debug(page, (x) => x.precompile());
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: join(SHOTS, 'ribbon.png') });
+  await page.screenshot({ path: join(SHOTS, 'ribbon-crop.png'), clip: { x: VIEWPORT.width / 2 - 300, y: VIEWPORT.height / 2 - 260, width: 600, height: 520 } });
+  const budget = await homeBudget(page);
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: join(SHOTS, 'ribbon-home.png') });
+  console.log(`info  the city from home with the ribbons: ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles`);
+  check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `the city keeps its budget from home with the ribbons (${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
 type Tally = { calls: number; triangles: number };
@@ -583,7 +627,7 @@ async function spireAfterDropChecks(page: Page, before: SpireShow[]): Promise<vo
   const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
   const own = Object.values(b.milestones ?? {}).reduce((acc, t) => acc + t.calls, 0);
   console.log(`info  at medium from home: ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles, the skyline ${own} calls`);
-  check(own > 0 && own <= 32 && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `at medium the spires and the revival draw in at most 32 calls and the city stays within its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+  check(own > 0 && own <= 36 && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `at medium the milestones draw in at most 36 calls and the city stays within its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
 // ---------------------------------------------------------------- silhouettes (Task 23)
@@ -2570,7 +2614,7 @@ async function main(): Promise<void> {
     // name what it saw. A quick run for the notice rounds; the full run takes the same checks in their places.
     const forceDrop = process.env.UI_FORCE_DROP === '1';
     // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
-    const spireOnly = process.env.UI_ONLY === 'spire' || process.env.UI_ONLY === 'revival' || process.env.UI_ONLY === 'budget';
+    const spireOnly = ['spire', 'revival', 'ribbon', 'budget'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -2582,6 +2626,7 @@ async function main(): Promise<void> {
       } else {
         await spireChecks(page);
         await revivalChecks(page);
+        await ribbonChecks(page);
         const before = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(1500);
@@ -2665,6 +2710,7 @@ async function main(): Promise<void> {
         await earnedChecks(page);
         await spireChecks(page);
         await revivalChecks(page);
+        await ribbonChecks(page);
         await quarterChecks(page);
         await darkTowerChecks(page);
         await exchangeChecks(page);

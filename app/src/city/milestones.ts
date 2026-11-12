@@ -30,6 +30,7 @@ import type { Milestone, MilestoneKind, Quarter, TowerSpec } from '../../../shar
 import { LAYER, setLayers } from './lod.js';
 import { hash01 } from './construction.js';
 import { makeLitScaffold, type LitScaffold } from './scaffold-kit.js';
+import { RIBBON, ribbonGeometry, ribbonMaterial, type RibbonSpec } from './ribbon.js';
 import { makeSpire } from './tower/crowns.js';
 import { Kit, lathe, M, type MatKey, type TowerMaterials } from './tower/kit.js';
 
@@ -169,7 +170,7 @@ export interface Milestones {
    * shows nothing. Returns when the next one still standing ends (ms since
    * the epoch), or null: the caller sets them again then, so it goes dark.
    */
-  set(ms: ReadonlyArray<Milestone>, towers: (towerId: string) => TowerPiece | null, now?: number): number | null;
+  set(ms: ReadonlyArray<Milestone>, towers: (towerId: string) => TowerPiece | null, now?: number, o?: { fallen?: ReadonlySet<string> }): number | null;
   update(dt: number, clock: number): void;
   shows(): Map<string, MilestoneShow>;
   dispose(): void;
@@ -329,6 +330,8 @@ const shortDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numer
 export function milestoneNote(m: Milestone, now: number = Date.now()): string {
   const what = m.title.replace(/^The /, 'the ');
   if (m.kind === 'skyline' && !m.lit) return `held ${what}`;
+  // A ribbon names its firm, and needs no date: "first PR of Quickset".
+  if (m.kind === 'ribbon') return m.title.replace(/^The /, '');
   const at = Date.parse(m.at);
   const day = (t: number): number => {
     const d = new Date(t);
@@ -384,7 +387,7 @@ class Draw {
   }
 }
 
-export function createMilestones(opts: { quality: 'high' | 'medium'; materials: TowerMaterials }): Milestones {
+export function createMilestones(opts: { quality: 'high' | 'medium'; materials: TowerMaterials; firmColour?: (firmId: string) => THREE.Color }): Milestones {
   const group = new THREE.Group();
   group.name = 'milestones';
   const [lr, lg, lb] = SPIRE.lamp;
@@ -432,8 +435,17 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
     return m;
   }
   let bulbs = 0;
+  let bulbHash = new Float32Array(0);
 
   let shows = new Map<string, MilestoneShow>();
+  const ribbonMat = ribbonMaterial();
+  const ribbonMesh = new THREE.Mesh(new THREE.BufferGeometry(), ribbonMat);
+  ribbonMesh.name = 'milestone:ribbon';
+  ribbonMesh.castShadow = true;
+  ribbonMesh.receiveShadow = true;
+  ribbonMesh.visible = false;
+  group.add(ribbonMesh);
+  let lastRibbons = '';
   let lastClock = 0;
   /** Each bulb's level now: its own, wavering a little on two slow beats; a dead one barely glows. */
   function flicker(clock: number): void {
@@ -441,8 +453,8 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
     if (!bulbs) return;
     const c = festoon.instanceColor!;
     for (let i = 0; i < bulbs; i++) {
-      const h = hash01(i * 7 + 1);
-      const h2 = hash01(i * 13 + 5);
+      const h = bulbHash[i * 2];
+      const h2 = bulbHash[i * 2 + 1];
       const k = h2 < FESTOON.dead ? 0.08 : 0.72 + 0.2 * h + 0.05 * Math.sin(clock * (1.3 + 2.1 * h) + h2 * 40) + 0.03 * Math.sin(clock * (7 + 5 * h2) + h * 17);
       c.setXYZ(i, k, k, k);
     }
@@ -453,11 +465,21 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
     group,
     lamp,
     point: pointMat,
-    set(ms, towers, now = Date.now()) {
+    set(ms, towers, now = Date.now(), o = {}) {
       const byTower = new Map<string, { sky?: Milestone; founding?: Milestone }>();
       let next: number | null = null;
       const revived: Milestone[] = [];
+      const ribbons: Milestone[] = [];
       for (const r of ms) {
+        if (r.kind === 'ribbon') {
+          // A bankrupt firm's ribbon comes down the frame its towers darken, before the engine's patch arrives.
+          if (r.firmId && o.fallen?.has(r.firmId)) continue;
+          const until = r.until === null ? null : Date.parse(r.until);
+          if (until !== null && until <= now) continue;
+          if (until !== null && (next === null || until < next)) next = until;
+          ribbons.push(r);
+          continue;
+        }
         if (r.kind !== 'skyline' && r.kind !== 'founding-skyline' && r.kind !== 'revival') continue;
         const until = r.until === null ? null : Date.parse(r.until);
         if (until !== null && until <= now) continue;
@@ -571,13 +593,43 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
       festoon.instanceMatrix.needsUpdate = true;
       if (lampsAt.length) festoon.computeBoundingSphere();
       bulbs = lampsAt.length;
+      // Each bulb's two hashes, worked out once here rather than every frame.
+      if (bulbHash.length < bulbs * 2) bulbHash = new Float32Array(bulbs * 4);
+      for (let i = 0; i < bulbs; i++) {
+        bulbHash[i * 2] = hash01(i * 7 + 1);
+        bulbHash[i * 2 + 1] = hash01(i * 13 + 5);
+      }
       flicker(lastClock);
+
+      // The ribbons: one geometry for all of them, sewn again only when what they wrap changes.
+      const specs: RibbonSpec[] = [];
+      for (const r of ribbons) {
+        const piece = r.floorId ? towers(r.towerId) : null;
+        const f = piece && r.floorId ? piece.floor(r.floorId) : null;
+        if (!piece || !f) continue;
+        piece.group.updateWorldMatrix(true, false);
+        const centre = piece.group.localToWorld(new THREE.Vector3(f.cx, 0, f.cz));
+        const turn = new THREE.Euler().setFromRotationMatrix(new THREE.Matrix4().extractRotation(piece.group.matrixWorld), 'YXZ').y + f.ry;
+        // Across the floor's face a little above its middle, clear of the slab edge and its line, so it reads as cloth, not trim.
+        const y = piece.group.localToWorld(new THREE.Vector3(0, f.y0 + f.h * 0.62, 0)).y;
+        const colour = r.firmId ? (opts.firmColour?.(r.firmId) ?? new THREE.Color(0.55, 0.1, 0.12)) : new THREE.Color(0.55, 0.1, 0.12);
+        specs.push({ centre, ry: turn, half: f.half, y, colour });
+        nextShows.set(r.id, { kind: 'ribbon', towerId: r.towerId, lit: false, y, height: RIBBON.band, tip: [centre.x, y, centre.z] });
+      }
+      const ribbonKey = JSON.stringify(specs.map((x) => [x.centre.toArray().map((v) => v.toFixed(3)), x.ry.toFixed(4), x.half.toFixed(3), x.y.toFixed(3), x.colour.getHexString()]));
+      if (ribbonKey !== lastRibbons) {
+        lastRibbons = ribbonKey;
+        ribbonMesh.geometry.dispose();
+        ribbonMesh.geometry = ribbonGeometry(specs);
+      }
+      ribbonMesh.visible = specs.length > 0;
 
       shows = nextShows;
       return next;
     },
     update(_dt, clock) {
       flicker(clock);
+      ribbonMat.userData.time.value = clock;
       const t = 0.5 - 0.5 * Math.cos((clock / SPIRE.period) * Math.PI * 2);
       const k = SPIRE.breath[0] + (SPIRE.breath[1] - SPIRE.breath[0]) * t;
       lamp.color.setRGB(lr * k, lg * k, lb * k);
@@ -587,6 +639,8 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
     },
     shows: () => new Map(shows),
     dispose() {
+      ribbonMesh.geometry.dispose();
+      ribbonMat.dispose();
       for (const e of revivals.values()) e.s.dispose();
       revivals.clear();
       festoon.dispose();

@@ -329,6 +329,8 @@ async function main(): Promise<void> {
     makeExchange: (q) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')) }),
     // The skyline's mast and finial in the city's galvanised steel and polished bronze.
     milestoneMaterials: towerMaterials(lookFor('civic:exchange')),
+    // A firm's ribbon in its own mark colour, as its floors' marks are.
+    firmColour: (firmId) => firmMarkColor(firmId, firmSlots),
     describeTrip: (trip, agent) => describeTrip(trip, agent),
     // A persona's coat: its firm's mark colour, as wool rather than painted metal.
     coatOf: (agent) => {

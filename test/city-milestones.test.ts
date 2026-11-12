@@ -13,8 +13,10 @@ import * as THREE from 'three';
 import { createMilestones, findTowerPiece, milestoneNote, SPIRE, spireHeight, type TowerPiece } from '../app/src/city/milestones.js';
 import { quarterCenterpiece, quarterLooks } from '../app/src/city/quarters.js';
 import { buildTower } from '../app/src/city/tower/build.js';
+import { firmMarkColor } from '../app/src/city/tower/eras.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
 import { lookFor } from '../app/src/city/tower/variants.js';
+import { makeLitScaffold } from '../app/src/city/scaffold-kit.js';
 import { crownFor } from '../shared/silhouette.js';
 import { BLOOM_THRESHOLD, EXPOSURE } from '../app/src/city/post.js';
 import { layoutTower } from '../shared/tower-layout.js';
@@ -312,6 +314,127 @@ test('lights come down at until, and with the tower', () => {
   s.dispose();
 });
 
+test('a revival below the top stops at its slab, and one on the first floor stands alone', () => {
+  const s = scene();
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials() });
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const now = Date.parse('2026-11-12T12:00:00Z');
+  const lay = layoutTower(s.district);
+  // Floor 7 of 9: a floor above it, so no working deck rises into it.
+  const mid = lay.floors[6];
+  const r = revival(s.district.id, mid.floor.id, '2026-11-17T09:00:00Z');
+  ms.set([r], towers, now);
+  const show = ms.shows().get(r.id)!;
+  assert.ok(Math.abs(show.y - lay.floors[5].y0) < 1e-6, 'from the floor below');
+  assert.ok(show.y + show.height <= mid.y0 + mid.h + 2 + 1e-6, `no deck over a floor with floors above (${(show.y + show.height).toFixed(2)} against ${(mid.y0 + mid.h).toFixed(2)})`);
+  // The first floor: nothing below it, one stage, one festoon.
+  const first = revival(s.district.id, lay.floors[0].floor.id, '2026-11-17T09:00:00Z');
+  ms.set([first], towers, now);
+  const f = ms.shows().get(first.id)!;
+  assert.ok(Math.abs(f.y - lay.floors[0].y0) < 1e-6, 'the first floor stands its scaffold on its own slab');
+  assert.equal(drawn(ms.group).filter((p) => /festoon/.test(p.name))[0].count, 16, 'one festoon');
+  ms.dispose();
+  s.dispose();
+});
+
+test('a revival keeps its scaffold while it stands still, and disposes it when it moves', () => {
+  const s = scene();
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials() });
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const now = Date.parse('2026-11-12T12:00:00Z');
+  const lay = layoutTower(s.district);
+  const r = revival(s.district.id, lay.floors[8].floor.id, '2026-11-17T09:00:00Z');
+  ms.set([r], towers, now);
+  const first = ms.group.getObjectByName(`revival:${r.id}`)!;
+  ms.set([r], towers, now);
+  assert.equal(ms.group.getObjectByName(`revival:${r.id}`), first, 'the same scaffold, not rebuilt');
+  let disposed = 0;
+  first.traverse((o) => (o as THREE.Mesh).geometry?.addEventListener('dispose', () => disposed++));
+  s.districts[0].object.position.x += 40;
+  s.root.updateMatrixWorld(true);
+  ms.set([r], towers, now);
+  const moved = ms.group.getObjectByName(`revival:${r.id}`)!;
+  assert.notEqual(moved, first, 'rebuilt where the tower now stands');
+  assert.ok(disposed > 0, 'the old scaffold disposed');
+  assert.equal(first.parent, null, 'and taken out of the city');
+  ms.dispose();
+  s.dispose();
+});
+
+test("a lower stage's festoon hangs within its own floor", () => {
+  const stages = [
+    { halfX: 8, halfZ: 8, y0: 0, y1: 4.6 },
+    { halfX: 7, halfZ: 7, y0: 4.6, y1: 9.2 },
+  ];
+  const lit = makeLitScaffold(stages, false);
+  const lower = lit.lamps.slice(0, 16);
+  assert.ok(lower.every((p) => p.y <= stages[0].y1), `the lower festoon stays under the floor above (${Math.max(...lower.map((p) => p.y)).toFixed(2)} against ${stages[0].y1})`);
+  lit.dispose();
+});
+
+function ribbon(towerId: string, floorId: string, firmId = 'f1', until: string | null = null): Milestone {
+  return { id: `ribbon:${firmId}:job-8`, kind: 'ribbon', towerId, repo: 'acme/widgets', firmId, agentId: 'a1', floorId, at: '2026-11-10T09:00:00Z', until, lit: true, title: 'The first PR of Quickset', detail: '' };
+}
+
+test("a ribbon wraps the floor's slab at its height, in the firm's colour, tied in a bow", () => {
+  const s = scene();
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials(), firmColour: (id) => firmMarkColor(id) });
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const lay = layoutTower(s.district);
+  const fl = lay.floors[7];
+  const r = ribbon(s.district.id, fl.floor.id);
+  ms.set([r], towers, Date.parse('2026-11-12T12:00:00Z'));
+  const show = ms.shows().get(r.id);
+  assert.ok(show && show.kind === 'ribbon', 'the ribbon shows');
+  assert.ok(show.y > fl.y0 && show.y < fl.y0 + fl.h, `at the floor's height (${show.y.toFixed(2)} in ${fl.y0.toFixed(2)} to ${(fl.y0 + fl.h).toFixed(2)})`);
+  const mesh = ms.group.getObjectByName('milestone:ribbon') as THREE.Mesh;
+  assert.ok(mesh?.visible, 'one ribbon draw');
+  const box = new THREE.Box3().setFromObject(mesh, true);
+  const piece = towers(s.district.id)!;
+  const f = piece.floor(fl.floor.id)!;
+  assert.ok(box.max.x - box.min.x > f.half * 2 && box.max.x - box.min.x < f.half * 2 + 3, `round the floor, just proud of its face (${(box.max.x - box.min.x).toFixed(2)} against ${(f.half * 2).toFixed(2)})`);
+  assert.ok(Math.abs((box.min.x + box.max.x) / 2 - 300) < 2 && Math.abs((box.min.z + box.max.z) / 2 + 120) < 2, 'centred on the tower');
+  assert.ok(box.min.y < show.y - 0.8, `the bow's tails hang below the band (${box.min.y.toFixed(2)} against ${show.y.toFixed(2)})`);
+  // The firm's colour, as cloth: a satin sheen, no glow.
+  const col = mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
+  const want = firmMarkColor('f1');
+  assert.ok(Math.abs(col.getX(0) - want.r) < 1e-3 && Math.abs(col.getY(0) - want.g) < 1e-3 && Math.abs(col.getZ(0) - want.b) < 1e-3, "in the firm's mark colour");
+  const mat = mesh.material as THREE.MeshPhysicalMaterial;
+  assert.ok(mat.isMeshPhysicalMaterial && mat.sheen > 0, 'satin, with a sheen');
+  assert.equal(mat.emissive.getHex(), 0, 'and no glow');
+  // It sways: pinned at the corners, free between them and at the tails.
+  const sway = mesh.geometry.getAttribute('sway') as THREE.BufferAttribute;
+  let lo = Infinity;
+  let hi = 0;
+  for (let i = 0; i < sway.count; i++) {
+    lo = Math.min(lo, sway.getX(i));
+    hi = Math.max(hi, sway.getX(i));
+  }
+  assert.ok(lo === 0 && hi > 0.5, `pinned and free (${lo} to ${hi})`);
+  ms.dispose();
+  s.dispose();
+});
+
+test("a bankrupt firm's ribbon leaves the same frame the tower darkens, and at its end", () => {
+  const s = scene();
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials(), firmColour: (id) => firmMarkColor(id) });
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const lay = layoutTower(s.district);
+  const r = ribbon(s.district.id, lay.floors[7].floor.id, 'f1', '2026-11-20T09:00:00Z');
+  const now = Date.parse('2026-11-12T12:00:00Z');
+  ms.set([r], towers, now);
+  assert.ok(ms.shows().has(r.id));
+  ms.set([r], towers, now, { fallen: new Set(['f1']) });
+  assert.equal(ms.shows().has(r.id), false, 'down with the firm, before the engine says so');
+  assert.equal((ms.group.getObjectByName('milestone:ribbon') as THREE.Mesh).visible, false);
+  ms.set([r], towers, now);
+  assert.ok(ms.shows().has(r.id));
+  ms.set([r], towers, Date.parse(r.until!));
+  assert.equal(ms.shows().has(r.id), false, 'down at its end');
+  ms.dispose();
+  s.dispose();
+});
+
 test("a floor's milestone reads in quiet words", () => {
   const now = Date.parse('2026-11-12T15:00:00Z');
   const sky = { ...row('skyline', 'x#founding', true), at: '2026-11-10T09:00:00Z' };
@@ -319,4 +442,5 @@ test("a floor's milestone reads in quiet words", () => {
   assert.equal(milestoneNote({ ...sky, lit: false }, now), 'held the skyline');
   assert.equal(milestoneNote({ ...sky, at: '2026-10-01T09:00:00Z' }, now), 'the skyline, since Oct 1');
   assert.equal(milestoneNote({ ...sky, at: '2026-11-12T09:00:00Z' }, now), 'the skyline, since today');
+  assert.equal(milestoneNote(ribbon('x#founding', 'x#f1'), now), 'first PR of Quickset');
 });

@@ -95,6 +95,17 @@ export interface RecladScaffold {
   dispose(): void;
 }
 
+/**
+ * How many lifts a stage stands: the top stage rounds up (and stands a lift
+ * and a half over the roof as a working deck, when `deck`); a lower stage
+ * rounds down, so its top lift never rises into the stage above it.
+ */
+function liftsOf(stages: ReadonlyArray<ScaffoldStage>, stage: number, deck: boolean): number {
+  const { y0, y1 } = stages[stage];
+  if (stage < stages.length - 1) return Math.max(1, Math.floor((y1 - y0) / LIFT));
+  return Math.max(1, Math.ceil((y1 - y0 + (deck ? 1.5 : 0)) / LIFT));
+}
+
 export function makeRecladScaffold(stages: ScaffoldStage[], extraTubes: ReadonlyArray<{ m: THREE.Matrix4; y: number }> = [], deck = true): RecladScaffold {
   const m = scaffoldMaterials();
   const geo = new THREE.BoxGeometry(1, 1, 1);
@@ -106,7 +117,7 @@ export function makeRecladScaffold(stages: ScaffoldStage[], extraTubes: Readonly
 
   stages.forEach(({ halfX, halfZ, y0: base, y1 }, stage) => {
     // The last stage stands a lift and a half over the roof, as a working deck does.
-    const lifts = Math.max(1, Math.ceil((y1 - base + (deck && stage === stages.length - 1 ? 1.5 : 0)) / LIFT));
+    const lifts = liftsOf(stages, stage, deck);
     top = Math.max(top, base + lifts * LIFT);
     for (let side = 0; side < 4; side++) {
       const rot = new THREE.Matrix4().makeRotationY((side * Math.PI) / 2);
@@ -244,7 +255,7 @@ export function makeLitScaffold(stages: ScaffoldStage[], deck = true): LitScaffo
   const cable: Array<{ m: THREE.Matrix4; y: number }> = [];
   const perFace = FESTOON_LAMPS / 4;
   stages.forEach(({ halfX, halfZ, y0: base, y1 }, stage) => {
-    const lifts = Math.max(1, Math.ceil((y1 - base + (deck && stage === stages.length - 1 ? 1.5 : 0)) / LIFT));
+    const lifts = liftsOf(stages, stage, deck);
     const clip = base + lifts * LIFT - 0.18;
     for (let side = 0; side < 4; side++) {
       const rot = new THREE.Matrix4().makeRotationY((side * Math.PI) / 2);

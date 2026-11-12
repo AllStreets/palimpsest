@@ -83,6 +83,8 @@ export interface CityOptions {
   coatOf?: (agent: Agent) => [number, number, number];
   /** The steel and bronze the skyline's mast and finial are built in (milestones.ts); without them no milestone shows. */
   milestoneMaterials?: TowerMaterials;
+  /** A firm's mark colour (eras.ts firmMarkColor with the city's slots): its ribbon's satin. */
+  firmColour?: (firmId: string) => THREE.Color;
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
@@ -470,7 +472,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   // ---------------------------------------------------------------- milestones: the spire and the finial (milestones.ts)
   let milestoneRows: ReadonlyArray<Milestone> = [];
-  let milestones: Milestones | null = opts.milestoneMaterials ? createMilestones({ quality, materials: opts.milestoneMaterials }) : null;
+  let milestones: Milestones | null = opts.milestoneMaterials ? createMilestones({ quality, materials: opts.milestoneMaterials, firmColour: opts.firmColour }) : null;
+  /** Firms seen going bankrupt live: their ribbons come down the frame their towers start to darken. */
+  const fallen = new Set<string>();
   if (milestones) scene.add(milestones.group);
   function towerPiece(towerId: string): TowerPiece | null {
     return findTowerPiece(
@@ -483,7 +487,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let milestoneTimer: ReturnType<typeof setTimeout> | null = null;
   function placeMilestones(): void {
     if (!milestones) return;
-    const next = milestones.set(milestoneRows, towerPiece, Date.now());
+    const next = milestones.set(milestoneRows, towerPiece, Date.now(), { fallen });
     sun.shadow.needsUpdate = true;
     // A milestone with an end (a revival's lights, a ribbon) goes dark at it, with no event to say so: placed again then.
     if (milestoneTimer) clearTimeout(milestoneTimer);
@@ -1379,7 +1383,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     placeConstructions();
     if (milestones && opts.milestoneMaterials) {
       milestones.dispose();
-      milestones = createMilestones({ quality: 'medium', materials: opts.milestoneMaterials });
+      milestones = createMilestones({ quality: 'medium', materials: opts.milestoneMaterials, firmColour: opts.firmColour });
       scene.add(milestones.group);
       placeMilestones();
     }
@@ -1484,7 +1488,13 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     },
     exchange: () => exchange,
     setSites,
-    quarterEvent: (e) => life.event(e),
+    quarterEvent: (e) => {
+      life.event(e);
+      if (e.kind === 'bankrupt') {
+        fallen.add(e.firmId);
+        placeMilestones();
+      }
+    },
     quarterShows: () => life.shows(),
     site: siteView,
     showSites(on) {
