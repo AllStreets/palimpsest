@@ -449,6 +449,11 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     }
     case 'audit.stage': {
       // A stage moves one audit in flight; one naming a status outside AuditStatus is ignored whole.
+      // A waiting audit dropped from the queue (its repo was disconnected) leaves the state as it left the table.
+      if (d.dropped === true) {
+        delete s.audits[str(d.auditId) ?? ''];
+        return s;
+      }
       const a = s.audits[str(d.auditId) ?? ''];
       if (a && AUDIT_STATUSES.has(d.status as AuditStatus)) {
         a.status = d.status as AuditStatus;
@@ -456,6 +461,7 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
         if (str(d.model)) a.model = d.model as Audit['model'];
         if (str(d.baseSha)) a.baseSha = d.baseSha as string;
         if (typeof d.unattended === 'boolean') a.unattended = d.unattended;
+        if (str(d.startedAt)) a.startedAt = d.startedAt as string;
       }
       return s;
     }

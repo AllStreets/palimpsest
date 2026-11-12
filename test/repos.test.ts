@@ -1041,3 +1041,21 @@ test('patchRepo remembers which checks he set by hand, one by one', async () => 
   await again;
   assert.deepEqual(listRepos()[0].checks?.setByYou, ['build', 'preview', 'shots', 'test']);
 });
+
+test('turning the market on with no audit trigger registered warns once and still patches', async () => {
+  const { registerAuditTrigger } = await import('../engine/repos.js');
+  const warned: string[] = [];
+  const original = console.warn;
+  console.warn = (...a: unknown[]) => warned.push(a.map(String).join(' '));
+  try {
+    registerAuditTrigger(null);
+    const repo = { ...repoMarketDefaults(), fullName: 'acme/untriggered', private: false, defaultBranch: 'main', language: null, description: null, connected: true, pushMode: false, root: 'roman', slot: 0, status: 'ready', error: null, connectedAt: '2026-11-01T00:00:00.000Z', analyzedAt: '2026-11-01T00:00:00.000Z', joinedAt: '2026-11-01T00:00:00.000Z' } as Repo;
+    openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(repo.fullName, JSON.stringify(repo));
+    assert.equal(patchRepo(repo.fullName, { market: true }).market, true);
+    patchRepo(repo.fullName, { market: false });
+    patchRepo(repo.fullName, { market: true });
+    assert.equal(warned.filter((w) => /no audit trigger registered/.test(w)).length, 1);
+  } finally {
+    console.warn = original;
+  }
+});

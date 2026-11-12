@@ -457,15 +457,24 @@ function mergeDetected(stored: RepoChecks | null, detected: RepoChecks): RepoChe
 
 /** The audit runner (engine/audit/run.ts) registers its trigger here at load, so this module never imports the market graph. */
 let auditTrigger: ((repo: Repo) => void) | null = null;
+let warnedNoTrigger = false;
 
 export function registerAuditTrigger(fn: ((repo: Repo) => void) | null): void {
   auditTrigger = fn;
+  warnedNoTrigger = false;
 }
 
 /** The automatic README audit (Phase 3 ruling 6), never worth failing an analysis or a patch over. */
 function queueAutoAudit(repo: Repo): void {
   try {
-    auditTrigger?.(repo);
+    if (!auditTrigger) {
+      if (repo.market && !warnedNoTrigger) {
+        warnedNoTrigger = true;
+        console.warn(`palimpsest: no audit trigger registered, so ${repo.fullName} was not queued for its audit`);
+      }
+      return;
+    }
+    auditTrigger(repo);
   } catch (err) {
     console.warn(`palimpsest: queueing the audit of ${repo.fullName} failed: ${err instanceof Error ? err.message : String(err)}`);
   }

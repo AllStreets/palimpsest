@@ -693,6 +693,8 @@ test('scheduler.stop() kills a live audit, and the stop file in a tick does too'
   assert.equal(a.status, 'killed');
   assert.match(a.endedReason ?? '', /shutting down/);
   assert.equal(liveAuditIds().length, 0);
+  // After a shutdown nothing starts until the engine comes back (resetRuns stands in for the restart).
+  resetRuns();
 
   const held2 = heldAudit();
   useScript({ audit: held2.audit });
@@ -706,7 +708,8 @@ test('scheduler.stop() kills a live audit, and the stop file in a tick does too'
   assert.equal(storedAudit(held2.started[0].auditId)?.status, 'killed');
   // While the stop file stands no audit starts; cleared, the next tick starts the queue again.
   useScript({});
-  queueAudit(getRepo(FULL) as Repo, 'demand');
+  clock += MIN;
+  queueAudit(getRepo(FULL) as Repo, 'demand', clock);
   await s2.tick();
   await s2.idle();
   assert.equal(listAudits({ repo: FULL, status: ['waiting'] }).length, 1);
@@ -1037,4 +1040,80 @@ test('every reason the audit stores is redacted and the log keeps every line', a
   assert.ok(lines.some((l) => l.kind === 'assistant' && l.text.startsWith('reading ')));
   assert.ok(lines.some((l) => l.kind === 'engine' && /audit ended crashed/.test(l.text)));
   assert.ok(evOf('audit.log').length > 0);
+});
+
+// ---------------------------------------------------------------- fix round 1
+
+test('the scheduler arms its watcher for an audit alone: the stop file kills a held audit and the wall deadline caps a stuck one with nobody calling watch()', async () => {
+  const held = heldAudit();
+  useScript({ audit: held.audit });
+  makeRepo();
+  queueAudit(getRepo(FULL) as Repo, 'demand');
+  const s = createScheduler(deps({ watchMs: 50 }));
+  await s.tick();
+  await until(() => held.started.length === 1);
+  writeFileSync(paths().stop, 'stopped by the test\n');
+  await until(() => storedAudit(held.started[0].auditId)?.status === 'killed', 3000);
+  await s.idle();
+  assert.match(storedAudit(held.started[0].auditId)?.endedReason ?? '', /stop file/);
+  rmSync(paths().stop);
+
+  const stuck = heldAudit({ ignoreSignal: true });
+  useScript({ audit: stuck.audit });
+  queueAudit(getRepo(FULL) as Repo, 'demand');
+  const s2 = createScheduler(deps({ watchMs: 50, runWallMs: 200 }));
+  await s2.tick();
+  await until(() => stuck.started.length === 1);
+  clock += 201;
+  await until(() => storedAudit(stuck.started[0].auditId)?.status === 'capped', 3000);
+  await s2.idle();
+  assert.match(storedAudit(stuck.started[0].auditId)?.endedReason ?? '', /wall deadline/);
+  stuck.release(stuck.started[0].auditId);
+});
+
+test('a queued audit whose repo was disconnected is dropped from the queue, and a reconnect still gets its one automatic audit', async () => {
+  useScript({});
+  const repo = makeRepo();
+  const a = queueAudit(repo, 'connect');
+  openDb().prepare('UPDATE repos SET json = ? WHERE full_name = ?').run(JSON.stringify({ ...repo, connected: false }), FULL);
+  assert.equal(await start(), null);
+  assert.equal(storedAudit(a.id), null, 'the waiting row is gone, not failed');
+  assert.equal(latestAudit(FULL), null);
+  assert.ok(!entries().some((e) => e.kind === 'audit.ended'));
+  assert.deepEqual(verifyReplay().diffs, [], 'replay forgets the dropped audit too');
+  assert.equal(shouldAutoAudit({ ...repo, connected: true }, getSettings()), true);
+});
+
+test('the preparing stage carries the real start, so a waiting audit reads as started when it starts', async () => {
+  useScript({});
+  const repo = makeRepo();
+  const queued = queueAudit(repo, 'connect', clock);
+  assert.equal(queued.startedAt, new Date(clock).toISOString());
+  clock += 30 * MIN;
+  const ended = (await start()) as Audit;
+  assert.equal(ended.startedAt, new Date(clock).toISOString());
+  const preparing = entries().find((e) => e.kind === 'audit.stage' && (e.data as { status: string }).status === 'preparing')?.data as { startedAt?: string };
+  assert.equal(preparing.startedAt, ended.startedAt);
+  assert.deepEqual(verifyReplay().diffs, []);
+  // The page's date and the stored end are one timestamp.
+  const day = new Date(ended.endedAt as string);
+  assert.match(readFileSync(ended.markdownPath as string, 'utf8'), new RegExp(`Audited ${day.getDate()} November ${day.getFullYear()}`));
+});
+
+test('while the audits are being stopped no queued audit starts', async () => {
+  const held = heldAudit();
+  useScript({ audit: held.audit });
+  makeRepo();
+  makeRepo('acme/other');
+  queueAudit(getRepo(FULL) as Repo, 'demand');
+  queueAudit(getRepo('acme/other') as Repo, 'demand');
+  const first = start();
+  await until(() => held.started.length === 1);
+  // A tick that is already past its live check when the shutdown begins must not start the second audit.
+  const stopping = killLiveAudits('shutting down');
+  const second = start({ preflight: async () => { await stopping; return null; } });
+  await first;
+  assert.equal(await second, null);
+  assert.equal(held.started.length, 1);
+  assert.equal(storedAudit(listAudits({ repo: 'acme/other' })[0].id)?.status, 'waiting');
 });

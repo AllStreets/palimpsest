@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { AUDIT_CAPS, AUDIT_ESTIMATE, localSize } from '../../shared/market-rules.js';
 import type { Audit, AuditStatus, AuditTrigger, ModelRef, Repo, RunProgress, Settings } from '../../shared/types.js';
 import { emit } from '../events.js';
+import { openDb } from '../db.js';
 import { paths } from '../home.js';
 import { record } from '../ledger.js';
 import { getRepo, registerAuditTrigger, updateRepoMarket } from '../repos.js';
@@ -89,6 +90,8 @@ interface LiveAudit {
 const live = new Map<string, LiveAudit>();
 /** True between the pick of a waiting audit and its entry in `live`, so two ticks never start two. */
 let starting = false;
+/** Set while killLiveAudits waits for the live audits to settle (the shutdown), so no queued audit starts meanwhile. */
+let stopping = false;
 
 export interface StartOptions {
   now: () => number;
@@ -101,6 +104,8 @@ export interface StartOptions {
   installed?: string[];
   /** The whole wall time of an audit; past it the watcher ends it `capped`. Default the session cap plus RUN_EXTRA_MINUTES. */
   wallMs?: number;
+  /** Called when an audit becomes live and when it leaves (the scheduler arms its watcher on it). */
+  onLive?: () => void;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -203,7 +208,7 @@ function setWaiting(a: Audit, reason: string | null): Audit {
  * given the reason and left waiting; one with no model likewise.
  */
 export async function startQueuedAudit(o: StartOptions): Promise<Audit | null> {
-  if (starting || live.size > 0) return null;
+  if (starting || stopping || live.size > 0) return null;
   const waiting = listAudits({ status: ['waiting'] });
   const next = waiting[waiting.length - 1];
   if (!next) return null;
@@ -213,10 +218,12 @@ export async function startQueuedAudit(o: StartOptions): Promise<Audit | null> {
     const now = o.now();
     const repo = getRepo(next.repo);
     if (!repo || !repo.connected) {
-      endWaiting(next, 'failed', `${next.repo} is not connected.`, now);
+      // The repo left while the audit waited: the row goes, so a reconnect still gets its one automatic audit.
+      dropWaiting(next);
       return null;
     }
     const problem = await o.preflight();
+    if (stopping) return null;
     if (problem) {
       setWaiting(next, problem);
       return null;
@@ -231,6 +238,10 @@ export async function startQueuedAudit(o: StartOptions): Promise<Audit | null> {
       return null;
     }
     const got = await acquire(model, 'work', AUDIT_ESTIMATE, { now });
+    if (stopping) {
+      if (got.ok) got.lease.release();
+      return null;
+    }
     if (!got.ok) {
       setWaiting(next, got.reason.detail);
       return null;
@@ -238,6 +249,8 @@ export async function startQueuedAudit(o: StartOptions): Promise<Audit | null> {
     lease = got.lease;
     const st = begin(storedAudit(next.id) ?? next, repo, model, lease, o);
     lease = null;
+    // Live now: the next tick's check is `live`, so a second start may be refused on that alone.
+    starting = false;
     return await st.settled;
   } catch (err) {
     lease?.release();
@@ -247,12 +260,11 @@ export async function startQueuedAudit(o: StartOptions): Promise<Audit | null> {
   }
 }
 
-/** Ends an audit that never left the queue (its repo is gone), with no root to reap. */
-function endWaiting(a: Audit, status: AuditStatus, reason: string, now: number): void {
-  const ended: Audit = { ...a, status, endedReason: redact(reason), endedAt: iso(now), waitingReason: null };
-  saveAudit(ended);
-  record('audit.ended', { auditId: ended.id, repo: ended.repo, status, reason: ended.endedReason, audit: ended });
-  emit('audit.ended', { audit: ended });
+/** Removes an audit that never left the queue (its repo was disconnected): nothing ran, nothing is recorded as ended. */
+function dropWaiting(a: Audit): void {
+  openDb().prepare('DELETE FROM audits WHERE id = ? AND status = ?').run(a.id, 'waiting');
+  record('audit.stage', { auditId: a.id, status: 'waiting', waitingReason: null, dropped: true, at: new Date().toISOString() });
+  emit('audit.dropped', { auditId: a.id, repo: a.repo });
 }
 
 // ---------------------------------------------------------------- one audit
@@ -299,7 +311,7 @@ function reasonOf(st: LiveAudit): string {
   return msg || 'The audit was stopped.';
 }
 
-function setStage(st: LiveAudit, status: AuditStatus, extra: Partial<Pick<Audit, 'model' | 'baseSha' | 'unattended'>> = {}, now: number = Date.now()): void {
+function setStage(st: LiveAudit, status: AuditStatus, extra: Partial<Pick<Audit, 'model' | 'baseSha' | 'unattended' | 'startedAt'>> = {}, now: number = Date.now()): void {
   st.audit = { ...st.audit, ...extra, status, waitingReason: null };
   saveAudit(st.audit);
   const data = { auditId: st.audit.id, status, waitingReason: null, ...extra, at: iso(now) };
@@ -419,7 +431,8 @@ async function settled(st: LiveAudit, session: Promise<AuditResult>, now: () => 
   try {
     out = await guarded(st, session);
   } catch (err) {
-    if (!(err instanceof Killed)) throw err;
+    // A session past its wall deadline is presumed hung: it gets no grace.
+    if (!(err instanceof Killed) || st.deadlineHit) throw err;
     const late = await Promise.race([session.then((o) => o, () => null), new Promise<null>((r) => setTimeout(() => r(null), KILL_GRACE_MS))]);
     if (late) book(late);
     throw err;
@@ -500,9 +513,9 @@ async function lifecycle(st: LiveAudit, o: StartOptions): Promise<Audit> {
     const pageDir = join(paths().reports, 'audits');
     mkdirSync(pageDir, { recursive: true });
     const markdownPath = join(pageDir, `${auditSlug(st.repo.fullName, st.audit.id)}.md`);
-    const endedAt = iso(o.now());
-    writeFileSync(markdownPath, renderAudit({ ...done, status: 'done', endedAt, markdownPath }, { repoDescription: st.repo.description }));
-    return end(st, 'done', null, o.now(), { ...done, markdownPath });
+    const endedMs = o.now();
+    writeFileSync(markdownPath, renderAudit({ ...done, status: 'done', endedAt: iso(endedMs), markdownPath }, { repoDescription: st.repo.description }));
+    return end(st, 'done', null, endedMs, { ...done, markdownPath });
   } catch (err) {
     if (st.deadlineHit) return end(st, 'capped', reasonOf(st), o.now());
     if (st.lease.signal.aborted || err instanceof Killed) return end(st, 'killed', reasonOf(st), o.now());
@@ -524,6 +537,7 @@ async function lifecycle(st: LiveAudit, o: StartOptions): Promise<Audit> {
     removeRunDir(st.audit.id);
     live.delete(st.audit.id);
     st.lease.release();
+    o.onLive?.();
   }
 }
 
@@ -551,7 +565,9 @@ function begin(a: Audit, repo: Repo, model: ModelRef, lease: Lease, o: StartOpti
     settled: Promise.resolve(a),
   };
   live.set(a.id, st);
-  setStage(st, 'preparing', { model, unattended: unattended(now) }, now);
+  o.onLive?.();
+  // The queue time gave way: from here `startedAt` is the real start, and the stage carries it for replay.
+  setStage(st, 'preparing', { model, unattended: unattended(now), startedAt: iso(now) }, now);
   st.settled = lifecycle(st, o);
   return st;
 }
@@ -569,6 +585,7 @@ export function killAudit(id: string, reason: string): boolean {
 
 /** Kills every live audit and waits until each has closed, been reaped and released. */
 export async function killLiveAudits(reason: string): Promise<void> {
+  stopping = true;
   const all = [...live.values()];
   for (const st of all) killAudit(st.audit.id, reason);
   await Promise.allSettled(all.map((st) => st.settled));
@@ -615,4 +632,5 @@ export function resetAudits(): void {
   for (const st of live.values()) abortLease(st.lease, new Error('reset'));
   live.clear();
   starting = false;
+  stopping = false;
 }

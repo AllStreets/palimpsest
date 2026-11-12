@@ -473,7 +473,7 @@ export function watchOnce(): void {
 }
 
 function syncWatcher(): void {
-  const want = live.size > 0 && config.watchMs > 0;
+  const want = (live.size > 0 || liveAuditsNow().length > 0) && config.watchMs > 0;
   if (want && !watcher) {
     watcher = setInterval(watchOnce, config.watchMs);
     watcher.unref?.();
@@ -1181,7 +1181,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     await startRuns(now, eligible);
     // The README audits (Phase 3) start outside the market-on filter, so an on-demand audit on a market-off repo runs.
-    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
+    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs, onLive: syncWatcher })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
 
     for (const step of [config.pollPRs, config.watchReverts]) {
       try {
