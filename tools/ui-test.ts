@@ -707,6 +707,85 @@ async function tourChecks(page: Page): Promise<void> {
   console.log(`info  the city from home after the tour: ${budget.calls} calls`);
 }
 
+/**
+ * The floor dossier on the ride (Phase 3 Task 18): riding the harbour tower,
+ * an earned floor's stop carries its dossier under the caption (the change
+ * in numbers, the plan, the verdict) and a founding floor's stop none; a
+ * floor a README proposal built quotes the claim. Shots: ride-dossier.png,
+ * ride-dossier-crop.png and ride-dossier-claim.png. Runs with the economy.
+ */
+async function dossierChecks(page: Page): Promise<void> {
+  type Riding = { length: number; stops: Array<{ t: number; dwell: number; mark: string | null; title: string | null; floorId: string | null; dossier: boolean }> };
+  const ride = async (repo: string): Promise<Riding | null> => {
+    // The inspector opens first, as he would before pressing R: the dossiers are read in the background.
+    await page.evaluate((r) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(r), repo);
+    await page.waitForTimeout(2500);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    const ok = await page.evaluate((r) => (window as unknown as { __palimpsest: { ride(k: string): boolean } }).__palimpsest.ride(r), repo);
+    if (!ok) return null;
+    await page.evaluate('window.__palimpsest.rideHold(true)');
+    return (await page.evaluate('window.__palimpsest.riding()')) as Riding;
+  };
+  const seek = async (t: number): Promise<void> => {
+    await page.evaluate((x) => (window as unknown as { __palimpsest: { rideSeek(t: number): void } }).__palimpsest.rideSeek(x), t);
+    await page.waitForTimeout(1300);
+  };
+  const off = async (): Promise<void> => {
+    await page.evaluate('window.__palimpsest.ride(null)');
+    await page.waitForTimeout(3000);
+  };
+  const r = await ride('tidewater/harbor-ledger');
+  check(!!r, 'the harbour tower\'s lift runs');
+  if (!r) return;
+  const withDossier = r.stops.filter((s) => s.dossier);
+  check(withDossier.length >= 1 && withDossier.every((s) => Math.abs(s.dwell - 2.4) < 1e-6), `the ride waits 2.4 s at each floor with a dossier (${withDossier.length} of them)`);
+  console.log(`info  the harbour ride: ${r.length.toFixed(1)} s, ${withDossier.length} dossier stops`);
+  check(r.length <= 60, `the dossiers never make the ride a crawl (${r.length.toFixed(1)} s)`);
+  const d = withDossier[withDossier.length - 1];
+  if (d) {
+    await seek(d.t + 0.8);
+    const text = ((await page.locator('.ride .ride-dossier-body').getAttribute('aria-label').catch(() => null)) ?? '').trim();
+    check(/\d+ lines?\./.test(text) && /Plan: /.test(text) && /(Passed|Failed|Inconclusive)/.test(text), `an earned floor's stop shows its dossier ("${text.slice(0, 140)}")`);
+    const fits = await page.evaluate(() => {
+      const b = document.querySelector('.ride .ride-dossier')!.getBoundingClientRect();
+      const c = document.querySelector('.ride .ride-caption')!.getBoundingClientRect();
+      return b.right <= c.right + 1 && b.width <= 441;
+    });
+    check(fits, 'the dossier never runs wider than the caption\'s column');
+    check((await page.locator('.ride .ride-caption[role="status"] .ride-dossier-body[aria-label]').count()) === 1, 'it is read out with the caption (role status), whole');
+    await page.screenshot({ path: join(SHOTS, 'ride-dossier.png') });
+    await page.screenshot({ path: join(SHOTS, 'ride-dossier-crop.png'), clip: { x: 0, y: VIEWPORT.height - 380, width: 760, height: 380 } });
+  }
+  const founding = r.stops.find((s) => !s.dossier && (s.mark === 'claude' || s.mark === 'datum' || s.floorId === null) && s.t > 0);
+  if (founding) {
+    await seek(founding.t + 0.8);
+    check((await page.locator('.ride .ride-dossier-body').count()) === 0, `a founding floor's stop carries no dossier (${founding.title})`);
+  }
+  await off();
+  // A floor a README proposal built: the claim, quoted. The economy merges no proposal, so when none stands one is
+  // staged: the claim set into the newest dossier floor, as a proposal floor carries it (stageClaim).
+  const jobs = (await page.evaluate(() => fetch('/api/jobs').then((x) => x.json()))) as Array<{ id: string; source: string; status: string; repo: string }>;
+  const ds = await cityOf(page);
+  const built = jobs.find((j) => j.source === 'proposal' && ds.some((x) => x.repo === j.repo && x.tower.floors.some((f) => f.earned?.jobId === j.id)));
+  const repo = built?.repo ?? 'tidewater/harbor-ledger';
+  const floorId = built ? ds.find((x) => x.repo === built.repo)!.tower.floors.find((f) => f.earned?.jobId === built.id)!.id : (d?.floorId ?? null);
+  console.log(`info  the README claim: ${built ? `a proposal floor on ${repo}` : 'staged on the harbour tower'}`);
+  if (!floorId) return;
+  if (!built) await page.evaluate(([f, c]) => (window as unknown as { __palimpsest: { stageClaim(f: string, c: string): boolean } }).__palimpsest.stageClaim(f, c), [floorId, 'Tide tables are cached per port and refreshed at local midnight'] as [string, string]);
+  const pr = await ride(repo);
+  const stop = pr?.stops.find((s) => s.floorId === floorId);
+  check(!!stop && stop.dossier, "the claim's floor is a dossier stop");
+  if (stop) {
+    await seek(stop.t + 0.8);
+    const claim = ((await page.locator('.ride .ride-dossier-claim').textContent().catch(() => null)) ?? '').trim();
+    check(/^From the README: \u2018.+\u2019$/.test(claim), `it quotes the README's claim ("${claim}")`);
+    await page.screenshot({ path: join(SHOTS, 'ride-dossier-claim.png') });
+    await page.screenshot({ path: join(SHOTS, 'ride-dossier-claim-crop.png'), clip: { x: 0, y: VIEWPORT.height - 420, width: 760, height: 420 } });
+  }
+  await off();
+}
+
 type Tally = { calls: number; triangles: number };
 type Breakdown = Record<string, Record<string, Tally>>;
 /** The home view's draws by subsystem (or by drawn mesh, with `detail`) and pass, the shadow map redrawn. */
@@ -2741,7 +2820,7 @@ async function main(): Promise<void> {
     // name what it saw. A quick run for the notice rounds; the full run takes the same checks in their places.
     const forceDrop = process.env.UI_FORCE_DROP === '1';
     // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'budget'].includes(process.env.UI_ONLY ?? '');
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -2755,6 +2834,7 @@ async function main(): Promise<void> {
         await revivalChecks(page);
         await ribbonChecks(page);
         await tourChecks(page);
+        await dossierChecks(page);
         const before = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(1500);
@@ -2840,6 +2920,7 @@ async function main(): Promise<void> {
         await revivalChecks(page);
         await ribbonChecks(page);
         await tourChecks(page);
+        await dossierChecks(page);
         await quarterChecks(page);
         await darkTowerChecks(page);
         await exchangeChecks(page);

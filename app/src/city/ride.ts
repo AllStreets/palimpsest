@@ -14,7 +14,7 @@
  */
 import * as THREE from 'three';
 
-import { RIDE, rideAt, rideLength, rideNextStop, rideSway, type RideCaption, type RideKey } from '../../../shared/ride.js';
+import { dossierParts, dossierWords, RIDE, rideAt, rideLength, rideNextStop, rideSway, type Dossier, type RideCaption, type RideKey } from '../../../shared/ride.js';
 import type { ScriptPose } from './camera';
 import { Parts } from './construction.js';
 
@@ -84,7 +84,7 @@ export interface RideState {
   held: boolean;
   hoist: boolean;
   /** The plan's stops: when the car reaches each, and what it marks (captures). */
-  stops: Array<{ t: number; dwell: number; mark: string | null; title: string | null }>;
+  stops: Array<{ t: number; dwell: number; mark: string | null; title: string | null; floorId: string | null; dossier: boolean }>;
 }
 
 export interface Ride {
@@ -486,6 +486,32 @@ function buildCar(rail: Rail): Rig {
 
 // ---------------------------------------------------------------- the captions
 
+/**
+ * A floor's dossier as the caption sets it, small under the title: the
+ * change, the plan and the verdict in one paragraph, and for a floor a
+ * proposal built, the README's own words above it in the serif, quoted.
+ * Every string is plain text (textContent), cleaned in dossierOf.
+ */
+export function dossierBlock(d: Dossier): HTMLElement {
+  const w = dossierParts(d);
+  const el = document.createElement('div');
+  el.className = 'ride-dossier-body';
+  const para = (cls: string, text: string | null): void => {
+    if (!text) return;
+    const p = document.createElement('p');
+    p.className = cls;
+    p.textContent = text;
+    el.append(p);
+  };
+  para('ride-dossier-claim', w.claim);
+  para('ride-dossier-line', w.facts);
+  para('ride-dossier-plan', w.plan);
+  if (w.verdict) el.dataset.verdict = w.verdict;
+  // Read out whole, in the order of dossierWords, however the lines are set.
+  el.setAttribute('aria-label', [w.claim, dossierWords(d).line].filter(Boolean).join(' '));
+  return el;
+}
+
 interface Captions {
   el: HTMLElement;
   show(c: RideCaption | null, key: number, floorId: string | null): void;
@@ -564,7 +590,9 @@ function captions(parent: HTMLElement, dossier: RideOptions['dossier'], act: { o
       date.hidden = !c.date;
       who.textContent = c.who;
       who.hidden = !c.who;
-      const extra = floorId && dossier ? dossier(floorId) : null;
+      // The floor's dossier: from the plan when it was read in time, else asked for now (it may have arrived since).
+      const planned = c.dossier && (c.dossier.diff || c.dossier.plan || c.dossier.verdict || c.dossier.claim) ? c.dossier : null;
+      const extra = planned ? dossierBlock(planned) : floorId && dossier ? dossier(floorId) : null;
       slot.replaceChildren(...(extra ? [extra] : []));
       slot.hidden = !extra;
       // Re-set so the change reads as a new line, not a flicker in place.
@@ -840,7 +868,7 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
       caption: captionTitle,
       held,
       hoist: !!hoist,
-      stops: plan.filter((k) => k.dwell > 0).map((k) => ({ t: k.t, dwell: k.dwell, mark: k.caption?.mark ?? null, title: k.caption?.title ?? null })),
+      stops: plan.filter((k) => k.dwell > 0).map((k) => ({ t: k.t, dwell: k.dwell, mark: k.caption?.mark ?? null, title: k.caption?.title ?? null, floorId: k.floorId, dossier: !!k.caption?.dossier })),
     }),
     hold(on) {
       held = on;

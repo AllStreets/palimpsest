@@ -10,7 +10,7 @@
  * a caption. It ends over the roof (over the crown of an agent's tower) with
  * a slow orbit, or at the live work when a site is under construction.
  */
-import type { Floor, SiteState } from './types.js';
+import type { Award, Bid, Floor, InspectionView, Job, RunView, SiteState } from './types.js';
 import type { TowerLayout } from './tower-layout.js';
 
 export const RIDE = {
@@ -24,6 +24,10 @@ export const RIDE = {
   slow: 0.8,
   /** Seconds the car waits at a captioned floor. */
   dwell: 1.2,
+  /** Seconds it waits at a floor with a dossier: long enough to read two short lines, not a stall. */
+  dossierDwell: 2.4,
+  /** At most this many floors of a tower carry a dossier on the ride. */
+  dossiers: 6,
   /** Seconds at street level before the car moves off. */
   start: 1.6,
   /** Seconds of the slow orbit over the roof. */
@@ -51,6 +55,115 @@ export interface RideCaption {
   date: string;
   who: string;
   mark: RideMark;
+  /** What is inside an earned floor (Phase 3 Task 18), or null. */
+  dossier?: Dossier | null;
+}
+
+/**
+ * The floor dossier (Phase 3 Task 18, Decision 6): what is inside an
+ * earned floor, set small under its caption as the car waits there: the
+ * change in numbers, the agent's plan, the inspection's verdict, the README
+ * claim behind a proposal, and the firm. Every string is cleaned and cut.
+ */
+export interface Dossier {
+  diff: { files: number; lines: number } | null;
+  plan: string | null;
+  verdict: string | null;
+  claim: string | null;
+  firm: string | null;
+}
+
+/** What the dossier is read from: the job's detail and its run's inspection (the API's, redacted), the finding's claim. */
+export interface DossierData {
+  job?: Job | null;
+  bids?: Bid[];
+  award?: Award | null;
+  run?: RunView | null;
+  inspection?: InspectionView | null;
+  claim?: string | null;
+  firm?: string | null;
+}
+
+/** A line of model or engine text made safe to set in the city: one line, no control characters, cut at a word. */
+export function dossierText(text: string | null | undefined, max = 160): string | null {
+  if (!text) return null;
+  // eslint-disable-next-line no-control-regex
+  const one = text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!one) return null;
+  if (one.length <= max) return one;
+  const cut = one.slice(0, max - 1);
+  const at = cut.lastIndexOf(' ');
+  return `${(at > max * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,;:.]+$/, '')}\u2026`;
+}
+
+/** An earned floor's dossier, or null for a founding floor or one whose job has not been read. */
+export function dossierOf(floor: Floor, data: DossierData | null): Dossier | null {
+  const e = floor.earned;
+  if (floor.founding || !e || !data) return null;
+  const run = data.run ?? null;
+  const bid = (run ? data.bids?.find((b) => b.id === run.bidId) : undefined) ?? data.award?.chosen ?? data.bids?.find((b) => b.agentId === e.agentId) ?? null;
+  const insp = data.inspection ?? null;
+  let verdict: string | null = null;
+  if (insp) {
+    if (insp.inconclusive) verdict = 'Inconclusive';
+    else if (insp.passed) verdict = insp.pushable ? 'Passed, pushable' : 'Passed, held back';
+    else {
+      const failed = insp.checks.filter((c) => c.status === 'fail').map((c) => c.name);
+      verdict = failed.length ? `Failed: ${failed.join(', ')}` : 'Failed';
+    }
+  }
+  const files = run?.progress?.filesChanged ?? 0;
+  return {
+    diff: files > 0 || floor.lines > 0 ? { files, lines: floor.lines } : null,
+    plan: dossierText(bid?.plan ?? run?.summary ?? null),
+    verdict,
+    claim: data.job?.source === 'proposal' ? dossierText(data.claim ?? null, 120) : null,
+    firm: dossierText(data.firm ?? null, 60),
+  };
+}
+
+/** The dossier in words, as the caption sets it: "4 files, 212 lines. Plan: add the retry. Passed, pushable." and the claim. */
+export function dossierWords(d: Dossier): { line: string; claim: string | null } {
+  const parts: string[] = [];
+  if (d.diff) parts.push(`${d.diff.files ? `${plural(d.diff.files, 'file')}, ` : ''}${plural(d.diff.lines, 'line')}.`);
+  if (d.plan) {
+    // Set inside the sentence: its first letter lowered unless it starts an acronym or a name in capitals.
+    const p = /^[A-Z][a-z]/.test(d.plan) ? d.plan[0].toLowerCase() + d.plan.slice(1) : d.plan;
+    parts.push(`Plan: ${p}${/[.!?\u2026]$/.test(p) ? '' : '.'}`);
+  }
+  if (d.verdict) parts.push(`${d.verdict}.`);
+  return { line: parts.join(' '), claim: d.claim ? `From the README: \u2018${d.claim}\u2019` : null };
+}
+
+/** The dossier as the caption lays it out: the facts (the change and the verdict), the plan, and the claim, each its own line. */
+export function dossierParts(d: Dossier): { facts: string | null; plan: string | null; claim: string | null; verdict: 'pass' | 'fail' | 'open' | null } {
+  const facts: string[] = [];
+  if (d.diff) facts.push(`${d.diff.files ? `${plural(d.diff.files, 'file')}, ` : ''}${plural(d.diff.lines, 'line')}.`);
+  if (d.verdict) facts.push(`${d.verdict}.`);
+  const p = d.plan ? (/^[A-Z][a-z]/.test(d.plan) ? d.plan[0].toLowerCase() + d.plan.slice(1) : d.plan) : null;
+  return {
+    facts: facts.length ? facts.join(' ') : null,
+    plan: p ? `Plan: ${p}${/[.!?\u2026]$/.test(p) ? '' : '.'}` : null,
+    claim: dossierWords(d).claim,
+    verdict: d.verdict ? (d.verdict.startsWith('Passed') ? 'pass' : d.verdict.startsWith('Failed') ? 'fail' : 'open') : null,
+  };
+}
+
+/**
+ * The floors of a tower that carry a dossier on the ride, at most
+ * RIDE.dossiers: every scar, every floor a proposal built (its job id in
+ * `proposals`), then the newest earned floors; never a founding floor.
+ */
+export function dossierFloors(floors: ReadonlyArray<Floor>, proposals: ReadonlySet<string> = new Set()): string[] {
+  const earned = floors.filter((f) => !f.founding && f.earned);
+  const out: string[] = [];
+  const add = (f: Floor): void => {
+    if (out.length < RIDE.dossiers && !out.includes(f.id)) out.push(f.id);
+  };
+  for (const f of earned) if (f.earned!.state === 'scar') add(f);
+  for (const f of earned) if (proposals.has(f.earned!.jobId)) add(f);
+  for (const f of [...earned].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 3)) add(f);
+  return out;
 }
 
 export interface RideKey {
@@ -82,6 +195,8 @@ export interface RideOptions {
   crown?: number;
   /** An agent's tower: the datum is where the agent joined the city. */
   agent?: boolean;
+  /** Earned floors with a dossier, by floor id: each is a stop the car waits longer at, the dossier under its caption. */
+  dossiers?: ReadonlyMap<string, Dossier>;
 }
 
 /** The site stages at which there is work to ride up to. */
@@ -172,6 +287,13 @@ function planAt(layout: TowerLayout, floors: Floor[], opts: RideOptions, speed: 
   let lastClaude = -Infinity;
   laid.forEach((l, i) => {
     const mark = markOf(l.floor);
+    const dossier = opts.dossiers?.get(l.floor.id) ?? null;
+    if (dossier) {
+      // A floor with a dossier: a stop of its own, waited at long enough to read it.
+      const y = Math.max(RIDE.eye, l.y0 + l.h / 2 - RIDE.under);
+      stops.push({ y, dwell: RIDE.dossierDwell, caption: { ...floorCaption(l.floor, mark), dossier }, floorId: l.floor.id });
+      return;
+    }
     if (!mark) return;
     const y = Math.max(RIDE.eye, l.y0 + l.h / 2 - RIDE.under);
     if (mark === 'claude') {

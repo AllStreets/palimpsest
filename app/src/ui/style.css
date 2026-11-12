@@ -720,6 +720,59 @@ body[data-riding] .runhead {
 .ride-dossier[hidden] {
   display: none;
 }
+/* The floor's dossier (Phase 3 Task 18): set small under the caption, a hairline over it, never wider than its
+   column; the README's words in the serif above the facts when a proposal built the floor. */
+.ride-dossier {
+  max-width: 440px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(236, 230, 218, 0.22);
+  animation: ride-dossier-in 0.5s ease 0.25s both;
+}
+.ride-dossier-claim {
+  margin: 0 0 6px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.ride-dossier-line {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  color: var(--ink);
+}
+/* A scar's verdict in the primer's oxide red, as the inspector says it. */
+.ride-dossier-body[data-verdict='fail'] .ride-dossier-line {
+  color: #e09078;
+}
+.ride-dossier-plan {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@keyframes ride-dossier-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ride-dossier {
+    animation: none;
+  }
+}
 .ride-keys {
   display: flex;
   gap: 18px;

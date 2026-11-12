@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { RIDE, rideAt, rideLength, rideNextStop, ridePlan, type RideKey } from '../shared/ride.js';
+import { dossierFloors, dossierOf, dossierParts, dossierWords, RIDE, rideAt, rideLength, rideNextStop, ridePlan, type Dossier, type RideKey } from '../shared/ride.js';
 import { layoutTower } from '../shared/tower-layout.js';
-import type { Floor, SiteState, TowerSpec } from '../shared/types.js';
+import type { Bid, Floor, InspectionView, Job, RunView, SiteState, TowerSpec } from '../shared/types.js';
 
 function floor(i: number, p: Partial<Floor> = {}): Floor {
   return {
@@ -183,4 +183,72 @@ test('skipping goes to the next stop', () => {
   assert.equal(rideNextStop(keys, claude.t + 0.1), datum.t, 'waiting there, the next stop');
   const last = keys[keys.length - 1];
   assert.equal(rideNextStop(keys, last.t + 1), null, 'nothing past the last stop');
+});
+
+// ---------------------------------------------------------------- the floor dossier (Phase 3 Task 18)
+
+const job = (p: Partial<Job> = {}): Job => ({ id: 'job-1', repo: 'acme/harbour', source: 'issue', title: 'Uploads lose their place', status: 'merged', ...p }) as unknown as Job;
+const run = (p: Partial<RunView> = {}): RunView => ({ id: 'run-1', jobId: 'job-1', bidId: 'bid-1', progress: { toolCalls: 9, filesChanged: 4, testsRun: 2, turns: 6, weightedTokens: 1000, credits: 12, refusals: 0 }, summary: null, ...p }) as unknown as RunView;
+const bid = (p: Partial<Bid> = {}): Bid => ({ id: 'bid-1', jobId: 'job-1', plan: 'Add the missing retry to the uploader.', ...p }) as unknown as Bid;
+const inspection = (p: Partial<InspectionView> = {}): InspectionView => ({ id: 'insp-1', runId: 'run-1', passed: true, pushable: true, checks: [], inconclusive: null, ...p }) as unknown as InspectionView;
+
+test('dossierOf fills diff, plan, verdict and claim from the views and null for a founding floor', () => {
+  const f = floor(30, { founding: false, era: 'glass', lines: 212, earned: earned('lit') });
+  const d = dossierOf(f, { job: job(), bids: [bid()], run: run(), inspection: inspection(), claim: null, firm: 'Quickset' });
+  assert.deepEqual(d, { diff: { files: 4, lines: 212 }, plan: 'Add the missing retry to the uploader.', verdict: 'Passed, pushable', claim: null, firm: 'Quickset' });
+  assert.deepEqual(dossierWords(d!), { line: '4 files, 212 lines. Plan: add the missing retry to the uploader. Passed, pushable.', claim: null });
+  assert.deepEqual(dossierParts(d!), { facts: '4 files, 212 lines. Passed, pushable.', plan: 'Plan: add the missing retry to the uploader.', claim: null, verdict: 'pass' });
+  // A proposal floor carries the README claim behind it.
+  const p = dossierOf(f, { job: job({ source: 'proposal' }), bids: [bid()], run: run(), inspection: inspection(), claim: 'Resumable uploads', firm: 'Quickset' })!;
+  assert.equal(dossierWords(p).claim, 'From the README: \u2018Resumable uploads\u2019');
+  // A scar: its failed checks are the verdict.
+  const scar = dossierOf(floor(31, { founding: false, earned: earned('scar'), lines: 40 }), {
+    job: job(),
+    bids: [bid()],
+    run: run(),
+    inspection: inspection({ passed: false, pushable: false, checks: [{ name: 'scope', status: 'fail' }, { name: 'test', status: 'pass' }, { name: 'review', status: 'fail' }] as InspectionView['checks'] }),
+    claim: null,
+    firm: null,
+  })!;
+  assert.equal(scar.verdict, 'Failed: scope, review');
+  // A plan written as model output is cleaned and cut, never shown raw.
+  const long = dossierOf(f, { job: job(), bids: [bid({ plan: `  first line\n\n${'x'.repeat(400)}` })], run: run(), inspection: null, claim: null, firm: null })!;
+  assert.ok(long.plan!.length <= 160 && !/\n/.test(long.plan!), 'one line, cut');
+  assert.equal(long.verdict, null, 'no inspection, no verdict');
+  // Nothing for a founding floor, nor for an earned floor with nothing read yet.
+  assert.equal(dossierOf(floor(3), { job: job(), bids: [bid()], run: run(), inspection: inspection(), claim: null, firm: null }), null);
+  assert.equal(dossierOf(f, null), null);
+});
+
+test('ridePlan dwells longer on a floor with a dossier, and stops at it', () => {
+  const floors = [
+    ...Array.from({ length: 10 }, (_, i) => floor(i)),
+    ...Array.from({ length: 6 }, (_, j) => floor(10 + j, { founding: false, era: 'glass', title: `Earned ${j}`, earned: earned('lit') })),
+  ];
+  const spec = tower(floors, 10);
+  const lay = layoutTower(spec);
+  const d: Dossier = { diff: { files: 4, lines: 212 }, plan: 'Add the retry.', verdict: 'Passed, pushable', claim: null, firm: 'Quickset' };
+  const dossiers = new Map([[floors[13].id, d]]);
+  const plain = ridePlan(lay, floors, { live: null });
+  const keys = ridePlan(lay, floors, { live: null, dossiers });
+  assert.ok(!plain.some((k) => k.floorId === floors[13].id), 'a plain earned floor is passed');
+  const stop = keys.find((k) => k.floorId === floors[13].id);
+  assert.ok(stop, 'the dossier floor is a stop');
+  assert.equal(stop.dwell, RIDE.dossierDwell);
+  assert.ok(RIDE.dossierDwell >= RIDE.dwell * 2 - 1e-9);
+  assert.deepEqual(stop.caption?.dossier, d);
+  assert.ok(keys.filter((k) => k.caption && k.floorId !== floors[13].id).every((k) => !k.caption!.dossier), 'nothing on the other stops');
+});
+
+test('dossierFloors picks the scars, the proposals and the newest earned floors, and none founding', () => {
+  const floors = [
+    ...Array.from({ length: 4 }, (_, i) => floor(i)),
+    ...Array.from({ length: 9 }, (_, j) => floor(4 + j, { founding: false, at: `2025-03-${String(5 + j).padStart(2, '0')}T10:00:00Z`, earned: { ...earned(j === 1 ? 'scar' : 'lit'), jobId: `job-${j}` } })),
+  ];
+  const picked = dossierFloors(floors, new Set(['job-2']));
+  assert.ok(picked.includes(floors[5].id), 'the scar');
+  assert.ok(picked.includes(floors[6].id), 'the proposal');
+  for (const f of floors.slice(-3)) assert.ok(picked.includes(f.id), 'the newest three');
+  assert.ok(picked.every((id) => !floors.slice(0, 4).some((f) => f.id === id)), 'no founding floor');
+  assert.ok(picked.length <= 6);
 });
