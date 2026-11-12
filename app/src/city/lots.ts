@@ -797,6 +797,9 @@ export function lotParts(lot: Lot): Part[] {
     // Walk-ups throw a three-sided bay out over the street, storey by storey, from the first floor to the parapet.
     if (a === 'walkup' && t === tiers[0] && v < 0.7) {
       const storeys = Math.floor((t.y1 - s.ground - s.parapet - 0.35) / s.floor);
+      // The bay's painted timber: a lighter cut of the wall's own colour. The window trim (the accent) is a dark
+      // sash paint on most walk-ups, and a bay in it stood as a black slab down the whole front (AUD-C).
+      const bayPaint = lot.colour.clone().lerp(colour(0xffffff), 0.3);
       for (const f of lot.front) {
         const along = f === 'px' || f === 'nx' ? t.d : t.w;
         const n = along > 11 ? 2 : 1;
@@ -806,10 +809,11 @@ export function lotParts(lot: Lot): Part[] {
           const bd = 0.85;
           for (let k = 0; k < storeys; k++) {
             const y = s.ground + k * s.floor + s.floor / 2;
-            const lit = hash(Math.round(lot.x * 3 + b), Math.round(lot.z), k + 7) < 0.45;
+            const lit = hash(Math.round(lot.x * 3 + b), Math.round(lot.z), k + 7) < 0.5;
             const at = (dx: number, dz: number, rot: number, glass: boolean): void => {
-              if (glass) p(lit ? 'bayLit' : 'bayGlass', t.x + dx, y, t.z + dz, bw, s.floor, bd, lit ? colour(0xffffff) : undefined, rot);
-              else p('bay', t.x + dx, y, t.z + dz, bw, s.floor, bd, trim, rot);
+              // The panes stand a few centimetres proud of the bay's faces, clear of its own surface.
+              if (glass) p(lit ? 'bayLit' : 'bayGlass', t.x + dx, y, t.z + dz, bw * 1.03, s.floor, bd * 1.06, lit ? colour(0xffffff) : undefined, rot);
+              else p('bay', t.x + dx, y, t.z + dz, bw, s.floor, bd, bayPaint, rot);
             };
             for (const glass of [false, true]) {
               if (f === 'pz') at(o, t.d / 2 + bd / 2, 0, glass);

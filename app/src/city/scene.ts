@@ -16,6 +16,7 @@ import type { Lot } from './lots';
 import { configureMaterials, texturesSettled } from './materials';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor } from './governor';
+import { setFacadeRooms } from './facade';
 import { lightsOutTree } from './lightsout.js';
 import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
@@ -241,6 +242,7 @@ const STREET_EYE = 80;
  */
 export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let quality = opts.quality;
+  setFacadeRooms(quality === 'high');
   installSkyFog();
   const makeCenterpiece = opts.makeDistrictCenterpiece ?? (() => plinthCenterpiece());
 
@@ -1191,6 +1193,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     river.setQuality('medium');
     vehicles?.setQuality('medium');
     ambient?.setQuality('medium');
+    setFacadeRooms(false);
     post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
     texel = (SHADOW_HALF * 2) / shadowSize;

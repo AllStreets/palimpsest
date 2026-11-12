@@ -49,7 +49,7 @@ export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; s
     "sun": [
       59.5,
       13,
-      13.7
+      13.8
     ],
     "shade": [
       46.7,
@@ -59,7 +59,7 @@ export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; s
   },
   "walkup:black": {
     "sun": [
-      37.8,
+      37.9,
       11.2,
       8.2
     ],
@@ -112,9 +112,9 @@ export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; s
       15.8
     ],
     "shade": [
-      45.8,
-      10.7,
-      5.3
+      47.9,
+      11.4,
+      5.9
     ]
   },
   "commercial:limestone": {
@@ -576,4 +576,4 @@ export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; s
 };
 
 /** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */
-export const AMBIENT_INPUTS = '7114c5dce330876f';
+export const AMBIENT_INPUTS = '3f23177694e82663';

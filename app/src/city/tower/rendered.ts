@@ -23,6 +23,12 @@
  * glass). They moved by 0.4 to 3.2 dE. Every other entry is kept as it was:
  * the full re-measure moved them by up to 3.9 dE (travertine again), the
  * same drift as last time. The fingerprint is today's.
+ *
+ * AUD-C fix round 1: restamped, not re-measured. The sci-fi needle and
+ * organic families got their shared TITANIUM finish back exactly as it was
+ * measured (the titanium era now has its own TITANIUM_CLAD, the values its
+ * entry was measured with), and the other inputs that changed (the merged
+ * lines, firm marks and datum course in look.ts) stand on no swatch.
  */
 export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = {
   "stone:limestone": {
@@ -643,4 +649,4 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   }
 };
 
-export const RENDERED_INPUTS = 'b1113d7d8fdd3878';
+export const RENDERED_INPUTS = 'a75bbb02e6b5a1d9';

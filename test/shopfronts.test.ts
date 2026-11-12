@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 
 import { lotParts, SECTIONS, type Face, type Lot } from '../app/src/city/lots.js';
-import { AWNING, packShopfront, SHOP_SLOTS, shopBays, shopfrontPlan, type ShopfrontPlan, unpackShopfront } from '../app/src/city/shopfronts.js';
+import { AWNING, HOODS, NAMED_KINDS, NAMES_PER_SET, packShopfront, SHOP_NAMES, SHOP_SLOTS, shopBays, shopfrontPlan, type ShopfrontPlan, signRow, signRows, unpackShopfront } from '../app/src/city/shopfronts.js';
 
 const plan = (seed: number, o: Partial<Parameters<typeof shopfrontPlan>[0]> = {}): ShopfrontPlan =>
   shopfrontPlan({ archetype: 'walkup', hood: 'residential', w: 12, d: 10, front: ['pz'], seed, ...o });
@@ -81,7 +81,7 @@ test('the pack carries the plan to the shader and back without loss', () => {
     const packed = packShopfront(p);
     for (const v of packed) assert.ok(Number.isInteger(v) && v >= 0 && v < 2 ** 24, 'each channel is a whole number a float32 holds exactly');
     const back = unpackShopfront(packed, p.x.length, p.z.length);
-    assert.deepEqual(back, { bay: p.bay, palette: p.palette, frontage: p.frontage, x: p.x, z: p.z, awningsX: p.awningsX, awningsZ: p.awningsZ });
+    assert.deepEqual(back, { bay: p.bay, hood: p.hood, palette: p.palette, frontage: p.frontage, x: p.x, z: p.z, awningsX: p.awningsX, awningsZ: p.awningsZ });
   }
 });
 
@@ -120,4 +120,29 @@ test('a lot hangs its awnings on its street fronts, over the glass, one per awni
     assert.ok(a.colour, 'in its own cloth');
   }
   assert.ok(AWNING.reach > 1 && AWNING.reach < 2, 'an awning reaches a pavement\'s width out');
+});
+
+test('every district has its own shop names, in an older and a modern set, each short enough for a fascia', () => {
+  const all = new Set<string>();
+  for (const h of HOODS) {
+    for (const k of NAMED_KINDS) {
+      const sets = SHOP_NAMES[h][k as 'shop' | 'cafe' | 'lobby'];
+      for (const set of sets) {
+        assert.equal(set.length, NAMES_PER_SET, `${h} ${k}: six names a set`);
+        for (const n of set) {
+          assert.ok(n.length >= 4 && n.length <= 26, `${n}: a name a fascia can carry`);
+          assert.ok(!all.has(n) || k === 'lobby', `${n} is used twice`);
+          all.add(n);
+        }
+      }
+      assert.notDeepEqual(sets[0], sets[1], `${h} ${k}: the eras differ`);
+    }
+  }
+  const rows = signRows();
+  assert.equal(rows.length, HOODS.length * NAMED_KINDS.length * 2 * NAMES_PER_SET);
+  // The row the shader computes is the row the atlas drew.
+  assert.equal(rows[signRow(HOODS.indexOf('midtown'), 'cafe', false, 2)], SHOP_NAMES.midtown.cafe[1][2]);
+  assert.equal(rows[signRow(HOODS.indexOf('industrial'), 'shop', true, 7)], SHOP_NAMES.industrial.shop[0][1]);
+  const p = plan(3, { hood: 'spine' });
+  assert.equal(p.hood, HOODS.indexOf('spine'), 'the plan carries its district to the shader');
 });

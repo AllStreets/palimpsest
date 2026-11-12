@@ -712,10 +712,12 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     // Polished, lighter than the mullion bronze: it takes the sun on one side and the warm horizon on the other.
     // A little diffuse response under the metal, so the band takes the low sun as bronze even where its mirror
     // sees only the dark city below; the polish still catches the sky on top and on the chamfers.
+    // A moulded bronze course (datum.ts): darker and satin, so it reads as a cornice in the tower's metal and not
+    // a gold slab (AUD-C).
     datum: (() => {
-      const d = metal(0xd9c26e, 0.4, 0.2);
-      d.metalness = 0.8;
-      d.envMapIntensity = 1.4;
+      const d = metal(0x8c6b3c, 0.42, 0.2);
+      d.metalness = 0.85;
+      d.envMapIntensity = 1.1;
       return d;
     })(),
     graphite: brushed(0x2e3136, 0.42, 0.4, 1.4),
@@ -732,11 +734,13 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     accent: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) })),
     // Cool moonlight blue-white, darker than the neutral light line: a merged floor's slab edge reads as lit
     // from the city's distance without reaching the bloom threshold (0.97), and never as the Claude amber.
-    earnedLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.68, 0.95).multiplyScalar(1.1) })),
+    // Dimmed (AUD-C) so the line reads as a lit reveal under the floor's own lit rooms, not a strip in front of them.
+    earnedLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.68, 0.95).multiplyScalar(0.5) })),
     // Warm ivory (about 3200 K), a pair of lines: his own hand in the floor, apart from the cool line and the amber.
-    handLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.84, 0.62).multiplyScalar(0.78) })),
+    handLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.84, 0.62).multiplyScalar(0.4) })),
     // Painted metal, satin: the firm's colour arrives as the vertex colour, so one material serves every firm.
-    firmMark: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.15, vertexColors: true, envMapIntensity: 0.8 }),
+    // Set back into the slab edge (eras.ts firmMark) and matte, so it reads as an inlaid band, not a strip.
+    firmMark: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.1, vertexColors: true, envMapIntensity: 0.5 }),
     // Shop primer: red iron oxide in a flat alkyd, matte and a little chalky, browner and darker than any brick
     // in the city, so it reads as a coat waiting for its finish rather than as paint.
     primer: new THREE.MeshStandardMaterial({ color: 0x5c2c22, roughness: 0.9, metalness: 0, vertexColors: true, envMapIntensity: 0.5 }),

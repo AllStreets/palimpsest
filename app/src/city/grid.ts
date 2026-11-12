@@ -159,6 +159,19 @@ class Batch {
 }
 
 /** A triangular prism a unit each way, its steep face at -z and its slope falling to +z: a sawtooth roof's tooth. */
+function prismGeometry(): THREE.BufferGeometry {
+  const fb = (x: number): number[] => [x, -0.5, -0.5];
+  const bb = (x: number): number[] => [x, -0.5, 0.5];
+  const ft = (x: number): number[] => [x, 0.5, -0.5];
+  const L = -0.5;
+  const R = 0.5;
+  const tris = [fb(L), ft(R), ft(L), fb(L), fb(R), ft(R), ft(L), bb(R), bb(L), ft(L), ft(R), bb(R), fb(L), ft(L), bb(L), fb(R), bb(R), ft(R)].flat();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(tris, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
 /**
  * Awning cloth: matte canvas in the front's own colour (instance colour; a
  * red past STRIPED marks a striped cloth, cream stripes across it), its
@@ -218,19 +231,6 @@ function awningGeometry(): THREE.BufferGeometry {
   tri(wr, or, vr);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
-  g.computeVertexNormals();
-  return g;
-}
-
-function prismGeometry(): THREE.BufferGeometry {
-  const fb = (x: number): number[] => [x, -0.5, -0.5];
-  const bb = (x: number): number[] => [x, -0.5, 0.5];
-  const ft = (x: number): number[] => [x, 0.5, -0.5];
-  const L = -0.5;
-  const R = 0.5;
-  const tris = [fb(L), ft(R), ft(L), fb(L), fb(R), ft(R), ft(L), bb(R), bb(L), ft(L), ft(R), bb(R), fb(L), ft(L), bb(L), fb(R), bb(R), ft(R)].flat();
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(tris, 3));
   g.computeVertexNormals();
   return g;
 }
@@ -300,8 +300,11 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const kitBayMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, vertexColors: true });
   const sawMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.35 });
   // Clerestory and sawtooth glass: lit ones glow warm (HDR, so bloom finds them), dark ones mirror the sky.
-  const glazeLitMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.1, 0.62) });
-  const glazeDarkMat = new THREE.MeshStandardMaterial({ color: 0x0d1114, roughness: 0.08, metalness: 0.6, envMapIntensity: 1.8 });
+  // Lit glass over a warm room, glossy enough to hold a little of the sky, rather than a flat orange panel.
+  const glazeLitMat = new THREE.MeshStandardMaterial({ color: 0x0a0806, roughness: 0.1, metalness: 0, envMapIntensity: 1.2, emissive: new THREE.Color(1.0, 0.64, 0.36), emissiveIntensity: 0.5 });
+  // Unlit glass still holds a little of the room behind it: without the faint warmth, a stack of dark oriel bays read
+  // as flat black slabs down a street front (AUD-C).
+  const glazeDarkMat = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.12, metalness: 0.25, envMapIntensity: 1.5, emissive: new THREE.Color(0.25, 0.19, 0.13), emissiveIntensity: 0.16 });
   const planterMat = new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.95 });
   const treeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true });
   const deckLightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.3, 2.5) });

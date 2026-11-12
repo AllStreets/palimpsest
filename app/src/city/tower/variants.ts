@@ -171,7 +171,9 @@ const ROSE_GRANITE = scan('granite', 0x8e6a76, 0.3, { normal: 0.5, joint: 0x5e44
 const BRONZE: Finish = { kind: 'brushed', color: 0x8f6c4a, rough: 0.24, aniso: 0.45, env: 1.9 };
 const DARK_BRONZE: Finish = { kind: 'metal', color: 0x4a3324, rough: 0.5 };
 const GRAPHITE: Finish = { kind: 'brushed', color: 0x2e3136, rough: 0.42, aniso: 0.4, env: 1.4 };
-const TITANIUM: Finish = { kind: 'brushed', color: 0xa9afb7, rough: 0.2, aniso: 0.6, env: 1.5 };
+const TITANIUM: Finish = { kind: 'brushed', color: 0xa9afb7, rough: 0.13, aniso: 0.6, env: 2.2 };
+/** The titanium era's own cladding: the same metal, duller, so its fins do not take the whole dusk (AUD-C); the sci-fi families keep TITANIUM. */
+const TITANIUM_CLAD: Finish = { kind: 'brushed', color: 0xa9afb7, rough: 0.2, aniso: 0.6, env: 1.5 };
 const ALUMINIUM: Finish = { kind: 'metal', color: 0xaab0b5, rough: 0.36 };
 const BLACK_STEEL: Finish = { kind: 'metal', color: 0x17181a, rough: 0.34 };
 const VERDIGRIS = scan('rust', 0x6f8a7c, 0.5, { joint: 0x51665a, normal: 0.6 });
@@ -384,7 +386,7 @@ export const VARIANTS: Record<Era, Variant[]> = {
       id: 'titanium:titanium',
       era: 'titanium',
       name: 'Brushed titanium',
-      wall: TITANIUM,
+      wall: TITANIUM_CLAD,
       trim: GRAPHITE,
       band: GRAPHITE,
       glass: { body: 0x050608, tint: 0xe6eeff, env: 1.15 },

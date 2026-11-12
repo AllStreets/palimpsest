@@ -924,15 +924,15 @@ export function firmMarkColor(firmId: string, slots?: Map<string, number>): THRE
   return FIRM_MARKS[((i % FIRM_MARKS.length) + FIRM_MARKS.length) % FIRM_MARKS.length];
 }
 
-/** The firm's mark: a painted strip just above the slab edge's line, in the firm's colour. */
+/** The firm's mark: a band inlaid into the slab edge just above its light line, in the firm's colour, set back behind the face. */
 export function firmMark(k: Kit, edge: FloorShape['edge'], color: THREE.Color): void {
   const was = k.tint;
-  k.tint = color.clone();
+  k.tint = color.clone().multiplyScalar(0.7);
   k.add('firmMark', edgeSweep(edge, [
-    [-0.12, 0.14],
-    [0.05, 0.14],
-    [0.05, 0.46],
-    [-0.12, 0.46],
+    [-0.14, 0.14],
+    [-0.03, 0.14],
+    [-0.03, 0.4],
+    [-0.14, 0.4],
   ]), M(edge.cx, 0, edge.cz));
   k.tint = was;
 }

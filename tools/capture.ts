@@ -393,6 +393,11 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       if (process.env.LIFE_FPS) {
         // LIFE_FPS='[[eye],[target]]': frames per second there with the streets full, then empty (tuning).
         const [e, t] = JSON.parse(process.env.LIFE_FPS) as [V3, V3];
+        // LIFE_DROP=1: the governor's step down first, so the numbers are medium's.
+        if (process.env.LIFE_DROP) {
+          await page.evaluate('window.__palimpsest.dropQuality()');
+          await page.waitForTimeout(3000);
+        }
         const fps = (): Promise<number> => page.evaluate(`new Promise((r) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 3000) requestAnimationFrame(f); else r((n * 1000) / (performance.now() - t0)); }; requestAnimationFrame(f); })`) as Promise<number>;
         await frame(page, e, t);
         for (const n of [1, 0, 1, 0]) {

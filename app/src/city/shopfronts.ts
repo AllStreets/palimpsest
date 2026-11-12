@@ -28,6 +28,8 @@ export const SHOP_SLOTS = 12;
 export interface ShopfrontPlan {
   /** The bay width in metres, to the centimetre. */
   bay: number;
+  /** The district (HOODS index), which picks the signs' names. */
+  hood: number;
   /** The joinery and sign scheme (PALETTES). */
   palette: number;
   /** 0: shops; 1: one tenant's lobby across the front. */
@@ -37,6 +39,107 @@ export interface ShopfrontPlan {
   z: ShopKind[];
   awningsX: boolean[];
   awningsZ: boolean[];
+}
+
+/** The districts in the order the pack and the sign atlas number them. */
+export const HOODS: readonly Hood[] = ['core', 'spine', 'midtown', 'residential', 'industrial'];
+
+/** The kinds that carry a name, in the atlas's order. */
+export const NAMED_KINDS: readonly ShopKind[] = ['shop', 'cafe', 'lobby'];
+
+/** Names per sign set in the atlas. */
+export const NAMES_PER_SET = 6;
+
+/**
+ * The shop names, by district, kind and age: the older set is for the brick
+ * and stone fronts (walk-ups, offices), the modern set for the mid-century,
+ * glass and concrete ones. Streets and firms of the city's own (the tram's
+ * stops, the sample repos) rather than stock trade names.
+ */
+export const SHOP_NAMES: Record<Hood, Record<'shop' | 'cafe' | 'lobby', [string[], string[]]>> = {
+  residential: {
+    shop: [
+      ['Corrigan & Sons Grocers', "Hale's Hardware", 'The Launderette', 'Pennywell Florist', 'Marchbank Pharmacy', 'Ivy Lane Fishmonger'],
+      ['Wick Street Market', 'Orbit Launderette', 'Fairlie Pharmacy', "Pell's Greengrocer", 'Tallow Pet Supplies', 'Saddlers Newsagent'],
+    ],
+    cafe: [
+      ['The Copper Kettle', "Dunmore's Bakery", 'Cafe Lisboa', 'The Malt House', "Rosa's Kitchen", 'Hatters Tea Rooms'],
+      ['Bellfounders Coffee', 'Noon & Night', 'Kiln Lane Bakery', 'Cafe Furnace', 'The Pewter Cup', 'Limekiln Diner'],
+    ],
+    lobby: [
+      ['Weavers Hill Surgery', 'Glovers Walk Library', 'Tanners Bank Credit Union', 'Saddlers Gate Hall', 'Rope Street Baths', 'Malt House Institute'],
+      ['Cordwainers Dental', 'Slate Street Clinic', 'Barrow Lane Nursery', 'Kiln Lane Housing', 'Pewter Row Pharmacy', 'Ink Street Studios'],
+    ],
+  },
+  midtown: {
+    shop: [
+      ['Ink Street Books', 'J. Pell Tailor', 'Chandlery Records', 'Hatters & Co', 'Paper Mill Stationers', 'Rope Street Outfitters'],
+      ['Vane Optics', 'Meridian Records', 'Saddlers Gate Cycles', 'Tinsmiths Kitchenware', 'Wharf Road Frames', 'Hop Garden Wines'],
+    ],
+    cafe: [
+      ['The Printers Arms', 'Cafe Marchetti', 'Coopers Row Bar', "Fenwick's Chophouse", 'The Tallow Candle', 'Oyster Rooms'],
+      ['Ramen Kiln', 'Bar Lantern', 'Tidewater Oyster Bar', 'Kestrel Coffee', 'Furnace Yard Pizza', 'Saddlers Bistro'],
+    ],
+    lobby: [
+      ['Chandlery Chambers', 'Ink Street Assurance', 'Wharf Road Exchange', 'Hatters Hall', 'Paper Mill Court', 'Cordwainers House'],
+      ['Meridian House', 'Vane Pods Ticket Hall', 'Lantern Studios', 'Kestrel Media', 'Harbor Ledger Press', 'Fieldnotes'],
+    ],
+  },
+  spine: {
+    shop: [
+      ['Barrow & Vale Jewellers', 'Pewter Row Pharmacy', 'Slate Street Books', 'Ferro Ironmongers', 'Alder Prints', 'Quarry Opticians'],
+      ['Hoshi Electronics', 'Kumo Design Store', 'Tidewater Travel', 'Alder Camera', 'Lodestar Phones', 'Blank Slate Supply'],
+    ],
+    cafe: [
+      ['Cafe Lantern', 'The Assay Office', 'Bellfounders Grill', 'Hotel Meridian Bar', 'Cafe Quarry', 'The Spine Tavern'],
+      ['Espresso Hoshi', 'Pod Line Coffee', 'Kumo Noodle Bar', 'Lodestar Lounge', 'Alder Juice', 'Fieldnotes Cafe'],
+    ],
+    lobby: [
+      ['Assay Kit Chambers', 'Meridian Assurance', 'Tidewater Trust', 'Ferro & Quarry', 'Lantern Building', 'Alder Exchange'],
+      ['Harbor Ledger', 'Kumo Tower', 'Fieldnotes', 'Blank Slate', 'Lodestar Capital', 'Vane Systems'],
+    ],
+  },
+  core: {
+    shop: [
+      ['Meridian Bank', 'Tidewater Savings', 'Assay Jewellers', 'Lantern Bookshop', 'Quarry & Co', 'Ferro Tobacconist'],
+      ['Hoshi Flagship', 'Kumo Store', 'Alder Apothecary', 'Lodestar Travel', 'Exchange Newsstand', 'Pod Line Store'],
+    ],
+    cafe: [
+      ['The Exchange Grill', 'Cafe Meridian', 'Assay Oyster Bar', 'Lantern Tea Rooms', 'Ferro Brasserie', 'Quarry Wine Bar'],
+      ['Kumo Espresso', 'Fieldnotes Coffee', 'Tidewater Bar', 'Alder Kitchen', 'Lodestar Sushi', 'Vane Cafe'],
+    ],
+    lobby: [
+      ['Meridian Assurance', 'Tidewater Trust Building', 'Exchange Chambers', 'Lantern House', 'Assay House', 'Quarry Court'],
+      ['Harbor Ledger', 'Kumo', 'Fieldnotes', 'Blank Slate', 'Lodestar', 'Vane'],
+    ],
+  },
+  industrial: {
+    shop: [
+      ['Hale Tool & Die', 'Wick Street Motors', 'Furnace Yard Salvage', 'Tanners Bank Timber', 'Kiln Lane Plumbing', 'Barrow Lane Tyres'],
+      ['Limekiln Hire', 'Paper Mill Packaging', 'Rope Street Auto Parts', 'Tinsmiths Fabrication', 'Wharf Road Storage', 'Malt House Scaffold'],
+    ],
+    cafe: [
+      ['Dockers Cafe', 'The Furnace Arms', 'Mill Canteen', 'Wharf Cafe', 'The Tanners Rest', 'Kiln Cafe'],
+      ['Yard Coffee', 'Depot Diner', 'Limekiln Grill', 'Rope St Snacks', 'Tinsmiths Cafe', 'Night Shift Cafe'],
+    ],
+    lobby: [
+      ['Wick Street Works', 'Furnace Yard Depot', 'Tanners Bank Freight', 'Limekiln Goods Office', 'Malt House Bonded Store', 'Paper Mill Gate'],
+      ['Harbor Ledger Logistics', 'Kiln Lane Data Hall', 'Wharf Road Studios', 'Barrow Lane Depot', 'Tinsmiths Workshop', 'Rope Street Yard'],
+    ],
+  },
+};
+
+/** The atlas row of a name: by district, kind, age set and index, as facade.ts's shader computes it. */
+export function signRow(hood: number, kind: ShopKind, old: boolean, n: number): number {
+  const k = Math.max(0, NAMED_KINDS.indexOf(kind));
+  return ((hood * NAMED_KINDS.length + k) * 2 + (old ? 0 : 1)) * NAMES_PER_SET + (n % NAMES_PER_SET);
+}
+
+/** Every name in atlas row order (signRow), for the atlas to draw. */
+export function signRows(): string[] {
+  const rows: string[] = [];
+  for (const h of HOODS) for (const k of NAMED_KINDS) for (const set of [0, 1] as const) rows.push(...SHOP_NAMES[h][k as 'shop' | 'cafe' | 'lobby'][set]);
+  return rows;
 }
 
 /** The awning: how far it reaches over the pavement, its drop over that reach, and the valance hanging from its edge. */
@@ -167,20 +270,20 @@ export function shopfrontPlan(s: ShopfrontSite): ShopfrontPlan {
   };
   const fx = face(s.d, s.front.includes('px') || s.front.includes('nx'));
   const fz = face(s.w, s.front.includes('pz') || s.front.includes('nz'));
-  return { bay, palette, frontage, x: fx.kinds, z: fz.kinds, awningsX: fx.awnings, awningsZ: fz.awnings };
+  return { bay, hood: HOODS.indexOf(s.hood), palette, frontage, x: fx.kinds, z: fz.kinds, awningsX: fx.awnings, awningsZ: fz.awnings };
 }
 
 /**
  * The plan as four whole numbers under 2^24 (exact in a float32 attribute):
  * the x faces' kinds (two bits a bay), the z faces' kinds, the awnings (one
  * bit a bay, the z faces' from bit 12), and the bay width in centimetres
- * plus the palette times 1000 plus the frontage times 16000. facade.ts
- * decodes them the same way.
+ * plus the palette times 1000 plus the frontage times 16000 plus the
+ * district times 32000. facade.ts decodes them the same way.
  */
 export function packShopfront(p: ShopfrontPlan): [number, number, number, number] {
   const kinds = (ks: ShopKind[]): number => ks.reduce((acc, k, i) => acc + SHOP_KINDS.indexOf(k) * 4 ** i, 0);
   const bits = (bs: boolean[], from: number): number => bs.reduce((acc, b, i) => acc + (b ? 2 ** (from + i) : 0), 0);
-  return [kinds(p.x), kinds(p.z), bits(p.awningsX, 0) + bits(p.awningsZ, SHOP_SLOTS), Math.round(p.bay * 100) + p.palette * 1000 + p.frontage * 16000];
+  return [kinds(p.x), kinds(p.z), bits(p.awningsX, 0) + bits(p.awningsZ, SHOP_SLOTS), Math.round(p.bay * 100) + p.palette * 1000 + p.frontage * 16000 + p.hood * 32000];
 }
 
 /** The shader's reading of a pack, for the tests: the first nx and nz bays of each face. */
@@ -189,7 +292,8 @@ export function unpackShopfront(v: [number, number, number, number], nx: number,
   const bits = (c: number, from: number, n: number): boolean[] => Array.from({ length: n }, (_, i) => Math.floor(c / 2 ** (from + i)) % 2 === 1);
   const w = v[3];
   return {
-    frontage: Math.floor(w / 16000) as 0 | 1,
+    hood: Math.floor(w / 32000),
+    frontage: Math.floor((w % 32000) / 16000) as 0 | 1,
     palette: Math.floor((w % 16000) / 1000),
     bay: (w % 1000) / 100,
     x: kinds(v[0], nx),

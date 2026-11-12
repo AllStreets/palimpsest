@@ -31,14 +31,24 @@ export interface DatumPlan {
 
 export function addDatum(k: Kit, datumY: number, plan: DatumPlan): void {
   const y0 = datumY - DATUM_HEIGHT;
-  // A flat polished face between two chamfers, so the band catches a line of light top and bottom.
+  // A moulded course, read bottom to top: a bed mould stepping out, a plain fascia, a cyma under the corona, and
+  // the corona itself with a drip under its edge, so the band catches light on its mouldings and throws a shadow
+  // line under each, as a cornice does, instead of one flat face.
+  const h = DATUM_HEIGHT;
   const profile: Array<[number, number]> = [
     [-0.2, y0],
-    [PROUD - 0.12, y0],
-    [PROUD, y0 + 0.12],
-    [PROUD, y0 + DATUM_HEIGHT - 0.12],
-    [PROUD - 0.12, y0 + DATUM_HEIGHT],
-    [-0.2, y0 + DATUM_HEIGHT],
+    [0.08, y0],
+    [0.14, y0 + 0.1 * h],
+    [0.2, y0 + 0.16 * h],
+    [0.2, y0 + 0.5 * h],
+    [0.26, y0 + 0.56 * h],
+    [PROUD - 0.12, y0 + 0.7 * h],
+    [PROUD - 0.1, y0 + 0.76 * h],
+    [PROUD - 0.16, y0 + 0.79 * h],
+    [PROUD, y0 + 0.84 * h],
+    [PROUD, y0 + 0.97 * h],
+    [PROUD - 0.06, y0 + h],
+    [-0.2, y0 + h],
   ];
   const geo = plan.round
     ? new THREE.LatheGeometry(
