@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import { inChannel, railHalf, STREET_PITCH, streetLine, tramHalf, type Network } from '../../../shared/commute.js';
 import { CIVIC_LAMPS, FOUNTAIN, onExchange } from './exchange.js';
+import { figureLevel } from './figures.js';
 import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
 import { LAMP_EDGE, LAMP_OFFSETS, PITCH } from './lots.js';
@@ -86,7 +87,7 @@ export const AMBIENT_CAP = {
 } as const;
 
 /** The near and far levels' dissolve bands, in metres from the eye, and where the far crowd fades out. */
-export const LIFE_LOD = { car: { near: 190, far: 240 }, person: { near: 70, far: 95 }, crowdEnd: { near: 430, far: 520 } } as const;
+export const LIFE_LOD = { car: { near: 190, far: 240 }, close: { near: 16, far: 24 }, person: { near: 70, far: 95 }, crowdEnd: { near: 430, far: 520 } } as const;
 /**
  * The lamp streams (one call of points) fade in from this far off: beyond
  * it a car is a lamp or two, so the streams carry the avenues' traffic
@@ -914,6 +915,8 @@ interface Person {
   hair: number;
   coatLen: number;
   hat: number;
+  /** The body's shape (0 to 1), the hair (1 buzz, 2 short, 3 long, 4 a bun), the hat (0, 1 a felt hat, 2 a cap) and the scarf (0 or 1): aBody. */
+  body: [number, number, number, number];
   group: number;
   /** Followers keep beside their group's leader. */
   leader: Person | null;
@@ -989,11 +992,27 @@ function vary(c: [number, number, number], r: () => number, k = 0.12): [number, 
   return [c[0] * l * (1 + (r() - 0.5) * k * 0.5), c[1] * l, c[2] * l * (1 + (r() - 0.5) * k * 0.5)];
 }
 
+/**
+ * A figure's shape and what it wears, from its id alone (so the crowd's
+ * random stream, and with it every position, is as it was): about half
+ * the bodies narrower in the shoulder and fuller in the hip, who wear
+ * their hair long or up more often; a hat on those the stream gave one; a
+ * scarf on about one in five.
+ */
+export function bodyOf(id: number, hat: number): [number, number, number, number] {
+  const u = (k: number): number => (hashOf(id, 97, k) % 10007) / 10007;
+  const fem = u(1) < 0.5;
+  const shape = fem ? 0.72 + 0.28 * u(2) : 0.14 * u(2);
+  const h = u(3);
+  const hair = fem ? (h < 0.42 ? 3 : h < 0.72 ? 4 : 2) : h < 0.58 ? 2 : h < 0.94 ? 1 : 3;
+  return [shape, hair, hat ? (u(4) < (fem ? 0.75 : 0.4) ? 1 : 2) : 0, u(5) < 0.21 ? 1 : 0];
+}
+
 function newPerson(id: number, r: () => number): Person {
   const height = clamp(1.71 + gauss(r) * 0.085, 1.5, 1.96);
   const pace = clamp(1.32 + gauss(r) * 0.17, 0.85, 1.85);
   const step = 0.413 * height * (0.86 + 0.14 * (pace / 1.34)) * (0.93 + r() * 0.14);
-  return {
+  const p: Person = {
     id,
     state: 'walking',
     x: 0,
@@ -1015,6 +1034,7 @@ function newPerson(id: number, r: () => number): Person {
     hair: r(),
     coatLen: r() < 0.45 ? 0.05 + r() * 0.15 : 0.3 + r() * 0.32,
     hat: r() < 0.14 ? 1 : 0,
+    body: [0, 2, 0, 0],
     group: -1,
     leader: null,
     slot: { x: 0, z: 0 },
@@ -1033,6 +1053,8 @@ function newPerson(id: number, r: () => number): Person {
     gave: [0, pace],
     jit: (r() - 0.5) * 0.6,
   };
+  p.body = bodyOf(id, p.hat);
+  return p;
 }
 
 // ---------------------------------------------------------------- street lamps
@@ -1527,7 +1549,7 @@ function farCarModel(): THREE.BufferGeometry {
   return b.geometry();
 }
 
-/** The figure's joints, at 1.75 m (each figure is scaled to its own height and build). */
+/** The figure's joints, at 1.75 m (each figure is scaled to its own height and build); tools/kits/figures.py models round them. */
 export const JOINT = {
   hip: [0, 0.92, 0.095],
   knee: [0.01, 0.5, 0.095],
@@ -1538,256 +1560,89 @@ export const JOINT = {
   neck: [0, 1.52, 0],
 } as const;
 
-/** Figure codes: 0 skin, 1 hair, 2 coat, 3 legs, 4 shoes. */
+/** The plain figure's codes: 0 skin, 1 hair, 2 coat, 3 legs, 4 shoes. */
 export const F = { skin: 0, hair: 1, coat: 2, legs: 3, shoes: 4 } as const;
 /** Bones: 0 body, 1 head, 2 and 3 the left thigh and shin, 4 and 5 the right, 6 and 7 the left upper arm and forearm, 8 and 9 the right. */
 export const B = { body: 0, head: 1, thighL: 2, shinL: 3, thighR: 4, shinR: 5, armL: 6, foreL: 7, armR: 8, foreR: 9 } as const;
+/** Surface codes of the modelled figure (figures.py CODE); 6 and 14 are the persona's lantern glass and brass. */
+export const FIGURE_CODE = { skin: 0, hair: 1, coat: 2, legs: 3, shoes: 4, button: 5, glass: 6, eye: 7, trim: 8, lip: 9, hat: 10, scarf: 11, shirt: 12, sole: 13, brass: 14 } as const;
+/** The variant parts (figures.py PART): 0 always worn, the rest chosen by the instance's aBody. */
+export const FIGURE_PART = { base: 0, buzz: 1, short: 2, long: 3, bun: 4, hat: 5, cap: 6, scarf: 7 } as const;
+/** How far the shoulders (and so the arms) come in at a full aBody.x: the shader's morph and its joints agree on it. */
+export const SHOULDER_IN = 0.0156;
 
 /**
- * A figure (original), as a rig: every vertex carries its bone, how much it
- * follows that bone, its surface and (for the coat's tails) how far down the
- * tail it lies. Near: tapered limbs, a torso with a chest and a waist, an
- * ellipsoid head with its hair, hands and shoes. Far: boxes on the same rig.
+ * The plain figure (original): boxes on the rig, for the far level, and for
+ * every level when figures.glb did not load. Its attributes are the
+ * modelled figure's (aSkin, aSurf), so one shader poses both.
  */
-function figureModel(lo: boolean): THREE.BufferGeometry {
+export function plainFigure(): THREE.BufferGeometry {
   const b = new Builder();
-  buildFigure(b, lo);
-  return b.geometry();
-}
-
-/** Builds the figure into `b` (people.ts adds a persona's detail to the same rig before taking the geometry). */
-export function buildFigure(b: Builder, lo: boolean): void {
   const rig = (bone: number, code: number, w = 1): number[] => [bone, w, code];
-  if (lo) {
-    for (const side of [-1, 1]) {
-      const z = side * JOINT.hip[2];
-      b.box([0, 0.71, z], [0.15, 0.42, 0.14], rig(side < 0 ? B.thighL : B.thighR, F.legs));
-      b.box([0, 0.3, z], [0.12, 0.44, 0.11], rig(side < 0 ? B.shinL : B.shinR, F.legs));
-      b.box([0.05, 0.04, z], [0.25, 0.08, 0.1], rig(side < 0 ? B.shinL : B.shinR, F.shoes));
-      b.box([0, 1.28, side * 0.215], [0.09, 0.32, 0.09], rig(side < 0 ? B.armL : B.armR, F.coat));
-      b.box([0.01, 0.98, side * 0.22], [0.08, 0.3, 0.08], rig(side < 0 ? B.foreL : B.foreR, F.coat));
-    }
-    b.box([0, 1.16, 0], [0.22, 0.6, 0.38], rig(B.body, F.coat));
-    b.box([0.01, 1.64, 0], [0.19, 0.23, 0.16], rig(B.head, F.skin));
-    b.box([-0.01, 1.74, 0], [0.2, 0.06, 0.17], rig(B.head, F.hair));
-    return;
-  }
-  /**
-   * A loft of elliptical rings: each ring a centre, its half depth (x) and
-   * half width (z); `seg` points round; smooth normals; each vertex rigged by
-   * `rigOf` and carrying `ex` (the coat's tail measure).
-   */
-  const rings = (R: Array<{ c: number[]; rx: number; rz: number; ex?: number }>, seg: number, rigOf: (p: number[]) => number[], caps = false): void => {
-    const P = R.map((r) => Array.from({ length: seg }, (_, k) => {
-      const a = (k / seg) * Math.PI * 2;
-      return [r.c[0] + Math.cos(a) * r.rx, r.c[1], r.c[2] + Math.sin(a) * r.rz];
-    }));
-    const N = R.map((r, j) => Array.from({ length: seg }, (_, k) => {
-      const a = (k / seg) * Math.PI * 2;
-      // Outward in the ring, tilted by how the radius changes along the loft.
-      const up = R[Math.min(j + 1, R.length - 1)];
-      const dn = R[Math.max(j - 1, 0)];
-      const dy = up.c[1] - dn.c[1] || 1;
-      const dr = ((up.rx + up.rz) - (dn.rx + dn.rz)) / 2;
-      const n = [Math.cos(a) / r.rx, -dr / dy / ((r.rx + r.rz) / 2) * 0.5, Math.sin(a) / r.rz];
-      const l = Math.hypot(n[0], n[1], n[2]);
-      return [n[0] / l, n[1] / l, n[2] / l];
-    }));
-    for (let j = 0; j + 1 < R.length; j++) {
-      for (let k = 0; k < seg; k++) {
-        const k1 = (k + 1) % seg;
-        const quad: Array<[number, number]> = [
-          [j, k],
-          [j + 1, k],
-          [j + 1, k1],
-          [j, k1],
-        ];
-        for (const tri of [
-          [0, 1, 2],
-          [0, 2, 3],
-        ]) {
-          const v = tri.map((i) => quad[i]);
-          const mid = [(P[v[0][0]][v[0][1]][0] + P[v[1][0]][v[1][1]][0] + P[v[2][0]][v[2][1]][0]) / 3, 0, (P[v[0][0]][v[0][1]][2] + P[v[1][0]][v[1][1]][2] + P[v[2][0]][v[2][1]][2]) / 3];
-          b.tri(P[v[0][0]][v[0][1]], P[v[1][0]][v[1][1]], P[v[2][0]][v[2][1]], N[v[0][0]][v[0][1]], N[v[1][0]][v[1][1]], N[v[2][0]][v[2][1]], rigOf(mid));
-          b.extra.splice(-6, 6, ...v.flatMap(([jj]) => [R[jj].ex ?? 0, 0]));
-        }
-      }
-    }
-    if (!caps) return;
-    for (const [j, dir] of [
-      [0, -1],
-      [R.length - 1, 1],
-    ]) {
-      const c = R[j].c;
-      for (let k = 0; k < seg; k++) {
-        const k1 = (k + 1) % seg;
-        const n = [0, dir, 0];
-        if (dir > 0) b.tri(c, P[j][k1], P[j][k], n, n, n, rigOf(c));
-        else b.tri(c, P[j][k], P[j][k1], n, n, n, rigOf(c));
-      }
-    }
-  };
-  const one = (r: number[]) => () => r;
   for (const side of [-1, 1]) {
     const z = side * JOINT.hip[2];
-    const thigh = side < 0 ? B.thighL : B.thighR;
-    const shin = side < 0 ? B.shinL : B.shinR;
-    const arm = side < 0 ? B.armL : B.armR;
-    const fore = side < 0 ? B.foreL : B.foreR;
-    // The leg: a full thigh tapering to the knee, the calf, a slim ankle.
-    rings(
-      [
-        { c: [0.012, 0.47, z], rx: 0.05, rz: 0.048 },
-        { c: [0.005, 0.62, z], rx: 0.064, rz: 0.06 },
-        { c: [0.0, 0.8, z * 1.02], rx: 0.078, rz: 0.074 },
-        { c: [-0.005, 0.93, z * 1.05], rx: 0.09, rz: 0.084 },
-      ],
-      9,
-      one(rig(thigh, F.legs)),
-    );
-    rings(
-      [
-        { c: [0.0, 0.07, z], rx: 0.036, rz: 0.034 },
-        { c: [-0.006, 0.16, z], rx: 0.04, rz: 0.038 },
-        { c: [-0.014, 0.33, z], rx: 0.056, rz: 0.05 },
-        { c: [0.006, 0.48, z], rx: 0.05, rz: 0.047 },
-      ],
-      9,
-      one(rig(shin, F.legs)),
-    );
-    // The shoe: a heel and a rounded toe on the ground.
-    rings(
-      [
-        { c: [-0.04, 0.0, z], rx: 0.045, rz: 0.042 },
-        { c: [0.02, 0.0, z], rx: 0.09, rz: 0.048 },
-      ],
-      8,
-      one(rig(shin, F.shoes)),
-    );
-    rings(
-      [
-        { c: [0.04, 0.0, z], rx: 0.13, rz: 0.048 },
-        { c: [0.03, 0.075, z], rx: 0.1, rz: 0.044 },
-        { c: [0.0, 0.1, z], rx: 0.05, rz: 0.04 },
-      ],
-      8,
-      one(rig(shin, F.shoes)),
-    );
-    // The arm in its sleeve: a rounded shoulder, the upper arm, the forearm; the hand.
-    const sz = side * JOINT.shoulder[2];
-    rings(
-      [
-        { c: [0, 1.15, side * JOINT.elbow[2]], rx: 0.044, rz: 0.042 },
-        { c: [0, 1.29, side * 0.207], rx: 0.05, rz: 0.048 },
-        { c: [0, 1.4, sz], rx: 0.058, rz: 0.056 },
-        { c: [0, 1.455, sz * 0.93], rx: 0.045, rz: 0.04 },
-      ],
-      8,
-      one(rig(arm, F.coat)),
-      true,
-    );
-    rings(
-      [
-        { c: [0.012, 0.9, side * JOINT.wrist[2]], rx: 0.034, rz: 0.03 },
-        { c: [0.005, 1.02, side * 0.218], rx: 0.04, rz: 0.038 },
-        { c: [-0.005, 1.16, side * JOINT.elbow[2]], rx: 0.045, rz: 0.043 },
-      ],
-      8,
-      one(rig(fore, F.coat)),
-    );
-    rings(
-      [
-        { c: [0.02, 0.8, side * 0.212], rx: 0.016, rz: 0.012 },
-        { c: [0.018, 0.84, side * 0.214], rx: 0.04, rz: 0.018 },
-        { c: [0.012, 0.9, side * JOINT.wrist[2]], rx: 0.03, rz: 0.022 },
-      ],
-      6,
-      one(rig(fore, F.skin)),
-    );
+    b.box([0, 0.71, z], [0.15, 0.42, 0.14], rig(side < 0 ? B.thighL : B.thighR, F.legs));
+    b.box([0, 0.3, z], [0.12, 0.44, 0.11], rig(side < 0 ? B.shinL : B.shinR, F.legs));
+    b.box([0.05, 0.04, z], [0.25, 0.08, 0.1], rig(side < 0 ? B.shinL : B.shinR, F.shoes));
+    b.box([0, 1.28, side * 0.215], [0.09, 0.32, 0.09], rig(side < 0 ? B.armL : B.armR, F.coat));
+    b.box([0.01, 0.98, side * 0.22], [0.08, 0.3, 0.08], rig(side < 0 ? B.foreL : B.foreR, F.coat));
   }
-  // The coat over the body: a loft from its hem to the collar, the tail (below the waist) as long as this
-  // figure's coat (aExtra.x: 0 at the waist, 1 at the hem), each half following its thigh a little.
-  const tail = (p: number[], t: number): number[] => (t > 0 ? rig(p[2] < 0 ? B.thighL : B.thighR, F.coat, 0.5) : rig(B.body, F.coat));
-  rings(
-    [
-      { c: [-0.004, 0.88, 0], rx: 0.125, rz: 0.19, ex: 1 },
-      { c: [-0.004, 0.88, 0], rx: 0.122, rz: 0.186, ex: 0.66 },
-      { c: [-0.004, 0.88, 0], rx: 0.119, rz: 0.182, ex: 0.33 },
-      { c: [-0.004, 0.88, 0], rx: 0.115, rz: 0.178, ex: 0 },
-    ],
-    14,
-    (p) => tail(p, 1),
-  );
-  rings(
-    [
-      { c: [-0.004, 0.88, 0], rx: 0.115, rz: 0.178 },
-      { c: [0.0, 1.0, 0], rx: 0.108, rz: 0.165 },
-      { c: [0.008, 1.14, 0], rx: 0.118, rz: 0.172 },
-      { c: [0.012, 1.28, 0], rx: 0.128, rz: 0.19 },
-      { c: [0.006, 1.38, 0], rx: 0.12, rz: 0.205 },
-      { c: [-0.004, 1.44, 0], rx: 0.1, rz: 0.19 },
-      { c: [-0.01, 1.48, 0], rx: 0.07, rz: 0.11 },
-      { c: [-0.01, 1.505, 0], rx: 0.058, rz: 0.062 },
-    ],
-    14,
-    one(rig(B.body, F.coat)),
-  );
-  // The neck, and the head: a skull, the face narrowing to the jaw.
-  rings(
-    [
-      { c: [0.0, 1.49, 0], rx: 0.048, rz: 0.05 },
-      { c: [0.01, 1.58, 0], rx: 0.046, rz: 0.048 },
-    ],
-    8,
-    one(rig(B.head, F.skin)),
-  );
-  const hc = [0.012, 1.66, 0];
-  const lat = 9;
-  const lon = 12;
-  const head = (i: number, k: number, grow: number): number[] => {
-    const th = (i / lat) * Math.PI;
-    const ph = (k / lon) * Math.PI * 2;
-    const y = Math.cos(th);
-    // The jaw: narrower and further forward below the cheekbones.
-    const jaw = y < -0.2 ? 0.86 + 0.14 * (1 + y) : 1;
-    const rx = (0.1 + (Math.cos(ph) > 0 ? 0.005 : 0.01)) * grow;
-    return [hc[0] + Math.sin(th) * Math.cos(ph) * rx * jaw + (y < -0.3 ? 0.012 : 0), hc[1] + y * 0.118 * grow, hc[2] + Math.sin(th) * Math.sin(ph) * 0.083 * grow * jaw];
+  b.box([0, 1.16, 0], [0.22, 0.6, 0.38], rig(B.body, F.coat));
+  b.box([0.01, 1.64, 0], [0.19, 0.23, 0.16], rig(B.head, F.skin));
+  b.box([-0.01, 1.74, 0], [0.2, 0.06, 0.17], rig(B.head, F.hair));
+  return asSkinned(b);
+}
+
+/** A Builder's rig (bone, weight, code) and tail measure as the modelled figure's attributes: one bone, lit open (no occlusion). */
+export function asSkinned(b: Builder): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  const n = b.pos.length / 3;
+  const width = b.rig.length / n;
+  const skin = new Float32Array(n * 4);
+  const surf = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const bone = b.rig[i * width];
+    const code = b.rig[i * width + 2];
+    skin.set([bone, bone, 0, 0], i * 4);
+    surf.set([code, 0, Math.round((b.extra[i * 2] ?? 0) * 255), 255], i * 4);
+  }
+  g.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(b.nor, 3));
+  g.setAttribute('aSkin', new THREE.Float32BufferAttribute(skin, 4));
+  g.setAttribute('aSurf', new THREE.Float32BufferAttribute(surf, 4));
+  g.computeBoundingSphere();
+  return g;
+}
+
+/** The figure at a level: the modelled close (hi) and near (lo) levels when figures.glb loaded, else the plain figure; far is always plain. */
+export function figureGeometry(level: 'hi' | 'lo' | 'far'): THREE.BufferGeometry {
+  return (level === 'far' ? null : figureLevel(level)) ?? plainFigure();
+}
+
+/** Triangles a geometry draws (indexed or not). */
+export function trianglesOf(g: THREE.BufferGeometry): number {
+  return (g.index ? g.index.count : g.attributes.position.count) / 3;
+}
+
+/**
+ * A rest point posed by the legs alone, as the shader's boneMove and
+ * figureSkin do it (tests: the skinning's blend across a joint).
+ */
+export function skinPoint(p: THREE.Vector3, a: number, b: number, w: number, pose: { hipL?: number; hipR?: number; kneeL?: number; kneeR?: number }): THREE.Vector3 {
+  const move = (bone: number): THREE.Vector3 => {
+    const q = p.clone();
+    const turn = (at: readonly number[], left: boolean, ang: number): void => {
+      const c = new THREE.Vector3(at[0], at[1], left ? -at[2] : at[2]);
+      q.sub(c).applyAxisAngle(new THREE.Vector3(0, 0, 1), ang).add(c);
+    };
+    if (bone === 3) turn(JOINT.knee, true, -(pose.kneeL ?? 0));
+    if (bone === 5) turn(JOINT.knee, false, -(pose.kneeR ?? 0));
+    if (bone === 2 || bone === 3) turn(JOINT.hip, true, pose.hipL ?? 0);
+    if (bone === 4 || bone === 5) turn(JOINT.hip, false, pose.hipR ?? 0);
+    return q;
   };
-  const hn = (p: number[]): number[] => {
-    const x = (p[0] - hc[0]) / 0.0105;
-    const y = (p[1] - hc[1]) / 0.0139;
-    const z = (p[2] - hc[2]) / 0.0069;
-    const l = Math.hypot(x, y, z) || 1;
-    return [x / l, y / l, z / l];
-  };
-  for (let i = 0; i < lat; i++) {
-    for (let k = 0; k < lon; k++) {
-      const a = head(i, k, 1);
-      const c = head(i, k + 1, 1);
-      const d = head(i + 1, k + 1, 1);
-      const e = head(i + 1, k, 1);
-      b.tri(a, d, e, hn(a), hn(d), hn(e), rig(B.head, F.skin));
-      b.tri(a, c, d, hn(a), hn(c), hn(d), rig(B.head, F.skin));
-    }
-  }
-  // Hair (or a hat): a shell over the crown and down the back to the nape, standing a little proud of the skull.
-  for (let i = 0; i < 6; i++) {
-    for (let k = 0; k < lon; k++) {
-      const ph0 = (k / lon) * Math.PI * 2;
-      const ph1 = ((k + 1) / lon) * Math.PI * 2;
-      // Over the forehead the hairline is high; at the back it comes down to the nape.
-      const reach = (ph: number): number => (Math.cos(ph) > 0.35 ? 3 : Math.cos(ph) > -0.2 ? 4 : 6);
-      if (i >= Math.max(reach(ph0), reach(ph1))) continue;
-      const a = head(i, k, 1.07);
-      const c = head(i, k + 1, 1.07);
-      const d = head(i + 1, k + 1, 1.07);
-      const e = head(i + 1, k, 1.07);
-      b.tri(a, d, e, hn(a), hn(d), hn(e), rig(B.head, F.hair));
-      b.tri(a, c, d, hn(a), hn(c), hn(d), rig(B.head, F.hair));
-    }
-  }
-  // The nose, a shadow of a brow: enough for a face to read at a few metres.
-  b.box([hc[0] + 0.1, hc[1] - 0.012, 0], [0.026, 0.05, 0.022], rig(B.head, F.skin), 0, -0.25);
+  const pa = move(Math.round(a));
+  return w > 0 && Math.round(b) !== Math.round(a) ? pa.lerp(move(Math.round(b)), w) : pa;
 }
 
 // ---------------------------------------------------------------- materials
@@ -1798,15 +1653,17 @@ export function buildFigure(b: Builder, lo: boolean): void {
  * and the two levels keep complementary halves of a dither across the band.
  * `out`, when given, dissolves the far level out to nothing past it.
  */
-export function dissolve(sh: THREE.WebGLProgramParametersWithUniforms, band: { near: number; far: number }, level: 'near' | 'far', out?: { near: number; far: number }): void {
+export function dissolve(sh: THREE.WebGLProgramParametersWithUniforms, band: { near: number; far: number }, level: 'near' | 'far', out?: { near: number; far: number }, inBand?: { value: THREE.Vector2 }): void {
   sh.uniforms.uLodEye = LOD_EYE;
-  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform vec3 uLodEye;\nvarying float vLodFade;\nvarying float vLodOut;').replace(
+  if (inBand) sh.uniforms.uLodIn = inBand;
+  const fade = inBand ? 'smoothstep(uLodIn.x, uLodIn.y, lodD)' : `smoothstep(${band.near.toFixed(1)}, ${band.far.toFixed(1)}, lodD)`;
+  sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>\nuniform vec3 uLodEye;\n${inBand ? 'uniform vec2 uLodIn;\n' : ''}varying float vLodFade;\nvarying float vLodOut;`).replace(
     '#include <project_vertex>',
     `#include <project_vertex>
     {
       vec4 lodAt = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
       float lodD = distance(lodAt.xyz, uLodEye);
-      vLodFade = smoothstep(${band.near.toFixed(1)}, ${band.far.toFixed(1)}, lodD);
+      vLodFade = ${fade};
       vLodOut = ${out ? `smoothstep(${out.near.toFixed(1)}, ${out.far.toFixed(1)}, lodD)` : '0.0'};
       if (${level === 'near' ? 'vLodFade >= 1.0' : 'vLodFade <= 0.0 || vLodOut >= 1.0'}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
     }`,
@@ -1973,8 +1830,33 @@ function carMaterial(far: boolean): THREE.MeshPhysicalMaterial {
   return m;
 }
 
-/** Skin tones from light to dark, hair from black to fair and grey, and a few hats (linear RGB). */
+const glv = (v: readonly number[]): string => v.map((x) => x.toFixed(4)).join(', ');
+
+/**
+ * The figure's shading and skinning, shared by the crowd and the personas.
+ * Geometry: aSkin (bone a, bone b, b's weight out of 255, blush out of
+ * 255) and aSurf (code, variant part, coat tail out of 255, occlusion out
+ * of 255). Instance: aAnim, aLook (skin, hair, coat length, hat), aCoat,
+ * aLegs and aBody (the body's shape 0 to 1, the hair 1 to 4, the hat 0 to
+ * 2, the scarf). Each material supplies a Rig (its pose) and calls
+ * figureVertex. Left is -z.
+ */
 export const FIGURE_GLSL = /* glsl */ `
+  attribute vec4 aSkin;
+  attribute vec4 aSurf;
+  attribute vec4 aAnim;
+  attribute vec4 aLook;
+  attribute vec3 aCoat;
+  attribute vec3 aLegs;
+  attribute vec4 aBody;
+  varying vec3 vAlb;
+  varying float vRough;
+  varying float vMetal;
+  varying float vAo;
+  varying vec3 vObj;
+  varying float vCloth;
+  varying float vEye;
+  varying vec3 vIris;
   vec3 skinTone(float t) {
     vec3 a = vec3(0.72, 0.47, 0.37);
     vec3 b = vec3(0.47, 0.27, 0.17);
@@ -1989,25 +1871,212 @@ export const FIGURE_GLSL = /* glsl */ `
     if (t < 0.94) return vec3(0.16, 0.05, 0.025);
     return vec3(0.3, 0.29, 0.28);
   }
+  vec3 knitTone(float t) {
+    if (t < 0.25) return vec3(0.16, 0.025, 0.02);
+    if (t < 0.45) return vec3(0.3, 0.19, 0.04);
+    if (t < 0.65) return vec3(0.07, 0.07, 0.068);
+    if (t < 0.82) return vec3(0.025, 0.04, 0.09);
+    return vec3(0.04, 0.07, 0.04);
+  }
   mat3 rotZ(float a) { float c = cos(a), s = sin(a); return mat3(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0); }
   mat3 rotY(float a) { float c = cos(a), s = sin(a); return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c); }
   mat3 rotX(float a) { float c = cos(a), s = sin(a); return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c); }
   void turnAbout(inout vec3 p, inout vec3 n, vec3 at, mat3 R) { p = R * (p - at) + at; n = R * n; }
-  /**
-   * The figure's pose: a walk cycle blended with standing, each limb turned about its joint, child before parent.
-   * aAnim: phase, walking (0 to 1), stride, style. Left is -z.
-   */
-  void posed(inout vec3 p, inout vec3 n) {
-    int bone = int(aRig.x + 0.5);
+  /** A pose: each joint's angle, the head's and the torso's turn, the arms' shift in, and the body's drop and sway. */
+  struct Rig {
+    float hipL; float hipR; float kneeL; float kneeR;
+    float armL; float armR; float elbL; float elbR; float outL; float outR;
+    mat3 head; mat3 torso;
+    float shift; float drop; float sway;
+  };
+  /** One bone's move of a rest point: child joints before their parents. */
+  void boneMove(int bone, Rig R, inout vec3 p, inout vec3 n) {
+    vec3 L = vec3(1.0, 1.0, -1.0);
+    vec3 hip = vec3(${glv(JOINT.hip)});
+    vec3 knee = vec3(${glv(JOINT.knee)});
+    vec3 sho = vec3(${glv(JOINT.shoulder)}) - vec3(0.0, 0.0, R.shift);
+    vec3 elb = vec3(${glv(JOINT.elbow)}) - vec3(0.0, 0.0, R.shift);
+    if (bone == 3) turnAbout(p, n, knee * L, rotZ(-R.kneeL));
+    if (bone == 5) turnAbout(p, n, knee, rotZ(-R.kneeR));
+    if (bone == 2 || bone == 3) turnAbout(p, n, hip * L, rotZ(R.hipL));
+    if (bone == 4 || bone == 5) turnAbout(p, n, hip, rotZ(R.hipR));
+    if (bone == 7) turnAbout(p, n, elb * L, rotZ(R.elbL));
+    if (bone == 9) turnAbout(p, n, elb, rotZ(R.elbR));
+    if (bone == 6 || bone == 7) turnAbout(p, n, sho * L, rotZ(R.armL) * rotX(R.outL));
+    if (bone == 8 || bone == 9) turnAbout(p, n, sho, rotZ(R.armR) * rotX(R.outR));
+    if (bone == 1) turnAbout(p, n, vec3(0.0, ${JOINT.neck[1].toFixed(3)}, 0.0), R.head);
+    if (bone == 0 || bone == 1 || bone >= 6) turnAbout(p, n, vec3(0.0, 0.95, 0.0), R.torso);
+  }
+  /** Whether the instance wears this part: the base always; one head of hair; the hat or the cap; the scarf. */
+  bool worn(float part) {
+    if (part < 0.5) return true;
+    float style = aBody.y;
+    float hat = aBody.z;
+    // Under a hat the hair is cropped close, unless it is long.
+    if (hat > 0.5 && style != 3.0) style = 1.0;
+    if (part < 4.5) return abs(part - style) < 0.5;
+    if (part < 5.5) return abs(hat - 1.0) < 0.5;
+    if (part < 6.5) return abs(hat - 2.0) < 0.5;
+    return aBody.w > 0.5;
+  }
+  /** The body's shape (m 0 to 1): narrower shoulders and waist, fuller hips and bust, a finer head. */
+  void morph(inout vec3 p, int bone, float m) {
+    if (m <= 0.0) return;
+    if (bone >= 6) { p.z -= sign(p.z) * ${SHOULDER_IN} * m; return; }
+    if (bone == 1) { p.xz *= 1.0 - 0.045 * m; return; }
+    float y = p.y;
+    float wy = (y - 1.06) / 0.08;
+    float hy = (y - 0.9) / 0.1;
+    float by = (y - 1.27) / 0.055;
+    float bz = (abs(p.z) - 0.07) / 0.045;
+    float waist = exp(-wy * wy);
+    p.z *= 1.0 - ${(SHOULDER_IN / JOINT.shoulder[2]).toFixed(4)} * m * smoothstep(1.3, 1.42, y) - 0.06 * m * waist + 0.075 * m * exp(-hy * hy);
+    p.x *= 1.0 - 0.035 * m * waist;
+    if (p.x > 0.0) p.x += 0.017 * m * exp(-by * by - bz * bz);
+  }
+  /** Two-bone skinning: the point moved by each bone, blended by the weight. */
+  void figureSkin(Rig R, inout vec3 p, inout vec3 n) {
+    int a = int(aSkin.x + 0.5);
+    int b = int(aSkin.y + 0.5);
+    float w = aSkin.z / 255.0;
+    vec3 pa = p;
+    vec3 na = n;
+    boneMove(a, R, pa, na);
+    if (w > 0.0 && b != a) {
+      vec3 pb = p;
+      vec3 nb = n;
+      boneMove(b, R, pb, nb);
+      pa = mix(pa, pb, w);
+      na = mix(na, nb, w);
+    }
+    p = pa;
+    float nl = length(na);
+    n = nl > 1e-4 ? na / nl : vec3(0.0, 1.0, 0.0);
+  }
+  /** A surface's colour, roughness and metal. */
+  void figureSurface(int code, out vec3 alb, out float rough, out float metal) {
+    vec3 skin = skinTone(aLook.x);
+    float blush = aSkin.w / 255.0;
+    alb = aCoat;
+    rough = 0.86;
+    metal = 0.0;
+    if (code == 0) { alb = mix(skin, skin * vec3(1.12, 0.8, 0.76), blush); rough = 0.5; }
+    else if (code == 1) { alb = aBody.z > 0.5 && aSurf.y < 0.5 ? aCoat * 0.45 + vec3(0.01) : hairTone(aLook.y); rough = 0.46; }
+    else if (code == 3) { alb = aLegs; rough = 0.8; }
+    else if (code == 4) { alb = fract(aLook.y * 7.3) > 0.7 ? vec3(0.07, 0.035, 0.018) : vec3(0.016, 0.014, 0.012); rough = 0.36; }
+    else if (code == 5) { alb = vec3(0.02, 0.016, 0.013); rough = 0.35; }
+    else if (code == 7) { alb = vec3(0.3, 0.28, 0.26); rough = 0.12; }
+    else if (code == 8) { alb = vec3(0.012, 0.011, 0.01); rough = 0.6; }
+    else if (code == 9) { alb = skin * vec3(0.86, 0.6, 0.6); rough = 0.38; }
+    else if (code == 10) { alb = aCoat * 0.4 + vec3(0.012, 0.01, 0.008); rough = 0.92; }
+    else if (code == 11) { alb = knitTone(fract(aLook.y * 5.7 + aLook.x * 3.1)); rough = 0.95; }
+    else if (code == 12) { alb = fract(aLook.y * 11.1) > 0.6 ? vec3(0.4, 0.45, 0.52) : vec3(0.6, 0.58, 0.54); rough = 0.75; }
+    else if (code == 13) { alb = vec3(0.008); rough = 0.7; }
+  }
+  /** The vertex: tail, shape and skin applied to a worn part (others fold to a point), and its surface for the fragment. */
+  void figureVertex(Rig R, inout vec3 p, inout vec3 n) {
+    vObj = p;
+    int code = int(aSurf.x + 0.5);
+    float tailT = aSurf.z / 255.0;
+    if (!worn(aSurf.y)) { p = vec3(0.0); return; }
+    if (tailT > 0.0) {
+      float ext = max(aLook.z - 0.08, 0.0);
+      p.y -= tailT * ext;
+      p.xz *= 1.0 + 0.16 * tailT * ext;
+    }
+    morph(p, aSkin.z < 127.5 ? int(aSkin.x + 0.5) : int(aSkin.y + 0.5), aBody.x);
+    figureSkin(R, p, n);
+    p.y -= R.drop;
+    p.z += R.sway;
+    vec3 alb;
+    float rough;
+    float metal;
+    figureSurface(code, alb, rough, metal);
+    float ao = aSurf.w / 255.0;
+    // Occlusion takes the ambient light (lights_fragment_end) and a little of the albedo, as cavities do.
+    alb *= mix(0.55, 1.0, ao) * (0.86 + 0.14 * smoothstep(0.0, 1.4, vObj.y));
+    vAlb = alb;
+    vRough = rough;
+    vMetal = metal;
+    vAo = ao;
+    vCloth = (code == 2 || code == 3 || code == 10 || code == 11) ? 1.0 : 0.0;
+    vEye = code == 7 ? 1.0 : 0.0;
+    float t = fract(aLook.y * 13.7 + aLook.x * 2.3);
+    vIris = aLook.x > 0.45 || t < 0.55 ? vec3(0.03, 0.016, 0.008) : t < 0.8 ? vec3(0.06, 0.045, 0.02) : vec3(0.05, 0.075, 0.09);
+  }`;
+
+/** The figure's fragment: its surface, the iris and pupil on the eye, a fine weave close up, occlusion on the ambient light. */
+export const FIGURE_FRAG = /* glsl */ `
+  varying vec3 vAlb;
+  varying float vRough;
+  varying float vMetal;
+  varying float vAo;
+  varying vec3 vObj;
+  varying float vCloth;
+  varying float vEye;
+  varying vec3 vIris;`;
+
+/** Wires FIGURE_GLSL into a standard material's shader: `rig` is GLSL returning the instance's Rig; `extra` runs after (sees code). */
+export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: string, extra = '', extraFrag = ''): void {
+  sh.vertexShader = sh.vertexShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+      ${LAMP_VERT}
+      ${FIGURE_GLSL}
+      ${rig}`,
+    )
+    .replace(
+      '#include <beginnormal_vertex>',
+      `vec3 objectNormal = vec3(normal);
+      vec3 posedP = vec3(position);
+      figureVertex(figureRig(), posedP, objectNormal);
+      {
+        int code = int(aSurf.x + 0.5);
+        ${extra}
+        ${LAMP_VERT_MAIN}
+      }`,
+    )
+    .replace('#include <begin_vertex>', 'vec3 transformed = posedP;');
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', `#include <common>\n${FIGURE_FRAG}\n${LAMP_FRAG}\n${extraFrag}`)
+    .replace(
+      '#include <normal_fragment_begin>',
+      `#include <normal_fragment_begin>
+      if (vCloth > 0.5) {
+        float near = smoothstep(14.0, 3.0, length(vViewPosition));
+        float wv = sin(vObj.y * 620.0) * sin((vObj.x + vObj.z) * 540.0) + 0.5 * sin(vObj.y * 1900.0 + vObj.x * 1100.0);
+        normal = normalize(normal + 0.05 * near * wv * vec3(1.0, 0.6, 1.0));
+      }`,
+    )
+    .replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+      diffuseColor.rgb = vAlb;
+      if (vEye > 0.5) {
+        float r = length(vec2(vObj.y - ${EYE_AT[1].toFixed(4)}, abs(vObj.z) - ${EYE_AT[2].toFixed(4)}));
+        float front = smoothstep(${(EYE_AT[0] + 0.006).toFixed(4)}, ${(EYE_AT[0] + 0.0095).toFixed(4)}, vObj.x);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vIris, front * (1.0 - smoothstep(0.0052, 0.0062, r)));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.004), front * (1.0 - smoothstep(0.0022, 0.0028, r)));
+      }`,
+    )
+    .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vRough;')
+    .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
+    .replace('#include <aomap_fragment>', 'reflectedLight.indirectDiffuse *= vAo;\nreflectedLight.indirectSpecular *= mix(0.3, 1.0, vAo);')
+    .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${LAMP_FRAG_MAIN}`);
+}
+
+/** The eye's centre (figures.py EYE), right side: the iris is drawn round it on the eyeball's front. */
+const EYE_AT = [0.079, 1.669, 0.032] as const;
+
+/** The crowd's pose: a walk cycle blended with standing, in the old styles (1 hands in pockets, 2 a phone, 3 a slow walk, 4 talking). */
+const CROWD_RIG = /* glsl */ `
+  Rig figureRig() {
     float w = aAnim.y;
     float ph = aAnim.x;
     float A = aAnim.z;
     int style = int(aAnim.w + 0.5);
     float s = sin(ph);
-    float c = cos(ph);
-    // The coat's tail: as long as this figure's coat, flaring a little toward the hem.
-    float tailT = aExtra.x;
-    if (tailT > 0.0) { p.y -= tailT * aLook.z; p.xz *= 1.0 + 0.16 * tailT * aLook.z; }
     // Walking: the hips swing the legs, the knee folds through the swing, the arms swing against the legs.
     float hipL = A * s;
     float hipR = -A * s;
@@ -2023,102 +2092,52 @@ export const FIGURE_GLSL = /* glsl */ `
     // Standing: weight on one leg, the other knee easy; arms hanging, a breath, a look round.
     float idle = 1.0 - w;
     float slow = sin(ph * 0.5);
-    float sHipL = 0.035 * slow;
-    float sHipR = -0.02 - 0.03 * slow;
-    float sKneeL = 0.04;
-    float sKneeR = 0.12 + 0.06 * max(0.0, slow);
     float sArmL = 0.05;
     float sArmR = 0.05;
     float sElbL = 0.12;
     float sElbR = 0.12;
-    if (style == 1) { swing = 0.1; sArmL = -0.14; sArmR = -0.14; sElbL = 0.55; sElbR = 0.55; elbL = 0.5; elbR = 0.5; armL = -0.14; armR = -0.14; }
+    if (style == 1) { sArmL = -0.14; sArmR = -0.14; sElbL = 0.55; sElbR = 0.55; elbL = 0.5; elbR = 0.5; armL = -0.14; armR = -0.14; }
     if (style == 2) { sArmR = 0.32; sElbR = 1.45; armR = 0.3; elbR = 1.4; sArmL = 0.12; sElbL = 0.9 + 0.05 * slow; }
     if (style == 4) { sArmR = 0.18 + 0.14 * sin(ph * 2.3); sElbR = 0.75 + 0.45 * max(0.0, sin(ph * 1.7)); }
-    hipL = mix(sHipL, hipL, w);
-    hipR = mix(sHipR, hipR, w);
-    kneeL = mix(sKneeL, kneeL, w);
-    kneeR = mix(sKneeR, kneeR, w);
-    armL = mix(sArmL, armL, w);
-    armR = mix(sArmR, armR, w);
-    elbL = mix(sElbL, elbL, w);
-    elbR = mix(sElbR, elbR, w);
-    vec3 hip = vec3(${JOINT.hip[0]}, ${JOINT.hip[1]}, ${JOINT.hip[2]});
-    vec3 knee = vec3(${JOINT.knee[0]}, ${JOINT.knee[1]}, ${JOINT.knee[2]});
-    vec3 sho = vec3(${JOINT.shoulder[0]}, ${JOINT.shoulder[1]}, ${JOINT.shoulder[2]});
-    vec3 elb = vec3(${JOINT.elbow[0]}, ${JOINT.elbow[1]}, ${JOINT.elbow[2]});
-    vec3 L = vec3(1.0, 1.0, -1.0);
-    if (bone == 3) turnAbout(p, n, knee * L, rotZ(-kneeL));
-    if (bone == 5) turnAbout(p, n, knee, rotZ(-kneeR));
-    if (bone == 2 || bone == 3) turnAbout(p, n, hip * L, rotZ(hipL * (bone == 2 ? aRig.y : 1.0)));
-    if (bone == 4 || bone == 5) turnAbout(p, n, hip, rotZ(hipR * (bone == 4 ? aRig.y : 1.0)));
-    if (bone == 7) turnAbout(p, n, elb * L, rotZ(elbL));
-    if (bone == 9) turnAbout(p, n, elb, rotZ(elbR));
-    // The arms hang a little out from the body, more so with a broad coat.
-    if (bone == 6 || bone == 7) turnAbout(p, n, sho * L, rotZ(armL) * rotX(0.06 + 0.04 * w));
-    if (bone == 8 || bone == 9) turnAbout(p, n, sho, rotZ(armR) * rotX(-0.06 - 0.04 * w));
-    // The head: a slow look round when standing; down at the phone.
-    if (bone == 1) {
-      vec3 neck = vec3(0.0, ${JOINT.neck[1]}, 0.0);
-      float look = idle * 0.38 * sin(ph * 0.31 + aLook.y * 6.0);
-      float nod = style == 2 ? -0.38 : -0.04 * w;
-      turnAbout(p, n, neck, rotY(look - 0.06 * s * w) * rotZ(nod));
-    }
+    Rig R;
+    R.hipL = mix(0.035 * slow, hipL, w);
+    R.hipR = mix(-0.02 - 0.03 * slow, hipR, w);
+    R.kneeL = mix(0.04, kneeL, w);
+    R.kneeR = mix(0.12 + 0.06 * max(0.0, slow), kneeR, w);
+    R.armL = mix(sArmL, armL, w);
+    R.armR = mix(sArmR, armR, w);
+    R.elbL = mix(sElbL, elbL, w);
+    R.elbR = mix(sElbR, elbR, w);
+    // The arms hang a little out from the body.
+    R.outL = 0.06 + 0.04 * w;
+    R.outR = -0.06 - 0.04 * w;
+    float look = idle * 0.38 * sin(ph * 0.31 + aLook.y * 6.0);
+    float nod = style == 2 ? -0.38 : -0.04 * w;
+    R.head = rotY(look - 0.06 * s * w) * rotZ(nod);
     // The upper body leans into the walk and turns a little against the hips.
-    if (bone == 0 || bone == 1 || bone >= 6) turnAbout(p, n, vec3(0.0, 0.95, 0.0), rotY(0.07 * s * w) * rotZ(-0.055 * w));
+    R.torso = rotY(0.07 * s * w) * rotZ(-0.055 * w);
+    R.shift = ${SHOULDER_IN} * aBody.x;
     // The whole body drops as the legs spread (so the planted foot stays down), and sways over the standing foot.
-    p.y -= w * 0.86 * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow);
-    p.z += w * 0.022 * s + idle * 0.012 * slow;
+    R.drop = w * 0.86 * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow);
+    R.sway = w * 0.022 * s + idle * 0.012 * slow;
+    return R;
   }`;
 
-/** The figures' material: the rig posed in the vertex shader, each surface coloured from the instance's own colours. */
-function figureMaterial(far: boolean): THREE.MeshStandardMaterial {
+/**
+ * The crowd's figure material at a level: hi (close), lo (near) or far.
+ * `inBand` (lo only) is the uniform band it fades in over from the close
+ * level, so the governor's medium step can switch the close level off.
+ */
+function figureMaterial(level: 'hi' | 'lo' | 'far', inBand?: { value: THREE.Vector2 }): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0, envMapIntensity: 0.6 });
-  m.name = far ? 'ambient-figure-far' : 'ambient-figure';
+  m.name = `ambient-figure-${level}`;
   m.onBeforeCompile = (sh) => {
-    dissolve(sh, LIFE_LOD.person, far ? 'far' : 'near', far ? LIFE_LOD.crowdEnd : undefined);
-    sh.vertexShader = sh.vertexShader
-      .replace(
-        '#include <common>',
-        `#include <common>
-        attribute vec3 aRig;
-        attribute vec2 aExtra;
-        attribute vec4 aAnim;
-        attribute vec4 aLook;
-        attribute vec3 aCoat;
-        attribute vec3 aLegs;
-        ${LAMP_VERT}
-        varying vec3 vAlb;
-        varying float vRough;
-        ${FIGURE_GLSL}`,
-      )
-      .replace(
-        '#include <beginnormal_vertex>',
-        `vec3 objectNormal = vec3(normal);
-        vec3 posedP = vec3(position);
-        posed(posedP, objectNormal);
-        {
-          int code = int(aRig.z + 0.5);
-          vec3 alb = aCoat;
-          float rough = 0.86;
-          if (code == 0) { alb = skinTone(aLook.x); rough = 0.55; }
-          else if (code == 1) { alb = aLook.w > 0.5 ? aCoat * 0.55 + vec3(0.01) : hairTone(aLook.y); rough = aLook.w > 0.5 ? 0.9 : 0.5; }
-          else if (code == 3) { alb = aLegs; rough = 0.8; }
-          else if (code == 4) { alb = aLook.y > 0.9 ? vec3(0.55, 0.54, 0.52) : vec3(0.014, 0.013, 0.012); rough = 0.45; }
-          // The folds and the ground's shade: a little darker low down and under each limb.
-          alb *= (0.72 + 0.28 * smoothstep(0.0, 1.5, position.y)) * (0.85 + 0.15 * clamp(normal.y + 1.0, 0.0, 1.0));
-          vAlb = alb;
-          vRough = rough;
-          ${LAMP_VERT_MAIN}
-        }`,
-      )
-      .replace('#include <begin_vertex>', 'vec3 transformed = posedP;');
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vAlb;\nvarying float vRough;\n${LAMP_FRAG}`)
-      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = vAlb;')
-      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vRough;')
-      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${LAMP_FRAG_MAIN}`);
+    if (level === 'hi') dissolve(sh, LIFE_LOD.close, 'near');
+    else if (level === 'lo') dissolve(sh, LIFE_LOD.close, 'far', LIFE_LOD.person, inBand);
+    else dissolve(sh, LIFE_LOD.person, 'far', LIFE_LOD.crowdEnd);
+    figureShader(sh, CROWD_RIG);
   };
-  m.customProgramCacheKey = () => (far ? 'palimpsest-ambient-figure-far' : 'palimpsest-ambient-figure');
+  m.customProgramCacheKey = () => `palimpsest-ambient-figure-${level}`;
   return m;
 }
 
@@ -2268,6 +2287,8 @@ export interface AmbientView {
   farCars: number;
   /** Lamps in the streams far off, when they draw. */
   streams: number;
+  /** Figures drawn at the close (modelled, full) level, the near (modelled, reduced) level and far (plain). */
+  closePeople: number;
   nearPeople: number;
   farPeople: number;
   /** Draw calls of the main pass and the triangles they draw. */
@@ -2321,15 +2342,19 @@ export interface Ambient {
   dispose(): void;
 }
 
-/** The near figure's triangles by surface (tests): skin, hair, coat, legs, shoes. */
-export function ambientFigure(): Record<'skin' | 'hair' | 'coat' | 'legs' | 'shoes', number> {
-  const g = figureModel(false);
-  const rig = g.attributes.aRig;
-  const out = { skin: 0, hair: 0, coat: 0, legs: 0, shoes: 0 };
-  const names = ['skin', 'hair', 'coat', 'legs', 'shoes'] as const;
-  for (let i = 0; i < rig.count; i += 3) out[names[Math.round(rig.getZ(i))]]++;
-  g.dispose();
-  return out;
+/** The triangles a figure draws at a level: its base and, of the variants, the most a figure wears at once (tests and the view's count). */
+export function wornTriangles(g: THREE.BufferGeometry): number {
+  const surf = g.attributes.aSurf;
+  if (!g.index) return trianglesOf(g);
+  const by = new Map<number, number>();
+  for (let i = 0; i < g.index.count; i += 3) {
+    const part = Math.round(surf.getY(g.index.getX(i)));
+    by.set(part, (by.get(part) ?? 0) + 1);
+  }
+  const P = FIGURE_PART;
+  const hair = Math.max(...[P.buzz, P.short, P.long, P.bun].map((k) => by.get(k) ?? 0));
+  const hat = Math.max(by.get(P.hat) ?? 0, by.get(P.cap) ?? 0);
+  return (by.get(P.base) ?? 0) + hair + hat + (by.get(P.scarf) ?? 0);
 }
 
 /** Each model's lamp and roof heights and its triangles, near (tests). */
@@ -3396,11 +3421,14 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   const personCap = AMBIENT_CAP.high.people;
   const nearCar = carMaterial(false);
   const farCar = carMaterial(true);
-  const nearFig = figureMaterial(false);
-  const farFig = figureMaterial(true);
+  /** The near level's fade-in band: from the close level at high, from the eye itself at medium (no close level). */
+  const closeBand = { value: new THREE.Vector2(LIFE_LOD.close.near, LIFE_LOD.close.far) };
+  const closeFig = figureMaterial('hi');
+  const nearFig = figureMaterial('lo', closeBand);
+  const farFig = figureMaterial('far');
   const pool = poolMaterial();
   const shade = shadeMaterial();
-  mats.push(nearCar, farCar, nearFig, farFig, pool, shade);
+  mats.push(nearCar, farCar, closeFig, nearFig, farFig, pool, shade);
   const CAR_ATTRS = { aPaint: 4, aState: 4, aLampL: 4 };
   const BODY_MODELS: Array<Exclude<AmbientModel, 'cab'>> = ['saloon', 'hatch', 'estate', 'van'];
   /**
@@ -3445,11 +3473,15 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     setLayers(shades, LAYER.view);
     group.add(shades);
   }
-  const FIG_ATTRS = { aAnim: 4, aLook: 4, aCoat: 3, aLegs: 3, aLampL: 4 };
-  const figGeo = figureModel(false);
-  const figFarGeo = figureModel(true);
-  const nearPeople = { ...instanced(figGeo, nearFig, personCap, FIG_ATTRS, 'ambient:people'), tris: figGeo.attributes.position.count / 3, n: 0 };
-  const farPeople = { ...instanced(figFarGeo, farFig, personCap, FIG_ATTRS, 'ambient:people:far'), tris: figFarGeo.attributes.position.count / 3, n: 0 };
+  const FIG_ATTRS = { aAnim: 4, aLook: 4, aCoat: 3, aLegs: 3, aLampL: 4, aBody: 4 };
+  // The modelled figure (figures.glb) close and near, the plain one far: tris counts what a figure draws (its worn variants).
+  const figure = (level: 'hi' | 'lo' | 'far', mat: THREE.Material, cap: number, name: string): Drawn & { tris: number; n: number } => {
+    const g = figureGeometry(level);
+    return { ...instanced(g, mat, cap, FIG_ATTRS, name), tris: wornTriangles(g), n: 0 };
+  };
+  const closePeople = figure('hi', closeFig, 256, 'ambient:people:close');
+  const nearPeople = figure('lo', nearFig, personCap, 'ambient:people');
+  const farPeople = figure('far', farFig, personCap, 'ambient:people:far');
   const poolGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0.5, 0, 0);
   const shadeGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
   const pools = new THREE.InstancedMesh(poolGeo, pool, HEADLAMP.pools);
@@ -3556,6 +3588,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     d0.a.aCoat.setXYZ(i, p.coat[0], p.coat[1], p.coat[2]);
     d0.a.aLegs.setXYZ(i, p.legs[0], p.legs[1], p.legs[2]);
     d0.a.aLampL.setXYZW(i, p.lamp[0], p.lamp[1], p.lamp[2], p.lamp[3]);
+    d0.a.aBody.setXYZW(i, p.body[0], p.body[1], p.body[2], p.body[3]);
   }
 
   function draw(camera: THREE.PerspectiveCamera, viewHeight: number): void {
@@ -3573,8 +3606,11 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     if (streams) streams.visible = density > 0.02 && streamN > 0;
     for (const d of carMeshes.values()) d.n = 0;
     farCars.n = 0;
+    closePeople.n = 0;
     nearPeople.n = 0;
     farPeople.n = 0;
+    const close = quality === 'high';
+    closeBand.value.set(close ? LIFE_LOD.close.near : -2, close ? LIFE_LOD.close.far : -1);
     poolN = 0;
     shadeN = 0;
     const poolsOn = quality === 'high';
@@ -3633,7 +3669,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       const stride = Math.asin(clamp((p.step * Math.max(0.55, wv)) / (2 * 0.86 * k), 0, 0.62));
       if (d < LIFE_LOD.person.far) {
         lampLight(lamps, p.x, p.y + 1.3, p.z, p.lamp);
-        writePerson(nearPeople, p, wv, stride);
+        if (close && d < LIFE_LOD.close.far) writePerson(closePeople, p, wv, stride);
+        if (!close || d > LIFE_LOD.close.near) writePerson(nearPeople, p, wv, stride);
         addShade(p.x, p.y, p.z, p.yaw, 0.62 * k, 0.5 * k * p.build);
       } else p.lamp[3] = 0;
       if (d > LIFE_LOD.person.near) writePerson(farPeople, p, wv, stride);
@@ -3653,6 +3690,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     };
     for (const d of carMeshes.values()) finish(d.mesh, d.n, d.a);
     finish(farCars.mesh, farCars.n, farCars.a);
+    finish(closePeople.mesh, closePeople.n, closePeople.a);
     finish(nearPeople.mesh, nearPeople.n, nearPeople.a);
     finish(farPeople.mesh, farPeople.n, farPeople.a);
     finish(pools, poolN);
@@ -3752,7 +3790,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
         }
         nc += d.n;
       }
-      for (const d of [farCars, nearPeople, farPeople]) {
+      for (const d of [farCars, closePeople, nearPeople, farPeople]) {
         if (!d.mesh.visible) continue;
         meshes++;
         triangles += d.tris * d.n;
@@ -3771,6 +3809,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
         waiting: people.filter((p) => p.state === 'waiting').length,
         nearCars: nc,
         farCars: farCars.n,
+        closePeople: closePeople.n,
         nearPeople: nearPeople.n,
         farPeople: farPeople.n,
         meshes,
@@ -3792,7 +3831,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       }
       for (const g of owned) g.dispose();
       for (const m of mats) m.dispose();
-      for (const m of [...carMeshes.values()].map((d) => d.mesh).concat([farCars.mesh, nearPeople.mesh, farPeople.mesh, pools, shades])) {
+      for (const m of [...carMeshes.values()].map((d) => d.mesh).concat([farCars.mesh, closePeople.mesh, nearPeople.mesh, farPeople.mesh, pools, shades])) {
         group.remove(m);
         m.dispose();
       }

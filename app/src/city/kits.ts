@@ -50,6 +50,7 @@ export function parseGlb(buf: ArrayBuffer): Map<string, THREE.BufferGeometry> {
           case 5125: v = src.getUint32(o, true); break;
           case 5123: v = src.getUint16(o, true); if (a.normalized) v /= 65535; break;
           case 5121: v = src.getUint8(o); if (a.normalized) v /= 255; break;
+          case 5120: v = src.getInt8(o); if (a.normalized) v = Math.max(v / 127, -1); break;
           default: throw new Error(`kits: component type ${a.componentType}`);
         }
         out[e * size + c] = v;
@@ -71,6 +72,12 @@ export function parseGlb(buf: ArrayBuffer): Map<string, THREE.BufferGeometry> {
       const rgb = new Float32Array((c.array.length / c.size) * 3);
       for (let i = 0; i < rgb.length / 3; i++) for (let k = 0; k < 3; k++) rgb[i * 3 + k] = c.array[i * c.size + k];
       geo.setAttribute('color', new THREE.BufferAttribute(rgb, 3));
+    }
+    // Custom attributes (`_SKIN` and the like, as figures.py writes them) as floats named aSkin and so on.
+    for (const [key, index] of Object.entries(prim.attributes)) {
+      if (!key.startsWith('_')) continue;
+      const c = read(index);
+      geo.setAttribute(`a${key[1]}${key.slice(2).toLowerCase()}`, new THREE.BufferAttribute(Float32Array.from(c.array), c.size));
     }
     geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(pos.array.length / 3 * 2), 2));
     if (prim.indices !== undefined) geo.setIndex(new THREE.BufferAttribute(new Uint32Array(read(prim.indices).array), 1));

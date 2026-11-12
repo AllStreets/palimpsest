@@ -1,3 +1,4 @@
+import './figure-setup.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -127,7 +128,7 @@ test('a figure in a cab moves with the cab', () => {
   assert.ok(Math.hypot(out.x - end[0], out.z - end[2]) < 12, `it steps out by the leg's end (${Math.hypot(out.x - end[0], out.z - end[2]).toFixed(1)} m)`);
 });
 
-test('beyond 400 m only the lantern renders', () => {
+test('close the modelled figure in full, then reduced, then plain, and beyond 400 m only the lantern', () => {
   const trip = tripOf('cy', { x: 440, z: 200 }, { x: 440, z: 320 });
   const start = Date.parse(trip.startedAt);
   const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start });
@@ -139,11 +140,15 @@ test('beyond 400 m only the lantern renders', () => {
     camera.updateMatrixWorld();
     people.update(0.016, camera);
   };
-  look(20);
+  look(3);
   let v = people.view(camera);
   assert.equal(v.figures, 1);
-  assert.ok(v.near === 1 && v.far === 0 && v.lanterns === 0, `at 20 m the near figure draws (${JSON.stringify(v)})`);
-  assert.ok(v.triangles > 1500, `with real detail (${v.triangles} triangles)`);
+  assert.ok(v.close === 1 && v.near === 0 && v.far === 0 && v.lanterns === 0, `a few metres off the close figure draws (${JSON.stringify(v)})`);
+  assert.ok(v.triangles > 9000, `the modelled figure in full (${v.triangles} triangles)`);
+  look(60);
+  v = people.view(camera);
+  assert.ok(v.close === 0 && v.near === 1 && v.far === 0, `at 60 m the near figure draws (${JSON.stringify(v)})`);
+  assert.ok(v.triangles > 1800 && v.triangles < 5000, `the modelled figure reduced (${v.triangles} triangles)`);
   look(250);
   v = people.view(camera);
   assert.ok(v.near === 0 && v.far === 1 && v.lanterns === 0, `at 250 m the far figure draws (${JSON.stringify(v)})`);

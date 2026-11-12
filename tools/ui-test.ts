@@ -2003,7 +2003,7 @@ async function vehicleChecks(page: Page): Promise<void> {
  * rides in it; Follow brings the camera to it and Escape lets go.
  */
 async function peopleChecks(page: Page): Promise<void> {
-  type PV = { figures: number; near: number; far: number; lanterns: number; meshes: number; triangles: number; following: string | null };
+  type PV = { figures: number; close: number; near: number; far: number; lanterns: number; meshes: number; triangles: number; following: string | null };
   const view = (): Promise<PV | null> => callDebug<PV | null>(page, 'd.people()');
   const home = await debug(page, (d) => d.limits().home);
   await setView(page, home.eye, home.target);
@@ -2031,7 +2031,7 @@ async function peopleChecks(page: Page): Promise<void> {
       const plateText = (await plates.allTextContents()).join(' | ');
       check((await plates.count()) >= 1 && /Dagny Hollis/.test(plateText), `her plate stands over her within 150 m (${plateText || 'none'})`);
       const near = await view();
-      check(!!near && near.near >= 1 && near.triangles > 1500, `close by she draws at her full level (${near?.near} near, ${near?.triangles} triangles)`);
+      check(!!near && near.close >= 1 && near.triangles > 9000, `close by she draws as the modelled figure in full (${near?.close} close, ${near?.near} near, ${near?.triangles} triangles)`);
       await page.screenshot({ path: join(SHOTS, 'commute.png') });
     }
     f = await runUntil(page, id, (x) => x.stage === 'ride', 300);

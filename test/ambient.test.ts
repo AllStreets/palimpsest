@@ -254,7 +254,7 @@ test("a tower's look changing retones only the blocks in its ring; every block o
 import { readFileSync } from 'node:fs';
 import { extentBlocks, inChannel, network, streetLine, tramHalf } from '../shared/commute.js';
 import * as THREE from 'three';
-import { ambientDensity, ambientModels, createAmbient, AMBIENT_CAP, type Ambient } from '../app/src/city/ambient.js';
+import { ambientDensity, ambientModels, bodyOf, createAmbient, AMBIENT_CAP, type Ambient } from '../app/src/city/ambient.js';
 
 /** The sample city's network, as the commute and vehicle tests lay it. */
 const SLOTS = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
@@ -639,4 +639,49 @@ test('a network grown a ring keeps the parked cars inside the old reach where th
   for (const k of after.keys()) assert.ok(before.has(k), `no new car appears inside the old reach (${k})`);
   assert.ok(a.parked().length > before.size, 'the grown ring parks its own');
   a.dispose();
+});
+
+test('the modelled crowd: in full close by at high, reduced past it, and the medium step drops the close level for the reduced one', () => {
+  const a = createAmbient(NET, 'high', { seed: 37 });
+  a.setDensity(1);
+  a.skip(20);
+  a.hold(true);
+  const p = a.people().find((x) => Math.hypot(x.x, x.z) < 400)!;
+  assert.ok(p, 'someone on the streets');
+  const cam = new THREE.PerspectiveCamera(50, 1.6, 0.1, 3000);
+  const look = (d: number): ReturnType<Ambient['view']> => {
+    cam.position.set(p.x + d, 1.7, p.z + 0.01);
+    cam.lookAt(p.x, 1, p.z);
+    cam.updateMatrixWorld();
+    a.update(0, cam, 1000);
+    return a.view(cam);
+  };
+  let v = look(6);
+  assert.ok(v.closePeople >= 1, `at high a figure 6 m off is drawn in full (${JSON.stringify(v)})`);
+  const closeAt6 = v.closePeople;
+  a.setQuality('medium');
+  v = look(6);
+  assert.equal(v.closePeople, 0, 'at medium nobody is drawn at the close level');
+  assert.ok(v.nearPeople >= 1, `the reduced level draws them instead (${v.nearPeople} near for ${closeAt6} close at high)`);
+  a.setQuality('high');
+  v = look(6);
+  assert.ok(v.closePeople >= 1, 'back at high the close level returns');
+  a.dispose();
+});
+
+test('the crowd wears a spread of bodies, hair, hats and scarves, the same for the same person', () => {
+  const seen = { shape: new Set<number>(), hair: new Set<number>(), hat: new Set<number>(), scarf: 0 };
+  for (let id = 0; id < 400; id++) {
+    const [shape, hair, hat, scarf] = bodyOf(id, id % 7 === 0 ? 1 : 0);
+    assert.deepEqual(bodyOf(id, id % 7 === 0 ? 1 : 0), [shape, hair, hat, scarf]);
+    assert.ok(shape >= 0 && shape <= 1);
+    seen.shape.add(shape > 0.5 ? 1 : 0);
+    seen.hair.add(hair);
+    seen.hat.add(hat);
+    seen.scarf += scarf;
+  }
+  assert.equal(seen.shape.size, 2, 'both builds');
+  assert.deepEqual([...seen.hair].sort(), [1, 2, 3, 4], 'every head of hair');
+  assert.deepEqual([...seen.hat].sort(), [0, 1, 2], 'no hat, a felt hat, a cap');
+  assert.ok(seen.scarf > 40 && seen.scarf < 140, `a scarf on some (${seen.scarf} of 400)`);
 });

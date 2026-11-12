@@ -2,9 +2,10 @@ import './kit-setup.js';
 import assert from 'node:assert/strict';
 import { statSync } from 'node:fs';
 import { test } from 'node:test';
+import * as THREE from 'three';
 
 import { hasKit, kitShared } from '../app/src/city/kits.js';
-import { codedParts, modelParts } from '../app/src/city/vehicles.js';
+import { codedParts, interiorOf, modelParts, nearPart } from '../app/src/city/vehicles.js';
 
 // The train's cab car and the cab, modelled in the kit pipeline (tools/kits/kits.py), read from kits.glb in Node.
 
@@ -78,5 +79,50 @@ test("a destination renders into the board's columns whole, unclipped, each lett
       }
       if (i < name.length - 1) assert.equal(columns[start + i * 6 + 5], 0, `a dark column after ${ch}`);
     });
+  }
+});
+
+// ---------------------------------------------------------------- inside the cars
+
+/** The near model's solid parts (body, trim, lamps) as one mesh drawn front faces only, as the app draws them. */
+function solid(name: Parameters<typeof nearPart>[0]): THREE.Mesh {
+  const geos = (['body', 'trim', 'lamp'] as const).map((p) => nearPart(name, p)).filter((g): g is THREE.BufferGeometry => !!g);
+  const pos: number[] = [];
+  for (const g of geos) pos.push(...(g.attributes.position.array as Float32Array));
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ side: THREE.FrontSide }));
+}
+
+test('from a seat inside a car the cabin is closed round the rider: floor, ceiling, the walls under the sills and over the window heads', () => {
+  for (const name of ['railEnd', 'railMid', 'tram', 'pod', 'ferry', 'cab'] as const) {
+    const i = interiorOf(name);
+    const mesh = solid(name);
+    const ray = new THREE.Raycaster();
+    const eye = new THREE.Vector3((i.min[0] + i.max[0]) / 2 + 0.3, i.min[1] + Math.min(1.2, (i.max[1] - i.min[1]) * 0.6), 0.2);
+    const hits = (dir: THREE.Vector3): boolean => {
+      ray.set(eye, dir.normalize());
+      ray.far = 12;
+      return ray.intersectObject(mesh).length > 0;
+    };
+    assert.ok(hits(new THREE.Vector3(0, -1, 0)), `${name}: a floor under the rider`);
+    assert.ok(hits(new THREE.Vector3(0, 1, 0)), `${name}: a ceiling over the rider`);
+    const low = i.min[1] + (i.sill - i.min[1]) * 0.5 - eye.y;
+    for (const side of [-1, 1]) assert.ok(hits(new THREE.Vector3(0, low, side * (i.max[2] - eye.z * side))), `${name}: the wall under the ${side < 0 ? 'left' : 'right'} sill`);
+    if (i.head < i.max[1] - 0.05) assert.ok(hits(new THREE.Vector3(0, i.head + (i.max[1] - i.head) / 2 - eye.y, i.max[2] - eye.z)), `${name}: the wall over the window head`);
+    assert.ok(hits(new THREE.Vector3(1, -0.05, 0)) && hits(new THREE.Vector3(-1, -0.05, 0)), `${name}: an end wall ahead and behind`);
+  }
+});
+
+test('a seat stands where a rider sits, in the cars people sit in', () => {
+  for (const [name, along, across, height] of [['railMid', 0, 0.6, 0.45], ['ferry', 0.5, 1.2, 0.45], ['cab', -0.45, 0.38, 0.14]] as const) {
+    const i = interiorOf(name);
+    const mesh = solid(name);
+    const ray = new THREE.Raycaster(new THREE.Vector3(along, i.min[1] + height + 0.3, across), new THREE.Vector3(0, -1, 0));
+    const hit = ray.intersectObject(mesh)[0];
+    assert.ok(hit, `${name}: something under the rider`);
+    const top = hit.point.y - i.min[1];
+    assert.ok(Math.abs(top - height) < 0.08, `${name}: the seat's top stands ${top.toFixed(2)} m over the floor (the rider sits at ${height})`);
   }
 });

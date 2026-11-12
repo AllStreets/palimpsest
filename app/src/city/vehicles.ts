@@ -1301,10 +1301,22 @@ function kitCode(r: number): number {
   return Math.floor(r * 32);
 }
 
+/** A model's near level as built now, one part of it (tests: what a rider sees from inside). */
+export function nearPart(name: ModelName, part: Part): THREE.BufferGeometry | null {
+  const kit = new Kit(false);
+  buildModel(kit, name);
+  return kit.part(part);
+}
+
+/** A model's cabin: its box, sills and window heads, in the car's frame (tests). */
+export function interiorOf(name: ModelName): Interior {
+  return MODELS[name].interior;
+}
+
 /** Triangles per part of a model's near level as built now (tests: the kit meshes or the procedural stand-ins). */
 export function modelParts(name: ModelName): Record<Part, number> {
   const kit = new Kit(false);
-  MODELS[name].build(kit);
+  buildModel(kit, name);
   const out: Record<Part, number> = { body: 0, trim: 0, glass: 0, lamp: 0 };
   for (const p of PARTS) {
     const g = kit.part(p);
@@ -1925,6 +1937,88 @@ const MODELS: Record<ModelName, { build(kit: Kit): void; interior: Interior; glo
   ferry: { build: ferryModel, interior: FERRY_INTERIOR, glow: scale(WARM, 0.45) },
   cab: { build: cabModel, interior: CAB_INTERIOR, glow: scale(WARM, 0.12) },
 };
+
+/** A model at a level: its shell and fittings, and near, the cabin a rider sits in. */
+function buildModel(kit: Kit, name: ModelName): void {
+  MODELS[name].build(kit);
+  if (!kit.lo) cabin(kit, MODELS[name].interior, name);
+}
+
+/** Where each cabin's first row of seats stands (along the car) and its seat's height: where people.ts seats a rider. */
+const CABIN_SEAT: Partial<Record<ModelName, { at: number; height: number; bench?: boolean }>> = {
+  railEnd: { at: 0, height: 0.45 },
+  railMid: { at: 0, height: 0.45 },
+  ferry: { at: 0.5, height: 0.45 },
+  tram: { at: 0, height: 0.45 },
+  pod: { at: 0, height: 0.45 },
+  cab: { at: -0.45, height: 0.14, bench: true },
+};
+
+/**
+ * The cabin, seen from inside: the shells are single sided (their faces
+ * look out), so a rider would see the street through them. Faces looking
+ * in: the floor, the ceiling, the walls under the sills and over the
+ * window heads (the glazing between is open from inside, onto the street),
+ * the end walls; rows of seats facing the way the car runs, one where
+ * people.ts seats a rider; light lines down the ceiling. Drawn in the trim
+ * and lamp parts the near level already has, so no draw call is added.
+ */
+function cabin(kit: Kit, i: Interior, name: ModelName): void {
+  const [x0, y0, z0] = i.min;
+  const [x1, y1, z1] = i.max;
+  const sill = Math.min(Math.max(i.sill, y0), y1);
+  const head = Math.min(Math.max(i.head, sill), y1);
+  const lining = lin('#4a4743');
+  const floor = lin('#2a2725');
+  const ceiling = lin('#b9b3a8');
+  const matt: Surf = [0, 0.8];
+  // A quad from four corners, wound so its face looks along n.
+  const quad = (a: V3, b: V3, c: V3, d: V3, n: V3, col: RGB, sf: Surf = matt): void => {
+    const e1 = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    const e2 = new THREE.Vector3(c[0] - a[0], c[1] - a[1], c[2] - a[2]);
+    const flip = e1.cross(e2).dot(new THREE.Vector3(...n)) < 0;
+    const [p, q, r, t] = flip ? [a, d, c, b] : [a, b, c, d];
+    kit.tri('trim', p, q, r, n, n, n, col, sf);
+    kit.tri('trim', p, r, t, n, n, n, col, sf);
+  };
+  const e = 0.012;
+  quad([x0, y0 + e, z0], [x1, y0 + e, z0], [x1, y0 + e, z1], [x0, y0 + e, z1], [0, 1, 0], floor, [0, 0.7]);
+  quad([x0, y1 - e, z0], [x1, y1 - e, z0], [x1, y1 - e, z1], [x0, y1 - e, z1], [0, -1, 0], ceiling);
+  for (const sz of [-1, 1]) {
+    const z = sz * (z1 - e);
+    quad([x0, y0, z], [x1, y0, z], [x1, sill, z], [x0, sill, z], [0, 0, -sz], lining);
+    if (head < y1 - 0.02) quad([x0, head, z], [x1, head, z], [x1, y1, z], [x0, y1, z], [0, 0, -sz], ceiling);
+  }
+  for (const [x, nx] of [[x0 + e, 1], [x1 - e, -1]] as const) quad([x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1], [nx, 0, 0], lining);
+  // Seats: rows facing forward either side of an aisle (a bench across a cab), one row where the rider sits.
+  const seat = CABIN_SEAT[name];
+  if (seat && (i.seats || seat.bench)) {
+    const pitch = Math.max(0.85, i.pitch / 2);
+    const clearOfDoor = (x: number): boolean => i.doors.every((d) => Math.abs(x - d) > i.doorW / 2 + 0.35);
+    const blocks: Array<[number, number]> = seat.bench ? [[z0 + 0.08, z1 - 0.08]] : [[0.22, z1 - 0.05], [z0 + 0.05, -0.22]];
+    for (let k = -12; k <= 12; k++) {
+      const x = seat.at + k * pitch;
+      if (x < x0 + 0.45 || x > x1 - 0.35) continue;
+      if (k !== 0 && !clearOfDoor(x)) continue;
+      if (seat.bench && k !== 0) continue;
+      for (const [za, zb] of blocks) {
+        // Each block parted into seats a little apart: a cushion on a dark frame, a raked back over it.
+        const n = seat.bench ? 1 : Math.max(1, Math.round((zb - za) / 0.5));
+        const w = (zb - za) / n;
+        for (let k2 = 0; k2 < n; k2++) {
+          const zc = za + w * (k2 + 0.5);
+          kit.box('trim', [x + 0.04, y0 + (seat.height - 0.09) / 2, zc], [0.4, seat.height - 0.09, w - 0.08], lin('#1d1d1e'), [0.6, 0.45]);
+          kit.box('trim', [x + 0.05, y0 + seat.height - 0.045, zc], [0.46, 0.09, w - 0.03], i.seat, [0, 0.85]);
+          kit.box('trim', [x - 0.2, y0 + seat.height + 0.27, zc], [0.07, 0.5, w - 0.03], scale(i.seat, 1.15), [0, 0.85], undefined, 0, -0.1);
+        }
+      }
+    }
+  }
+  // Light lines down the ceiling (the cab has its dome light in the glazing's room instead).
+  if (name !== 'cab' && i.lines !== false) {
+    for (const sz of [-1, 1]) kit.box('lamp', [(x0 + x1) / 2, y1 - 0.03, sz * Math.min(0.5, z1 * 0.4)], [x1 - x0 - 0.6, 0.02, 0.06], [1.0, 0.86, 0.68], [0, 0.4], 'always');
+  }
+}
 const MODEL_KIND: Record<ModelName, VehicleKind> = { tram: 'tram', railEnd: 'rail', railMid: 'rail', pod: 'pod', ferry: 'ferry', cab: 'cab' };
 
 // ---------------------------------------------------------------- materials
@@ -2589,7 +2683,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     const spec = MODELS[name];
     const cap = capacity(fleet, name);
     const nearKit = new Kit(false);
-    spec.build(nearKit);
+    buildModel(nearKit, name);
     const farKit = new Kit(true);
     spec.build(farKit);
     const gm = glass.get(name) ?? glassMaterial(spec.interior);
