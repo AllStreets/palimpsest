@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import './ui/style.css';
 import './ui/screens.css';
 
-import type { District, FirmView, Job, Quarter, Repo, SiteState, TowerSpec } from '../../shared/types';
+import type { Agent, District, FirmView, Job, Quarter, Repo, SiteState, TowerSpec } from '../../shared/types';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
@@ -16,6 +16,9 @@ import type { AmbientView } from './city/ambient.js';
 import { route } from '../../shared/commute.js';
 import type { Trip } from '../../shared/types';
 import { towerCenterpiece, towerMaterials } from './city/tower/look';
+import { firmMarkColor } from './city/tower/eras';
+import { cleanText } from './ui/board';
+import type { FigureView, PeopleView } from './city/people.js';
 import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
 import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
 import { towerTones } from './city/lots';
@@ -96,6 +99,22 @@ interface DebugHandle {
   vehicleKinds(kind: 'tram' | 'rail' | 'pod' | 'ferry' | 'cab'): VehicleProbe[];
   /** A stand-in rider at a point facing a heading, or none. */
   vehicleRider(at: number[] | null, heading?: number): void;
+  /** The personas (people.ts): how many figures, and what of them draws from this camera (null before the network is laid). */
+  people(): PeopleView | null;
+  /** An agent's figure as it stands now, or null. */
+  person(agentId: string): FigureView | null;
+  /** Every figure as it stands now. */
+  persons(): FigureView[];
+  /** Sends an agent's figure on a synthetic trip from one point to another, routed over the network (captures and the UI test). */
+  peopleTrip(agentId: string, from: number[], to: number[]): string | null;
+  /** Holds or releases the people's and the vehicles' clocks together, or moves both on (captures and tests). */
+  peopleHold(on: boolean): void;
+  peopleSkip(seconds: number): void;
+  /** Holds the lanterns lit or dark for a capture, or follows the hour again with null. */
+  peopleLantern(on: boolean | null): void;
+  /** Follows an agent's figure as the agent page's Follow button and the F key do; null lets go. */
+  follow(agentId: string | null): void;
+  following(): string | null;
   /** The ambient traffic and crowd: how many, and what of them draws from this camera (null before the network is laid). */
   ambient(): AmbientView | null;
   /** Holds the ambient density at n (0 to 1), or follows the hour again with null. */
@@ -193,7 +212,7 @@ const REFRESH_ON = new Set([
  */
 const NAMES_ON = new Set(['agent.hired', 'agent.retired', 'firm.bankrupt', 'tower.sold', 'inspection.done', 'run.ended', 'merge.detected', 'floor.lit', 'report.written']);
 /** Events after which the job sites are read afresh: a run starting or ending, or a floor laid, lit or taken down under one. */
-const LIVE_ON = new Set(['run.started', 'run.ended', 'floor.laid', 'floor.lit', 'floor.removed', 'floor.scarred', 'merge.detected']);
+const LIVE_ON = new Set(['run.started', 'run.ended', 'floor.laid', 'floor.lit', 'floor.removed', 'floor.scarred', 'merge.detected', 'trip.started', 'trip.ended']);
 /** Events that change what the exchange's tote board shows: a job posted or moved on, a bid placed or declined. */
 const BOARD_ON = new Set(['job.posted', 'job.proposed', 'job.changed', 'job.awarded', 'bid.placed', 'bid.satOut']);
 
@@ -335,6 +354,12 @@ async function main(): Promise<void> {
     quarterKey: (q) => `${firmViews.get(q.firmId)?.name ?? ''}|${quality}|${firmsKey}`,
     // The civic exchange in the city's own pale limestone and granite.
     makeExchange: (q) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')) }),
+    describeTrip: (trip, agent) => describeTrip(trip, agent),
+    // A persona's coat: its firm's mark colour, as wool rather than painted metal.
+    coatOf: (agent) => {
+      const c = firmMarkColor(agent.firmId, firmSlots);
+      return [c.r * 0.42, c.g * 0.42, c.b * 0.42];
+    },
   });
 
   const debug: DebugHandle = {
@@ -446,6 +471,30 @@ async function main(): Promise<void> {
       return null;
     },
     vehicleRider: (at, heading) => city.vehicles()?.rider(at ? [at[0], at[1], at[2]] : null, heading),
+    people: () => city.people()?.view(city.camera) ?? null,
+    person: (id) => city.people()?.figures().find((f) => f.agentId === id) ?? null,
+    persons: () => city.people()?.figures() ?? [],
+    peopleTrip(agentId, from, to) {
+      const net = city.transitNetwork();
+      const agent = agentsAll().find((a) => a.id === agentId);
+      if (!net || !agent) return null;
+      const legs = route({ x: from[0], z: from[1] }, { x: to[0], z: to[1] }, net);
+      const trip: Trip = { id: `probe:${agentId}:${Date.now()}`, agentId, firmId: agent.firmId, reason: 'job', jobId: null, from: { x: from[0], z: from[1] }, to: { x: to[0], z: to[1] }, legs, startedAt: new Date().toISOString(), ms: legs.reduce((s, l) => s + l.ms, 0), endedAt: null };
+      probeTrips.set(agentId, trip);
+      showTrips();
+      return trip.id;
+    },
+    peopleHold(on) {
+      city.vehicles()?.hold(on);
+      city.people()?.hold(on);
+    },
+    peopleSkip(s) {
+      city.vehicles()?.skip(s);
+      city.people()?.skip(s);
+    },
+    peopleLantern: (on) => city.people()?.lantern(on),
+    follow: (id) => followAgent(id),
+    following: () => city.following(),
     quality: () => city.quality(),
     dropQuality: () => city.dropQuality(),
     notice: () => notice.text(),
@@ -594,6 +643,7 @@ async function main(): Promise<void> {
       );
       names = { agents, firms: new Map(firms.map((f) => [f.id, f.name])), inspections };
       inspector.setNames(names);
+      showTrips();
     } catch {
       /* the rows show ids until the names can be read */
     }
@@ -618,6 +668,7 @@ async function main(): Promise<void> {
 
   /** An agent's tower or a firm's plinth opens its page (Task 38), and the camera comes to the tower. */
   function openAgent(agentId: string): void {
+    selectedAgent = agentId;
     debug.opened = `#/agents/${encodeURIComponent(agentId)}`;
     location.hash = debug.opened;
     const t = city.agentFrame(agentId);
@@ -637,7 +688,12 @@ async function main(): Promise<void> {
     debug.lastPick = hit;
     if (hit.kind === 'tower') inspect(hit.repo, hit.floorId);
     else if (hit.kind === 'agent') openAgent(hit.agentId);
-    else if (hit.kind === 'exchange') openJobs();
+    else if (hit.kind === 'person') {
+      // A figure's plate opens its page where the camera stands: no flight to the tower.
+      selectedAgent = hit.agentId;
+      debug.opened = `#/agents/${encodeURIComponent(hit.agentId)}`;
+      location.hash = debug.opened;
+    } else if (hit.kind === 'exchange') openJobs();
     else openFirm(hit.firmId);
   });
 
@@ -676,10 +732,75 @@ async function main(): Promise<void> {
       liveSites.clear();
       for (const s of view.sites) liveSites.set(s.runId, s);
       showSites();
+      liveTrips = view.trips ?? [];
+      showTrips();
     } catch {
       /* the sites keep what they last showed until the engine answers */
     }
   });
+
+  // ---------------------------------------------------------------- the personas on their trips
+  /**
+   * The live trips (people.ts walks and rides them): read whole from
+   * /api/live with the sites, after every trip.started and trip.ended, and
+   * handed over with every agent the firms list, so a figure knows its
+   * name and its firm's coat. A capture's synthetic trips (peopleTrip) ride
+   * along with the real ones.
+   */
+  let liveTrips: Trip[] = [];
+  const probeTrips = new Map<string, Trip>();
+  const agentsAll = (): Agent[] => [...firmViews.values()].flatMap((f) => f.agents);
+  const showTrips = (): void => {
+    const trips = probeTrips.size ? [...liveTrips.filter((t) => !probeTrips.has(t.agentId)), ...probeTrips.values()] : liveTrips;
+    city.setTrips(trips, agentsAll());
+  };
+  /** Job titles by id, read once each for the plates over the figures; a title arriving re-places the plates. */
+  const jobTitles = new Map<string, string | null>();
+  const titleOf = (jobId: string | null): string | null => {
+    if (!jobId) return null;
+    if (!jobTitles.has(jobId)) {
+      jobTitles.set(jobId, null);
+      api.job(jobId).then(
+        (d) => {
+          jobTitles.set(jobId, cleanText(d.job.title, 60));
+          showTrips();
+        },
+        () => {},
+      );
+    }
+    return jobTitles.get(jobId) ?? null;
+  };
+  /** Where a trip ends, in the city's words: a district's short name, the exchange, or a firm's quarter. */
+  const placeOf = (p: { x: number; z: number }): string => {
+    const d = districts.find((x) => Math.hypot(x.origin.x - p.x, x.origin.z - p.z) < 110);
+    if (d) return d.repo.split('/')[1] ?? d.repo;
+    if (Math.hypot(p.x, p.z - 40) < 90) return 'the exchange';
+    const q = servedQuarters.find((x) => Math.hypot(x.origin.x - p.x, x.origin.z - p.z) < 110);
+    if (q) return firmViews.get(q.firmId)?.name ?? 'its quarter';
+    return 'the city';
+  };
+  function describeTrip(trip: Trip, agent: Agent): string {
+    const title = titleOf(trip.jobId);
+    const place = placeOf(trip.to);
+    if (trip.reason === 'home') return `home to ${firmViews.get(agent.firmId)?.name ?? place}`;
+    if (trip.reason === 'bid') return title ? `to the exchange to bid on ${title}` : 'to the exchange to bid';
+    if (trip.reason === 'inspect') return title ? `to ${place} to inspect ${title}` : `to ${place} to inspect`;
+    return title ? `to ${place} for ${title}` : `to ${place} to work`;
+  }
+  /** The agent the F key follows: the one whose page is open, or whose tower or figure was last picked. */
+  let selectedAgent: string | null = null;
+  function followAgent(agentId: string | null): void {
+    if (agentId === null) {
+      city.followAgent(null);
+      return;
+    }
+    if (!city.people()?.positionOf(agentId)) {
+      notice.add('That agent is not out in the city just now.');
+      return;
+    }
+    navigate('city');
+    city.followAgent(agentId);
+  }
 
   // ---------------------------------------------------------------- districts, sites and plates
   /**
@@ -884,6 +1005,12 @@ async function main(): Promise<void> {
       e.preventDefault();
       city.home();
     }
+    // F follows the selected agent's figure (Task 34); Escape in the city lets go of it.
+    if ((e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city' && selectedAgent) {
+      e.preventDefault();
+      followAgent(selectedAgent);
+    }
+    if (e.key === 'Escape' && !e.defaultPrevented && document.body.dataset.route === 'city' && city.following()) city.followAgent(null);
   });
 
   // A job, a run and an inspection report each have a page (Task 37). The job's floor flies the city to it.
@@ -931,8 +1058,7 @@ async function main(): Promise<void> {
   const agentPage = createAgentPage(document.body, {
     listen,
     onDismiss: toCity,
-    // TODO(Task 34): follow the agent through the city; until Follow lands the button does nothing.
-    follow: () => {},
+    follow: (agentId) => followAgent(agentId),
     // TODO(Task 35): ride the lift up the agent's tower; until Ride up lands the button does nothing.
     rideUp: () => {},
   });
@@ -969,8 +1095,10 @@ async function main(): Promise<void> {
     else firmsList.hide();
     if (route === 'firm') firmPage.show(place.id!);
     else firmPage.hide();
-    if (route === 'agent') agentPage.show(place.id!);
-    else agentPage.hide();
+    if (route === 'agent') {
+      agentPage.show(place.id!);
+      selectedAgent = place.id!;
+    } else agentPage.hide();
     if (route === 'treasury') treasuryPage.show();
     else treasuryPage.hide();
     if (route === 'repo') districtPage.show(place.id!);

@@ -1134,7 +1134,7 @@ export interface ModelStats {
 const C = { paint: 0, plastic: 1, glass: 2, metal: 3, tyre: 4, wheel: 5, head: 6, tail: 7, blinkR: 8, blinkL: 9, brake: 10, grille: 11 } as const;
 
 /** Geometry gathered with a code per vertex; for figures, a bone, its weight and a coat-tail measure too. */
-class Builder {
+export class Builder {
   pos: number[] = [];
   nor: number[] = [];
   rig: number[] = [];
@@ -1528,7 +1528,7 @@ function farCarModel(): THREE.BufferGeometry {
 }
 
 /** The figure's joints, at 1.75 m (each figure is scaled to its own height and build). */
-const JOINT = {
+export const JOINT = {
   hip: [0, 0.92, 0.095],
   knee: [0.01, 0.5, 0.095],
   ankle: [0, 0.085, 0.095],
@@ -1539,9 +1539,9 @@ const JOINT = {
 } as const;
 
 /** Figure codes: 0 skin, 1 hair, 2 coat, 3 legs, 4 shoes. */
-const F = { skin: 0, hair: 1, coat: 2, legs: 3, shoes: 4 } as const;
+export const F = { skin: 0, hair: 1, coat: 2, legs: 3, shoes: 4 } as const;
 /** Bones: 0 body, 1 head, 2 and 3 the left thigh and shin, 4 and 5 the right, 6 and 7 the left upper arm and forearm, 8 and 9 the right. */
-const B = { body: 0, head: 1, thighL: 2, shinL: 3, thighR: 4, shinR: 5, armL: 6, foreL: 7, armR: 8, foreR: 9 } as const;
+export const B = { body: 0, head: 1, thighL: 2, shinL: 3, thighR: 4, shinR: 5, armL: 6, foreL: 7, armR: 8, foreR: 9 } as const;
 
 /**
  * A figure (original), as a rig: every vertex carries its bone, how much it
@@ -1551,6 +1551,12 @@ const B = { body: 0, head: 1, thighL: 2, shinL: 3, thighR: 4, shinR: 5, armL: 6,
  */
 function figureModel(lo: boolean): THREE.BufferGeometry {
   const b = new Builder();
+  buildFigure(b, lo);
+  return b.geometry();
+}
+
+/** Builds the figure into `b` (people.ts adds a persona's detail to the same rig before taking the geometry). */
+export function buildFigure(b: Builder, lo: boolean): void {
   const rig = (bone: number, code: number, w = 1): number[] => [bone, w, code];
   if (lo) {
     for (const side of [-1, 1]) {
@@ -1564,7 +1570,7 @@ function figureModel(lo: boolean): THREE.BufferGeometry {
     b.box([0, 1.16, 0], [0.22, 0.6, 0.38], rig(B.body, F.coat));
     b.box([0.01, 1.64, 0], [0.19, 0.23, 0.16], rig(B.head, F.skin));
     b.box([-0.01, 1.74, 0], [0.2, 0.06, 0.17], rig(B.head, F.hair));
-    return b.geometry();
+    return;
   }
   /**
    * A loft of elliptical rings: each ring a centre, its half depth (x) and
@@ -1782,7 +1788,6 @@ function figureModel(lo: boolean): THREE.BufferGeometry {
   }
   // The nose, a shadow of a brow: enough for a face to read at a few metres.
   b.box([hc[0] + 0.1, hc[1] - 0.012, 0], [0.026, 0.05, 0.022], rig(B.head, F.skin), 0, -0.25);
-  return b.geometry();
 }
 
 // ---------------------------------------------------------------- materials
@@ -1793,7 +1798,7 @@ function figureModel(lo: boolean): THREE.BufferGeometry {
  * and the two levels keep complementary halves of a dither across the band.
  * `out`, when given, dissolves the far level out to nothing past it.
  */
-function dissolve(sh: THREE.WebGLProgramParametersWithUniforms, band: { near: number; far: number }, level: 'near' | 'far', out?: { near: number; far: number }): void {
+export function dissolve(sh: THREE.WebGLProgramParametersWithUniforms, band: { near: number; far: number }, level: 'near' | 'far', out?: { near: number; far: number }): void {
   sh.uniforms.uLodEye = LOD_EYE;
   sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform vec3 uLodEye;\nvarying float vLodFade;\nvarying float vLodOut;').replace(
     '#include <project_vertex>',
@@ -1815,17 +1820,17 @@ function dissolve(sh: THREE.WebGLProgramParametersWithUniforms, band: { near: nu
 }
 
 /** The street lamps' sodium light on whatever is near one (lampLight), added as a direct diffuse term. */
-const LAMP_VERT = `
+export const LAMP_VERT = `
   attribute vec4 aLampL;
   varying vec3 vLampDir;
   varying vec3 vLampCol;`;
-const LAMP_VERT_MAIN = `
+export const LAMP_VERT_MAIN = `
   vLampDir = normalize((viewMatrix * vec4(aLampL.xyz, 0.0)).xyz);
   vLampCol = vec3(1.0, 0.56, 0.22) * aLampL.w;`;
-const LAMP_FRAG = `
+export const LAMP_FRAG = `
   varying vec3 vLampDir;
   varying vec3 vLampCol;`;
-const LAMP_FRAG_MAIN = `
+export const LAMP_FRAG_MAIN = `
   {
     float wrap = max(dot(normal, vLampDir), 0.0) * 0.85 + 0.15 * (0.5 + 0.5 * dot(normal, vLampDir));
     reflectedLight.directDiffuse += vLampCol * wrap * BRDF_Lambert(material.diffuseColor);
@@ -1969,7 +1974,7 @@ function carMaterial(far: boolean): THREE.MeshPhysicalMaterial {
 }
 
 /** Skin tones from light to dark, hair from black to fair and grey, and a few hats (linear RGB). */
-const FIGURE_GLSL = /* glsl */ `
+export const FIGURE_GLSL = /* glsl */ `
   vec3 skinTone(float t) {
     vec3 a = vec3(0.72, 0.47, 0.37);
     vec3 b = vec3(0.47, 0.27, 0.17);
@@ -2306,6 +2311,8 @@ export interface Ambient {
   /** The cars parked at the kerbs the quality keeps: where, which way, their body, paint, and whether up on the kerb. */
   parked(): Array<{ x: number; z: number; yaw: number; model: AmbientModel; paint: [number, number, number]; kerb: number }>;
   people(): AmbientPerson[];
+  /** The street lamp that lights a point most (direction to it and strength), as the crowd is lit; people.ts lights the personas by it. */
+  lampLight(x: number, y: number, z: number, out: [number, number, number, number]): void;
   view(camera: THREE.Camera): AmbientView;
   /** Holds the clock (captures). */
   hold(on: boolean): void;
@@ -3732,6 +3739,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     carRoom: () => carCap,
     parked: () => parked.map((c) => ({ x: c.x, z: c.z, yaw: c.yaw, model: c.model, paint: [...c.paint] as [number, number, number], kerb: c.kerb })),
     people: () => people.map((p) => ({ id: p.id, state: p.state, x: p.x, z: p.z, yaw: p.yaw, speed: p.v, phase: p.phase % (Math.PI * 2), cadence: p.cadence, height: p.height, build: p.build, coat: [...p.coat] as [number, number, number], group: p.group })),
+    lampLight: (x, y, z, out) => lampLight(lamps, x, y, z, out),
     view(camera) {
       void camera;
       let meshes = 0;

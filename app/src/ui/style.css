@@ -111,6 +111,26 @@
   outline: 1px solid rgba(236, 230, 218, 0.6);
   outline-offset: 3px;
 }
+/* A persona's plate stands over the figure's head: a shorter hairline, the name a size down, its errand beneath. */
+.plate.plate-person::before {
+  height: 18px;
+  background: linear-gradient(to top, rgba(236, 230, 218, 0.6), rgba(236, 230, 218, 0.12));
+  bottom: auto;
+  top: 0;
+}
+.plate.plate-person .plate-name {
+  bottom: auto;
+  top: -32px;
+  font-size: 14.5px;
+}
+.plate.plate-person .plate-sub {
+  bottom: auto;
+  top: -18px;
+  font-size: 11px;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ---------------------------------------------------------------- the inspector */
 

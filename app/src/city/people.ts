@@ -1,0 +1,1142 @@
+/**
+ * The agent personas as people in the city (Task 34). Each agent with a
+ * trip (engine/market/trips.ts, read through /api/live) has one figure: a
+ * 1.8 m articulated person in a coat of its firm's colour, walking its
+ * trip's legs at the pace the legs say and riding the vehicles between
+ * them (vehicles.ts: a cab summoned to the kerb, the next tram, train, pod
+ * or ferry calling at its stop). The figure waits at the kerb or on the
+ * platform until its vehicle stands there, steps in, sits in a cab, a train
+ * or a ferry (stands holding on in a tram or a pod), and steps out at the
+ * other end. A trip that ends while it is still on its way is finished on
+ * foot; then the figure stands where it arrived until its next trip.
+ *
+ * The figures share the ambient crowd's rig and pose shader (ambient.ts),
+ * so they sit in the same light as everyone else, with more of a person on
+ * them: a face with eyes, brows, ears and a mouth, hands with fingers, coat
+ * lapels and buttons, and a lantern carried in the right hand, lit after
+ * dusk. Near (to 150 m) the full figure draws, far (to 440 m) the crowd's
+ * box figure on the same rig, both in one instanced call each and
+ * cross-faded by the screen-door dissolve; beyond 400 m the figure is only
+ * its lantern, a warm point of light, so a trip reads from the overview.
+ * A plate (name, where it is going) stands over the figure within 150 m.
+ *
+ * follow() gives the camera a pose to keep 12 m behind and above; it lets go
+ * when the trip ends or the agent retires (camera.ts lets go on a drag or
+ * Escape).
+ */
+import * as THREE from 'three';
+
+import { inChannel, SPEED, streetLine, type Network } from '../../../shared/commute.js';
+import type { Agent, Trip, TripMode } from '../../../shared/types.js';
+import { B, buildFigure, Builder, dissolve, F, FIGURE_GLSL, JOINT, LAMP_FRAG, LAMP_FRAG_MAIN, LAMP_VERT, LAMP_VERT_MAIN } from './ambient.js';
+import type { Plate } from './labels.js';
+import { LAYER, setLayers } from './lod.js';
+import { LOD_EYE } from './lod-shader.js';
+import { FOUNTAIN } from './exchange.js';
+import { kerbOf, type Ride, type VehicleRef, type Vehicles } from './vehicles.js';
+
+type V3 = [number, number, number];
+type P = { x: number; z: number };
+
+/** Eye distances: the full figure to 150 m, the box figure to 440 m, the lantern alone from 400 m. */
+export const PEOPLE_LOD = { near: { near: 110, far: 150 }, out: { near: 380, far: 440 }, plate: 150 } as const;
+/** The lantern lights between these hours (the city is lit for dusk; the lantern says the hour on the figure). */
+const DUSK = { from: 16.5, to: 7.5 } as const;
+/** Where the hips sit above a seat, and how far down the figure drops into it. */
+const SEAT = 0.45;
+/** The leg's length in the rig (hip to ankle), the stride's half angle at a walk. */
+const LEG = 0.86;
+const STRIDE = 0.42;
+/** Seconds to step into a cab (within its pickup stand), out of it, and onto or off a line's vehicle. */
+const BOARD_S = { cab: 3.4, line: 1.8 } as const;
+/** How many figures the buffers hold at first; they grow when the roster outgrows them. */
+const CAP = 48;
+
+/** Figure codes beyond the crowd's: 5 brass, 6 lantern glass, 7 eyes, 8 coat trim, 9 lips. */
+const CODE = { brass: 5, glass: 6, eye: 7, trim: 8, lip: 9 } as const;
+
+/**
+ * The walk cycle's phase rate for a speed: one cycle is two steps of
+ * 2 L sin(A) each (a figure `k` times the rig's height steps that much
+ * further), so the feet are planted as far as the body moves and do not
+ * slide.
+ */
+export function strideRate(speed: number, A: number = STRIDE, k = 1): number {
+  const step = 2 * LEG * k * Math.sin(A);
+  return (Math.PI * speed) / step;
+}
+
+export type FigureStage = 'walk' | 'wait' | 'board' | 'ride' | 'alight' | 'idle';
+
+export interface FigureView {
+  agentId: string;
+  name: string;
+  tripId: string | null;
+  /** Whether its trip is still among the live ones (a figure finishes an ended trip on foot). */
+  live: boolean;
+  leg: number;
+  mode: TripMode | null;
+  stage: FigureStage;
+  position: V3;
+  heading: number;
+  walking: number;
+  sit: number;
+  /** The lantern's light, 0 (dark) to 1 (lit for dusk). */
+  lit: number;
+  /** The vehicle it waits for or rides, or null on foot. */
+  ride: { mode: TripMode; id: string; phase: string } | null;
+}
+
+export interface PeopleView {
+  figures: number;
+  /** Figures drawn at the near level, the far level and as lanterns (one in a dissolve band counts in both). */
+  near: number;
+  far: number;
+  lanterns: number;
+  /** Draw calls of the main pass and the triangles they draw. */
+  meshes: number;
+  triangles: number;
+  following: string | null;
+  time: number;
+}
+
+export interface PeopleDeps {
+  /** The vehicles to board (null before the network is laid, or in a test of the walking alone). */
+  vehicles(): Vehicles | null;
+  /** The network as laid (kerbOf needs it), or null. */
+  net(): Network | null;
+  /** The street lamp lighting a point most (ambient.ts), for the figures' sodium light. */
+  lampLight?(x: number, y: number, z: number, out: [number, number, number, number]): void;
+  /** The clock trips are measured against (tests pin it). */
+  now?(): number;
+  /** The local hour, 0 to 24 (the lantern lights for dusk). */
+  hour?(): number;
+  /** The coat for an agent, linear RGB: its firm's colour (main.ts); left out, a muted wool from the id. */
+  coatOf?(agent: Agent): [number, number, number];
+  /** The plate's second line for a trip: "to <district> for <job title>". */
+  describe?(trip: Trip, agent: Agent): string;
+  /** Clicking a figure's plate. */
+  onActivate?(agentId: string): void;
+  /** The follow let go of itself: its trip ended or its agent retired. */
+  onRelease?(): void;
+}
+
+export interface People {
+  group: THREE.Group;
+  /** The live trips and the agents they belong to, as last read: a figure per agent on its way or arrived this session. */
+  set(trips: ReadonlyArray<Trip>, agents: ReadonlyArray<Agent>): void;
+  /** Moves everyone on by dt seconds and, with a camera, lays each figure into its level from the eye. */
+  update(dt: number, camera?: THREE.PerspectiveCamera): void;
+  /** Follows an agent's figure (null, or an agent with no figure, lets go). */
+  follow(agentId: string | null): void;
+  following(): string | null;
+  /** Where the followed figure stands and faces now, for the camera; null when nothing is followed. */
+  followPose(): { position: THREE.Vector3; heading: number } | null;
+  positionOf(agentId: string): THREE.Vector3 | null;
+  /** The vehicle an agent's figure waits for or rides, or null on foot. */
+  rideOf(agentId: string): { mode: TripMode; id: string; phase: string } | null;
+  figures(): FigureView[];
+  /** The plates over the figures within reach of the eye, as laid this frame (scene.ts shows them). */
+  plates(): Plate[];
+  /** Counts up each time plates() would answer differently. */
+  platesVersion(): number;
+  view(camera: THREE.Camera): PeopleView;
+  /** Holds the lantern lit or dark for a capture, or follows the hour again with null. */
+  lantern(on: boolean | null): void;
+  setQuality(q: 'high' | 'medium'): void;
+  /** Holds the clock (captures); skip moves it on in steps, held or not. */
+  hold(on: boolean): void;
+  skip(seconds: number): void;
+  dispose(): void;
+}
+
+interface Look {
+  skin: number;
+  hair: number;
+  height: number;
+  build: number;
+  coatLen: number;
+  hat: number;
+  coat: [number, number, number];
+  legs: [number, number, number];
+}
+
+interface Figure {
+  agent: Agent;
+  look: Look;
+  trip: Trip | null;
+  live: boolean;
+  leg: number;
+  /** Metres along a walk leg (or a ride walked for want of a vehicle). */
+  s: number;
+  stage: FigureStage;
+  /** 0 to 1 through a board or alight. */
+  k: number;
+  ride: VehicleRef | Ride | null;
+  /** Where a board or alight started, the door it goes by, and where it ends. */
+  from: V3;
+  via: V3;
+  to: V3;
+  /** The leg's path as walked (a walk leg's on the pavement). */
+  path: ReadonlyArray<V3>;
+  /** Where it waits for its vehicle, and which way it faces there. */
+  spot: V3;
+  spotHeading: number;
+  x: number;
+  y: number;
+  z: number;
+  heading: number;
+  phase: number;
+  walking: number;
+  sit: number;
+  hold: number;
+  lamp: [number, number, number, number];
+  seen: boolean;
+  /** Eye distance at the last draw. */
+  d: number;
+}
+
+const dist = (a: P, b: P): number => Math.hypot(a.x - b.x, a.z - b.z);
+const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+const smooth = (t: number): number => t * t * (3 - 2 * t);
+const lerp3 = (a: V3, b: V3, t: number): V3 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+/** A point `fwd` ahead and `right` to the right of p facing h (x forward is cos h, sin h). */
+const around = (p: ArrayLike<number>, h: number, fwd: number, right: number, y: number): V3 => [p[0] + Math.cos(h) * fwd - Math.sin(h) * right, y, p[2] + Math.sin(h) * fwd + Math.cos(h) * right];
+const turnTo = (from: number, to: number, k: number): number => {
+  let d = to - from;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return from + d * k;
+};
+
+function hashOf(s: string): () => number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return () => {
+    h = Math.imul(h ^ (h >>> 15), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  };
+}
+
+/** The length of a leg's path in plan, and the point and heading `s` metres along it. */
+function pathLength(path: ReadonlyArray<V3>): number {
+  let len = 0;
+  for (let i = 1; i < path.length; i++) len += Math.hypot(path[i][0] - path[i - 1][0], path[i][2] - path[i - 1][2]);
+  return len;
+}
+function along(path: ReadonlyArray<V3>, s: number, out: { p: V3; h: number }): void {
+  if (path.length === 1) {
+    out.p = [...path[0]];
+    return;
+  }
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1];
+    const b = path[i];
+    const len = Math.hypot(b[0] - a[0], b[2] - a[2]);
+    if (s <= len || i === path.length - 1) {
+      const t = len ? clamp(s / len, 0, 1) : 1;
+      out.p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+      if (len > 1e-6) out.h = Math.atan2(b[2] - a[2], b[0] - a[0]);
+      return;
+    }
+    s -= len;
+  }
+}
+
+/** Where a walker stands at a point on the ground: the road bridges' decks are a little proud of the streets (vehicles.ts roadY). */
+const groundY = (x: number): number => (inChannel(x, 2) ? 0.08 : 0);
+
+/** How far right of a street's centre line a walker keeps: the middle of the pavement (ambient.ts PAVE). */
+const PAVEMENT = 6.0;
+
+/**
+ * Where a figure stands for a trip's end: the point itself, unless it lies
+ * in the exchange's fountain (the engine's exchange point is the forecourt's
+ * centre, which the basin fills): then on the paving just off the basin's
+ * rim, on the side the point leans to (the hall's side for the centre).
+ */
+function standPoint(p: V3): V3 {
+  const dx = p[0] - FOUNTAIN.x;
+  const dz = p[2] - FOUNTAIN.z;
+  const d = Math.hypot(dx, dz);
+  const keep = FOUNTAIN.radius + 1.8;
+  if (d >= keep) return p;
+  const ux = d > 1e-6 ? dx / d : 0;
+  const uz = d > 1e-6 ? dz / d : -1;
+  return [FOUNTAIN.x + ux * keep, p[1], FOUNTAIN.z + uz * keep];
+}
+
+/**
+ * A walk leg's path moved onto the pavement: the router's streetWay runs
+ * along the streets' centre lines, so each point steps to the right of the
+ * way it goes (right-hand walking, as the crowd keeps), and the ground's
+ * height is read under it.
+ */
+function pavementPath(path: ReadonlyArray<V3>): V3[] {
+  if (path.length < 2) return path.map((p) => [p[0], Math.max(p[1], groundY(p[0])), p[2]] as V3);
+  return path.map((p0, i) => {
+    const p = i === 0 || i === path.length - 1 ? standPoint(p0) : p0;
+    const a = path[Math.max(0, i - 1)];
+    const b = path[Math.min(path.length - 1, i + 1)];
+    // The right normal of the way through this point (the mean of the segments either side).
+    let dx = b[0] - a[0];
+    let dz = b[2] - a[2];
+    const l = Math.hypot(dx, dz) || 1;
+    dx /= l;
+    dz /= l;
+    // A corner's offset point stays on the pavement band of both streets.
+    const k = i > 0 && i < path.length - 1 ? Math.min(1.6, 1 / Math.max(0.6, Math.abs(dx) + Math.abs(dz))) : 1;
+    const x = p[0] - dz * PAVEMENT * k;
+    const z = p[2] + dx * PAVEMENT * k;
+    return [x, Math.max(p[1], groundY(x)), z] as V3;
+  });
+}
+
+/**
+ * Where a rider waits for its cab: a step back from the kerb the cab pulls
+ * in at, on the pavement side (away from the street's centre line).
+ */
+function kerbSpot(start: V3, net: Network | null): { spot: V3; heading: number } {
+  const k = net ? kerbOf({ x: start[0], z: start[2] }, net) : { x: start[0], z: start[2] };
+  const dx = k.x - streetLine(k.x);
+  const dz = k.z - streetLine(k.z);
+  // The kerb lies 6.4 m off one street's centre line: step out along that axis.
+  const out = Math.abs(Math.abs(dx) - 6.4) < Math.abs(Math.abs(dz) - 6.4) ? { x: Math.sign(dx) || 1, z: 0 } : { x: 0, z: Math.sign(dz) || 1 };
+  // Clear of the cab's body however it comes in to the kerb point.
+  const spot: V3 = [k.x + out.x * 2.3, groundY(k.x), k.z + out.z * 2.3];
+  // Facing the road.
+  return { spot, heading: Math.atan2(-out.z, -out.x) };
+}
+
+/**
+ * Each line's platform, measured from the line's centre (the ride legs run
+ * along it; the right-hand track lies 2 m to the right): how far out a
+ * rider stands on it, and how high it is over the leg's height (transit.ts:
+ * the tram's raised kerb platform, the rail's and the pods' at floor height,
+ * the ferry's pier at quay level).
+ */
+const PLATFORM: Record<Exclude<TripMode, 'walk' | 'cab'>, { out: number; up: number | 'quay' }> = {
+  tram: { out: 4.1, up: 0.25 },
+  rail: { out: 4.9, up: 0.95 },
+  pod: { out: 3.4, up: 0.35 },
+  ferry: { out: 0, up: 'quay' },
+};
+
+/** Where a rider waits on a line's platform: beside the leg's first point, to the right of the way it runs. */
+function platformSpot(path: ReadonlyArray<V3>, mode: TripMode): { spot: V3; heading: number } {
+  const a = path[0];
+  const b = path[Math.min(1, path.length - 1)];
+  const h = path.length > 1 ? Math.atan2(b[2] - a[2], b[0] - a[0]) : 0;
+  const p = PLATFORM[mode as keyof typeof PLATFORM] ?? { out: 2.2, up: 0 };
+  // A little up the platform from the stop's centre, clear of the tram shelter's screen (transit.ts), by the edge.
+  return { spot: around(a, h, mode === 'tram' ? 5.5 : 0, p.out, p.up === 'quay' ? 0 : a[1] + p.up), heading: h };
+}
+
+/** The door a rider steps in and out by: a cab's rear right door at the kerb, a car's right-hand doorway at its floor. */
+function doorOf(ref: VehicleRef, mode: TripMode): V3 {
+  const p = ref.position();
+  const h = ref.heading();
+  if (mode === 'cab') return around(p, h, -0.35, 1.45, p[1]);
+  return around(p, h, 0, 1.3, ref.floorY());
+}
+
+/** Where a rider is aboard its vehicle: a cab's rear right seat, a seat or a standing place in a car, the ferry's deck. */
+function aboard(ref: VehicleRef, mode: TripMode): V3 {
+  const p = ref.position();
+  const h = ref.heading();
+  if (mode === 'cab') return around(p, h, -0.45, 0.38, ref.floorY() + SEAT);
+  if (mode === 'ferry') return around(p, h, 0.5, 1.2, ref.floorY() + SEAT);
+  if (mode === 'rail') return around(p, h, 0, 0.6, ref.floorY() + SEAT);
+  return around(p, h, 0, 0.55, ref.floorY());
+}
+
+const SITS: ReadonlySet<TripMode> = new Set(['cab', 'rail', 'ferry']);
+const HOLDS: ReadonlySet<TripMode> = new Set(['tram', 'pod']);
+
+// ---------------------------------------------------------------- the model
+
+/**
+ * A persona's figure: the crowd's rig and body (ambient.ts buildFigure),
+ * and on it what makes a person at arm's length: eyes under a brow, ears, a
+ * mouth, fingers and a thumb on each hand, the coat's lapels and buttons,
+ * and a lantern in the right hand.
+ */
+function personaModel(): THREE.BufferGeometry {
+  const b = new Builder();
+  buildFigure(b, false);
+  const rig = (bone: number, code: number, w = 1): number[] => [bone, w, code];
+  const head = rig(B.head, F.skin);
+  const hx = 0.012;
+  // A low brow over each eye, the eyes set under it, the mouth, and the ears.
+  for (const side of [-1, 1]) {
+    b.box([hx + 0.094, 1.676, side * 0.032], [0.008, 0.005, 0.03], head, side * 0.2, 0.15);
+    b.box([hx + 0.094, 1.665, side * 0.031], [0.006, 0.011, 0.022], rig(B.head, CODE.eye));
+    b.box([hx - 0.004, 1.652, side * 0.088], [0.016, 0.03, 0.012], head, 0, 0);
+  }
+  b.box([hx + 0.094, 1.622, 0], [0.006, 0.007, 0.03], rig(B.head, CODE.lip));
+  // The coat: lapels folding back from the collar to the top button, and three buttons down the front.
+  for (const side of [-1, 1]) {
+    b.box([0.118, 1.33, side * 0.052], [0.012, 0.24, 0.046], rig(B.body, CODE.trim), -side * 0.45, side * 0.0);
+  }
+  for (const y of [1.03, 1.14, 1.25]) b.box([0.131, y, 0.012], [0.008, 0.013, 0.013], rig(B.body, CODE.brass));
+  // The hands: four fingers from the palm, a thumb to the side.
+  for (const side of [-1, 1]) {
+    const fore = side < 0 ? B.foreL : B.foreR;
+    const z = side * 0.212;
+    for (const dx of [-0.024, -0.008, 0.008, 0.024]) {
+      b.tube([0.02 + dx, 0.805, z], [0.03 + dx * 0.8, 0.728, z + side * 0.004], 0.0085, 0.0065, 5, rig(fore, F.skin));
+    }
+    b.tube([0.05, 0.85, z - side * 0.004], [0.075, 0.8, z + side * 0.012], 0.0085, 0.007, 5, rig(fore, F.skin));
+  }
+  // The lantern, hung from the right hand on a bail: a brass cap and base, four corner posts, the glass between.
+  const lz = 0.215;
+  const lx = 0.024;
+  const brass = rig(B.foreR, CODE.brass);
+  b.tube([lx, 0.8, lz], [lx, 0.715, lz], 0.0045, 0.0045, 5, brass);
+  b.box([lx, 0.708, lz], [0.07, 0.014, 0.07], brass);
+  b.box([lx, 0.566, lz], [0.078, 0.014, 0.078], brass);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) b.box([lx + sx * 0.03, 0.637, lz + sz * 0.03], [0.007, 0.13, 0.007], brass);
+  b.box([lx, 0.637, lz], [0.052, 0.124, 0.052], rig(B.foreR, CODE.glass));
+  return b.geometry();
+}
+
+function farModel(): THREE.BufferGeometry {
+  const b = new Builder();
+  buildFigure(b, true);
+  return b.geometry();
+}
+
+// ---------------------------------------------------------------- the material
+
+// The joints, as ambient.ts lays them, written into the shader.
+const glslVec = (v: readonly number[]): string => v.map((x) => x.toFixed(3)).join(', ');
+const JOINT_HIP = glslVec(JOINT.hip);
+const JOINT_KNEE = glslVec(JOINT.knee);
+const JOINT_SHOULDER = glslVec(JOINT.shoulder);
+const JOINT_ELBOW = glslVec(JOINT.elbow);
+const JOINT_NECK_Y = JOINT.neck[1].toFixed(3);
+
+/** The persona's pose: the crowd's walk and stand, and over them sitting (aPose.x) and holding a strap (aPose.z). */
+const PERSONA_GLSL = /* glsl */ `
+  void posedPersona(inout vec3 p, inout vec3 n) {
+    int bone = int(aRig.x + 0.5);
+    float w = aAnim.y;
+    float ph = aAnim.x;
+    float A = aAnim.z;
+    float sit = aPose.x;
+    float hold = aPose.z;
+    float s = sin(ph);
+    float tailT = aExtra.x;
+    if (tailT > 0.0) { p.y -= tailT * aLook.z; p.xz *= 1.0 + 0.16 * tailT * aLook.z; }
+    float hipL = A * s;
+    float hipR = -A * s;
+    float fold = 0.8 * clamp(A / 0.48, 0.35, 1.0);
+    float kneeL = 0.07 + fold * pow(max(0.0, cos(ph + 0.45)), 1.6) + 0.1 * max(0.0, -sin(ph + 0.3));
+    float kneeR = 0.07 + fold * pow(max(0.0, -cos(ph + 0.45)), 1.6) + 0.1 * max(0.0, sin(ph + 0.3));
+    // The left arm swings; the right, with the lantern, hangs a little forward and swings less.
+    float armL = -A * 0.8 * s - 0.04;
+    float armR = A * 0.3 * s + 0.16;
+    float elbL = 0.22 + 0.26 * max(0.0, -s);
+    float elbR = 0.3;
+    float idle = 1.0 - w;
+    float slow = sin(ph * 0.5);
+    float sHipL = 0.035 * slow;
+    float sHipR = -0.02 - 0.03 * slow;
+    float sKneeL = 0.04;
+    float sKneeR = 0.12 + 0.06 * max(0.0, slow);
+    hipL = mix(sHipL, hipL, w);
+    hipR = mix(sHipR, hipR, w);
+    kneeL = mix(sKneeL, kneeL, w);
+    kneeR = mix(sKneeR, kneeR, w);
+    armL = mix(0.05, armL, w);
+    armR = mix(0.16, armR, w);
+    elbL = mix(0.12, elbL, w);
+    elbR = mix(0.3, elbR, w);
+    // Holding a strap: the left arm raised to it.
+    armL = mix(armL, 1.75, hold);
+    elbL = mix(elbL, 0.5, hold);
+    // Sitting: hips and knees at right angles, the forearms resting on the thighs.
+    hipL = mix(hipL, 1.5, sit);
+    hipR = mix(hipR, 1.5, sit);
+    kneeL = mix(kneeL, 1.5, sit);
+    kneeR = mix(kneeR, 1.5, sit);
+    armL = mix(armL, 0.45, sit);
+    armR = mix(armR, 0.45, sit);
+    elbL = mix(elbL, 1.0, sit);
+    elbR = mix(elbR, 1.0, sit);
+    vec3 hip = vec3(${JOINT_HIP});
+    vec3 knee = vec3(${JOINT_KNEE});
+    vec3 sho = vec3(${JOINT_SHOULDER});
+    vec3 elb = vec3(${JOINT_ELBOW});
+    vec3 L = vec3(1.0, 1.0, -1.0);
+    if (bone == 3) turnAbout(p, n, knee * L, rotZ(-kneeL));
+    if (bone == 5) turnAbout(p, n, knee, rotZ(-kneeR));
+    if (bone == 2 || bone == 3) turnAbout(p, n, hip * L, rotZ(hipL * (bone == 2 ? aRig.y : 1.0)));
+    if (bone == 4 || bone == 5) turnAbout(p, n, hip, rotZ(hipR * (bone == 4 ? aRig.y : 1.0)));
+    if (bone == 7) turnAbout(p, n, elb * L, rotZ(elbL));
+    if (bone == 9) turnAbout(p, n, elb, rotZ(elbR));
+    if (bone == 6 || bone == 7) turnAbout(p, n, sho * L, rotZ(armL) * rotX(0.06 + 0.04 * w));
+    if (bone == 8 || bone == 9) turnAbout(p, n, sho, rotZ(armR) * rotX(-0.06 - 0.04 * w));
+    if (bone == 1) {
+      vec3 neck = vec3(0.0, ${JOINT_NECK_Y}, 0.0);
+      float look = idle * (1.0 - sit) * 0.38 * sin(ph * 0.31 + aLook.y * 6.0);
+      turnAbout(p, n, neck, rotY(look - 0.06 * s * w) * rotZ(-0.04 * w));
+    }
+    if (bone == 0 || bone == 1 || bone >= 6) turnAbout(p, n, vec3(0.0, 0.95, 0.0), rotY(0.07 * s * w) * rotZ(-0.055 * w + 0.06 * sit));
+    p.y -= w * ${LEG.toFixed(2)} * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow) + 0.84 * sit;
+    p.z += w * 0.022 * s + idle * 0.012 * slow;
+  }`;
+
+/** The figures' material: the persona pose in the vertex shader, each surface by its code, the lantern's glass lit from the instance. */
+function personaMaterial(far: boolean): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0, envMapIntensity: 0.6 });
+  m.name = far ? 'people-far' : 'people';
+  m.onBeforeCompile = (sh) => {
+    dissolve(sh, PEOPLE_LOD.near, far ? 'far' : 'near', far ? PEOPLE_LOD.out : undefined);
+    sh.vertexShader = sh.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        attribute vec3 aRig;
+        attribute vec2 aExtra;
+        attribute vec4 aAnim;
+        attribute vec4 aLook;
+        attribute vec3 aCoat;
+        attribute vec3 aLegs;
+        attribute vec4 aPose;
+        ${LAMP_VERT}
+        varying vec3 vAlb;
+        varying vec3 vEmit;
+        varying float vRough;
+        varying float vMetal;
+        ${FIGURE_GLSL}
+        ${PERSONA_GLSL}`,
+      )
+      .replace(
+        '#include <beginnormal_vertex>',
+        `vec3 objectNormal = vec3(normal);
+        vec3 posedP = vec3(position);
+        posedPersona(posedP, objectNormal);
+        {
+          int code = int(aRig.z + 0.5);
+          vec3 alb = aCoat;
+          vec3 emit = vec3(0.0);
+          float rough = 0.86;
+          float metal = 0.0;
+          if (code == 0) { alb = skinTone(aLook.x); rough = 0.55; }
+          else if (code == 1) { alb = aLook.w > 0.5 ? aCoat * 0.55 + vec3(0.01) : hairTone(aLook.y); rough = aLook.w > 0.5 ? 0.9 : 0.5; }
+          else if (code == 3) { alb = aLegs; rough = 0.8; }
+          else if (code == 4) { alb = vec3(0.014, 0.013, 0.012); rough = 0.45; }
+          else if (code == 5) { alb = vec3(0.42, 0.3, 0.14); rough = 0.38; metal = 0.9; }
+          else if (code == 6) { alb = vec3(0.3, 0.25, 0.17); rough = 0.2; emit = vec3(1.0, 0.58, 0.24) * 1.3 * aPose.y; }
+          else if (code == 7) { alb = vec3(0.02, 0.018, 0.016); rough = 0.15; }
+          else if (code == 8) { alb = aCoat * 0.55; rough = 0.8; }
+          else if (code == 9) { alb = skinTone(aLook.x) * vec3(0.8, 0.55, 0.55); rough = 0.5; }
+          if (code < 5) alb *= (0.72 + 0.28 * smoothstep(0.0, 1.5, position.y)) * (0.85 + 0.15 * clamp(normal.y + 1.0, 0.0, 1.0));
+          vAlb = alb;
+          vEmit = emit;
+          vRough = rough;
+          vMetal = metal;
+          ${LAMP_VERT_MAIN}
+        }`,
+      )
+      .replace('#include <begin_vertex>', 'vec3 transformed = posedP;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec3 vAlb;\nvarying vec3 vEmit;\nvarying float vRough;\nvarying float vMetal;\n${LAMP_FRAG}`)
+      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = vAlb;')
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vRough;')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vEmit;')
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${LAMP_FRAG_MAIN}`);
+  };
+  m.customProgramCacheKey = () => (far ? 'palimpsest-people-far' : 'palimpsest-people');
+  return m;
+}
+
+/** The lanterns far off: a warm point a few pixels across at each figure past 400 m, dimmed less by the haze than a lit surface. */
+function lanternMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uLodEye: LOD_EYE, uSize: { value: 4 } },
+    vertexShader: /* glsl */ `
+      uniform vec3 uLodEye;
+      uniform float uSize;
+      varying float vIn;
+      void main() {
+        float d = distance(position, uLodEye);
+        vIn = smoothstep(${PEOPLE_LOD.out.near.toFixed(1)}, ${PEOPLE_LOD.out.far.toFixed(1)}, d);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = uSize * (1.0 + 0.6 * smoothstep(1200.0, 3000.0, d));
+        if (vIn <= 0.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+      }`,
+    fragmentShader: /* glsl */ `
+      varying float vIn;
+      void main() {
+        vec2 q = gl_PointCoord - 0.5;
+        float r = length(q) * 2.0;
+        float a = smoothstep(1.0, 0.25, r);
+        gl_FragColor = vec4(vec3(1.0, 0.64, 0.3) * 1.6 * a * vIn, 1.0);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
+// ---------------------------------------------------------------- the people
+
+export function createPeople(deps: PeopleDeps): People {
+  const now = deps.now ?? (() => Date.now());
+  const hour = deps.hour ?? (() => new Date().getHours() + new Date().getMinutes() / 60);
+  const group = new THREE.Group();
+  group.name = 'people';
+  const figures = new Map<string, Figure>();
+  let time = 0;
+  let held = false;
+  let followed: string | null = null;
+  let lanternHeld: boolean | null = null;
+  let version = 0;
+  let platesNow: Plate[] = [];
+  const lastStats = { near: 0, far: 0, lanterns: 0 };
+
+  // ---- the drawing
+  const nearMat = personaMaterial(false);
+  const farMat = personaMaterial(true);
+  const lanternMat = lanternMaterial();
+  const nearGeo = personaModel();
+  const farGeo = farModel();
+  const nearTris = nearGeo.attributes.position.count / 3;
+  const farTris = farGeo.attributes.position.count / 3;
+  const ATTRS = { aAnim: 4, aLook: 4, aCoat: 3, aLegs: 3, aLampL: 4, aPose: 4 };
+  interface Drawn {
+    mesh: THREE.InstancedMesh;
+    a: Record<string, THREE.InstancedBufferAttribute>;
+    n: number;
+  }
+  let cap = CAP;
+  let near!: Drawn;
+  let far!: Drawn;
+  let lanterns!: THREE.Points;
+  let lanternPos!: THREE.BufferAttribute;
+  function instanced(geo: THREE.BufferGeometry, mat: THREE.Material, name: string): Drawn {
+    const a: Record<string, THREE.InstancedBufferAttribute> = {};
+    for (const [k, n] of Object.entries(ATTRS)) {
+      const at = new THREE.InstancedBufferAttribute(new Float32Array(cap * n), n);
+      at.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute(k, at);
+      a[k] = at;
+    }
+    const mesh = new THREE.InstancedMesh(geo, mat, cap);
+    mesh.name = name;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.frustumCulled = false;
+    mesh.count = 0;
+    mesh.visible = false;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    setLayers(mesh, LAYER.view);
+    group.add(mesh);
+    return { mesh, a, n: 0 };
+  }
+  function size(): void {
+    if (near) {
+      group.remove(near.mesh, far.mesh, lanterns);
+      near.mesh.dispose();
+      far.mesh.dispose();
+      lanterns.geometry.dispose();
+    }
+    near = instanced(nearGeo, nearMat, 'people:near');
+    far = instanced(farGeo, farMat, 'people:far');
+    const g = new THREE.BufferGeometry();
+    lanternPos = new THREE.BufferAttribute(new Float32Array(cap * 3), 3);
+    lanternPos.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('position', lanternPos);
+    lanterns = new THREE.Points(g, lanternMat);
+    lanterns.name = 'people:lanterns';
+    lanterns.frustumCulled = false;
+    lanterns.visible = false;
+    setLayers(lanterns, LAYER.view);
+    group.add(lanterns);
+  }
+  size();
+
+  // ---- the figures
+  function lookOf(agent: Agent): Look {
+    const r = hashOf(agent.id);
+    const coat = deps.coatOf?.(agent) ?? ([0.08 + 0.1 * r(), 0.07 + 0.06 * r(), 0.06 + 0.05 * r()] as [number, number, number]);
+    const g = 0.03 + 0.07 * r();
+    return {
+      skin: r(),
+      hair: r(),
+      height: 1.64 + 0.24 * r(),
+      build: 0.92 + 0.18 * r(),
+      coatLen: 0.35 + 0.65 * r(),
+      hat: r() < 0.15 ? 1 : 0,
+      coat,
+      legs: [g, g * (0.95 + 0.1 * r()), g * (0.9 + 0.1 * r())],
+    };
+  }
+
+  function newFigure(agent: Agent): Figure {
+    return {
+      agent,
+      look: lookOf(agent),
+      trip: null,
+      live: false,
+      leg: 0,
+      s: 0,
+      stage: 'idle',
+      k: 0,
+      ride: null,
+      from: [0, 0, 0],
+      via: [0, 0, 0],
+      to: [0, 0, 0],
+      path: [],
+      spot: [0, 0, 0],
+      spotHeading: 0,
+      x: 0,
+      y: 0,
+      z: 0,
+      heading: 0,
+      phase: 0,
+      walking: 0,
+      sit: 0,
+      hold: 0,
+      lamp: [0, 1, 0, 0],
+      seen: false,
+      d: Infinity,
+    };
+  }
+
+  /** Puts a figure on a trip: at the point its elapsed time says, legs by their nominal times (a ride waits for its real vehicle). */
+  function startTrip(f: Figure, trip: Trip): void {
+    f.trip = trip;
+    f.live = true;
+    f.ride = null;
+    f.leg = 0;
+    f.s = 0;
+    f.k = 0;
+    let elapsed = Math.max(0, (now() - Date.parse(trip.startedAt)) / 1000);
+    for (let i = 0; i < trip.legs.length; i++) {
+      const leg = trip.legs[i];
+      const secs = leg.ms / 1000;
+      if (leg.mode !== 'walk' || elapsed < secs) {
+        f.leg = i;
+        if (leg.mode === 'walk') f.s = (pathLength(leg.path) * elapsed) / Math.max(1e-3, secs);
+        enterLeg(f);
+        return;
+      }
+      elapsed -= secs;
+    }
+    f.leg = trip.legs.length;
+    arrive(f);
+  }
+
+  function arrive(f: Figure): void {
+    const t = f.trip;
+    f.stage = 'idle';
+    f.ride = null;
+    if (t) {
+      [f.x, , f.z] = standPoint([t.to.x, 0, t.to.z]);
+      f.y = groundY(f.x);
+    }
+  }
+
+  /** Sets a figure up for the leg it is on: walking, or waiting where its vehicle will call. */
+  function enterLeg(f: Figure): void {
+    const trip = f.trip!;
+    if (f.leg >= trip.legs.length) return arrive(f);
+    const leg = trip.legs[f.leg];
+    f.ride = null;
+    f.k = 0;
+    f.path = leg.mode === 'walk' ? pavementPath(leg.path) : leg.path;
+    if (leg.mode === 'walk') {
+      f.stage = 'walk';
+      const at = { p: [0, 0, 0] as V3, h: f.heading };
+      along(f.path, f.s, at);
+      [f.x, f.y, f.z] = at.p;
+      f.heading = at.h;
+      return;
+    }
+    const w = leg.mode === 'cab' ? kerbSpot(leg.path[0], deps.net()) : platformSpot(leg.path, leg.mode);
+    f.spot = w.spot;
+    f.spotHeading = w.heading;
+    f.stage = 'wait';
+    f.s = 0;
+    [f.x, f.y, f.z] = w.spot;
+    f.heading = w.heading;
+  }
+
+  function nextLeg(f: Figure): void {
+    f.leg++;
+    f.s = 0;
+    enterLeg(f);
+  }
+
+  /** The vehicle for a ride leg, found again when the old one was retired by a relay; null walks the leg's path instead. */
+  function vehicleFor(f: Figure, leg: number, mode: TripMode): VehicleRef | Ride | null {
+    if (f.ride && !f.ride.retired()) return f.ride;
+    const v = deps.vehicles();
+    if (!v || !f.trip) return null;
+    try {
+      f.ride = mode === 'cab' ? v.summonCab(f.trip, leg) : v.board(f.trip, leg);
+    } catch {
+      f.ride = null;
+    }
+    return f.ride;
+  }
+
+  function stepFigure(f: Figure, dt: number): void {
+    const trip = f.trip;
+    const k = f.look.height / 1.75;
+    if (!trip || f.leg >= trip.legs.length) {
+      f.walking = Math.max(0, f.walking - dt * 3);
+      f.sit = Math.max(0, f.sit - dt * 2);
+      f.hold = 0;
+      f.phase += dt * 1.6;
+      return;
+    }
+    const leg = trip.legs[f.leg];
+    const len = pathLength(f.path);
+    const walkOn = (speed: number): void => {
+      f.s += speed * dt;
+      const at = { p: [f.x, f.y, f.z] as V3, h: f.heading };
+      along(f.path, f.s, at);
+      [f.x, f.y, f.z] = at.p;
+      f.heading = turnTo(f.heading, at.h, Math.min(1, dt * 8));
+      f.walking = Math.min(1, f.walking + dt * 3);
+      f.phase += strideRate(speed, STRIDE, k) * dt;
+      if (f.s >= len) nextLeg(f);
+    };
+    if (leg.mode === 'walk') {
+      // At the leg's own pace (its length over its time, 1.4 m/s), measured on the street line it was routed on.
+      walkOn(Math.max(0.5, pathLength(leg.path) / Math.max(1e-3, leg.ms / 1000)));
+      return;
+    }
+    const ref = vehicleFor(f, f.leg, leg.mode);
+    if (!ref) {
+      // No vehicle to board (before the network is laid): the leg is walked along its own path at its mode's pace.
+      f.stage = 'walk';
+      walkOn(SPEED[leg.mode]);
+      return;
+    }
+    const sits = SITS.has(leg.mode) ? 1 : 0;
+    const holds = HOLDS.has(leg.mode) ? 1 : 0;
+    const standing = (): void => {
+      f.walking = Math.max(0, f.walking - dt * 3);
+      f.phase += dt * 1.6;
+    };
+    if (f.stage === 'wait') {
+      [f.x, f.y, f.z] = f.spot;
+      f.heading = turnTo(f.heading, f.spotHeading, Math.min(1, dt * 4));
+      f.sit = Math.max(0, f.sit - dt * 2);
+      standing();
+      const stop = { x: leg.path[0][0], z: leg.path[0][2] };
+      const at = ref.position();
+      const here = dist({ x: at[0], z: at[2] }, stop) < (leg.mode === 'cab' ? 12 : 40);
+      const ready = leg.mode === 'cab' ? ref.phase() === 'pickup' : (ref as Ride).boardsIn() <= 0.05 && here;
+      if (ready) {
+        f.stage = 'board';
+        f.k = 0;
+        f.from = [f.x, f.y, f.z];
+      }
+      return;
+    }
+    // Stepping in: to the door on foot, then in through it to the seat or the standing place, sitting down on the way.
+    const AT_DOOR = 0.55;
+    if (f.stage === 'board') {
+      f.k = Math.min(1, f.k + dt / (leg.mode === 'cab' ? BOARD_S.cab : BOARD_S.line));
+      f.via = doorOf(ref, leg.mode);
+      f.to = aboard(ref, leg.mode);
+      const outside = f.k < AT_DOOR;
+      const t = outside ? smooth(f.k / AT_DOOR) : smooth((f.k - AT_DOOR) / (1 - AT_DOOR));
+      const p = outside ? lerp3(f.from, f.via, t) : lerp3(f.via, f.to, t);
+      const h = outside ? Math.atan2(f.via[2] - f.from[2], f.via[0] - f.from[0]) : ref.heading();
+      f.heading = turnTo(f.heading, h, Math.min(1, dt * 6));
+      f.walking = outside ? Math.min(1, f.walking + dt * 4) : Math.max(0, f.walking - dt * 4);
+      f.phase += strideRate(1.0, STRIDE, k) * dt * (outside ? 1 : 0.2);
+      f.sit = sits * (outside ? 0 : t);
+      f.hold = holds * (outside ? 0 : t);
+      [f.x, f.y, f.z] = p;
+      if (f.k >= 1) f.stage = 'ride';
+      return;
+    }
+    if (f.stage === 'ride') {
+      [f.x, f.y, f.z] = aboard(ref, leg.mode);
+      f.heading = ref.heading();
+      f.sit = sits;
+      f.hold = holds;
+      standing();
+      f.walking = 0;
+      let out = false;
+      if (leg.mode === 'cab') {
+        const ph = ref.phase();
+        out = ph === 'setdown' || ph === 'returning' || ph === 'parked';
+      } else {
+        const end = leg.path[leg.path.length - 1];
+        const at = ref.position();
+        out = (ref as Ride).alightsIn() <= 0.05 && dist({ x: at[0], z: at[2] }, { x: end[0], z: end[2] }) < 40;
+      }
+      if (out) {
+        f.stage = 'alight';
+        f.k = 0;
+        f.from = [f.x, f.y, f.z];
+        f.via = doorOf(ref, leg.mode);
+        const end = leg.path[leg.path.length - 1];
+        f.to = leg.mode === 'cab' ? kerbSpot(end, deps.net()).spot : platformSpot([end, ...(leg.path.length > 1 ? [leg.path[leg.path.length - 2]] : [])], leg.mode).spot;
+        if (leg.mode !== 'cab' && leg.path.length > 1) {
+          // Off onto the platform on the right of the way it came.
+          const prev = leg.path[leg.path.length - 2];
+          const h = Math.atan2(end[2] - prev[2], end[0] - prev[0]);
+          const pl = PLATFORM[leg.mode as keyof typeof PLATFORM];
+          f.to = around(end, h, 0, pl.out, pl.up === 'quay' ? 0 : end[1] + pl.up);
+        }
+      }
+      return;
+    }
+    // Stepping out: up from the seat and out through the door, then on foot to the kerb or along the platform.
+    if (f.stage === 'alight') {
+      f.k = Math.min(1, f.k + dt / (leg.mode === 'cab' ? BOARD_S.cab * 0.8 : BOARD_S.line));
+      const inside = f.k < 1 - AT_DOOR;
+      const t = inside ? smooth(f.k / (1 - AT_DOOR)) : smooth((f.k - (1 - AT_DOOR)) / AT_DOOR);
+      const p = inside ? lerp3(f.from, f.via, t) : lerp3(f.via, f.to, t);
+      const h = inside ? Math.atan2(f.via[2] - f.from[2], f.via[0] - f.from[0]) : Math.atan2(f.to[2] - f.via[2], f.to[0] - f.via[0]);
+      f.heading = turnTo(f.heading, h, Math.min(1, dt * 6));
+      f.sit = sits * (inside ? 1 - t : 0);
+      f.hold = holds * (inside ? 1 - t : 0);
+      f.walking = inside ? 0 : Math.min(1, f.walking + dt * 4);
+      f.phase += strideRate(1.0, STRIDE, k) * dt * (inside ? 0 : 1);
+      [f.x, f.y, f.z] = p;
+      if (f.k >= 1) nextLeg(f);
+    }
+  }
+
+  function step(dt: number): void {
+    time += dt;
+    for (const f of figures.values()) stepFigure(f, dt);
+  }
+
+  function release(): void {
+    if (followed === null) return;
+    followed = null;
+    deps.onRelease?.();
+  }
+
+  const lit = (): number => {
+    if (lanternHeld !== null) return lanternHeld ? 1 : 0;
+    const h = hour();
+    return h >= DUSK.from || h < DUSK.to ? 1 : 0;
+  };
+
+  // ---- the draw
+  const m4 = new THREE.Matrix4();
+  const pos = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  const scl = new THREE.Vector3();
+  const up = new THREE.Vector3(0, 1, 0);
+  const frustum = new THREE.Frustum();
+  const projView = new THREE.Matrix4();
+  const sphere = new THREE.Sphere();
+  const lampOut: [number, number, number, number] = [0, 1, 0, 0];
+
+  function write(d: Drawn, f: Figure, litNow: number): void {
+    if (d.n >= cap) return;
+    const i = d.n++;
+    d.mesh.setMatrixAt(i, m4);
+    const stride = Math.asin(clamp((0.7 * Math.max(0.55, f.walking)) / (2 * LEG), 0, 0.62));
+    d.a.aAnim.setXYZW(i, f.phase, f.walking, stride, 0);
+    d.a.aLook.setXYZW(i, f.look.skin, f.look.hair, f.look.coatLen, f.look.hat);
+    d.a.aCoat.setXYZ(i, f.look.coat[0], f.look.coat[1], f.look.coat[2]);
+    d.a.aLegs.setXYZ(i, f.look.legs[0], f.look.legs[1], f.look.legs[2]);
+    d.a.aLampL.setXYZW(i, f.lamp[0], f.lamp[1], f.lamp[2], f.lamp[3]);
+    d.a.aPose.setXYZW(i, f.sit, litNow, f.hold, 0);
+  }
+
+  function draw(camera: THREE.PerspectiveCamera): void {
+    camera.updateMatrixWorld();
+    projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    frustum.setFromProjectionMatrix(projView);
+    const eye = camera.position;
+    if (figures.size > cap) {
+      cap = Math.max(figures.size, cap * 2);
+      size();
+    }
+    near.n = 0;
+    far.n = 0;
+    let ln = 0;
+    const litNow = lit();
+    const plates: Plate[] = [];
+    for (const f of figures.values()) {
+      const d = Math.hypot(f.x - eye.x, f.y + 1 - eye.y, f.z - eye.z);
+      f.d = d;
+      f.seen = frustum.intersectsSphere(sphere.set(pos.set(f.x, f.y + 0.9, f.z), 1.4));
+      if (d > PEOPLE_LOD.out.near && f.seen) {
+        lanternPos.setXYZ(ln++, f.x, f.y + 0.7, f.z);
+      }
+      if (!f.seen || d > PEOPLE_LOD.out.far) continue;
+      const k = f.look.height / 1.75;
+      pos.set(f.x, f.y, f.z);
+      q.setFromAxisAngle(up, -f.heading);
+      m4.compose(pos, q, scl.set(k * (0.94 + 0.06 * f.look.build), k, k * f.look.build));
+      if (deps.lampLight) deps.lampLight(f.x, f.y + 1.3, f.z, f.lamp);
+      if (d < PEOPLE_LOD.near.far) {
+        write(near, f, litNow);
+        if (d < PEOPLE_LOD.plate) {
+          plates.push({
+            key: `person:${f.agent.id}`,
+            origin: { x: f.x, z: f.z },
+            at: (out) => out.set(f.x, f.y + (f.sit > 0.5 ? 1.45 : 1.95 * k) + 0.25, f.z),
+            fade: { start: PEOPLE_LOD.plate - 40, end: PEOPLE_LOD.plate },
+            className: 'plate-person',
+            name: f.agent.name,
+            sub: f.trip && f.live ? (deps.describe?.(f.trip, f.agent) ?? '') : f.trip ? 'Arrived' : '',
+            onActivate: deps.onActivate ? () => deps.onActivate!(f.agent.id) : undefined,
+          });
+        }
+      }
+      if (d > PEOPLE_LOD.near.near) write(far, f, litNow);
+    }
+    const upload = (a: THREE.BufferAttribute, n: number): void => {
+      a.clearUpdateRanges();
+      a.addUpdateRange(0, n * a.itemSize);
+      a.needsUpdate = true;
+    };
+    const finish = (d: Drawn): void => {
+      d.mesh.count = d.n;
+      d.mesh.visible = d.n > 0;
+      if (d.n === 0) return;
+      upload(d.mesh.instanceMatrix, d.n);
+      for (const a of Object.values(d.a)) upload(a, d.n);
+    };
+    finish(near);
+    finish(far);
+    lanterns.visible = ln > 0;
+    lanterns.geometry.setDrawRange(0, ln);
+    if (ln) upload(lanternPos, ln);
+    lastStats.near = near.n;
+    lastStats.far = far.n;
+    lastStats.lanterns = ln;
+    const key = plates.map((p) => `${p.key}|${p.name}|${p.sub}`).join('\n');
+    if (key !== platesNow.map((p) => `${p.key}|${p.name}|${p.sub}`).join('\n')) version++;
+    platesNow = plates;
+  }
+
+  const followVec = new THREE.Vector3();
+  const rideOf = (agentId: string): { mode: TripMode; id: string; phase: string } | null => {
+    const f = figures.get(agentId);
+    const leg = f?.trip?.legs[f.leg];
+    if (!f || !leg || leg.mode === 'walk' || !f.ride) return null;
+    return { mode: leg.mode, id: f.ride.id, phase: f.ride.phase() };
+  };
+  return {
+    group,
+    set(trips, agents) {
+      const byId = new Map(agents.map((a) => [a.id, a]));
+      const liveBy = new Map<string, Trip>();
+      for (const t of trips) if (!t.endedAt) liveBy.set(t.agentId, t);
+      // Agents gone or retired take their figures with them.
+      for (const [id, f] of figures) {
+        const a = byId.get(id);
+        if (!a || a.retired) {
+          figures.delete(id);
+          if (followed === id) release();
+        } else f.agent = a;
+      }
+      for (const [agentId, trip] of liveBy) {
+        const a = byId.get(agentId);
+        if (!a || a.retired) continue;
+        let f = figures.get(agentId);
+        if (!f) {
+          f = newFigure(a);
+          figures.set(agentId, f);
+        }
+        if (f.trip?.id !== trip.id) startTrip(f, trip);
+        else f.live = true;
+      }
+      // A trip no longer live: the figure finishes it on foot (or as far as its ride goes); the follow lets go.
+      for (const [id, f] of figures) {
+        if (liveBy.has(id)) continue;
+        f.live = false;
+        if (followed === id) release();
+      }
+      version++;
+    },
+    update(dt, camera) {
+      if (!held) step(dt);
+      if (camera) draw(camera);
+    },
+    follow(agentId) {
+      if (agentId === null || !figures.has(agentId)) {
+        release();
+        return;
+      }
+      followed = agentId;
+    },
+    following: () => followed,
+    followPose() {
+      const f = followed ? figures.get(followed) : null;
+      if (!f) return null;
+      return { position: followVec.set(f.x, f.y, f.z), heading: f.heading };
+    },
+    positionOf(agentId) {
+      const f = figures.get(agentId);
+      return f ? new THREE.Vector3(f.x, f.y, f.z) : null;
+    },
+    rideOf,
+    figures: () =>
+      [...figures.values()].map((f) => ({
+        agentId: f.agent.id,
+        name: f.agent.name,
+        tripId: f.trip?.id ?? null,
+        live: f.live,
+        leg: f.leg,
+        mode: f.trip?.legs[f.leg]?.mode ?? null,
+        stage: f.stage,
+        position: [f.x, f.y, f.z] as V3,
+        heading: f.heading,
+        walking: f.walking,
+        sit: f.sit,
+        lit: lit(),
+        ride: rideOf(f.agent.id),
+      })),
+    plates: () => platesNow,
+    platesVersion: () => version,
+    view: () => ({
+      figures: figures.size,
+      near: lastStats.near,
+      far: lastStats.far,
+      lanterns: lastStats.lanterns,
+      meshes: (near.mesh.visible ? 1 : 0) + (far.mesh.visible ? 1 : 0) + (lanterns.visible ? 1 : 0),
+      triangles: lastStats.near * nearTris + lastStats.far * farTris,
+      following: followed,
+      time,
+    }),
+    lantern(on) {
+      lanternHeld = on;
+    },
+    setQuality() {
+      /* the figures are few: the same at either quality */
+    },
+    hold(on) {
+      held = on;
+    },
+    skip(seconds) {
+      for (let t = 0; t < seconds; t += 0.1) step(Math.min(0.1, seconds - t));
+    },
+    dispose() {
+      group.remove(near.mesh, far.mesh, lanterns);
+      near.mesh.dispose();
+      far.mesh.dispose();
+      nearGeo.dispose();
+      farGeo.dispose();
+      lanterns.geometry.dispose();
+      nearMat.dispose();
+      farMat.dispose();
+      lanternMat.dispose();
+      figures.clear();
+      followed = null;
+    },
+  };
+}

@@ -8,6 +8,12 @@ export interface Plate {
   /** The quieter second line: owner and floor count, the analysis step, or a firm's agents and credits. */
   sub: string;
   onActivate?: () => void;
+  /** A plate that stands at a live point (a persona's figure, people.ts) rather than beside a district's origin. */
+  at?: (out: THREE.Vector3) => THREE.Vector3;
+  /** Its own fade band in metres from the eye (the districts' is FADE_START to FADE_END). */
+  fade?: { start: number; end: number };
+  /** A class on the plate's element besides `plate`. */
+  className?: string;
 }
 
 export interface Plates {
@@ -59,6 +65,7 @@ export function createPlates(
   const ray = new THREE.Vector3();
 
   function anchor(p: Plate, out: THREE.Vector3): THREE.Vector3 {
+    if (p.at) return p.at(out);
     toward.set(camera.position.x - p.origin.x, 0, camera.position.z - p.origin.z);
     if (toward.lengthSq() < 1e-6) toward.set(1, 0, 1);
     toward.normalize();
@@ -79,7 +86,7 @@ export function createPlates(
         } else {
           const el = document.createElement('button');
           el.type = 'button';
-          el.className = 'plate';
+          el.className = plate.className ? `plate ${plate.className}` : 'plate';
           const name = document.createElement('span');
           name.className = 'plate-name';
           const sub = document.createElement('span');
@@ -110,7 +117,7 @@ export function createPlates(
         const dist = at.distanceTo(camera.position);
         ndc.copy(at).project(camera);
         const behind = ndc.z > 1 || ndc.z < -1;
-        const fade = 1 - THREE.MathUtils.smoothstep(dist, FADE_START, FADE_END);
+        const fade = 1 - THREE.MathUtils.smoothstep(dist, l.plate.fade?.start ?? FADE_START, l.plate.fade?.end ?? FADE_END);
         if (testOcclusion && !behind) {
           raycaster.set(camera.position, ray.copy(at).sub(camera.position).normalize());
           raycaster.far = dist - 2;

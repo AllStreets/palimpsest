@@ -4,6 +4,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 /** The eye never drops below standing height. */
 const MIN_EYE_HEIGHT = 1.7;
 const FLIGHT_SECONDS = 1.6;
+/** Following a figure: the eye this far behind and above it, looking a little ahead of it, eased at these rates per second. */
+const FOLLOW = { back: 10.4, up: 6, ahead: 2.5, eyeRate: 2.2, targetRate: 4, turnRate: 1.6 } as const;
+
+/** Where a followed figure stands and faces (people.ts): x forward is (cos heading, sin heading). */
+export interface FollowPose {
+  position: THREE.Vector3;
+  heading: number;
+}
 
 export interface CameraRig {
   camera: THREE.PerspectiveCamera;
@@ -14,6 +22,15 @@ export interface CameraRig {
   flyView(eye: THREE.Vector3, target: THREE.Vector3): void;
   /** Jumps straight to an eye and target. */
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
+  /**
+   * Keeps the eye 12 m behind and above whatever `pose` answers, easing
+   * after it, until the user drags or scrolls, unfollow() is called, or
+   * `pose` answers null (the trip ended, the agent retired). `onRelease` is
+   * told whichever way it lets go.
+   */
+  follow(pose: () => FollowPose | null, onRelease?: () => void): void;
+  unfollow(): void;
+  following(): boolean;
   update(dt: number): void;
   setAspect(aspect: number): void;
   dispose(): void;
@@ -50,8 +67,17 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
     toTarget: THREE.Vector3;
   } | null = null;
 
+  let follow: { pose: () => FollowPose | null; onRelease?: () => void; heading: number; started: boolean; last: THREE.Vector3 } | null = null;
+  const release = (): void => {
+    if (!follow) return;
+    const done = follow.onRelease;
+    follow = null;
+    done?.();
+  };
   const stopFlight = (): void => {
     flight = null;
+    // A drag or a scroll is the user taking the camera back.
+    release();
   };
   dom.addEventListener('pointerdown', stopFlight);
   dom.addEventListener('wheel', stopFlight, { passive: true });
@@ -82,7 +108,42 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
       controls.target.copy(target);
       controls.update();
     },
+    follow(pose, onRelease) {
+      flight = null;
+      follow = { pose, onRelease, heading: 0, started: false, last: new THREE.Vector3() };
+    },
+    unfollow: release,
+    following: () => follow !== null,
     update(dt) {
+      if (follow) {
+        const p = follow.pose();
+        if (!p) release();
+        else {
+          // The bearing turns after the figure's heading the short way round, slowly enough that a corner does not swing the view.
+          if (!follow.started) {
+            follow.heading = p.heading;
+            follow.last.copy(p.position);
+            follow.started = true;
+          }
+          // The eye eases after the figure, so on a tram it would fall behind: it aims ahead by the way the figure moves.
+          const lead = dt > 1e-4 ? Math.min(1 / FOLLOW.eyeRate, 2) : 0;
+          const vx = dt > 1e-4 ? ((p.position.x - follow.last.x) / dt) * lead : 0;
+          const vz = dt > 1e-4 ? ((p.position.z - follow.last.z) / dt) * lead : 0;
+          follow.last.copy(p.position);
+          let d = p.heading - follow.heading;
+          while (d > Math.PI) d -= Math.PI * 2;
+          while (d < -Math.PI) d += Math.PI * 2;
+          follow.heading += d * Math.min(1, 1 - Math.exp(-FOLLOW.turnRate * dt));
+          const fx = Math.cos(follow.heading);
+          const fz = Math.sin(follow.heading);
+          const eye = new THREE.Vector3(p.position.x - fx * FOLLOW.back + vx, Math.max(MIN_EYE_HEIGHT, p.position.y + FOLLOW.up), p.position.z - fz * FOLLOW.back + vz);
+          const target = new THREE.Vector3(p.position.x + fx * FOLLOW.ahead + vx * 0.5, p.position.y + 1.4, p.position.z + fz * FOLLOW.ahead + vz * 0.5);
+          const ke = 1 - Math.exp(-FOLLOW.eyeRate * dt);
+          const kt = 1 - Math.exp(-FOLLOW.targetRate * dt);
+          camera.position.lerp(eye, ke);
+          controls.target.lerp(target, kt);
+        }
+      }
       if (flight) {
         flight.t = Math.min(flight.t + dt / FLIGHT_SECONDS, 1);
         const k = easeInOutCubic(flight.t);

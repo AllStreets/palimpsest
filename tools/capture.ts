@@ -53,6 +53,7 @@ import type { District, Quarter } from '../shared/types.js';
 import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
+import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
 import { decodePng, labOf } from './png.js';
 import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sample.js';
 
@@ -379,6 +380,60 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         await still(page, 'dusk', e, t);
       }
       await d((v) => v.vehicleHold(false));
+    },
+
+    async people(page) {
+      // The personas as people (Task 34; CAPTURE_ECONOMY=1 for the firms): a close follow shot of a figure walking
+      // (people-follow), close enough to read the face and hands (people-close), a figure stepping into its cab
+      // (people-cab), a figure on a tram platform with the tram coming in (people-platform), and a medium shot of
+      // her among the waiting crowd there (people-crowd). PEOPLE_ONLY='follow,cab' takes a subset;
+      // PEOPLE_VIEWS='{"people-follow": [[eye], [target]]}' overrides a view; PEOPLE_DAY=1 leaves the lanterns dark.
+      await chrome(page, false);
+      const only = process.env.PEOPLE_ONLY?.split(',');
+      const views = JSON.parse(process.env.PEOPLE_VIEWS ?? '{}') as Record<string, [V3, V3]>;
+      const want = (n: string): boolean => !only || only.includes(n);
+      await callDebug(page, 'd.ambientDensity(1)');
+      await callDebug(page, 'd.ambientSkip(60)');
+      await callDebug(page, 'd.ambientHold(true)');
+      await callDebug(page, 'd.peopleHold(true)');
+      await callDebug(page, `d.peopleLantern(${process.env.PEOPLE_DAY ? 'false' : 'true'})`);
+      const shot = async (name: string, def: [V3, V3]): Promise<void> => {
+        const [eye, target] = views[name] ?? def;
+        await still(page, name, eye, target);
+      };
+      // Dagny on her way to the tram: twenty seconds into the walk, framed as the follow camera frames her.
+      await sendPerson(page, 'dagny-hollis', [560, -300], [600, 200]);
+      await callDebug(page, 'd.peopleSkip(22)');
+      if (want('follow') || want('close')) {
+        const f = await person(page, 'dagny-hollis');
+        if (f) {
+          if (want('follow')) await shot('people-follow', followView(f));
+          // The orbit's nearest stand is 12 m, so the close shot looks past her: the eye 4 m off her shoulder, the target well behind.
+          if (want('close')) await shot('people-close', [aroundPerson(f.position, f.heading, 2.6, -3.0, f.position[1] + 1.5), aroundPerson(f.position, f.heading, -5.5, 6.2, f.position[1] + 0.5)]);
+        }
+      }
+      if (want('platform') || want('crowd')) {
+        // On the platform among the waiting crowd as the tram comes in: close from behind her, and a medium shot from up the platform.
+        const f0 = await runUntil(page, 'dagny-hollis', (x) => x.mode === 'tram' && x.stage === 'wait');
+        const f = f0 ? await runUntil(page, 'dagny-hollis', (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 34 && v.speed > 0.5), 1200) : null;
+        if (f && want('platform')) await shot('people-platform', [aroundPerson(f.position, f.heading, 11, 2.4, f.position[1] + 2.4), aroundPerson(f.position, f.heading, -1.5, 0.3, f.position[1] + 1.2)]);
+        if (f && want('crowd')) await shot('people-crowd', [aroundPerson(f.position, f.heading, 13, 3.5, f.position[1] + 2.0), aroundPerson(f.position, f.heading, 0, 0.5, f.position[1] + 1.1)]);
+        if (!f) console.log('  no figure on the platform');
+      }
+      if (want('cab')) {
+        // Hal's cab: a second and a half into stepping in at the rear door.
+        await sendPerson(page, 'hal-meridian', [446.5, 330], [1100, -200]);
+        const f0 = await runUntil(page, 'hal-meridian', (x) => x.stage === 'board');
+        if (f0) {
+          await callDebug(page, 'd.peopleSkip(1.4)');
+          const f = await person(page, 'hal-meridian');
+          const v = f?.ride ? await callDebug<{ position: number[]; heading: number } | null>(page, `d.vehicle(${JSON.stringify(f.ride.id)})`) : null;
+          if (f && v) await shot('people-cab', [aroundPerson(v.position, v.heading, 6.5, 4.4, 1.45), aroundPerson(v.position, v.heading, -0.3, 0.7, 0.95)]);
+        } else console.log('  no figure at a cab');
+      }
+      await callDebug(page, 'd.peopleHold(false)');
+      await callDebug(page, 'd.ambientHold(false)');
+      await callDebug(page, 'd.peopleLantern(null)');
     },
 
     async life(page) {

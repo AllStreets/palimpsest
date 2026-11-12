@@ -18,7 +18,7 @@ export interface AgentPage {
 export interface AgentPageOptions {
   listen(fn: (e: EngineEvent) => void): () => void;
   onDismiss(): void;
-  /** Follow the agent through the city as it works (Task 34). */
+  /** Follow the agent's figure through the city as it works (people.ts). */
   follow(agentId: string): void;
   /** Ride the lift up the agent's tower (Task 35). */
   rideUp(agentId: string): void;
@@ -109,11 +109,9 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
     const ride = button('agent-ride', 'Ride up', () => opts.rideUp(a.id));
     ride.dataset.ride = a.id;
     ride.setAttribute('aria-label', `Ride up ${cleanText(a.name, 80)}’s tower`);
-    // Until the city tour lands (Tasks 34 and 35) both are in place but say they are not ready.
-    for (const b of [follow, ride]) {
-      b.setAttribute('aria-disabled', 'true');
-      b.title = 'Arrives with the city tour';
-    }
+    // Until the lift lands (Task 35) Ride up is in place but says it is not ready.
+    ride.setAttribute('aria-disabled', 'true');
+    ride.title = 'Arrives with the city tour';
     const jump = el('button', 'textbtn agent-jump', 'Read its persona');
     jump.type = 'button';
     jump.addEventListener('click', () => {

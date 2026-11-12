@@ -34,6 +34,7 @@ import { firmChecks } from './ui-test-firms.js';
 import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
+import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1851,6 +1852,86 @@ async function vehicleChecks(page: Page): Promise<void> {
   check((await debug(page, (d) => d.quality())) === 'high', 'the vehicles hold high quality');
 }
 
+// ---------------------------------------------------------------- the personas as people (Task 34)
+
+/**
+ * The agent personas on the economy's trips: figures in the city, none at
+ * its full level from home; a persona sent on the tram walks to its stop,
+ * waits on the platform under its plate (commute.png), boards the tram and
+ * rides in it; Follow brings the camera to it and Escape lets go.
+ */
+async function peopleChecks(page: Page): Promise<void> {
+  type PV = { figures: number; near: number; far: number; lanterns: number; meshes: number; triangles: number; following: string | null };
+  const view = (): Promise<PV | null> => callDebug<PV | null>(page, 'd.people()');
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(800);
+  const far = await view();
+  console.log(`info  people: ${far?.figures} figures; from home ${far?.near} near, ${far?.far} far, ${far?.lanterns} lanterns in ${far?.meshes} calls`);
+  check(!!far && far.figures >= 3, `the economy's trips put personas in the city (${far?.figures})`);
+  check(!!far && far.near === 0 && far.meshes <= 2, `from home no persona draws its full figure (${far?.near} near, ${far?.meshes} calls)`);
+
+  // Dagny on the tram: she walks to the stop, waits on the platform, and boards.
+  await callDebug(page, 'd.peopleHold(true)');
+  const id = 'dagny-hollis';
+  const tripId = await sendPerson(page, id, [560, -300], [600, 200]);
+  check(!!tripId, 'a persona is sent on a tram trip');
+  let f = await runUntil(page, id, (x) => x.mode === 'tram' && x.stage === 'wait');
+  check(!!f && f.mode === 'tram' && f.stage === 'wait' && !!f.ride, `she walks to the stop and waits for the tram (${f?.mode}, ${f?.stage})`);
+  if (f?.ride) {
+    // The tram coming in: the still a few seconds before it stands at the stop.
+    f = await runUntil(page, id, (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 34 && v.speed > 0.5), 1200);
+    if (f) {
+      await setView(page, aroundPerson(f.position, f.heading, 11, 2.4, f.position[1] + 2.4), aroundPerson(f.position, f.heading, -1.5, 0.3, f.position[1] + 1.2));
+      await debug(page, (d) => d.precompile());
+      await page.waitForTimeout(900);
+      const plates = page.locator('.plate.plate-person');
+      const plateText = (await plates.allTextContents()).join(' | ');
+      check((await plates.count()) >= 1 && /Dagny Hollis/.test(plateText), `her plate stands over her within 150 m (${plateText || 'none'})`);
+      const near = await view();
+      check(!!near && near.near >= 1 && near.triangles > 1500, `close by she draws at her full level (${near?.near} near, ${near?.triangles} triangles)`);
+      await page.screenshot({ path: join(SHOTS, 'commute.png') });
+    }
+    f = await runUntil(page, id, (x) => x.stage === 'ride', 300);
+    const v = f?.ride ? await callDebug<{ position: number[] } | null>(page, `d.vehicle(${JSON.stringify(f.ride.id)})`) : null;
+    check(!!f && f.stage === 'ride' && !!v && Math.hypot(f.position[0] - v.position[0], f.position[2] - v.position[2]) < 2.5, `she boards and rides in the tram (${f?.stage})`);
+    // The tram dwells 20 s at the stop: once it is under way, ten seconds more carry her down the line with it.
+    await runUntil(page, id, (_x, tv) => !!tv && tv.speed > 1, 60);
+    await callDebug(page, 'd.peopleSkip(10)');
+    const f2 = await person(page, id);
+    const v2 = f2?.ride ? await callDebug<{ position: number[] } | null>(page, `d.vehicle(${JSON.stringify(f2.ride.id)})`) : null;
+    const moved = f2 && f ? Math.hypot(f2.position[0] - f.position[0], f2.position[2] - f.position[2]) : 0;
+    const off = f2 && v2 ? Math.hypot(f2.position[0] - v2.position[0], f2.position[2] - v2.position[2]) : Infinity;
+    check(moved > 20 && off < 2.5, `and moves with it down the line (${moved.toFixed(0)} m on, ${off.toFixed(1)} m from the tram)`);
+  }
+  await callDebug(page, 'd.peopleHold(false)');
+
+  // Follow: the camera comes to her and keeps behind her; Escape lets go.
+  await callDebug(page, `d.follow(${JSON.stringify(id)})`);
+  await page.waitForTimeout(2500);
+  const followed = await person(page, id);
+  const eye = await debug(page, (d) => d.camera());
+  const off = followed ? Math.hypot(eye[0] - followed.position[0], eye[2] - followed.position[2]) : Infinity;
+  check((await callDebug<string | null>(page, 'd.following()')) === id && off < 18, `Follow brings the camera to her and keeps about 12 m behind, on the tram too (${off.toFixed(1)} m off in plan)`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  check((await callDebug<string | null>(page, 'd.following()')) === null, 'Escape lets the follow go');
+  // The agent page's Follow button does the same, and comes back to the city.
+  await page.goto(`http://127.0.0.1:${PORT}/?debug#/agents/${id}`);
+  await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  const btn = page.locator('.agentpage .agent-follow');
+  check((await btn.count()) === 1 && (await btn.getAttribute('aria-disabled')) === null, 'the agent page offers Follow');
+  await btn.click();
+  await page.waitForTimeout(2500);
+  const route = await page.evaluate(() => document.body.dataset.route);
+  check(route === 'city', `Follow comes back to the city (${route})`);
+  const now = await callDebug<string | null>(page, 'd.following()');
+  check(now === id || (await person(page, id)) === null, `and follows her figure (${now})`);
+  await callDebug(page, 'd.follow(null)');
+  check((await debug(page, (d) => d.quality())) === 'high', 'the people hold high quality');
+}
+
 // ---------------------------------------------------------------- the ambient traffic and crowd (Task 32)
 
 /** From home the ambient life draws its far levels only: a few calls, and its share of the home budget's room. */
@@ -2104,6 +2185,7 @@ async function main(): Promise<void> {
       await riverChecks(page);
       await transitChecks(page);
       await vehicleChecks(page);
+      await peopleChecks(page);
       await ambientChecks(page);
       await qualityDropChecks(page, consoleErrors);
     }

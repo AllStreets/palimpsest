@@ -25,6 +25,8 @@ import { createPost, EXPOSURE, FLICKER } from './post';
 import { createRiver } from './river.js';
 import { createTransit, type TransitView } from './transit.js';
 import { createVehicles, type Vehicles } from './vehicles.js';
+import { createPeople, type People } from './people.js';
+import type { Agent, Trip } from '../../../shared/types';
 import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza, type CabPose } from './ambient.js';
 import { extentBlocks, type Network } from '../../../shared/commute.js';
 import { makeScaffold, type Scaffold } from './scaffold';
@@ -36,7 +38,9 @@ export type PickHit =
   | { kind: 'tower'; repo: string; floorId: string | null }
   | { kind: 'agent'; agentId: string; firmId: string; floorId: string | null }
   | { kind: 'firm'; firmId: string }
-  | { kind: 'exchange'; route: string };
+  | { kind: 'exchange'; route: string }
+  /** A persona's plate (people.ts). */
+  | { kind: 'person'; agentId: string };
 
 /** What stands at a district's origin, and which of its parts can be clicked (mapped to a floor id, or null). */
 export interface Centerpiece {
@@ -70,6 +74,10 @@ export interface CityOptions {
   quarterKey?: (q: Quarter) => string;
   /** Builds the civic exchange on the plaza at the origin (exchange.ts); without it the plaza stands empty. */
   makeExchange?: (quality: 'high' | 'medium') => Exchange;
+  /** A persona's plate's second line for its trip (people.ts): "to <district> for <job title>". */
+  describeTrip?: (trip: Trip, agent: Agent) => string;
+  /** A persona's coat, linear RGB: its firm's colour. */
+  coatOf?: (agent: Agent) => [number, number, number];
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
@@ -151,6 +159,13 @@ export interface City {
   transitNetwork(): Network | null;
   /** The ambient traffic and crowd (ambient.ts), or null before the network is laid. */
   ambient(): Ambient | null;
+  /** The agent personas as people (people.ts), or null before the network is laid. */
+  people(): People | null;
+  /** The live trips and the agents they belong to: a figure per agent on its way (GET /api/live, trip.started, trip.ended). */
+  setTrips(trips: ReadonlyArray<Trip>, agents: ReadonlyArray<Agent>): void;
+  /** Flies to and follows an agent's figure, 12 m behind and above, until a drag, Escape, the trip's end or null. */
+  followAgent(agentId: string | null): void;
+  following(): string | null;
   /** Holds the ambient density where a test or capture puts it (0 to 1), or null to follow the hour again; returns the hold it replaces. */
   ambientDensity(n: number | null): number | null;
   /**
@@ -340,7 +355,31 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       ambient.setDensity(forcedDensity ?? hourDensity());
       ambientRoot.add(ambient.group);
     }
+    // The personas (people.ts): they board the vehicles and are lit by the crowd's lamps.
+    if (!people) {
+      people = createPeople({
+        vehicles: () => vehicles,
+        net: () => transit.network(),
+        lampLight: (x, y, z, out) => ambient?.lampLight(x, y, z, out),
+        describe: opts.describeTrip,
+        coatOf: opts.coatOf,
+        onActivate: (agentId) => {
+          for (const fn of pickListeners) fn({ kind: 'person', agentId });
+        },
+        onRelease: () => rig.unfollow(),
+      });
+      peopleRoot.add(people.group);
+      people.set(pendingTrips.trips, pendingTrips.agents);
+    }
   }
+  // ---------------------------------------------------------------- the people
+  const peopleRoot = new THREE.Group();
+  peopleRoot.name = 'people';
+  scene.add(peopleRoot);
+  let people: People | null = null;
+  /** The trips and agents as last set, for a people group made after they arrived. */
+  const pendingTrips: { trips: ReadonlyArray<Trip>; agents: ReadonlyArray<Agent> } = { trips: [], agents: [] };
+  let peoplePlatesVersion = -1;
   // ---------------------------------------------------------------- the ambient life
   // Unlabelled cars and people (ambient.ts). Their density follows the local hour, drifting out of sight.
   const ambientRoot = new THREE.Group();
@@ -1078,6 +1117,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ...allPickables(),
     ...(camera.position.y < STREET_EYE ? grid.blockers : []),
   ]);
+  // The personas' plates stand over their figures, hidden behind the same towers.
+  const peoplePlates = createPlates(canvasHost, camera, () => [
+    ...allPickables(),
+    ...(camera.position.y < STREET_EYE ? grid.blockers : []),
+  ]);
   const observer = new ResizeObserver(resize);
   observer.observe(canvasHost);
 
@@ -1172,6 +1216,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ['transit', transit.group],
     ['vehicles', vehicleRoot],
     ['traffic', ambientRoot],
+    ['people', peopleRoot],
     ['ground', ground.mesh],
     ['sky', sky.dome],
     ['construction', field.group],
@@ -1193,6 +1238,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     river.setQuality('medium');
     vehicles?.setQuality('medium');
     ambient?.setQuality('medium');
+    people?.setQuality('medium');
     setFacadeRooms(false);
     post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
@@ -1268,8 +1314,16 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       }
       ambient.update(dt, camera, renderer.domElement.height);
     }
+    if (people) {
+      people.update(dt, camera);
+      if (people.platesVersion() !== peoplePlatesVersion) {
+        peoplePlatesVersion = people.platesVersion();
+        peoplePlates.set(people.plates());
+      }
+    }
     fitMark();
     plates.update();
+    peoplePlates.update();
     sky.dome.position.copy(camera.position);
     followShadow();
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
@@ -1339,6 +1393,26 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     vehicles: () => vehicles,
     transitNetwork: () => transit.network(),
     ambient: () => ambient,
+    people: () => people,
+    setTrips(trips, agents) {
+      pendingTrips.trips = trips;
+      pendingTrips.agents = agents;
+      people?.set(trips, agents);
+    },
+    followAgent(agentId) {
+      if (!people || agentId === null) {
+        people?.follow(null);
+        rig.unfollow();
+        return;
+      }
+      people.follow(agentId);
+      if (people.following() !== agentId) return;
+      rig.follow(
+        () => people?.followPose() ?? null,
+        () => people?.follow(null),
+      );
+    },
+    following: () => people?.following() ?? null,
     ambientDensity(n) {
       const was = forcedDensity;
       forcedDensity = n === null ? null : Math.max(0, Math.min(1, n));
@@ -1384,6 +1458,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       field.dispose();
       life.dispose();
       plates.dispose();
+      peoplePlates.dispose();
+      people?.dispose();
       markBox.dispose();
       markMaterials.edge.dispose();
       markMaterials.wash.dispose();
