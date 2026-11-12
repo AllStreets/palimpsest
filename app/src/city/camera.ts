@@ -11,6 +11,8 @@ const FOLLOW = { back: 10.4, up: 6, ahead: 2.5, eyeRate: 2.2, targetRate: 4, tur
 export interface FollowPose {
   position: THREE.Vector3;
   heading: number;
+  /** Metres to raise the eye by, when something stands between it and the figure (scene.ts tests the line of sight). */
+  lift?: number;
 }
 
 export interface CameraRig {
@@ -104,6 +106,8 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
     },
     view(eye, target) {
       flight = null;
+      // A capture may stand closer than the orbit's nearest: the limit gives way to the view asked for.
+      controls.minDistance = Math.min(12, Math.max(0.5, eye.distanceTo(target)));
       camera.position.copy(eye);
       controls.target.copy(target);
       controls.update();
@@ -136,7 +140,7 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
           follow.heading += d * Math.min(1, 1 - Math.exp(-FOLLOW.turnRate * dt));
           const fx = Math.cos(follow.heading);
           const fz = Math.sin(follow.heading);
-          const eye = new THREE.Vector3(p.position.x - fx * FOLLOW.back + vx, Math.max(MIN_EYE_HEIGHT, p.position.y + FOLLOW.up), p.position.z - fz * FOLLOW.back + vz);
+          const eye = new THREE.Vector3(p.position.x - fx * FOLLOW.back + vx, Math.max(MIN_EYE_HEIGHT, p.position.y + FOLLOW.up + (p.lift ?? 0)), p.position.z - fz * FOLLOW.back + vz);
           const target = new THREE.Vector3(p.position.x + fx * FOLLOW.ahead + vx * 0.5, p.position.y + 1.4, p.position.z + fz * FOLLOW.ahead + vz * 0.5);
           const ke = 1 - Math.exp(-FOLLOW.eyeRate * dt);
           const kt = 1 - Math.exp(-FOLLOW.targetRate * dt);

@@ -1407,8 +1407,31 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       }
       people.follow(agentId);
       if (people.following() !== agentId) return;
+      // When a tower or a block stands between the eye and the figure's head, the eye is raised until it clears
+      // (tested every few frames, by the plates' occluders); it comes down again when the way is clear.
+      const ray = new THREE.Raycaster();
+      ray.layers.enableAll();
+      const head = new THREE.Vector3();
+      const dir = new THREE.Vector3();
+      let lift = 0;
+      let frame = 0;
       rig.follow(
-        () => people?.followPose() ?? null,
+        () => {
+          const pose = people?.followPose();
+          if (!pose) return null;
+          if (frame++ % 6 === 0) {
+            head.set(pose.position.x, pose.position.y + 1.6, pose.position.z);
+            dir.copy(camera.position).sub(head);
+            const d = dir.length();
+            if (d > 1e-3) {
+              ray.set(head, dir.multiplyScalar(1 / d));
+              ray.far = d - 0.5;
+              const blocked = ray.intersectObjects([...allPickables(), ...(camera.position.y < STREET_EYE ? grid.blockers : [])], false).length > 0;
+              lift = blocked ? Math.min(lift + 2.5, 40) : Math.max(0, lift - 1);
+            }
+          }
+          return { ...pose, lift };
+        },
         () => people?.follow(null),
       );
     },

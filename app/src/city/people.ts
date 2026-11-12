@@ -42,8 +42,9 @@ type P = { x: number; z: number };
 export const PEOPLE_LOD = { near: { near: 110, far: 150 }, out: { near: 380, far: 440 }, plate: 150 } as const;
 /** The lantern lights between these hours (the city is lit for dusk; the lantern says the hour on the figure). */
 const DUSK = { from: 16.5, to: 7.5 } as const;
-/** Where the hips sit above a seat, and how far down the figure drops into it. */
+/** Where the hips sit above a seat, and how far down the figure drops into it; a cab's bench is low under its 1 m roof. */
 const SEAT = 0.45;
+const CAB_SEAT = 0.14;
 /** The leg's length in the rig (hip to ankle), the stride's half angle at a walk. */
 const LEG = 0.86;
 const STRIDE = 0.42;
@@ -173,6 +174,9 @@ interface Figure {
   /** 0 to 1 through a board or alight. */
   k: number;
   ride: VehicleRef | Ride | null;
+  /** The clock time before which no vehicle is asked for again after one could not be had, and whether that was logged. */
+  retryAt: number;
+  warned: boolean;
   /** Where a board or alight started, the door it goes by, and where it ends. */
   from: V3;
   via: V3;
@@ -190,6 +194,8 @@ interface Figure {
   walking: number;
   sit: number;
   hold: number;
+  /** Seated lean-back, 0 to 1 (a cab's low bench). */
+  lean: number;
   lamp: [number, number, number, number];
   seen: boolean;
   /** Eye distance at the last draw. */
@@ -286,8 +292,9 @@ function pavementPath(path: ReadonlyArray<V3>): V3[] {
     const l = Math.hypot(dx, dz) || 1;
     dx /= l;
     dz /= l;
-    // A corner's offset point stays on the pavement band of both streets.
-    const k = i > 0 && i < path.length - 1 ? Math.min(1.6, 1 / Math.max(0.6, Math.abs(dx) + Math.abs(dz))) : 1;
+    // At a corner the point steps out along the bisector far enough to lie PAVEMENT off both streets (root 2 at a
+    // right angle), never less, so the walker rounds the junction's kerb on the paving rather than cutting it.
+    const k = i > 0 && i < path.length - 1 ? clamp(1 / Math.max(Math.abs(dx), Math.abs(dz), 1e-3), 1, 1.5) : 1;
     const x = p[0] - dz * PAVEMENT * k;
     const z = p[2] + dx * PAVEMENT * k;
     return [x, Math.max(p[1], groundY(x)), z] as V3;
@@ -304,8 +311,9 @@ function kerbSpot(start: V3, net: Network | null): { spot: V3; heading: number }
   const dz = k.z - streetLine(k.z);
   // The kerb lies 6.4 m off one street's centre line: step out along that axis.
   const out = Math.abs(Math.abs(dx) - 6.4) < Math.abs(Math.abs(dz) - 6.4) ? { x: Math.sign(dx) || 1, z: 0 } : { x: 0, z: Math.sign(dz) || 1 };
-  // Clear of the cab's body however it comes in to the kerb point.
-  const spot: V3 = [k.x + out.x * 2.3, groundY(k.x), k.z + out.z * 2.3];
+  // Clear of the cab's body however it comes in to the kerb point: 2.3 m onto the pavement and 1.5 m along the
+  // street, so it stands beside the cab's doors rather than at its nose or tail.
+  const spot: V3 = [k.x + out.x * 2.3 + out.z * 1.5, groundY(k.x), k.z + out.z * 2.3 + out.x * 1.5];
   // Facing the road.
   return { spot, heading: Math.atan2(-out.z, -out.x) };
 }
@@ -346,7 +354,7 @@ function doorOf(ref: VehicleRef, mode: TripMode): V3 {
 function aboard(ref: VehicleRef, mode: TripMode): V3 {
   const p = ref.position();
   const h = ref.heading();
-  if (mode === 'cab') return around(p, h, -0.45, 0.38, ref.floorY() + SEAT);
+  if (mode === 'cab') return around(p, h, -0.45, 0.38, ref.floorY() + CAB_SEAT);
   if (mode === 'ferry') return around(p, h, 0.5, 1.2, ref.floorY() + SEAT);
   if (mode === 'rail') return around(p, h, 0, 0.6, ref.floorY() + SEAT);
   return around(p, h, 0, 0.55, ref.floorY());
@@ -370,15 +378,23 @@ function personaModel(): THREE.BufferGeometry {
   const head = rig(B.head, F.skin);
   const hx = 0.012;
   // A low brow over each eye, the eyes set under it, the mouth, and the ears.
+  const blob = (c: number[], s: number[], code: number[]): void => {
+    const g = new THREE.SphereGeometry(1, 10, 7).toNonIndexed();
+    g.scale(s[0], s[1], s[2]);
+    g.translate(c[0], c[1], c[2]);
+    b.take(g, code);
+  };
   for (const side of [-1, 1]) {
-    b.box([hx + 0.094, 1.676, side * 0.032], [0.008, 0.005, 0.03], head, side * 0.2, 0.15);
-    b.box([hx + 0.094, 1.665, side * 0.031], [0.006, 0.011, 0.022], rig(B.head, CODE.eye));
+    b.box([hx + 0.094, 1.679, side * 0.032], [0.008, 0.005, 0.03], head, side * 0.2, 0.15);
+    // The eye: a glossy ellipsoid set a little into the face under a lid.
+    blob([hx + 0.088, 1.666, side * 0.031], [0.009, 0.009, 0.013], rig(B.head, CODE.eye));
+    blob([hx + 0.086, 1.671, side * 0.031], [0.009, 0.006, 0.014], head);
     b.box([hx - 0.004, 1.652, side * 0.088], [0.016, 0.03, 0.012], head, 0, 0);
   }
-  b.box([hx + 0.094, 1.622, 0], [0.006, 0.007, 0.03], rig(B.head, CODE.lip));
+  blob([hx + 0.092, 1.622, 0], [0.007, 0.006, 0.02], rig(B.head, CODE.lip));
   // The coat: lapels folding back from the collar to the top button, and three buttons down the front.
   for (const side of [-1, 1]) {
-    b.box([0.118, 1.33, side * 0.052], [0.012, 0.24, 0.046], rig(B.body, CODE.trim), -side * 0.45, side * 0.0);
+    b.box([0.118, 1.33, side * 0.06], [0.012, 0.24, 0.036], rig(B.body, CODE.trim), -side * 0.45, 0);
   }
   for (const y of [1.03, 1.14, 1.25]) b.box([0.131, y, 0.012], [0.008, 0.013, 0.013], rig(B.body, CODE.brass));
   // The hands: four fingers from the palm, a thumb to the side.
@@ -386,7 +402,7 @@ function personaModel(): THREE.BufferGeometry {
     const fore = side < 0 ? B.foreL : B.foreR;
     const z = side * 0.212;
     for (const dx of [-0.024, -0.008, 0.008, 0.024]) {
-      b.tube([0.02 + dx, 0.805, z], [0.03 + dx * 0.8, 0.728, z + side * 0.004], 0.0085, 0.0065, 5, rig(fore, F.skin));
+      b.tube([0.02 + dx, 0.805, z], [0.028 + dx * 0.8, 0.742, z + side * 0.004], 0.009, 0.0075, 5, rig(fore, F.skin));
     }
     b.tube([0.05, 0.85, z - side * 0.004], [0.075, 0.8, z + side * 0.012], 0.0085, 0.007, 5, rig(fore, F.skin));
   }
@@ -427,6 +443,7 @@ const PERSONA_GLSL = /* glsl */ `
     float A = aAnim.z;
     float sit = aPose.x;
     float hold = aPose.z;
+    float lean = aPose.w;
     float s = sin(ph);
     float tailT = aExtra.x;
     if (tailT > 0.0) { p.y -= tailT * aLook.z; p.xz *= 1.0 + 0.16 * tailT * aLook.z; }
@@ -484,7 +501,8 @@ const PERSONA_GLSL = /* glsl */ `
       float look = idle * (1.0 - sit) * 0.38 * sin(ph * 0.31 + aLook.y * 6.0);
       turnAbout(p, n, neck, rotY(look - 0.06 * s * w) * rotZ(-0.04 * w));
     }
-    if (bone == 0 || bone == 1 || bone >= 6) turnAbout(p, n, vec3(0.0, 0.95, 0.0), rotY(0.07 * s * w) * rotZ(-0.055 * w + 0.06 * sit));
+    // Seated: the upper body leans back into the seat (more in a cab's low bench).
+    if (bone == 0 || bone == 1 || bone >= 6) turnAbout(p, n, vec3(0.0, 0.95, 0.0), rotY(0.07 * s * w) * rotZ(-0.055 * w - 0.06 * sit - 0.3 * lean));
     p.y -= w * ${LEG.toFixed(2)} * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow) + 0.84 * sit;
     p.z += w * 0.022 * s + idle * 0.012 * slow;
   }`;
@@ -511,6 +529,8 @@ function personaMaterial(far: boolean): THREE.MeshStandardMaterial {
         varying vec3 vEmit;
         varying float vRough;
         varying float vMetal;
+        varying vec3 vObj;
+        varying float vCloth;
         ${FIGURE_GLSL}
         ${PERSONA_GLSL}`,
       )
@@ -539,12 +559,24 @@ function personaMaterial(far: boolean): THREE.MeshStandardMaterial {
           vEmit = emit;
           vRough = rough;
           vMetal = metal;
+          vObj = position;
+          vCloth = (code == 2 || code == 3 || code == 8) ? 1.0 : 0.0;
           ${LAMP_VERT_MAIN}
         }`,
       )
       .replace('#include <begin_vertex>', 'vec3 transformed = posedP;');
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vAlb;\nvarying vec3 vEmit;\nvarying float vRough;\nvarying float vMetal;\n${LAMP_FRAG}`)
+      .replace('#include <common>', `#include <common>\nvarying vec3 vAlb;\nvarying vec3 vEmit;\nvarying float vRough;\nvarying float vMetal;\nvarying vec3 vObj;\nvarying float vCloth;\n${LAMP_FRAG}`)
+      // A fine weave in the cloth's normal, seen within a few metres and gone before it could alias.
+      .replace(
+        '#include <normal_fragment_begin>',
+        `#include <normal_fragment_begin>
+        if (vCloth > 0.5) {
+          float near = smoothstep(14.0, 3.0, length(vViewPosition));
+          float wv = sin(vObj.y * 620.0) * sin((vObj.x + vObj.z) * 540.0) + 0.5 * sin(vObj.y * 1900.0 + vObj.x * 1100.0);
+          normal = normalize(normal + 0.05 * near * wv * vec3(1.0, 0.6, 1.0));
+        }`,
+      )
       .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = vAlb;')
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vRough;')
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
@@ -597,6 +629,7 @@ export function createPeople(deps: PeopleDeps): People {
   let held = false;
   let followed: string | null = null;
   let lanternHeld: boolean | null = null;
+  let disposed = false;
   let version = 0;
   let platesNow: Plate[] = [];
   const lastStats = { near: 0, far: 0, lanterns: 0 };
@@ -690,6 +723,8 @@ export function createPeople(deps: PeopleDeps): People {
       stage: 'idle',
       k: 0,
       ride: null,
+      retryAt: 0,
+      warned: false,
       from: [0, 0, 0],
       via: [0, 0, 0],
       to: [0, 0, 0],
@@ -704,6 +739,7 @@ export function createPeople(deps: PeopleDeps): People {
       walking: 0,
       sit: 0,
       hold: 0,
+      lean: 0,
       lamp: [0, 1, 0, 0],
       seen: false,
       d: Infinity,
@@ -775,16 +811,27 @@ export function createPeople(deps: PeopleDeps): People {
     enterLeg(f);
   }
 
-  /** The vehicle for a ride leg, found again when the old one was retired by a relay; null walks the leg's path instead. */
+  /** Seconds before a figure asks for a vehicle again after none could be had. */
+  const RETRY_S = 5;
+  /**
+   * The vehicle for a ride leg, found again when the old one was retired by
+   * a relay; null walks the leg's path instead. A leg no vehicle can serve
+   * (board() answers null, or summonCab() throws) is asked about again
+   * after RETRY_S, and logged once per figure rather than every frame.
+   */
   function vehicleFor(f: Figure, leg: number, mode: TripMode): VehicleRef | Ride | null {
     if (f.ride && !f.ride.retired()) return f.ride;
     const v = deps.vehicles();
     if (!v || !f.trip) return null;
+    if (time < f.retryAt) return null;
     try {
       f.ride = mode === 'cab' ? v.summonCab(f.trip, leg) : v.board(f.trip, leg);
-    } catch {
+    } catch (err) {
       f.ride = null;
+      if (!f.warned) console.warn(`people: no ${mode} for ${f.agent.name}'s leg ${leg}`, err);
+      f.warned = true;
     }
+    if (!f.ride) f.retryAt = time + RETRY_S;
     return f.ride;
   }
 
@@ -795,6 +842,7 @@ export function createPeople(deps: PeopleDeps): People {
       f.walking = Math.max(0, f.walking - dt * 3);
       f.sit = Math.max(0, f.sit - dt * 2);
       f.hold = 0;
+      f.lean = 0;
       f.phase += dt * 1.6;
       return;
     }
@@ -859,6 +907,7 @@ export function createPeople(deps: PeopleDeps): People {
       f.phase += strideRate(1.0, STRIDE, k) * dt * (outside ? 1 : 0.2);
       f.sit = sits * (outside ? 0 : t);
       f.hold = holds * (outside ? 0 : t);
+      f.lean = leg.mode === 'cab' ? f.sit : 0;
       [f.x, f.y, f.z] = p;
       if (f.k >= 1) f.stage = 'ride';
       return;
@@ -868,6 +917,7 @@ export function createPeople(deps: PeopleDeps): People {
       f.heading = ref.heading();
       f.sit = sits;
       f.hold = holds;
+      f.lean = leg.mode === 'cab' ? 1 : 0;
       standing();
       f.walking = 0;
       let out = false;
@@ -906,6 +956,7 @@ export function createPeople(deps: PeopleDeps): People {
       f.heading = turnTo(f.heading, h, Math.min(1, dt * 6));
       f.sit = sits * (inside ? 1 - t : 0);
       f.hold = holds * (inside ? 1 - t : 0);
+      f.lean = leg.mode === 'cab' ? f.sit : 0;
       f.walking = inside ? 0 : Math.min(1, f.walking + dt * 4);
       f.phase += strideRate(1.0, STRIDE, k) * dt * (inside ? 0 : 1);
       [f.x, f.y, f.z] = p;
@@ -951,7 +1002,7 @@ export function createPeople(deps: PeopleDeps): People {
     d.a.aCoat.setXYZ(i, f.look.coat[0], f.look.coat[1], f.look.coat[2]);
     d.a.aLegs.setXYZ(i, f.look.legs[0], f.look.legs[1], f.look.legs[2]);
     d.a.aLampL.setXYZW(i, f.lamp[0], f.lamp[1], f.lamp[2], f.lamp[3]);
-    d.a.aPose.setXYZW(i, f.sit, litNow, f.hold, 0);
+    d.a.aPose.setXYZW(i, f.sit, litNow, f.hold, f.lean);
   }
 
   function draw(camera: THREE.PerspectiveCamera): void {
@@ -1064,6 +1115,7 @@ export function createPeople(deps: PeopleDeps): People {
       version++;
     },
     update(dt, camera) {
+      if (disposed) return;
       if (!held) step(dt);
       if (camera) draw(camera);
     },
@@ -1117,7 +1169,8 @@ export function createPeople(deps: PeopleDeps): People {
       lanternHeld = on;
     },
     setQuality() {
-      /* the figures are few: the same at either quality */
+      // A stub on purpose: the figures are a few dozen at most, in three calls, so medium keeps them whole. The
+      // crowd and the vehicles do the stepping down (ambient.ts, vehicles.ts).
     },
     hold(on) {
       held = on;
@@ -1126,6 +1179,7 @@ export function createPeople(deps: PeopleDeps): People {
       for (let t = 0; t < seconds; t += 0.1) step(Math.min(0.1, seconds - t));
     },
     dispose() {
+      release();
       group.remove(near.mesh, far.mesh, lanterns);
       near.mesh.dispose();
       far.mesh.dispose();
@@ -1136,7 +1190,9 @@ export function createPeople(deps: PeopleDeps): People {
       farMat.dispose();
       lanternMat.dispose();
       figures.clear();
-      followed = null;
+      platesNow = [];
+      lastStats.near = lastStats.far = lastStats.lanterns = 0;
+      disposed = true;
     },
   };
 }

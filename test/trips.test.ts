@@ -97,8 +97,8 @@ test('a 1,000 m trip to a district takes a cab', () => {
   const trip = startTrip(a, 'job', null, EXCHANGE, { x: EXCHANGE.x + 1000, z: EXCHANGE.z }, T0);
   assert.deepEqual(trip.legs.map((l) => l.mode), ['cab']);
   const [cab] = trip.legs;
-  assert.deepEqual(cab.path[0], [0, 0, 40]);
-  assert.deepEqual(cab.path[cab.path.length - 1], [1000, 0, 40]);
+  assert.deepEqual(cab.path[0], [EXCHANGE.x, 0, EXCHANGE.z]);
+  assert.deepEqual(cab.path[cab.path.length - 1], [EXCHANGE.x + 1000, 0, EXCHANGE.z]);
   // 1,000 m at 11 m/s plus the 30 s wait at the kerb.
   assert.ok(cab.ms > 100_000 && cab.ms < 130_000, `${cab.ms} ms`);
 });
@@ -258,4 +258,11 @@ test('the trips table stays bounded: ended trips older than an hour go, each age
   assert.equal(mine?.startedAt, new Date(T0 + 39 * MIN).toISOString());
   assert.deepEqual(whereIs(a), EXCHANGE);
   assert.deepEqual(whereIs(wren), EXCHANGE);
+});
+
+test('the exchange point stands on the forecourt, off the fountain and the hall', () => {
+  // The forecourt fountain (app/src/city/exchange.ts FOUNTAIN) is centred at (0, 42) with a 10 m basin, and the
+  // hall with its steps reaches to z 21: a bidder stands between them, clear of both.
+  assert.ok(Math.hypot(EXCHANGE.x - 0, EXCHANGE.z - 42) > 12, `outside the fountain (${JSON.stringify(EXCHANGE)})`);
+  assert.ok(EXCHANGE.z > 23, 'off the hall steps');
 });

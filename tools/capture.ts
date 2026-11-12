@@ -385,8 +385,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     async people(page) {
       // The personas as people (Task 34; CAPTURE_ECONOMY=1 for the firms): a close follow shot of a figure walking
       // (people-follow), close enough to read the face and hands (people-close), a figure stepping into its cab
-      // (people-cab), a figure on a tram platform with the tram coming in (people-platform), and a medium shot of
-      // her among the waiting crowd there (people-crowd). PEOPLE_ONLY='follow,cab' takes a subset;
+      // (people-cab) and seated in it, through its window (people-seated), a figure on a tram platform with the tram
+      // coming in (people-platform), and a medium shot of her among the waiting crowd there (people-crowd). PEOPLE_ONLY='follow,cab' takes a subset;
       // PEOPLE_VIEWS='{"people-follow": [[eye], [target]]}' overrides a view; PEOPLE_DAY=1 leaves the lanterns dark.
       await chrome(page, false);
       const only = process.env.PEOPLE_ONLY?.split(',');
@@ -420,16 +420,27 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         if (f && want('crowd')) await shot('people-crowd', [aroundPerson(f.position, f.heading, 13, 3.5, f.position[1] + 2.0), aroundPerson(f.position, f.heading, 0, 0.5, f.position[1] + 1.1)]);
         if (!f) console.log('  no figure on the platform');
       }
-      if (want('cab')) {
-        // Hal's cab: a second and a half into stepping in at the rear door.
+      if (want('cab') || want('seated')) {
+        // Hal's cab: a second and a half into stepping in at the rear door; then seated inside, through the rear window.
         await sendPerson(page, 'hal-meridian', [446.5, 330], [1100, -200]);
         const f0 = await runUntil(page, 'hal-meridian', (x) => x.stage === 'board');
         if (f0) {
           await callDebug(page, 'd.peopleSkip(1.4)');
           const f = await person(page, 'hal-meridian');
           const v = f?.ride ? await callDebug<{ position: number[]; heading: number } | null>(page, `d.vehicle(${JSON.stringify(f.ride.id)})`) : null;
-          if (f && v) await shot('people-cab', [aroundPerson(v.position, v.heading, 6.5, 4.4, 1.45), aroundPerson(v.position, v.heading, -0.3, 0.7, 0.95)]);
+          if (f && v && want('cab')) await shot('people-cab', [aroundPerson(v.position, v.heading, 6.5, 4.4, 1.45), aroundPerson(v.position, v.heading, -0.3, 0.7, 0.95)]);
         } else console.log('  no figure at a cab');
+      }
+      if (want('seated')) {
+        // Bruno seated in the train (the cab's glass is too dark to see in): from inside the car, a few seats up.
+        await sendPerson(page, 'bruno-kiln', [600, -600], [-600, 600]);
+        const r = await runUntil(page, 'bruno-kiln', (x) => x.mode === 'rail' && x.stage === 'ride', 1800, 2);
+        const rv = r?.ride ? await callDebug<{ position: number[]; heading: number; floorY: number } | null>(page, `d.vehicle(${JSON.stringify(r.ride.id)})`) : null;
+        if (r && rv) {
+          await callDebug(page, 'd.peopleSkip(3)');
+          const f = (await person(page, 'bruno-kiln'))!;
+          await shot('people-seated', [aroundPerson(f.position, f.heading, 2.4, -1.3, f.position[1] + 1.15), aroundPerson(f.position, f.heading, -0.1, 0.1, f.position[1] + 0.55)]);
+        } else console.log('  no figure seated on the train');
       }
       await callDebug(page, 'd.peopleHold(false)');
       await callDebug(page, 'd.ambientHold(false)');

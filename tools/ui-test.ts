@@ -1929,6 +1929,23 @@ async function peopleChecks(page: Page): Promise<void> {
   const now = await callDebug<string | null>(page, 'd.following()');
   check(now === id || (await person(page, id)) === null, `and follows her figure (${now})`);
   await callDebug(page, 'd.follow(null)');
+  // F on an agent with no figure in the city says so in the running head instead of flying anywhere.
+  const firms = (await page.evaluate(() => fetch('/api/firms').then((r) => r.json()))) as Array<{ agents: Array<{ id: string; retired: boolean }> }>;
+  const out = new Set((await callDebug<Array<{ agentId: string }>>(page, 'd.persons()')).map((p) => p.agentId));
+  const stayAt = firms.flatMap((f) => f.agents).find((a) => !a.retired && !out.has(a.id));
+  if (stayAt) {
+    await page.goto(`http://127.0.0.1:${PORT}/?debug#/agents/${stayAt.id}`);
+    await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+    await page.waitForTimeout(800);
+    await page.evaluate(() => {
+      location.hash = '#/';
+    });
+    await page.waitForTimeout(400);
+    await page.keyboard.press('f');
+    await page.waitForTimeout(300);
+    const said = await debug(page, (d) => d.notice());
+    check(/not out in the city/.test(said) && (await callDebug<string | null>(page, 'd.following()')) === null, `F on an agent with no figure says so (${said || 'nothing'})`);
+  } else check(false, 'an agent without a figure to try F on');
   check((await debug(page, (d) => d.quality())) === 'high', 'the people hold high quality');
 }
 

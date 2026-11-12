@@ -30,8 +30,12 @@ type P = { x: number; z: number };
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** Where a bidder stands at the exchange: the hall's forecourt, south of the civic centre. */
-export const EXCHANGE: P = { x: 0, z: 40 };
+/**
+ * Where a bidder stands at the exchange: on the forecourt between the hall's
+ * steps (which reach z 21) and the fountain (centred at z 42, a 10 m basin),
+ * never in the basin (app/src/city/exchange.ts).
+ */
+export const EXCHANGE: P = { x: 0, z: 27 };
 
 /** Where a firm's person stands at home: beside its tower in the quarter. */
 export function homeOf(a: Pick<Agent, 'firmId' | 'towerIndex'>): P {
