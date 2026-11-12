@@ -86,6 +86,23 @@ describe('provider usage', () => {
     assert.equal(geminiHome({}), join(homedir(), '.gemini'));
   });
 
+  test('a Codex log cut at the head books only the tokens spent within the tail, not the session total before it', () => {
+    const dir = join(tempDir, 'cut-codex');
+    const day = join(dir, 'sessions', '2026', '11', '10');
+    mkdirSync(day, { recursive: true });
+    const line = (total: number) => JSON.stringify({ timestamp: '2026-11-10T14:00:00Z', type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { total_tokens: total } }, rate_limits: {} } });
+    const pad = `${JSON.stringify({ type: 'other', text: 'x'.repeat(1000) })}\n`.repeat(Math.ceil((READ_CAP.bytes * 1.5) / 1000));
+    const big = join(day, 'rollout-cut.jsonl');
+    // The session spent 1,000,000 tokens before the tail, then 500 within it.
+    writeFileSync(big, `${line(10)}\n${pad}${line(1_000_000)}\n${line(1_000_500)}\n`);
+    const at = new Date(NOW - 60_000);
+    utimesSync(big, at, at);
+    process.env.PALIMPSEST_CODEX_HOME = dir;
+    const u = openaiUsage(NOW);
+    assert.equal(u.tokens?.today, 500);
+    assert.equal(u.tokens?.week, 500);
+  });
+
   test('the readers are bounded: the tail of a big Codex log, a capped number of files, oversized Gemini chats skipped', () => {
     const dir = join(tempDir, 'big-codex');
     const day = join(dir, 'sessions', '2026', '11', '10');

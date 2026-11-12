@@ -24,7 +24,7 @@ import { acceptProposed, CITY_MARKER, listJobs, postManualJob } from '../engine/
 import { listMilestones, weekTour } from '../engine/market/milestones.js';
 import { resetProviders } from '../engine/market/providers.js';
 import { verifyReplay } from '../engine/market/replay.js';
-import { listRuns, resetRuns } from '../engine/market/runs.js';
+import { listRuns, resetRuns, settleRuns } from '../engine/market/runs.js';
 import { economyClock, economySites, sampleReading, seedEconomy } from '../engine/market/sample-economy.js';
 import { resetShipping } from '../engine/market/ship.js';
 import { installTreasury } from '../engine/market/treasury.js';
@@ -102,7 +102,8 @@ beforeEach(() => {
   }) as typeof fetch;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await settleRuns();
   setRunner(realRunner);
   setSpawner(realSpawner);
   globalThis.fetch = realFetch;

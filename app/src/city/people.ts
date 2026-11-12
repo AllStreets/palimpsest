@@ -28,7 +28,7 @@ import * as THREE from 'three';
 
 import { inChannel, SPEED, streetLine, type Network } from '../../../shared/commute.js';
 import type { Agent, Trip, TripMode } from '../../../shared/types.js';
-import { B, buildFigure, Builder, dissolve, F, FIGURE_GLSL, JOINT, LAMP_FRAG, LAMP_FRAG_MAIN, LAMP_VERT, LAMP_VERT_MAIN } from './ambient.js';
+import { asSkinned, B, bodyOf, Builder, dissolve, FIGURE_CODE, figureGeometry, figureShader, SHOULDER_IN, wornTriangles } from './ambient.js';
 import type { Plate } from './labels.js';
 import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
@@ -38,8 +38,8 @@ import { kerbOf, type Ride, type VehicleRef, type Vehicles } from './vehicles.js
 type V3 = [number, number, number];
 type P = { x: number; z: number };
 
-/** Eye distances: the full figure to 150 m, the box figure to 440 m, the lantern alone from 400 m. */
-export const PEOPLE_LOD = { near: { near: 110, far: 150 }, out: { near: 380, far: 440 }, plate: 150 } as const;
+/** Eye distances: the modelled figure in full to 24 m and reduced to 150 m, the plain figure to 440 m, the lantern alone from 400 m. */
+export const PEOPLE_LOD = { close: { near: 16, far: 24 }, near: { near: 110, far: 150 }, out: { near: 380, far: 440 }, plate: 150 } as const;
 /** The lantern lights between these hours (the city is lit for dusk; the lantern says the hour on the figure). */
 const DUSK = { from: 16.5, to: 7.5 } as const;
 /** Where the hips sit above a seat, and how far down the figure drops into it; a cab's bench is low under its 1 m roof. */
@@ -52,9 +52,6 @@ const STRIDE = 0.42;
 const BOARD_S = { cab: 3.4, line: 1.8 } as const;
 /** How many figures the buffers hold at first; they grow when the roster outgrows them. */
 const CAP = 48;
-
-/** Figure codes beyond the crowd's: 5 brass, 6 lantern glass, 7 eyes, 8 coat trim, 9 lips. */
-const CODE = { brass: 5, glass: 6, eye: 7, trim: 8, lip: 9 } as const;
 
 /**
  * The walk cycle's phase rate for a speed: one cycle is two steps of
@@ -90,7 +87,8 @@ export interface FigureView {
 
 export interface PeopleView {
   figures: number;
-  /** Figures drawn at the near level, the far level and as lanterns (one in a dissolve band counts in both). */
+  /** Figures drawn at the close level, the near level, the far level and as lanterns (one in a dissolve band counts in both). */
+  close: number;
   near: number;
   far: number;
   lanterns: number;
@@ -160,6 +158,8 @@ interface Look {
   hat: number;
   coat: [number, number, number];
   legs: [number, number, number];
+  /** The body's shape, hair, hat and scarf (ambient.ts bodyOf): aBody. */
+  body: [number, number, number, number];
 }
 
 interface Figure {
@@ -366,78 +366,56 @@ const HOLDS: ReadonlySet<TripMode> = new Set(['tram', 'pod']);
 // ---------------------------------------------------------------- the model
 
 /**
- * A persona's figure: the crowd's rig and body (ambient.ts buildFigure),
- * and on it what makes a person at arm's length: eyes under a brow, ears, a
- * mouth, fingers and a thumb on each hand, the coat's lapels and buttons,
- * and a lantern in the right hand.
+ * A persona's figure at a level: the crowd's modelled figure (figures.glb,
+ * ambient.ts figureGeometry), with a lantern hung from the right hand on a
+ * bail: a brass cap and base, four corner posts, the glass between.
  */
-function personaModel(): THREE.BufferGeometry {
+function personaModel(level: 'hi' | 'lo'): THREE.BufferGeometry {
+  const base = figureGeometry(level);
   const b = new Builder();
-  buildFigure(b, false);
-  const rig = (bone: number, code: number, w = 1): number[] => [bone, w, code];
-  const head = rig(B.head, F.skin);
-  const hx = 0.012;
-  // A low brow over each eye, the eyes set under it, the mouth, and the ears.
-  const blob = (c: number[], s: number[], code: number[]): void => {
-    const g = new THREE.SphereGeometry(1, 10, 7).toNonIndexed();
-    g.scale(s[0], s[1], s[2]);
-    g.translate(c[0], c[1], c[2]);
-    b.take(g, code);
-  };
-  for (const side of [-1, 1]) {
-    b.box([hx + 0.094, 1.679, side * 0.032], [0.008, 0.005, 0.03], head, side * 0.2, 0.15);
-    // The eye: a glossy ellipsoid set a little into the face under a lid.
-    blob([hx + 0.088, 1.666, side * 0.031], [0.009, 0.009, 0.013], rig(B.head, CODE.eye));
-    blob([hx + 0.086, 1.671, side * 0.031], [0.009, 0.006, 0.014], head);
-    b.box([hx - 0.004, 1.652, side * 0.088], [0.016, 0.03, 0.012], head, 0, 0);
-  }
-  blob([hx + 0.092, 1.622, 0], [0.007, 0.006, 0.02], rig(B.head, CODE.lip));
-  // The coat: lapels folding back from the collar to the top button, and three buttons down the front.
-  for (const side of [-1, 1]) {
-    b.box([0.118, 1.33, side * 0.06], [0.012, 0.24, 0.036], rig(B.body, CODE.trim), -side * 0.45, 0);
-  }
-  for (const y of [1.03, 1.14, 1.25]) b.box([0.131, y, 0.012], [0.008, 0.013, 0.013], rig(B.body, CODE.brass));
-  // The hands: four fingers from the palm, a thumb to the side.
-  for (const side of [-1, 1]) {
-    const fore = side < 0 ? B.foreL : B.foreR;
-    const z = side * 0.212;
-    for (const dx of [-0.024, -0.008, 0.008, 0.024]) {
-      b.tube([0.02 + dx, 0.805, z], [0.028 + dx * 0.8, 0.742, z + side * 0.004], 0.009, 0.0075, 5, rig(fore, F.skin));
-    }
-    b.tube([0.05, 0.85, z - side * 0.004], [0.075, 0.8, z + side * 0.012], 0.0085, 0.007, 5, rig(fore, F.skin));
-  }
-  // The lantern, hung from the right hand on a bail: a brass cap and base, four corner posts, the glass between.
+  const rig = (bone: number, code: number): number[] => [bone, 1, code];
   const lz = 0.215;
   const lx = 0.024;
-  const brass = rig(B.foreR, CODE.brass);
-  b.tube([lx, 0.8, lz], [lx, 0.715, lz], 0.0045, 0.0045, 5, brass);
+  const brass = rig(B.foreR, FIGURE_CODE.brass);
+  b.tube([lx, 0.81, lz], [lx, 0.715, lz], 0.0045, 0.0045, 6, brass);
   b.box([lx, 0.708, lz], [0.07, 0.014, 0.07], brass);
   b.box([lx, 0.566, lz], [0.078, 0.014, 0.078], brass);
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) b.box([lx + sx * 0.03, 0.637, lz + sz * 0.03], [0.007, 0.13, 0.007], brass);
-  b.box([lx, 0.637, lz], [0.052, 0.124, 0.052], rig(B.foreR, CODE.glass));
-  return b.geometry();
+  b.box([lx, 0.637, lz], [0.052, 0.124, 0.052], rig(B.foreR, FIGURE_CODE.glass));
+  return merged(base, asSkinned(b));
 }
 
-function farModel(): THREE.BufferGeometry {
-  const b = new Builder();
-  buildFigure(b, true);
-  return b.geometry();
+/** Two figure geometries as one indexed geometry (the lantern on the figure). */
+function merged(a: THREE.BufferGeometry, b: THREE.BufferGeometry): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  const na = a.attributes.position.count;
+  const nb = b.attributes.position.count;
+  for (const [k, size] of [['position', 3], ['normal', 3], ['aSkin', 4], ['aSurf', 4]] as const) {
+    const out = new Float32Array((na + nb) * size);
+    const from = (src: THREE.BufferGeometry, at: number): void => {
+      const s = src.attributes[k];
+      for (let i = 0; i < s.count; i++) for (let c = 0; c < size; c++) out[(at + i) * size + c] = s.getComponent(i, c);
+    };
+    from(a, 0);
+    from(b, na);
+    g.setAttribute(k, new THREE.BufferAttribute(out, size));
+  }
+  const ia = a.index ? Array.from(a.index.array as ArrayLike<number>) : Array.from({ length: na }, (_, i) => i);
+  const ib = Array.from({ length: nb }, (_, i) => na + i);
+  g.setIndex(new THREE.BufferAttribute(new Uint32Array([...ia, ...ib]), 1));
+  g.computeBoundingSphere();
+  a.dispose();
+  b.dispose();
+  return g;
 }
 
 // ---------------------------------------------------------------- the material
 
-// The joints, as ambient.ts lays them, written into the shader.
-const glslVec = (v: readonly number[]): string => v.map((x) => x.toFixed(3)).join(', ');
-const JOINT_HIP = glslVec(JOINT.hip);
-const JOINT_KNEE = glslVec(JOINT.knee);
-const JOINT_SHOULDER = glslVec(JOINT.shoulder);
-const JOINT_ELBOW = glslVec(JOINT.elbow);
-const JOINT_NECK_Y = JOINT.neck[1].toFixed(3);
-
 /** The persona's pose: the crowd's walk and stand, and over them sitting (aPose.x) and holding a strap (aPose.z). */
-const PERSONA_GLSL = /* glsl */ `
-  void posedPersona(inout vec3 p, inout vec3 n) {
-    int bone = int(aRig.x + 0.5);
+const PERSONA_RIG = /* glsl */ `
+  attribute vec4 aPose;
+  varying vec3 vEmit;
+  Rig figureRig() {
     float w = aAnim.y;
     float ph = aAnim.x;
     float A = aAnim.z;
@@ -445,8 +423,6 @@ const PERSONA_GLSL = /* glsl */ `
     float hold = aPose.z;
     float lean = aPose.w;
     float s = sin(ph);
-    float tailT = aExtra.x;
-    if (tailT > 0.0) { p.y -= tailT * aLook.z; p.xz *= 1.0 + 0.16 * tailT * aLook.z; }
     float hipL = A * s;
     float hipR = -A * s;
     float fold = 0.8 * clamp(A / 0.48, 0.35, 1.0);
@@ -459,131 +435,57 @@ const PERSONA_GLSL = /* glsl */ `
     float elbR = 0.3;
     float idle = 1.0 - w;
     float slow = sin(ph * 0.5);
-    float sHipL = 0.035 * slow;
-    float sHipR = -0.02 - 0.03 * slow;
-    float sKneeL = 0.04;
-    float sKneeR = 0.12 + 0.06 * max(0.0, slow);
-    hipL = mix(sHipL, hipL, w);
-    hipR = mix(sHipR, hipR, w);
-    kneeL = mix(sKneeL, kneeL, w);
-    kneeR = mix(sKneeR, kneeR, w);
-    armL = mix(0.05, armL, w);
-    armR = mix(0.16, armR, w);
-    elbL = mix(0.12, elbL, w);
-    elbR = mix(0.3, elbR, w);
+    Rig R;
+    R.hipL = mix(0.035 * slow, hipL, w);
+    R.hipR = mix(-0.02 - 0.03 * slow, hipR, w);
+    R.kneeL = mix(0.04, kneeL, w);
+    R.kneeR = mix(0.12 + 0.06 * max(0.0, slow), kneeR, w);
+    R.armL = mix(0.05, armL, w);
+    R.armR = mix(0.16, armR, w);
+    R.elbL = mix(0.12, elbL, w);
+    R.elbR = mix(0.3, elbR, w);
     // Holding a strap: the left arm raised to it.
-    armL = mix(armL, 1.75, hold);
-    elbL = mix(elbL, 0.5, hold);
+    R.armL = mix(R.armL, 1.75, hold);
+    R.elbL = mix(R.elbL, 0.5, hold);
     // Sitting: hips and knees at right angles, the forearms resting on the thighs.
-    hipL = mix(hipL, 1.5, sit);
-    hipR = mix(hipR, 1.5, sit);
-    kneeL = mix(kneeL, 1.5, sit);
-    kneeR = mix(kneeR, 1.5, sit);
-    armL = mix(armL, 0.45, sit);
-    armR = mix(armR, 0.45, sit);
-    elbL = mix(elbL, 1.0, sit);
-    elbR = mix(elbR, 1.0, sit);
-    vec3 hip = vec3(${JOINT_HIP});
-    vec3 knee = vec3(${JOINT_KNEE});
-    vec3 sho = vec3(${JOINT_SHOULDER});
-    vec3 elb = vec3(${JOINT_ELBOW});
-    vec3 L = vec3(1.0, 1.0, -1.0);
-    if (bone == 3) turnAbout(p, n, knee * L, rotZ(-kneeL));
-    if (bone == 5) turnAbout(p, n, knee, rotZ(-kneeR));
-    if (bone == 2 || bone == 3) turnAbout(p, n, hip * L, rotZ(hipL * (bone == 2 ? aRig.y : 1.0)));
-    if (bone == 4 || bone == 5) turnAbout(p, n, hip, rotZ(hipR * (bone == 4 ? aRig.y : 1.0)));
-    if (bone == 7) turnAbout(p, n, elb * L, rotZ(elbL));
-    if (bone == 9) turnAbout(p, n, elb, rotZ(elbR));
-    if (bone == 6 || bone == 7) turnAbout(p, n, sho * L, rotZ(armL) * rotX(0.06 + 0.04 * w));
-    if (bone == 8 || bone == 9) turnAbout(p, n, sho, rotZ(armR) * rotX(-0.06 - 0.04 * w));
-    if (bone == 1) {
-      vec3 neck = vec3(0.0, ${JOINT_NECK_Y}, 0.0);
-      float look = idle * (1.0 - sit) * 0.38 * sin(ph * 0.31 + aLook.y * 6.0);
-      turnAbout(p, n, neck, rotY(look - 0.06 * s * w) * rotZ(-0.04 * w));
-    }
+    R.hipL = mix(R.hipL, 1.5, sit);
+    R.hipR = mix(R.hipR, 1.5, sit);
+    R.kneeL = mix(R.kneeL, 1.5, sit);
+    R.kneeR = mix(R.kneeR, 1.5, sit);
+    R.armL = mix(R.armL, 0.45, sit);
+    R.armR = mix(R.armR, 0.45, sit);
+    R.elbL = mix(R.elbL, 1.0, sit);
+    R.elbR = mix(R.elbR, 1.0, sit);
+    R.outL = 0.06 + 0.04 * w;
+    R.outR = -0.06 - 0.04 * w;
+    float look = idle * (1.0 - sit) * 0.38 * sin(ph * 0.31 + aLook.y * 6.0);
+    R.head = rotY(look - 0.06 * s * w) * rotZ(-0.04 * w);
     // Seated: the upper body leans back into the seat (more in a cab's low bench).
-    if (bone == 0 || bone == 1 || bone >= 6) turnAbout(p, n, vec3(0.0, 0.95, 0.0), rotY(0.07 * s * w) * rotZ(-0.055 * w - 0.06 * sit - 0.3 * lean));
-    p.y -= w * ${LEG.toFixed(2)} * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow) + 0.84 * sit;
-    p.z += w * 0.022 * s + idle * 0.012 * slow;
+    R.torso = rotY(0.07 * s * w) * rotZ(-0.055 * w - 0.06 * sit - 0.3 * lean);
+    R.shift = ${SHOULDER_IN} * aBody.x;
+    R.drop = w * ${LEG.toFixed(2)} * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow) + 0.84 * sit;
+    R.sway = w * 0.022 * s + idle * 0.012 * slow;
+    return R;
   }`;
 
-/** The figures' material: the persona pose in the vertex shader, each surface by its code, the lantern's glass lit from the instance. */
-function personaMaterial(far: boolean): THREE.MeshStandardMaterial {
+/** The persona's own surfaces over the crowd's: brass buttons and lantern, the lantern's glass lit for dusk. */
+const PERSONA_SURFACE = /* glsl */ `
+  vEmit = vec3(0.0);
+  if (code == 5 || code == 14) { vAlb = vec3(0.42, 0.3, 0.14); vRough = 0.38; vMetal = 0.9; }
+  else if (code == 6) { vAlb = vec3(0.3, 0.25, 0.17); vRough = 0.2; vEmit = vec3(1.0, 0.58, 0.24) * 1.3 * aPose.y; }`;
+
+/** The figures' material at a level: the persona pose and surfaces on the crowd's figure shader. */
+function personaMaterial(level: 'hi' | 'lo' | 'far'): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0, envMapIntensity: 0.6 });
-  m.name = far ? 'people-far' : 'people';
+  m.name = `people-${level}`;
   m.onBeforeCompile = (sh) => {
-    dissolve(sh, PEOPLE_LOD.near, far ? 'far' : 'near', far ? PEOPLE_LOD.out : undefined);
-    sh.vertexShader = sh.vertexShader
-      .replace(
-        '#include <common>',
-        `#include <common>
-        attribute vec3 aRig;
-        attribute vec2 aExtra;
-        attribute vec4 aAnim;
-        attribute vec4 aLook;
-        attribute vec3 aCoat;
-        attribute vec3 aLegs;
-        attribute vec4 aPose;
-        ${LAMP_VERT}
-        varying vec3 vAlb;
-        varying vec3 vEmit;
-        varying float vRough;
-        varying float vMetal;
-        varying vec3 vObj;
-        varying float vCloth;
-        ${FIGURE_GLSL}
-        ${PERSONA_GLSL}`,
-      )
-      .replace(
-        '#include <beginnormal_vertex>',
-        `vec3 objectNormal = vec3(normal);
-        vec3 posedP = vec3(position);
-        posedPersona(posedP, objectNormal);
-        {
-          int code = int(aRig.z + 0.5);
-          vec3 alb = aCoat;
-          vec3 emit = vec3(0.0);
-          float rough = 0.86;
-          float metal = 0.0;
-          if (code == 0) { alb = skinTone(aLook.x); rough = 0.55; }
-          else if (code == 1) { alb = aLook.w > 0.5 ? aCoat * 0.55 + vec3(0.01) : hairTone(aLook.y); rough = aLook.w > 0.5 ? 0.9 : 0.5; }
-          else if (code == 3) { alb = aLegs; rough = 0.8; }
-          else if (code == 4) { alb = vec3(0.014, 0.013, 0.012); rough = 0.45; }
-          else if (code == 5) { alb = vec3(0.42, 0.3, 0.14); rough = 0.38; metal = 0.9; }
-          else if (code == 6) { alb = vec3(0.3, 0.25, 0.17); rough = 0.2; emit = vec3(1.0, 0.58, 0.24) * 1.3 * aPose.y; }
-          else if (code == 7) { alb = vec3(0.02, 0.018, 0.016); rough = 0.15; }
-          else if (code == 8) { alb = aCoat * 0.55; rough = 0.8; }
-          else if (code == 9) { alb = skinTone(aLook.x) * vec3(0.8, 0.55, 0.55); rough = 0.5; }
-          if (code < 5) alb *= (0.72 + 0.28 * smoothstep(0.0, 1.5, position.y)) * (0.85 + 0.15 * clamp(normal.y + 1.0, 0.0, 1.0));
-          vAlb = alb;
-          vEmit = emit;
-          vRough = rough;
-          vMetal = metal;
-          vObj = position;
-          vCloth = (code == 2 || code == 3 || code == 8) ? 1.0 : 0.0;
-          ${LAMP_VERT_MAIN}
-        }`,
-      )
-      .replace('#include <begin_vertex>', 'vec3 transformed = posedP;');
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vAlb;\nvarying vec3 vEmit;\nvarying float vRough;\nvarying float vMetal;\nvarying vec3 vObj;\nvarying float vCloth;\n${LAMP_FRAG}`)
-      // A fine weave in the cloth's normal, seen within a few metres and gone before it could alias.
-      .replace(
-        '#include <normal_fragment_begin>',
-        `#include <normal_fragment_begin>
-        if (vCloth > 0.5) {
-          float near = smoothstep(14.0, 3.0, length(vViewPosition));
-          float wv = sin(vObj.y * 620.0) * sin((vObj.x + vObj.z) * 540.0) + 0.5 * sin(vObj.y * 1900.0 + vObj.x * 1100.0);
-          normal = normalize(normal + 0.05 * near * wv * vec3(1.0, 0.6, 1.0));
-        }`,
-      )
-      .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = vAlb;')
-      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vRough;')
-      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vEmit;')
-      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${LAMP_FRAG_MAIN}`);
+    if (level === 'hi') dissolve(sh, PEOPLE_LOD.close, 'near');
+    else if (level === 'lo') dissolve(sh, PEOPLE_LOD.close, 'far', PEOPLE_LOD.near);
+    else dissolve(sh, PEOPLE_LOD.near, 'far', PEOPLE_LOD.out);
+    figureShader(sh, PERSONA_RIG, PERSONA_SURFACE, 'varying vec3 vEmit;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vEmit;');
   };
-  m.customProgramCacheKey = () => (far ? 'palimpsest-people-far' : 'palimpsest-people');
+  m.customProgramCacheKey = () => `palimpsest-people-${level}`;
   return m;
 }
 
@@ -632,23 +534,27 @@ export function createPeople(deps: PeopleDeps): People {
   let disposed = false;
   let version = 0;
   let platesNow: Plate[] = [];
-  const lastStats = { near: 0, far: 0, lanterns: 0 };
+  const lastStats = { close: 0, near: 0, far: 0, lanterns: 0 };
 
   // ---- the drawing
-  const nearMat = personaMaterial(false);
-  const farMat = personaMaterial(true);
+  const closeMat = personaMaterial('hi');
+  const nearMat = personaMaterial('lo');
+  const farMat = personaMaterial('far');
   const lanternMat = lanternMaterial();
-  const nearGeo = personaModel();
-  const farGeo = farModel();
-  const nearTris = nearGeo.attributes.position.count / 3;
-  const farTris = farGeo.attributes.position.count / 3;
-  const ATTRS = { aAnim: 4, aLook: 4, aCoat: 3, aLegs: 3, aLampL: 4, aPose: 4 };
+  const closeGeo = personaModel('hi');
+  const nearGeo = personaModel('lo');
+  const farGeo = figureGeometry('far');
+  const closeTris = wornTriangles(closeGeo);
+  const nearTris = wornTriangles(nearGeo);
+  const farTris = wornTriangles(farGeo);
+  const ATTRS = { aAnim: 4, aLook: 4, aCoat: 3, aLegs: 3, aLampL: 4, aPose: 4, aBody: 4 };
   interface Drawn {
     mesh: THREE.InstancedMesh;
     a: Record<string, THREE.InstancedBufferAttribute>;
     n: number;
   }
   let cap = CAP;
+  let close!: Drawn;
   let near!: Drawn;
   let far!: Drawn;
   let lanterns!: THREE.Points;
@@ -675,11 +581,13 @@ export function createPeople(deps: PeopleDeps): People {
   }
   function size(): void {
     if (near) {
-      group.remove(near.mesh, far.mesh, lanterns);
+      group.remove(close.mesh, near.mesh, far.mesh, lanterns);
+      close.mesh.dispose();
       near.mesh.dispose();
       far.mesh.dispose();
       lanterns.geometry.dispose();
     }
+    close = instanced(closeGeo, closeMat, 'people:close');
     near = instanced(nearGeo, nearMat, 'people:near');
     far = instanced(farGeo, farMat, 'people:far');
     const g = new THREE.BufferGeometry();
@@ -700,7 +608,7 @@ export function createPeople(deps: PeopleDeps): People {
     const r = hashOf(agent.id);
     const coat = deps.coatOf?.(agent) ?? ([0.08 + 0.1 * r(), 0.07 + 0.06 * r(), 0.06 + 0.05 * r()] as [number, number, number]);
     const g = 0.03 + 0.07 * r();
-    return {
+    const look: Look = {
       skin: r(),
       hair: r(),
       height: 1.64 + 0.24 * r(),
@@ -709,7 +617,10 @@ export function createPeople(deps: PeopleDeps): People {
       hat: r() < 0.15 ? 1 : 0,
       coat,
       legs: [g, g * (0.95 + 0.1 * r()), g * (0.9 + 0.1 * r())],
+      body: [0, 2, 0, 0],
     };
+    look.body = bodyOf(Math.floor(r() * 1e6), look.hat);
+    return look;
   }
 
   function newFigure(agent: Agent): Figure {
@@ -1003,6 +914,7 @@ export function createPeople(deps: PeopleDeps): People {
     d.a.aLegs.setXYZ(i, f.look.legs[0], f.look.legs[1], f.look.legs[2]);
     d.a.aLampL.setXYZW(i, f.lamp[0], f.lamp[1], f.lamp[2], f.lamp[3]);
     d.a.aPose.setXYZW(i, f.sit, litNow, f.hold, f.lean);
+    d.a.aBody.setXYZW(i, f.look.body[0], f.look.body[1], f.look.body[2], f.look.body[3]);
   }
 
   function draw(camera: THREE.PerspectiveCamera): void {
@@ -1014,6 +926,7 @@ export function createPeople(deps: PeopleDeps): People {
       cap = Math.max(figures.size, cap * 2);
       size();
     }
+    close.n = 0;
     near.n = 0;
     far.n = 0;
     let ln = 0;
@@ -1032,8 +945,9 @@ export function createPeople(deps: PeopleDeps): People {
       q.setFromAxisAngle(up, -f.heading);
       m4.compose(pos, q, scl.set(k * (0.94 + 0.06 * f.look.build), k, k * f.look.build));
       if (deps.lampLight) deps.lampLight(f.x, f.y + 1.3, f.z, f.lamp);
+      if (d < PEOPLE_LOD.close.far) write(close, f, litNow);
       if (d < PEOPLE_LOD.near.far) {
-        write(near, f, litNow);
+        if (d > PEOPLE_LOD.close.near) write(near, f, litNow);
         if (d < PEOPLE_LOD.plate) {
           plates.push({
             key: `person:${f.agent.id}`,
@@ -1061,11 +975,13 @@ export function createPeople(deps: PeopleDeps): People {
       upload(d.mesh.instanceMatrix, d.n);
       for (const a of Object.values(d.a)) upload(a, d.n);
     };
+    finish(close);
     finish(near);
     finish(far);
     lanterns.visible = ln > 0;
     lanterns.geometry.setDrawRange(0, ln);
     if (ln) upload(lanternPos, ln);
+    lastStats.close = close.n;
     lastStats.near = near.n;
     lastStats.far = far.n;
     lastStats.lanterns = ln;
@@ -1157,11 +1073,12 @@ export function createPeople(deps: PeopleDeps): People {
     platesVersion: () => version,
     view: () => ({
       figures: figures.size,
+      close: lastStats.close,
       near: lastStats.near,
       far: lastStats.far,
       lanterns: lastStats.lanterns,
-      meshes: (near.mesh.visible ? 1 : 0) + (far.mesh.visible ? 1 : 0) + (lanterns.visible ? 1 : 0),
-      triangles: lastStats.near * nearTris + lastStats.far * farTris,
+      meshes: (close.mesh.visible ? 1 : 0) + (near.mesh.visible ? 1 : 0) + (far.mesh.visible ? 1 : 0) + (lanterns.visible ? 1 : 0),
+      triangles: lastStats.close * closeTris + lastStats.near * nearTris + lastStats.far * farTris,
       following: followed,
       time,
     }),
@@ -1180,18 +1097,21 @@ export function createPeople(deps: PeopleDeps): People {
     },
     dispose() {
       release();
-      group.remove(near.mesh, far.mesh, lanterns);
+      group.remove(close.mesh, near.mesh, far.mesh, lanterns);
+      close.mesh.dispose();
       near.mesh.dispose();
       far.mesh.dispose();
+      closeGeo.dispose();
       nearGeo.dispose();
       farGeo.dispose();
       lanterns.geometry.dispose();
+      closeMat.dispose();
       nearMat.dispose();
       farMat.dispose();
       lanternMat.dispose();
       figures.clear();
       platesNow = [];
-      lastStats.near = lastStats.far = lastStats.lanterns = 0;
+      lastStats.close = lastStats.near = lastStats.far = lastStats.lanterns = 0;
       disposed = true;
     },
   };

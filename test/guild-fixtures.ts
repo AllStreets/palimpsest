@@ -18,7 +18,7 @@ import { mirrorDir } from '../engine/mirror.js';
 import { acquire, resetBudget, type Lease } from '../engine/market/budget.js';
 import { postManualJob, settleJobEffects } from '../engine/market/jobs.js';
 import { resetProviders } from '../engine/market/providers.js';
-import { resetRuns, type RunDiff } from '../engine/market/runs.js';
+import { resetRuns, settleRuns, type RunDiff } from '../engine/market/runs.js';
 import { commitAll, createRunDir, diffOf } from '../engine/market/worktree.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Agent, Firm, Job, ModelRef, Repo, RepoChecks, Run } from '../shared/types.js';
@@ -64,6 +64,9 @@ export function setUp(name: string): void {
 }
 
 export async function tearDown(): Promise<void> {
+  // Every run's async tail ends while the temp home is still set: a tail that
+  // outlived the restore once wrote a run.ended into his real database.
+  await settleRuns();
   resetRuns();
   await settleJobEffects();
   resetBudget();

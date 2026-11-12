@@ -77,6 +77,8 @@ After every broker command and file tool call, `reapRun()` (`engine/market/reape
 
 The control scripts the sandboxed processes run (the hook, the MCP server, the file tool and the guard) are copied into `<runRoot>/ctl/bin` (read-only to both profiles) by `installControlScripts()` in `engine/market/broker.ts`, because both profiles deny reads of his home, where this repository lives.
 
+**Accepted residual: egress is per run, not per process.** A run has one proxy, and its allow list is the stage's (`egress.ts` `hostsFor`). In the `working` stage of a Claude run that list holds the ecosystems' registries and the Claude hosts together, so an agent's tool command can reach `api.anthropic.com`, and the claude process can reach the registries. Either process therefore has a path to send private repo text to a host it does not itself need. Neither carries a credential for that host: tool children run with a fake HOME, no keychain mach service and no Claude login, and the claude process has no code-running tool to drive a registry upload. TLS domain fronting on an allowed host stays open as a read and send path (Task 7). The fix, if it is ever needed, is to give the broker's commands their own registries-only proxy and the claude process a Claude-only one.
+
 ## Kill switches and caps
 
 | Switch or cap | Where |

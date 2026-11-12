@@ -35,6 +35,12 @@ The river (`app/src/city/river.ts`) is own work, modelled in code for Palimpsest
 
 The architecture kits in `app/public/kits/kits.glb` are own work, authored in Blender from code by `tools/kits/kits.py` (run headless; the script is the source): the coursed stone and banded brick blocks laid over the masonry floors, the six sci-fi family crowns (deco tiers, ziggurat summit, needle blades, arcology sky garden, ribbed dome, stacked pods), and the ambient city's roof and massing pieces (timber water tanks on braced stands, stair bulkheads, louvred penthouses, finned plant screens, rooftop units, cars, oriel bays, cut-corner walls). No third-party models or textures are in it.
 
+The vehicles (`app/src/city/vehicles.ts`) are own work, modelled in code for Palimpsest: the trams, the maglev pods, the river ferries and their wakes, the elevated train's cars and the persona cabs. The train's cab car and the cab are subdivision surfaces authored in Blender from code by `tools/kits/kits.py` and ship in `kits.glb`; the train's destination board is lit in a 5 by 7 dot-matrix face drawn in code. They follow real vehicles in general and copy no maker's design. No third-party models or textures are used.
+
+The people (`app/public/kits/figures.glb`) are own work, sculpted in Blender from code by `tools/kits/figures.py` (run headless; the script is the source): one clothed figure with its head, hands, coat, trousers and shoes, and the hair, hats and scarf a crowd wears. The personas (`app/src/city/people.ts`) and the ambient crowd are drawn from it; the ambient traffic's cars are modelled in code in `app/src/city/ambient.ts`. No third-party models, scans or motion capture are used.
+
+The shopfronts on the ground storeys of the ambient city (`app/src/city/shopfronts.ts`, drawn by the facade shader), and the glass lift and the crew's hoist car of the ride up a tower (`app/src/city/ride.ts`) are own work, written for Palimpsest. No third-party models or textures are used.
+
 ## Type
 
 Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. The app's splash (`src-tauri/splash/`) shows before the engine can serve anything, so it carries its own copies of the same files in `src-tauri/splash/fonts/`. All under the [SIL Open Font License 1.1](https://openfontlicense.org).
@@ -50,4 +56,4 @@ Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. 
 
 The wordmark, the app mark and the app icon set are own work, rendered in Blender by scripts written for Palimpsest (`docs/brand/wordmark.py`, `docs/brand/logo.py`, `docs/brand/icons.py`). They reuse the Poly Haven sandstone, brick and rust scans listed above. The icons in `src-tauri/icons/` are copies of `docs/brand/icons/`.
 
-The README's hero, stills and clips in `docs/media/` are captured from the app itself by `tools/capture.ts`, from the fictional repos that `tools/sample.ts` writes. No real repo appears in them.
+The README's hero, stills and clips in `docs/media/` are captured from the app itself by `tools/capture.ts`, from the fictional repos that `tools/sample.ts` writes and the scripted sample market that `engine/market/sample-economy.ts` writes on them. No real repo, issue, run or usage reading appears in them.

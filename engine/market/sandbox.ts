@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFi
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 
-import { home as dataHomeDir, isRealDataHome } from '../home.js';
+import { onRealDataHome } from '../home.js';
 
 export interface ProfileInput {
   /** `<home>/runs/<runId>` (or a baseline or scratch root). */
@@ -493,7 +493,7 @@ export function wrap(argv: string[], kind: 'tool', o: ProfileInput, log?: (line:
 export function wrap(argv: string[], kind: 'cli', o: CliProfileInput, log?: (line: string) => void): string[];
 export function wrap(argv: string[], kind: 'tool' | 'cli', o: ProfileInput | CliProfileInput, log?: (line: string) => void): string[] {
   if (sandboxOff()) {
-    if (isRealDataHome(dataHomeDir())) throw new Error('sandbox cannot be off on the real data home');
+    if (onRealDataHome()) throw new Error('sandbox cannot be off on the real data home');
     (log ?? ((l: string) => console.warn(l)))('sandbox off');
     return argv;
   }

@@ -24,6 +24,7 @@ import type { FigureView, PeopleView } from './city/people.js';
 import { type SwatchPoint, swatchBoard } from './city/tower/swatches';
 import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
 import { towerTones } from './city/lots';
+import { loadFigures } from './city/figures';
 import { loadKits, registerFallbackKits } from './city/kits';
 import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
@@ -286,6 +287,8 @@ async function main(): Promise<void> {
       registerFallbackKits();
       notice.add('The architecture kits did not load (kits/kits.glb is missing or damaged), so the city is built from plain blocks. Reinstalling Palimpsest restores them.');
     }),
+    // Without the modelled figures the people stand as plain figures; the city is whole either way.
+    loadFigures().catch((err: unknown) => console.warn('the figures did not load; the people stand as plain figures', err)),
   ]);
   /** The quality towers are built at: Settings' choice, until the city steps down by itself. */
   let quality: 'high' | 'medium' = settingsQuality;

@@ -536,6 +536,16 @@ test('the harness proposal waits until accepted and dismiss withdraws it', () =>
   assert.equal(job(q.id)!.status, 'withdrawn');
 });
 
+test('a merged harness job is not proposed again when detection still finds no test or build', () => {
+  const repo = storeRepo();
+  const p = acceptProposed(proposeHarnessJob(repo).id);
+  walk(p, ['bidding', 'awarded', 'running', 'inspecting', 'shipping', 'merged']);
+  const again = proposeHarnessJob(repo);
+  assert.equal(again.id, p.id, 'the merged harness job is the answer, not a second proposal');
+  assert.equal(listJobs({ repo: FULL, source: 'harness' }).length, 1);
+  assert.equal(entries().filter((e) => e.kind === 'job.proposed').length, 1);
+});
+
 test('listJobs filters by repo, status and source', () => {
   storeRepo();
   storeRepo(makeRepo({ fullName: 'acme/gadgets', slot: 1 }));

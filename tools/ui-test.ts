@@ -687,13 +687,17 @@ async function constructionChecks(page: Page): Promise<void> {
     console.log(`info  city from home with live sites: ${homeFps.toFixed(0)} fps, ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
     check(homeFps >= overviewFps - 5, `the city from home holds its frame rate with live sites (${homeFps.toFixed(0)} fps)`);
     // What the sites cost from home: every site is drawn in a few batches, so all of them together add under 60 calls.
+    // Both sides are measured the same way (homeBudget: the shadow map redrawn, every pass counted), so a shadow
+    // redraw or a level-of-detail step in one single frame and not the other can never read as the sites' cost.
     const nSites = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length)) as number;
+    const withSites = await homeBudget(page);
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(false));
     await page.waitForTimeout(800);
-    const bare = await debug(page, (x) => x.stats());
+    const bare = await homeBudget(page);
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(true));
-    console.log(`info  the ${nSites} live sites add ${home.calls - bare.calls} draw calls from home`);
-    check(nSites >= 3 && home.calls - bare.calls < 60, `${nSites} live sites add fewer than 60 draw calls from home (${home.calls - bare.calls})`);
+    const added = withSites.calls - bare.calls;
+    console.log(`info  the ${nSites} live sites add ${added} draw calls from home`);
+    check(nSites >= 3 && added < 60, `${nSites} live sites add fewer than 60 draw calls from home (${added})`);
     // The city's budget from home (task PERF): a frame with the shadow map redrawn, every pass counted.
     let full = await homeBudget(page);
     console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
@@ -2009,7 +2013,7 @@ async function vehicleChecks(page: Page): Promise<void> {
  * rides in it; Follow brings the camera to it and Escape lets go.
  */
 async function peopleChecks(page: Page): Promise<void> {
-  type PV = { figures: number; near: number; far: number; lanterns: number; meshes: number; triangles: number; following: string | null };
+  type PV = { figures: number; close: number; near: number; far: number; lanterns: number; meshes: number; triangles: number; following: string | null };
   const view = (): Promise<PV | null> => callDebug<PV | null>(page, 'd.people()');
   const home = await debug(page, (d) => d.limits().home);
   await setView(page, home.eye, home.target);
@@ -2037,7 +2041,7 @@ async function peopleChecks(page: Page): Promise<void> {
       const plateText = (await plates.allTextContents()).join(' | ');
       check((await plates.count()) >= 1 && /Dagny Hollis/.test(plateText), `her plate stands over her within 150 m (${plateText || 'none'})`);
       const near = await view();
-      check(!!near && near.near >= 1 && near.triangles > 1500, `close by she draws at her full level (${near?.near} near, ${near?.triangles} triangles)`);
+      check(!!near && near.close >= 1 && near.triangles > 9000, `close by she draws as the modelled figure in full (${near?.close} close, ${near?.near} near, ${near?.triangles} triangles)`);
       await page.screenshot({ path: join(SHOTS, 'commute.png') });
     }
     f = await runUntil(page, id, (x) => x.stage === 'ride', 300);
@@ -2173,6 +2177,48 @@ async function qualityDropChecks(page: Page, errors: string[]): Promise<void> {
   }
   const fresh = errors.slice(before);
   check(fresh.length === 0, `stepping down to medium leaves no errors${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
+}
+
+/**
+ * Every screen once more, by its address, after the whole run has moved the economy on (Task 42): each opens on its
+ * sheet and adds no console error of its own. The ids are read from the engine, so each page opens on a real record.
+ */
+async function everyScreenChecks(page: Page, errors: string[]): Promise<void> {
+  const api = <T>(path: string): Promise<T> => page.evaluate((p) => fetch(p).then((r) => r.json()), path) as Promise<T>;
+  const jobs = await api<Array<{ id: string; runId: string | null }>>('/api/jobs');
+  const firms = await api<FirmView[]>('/api/firms');
+  const withRun = jobs.find((j) => j.runId);
+  const detail = withRun ? await api<{ inspections: Array<{ id: string }> }>(`/api/jobs/${withRun.id}`) : null;
+  const screens: Array<[string, string, string]> = [
+    ['city', '#/', '.runhead'],
+    ['job board', '#/jobs', '.sheet.jobs, .sheet .sec-bidding, .sheet-title'],
+    ...(jobs[0] ? ([['job', `#/jobs/${jobs[0].id}`, '.sheet.jobpage .sheet-title']] as Array<[string, string, string]>) : []),
+    ...(withRun?.runId ? ([['run', `#/runs/${withRun.runId}`, '.runpage .sheet-title']] as Array<[string, string, string]>) : []),
+    ...(detail?.inspections[0] ? ([['inspection', `#/inspections/${detail.inspections[0].id}`, '.insppage .sheet-title']] as Array<[string, string, string]>) : []),
+    ['firms', '#/firms', '.sheet.firms .firm-row'],
+    ...(firms[0] ? ([['firm', `#/firms/${firms[0].id}`, '.sheet.firmpage .sheet-title']] as Array<[string, string, string]>) : []),
+    ...(firms[0]?.agents[0] ? ([['agent', `#/agents/${firms[0].agents[0].id}`, '.sheet.agentpage .sheet-title']] as Array<[string, string, string]>) : []),
+    ['treasury', '#/treasury', '.sheet.treasury .sheet-title'],
+    ['repos', '#/repos', '.sheet.repos .sheet-title'],
+    ['district', `#/repos/${SAMPLE[0].fullName}`, '.sheet.district .sheet-title'],
+    ['settings', '#/settings', '.sheet.settings .sheet-title'],
+  ];
+  for (const [name, hash, ready] of screens) {
+    const before = errors.length;
+    await page.evaluate((h) => {
+      location.hash = h;
+    }, hash);
+    const shown = await page
+      .waitForSelector(ready, { state: 'attached', timeout: 8000 })
+      .then(() => true)
+      .catch(() => false);
+    await page.waitForTimeout(600);
+    const fresh = errors.slice(before);
+    check(shown && fresh.length === 0, `the ${name} screen opens at ${hash} with no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
+  }
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
 }
 
 async function main(): Promise<void> {
@@ -2383,6 +2429,7 @@ async function main(): Promise<void> {
         await vehicleChecks(page);
         await peopleChecks(page);
         await ambientChecks(page);
+        await everyScreenChecks(page, consoleErrors);
         await qualityDropChecks(page, consoleErrors);
       }
     }

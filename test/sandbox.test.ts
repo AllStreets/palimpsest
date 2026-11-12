@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -436,7 +436,9 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     assert.ok(!existsSync(join(runRoot, 'ship', '.git', 'config')));
   });
 
-  test('exec of /usr/bin/security fails', async () => {
+  // Test safety rule 4: no default test spawns the real security, even under the profile. The profile's
+  // exec deny is checked as text above; this live check runs only with PALIMPSEST_REAL_SECURITY_TEST=1.
+  test('exec of /usr/bin/security fails', { skip: process.env.PALIMPSEST_REAL_SECURITY_TEST !== '1' && 'spawns the real security: set PALIMPSEST_REAL_SECURITY_TEST=1' }, async () => {
     const r = await tool('/usr/bin/security list-keychains');
     assert.notEqual(r.code, 0);
     assert.doesNotMatch(r.stdout, /keychain/i);
@@ -452,19 +454,8 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
     assert.doesNotMatch(r.stdout, /ran/);
   });
 
-  test('a renamed copy of security cannot reach the keychain', async (ctx) => {
-    const sec = join(runRoot, 'tmp', 'sec');
-    copyFileSync('/usr/bin/security', sec);
-    chmodSync(sec, 0o755);
-    const outside = await run([sec, 'list-keychains']);
-    if (outside.code !== 0 || !/keychain/i.test(outside.stdout)) {
-      ctx.skip('the copy does not list keychains outside the sandbox');
-      return;
-    }
-    const inside = await tool(`'${sec}' list-keychains`);
-    assert.doesNotMatch(inside.stdout, /keychain/i);
-  });
-
+  // A renamed copy of security is covered by the next test: the keychain's mach service is denied
+  // to every tool child, whatever binary asks, so no copy of security is ever run here.
   test("no tool child can look up the keychain's mach service, whatever binary asks", { skip: !PYTHON && 'no python3 outside the developer tools' }, async (ctx) => {
     const python = PYTHON as string;
     const script = join(runRoot, 'tmp', 'lookup.py');

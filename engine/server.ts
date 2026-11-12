@@ -106,9 +106,9 @@ export interface StartedServer {
   port: number;
 }
 
+/** An error's text as it may leave the engine: redacted like every other route (scrub), so no home path or token goes out. */
 function readableMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
+  return scrub(err instanceof Error ? err.message : String(err)) as string;
 }
 
 function isValidCap(v: unknown): v is number {
@@ -498,7 +498,7 @@ async function handleApi(
     throw new HttpError(404, { error: 'not found' });
   } catch (err) {
     if (err instanceof GhError) {
-      sendJson(res, 502, { error: err.message, kind: err.kind });
+      sendJson(res, 502, { error: readableMessage(err), kind: err.kind });
       return;
     }
     if (err instanceof HttpError) {

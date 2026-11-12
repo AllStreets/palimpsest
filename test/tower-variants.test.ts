@@ -334,7 +334,8 @@ test('within an era, variants differ from each other by material alone', () => {
 
 test('nothing regenerates rendered.ts on its own: no default capture measures, and only SWATCH_WRITE=1 writes it', () => {
   const src = readFileSync(new URL('../tools/capture.ts', import.meta.url), 'utf8');
-  const defaults = /const wanted = [^;]*?\[([^\]]*)\]/.exec(src)?.[1] ?? '';
+  // A bare capture runs README_SHOTS, the README's media.
+  const defaults = /const README_SHOTS = \[([^\]]*)\]/.exec(src)?.[1] ?? '';
   assert.ok(defaults.length > 0, 'found the default shot list');
   assert.ok(!defaults.includes('swatches'), 'the default capture does not measure');
   const writes = src.split('\n').filter((l) => l.includes("'rendered.ts'") && l.includes('writeFileSync'));

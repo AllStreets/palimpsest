@@ -38,7 +38,7 @@ import { getRunner } from '../exec.js';
 import { createPR, openPRsFrom, prCommits, prState, prTitle, recentCommits, viewerLogin, type PRState } from '../github.js';
 import { runCheck } from '../guild/checks.js';
 import { canOpenPR, canPush, inspectionSummary, wipeScratch } from '../guild/inspect.js';
-import { home, isRealDataHome, paths } from '../home.js';
+import { onRealDataHome, paths } from '../home.js';
 import { record } from '../ledger.js';
 import { mirrorDir, syncMirror } from '../mirror.js';
 import { earnedFloors, getRepo, layEarnedFloor, listRepos, removeEarnedFloor, updateEarnedFloor } from '../repos.js';
@@ -172,7 +172,7 @@ export async function pushTarget(repo: Repo): Promise<string> {
   const r = await getRunner()('git', [`--git-dir=${mirrorDir(repo.fullName)}`, 'config', '--local', '--get', 'remote.origin.url'], { timeoutMs: 30_000, env: pushEnv() });
   const url = r.stdout.trim();
   if (r.code !== 0 || !url) throw new Error(`The mirror of ${repo.fullName} has no origin to push to.`);
-  if (isRealDataHome(home())) {
+  if (onRealDataHome()) {
     const full = repo.fullName.toLowerCase();
     if (url.toLowerCase() !== `https://github.com/${full}.git`) throw new Error(`Refused: the mirror's origin ${url} is not ${repo.fullName} on GitHub.`);
     return url;

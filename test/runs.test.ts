@@ -39,6 +39,7 @@ import {
   kill,
   listRuns,
   resetRuns,
+  settleRuns,
   resumeRepo,
   run as storedRun,
   sites,
@@ -120,6 +121,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   unsubscribe();
+  await settleRuns();
   resetRuns();
   await settleJobEffects();
   resetBudget();
@@ -474,6 +476,22 @@ test('kill() ends a run as killed and reopens the job without an attempt', async
   assert.equal(ended.outcome, 'killed');
   assert.equal(ended.runId, held.started[0].runId);
   assert.ok('summary' in ended, 'summary is recorded at the top level of run.ended');
+});
+
+test('settleRuns kills every live run and returns only once its tail has written run.ended, however the run was started', async () => {
+  const held = heldWork();
+  useScript({ work: held.work });
+  makeRepo();
+  const { bid } = awarded(FULL, addAgent('l1', 'gamma', 'ollama:qwen3'));
+  createScheduler(deps().deps);
+  // Started directly, not through a tick, and never awaited: the tail must still be waited for.
+  void startRun(bid).catch(() => {});
+  await until(() => held.started.length === 1);
+  await settleRuns();
+  const runId = held.started[0].runId;
+  assert.equal(storedRun(runId)?.outcome, 'killed', 'the tail finished before settleRuns returned');
+  assert.ok(entries().some((e) => e.kind === 'run.ended' && (e.data as { runId: string }).runId === runId));
+  assert.equal(liveRunIds().length, 0);
 });
 
 test("bankruptcy kills the firm's live run, reopens its job without an attempt, and its tower is not sold while the run lives", async () => {

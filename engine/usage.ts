@@ -6,7 +6,7 @@ import { join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { calibrate, DEFAULT_TOKENS_PER_PCT, weightedTokens } from '../shared/credits.js';
 import type { UsageReading, UsageWindow } from '../shared/types.js';
 import { openDb } from './db.js';
-import { defaultHome, home, paths } from './home.js';
+import { home, onRealDataHome, paths } from './home.js';
 import { record } from './ledger.js';
 import { isSampleHome, sampleClaudeSettingsPath, sampleProjectsDir } from './sample.js';
 import { getSettings, patchSettings } from './settings.js';
@@ -48,7 +48,9 @@ export const NO_CLAUDE_SETTINGS =
 export function claudeSettingsTarget(env: NodeJS.ProcessEnv = process.env): string | null {
   if (isSampleHome()) return sampleClaudeSettingsPath();
   if (env.PALIMPSEST_CLAUDE_SETTINGS) return resolve(env.PALIMPSEST_CLAUDE_SETTINGS);
-  if (resolve(home()) !== resolve(defaultHome())) return null;
+  if (!onRealDataHome()) return null;
+  // Under a test this throws: no test ever reaches his real ~/.claude/settings.json.
+  home();
   return join(homedir(), '.claude', 'settings.json');
 }
 

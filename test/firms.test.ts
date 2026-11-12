@@ -29,6 +29,7 @@ import {
 import { readPersona } from '../engine/market/firms.js';
 import { SYSTEM_PATH } from '../engine/market/sandbox.js';
 import { layEarnedFloor } from '../engine/repos.js';
+import { patchSettings } from '../engine/settings.js';
 import { startServer } from '../engine/server.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Agent, Floor, Repo } from '../shared/types.js';
@@ -243,6 +244,17 @@ test('installedModels reads ollama list through the runner and is empty when Oll
   assert.deepEqual(await installedModels(), []);
   setRunner(async () => ({ stdout: '', stderr: 'could not connect to ollama app', code: 1 }));
   assert.deepEqual(await installedModels(), []);
+});
+
+test('installedModels asks the Ollama host his settings name, so a non-default host does not retire every local agent', async () => {
+  patchSettings({ ollamaHost: '10.0.0.7:11500' });
+  const hosts: Array<string | undefined> = [];
+  setRunner(async (_cmd, _args, opts) => {
+    hosts.push(opts?.env?.OLLAMA_HOST);
+    return { stdout: 'NAME          ID              SIZE      MODIFIED\nqwen3:1.7b    06c1097efce0    1 GB      3 weeks ago\n', stderr: '', code: 0 };
+  });
+  assert.deepEqual(await installedModels(), ['qwen3:1.7b']);
+  assert.deepEqual(hosts, ['http://10.0.0.7:11500']);
 });
 
 test("every agent's genome passes a copy of Beagle's validate rules", () => {
