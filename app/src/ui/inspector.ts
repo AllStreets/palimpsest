@@ -1,4 +1,5 @@
-import type { District, Era, Floor, FloorSize, RootStyle, TowerSpec } from '../../../shared/types.js';
+import type { District, Era, Floor, FloorSize, Milestone, RootStyle, TowerSpec } from '../../../shared/types.js';
+import { milestoneNote } from '../city/milestones.js';
 
 export const ROOT_NAMES: Record<RootStyle, string> = {
   beauxarts: 'Beaux-Arts',
@@ -69,6 +70,8 @@ export interface MarketNames {
   firms: Map<string, string>;
   /** Run id to the id of its inspection report. */
   inspections: Map<string, string>;
+  /** The milestones standing on floors, by floor id (GET /api/milestones?active=1). */
+  milestones?: Map<string, Milestone>;
 }
 
 export const NO_NAMES: MarketNames = { agents: new Map(), firms: new Map(), inspections: new Map() };
@@ -258,7 +261,13 @@ export function floorList(tower: TowerSpec, opts: FloorListOptions): { list: HTM
     r.append(el('span', 'insp-n', String(n)), title, ref, meta, el('span', 'insp-date', floorDate(f.at)));
     // How it stands, on a line of its own so the builder's name never gives way to it.
     if (e.state) r.append(el('span', e.failed ? 'insp-state insp-failed' : 'insp-state', e.state));
-    r.setAttribute('aria-label', `Floor ${n}, ${e.job}, built by ${e.agent} of ${e.firm}${e.state ? `, ${e.state.toLowerCase()}` : ''}, ${floorDate(f.at)}${agentHref && picking ? `. Shift+Enter opens ${e.agent}’s page` : ''}`);
+    const held = names.milestones?.get(f.id);
+    const mark = held ? milestoneNote(held) : null;
+    if (mark) {
+      r.classList.add('marked');
+      r.append(el('span', 'insp-mark', mark));
+    }
+    r.setAttribute('aria-label', `Floor ${n}, ${e.job}, built by ${e.agent} of ${e.firm}${e.state ? `, ${e.state.toLowerCase()}` : ''}${mark ? `, ${mark}` : ''}, ${floorDate(f.at)}${agentHref && picking ? `. Shift+Enter opens ${e.agent}’s page` : ''}`);
     if (agentHref && picking) {
       // The builder's link is not a tab stop inside the listbox: Shift+Enter on the row reaches it.
       r.addEventListener('keydown', (ev) => {

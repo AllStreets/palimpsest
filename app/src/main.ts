@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import './ui/style.css';
 import './ui/screens.css';
 
-import type { Agent, District, FirmView, Job, Quarter, Repo, SiteState, TowerSpec } from '../../shared/types';
+import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, TowerSpec } from '../../shared/types';
 import { weekOf } from '../../shared/tour';
 import { api } from './api';
 import { coalesced } from './coalesce';
@@ -13,6 +13,7 @@ import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } f
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
+import type { MilestoneShow } from './city/milestones.js';
 import type { VehicleRef, VehiclesView } from './city/vehicles.js';
 import type { AmbientView } from './city/ambient.js';
 import { route } from '../../shared/commute.js';
@@ -85,6 +86,10 @@ interface DebugHandle {
   limits(): ReturnType<ReturnType<typeof createCity>['limits']>;
   /** Where a world point lands on screen, in normalised device coordinates (y up, the frame is -1 to 1). */
   project(p: number[]): number[];
+  /** Each milestone as the city shows it now (milestones.ts), by id. */
+  milestones(): Array<MilestoneShow & { id: string }>;
+  /** Stands these milestones in place of the engine's for a capture (the finial on a tower of its own), or the engine's again with null. */
+  stageMilestones(ms: Milestone[] | null): void;
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
   /** The next frame's draw calls and triangles by subsystem and pass, the shadow map redrawn in it. */
@@ -320,6 +325,8 @@ async function main(): Promise<void> {
     quarterKey: (q) => `${firmViews.get(q.firmId)?.name ?? ''}|${quality}|${firmsKey}`,
     // The civic exchange in the city's own pale limestone and granite.
     makeExchange: (q) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')) }),
+    // The skyline's mast and finial in the city's galvanised steel and polished bronze.
+    milestoneMaterials: towerMaterials(lookFor('civic:exchange')),
     describeTrip: (trip, agent) => describeTrip(trip, agent),
     // A persona's coat: its firm's mark colour, as wool rather than painted metal.
     coatOf: (agent) => {
@@ -469,6 +476,8 @@ async function main(): Promise<void> {
       city.people()?.skip(s);
     },
     peopleLantern: (on) => city.people()?.lantern(on),
+    milestones: () => [...city.milestoneShows()].map(([id, m]) => ({ id, ...m })),
+    stageMilestones: (ms) => (ms ? city.setMilestones(ms) : showMilestones()),
     follow: (id) => followAgent(id),
     following: () => city.following(),
     quality: () => city.quality(),
@@ -646,6 +655,27 @@ async function main(): Promise<void> {
     return true;
   }
 
+  // ---------------------------------------------------------------- milestones (Phase 3 Task 14)
+  /** The milestones standing now, by id: read once, then kept by milestone.reached. */
+  const milestoneRows = new Map<string, Milestone>();
+  const standingNow = (m: Milestone): boolean => m.until === null || Date.parse(m.until) > Date.now();
+  function showMilestones(): void {
+    const rows = [...milestoneRows.values()].filter(standingNow);
+    city.setMilestones(rows);
+    names = { ...names, milestones: new Map(rows.filter((m) => m.floorId).map((m) => [m.floorId!, m])) };
+    inspector.setNames(names);
+  }
+  const readMilestones = coalesced(() =>
+    api.milestones(true).then(
+      (ms) => {
+        milestoneRows.clear();
+        for (const m of ms) milestoneRows.set(m.id, m);
+        showMilestones();
+      },
+      () => {},
+    ),
+  );
+
   // ---------------------------------------------------------------- the market's names
   /** Agent and firm names for the earned floors, and each scar's inspection report, read from the engine. */
   let names: MarketNames = { agents: new Map(), firms: new Map(), inspections: new Map() };
@@ -676,7 +706,7 @@ async function main(): Promise<void> {
             ),
           ),
       );
-      names = { agents, firms: new Map(firms.map((f) => [f.id, f.name])), inspections };
+      names = { agents, firms: new Map(firms.map((f) => [f.id, f.name])), inspections, milestones: names.milestones };
       inspector.setNames(names);
       showTrips();
     } catch {
@@ -952,6 +982,7 @@ async function main(): Promise<void> {
     show(loaded, quarters);
     readBoard();
     readLive();
+    readMilestones();
   } catch (err) {
     console.warn('could not load the city from the engine', err);
     show([]);
@@ -967,7 +998,16 @@ async function main(): Promise<void> {
     ),
   );
   api.events((e) => {
+    // A milestone reached or patched (the spire passed on, a finial moved) stands at once.
+    if (e.type === 'milestone.reached') {
+      const m = (e.data as { milestone?: Milestone } | null)?.milestone;
+      if (m?.id) {
+        milestoneRows.set(m.id, m);
+        showMilestones();
+      }
+    }
     if (e.type === 'engine.reconnected') {
+      readMilestones();
       // Events sent while the stream was down are lost: read the repos, the city and the kill switch afresh.
       void api.repos().then((list) => {
         takeRepos(list);

@@ -15,7 +15,8 @@
  * at retina density, UI_QUALITY=medium switches the quality setting first,
  * UI_TOWER_SHOTS=all adds close shots of every root and era for the quality
  * rounds. UI_FORCE_DROP=1 runs the notice stack's checks alone and then
- * drops the quality from home, checking that the notice names what it saw. UI_PORT=4811 runs it on another port, so two worktrees can each
+ * drops the quality from home, checking that the notice names what it saw. UI_ONLY=spire seeds the economy and
+ * runs the skyline's checks and shots alone. UI_PORT=4811 runs it on another port, so two worktrees can each
  * run one at once.
  */
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -28,6 +29,7 @@ import { chromium } from 'playwright';
 import type { Browser, Page } from 'playwright';
 
 import { repoMarketDefaults } from '../shared/market-rules.js';
+import { crownFor } from '../shared/silhouette.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../shared/types.js';
@@ -42,6 +44,7 @@ import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
 import { dropNoticeChecks, noticeChecks } from './ui-test-notices.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
+import { decodePng } from './png.js';
 import { uiPort } from './ui-port.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -335,6 +338,122 @@ async function earnedChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'tower-earned-inspector.png') });
   await page.keyboard.press('Escape');
   check((await debug(page, (x) => x.notice())) === '', 'no notice shows when the kits load and the frame rate holds');
+}
+
+// ---------------------------------------------------------------- the spire and the finial (Phase 3 Task 14)
+
+type SpireShow = { id: string; kind: string; towerId: string; lit: boolean; y: number; height: number; tip: number[] };
+
+/**
+ * The skyline on the sample economy (engine/market/sample-economy.ts):
+ * the harbour tower holds the lit spire and the founding skyline both, so
+ * its mast is lit and wears the bronze sleeve; assay-kit held the spire
+ * first and keeps its mast dark. Each stands on its tower's true top. Shots:
+ * spire.png close at dusk, finial.png (the finial staged on assay-kit's
+ * mast, as a tower holding the founding skyline alone would wear it) and
+ * spire-home.png from home, where the lit tip must read; the city's budget
+ * from home holds with them. Runs with the economy seeded.
+ */
+async function spireChecks(page: Page): Promise<void> {
+  const shows = async (): Promise<SpireShow[]> => (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
+  const H = 'tidewater/harbor-ledger#founding';
+  const A = 'lantern/assay-kit#founding';
+  await page.waitForFunction(`window.__palimpsest.milestones().some((m) => m.kind === 'skyline' && m.lit)`, null, { timeout: 10_000 }).catch(() => {});
+  const ms = await shows();
+  const lit = ms.filter((m) => m.kind === 'skyline' && m.lit);
+  const passed = ms.filter((m) => m.kind === 'skyline' && !m.lit);
+  const founding = ms.filter((m) => m.kind === 'founding-skyline');
+  check(lit.length === 1 && lit[0].towerId === H, `the harbour tower carries the lit spire (${lit.map((m) => m.towerId).join(', ') || 'none'})`);
+  check(passed.some((m) => m.towerId === A), `assay-kit, the previous holder, keeps an unlit spire (${passed.map((m) => m.towerId).join(', ') || 'none'})`);
+  const ds = await cityOf(page);
+  const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const specs = [...ds.map((d) => d.tower), ...qs.flatMap((q) => q.towers)];
+  // The founding skyline is the tallest tower by total height: the harbour tower on the seeded economy alone (its sleeve on the lit mast),
+  // or whichever tower earlier checks raised past it in the full run.
+  const tallest = specs.reduce((a, b) => (layoutTower(b).top > layoutTower(a).top ? b : a));
+  check(founding.length === 1 && founding[0].towerId === tallest.id, `the founding skyline stands on the tallest tower (${founding.map((m) => m.towerId).join(', ') || 'none'} against ${tallest.id})`);
+  for (const m of [...lit, ...passed]) {
+    const t = specs.find((x) => x.id === m.towerId);
+    // An agent tower's lens or needle crown stands between its roof and the spire (crownFor).
+    const earned = t ? t.floors.filter((f, i) => i >= t.datumIndex && !f.founding).length : 0;
+    const crown = t && t.kind === 'agent' && earned > 0 ? crownFor(t.silhouette ?? 'plain', earned).height : 0;
+    const top = t ? layoutTower(t).top + crown : NaN;
+    check(Math.abs(m.y - top) < 0.05, `the spire on ${m.towerId} stands on its true top (${m.y.toFixed(2)} against ${top.toFixed(2)} m)`);
+  }
+  if (!lit[0]) return;
+  const harbour = ds.find((x) => x.tower.id === H)!;
+  const s = lit[0];
+  const foot = [harbour.origin.x, s.y, harbour.origin.z];
+
+  // Close, at dusk: the mast from a little below its lamp, the roof and its stays in frame, the city beyond.
+  await setView(page, [foot[0] - s.height * 1.15, s.y + s.height * 0.55, foot[2] + s.height * 1.55], [foot[0], s.y + s.height * 0.5, foot[2]]);
+  await debug(page, (x) => x.precompile());
+  await page.waitForTimeout(2200);
+  await page.screenshot({ path: join(SHOTS, 'spire.png') });
+  await page.screenshot({ path: join(SHOTS, 'spire-crop.png'), clip: { x: VIEWPORT.width / 2 - 260, y: 60, width: 520, height: 520 } });
+  const close = await debug(page, (x) => x.stats());
+  const closeFps = await pageFps(page);
+  console.log(`info  the spire close: ${closeFps.toFixed(0)} fps, ${close.calls} draw calls`);
+  check(closeFps >= overviewFps - 5, `the spire's close view holds the frame rate (${closeFps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+
+  // The finial: the founding skyline alone on a mast, staged on assay-kit's.
+  const a = passed.find((m) => m.towerId === A);
+  const ad = ds.find((x) => x.tower.id === A);
+  if (a && ad) {
+    const row = (kind: string, towerId: string, l: boolean) => ({ id: `${kind}:${towerId}`, kind, towerId, repo: null, firmId: null, agentId: null, floorId: null, at: new Date().toISOString(), until: null, lit: l, title: '', detail: '' });
+    await page.evaluate((rows) => (window as unknown as { __palimpsest: { stageMilestones(r: unknown): void } }).__palimpsest.stageMilestones(rows), [row('skyline', H, true), row('skyline', A, false), row('founding-skyline', A, false)]);
+    await setView(page, [ad.origin.x + a.height * 1.0, a.y + a.height * 0.8, ad.origin.z + a.height * 1.3], [ad.origin.x, a.y + a.height * 0.72, ad.origin.z]);
+    await page.waitForTimeout(1800);
+    await page.screenshot({ path: join(SHOTS, 'finial.png') });
+    await page.screenshot({ path: join(SHOTS, 'finial-crop.png'), clip: { x: VIEWPORT.width / 2 - 260, y: 60, width: 520, height: 520 } });
+    await page.evaluate(() => (window as unknown as { __palimpsest: { stageMilestones(r: null): void } }).__palimpsest.stageMilestones(null));
+    await page.waitForTimeout(300);
+    const again = (await shows()).filter((m) => m.kind === 'founding-skyline').map((m) => m.towerId);
+    check(again.join() === founding.map((m) => m.towerId).join(), `the engine's milestones stand again after the staged finial (${again.join(', ')})`);
+  }
+
+  // From home: the lit tip reads as a warm point against what stands behind it.
+  const budget = await homeBudget(page);
+  await page.waitForTimeout(1500);
+  const shot = await page.screenshot({ path: join(SHOTS, 'spire-home.png') });
+  const ndc = (await page.evaluate((p) => (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest.project(p), s.tip)) as number[];
+  const px = Math.round(((ndc[0] + 1) / 2) * VIEWPORT.width);
+  const py = Math.round(((1 - ndc[1]) / 2) * VIEWPORT.height);
+  const onScreen = ndc[2] < 1 && px >= 0 && py >= 0 && px < VIEWPORT.width && py < VIEWPORT.height;
+  check(onScreen, `the lit tip stands in the home view (${px}, ${py})`);
+  if (onScreen) {
+    const img = decodePng(shot);
+    const lum = (x: number, y: number): number => {
+      const i = (Math.min(img.height - 1, Math.max(0, y)) * img.width + Math.min(img.width - 1, Math.max(0, x))) * 4;
+      return 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
+    };
+    let peak = 0;
+    let warm = false;
+    for (let dy = -2; dy <= 2; dy++)
+      for (let dx = -2; dx <= 2; dx++) {
+        const l = lum(px + dx, py + dy);
+        if (l > peak) {
+          peak = l;
+          const i = ((py + dy) * img.width + px + dx) * 4;
+          warm = img.data[i] > img.data[i + 2] + 20;
+        }
+      }
+    const ring: number[] = [];
+    for (let k = 0; k < 24; k++) {
+      const t = (k / 24) * Math.PI * 2;
+      ring.push(lum(px + Math.round(Math.cos(t) * 9), py + Math.round(Math.sin(t) * 9)));
+    }
+    ring.sort((x, y) => x - y);
+    const behind = ring[12];
+    console.log(`info  the lit tip from home at (${px}, ${py}): ${peak.toFixed(0)} against ${behind.toFixed(0)} behind it, ${warm ? 'warm' : 'not warm'}`);
+    check(peak > behind + 30 && warm, `the lamp reads from home as a warm point (${peak.toFixed(0)} against ${behind.toFixed(0)})`);
+  }
+  type T = { calls: number; triangles: number };
+  const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
+  const own = Object.values(b.milestones ?? {}).reduce((acc, t) => ({ calls: acc.calls + t.calls, triangles: acc.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  console.log(`info  the skyline from home: ${own.calls} draw calls, ${(own.triangles / 1000).toFixed(1)}k triangles; the city ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles`);
+  check(own.calls > 0 && own.calls <= 24, `the spires and the finial draw in at most 24 calls from home, every pass counted (${own.calls})`);
+  check(budget.triangles <= HOME_TRIANGLES && budget.calls < HOME_CALLS, `the city from home stays within ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M triangles with the spires (${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
 // ---------------------------------------------------------------- silhouettes (Task 23)
@@ -2317,7 +2436,13 @@ async function main(): Promise<void> {
     // UI_FORCE_DROP=1: the notice stack alone, then the governor's step down taken from home, whose notice must
     // name what it saw. A quick run for the notice rounds; the full run takes the same checks in their places.
     const forceDrop = process.env.UI_FORCE_DROP === '1';
-    if (forceDrop && ready) {
+    // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
+    const spireOnly = process.env.UI_ONLY === 'spire';
+    if (spireOnly && ready) {
+      await measureFps(page);
+      await earnedChecks(page);
+      await spireChecks(page);
+    } else if (forceDrop && ready) {
       await noticeChecks(page, check, SHOTS);
       const home = await debug(page, (d) => d.limits().home);
       await setView(page, home.eye, home.target);
@@ -2393,6 +2518,7 @@ async function main(): Promise<void> {
         await viewGrowsChecks(page);
         await reconnectChecks(page, restart);
         await earnedChecks(page);
+        await spireChecks(page);
         await quarterChecks(page);
         await darkTowerChecks(page);
         await exchangeChecks(page);
@@ -2438,7 +2564,7 @@ async function main(): Promise<void> {
 
     // The empty morning (Phase 3 Task 11), last: on a fresh home with no repos, since the economy's is never empty.
     await page.close();
-    if (!forceDrop) {
+    if (!forceDrop && !spireOnly) {
       await server.close();
       process.env.PALIMPSEST_HOME = join(tmp, 'home-empty');
       server = await startServer({ port: PORT, claudeSettingsPath, keychain });

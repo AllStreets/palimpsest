@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
-import type { District, Era, Quarter, SiteStage, SiteState } from '../../../shared/types';
+import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
 import { createCameraRig, type ScriptPose } from './camera';
@@ -31,6 +31,8 @@ import type { Agent, Trip } from '../../../shared/types';
 import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza, type CabPose } from './ambient.js';
 import { extentBlocks, type Network } from '../../../shared/commute.js';
 import { makeScaffold, type Scaffold } from './scaffold';
+import { createMilestones, findTowerPiece, type MilestoneShow, type Milestones, type TowerPiece } from './milestones.js';
+import type { TowerMaterials } from './tower/kit.js';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
 import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
 
@@ -79,6 +81,8 @@ export interface CityOptions {
   describeTrip?: (trip: Trip, agent: Agent) => string;
   /** A persona's coat, linear RGB: its firm's colour. */
   coatOf?: (agent: Agent) => [number, number, number];
+  /** The steel and bronze the skyline's mast and finial are built in (milestones.ts); without them no milestone shows. */
+  milestoneMaterials?: TowerMaterials;
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
@@ -207,6 +211,16 @@ export interface City {
   dropQuality(): void;
   /** Each listener hears what the city drew when it stepped down, and whether the camera stood at home then. */
   onQualityDrop(fn: (saw: QualityDrop) => void): void;
+  /**
+   * A tower as built, by its id: a district tower by `<repo>#founding`, an
+   * agent tower by `agent:<id>`: its group, its layout, its roof's half width
+   * and its true top. Null when no such tower stands.
+   */
+  towerPiece(towerId: string): TowerPiece | null;
+  /** The engine's milestones (GET /api/milestones?active=1, then milestone.reached): the spire and the finial stand on their towers. */
+  setMilestones(ms: ReadonlyArray<Milestone>): void;
+  /** Each milestone as it shows now, by id (tests and captures). */
+  milestoneShows(): Map<string, MilestoneShow>;
 }
 
 /** The frame rate and triangles the city drew when it stepped down, and whether that was the home view. */
@@ -445,14 +459,32 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const districtGroup = new THREE.Group();
   districtGroup.name = 'districts';
   scene.add(districtGroup);
-  let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece }> = [];
-  let quarterPieces: Array<{ firmId: string; key: string; piece: Centerpiece }> = [];
+  let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece; d: District }> = [];
+  let quarterPieces: Array<{ firmId: string; key: string; piece: Centerpiece; q: Quarter }> = [];
   /** Bumped whenever what stands in the districts changes, so the distance pass (districtLod) judges it afresh. */
   let lodRevision = 0;
   /** Every pickable part in the city: towers' floors and roots, quarters' towers and plinths. */
   const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : [])];
   let scaffolds = new Map<string, Scaffold>();
   let framed = false;
+
+  // ---------------------------------------------------------------- milestones: the spire and the finial (milestones.ts)
+  let milestoneRows: ReadonlyArray<Milestone> = [];
+  let milestones: Milestones | null = opts.milestoneMaterials ? createMilestones({ quality, materials: opts.milestoneMaterials }) : null;
+  if (milestones) scene.add(milestones.group);
+  function towerPiece(towerId: string): TowerPiece | null {
+    return findTowerPiece(
+      towerId,
+      centerpieces.map(({ d, piece }) => ({ spec: d.tower, object: piece.object })),
+      quarterPieces.map(({ q, piece }) => ({ quarter: q, object: piece.object })),
+    );
+  }
+  /** Stands each milestone on its tower as built now: a tower rebuilt carries its ornament up, one removed takes it. */
+  function placeMilestones(): void {
+    if (!milestones) return;
+    milestones.set(milestoneRows, towerPiece);
+    sun.shadow.needsUpdate = true;
+  }
 
   // ---------------------------------------------------------------- the view grows with the city
   // The limits follow the districts standing: the home framing changes at once (it is only used when asked
@@ -518,14 +550,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       const kept = old.get(d.repo);
       if (kept && kept.key === key) {
         old.delete(d.repo);
-        return kept;
+        return { ...kept, d };
       }
       const piece = makeCenterpiece(d);
       piece.object.position.set(d.origin.x, 0, d.origin.z);
       piece.object.userData.repo = d.repo;
       districtGroup.add(piece.object);
       built++;
-      return { repo: d.repo, key, piece };
+      return { repo: d.repo, key, piece, d };
     });
     for (const { piece } of old.values()) {
       districtGroup.remove(piece.object);
@@ -571,14 +603,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       const kept = old.get(q.firmId);
       if (kept && kept.key === key) {
         old.delete(q.firmId);
-        return kept;
+        return { ...kept, q };
       }
       const piece = opts.makeQuarterCenterpiece?.(q) ?? { object: new THREE.Group(), pickables: new Map() };
       piece.object.position.set(q.origin.x, 0, q.origin.z);
       piece.object.userData.firmId = q.firmId;
       districtGroup.add(piece.object);
       built++;
-      return { firmId: q.firmId, key, piece };
+      return { firmId: q.firmId, key, piece, q };
     });
     const removed = old.size;
     for (const { piece } of old.values()) {
@@ -616,6 +648,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const { draw, moved } = life.update(dt);
     if (draw) {
       placeQuarters(draw);
+      placeMilestones();
       searchLitTree(districtGroup);
       lightsOutTree(districtGroup);
       sun.shadow.needsUpdate = true;
@@ -943,6 +976,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     // A bankrupt firm's towers take a dead building's dust where the power is off (lightsout.ts).
     lightsOutTree(districtGroup);
     // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
+    placeMilestones();
     const key = JSON.stringify(plazasOf(occ));
     if (key !== lastPlazas) {
       lastPlazas = key;
@@ -1302,6 +1336,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ['quarters', life.group],
     ...(exchange ? [['exchange', exchange.object] as [string, THREE.Object3D]] : []),
     ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
+    ...(milestones ? [['milestones', milestones.group] as [string, THREE.Object3D]] : []),
     ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
   ];
   const clock = new THREE.Clock();
@@ -1338,6 +1373,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     field = makeConstructionField('medium');
     scene.add(field.group);
     placeConstructions();
+    if (milestones && opts.milestoneMaterials) {
+      milestones.dispose();
+      milestones = createMilestones({ quality: 'medium', materials: opts.milestoneMaterials });
+      scene.add(milestones.group);
+      placeMilestones();
+    }
     for (const fn of dropListeners) fn(saw);
   }
   renderer.setAnimationLoop(() => {
@@ -1355,6 +1396,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     exchange?.update(dt);
     updateConstructions(dt);
     updateLife(dt);
+    milestones?.update(dt, clock.elapsedTime);
     applyLimits();
     // Each chunk of the river draws its detail, casts its shadow and joins the AO pass only near the eye.
     if (river.update(dt, fog.density, camera.position)) sun.shadow.needsUpdate = true;
@@ -1559,6 +1601,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     },
     quality: () => quality,
     dropQuality,
+    towerPiece,
+    setMilestones(ms) {
+      milestoneRows = [...ms];
+      placeMilestones();
+    },
+    milestoneShows: () => milestones?.shows() ?? new Map(),
     onQualityDrop(fn) {
       dropListeners.push(fn);
     },
@@ -1591,6 +1639,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       river.dispose();
       transit.dispose();
       vehicles?.dispose();
+      milestones?.dispose();
       ambient?.dispose();
       ground.dispose();
       sky.dispose();

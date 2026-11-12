@@ -301,6 +301,20 @@
   font-size: 12px;
   color: var(--ink-2);
 }
+/* A floor that holds a milestone (the skyline): its title in quiet italic under the row, never a badge. */
+.insp-floor.insp-earned.marked {
+  grid-template-areas:
+    'n title ref'
+    'n meta date'
+    'n state state'
+    'n mark mark';
+}
+.insp-mark {
+  grid-area: mark;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--ink-3);
+}
 /* A scar's words in the primer's own oxide red, lifted to read on the dark paper. */
 .insp-failed {
   color: #d07a62;
