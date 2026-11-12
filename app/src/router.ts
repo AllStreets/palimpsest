@@ -3,7 +3,7 @@
  * A route with an id (a job, a firm, an agent, a run, an inspection, a repo)
  * carries it in the address: `#/jobs/<id>`, `#/repos/<owner>/<name>`.
  */
-export type Route = 'city' | 'repos' | 'settings' | 'jobs' | 'job' | 'firms' | 'firm' | 'agent' | 'run' | 'inspection' | 'treasury' | 'repo';
+export type Route = 'city' | 'repos' | 'settings' | 'jobs' | 'job' | 'firms' | 'firm' | 'agent' | 'run' | 'inspection' | 'treasury' | 'repo' | 'brief' | 'audit';
 
 /** Where the app is: a route, and the id it opens on (null for a list or the city). */
 export interface Place {
@@ -18,6 +18,7 @@ const LISTS: Record<string, Route> = {
   jobs: 'jobs',
   firms: 'firms',
   treasury: 'treasury',
+  brief: 'brief',
 };
 
 /** Routes with one id segment, by the list they sit under. */
@@ -27,6 +28,7 @@ const ONE: Record<string, Route> = {
   agents: 'agent',
   runs: 'run',
   inspections: 'inspection',
+  audits: 'audit',
 };
 
 const PATH_OF: Record<Route, string> = {
@@ -42,6 +44,8 @@ const PATH_OF: Record<Route, string> = {
   inspection: 'inspections',
   treasury: 'treasury',
   repo: 'repos',
+  brief: 'brief',
+  audit: 'audits',
 };
 
 const CITY: Place = { route: 'city', id: null };

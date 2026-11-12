@@ -12,9 +12,15 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 
+import { audit as storedAudit, listAudits } from '../audit/store.js';
+import { killAudit, queueAudit } from '../audit/run.js';
+import { actOn, briefData, openBrief } from '../brief.js';
 import { LEGAL_MOVES, MAX_ATTEMPTS } from '../../shared/market-rules.js';
 import type {
   Agent,
+  Audit,
+  AuditView,
+  BriefAction,
   AgentDetail,
   CheckView,
   CreditEntries,
@@ -48,7 +54,8 @@ import { apiKeyStored, setApiKey, removeApiKey } from './anthropic-api.js';
 import { bidList } from './bids.js';
 import { MAX_RESUME_MS, treasury } from './budget.js';
 import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
-import { job, listJobs, postManualJob, redact, repost, setTier, transition, withdrawable } from './jobs.js';
+import { job, listJobs, postManualJob, redact, repost, setScope, setTier, transition, withdrawable } from './jobs.js';
+import { listMilestones, weekTour } from './milestones.js';
 import { latestReport } from './report.js';
 import { firmBooks, firmDeals, firmRounds } from './firm-story.js';
 import { reputation, reputationLine, reputationLog } from './reputation.js';
@@ -84,6 +91,9 @@ const JOB_STATUSES = Object.keys(LEGAL_MOVES) as JobStatus[];
 const TIERS: Tier[] = ['low', 'normal', 'high'];
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const BRIEF_ACTIONS: BriefAction[] = ['accept', 'tier', 'dismiss', 'why', 'diff', 'fly', 'retry', 'resume', 'open-pr', 'cap', 'audit', 'tour'];
+/** The most of an audit's page the API carries. */
+const AUDIT_PAGE_CAP = 512 * 1024;
 /** The most of a check log the API carries. */
 export const LOG_CAP = 64 * 1024;
 const DIFF_CAP = 2 * 1024 * 1024;
@@ -92,7 +102,7 @@ const LOG_PAGE = 2000;
 const LEDGER_CAP = 500;
 
 /** Keys whose values are places on this Mac. */
-const PATH_KEYS = new Set(['dir', 'logPath', 'patchPath', 'runRoot']);
+const PATH_KEYS = new Set(['dir', 'logPath', 'patchPath', 'runRoot', 'markdownPath']);
 const HASH = /^[0-9a-f]{40,64}$/;
 
 /** Text with tokens and paths taken out; a bare hash (a sha) stays, it is an identifier. */
@@ -132,7 +142,7 @@ function moving<T>(fn: () => T): T {
   try {
     return fn();
   } catch (err) {
-    if (err instanceof Error && /^illegal move|^job \S+ is /.test(err.message)) throw new HttpError(409, { error: err.message });
+    if (err instanceof Error && /^illegal move|^job \S+ is |^scope refused: |^acceptance needs at least one line/.test(err.message)) throw new HttpError(409, { error: err.message });
     throw err;
   }
 }
@@ -290,6 +300,79 @@ async function withdraw(j: Job): Promise<Job> {
   const now = job(j.id);
   if (!now || !withdrawable(now)) throw new HttpError(409, { error: 'the job moved on; look again' });
   return moving(() => transition(now, 'withdrawn', {}, { by: 'him' }));
+}
+
+// ------------------------------------------------------------------ audits
+
+function publicAudit(a: Audit): Omit<Audit, 'markdownPath'> {
+  const { markdownPath: _p, ...rest } = a;
+  return rest;
+}
+
+/** An audit's page, read only from inside the reports folder; null when it has none. */
+function auditPage(path: string | null): string | null {
+  if (!path) return null;
+  try {
+    const real = realpathSync(path);
+    const root = realpathSync(join(paths().reports, 'audits'));
+    if (!real.startsWith(root + sep) || !statSync(real).isFile()) return null;
+    return readFileSync(real, 'utf8').slice(0, AUDIT_PAGE_CAP);
+  } catch {
+    return null;
+  }
+}
+
+function auditView(a: Audit): AuditView {
+  return { ...publicAudit(a), markdown: auditPage(a.markdownPath), proposals: listJobs().filter((j) => j.proposal?.auditId === a.id) };
+}
+
+function mustAudit(id: string): Audit {
+  const a = storedAudit(idOf(id, 'audit'));
+  if (!a) throw new HttpError(404, { error: 'unknown audit' });
+  return a;
+}
+
+function startAudit(ownerRaw: string, nameRaw: string): Omit<Audit, 'markdownPath'> {
+  let full: string;
+  try {
+    full = `${decodeURIComponent(ownerRaw)}/${decodeURIComponent(nameRaw)}`;
+  } catch {
+    throw new HttpError(400, { error: BAD_NAME });
+  }
+  if (!isValidFullName(full)) throw new HttpError(400, { error: BAD_NAME });
+  const repo = getRepo(full);
+  if (!repo?.connected) throw new HttpError(404, { error: `${full} is not connected` });
+  try {
+    return publicAudit(queueAudit(repo, 'demand'));
+  } catch (err) {
+    throw new HttpError(409, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+// ------------------------------------------------------------------ the brief
+
+async function briefAction(req: IncomingMessage, itemRaw: string, actionRaw: string): Promise<{ item: unknown; result: unknown }> {
+  let itemId: string;
+  try {
+    itemId = decodeURIComponent(itemRaw);
+  } catch {
+    throw new HttpError(400, { error: 'not a brief item' });
+  }
+  if (!itemId || itemId.length > 200) throw new HttpError(400, { error: 'not a brief item' });
+  if (!BRIEF_ACTIONS.includes(actionRaw as BriefAction)) throw new HttpError(400, { error: `action must be one of ${BRIEF_ACTIONS.join(', ')}` });
+  const b = await readObjectBody(req);
+  const body: { tier?: Tier; pct?: number } = {};
+  if (b.tier !== undefined) body.tier = tierOf(b.tier);
+  if (b.pct !== undefined) {
+    if (typeof b.pct !== 'number' || !Number.isFinite(b.pct)) throw new HttpError(400, { error: 'pct must be a number' });
+    body.pct = b.pct;
+  }
+  // The action goes through actOn, which refuses with a reason and records what he did (a retry included).
+  try {
+    return actOn(itemId, actionRaw as BriefAction, body);
+  } catch (err) {
+    throw new HttpError(409, { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 // ------------------------------------------------------------------ firms, agents
@@ -464,9 +547,16 @@ export async function handleMarketApi(
     if (method === 'PATCH') {
       const j = mustJob(m[1]);
       const b = await readObjectBody(req);
-      if (!('tier' in b)) throw new HttpError(400, { error: 'expected { tier }' });
-      const tier = tierOf(b.tier);
-      return send(200, moving(() => setTier(j.id, tier)));
+      if (!('tier' in b) && !('scope' in b) && !('acceptance' in b)) throw new HttpError(400, { error: 'expected { tier } or { scope, acceptance }' });
+      const tier = 'tier' in b ? tierOf(b.tier) : undefined;
+      const scope = list(b, 'scope');
+      const acceptance = list(b, 'acceptance');
+      if ('scope' in b && scope === undefined) throw new HttpError(400, { error: 'scope must be a list of up to 50 short texts' });
+      // The scope and acceptance first: a refusal there changes nothing, tier included.
+      let out: Job = j;
+      if (scope !== undefined || acceptance !== undefined) out = moving(() => setScope(j.id, { scope, acceptance }));
+      if (tier !== undefined) out = moving(() => setTier(j.id, tier));
+      return send(200, out);
     }
   }
   if ((m = pathname.match(/^\/api\/jobs\/([^/]+)\/(withdraw|repost|accept|dismiss|resume)$/)) && method === 'POST') {
@@ -488,6 +578,31 @@ export async function handleMarketApi(
         if (getRepo(j.repo)?.halted) throw new HttpError(409, { error: `the market on ${j.repo} is halted: resume the repo first` });
         return send(200, moving(() => resumeJob(j)));
     }
+  }
+
+  // audits
+  if (pathname === '/api/audits' && method === 'GET') {
+    const repo = search.get('repo');
+    if (repo !== null && !isValidFullName(repo)) throw new HttpError(400, { error: BAD_NAME });
+    return send(200, listAudits(repo ? { repo } : {}).map(publicAudit));
+  }
+  if ((m = pathname.match(/^\/api\/audits\/([^/]+)$/)) && method === 'GET') return send(200, auditView(mustAudit(m[1])));
+  if ((m = pathname.match(/^\/api\/audits\/([^/]+)\/kill$/)) && method === 'POST') {
+    const a = mustAudit(m[1]);
+    if (!killAudit(a.id, 'He stopped the audit.')) throw new HttpError(409, { error: 'the audit is not live' });
+    return send(200, { ok: true });
+  }
+  if ((m = pathname.match(/^\/api\/repos\/([^/]+)\/([^/]+)\/audit$/)) && method === 'POST') return send(202, startAudit(m[1], m[2]));
+
+  // the brief, milestones and the tour
+  if (pathname === '/api/brief' && method === 'GET') return send(200, briefData(Date.now()));
+  if (pathname === '/api/brief/open' && method === 'POST') return send(200, openBrief(Date.now()));
+  if ((m = pathname.match(/^\/api\/brief\/items\/([^/]+)\/([^/]+)$/)) && method === 'POST') return send(200, await briefAction(req, m[1], m[2]));
+  if (pathname === '/api/milestones' && method === 'GET') return send(200, listMilestones(Date.now(), { active: search.get('active') === '1' }));
+  if (pathname === '/api/tour' && method === 'GET') {
+    const week = search.get('week');
+    if (week !== null && !DAY.test(week)) throw new HttpError(400, { error: 'a week is its Monday, YYYY-MM-DD' });
+    return send(200, weekTour(week ?? Date.now()));
   }
 
   // firms and agents

@@ -11,11 +11,12 @@ import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
+import { saveAudit } from '../engine/audit/store.js';
 import { openDb } from '../engine/db.js';
 import { emit } from '../engine/events.js';
 import { realRunner, setRunner, setSpawner, type Spawned } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
-import { entries, record } from '../engine/ledger.js';
+import { entries, query, record } from '../engine/ledger.js';
 import { openBidding } from '../engine/market/bids.js';
 import { fakeDefaults, fakeProvider } from '../engine/market/fake-provider.js';
 import { job, postManualJob, proposeHarnessJob, transition } from '../engine/market/jobs.js';
@@ -24,7 +25,7 @@ import { createScheduler, haltRepo, run as storedRun } from '../engine/market/ru
 import { getRepo } from '../engine/repos.js';
 import { startServer, type StartedServer } from '../engine/server.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
-import type { Bid, Inspection, Job, Run } from '../shared/types.js';
+import type { Audit, Bid, Inspection, Job, Run } from '../shared/types.js';
 import { FULL, HOUR, PNG, addAgent, addFirm, checks, git, makeRepo, makeRun, noReading, postJob, reading, setUp, tearDown, tempDir, write } from './guild-fixtures.js';
 
 let server: StartedServer | null = null;
@@ -881,4 +882,229 @@ test('a run log over 16 MB answers its last page of lines, and a diff has home p
   const d = await call('GET', `/api/runs/${run.id}/diff`);
   assert.ok(!d.text.includes(String(process.env.HOME) + '/secret'));
   assert.ok(d.text.includes('0123456789abcdef0123456789abcdef01234567'), 'code is otherwise raw');
+});
+
+// ------------------------------------------------------------------ audits, the brief, milestones, the tour (Phase 3 Task 8)
+
+function doneAudit(over: Partial<Audit> = {}): Audit {
+  const a: Audit = {
+    id: 'audit-abc123',
+    repo: FULL,
+    model: 'claude:sonnet',
+    trigger: 'demand',
+    baseSha: 'a'.repeat(40),
+    status: 'done',
+    waitingReason: null,
+    startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+    endedAt: new Date().toISOString(),
+    endedReason: null,
+    findings: [
+      {
+        id: 'f1',
+        claim: 'The CLI exports every report as CSV',
+        source: { file: 'README.md', line: 12 },
+        verdict: 'MISSING',
+        tested: false,
+        evidence: [{ file: 'src/cli.ts', line: 3, note: 'No export command in /Users/someone/work/cli.ts.', verified: true }],
+        unverified: false,
+        proposal: { key: `${FULL}#abcdef123456`, title: 'Add the CSV export', body: 'Add it.', scope: ['src/**'], acceptance: ['CSV export exists'], tier: 'normal', jobId: null },
+      },
+    ],
+    counts: { REAL: 0, PARTIAL: 0, MISSING: 1, STUBBED: 0, BROKEN: 0 },
+    unverified: 0,
+    claimsRead: 1,
+    credits: 4,
+    unattended: false,
+    markdownPath: null,
+    ...over,
+  };
+  saveAudit(a);
+  return a;
+}
+
+test('audits list, read with proposals, start on demand and refuse a second', async () => {
+  repoOf();
+  const bare = await call('POST', `/api/repos/${FULL}/audit`);
+  assert.equal(bare.status, 202, 'a connected repo queues an audit');
+  assert.equal(bare.json.status, 'waiting');
+  assert.equal(bare.json.trigger, 'demand');
+  const again = await call('POST', `/api/repos/${FULL}/audit`);
+  assert.equal(again.status, 409);
+  assert.match(again.json.error, /already has an audit/);
+  assert.equal((await call('POST', '/api/repos/acme/other/audit')).status, 404, 'an unconnected repo');
+  assert.equal((await call('POST', '/api/repos/bad%20name/y/audit')).status, 400);
+
+  const done = doneAudit({ id: 'audit-done1', startedAt: new Date(Date.now() - 7_200_000).toISOString(), status: 'done' });
+  mkdirSync(join(paths().reports, 'audits'), { recursive: true });
+  const md = join(paths().reports, 'audits', 'widgets.md');
+  writeFileSync(md, '# Audit\nSee /Users/someone/x and ghp_abcdefghijklmnopqrstuvwxyz0123456789\n');
+  saveAudit({ ...done, markdownPath: md });
+  const proposed = postManualJob({ repo: FULL, title: 'Add the CSV export', body: 'b' });
+  openDb().prepare('UPDATE jobs SET json = ? WHERE id = ?').run(JSON.stringify({ ...proposed, status: 'proposed', proposal: { auditId: done.id, findingId: 'f1' } }), proposed.id);
+
+  const list = await call('GET', `/api/audits?repo=${FULL}`);
+  assert.equal(list.status, 200);
+  assert.equal(list.json.length, 2);
+  assert.ok(list.json.every((a: Record<string, unknown>) => !('markdownPath' in a)), 'no path of this Mac in the list');
+  assert.equal((await call('GET', '/api/audits?repo=../x')).status, 400);
+
+  const view = await call('GET', `/api/audits/${done.id}`);
+  assert.equal(view.status, 200);
+  assert.ok(!('markdownPath' in view.json));
+  assert.match(view.json.markdown, /^# Audit\n/);
+  assert.ok(!view.text.includes('/Users/someone') && !view.text.includes('ghp_abcdefgh'), 'the page and the notes are scrubbed');
+  assert.deepEqual(view.json.proposals.map((j: Job) => j.id), [proposed.id]);
+  assert.equal((await call('GET', '/api/audits/audit-nope')).status, 404);
+  assert.equal(((await call('GET', `/api/audits/${bare.json.id}`)).json as { markdown: unknown }).markdown, null);
+
+  assert.equal((await call('POST', '/api/audits/audit-nope/kill')).status, 404);
+  assert.equal((await call('POST', `/api/audits/${done.id}/kill`)).status, 409, 'an audit that is not live cannot be killed');
+});
+
+test('the brief opens once a day over the API and an action answers the item', async () => {
+  repoOf();
+  const j = postManualJob({ repo: FULL, title: 'x', body: 'b' });
+  openDb().prepare('UPDATE jobs SET json = ? WHERE id = ?').run(JSON.stringify({ ...j, status: 'proposed' }), j.id);
+  const peek = await call('GET', '/api/brief');
+  assert.equal(peek.status, 200);
+  assert.equal(peek.json.firstOpen, true);
+  assert.equal(query({ kind: 'brief.opened' }).length, 0, 'GET records nothing');
+  const first = await call('POST', '/api/brief/open');
+  assert.equal(first.json.firstOpen, true);
+  const second = await call('POST', '/api/brief/open');
+  assert.equal(second.json.firstOpen, false);
+  assert.equal(query({ kind: 'brief.opened' }).length, 1);
+
+  const acted = await call('POST', `/api/brief/items/${encodeURIComponent(`proposal:${j.id}`)}/accept`, {});
+  assert.equal(acted.status, 200);
+  assert.equal(acted.json.item.acted.action, 'accept');
+  assert.equal(job(j.id)!.status, 'open');
+  assert.equal(query({ kind: 'brief.action' }).length, 1);
+});
+
+test('a refused brief action is 409 with its reason', async () => {
+  repoOf();
+  const r = await call('POST', '/api/brief/items/nothing/accept', {});
+  assert.equal(r.status, 409);
+  assert.match(r.json.error, /no brief item nothing/);
+  assert.equal((await call('POST', '/api/brief/items/usage/bogus', {})).status, 400, 'an unknown action is a bad request');
+  assert.equal((await call('POST', `/api/brief/items/${'x'.repeat(300)}/accept`, {})).status, 400);
+  assert.equal((await call('POST', '/api/brief/items/usage/cap', { pct: 'lots' })).status, 400, 'a body that is not a number');
+});
+
+test('a proposed job scope patches and a denied glob is 409', async () => {
+  repoOf();
+  const j = postManualJob({ repo: FULL, title: 'Change it', body: 'b' });
+  openDb().prepare('UPDATE jobs SET json = ? WHERE id = ?').run(JSON.stringify({ ...j, status: 'proposed' }), j.id);
+  const ok = await call('PATCH', `/api/jobs/${j.id}`, { scope: ['src/**'], acceptance: ['It works.'] });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json.scope, ['src/**']);
+  assert.deepEqual(ok.json.acceptance, ['It works.']);
+  const denied = await call('PATCH', `/api/jobs/${j.id}`, { scope: ['.github/workflows/**'] });
+  assert.equal(denied.status, 409);
+  assert.match(denied.json.error, /^scope refused: /);
+  assert.equal((await call('PATCH', `/api/jobs/${j.id}`, { acceptance: [] })).status, 409, 'no acceptance line');
+  assert.equal((await call('PATCH', `/api/jobs/${j.id}`, { scope: 'src' })).status, 400, 'scope is a list');
+  assert.equal((await call('PATCH', `/api/jobs/${j.id}`, {})).status, 400);
+  assert.equal((await call('PATCH', `/api/jobs/${j.id}`, { tier: 'high' })).json.tier, 'high', 'a tier patch works as before');
+  assert.deepEqual(job(j.id)!.scope, ['src/**'], 'the refused patches changed nothing');
+  transition(job(j.id)!, 'open');
+  const running = job(j.id)!;
+  openDb().prepare('UPDATE jobs SET json = ? WHERE id = ?').run(JSON.stringify({ ...running, status: 'running' }), j.id);
+  const late = await call('PATCH', `/api/jobs/${j.id}`, { scope: ['src/**'] });
+  assert.equal(late.status, 409);
+  assert.match(late.json.error, /only while proposed or open/);
+});
+
+test('settings validate auditMaxCredits and auditModel by shape without running ollama', async () => {
+  const calls: string[] = [];
+  setRunner(async (cmd) => {
+    calls.push(cmd);
+    return { code: 1, stdout: '', stderr: 'no' } as never;
+  });
+  const patch = (b: unknown) => call('PATCH', '/api/settings', b);
+  assert.equal((await patch({ auditOnConnect: false })).json.auditOnConnect, false);
+  assert.equal((await patch({ auditOnConnect: 'no' })).status, 400);
+  assert.equal((await patch({ auditMaxCredits: 10 })).json.auditMaxCredits, 10);
+  assert.equal((await patch({ auditMaxCredits: 200 })).json.auditMaxCredits, 200);
+  for (const bad of [9, 201, 12.5, '40', null]) assert.equal((await patch({ auditMaxCredits: bad })).status, 400, String(bad));
+  assert.equal((await patch({ auditModel: 'claude:sonnet' })).json.auditModel, 'claude:sonnet');
+  assert.equal((await patch({ auditModel: 'ollama:qwen2.5-coder:7b' })).json.auditModel, 'ollama:qwen2.5-coder:7b');
+  assert.equal((await patch({ auditModel: 'mlx:some-model' })).status, 200);
+  assert.equal((await patch({ auditModel: 'auto' })).json.auditModel, 'auto');
+  for (const bad of ['gpt:4', 'ollama:', 'ollama:../x', 'ollama:a b', 'claude:' + 'x'.repeat(200), 5, '']) assert.equal((await patch({ auditModel: bad })).status, 400, String(bad));
+  // todayCapPct: only cleared here; the brief's cap sets it.
+  assert.equal((await patch({ todayCapPct: { day: '2026-11-11', pct: 50 } })).status, 400);
+  assert.equal((await patch({ todayCapPct: 50 })).status, 400);
+  patchSettings({ todayCapPct: { day: '2026-11-11', pct: 30 } });
+  assert.equal((await patch({ todayCapPct: null })).json.todayCapPct, null);
+  assert.ok(!calls.some((c) => /ollama/.test(c)), 'no ollama call was made by a route');
+});
+
+test('milestones and the tour serve from fixtures', async () => {
+  const ms = await call('GET', '/api/milestones?active=1');
+  assert.equal(ms.status, 200);
+  assert.deepEqual(ms.json, []);
+  assert.equal((await call('GET', '/api/milestones')).status, 200);
+  const tour = await call('GET', '/api/tour?week=2026-11-09');
+  assert.equal(tour.status, 200);
+  assert.ok(tour.json === null || tour.json.week === '2026-11-09');
+  assert.equal((await call('GET', '/api/tour?week=soon')).status, 400);
+  assert.equal((await call('GET', '/api/tour')).status, 200, 'no week means this week');
+});
+
+test('SSE forwards audit.ended and brief.action scrubbed', async () => {
+  const s = await start();
+  const text = await listen(s, () => {
+    emit('audit.ended', { auditId: 'a1', audit: { endedReason: 'failed in /Users/someone/clone', markdownPath: '/Users/someone/x.md' } });
+    emit('brief.action', { itemId: 'usage', action: 'cap', note: 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' });
+  }, (t) => t.includes('event: brief.action'));
+  assert.ok(text.includes('event: audit.ended\n'));
+  assert.ok(!text.includes('/Users/someone') && !text.includes('ghp_abcdefgh') && !text.includes('markdownPath'));
+});
+
+test('no view carries a path of this Mac', async () => {
+  const repo = repoOf();
+  const a = addAgent('a1', 'alpha', 'claude:sonnet');
+  const j = postJob(['**']);
+  const { run } = await makeRun(repo, j, a, (dir) => write(dir, 'src/header.ts', 'export const header = 2;\n'));
+  const mac = '/Users/someone/work';
+  const insp: Inspection = {
+    id: 'insp-p',
+    runId: run.id,
+    jobId: j.id,
+    repo: FULL,
+    reviewerAgentId: null,
+    reviewerFirmId: null,
+    checks: [
+      { name: 'scope', status: 'fail', detail: `touched ${mac}/a.ts`, durationMs: 1, logPath: null, testsRun: null, offenders: [{ path: `${mac}/a.ts`, why: `outside scope at ${mac}` }] },
+      { name: 'review', status: 'fail', detail: 'x', durationMs: 1, logPath: null, testsRun: null, notes: `see ${mac}`, concerns: [`reads ${mac}/.env`] },
+    ],
+    passed: false,
+    pushable: false,
+    design: null,
+    cost: 1,
+    at: new Date().toISOString(),
+  };
+  openDb().prepare('INSERT INTO inspections (id, run_id, json) VALUES (?, ?, ?)').run(insp.id, run.id, JSON.stringify(insp));
+  openDb().prepare('UPDATE runs SET json = ? WHERE id = ?').run(JSON.stringify({ ...run, inspectionId: insp.id }), run.id);
+  const got = await call('GET', `/api/inspections/${insp.id}`);
+  assert.equal(got.status, 200);
+  assert.ok(!got.text.includes('/Users/someone'), 'the inspection is scrubbed');
+  assert.ok(!(await call('GET', `/api/jobs/${j.id}`)).text.includes('/Users/someone'));
+  doneAudit({ id: 'audit-p', endedReason: `failed in ${mac}` });
+  const av = await call('GET', '/api/audits/audit-p');
+  assert.equal(av.status, 200);
+  assert.ok(av.text.includes('[path]') && !av.text.includes('/Users/someone'), 'the audit is scrubbed');
+  const al = await call('GET', '/api/audits');
+  assert.equal(al.status, 200);
+  assert.ok(!al.text.includes('/Users/someone'));
+  const log = `${JSON.stringify({ at: 'x', kind: 'tool', text: 'ran', data: { exit: { command: `cd ${mac} && ls`, code: 0 } } })}\n`;
+  writeFileSync(join(paths().runs, run.id, 'log.jsonl'), log);
+  const lines = await call('GET', `/api/runs/${run.id}/log`);
+  assert.ok(!lines.text.includes('/Users/someone'), 'data.exit.command is scrubbed');
+  const made = await call('POST', '/api/jobs', { repo: FULL, title: `Fix ${mac}`, body: `in ${mac}`, acceptance: [`works at ${mac}`] });
+  const detail = await call('GET', `/api/jobs/${made.json.id}`);
+  assert.ok(!detail.text.includes('/Users/someone'), 'title, body and acceptance are scrubbed');
+  assert.ok(!(await call('GET', '/api/jobs')).text.includes('/Users/someone'));
 });

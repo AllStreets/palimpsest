@@ -19,6 +19,7 @@ import {
   pollJobs,
   postManualJob,
   proposeHarnessJob,
+  redact,
   setScope,
   settleJobEffects,
   transition,
@@ -715,4 +716,13 @@ test('a legacy withdrawn row with no withdrawnBy counts as taken', () => {
   assert.equal(job(legacy.id)?.withdrawnBy, undefined);
   assert.equal(keyTaken(repo.fullName, key)?.id, 'job-legacy');
   assert.equal(proposeHarnessJob(repo).id, 'job-legacy', 'not proposed again');
+});
+
+test('redact() pins: a 44 character mixed-case run, sk-ant, ghp_ and github_pat_ go, a 40 hex sha stays', () => {
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  assert.equal(redact('k AbCdEf0123456789AbCdEf0123456789AbCdEf012345 z'), 'k [redacted] z');
+  assert.equal(redact('sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv'), '[redacted]');
+  assert.equal(redact('ghp_abcdefghijklmnopqrstuvwxyz0123456789'), '[redacted]');
+  assert.equal(redact('github_pat_11ABCDEFG0abcdefghijklmnopqrstuv'), '[redacted]');
+  assert.equal(redact(`at ${sha}`), `at ${sha}`);
 });

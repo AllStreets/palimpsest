@@ -155,3 +155,54 @@ test('the market client calls each route with the right method, path and header'
   assert.equal(calls[8].body, JSON.stringify({ tier: 'high' }));
   assert.equal(calls[22].body, JSON.stringify({ key: 'sk-ant-x' }));
 });
+
+test('the client names the Phase 3 routes and listens for the Phase 3 events', async () => {
+  const seen: Array<{ method: string; url: string; body: unknown }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    seen.push({ method: init?.method ?? 'GET', url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response('null', { status: 200 });
+  }) as typeof fetch;
+  try {
+    await api.audits();
+    await api.audits('acme/widgets');
+    await api.audit('audit-1');
+    await api.startAudit('acme', 'widgets');
+    await api.killAudit('audit-1');
+    await api.brief();
+    await api.openBrief();
+    await api.briefAct('proposal:job-1', 'tier', { tier: 'high' });
+    await api.milestones(true);
+    await api.tour('2026-11-09');
+    await api.tour();
+    await api.setJobScope('job-1', { scope: ['src/**'] });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(
+    seen.map((s) => `${s.method} ${s.url}`),
+    [
+      'GET /api/audits',
+      'GET /api/audits?repo=acme%2Fwidgets',
+      'GET /api/audits/audit-1',
+      'POST /api/repos/acme/widgets/audit',
+      'POST /api/audits/audit-1/kill',
+      'GET /api/brief',
+      'POST /api/brief/open',
+      'POST /api/brief/items/proposal%3Ajob-1/tier',
+      'GET /api/milestones?active=1',
+      'GET /api/tour?week=2026-11-09',
+      'GET /api/tour',
+      'PATCH /api/jobs/job-1',
+    ],
+  );
+  assert.deepEqual(seen[7].body, { tier: 'high' });
+  assert.deepEqual(seen[11].body, { scope: ['src/**'] });
+
+  (globalThis as { EventSource?: unknown }).EventSource = FakeEventSource;
+  const got: string[] = [];
+  const close = api.events((e) => got.push(e.type));
+  for (const t of ['audit.started', 'audit.stage', 'audit.ended', 'brief.action', 'milestone.reached']) FakeEventSource.last!.send(t, {});
+  close();
+  assert.deepEqual(got, ['audit.started', 'audit.stage', 'audit.ended', 'brief.action', 'milestone.reached']);
+});

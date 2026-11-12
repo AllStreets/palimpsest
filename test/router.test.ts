@@ -48,3 +48,13 @@ test('placeHref writes what parseHash reads', () => {
   assert.equal(placeHref('jobs'), '#/jobs');
   assert.equal(placeHref('repo', 'tidewater/harbor-ledger'), '#/repos/tidewater/harbor-ledger');
 });
+
+test('router parses #/brief and #/audits/:id', () => {
+  assert.deepEqual(parseHash('#/brief'), { route: 'brief', id: null });
+  assert.deepEqual(parseHash('#/audits/audit-abc123'), { route: 'audit', id: 'audit-abc123' });
+  assert.deepEqual(parseHash('#/audits'), { route: 'city', id: null }, 'there is no audits list');
+  assert.deepEqual(parseHash('#/audits/a/b'), { route: 'city', id: null });
+  assert.equal(placeHref('brief'), '#/brief');
+  assert.equal(placeHref('audit', 'audit-abc123'), '#/audits/audit-abc123');
+  assert.deepEqual(parseHash(placeHref('audit', 'audit-abc123')), { route: 'audit', id: 'audit-abc123' });
+});

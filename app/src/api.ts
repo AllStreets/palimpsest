@@ -1,5 +1,12 @@
 import type {
   AgentDetail,
+  Audit,
+  AuditView,
+  Brief,
+  BriefAction,
+  BriefItem,
+  Milestone,
+  Tour,
   CreditEntries,
   District,
   FirmDetail,
@@ -98,12 +105,18 @@ const EVENT_TYPES = [
   'trip.started',
   'trip.ended',
   'report.written',
+  // Phase 3: the audits, the brief and the milestones.
+  'audit.started',
+  'audit.stage',
+  'audit.ended',
+  'brief.action',
+  'milestone.reached',
 ];
 
 /** What the settings page may change (the engine checks every value again). */
 export type SettingsPatch = Partial<
-  Pick<Settings, 'quality' | 'dayCapPct' | 'nightCapPct' | 'claudeConcurrency' | 'localConcurrency' | 'bidWindowSec' | 'hardStopPct' | 'keepAwake' | 'ollamaHost'>
-> & { anthropicApi?: Partial<Settings['anthropicApi']> };
+  Pick<Settings, 'quality' | 'dayCapPct' | 'nightCapPct' | 'claudeConcurrency' | 'localConcurrency' | 'bidWindowSec' | 'hardStopPct' | 'keepAwake' | 'ollamaHost' | 'auditOnConnect' | 'auditModel' | 'auditMaxCredits'>
+> & { todayCapPct?: null } & { anthropicApi?: Partial<Settings['anthropicApi']> };
 
 /** What a repo patch may carry (the engine checks every value again). */
 export type RepoPatchBody = Partial<Pick<Repo, 'pushMode' | 'root' | 'market' | 'label'>> & { checks?: Partial<RepoChecks> };
@@ -176,6 +189,23 @@ export const api = {
   /** Resumes one halted job (a waiting one goes back to waiting, any other to open). */
   resumeJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/resume`),
   setJobTier: (id: string, tier: Tier) => request<Job>('PATCH', `/api/jobs/${enc(id)}`, { tier }),
+  /** His edit of a proposed or open job's scope and acceptance; a refused glob answers 409 with the reason. */
+  setJobScope: (id: string, patch: { scope?: string[]; acceptance?: string[] }) => request<Job>('PATCH', `/api/jobs/${enc(id)}`, patch),
+  /** The repo's audits, newest first, without the page. */
+  audits: (repo?: string) => request<Omit<Audit, 'markdownPath'>[]>('GET', `/api/audits${queryOf({ repo })}`),
+  audit: (id: string) => request<AuditView>('GET', `/api/audits/${enc(id)}`),
+  /** Queues an audit on demand; 409 when one is waiting or under way. */
+  startAudit: (owner: string, name: string) => request<Omit<Audit, 'markdownPath'>>('POST', `/api/repos/${enc(owner)}/${enc(name)}/audit`),
+  killAudit: (id: string) => request<{ ok: boolean }>('POST', `/api/audits/${enc(id)}/kill`),
+  /** The brief as it stands; records nothing. */
+  brief: () => request<Brief>('GET', '/api/brief'),
+  /** The brief when he opens the app: the first open of a day is recorded. */
+  openBrief: () => request<Brief>('POST', '/api/brief/open'),
+  briefAct: (itemId: string, action: BriefAction, body: { tier?: Tier; pct?: number } = {}) =>
+    request<{ item: BriefItem; result: unknown }>('POST', `/api/brief/items/${enc(itemId)}/${enc(action)}`, body),
+  milestones: (active = false) => request<Milestone[]>('GET', `/api/milestones${active ? '?active=1' : ''}`),
+  /** The tour of a week (a Monday, YYYY-MM-DD); without one, this week's. */
+  tour: (week?: string) => request<Tour | null>('GET', `/api/tour${queryOf({ week })}`),
   firms: () => request<FirmView[]>('GET', '/api/firms'),
   firm: (id: string) => request<FirmDetail>('GET', `/api/firms/${enc(id)}`),
   agent: (id: string) => request<AgentDetail>('GET', `/api/agents/${enc(id)}`),

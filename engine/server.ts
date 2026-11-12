@@ -120,6 +120,9 @@ function intIn(v: unknown, lo: number, hi: number): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi;
 }
 
+/** A model reference by shape: a provider, a colon and a name (an Ollama name may carry a tag: `qwen2.5-coder:7b`). */
+const AUDIT_MODEL = /^(?:claude|ollama|anthropic|mlx):[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
+
 const OLLAMA_HOST = /^(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/;
 
 /** Validates a PATCH /api/settings body, returning the partial patch or null when any present field is invalid. */
@@ -127,7 +130,7 @@ function validateSettingsPatch(body: unknown, current: Settings): Partial<Settin
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
   const b = body as Record<string, unknown>;
   const patch: Partial<Settings> = {};
-  const allowed = new Set(['quality', 'dayCapPct', 'nightCapPct', 'claudeConcurrency', 'localConcurrency', 'bidWindowSec', 'hardStopPct', 'keepAwake', 'ollamaHost', 'anthropicApi']);
+  const allowed = new Set(['quality', 'dayCapPct', 'nightCapPct', 'claudeConcurrency', 'localConcurrency', 'bidWindowSec', 'hardStopPct', 'keepAwake', 'ollamaHost', 'anthropicApi', 'auditOnConnect', 'auditModel', 'auditMaxCredits', 'todayCapPct']);
   if (Object.keys(b).some((k) => !allowed.has(k))) return null;
 
   if ('quality' in b) {
@@ -166,6 +169,24 @@ function validateSettingsPatch(body: unknown, current: Settings): Partial<Settin
     const m = typeof b.ollamaHost === 'string' ? OLLAMA_HOST.exec(b.ollamaHost) : null;
     if (!m || Number(m[2]) < 1 || Number(m[2]) > 65535) return null;
     patch.ollamaHost = b.ollamaHost as string;
+  }
+  if ('auditOnConnect' in b) {
+    if (typeof b.auditOnConnect !== 'boolean') return null;
+    patch.auditOnConnect = b.auditOnConnect;
+  }
+  if ('auditModel' in b) {
+    // By shape only: a route never runs `ollama list` (the audit picks and checks the model when it starts).
+    if (b.auditModel !== 'auto' && (typeof b.auditModel !== 'string' || !AUDIT_MODEL.test(b.auditModel))) return null;
+    patch.auditModel = b.auditModel as Settings['auditModel'];
+  }
+  if ('auditMaxCredits' in b) {
+    if (!intIn(b.auditMaxCredits, 10, 200)) return null;
+    patch.auditMaxCredits = b.auditMaxCredits;
+  }
+  if ('todayCapPct' in b) {
+    // Only cleared here; it is set through the brief's cap action, which clamps it.
+    if (b.todayCapPct !== null) return null;
+    patch.todayCapPct = null;
   }
   if ('anthropicApi' in b) {
     const a = b.anthropicApi;
