@@ -875,6 +875,22 @@ a.repo-name:focus-visible {
 .prov[data-status='off'] .prov-state-line {
   color: var(--ink-2);
 }
+/* A long reason (a folder path) wraps inside the column, never runs past it or stops mid-word. */
+.prov-state {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* What could not be read while the rest held, under the state line in amber, wrapped. */
+.prov-trouble {
+  margin: 4px 0 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+.prov-trouble[hidden] {
+  display: none;
+}
 /* The provider's state as a small square: bronze filled for ready, hollow for off or missing, hatched for later, amber for unknown. */
 .prov-mark {
   flex-shrink: 0;

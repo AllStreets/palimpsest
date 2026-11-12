@@ -12,7 +12,8 @@ import { join } from 'node:path';
 
 import type { Page } from 'playwright';
 
-import type { TreasuryView } from '../shared/types.js';
+import { LIVE_JOB_STATUSES } from '../shared/market-rules.js';
+import type { Job, TreasuryView } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
 
@@ -101,7 +102,13 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     check((await text(page, '.treasury .calibration-line')) === '1% of the window is about 58,000 weighted tokens, measured from 14 pairs.', `the calibration line (${await text(page, '.treasury .calibration-line')})`);
     check((await sheet.locator('.treasury-pause[data-reason="stale"]').count()) === 0, 'a fresh reading does not pause the city');
     for (const key of ['concurrency', 'night', 'api', 'awake']) check((await sheet.locator(`.now-row[data-now="${key}"]`).count()) === 1, `it says the ${key} state now`);
-    check(/Claude \d+ of \d+/.test((await sheet.locator('.now-row[data-now="concurrency"]').textContent()) ?? ''), 'concurrency says Claude slots in use of the most');
+    const runningRow = sheet.locator('.now-row[data-now="concurrency"]');
+    const jobsNow = await api<Job[]>(page, '/api/jobs');
+    const onBoard = jobsNow.filter((j) => LIVE_JOB_STATUSES.includes(j.status) && !!j.runId).length;
+    const runsLine = (await runningRow.locator('.now-runs').textContent()) ?? '';
+    const said = Number((/^(\d+) runs? under way/.exec(runsLine) ?? [])[1] ?? (/^No run/.test(runsLine) ? 0 : -1));
+    check(onBoard > 0 && said === onBoard, `Running counts the same runs the job board counts (${said} against ${onBoard} on the board: ${runsLine})`);
+    check(/^Slots the runner holds: Claude \d+ of \d+, local \d+ of \d+, API \d+\.$/.test(((await runningRow.locator('.now-slots-held').textContent()) ?? '').trim()), `and names the slots the runner holds apart (${await runningRow.locator('.now-slots-held').textContent()})`);
 
     // Spend by firm and by model, and the balances; every row opens to its credits entries.
     const t = await api<TreasuryView>(page, '/api/treasury');

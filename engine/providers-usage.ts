@@ -279,8 +279,7 @@ export async function ollamaUsage(now: number = Date.now(), credits: (now: numbe
 /** Claude plan windows from the latest hook reading, and what the city has spent of them. */
 export function claudeUsage(now: number = Date.now()): ProviderUsage {
   const r = latestReading();
-  const t = treasury(now);
-  return {
+  const base: ProviderUsage = {
     provider: 'claude',
     status: r ? 'ready' : 'not-found',
     windows: [
@@ -289,8 +288,18 @@ export function claudeUsage(now: number = Date.now()): ProviderUsage {
     ],
     tokens: null,
     spendUsd: null,
-    detail: r ? `The city has spent ${t.citySpent.today} credits today and ${t.citySpent.week} this week` : 'No Claude usage reading yet',
+    detail: r ? '' : 'No Claude usage reading yet',
   };
+  // The treasury reads his transcripts for the trend between readings. When that folder cannot be read, the
+  // statusline percentages above still hold: the trouble is named apart, and never thrown over the reading.
+  let t: ReturnType<typeof treasury>;
+  try {
+    t = treasury(now);
+  } catch (e) {
+    const reason = (e instanceof Error ? e.message : String(e)).slice(0, 300);
+    return { ...base, detail: r ? 'The statusline percentages held' : base.detail, trouble: `The transcripts trend could not be read: ${reason}` };
+  }
+  return { ...base, detail: r ? `The city has spent ${t.citySpent.today} credits today and ${t.citySpent.week} this week` : base.detail };
 }
 
 export function anthropicApiUsage(now: number = Date.now()): ProviderUsage {

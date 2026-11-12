@@ -440,6 +440,25 @@ test('kill ends a run', async () => {
 
 // ------------------------------------------------------------------ treasury, reports, providers
 
+test('the treasury counts the runs under way from the runs store, apart from the slots the runner holds', async () => {
+  reading();
+  const none = await call('GET', '/api/treasury');
+  assert.deepEqual(none.json.underWay, { total: 0, claude: 0, local: 0, api: 0 });
+  // A run on the books with no end, as the board and the run page see it, whether or not a lease stands behind it.
+  const base = { jobId: 'job-x', bidId: 'bid-x', agentId: 'a', firmId: 'f', repo: 'acme/widgets', branch: 'b', dir: null, baseSha: null, headSha: null, stage: 'working', outcome: null, endedReason: null, progress: { turns: 0, toolCalls: 0, filesTouched: 0, linesChanged: 0, refused: 0 }, startedAt: new Date().toISOString(), prNumber: null, prUrl: null, mergeSha: null, inspectionId: null, scar: false, unattended: false };
+  const putJob = openDb().prepare('INSERT INTO jobs (id, repo, status, json) VALUES (?, ?, ?, ?)');
+  for (const [id, status] of [['job-x', 'running'], ['job-y', 'inspecting'], ['job-z', 'merged'], ['job-w', 'waiting']]) putJob.run(id, 'acme/widgets', status, JSON.stringify({ id, repo: 'acme/widgets', status, postedAt: new Date().toISOString() }));
+  const put = openDb().prepare('INSERT INTO runs (id, job_id, repo, stage, json) VALUES (?, ?, ?, ?, ?)');
+  put.run('run-live-1', 'job-x', 'acme/widgets', 'working', JSON.stringify({ ...base, id: 'run-live-1', model: 'claude:sonnet', endedAt: null }));
+  put.run('run-live-2', 'job-y', 'acme/widgets', 'working', JSON.stringify({ ...base, id: 'run-live-2', jobId: 'job-y', model: 'ollama:qwen2.5-coder:7b', endedAt: null }));
+  put.run('run-done', 'job-z', 'acme/widgets', 'done', JSON.stringify({ ...base, id: 'run-done', jobId: 'job-z', model: 'claude:sonnet', stage: 'done', outcome: 'merged', endedAt: new Date().toISOString() }));
+  put.run('run-waits', 'job-w', 'acme/widgets', 'waiting', JSON.stringify({ ...base, id: 'run-waits', jobId: 'job-w', model: 'claude:sonnet', stage: 'waiting', endedAt: null }));
+  const t = await call('GET', '/api/treasury');
+  assert.equal(t.status, 200, t.text.slice(0, 300));
+  assert.deepEqual(t.json.underWay, { total: 2, claude: 1, local: 1, api: 0 }, 'a run whose PR waits on him is not under way');
+  assert.equal(t.json.concurrency.claude, 0, 'no lease stands behind a run written to the store, and the slots say so');
+});
+
 test('treasury reports paused reasons, and resume-stale lets a stale reading carry on', async () => {
   noReading();
   const stale = await call('GET', '/api/treasury');

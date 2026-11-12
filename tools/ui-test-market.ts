@@ -303,6 +303,42 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
   await page.waitForTimeout(400);
   await page.screenshot({ path: join(shots, 'market-settings-providers.png') });
 
+  // When the transcripts trend cannot be read, the statusline percentages still hold: the page says what failed,
+  // on a wrapped line of its own, apart from what held and when it was read.
+  const longPath = '/Users/someone/Library/Application Support/Palimpsest/sample-home/claude-projects';
+  await page.route('**/api/providers', async (route) => {
+    const r = await route.fetch();
+    const list = (await r.json()) as ProviderUsage[];
+    for (const p of list) if (p.provider === 'claude') Object.assign(p, { detail: 'The statusline percentages held', trouble: `The transcripts trend could not be read: transcripts folder ${longPath} is outside /Users/someone/.claude/projects` });
+    await route.fulfill({ response: r, body: JSON.stringify(list), headers: { ...r.headers(), 'content-type': 'application/json' } });
+  });
+  try {
+    await go(page, '#/');
+    await go(page, '#/settings');
+    const claudeP = sheet.locator('.prov[data-provider="claude"]');
+    const trouble = claudeP.locator('.prov-trouble');
+    check(await within(page, 6000, async () => (await trouble.count()) === 1 && (await trouble.isVisible())), 'a failed transcripts trend has its own line');
+    const troubleText = ((await trouble.textContent()) ?? '').trim();
+    check(troubleText.includes(longPath) && /is outside/.test(troubleText), `with the whole reason, not cut mid-word (${troubleText.slice(-40)})`);
+    const fit = await trouble.evaluate((e) => {
+      const b = e.getBoundingClientRect();
+      const col = e.parentElement!.getBoundingClientRect();
+      return { wrapped: b.height > parseFloat(getComputedStyle(e).lineHeight) * 1.5, inside: b.right <= col.right + 1 && e.scrollWidth <= e.clientWidth + 1 };
+    });
+    check(fit.wrapped && fit.inside, 'wrapped inside its column');
+    check(/^The statusline percentages held, read .* ago\.$/.test(((await claudeP.locator('.prov-state').textContent()) ?? '').trim()), `and the state line says what held and when it was read (${await claudeP.locator('.prov-state').textContent()})`);
+    check((await claudeP.locator('.usage-five .usage-pct').textContent()) === '34%' && (await claudeP.locator('.usage-week .usage-pct').textContent()) === '21%', 'with the readings still shown under it');
+    const troubleBox = await trouble.boundingBox();
+    const stateBox = await claudeP.locator('.prov-state-line').boundingBox();
+    check(!!troubleBox && !!stateBox && troubleBox.y >= stateBox.y + stateBox.height - 1, 'the trouble line stands under the state line, never over the readings');
+    await page.screenshot({ path: join(shots, 'market-settings-claude-trouble.png') });
+  } finally {
+    await page.unroute('**/api/providers');
+    await go(page, '#/');
+    await go(page, '#/settings');
+    await within(page, 6000, async () => (await sheet.locator('.prov').count()) === 6 && (await sheet.locator('.prov[data-provider="claude"] .prov-trouble').count()) === 0);
+  }
+
   // The API key: posted, stored in the (stand-in) keychain, never shown again.
   const bodies: string[] = [];
   const pending: Array<Promise<void>> = [];

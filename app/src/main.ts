@@ -111,6 +111,8 @@ interface DebugHandle {
   dropQuality(): void;
   /** The notice line's text, or '' when none shows. */
   notice(): string;
+  /** Puts a line in the running head, as the city does for what it did by itself (the UI test). */
+  say(text: string): void;
   /** Plazas paved (the civic plaza included) and ambient buildings standing. */
   plots(): { plazas: number; buildings: number };
   /**
@@ -195,33 +197,66 @@ const LIVE_ON = new Set(['run.started', 'run.ended', 'floor.laid', 'floor.lit', 
 /** Events that change what the exchange's tote board shows: a job posted or moved on, a bid placed or declined. */
 const BOARD_ON = new Set(['job.posted', 'job.proposed', 'job.changed', 'job.awarded', 'bid.placed', 'bid.satOut']);
 
+/** How long a notice stands in the running head before it fades. */
+const NOTICE_MS = 6000;
+/** How many notices the recall mark keeps. */
+const NOTICES_KEPT = 3;
+
 /**
- * A quiet line at the foot of the window for what the city did by itself
+ * A one-line notice in the running head for what the city did by itself
  * (stood on plain stand-ins when the kits would not load, stepped down to
- * medium quality). It stays until dismissed; a second notice joins the first.
+ * medium quality). It stands a few seconds and fades; a small mark stays at
+ * the head's end to recall it: the last three, joined, so none is lost.
  */
-function createNotice(parent: HTMLElement): { add(text: string): void; text(): string } {
+function createNotice(head: HTMLElement): { add(text: string): void; text(): string } {
   const box = document.createElement('div');
   box.className = 'city-notice';
-  box.setAttribute('role', 'status');
   box.hidden = true;
-  const lines = document.createElement('p');
-  const close = document.createElement('button');
-  close.type = 'button';
-  close.className = 'city-notice-close';
-  close.textContent = 'Dismiss';
-  close.addEventListener('click', () => {
-    box.hidden = true;
-    lines.textContent = '';
+  const line = document.createElement('p');
+  line.setAttribute('role', 'status');
+  const recall = document.createElement('button');
+  recall.type = 'button';
+  recall.className = 'city-notice-recall';
+  recall.textContent = 'Notice';
+  recall.title = 'Show the last notice again';
+  box.append(line, recall);
+  head.append(box);
+  /** The last few notices, oldest first; the recall shows them all. */
+  const kept: string[] = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  /** Sets the line's text so a screen reader announces it again, even when the words are the same. */
+  const announce = (text: string): void => {
+    line.textContent = '';
+    line.title = text;
+    requestAnimationFrame(() => {
+      line.textContent = text;
+    });
+  };
+  const fade = (): void => {
+    timer = null;
+    delete box.dataset.shown;
+    recall.setAttribute('aria-expanded', 'false');
+  };
+  const show = (): void => {
+    box.dataset.shown = '';
+    recall.setAttribute('aria-expanded', 'true');
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(fade, NOTICE_MS);
+  };
+  recall.addEventListener('click', () => {
+    if (box.dataset.shown !== undefined) return fade();
+    announce(kept.join(' '));
+    show();
   });
-  box.append(lines, close);
-  parent.appendChild(box);
   return {
     add(text) {
-      lines.textContent = lines.textContent ? `${lines.textContent} ${text}` : text;
+      kept.push(text);
+      if (kept.length > NOTICES_KEPT) kept.splice(0, kept.length - NOTICES_KEPT);
+      announce(text);
       box.hidden = false;
+      show();
     },
-    text: () => (box.hidden ? '' : (lines.textContent ?? '')),
+    text: () => (box.hidden || box.dataset.shown === undefined ? '' : (line.textContent ?? '')),
   };
 }
 
@@ -243,7 +278,9 @@ async function main(): Promise<void> {
   const veil = document.getElementById('veil');
   if (!host) throw new Error('missing #city');
 
-  const notice = createNotice(document.body);
+  // The running head stands first, so the notices the city makes while it loads have their line in it.
+  const runhead = createRunhead(document.body);
+  const notice = createNotice(runhead.el);
   // The Blender-authored kits (masonry courses, crowns, roof pieces) load before anything is built from them.
   // Missing or corrupt, the city stands on plain stand-ins and says so, rather than going blank.
   /** Each firm's slot, which picks the colour of its mark on the floors it earned. */
@@ -412,6 +449,7 @@ async function main(): Promise<void> {
     quality: () => city.quality(),
     dropQuality: () => city.dropQuality(),
     notice: () => notice.text(),
+    say: (text) => notice.add(text),
     plots: () => city.plots(),
     async ambientBoard() {
       // A board is measured with the streets empty: no car or person passes in front of it. The board stands on
@@ -490,7 +528,6 @@ async function main(): Promise<void> {
   const analyzingStep = (repo: string): string => known.get(repo)?.step ?? '';
 
   // ---------------------------------------------------------------- navigation and screens
-  const runhead = createRunhead(document.body);
   /** Screens listen to the one event stream while they are open. */
   const listeners = new Set<(e: EngineEvent) => void>();
   const listen = (fn: (e: EngineEvent) => void): (() => void) => {
