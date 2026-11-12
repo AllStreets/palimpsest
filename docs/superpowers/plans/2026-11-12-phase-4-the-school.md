@@ -2,200 +2,201 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Revision 1 (2026-11-12).** Written before any builder check. It pre-empts the four classes the Phase 2 and Phase 3 checks found: every interface a task consumes is either named with its file as it stands today or produced by an earlier task here; every model call and every minute of training is charged and capped (Task 1 adds the spend kinds, Task 4 the lease, Task 7 the training charge); every test that would pass before its change is marked as a pin; the large pieces (the trainer, the nets, the arenas, the LoRA, the campus) are split so a reviewer can reject one and approve its neighbour.
+**Revision 2 (2026-11-12).** Revised after builder check round 1 (`.superpowers/sdd/phase-4-plan-review-1.md`, NOT READY: 3 Critical, 14 Important, 12 Minor). Every item is addressed; "Builder check fixes" at the end maps each to the ruling or task that fixes it. Task 21 of revision 1 is split, the campus plot moves into Task 1, and two tasks are added (verified history; the agent page's lineage), so the tasks are renumbered (41 tasks).
 
-**Goal:** Open the university: the city breeds agents on arenas built from his own repos with Beagle's engine, fine-tunes small local coders with LoRA on MLX from verified past work and graduates only those that beat their base on a sealed set, trains five small nets and a master net from what actually happened, shows every one of them with held-out scores and confidence intervals, and asks his permission, kind by kind and repo by repo, to act on its own once the master agrees with him often enough, dropping any grant the moment a revert says it was wrong.
+**Goal:** Open the university: the city breeds agents on arenas built from his own repos with Beagle's engine, fine-tunes small local coders with LoRA on MLX from verified past work and graduates only those that beat their base on a sealed set, trains five small nets and a master net from what actually happened, shows every one of them with held-out scores and confidence intervals (and says plainly when there is nothing yet to show), and asks his permission, kind by kind and repo by repo, to act on its own once the master agrees with his own decisions often enough, dropping any grant the moment a revert or his own undoing says it was wrong.
 
-**Architecture:** A school layer under `engine/school/` owns everything new. Beagle (`AllStreets/beagle`) is imported as a library through one loader (`engine/school/beagle.ts`) that points Beagle's store under the Palimpsest home and replaces Beagle's model driver with one that goes through Palimpsest's own `Provider.complete()`, leases and credits, so no Beagle call can bypass the caps, the sandbox or the night cap. Arenas are built from connected repos (planted bugs and real past issues), verified by running each repo's own suite under the tool profile, and registered with Beagle as ordinary arenas whose tools run through the command broker. Training (the nets, the LoRA) runs in a native arm64 Python venv in `trainer/` with `mlx` and `mlx-lm`, as a warm subprocess under its own sandbox profile, only when the training gate holds (on AC power, idle, inside the window, cool, with disk, with no local job waiting); it yields to real work and resumes from checkpoints. The nets are small MLPs trained in MLX and exported as JSON weights; the engine runs their forward pass in TypeScript (`shared/nets.ts`), so a prediction never needs Python. The master's predictions are registered before he decides, resolved against what he then did, and the autonomy gate reads only those prospective pairs; every path that cannot prove the gate holds refuses. Graduates are served by `mlx_lm.server` through a new `mlx:` backend. The UI adds the school screen, the autonomy section in Settings and on the district page, brief items to grant and revoke, and in the city the university campus on its own plot with the observatory where the master net lives.
+**Architecture:** A school layer under `engine/school/` owns everything new. Beagle (`AllStreets/beagle`) is imported as a library through one loader (`engine/school/beagle.ts`) that points Beagle's store under the Palimpsest home, writes Palimpsest's arena tasks into that store, and replaces Beagle's model driver with one that goes through Palimpsest's own `Provider.complete()`, leases and credits, so no Beagle call can bypass the caps, the Claude slots, the sandbox or the night cap. Arenas are built, only on his click and only from market-on repos, from planted bugs and from verified past changes, checked by running each repo's own suite under the tool profile, and raced through Beagle with tools that run through the command broker. Training (the nets, the LoRA) runs in a native arm64 Python venv with `mlx` and `mlx-lm`, as a warm subprocess under its own sandbox profile, only when the training gate holds (on AC power, idle, inside the window, cool, with disk, with no local job waiting); it yields to real work and resumes from checkpoints. The nets are small MLPs trained in MLX and exported as JSON weights; the engine runs their forward pass in TypeScript (`shared/nets.ts`). The master's predictions are registered before he decides, resolved only against what he himself then did (never the city's own acts), and the autonomy gate reads only those prospective pairs; every path that cannot prove the gate holds refuses. Graduates are scored on a sealed race outside any voyage and served by `mlx_lm.server` through a new `mlx:` backend. The UI adds the school screen, autonomy in Settings, on the district page and in the brief, lineage on the agent page, and in the city the university campus on its own plot with the observatory where the master net lives.
 
-**Tech Stack:** Node 22.13+, TypeScript, tsx, `node:test`, `node:sqlite`, three.js 0.187, Vite 8, Playwright, Tauri 2, `gh`, `git`, `sandbox-exec`, `pmset`, `ioreg`, the `claude` CLI 2.1.319+ (his own install), Ollama 0.40+ on `127.0.0.1:11434`, Beagle at a pinned commit, Python 3.12 arm64 (uv's `cpython-3.12-macos-aarch64-none`), `mlx` 0.32.4, `mlx-lm` 0.32.2, numpy.
+**Tech Stack:** Node 22.13+, TypeScript, tsx 4.23 (loads Beagle's `.ts` from `node_modules`, verified by the builder check), `node:test`, `node:sqlite`, three.js 0.187, Vite 8, Playwright, Tauri 2, `gh`, `git`, `sandbox-exec`, `pmset`, `ioreg`, `df`, the `claude` CLI 2.1.319+ (his own install), Ollama 0.40+ on `127.0.0.1:11434`, Beagle at a pinned full sha, Python 3.12 arm64 (uv's `cpython-3.12-macos-aarch64-none`), `mlx` 0.32.4, `mlx-lm` 0.32.2, numpy, `huggingface_hub`.
 
 **Spec:** `docs/superpowers/specs/2026-11-08-palimpsest-design.md` (Phase 4 in section 13; sections 2 goals 6 and 7, 4, 5, 6.1, 6.2, 6.4, 7.2, 7.3, 8, 9.1 to 9.4, 11, 12 and 17 apply). The Phase 2 plan (`2026-11-10-phase-2-market.md`, "Phase 2 ruling n", "Phase 2 test safety rule n") and the Phase 3 plan (`2026-11-11-phase-3-analysis-and-brief.md`, "Phase 3 ruling n") fix the conventions this plan continues.
 
-**Starting head.** Both tracks start from the head where `phase-3-screens` and `phase-3-city` have merged, which contains Phase 2's final review fix `b1bb756` (`home()` throws under a test whose home is unset or real). A task that finds `engine/home.ts` without `onRealDataHome()` stops and asks the controller. The city track additionally needs Phase 3 Task 14's `towerPiece()` in `app/src/city/scene.ts`.
+**Starting head.** Phase 4 starts only after Phase 3's Task 21 and Phase 3's final review have landed, with `phase-3-screens` and `phase-3-city` merged. That head contains Phase 2's `b1bb756` (`home()` throws under a test whose home is unset or real), Phase 3's notices and audit settings (`9156a19`, `d9e17dd`) and Phase 3's city ornaments (Tasks 14 to 18), which the campus's draw budget is measured against. A task that finds `engine/home.ts` without `onRealDataHome()` or `app/src/city/scene.ts` without `towerPiece()` stops and asks the controller. Task 2 is a hard stop in the controller's ledger: Task 4 cannot start until he has merged Task 2's PR on Beagle.
 
-**What was found on this Mac (2026-11-12), read-only:**
-- Beagle is cloned at `~/Downloads/beagle` (clean, head `4edbd39`, public repo). Since the 2026-11-08 audit it fixed two of the six findings: breeding outside geotag (`aae774c`: `validate(x, tools)` takes the arena's tools) and the sandbox (`6b58364`: fix-test grading runs under `sandbox-exec`, custom graders in a worker). Still open at `4edbd39`: the self-check prompt is geotag's (`src/runner.ts:88`, "is that really where this happened"), parent against child is compared only in the browser's scales (`app/src/holdroom.ts`), never in the engine, fossils are geotag only (`src/fossil.ts` imports geotag's grader), and there is no LoRA. For use as a library it also lacks: a package entry (no `exports`), a lazy home (`src/paths.ts` reads `BEAGLE_HOME` once at import), a designer model option (`DESIGNER` is fixed to `claude:claude-opus-5-5`), an abort for races and breeding, and the `mlx:` prefix (`validate()` and `complete()` accept only `claude:` and `ollama:`). Beagle's sources are TypeScript with `.ts` import specifiers run under `--experimental-strip-types`.
-- MLX is **not** importable from any system Python (`/usr/bin/python3` 3.9.6, `/opt/homebrew/bin/python3` 3.14.5, Anaconda 3.8.8 x86). It **is** installed in Beagle's own venv: `~/Downloads/beagle/trainer/.venv` (CPython 3.12.7 arm64 from uv, `mlx` 0.32.4, `mlx_lm` 0.32.2, whose `server.py` parses tool calls). uv itself is the x86 build under Anaconda but installs the arm64 interpreter, as Beagle's `trainer/README.md` shows. No MLX language model is in the Hugging Face cache (`~/.cache/huggingface/hub` holds two unrelated transformers models).
-- Hardware: Apple M5 Pro, 64 GB, on AC power at 100% when checked.
-- His real Palimpsest ledger holds 20 `repo.analyzed`, 7 `repo.connected`, 1 `repo.disconnected` and 1 `run.ended`: no bids, inspections, brief actions or merges yet. **Every net starts with no labels.** Earned autonomy at 50 decisions per kind is months away on his real data; the plan is written so the school is honest about that, not so it looks busy.
-- Understudy's database (`~/Library/Application Support/Understudy/understudy.db`) holds 37 taste statements (the bible), 400 readings, 1,724 images and **0 answered calibration pairs and 0 verdicts**. The Taste net has no labels from Understudy today.
+**What was found on this Mac (2026-11-12), read-only, and confirmed by the builder check:**
+- Beagle is cloned at `~/Downloads/beagle` (clean, head `4edbd39`, public repo). Since the 2026-11-08 audit it fixed breeding outside geotag (`aae774c`) and the sandbox (`6b58364`). Still open: the self-check prompt is geotag's (`src/runner.ts:88`), parent against child is compared only in the browser (`app/src/holdroom.ts`), fossils are geotag only, there is no LoRA. For use as a library it lacks: `exports`, a lazy home (`src/paths.ts` reads `BEAGLE_HOME` at import, `store.open()` caches one database), a designer option (`DESIGNER` fixed), an abort, the `mlx:` prefix (`validate()`, `complete()`, the `Driver` union), an export of `splitOf` (only in `src/arenas/custom.ts`), a way to write tasks into its store (every race reads `tasks` from Beagle's own database), and a sealed race outside a voyage (`sealedScore()` needs a finished voyage whose genome rows only `race()` inserts, and runs once per voyage and genome). tsx loads Beagle's `.ts` from `node_modules`; plain Node refuses (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`); the engine's launchd plist runs `node --import tsx`.
+- MLX is not importable from any system Python; it is installed in Beagle's venv `~/Downloads/beagle/trainer/.venv` (CPython 3.12.7 arm64, `mlx` 0.32.4, `mlx_lm` 0.32.2, `huggingface_hub` 2.4.0 with `hf_xet`), which runs on `Device(gpu, 0)` and works under a `sandbox-exec` profile of ruling 7's shape. No MLX language model is downloaded.
+- Power on macOS 26.4: `pmset -g` prints "Currently in use:" with `powermode 1` (0 automatic, 1 low power, 2 high power) and no `lowpowermode` key; `pmset -g custom` shows `powermode 1` under "AC Power:" and `0` under "Battery Power:", so **his Mac runs Low Power on AC**; `pmset -g therm` prints only "Note: No thermal warning level has been recorded", "Note: No performance warning level has been recorded" and "Note: No CPU power status has been recorded"; `pmset -g batt` starts "Now drawing from 'AC Power'"; `ioreg` `HIDIdleTime` and `df -k` parse (310 GB free).
+- His real ledger: 20 `repo.analyzed`, 7 `repo.connected`, 1 `repo.disconnected`, 1 `run.ended`; the market is off on every repo; no bid, inspection, brief action or merge.
+- His mirrors: palimpsest 25 commits and 0 merged PRs, teardown 14 and 0, Chicago-Open-World 398 and 0, beagle 61 and 0, understudy 14 and 0, ONEXUS 441 and 11. **Merged PRs alone give about 11 LoRA examples against the 100 needed.**
+- Understudy: 37 live statements, 400 readings, 1,724 images, **0 answered pairs and 0 verdicts**, WAL journal.
+- The ui-test home budget stood at 799 calls and 9.86M triangles (shadow map redrawn) before Phase 3's Tasks 15 to 17 landed, against the guard of 850 calls and 12M triangles.
+
+**The honest state.** For months on his real data: every net is thin, every master prediction abstains, no ask is made, and the LoRA cannot train unless he says yes to Decision 7. Planted-bug arenas and voyages on market-on repos are what can run now. The plan is written so the school says this on every card, not so it looks busy.
 
 ## Decisions for Connor
 
-Twelve calls, one line each, with the recommendation the plan is written to. Answer in plain text; a yes to all changes nothing below.
+Seventeen calls, one line each, with the recommendation the plan is written to. Answer in plain text; a yes to all changes nothing below.
 
-1. **Beagle import:** a pinned git dependency on `AllStreets/beagle` at the commit where Task 2's library fixes merge, vendored under `vendor/beagle/` only if tsx refuses TypeScript inside `node_modules`. Recommend yes.
-2. **Who fixes Beagle:** Task 2 makes the seven small library fixes by hand as one PR on Beagle for you to merge; fossils beyond geotag and LoRA in Beagle stay as Beagle README-versus-reality jobs for the city. Recommend yes.
-3. **When the Mac trains:** only on AC power, not in Low Power Mode, after 15 idle minutes, between 01:00 and 06:00, thermals nominal, 20 GB free, no local job waiting; "Train now" in Settings skips the window and the idle check but never AC power. Recommend yes.
-4. **The LoRA base model:** download `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` (about 4.3 GB) once, only when you click "Download" in Settings. Recommend yes.
-5. **LoRA training data:** city merges that passed inspection and survived 30 days, plus your own merged PRs on connected repos that were never reverted, never any sealed-set item; it never leaves this Mac. Recommend yes (market merges alone would leave the school idle for months).
-6. **Understudy:** let the engine read Understudy's database read-only for its taste statements and answered pairs, for the Taste net only. Recommend yes.
-7. **The school's Claude spend:** voyages race local models only; the designer runs on `claude:sonnet` at most 30 credits a day (3% of a five-hour window) inside every existing cap, the night cap included, else `ollama:qwen3-coder:30b`. Recommend yes.
-8. **Kinds of work:** six kinds: `propose:harness`, `propose:readme-gap`, `merge:low`, `merge:normal`, `merge:high`, `merge:ui`. Recommend yes.
-9. **The agreement window:** 95% over the last 50 decisions of a kind, pooled across repos, counting only predictions recorded before you decided, an abstention counting as a disagreement; a repo is asked about only once it has 10 decisions of that kind with none of its last 10 against the master. Recommend yes.
-10. **Acting under a grant:** the master must predict approve at 0.9 or more on that item and the window must still hold at that moment, else the grant is suspended and asked again; a revert drops the grant and the next ask waits until the window holds again with the revert counted. Recommend yes.
-11. **The appraiser in the award:** shown beside every bid from the day it beats the pass-rate baseline on held-out data; it enters the award only after that, as the mean of the firm's calibrated confidence and the appraiser's pass chance. Recommend yes.
-12. **Where the university stands:** on the next free plot of the district spiral, taken the first time Phase 4's engine starts, so nothing already standing moves. Recommend yes.
+1. **Beagle import:** a git dependency on `AllStreets/beagle` pinned by full sha (tsx loads it, no vendoring); the pin moves only in a commit you approve, and Beagle stays in PR mode with no `merge:*` grant while Palimpsest imports it. Recommend yes.
+2. **Who fixes Beagle:** Task 2 makes eleven small library fixes in a fresh clone under the scratchpad (never in your checkout) as one PR for you to merge; fossils beyond geotag and LoRA inside Beagle stay as Beagle jobs for the city. Recommend yes.
+3. **Low Power on AC (your call):** your Mac runs Low Power on AC, so either (a) the gate ignores power mode on AC and trains slower and cooler, or (b) Low Power blocks training and you switch AC to Automatic. Recommend (a); the plan builds `school.allowLowPower` defaulting to your answer.
+4. **When the Mac trains:** on AC power only, after 15 idle minutes, between 01:00 and 06:00, with no thermal or performance warning recorded, 20 GB free and no local job waiting; "Train now" skips the window and idle but never AC power. Recommend yes.
+5. **Setting up the trainer:** while building, the trainer runs on Beagle's existing venv through `PALIMPSEST_PYTHON` (nothing downloaded); `npm run trainer:setup`, which downloads Python and the MLX wheels from PyPI, runs only when you run it or say go. Recommend yes.
+6. **The LoRA base model:** download `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` (about 4.3 GB) only when you click Download, with your Hugging Face login not sent and the xet transfer off. Recommend yes.
+7. **Verified past work:** your repos hold about 11 merged PRs, so also count your own direct commits on default branches that touch source, survived 30 days with no revert or follow-up fix, and (where a suite exists) pass their tests when the school checks them, about 950 commits; this departs from spec 9.2's "passed inspection" and feeds both the LoRA and the past-change arenas. Recommend yes, knowingly.
+8. **Arenas:** built only when you click "Build an arena" on a district page or in Settings, and only from repos whose market is on (Phase 3's rule that nothing of a repo reaches Claude before its market opens). Recommend yes.
+9. **Understudy:** read its database read-only; with the switch on, your 37 taste statements are added to the design judge's bar for every UI inspection in the market, not only the Taste net; it has 0 answered pairs today, so Taste gets no labels from it yet. Recommend yes.
+10. **The school's Claude spend:** voyages race local models only; the designer runs on `claude:sonnet` at most 30 credits a day (3% of a window), takes one of the city's Claude slots, waits while you are using Claude, counts in the night cap; else `ollama:qwen3-coder:30b`. Recommend yes.
+11. **Kinds of work:** six: `propose:harness`, `propose:readme-gap`, `merge:low`, `merge:normal`, `merge:high`, `merge:ui`. Recommend yes.
+12. **The agreement window:** 95% over the last 50 of your own decisions of a kind, pooled across repos, only predictions made before you decided, an abstention counting against, the city's own acts never counted; a repo needs 10 decisions of that kind with none of its last 10 against. A kind you approve almost always may never be offered, because a master that cannot beat the base rate is not trusted. Recommend yes.
+13. **Acting under a grant:** the master must predict approve at 0.9 or more with a current version, the window must still hold, and before any merge the city re-reads the repo for a revert; your withdrawing an auto-accepted job or closing its PR counts against the master and suspends the grant; a revert revokes it; a grant you revoke is not asked about again for 30 days unless you re-grant it in Settings. Recommend yes.
+14. **The appraiser in the award:** shown beside every bid once it beats the firm's pass rate as of the award on held-out rows, then the mean of the firm's calibrated confidence and its estimate; its later training rows are partly chosen by itself, so its baseline stays the firm's pass rate. Recommend yes.
+15. **Firms paying the school (spec 7.2):** a firm with at least 400 credits may pay 120 credits to commission a voyage on a ready arena of a repo it has worked, and gets first refusal on the champion. Recommend yes.
+16. **Where the university stands:** on the next free plot of the district spiral, taken the first time Phase 4's engine starts, so nothing already standing moves. Recommend yes.
+17. **The campus's draw budget:** hold the campus to 25 calls from home with shadows and its life, re-measured at the merged Phase 3 head, rather than raising the 850 guard. Recommend hold.
 
 ## Global Constraints
 
-- Engine API on `127.0.0.1:4770` only, with the Host and Origin checks and the `x-palimpsest: 1` header on every write; UI dev server on `4771`. Ollama only at `127.0.0.1:11434`, only from the engine. `mlx_lm.server` only on a loopback port the engine picks, only from the engine; the engine port, `11434` and every live run's proxy and broker ports stay denied to it.
-- Data directory `~/Library/Application Support/Palimpsest`, overridable with `PALIMPSEST_HOME`; every test sets it to a temp dir, and `home()` throws under a test whose home is unset or real. Everything the school writes lives under `paths().school` (`<home>/school`: `beagle/`, `arenas/`, `nets/`, `lora/`, `graduates/`, `logs/`).
-- `redact()` (`engine/market/jobs.ts`) and `scrub()` (`engine/market/api.ts`) on everything that leaves the engine: every net view, voyage, genome instruction, arena task brief, graduate card, prediction reason, autonomy row, brief item, ledger row and event; the UI cleans again with `cleanText()`. Training data files never leave `paths().school` and are never served by the API.
-- The market is off by default (`Repo.market false`). The school is off by default too: no arena is built, no voyage sails and nothing trains until he turns `school.enabled` on in Settings; the nets' nightly retrain is part of the school switch. No autonomy grant exists until he grants one, per kind and per repo.
-- Nothing trains on his Claude plan. Every Claude call the school makes (the designer, any `claude:` genome he allows to race) goes through `Provider.complete()` under an `acquire(model, 'school', …)` lease and `charge({ kind: 'school' })`, so it counts in the day cap, the night cap, the hard stop, `citySpent`, the treasury and the report, and it also stops at `school.claudeCreditsPerDay`. Local training and local inference are charged as `kind 'train'` and `kind 'school'` local credits (Phase 2 ruling 1) so the treasury shows their minutes.
-- The training gate (ruling 6) is re-read every 30 s while anything trains or races; when it fails the trainer is stopped within 30 s and resumes from its last checkpoint. A gate input that cannot be read fails the gate.
-- Earned autonomy is fail-closed: an action under a grant happens only when every check in ruling 18 answers yes at that moment; any error, missing net, stale net, unreadable ledger row or abstention means no action and a recorded reason. A revert of an autonomous merge revokes its grant before any other autonomous action on that repo is considered.
-- Never without asking: unchanged. An autonomous merge is a PR merge through `gh pr merge --merge --match-head-commit <run.headSha>` on a repo whose grant he gave; never `--admin`, never a force, never a branch delete beyond the city's own `palimpsest/*` branch.
-- No loops: the school never creates jobs. A graduate or bred agent bids like any agent. Auto-accepted proposals come only from audits and harness detection, which never run after a city merge (Phase 3 ruling 6). `docs/SELF_RECURSION_GUARDRAILS.md` gains the school and autonomy arrows (Task 17).
-- Ledger: every voyage, generation, arena build, training start, pause and end, net version, master prediction, decision, ask, grant, decline, suspension, revocation and autonomous action is recorded append-only with kinds from `LEDGER_KINDS`, replays and is compared by `verifyReplay()`.
-- Tests never touch port 4770, the real data home, the keychain, his real `~/.claude`, `~/.codex` or `~/.gemini`, Beagle's real home, Understudy's real database or the Hugging Face network (test safety rules below).
-- The ui-test guard from home is 850 draw calls and 12M triangles; the campus must fit inside it with every Phase 2 and Phase 3 ornament standing.
-- No em dashes, `--` or emojis in UI copy, README, report pages or commit text. No AI look: sentence case, hairline rules, ledgers not cards, no badges, scores shown as numbers with their interval, never as stars or bars of glow.
+- Engine API on `127.0.0.1:4770` only, with the Host and Origin checks and the `x-palimpsest: 1` header on every write; UI dev server on `4771`. Ollama only at `127.0.0.1:11434`, only from the engine. `mlx_lm.server` only on a loopback port the engine picks, only from the engine.
+- Data directory `~/Library/Application Support/Palimpsest`, overridable with `PALIMPSEST_HOME`; every test sets it to a temp dir, and `home()` throws under a test whose home is unset or real. Everything the school writes lives under `paths().school` (`<home>/school`: `beagle/`, `arenas/`, `nets/`, `lora/`, `graduates/`, `understudy/`, `logs/`).
+- `redact()` (`engine/market/jobs.ts`) and `scrub()` (`engine/market/api.ts`) on everything that leaves the engine; the UI cleans again with `cleanText()`. Training files, arena task bodies and Understudy shots are never served.
+- The market is off by default (`Repo.market false`). The school is off by default (`school.enabled false`): no arena is built, no voyage sails, nothing trains, no net feeds the award or the brief, no prediction is anything but an abstention ("the school is off") and `act()` does nothing. Turning it off takes effect at once, mid-train included. No autonomy grant exists until he grants one.
+- Nothing from a repo reaches Claude before its market is on: arenas come only from market-on repos, built only on his click (Decision 8).
+- Nothing trains on his Claude plan unmetered. Every Claude call the school makes goes through `Provider.complete()` under `acquire(model, 'school', …)`, which counts in `claudeConcurrency`, drops to the single slot while `interactiveActive()`, and is refused past `school.claudeCreditsPerDay`; it is charged with `charge({ kind: 'school', unattended })`, so it counts in the day cap, the night cap, the hard stop, `citySpent`, the treasury and the report. Local training and inference are charged as local credits (`train`, `school`), which never enter the Claude windows.
+- Downloads only on his click or go-ahead: the base model (Task 25), `trainer:setup` (Task 5). Every other trainer environment carries `HF_HUB_OFFLINE=1`.
+- The training gate (ruling 6) is re-read every 30 s while anything trains or races; when it fails the trainer is stopped within 30 s and resumes from its last checkpoint. A probe that cannot be read fails the gate.
+- Earned autonomy is fail-closed: an action under a grant happens only when every check in ruling 18 answers yes at that moment, a fresh revert read included; any error means no action and a recorded reason. A revert of an autonomous merge revokes its grant before any other autonomous action on that repo; his undoing of an autonomous act suspends it.
+- Never without asking: unchanged. An autonomous merge is `gh pr merge --merge --match-head-commit <run.headSha>` on a repo whose grant he gave; never `--admin`, `--auto` or `--delete-branch`.
+- Nothing is written to Beagle's repo except through a PR he merges; the Beagle pin moves only in a commit he approves (Decision 1).
+- No loops: the school never creates jobs. `docs/SELF_RECURSION_GUARDRAILS.md` gains the school and autonomy arrows (Task 17).
+- Ledger: every school, arena, voyage, training, net, prediction, decision and autonomy event is recorded append-only with kinds from `LEDGER_KINDS`, replays and is compared by `verifyReplay()`.
+- The ui-test guard from home is 850 draw calls and 12M triangles with the shadow map redrawn; the campus has its own sub-guard (Decision 17).
+- No em dashes, `--` or emojis in UI copy, README, report pages or commit text. No AI look; scores are numbers with their interval and n, never stars or glow; an empty chart is a sentence, never an empty axis.
 - Every visible change: build, screenshot at full size and zoomed crops, critique, iterate (three rounds for 3D, two for screens); rounds and what is still weak go in the commit body.
-- README media only from the sample dataset, never his repos or session content.
+- README media only from the sample dataset.
 - Commit trailers on every commit: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01UGpw98HC7NNMT1jveHzgfa`.
 
 ## Test safety rules (Phase 2 rules 1 to 10 hold; these are added)
 
-11. No test spawns the real Python, `mlx_lm.lora`, `mlx_lm.server` or `trainer/school.py`: every spawn goes through `getSpawner()` and tests install fakes. The trainer's own tests are `npm run test:trainer` (Python `unittest` on synthetic data under a temp dir with `HF_HUB_OFFLINE=1`), never part of `npm test`, and are skipped with a message when `trainer/.venv` is absent.
-12. No test reads Understudy's real database: the reader opens only `PALIMPSEST_UNDERSTUDY_DB` under a test, refuses the default path the way `home()` does, and tests point it at a fixture they build.
-13. No test imports Beagle with `BEAGLE_HOME` unset or at Beagle's real home (`~/Library/Application Support/Beagle`): `loadBeagle()` sets it to `paths().school/beagle` (which `home()` already confines) and throws if it resolves anywhere else; every test replaces Beagle's driver with a fake and sets `BEAGLE_BACKOFF_MS=0`.
-14. No test runs `pmset`, `ioreg`, `df` or `sysctl` for real: the gate's probes go through `getRunner()` and tests answer them.
-15. No test or route downloads a model: every trainer environment carries `HF_HUB_OFFLINE=1` except the one download action (Task 23), which tests run against a fake spawner.
-16. No test runs `gh pr merge`: it goes through `getRunner()` like every `gh` call (Phase 2 rule 4), and `githubWriteRefused()` refuses it on the real home under a test.
+11. No test spawns the real Python, `mlx_lm.lora`, `mlx_lm.server` or `trainer/school.py`: every spawn goes through `getSpawner()` and tests install fakes. The trainer's own tests are `npm run test:trainer` (Python `unittest` on synthetic data under a temp dir with `HF_HUB_OFFLINE=1`), never part of `npm test`, skipped with a message when no trainer Python is found.
+12. No test reads Understudy's real database: the reader opens only `PALIMPSEST_UNDERSTUDY_DB` under a test, refuses the default path the way `home()` does, and tests build fixtures (one in WAL mode).
+13. No test imports Beagle with `BEAGLE_HOME` unset or at Beagle's real home: `loadBeagle()` sets it to `paths().school/beagle` and throws if it resolves anywhere else; every test replaces Beagle's driver with a fake and sets `BEAGLE_BACKOFF_MS=0`.
+14. No test runs `pmset`, `ioreg`, `df` or `sysctl` for real: the probes go through `getRunner()` and tests answer them with the outputs captured on his Mac (`test/fixtures/pmset/`).
+15. No test or route downloads a model.
+16. No test runs `gh pr merge`: it goes through `getRunner()` like every `gh` call, and with the real runner on a temp home `githubWriteRefused()` refuses it before any `gh` call.
 
 ## Phase 4 rulings on spec gaps
 
-1. **Beagle as a library** (spec 9, 12). Palimpsest depends on `"beagle": "github:AllStreets/beagle#<sha>"` at the commit where Task 2 merged. Only `engine/school/beagle.ts` imports it, by dynamic `import()` of its package entries, with the types Palimpsest uses declared in `engine/school/beagle-api.ts` (so `tsc` never checks Beagle's sources). `loadBeagle()` sets `BEAGLE_HOME` to `paths().school/beagle`, calls Beagle's `setDriver(schoolDriver)` and refuses to return Beagle if its home resolves outside `paths().school`. Palimpsest uses: `race()`, `sealedScore()`, `startVoyage()`, `finishVoyage()`, `breed()`, `compareToParents()`, `summarize()`, `bootstrap()`, `rng()`, `validate()`, `registerArena()`, `unregisterArena()`, `splitOf()` and the `Arena`, `ToolSpec`, `Genome`, `RaceResult`, `Score` types. If `node --import tsx` cannot load TypeScript from `node_modules`, `tools/vendor-beagle.ts` copies `src/` at the pinned sha into `vendor/beagle/` with its MIT licence and the loader imports from there; the choice is recorded in `CREDITS.md`.
-2. **The Beagle fixes** (spec 9.1; Decision 2). In Beagle's repo, one PR: (a) `package.json` `exports` for `./race`, `./designer`, `./genome`, `./stats`, `./runner`, `./arenas`, `./models`, `./store`; (b) `paths` and `store.open()` read `BEAGLE_HOME` on each call and reopen when it changes; (c) `breed(…, { designer?: string })` with `DESIGNER` as the default; (d) `Arena.selfCheck?(answer, input): string` with a generic default ("Check your answer against the task as it was given. Reply with your final answer.") replacing the geotag sentence in `runner.ts`; (e) `compareToParents(voyageId, generation): Array<{ child; parent; diff: number; lo: number; hi: number; tasks: number }>`: the paired bootstrap of per-task score differences on the tasks both raced, seeded; (f) `race()` and `breed()` take `signal?: AbortSignal`; an abort leaves runs not yet graded unscored and returns `complete: false, reason: 'aborted'`; (g) `mlx:` joins the model prefixes in `validate()` and `complete()`. Beagle's own `npm test` passes with each.
-3. **The spend kinds.** `'school'` (model calls made for voyages and graduation evaluation, Claude or local) and `'train'` (MLX training and its evaluation passes, local) join `SPEND_KINDS` (`budget.ts`), `CALL_KINDS` (`spend.ts`), the report's call kinds (`report.ts` line 221) and `charge()`'s kind union. Rows carry `firm_id NULL` (the city pays), `run_id` the voyage, net version or LoRA id. Local credits follow Phase 2 ruling 1 with `modelGB` from the base model's size on disk.
-4. **The school lease.** `acquire(model, 'school', estimate, { waitUntil })` queues like a plan lease on its own pool, `SCHOOL_POOL = { claude: 1, local: 1 }`, behind the same `gate()` (pauses, the hard stop, the stop file, the night cap), and additionally refuses a Claude lease once `schoolClaudeSpent(today) + estimate > settings.school.claudeCreditsPerDay`. A local school lease also requires `workCount('local') === 0`: real work always beats the school.
-5. **`Provider.complete()`.** One turn, no tools, an optional JSON schema: `complete(i: CompleteInput): Promise<CompleteResult>` on every backend. Claude reuses the existing no-tool `call()` path in `claude.ts` (empty strict MCP config, `CALL_DENY`, the CLI profile, `--max-turns 1`); Ollama and the Anthropic API reuse `jsonCall()`'s transport without the JSON wrapper when no schema is given; the fake answers from its script. This is the only interface change to `Provider` in Phase 4 besides the `mlx` backend.
-6. **The training gate** (Decision 3). `gateNow(kind: 'light' | 'heavy', now): { ok: true } | { ok: false; reason: string }`. Both kinds need: `school.enabled`; the stop file absent; `pmset -g batt` says `AC Power`; `pmset -g` shows `lowpowermode 0`; the local time inside `school.window` (default `{ from: '01:00', to: '06:00' }`) unless a "Train now" is live; no local run live and none queued (`workCount('local') === 0` and no `awarded` job whose winning bid is local). `heavy` (LoRA, voyages, arena builds) adds: HID idle at least `school.idleMinutes` (default 15, from `ioreg -c IOHIDSystem` `HIDIdleTime`) unless "Train now"; `pmset -g therm` reports no `CPU_Speed_Limit` under 100; `df -k <home>` at least 20 GB free. Any probe that fails or does not parse fails the gate with that reason. "Train now" lasts 3 hours and never skips AC power, thermals or disk.
-7. **The trainer.** `trainer/` in this repo: `requirements.txt` pins `mlx==0.32.4`, `mlx-lm==0.32.2`, `numpy`; `npm run trainer:setup` runs `uv venv --python cpython-3.12-macos-aarch64-none trainer/.venv` and `uv pip install -r trainer/requirements.txt`, then checks `platform.machine() == 'arm64'`. The engine finds `trainer/.venv/bin/python` (or `PALIMPSEST_PYTHON`). `trainer/school.py` is one warm subprocess speaking JSON lines on stdin and stdout (`train_net`, `predict_net` for parity checks, `lora_train`, `lora_eval_ready`, `ping`), started under the trainer profile: allow by default, deny all network (`HF_HUB_OFFLINE=1` as well), deny `file-write*` outside `paths().school` and its own tmp, deny reads of `SECRET_PATHS`. Training a LoRA runs `python -m mlx_lm.lora` as a child of `school.py` under the same profile with `--save-every 50` and `--resume-adapter-file` on resume. The gate loss path sends SIGTERM, waits 10 s, then SIGKILL; up to 50 steps are lost and the run records how many.
-8. **The nets** (spec 9.3). Each net is a one-hidden-layer MLP (16 GELU units, AdamW lr 1e-2, weight decay 1e-2, at most 300 epochs, early stop on an inner split of the training rows' newest 15%, seed 1), features standardised with the training rows' mean and standard deviation, exported as JSON `{ net, version, features: string[], norm: { mean: number[]; std: number[] }, layers: Array<{ W: number[][]; b: number[] }>, out: 'sigmoid' | 'linear' }`. Units, labels and features (each feature list fixed in `shared/net-features.ts`, unknowns as 0 with a matching `has_*` mask feature):
-   - **Appraiser:** one row per awarded bid whose run ended. Label `pass` (the run's inspection passed and the job did not fail its inspection) and `cost` (log1p of the run's credits rows). Features: tier, scope globs, acceptance lines, source, repo language, checks present (test, build, typecheck, lint), the bid's price over value, confidence, plan length, workflow shape, model family, capability era, the firm's pass rate and Brier as of the award (`reputation(firmId, log before at)`). Two heads: `appraiser-pass` (sigmoid) and `appraiser-cost` (linear). Unawarded bids have no label and are never rows (stated on the school screen).
-   - **Router:** the same rows without the bid's own price, confidence and plan; predicts `pass` for a (job, agent) pair so it can rank agents who did not bid.
-   - **Durability:** one row per merged city job with at least 30 days since merge or a `merge.reverted` or `merge.followup` (ruling 9) before that. Label `survived`. Features: diff files and lines (`run.diff`), tier, model family, checks that passed, `preexisting` count, design checked, review concerns count, whether he added commits (`hisChanges`).
-   - **Triage:** one row per item id in each `brief.opened.items`. Label `acted`: 1 when a `brief.action` other than `dismiss` for that id falls on the same brief day, else 0. Features: item kind, tier, hours since the item's `at`, weekday, whether it was the first open, the item's position in its section, the repo's share of his past accepts.
-   - **Taste:** one row per inspection with `design` not null whose job reached `merged` or `closed` by him in PR mode, plus one row per answered Understudy pair (ruling 10). Label `approved`. Features: the judge's `after`, `before`, `after - before`, `diffOnly`, shots count; for a pair, the local vision judge's scores of its two shots.
-   - **Master:** one row per resolved decision (ruling 14). Label `approved`. Features: the five nets' outputs for the item (each with a `has_` mask), the work kind (one-hot over the six kinds), the repo's approval share in its last 20 decisions.
-9. **Follow-up fixes.** `watchReverts()` also records `merge.followup { jobId, runId, repo, floorId, mergeSha, fixSha, files, at }` once per floor when, within 14 days after a city merge and by ancestry after it, a commit not made by the city (no `Palimpsest-Job:` trailer, head branch not `palimpsest/*`) touches a file the merge touched and its subject matches `/\bfix(es|ed)?\b/i`. It is a durability label only: it never halts and never scars.
-10. **Understudy** (Decision 6). `engine/school/understudy.ts` opens `~/Library/Application Support/Understudy/understudy.db` read-only (`node:sqlite` with `readOnly: true`), only when `school.understudy` is on, reads `statements` (not removed) and `pairs` with a `pick`, and never writes or copies its images out of `paths().school`. The statements are appended to the design judge's bar (`engine/guild/design-bar.md` is unchanged; the judge input gains them) only when the switch is on. A pair is scored once by the local vision judge (`ollama:qwen2.5vl:7b`) under a local school lease and cached by pair id.
-11. **Evaluation** (spec 9.2: no claim without a number). Rows are ordered by `at`; the newest 20% (at least 10) are held out and never seen in training or early stopping. A net reports nothing (`status: 'thin'`, "n of 40 labels") until it has 30 training rows and 10 held out. Metrics on the held-out rows: Brier for sigmoid heads, mean absolute error for the cost head, and for the master agreement at 0.5; each with a seeded 95% interval from Beagle's `bootstrap()` over per-row values (10,000 resamples, seed 1). Each net is compared with a baseline (the training rows' base rate; for the appraiser, the firm's pass rate as of the award, which is what Phase 2 shows today): `vsBaseline = { diff, lo, hi }` from `bootstrap()` over per-row differences. A net is `trusted` only when `hi < 0` for Brier or error (it beats the baseline with the whole interval). Only trusted nets feed anything but the school screen.
-12. **Retraining.** Nightly under the light gate, one `retrain` pass trains every net with new labels since its last version, in the order appraiser, router, durability, triage, taste, master (the master last, on the others' fresh outputs). Each version is stored at `paths().school/nets/<net>/v<n>.json` with its metrics, recorded as `net.trained`. A version is promoted to current only if it is trusted or the current one is not; a promoted version that later scores worse is kept but not current. Feature lists change only with a new version number and a migration note.
-13. **Distillation** (spec 9.3), only where the targets mean the same thing: Triage on items that are proposals takes the master's `P(approve)` as a soft label with weight 0.3 when it has fewer than 100 own rows; Taste on UI merges does the same. The master never learns from its own predictions; it learns from the small nets' outputs as features. Held-out rows are always real labels; a distilled net's card says "taught by the master on n rows".
-14. **Decisions and kinds** (Decisions 8 and 9). A decision is his: a proposal accepted (`job.changed` from `proposed` to `open`) or dismissed (to `withdrawn` with `withdrawnBy 'him'`); a PR-mode city PR merged (`job.changed` to `merged` with a run in `waiting`; `hisChanges` and `mergedWithChanges` count as approve) or closed (`job.changed` to `closed`); and a revert (`merge.reverted`) which supersedes any earlier approve of that job as a decline. Push-mode merges are not his decisions. `workKind(job, inspection)`: `propose:harness` (source `harness`), `propose:readme-gap` (source `proposal`), `merge:ui` (an inspection with `design` not null), else `merge:<tier>`. The item key is `<kind>:<jobId>`.
-15. **Prospective predictions.** When a decision becomes pending (a job posted `proposed`; `pr.opened` recorded in `ship.ts`), `registerPrediction(job, run | null)` records `master.predicted { key, kind, repo, jobId, p, version, inputs, at }` once per key, where `p` is null (an abstention) when the master is missing, thin, untrusted, its version is older than 8 days, or any input could not be computed. A decision resolved records `decision.resolved { key, kind, repo, jobId, approved, by, predictionId, agreed, at }`; `agreed` is null when there is no prediction recorded strictly before the decision, and such a decision never enters any window. `agreed` is false for an abstention.
-16. **Agreement** (Decision 9). `agreement(kind, repo?)` reads the last 50 `decision.resolved` rows of that kind (pooled, or that repo's) whose `agreed` is not null, the latest resolution per key; `rate` is the agreeing share with its 95% interval; `eligible` needs exactly 50 rows and `rate >= 0.95`. The repo test: at least 10 of that repo's rows of that kind and none of its last 10 with `agreed false`.
-17. **Asks and grants.** The school tick asks once per (kind, repo) when the kind is eligible, the repo passes its test, the repo has a test and a build command (spec 17), is connected, not halted, its market is on, and there is no open ask, grant or decline younger than 30 days for that pair. An ask is `autonomy.asked` and a brief item `autonomy:<kind>:<repo>` with actions `grant`, `decline`, `why`. Only his action grants (`autonomy.granted { kind, repo, by: 'him', rate, lo, version, at }`); declining records `autonomy.declined` and silences the pair for 30 days. He revokes from Settings, the district page or a brief item at any time (`autonomy.revoked { by: 'him' }`).
-18. **Acting under a grant** (Decision 10). `mayAct(kind, repo, jobId, now): { ok: true; p: number } | { ok: false; reason: string }` answers yes only when all hold at that moment, read fresh from the store: an active grant for the pair; no revocation or suspension after it; the stop file absent; the repo connected, market on, not halted, with test and build; `agreement(kind)` still eligible and the repo test still passing (else `autonomy.suspended` and a fresh ask); the master current and trusted; a `master.predicted` row for this key with `p >= 0.9`; for a merge, the run's inspection `passed` and `pushable`, the PR open, and its head sha equal to `run.headSha`. Any throw is caught and answered `{ ok: false, reason: 'could not check: …' }`. Actions: `propose:*` accepts the proposal through `acceptProposed()`; `merge:*` runs `mergePR(repo, number, headSha)`. Each records `autonomy.acted { kind, repo, jobId, p, at }` before the action and its result after.
-19. **Revocation by revert** (spec 9.4). A `merge.reverted` whose job has an `autonomy.acted` row revokes that (kind, repo) grant (`autonomy.revoked { by: 'revert', jobId }`) in the same handler that records the revert, before the repo halts; the revert also enters the window as a decision with `agreed false` (the master had predicted approve). The pair can be asked again only by ruling 17, so after a revert the window must hold again with the revert in it.
-20. **Arenas from his repos** (spec 9.2). For a connected repo with a test command, `buildArena(repo, kind)` makes one of:
-    - **Planted bugs:** at the repo's default branch head, up to 120 candidate one-line mutants on source lines (not tests) from six operators (flip a comparison, off by one on an integer literal, swap `&&` and `||`, drop a `!`, swap `true` and `false`, return the first argument), each kept only if the repo's own test command passes at the head and fails with the mutant; at most 60 kept, split by Beagle's `splitOf(id)` (60% breeding, 25% race, 15% sealed).
-    - **Past issues:** merged PRs (from `mergedPRs()`, founding history included) that changed both source and test files; the task is the merge's first parent with the PR's test files applied, kept only if those tests fail there and pass at the merge; at most 40, split the same way.
-    Both run the suite under the tool profile in a per-task APFS clone (`cp -c`) of an arena base clone whose dependencies were installed once under the install egress; every grading run has no network. Building is heavy-gated and charged as local `school` credits by wall time.
-21. **Arena answers and grading.** The answer is Beagle's fix-test shape, `{ edits: Array<{ file; find; replace }> }`, each `find` unique in its file, files only under source paths, never tests. Grade: apply to a fresh task clone, run the test command under the tool profile with no network, score 1 when the target tests pass and no test that passed at the task's base fails, 0.5 when the targets pass but another fails, 0 otherwise. The tools offered: `read_file`, `list_files`, `search` and `run_tests` (the repo's test command on the agent's proposed edits in a scratch clone), each through `execFileTool()` or `execTool()` under the tool profile.
-22. **Voyages** (spec 9.2). A voyage breeds on one arena: population 8, 4 generations, local models only (Decision 7), `localOnly: true`, the designer per Decision 7, the race on the race split, children promoted only when `compareToParents()` gives `lo > 0`. The champion is scored on the sealed split once at the end (`sealedScore()`). A champion whose sealed score beats every seeded agent's on the same tasks with `lo > 0` becomes a school-bred specialist on the roster (`lineage.origin 'school'`), hireable by Phase 2 ruling 6's rule.
-23. **LoRA data** (Decision 5). One example per verified change: the city's merges that passed inspection and survived 30 days, and his merged PRs on connected repos never reverted, with the changed files' text before the change. The example is a chat in the arena's own shape (system: the arena's describe; user: the task as `show()` renders it with the files' text; assistant: the edits JSON built from the diff's hunks, each hunk's old text widened until unique). Excluded: any change whose PR or merge sha is a task of any arena's sealed split, any change whose files exceed 24 KB, any example over 4,096 tokens. Training needs at least `LORA_MIN = 100` examples; the latest 10% are its validation set.
-24. **LoRA training** (Decision 4). Base `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`, `--fine-tune-type lora`, `--num-layers 16`, `--batch-size 2`, `--iters 600`, `--learning-rate 1e-5`, `--mask-prompt`, `--grad-checkpoint`, `--save-every 50`, under the heavy gate. Its local credits use `modelGB` 4.3.
-25. **Graduation** (spec 9.2). A trained adapter is scored on every sealed task of every arena it has not seen, against the same base without the adapter, both as the same single-shape genome through `sealedScore()`; it graduates only if the paired difference has `lo > 0`. A graduate becomes `mlx:<name>` (`grad-<base short>-<n>`), an agent on the school roster with `capability` by its sealed score (Phase 2 ruling 5's capability for 7B local, glass), root `collegiate`, `lineage.origin 'school'`.
-26. **The `mlx` backend.** `engine/market/mlx.ts` serves a graduate through a warm `mlx_lm.server --model <base> --adapter-path <dir> --host 127.0.0.1 --port <free>` under the trainer profile (network denied except binding loopback), started on first use and stopped after 10 idle minutes, one at a time. Its transport is the OpenAI chat shape `mlx_lm.server` serves; tool calls come back parsed; `poolOfModel('mlx:…')` is `local` (a pin: it is today).
-27. **The university plot** (Decision 12). `ensureCampus()` takes `nextSlot('campus', 'university')` the first time the Phase 4 engine starts; the campus occupies that one spiral block (240 m), on a terrace 6 m above the street grid. Nothing else moves.
-28. **Commuting to school** (spec 6.4). A seeded or roster agent whose genome is a parent in a live voyage takes a trip with reason `school` to the campus when the voyage starts and home when it ends; a graduate's first trip goes from the campus to its firm's quarter when hired.
+1. **Beagle as a library** (spec 9, 12; Decision 1). `"beagle": "github:AllStreets/beagle#<full 40-hex sha>"`, never a branch or tag; the pin moves only in a commit he approves. Only `engine/school/beagle.ts` imports it, by `import()` of a non-literal specifier (`const spec = 'beagle/' + entry`) typed through `engine/school/beagle-api.ts`, so `tsc` (which checks `.ts` files under `node_modules`, `skipLibCheck` skipping only `.d.ts`) never sees Beagle's sources. `loadBeagle()` sets `BEAGLE_HOME` to `paths().school/beagle`, calls `setDriver(schoolDriver)`, and refuses if Beagle's home resolves outside `paths().school`. While Palimpsest imports Beagle, the repo `AllStreets/beagle` is never asked about or granted any `merge:*` kind (`askDue` skips it), so no city-written code reaches the engine except through a pin he approves.
+2. **The Beagle fixes** (spec 9.1; Decision 2). In a fresh `git clone https://github.com/AllStreets/beagle` under the scratchpad (never a worktree of `~/Downloads/beagle`, whose `.git` must not be written), one branch, one PR: (a) `exports` for `./race`, `./designer`, `./genome`, `./stats`, `./runner`, `./arenas`, `./models`, `./store`; (b) `paths` and `store.open()` read `BEAGLE_HOME` on each call and reopen when it changes; (c) `breed(…, { designer?: string })`; (d) `Arena.selfCheck?(answer, input): string` with a generic default replacing the geotag sentence; (e) `compareToParents(voyageId, generation)`: the seeded paired bootstrap of per-task differences on common tasks; (f) `race()` and `breed()` take `signal?: AbortSignal`, an abort leaving ungraded runs unscored and returning `complete: false, reason: 'aborted'`; (g) `mlx:` in `validate()` and `complete()`; (h) `splitOf` re-exported from `./arenas`; (i) the `Driver` provider union gains `'mlx'`; (j) `putArena(id: string, name: string)` and `putTasks(arenaData: string, rows: Array<{ id; input; truth; split: 'breeding' | 'race' | 'sealed' }>)` writing Beagle's `arenas` and `tasks` tables (replacing a task by id); (k) `sealedRace(arenaId: string, genomes: Genome[], o: { signal?: AbortSignal; seed?: number }): Promise<{ hash: string; scores: Score[]; perTask: Record<string, Record<string, number>> }>`: races the genomes on the sealed split outside any voyage, recording its runs under a synthetic voyage `sealed-<n>` per call so a second call scores afresh, and returns the `sealedHash(arenaId)` it used. Beagle's own `npm test` passes with each.
+3. **The spend kinds.** `'school'` (model calls for voyages and graduation, Claude or local, and arena builds by wall time) and `'train'` (MLX training and evaluation passes) join `SPEND_KINDS` (`budget.ts`), `CALL_KINDS` (`spend.ts`), the report's call kinds and `charge()`'s union. Rows carry `firm_id NULL` (or the commissioning firm, ruling 22), `run_id` the voyage, net version or LoRA id, and `unattended: unattended(now)` at the call's start, so the night cap (`json.unattended = 1`) sees school spend. Local credits follow Phase 2 ruling 1 with `modelGB` from the model's size.
+4. **The school lease.** `acquire(model, 'school', estimate, { waitUntil })` queues FIFO on the school queue behind the same `gate()`. A Claude school lease is a Claude work lease for counting: it holds one of `claudeConcurrency`'s slots (`workCount('claude')` includes it), is refused while `interactiveActive(now)` (the one Claude slot then stays his market's), and is refused once `schoolClaudeSpent(today) + estimate > school.claudeCreditsPerDay`. A local school lease needs `workCount('local') === 0` and holds the local slot: real work always beats the school.
+5. **`Provider.complete()`.** One turn, no tools, an optional schema: `complete(i: CompleteInput): Promise<CompleteResult>` on every backend. Claude reuses the no-tool `call()` path in `claude.ts` (empty strict MCP config, `CALL_DENY`, the CLI profile, `CALL_MAX_TURNS` 3, as Phase 2 chose for structured output), with a free-text branch that omits `--json-schema` when `schema` is null; Ollama and the Anthropic API reuse their transports; the fake answers from its script.
+6. **The training gate** (Decisions 3 and 4). `gateNow(kind: 'light' | 'heavy', now): Promise<GateState>`. Both kinds need: `school.enabled`; the stop file absent; `pmset -g batt` beginning "Now drawing from 'AC Power'"; the "Currently in use:" `powermode` of `pmset -g` not `1` unless `school.allowLowPower` (a value outside 0, 1, 2 or a missing key fails); the local time inside `school.window` (default 01:00 to 06:00) unless "Train now" is live; no local run live and no `awarded` job whose winning bid is local. `heavy` (LoRA, voyages, arena builds) adds: `HIDIdleTime` at least `school.idleMinutes` (default 15) unless "Train now"; `pmset -g therm` either consisting only of "Note: No … has been recorded" lines (nominal) or naming a thermal or performance warning level of 0, any other level is `limited` and anything unrecognised is `unknown`, both failing; `df -k <home>` at least 20 GB free. "Train now" lasts 3 hours and never skips AC power, power mode, thermals or disk.
+7. **The trainer.** `trainer/` in this repo: `requirements.txt` pins `mlx==0.32.4`, `mlx-lm==0.32.2`, `numpy`, `huggingface_hub`; `npm run trainer:setup` (run only by him or on his go-ahead; Decision 5) runs `uv venv --python cpython-3.12-macos-aarch64-none trainer/.venv` and `uv pip install -r trainer/requirements.txt` and checks `arm64`. The engine uses `PALIMPSEST_PYTHON` when set (during development, Beagle's `trainer/.venv/bin/python`, which already has the pinned versions), else `trainer/.venv/bin/python`. `trainer/school.py` is one warm subprocess speaking JSON lines (`ping`, `train_net`, `predict_net`, `lora_train`, `download_base`), started under the trainer profile: `(allow default)`, `(deny network*)` (except loopback bind for the server, ruling 26), `(deny file-write*)` with allows for `paths().school`, its tmp and `/dev/null` after it, `deny file-read*` of `SECRET_PATHS`; the builder check ran MLX on the GPU under exactly this shape. The gate loss path sends SIGTERM, waits 10 s, then SIGKILL.
+8. **The nets** (spec 9.3). One-hidden-layer MLP (16 units, exact GELU as MLX's `nn.gelu`, AdamW lr 1e-2, weight decay 1e-2, at most 300 epochs, early stop on the training rows' newest 15%, seed 1), features standardised, exported as JSON `{ net, version, features, norm: { mean; std }, layers: Array<{ W; b }>, out: 'sigmoid' | 'linear' }`. Units, labels and features (lists fixed in `shared/net-features.ts`, unknowns as 0 with a `has_*` mask):
+   - **Appraiser:** one row per awarded bid whose run ended; labels `pass` and `cost` (log1p of the run's credits); features: tier, scope globs, acceptance lines, source, language, checks present, price over value, confidence, plan length, workflow shape, model family, capability era, the firm's pass rate and Brier as of the award. Heads `appraiser-pass` and `appraiser-cost`. Unawarded bids are never rows; once the appraiser moves awards its rows are partly self-selected, which the school screen says.
+   - **Router:** the same rows without price, confidence and plan; predicts `pass` for a (job, agent) pair.
+   - **Durability:** one row per merged city job 30 days after merge, or earlier on a `merge.reverted` or `merge.followup`; label `survived`; features: diff files and lines, tier, model family, checks passed, `preexisting` count, design checked, review concerns, `hisChanges`.
+   - **Triage:** one row per item id in each finished day's `brief.opened.items`; label `acted` (a non-dismiss `brief.action` that day); features: item kind, tier, hours since `at`, weekday, first open, section position, the repo's share of his past accepts.
+   - **Taste:** one row per inspection with `design` whose job he merged or closed in PR mode, plus one per answered Understudy pair; label `approved`; features: the judge's `after`, `before`, difference, `diffOnly`, shots; for a pair, the local vision judge's two scores.
+   - **Master:** one row per resolved decision (ruling 14); label `approved`; features: the five nets' outputs with masks, the kind (one-hot over six), the repo's approval share over its last 20 decisions.
+9. **Follow-up fixes.** `watchRevertsFor()` also records `merge.followup { jobId, runId, repo, floorId, mergeSha, fixSha, files, at }` once per floor when, within 14 days after a city merge and by ancestry, a non-city commit (no `Palimpsest-Job:` trailer, not from a `palimpsest/*` branch) whose subject matches `/\bfix(es|ed)?\b/i` touches a file the merge touched. Files come from `engineGit(mirror, ['show', '--name-only', '--format=', sha])` on the mirror, since `recentCommits()` carries none. Never halts, never scars.
+10. **Understudy** (Decision 9). `engine/school/understudy.ts` opens the database read-only (`node:sqlite` `readOnly: true`); when that fails on a WAL database whose `-shm` cannot be created, it opens the URI `file:<path>?immutable=1`. Only when `school.understudy` is on; reads `statements` not removed and `pairs` with `pick` in `a` or `b`; never writes or copies images outside `paths().school`. With the switch on the statements join the design judge's bar for every UI inspection (disclosed in Settings and Decision 9). A pair is scored once by the local vision judge under a local school lease and cached.
+11. **Evaluation** (spec 9.2). Rows ordered by `at`; the newest 20% (at least 10) held out. A net reports nothing (`status 'thin'`, "n of 40 labels" with its cause, ruling 29) until 30 training rows and 10 held out. Every sigmoid head, the master included, is scored by Brier with a seeded 95% interval from Beagle's `bootstrap()` (10,000 resamples, seed 1), against a baseline (the training rows' base rate; for the appraiser, the firm's pass rate as of the award): `vsBaseline` from `bootstrap()` over per-row differences. A head is `trusted` only when `vsBaseline.hi < 0`. The cost head uses mean absolute error the same way. The master's agreement at 0.5 is reported beside its Brier, never instead. At a skewed base rate (he approves 97% of a kind) the baseline's Brier is near 0.03 and a master that only says "approve" is not trusted, so that kind is never offered; the school screen says so for the kind.
+12. **Retraining.** Nightly under the light gate, in the order appraiser, router, durability, triage, taste, master, only nets with new labels. Versions at `paths().school/nets/<net>/v<n>.json`, recorded as `net.trained`; promoted to current only if trusted or the current is not (`net.promoted`).
+13. **Distillation** (spec 9.3), only where targets mean the same: Triage on proposal items and Taste on UI merges take the master's `P(approve)` as a soft label (weight 0.3) while under 100 own rows. The master never learns from its own predictions. Held-out rows are always real.
+14. **His decisions and kinds** (Decisions 11 and 12). A decision is his and only his:
+    - a proposal accepted (`job.changed` from `proposed` to `open`) or dismissed (to `withdrawn` with `withdrawnBy 'him'`);
+    - a PR-mode city PR merged by him (`job.changed` to `merged` with the run in `waiting`; `hisChanges` and `mergedWithChanges` approve) or closed by him (the run ended `closed` with `PR_CLOSED_REASON`, exported from `ship.ts` as the text `closed(r)` writes today, "The PR was closed without a merge."); a job settled `closed` because its issue closed is not a decision;
+    - a revert (`merge.reverted`), which supersedes an earlier approve of that job as a decline.
+    Excluded: every `job.changed` or merge whose key has an `autonomy.acted` row (the city's own act). His later withdrawal of an auto-accepted job, or close of the PR it produced, is a decision with `approved false` and `agreed false`, and suspends that (kind, repo) grant (`autonomy.suspended { reason: 'he undid it' }`). Push-mode merges are not his decisions. `workKind(job, inspection)`: `propose:harness` (source `harness`), `propose:readme-gap` (source `proposal`), `merge:ui` (an inspection with `design`), else `merge:<tier>`. Key `<kind>:<jobId>`.
+15. **Prospective predictions.** When a decision becomes pending (a job posted `proposed`; `pr.opened`), `registerPrediction(job, run | null)` records `master.predicted { key, kind, repo, jobId, p, version, reason, at }` once per key; `p` null (an abstention) when the school is off, the master is missing, thin, untrusted, older than 8 days, or an input fails. `decision.resolved { key, kind, repo, jobId, approved, by, predictionId, agreed, at }`; `agreed` null when no prediction was recorded strictly before the decision (never in a window), false for an abstention.
+16. **Agreement** (Decision 12). `agreement(kind, repo?)` over the last 50 non-null `agreed` rows of that kind (latest resolution per key); `rate` with its interval; `eligible` needs 50 rows and `rate.value >= 0.95`. Repo test: at least 10 of its rows of that kind, none of its last 10 `agreed false`.
+17. **Asks and grants.** The school tick asks once per (kind, repo) when the kind is eligible, the master trusted, the repo passes its test, has a test and a build command, is connected, not halted, market on, is not `AllStreets/beagle` while pinned (ruling 1), and the pair has no open ask, no grant, and no decline or revocation by him younger than 30 days. `autonomy.asked` and a brief item `autonomy:<kind>:<repo>` (`grant`, `decline`, `why`). Only his action grants; he may re-grant a revoked pair from Settings at any time without an ask. Declining or revoking silences the pair for 30 days.
+18. **Acting under a grant** (Decision 13). `mayAct(kind, repo, jobId, now)` answers yes only when all hold, read fresh: `school.enabled`; an active grant with no revocation or suspension after it; the stop file absent; the repo connected, market on, not halted, with test and build; `agreement(kind)` still eligible and the repo test passing (else `autonomy.suspended` and a fresh ask); the master current and trusted; a `master.predicted` row for this key with `p >= 0.9` whose version is the current one or no older than `AGREE.staleDays`; for a merge: the inspection `passed` and `pushable`, the PR open, its head equal to `run.headSha`, and a fresh revert read of that repo (`watchRevertsFor(repo, now, { force: true })`: a mirror sync and the revert and follow-up scan past the 30-minute throttle; a failed read refuses; a revert found revokes first). Any throw answers `{ ok: false, reason: 'could not check: …' }`. Acts: `propose:*` through `acceptProposed()`; `merge:*` through `mergePR()`. Each records `autonomy.acted` before and its result after. A `gh pr merge --merge` refused because the repo allows only squash or rebase suspends the pair with that reason.
+19. **Revocation by revert** (spec 9.4). A `merge.reverted` whose job has an `autonomy.acted` row revokes that pair (`autonomy.revoked { by: 'revert', jobId }`) in the handler, before the repo halts; it also enters the window as `agreed false`.
+20. **Arenas** (spec 9.2; Decision 8). Built only by his click (`POST /api/school/arenas/:owner/:name`, from the district page or Settings), only for a connected repo with the market on and a test command; never by the tick. Two kinds:
+    - **Planted bugs:** up to 120 one-line mutants on non-test source lines (flip a comparison, off by one, swap `&&` and `||`, drop a `!`, swap `true` and `false`, return the first argument), each kept only if the suite passes at the head and fails with it; at most 60 kept.
+    - **Past changes:** from verified history (ruling 23): changes that touched source and tests, where the task base is the change's parent with the change's test files applied, kept only if those tests fail there and pass at the change; at most 40. A rebase-merged PR whose first parent is not on the default branch before the PR is skipped.
+    Split by Beagle's `splitOf(id)` (60, 25, 15), written into Beagle's store with `putArena` and `putTasks` (`Arena.data` is the arena id), so `sealedHash` covers the sealed split. Each task grades in an APFS clone of an arena base whose dependencies were installed once under the install egress; grading has no network. Building is heavy-gated and charged as local `school` credits.
+21. **Arena answers and grading.** Answer `{ edits: Array<{ file; find; replace }> }`, each `find` unique, source files only. Grade: apply to a fresh task clone, run the test command under the tool profile, 1 when the targets pass and nothing that passed at base fails, 0.5 when the targets pass and another fails, else 0. Tools: `read_file`, `list_files`, `search`, `run_tests`; `run_tests` makes a fresh scratch clone per call (`ToolSpec.run` gets only `ctx.task`, so racing genomes cannot share one). `graderTimeoutMs` is the repo's `CHECK_MS` (15 minutes) and `maxTurns` 24.
+22. **Voyages and commissions** (spec 7.2, 9.2; Decision 15). The tick sails one voyage at a time, on the ready arena least recently voyaged (a commissioned one first): population 8, 4 generations, local models only, Beagle `concurrency 1`, the designer per Decision 10 seeing only breeding-split tasks, children kept only with `compareToParents().lo > 0`. About 500 tool-using runs per voyage at 60 kept tasks: **a voyage spans several nights**; a gate loss aborts through the signal and the next night calls `race()` again, which skips runs already stored, so it resumes per run. The champion is scored once by `sealedRace()` against every seeded **local** agent on the same sealed tasks; with `lo > 0` against each it joins the roster (`lineage.origin 'school'`). Claude agents are not compared and the screen says so. A firm with at least 400 credits and an idle agent may commission a voyage on a ready arena of a repo it has a floor on: 120 credits move from the firm to the city (`credits.moved`, `voyage.commissioned`), at most one commissioned voyage live, and that firm has first refusal on its champion for 7 days.
+23. **Verified history** (Decision 7). `verifiedChanges(repo, now)`: the city's merges that passed inspection and survived 30 days; his merged PRs never reverted; and, with Decision 7's yes, his direct commits on the default branch that touch source, are 30 days old, have no revert or follow-up fix, and (where a suite exists) whose tests pass at the commit when the school checks them under the tool profile (cached by sha). LoRA examples: chat in the arena's shape, assistant answer the edits built from the change's hunks, excluding any change in a sealed split, files over 24 KB, examples over 4,096 tokens. Training needs `LORA.min` 100 examples.
+24. **LoRA training** (Decision 6). Base `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit`, `--fine-tune-type lora --num-layers 16 --batch-size 2 --iters 600 --learning-rate 1e-5 --max-seq-length 4096 --mask-prompt --grad-checkpoint --save-every 50 --adapter-path <dir>`, heavy gate. The checkpoint is `<dir>/adapters.safetensors` (rewritten at each save, with `<step>_adapters.safetensors` beside it). A resume passes `--resume-adapter-file <dir>/adapters.safetensors` and `--iters` the remaining steps; it loads weights only, so the optimiser state and the batch order restart; the run records `optimizerReset: true` and the steps lost. A resumed run is not equivalent to an uninterrupted one and the card says so.
+25. **Graduation** (spec 9.2). An adapter is scored by one `sealedRace()` per arena whose sealed tasks its data excluded, as the adapter genome against the base genome (same single-shape instructions); it graduates only if the paired difference over all those tasks has `lo > 0`. Each `sealedRace` adds one sealed use to that arena; after `SEALED_USES` (10) the arena's sealed split is spent: no further graduation or champion claim on it until he rebuilds the arena (a fresh split, a new `sealed_hash`), and the screen shows the use count. A graduate becomes `mlx:grad-<base short>-<n>`, a roster agent with root `collegiate`, `lineage.origin 'school'`.
+26. **The `mlx` backend.** A warm `mlx_lm.server --model <base> --adapter-path <dir> --host 127.0.0.1 --port <free>` under the trainer profile with loopback bind only, one at a time, stopped after 10 idle minutes; OpenAI chat transport with tool calls; `poolOfModel('mlx:…')` is `local`.
+27. **The university plot** (Decision 16). `ensureCampus()` takes `nextSlot('campus', 'university')` at the Phase 4 engine's first start (Task 1); the campus is that one 240 m block on a terrace 6 m up. Nothing moves.
+28. **Commuting to school** (spec 6.4). A seeded or roster agent whose genome is a parent in a live voyage takes a trip with reason `school` to the campus and home when it ends or pauses for the night; a graduate's first trip goes from the campus to its firm's quarter.
+29. **Honest empty states.** Every card that has nothing says why, from data: appraiser and router "No bid has been run: the market is off on every repo" (or "n of 40 awarded runs ended"); durability "No city merge has had 30 days yet"; triage "n finished brief days so far"; taste "No UI change has been inspected yet; Understudy has 37 statements and 0 answered pairs" (counts read live); master "None of your decisions has had a prediction yet"; LoRA "11 of 100 verified changes" (counted by `verifiedChanges`), or "Download the base model first"; arenas "No arena: build one from a market-on repo's page"; the trainer "Not set up on this Mac". A chart with fewer than two points is a sentence, never an axis.
 
 ## Review Focus
 
-1. He unplugs the Mac at 02:10 during a LoRA run, or wakes it and starts typing: within 30 s the trainer is stopped, `train.paused` records the reason and the steps lost, no adapter half trained is evaluated or graduated, and the next eligible night resumes from the checkpoint with the same data and seed. (Tasks 6, 7 and 23.)
-2. A revert of an autonomous merge lands while the next autonomous merge for the same kind and repo is in flight: the grant is revoked before that merge's last check, `mayAct` refuses right before `gh pr merge`, the brief says what happened, and the repo halts as Phase 2 does. (Tasks 16 and 17.)
-3. The master is missing, its weights are corrupt JSON, it is 9 days old, the trainer venv is absent, or one small net throws: every prediction abstains, every abstention counts against agreement, no ask is made and no action runs, and the school screen names the reason. (Tasks 11, 14 and 16.)
-4. The engine was down while he merged a PR, so the decision is seen before any prediction exists, or a prediction is backfilled after the fact: that decision never enters an agreement window. (Tasks 14 and 15.)
-5. A sealed task's PR also appears among the LoRA examples, the designer's evidence or the breeding split: it is excluded from training and from the designer, and a test names it. (Tasks 18, 19, 21 and 22.)
+1. He unplugs the Mac at 02:10 during a LoRA run, or wakes it and starts typing: within 30 s the trainer is stopped, `train.paused` records the reason and the steps lost, no half-trained adapter is evaluated, and the next eligible night resumes from `adapters.safetensors` with the remaining steps and `optimizerReset: true` recorded. (Tasks 6, 7 and 25.)
+2. A revert of an autonomous merge is pushed a minute before the next autonomous merge on that kind and repo: the second merge's own fresh revert read finds it, revokes the grant, refuses, and the repo halts. (Tasks 16 and 17.)
+3. The master is missing, its weights are corrupt, it is 9 days old, the school is off, the trainer is absent, or one small net throws: every prediction abstains, every abstention counts against agreement, no ask is made and no action runs, and the screen names the reason. (Tasks 12, 13, 14 and 16.)
+4. A decision seen before any prediction existed (the engine was down), the city's own auto-accept or auto-merge, or a job closed because its issue closed: none of them enters an agreement window; his undoing of an autonomous act does, as a disagreement. (Tasks 14 and 15.)
+5. A sealed task's change appears among the LoRA examples, the designer's evidence or the breeding split, or a sealed split is used an eleventh time: it is excluded, or the claim is refused with "sealed set spent", and a test names it. (Tasks 20, 21, 24 and 27.)
 
 ---
 
 ## File Structure
 
 ```
-shared/types.ts                 + NetName, NetCard, NetStatus, NetVersion, Voyage view, ArenaInfo, Graduate, WorkKind, Prediction,
-                                  Decision, Agreement, Grant, GrantState, TrainState, GateState, SchoolSettings; RootStyle + 'collegiate';
-                                  TripReason + 'school'; BriefItemKind + 'autonomy' | 'graduate' | 'acted'; BriefAction + 'grant' | 'decline' | 'revoke';
-                                  Settings.school
-shared/ledger-kinds.ts          + school.*, arena.*, train.*, net.trained, master.predicted, decision.resolved, autonomy.*, merge.followup
-shared/school-rules.ts          pure: WORK_KINDS, workKind(), AGREE, NET_MIN, gate constants, LORA_*, ARENA_*, VOYAGE, SCHOOL_POOL
-shared/net-features.ts          pure: the feature lists and encoders per net
-shared/nets.ts                  pure: forward(net, x), parseNet(json)
+shared/types.ts                 + NetName, NetCard, NetStatus, NetVersion, Interval, WorkKind, Prediction, Decision, Agreement, Grant, GrantState,
+                                  GateState, TrainKind, TrainState, ArenaInfo, VoyageView, Graduate, SchoolSettings; RootStyle + 'collegiate';
+                                  TripReason + 'school'; BriefItemKind + 'autonomy' | 'graduate' | 'acted'; BriefAction + 'grant' | 'decline' | 'revoke'
+shared/ledger-kinds.ts          + school.enabled, arena.built, voyage.*, train.*, net.*, master.predicted, decision.resolved, autonomy.*, graduate.made, merge.followup
+shared/school-rules.ts          pure: WORK_KINDS, workKind(), itemKey(), AGREE, NET_MIN, GATE, LORA, ARENA, VOYAGE, SEALED_USES, COMMISSION, inWindow()
+shared/net-features.ts          pure: feature lists and encoders
+shared/nets.ts                  pure: parseNet(), forward(), erf()
 engine/home.ts                  + paths().school
-engine/db.ts                    + nets, predictions, decisions, grants, arenas, arena_tasks, voyages, lora_runs, graduates tables
+engine/db.ts                    + school tables
 engine/market/provider.ts       + CompleteInput, CompleteResult, Provider.complete
 engine/market/{claude,ollama,anthropic-api,fake-provider}.ts   + complete()
-engine/market/mlx.ts            the mlx backend (graduates)
-engine/market/providers.ts      + 'mlx' backend kind
-engine/market/budget.ts         + 'school', 'train' kinds; acquire(…, 'school'); SCHOOL_POOL; schoolClaudeSpent()
-engine/market/{spend,report,replay}.ts   + the kinds; + school tables in MarketState
-engine/market/ship.ts           + registerPrediction on pr.opened; merge.followup in watchReverts; revert revokes grants
-engine/market/jobs.ts           + registerPrediction on a proposed job
+engine/market/mlx.ts            the mlx backend
+engine/market/providers.ts      + 'mlx'
+engine/market/budget.ts         + kinds, the school lease, liveWork(), creditEntries(), schoolClaudeSpent()
+engine/market/{spend,report,replay}.ts
+engine/market/ship.ts           + PR_CLOSED_REASON, watchRevertsFor(), merge.followup, registerPrediction, revokeOnRevert
+engine/market/jobs.ts           + registerPrediction on proposed jobs
+engine/market/firms.ts          + school roster, commissions, graduates
 engine/github.ts                + mergePR()
-engine/school/beagle-api.ts     the Beagle types Palimpsest uses
-engine/school/beagle.ts         loadBeagle(), schoolDriver
-engine/school/stats.ts          ci(), pairedCi() over Beagle's bootstrap
-engine/school/gate.ts           gateNow(), probes
-engine/school/trainer.ts        the warm trainer subprocess, its profile, the charge
-engine/school/understudy.ts     the read-only reader
-engine/school/datasets.ts       rows per net from the ledger
-engine/school/nets.ts           train, evaluate, promote, current(), predict()
-engine/school/decisions.ts      registerPrediction(), resolve(), agreement()
-engine/school/autonomy.ts       asks, grants, mayAct(), act(), revoke
-engine/school/arenas.ts         planted bugs, past issues, verification, Arena objects
-engine/school/voyages.ts        breeding runs
-engine/school/lora.ts           dataset, training, evaluation, graduation
-engine/school/campus.ts         ensureCampus()
-engine/school/tick.ts           the school's scheduler
-engine/school/api.ts            the school routes
-trainer/requirements.txt, trainer/school.py, trainer/nets.py, trainer/test_school.py
-app/src/api.ts, app/src/router.ts   + school routes and events
-app/src/ui/school.ts, school-words.ts, autonomy.ts   the school screen, its words, the grants block
-app/src/ui/settings.ts, repo.ts, brief.ts, job.ts, agent.ts   as the tasks say
-app/src/city/campus/*.ts        site, halls, library, clock tower, observatory, life
-app/src/city/tower/*            + collegiate root
-tools/ui-test-school.ts, tools/ui-test.ts, tools/capture.ts, tools/vendor-beagle.ts
-test/*.test.ts                  node:test suites per task
+engine/school/{beagle-api,beagle,stats,trainer-env,gate,trainer,understudy,datasets,nets,decisions,autonomy,
+               history,mutants,arenas,voyages,roster,lora,campus,tick,api}.ts
+trainer/requirements.txt, school.py, nets.py, test_school.py, README.md
+app/src/api.ts, router.ts
+app/src/ui/school.ts, school-words.ts, autonomy.ts, settings.ts, repo.ts, brief.ts, brief-words.ts, job.ts, agent.ts, treasury.ts
+app/src/city/campus/{index,site,halls,library,clock,observatory,life}.ts, app/src/city/breakdown.ts, app/src/city/tower/*
+tools/ui-test-school.ts, tools/ui-test.ts, tools/capture.ts
+test/fixtures/pmset/*.txt, test/fixtures/net-parity.json, test/*.test.ts
 ```
 
 ## Pre-flight conflict table
 
 | Tasks | Shared | Resolution |
 |---|---|---|
-| 1, all | `shared/types.ts`, `LEDGER_KINDS`, the spend kinds, `Settings.school`, the tables | Task 1 freezes them; a later field is added in its own commit and noted in the ledger |
-| 2, 4 | Beagle's API | Task 2 lands in Beagle and is pinned; Task 4 imports only what ruling 1 lists |
-| 3, 4, 24 | `Provider.complete`, `CompleteInput` | Task 3 defines and implements on four backends; Task 24 adds the fifth |
-| 4, 21, 25 | `schoolDriver` | every Beagle model call goes through it; no school code calls a provider for a genome directly |
-| 6, 7, 13, 18 to 23 | `gateNow()` | only Task 6 reads the probes; everything else asks `gateNow` |
-| 8, 11, 12, 14 | rows, weights, `predict()` | Task 8 builds rows, Task 11 trains and loads weights, Task 12 evaluates and promotes, Task 14 predicts |
-| 14, 15, 16, 17 | predictions, decisions, grants | Task 14 writes predictions, Task 15 decisions and agreement, Task 16 grants and `mayAct`, Task 17 acts |
-| 17, Phase 2 `ship.ts` | the revert handler | Task 17 adds one call, `revokeOnRevert(data)`, before `haltRepo()` in `watchReverts()` |
-| 26, 28 to 30 | the `api` client | screens call only what Task 26 added |
-| 27, 28 to 35 | the sample school | `seedSchool()` inside `seedEconomy()` is the only entry point |
-| 31 to 35, Phase 3 city | `scene.ts`, the perf guard | the campus is its own group built in `app/src/city/campus/`; the tower builders change only in Task 35 |
+| 1, all | types, kinds, spend kinds, `Settings.school`, tables, the campus plot | Task 1 freezes them |
+| 2, 4, 21, 22, 27 | Beagle's API and store | Task 2 lands in Beagle; Task 4 imports ruling 1's list; Task 21 writes tasks with `putTasks`; Tasks 22 and 27 race through `race()` and `sealedRace()` |
+| 3, 4, 26 | `Provider.complete` | Task 3 on four backends; Task 26 adds the fifth |
+| 4, 22, 27 | `schoolDriver` | every Beagle model call goes through it |
+| 6, all trainers | `gateNow()` | only Task 6 reads probes |
+| 8, 11, 12, 14 | rows, weights, `predict()` | in that order |
+| 14 to 17 | predictions, decisions, grants | 14 writes predictions, 15 decisions, 16 grants and `mayAct`, 17 acts |
+| 17, Phase 2 `ship.ts` | the revert handler | Task 9 extracts `watchRevertsFor()`; Task 17 calls `revokeOnRevert()` in it before `haltRepo()` |
+| 18, 20, 24 | verified history | Task 18 produces `verifiedChanges()`; 20 and 24 consume it |
+| 28, 30 to 33 | the `api` client | screens call only what Task 28 added (and Task 1's campus route) |
+| 29, 30 to 38 | the sample school | `seedSchool()` inside `seedEconomy()` |
+| 34 to 38, Phase 3 city | `scene.ts`, `breakdown.ts`, the perf guard | the campus is its own group with its own `breakdown()` key; tower builders change only in Task 38 |
 
-Known orderings: Task 1 first; Task 2 merged in Beagle before Task 4; Task 3 before Task 4; Tasks 5 and 6 before Task 7; Task 7 before Tasks 11, 23; Task 8 (with 9 and 10) before Task 11; Tasks 11 and 12 before 13 and 14; Task 14 before 15; 15 before 16; 16 before 17; Task 20 needs 18 and 19; Task 21 needs 4, 6 and 20; Task 23 needs 7 and 22; Task 25 needs 21, 23 and 24; Task 26 after Tasks 12 to 25; Task 27 before every UI test; the city track's Task 31 needs only Task 1 (`campus` slot and types) and Task 26's `/api/school/campus`; Task 34 needs Task 26's events; both tracks merged before Tasks 36 to 38.
+Known orderings: Task 1 first; Task 2 merged by him before Task 4; Task 3 before Task 4; Tasks 5 and 6 before Task 7; Task 7 before Tasks 11, 25 and 27; Tasks 8, 9 and 10 before Task 11; Task 9 before Task 17; Tasks 11 and 12 before 13 and 14; 14, 15, 16, 17 in order; Task 18 before Tasks 20 and 24; Tasks 19 and 20 before 21; Task 21 before 22; Task 22 before 23; Tasks 24 and 25 before 27; Task 26 before 27; Task 28 after Tasks 12 to 27; Task 29 before every UI test; the city track starts after Task 1 (the campus plot and `/api/school/campus`), Task 37 needs Task 28's events; both tracks merged before Tasks 39 to 41.
 
 ## Model marks
 
-**[Opus]** for every task but Tasks 26 and 30, which are **[Sonnet]** with a full brief. Reviews of logic and visual work go to Opus.
+**[Opus]** for every task but Tasks 28, 32 and 33, which are **[Sonnet]** with a full brief. Reviews of logic and visual work go to Opus.
 
 ---
 
 ## Part A: foundations (screens track)
 
-### Task 1: Types, ledger kinds, spend kinds, settings, tables and replay [Opus] [screens]
+### Task 1: Types, ledger kinds, spend kinds, settings, tables, replay and the campus plot [Opus] [screens]
 
 **Files:**
-- Modify: `shared/types.ts`, `shared/ledger-kinds.ts`, `engine/home.ts` (`paths().school`, creating its subdirectories), `engine/db.ts`, `engine/settings.ts`, `engine/repos.ts` (`nextSlot` kind union gains `'campus'`), `engine/market/budget.ts`, `engine/market/spend.ts`, `engine/market/report.ts`, `engine/market/replay.ts`
-- Create: `shared/school-rules.ts`
-- Test: `test/market-types.test.ts`, `test/school-rules.test.ts`, `test/db.test.ts`, `test/replay.test.ts`, `test/budget.test.ts`, `test/spend.test.ts`, `test/home.test.ts`
+- Modify: `shared/types.ts`, `shared/ledger-kinds.ts`, `engine/home.ts`, `engine/db.ts`, `engine/settings.ts`, `engine/repos.ts` (`nextSlot` kind union gains `'campus'`), `engine/main.ts` (`ensureCampus()` at start), `engine/market/budget.ts`, `engine/market/spend.ts`, `engine/market/report.ts`, `engine/market/replay.ts`, `engine/market/api.ts` (mounts `GET /api/school/campus`)
+- Create: `shared/school-rules.ts`, `engine/school/campus.ts`
+- Test: `test/market-types.test.ts`, `test/school-rules.test.ts`, `test/db.test.ts`, `test/replay.test.ts`, `test/budget.test.ts`, `test/spend.test.ts`, `test/home.test.ts`, `test/campus-plot.test.ts`
 
 **Interfaces:**
 - Produces (`shared/types.ts`):
@@ -204,59 +205,62 @@ Known orderings: Task 1 first; Task 2 merged in Beagle before Task 4; Task 3 bef
   export type NetStatus = 'thin' | 'untrained' | 'trained' | 'trusted';
   export interface Interval { value: number; lo: number; hi: number; n: number }
   export interface NetVersion { net: NetName; version: number; at: string; rows: { train: number; heldOut: number; distilled: number };
-    metric: 'brier' | 'mae' | 'agreement'; score: Interval; baseline: Interval; vsBaseline: { diff: number; lo: number; hi: number };
-    trusted: boolean; current: boolean; seconds: number; path: string }
-  export interface NetCard { net: NetName; status: NetStatus; reason: string | null; current: Omit<NetVersion, 'path'> | null;
-    history: Array<Pick<NetVersion, 'version' | 'at' | 'score' | 'trusted'>>; labels: number; needs: number }
+    metric: 'brier' | 'mae'; score: Interval; baseline: Interval; vsBaseline: { diff: number; lo: number; hi: number };
+    agreement: Interval | null; trusted: boolean; current: boolean; seconds: number; path: string }
+  export interface NetCard { net: NetName; status: NetStatus; reason: string | null; cause: string | null; current: Omit<NetVersion, 'path'> | null;
+    history: Array<Pick<NetVersion, 'version' | 'at' | 'score' | 'trusted'>>; labels: number; needs: number; selfSelected: boolean }
   export type WorkKind = 'propose:harness' | 'propose:readme-gap' | 'merge:low' | 'merge:normal' | 'merge:high' | 'merge:ui';
   export interface Prediction { id: number; key: string; kind: WorkKind; repo: string; jobId: string; p: number | null; version: number | null; reason: string | null; at: string }
   export interface Decision { key: string; kind: WorkKind; repo: string; jobId: string; approved: boolean;
-    by: 'accept' | 'dismiss' | 'merge' | 'close' | 'revert'; predictionId: number | null; agreed: boolean | null; at: string }
-  export interface Agreement { kind: WorkKind; repo: string | null; rows: number; agreed: number; rate: Interval | null; eligible: boolean; repoOk: boolean | null }
+    by: 'accept' | 'dismiss' | 'merge' | 'close' | 'revert' | 'undo'; predictionId: number | null; agreed: boolean | null; at: string }
+  export interface Agreement { kind: WorkKind; repo: string | null; rows: number; agreed: number; rate: Interval | null; eligible: boolean; repoOk: boolean | null; skewed: boolean }
   export type GrantState = 'asked' | 'granted' | 'declined' | 'suspended' | 'revoked';
-  export interface Grant { kind: WorkKind; repo: string; state: GrantState; at: string; by: 'him' | 'revert' | 'school'; rate: Interval | null; reason: string | null; acted: number }
-  export interface GateState { kind: 'light' | 'heavy'; ok: boolean; reason: string | null; power: 'ac' | 'battery' | 'unknown'; idleMin: number | null;
-    inWindow: boolean; trainNowUntil: string | null; freeGB: number | null; thermal: 'nominal' | 'limited' | 'unknown' }
+  export interface Grant { kind: WorkKind; repo: string; state: GrantState; at: string; by: 'him' | 'revert' | 'school'; rate: Interval | null; reason: string | null; acted: number; quietUntil: string | null }
+  export interface GateState { kind: 'light' | 'heavy'; ok: boolean; reason: string | null; power: 'ac' | 'battery' | 'unknown'; powerMode: 0 | 1 | 2 | null;
+    idleMin: number | null; inWindow: boolean; trainNowUntil: string | null; freeGB: number | null; thermal: 'nominal' | 'limited' | 'unknown' }
   export type TrainKind = 'nets' | 'lora' | 'arena' | 'voyage' | 'eval';
   export interface TrainState { id: string; kind: TrainKind; status: 'waiting' | 'running' | 'paused' | 'done' | 'failed'; reason: string | null;
-    startedAt: string; endedAt: string | null; seconds: number; steps: { done: number; of: number; lost: number } | null; credits: number }
+    startedAt: string; endedAt: string | null; seconds: number; steps: { done: number; of: number; lost: number; optimizerReset: boolean } | null; credits: number }
   export interface ArenaInfo { id: string; repo: string; kind: 'planted' | 'past'; sha: string; tasks: { breeding: number; race: number; sealed: number };
-    candidates: number; kept: number; builtAt: string; status: 'building' | 'ready' | 'failed'; reason: string | null }
+    candidates: number; kept: number; sealedUses: number; sealedHash: string | null; builtAt: string; status: 'building' | 'paused' | 'ready' | 'failed' | 'spent'; reason: string | null }
   export interface VoyageView { id: string; arena: string; status: 'sailing' | 'paused' | 'done' | 'capped' | 'failed'; generation: number; of: number;
+    runs: { done: number; of: number }; commissionedBy: string | null;
     scores: Array<{ genome: string; name: string; generation: number; mean: number; lo: number; hi: number; parents: string[] }>;
     promoted: Array<{ child: string; parent: string; diff: number; lo: number; hi: number }>; sealed: Interval | null; credits: number; startedAt: string; endedAt: string | null }
   export interface Graduate { id: string; model: ModelRef; base: string; loraId: string; sealed: Interval; baseSealed: Interval;
-    vsBase: { diff: number; lo: number; hi: number }; examples: number; at: string; agentId: string | null }
-  export interface SchoolSettings { enabled: boolean; window: { from: string; to: string }; idleMinutes: number; trainNowUntil: string | null;
-    claudeCreditsPerDay: number; designer: ModelRef; understudy: boolean; baseModel: string; baseModelReady: boolean }
+    vsBase: { diff: number; lo: number; hi: number }; examples: number; arenas: string[]; at: string; agentId: string | null }
+  export interface SchoolSettings { enabled: boolean; window: { from: string; to: string }; idleMinutes: number; allowLowPower: boolean; trainNowUntil: string | null;
+    claudeCreditsPerDay: number; designer: ModelRef; understudy: boolean; commitsAsWork: boolean; baseModel: string; baseModelReady: boolean }
   // RootStyle + 'collegiate'; TripReason + 'school'; BriefItemKind + 'autonomy' | 'graduate' | 'acted'; BriefAction + 'grant' | 'decline' | 'revoke'.
-  // Settings + school: SchoolSettings (enabled false, window 01:00 to 06:00, idleMinutes 15, trainNowUntil null, claudeCreditsPerDay 30,
-  //   designer 'claude:sonnet', understudy false, baseModel 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit', baseModelReady false).
+  // Settings + school: enabled false, window 01:00 to 06:00, idleMinutes 15, allowLowPower (Decision 3's answer; true as written), trainNowUntil null,
+  //   claudeCreditsPerDay 30, designer 'claude:sonnet', understudy false, commitsAsWork (Decision 7's answer; true as written),
+  //   baseModel 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit', baseModelReady false.
   ```
-- Produces (`shared/school-rules.ts`): `WORK_KINDS: readonly WorkKind[]` (ruling 14's six), `AGREE = { window: 50, rate: 0.95, repoMin: 10, repoLast: 10, actP: 0.9, quietDays: 30, staleDays: 8 }`, `NET_MIN = { train: 30, heldOut: 10 }`, `HELD_OUT = 0.2`, `DISTIL = { weight: 0.3, under: 100 }`, `GATE = { pollMs: 30_000, minFreeGB: 20, trainNowHours: 3, killGraceMs: 10_000 }`, `SCHOOL_POOL = { claude: 1, local: 1 }`, `LORA = { min: 100, iters: 600, saveEvery: 50, layers: 16, batch: 2, lr: 1e-5, maxTokens: 4096, maxFileBytes: 24_000, gb: 4.3 }`, `ARENA = { mutants: 120, keepPlanted: 60, keepPast: 40 }`, `VOYAGE = { population: 8, generations: 4 }`, `FOLLOWUP_DAYS = 14`, `SURVIVE_DAYS = 30`, `inWindow(window, now): boolean` (handles a window that crosses midnight), `itemKey(kind, jobId)`.
-- Produces (`shared/ledger-kinds.ts`): `school.enabled`, `arena.built`, `voyage.started`, `voyage.generation`, `voyage.ended`, `train.started`, `train.paused`, `train.ended`, `net.trained`, `net.promoted`, `master.predicted`, `decision.resolved`, `autonomy.asked`, `autonomy.granted`, `autonomy.declined`, `autonomy.suspended`, `autonomy.revoked`, `autonomy.acted`, `graduate.made`, `merge.followup`.
-- Produces (`engine/db.ts`, migration): `nets (net TEXT, version INTEGER, at TEXT, current INTEGER, json TEXT, PRIMARY KEY (net, version))`; `predictions (id INTEGER PRIMARY KEY, key TEXT UNIQUE, kind TEXT, repo TEXT, at TEXT, json TEXT)`; `decisions (key TEXT, at TEXT, kind TEXT, repo TEXT, json TEXT)` with index `(kind, at)`; `grants (kind TEXT, repo TEXT, state TEXT, at TEXT, json TEXT, PRIMARY KEY (kind, repo))`; `arenas (id TEXT PRIMARY KEY, repo TEXT, json TEXT)`; `arena_tasks (id TEXT PRIMARY KEY, arena TEXT, split TEXT, pr TEXT, sha TEXT, json TEXT)`; `voyages (id TEXT PRIMARY KEY, json TEXT)`; `trains (id TEXT PRIMARY KEY, kind TEXT, status TEXT, json TEXT)`; `graduates (id TEXT PRIMARY KEY, json TEXT)`.
-- Produces (`engine/market/budget.ts`): `SPEND_KINDS` gains `'school'`, `'train'`; `charge()`'s kind union gains both; `acquire(model, kind: 'plan' | 'work' | 'school', estimate, opts)` (ruling 4); `schoolClaudeSpent(day): number`. `spend.ts` `CALL_KINDS` and the report's call kinds gain both.
-- Produces (`engine/market/replay.ts`): `MarketState` gains `nets`, `predictions`, `decisions`, `grants`, `arenas`, `voyages`, `trains`, `graduates`; `verifyReplay()` compares each against its table.
-- [ ] **Step 1: Write the failing tests:** `inWindow handles 01:00 to 06:00 and 22:00 to 04:00`; `itemKey joins kind and job`; `paths().school creates beagle, arenas, nets, lora, graduates and logs under the temp home`; `the db has the nine school tables`; `a school charge at night counts in the five-hour window, the night cap and citySpent`; `a train charge appears under the city's own calls in the spend tables and the report`; `acquire school on claude refuses past claudeCreditsPerDay with the reason`; `acquire school on local is refused while a local run holds a work lease`; `acquire school waits in its own queue and does not take a plan slot`; `replay rebuilds each school table and verifyReplay flags a corrupted grant row`; `nextSlot('campus', 'university') takes the next slot once and returns it again`; pin: `poolOfModel('mlx:grad-x') is local` (passes today).
+- Produces (`shared/school-rules.ts`): `WORK_KINDS`, `workKind()`, `itemKey(kind, jobId)`, `AGREE = { window: 50, rate: 0.95, repoMin: 10, repoLast: 10, actP: 0.9, quietDays: 30, staleDays: 8 }`, `NET_MIN = { train: 30, heldOut: 10 }`, `HELD_OUT = 0.2`, `DISTIL = { weight: 0.3, under: 100 }`, `GATE = { pollMs: 30_000, minFreeGB: 20, trainNowHours: 3, killGraceMs: 10_000 }`, `LORA = { min: 100, iters: 600, saveEvery: 50, layers: 16, batch: 2, lr: 1e-5, maxSeq: 4096, maxFileBytes: 24_000, gb: 4.3 }`, `ARENA = { mutants: 120, keepPlanted: 60, keepPast: 40, maxTurns: 24 }`, `VOYAGE = { population: 8, generations: 4, concurrency: 1 }`, `SEALED_USES = 10`, `COMMISSION = { fee: 120, minBalance: 400, firstRefusalDays: 7 }`, `FOLLOWUP_DAYS = 14`, `SURVIVE_DAYS = 30`, `inWindow(window, now)`.
+- Produces (`shared/ledger-kinds.ts`): `school.enabled`, `arena.built`, `voyage.started`, `voyage.commissioned`, `voyage.generation`, `voyage.ended`, `train.started`, `train.paused`, `train.ended`, `net.trained`, `net.promoted`, `master.predicted`, `decision.resolved`, `autonomy.asked`, `autonomy.granted`, `autonomy.declined`, `autonomy.suspended`, `autonomy.revoked`, `autonomy.acted`, `graduate.made`, `merge.followup`.
+- Produces (`engine/db.ts`): `nets (net, version, at, current, json; PK (net, version))`; `predictions (id INTEGER PRIMARY KEY, key TEXT UNIQUE, kind, repo, at, json)`; `decisions (key, at, kind, repo, json)` indexed `(kind, at)`; `grants (kind, repo, state, at, json; PK (kind, repo))`; `arenas (id PK, repo, json)`; `arena_tasks (id PK, arena, split, ref, json)`; `voyages (id PK, json)`; `trains (id PK, kind, status, json)`; `graduates (id PK, json)`; `verified (repo, sha, json; PK (repo, sha))`.
+- Produces (`engine/market/budget.ts`): the kinds; `charge()` union; `acquire(model, 'plan' | 'work' | 'school', …)` (ruling 4); `schoolClaudeSpent(day)`; `liveWork(pool): number` and `creditEntries(runId)` exported. `spend.ts`, `report.ts` gain the kinds.
+- Produces (`engine/market/replay.ts`): `MarketState` gains `nets`, `predictions`, `decisions`, `grants`, `arenas`, `voyages`, `trains`, `graduates`; `verifyReplay()` compares each.
+- Produces (`engine/school/campus.ts`): `ensureCampus(): number`, `campusOrigin(): { x: number; z: number }`; route `GET /api/school/campus` -> `{ origin; slot; live: { voyage: boolean; nets: boolean; lora: boolean } }` (all false until later tasks fill them).
+- [ ] **Step 1: Write the failing tests:** `inWindow handles 01:00 to 06:00 and 22:00 to 04:00`; `paths().school creates its subdirectories under the temp home`; `the db has the ten school tables`; `a school charge made unattended counts in the night cap, the five-hour window and citySpent`; `a train charge on an mlx model never enters the Claude window`; `a train charge appears under the city's own calls in the spend tables and the report`; `acquire school on claude takes a Claude work slot, so a second market Claude run is busy at claudeConcurrency 2`; `acquire school on claude is refused while his interactive use is active`; `acquire school on claude refuses past claudeCreditsPerDay`; `acquire school on local is refused while a local run holds a work lease`; `replay rebuilds each school table and verifyReplay flags a corrupted grant row`; `ensureCampus takes the next slot once, the same slot again on restart, and moves no district`; `GET /api/school/campus answers the origin of that slot`; pin: `poolOfModel('mlx:grad-x') is local`.
 - [ ] **Step 2:** Run `npm test` and `npm run typecheck`; expect FAIL on the new tests.
-- [ ] **Step 3:** Implement. The settings default holds `school.enabled false`.
+- [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Lay the Phase 4 types: the school's tables, its spend, its lease and its ledger`.
+- [ ] **Step 5:** Commit `Lay the Phase 4 types: the school's tables, spend, lease and ledger, and the university's plot`.
 
-### Task 2: Beagle's library fixes, in Beagle's repo [Opus] [screens]
+### Task 2: Beagle's library fixes, as one PR on Beagle [Opus] [screens]
 
-**Files (in a worktree of `~/Downloads/beagle` on branch `palimpsest-library`, never on his checkout's working tree):**
-- Modify: `package.json` (`exports`), `src/paths.ts`, `src/store.ts`, `src/designer.ts`, `src/runner.ts`, `src/race.ts`, `src/genome.ts`, `src/models/index.ts`, `src/arenas/types.ts`, `README.md` (the fixed audit lines)
-- Test: Beagle's `test/genome.test.ts`, `test/runner.test.ts`, `test/race.test.ts`, `test/designer.test.ts`, `test/paths.test.ts` (new where missing)
+**Files (in a fresh `git clone https://github.com/AllStreets/beagle` under the scratchpad, branch `palimpsest-library`; `~/Downloads/beagle` is never touched):**
+- Modify: `package.json`, `src/paths.ts`, `src/store.ts`, `src/designer.ts`, `src/runner.ts`, `src/race.ts`, `src/genome.ts`, `src/models/index.ts`, `src/arenas/index.ts`, `src/arenas/types.ts`, `README.md`
+- Test: Beagle's tests (new files where missing)
 
 **Interfaces:**
-- Produces (Beagle, ruling 2): `exports` entries; `paths` getters; `open()` reopening on a changed home; `breed(voyageId, generation, o: { …; designer?: string; signal?: AbortSignal })`; `race(…, o: { …; signal?: AbortSignal })` returning `complete: false, reason: 'aborted'` on abort with ungraded runs unscored; `Arena.selfCheck?(answer: unknown, input: unknown): string` and the generic default; `compareToParents(voyageId: string, generation: number)`; `mlx:` accepted by `validate()` and passed to the driver by `complete()`.
-- [ ] **Step 1: Write the failing tests in Beagle:** `a genome on mlx:grad-1 validates`; `complete passes mlx to the driver`; `the self-check turn of a fix-test genome does not mention where anything happened`; `breed uses the designer it is given`; `an aborted race scores no run that had not finished and says aborted`; `compareToParents gives a positive interval for a child better on every common task and one spanning zero for a tie`; `paths follow BEAGLE_HOME changed between calls`.
-- [ ] **Step 2:** Run `npm test` in the Beagle worktree; expect FAIL.
-- [ ] **Step 3:** Implement, keeping Beagle's style and its existing tests green.
-- [ ] **Step 4:** Run `npm test` and `npm run typecheck` in Beagle; expect PASS.
-- [ ] **Step 5:** Commit in Beagle `Let Palimpsest import Beagle: a package entry, a home read on each call, the designer and an abort as options, a self-check any arena can word, parent against child in the engine, and mlx models`; with his go-ahead push the branch and open the PR on `AllStreets/beagle`. After he merges, record the merge sha in this repo's ledger note for Task 4.
+- Produces (Beagle, ruling 2 (a) to (k)).
+- [ ] **Step 1: Write the failing tests in the clone:** `a genome on mlx:grad-1 validates`; `complete passes mlx to the driver`; `the self-check turn of a fix-test genome does not mention where anything happened`; `breed uses the designer it is given`; `an aborted race scores no unfinished run and says aborted`; `compareToParents gives lo above zero for a child better on every common task and spans zero for a tie`; `paths follow BEAGLE_HOME changed between calls`; `splitOf is importable from ./arenas`; `putTasks writes tasks a race then reads, and sealedHash changes when a sealed task changes`; `sealedRace scores two genomes on the sealed split outside any voyage, and a second call scores afresh`.
+- [ ] **Step 2:** Run `npm test` in the clone; expect FAIL.
+- [ ] **Step 3:** Implement in Beagle's style; its existing tests stay green.
+- [ ] **Step 4:** Run `npm test` and `npm run typecheck` in the clone; expect PASS.
+- [ ] **Step 5:** Commit in the clone `Let Palimpsest import Beagle: a package entry, a home read on each call, a store it can write tasks to, a sealed race outside a voyage, the designer and an abort as options, a self-check any arena can word, parent against child in the engine, and mlx models`. With his go-ahead push the branch and open the PR on `AllStreets/beagle`; stop. After he merges, record the full merge sha in the controller's ledger for Task 4.
 
 ### Task 3: Provider.complete on the four backends [Opus] [screens]
 
@@ -265,33 +269,32 @@ Known orderings: Task 1 first; Task 2 merged in Beagle before Task 4; Task 3 bef
 - Test: `test/claude-provider.test.ts`, `test/ollama.test.ts`, `test/anthropic-api.test.ts`, `test/fake-provider.test.ts`
 
 **Interfaces:**
-- Produces (`engine/market/provider.ts`):
+- Produces (`provider.ts`):
   ```ts
   export interface CompleteInput { model: ModelRef; system: string; turns: Array<{ role: 'user' | 'assistant'; content: string }>;
     schema: object | null; signal: AbortSignal; maxMs: number }
   export interface CompleteResult { text: string; json: unknown | null; usage: Usage }
   // Provider: + complete(i: CompleteInput): Promise<CompleteResult>;
   ```
-- Produces: `claude.ts` `complete()` through the existing `call()` (rename its `kind` parameter use to `'complete'`), multi-turn folded into one message the way Beagle's `models/claude.ts` does, `--json-schema` when a schema is given, `structured_output` as `json`; `ollama.ts` and `anthropic-api.ts` `complete()` over their transports with `num_ctx` `REVIEW_NUM_CTX`; `fakeProvider` `FakeScript.complete?` with a default that answers `{ "edits": [] }` for a schema and `"ok"` otherwise.
-- [ ] **Step 1: Write the failing tests:** `claude complete builds the no-tool argv with the CLI profile, --max-turns 1 and the schema, and reads structured_output`; `claude complete aborts on the signal within 5 s`; `ollama complete posts the turns and returns the text and its seconds`; `anthropic complete charges dollars from usage`; `the fake complete answers by its script`.
+- Produces: `claude.ts` `complete()` through `call()` with `CALL_MAX_TURNS`, a schema-less branch without `--json-schema`, multi-turn folded into one message as Beagle's `models/claude.ts` does; `ollama.ts`, `anthropic-api.ts` `complete()`; `FakeScript.complete?` (default `{ "edits": [] }` with a schema, `"ok"` without).
+- [ ] **Step 1: Write the failing tests:** `claude complete with a schema builds the no-tool argv with the CLI profile, --max-turns 3 and --json-schema and reads structured_output`; `claude complete without a schema omits --json-schema and returns the result text`; `claude complete aborts on the signal within 5 s`; `ollama complete returns the text and its seconds`; `anthropic complete charges dollars`; `the fake complete answers by its script`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run; expect PASS; the existing plan, review, judge and audit tests still pass.
+- [ ] **Step 4:** Run; expect PASS; plan, review, judge and audit tests still pass.
 - [ ] **Step 5:** Commit `Give every backend a single-turn completion the school can meter`.
 
 ### Task 4: Beagle as a library, with every call through the caps [Opus] [screens]
 
 **Files:**
-- Create: `engine/school/beagle-api.ts`, `engine/school/beagle.ts`, `engine/school/stats.ts`, `tools/vendor-beagle.ts` (used only on the fallback)
-- Modify: `package.json` (`"beagle": "github:AllStreets/beagle#<Task 2 merge sha>"`), `CREDITS.md`
+- Create: `engine/school/beagle-api.ts`, `engine/school/beagle.ts`, `engine/school/stats.ts`
+- Modify: `package.json` (`"beagle": "github:AllStreets/beagle#<full sha from Task 2>"`), `CREDITS.md`
 - Test: `test/school-beagle.test.ts`, `test/school-stats.test.ts`
 
 **Interfaces:**
-- Consumes: `Provider.complete` (Task 3), `acquire(model, 'school', …)`, `charge({ kind: 'school' })`, `callPaused` (Task 1), Beagle's exports (Task 2).
-- Produces (`engine/school/beagle.ts`): `loadBeagle(): Promise<BeagleApi>` (ruling 1; idempotent per home; throws `refused: Beagle's home is outside the school` when `BEAGLE_HOME` resolves elsewhere); `schoolDriver(o: { voyageId: string | null; designer: ModelRef; signal: AbortSignal; now?: () => number })`: the Beagle `Driver` that maps Beagle's `claude:claude-opus-5-5` designer name to `o.designer`, takes `acquire(model, 'school', estimate, { waitUntil: now + 10 min })`, calls `providerFor(model).complete()`, charges `kind 'school'` with `runId` the voyage id, and on a refusal for caps throws Beagle's `LimitError` (so Beagle waits rather than scoring 0) and on the signal throws an abort.
-- Produces (`engine/school/stats.ts`): `ci(values: number[], seed = 1): Interval` and `pairedCi(a: number[], b: number[], seed = 1): { diff; lo; hi }`, both through Beagle's `bootstrap()`.
-- [ ] **Step 0 (probe):** `node --no-warnings --import tsx -e "await import('beagle/stats')"` in this repo after `npm install`. If it fails because TypeScript is refused inside `node_modules`, run `tools/vendor-beagle.ts <sha>`, point the loader at `vendor/beagle/src`, and record the choice in `CREDITS.md` and the commit body.
-- [ ] **Step 1: Write the failing tests:** `loadBeagle sets BEAGLE_HOME under the temp school and never at Beagle's real home` (a test that sets `BEAGLE_HOME` to the real path first sees the throw); `a designer call is routed to the designer setting and charged as school`; `a school Claude call past claudeCreditsPerDay throws LimitError and charges nothing`; `a school call during the hard stop is refused`; `a school call at night counts in the night cap`; `an aborted driver call throws and Beagle's race comes back incomplete` (a fake provider that waits; the race of one genome on a two-task fake arena); `ci of [1,1,1,0] is seeded and stable`; `pairedCi of a better child has lo above zero`.
+- Consumes: `Provider.complete` (Task 3); `acquire(…, 'school')`, `charge`, `unattended()` (Task 1, `budget.ts`); Beagle (Task 2).
+- Produces (`beagle.ts`): `loadBeagle(): Promise<BeagleApi>` (ruling 1); `schoolDriver(o: { voyageId: string | null; designer: ModelRef; firmId: string | null; signal: AbortSignal; now?: () => number })`: maps Beagle's designer name to `o.designer`, leases `acquire(model, 'school', estimate, { waitUntil: now + 10 min })`, calls `providerFor(model).complete()`, charges `kind 'school'` with `unattended: unattended(now)` and the firm when commissioned, throws Beagle's `LimitError` on a cap refusal (Beagle backs off, then ends the race "Claude usage limit") and an abort on the signal.
+- Produces (`stats.ts`): `ci(values, seed = 1): Interval`, `pairedCi(a, b, seed = 1): { diff; lo; hi }` over Beagle's `bootstrap()`.
+- [ ] **Step 1: Write the failing tests:** `loadBeagle sets BEAGLE_HOME under the temp school and throws when it points at Beagle's real home`; `tsc does not check Beagle's sources` (`npm run typecheck` passes with the dependency installed); `a designer call goes to the designer setting and is charged as school`; `a school Claude call past claudeCreditsPerDay throws LimitError and charges nothing`; `a school Claude call while he is active throws LimitError`; `a school call during the hard stop is refused`; `a school call at night is charged unattended and counts in the night cap`; `an aborted driver call leaves Beagle's race incomplete`; `ci is seeded and stable`; `pairedCi of a better child has lo above zero`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
@@ -300,49 +303,48 @@ Known orderings: Task 1 first; Task 2 merged in Beagle before Task 4; Task 3 bef
 ### Task 5: The trainer environment [Opus] [screens]
 
 **Files:**
-- Create: `trainer/requirements.txt`, `trainer/school.py` (the `ping` command and the JSON line loop only), `trainer/test_school.py`, `trainer/README.md`
+- Create: `trainer/requirements.txt`, `trainer/school.py` (`ping` and the JSON line loop), `trainer/test_school.py`, `trainer/README.md`, `engine/school/trainer-env.ts`
 - Modify: `package.json` (`trainer:setup`, `test:trainer`), `.gitignore` (`trainer/.venv`)
-- Create: `engine/school/trainer-env.ts`
 - Test: `test/trainer-env.test.ts`
 
 **Interfaces:**
-- Produces (`engine/school/trainer-env.ts`): `trainerPython(): string` (`PALIMPSEST_PYTHON` or `<repo>/trainer/.venv/bin/python`); `trainerStatus(): Promise<{ ready: boolean; reason: string | null; python: string | null; arch: string | null; mlx: string | null; mlxLm: string | null }>` (runs `<python> -c` through `getRunner()` printing `platform.machine()`, `mlx.core.__version__`, `mlx_lm.__version__`; `ready` only for `arm64` with both present; the reasons: "No trainer environment: run npm run trainer:setup", "The trainer's Python is not arm64", "mlx is not installed in the trainer").
-- `trainer:setup` runs the ruling 7 commands and prints the three versions; `test:trainer` runs `trainer/.venv/bin/python -m unittest trainer/test_school.py` or prints "Skipped: no trainer environment".
-- [ ] **Step 1: Write the failing tests:** `trainerStatus is not ready without a venv and says to run setup`; `trainerStatus refuses an x86_64 python`; `trainerStatus is ready for arm64 with mlx 0.32.4 and mlx_lm 0.32.2` (fake runner answers); Python: `ping answers pong with the versions`.
-- [ ] **Step 2:** Run `npm test`; expect FAIL.
-- [ ] **Step 3:** Implement; run `npm run trainer:setup` once on his Mac (no download beyond PyPI) and `npm run test:trainer`.
+- Produces: `trainerPython(): string | null` (`PALIMPSEST_PYTHON` or `trainer/.venv/bin/python` when it exists); `trainerStatus(): Promise<{ ready; reason; python; arch; mlx; mlxLm }>` (reasons: "The trainer is not set up on this Mac", "The trainer's Python is not arm64", "mlx is not installed in the trainer"). `test:trainer` uses `trainerPython()` or prints "Skipped: no trainer Python".
+- [ ] **Step 1: Write the failing tests:** `trainerStatus is not ready without a python and says so`; `it refuses x86_64`; `it is ready for arm64 with mlx 0.32.4 and mlx_lm 0.32.2` (fake runner); Python: `ping answers pong with the versions`.
+- [ ] **Step 2:** Run; expect FAIL.
+- [ ] **Step 3:** Implement. Develop and run `npm run test:trainer` with `PALIMPSEST_PYTHON=~/Downloads/beagle/trainer/.venv/bin/python` (read-only use of Beagle's venv with `PYTHONDONTWRITEBYTECODE=1`, so nothing is installed or written into it). Do not run `npm run trainer:setup` without his go-ahead (Decision 5).
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Give the school its own native MLX environment`.
+- [ ] **Step 5:** Commit `Give the school a native MLX environment, set up only when he says`.
 
 ### Task 6: The training gate [Opus] [screens]
 
 **Files:**
-- Create: `engine/school/gate.ts`
+- Create: `engine/school/gate.ts`, `test/fixtures/pmset/` (`g-ac-lowpower.txt`, `custom.txt`, `therm-none.txt`, `batt-ac.txt`, plus hand-made `batt-battery.txt`, `g-automatic.txt`, `therm-warning.txt`, `g-nokey.txt`)
 - Test: `test/school-gate.test.ts`
 
 **Interfaces:**
-- Consumes: `getRunner()`, `paths().stop`, `workCount` (exported from `budget.ts` in this task as `liveWork(pool)`), `listJobs({ status: ['awarded'] })`, `bidById`, `getSettings().school`, `inWindow`, `GATE`.
-- Produces: `probePower(): Promise<{ power; lowPower: boolean | null }>` (parses `pmset -g batt` and `pmset -g`), `probeIdle(): Promise<number | null>` (minutes from `ioreg -c IOHIDSystem -d 4`'s `HIDIdleTime` in ns), `probeThermal(): Promise<'nominal' | 'limited' | 'unknown'>` (`pmset -g therm`), `probeFreeGB(dir): Promise<number | null>` (`df -k`); `gateNow(kind, now): Promise<GateState>` (ruling 6; the probes run at most once per 10 s and are cached); `startTrainNow(now)` and `stopTrainNow()` writing `school.trainNowUntil`.
-- [ ] **Step 1: Write the failing tests** (fake runner answers each probe): `on battery the gate fails with "on battery"`; `Low Power Mode fails it`; `outside the window it fails with the window in the reason, and Train now opens it for 3 hours`; `Train now never opens it on battery`; `heavy needs 15 idle minutes and light does not`; `a thermal limit fails heavy`; `19 GB free fails heavy`; `a local run live or an awarded local job fails both`; `an unparsable pmset answer fails the gate with "could not read the power state"`; `the stop file fails both`; `school.enabled false fails both`.
+- Consumes: `getRunner()`, `paths().stop`, `liveWork(pool)` (Task 1), `listJobs({ status: ['awarded'] })`, `bidById`, `getSettings().school`, `inWindow`, `GATE`.
+- Produces: `parseBatt(text): 'ac' | 'battery' | 'unknown'`, `parsePowerMode(text): 0 | 1 | 2 | null` (the `powermode` under "Currently in use:"), `parseTherm(text): 'nominal' | 'limited' | 'unknown'` (ruling 6), `parseIdle(text): number | null`, `parseFreeGB(text): number | null`; `gateNow(kind, now): Promise<GateState>` (probes cached 10 s); `startTrainNow(now)` (refused on battery), `stopTrainNow()`.
+- [ ] **Step 0:** Capture `pmset -g`, `pmset -g custom`, `pmset -g therm`, `pmset -g batt` on his Mac (read-only) into the fixtures above, unedited.
+- [ ] **Step 1: Write the failing tests** (the captured fixtures): `the captured pmset -g reads power mode 1`; `the captured therm notes read nominal`; `a warning level of 2 reads limited and an unknown line unknown`; `a pmset -g without powermode fails the gate with "could not read the power mode"`; `on AC in Low Power the gate holds with allowLowPower and fails without it`; `on battery it fails with "on battery", and Train now cannot open it`; `outside the window it fails, and Train now opens it for 3 hours`; `heavy needs 15 idle minutes and light does not`; `limited or unknown thermals fail heavy`; `19 GB free fails heavy`; `a live or awarded local job fails both`; `the stop file and school.enabled false fail both`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Let the Mac train only on power, idle, at night and cool, and say why not`.
+- [ ] **Step 5:** Commit `Let the Mac train only on power, idle, at night and cool, read the way macOS 26 says it, and say why not`.
 
 ### Task 7: The trainer process, its sandbox, its charge and the pause [Opus] [screens]
 
 **Files:**
 - Create: `engine/school/trainer.ts`
-- Modify: `engine/market/sandbox.ts` (`trainerProfile(o: { school: string; tmp: string; port?: number })`), `trainer/school.py` (`sleep` test command, SIGTERM handling that flushes a checkpoint note)
+- Modify: `engine/market/sandbox.ts` (`trainerProfile`), `trainer/school.py` (`sleep` test command, SIGTERM note)
 - Test: `test/school-trainer.test.ts`, `test/sandbox.test.ts`, `trainer/test_school.py`
 
 **Interfaces:**
-- Consumes: `trainerPython()`, `gateNow()`, `getSpawner()`, `wrap()`, `SECRET_PATHS`, `charge()`, `acquire(…, 'school')`.
-- Produces: `trainerProfile()` (ruling 7, tested as text: default allow, `deny network*` except `network-bind` and `network-inbound` on loopback when `port` is given, `deny file-write*` with `allow` for `school` and `tmp` after it, `deny file-read*` of each `SECRET_PATHS` entry); `startTrain(o: { kind: TrainKind; gate: 'light' | 'heavy'; command: object; gb: number; onLine: (l: object) => void; now?: () => number }): Promise<TrainState>` (records `train.started`, spawns `school.py` under `wrap(…, trainerProfile)` with `HF_HUB_OFFLINE=1`, polls `gateNow` every `GATE.pollMs`, on a failing gate sends SIGTERM then SIGKILL after `GATE.killGraceMs`, records `train.paused { reason, steps.lost }`, on exit charges `kind 'train'` local credits for the wall seconds at `gb`, records `train.ended`); `pauseAll(reason)`; `liveTrains()`; `failInterruptedTrains()` (a `running` train at engine start ends `paused` with "The engine stopped during training").
-- [ ] **Step 1: Write the failing tests** (fake spawner and fake gate): `a train starts only when the gate holds and records train.started`; `the gate failing mid-run sends SIGTERM within 30 s and SIGKILL 10 s later, and the train is paused with the reason`; `a paused train charges its seconds as train credits with no firm`; `the spawned argv is wrapped in the trainer profile and its env has HF_HUB_OFFLINE=1 and no API keys`; `the trainer profile denies network and writes outside the school, and denies reading ~/.ssh` (as text); `a train running at engine start is paused by failInterruptedTrains`; Python: `school.py on SIGTERM writes its last step to stdout and exits 0`.
+- Consumes: `trainerPython()`, `gateNow()`, `getSpawner()`, `wrap()`, `SECRET_PATHS`, `charge()`.
+- Produces: `trainerProfile(o: { school: string; tmp: string; bindPort?: number }): string` (ruling 7); `startTrain(o: { kind; gate; command: object; gb: number; onLine; now? }): Promise<TrainState>` (records `train.started`; spawns `school.py` under the profile with `HF_HUB_OFFLINE=1`; polls `gateNow` every 30 s and `school.enabled`; on failure SIGTERM, SIGKILL after 10 s, `train.paused { reason, steps.lost }`; on exit charges `kind 'train'` for the wall seconds at `gb`; `train.ended`); `pauseAll(reason)`; `liveTrains()`; `failInterruptedTrains()`.
+- [ ] **Step 1: Write the failing tests** (fake spawner and gate): `a train starts only when the gate holds`; `a failing gate sends SIGTERM within 30 s and SIGKILL 10 s later and pauses with the reason`; `turning the school off pauses a live train`; `a paused train charges its seconds as train credits`; `the argv is wrapped in the trainer profile with HF_HUB_OFFLINE=1 and no API keys`; `the profile denies network and writes outside the school and reads of ~/.ssh` (text); `a running train at engine start is paused`; Python: `school.py on SIGTERM writes its last step and exits 0`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run; expect PASS. On his Mac, run `school.py ping` under the real profile once with `sandbox-exec` and confirm MLX sees the GPU (`mx.default_device()` prints `gpu`); the profile allows by default, so a Metal failure can come only from a deny rule: record the denial from the sandbox log and narrow that deny, never the network or write denies.
+- [ ] **Step 4:** Run; expect PASS. On his Mac, run `school.py ping` under the real profile with `PALIMPSEST_PYTHON` at Beagle's venv and record `Device(gpu, 0)` in the commit body.
 - [ ] **Step 5:** Commit `Run the trainer fenced in, charged by the minute, and stop it when the gate closes`.
 
 ### Task 8: The nets' rows from the ledger [Opus] [screens]
@@ -352,29 +354,28 @@ Known orderings: Task 1 first; Task 2 merged in Beagle before Task 4; Task 3 bef
 - Test: `test/net-features.test.ts`, `test/school-datasets.test.ts`
 
 **Interfaces:**
-- Consumes: `query()` (`ledger.ts`), `reputation(firmId, log)` (`reputation.ts`), `listJobs`, `listRuns`, `job`, `bidById`, `agent`, the credits table through `creditEntries(runId)` (exported from `budget.ts` in this task), `getRepo`, `Inspection` rows (`inspection.done`), `merge.reverted`, `merge.followup` (Task 9; empty until it lands), `brief.opened`, `brief.action`, `decision.resolved` (Task 15; empty until it lands), `understudyPairs()` (Task 10; injected, empty until it lands).
-- Produces (`shared/net-features.ts`): `FEATURES: Record<NetName, readonly string[]>` and `encode(net, raw: Record<string, number | string | boolean | null>): number[]` (one-hot for categoricals by a fixed vocabulary, `has_` masks, numbers as given).
-- Produces (`engine/school/datasets.ts`): `Row = { id: string; at: string; x: number[]; y: number; weight: number; source: 'real' | 'distilled' }`; `rowsFor(net: NetName, now: number): Row[]` (ruling 8, oldest first; the appraiser's reputation as of the award from the ledger before that entry; durability rows only once `SURVIVE_DAYS` passed or a revert or follow-up came first; triage rows only for brief days that are over); `labelCounts(now): Record<NetName, number>`.
-- [ ] **Step 1: Write the failing tests** (ledger fixtures written with `record()` in a temp home): `an awarded bid whose run passed becomes one appraiser row with pass 1 and log1p of its credits`; `an unawarded bid is never a row`; `the firm's pass rate in a row is the one before the award, not today's`; `a merge 10 days old with no revert is not a durability row yet; at 31 days it is with survived 1; a revert at day 3 makes it survived 0`; `a brief day with three items shown and one accepted gives three triage rows with one acted`; `today's brief day gives no rows`; `a UI inspection whose PR he closed gives a taste row with approved 0`; `encode one-hots a tier and sets has_ masks for nulls`; `labelCounts on an empty ledger is all zeros`.
+- Consumes: `query()`, `reputation(firmId, log)`, `listJobs`, `listRuns`, `bidById`, `agent`, `creditEntries(runId)` (Task 1), `getRepo`, `inspection.done`, `merge.reverted`, `merge.followup` (Task 9; empty until it lands), `brief.opened`, `brief.action`, `decision.resolved` (Task 15; empty until it lands), `understudyPairs()` (Task 10; injected).
+- Produces: `FEATURES`, `encode(net, raw)`; `Row = { id; at; x: number[]; y: number; weight: number; source: 'real' | 'distilled' }`; `rowsFor(net, now): Row[]` (ruling 8); `labelCounts(now)`; `thinCause(net, now): string` (ruling 29, from live counts: repos with the market on, awarded runs ended, merges 30 days old, finished brief days, inspected UI changes, Understudy counts, predicted decisions).
+- [ ] **Step 1: Write the failing tests:** `an awarded bid whose run passed is one appraiser row with pass 1 and log1p of its credits`; `an unawarded bid is never a row`; `the firm's pass rate in a row is the one before the award`; `a merge 10 days old with no revert is not a durability row; at 31 days it is; a revert at day 3 makes it survived 0`; `a finished brief day with three items and one accepted gives three triage rows`; `a UI inspection whose PR he closed gives a taste row with approved 0`; `encode one-hots a tier and masks nulls`; `on an empty ledger with every market off thinCause for the appraiser says the market is off on every repo`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Read each net's labelled rows from what actually happened`.
+- [ ] **Step 5:** Commit `Read each net's labelled rows from what actually happened, and why there are none`.
 
-### Task 9: Follow-up fixes [Opus] [screens]
+### Task 9: Follow-up fixes and a revert read per repo [Opus] [screens]
 
 **Files:**
-- Modify: `engine/market/ship.ts` (`watchReverts()`), `engine/market/replay.ts`
+- Modify: `engine/market/ship.ts` (`watchReverts()` loops over a new `watchRevertsFor()`; `PR_CLOSED_REASON` exported), `engine/market/replay.ts`
 - Test: `test/ship.test.ts`
 
 **Interfaces:**
-- Consumes: `recentCommits()` (`github.ts`), `earnedFloors`, `JOB_TRAILER` and `CITY_BRANCH` (`history.ts`).
-- Produces: `followupOf(commits, mergeSha, files, mergedAt, now): Commit | null` (ruling 9, pure, exported for the test); `merge.followup` recorded and emitted once per floor (keyed on `floorId`).
-- [ ] **Step 1: Write the failing tests:** `a non-city fix touching a merged file within 14 days records merge.followup once`; `a city commit, a commit after 14 days, a commit touching other files and a subject without fix are ignored`; `a follow-up neither halts the repo nor scars`; `replay keeps the follow-up rows`.
-- [ ] **Step 2:** Run; expect FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Notice when a city merge needed a fix soon after, for the durability net`.
+- Consumes: `recentCommits()`, `engineGit` on the mirror, `earnedFloors`, `JOB_TRAILER`, `CITY_BRANCH`.
+- Produces: `watchRevertsFor(repo: Repo, now, o: { force?: boolean } = {}): Promise<{ ok: boolean; reverted: string[]; reason: string | null }>` (the per-repo body of today's watch; `force` bypasses `REVERT_WATCH_MS` and syncs the mirror; `ok false` when the read fails); `followupOf(commits, filesOf: (sha) => Promise<string[]>, mergeSha, files, mergedAt, now)` (ruling 9); `merge.followup` once per floor; `PR_CLOSED_REASON`.
+- [ ] **Step 1: Write the failing tests:** `a non-city fix touching a merged file within 14 days records merge.followup once, with files read by show --name-only`; `a city commit, a late commit, other files and a subject without fix are ignored`; `watchRevertsFor with force reads a repo inside the 30-minute throttle`; `a failed mirror read answers ok false`; `replay keeps follow-ups`; pin: `a follow-up neither halts the repo nor scars`.
+- [ ] **Step 2:** Run; expect FAIL (all but the pin).
+- [ ] **Step 3:** Implement; `watchReverts()` behaves as before.
+- [ ] **Step 4:** Run; expect PASS; the Phase 2 revert tests still pass.
+- [ ] **Step 5:** Commit `Notice fixes that followed a city merge, and let one repo be read for reverts on demand`.
 
 ### Task 10: The Understudy reader [Opus] [screens]
 
@@ -384,8 +385,8 @@ Known orderings: Task 1 first; Task 2 merged in Beagle before Task 4; Task 3 bef
 - Test: `test/understudy.test.ts`, `test/design.test.ts`
 
 **Interfaces:**
-- Produces: `understudyDb(): string` (`PALIMPSEST_UNDERSTUDY_DB` or the default path; under a test the default throws as `home()` does); `understudyStatements(): string[]` (not removed, by weight, at most 40); `understudyPairs(): Array<{ id: string; at: string; aShot: string; bShot: string; pick: 'a' | 'b' }>` (`neither` skipped); `scorePair(pair): Promise<{ a: number; b: number }>` (local vision judge, cached at `paths().school/understudy/<id>.json`, under a local school lease); everything returns empty when `school.understudy` is false.
-- [ ] **Step 1: Write the failing tests** (a fixture db built in the temp dir with Understudy's schema): `statements come back without removed ones`; `pairs without a pick or with neither are skipped`; `the reader opens read only and a write throws`; `with the switch off nothing is read`; `under a test the default path throws`; `the judge input carries the bible only with the switch on`.
+- Produces: `understudyDb()`, `understudyStatements()`, `understudyPairs()`, `understudyCounts(): { statements; pairs; answered }`, `scorePair(pair)` (ruling 10); empty when the switch is off.
+- [ ] **Step 1: Write the failing tests** (fixtures with Understudy's schema, one in WAL mode with no `-shm` writable): `statements come back without removed ones`; `pairs without a pick or with neither are skipped`; `a WAL database opens through immutable when readOnly fails`; `a write through the reader throws`; `with the switch off nothing is read`; `under a test the default path throws`; `the judge input carries the bible only with the switch on`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
@@ -394,16 +395,16 @@ Known orderings: Task 1 first; Task 2 merged in Beagle before Task 4; Task 3 bef
 ### Task 11: Training a net in MLX and running it in TypeScript [Opus] [screens]
 
 **Files:**
-- Create: `trainer/nets.py`, `shared/nets.ts`
+- Create: `trainer/nets.py`, `shared/nets.ts`, `test/fixtures/net-parity.json`
 - Modify: `trainer/school.py` (`train_net`, `predict_net`), `trainer/test_school.py`
 - Test: `test/nets-forward.test.ts`
 
 **Interfaces:**
-- Produces (`trainer/nets.py`): `train_net({ net, rows_path, out_path, seed }) -> { epochs, kept_epoch, seconds }` (ruling 8: reads `rows.json` `{ x, y, w, kind }`, standardises, trains, keeps the epoch with the lowest inner-split loss, writes the weights JSON); `predict_net({ weights_path, x }) -> p[]`.
-- Produces (`shared/nets.ts`): `parseNet(text: string): NetWeights | null` (refuses a wrong shape, a non-finite number or mismatched sizes); `forward(net: NetWeights, x: number[]): number` (standardise, linear, exact GELU `0.5 x (1 + erf(x / sqrt 2))` as MLX's `nn.gelu` computes it, linear, then sigmoid or identity); `erf(x)` in the same file, accurate to 1e-9.
-- [ ] **Step 1: Write the failing tests:** TS: `parseNet refuses NaN, a missing layer and a size mismatch`; `forward matches a hand-computed two-unit net to 1e-9`; Python: `train_net learns y = x0 > 0 on 400 synthetic rows to held-out Brier under 0.05`; `predict_net and the exported JSON agree with a fixture of 20 rows the TS test also reads` (the fixture `test/fixtures/net-parity.json` holds the weights and the 20 expected outputs; `test/nets-forward.test.ts` asserts `forward` matches them to 1e-5).
+- Produces (`trainer/nets.py`): `train_net({ net, rows_path, out_path, seed })` and `predict_net({ weights_path, x })` (ruling 8, `nn.gelu`, never `nn.gelu_approx`).
+- Produces (`shared/nets.ts`): `parseNet(text): NetWeights | null` (refuses wrong shapes and non-finite numbers); `erf(x)` accurate to 1e-9; `forward(net, x): number` (standardise, linear, GELU `0.5 x (1 + erf(x / sqrt 2))`, linear, sigmoid or identity).
+- [ ] **Step 1: Write the failing tests:** TS: `parseNet refuses NaN, a missing layer and a size mismatch`; `erf matches tabulated values to 1e-9`; `forward matches a hand-computed two-unit net`; `forward matches net-parity.json's 20 expected outputs to 1e-5`; Python: `train_net learns y = x0 > 0 on 400 synthetic rows to held-out Brier under 0.05`; `predict_net reproduces net-parity.json`.
 - [ ] **Step 2:** Run `npm test` and `npm run test:trainer`; expect FAIL.
-- [ ] **Step 3:** Implement. `trainer/nets.py` uses `nn.gelu` (exact), never `nn.gelu_approx`, so the TS forward pass can match it.
+- [ ] **Step 3:** Implement; generate `net-parity.json` once with `predict_net` and commit it.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5:** Commit `Train each small net in MLX and run it in the engine with no Python`.
 
@@ -414,260 +415,287 @@ Known orderings: Task 1 first; Task 2 merged in Beagle before Task 4; Task 3 bef
 - Test: `test/school-nets.test.ts`
 
 **Interfaces:**
-- Consumes: `rowsFor`, `labelCounts` (Task 8), `startTrain` (Task 7), `parseNet`, `forward` (Task 11), `ci`, `pairedCi` (Task 4), `NET_MIN`, `HELD_OUT`.
-- Produces: `split(rows): { train: Row[]; heldOut: Row[] } | null` (ruling 11; null under `NET_MIN`); `evaluate(net, weights, heldOut, baseline: (r: Row) => number): Pick<NetVersion, 'score' | 'baseline' | 'vsBaseline' | 'trusted'>`; `trainNet(net, now): Promise<NetVersion | { thin: true; labels: number; needs: number }>` (writes `rows.json` with real held-out rows excluded, starts a `nets` train, loads and evaluates the weights, stores the version, records `net.trained`, promotes by ruling 12 and records `net.promoted`); `current(net): { weights: NetWeights; version: NetVersion } | null` (null when the file is missing or `parseNet` refuses it, with the reason kept for `netCard`); `netCard(net, now): NetCard`; `baselineFor(net)` (ruling 11).
-- [ ] **Step 1: Write the failing tests** (fake trainer that writes weights fitting the fixture): `a net with 25 labels is thin and says 25 of 40`; `the held-out rows are the newest 20% and never in rows.json`; `a net that beats the base rate with hi below zero is trusted and promoted`; `a net whose interval spans zero is trained, not trusted, and not promoted over a trusted one`; `a corrupt weights file makes current null and the card names the reason` (Review Focus 3); `the appraiser's baseline is the firm's pass rate as of the award`; `every score carries n and a seeded interval`.
+- Consumes: `rowsFor`, `labelCounts`, `thinCause` (Task 8), `startTrain` (Task 7), `parseNet`, `forward` (Task 11), `ci`, `pairedCi` (Task 4).
+- Produces: `split(rows)`; `evaluate(net, weights, heldOut, baseline)` (ruling 11: Brier for every sigmoid head, the master included, MAE for cost, agreement beside the master's Brier); `trainNet(net, now)`; `current(net)` (null when missing or refused, reason kept); `netCard(net, now): NetCard` (with `cause` from `thinCause` and `selfSelected` true for the appraiser once it has moved an award); `baselineFor(net)`.
+- [ ] **Step 1: Write the failing tests:** `a net with 25 labels is thin, says 25 of 40 and names its cause`; `held-out rows are the newest 20% and never in rows.json`; `a head beating the base rate with hi below zero is trusted and promoted`; `a head whose interval spans zero is not trusted and not promoted over a trusted one`; `the master is trusted by Brier against the base rate, with agreement reported beside it`; `a master that only says approve on a 97% kind is not trusted and the kind is marked skewed`; `a corrupt weights file makes current null and the card names it`; `the appraiser's baseline is the firm's pass rate as of the award`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5:** Commit `Score every net on rows it never saw, against a baseline, and trust only what beats it`.
 
-### Task 13: The nightly retrain and distillation [Opus] [screens]
+### Task 13: The nightly retrain, distillation and the school's off switch [Opus] [screens]
 
 **Files:**
-- Create: `engine/school/tick.ts` (the retrain part; later tasks add theirs)
-- Modify: `engine/main.ts` (`startSchool()` after the scheduler; stopped on shutdown), `engine/school/datasets.ts` (distilled rows)
+- Create: `engine/school/tick.ts`
+- Modify: `engine/main.ts` (`startSchool()`; stopped on shutdown), `engine/school/datasets.ts` (distilled rows), `engine/settings.ts` (`patchSettings` turning `school.enabled` off calls `schoolOff()`)
 - Test: `test/school-tick.test.ts`, `test/school-datasets.test.ts`
 
 **Interfaces:**
-- Consumes: `trainNet`, `current`, `gateNow('light')`, `labelCounts`, `master predictions` through `current('master')` and `predict()` (Task 14 provides `predict`; until then the distillation test injects it).
-- Produces: `startSchool(o: { now?: () => number }): { tick(): Promise<void>; stop(): Promise<void> }` (each tick, at most once a night, when the light gate holds and some net has new labels since its version, retrains in ruling 12's order; it never runs two trains at once); `rowsFor` gains distilled rows (ruling 13) with `source 'distilled'` and `weight DISTIL.weight`, never in the held-out split.
-- [ ] **Step 1: Write the failing tests:** `the tick retrains only nets with new labels, master last`; `it does not run outside the window or on battery`; `it runs once a night, not every tick`; `triage under 100 rows gets distilled rows from the master for proposal items only, weighted 0.3, and none held out`; `durability, router and appraiser never get distilled rows`; `stop() pauses a live retrain`.
-- [ ] **Step 2:** Run; expect FAIL.
+- Consumes: `trainNet`, `current`, `gateNow('light')`, `labelCounts`; `predict` (Task 14; injected until it lands).
+- Produces: `startSchool(o)`: `{ tick(); stop() }` (ruling 12, at most once a night, one train at a time); distilled rows (ruling 13); `schoolOff(now)` (records `school.enabled { on: false }`, `pauseAll('the school was turned off')`, aborts a live voyage or arena build; `predict()`, `registerPrediction()` and `act()` read `school.enabled` on every call).
+- [ ] **Step 1: Write the failing tests:** `the tick retrains only nets with new labels, master last`; `not outside the window or on battery`; `once a night`; `triage under 100 rows gets distilled rows for proposal items only, weight 0.3, none held out`; `turning the school off pauses a live retrain at once`; pin: `durability, router and appraiser never get distilled rows`.
+- [ ] **Step 2:** Run; expect FAIL (all but the pin).
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Retrain the nets each night from the day's labels, the master last`.
+- [ ] **Step 5:** Commit `Retrain the nets each night from the day's labels, master last, and stop everything the moment he turns the school off`.
 
-### Task 14: Putting the nets to work and registering the master's predictions [Opus] [screens]
+### Task 14: The nets at work and the master's prospective guesses [Opus] [screens]
 
 **Files:**
 - Create: `engine/school/decisions.ts` (the prediction half)
-- Modify: `engine/market/bids.ts` (`appraisal` from the appraiser when trusted, the award per Decision 11), `engine/brief.ts` (triage orders "Recommended" and suggests a tier in quiet text when trusted), `engine/market/jobs.ts` (`postProposal` and `proposeHarnessJob` call `registerPrediction`), `engine/market/ship.ts` (after `record('pr.opened', …)` calls `registerPrediction`), `engine/market/api.ts` (`JobDetail.school`)
+- Modify: `engine/market/bids.ts` (`appraisal` and the award, Decision 14), `engine/brief.ts` (triage order and a suggested tier in quiet text), `engine/market/jobs.ts` (`postProposal`, `proposeHarnessJob` call `registerPrediction`), `engine/market/ship.ts` (after `record('pr.opened', …)`), `engine/market/api.ts` (`JobDetail.school`)
 - Test: `test/school-predict.test.ts`, `test/bids.test.ts`, `test/brief.test.ts`
 
 **Interfaces:**
-- Consumes: `current()`, `forward()`, `encode()`, `workKind()`, `itemKey()`, `AGREE.staleDays`.
-- Produces: `predict(net, raw): { p: number; version: number } | null` (null when the net is not current or not trusted); `masterInputs(job, run): Record<string, …> | null` (the five nets' outputs or masks; null on any throw); `registerPrediction(job, run: Run | null, now): Prediction` (ruling 15; idempotent by key; `p` null with the reason "the master is thin", "the master is not trusted", "the master is 9 days old", "an input could not be read: …"); `JobDetail.school: { appraisal: number | null; router: Array<{ agentId; p }>; durability: number | null; master: Prediction | null }`. `award()` uses `calibrated' = (calibrated + appraisal) / 2` only when the appraiser is trusted; otherwise unchanged (a pin keeps Phase 2's award byte for byte when it is not).
-- [ ] **Step 1: Write the failing tests:** `a proposed job registers one prediction, and a second call does not add another`; `a PR opened registers a prediction with the merge kind`; `with no master the prediction abstains with the reason` (Review Focus 3); `a master 9 days old abstains`; `a net that throws makes the prediction abstain`; `a trusted appraiser fills bid.appraisal and moves the award; an untrusted one leaves the award as Phase 2 made it`; `triage reorders recommendations only when trusted`; `triage never sets a tier`; pin: `award without a trusted appraiser equals Phase 2's choice on the bids fixture`.
+- Produces: `predict(net, raw): { p; version } | null` (null when the school is off or the net is not current and trusted); `masterInputs(job, run)`; `registerPrediction(job, run | null, now): Prediction` (ruling 15); `JobDetail.school: { appraisal; router: Array<{ agentId; p }>; durability; master: Prediction | null }`; the award uses `(calibrated + appraisal) / 2` only with a trusted appraiser and the school on.
+- [ ] **Step 1: Write the failing tests:** `a proposed job registers one prediction, once`; `a PR opened registers one with the merge kind`; `with no master the prediction abstains with the reason`; `with the school off it abstains with "the school is off"`; `a master 9 days old abstains`; `a net that throws makes it abstain`; `a trusted appraiser moves the award, and with the school off the award is Phase 2's again`; `triage reorders recommendations only when trusted and the school is on, and never sets a tier`; pin: `award without a trusted appraiser equals Phase 2's choice on the bids fixture`.
 - [ ] **Step 2:** Run; expect FAIL (all but the pin).
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5:** Commit `Let trusted nets inform the award and the brief, and write down the master's guess before he decides`.
 
-### Task 15: His decisions and the master's agreement [Opus] [screens]
+### Task 15: His decisions, never the city's, and the master's agreement [Opus] [screens]
 
 **Files:**
 - Modify: `engine/school/decisions.ts` (the resolution half), `engine/main.ts` (`installDecisions()`)
 - Test: `test/school-decisions.test.ts`
 
 **Interfaces:**
-- Consumes: the bus events `job.changed`, `merge.reverted`; `predictions` rows; `ci`.
-- Produces: `installDecisions(): () => void` (ruling 14: subscribes and records `decision.resolved`); `resolve(job, by, at): Decision | null`; `agreement(kind, repo?: string): Agreement` (ruling 16); `agreements(): Agreement[]` (every kind pooled and per connected repo).
-- [ ] **Step 1: Write the failing tests:** `accepting a proposal with a prediction of 0.8 records approved and agreed`; `dismissing it records approved false and agreed false`; `a merged PR with his changes counts as approve`; `a closed PR counts as decline`; `a push-mode merge records no decision`; `a revert after an approve supersedes it as a decline with agreed false`; `a decision with no prediction before it has agreed null and is never in a window` (Review Focus 4); `an abstention counts as a disagreement`; `49 decisions are not eligible; 50 with 48 agreed are; 50 with 47 are not`; `the repo test needs 10 rows and none of the last 10 against`; `the rate carries a seeded interval`.
+- Consumes: `job.changed`, `run.ended`, `merge.reverted`; `PR_CLOSED_REASON` (Task 9); `predictions`; `autonomy.acted` rows (Task 17; read by key, empty until it lands); `suspend()` (Task 16; injected until it lands); `ci`.
+- Produces: `installDecisions()` (ruling 14); `resolve(job, by, at)`; `agreement(kind, repo?)` (ruling 16, with `skewed` from Task 12's mark); `agreements()`.
+- [ ] **Step 1: Write the failing tests:** `accepting a proposal predicted 0.8 records approved and agreed`; `dismissing it records agreed false`; `a merged PR with his changes approves`; `a PR he closed declines`; `a job closed because its issue closed records no decision`; `a push-mode merge records no decision`; `a revert after an approve supersedes it as a decline`; `a decision with no earlier prediction has agreed null and is in no window`; `an abstention counts as a disagreement`; `an autonomous accept and an autonomous merge record no decision.resolved`; `his withdrawal of an auto-accepted job records agreed false, by undo, and suspends the pair`; `his close of an autonomous PR does the same`; `49 rows are not eligible, 50 with 48 agreed are, 50 with 47 are not`; `the repo test needs 10 rows and none of the last 10 against`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Record each of his decisions against the guess made before it, kind by kind`.
+- [ ] **Step 5:** Commit `Record each of his own decisions against the guess made before it, and never count the city's`.
 
 ### Task 16: Asks, grants, suspension, revocation and mayAct [Opus] [screens]
 
 **Files:**
 - Create: `engine/school/autonomy.ts`
-- Modify: `engine/school/tick.ts` (`askDue()` each tick), `engine/brief.ts` (items `autonomy` with `grant`, `decline`, `why`; `acted` with `revoke`, `why`; `TAUGHT` gains `grant`, `decline`, `revoke`), `engine/market/replay.ts`
+- Modify: `engine/school/tick.ts` (`askDue()`), `engine/brief.ts` (items `autonomy` with `grant`, `decline`, `why`; `acted` with `revoke`, `why`; `TAUGHT` gains `grant`, `decline`, `revoke`), `engine/market/replay.ts`
 - Test: `test/school-autonomy.test.ts`, `test/brief.test.ts`
 
 **Interfaces:**
-- Consumes: `agreement()`, `current('master')`, `getRepo`, `paths().stop`, `run`, `prState()`, `predictions` rows.
-- Produces: `askDue(now): Grant[]` (ruling 17); `grant(kind, repo, now): Grant` (only from his action; refuses when no open ask exists for the pair); `decline(kind, repo, now)`; `revoke(kind, repo, by: 'him' | 'revert', jobId?: string, now?)`; `suspend(kind, repo, reason, now)`; `grants(): Grant[]`; `mayAct(kind, repo, jobId, now): Promise<{ ok: true; p: number } | { ok: false; reason: string }>` (ruling 18, every condition read fresh, any throw answered `ok: false` with "could not check: …"); `revokeOnRevert(data: { jobId; repo })` (ruling 19).
-- [ ] **Step 1: Write the failing tests** (each condition alone): `an eligible kind on a repo with test and build asks once, and not again for 30 days after a decline`; `a repo without a build command is never asked`; `only grant() moves an ask to granted, and grant without an ask is refused`; `mayAct refuses with each of: no grant, revoked, suspended, stop file, repo halted, market off, no build, window no longer eligible (and suspends), repo test failing, master missing, master untrusted, no prediction, p 0.89, inspection not pushable, PR closed, head sha moved`; `mayAct answers ok when every condition holds`; `a throw inside a check answers could not check`; `revokeOnRevert revokes the grant of an autonomous job and records by revert`; `a revert of a job the city did not act on revokes nothing`; `the brief carries the ask with grant and decline, and an acted item with revoke`; `replay rebuilds grants and verifyReplay compares them`.
-- [ ] **Step 2:** Run; expect FAIL.
-- [ ] **Step 3:** Implement. Every refusal reason is a sentence he reads in the brief.
+- Consumes: `agreement()`, `current('master')`, `getRepo`, `paths().stop`, `run`, `prState()`, `watchRevertsFor()` (Task 9), `predictions`.
+- Produces: `askDue(now)` (ruling 17); `grant(kind, repo, now, o: { fromSettings?: boolean })` (from an open ask, or from Settings for a pair he revoked); `decline()`; `revoke(kind, repo, by, jobId?, now?)` (sets `quietUntil`); `suspend(kind, repo, reason, now)`; `grants()`; `mayAct(kind, repo, jobId, now)` (ruling 18); `revokeOnRevert(data)` (ruling 19).
+- [ ] **Step 1: Write the failing tests:** `an eligible kind with a trusted master asks once`; `a declined pair is silent 30 days`; `a pair he revoked is silent 30 days and he can re-grant it from Settings`; `a repo without a build command and AllStreets/beagle are never asked`; `only grant moves an ask to granted`; `mayAct refuses with each of: school off, no grant, revoked, suspended, stop file, halted, market off, no build, window no longer eligible (and suspends), repo test failing, master missing, untrusted, no prediction, p 0.89, a prediction from a master 9 days old and replaced, not pushable, PR closed, head moved, a failed revert read`; `a revert pushed a minute before is found by mayAct's own read, which revokes and refuses`; `mayAct answers ok when every condition holds`; `a throw answers could not check`; `revokeOnRevert revokes an autonomous job's grant`; `the brief carries the ask and an acted item with revoke`; `replay rebuilds grants`; pin: `a revert of a job the city did not act on revokes nothing`.
+- [ ] **Step 2:** Run; expect FAIL (all but the pin).
+- [ ] **Step 3:** Implement. Every refusal reason is a sentence he reads.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5:** Commit `Ask his permission kind by kind and repo by repo, and refuse to act unless every check holds`.
 
 ### Task 17: Acting under a grant [Opus] [screens]
 
 **Files:**
-- Modify: `engine/school/autonomy.ts` (`act()`), `engine/school/tick.ts`, `engine/github.ts` (`mergePR()`), `engine/market/ship.ts` (`watchReverts()` calls `revokeOnRevert` before `haltRepo`; `pollPRs` sees the city's own merge as merged), `docs/SELF_RECURSION_GUARDRAILS.md`
+- Modify: `engine/school/autonomy.ts` (`act()`), `engine/school/tick.ts`, `engine/github.ts` (`mergePR()`), `engine/market/ship.ts` (`watchRevertsFor()` calls `revokeOnRevert` before `haltRepo`), `docs/SELF_RECURSION_GUARDRAILS.md`
 - Test: `test/school-act.test.ts`, `test/ship.test.ts`, `test/github.test.ts`
 
 **Interfaces:**
-- Consumes: `mayAct`, `acceptProposed`, `listJobs({ status: ['proposed'] })`, `listRuns` in `waiting`, `githubWriteRefused()`.
-- Produces: `mergePR(fullName, number, headSha): Promise<void>` (`gh pr merge <n> --repo <full> --merge --match-head-commit <sha>`; refused by `githubWriteRefused()`; never `--admin`, `--auto` or `--delete-branch`); `act(now): Promise<number>` (for each proposed job and waiting PR whose kind and repo hold a grant: `mayAct`, then record `autonomy.acted` and act, then re-read: a merge whose PR is not `MERGED` after the call records the failure and suspends the pair); the guardrails doc gains the arrows `proposed job of a granted kind > mayAct > accept > open > bid …` and `waiting PR of a granted kind > mayAct > gh pr merge`, and why neither creates a job.
-- [ ] **Step 1: Write the failing tests** (fake runner records every gh argv): `a granted proposal kind is accepted with acted recorded first`; `a granted merge kind runs gh pr merge with --merge and --match-head-commit and nothing else`; `a revert arriving between two acts revokes before the second mayAct, which refuses` (Review Focus 2); `the stop file set mid-tick stops further acts`; `a merge that GitHub refuses suspends the pair`; `the revert handler revokes before it halts` (order checked in the ledger); `githubWriteRefused stops mergePR on the real home`; pin: `no autonomous action without a grant` (passes once Task 16 lands; kept).
-- [ ] **Step 2:** Run; expect FAIL.
+- Produces: `mergePR(fullName, number, headSha)` (`gh pr merge <n> --repo <full> --merge --match-head-commit <sha>`; refused by `githubWriteRefused()`); `act(now): Promise<number>` (ruling 18; nothing when the school is off); the guardrails arrows (`proposed job of a granted kind > mayAct > accept > open > bid …`; `waiting PR of a granted kind > mayAct (fresh revert read) > gh pr merge`), why neither creates a job, and the Beagle pin rule (ruling 1).
+- [ ] **Step 1: Write the failing tests** (fake runner): `a granted proposal kind is accepted with acted recorded first`; `a granted merge kind runs exactly gh pr merge with --merge and --match-head-commit`; `a revert pushed one minute before the next act is found by that act's own check, which refuses` (Review Focus 2); `the stop file mid-tick stops further acts`; `a squash-only repo's refusal suspends the pair with that reason`; `the revert handler revokes before it halts`; `with the real runner on a temp home mergePR is refused before any gh call`; `act does nothing with the school off`; pin: `no autonomous action without a grant`.
+- [ ] **Step 2:** Run; expect FAIL (all but the pin).
 - [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run; expect PASS. Run `npm test` whole.
-- [ ] **Step 5:** Commit `Act on its own only where he granted it, re-checking every time, and stand down on a revert`.
+- [ ] **Step 4:** Run; expect PASS; `npm test` whole.
+- [ ] **Step 5:** Commit `Act on its own only where he granted it, re-reading for reverts every time, and stand down on a revert`.
 
-### Task 18: Arenas from planted bugs [Opus] [screens]
+### Task 18: Verified history [Opus] [screens]
 
 **Files:**
-- Create: `engine/school/arenas.ts` (the build half), `engine/school/mutants.ts`
-- Test: `test/school-mutants.test.ts`, `test/school-arenas.test.ts`
+- Create: `engine/school/history.ts`
+- Test: `test/school-history.test.ts`
 
 **Interfaces:**
-- Consumes: `createBaseDir` (`worktree.ts`), `installDeps`, `startEgress`, `hostsFor`, `execTool`, `wrap`, `toolProfile`, `childEnv`, `reapRun`, `gateNow('heavy')`, `charge({ kind: 'school' })`, Beagle's `splitOf` through `loadBeagle()`.
-- Produces (`engine/school/mutants.ts`, pure): `mutate(path: string, text: string, max: number, seed: number): Array<{ file; line; original; mutated; op }>` (ruling 20's six operators on non-test source files of the repo's language, never inside strings or comments, deterministic by seed).
-- Produces (`engine/school/arenas.ts`): `buildPlanted(repo: Repo, now): Promise<ArenaInfo>` (heavy gate; the base clone under `paths().school/arenas/<id>/base` installed once under the install egress; each candidate in an APFS clone; the repo's test command under the tool profile with no egress; kept by ruling 20; tasks stored in `arena_tasks` with `split` by `splitOf`; records `arena.built`; a gate loss pauses the build and the next night resumes from the candidates not yet tried); `arenaTasks(id, split)`.
-- [ ] **Step 1: Write the failing tests** (a tiny JS repo in the temp dir with three source functions and a `node --test` suite, `PALIMPSEST_SANDBOX=off`): `mutate flips a comparison and skips strings and comments`; `mutate is deterministic by seed`; `a mutant the suite still passes is dropped, one it fails is kept`; `the kept tasks are split by splitOf and the sealed split is never empty with 20 or more`; `the grading runs carry no proxy (no egress)`; `a gate loss mid-build pauses it and the resume tries only the rest`; `a repo with no test command is refused with the reason`; `the build is charged as local school credits`.
+- Consumes: `listRuns`, `inspection.done`, `merge.reverted`, `merge.followup`, `mergedPRs`, `engineGit` on the mirror, `execTool` under the tool profile (the test check), `getSettings().school.commitsAsWork`, `JOB_TRAILER`, `CITY_BRANCH`.
+- Produces: `verifiedChanges(repo: Repo, now, o: { check?: boolean }): Promise<Array<{ ref: string; sha: string; parent: string; kind: 'city' | 'pr' | 'commit'; files: string[]; touchesTests: boolean; at: string }>>` (ruling 23; the test check under the heavy gate, cached in `verified`); `verifiedCounts(): Record<string, { city; pr; commit }>` (for the screen's "11 of 100").
+- [ ] **Step 1: Write the failing tests** (a bare repo fixture with direct commits, one merged PR, one revert, one follow-up fix): `a 40-day-old commit touching source with passing tests is verified`; `a 20-day-old commit is not`; `a reverted commit and one followed by a fix are not`; `a commit whose tests fail at it is not`; `a city commit is counted as city only when it passed inspection`; `with commitsAsWork off only city merges and PRs count`; `verifiedCounts reports each kind`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Plant one-line bugs in his repos that their own tests catch, for the school to race on`.
+- [ ] **Step 5:** Commit `Find his verified past work: city merges, PRs and the commits that survived`.
 
-### Task 19: Arenas from real past issues [Opus] [screens]
+### Task 19: Arenas from planted bugs [Opus] [screens]
+
+**Files:**
+- Create: `engine/school/mutants.ts`, `engine/school/arenas.ts` (the build half)
+- Test: `test/school-mutants.test.ts`, `test/school-arenas.test.ts`
+
+**Interfaces:**
+- Consumes: `createBaseDir`, `installDeps`, `startEgress`, `hostsFor`, `execTool`, `wrap`, `toolProfile`, `childEnv`, `reapRun`, `gateNow('heavy')`, `charge`, Beagle's `splitOf`, `putArena`, `putTasks`, `sealedHash` (via `loadBeagle()`).
+- Produces: `mutate(path, text, max, seed)` (pure, ruling 20); `buildPlanted(repo, now): Promise<ArenaInfo>` (refuses a market-off repo or one with no test command with the reason; writes tasks to `arena_tasks` and to Beagle's store with `Arena.data` the arena id; records `arena.built` with `sealedHash`; a gate loss pauses and the next night tries only the untried candidates); `arenaTasks(id, split)`.
+- [ ] **Step 1: Write the failing tests** (a tiny JS repo, `PALIMPSEST_SANDBOX=off`): `mutate flips a comparison, skips strings and comments, and is deterministic`; `a mutant the suite passes is dropped, one it fails is kept`; `kept tasks are in Beagle's store under the arena id with their splits, and the recorded sealedHash is Beagle's sealedHash of that arena`; `grading runs carry no proxy`; `a gate loss pauses and resumes the rest`; `a market-off repo is refused`; `charged as local school credits`.
+- [ ] **Step 2:** Run; expect FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run; expect PASS.
+- [ ] **Step 5:** Commit `Plant one-line bugs in his repos that their own tests catch, written into Beagle's store`.
+
+### Task 20: Arenas from past changes [Opus] [screens]
 
 **Files:**
 - Modify: `engine/school/arenas.ts` (`buildPast`)
 - Test: `test/school-arenas.test.ts`
 
 **Interfaces:**
-- Consumes: `mergedPRs(fullName)` (`github.ts`), the mirror (`paths().mirrors`), `engineGit`.
-- Produces: `buildPast(repo, now): Promise<ArenaInfo>` (ruling 20: PRs touching source and tests; task base is the merge's first parent with the PR's test files applied; kept only if those tests fail there and pass at the merge; `arena_tasks.pr` and `.sha` set so Tasks 21 and 22 can exclude sealed ones); `sealedRefs(): Set<string>` (every PR number and merge sha in any arena's sealed split).
-- [ ] **Step 1: Write the failing tests** (a bare repo fixture with three merged PRs: one with a test that fails at its parent, one whose test already passed at its parent, one without tests): `only the first becomes a task`; `its task shows the failing test and not the fix`; `sealedRefs names the sealed tasks' PR and sha`; `the build never fetches from GitHub beyond the mirror`.
+- Consumes: `verifiedChanges()` (Task 18), the mirror, `engineGit`.
+- Produces: `buildPast(repo, now)` (ruling 20; `arena_tasks.ref` the PR number or sha); `sealedRefs(): Set<string>` (every ref and sha in any sealed split).
+- [ ] **Step 1: Write the failing tests:** `a verified commit with a test that fails at its parent becomes a task`; `one whose test already passed at its parent does not`; `a rebase-merged PR whose first parent is not on the base is skipped`; `its task shows the failing test, not the fix`; `sealedRefs names the sealed tasks`; `nothing is fetched beyond the mirror`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Turn his merged fixes with tests into tasks the school can race on`.
+- [ ] **Step 5:** Commit `Turn his verified fixes with tests into tasks the school can race on`.
 
-### Task 20: Arenas as Beagle arenas: tools and grading in the sandbox [Opus] [screens]
+### Task 21: Arenas as Beagle arenas: tools and grading in the sandbox [Opus] [screens]
 
 **Files:**
-- Modify: `engine/school/arenas.ts` (`toBeagleArena`)
+- Modify: `engine/school/arenas.ts` (`toBeagleArena`, `registerArenas`)
 - Test: `test/school-arena-grade.test.ts`
 
 **Interfaces:**
-- Consumes: Beagle's `Arena`, `ToolSpec`, `registerArena`, `unregisterArena` (Task 4's `BeagleApi`); `execFileTool`, `execTool` (`broker.ts`); the arena tasks (Tasks 18, 19).
-- Produces: `toBeagleArena(info: ArenaInfo): Arena` (ruling 21: `id` `palimpsest:<repo>:<kind>`, `kind 'fixtest'`, `describe`, `answer` schema, `show(input)` (the failing tests' names and output, the planted or past task's file list; never a path of this Mac), `tools` `read_file`, `list_files`, `search`, `run_tests`, each executed in the task's scratch clone under the tool profile with no egress, `grade(answer, truth)` by ruling 21, `selfCheck(answer)` "Run the tests on your edits once more and give your final edits.", `starters()` from the seeded agents' genomes through `toGenome()`); `registerArenas(): Promise<number>` (every `ready` arena, at school start).
-- [ ] **Step 1: Write the failing tests:** `a correct edit scores 1, a fix that breaks another passing test 0.5, an edit to a test file 0 with the reason`; `a find that is not unique is refused`; `read_file outside the clone and through a symlink is refused` (the broker's file tool); `run_tests has no network`; `show never contains the temp dir's path`; `the arena registers in Beagle and its sealed tasks are the stored sealed split`.
-- [ ] **Step 2:** Run; expect FAIL.
+- Consumes: Beagle's `Arena`, `ToolSpec`, `registerArena`; `execFileTool`, `execTool`.
+- Produces: `toBeagleArena(info)` (ruling 21: `id` and `data` the arena id, `kind 'fixtest'`, `show()` with no path of this Mac, tools, `run_tests` in a fresh scratch clone per call, `grade`, `graderTimeoutMs` 15 minutes, `maxTurns` 24, `selfCheck`, `starters()` from the seeded local agents through `toGenome()`); `registerArenas()`.
+- [ ] **Step 1: Write the failing tests:** `a correct edit scores 1, one breaking another test 0.5, an edit to a test file 0`; `a non-unique find is refused`; `two run_tests calls on one task use two scratch clones`; `run_tests has no network`; `show never contains the temp path`; `a race of two fake genomes reads its tasks from Beagle's store`; pin: `read_file outside the clone and through a symlink is refused` (the broker's file tool).
+- [ ] **Step 2:** Run; expect FAIL (all but the pin).
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5:** Commit `Race agents on his repos' tasks through Beagle, graded by their own tests in the sandbox`.
 
-### Task 21: Voyages [Opus] [screens]
+### Task 22: Voyages [Opus] [screens]
 
 **Files:**
-- Create: `engine/school/voyages.ts`, `engine/school/campus.ts`
-- Modify: `engine/school/tick.ts`, `engine/market/firms.ts` (`ROSTER` gains school-bred specialists from the `voyages` rows; `hire()` prefers them where the router is trusted), `engine/market/trips.ts` (reason `school`, the campus as a place)
-- Test: `test/school-voyages.test.ts`, `test/firms.test.ts`, `test/trips.test.ts`
+- Create: `engine/school/voyages.ts`
+- Modify: `engine/school/tick.ts`, `engine/market/trips.ts` (reason `school`, the campus from `campusOrigin()`)
+- Test: `test/school-voyages.test.ts`, `test/trips.test.ts`
 
 **Interfaces:**
-- Consumes: `loadBeagle()` (`startVoyage`, `race`, `breed`, `compareToParents`, `sealedScore`, `finishVoyage`), `schoolDriver`, `gateNow('heavy')`, `sealedRefs()`, `toGenome`, `nextSlot('campus', …)` (Task 1).
-- Produces: `sailVoyage(arenaId, now): Promise<VoyageView>` (ruling 22; one voyage at a time; the designer's evidence filtered to breeding-split tasks only; children kept only with `lo > 0` against their parent; aborted on a gate loss through the signal and resumed at the next generation boundary; records `voyage.started`, `voyage.generation`, `voyage.ended`; parents' agents travel to the campus and home); `voyages(): VoyageView[]`; `ensureCampus(): number`, `campusOrigin(): P`.
-- [ ] **Step 1: Write the failing tests** (fake driver with scripted scores on a fake arena): `a voyage of 8 runs 4 generations and records each`; `a child no better than its parent with lo at or below zero is not promoted`; `the designer never sees a race or sealed task`; `a gate loss aborts the generation unscored and the next night resumes it`; `a champion better than every seeded agent on the sealed split with lo above zero joins the roster with origin school`; `a parent agent's persona travels to the campus and home`; `school Claude spend in a voyage stops at the day's 30 credits`; `ensureCampus takes a slot once`.
+- Consumes: `loadBeagle()` (`startVoyage` with `concurrency 1` and `localOnly`, `race`, `breed`, `compareToParents`, `sealedRace`, `finishVoyage`), `schoolDriver`, `gateNow('heavy')`, `sealedRefs()`, `campusOrigin()`.
+- Produces: `sailVoyage(arenaId, now, o: { firmId?: string }): Promise<VoyageView>` (ruling 22; one at a time; resumes per run; the champion against every seeded local agent through one `sealedRace`, which counts a sealed use; records `voyage.*`); `voyages()`; parents' trips.
+- [ ] **Step 1: Write the failing tests** (fake driver, fake arena): `a voyage of 8 runs 4 generations and records each`; `a child with lo at or below zero is not promoted`; `the designer sees only breeding tasks`; `a gate loss aborts unscored and the next night's race skips the stored runs`; `Beagle runs at concurrency 1`; `the champion is compared only with seeded local agents and the view says Claude agents were not compared`; `a spent arena (10 sealed uses) makes no champion claim`; `school Claude spend in a voyage stops at the day's 30 credits`; `parents travel to the campus and home`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Breed agents on his repos' arenas at night and keep only children that are significantly better`.
+- [ ] **Step 5:** Commit `Breed agents on his repos' arenas over several nights and keep only children that are significantly better`.
 
-### Task 22: The LoRA dataset [Opus] [screens]
+### Task 23: The school roster, commissions and hiring [Opus] [screens]
+
+**Files:**
+- Create: `engine/school/roster.ts`
+- Modify: `engine/market/firms.ts` (`ROSTER` reads school-bred specialists and graduates; `hire()` prefers them where the router is trusted, and a commissioning firm first for 7 days), `engine/market/treasury.ts` (the daily tick's commission rule)
+- Test: `test/school-roster.test.ts`, `test/firms.test.ts`, `test/treasury.test.ts`
+
+**Interfaces:**
+- Consumes: `voyages()`, `graduates()` (Task 27; empty until it lands), `predict('router', …)`, `credits.moved`.
+- Produces: `schoolRoster(): RosterSeed[]`; `commission(firmId, arenaId, now): VoyageView` (ruling 22: balance at least 400, an idle agent, a floor on the arena's repo, no commissioned voyage live; 120 credits to the city; `voyage.commissioned`); `firstRefusal(agentSeedId): string | null`.
+- [ ] **Step 1: Write the failing tests:** `a school-bred champion appears on the roster with origin school`; `a firm with 390 credits cannot commission`; `a commission moves 120 credits and queues the voyage first`; `the commissioning firm hires the champion first for 7 days`; `hire prefers a school agent only where the router is trusted`.
+- [ ] **Step 2:** Run; expect FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run; expect PASS.
+- [ ] **Step 5:** Commit `Let firms pay the school to breed a specialist and hire what it produces`.
+
+### Task 24: The LoRA dataset [Opus] [screens]
 
 **Files:**
 - Create: `engine/school/lora.ts` (the dataset half)
 - Test: `test/school-lora-data.test.ts`
 
 **Interfaces:**
-- Consumes: `listRuns`, `inspection.done`, `merge.reverted`, `merge.followup`, `mergedPRs`, `engineGit` on the mirror, `sealedRefs()`, `toBeagleArena(...).describe` and `.show` for the chat shape, `LORA`.
-- Produces: `hunksToEdits(before: Record<string, string>, patch: string): Array<{ file; find; replace }> | null` (ruling 23: widen each hunk's old text by whole lines until unique; null when it cannot be made unique); `buildLoraData(now): { examples: number; skipped: Record<string, number>; path: string; validPath: string }` (writes `train.jsonl` and `valid.jsonl` in `mlx_lm`'s chat format under `paths().school/lora/<id>/data`; reasons counted: `sealed`, `too-large`, `too-long`, `not-unique`, `reverted`, `young`).
-- [ ] **Step 1: Write the failing tests:** `hunksToEdits widens a repeated line until it is unique and applies back to the after text`; `a city merge that survived 30 days and passed inspection is an example; one 20 days old is not`; `his merged PR never reverted is an example; a reverted one is not`; `a PR in any sealed split is skipped as sealed` (Review Focus 5); `a 30 KB file skips the change`; `the latest 10% go to valid.jsonl`; `the data never leaves paths().school`.
+- Consumes: `verifiedChanges()` (Task 18), `sealedRefs()` (Task 20), `toBeagleArena(...)` for the chat shape, `LORA`.
+- Produces: `hunksToEdits(before, patch)`; `buildLoraData(now): { examples; skipped: Record<'sealed' | 'too-large' | 'too-long' | 'not-unique', number>; path; validPath }`.
+- [ ] **Step 1: Write the failing tests:** `hunksToEdits widens a repeated line until unique and reproduces the after text`; `each verified change is an example and a sealed one is skipped as sealed`; `a 30 KB file skips the change`; `an example over 4,096 tokens is skipped`; `the latest 10% go to valid.jsonl`; `the data stays under paths().school`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5:** Commit `Gather verified past work as LoRA examples, never anything from a sealed set`.
 
-### Task 23: LoRA training and the base model download [Opus] [screens]
+### Task 25: LoRA training and the base model download [Opus] [screens]
 
 **Files:**
-- Modify: `engine/school/lora.ts` (training), `trainer/school.py` (`lora_train`, `download_base`), `engine/school/tick.ts`
-- Test: `test/school-lora-train.test.ts`, `trainer/test_school.py`
+- Modify: `engine/school/lora.ts`, `trainer/school.py` (`lora_train`, `download_base`), `trainer/test_school.py`, `engine/school/tick.ts`
+- Test: `test/school-lora-train.test.ts`
 
 **Interfaces:**
-- Consumes: `startTrain` (Task 7) with gate `heavy` and `gb LORA.gb`, `buildLoraData`, `getSettings().school.baseModel`, `.baseModelReady`.
-- Produces: `downloadBase(): Promise<{ ok: boolean; bytes: number; reason: string | null }>` (the one command run without `HF_HUB_OFFLINE`, through `huggingface_hub.snapshot_download` into `paths().school/lora/base/`, egress only to `huggingface.co` and its CDN through a per-download egress proxy, only on his click, sets `baseModelReady`); `trainLora(now): Promise<TrainState>` (ruling 24; refuses without `baseModelReady` or under `LORA.min` examples with "n of 100 verified changes"; resumes from `adapters.safetensors` with `--resume-adapter-file` after a pause with the same data id and seed; records the steps done and lost).
-- [ ] **Step 1: Write the failing tests** (fake spawner): `training is refused until the base is downloaded`; `training is refused under 100 examples with the count`; `the lora argv carries the ruling's flags and the trainer profile and HF_HUB_OFFLINE`; `a pause at step 230 resumes with --resume-adapter-file and the same data` (Review Focus 1); `a paused adapter is never evaluated`; `the download runs only from downloadBase and only to the Hugging Face hosts`; Python: `lora_train on a tiny synthetic model fixture writes adapters and step lines` (skipped without the venv).
+- Consumes: `startTrain` (heavy, `LORA.gb`), `buildLoraData`, `startEgress`.
+- Produces: `downloadBase()` (his click only; `snapshot_download` into `paths().school/lora/base/` with `HF_HUB_DISABLE_XET=1`, `HF_TOKEN=` empty and `HF_HUB_OFFLINE` unset, through a per-download egress proxy allowing `huggingface.co` and `cdn-lfs.huggingface.co`, `cdn-lfs-us-1.huggingface.co`; sets `baseModelReady`); `trainLora(now)` (ruling 24; refused without the base or under 100 examples with "n of 100 verified changes"; resume by the remaining steps from `adapters.safetensors`, `optimizerReset: true`).
+- [ ] **Step 1: Write the failing tests** (fake spawner): `training is refused until the base is downloaded`; `refused under 100 examples with the count`; `the argv carries --max-seq-length 4096, the ruling's flags, the trainer profile and HF_HUB_OFFLINE`; `a pause at step 230 resumes with --resume-adapter-file adapters.safetensors and --iters 370 and records optimizerReset`; `a paused adapter is never evaluated`; `the download env has HF_HUB_DISABLE_XET=1 and an empty HF_TOKEN and its proxy allows only the Hugging Face hosts`; Python: `lora_train on a two-layer random Qwen-shaped model built in the test from a config (never downloaded) writes adapters and step lines`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Fine-tune a local coder on his verified work, at night, from a checkpoint it can resume`.
+- [ ] **Step 5:** Commit `Fine-tune a local coder on his verified work, at night, resuming honestly from its checkpoint`.
 
-### Task 24: The mlx backend [Opus] [screens]
+### Task 26: The mlx backend [Opus] [screens]
 
 **Files:**
 - Create: `engine/market/mlx.ts`
-- Modify: `engine/market/providers.ts` (`BackendKind` gains `'mlx'`), `engine/market/sandbox.ts` (`trainerProfile` with a port)
+- Modify: `engine/market/providers.ts` (`'mlx'`)
 - Test: `test/mlx-provider.test.ts`
 
 **Interfaces:**
-- Consumes: `ChatTransport`, `runLoop`, `jsonCall` shape (`toolloop.ts`, `ollama.ts`), `trainerProfile`, `getSpawner`, `graduate(id)` (Task 25; until then a fixture).
-- Produces: `mlxTransport(model: string): ChatTransport` (OpenAI chat over `http://127.0.0.1:<port>/v1/chat/completions`, tools in the request, `tool_calls` parsed); `mlxProvider(): Provider` (plan, work, review, judge as the Ollama provider does them over this transport, `audit` through `runLoop` with the audit tools, `complete`); `ensureServer(model): Promise<number>` (one server at a time, started under the profile, ready when `/v1/models` answers, stopped after 10 idle minutes or on shutdown); credits by seconds at `LORA.gb`.
-- [ ] **Step 1: Write the failing tests** (a fake HTTP server on port 0 standing in for `mlx_lm.server`, a fake spawner): `providerFor mlx: returns the mlx backend`; `a work loop's tool call round-trips through the transport`; `the server is started once, wrapped in the profile with loopback bind only, and stopped after 10 idle minutes`; `a second graduate stops the first server`; `credits are local by seconds`.
+- Consumes: `ChatTransport`, `runLoop`, `trainerProfile` with `bindPort`, `getSpawner`.
+- Produces: `mlxTransport(model)`, `mlxProvider()` (plan, work, review, judge, audit, complete), `ensureServer(model)` (ruling 26).
+- [ ] **Step 1: Write the failing tests** (fake HTTP server on port 0, fake spawner): `providerFor mlx returns the mlx backend`; `a work loop's tool call round-trips`; `the server starts once under the profile with loopback bind only and stops after 10 idle minutes`; `a second graduate stops the first server`; `credits are local by seconds`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run; expect PASS. On his Mac, once a base is present, start `mlx_lm.server` under the profile by hand and confirm a tool call parses for Qwen2.5-Coder (the log goes in the commit body).
+- [ ] **Step 4:** Run; expect PASS. On his Mac, once a base exists, confirm a tool call parses for Qwen2.5-Coder under the profile (log in the commit body).
 - [ ] **Step 5:** Commit `Serve the school's graduates as mlx models, fenced in and on loopback`.
 
-### Task 25: Graduation [Opus] [screens]
+### Task 27: Graduation [Opus] [screens]
 
 **Files:**
-- Modify: `engine/school/lora.ts` (evaluation and graduation), `engine/market/firms.ts` (graduates on the roster, root `collegiate`), `engine/school/tick.ts`
-- Test: `test/school-graduate.test.ts`, `test/firms.test.ts`
+- Modify: `engine/school/lora.ts` (evaluation, graduation), `engine/school/tick.ts`
+- Test: `test/school-graduate.test.ts`
 
 **Interfaces:**
-- Consumes: `sealedScore` (Beagle), `pairedCi`, `mlxProvider`, every arena's sealed split, `hire()`.
-- Produces: `evaluateAdapter(loraId, now): Promise<{ sealed: Interval; baseSealed: Interval; vsBase }>` (ruling 25; both as the same single-shape genome on every sealed task; charged as `train` for the minutes); `graduate(loraId, now): Graduate | null` (only when `vsBase.lo > 0`; records `graduate.made`; adds the agent to the roster); `graduates(): Graduate[]`; a hired graduate's tower uses root `collegiate`.
-- [ ] **Step 1: Write the failing tests:** `an adapter whose paired interval is above zero graduates as mlx:grad-qwen25c7-1`; `one whose interval spans zero does not, and the reason names the numbers`; `the evaluation uses only sealed tasks the adapter's data excluded`; `a graduate on the roster can be hired by the Phase 2 rule and its tower root is collegiate`; `a graduate commutes from the campus to its quarter when hired`.
+- Consumes: `sealedRace` (Beagle), `pairedCi`, `mlxProvider`, `schoolRoster` (Task 23), `SEALED_USES`.
+- Produces: `evaluateAdapter(loraId, now)` (ruling 25; one `sealedRace` per eligible arena, each a sealed use; charged as `train`); `graduate(loraId, now): Graduate | null` (`graduate.made`); `graduates()`.
+- [ ] **Step 1: Write the failing tests:** `an adapter whose paired interval is above zero graduates as mlx:grad-qwen25c7-1 with root collegiate`; `one spanning zero does not and the reason names the numbers`; `only arenas whose sealed tasks its data excluded are used`; `each evaluation adds a sealed use, and the eleventh is refused with "sealed set spent"`; `Beagle's store holds the evaluation's runs, and the hash it used is the arena's sealedHash`; `a graduate commutes from the campus to its quarter when hired`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5:** Commit `Graduate a fine-tuned coder only when it beats its base on the sealed set`.
+- [ ] **Step 5:** Commit `Graduate a fine-tuned coder only when it beats its base on a sealed race`.
 
-### Task 26: School API routes, the client, the router and redaction [Sonnet] [screens]
+### Task 28: School API routes, the client, the router and redaction [Sonnet] [screens]
 
 **Files:**
 - Create: `engine/school/api.ts`
-- Modify: `engine/market/api.ts` (mounts the school routes), `app/src/api.ts`, `app/src/router.ts`
+- Modify: `engine/market/api.ts`, `app/src/api.ts`, `app/src/router.ts`
 - Test: `test/school-routes.test.ts`, `test/router.test.ts`, `test/api-events.test.ts`
 
 **Interfaces (full brief):**
 - Routes (JSON; writes need `x-palimpsest: 1`):
-  - `GET /api/school` -> `{ settings: SchoolSettings; gate: { light: GateState; heavy: GateState }; trainer: trainerStatus(); nets: NetCard[]; agreements: Agreement[]; grants: Grant[]; arenas: ArenaInfo[]; voyages: VoyageView[]; graduates: Graduate[]; trains: TrainState[] }`.
-  - `GET /api/school/nets/:net` -> `NetCard` with its full history; `GET /api/school/voyages/:id` -> `VoyageView`; `GET /api/school/graduates/:id` -> `Graduate`; `GET /api/school/campus` -> `{ origin: { x; z }; slot: number; live: { voyage: boolean; nets: boolean; lora: boolean } }`.
-  - `POST /api/school/train-now` -> `GateState` (refused 409 on battery); `DELETE /api/school/train-now`; `POST /api/school/download-base` -> 202; `POST /api/school/arenas/:owner/:name` with `{ kind }` -> 202 `ArenaInfo`.
-  - `POST /api/autonomy/:kind/:owner/:name/grant` (409 without an open ask), `/decline`, `/revoke` -> `Grant`.
-  - `PATCH /api/settings` accepts `school` fields: `enabled`, `window` (`HH:MM`), `idleMinutes` (5 to 120), `claudeCreditsPerDay` (0 to 100), `designer` (`ModelRef` by shape only, never `ollama list` in a route), `understudy`.
-  - `JobDetail.school` (Task 14) through `scrub()`.
-- `scrub()` on every field of every view above; no training file path, no `rows.json` and no Understudy shot path is ever served.
-- `app/src/api.ts`: `school()`, `net(name)`, `voyage(id)`, `graduate(id)`, `campus()`, `trainNow()`, `stopTrainNow()`, `downloadBase()`, `buildArena(owner, name, kind)`, `grant(kind, owner, name)`, `decline(…)`, `revoke(…)`; `EVENT_TYPES` gains `train.started`, `train.paused`, `train.ended`, `net.trained`, `net.promoted`, `voyage.started`, `voyage.generation`, `voyage.ended`, `autonomy.asked`, `autonomy.granted`, `autonomy.revoked`, `autonomy.acted`, `graduate.made`.
-- `app/src/router.ts`: `Route` gains `'school'` (`#/school`), `'net'` (`#/school/nets/:net`), `'voyage'` (`#/school/voyages/:id`), `'graduate'` (`#/school/graduates/:id`).
-- [ ] **Step 1: Write the failing tests:** `the school view lists seven net cards (the five nets, the appraiser's two heads counted apart, and the master) as thin on an empty home with the counts`; `grant without an ask is 409`; `revoke answers the grant revoked`; `train-now on battery is 409 with the reason`; `settings refuse idleMinutes 2 and a designer of the wrong shape without running ollama`; `no view carries a path of this Mac or a rows file`; `SSE forwards net.trained and autonomy.acted scrubbed`; `router parses the four school routes`.
+  - `GET /api/school` -> `{ settings; gate: { light; heavy }; trainer; nets: NetCard[]; agreements; grants; arenas; voyages; graduates; trains; lora: { examples: number; needs: number; counts: verifiedCounts(); baseReady: boolean } }`.
+  - `GET /api/school/nets/:net`, `/voyages/:id`, `/graduates/:id`; `GET /api/school/campus` stays as Task 1 made it, now filling `live`.
+  - `POST /api/school/train-now` (409 on battery), `DELETE /api/school/train-now`, `POST /api/school/download-base` (202), `POST /api/school/arenas/:owner/:name` with `{ kind }` (202; 409 for a market-off repo or one without a test command, with the reason).
+  - `POST /api/autonomy/:kind/:owner/:name/grant` (409 without an open ask unless `{ fromSettings: true }` on a revoked pair), `/decline`, `/revoke`.
+  - `PATCH /api/settings` accepts `school` fields: `enabled`, `window` (`HH:MM`), `idleMinutes` (5 to 120), `allowLowPower`, `claudeCreditsPerDay` (0 to 100), `designer` (by shape only, never `ollama list`), `understudy`, `commitsAsWork`.
+  - `scrub()` on every field; no training file, rows file, task body or Understudy shot path is ever served.
+- `app/src/api.ts`: `school()`, `net()`, `voyage()`, `graduate()`, `campus()`, `trainNow()`, `stopTrainNow()`, `downloadBase()`, `buildArena()`, `grant()`, `decline()`, `revoke()`; `EVENT_TYPES` gains the train, net, voyage, autonomy and graduate events.
+- `app/src/router.ts`: `school`, `net`, `voyage`, `graduate`.
+- [ ] **Step 1: Write the failing tests:** `on an empty home the school view has seven thin cards each with a cause, no arena, lora 0 of 100 and the trainer not set up`; `building an arena on a market-off repo is 409 with the reason`; `grant without an ask is 409, and from Settings on a revoked pair is 200`; `train-now on battery is 409`; `settings refuse idleMinutes 2 and a malformed designer without running ollama`; `no view carries a path of this Mac`; `SSE forwards net.trained and autonomy.acted scrubbed`; `the router parses the four routes`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5:** Commit `Serve the school, its nets, voyages, graduates and grants, scrubbed`.
 
-### Task 27: The sample school [Opus] [screens]
+### Task 29: The sample school [Opus] [screens]
 
 **Files:**
-- Modify: `engine/market/sample-economy.ts` (`seedSchool()` called from `seedEconomy()`), `tools/sample.ts`
+- Modify: `engine/market/sample-economy.ts` (`seedSchool()`), `tools/sample.ts`
 - Test: `test/sample-economy.test.ts`
 
 **Interfaces:**
-- Produces: `seedSchool()` adds, with ledger entries that replay: nets with histories (appraiser-pass trusted at v6, Brier 0.14 [0.10, 0.19] against 0.22, n 64; router trained not trusted; durability thin "18 of 40"; triage trusted with "taught by the master on 22 rows"; taste thin; master trusted at v5, agreement 0.92 [0.84, 0.98] on 50); agreements by kind (`propose:readme-gap` at 48 of 50 eligible, `merge:low` 44 of 50, the rest under 50); one open ask on `tidewater/harbor-ledger` for `propose:readme-gap`, one grant on `hoshi/kumo` for `merge:low` with two autonomous merges, one revoked by a revert last week; two arenas (`tidewater/harbor-ledger` planted, 48 tasks; `hoshi/kumo` past, 22 tasks); one finished voyage with four generations and two promoted children, one sailing that the clock ends in 30 s at speed 20; one graduate `mlx:grad-qwen25c7-1` (sealed 0.61 [0.52, 0.70] against base 0.47 [0.38, 0.56], diff 0.14 [0.06, 0.22]) hired by Quickset; a paused LoRA run "on battery"; the gate states for a night window. All on the fake trainer; nothing in the sample ever spawns Python. `economyClock` gains `school: boolean` (default true).
-- [ ] **Step 1: Write the failing tests:** `the sample school replays clean`; `the clock ends the sailing voyage with its numbers`; `the brief holds an autonomy ask and an acted item`; `the sample never spawns python or mlx_lm`.
+- Produces: `seedSchool()` with replaying ledger entries: nets (appraiser-pass trusted at v6, Brier 0.14 [0.10, 0.19] against 0.22, n 64; router trained not trusted; durability thin "18 of 40" with its cause; triage trusted "taught by the master on 22 rows"; taste thin; master trusted at v5, Brier 0.09 [0.05, 0.14] against 0.16, agreement 0.92 [0.84, 0.98] on 50); agreements (`propose:readme-gap` 48 of 50 eligible, `merge:low` 44 of 50, one kind marked skewed); an open ask on `tidewater/harbor-ledger` for `propose:readme-gap`; a grant on `hoshi/kumo` for `merge:low` with two autonomous merges and one earlier grant revoked by a revert; one he revoked by hand, quiet until a date; two arenas (planted on harbor-ledger, 48 tasks, 3 sealed uses; past on kumo, 22 tasks); one finished voyage, one sailing that the clock ends in 30 s at speed 20, one commissioned by Quickset; a graduate `mlx:grad-qwen25c7-1` (sealed 0.61 [0.52, 0.70] against 0.47 [0.38, 0.56], diff 0.14 [0.06, 0.22]) hired by Quickset; a paused LoRA "on battery" with `optimizerReset` on its resume; night gate states. All on the fake trainer; nothing spawns Python. `economyClock.school` (default true).
+- [ ] **Step 1: Write the failing tests:** `the sample school replays clean`; `the clock ends the sailing voyage`; `the brief holds an ask and an acted item`; `the sample never spawns python or mlx_lm`.
 - [ ] **Step 2:** Run; expect FAIL.
-- [ ] **Step 3:** Implement. The numbers above are the copy he reads in captures; keep them.
-- [ ] **Step 4:** Run; expect PASS; the `--economy` seed on a temp home with `PALIMPSEST_PORT=4790` answers `/api/school`.
-- [ ] **Step 5:** Commit `Seed a school with nets, voyages, a graduate and a grant into the sample economy`.
+- [ ] **Step 3:** Implement; the numbers above are capture copy.
+- [ ] **Step 4:** Run; expect PASS; `--economy` on a temp home with `PALIMPSEST_PORT=4790` answers `/api/school`.
+- [ ] **Step 5:** Commit `Seed a school with nets, voyages, a graduate and grants into the sample economy`.
 
 ---
 
 ## Part B: the screens (screens track)
 
-The screens keep the book-like language: sheets over the city, Newsreader for names and headings, IBM Plex Sans for text, Plex Mono for numbers and refs, hairline rules, sentence case, square corners. Every score is a number with its interval and its n, never a bar of colour alone.
+Book-like language as before; every score is a number with its interval and n; every empty card says why.
 
-### Task 28: The school screen [Opus] [screens]
+### Task 30: The school screen, full and empty [Opus] [screens]
 
 **Files:**
 - Create: `app/src/ui/school.ts`, `app/src/ui/school-words.ts`, `tools/ui-test-school.ts`
@@ -675,68 +703,82 @@ The screens keep the book-like language: sheets over the city, Newsreader for na
 - Test: `test/school-words.test.ts`, `tools/ui-test.ts` (calls `schoolChecks`)
 
 **Interfaces:**
-- Consumes: `api.school()`, `api.net()`, `api.voyage()`, `api.graduate()`, the school events.
-- Produces (`app/src/ui/school-words.ts`, pure): `intervalText(i: Interval, metric)` ("Brier 0.14, 95% interval 0.10 to 0.19, on 64 held-out rows"), `netLine(card)` (thin: "18 of 40 labels; it says nothing until it has 40"), `gateLine(g: GateState)` ("Training waits: on battery." / "Training may run: on power, idle 22 minutes, inside 1:00 to 6:00."), `agreementLine(a)` ("48 of the last 50, 0.96 (0.90 to 1.00)"), `kindLabel(kind)` (`propose:readme-gap` "Posting README proposals as jobs", `merge:low` "Merging low tier PRs", and the rest).
-- Produces (`app/src/ui/school.ts`): `createSchool(parent, deps)`: the sheet "School" with sections as ledgers: "The nets" (one row each: name, its job in a sentence, the score line, against the baseline, trusted or not, a small line chart of its held-out score per version with the interval as a band, drawn in SVG with hairlines, no fill glow), "The master" (agreement by kind: one row per kind with the line and eligible or how many more), "Voyages" (each with generations, the champion's score and interval, promoted children with their differences; a sailing one updates live), "Graduates" (sealed score against base with the difference and its interval), "Training" (the gate lines, the trainer status, the live train with steps, and the minutes trained this week on power); each row links to its page (`#/school/nets/:net`, `#/school/voyages/:id`, `#/school/graduates/:id`).
-- [ ] **Step 1: Write the failing tests:** unit tests for each word function; UI tests (economy, shots `school.png`, `school-net.png`, `school-voyage.png`): seven net rows with numbers and intervals; durability reads "18 of 40 labels"; the master section shows `propose:readme-gap` eligible; the sailing voyage reaches its fourth generation live; the graduate row reads its difference and interval; a net's page draws one point per version; no console errors.
-- [ ] **Step 2:** Run `npm run ui-test`; expect FAIL on the new checks.
+- Produces (`school-words.ts`, pure): `intervalText(i, metric)` ("Brier 0.14, 95% interval 0.10 to 0.19, on 64 held-out rows"), `netLine(card)` (thin: "18 of 40 labels. No city merge has had 30 days yet."), `gateLine(g)` ("Training waits: on battery." / "Training may run: on power in Low Power mode, idle 22 minutes, inside 1:00 to 6:00."), `agreementLine(a)` (and for a skewed kind "You approve nearly all of these, so the master cannot show it knows better than that; this kind may never be offered."), `kindLabel(kind)`, `loraLine(l)` ("11 of 100 verified changes"), `sealedLine(info)` ("sealed set used 3 of 10 times").
+- Produces (`school.ts`): `createSchool(parent, deps)`: sections "The nets", "The master", "Arenas", "Voyages" (runs done of total, "spans several nights"), "Graduates", "Training"; charts in SVG hairlines only with two or more points, else the sentence.
+- [ ] **Step 1: Write the failing tests:** unit tests per word function; UI on the economy (shots `school.png`, `school-net.png`, `school-voyage.png`): seven net rows with intervals; the skewed kind's sentence; the sailing voyage advances live; the graduate's difference; a net page with one point per version; UI on an **empty home** (no economy, shot `school-empty.png`): seven thin cards each naming its cause, "No arena", "0 of 100 verified changes" with the base model not downloaded, "The trainer is not set up on this Mac", and no `svg` chart element anywhere; no console errors.
+- [ ] **Step 2:** Run `npm run ui-test`; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5: Quality rounds** (two): every number must carry its interval and n; the charts must read as engraved plates, not a dashboard; thin nets must look honestly empty, not broken. Commit `Show what the school has learned, each claim with its number`.
+- [ ] **Step 5: Quality rounds** (two): numbers carry intervals and n; charts read as engraved plates; the empty school reads honestly empty, not broken. Commit `Show what the school has learned, each claim with its number, and say so when there is nothing yet`.
 
-### Task 29: Autonomy where he decides: Settings, the district page, the brief and the job page [Opus] [screens]
+### Task 31: Autonomy where he decides: Settings, the district page, the brief and the job page [Opus] [screens]
 
 **Files:**
 - Create: `app/src/ui/autonomy.ts`
-- Modify: `app/src/ui/settings.ts` (section "Autonomy"), `app/src/ui/repo.ts` (the "Autonomy grants arrive with Phase 4." note becomes the repo's grants block), `app/src/ui/brief.ts`, `app/src/ui/brief-words.ts` (`grant` "Let the city do this on its own here", `decline` "Not yet", `revoke` "Take it back"), `app/src/ui/job.ts` ("What the school thinks": the appraisal, the router's three best agents, durability, the master's guess with its version, or "The master abstained: <reason>")
+- Modify: `app/src/ui/settings.ts` ("Autonomy"), `app/src/ui/repo.ts` (the Phase 3 note becomes the grants block, and "Build an arena" for a market-on repo with a test command), `app/src/ui/brief.ts`, `app/src/ui/brief-words.ts` (`grant` "Let the city do this on its own here", `decline` "Not yet", `revoke` "Take it back"), `app/src/ui/job.ts` ("What the school thinks")
 - Test: `test/brief-words.test.ts`, `tools/ui-test-school.ts`
 
 **Interfaces:**
-- Produces (`app/src/ui/autonomy.ts`): `renderGrants(grants: Grant[], agreements: Agreement[], opts: { repo?: string; onGrant; onDecline; onRevoke }): HTMLElement`: one ruled row per (kind, repo): the kind in words, the agreement line, the state ("asked on Tuesday", "granted 3 November, 6 merges since", "revoked by a revert on 8 November", "declined; asks again after 2 December"), and its one action as a text button in the line; the Settings section lists every pair and a sentence above it: "The city asks before it does any kind of work on its own, repo by repo. A revert takes the permission back at once."
-- [ ] **Step 1: Write the failing tests:** unit: the three labels; UI (economy, shots `autonomy-settings.png`, `district-autonomy.png`, `brief-autonomy.png`, `job-school.png`): the harbour ask grants from the brief and shows granted in Settings and on the district page without reload; Take it back on `hoshi/kumo` revokes and the row says so; the revoked-by-revert row reads its date; a job page shows the master's guess and a thin net shows its reason; keyboard reaches every action; no console errors.
+- Produces: `renderGrants(grants, agreements, opts: { repo?; onGrant; onDecline; onRevoke; onRegrant })`: one ruled row per pair with its state ("asked on Tuesday", "granted 3 November, 6 merges since", "revoked by a revert on 8 November", "you took it back; quiet until 2 December", "suspended: you undid an accepted proposal") and its one action; Settings lists every pair and lets him re-grant a revoked one; the district page's "Build an arena" is disabled with the reason on a market-off repo.
+- [ ] **Step 1: Write the failing tests:** unit labels; UI (shots `autonomy-settings.png`, `district-autonomy.png`, `brief-autonomy.png`, `job-school.png`): the harbour ask grants from the brief and shows in Settings and on the district page live; Take it back revokes and shows the quiet date; Settings re-grants it; the suspended row names his undo; a job page shows the master's guess or the abstention's reason; "Build an arena" on a market-off repo is disabled with the reason; keyboard reaches every action; no console errors.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5: Quality rounds** (two): a grant must read as a permission he gives, not a toggle; the revoke must be one plain action away everywhere a grant shows. Commit `Let him grant, decline and take back the city's autonomy where he already looks`.
+- [ ] **Step 5: Quality rounds** (two). Commit `Let him grant, decline and take back the city's autonomy where he already looks`.
 
-### Task 30: Training settings and the trainer's state [Sonnet] [screens]
+### Task 32: Training settings and the trainer's state [Sonnet] [screens]
 
 **Files:**
-- Modify: `app/src/ui/settings.ts` (section "School" under Analysis), `app/src/ui/treasury.ts` (the school's spend rows under the city's own calls, the minutes trained on power this week)
+- Modify: `app/src/ui/settings.ts` ("School"), `app/src/ui/treasury.ts`
 - Test: `tools/ui-test-school.ts`
 
 **Interfaces (full brief):**
-- Settings "School": "Run the school" (switch, `school.enabled`, line: "Off by default. While on, the city builds arenas from your repos, breeds agents and trains its nets and coders on this Mac."); "Train between" two times (`window`); "Only after the Mac has been idle for" (`idleMinutes`); the gate's live line from `gateLine()` for heavy; "Train now" (disabled on battery with the reason; shows "until 4:10" while live; "Stop"); "The school may spend on Claude each day" (`claudeCreditsPerDay`, in credits and as a share of a window: "30 credits, 3% of a window"); "Design agents with" (`designer`); "Read your taste from Understudy" (switch, with the line "Read only, on this Mac; it reads your taste statements and the pairs you picked."); "Base model for coders" (the name, its size, and "Download, about 4.3 GB" until ready, then "Ready"); the trainer status line ("The trainer is not set up on this Mac. Run npm run trainer:setup in the Palimpsest folder."). Privacy adds: "Training happens on this Mac. Nothing it learns leaves it. The one download is the base model, from Hugging Face, when you click Download."
-- Treasury: `school` and `train` rows in the spend table; "Trained 3 h 12 min on power this week" under it.
-- [ ] **Step 1: Write the failing UI tests:** the switch patches `enabled`; a window of `25:00` is refused in place; Train now is disabled with "on battery" when the sample gate says battery; Download shows 202 and then "Ready" when the fake finishes; the treasury lists school and train spend; no "arrive with Phase 4" text anywhere in the built app (a grep over `dist/assets/*.js`).
+- Settings "School": "Run the school" (`enabled`; "Off by default. While on, the city trains its nets at night, races agents on arenas you build, and trains coders on this Mac."); "Train between" (`window`); "Only after the Mac has been idle for" (`idleMinutes`); "Train in Low Power mode on power" (`allowLowPower`; "Your Mac is set to Low Power on power; training then runs slower and cooler."); the heavy gate's `gateLine()`; "Train now" (disabled on battery with the reason; "until 4:10"; "Stop"); "The school may spend on Claude each day" ("30 credits, 3% of a window"; "It takes one of the city's Claude slots and waits while you are using Claude."); "Design agents with" (`designer`); "Count my own commits as verified work" (`commitsAsWork`; "Commits that touched source, lasted 30 days with no revert or fix, and pass their tests. This goes beyond changes the guild inspected."); "Read your taste from Understudy" (`understudy`; "Read only, on this Mac. Your taste statements are also added to the bar every UI change in the market is judged against."); "Base model for coders" ("Download, about 4.3 GB" until ready; "Your Hugging Face login is not sent."); the trainer line. Privacy adds: "Training happens on this Mac and nothing it learns leaves it. Arenas are built only from repos whose market you turned on, and only when you click. The one download is the base model, when you click Download."
+- Treasury: `school` and `train` spend rows; "Trained 3 h 12 min on power this week".
+- [ ] **Step 1: Write the failing UI tests:** each switch patches its field; `25:00` is refused in place; Train now disabled on battery; Download answers 202 then "Ready"; the treasury lists school and train spend; no "arrive with Phase 4" text in `dist/assets/*.js`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
 - [ ] **Step 5: Quality rounds** (two). Commit `Put the school's switches, its hours and its spend where he sets the city's limits`.
 
+### Task 33: Lineage on the agent page [Sonnet] [screens]
+
+**Files:**
+- Modify: `app/src/ui/agent.ts`, `engine/market/api.ts` (`AgentDetail.school: { voyage: VoyageView | null; graduate: Graduate | null }`)
+- Test: `test/school-routes.test.ts`, `tools/ui-test-school.ts`
+
+**Interfaces (full brief):**
+- A bred specialist's page shows its parents (links), the voyage and generation it came from, its sealed score with interval against each seeded local agent, and who commissioned it; a graduate's page shows its base model, adapter id, examples trained on, the arenas of its sealed race, and its sealed score against base with the difference and interval; a seeded agent's page is unchanged. Text through `cleanText()`.
+- [ ] **Step 1: Write the failing tests:** route: `AgentDetail.school for the sample graduate carries its graduate row`; UI (shot `agent-graduate.png`): Quickset's graduate shows base, adapter and the difference; a bred specialist links its two parents; no console errors.
+- [ ] **Step 2:** Run; expect FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run; expect PASS.
+- [ ] **Step 5: Quality rounds** (two). Commit `Show where a school agent came from on its own page`.
+
 ---
 
 ## Part C: the city (city track)
 
-Every task here keeps every view at 60 fps on his M5 Pro and re-measures the city from home against the guard (12M triangles, 850 calls) with every Phase 2 and Phase 3 ornament standing. The campus budget from home is at most 40 draw calls and 900k triangles, with LOD.
+Every task keeps 60 fps on his M5 Pro and re-measures from home against the guard (850 calls, 12M triangles, shadow map redrawn) with every Phase 2 and Phase 3 ornament standing. The campus has its own `campus` key in `breakdown()` and a sub-guard of at most 25 calls and 900k triangles from home, shadow pass and campus life included (Decision 17): one merged mesh per material beyond the far LOD distance, the four halls one instanced draw per material, and no shadow casting for tracery, chimneys, pinnacles, paths or figures.
 
-### Task 31: The campus site, its terrace, quads and halls [Opus] [city]
+### Task 34: The campus site, its terrace, quads and halls [Opus] [city]
 
 **Files:**
 - Create: `app/src/city/campus/site.ts`, `app/src/city/campus/halls.ts`, `app/src/city/campus/index.ts`
-- Modify: `app/src/city/scene.ts` (`setCampus(origin)`), `app/src/main.ts` (reads `GET /api/school/campus`), `app/src/city/lots.ts` (the campus block is not an ambient lot)
+- Modify: `app/src/city/scene.ts` (`setCampus(origin)`), `app/src/city/breakdown.ts` (`campus` key), `app/src/main.ts` (reads `GET /api/school/campus`, Task 1), `app/src/city/lots.ts`, `tools/ui-test.ts` (`CAMPUS_HOME_CALLS = 25`, `CAMPUS_HOME_TRIANGLES = 900_000`)
 - Test: `test/campus.test.ts`, `tools/ui-test.ts`
 
 **Interfaces:**
-- Consumes: `api.campus()` (Task 26), `towerMaterials` (`look.ts`), Poly Haven CC0 textures already in the kit (brick, limestone, slate), `Kit` (`tower/kit.ts`).
-- Produces: `createCampus(opts: { quality; materials }): { group: THREE.Group; set(origin: { x; z }): void; anchors(): CampusAnchors; update(dt, clock): void; dispose() }` where `CampusAnchors = { library: Vec3; clock: Vec3; dome: Vec3; gate: Vec3 }`; the site: a 240 m block, a terrace 6 m up with a dressed limestone retaining wall and two flights of steps to the street, two grass quads crossed by stone paths, and four collegiate gothic halls (red brick with limestone dressings, slate roofs, buttresses, pointed-arch windows with stone tracery, chimneys), each built once in a `Kit` and instanced; windows use the facade window shader with lit rooms driven by `update`.
-- [ ] **Step 1: Write the failing tests:** `the campus stands on its slot's origin and inside its block`; `no ambient lot overlaps it`; `the halls are instanced: four halls cost the draw calls of one`; UI test: `the campus is visible from home and within its budget`; shots `campus-home.png`, `campus-quad.png`.
+- Consumes: `api.campus()`, `towerMaterials`, the kit's CC0 brick, limestone and slate, `Kit`.
+- Produces: `createCampus(opts): { group; set(origin); anchors(): CampusAnchors; update(dt, clock); dispose() }` (`CampusAnchors = { library; clock; dome; gate }`): terrace 6 m up with a dressed limestone wall and two flights of steps, two quads with stone paths, four collegiate gothic halls built once in a `Kit` and instanced, windows through the facade shader.
+- [ ] **Step 0:** Re-measure home at the merged Phase 3 head; record calls and triangles in the commit body. If fewer than 25 calls remain under 850, stop and put the guard to him (Decision 17).
+- [ ] **Step 1: Write the failing tests:** `the campus stands on its slot's origin, inside its block`; `no ambient lot overlaps it`; `four halls cost the calls of one`; UI: `breakdown().campus is within 25 calls and 900k triangles from home with shadows`, `the whole city is still within 850 and 12M`; shots `campus-home.png`, `campus-quad.png`.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5: Quality rounds** (three): the halls must read as collegiate gothic (buttress rhythm, tracery, roof pitch) at both distances, not as boxes with arches drawn on; the terrace must read as a hill the street climbs. Commit `Raise the university on its own terrace: quads and collegiate halls`.
+- [ ] **Step 5: Quality rounds** (three): collegiate gothic at both distances, not boxes with arches; the terrace reads as a hill. Commit `Raise the university on its own terrace: quads and collegiate halls`.
 
-### Task 32: The library and the clock tower [Opus] [city]
+### Task 35: The library and the clock tower [Opus] [city]
 
 **Files:**
 - Create: `app/src/city/campus/library.ts`, `app/src/city/campus/clock.ts`
@@ -744,14 +786,14 @@ Every task here keeps every view at 60 fps on his M5 Pro and re-measures the cit
 - Test: `test/campus.test.ts`, `tools/ui-test.ts`
 
 **Interfaces:**
-- Produces: `makeLibrary(k: Kit): THREE.Group` (a long reading room with tall traceried windows, a central entrance tower, a lead roof with a lantern); `makeClockTower(k: Kit, clock: () => Date): { group; update(): void }` (a four-stage tower 48 m high with a clock face on each side whose hands show his local time, lit faces at dusk as real emitters under the bloom threshold, a bell stage with louvres and pinnacles).
-- [ ] **Step 1: Write the failing tests:** `the clock's hands point at 10:10 for a 10:10 clock`; `the faces emit only after sunset by the sky's clock`; UI test: shots `campus-library.png`, `campus-clock.png`; within the budget.
+- Produces: `makeLibrary(k)`; `makeClockTower(k, clock): { group; update() }` (four stages, 48 m, faces showing his local time, lit after sunset as real emitters under the bloom threshold).
+- [ ] **Step 1: Write the failing tests:** `the hands point at 10:10 for 10:10`; `the faces emit only after sunset`; UI: shots `campus-library.png`, `campus-clock.png`; the campus sub-guard still holds.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5: Quality rounds** (three): the clock tower must hold the skyline of the campus without competing with the city's spire; tracery must not alias at home distance. Commit `Build the university's library and its clock tower`.
+- [ ] **Step 5: Quality rounds** (three). Commit `Build the university's library and its clock tower`.
 
-### Task 33: The observatory where the master net lives [Opus] [city]
+### Task 36: The observatory where the master net lives [Opus] [city]
 
 **Files:**
 - Create: `app/src/city/campus/observatory.ts`
@@ -759,83 +801,115 @@ Every task here keeps every view at 60 fps on his M5 Pro and re-measures the cit
 - Test: `test/campus.test.ts`, `tools/ui-test.ts`
 
 **Interfaces:**
-- Consumes: `api.school()` (the master's card), events `net.trained`, `net.promoted`, `train.started`, `train.ended`.
-- Produces: `makeObservatory(k: Kit): { group; setState(s: { training: boolean; masterTrusted: boolean; version: number | null }): void; update(dt): void }`: a domed observatory on a drum (copper dome with verdigris breakup, ribs, a shutter slit); while the nets train the slit is open and the telescope inside turns slowly with warm light in the slit; when the master is trusted a small brass plate light by the door is lit and the inspector names its version and agreement; when it is thin or untrusted the dome stays shut and dark. Every state comes from the school's data, never a timer.
-- [ ] **Step 1: Write the failing tests:** `the slit opens on train.started for nets and closes on train.ended`; `a thin master leaves the dome shut and unlit`; `clicking the dome opens the school screen at the master`; UI test: shots `observatory-shut.png`, `observatory-open.png`.
+- Consumes: `api.school()` (the master's card), `net.trained`, `net.promoted`, `train.started`, `train.ended` (Task 28).
+- Produces: `makeObservatory(k): { group; setState(s: { training; masterTrusted; version }); update(dt) }`: a copper dome on a drum with a shutter slit, open with warm light and a turning telescope only while the nets train; a lit brass plate by the door only while the master is trusted; shut and dark while it is thin.
+- [ ] **Step 1: Write the failing tests:** `the slit opens on train.started for nets and closes on train.ended`; `a thin master leaves it shut and dark`; `clicking the dome opens the school screen at the master`; UI shots `observatory-shut.png`, `observatory-open.png`; sub-guard holds.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5: Quality rounds** (three): copper must read as aged metal under the city's own sky light, not plastic; the slit light must be the only bright thing on the dome. Commit `Give the master net its observatory, open only while it learns`.
+- [ ] **Step 5: Quality rounds** (three). Commit `Give the master net its observatory, open only while it learns`.
 
-### Task 34: Campus life from real events [Opus] [city]
+### Task 37: Campus life from real events [Opus] [city]
 
 **Files:**
 - Create: `app/src/city/campus/life.ts`
-- Modify: `app/src/city/people.ts` (trips with reason `school` end at the campus gate), `app/src/main.ts`, `app/src/ui/inspector.ts` (the campus as a place: the live voyage, the trained nets, the graduates)
+- Modify: `app/src/city/people.ts` (trips with reason `school` end at the gate), `app/src/main.ts`, `app/src/ui/inspector.ts`
 - Test: `test/campus.test.ts`, `test/people.test.ts`, `tools/ui-test.ts`
 
 **Interfaces:**
-- Consumes: `voyage.*`, `train.*`, `graduate.made`, `trip.started` with reason `school`, `campusAnchors()`.
-- Produces: `campusLife(campus, opts): { apply(e: { type; data }): void; update(dt, clock): void }`: the library's reading room windows light, one bay per genome racing, while a voyage sails, and go dark when it ends; personas whose agents are parents in a voyage walk in through the gate and are seen crossing the quad; a graduate leaves through the gate on its first trip; nothing on the campus moves without one of these events except ambient students, which are unlabelled atmosphere like the city's crowds.
-- [ ] **Step 1: Write the failing tests:** `a voyage of 8 lights 8 bays and its end darkens them`; `a school trip ends at the gate`; `the inspector on the campus lists the live voyage and the graduates`; UI test (economy): the sailing voyage lights the library; shot `campus-voyage.png`; within the budget.
+- Produces: `campusLife(campus, opts): { apply(e); update(dt, clock) }`: one lit reading-room bay per genome racing while a voyage sails (instanced, one draw), dark when it pauses or ends; voyage parents walk in through the gate; a graduate leaves on its first trip; ambient students are unlabelled atmosphere; the inspector on the campus lists the live voyage, the trained nets and the graduates.
+- [ ] **Step 1: Write the failing tests:** `a voyage of 8 lights 8 bays and its pause darkens them`; `a school trip ends at the gate`; `the inspector lists the live voyage`; UI (economy): the sailing voyage lights the library; shot `campus-voyage.png`; the sub-guard holds with life on.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5: Quality rounds** (three): lit bays must read as people working late, not a light show. Commit `Light the library while agents are bred and walk them in through the gate`.
+- [ ] **Step 5: Quality rounds** (three). Commit `Light the library while agents are bred and walk them in through the gate`.
 
-### Task 35: The collegiate root for graduates' towers [Opus] [city]
+### Task 38: The collegiate root for school towers [Opus] [city]
 
 **Files:**
-- Modify: `app/src/city/tower/*` (the root builder for `collegiate`), `shared/tower-layout.ts` (root heights per style)
+- Modify: `app/src/city/tower/*` (the `collegiate` root), `shared/tower-layout.ts`
 - Test: `test/tower-build.test.ts`, `tools/ui-test.ts`
 
 **Interfaces:**
-- Consumes: `RootStyle 'collegiate'` (Task 1), the halls' brick and limestone materials (Task 31).
-- Produces: a `collegiate` root (spec 6.2): two storeys of red brick with limestone quoins, a pointed-arch entrance and a stone string course under the datum, sharing the campus's materials so a graduate's tower reads as from the university.
-- [ ] **Step 1: Write the failing tests:** `a collegiate root builds with the expected height and slots`; UI test: Quickset's graduate tower stands on a collegiate root; shot `graduate-tower.png`; within the guard.
+- Produces: a `collegiate` root: two storeys of red brick with limestone quoins, a pointed-arch entrance and a stone string course, sharing the campus's materials.
+- [ ] **Step 1: Write the failing tests:** `a collegiate root builds with the expected height and slots`; UI: Quickset's graduate tower stands on it; shot `graduate-tower.png`; the city guard holds.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.
-- [ ] **Step 5: Quality rounds** (three). Commit `Root a graduate's tower in the university's brick`.
+- [ ] **Step 5: Quality rounds** (three). Commit `Root a school agent's tower in the university's brick`.
 
 ---
 
 ## Part D: real runs, media and the README
 
-### Task 36: Real-run check: the trainer, the gate and the nets on his ledger [Opus] [both tracks merged]
+### Task 39: Real-run check: the trainer, the gate and the nets on his ledger [Opus] [both tracks merged]
 
 **Files:** `docs/superpowers/plans/2026-11-12-phase-4-realrun.md` holds the notes; fixes only where found.
 
-- [ ] **Step 1:** With his go-ahead, on the installed engine: `npm run trainer:setup`; `trainerStatus()` ready; `school.py ping` under the real trainer profile sees the GPU. Turn `school.enabled` on. Record the gate's readings over one night (power, idle, thermals) from the ledger.
-- [ ] **Step 2:** Confirm the nightly retrain ran inside the window on AC power only, that every net reports `thin` with its true counts (expected: near zero on his real ledger), that no prediction was made by a thin master (every `master.predicted` abstains), and that no ask exists. Unplug during a forced "Train now" retrain and confirm the pause within 30 s.
-- [ ] **Step 3:** Confirm `~/.claude/settings.json`, `~/.claude.json` and Understudy's database are byte-identical before and after (md5 recorded), and that `~/Library/Application Support/Beagle` was not touched.
+- [ ] **Step 1:** With his go-ahead (and his answers to Decisions 3 and 5): the trainer on `PALIMPSEST_PYTHON` or after he runs `trainer:setup`; `trainerStatus()` ready; `school.py ping` under the real profile on the GPU. Turn `school.enabled` on. Record one night's gate readings (power, power mode, idle, therm notes).
+- [ ] **Step 2:** Confirm the nightly retrain ran only inside the window on AC; every net is `thin` with its true counts and causes; every `master.predicted` abstains; no ask exists; the school screen on his real home matches the empty-home UI test. Unplug during a "Train now" retrain and confirm the pause within 30 s. Turn the school off and confirm everything stops at once.
+- [ ] **Step 3:** Confirm `~/.claude/settings.json`, `~/.claude.json` and Understudy's database are byte-identical before and after (md5), `~/.claude/projects` gained no entry, and `~/Library/Application Support/Beagle` and `~/Downloads/beagle` were not touched.
 - [ ] **Step 4:** Commit `Fix issues found running the school on his Mac` (never his data).
 
-### Task 37: Real-run check: an arena, a voyage and a LoRA on one of his repos [Opus] [both tracks merged]
+### Task 40: Real-run check: an arena, a voyage and a LoRA on one of his repos [Opus] [both tracks merged]
 
-- [ ] **Step 1:** With his go-ahead, on a repo he names with a test command, build the planted arena by hand from the district page (`POST /api/school/arenas/...`); record candidates, kept, the split, the wall time and the credits.
-- [ ] **Step 2:** Sail one voyage on it on local models only; record each generation's champion with its interval, the promoted children with their paired intervals, the designer's Claude credits (must be at most 30 that day and show in the treasury and the night cap), and the sealed score.
-- [ ] **Step 3:** With his click, download the base model; build the LoRA data and record the counts and skip reasons. If at least 100 examples exist, train one adapter overnight and evaluate it; record the sealed scores and the paired difference whether or not it graduates. If fewer than 100, record the count and stop there; that is the honest result.
+- [ ] **Step 1:** With his go-ahead, on a repo he names whose market he has turned on and that has a test command, click "Build an arena" (planted); record candidates, kept, the split, `sealedHash`, wall time and credits.
+- [ ] **Step 2:** Let one voyage sail on local models over **several nights**; record each night's runs done, each generation's champion with its interval, promoted children with their paired intervals, the designer's Claude credits each day (at most 30, shown in the treasury and the night cap), and the final sealed comparison against the seeded local agents.
+- [ ] **Step 3:** Record `verifiedCounts()` for every connected repo with his Decision 7 answer. With his click, download the base model. If at least 100 examples exist, train one adapter over the nights it needs and evaluate it; record the sealed scores and the paired difference whether or not it graduates, and every resume with its steps lost. Under 100, record the count; that is the honest result.
 - [ ] **Step 4:** Commit `Record the school's first real arena, voyage and coder, with their numbers`.
 
-### Task 38: UI test, captures, README and media [Opus] [both tracks merged]
+### Task 41: UI test, captures, README and media [Opus] [both tracks merged]
 
 **Files:**
 - Modify: `tools/ui-test.ts`, `tools/capture.ts`, `README.md`, `CREDITS.md`, `docs/media/*`
 
-- [ ] **Step 1:** `tools/ui-test.ts` runs the Phase 4 set on the economy with the clock (school, autonomy, training settings, campus, observatory, life, graduate tower), the console-error check on every screen, and the perf guard from home with the campus standing; `npm run ui-test` passes on a quiet GPU.
-- [ ] **Step 2:** `tools/capture.ts` gains stills `school`, `school-net`, `autonomy-settings`, `brief-autonomy`, `campus-home`, `campus-quad`, `campus-clock`, `observatory-open`, `graduate-tower` and clips `voyage` (the library lit as the sample voyage sails, 30 s at the clock's speed) and `observatory` (the slit opening as the nets train). All from the sample economy at 2x.
-- [ ] **Step 3:** README in his style: what Phase 4 adds in plain first person (the university, the arenas from his repos, breeding with Beagle, coders fine-tuned on his verified work and graduated only on a sealed set, the five nets and the master, earned autonomy and how it is taken back); the honest state with the real-run numbers from Tasks 36 and 37, including how few labels exist and what that means for autonomy; when the Mac trains and what it costs; privacy; the stills and clips. Shields row to phase 4.
-- [ ] **Step 4:** `npm test`, `npm run typecheck`, `npm run build`, `npm run ui-test` pass; `npm run test:trainer` passes on his Mac; `cargo test` in `src-tauri` still passes.
+- [ ] **Step 1:** `tools/ui-test.ts` runs the Phase 4 set on the economy (school, empty school on a fresh home, autonomy, training settings, agent lineage, campus, observatory, life, graduate tower), the console-error check, and the perf guard from home with the campus sub-guard; `npm run ui-test` passes on a quiet GPU.
+- [ ] **Step 2:** `tools/capture.ts` gains stills `school`, `school-empty`, `school-net`, `autonomy-settings`, `brief-autonomy`, `agent-graduate`, `campus-home`, `campus-quad`, `campus-clock`, `observatory-open`, `graduate-tower` and clips `voyage` and `observatory`, from the sample economy at 2x.
+- [ ] **Step 3:** README in his style: the university, arenas from his repos on his click, breeding with Beagle, coders fine-tuned on verified work (what counts, Decision 7) and graduated only on a sealed race, the five nets and the master, earned autonomy and how it is taken back; the honest state with Tasks 39 and 40's numbers, including how few labels exist and what that means; when the Mac trains (Low Power included) and what it costs; privacy; the media. Shields row to phase 4.
+- [ ] **Step 4:** `npm test`, `npm run typecheck`, `npm run build`, `npm run ui-test` pass; `npm run test:trainer` passes on his Mac; `cargo test` in `src-tauri` passes.
 - [ ] **Step 5:** Commit `Phase 4: the school` and push per his standing order.
 
 ---
 
 ## Self-review notes
 
-- **Spec coverage.** 9 and 12 (Beagle as a library, fixes in Beagle's repo): rulings 1 and 2, Tasks 2 and 4. 9.1 (the audit's findings): checked against Beagle's head; the two already fixed are named, the open three are Task 2 (d), (e) and the two left for the city are Decision 2. 9.2 (arenas from his repos graded by their suites in a sandbox: Tasks 18 to 20; LoRA on MLX from verified past work: Tasks 22 and 23; graduates served as `mlx:` and joining firms: Tasks 24 and 25; beat the base on a sealed set: ruling 25; numbers with intervals: ruling 11, Tasks 12 and 28). 9.3 (five nets and their sources: ruling 8, Tasks 8 to 13; the master: Tasks 14 and 15; distillation both ways: ruling 13, Task 13; nightly retrain: Task 13; trained locally on MLX: Tasks 5, 7 and 11). 9.4 (95% over 50: ruling 16; asks per kind and repo: ruling 17; shown in Settings, revocable: Tasks 16 and 29; a revert drops the grant: ruling 19, Task 17). 17 (autonomy governs posting proposals and merging PRs in PR mode; unavailable without a harness: rulings 14, 17 and 18). 6.1 (the university with library, clock tower, quads and the observatory where the master lives: Tasks 31 to 33). 6.2 (graduates start in collegiate gothic brick: Task 35). 6.4 (to the university when in training: ruling 28, Tasks 21 and 34). 7.2 (hiring a graduate or a bred specialist: Tasks 21 and 25). 7.3 and 4 (a sink for his usage; the night cap): rulings 3 and 4, Tasks 1 and 4. 11 (the school screen; Settings autonomy grants; the district's grants): Tasks 28 to 30. 5 (MLX in a native arm64 venv, Beagle's pattern): ruling 7, Task 5.
-- **Interfaces that do not exist today, and where they are made:** `Provider.complete` (Task 3), the `mlx` backend kind (Task 24), `acquire(…, 'school')` and the school pool (Task 1), `mergePR` (Task 17), `merge.followup` (Task 9), `RootStyle 'collegiate'` and `TripReason 'school'` (Task 1), `nextSlot('campus', …)` (Task 1), `liveWork(pool)` and `creditEntries(runId)` exported from `budget.ts` (Tasks 6 and 8), every Beagle function in ruling 1's list that Beagle lacks at `4edbd39` (Task 2).
-- **Spend accounting:** every Claude call of the school goes through `schoolDriver` (Task 4) or the graduation evaluation's `schoolDriver` use (Task 25); every local minute is charged (`train` in Task 7, `school` for arena builds in Task 18 and local races through the driver); both kinds count in every cap list (Task 1's tests).
-- **Tests that would pass before the change:** each Step 1 names a function, table, route or element that does not exist before its task; the pins are marked (`poolOfModel('mlx:…')` in Task 1, Phase 2's award in Task 14, "no action without a grant" in Task 17).
-- **Type consistency:** `NetName`, `NetCard`, `NetVersion`, `Interval`, `WorkKind`, `Prediction`, `Decision`, `Agreement`, `Grant`, `GateState`, `TrainState`, `ArenaInfo`, `VoyageView`, `Graduate`, `SchoolSettings` are defined once in Task 1; `rowsFor` once in Task 8; `forward`, `parseNet` in Task 11; `trainNet`, `current`, `netCard` in Task 12; `predict`, `registerPrediction` in Task 14; `agreement`, `installDecisions` in Task 15; `mayAct`, `grant`, `revoke`, `revokeOnRevert` in Task 16; `act`, `mergePR` in Task 17; `toBeagleArena`, `sealedRefs` in Tasks 19 and 20; `sailVoyage`, `ensureCampus`, `campusOrigin` in Task 21; `hunksToEdits`, `buildLoraData` in Task 22; `trainLora`, `downloadBase` in Task 23; `mlxProvider` in Task 24; `graduate`, `evaluateAdapter` in Task 25; `createCampus` in Task 31.
-- **Proportion:** 38 tasks against the spec's Phase 4 line and sections 9.1 to 9.4 (the largest section of the spec after the market); step bodies carry only values the spec, a Phase 2 or 3 ruling, or a ruling here pins.
+- **Spec coverage.** 9 and 12: rulings 1 and 2, Tasks 2 and 4. 9.1: checked at Beagle `4edbd39`; two fixed upstream, three open (Task 2 (d), (e); fossils and LoRA left to the city, Decision 2). 9.2: arenas graded by his suites in a sandbox (Tasks 19 to 21), LoRA on MLX from verified work (Tasks 18, 24, 25), graduates as `mlx:` joining firms (Tasks 23, 26, 27), beating the base on a sealed set (ruling 25), numbers with intervals and honest empties (rulings 11, 29; Task 30). 9.3: rulings 8, 12, 13; Tasks 8 to 14. 9.4: rulings 14 to 19; Tasks 15 to 17, 31. 17: autonomy for proposals and PR merges, a harness first (rulings 14, 17, 18). 7.2: hiring and paying the school to breed (ruling 22, Task 23). 6.1: Tasks 34 to 36. 6.2: Task 38. 6.4: ruling 28, Tasks 22, 37. 11: school screen (30), Settings (31, 32), district grants (31), agent lineage (33). 4 and 7.3 (no sink for his usage): rulings 3, 4; Tasks 1, 4. 5: ruling 7, Task 5.
+- **Interfaces created here:** `Provider.complete` (3); `mlx` backend (26); the school lease and kinds (1); `liveWork`, `creditEntries` (1); `watchRevertsFor`, `PR_CLOSED_REASON` (9); `mergePR` (17); `verifiedChanges` (18); `nextSlot('campus')`, `ensureCampus`, `campusOrigin`, `/api/school/campus` (1); Beagle's (a) to (k) (2).
+- **Spend:** every school Claude call through `schoolDriver` with `unattended` and a Claude work slot (1, 4); local minutes charged (7, 19, 22, 27); all kinds in every cap list (1).
+- **Pins:** Task 1 `poolOfModel`, Task 9 "neither halts nor scars", Task 13 "never get distilled rows", Task 14 Phase 2's award, Task 16 "revokes nothing", Task 17 "no action without a grant", Task 21 the broker's symlink refusal.
+- **Type consistency:** the Task 1 types are used unchanged; `Decision.by` gains `undo` (Task 1) for ruling 14; `NetVersion.metric` is `brier | mae` with `agreement` beside it (ruling 11); `ArenaInfo.status` includes `paused` and `spent`; names checked across tasks (`watchRevertsFor`, `verifiedChanges`, `sealedRace`, `putTasks`, `schoolRoster`, `commission`, `thinCause`, `schoolOff`).
+- **Proportion:** 41 tasks against the spec's largest phase; step bodies carry only values a ruling pins.
+
+## Builder check fixes
+
+| Item | Fixed by |
+|---|---|
+| C1 the window counted the city's own acts | Ruling 14 (acted keys excluded; his undo is a disagreement and suspends); Decisions 12 and 13; Task 15 tests |
+| C2 the gate's probes do not parse on macOS 26 | Ruling 6 (`powermode` under "Currently in use:", therm notes as nominal, `allowLowPower`); Decision 3 put to him; Task 6 with captured fixtures |
+| C3 Beagle's task store and the sealed set | Ruling 2 (h), (j), (k); ruling 20 (`putArena`, `putTasks`, `Arena.data`); ruling 25 (`sealedRace`); Tasks 2, 19, 21, 27 tests read Beagle's store and the hash |
+| I4 fresh revert read before a merge | Ruling 18; Task 9 `watchRevertsFor(…, { force })`; Tasks 16 and 17 tests; Review Focus 2 |
+| I5 silence after he revokes | Ruling 17; `Grant.quietUntil`; re-grant from Settings; Tasks 16, 31 |
+| I6 school Claude slot and `unattended` | Rulings 3 and 4; Task 1 and Task 4 tests |
+| I7 market-off and private repos | Ruling 20 and Decision 8 (his click, market-on only); Global Constraints; Tasks 19, 28, 31 |
+| I8 Beagle clone, (h), (i), pin policy | Ruling 2 (fresh clone, (h), (i)); ruling 1 and Decision 1 (full sha, his approval, no merge grant on Beagle) |
+| I9 commits as verified work | Decision 7; rulings 20 and 23; Task 18; counts in "What was found" |
+| I10 LoRA flags and resume | Ruling 24; Task 25; Review Focus 1 |
+| I11 the master's trust and skew | Ruling 11; Decision 12; Task 12 tests; `Agreement.skewed`; Task 30 copy |
+| I12 voyages: local controls, concurrency, nights | Ruling 22; `VOYAGE.concurrency`; Task 22; Task 40 Step 2 |
+| I13 order and split | Campus plot and route in Task 1; Task 21 of revision 1 split into Tasks 22 and 23; starting head after Phase 3 Task 21 and its final review |
+| I14 draw budget | Part C header, Decision 17, Task 34 Step 0 re-measure, `campus` breakdown key and sub-guard |
+| I15 empty states | Ruling 29; `thinCause`; Task 28 and Task 30 empty-home tests; no chart under two points |
+| I16 downloads | Decision 5, Task 5 (Beagle's venv via `PALIMPSEST_PYTHON`); Decision 6 and Task 25 (`HF_HUB_DISABLE_XET=1`, empty `HF_TOKEN`, host list) |
+| I17 school off means off | Global Constraints; Task 13 `schoolOff`; Tasks 14, 16, 17 tests |
+| M18 `githubWriteRefused` wording | Test safety rule 16; Task 17 test |
+| M19 `CALL_MAX_TURNS` and free text | Ruling 5; Task 3 tests |
+| M20 `tsc` and Beagle's sources | Ruling 1 (non-literal specifier); Task 4 test |
+| M21 pins | Tasks 9, 13, 16, 21 marked |
+| M22 7.2 and agent lineage | Ruling 22 and Task 23 (commissions); Task 33 (agent page); Decision 15 |
+| M23 grader timeout, turns, scratch clones | Ruling 21; `ARENA.maxTurns`; Task 21 tests |
+| M24 follow-up files | Ruling 9; Task 9 test |
+| M25 WAL fallback and disclosure | Ruling 10; Task 10 test; Decision 9; Task 32 copy |
+| M26 rebase merges and sealed uses | Ruling 20; ruling 25 and `SEALED_USES`; Tasks 20, 27 tests; Task 30 `sealedLine` |
+| M27 prediction version and squash-only | Ruling 18; Task 16 and 17 tests |
+| M28 issue-closed settlement | Ruling 14 (`PR_CLOSED_REASON`); Task 15 test |
+| M29 `~/.claude/projects` and the model fixture | Task 39 Step 3; Task 25 Python test |
