@@ -147,6 +147,32 @@ test('an aborted baseline is not cached', { timeout: 60_000 }, async () => {
   assert.equal(commands.includes('node --test'), false);
 });
 
+test('a joiner whose own signal is live recomputes when the first caller is stopped', { timeout: 120_000 }, async () => {
+  const { repo, first } = makeRepo(checks({ test: 'node --test' }));
+  const skipped = { name: 'install' as const, status: 'skipped' as const, detail: '', durationMs: 0, logPath: null, testsRun: null };
+  let installs = 0;
+  let entered!: () => void;
+  const inInstall = new Promise<void>((r) => (entered = r));
+  const installDeps = async (ctx: { signal: AbortSignal }) => {
+    installs++;
+    if (installs === 1) {
+      entered();
+      await new Promise<void>((r) => ctx.signal.addEventListener('abort', () => r(), { once: true }));
+    }
+    return skipped;
+  };
+  const ac = new AbortController();
+  const killed = baseline(repo, first, { signal: ac.signal, installDeps });
+  await inInstall;
+  const joiner = baseline(repo, first, { installDeps });
+  ac.abort();
+  await assert.rejects(killed, /stopped/);
+  const got = await joiner;
+  assert.deepEqual(got.map((c) => [c.name, c.status]), [['install', 'skipped'], ['test', 'pass']]);
+  assert.equal(installs, 2, 'the joiner computed its own baseline');
+  assert.deepEqual(cachedBaseline(repo.fullName, first), got);
+});
+
 test('a repo without a build command gets one harness proposal, not two', () => {
   const { repo } = makeRepo(checks({ test: 'node --test' }));
   const one = ensureHarnessProposal(repo);

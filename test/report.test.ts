@@ -254,12 +254,28 @@ test('outside text is redacted and plain: tokens, home paths, long dashes, doubl
   assert.match(md, /\[redacted\]/);
 });
 
+test('the first Phase 2 start writes no empty reports for the days before the market began', () => {
+  const at = (y: number, m: number, d: number, h: number, min = 0) => new Date(y, m - 1, d, h, min).getTime();
+  const put = (ms: number, kind: string, data: object) =>
+    openDb().prepare('INSERT INTO ledger (at, kind, json) VALUES (?, ?, ?)').run(new Date(ms).toISOString(), kind, JSON.stringify(data));
+  // Phase 1 days: repos connected and analyzed, the usage hook installed. No market yet.
+  put(at(2026, 11, 7, 12), 'repo.connected', { repo: FULL });
+  put(at(2026, 11, 8, 12), 'repo.analyzed', { repo: FULL, floors: 3 });
+  put(at(2026, 11, 8, 13), 'usage.hook.installed', {});
+  const start = at(2026, 11, 10, 0, 10);
+  assert.deepEqual(backfillReports(start), [], 'no report for a Phase 1 only day');
+  // The market's first entry on day 9: day 9 is reported, the days before it are not.
+  put(at(2026, 11, 9, 9), 'firm.seeded', { firmId: 'alpha' });
+  assert.deepEqual(backfillReports(start), ['2026-11-09']);
+});
+
 test('a day the engine was down across midnight is reported at the next start, and the scheduler picks up from the newest report', async () => {
   const at = (y: number, m: number, d: number, h: number, min = 0) => new Date(y, m - 1, d, h, min).getTime();
   const put = (ms: number, kind: string, data: object) =>
     openDb().prepare('INSERT INTO ledger (at, kind, json) VALUES (?, ?, ?)').run(new Date(ms).toISOString(), kind, JSON.stringify(data));
   // Day 7 was reported; day 8 the engine ran until 23:50 and stopped; day 9 nothing happened.
   put(at(2026, 11, 7, 12), 'repo.connected', { repo: FULL });
+  put(at(2026, 11, 7, 12, 5), 'firm.seeded', { firmId: 'alpha' });
   put(at(2026, 11, 7, 23, 59), 'report.written', { day: '2026-11-07', path: null, data: {} });
   put(at(2026, 11, 8, 23, 50), 'repo.analyzed', { repo: FULL, floors: 3 });
   // The engine starts again on day 10 at 00:10.

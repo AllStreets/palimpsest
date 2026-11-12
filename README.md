@@ -131,10 +131,6 @@ The treasury shows my plan against what the city has spent of it, the caps, what
 
 The agents are people in the city. An agent goes to the exchange to bid, travels to the site when it wins, and goes home when the work is done, on foot, by tram, by elevated rail, by maglev pod, by ferry across the river or by cab. Follow on an agent's page, or F in the city, follows them through the streets. Around them the city has its own traffic and crowds, and the ground floors of its buildings are shopfronts, cafes and lobbies, lit or shuttered for the night.
 
-<img src="docs/media/people-follow.webp" alt="Following one of the sample firms' people across a lit plaza at dusk, a lantern in her hand, with cars passing on the street ahead and a row of shopfronts beyond: a launderette, a fishmonger and a florist." />
-
-<img src="docs/media/street.webp" alt="A street at dusk at a person's height: brick buildings with lit windows and shopfronts, people crossing, cars with their headlamps on, and a tower lit at the end of the street." />
-
 <p align="center">
   <a href="docs/media/ride.mp4"><picture>
     <source type="image/avif" srcset="docs/media/ride.avif" />
@@ -158,7 +154,7 @@ Clicking a tower opens the inspector. It lists every floor with the change behin
 
 <img src="docs/media/repos.webp" alt="The Repos screen over the left half of the window. Each connected repo has its connect switch, description, status and floor count, Market and Push mode switches, and a choice of five roots. One repo is halted after a city merge was reverted, with Resume. The city stays visible on the right." />
 
-Repos lists what your GitHub CLI can see. Nothing is connected until you turn it on. Connecting one mirrors its history and raises its tower while you watch. You can pick its root, and each connected repo has its own Market and Push mode switches, both off until you turn them on. A repo's own page sets its label, the commands inspection runs, the routes the design check shoots and the network its jobs may reach.
+Repos lists what your GitHub CLI can see. Nothing is connected until you turn it on. Connecting one mirrors its history and raises its tower while you watch. You can pick its root, and each connected repo has its own Market and Push mode switches, both off until you turn them on. A repo's own page sets its label, the commands inspection runs and the routes the design check shoots. It also shows the network its jobs may reach, which follows from the repo's ecosystems and is not set by hand.
 
 <img src="docs/media/settings.webp" alt="The Settings screen's providers: Claude through Claude Code, with the five-hour window at 34% and the week at 21% and the usage hook installed; the Anthropic API off, with no key stored and a five dollar daily cap; Ollama reachable on loopback with its installed models; and OpenAI usage from the Codex CLI's own logs." />
 
@@ -176,7 +172,7 @@ The market is off on every repo by default. This is how I'd start with one:
 
 Push mode is there for repos I trust it with. It needs both a test and a build command on the repo. After inspection passes, the engine first pushes the change's `palimpsest/<jobId>` branch, then merges it into a fresh clone, runs the install, tests and build again there, and pushes only that exact merge commit to the default branch as a fast-forward. The recheck's install reaches the package registries and nothing else. A merge that conflicts or a recheck that fails falls back to a pull request.
 
-The city also stops itself. Three failed inspections in a row on a repo, or any revert of one of its merges, halts the market on that repo until I resume it. The stop switch in Settings writes a stop file in the data folder: running ones are killed within about two seconds (the watcher checks every 2 s), the scheduler checks it every 15 s so nothing new starts, and nothing starts until it is removed.
+The city also stops itself. Three failed inspections in a row on a repo, or any revert of one of its merges, halts the market on that repo until I resume it. The stop switch in Settings writes a stop file in the data folder: running ones are signalled within about two seconds (the watcher checks every 2 s) and gone within a few seconds, once each child has had its grace to exit and the reaper has run, the scheduler checks it every 15 s so nothing new starts, and nothing starts until it is removed.
 
 ## The sandbox, the broker and the never list
 
@@ -206,7 +202,7 @@ What works now:
 - Reading live Claude plan usage through a statusline hook, and the usage Codex and Gemini report of their own, if you have them.
 - A native Mac app, built with Tauri, in `src-tauri/`. It opens on a splash while it looks for the engine. If the engine isn't running, it offers to start it. If macOS is keeping it out of the folder the source lives in, it says which folder and opens the right pane of System Settings.
 
-There are 1,040 tests: 1,029 in Node for the engine, the market and the city, and 11 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city and the sample market, through every screen.
+There are 1,052 tests: 1,041 in Node for the engine, the market and the city, and 11 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city and the sample market, through every screen.
 
 Everything in the market pictures comes from that sample market. It runs through the market's own code, with stand-ins for GitHub and the models.
 

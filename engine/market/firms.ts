@@ -21,6 +21,7 @@ import { getRunner } from '../exec.js';
 import { quarterOrigin } from '../layout.js';
 import { record } from '../ledger.js';
 import { earnedFloors, nextSlot } from '../repos.js';
+import { getSettings } from '../settings.js';
 import { SYSTEM_PATH } from './sandbox.js';
 
 const PERSONA_DIR = join(dirname(fileURLToPath(import.meta.url)), 'personas');
@@ -177,7 +178,8 @@ export function ollamaListEnv(host?: string): Record<string, string> {
  */
 export async function installedModels(): Promise<string[]> {
   try {
-    const { stdout, code } = await getRunner()('ollama', ['list'], { timeoutMs: 10_000, env: ollamaListEnv() });
+    // The host his settings name, as the providers page asks: a non-default host would otherwise read as no models.
+    const { stdout, code } = await getRunner()('ollama', ['list'], { timeoutMs: 10_000, env: ollamaListEnv(getSettings().ollamaHost) });
     if (code !== 0) return [];
     return parseOllamaList(stdout);
   } catch {

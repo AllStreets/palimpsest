@@ -22,7 +22,7 @@ import { openDb } from '../db.js';
 import { emit } from '../events.js';
 import { getRunner, realRunner } from '../exec.js';
 import { addLabel, commentIssue, ensureLabel, type Issue, issueState, openIssues } from '../github.js';
-import { home, isRealDataHome } from '../home.js';
+import { home, onRealDataHome } from '../home.js';
 import { record } from '../ledger.js';
 
 /** The city signs what it writes with this; an issue whose body carries it is never a job. */
@@ -285,7 +285,10 @@ export function postManualJob(input: ManualJobInput): Job {
  * stays dismissed across re-analyses.
  */
 export function proposeHarnessJob(repo: Repo): Job {
-  const existing = listJobs({ repo: repo.fullName, source: 'harness' }).find((j) => j.status !== 'merged');
+  // One harness job per repo, ever: a live, dismissed or merged one is the answer. A merged harness that
+  // detection still cannot see is not proposed again (that would offer him the same work on a loop).
+  const all = listJobs({ repo: repo.fullName, source: 'harness' });
+  const existing = all.find((j) => j.status !== 'merged') ?? all[0];
   if (existing) return existing;
   return post(makeJob({
     repo: repo.fullName,
@@ -448,7 +451,7 @@ export function publicSummary(text: string): string {
  * refused before any gh call.
  */
 function writeRefused(j: Job): boolean {
-  if (getRunner() !== realRunner || isRealDataHome(home())) return false;
+  if (getRunner() !== realRunner || onRealDataHome()) return false;
   console.warn(`palimpsest: issue write-back for ${j.repo}#${j.issue} refused: ${home()} is not the real data home`);
   return true;
 }

@@ -1,6 +1,6 @@
 import type { Repo } from '../shared/types.js';
 import { getRunner, realRunner } from './exec.js';
-import { home, isRealDataHome } from './home.js';
+import { home, onRealDataHome } from './home.js';
 import { mirrorDir, syncMirror, type Commit } from './mirror.js';
 
 const TIMEOUT_MS = 120_000;
@@ -322,7 +322,7 @@ export function prTitle(title: string): string {
  * any gh call.
  */
 export function githubWriteRefused(): string | null {
-  if (getRunner() !== realRunner || isRealDataHome(home())) return null;
+  if (getRunner() !== realRunner || onRealDataHome()) return null;
   return `GitHub writes are refused: ${home()} is not the real data home`;
 }
 

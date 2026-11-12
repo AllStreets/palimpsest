@@ -233,6 +233,34 @@ test('gh missing returns 502 with kind missing', async () => {
   });
 });
 
+test('a gh error leaves the engine redacted: no home path or token in its text', async () => {
+  // gh auth status passes, so the failure keeps gh's own stderr as its message.
+  setRunner(async (_cmd, args) =>
+    args[0] === 'auth' ? { code: 0, stdout: '', stderr: '' } : { code: 1, stdout: '', stderr: 'failed to read /Users/connor/.config/gh/hosts.yml: ghp_abcdefghijklmnopqrstuvwxyz0123456789AB' },
+  );
+
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/api/repos/available'));
+    assert.equal(r.status, 502);
+    const body = (await r.json()) as { error: string; kind: string };
+    assert.doesNotMatch(body.error, /\/Users\/connor/, 'no home path');
+    assert.doesNotMatch(body.error, /ghp_/, 'no token');
+  });
+});
+
+test('a 500 leaves the engine redacted: no home path in its text', async () => {
+  setRunner(async () => {
+    throw Object.assign(new Error('EACCES: permission denied, open /Users/connor/private/notes.txt'), { code: 'EACCES' });
+  });
+
+  await withServer(async (server) => {
+    const r = await fetch(url(server, '/api/repos/available'));
+    assert.ok(r.status >= 500, `status ${r.status}`);
+    const body = (await r.json()) as { error: string };
+    assert.doesNotMatch(body.error, /\/Users\/connor/, 'no home path');
+  });
+});
+
 test('SSE delivers repo.analyzed', async () => {
   const fullName = 'acme/widgets';
   setRunner(fixtureRunner(fullName));

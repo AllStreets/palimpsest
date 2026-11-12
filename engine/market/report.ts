@@ -532,14 +532,18 @@ export function ensureDailyReport(day: string): string | null {
   return writeDailyReport(day);
 }
 
+/** A ledger entry the market wrote: anything but the Phase 1 kinds (repos, the usage hook) and the reports themselves. */
+const MARKET_KIND = "kind != 'report.written' AND kind NOT LIKE 'repo.%' AND kind NOT LIKE 'usage.%'";
+
 /**
- * At engine start (Task 18 ruling): every past local day that has ledger
- * entries and no `report.written` gets its report, so a day the engine was
+ * At engine start (Task 18 ruling): every past local day from the market's
+ * first entry on that has ledger entries and no `report.written` gets its report, so a day the engine was
  * stopped across midnight is never skipped. Today is left to the
  * scheduler. Returns the days written, oldest first.
  */
 export function backfillReports(now: number = Date.now()): string[] {
-  const first = openDb().prepare("SELECT MIN(at) AS at FROM ledger WHERE kind != 'report.written'").get() as { at: string | null } | undefined;
+  // Days before the market's first entry are Phase 1 days (repos and the usage hook only): they have no market to report.
+  const first = openDb().prepare(`SELECT MIN(at) AS at FROM ledger WHERE ${MARKET_KIND}`).get() as { at: string | null } | undefined;
   if (!first?.at) return [];
   const today = localDay(now);
   const done = reportedDays();

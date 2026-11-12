@@ -56,7 +56,7 @@ import type {
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
 import { getSpawner, type Spawned } from '../exec.js';
-import { home, isRealDataHome, paths } from '../home.js';
+import { onRealDataHome, paths } from '../home.js';
 import { record } from '../ledger.js';
 import { getRepo, listRepos, updateRepoMarket } from '../repos.js';
 import { getSettings } from '../settings.js';
@@ -206,7 +206,7 @@ let preflightOk: Promise<string | null> | null = null;
 
 /** The sandbox membership helper must build, and the sandbox may be off only away from the real home. */
 async function defaultPreflight(): Promise<string | null> {
-  if (sandboxOff()) return isRealDataHome(home()) ? 'The sandbox cannot be off on the real data home.' : null;
+  if (sandboxOff()) return onRealDataHome() ? 'The sandbox cannot be off on the real data home.' : null;
   if (!preflightOk) {
     preflightOk = sandboxCheckBin().then(
       (bin) => (bin ? null : HELPER_MISSING),
@@ -831,7 +831,12 @@ async function lifecycle(st: LiveRun): Promise<Run> {
  * preflight refuses, the job is no longer awarded to this bid, or its repo
  * already has a live run.
  */
-export async function startRun(bid: Bid, opts: { lease?: Lease } = {}): Promise<Run> {
+export function startRun(bid: Bid, opts: { lease?: Lease } = {}): Promise<Run> {
+  // Tracked, so the scheduler's idle() and settleRuns() wait for every run's tail, however it was started.
+  return track(startRunNow(bid, opts));
+}
+
+async function startRunNow(bid: Bid, opts: { lease?: Lease }): Promise<Run> {
   let lease = opts.lease;
   const refuse = (why: string): never => {
     lease?.release();
@@ -1283,6 +1288,24 @@ export function shutdownHandler(
         },
       );
   };
+}
+
+/**
+ * Kills every live run and waits until every tracked run and bid collection
+ * has finished its tail (run.ended, the job's return, the reap). Tests call it
+ * before they restore PALIMPSEST_HOME, so no tail writes after the temp home
+ * is gone. Throws after `ms` rather than hang.
+ */
+export async function settleRuns(ms = 20_000): Promise<void> {
+  for (const id of [...live.keys()]) kill(id, 'reset');
+  const deadline = Date.now() + ms;
+  while (pending.size > 0) {
+    if (Date.now() > deadline) throw new Error(`settleRuns: ${pending.size} run tail(s) still in flight after ${ms} ms`);
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([Promise.allSettled([...pending]), new Promise((r) => (timer = setTimeout(r, 250)))]);
+    clearTimeout(timer);
+    for (const id of [...live.keys()]) kill(id, 'reset');
+  }
 }
 
 /** Forgets every live run, the watcher, keep-awake and the configuration. For tests. */

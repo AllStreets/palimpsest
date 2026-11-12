@@ -69,7 +69,14 @@ export function baseline(repo: Repo, sha: string, opts: BaselineOptions = {}): P
   if (opts.signal?.aborted) return Promise.reject(new Stopped());
   const key = `${repo.fullName}@${sha}`;
   const running = inFlight.get(key);
-  if (running) return running;
+  if (running) {
+    // A joiner never inherits another caller's stop: when the first run is stopped and
+    // the joiner's own signal is live, it computes the baseline itself.
+    return running.catch((err: unknown) => {
+      if (err instanceof Stopped && !opts.signal?.aborted) return baseline(repo, sha, opts);
+      throw err;
+    });
+  }
   const p = compute(repo, sha, opts).finally(() => inFlight.delete(key));
   inFlight.set(key, p);
   return p;

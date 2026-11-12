@@ -21,10 +21,39 @@ export function defaultHome(): string {
   return join(homedir(), 'Library', 'Application Support', 'Palimpsest');
 }
 
-/** The data home. Honours PALIMPSEST_HOME, read fresh on every call. */
-export function home(): string {
-  // An empty value (PALIMPSEST_HOME="") means unset, never the current folder.
-  return process.env.PALIMPSEST_HOME || defaultHome();
+/** The configured data home, unchecked. An empty value (PALIMPSEST_HOME="") means unset, never the current folder. */
+function configuredHome(env: NodeJS.ProcessEnv): string {
+  return env.PALIMPSEST_HOME || defaultHome();
+}
+
+/** True inside a `node --test` process (the runner sets NODE_TEST_CONTEXT in every test file's process). */
+function underTest(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.NODE_TEST_CONTEXT) || (env === process.env && process.execArgv.includes('--test'));
+}
+
+/**
+ * The data home. Honours PALIMPSEST_HOME, read fresh on every call.
+ *
+ * Under a test it fails closed: a test whose home is unset (a tearDown that
+ * ran before a run's async tail) or that names the real home, however it is
+ * spelled, throws here, so no test can open, create or write anything in
+ * his real data home.
+ */
+export function home(env: NodeJS.ProcessEnv = process.env): string {
+  const h = configuredHome(env);
+  if (underTest(env) && (!env.PALIMPSEST_HOME || isRealDataHome(h))) {
+    throw new Error(`refused: a test reached the real data home (PALIMPSEST_HOME is ${env.PALIMPSEST_HOME ? 'the real home' : 'unset'})`);
+  }
+  return h;
+}
+
+/**
+ * True when the configured home is the real data home. Never throws, so the
+ * real-home refusals (sandbox off, GitHub writes, push targets) still answer
+ * under a test without opening anything there.
+ */
+export function onRealDataHome(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isRealDataHome(configuredHome(env));
 }
 
 /**

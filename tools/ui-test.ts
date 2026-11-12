@@ -681,13 +681,17 @@ async function constructionChecks(page: Page): Promise<void> {
     console.log(`info  city from home with live sites: ${homeFps.toFixed(0)} fps, ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
     check(homeFps >= overviewFps - 5, `the city from home holds its frame rate with live sites (${homeFps.toFixed(0)} fps)`);
     // What the sites cost from home: every site is drawn in a few batches, so all of them together add under 60 calls.
+    // Both sides are measured the same way (homeBudget: the shadow map redrawn, every pass counted), so a shadow
+    // redraw or a level-of-detail step in one single frame and not the other can never read as the sites' cost.
     const nSites = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length)) as number;
+    const withSites = await homeBudget(page);
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(false));
     await page.waitForTimeout(800);
-    const bare = await debug(page, (x) => x.stats());
+    const bare = await homeBudget(page);
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(true));
-    console.log(`info  the ${nSites} live sites add ${home.calls - bare.calls} draw calls from home`);
-    check(nSites >= 3 && home.calls - bare.calls < 60, `${nSites} live sites add fewer than 60 draw calls from home (${home.calls - bare.calls})`);
+    const added = withSites.calls - bare.calls;
+    console.log(`info  the ${nSites} live sites add ${added} draw calls from home`);
+    check(nSites >= 3 && added < 60, `${nSites} live sites add fewer than 60 draw calls from home (${added})`);
     // The city's budget from home (task PERF): a frame with the shadow map redrawn, every pass counted.
     let full = await homeBudget(page);
     console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);

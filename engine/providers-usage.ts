@@ -47,8 +47,8 @@ export function geminiHome(env: NodeJS.ProcessEnv = process.env): string {
  */
 export const READ_CAP = { files: 40, bytes: 2 * 1024 * 1024 };
 
-/** The last `READ_CAP.bytes` of a file as text, from its first whole line; null when it cannot be read. */
-function readTail(path: string): string | null {
+/** The last `READ_CAP.bytes` of a file as text, from its first whole line, and whether the head was cut; null when it cannot be read. */
+function readTail(path: string): { text: string; cut: boolean } | null {
   let fd: number | null = null;
   try {
     fd = openSync(path, 'r');
@@ -57,7 +57,7 @@ function readTail(path: string): string | null {
     const buf = Buffer.alloc(len);
     readSync(fd, buf, 0, len, size - len);
     const text = buf.toString('utf8');
-    return size > len ? text.slice(text.indexOf('\n') + 1) : text;
+    return size > len ? { text: text.slice(text.indexOf('\n') + 1), cut: true } : { text, cut: false };
   } catch {
     return null;
   } finally {
@@ -151,10 +151,13 @@ export function openaiUsage(now: number = Date.now()): ProviderUsage {
   let windowsSeen = false;
   let readAny = false;
   for (const f of files) {
-    const text = readTail(f.path);
-    if (text === null) continue;
+    const tail = readTail(f.path);
+    if (tail === null) continue;
+    const { text, cut } = tail;
     readAny = true;
-    let prevTotal = 0;
+    // Totals are cumulative. When the head was cut, the first total read is only a baseline:
+    // what the session spent before the tail is unknown, so none of it is booked as today's.
+    let prevTotal: number | null = cut ? null : 0;
     let last: Json | null = null;
     for (const raw of text.split('\n')) {
       if (!raw.trim()) continue;
@@ -169,8 +172,8 @@ export function openaiUsage(now: number = Date.now()): ProviderUsage {
       last = tc;
       const total = tc.info?.total_token_usage?.total_tokens;
       if (typeof total === 'number') {
-        const delta = Math.max(0, total - prevTotal);
-        prevTotal = Math.max(prevTotal, total);
+        const delta = prevTotal === null ? 0 : Math.max(0, total - prevTotal);
+        prevTotal = Math.max(prevTotal ?? 0, total);
         const ts = Date.parse(String(line.timestamp ?? tc.timestamp ?? ''));
         const at = Number.isFinite(ts) ? ts : f.at;
         if (at >= now - WEEK_MS && at <= now) week += delta;
