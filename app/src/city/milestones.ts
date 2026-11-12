@@ -30,7 +30,7 @@ import type { Milestone, MilestoneKind, Quarter, TowerSpec } from '../../../shar
 import { LAYER, setLayers } from './lod.js';
 import { hash01 } from './construction.js';
 import { makeLitScaffold, type LitScaffold } from './scaffold-kit.js';
-import { RIBBON, ribbonGeometry, ribbonMaterial, type RibbonSpec } from './ribbon.js';
+import { RIBBON, ribbonGeometry, ribbonMaterial, sheenOf, type RibbonSpec } from './ribbon.js';
 import { makeSpire } from './tower/crowns.js';
 import { Kit, lathe, M, type MatKey, type TowerMaterials } from './tower/kit.js';
 
@@ -621,6 +621,7 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
         lastRibbons = ribbonKey;
         ribbonMesh.geometry.dispose();
         ribbonMesh.geometry = ribbonGeometry(specs);
+        ribbonMat.sheenColor.copy(sheenOf(specs.map((x) => x.colour)));
       }
       ribbonMesh.visible = specs.length > 0;
 

@@ -397,10 +397,15 @@ test("a ribbon wraps the floor's slab at its height, in the firm's colour, tied 
   assert.ok(box.min.y < show.y - 0.8, `the bow's tails hang below the band (${box.min.y.toFixed(2)} against ${show.y.toFixed(2)})`);
   // The firm's colour, as cloth: a satin sheen, no glow.
   const col = mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
-  const want = firmMarkColor('f1');
-  assert.ok(Math.abs(col.getX(0) - want.r) < 1e-3 && Math.abs(col.getY(0) - want.g) < 1e-3 && Math.abs(col.getZ(0) - want.b) < 1e-3, "in the firm's mark colour");
+  const want = firmMarkColor('f1').getHSL({ h: 0, s: 0, l: 0 });
+  const got = new THREE.Color(col.getX(0), col.getY(0), col.getZ(0)).getHSL({ h: 0, s: 0, l: 0 });
+  assert.ok(Math.abs(got.h - want.h) < 0.01, "in the firm's hue");
+  assert.ok(got.l >= 0.35 && got.l <= 0.45, `lifted to a cloth's albedo, so its shaded side never goes black (L ${got.l.toFixed(2)})`);
   const mat = mesh.material as THREE.MeshPhysicalMaterial;
   assert.ok(mat.isMeshPhysicalMaterial && mat.sheen > 0, 'satin, with a sheen');
+  const sheen = mat.sheenColor.getHSL({ h: 0, s: 0, l: 0 });
+  assert.ok(Math.abs(sheen.h - want.h) < 0.02 && sheen.l > got.l, `the sheen a lightened firm colour (L ${sheen.l.toFixed(2)})`);
+  assert.ok(mat.envMapIntensity >= 1.4, 'the shaded face takes the sky fill');
   assert.equal(mat.emissive.getHex(), 0, 'and no glow');
   // It sways: pinned at the corners, free between them and at the tails.
   const sway = mesh.geometry.getAttribute('sway') as THREE.BufferAttribute;

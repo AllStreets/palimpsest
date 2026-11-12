@@ -345,6 +345,14 @@ async function earnedChecks(page: Page): Promise<void> {
 
 // ---------------------------------------------------------------- the spire and the finial (Phase 3 Task 14)
 
+/**
+ * The milestones' draw calls from home, every pass counted, on the economy as
+ * the full run leaves it (spires, finial, a revival, a ribbon): measured 35
+ * on high and 22 on medium (Task 16), each ceiling a call or two above, so a
+ * new ornament has to be paid for here, knowingly.
+ */
+const MILESTONE_CALLS = { high: 36, medium: 24 } as const;
+
 type SpireShow = { id: string; kind: string; towerId: string; lit: boolean; y: number; height: number; tip: number[] };
 
 /**
@@ -486,7 +494,7 @@ async function spireChecks(page: Page): Promise<void> {
   const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
   const own = Object.values(b.milestones ?? {}).reduce((acc, t) => ({ calls: acc.calls + t.calls, triangles: acc.triangles + t.triangles }), { calls: 0, triangles: 0 });
   console.log(`info  the skyline from home: ${own.calls} draw calls, ${(own.triangles / 1000).toFixed(1)}k triangles; the city ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles`);
-  check(own.calls > 0 && own.calls <= 36, `the milestones (spires, finial, revival, ribbons) draw in at most 36 calls from home, every pass counted (${own.calls})`);
+  check(own.calls > 0 && own.calls <= MILESTONE_CALLS.high, `the milestones (spires, finial, revival, ribbons) draw in at most ${MILESTONE_CALLS.high} calls from home, every pass counted (${own.calls})`);
   check(budget.triangles <= HOME_TRIANGLES && budget.calls < HOME_CALLS, `the city from home stays within ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M triangles with the spires (${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
@@ -533,13 +541,13 @@ async function revivalChecks(page: Page): Promise<void> {
   const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
   const own = Object.values(b.milestones ?? {}).reduce((acc, t) => acc + t.calls, 0);
   console.log(`info  the milestones from home with the revival: ${own} calls; the city ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles`);
-  check(own <= 36 && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `the milestones draw in at most 36 calls and the city keeps its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+  check(own <= MILESTONE_CALLS.high && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `the milestones draw in at most ${MILESTONE_CALLS.high} calls and the city keeps its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
 /**
  * The ribbon on a new firm's first PR floor (Phase 3 Task 16): every ribbon
- * the engine holds active is tied round its floor just under the slab edge,
- * and the inspector's row names the firm. Shots: ribbon.png close at dusk,
+ * the engine holds active is tied round its floor across the face, a little
+ * above mid-floor, and the inspector's row names the firm. Shots: ribbon.png close at dusk,
  * ribbon-crop.png, ribbon-home.png. Runs with the economy seeded.
  */
 async function ribbonChecks(page: Page): Promise<void> {
@@ -627,7 +635,7 @@ async function spireAfterDropChecks(page: Page, before: SpireShow[]): Promise<vo
   const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
   const own = Object.values(b.milestones ?? {}).reduce((acc, t) => acc + t.calls, 0);
   console.log(`info  at medium from home: ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles, the skyline ${own} calls`);
-  check(own > 0 && own <= 36 && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `at medium the milestones draw in at most 36 calls and the city stays within its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+  check(own > 0 && own <= MILESTONE_CALLS.medium && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `at medium the milestones draw in at most ${MILESTONE_CALLS.medium} calls and the city stays within its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
 // ---------------------------------------------------------------- silhouettes (Task 23)

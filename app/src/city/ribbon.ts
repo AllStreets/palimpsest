@@ -1,7 +1,7 @@
 /**
  * A ceremonial ribbon (Phase 3 Task 16): satin in a firm's colour, tied
- * round a floor just under its slab edge, sagging a little between the
- * corners where it is pinned, with a bow at the corner that faces the
+ * round a floor across its face, a little above mid-floor, sagging between
+ * the corners where it is pinned, with a bow at the corner that faces the
  * street: a knot, two loops and two tails cut to a V. Sewn as strips along
  * centripetal Catmull-Rom curves, every ribbon in the city merged into one
  * geometry with its colour per vertex and a `sway` weight (0 where it is
@@ -169,10 +169,30 @@ function sew(s: Sewer, r: RibbonSpec): void {
   }
 }
 
-/** Every ribbon in the city as one geometry, in the world. */
+/**
+ * A firm's colour as satin: its hue and saturation, its lightness lifted or
+ * held to a cloth's albedo (HSL L 0.35 to 0.45), so a dark mark colour's
+ * shaded side never goes black against lit glass.
+ */
+export function clothColour(c: THREE.Color): THREE.Color {
+  const hsl = c.getHSL({ h: 0, s: 0, l: 0 });
+  return new THREE.Color().setHSL(hsl.h, hsl.s, Math.min(0.45, Math.max(0.35, hsl.l)));
+}
+
+/** The sheen over satin of these colours: their mean, lightened toward white. */
+export function sheenOf(colours: ReadonlyArray<THREE.Color>): THREE.Color {
+  if (!colours.length) return new THREE.Color(0.85, 0.82, 0.78);
+  const m = new THREE.Color(0, 0, 0);
+  for (const c of colours) m.add(c);
+  m.multiplyScalar(1 / colours.length);
+  const hsl = clothColour(m).getHSL({ h: 0, s: 0, l: 0 });
+  return new THREE.Color().setHSL(hsl.h, hsl.s * 0.7, 0.72);
+}
+
+/** Every ribbon in the city as one geometry, in the world, each in its colour as cloth. */
 export function ribbonGeometry(specs: ReadonlyArray<RibbonSpec>): THREE.BufferGeometry {
   const s = new Sewer();
-  for (const r of specs) sew(s, r);
+  for (const r of specs) sew(s, { ...r, colour: clothColour(r.colour) });
   return s.geometry();
 }
 
@@ -188,6 +208,8 @@ export function ribbonMaterial(): THREE.MeshPhysicalMaterial & { userData: { tim
     sheen: 1,
     sheenRoughness: 0.32,
     sheenColor: new THREE.Color(0.85, 0.82, 0.78),
+    // The sky's fill on the face the sun leaves: satin is never black in shade.
+    envMapIntensity: 1.5,
     side: THREE.DoubleSide,
   });
   m.name = 'milestone-ribbon';
