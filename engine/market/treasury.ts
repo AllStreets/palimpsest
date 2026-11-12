@@ -26,8 +26,9 @@ import { BANKRUPT_REASON, darkTowers, firm, hire, idleAgents, listFirms, quarter
 import { bidById } from './bids.js';
 import { job as storedJob, listJobs, transition } from './jobs.js';
 import { kill, liveRunIds, run as storedRun } from './runs.js';
+import { endTripsOf } from './trips.js';
 import { canHire, HIRE_FEE, isBankrupt, REVIEWER_SHARE, salePrice, START_BALANCE } from '../../shared/market-rules.js';
-import type { Bid, Inspection, Job, Trip } from '../../shared/types.js';
+import type { Bid, Inspection, Job } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit, subscribe, type Event } from '../events.js';
 import { query, record, type LedgerEntry } from '../ledger.js';
@@ -389,18 +390,9 @@ export function replayBalances(log: LedgerEntry[]): Record<string, number> {
   return Object.fromEntries(Object.entries(micro).map(([k, v]) => [k, fromMicro(v)]));
 }
 
-/** Ends every live trip of a firm's people (its agents just retired). */
+/** Ends every live trip of a firm's people (its agents just retired); the events wait for the atomic block. */
 function endTrips(firmId: string, now: number): void {
-  const rows = openDb().prepare('SELECT id, json FROM trips').all() as Array<{ id: string; json: string }>;
-  for (const row of rows) {
-    const t = JSON.parse(row.json) as Trip;
-    if (t.firmId !== firmId || t.endedAt) continue;
-    const ended: Trip = { ...t, endedAt: iso(now) };
-    openDb().prepare('UPDATE trips SET json = ? WHERE id = ?').run(JSON.stringify(ended), row.id);
-    const data = { tripId: t.id, agentId: t.agentId, firmId, reason: BANKRUPT_REASON, at: iso(now) };
-    record('trip.ended', data);
-    later('trip.ended', data);
-  }
+  endTripsOf({ firmId }, BANKRUPT_REASON, now, later);
 }
 
 /** Firms with a run in a live stage right now. */

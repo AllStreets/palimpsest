@@ -25,6 +25,7 @@ import { firm as storedFirm, listAgents, listFirms } from '../market/firms.js';
 import type { Usage } from '../market/provider.js';
 import { providerFor } from '../market/providers.js';
 import { reputation, reputationLog } from '../market/reputation.js';
+import { homeOf, siteOf, startTrip, whereIs } from '../market/trips.js';
 
 /** Reviewers tried in turn when a call fails for its own reasons (not a stop). */
 const MAX_TRIES = 3;
@@ -160,6 +161,8 @@ export async function review(run: Run, job: Job, diff: string, checks: CheckResu
       if (provider.kind === 'anthropic' && chargesItself) return;
       credits += charge({ runId: run.id, firmId: null, model: a.model, kind: 'review', usage: u, unattended: run.unattended, lease: sub, minCredits: floor });
     };
+    // The reviewer goes to the site, and home once it has read the change.
+    startTrip(a, 'inspect', job.id, whereIs(a), siteOf(run.repo));
     try {
       const out = await provider.review({ job, agent: a, persona: a.persona, diff, acceptance: job.acceptance, checks }, sub.signal);
       const u = cleanUsage(out.usage);
@@ -183,6 +186,7 @@ export async function review(run: Run, job: Job, diff: string, checks: CheckResu
       problems.push(`${a.id}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       sub.release();
+      startTrip(a, 'home', job.id, siteOf(run.repo), homeOf(a));
     }
   }
   const why = problems.length ? ` (${problems.join('; ')})` : '';

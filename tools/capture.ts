@@ -1150,8 +1150,8 @@ async function main(): Promise<void> {
   // CAPTURE_ECONOMY=live: the economy's job sites and trips in the live view, and its clock at speed 20, ticked by the shots.
   if (process.env.CAPTURE_ECONOMY === 'live') {
     const { setMarketExtras } = await import('../engine/market/api.js');
-    const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
-    setMarketExtras({ sites: economySites, trips: economyTrips });
+    const { economyClock, economySites } = await import('../engine/market/sample-economy.js');
+    setMarketExtras({ sites: economySites });
     // The lifecycle shot has the clock fail the inspecting repo's inspection, so a scar is struck (CAPTURE_FAIL overrides).
     const fail = process.env.CAPTURE_FAIL ? process.env.CAPTURE_FAIL.split(',') : wanted.includes('lifecycle') ? ['lantern/assay-kit'] : [];
     economy = economyClock({ now: () => Date.now(), speed: 20, fail, sell: process.env.CAPTURE_HOLD_SALE ? 5 : undefined });

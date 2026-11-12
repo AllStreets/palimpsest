@@ -587,8 +587,8 @@ async function constructionChecks(page: Page): Promise<void> {
   type SV = { stage: string; progress: number; beams: number; beamsTotal: number; columns: number; crane: number[]; weld: number[] | null; arc: number; top: number; floorHeight: number; centre: number[] };
   type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): SV | null };
   const { setMarketExtras } = await import('../engine/market/api.js');
-  const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
-  setMarketExtras({ sites: economySites, trips: economyTrips });
+  const { economyClock, economySites } = await import('../engine/market/sample-economy.js');
+  setMarketExtras({ sites: economySites });
   const clock = economyClock({ now: () => Date.now(), speed: 20 });
   try {
     await page.reload();
@@ -726,8 +726,8 @@ async function lifecycleChecks(page: Page): Promise<void> {
   };
   type Dbg = { liveSites(): Array<{ repo: string; stage: string; progress: number; runId: string }>; site(r: string): SV | null; home(): void };
   const { setMarketExtras } = await import('../engine/market/api.js');
-  const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
-  setMarketExtras({ sites: economySites, trips: economyTrips });
+  const { economyClock, economySites } = await import('../engine/market/sample-economy.js');
+  setMarketExtras({ sites: economySites });
   const sites = (): Promise<Array<{ repo: string; stage: string; progress: number; runId: string }>> => page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites());
   const view = (repo: string): Promise<SV | null> => page.evaluate((r) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r), repo);
   // The repo whose inspection the clock fails: the one still working (the other passed during the construction checks).

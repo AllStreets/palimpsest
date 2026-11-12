@@ -37,8 +37,9 @@ import { query, record } from '../ledger.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
 import { acquire, charge, creditsFor, PLAN_ESTIMATE, unattended } from './budget.js';
-import { firm, listAgents } from './firms.js';
+import { agent as agentById, firm, listAgents } from './firms.js';
 import { job as storedJob, transition } from './jobs.js';
+import { EXCHANGE, siteOf, startTrip, whereIs } from './trips.js';
 import type { Usage } from './provider.js';
 import { providerFor } from './providers.js';
 import { reputation } from './reputation.js';
@@ -366,6 +367,8 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
   saveRow(bid.id, cur.id, { round, bid });
   record('bid.placed', { bid, calls, charged: { kind: 'bid', credits: cost, by: provider?.kind === 'anthropic' && chargesItself ? 'provider' : 'budget' } });
   emit('bid.placed', { bid });
+  // The bidder goes to the exchange.
+  startTrip(a, 'bid', cur.id, whereIs(a), EXCHANGE, clock());
   return bid;
 }
 
@@ -435,5 +438,8 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
   else transition(cur, 'open', { bidsCloseAt: null, awardedBid: null });
   record('job.awarded', data);
   emit('job.awarded', data);
+  // The winner goes on to the job's district, from the exchange or wherever it stands.
+  const winner = chosen ? agentById(chosen.agentId) : null;
+  if (winner) startTrip(winner, 'job', cur.id, whereIs(winner), siteOf(cur.repo), now);
   return chosen;
 }

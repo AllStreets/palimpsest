@@ -54,6 +54,7 @@ import { firmBooks, firmDeals, firmRounds } from './firm-story.js';
 import { reputation, reputationLine, reputationLog } from './reputation.js';
 import { kill, killJob, listRuns, resumeJob, run, sites } from './runs.js';
 import { balances, negativeSinceOf } from './treasury.js';
+import { activeTrips } from './trips.js';
 import { isStale, latestReading, storedCalibration } from '../usage.js';
 import { getSettings, patchSettings } from '../settings.js';
 import { CITY_KEY, creditEntries, periodBounds, spendBetween } from './spend.js';
@@ -65,7 +66,6 @@ import { CITY_KEY, creditEntries, periodBounds, spendBetween } from './spend.js'
  */
 export interface MarketExtras {
   sites?: () => SiteState[];
-  trips?: () => Trip[];
   providers?: Parameters<typeof providerUsages>[0];
 }
 
@@ -616,8 +616,8 @@ export async function handleMarketApi(
 
   // the city
   if (pathname === '/api/quarters' && method === 'GET') return send(200, quarters());
-  // Trips are walked by the city's own clock (the trips task); until it exists none is under way, except in a sample engine.
-  if (pathname === '/api/live' && method === 'GET') return send(200, { sites: [...sites(), ...(extras.sites?.() ?? [])], trips: extras.trips?.() ?? [] } satisfies LiveView);
+  // The trips under way now; one whose time is up ends as arrived on this look.
+  if (pathname === '/api/live' && method === 'GET') return send(200, { sites: [...sites(), ...(extras.sites?.() ?? [])], trips: activeTrips() } satisfies LiveView);
 
   return false;
 }

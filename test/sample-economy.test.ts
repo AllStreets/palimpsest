@@ -183,9 +183,13 @@ test('the economy seeds every job status and replays clean', async () => {
   assert.equal(codex.status, 'ready');
   assert.equal(codex.windows.length, 2);
 
-  // Trips in flight across every mode, a persona cab among them.
+  // Trips in flight, routed over the city's network (Task 33): the modes follow the distances, a persona cab among them.
   const live = trips().filter((t) => !t.endedAt);
-  assert.deepEqual(new Set(live.flatMap((t) => t.legs.map((l) => l.mode))), new Set(['walk', 'tram', 'rail', 'pod', 'ferry', 'cab']));
+  // The six seeded on their way, and the winners the scripted awards sent to their districts.
+  assert.ok(live.length >= 6, String(live.length));
+  const modes = new Set(live.flatMap((t) => t.legs.map((l) => l.mode)));
+  assert.ok(modes.has('cab') && modes.has('walk'), [...modes].join(','));
+  assert.ok(live.every((t) => t.legs.length >= 1 && t.legs.every((l) => l.path.length >= 2 && l.ms >= 1) && t.ms === t.legs.reduce((s, l) => s + l.ms, 0)), 'every trip has routed legs');
   assert.ok(live.every((t) => query({ kind: 'trip.started' }).some((e) => (e.data as { trip: Trip }).trip.id === t.id)), 'every trip is in the ledger');
 
   // Sites for every run in a live stage.

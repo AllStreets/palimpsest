@@ -170,8 +170,8 @@ async function main(): Promise<void> {
     if (!process.env.PERF_STATIC) {
       // Phase two: four live job sites, the governor running.
       const { setMarketExtras } = await import('../engine/market/api.js');
-      const { economySites, economyTrips } = await import('../engine/market/sample-economy.js');
-      setMarketExtras({ sites: economySites, trips: economyTrips });
+      const { economySites } = await import('../engine/market/sample-economy.js');
+      setMarketExtras({ sites: economySites });
       await open('debug');
       await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length >= 4, null, { timeout: 15_000 }).catch(() => {});
       const nSites = await dbg<number>(page, '(d) => d.liveSites().length');
