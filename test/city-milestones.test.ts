@@ -233,6 +233,85 @@ test('a milestone past its end goes dark, and set says when the next one ends', 
   s.dispose();
 });
 
+function revival(towerId: string, floorId: string, until: string): Milestone {
+  return { id: `revival:${floorId}`, kind: 'revival', towerId, repo: 'acme/widgets', firmId: 'f1', agentId: 'a1', floorId, at: '2026-11-10T09:00:00Z', until, lit: true, title: 'Back to life', detail: '' };
+}
+
+test('a revival hangs lights round its floor and the floor below', () => {
+  const s = scene();
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials() });
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const now = Date.parse('2026-11-12T12:00:00Z');
+  const lay = layoutTower(s.district);
+  const top = lay.floors[lay.floors.length - 1];
+  const below = lay.floors[lay.floors.length - 2];
+  const r = revival(s.district.id, top.floor.id, '2026-11-17T09:00:00Z');
+  assert.equal(ms.set([r], towers, now), Date.parse(r.until!), 'its end is the next to come');
+  const show = ms.shows().get(r.id);
+  assert.ok(show, 'the revival shows');
+  assert.equal(show.kind, 'revival');
+  assert.ok(Math.abs(show.y - below.y0) < 1e-6, `the scaffold stands from the floor below (${show.y} against ${below.y0})`);
+  assert.ok(show.y + show.height >= top.y0 + top.h, 'and rises past the revived floor');
+  const scaffold = ms.group.getObjectByName(`revival:${r.id}`);
+  assert.ok(scaffold, 'a scaffold hangs on the tower');
+  const box = new THREE.Box3().setFromObject(scaffold, true);
+  assert.ok(Math.abs((box.min.x + box.max.x) / 2 - 300) < 3 && Math.abs((box.min.z + box.max.z) / 2 + 120) < 3, 'round the tower, where it stands');
+  const lamps = drawn(ms.group).filter((p) => /festoon/.test(p.name));
+  assert.equal(lamps.length, 1, 'one instanced draw for every festoon lamp');
+  assert.equal(lamps[0].count, 32, 'sixteen lamps a lift, one lift for each floor');
+  assert.ok(lamps[0].mat instanceof THREE.MeshBasicMaterial, 'the lamps are emitters');
+  // The scaffold's own steel, boards and netting emit nothing.
+  scaffold.traverse((o) => {
+    const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+    if (m) assert.ok(!(m instanceof THREE.MeshBasicMaterial) && !((m as THREE.MeshStandardMaterial).emissiveIntensity > 0 && (m as THREE.MeshStandardMaterial).emissive?.getHex()), 'the lamps are the only emitters');
+  });
+  // The flicker: lamps differ from one another and move with time, under the bloom threshold.
+  ms.update(0.016, 1.0);
+  const a = lampLevels(ms);
+  ms.update(0.016, 1.7);
+  const b = lampLevels(ms);
+  assert.ok(new Set(a.map((x) => x.toFixed(3))).size > 4, 'each lamp burns its own way');
+  assert.ok(a.some((x, i) => Math.abs(x - b[i]) > 1e-3), 'and flickers');
+  assert.ok(Math.max(...a, ...b) * EXPOSURE < BLOOM_THRESHOLD, 'under the bloom threshold');
+  ms.dispose();
+  s.dispose();
+});
+
+/** Each festoon lamp's drawn brightness (its instance colour's red, times the material's). */
+function lampLevels(ms: ReturnType<typeof createMilestones>): number[] {
+  const out: number[] = [];
+  ms.group.traverse((o) => {
+    const m = o as THREE.InstancedMesh;
+    if (!m.isInstancedMesh || !/festoon/.test(m.name) || !m.instanceColor) return;
+    const c = new THREE.Color();
+    for (let i = 0; i < m.count; i++) {
+      m.getColorAt(i, c);
+      out.push(c.r * (m.material as THREE.MeshBasicMaterial).color.r);
+    }
+  });
+  return out;
+}
+
+test('lights come down at until, and with the tower', () => {
+  const s = scene();
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials() });
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const lay = layoutTower(s.district);
+  const r = revival(s.district.id, lay.floors[lay.floors.length - 1].floor.id, '2026-11-17T09:00:00Z');
+  ms.set([r], towers, Date.parse('2026-11-16T09:00:00Z'));
+  assert.ok(ms.group.getObjectByName(`revival:${r.id}`));
+  ms.set([r], towers, Date.parse(r.until!));
+  assert.equal(ms.shows().has(r.id), false, 'gone at until');
+  assert.equal(ms.group.getObjectByName(`revival:${r.id}`), undefined, 'the scaffold struck');
+  assert.ok(drawn(ms.group).filter((p) => /festoon/.test(p.name)).every((p) => p.count === 0), 'no lamp burns');
+  ms.set([r], towers, Date.parse('2026-11-16T09:00:00Z'));
+  s.districts[0].object.removeFromParent();
+  ms.set([r], towers, Date.parse('2026-11-16T09:00:00Z'));
+  assert.equal(ms.group.getObjectByName(`revival:${r.id}`), undefined, 'a tower taken away takes its scaffold');
+  ms.dispose();
+  s.dispose();
+});
+
 test("a floor's milestone reads in quiet words", () => {
   const now = Date.parse('2026-11-12T15:00:00Z');
   const sky = { ...row('skyline', 'x#founding', true), at: '2026-11-10T09:00:00Z' };

@@ -28,6 +28,8 @@ import { crownFor } from '../../../shared/silhouette.js';
 import { layoutTower, type TowerLayout } from '../../../shared/tower-layout.js';
 import type { Milestone, MilestoneKind, Quarter, TowerSpec } from '../../../shared/types.js';
 import { LAYER, setLayers } from './lod.js';
+import { hash01 } from './construction.js';
+import { makeLitScaffold, type LitScaffold } from './scaffold-kit.js';
 import { makeSpire } from './tower/crowns.js';
 import { Kit, lathe, M, type MatKey, type TowerMaterials } from './tower/kit.js';
 
@@ -41,6 +43,8 @@ export interface TowerPiece {
   crown: number;
   /** The tower's true top in the world: the top floor's roof centre, raised past its crown. */
   roof(): THREE.Vector3;
+  /** A floor by id, in the tower's frame: its plan centre, its turn, its foot and height, and its half width; null when the tower has no such floor. */
+  floor(id: string): { cx: number; cz: number; ry: number; y0: number; h: number; half: number; index: number } | null;
 }
 
 /** A district tower or a quarter as placed, for findTowerPiece. */
@@ -97,6 +101,15 @@ export function findTowerPiece(towerId: string, districts: ReadonlyArray<PlacedD
       g.updateWorldMatrix(true, false);
       return g.localToWorld(new THREE.Vector3(cx, layout.top + crown, cz));
     },
+    floor(id) {
+      const index = layout.floors.findIndex((f) => f.floor.id === id);
+      if (index < 0) return null;
+      const { y0, h } = layout.floors[index];
+      // The floor's own pick proxy: a unit box scaled to the floor's slice, centred on it.
+      const p = picks.children.find((o) => Math.abs(o.position.y - (y0 + h / 2)) < 1e-3 && Math.abs(o.scale.y - h) < 1e-3);
+      if (!p) return null;
+      return { cx: p.position.x, cz: p.position.z, ry: p.rotation.y, y0, h, half: p.scale.x / 2, index };
+    },
   };
 }
 
@@ -120,6 +133,18 @@ export const SPIRE = {
   period: 4,
   /** The far point's size in pixels. */
   point: 3.5,
+} as const;
+
+/**
+ * The festoon's bulbs (Task 15): warm tungsten, linear, at their brightest
+ * under the bloom threshold after the exposure; each burns at its own level
+ * and wavers a little (hash01 per bulb), and about one in sixteen is dead,
+ * as on any string that has hung a week on a site.
+ */
+export const FESTOON = {
+  bulb: [1.0, 0.5, 0.18] as [number, number, number],
+  radius: 0.12,
+  dead: 0.06,
 } as const;
 
 /** How a milestone shows in the city now (tests and captures). */
@@ -388,7 +413,41 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
   setLayers(points, LAYER.view);
   group.add(points);
 
+  // The revivals' scaffolds, by milestone id, kept while what they stand on is unchanged; every bulb in one emitter.
+  const revivals = new Map<string, { key: string; s: LitScaffold }>();
+  const [br, bg, bb] = FESTOON.bulb;
+  const bulb = new THREE.MeshBasicMaterial({ color: new THREE.Color(br, bg, bb) });
+  bulb.name = 'milestone-festoon';
+  const bulbGeo = new THREE.SphereGeometry(FESTOON.radius, 8, 6);
+  let festoon = makeFestoon(64);
+  function makeFestoon(n: number): THREE.InstancedMesh {
+    const m = new THREE.InstancedMesh(bulbGeo, bulb, n);
+    m.name = 'milestone:festoon';
+    m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3).fill(1), 3);
+    m.count = 0;
+    m.visible = false;
+    m.castShadow = false;
+    setLayers(m, 0, LAYER.view);
+    group.add(m);
+    return m;
+  }
+  let bulbs = 0;
+
   let shows = new Map<string, MilestoneShow>();
+  let lastClock = 0;
+  /** Each bulb's level now: its own, wavering a little on two slow beats; a dead one barely glows. */
+  function flicker(clock: number): void {
+    lastClock = clock;
+    if (!bulbs) return;
+    const c = festoon.instanceColor!;
+    for (let i = 0; i < bulbs; i++) {
+      const h = hash01(i * 7 + 1);
+      const h2 = hash01(i * 13 + 5);
+      const k = h2 < FESTOON.dead ? 0.08 : 0.72 + 0.2 * h + 0.05 * Math.sin(clock * (1.3 + 2.1 * h) + h2 * 40) + 0.03 * Math.sin(clock * (7 + 5 * h2) + h * 17);
+      c.setXYZ(i, k, k, k);
+    }
+    c.needsUpdate = true;
+  }
 
   return {
     group,
@@ -397,11 +456,16 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
     set(ms, towers, now = Date.now()) {
       const byTower = new Map<string, { sky?: Milestone; founding?: Milestone }>();
       let next: number | null = null;
+      const revived: Milestone[] = [];
       for (const r of ms) {
-        if (r.kind !== 'skyline' && r.kind !== 'founding-skyline') continue;
+        if (r.kind !== 'skyline' && r.kind !== 'founding-skyline' && r.kind !== 'revival') continue;
         const until = r.until === null ? null : Date.parse(r.until);
         if (until !== null && until <= now) continue;
         if (until !== null && (next === null || until < next)) next = until;
+        if (r.kind === 'revival') {
+          revived.push(r);
+          continue;
+        }
         const e = byTower.get(r.towerId) ?? {};
         if (r.kind === 'skyline') e.sky = r;
         else e.founding = r;
@@ -454,10 +518,66 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
       pos.needsUpdate = true;
       pointGeo.setDrawRange(0, tips.length);
       points.visible = tips.length > 0;
+      // The revivals: a scaffold round the revived floor and the one below, a festoon to each.
+      const wanted = new Set<string>();
+      const lampsAt: THREE.Vector3[] = [];
+      for (const r of revived) {
+        const piece = r.floorId ? towers(r.towerId) : null;
+        const f = piece && r.floorId ? piece.floor(r.floorId) : null;
+        if (!piece || !f) continue;
+        const below = f.index > 0 ? piece.floor(piece.layout.floors[f.index - 1].floor.id) : null;
+        const base = below ?? f;
+        // A working gap of half a metre off each floor's face.
+        const stages = [...(below ? [below] : []), f].map((x) => ({ halfX: x.half + 0.5, halfZ: x.half + 0.5, y0: x.y0 - base.y0, y1: x.y0 + x.h - base.y0 }));
+        piece.group.updateWorldMatrix(true, false);
+        const foot = piece.group.localToWorld(new THREE.Vector3(f.cx, base.y0, f.cz));
+        const turn = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(piece.group.matrixWorld)).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), f.ry));
+        const key = JSON.stringify([stages, foot.toArray().map((v) => v.toFixed(3)), turn.toArray().map((v) => v.toFixed(4))]);
+        let e = revivals.get(r.id);
+        if (e && e.key !== key) {
+          group.remove(e.s.object);
+          e.s.dispose();
+          e = undefined;
+        }
+        if (!e) {
+          // A working deck over the revived floor only when it is the tower's top.
+          const s = makeLitScaffold(stages, f.index === piece.layout.floors.length - 1);
+          s.object.name = `revival:${r.id}`;
+          s.object.position.copy(foot);
+          s.object.quaternion.copy(turn);
+          group.add(s.object);
+          e = { key, s };
+          revivals.set(r.id, e);
+        }
+        wanted.add(r.id);
+        e.s.object.updateMatrixWorld(true);
+        for (const l of e.s.lamps) lampsAt.push(e.s.object.localToWorld(l.clone()));
+        nextShows.set(r.id, { kind: 'revival', towerId: r.towerId, lit: true, y: foot.y, height: e.s.height, tip: foot.clone().add(new THREE.Vector3(0, e.s.height, 0)).toArray() });
+      }
+      for (const [id, e] of revivals) {
+        if (wanted.has(id)) continue;
+        group.remove(e.s.object);
+        e.s.dispose();
+        revivals.delete(id);
+      }
+      if (lampsAt.length > festoon.instanceMatrix.count) {
+        group.remove(festoon);
+        festoon.dispose();
+        festoon = makeFestoon(lampsAt.length * 2);
+      }
+      lampsAt.forEach((p, i) => festoon.setMatrixAt(i, new THREE.Matrix4().makeTranslation(p.x, p.y, p.z)));
+      festoon.count = lampsAt.length;
+      festoon.visible = lampsAt.length > 0;
+      festoon.instanceMatrix.needsUpdate = true;
+      if (lampsAt.length) festoon.computeBoundingSphere();
+      bulbs = lampsAt.length;
+      flicker(lastClock);
+
       shows = nextShows;
       return next;
     },
     update(_dt, clock) {
+      flicker(clock);
       const t = 0.5 - 0.5 * Math.cos((clock / SPIRE.period) * Math.PI * 2);
       const k = SPIRE.breath[0] + (SPIRE.breath[1] - SPIRE.breath[0]) * t;
       lamp.color.setRGB(lr * k, lg * k, lb * k);
@@ -467,6 +587,11 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
     },
     shows: () => new Map(shows),
     dispose() {
+      for (const e of revivals.values()) e.s.dispose();
+      revivals.clear();
+      festoon.dispose();
+      bulbGeo.dispose();
+      bulb.dispose();
       for (const d of [...mast, ...stays, litLamps, darkLamps, ...finials, ...sleeves]) d.dispose();
       lamp.dispose();
       darkLamp.dispose();
