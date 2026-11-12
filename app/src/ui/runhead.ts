@@ -3,6 +3,8 @@ import { routeHref } from '../router';
 import { el } from './controls';
 
 export interface Runhead {
+  /** The head itself, for the city's one-line notices to stand in. */
+  el: HTMLElement;
   setRoute(route: Route): void;
   setConnected(n: number): void;
   setStopped(stopped: boolean): void;
@@ -44,6 +46,7 @@ export function createRunhead(parent: HTMLElement): Runhead {
   parent.append(nav);
 
   return {
+    el: nav,
     setRoute(route) {
       for (const [r, a] of links) {
         if (r === route) a.setAttribute('aria-current', 'page');

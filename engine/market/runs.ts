@@ -37,7 +37,7 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { localDay } from '../../shared/day.js';
-import { MAX_ATTEMPTS } from '../../shared/market-rules.js';
+import { LIVE_JOB_STATUSES, MAX_ATTEMPTS } from '../../shared/market-rules.js';
 import type {
   Agent,
   Bid,
@@ -79,6 +79,7 @@ import {
 } from './budget.js';
 import { hostsFor, startEgress, type Egress } from './egress.js';
 import { agent as storedAgent } from './firms.js';
+import { sendHome } from './trips.js';
 import { inspect as guildInspect, inspectionSummary, type InspectContext } from '../guild/inspect.js';
 import { installDeps as defaultInstallDeps, type InstallDeps, type RunContext } from './install.js';
 import { attachRun, setInconclusive, job as storedJob, listJobs, pollJobs as defaultPollJobs, transition, type PollDeps } from './jobs.js';
@@ -127,7 +128,7 @@ export const HELPER_MISSING =
 /** Run stages in which a run is live (ruling 7: one per repo). */
 const LIVE_STAGES: RunStage[] = ['preparing', 'installing', 'working', 'inspecting', 'shipping'];
 /** Job statuses that belong to a live run. */
-const LIVE_JOB: JobStatus[] = ['awarded', 'running', 'inspecting', 'shipping'];
+const LIVE_JOB: JobStatus[] = LIVE_JOB_STATUSES;
 /** Job statuses a halt stops. */
 const HALTABLE: JobStatus[] = ['open', 'bidding', 'awarded', 'running', 'inspecting', 'shipping', 'waiting'];
 
@@ -535,6 +536,7 @@ function end(st: LiveRun, outcome: RunOutcome, reason: string | null, o: { job: 
   saveRun(st.run);
   record('run.ended', { runId: st.run.id, jobId: st.run.jobId, outcome, reason, summary: st.summary, run: st.run });
   emit('run.ended', { runId: st.run.id, outcome, reason });
+  sendHome(st.run);
   updateSite(st, o.scar ? 'scar' : outcome === 'merged' ? 'curing' : 'teardown');
   if (o.job !== 'none') settleJob(st, o.job, !!o.exclude, o.summary);
   engineLog(st, `run ended ${outcome}${reason ? `: ${reason}` : ''}`);
@@ -945,6 +947,7 @@ export function finishWaitingRun(runId: string, outcome: Exclude<RunOutcome, nul
   saveRun(ended);
   record('run.ended', { runId, jobId: r.jobId, outcome, reason, summary: ended.summary ?? null, run: ended });
   emit('run.ended', { runId, outcome, reason });
+  sendHome(ended);
   const j = storedJob(r.jobId);
   const site: SiteState = {
     repo: r.repo,
@@ -984,6 +987,7 @@ export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Pr
     saveRun(ended);
     record('run.ended', { runId: r.id, jobId: r.jobId, outcome: 'crashed', reason: INTERRUPTED_RUN, summary: r.summary ?? null, run: ended });
     emit('run.ended', { runId: r.id, outcome: 'crashed', reason: INTERRUPTED_RUN });
+    sendHome(ended);
     settleJob({ run: ended }, 'fail', false);
     // Whatever the run left running (a daemon that outlived the engine) is killed before its files go.
     const runRoot = join(paths().runs, r.id);

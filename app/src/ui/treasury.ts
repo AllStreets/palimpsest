@@ -6,7 +6,7 @@ import { ago, button, checkRadio, createSheet, el, rovingRadios } from './contro
 import { gauge, svgEl } from './firms';
 import { coalesce, keyedSlot, namesOf, outLink, refusal, secHead } from './pages';
 import { figure, shortDate } from './story';
-import { calibrationLine, pauseWords, reportBlocks, resetWords, spendFigure, type ReportBlock, type ReportSpan } from './treasury-words';
+import { calibrationLine, pauseWords, reportBlocks, resetWords, runningWords, spendFigure, type ReportBlock, type ReportSpan } from './treasury-words';
 import './market.css';
 
 export interface TreasuryScreen {
@@ -331,11 +331,14 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const sec = el('section', 'treasury-now');
     sec.append(secHead('Now'));
     const c = v.concurrency;
-    const conc = el('span', '', `Claude ${c.claude} of ${c.claudeMax}, local ${c.local} of ${c.localMax}, API ${c.api}`);
+    // The runs under way, counted as the board and the run pages count them; the slots the runner holds, apart.
+    const words = runningWords(v.underWay, c);
+    const conc = el('span', 'now-runs', words.runs);
+    const slotsLine = el('span', 'now-note now-slots-held', words.slots);
     const concNote = v.interactiveActive ? [el('span', 'now-note', 'Your own Claude Code is busy, so the city keeps to one Claude run.')] : [];
     const glyphs = el('div', 'now-slots');
     glyphs.append(slots_(c.claude, c.claudeMax, 'Claude'), slots_(c.local, c.localMax, 'Local'));
-    sec.append(nowRow('concurrency', 'Running', [conc, ...concNote], glyphs));
+    sec.append(nowRow('concurrency', 'Running', [conc, slotsLine, ...concNote], glyphs));
     const n = v.night;
     sec.append(
       nowRow(

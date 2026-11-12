@@ -268,8 +268,11 @@ export function buildTower(
   if (roofCrown.kind !== 'none') {
     // On the top floor's roof, turned with it, so a lens tower's crown follows its twist.
     kit.base = M(topPlan.cx, layout.top, topPlan.cz, topPlan.ry);
+    // The crown keeps its silhouette at any distance: none of its parts hide (lod.ts detailHidden).
+    kit.keep = true;
     if (roofCrown.kind === 'lens') makeLensCrown(kit, roofCrown.rings, quality, topPlan.half, roofCrown.height, topPlan.ry);
     else makeSpire(kit, roofCrown.height, topPlan.half);
+    kit.keep = false;
     kit.base = new THREE.Matrix4();
   }
 

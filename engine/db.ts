@@ -83,7 +83,8 @@ const MARKET_SCHEMA = `
   CREATE INDEX IF NOT EXISTS earned_floors_tower ON earned_floors (tower_id, seq);
   CREATE TABLE IF NOT EXISTS trips (
     id TEXT PRIMARY KEY,
-    json TEXT NOT NULL
+    json TEXT NOT NULL,
+    agent_id TEXT
   );
   CREATE TABLE IF NOT EXISTS slots (
     kind TEXT NOT NULL,
@@ -138,6 +139,7 @@ export function migrate(db: DatabaseSync): void {
   db.exec(SCHEMA);
   migrateLedgerIndex(db);
   db.exec(MARKET_SCHEMA);
+  migrateTripsAgent(db);
   migrateJobKey(db);
   db.exec(PHASE3_SCHEMA);
 
@@ -200,6 +202,28 @@ function migrateLedgerIndex(db: DatabaseSync): void {
     -- A firm's books (Task 38): its credits.moved entries, read per firm.
     CREATE INDEX IF NOT EXISTS ledger_moved_firm ON ledger (json_extract(json, '$.firmId'), id) WHERE kind = 'credits.moved';
   `);
+}
+
+/**
+ * Trips written before the agent column existed (Task 33) get it from their
+ * json, so a person's trips are read by index. The index is made here, not in
+ * MARKET_SCHEMA, so an older trips table gains its column before the index
+ * that reads it.
+ */
+function migrateTripsAgent(db: DatabaseSync): void {
+  const cols = new Set((db.prepare('PRAGMA table_info(trips)').all() as Array<{ name: string }>).map((c) => c.name));
+  if (!cols.has('agent_id')) {
+    db.exec('BEGIN');
+    try {
+      db.exec('ALTER TABLE trips ADD COLUMN agent_id TEXT');
+      db.exec("UPDATE trips SET agent_id = json_extract(json, '$.agentId')");
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS trips_agent ON trips (agent_id)');
 }
 
 /**

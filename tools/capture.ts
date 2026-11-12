@@ -14,7 +14,8 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe, swatches, families, fidelity, river. With no shots named,
+ * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles, life (the ambient traffic and crowd),
+ * ride (the lift up the harbour tower, datum to roof). With no shots named,
  * all but probe, swatches, families and fidelity run. families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
@@ -53,6 +54,7 @@ import type { District, Quarter } from '../shared/types.js';
 import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
+import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
 import { decodePng, labOf } from './png.js';
 import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sample.js';
 
@@ -60,7 +62,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 // CAPTURE_OUT sends everything elsewhere, for framing probes that should not touch docs/media.
 const MEDIA = process.env.CAPTURE_OUT ?? join(ROOT, 'docs', 'media');
-const PORT = 4789;
+const PORT = Number(process.env.CAPTURE_PORT ?? 4789);
 /** The sample economy's clock (CAPTURE_ECONOMY=live), ticked on demand by the shots that show it moving. */
 let economy: { tick(ms: number): void; idle(): Promise<void> } | null = null;
 /** The block pitch (lots.ts PITCH), for framing streets. */
@@ -231,6 +233,83 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       for (const [i, [eye, target]] of views.entries()) await still(page, `probe-${i}`, eye, target);
     },
 
+    async ride(page) {
+      // The ride up the outside of a tower (Task 35): the harbour tower from its datum to the roof, the car on its rail
+      // and the captions at the lower left. Stills at street level, at the datum and over the roof (RIDE_ONLY='street,mid,top,clip').
+      const only = process.env.RIDE_ONLY?.split(',');
+      const want = (k: string): boolean => !only || only.includes(k);
+      await chrome(page, true);
+      type Riding = { length: number; stops: Array<{ t: number; dwell: number; mark: string | null }> };
+      const seekShot = async (key: string, name: string, at: (r: Riding) => number): Promise<void> => {
+        if (!(await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(key)})`))) throw new Error(`no ride up ${key}`);
+        await page.evaluate('window.__palimpsest.rideHold(true)');
+        const rr = (await page.evaluate('window.__palimpsest.riding()')) as Riding;
+        for (let i = 0; i < 2; i++) {
+          await page.evaluate(`window.__palimpsest.rideSeek(${at(rr)})`);
+          await page.waitForTimeout(900);
+        }
+        await shoot(page, name);
+        await page.evaluate('window.__palimpsest.ride(null)');
+        await page.waitForTimeout(2000);
+      };
+      // The crew's hoist on a tower at work (CAPTURE_ECONOMY=live): the car at the new floor, the frame going up over it.
+      if (only?.includes('hoist')) {
+        await page.waitForFunction('window.__palimpsest.liveSites().some((s) => s.stage === "framing")', null, { timeout: 15_000 }).catch(() => {});
+        const sites = (await page.evaluate('window.__palimpsest.liveSites()')) as Array<{ repo: string; stage: string }>;
+        const framing = sites.find((x) => x.stage === 'framing');
+        if (!framing) throw new Error('no framing site to ride');
+        await page.waitForTimeout(2500);
+        await seekShot(framing.repo, 'ride-hoist', (rr) => rr.stops[rr.stops.length - 1].t + 3);
+      }
+      // An agent tower's crown, from the end of its ride (CAPTURE_ECONOMY=1): a lens or a spire where one stands.
+      if (only?.includes('crown')) {
+        const quarters = (await page.evaluate(() => fetch('/api/quarters').then((x) => x.json()))) as Quarter[];
+        const towers = quarters.flatMap((q) => q.towers).filter((t) => t.agentId && !t.dark);
+        const crowned = towers.find((t) => t.silhouette === 'lens' || t.silhouette === 'needle') ?? towers[0];
+        if (!crowned) throw new Error('no agent tower to ride');
+        console.log(`  crown: ${crowned.agentId} (${crowned.silhouette ?? 'plain'}, ${crowned.floors.length} floors)`);
+        await seekShot(`agent:${crowned.agentId}`, 'ride-agent-crown', (rr) => {
+          const roof = rr.stops[rr.stops.length - 1];
+          return roof.t + roof.dwell * 0.6;
+        });
+      }
+      if (only && !only.some((k) => ['street', 'mid', 'top', 'clip'].includes(k))) return;
+      const ok = await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(tall.repo)})`);
+      if (!ok) throw new Error('the ride did not start');
+      await page.evaluate('window.__palimpsest.rideHold(true)');
+      const r = (await page.evaluate('window.__palimpsest.riding()')) as Riding;
+      const datum = r.stops.find((s) => s.mark === 'datum') ?? r.stops[1] ?? r.stops[0];
+      const roof = r.stops[r.stops.length - 1];
+      const at = async (t: number): Promise<void> => {
+        await page.evaluate(`window.__palimpsest.rideSeek(${t})`);
+        await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+      };
+      const stillAt = async (name: string, t: number): Promise<void> => {
+        await at(t);
+        await page.waitForTimeout(900);
+        await at(t);
+        await shoot(page, name);
+      };
+      if (want('street')) await stillAt('ride-street', 0.9);
+      if (want('mid')) await stillAt('ride-mid', datum.t + 0.6);
+      if (want('top')) await stillAt('ride-top', roof.t + roof.dwell * 0.6);
+      if (want('clip')) {
+        const dir = mkdtempSync(join(tmpdir(), 'palimpsest-ride-'));
+        const from = Math.max(0, datum.t - 1.5);
+        const n = Math.round((r.length - from) * FPS);
+        console.log(`ride: ${n} frames`);
+        for (let i = 0; i < n; i++) {
+          await at(from + i / FPS);
+          await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
+          if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
+        }
+        encode(dir, 'ride');
+        if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
+        else rmSync(dir, { recursive: true, force: true });
+      }
+      await page.evaluate('window.__palimpsest.ride(null)');
+    },
+
     async river(page) {
       // The river (Task 29): the city from home, the river from the stone bridge, each bridge close, a quay at the
       // water's level and a pier. RIVER_ONLY='home,stone' takes a subset.
@@ -247,6 +326,271 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         ['pier', [-358, -3.2, 52], [-340, -4.6, 82]],
       ];
       for (const [name, eye, target] of views) if (!only || only.includes(name)) await still(page, name, eye, target);
+    },
+
+    async transit(page) {
+      // The transit network (Task 30), on the sample city (its loops at extent 2: the tram on the streets at 600 m,
+      // the rail at 680 m, the pod lines on z 120 and x 120): the city from home, a tram stop with the viaduct
+      // behind, a rail station from its platform end and from the street, the elevated line crossing the river, a
+      // pod station at height and inside, the interchange, a cab rank, the tram's own bridge over the river. TRANSIT_ONLY='home,station' takes a subset.
+      await chrome(page, false);
+      const only = process.env.TRANSIT_ONLY?.split(',');
+      const views: Array<[string, V3, V3]> = [
+        ['transit-home', OVERVIEW.eye, OVERVIEW.target],
+        ['tram-stop', [603.5, 3.2, 436], [598, 7.5, 640]],
+        ['station', [-40, 15.2, -683], [10, 14, -679]],
+        ['station-street', [-40, 2.0, -716], [2, 9, -680]],
+        ['rail-river', [-292, 4, -566], [-372, 10, -680]],
+        ['rail-river-high', [-260, 60, -520], [-400, 8, -690]],
+        ['pod-station', [264, 21, 152], [240, 19, 120]],
+        ['interchange', [165, 32, 175], [120, 18, 120]],
+        ['cab-rank', [279.5, 2.5, 352], [284, 1, 318]],
+        ['tram-bridge', [-322, 2.2, 652], [-366, 1.4, 682]],
+        ['tram-bridge-high', [-250, 45, 590], [-370, 4, 700]],
+        ['pod-interior', [227, 20.2, 123.6], [252, 19.6, 122.6]],
+        ['pod-street', [262, 2, 104], [240, 17, 122]],
+      ];
+      for (const [name, eye, target] of views) if (!only || only.includes(name)) await still(page, name, eye, target);
+    },
+
+    async vehicles(page) {
+      // The vehicles (Task 31) on the sample city's network: a tram standing at a stop, a train at a station, a pod at
+      // its station at height, a ferry alongside a pier, a cab pulled up for a rider at the kerb, and the city at dusk
+      // with everything running. Each vehicle is staged (the clock moved on until it stands) and the clock held for
+      // the still. VEHICLE_ONLY='tram,cab' takes a subset.
+      await chrome(page, false);
+      const only = process.env.VEHICLE_ONLY?.split(',');
+      type Probe = { id: string; position: number[]; heading: number; phase: string };
+      type VD = {
+        vehicleHold(on: boolean): void;
+        vehicleSkip(s: number): void;
+        vehicleStage(kind: string, near?: number[]): Probe | null;
+        vehicleTrip(from: number[], to: number[]): Array<{ mode: string; id: string | null }>;
+        vehicle(id: string): Probe | null;
+        vehicleRider(at: number[] | null, heading?: number): void;
+        vehicleSeek(conds: Array<{ kind: string; near: number[]; radius: number; moving?: number }>, horizon?: number): boolean;
+        vehicleKinds(kind: string): Probe[];
+      };
+      const d = <T>(fn: (v: VD, a: unknown) => T, arg?: unknown): Promise<T> => page.evaluate(`(${fn.toString()})(window.__palimpsest, ${JSON.stringify(arg ?? null)})`) as Promise<T>;
+      const around = (p: number[], h: number, fwd: number, right: number, y: number): V3 => [p[0] + Math.cos(h) * fwd - Math.sin(h) * right, y, p[2] + Math.sin(h) * fwd + Math.cos(h) * right];
+      const want = (name: string): boolean => !only || only.includes(name);
+      await d((v) => v.vehicleHold(true));
+      const views = JSON.parse(process.env.VEHICLE_VIEWS ?? '{}') as Record<string, [number, number, number, number, number, number]>;
+      const stageShot = async (name: string, kind: string, near: number[], def: [number, number, number, number, number, number]): Promise<void> => {
+        if (!want(name)) return;
+        const p = await d((v, a) => v.vehicleStage((a as [string, number[]])[0], (a as [string, number[]])[1]), [kind, near]);
+        if (!p) return console.log(`  no ${kind} to stage`);
+        const [ef, er, ey, tf, tr, ty] = views[name] ?? def;
+        await still(page, name, around(p.position, p.heading, ef, er, p.position[1] + ey), around(p.position, p.heading, tf, tr, p.position[1] + ty));
+      };
+      await stageShot('tram', 'tram', [680, 240], [21, 5.2, 1.7, 0, -0.5, 1.7]);
+      await stageShot('train', 'rail', [0, -760], [30, 2.6, 2.6, 0, 0, 2.0]);
+      await stageShot('pod', 'pod', [240, 120], [12, -6, 2.4, 0, 0, 1.3]);
+      await stageShot('ferry', 'ferry', [-332, 72], [26, 16, 6.5, 0, 0, 0.5]);
+      if (want('cab')) {
+        const trip = await d((v) => v.vehicleTrip([446.5, 330], [1100, -200]));
+        const cab = trip.find((l) => l.mode === 'cab');
+        if (cab?.id) {
+          for (let i = 0; i < 400; i++) {
+            const c = await d((v, id) => v.vehicle(id as string), cab.id);
+            if (!c || c.phase === 'pickup') break;
+            await d((v) => v.vehicleSkip(1));
+          }
+          await d((v) => v.vehicleSkip(2));
+          const c = (await d((v, id) => v.vehicle(id as string), cab.id))!;
+          // The rider at the kerb beside the cab's rear door, turning to step in.
+          const kerb = around(c.position, c.heading, -0.35, 1.45, c.position[1]);
+          await d((v, a) => v.vehicleRider((a as number[][])[0], (a as number[][])[1][0]), [kerb, [c.heading - Math.PI / 2 - 0.5]]);
+          const [ef, er, ey, tf, tr, ty] = views.cab ?? [6.5, 4.4, 1.45, -0.3, 0.7, 0.95];
+          await still(page, 'cab', around(c.position, c.heading, ef, er, ey), around(c.position, c.heading, tf, tr, ty));
+          await d((v) => v.vehicleRider(null));
+        }
+      }
+      if (want('ferry-wake')) {
+        // A ferry under way in mid-river, from the stone bridge's parapet behind it: its wake spreading astern.
+        if (await d((v) => v.vehicleSeek([{ kind: 'ferry', near: [-360, 210], radius: 50, moving: 5.5 }]))) {
+          const f = (await d((v) => v.vehicleKinds('ferry'))).sort((a, b) => Math.hypot(a.position[0] + 360, a.position[2] - 210) - Math.hypot(b.position[0] + 360, b.position[2] - 210))[0];
+          const go = f.heading;
+          const [ef, er, ey, tf, tr, ty] = views['ferry-wake'] ?? [-70, 8, 9, 6, 0, -5];
+          await still(page, 'ferry-wake', around(f.position, go, ef, er, ey), around(f.position, go, tf, tr, ty));
+        }
+      }
+      if (want('dusk-close')) {
+        // Close by the tram's bridge at dusk: a lit tram crossing over the river and a ferry coming up to pass under.
+        const blocks = (await page.evaluate('window.__palimpsest.transit().blocks')) as number;
+        const h = 240 * blocks + 200;
+        const tries = [
+          [
+            { kind: 'tram', near: [-360, h], radius: 20 },
+            { kind: 'ferry', near: [-360, h - 70], radius: 45 },
+          ],
+          [
+            { kind: 'tram', near: [-360, h], radius: 25 },
+            { kind: 'ferry', near: [-360, h - 70], radius: 90 },
+          ],
+          [{ kind: 'tram', near: [-360, h], radius: 25 }],
+        ];
+        for (const t of tries) if (await d((v, c) => v.vehicleSeek(c as never, 30000), t)) break;
+        const [e, t] = (process.env.DUSK_CLOSE_VIEW ? JSON.parse(process.env.DUSK_CLOSE_VIEW) : [[-336, 4.5, h - 92], [-366, -0.5, h - 2]]) as [V3, V3];
+        await still(page, 'dusk-close', e, t);
+      }
+      if (want('home')) await still(page, 'home', OVERVIEW.eye, OVERVIEW.target);
+      if (want('dusk')) {
+        // The river at dusk looking south to the tram's bridge and the elevated line's truss: a train crossing, a tram
+        // on its bridge and a ferry on the water, when the timetable brings them together (else as many as it can).
+        const blocks = (await page.evaluate('window.__palimpsest.transit().blocks')) as number;
+        const h = 240 * blocks + 200;
+        const rz = Math.ceil((Math.max(240 * blocks + 280, h + 80) - 40) / 80) * 80 + 40;
+        const tries = [
+          [
+            { kind: 'rail', near: [-360, rz + 2], radius: 50, moving: 4 },
+            { kind: 'tram', near: [-360, h], radius: 80 },
+            { kind: 'ferry', near: [-360, h - 70], radius: 90, moving: 3 },
+          ],
+          [
+            { kind: 'rail', near: [-360, rz + 2], radius: 50, moving: 4 },
+            { kind: 'ferry', near: [-360, h - 70], radius: 120 },
+          ],
+          [{ kind: 'rail', near: [-360, rz + 2], radius: 50, moving: 4 }],
+        ];
+        for (const t of tries) if (await d((v, c) => v.vehicleSeek(c as never, 6000), t)) break;
+        const [e, t] = (process.env.DUSK_VIEW ? JSON.parse(process.env.DUSK_VIEW) : [[-368, 21, h - 160], [-354, 5, h + 80]]) as [V3, V3];
+        await still(page, 'dusk', e, t);
+      }
+      await d((v) => v.vehicleHold(false));
+    },
+
+    async people(page) {
+      // The personas as people (Task 34; CAPTURE_ECONOMY=1 for the firms): a close follow shot of a figure walking
+      // (people-follow), close enough to read the face and hands (people-close), a figure stepping into its cab
+      // (people-cab) and seated in it, through its window (people-seated), a figure on a tram platform with the tram
+      // coming in (people-platform), and a medium shot of her among the waiting crowd there (people-crowd). PEOPLE_ONLY='follow,cab' takes a subset;
+      // PEOPLE_VIEWS='{"people-follow": [[eye], [target]]}' overrides a view; PEOPLE_DAY=1 leaves the lanterns dark.
+      await chrome(page, false);
+      const only = process.env.PEOPLE_ONLY?.split(',');
+      const views = JSON.parse(process.env.PEOPLE_VIEWS ?? '{}') as Record<string, [V3, V3]>;
+      const want = (n: string): boolean => !only || only.includes(n);
+      await callDebug(page, 'd.ambientDensity(1)');
+      await callDebug(page, 'd.ambientSkip(60)');
+      await callDebug(page, 'd.ambientHold(true)');
+      await callDebug(page, 'd.peopleHold(true)');
+      await callDebug(page, `d.peopleLantern(${process.env.PEOPLE_DAY ? 'false' : 'true'})`);
+      const shot = async (name: string, def: [V3, V3]): Promise<void> => {
+        const [eye, target] = views[name] ?? def;
+        await still(page, name, eye, target);
+      };
+      // Dagny on her way to the tram: twenty seconds into the walk, framed as the follow camera frames her.
+      await sendPerson(page, 'dagny-hollis', [560, -300], [600, 200]);
+      await callDebug(page, 'd.peopleSkip(22)');
+      if (want('follow') || want('close')) {
+        const f = await person(page, 'dagny-hollis');
+        if (f) {
+          if (want('follow')) await shot('people-follow', followView(f));
+          // The orbit's nearest stand is 12 m, so the close shot looks past her: the eye 4 m off her shoulder, the target well behind.
+          if (want('close')) await shot('people-close', [aroundPerson(f.position, f.heading, 2.6, -3.0, f.position[1] + 1.5), aroundPerson(f.position, f.heading, -5.5, 6.2, f.position[1] + 0.5)]);
+        }
+      }
+      if (want('platform') || want('crowd')) {
+        // On the platform among the waiting crowd as the tram comes in: close from behind her, and a medium shot from up the platform.
+        const f0 = await runUntil(page, 'dagny-hollis', (x) => x.mode === 'tram' && x.stage === 'wait');
+        const f = f0 ? await runUntil(page, 'dagny-hollis', (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 34 && v.speed > 0.5), 1200) : null;
+        if (f && want('platform')) await shot('people-platform', [aroundPerson(f.position, f.heading, 11, 2.4, f.position[1] + 2.4), aroundPerson(f.position, f.heading, -1.5, 0.3, f.position[1] + 1.2)]);
+        if (f && want('crowd')) await shot('people-crowd', [aroundPerson(f.position, f.heading, 13, 3.5, f.position[1] + 2.0), aroundPerson(f.position, f.heading, 0, 0.5, f.position[1] + 1.1)]);
+        if (!f) console.log('  no figure on the platform');
+      }
+      if (want('cab') || want('seated')) {
+        // Hal's cab: a second and a half into stepping in at the rear door; then seated inside, through the rear window.
+        await sendPerson(page, 'hal-meridian', [446.5, 330], [1100, -200]);
+        const f0 = await runUntil(page, 'hal-meridian', (x) => x.stage === 'board');
+        if (f0) {
+          await callDebug(page, 'd.peopleSkip(1.4)');
+          const f = await person(page, 'hal-meridian');
+          const v = f?.ride ? await callDebug<{ position: number[]; heading: number } | null>(page, `d.vehicle(${JSON.stringify(f.ride.id)})`) : null;
+          if (f && v && want('cab')) await shot('people-cab', [aroundPerson(v.position, v.heading, 6.5, 4.4, 1.45), aroundPerson(v.position, v.heading, -0.3, 0.7, 0.95)]);
+        } else console.log('  no figure at a cab');
+      }
+      if (want('seated')) {
+        // Bruno seated in the train (the cab's glass is too dark to see in): from inside the car, a few seats up.
+        await sendPerson(page, 'bruno-kiln', [600, -600], [-600, 600]);
+        const r = await runUntil(page, 'bruno-kiln', (x) => x.mode === 'rail' && x.stage === 'ride', 1800, 2);
+        const rv = r?.ride ? await callDebug<{ position: number[]; heading: number; floorY: number } | null>(page, `d.vehicle(${JSON.stringify(r.ride.id)})`) : null;
+        if (r && rv) {
+          await callDebug(page, 'd.peopleSkip(3)');
+          const f = (await person(page, 'bruno-kiln'))!;
+          await shot('people-seated', [aroundPerson(f.position, f.heading, 2.4, -1.3, f.position[1] + 1.15), aroundPerson(f.position, f.heading, -0.1, 0.1, f.position[1] + 0.55)]);
+        } else console.log('  no figure seated on the train');
+      }
+      await callDebug(page, 'd.peopleHold(false)');
+      await callDebug(page, 'd.ambientHold(false)');
+      await callDebug(page, 'd.peopleLantern(null)');
+    },
+
+    async life(page) {
+      // The ambient traffic and crowd (Task 32) at full density, the clock run on until the lights have queued
+      // traffic: a street at dusk at a person's height by a plaza (street), a junction with traffic queued at its
+      // lights (junction), the crowd on a tram platform (stop), and the streets from a rooftop (rooftop).
+      // LIFE_ONLY='street,stop' takes a subset; LIFE_VIEWS='{"street": [[eye], [target]]}' overrides a view.
+      await chrome(page, false);
+      const only = process.env.LIFE_ONLY?.split(',');
+      const views = JSON.parse(process.env.LIFE_VIEWS ?? '{}') as Record<string, [V3, V3]>;
+      const call = <T>(js: string): Promise<T> => page.evaluate(`(function (d) { return ${js}; })(window.__palimpsest)`) as Promise<T>;
+      if (process.env.LIFE_FPS) {
+        // LIFE_FPS='[[eye],[target]]': frames per second there with the streets full, then empty (tuning).
+        const [e, t] = JSON.parse(process.env.LIFE_FPS) as [V3, V3];
+        // LIFE_DROP=1: the governor's step down first, so the numbers are medium's.
+        if (process.env.LIFE_DROP) {
+          await page.evaluate('window.__palimpsest.dropQuality()');
+          await page.waitForTimeout(3000);
+        }
+        const fps = (): Promise<number> => page.evaluate(`new Promise((r) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 3000) requestAnimationFrame(f); else r((n * 1000) / (performance.now() - t0)); }; requestAnimationFrame(f); })`) as Promise<number>;
+        await frame(page, e, t);
+        for (const n of [1, 0, 1, 0]) {
+          await call(`d.ambientDensity(${n})`);
+          await page.waitForTimeout(1500);
+          console.log(`  density ${n}: ${(await fps()).toFixed(1)} fps`);
+        }
+      }
+      if (process.env.LIFE_BREAKDOWN) {
+        // The traffic and crowd's share of a frame from home, every pass (tuning).
+        await call('d.ambientDensity(1)');
+        await call('d.home()');
+        await page.waitForTimeout(4000);
+        const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, unknown>;
+        console.log(`  breakdown traffic ${JSON.stringify(b.traffic)} keys ${Object.keys(b).join(',')} ambient ${JSON.stringify(await call('d.ambient()'))}`);
+      }
+      await call('d.ambientDensity(1)');
+      const info = await page.evaluate(`(async function (d) { const city = await fetch('/api/city').then((r) => r.json()); return { blocks: d.transit().blocks, districts: city.map((c) => [c.origin.x, c.origin.z]), ambient: d.ambient() }; })(window.__palimpsest)`);
+      console.log(`  ${JSON.stringify(info)}`);
+      await call(`d.ambientSkip(${Number(process.env.LIFE_SKIP ?? 90)})`);
+      await call('d.ambientHold(true)');
+      const want = (n: string): boolean => !only || only.includes(n);
+      const shot = async (name: string, def: [V3, V3]): Promise<void> => {
+        if (!want(name)) return;
+        const [eye, target] = views[name] ?? def;
+        await still(page, name, eye, target);
+        console.log(`  ${name}: ${JSON.stringify(await call('d.ambient()'))}`);
+      };
+      await shot('street', [[195.4, 1.62, -145], [207, 1.45, -30]]);
+      if (want('junction')) {
+        // The junction near the plaza with the most cars standing at its lines, seen from a corner above the kerb.
+        const q = await call<Array<{ x: number; z: number; held: number }>>('d.ambientQueues([280, -120], 130)');
+        const j = q[0] ?? { x: 280, z: -120, held: 0 };
+        console.log(`  junction ${j.x},${j.z} with ${j.held} held`);
+        await shot('junction', [[j.x + 6.5, 4.5, j.z + 30], [j.x - 2, 0.5, j.z - 6]]);
+      }
+      await shot('stop', [[435.5, 1.6, -20], [442, 1.3, 4]]);
+      await shot('rooftop', [[287, 64, -430], [276, 0, -150]]);
+      // LIFE_STRIP='[[eye],[target]]': four frames 0.12 s apart from one view, for the walk cycle (walk-0..3).
+      if (process.env.LIFE_STRIP) {
+        const [e, t] = JSON.parse(process.env.LIFE_STRIP) as [V3, V3];
+        for (let i = 0; i < 4; i++) {
+          await still(page, `walk-${i}`, e, t);
+          await call('d.ambientSkip(0.12)');
+        }
+      }
+      // Any other named view in LIFE_VIEWS, for framing.
+      for (const [name, v] of Object.entries(views)) if (!['street', 'junction', 'stop', 'rooftop'].includes(name)) await still(page, name, v[0], v[1]);
+      await call('d.ambientHold(false)');
     },
 
     async swatches(page) {
@@ -950,8 +1294,18 @@ async function main(): Promise<void> {
   // CAPTURE_ECONOMY=live: the economy's job sites and trips in the live view, and its clock at speed 20, ticked by the shots.
   if (process.env.CAPTURE_ECONOMY === 'live') {
     const { setMarketExtras } = await import('../engine/market/api.js');
-    const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
-    setMarketExtras({ sites: economySites, trips: economyTrips });
+    const { economyClock, economySites } = await import('../engine/market/sample-economy.js');
+    setMarketExtras({ sites: economySites });
+    // Two long rides for the stills, on top of the economy's own trips: the pods along z 120 and the rail round the city.
+    const { agent } = await import('../engine/market/firms.js');
+    const { startTrip } = await import('../engine/market/trips.js');
+    const rider = (id: string) => {
+      const a = agent(id);
+      if (!a) throw new Error(`no sample agent ${id}`);
+      return a;
+    };
+    startTrip(rider('hal-meridian'), 'job', null, { x: -700, z: 120 }, { x: 900, z: 120 });
+    startTrip(rider('bruno-kiln'), 'home', null, { x: 600, z: -600 }, { x: -600, z: 600 });
     // The lifecycle shot has the clock fail the inspecting repo's inspection, so a scar is struck (CAPTURE_FAIL overrides).
     const fail = process.env.CAPTURE_FAIL ? process.env.CAPTURE_FAIL.split(',') : wanted.includes('lifecycle') ? ['lantern/assay-kit'] : [];
     economy = economyClock({ now: () => Date.now(), speed: 20, fail, sell: process.env.CAPTURE_HOLD_SALE ? 5 : undefined });

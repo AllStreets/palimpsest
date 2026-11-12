@@ -225,6 +225,22 @@ describe('provider usage', () => {
     assert.equal(u.tokens, null);
   });
 
+  test('a refused transcripts folder keeps the statusline reading and names the trend as what failed', () => {
+    // His statusline reading is there; the transcripts folder is outside ~/.claude/projects and no test switch excuses it.
+    const usageDir = join(tempDir, 'data', 'usage');
+    mkdirSync(usageDir, { recursive: true });
+    const at = Math.floor(NOW / 1000) - 8 * 60;
+    writeFileSync(join(usageDir, 'latest.json'), JSON.stringify({ at, rate_limits: { five_hour: { used_percentage: 34, resets_at: at + 3600 }, seven_day: { used_percentage: 21, resets_at: at + 86_400 } } }));
+    delete process.env.PALIMPSEST_TEST_PROJECTS;
+    const u = claudeUsage(NOW);
+    assert.equal(u.status, 'ready', 'the percentages held');
+    assert.deepEqual(u.windows.map((w) => w.usedPct), [34, 21]);
+    assert.match(u.detail, /statusline percentages held/i);
+    assert.match(u.trouble ?? '', /transcripts trend/i, 'what failed is named apart');
+    assert.match(u.trouble ?? '', /is outside/, 'with the reason');
+    assert.doesNotMatch(u.detail, /Could not read usage/);
+  });
+
   test('a throwing reader shows that provider as unknown and keeps the list', async () => {
     patchSettings({ ollamaHost: '127.0.0.1:1' });
     const list = await providerUsages({ claude: () => { throw new Error('boom'); }, 'anthropic-api': () => { throw new Error('bang'); } });

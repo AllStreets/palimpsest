@@ -3,7 +3,7 @@
  * reputation score and era, firm money and the job transition table. Shared
  * by the engine and the UI; imports nothing from engine/.
  */
-import type { Era, JobStatus, Repo, RepoChecks, Reputation, Settings, Tier } from './types.js';
+import type { Era, Job, JobStatus, ModelRef, Repo, RepoChecks, Reputation, Run, Settings, Tier } from './types.js';
 
 /** A job's value (the bid ceiling) by tier, in credits (ruling 3). */
 export const TIER_VALUE: Record<Tier, number> = { low: 20, normal: 60, high: 150 };
@@ -327,4 +327,44 @@ export function denied(path: string): string | null {
   if (parts.slice(0, -1).includes('.claude')) return '.claude/**';
   for (const d of denyRes) if (d.re.test(path) || (d.anywhere && d.re.test(lastSegment(path)))) return d.g;
   return null;
+}
+
+// ---------------------------------------------------------------- runs under way
+
+/** The pool a model's work draws on: his Claude plan, the Anthropic API on his key, or a local model. */
+export type WorkPool = 'claude' | 'local' | 'api';
+
+export function poolOfModel(model: ModelRef): WorkPool {
+  if (model.startsWith('claude:')) return 'claude';
+  if (model.startsWith('anthropic:')) return 'api';
+  return 'local';
+}
+
+export interface RunsUnderWay {
+  total: number;
+  claude: number;
+  local: number;
+  api: number;
+}
+
+/** The job statuses while a run is at work on it: the job board's running section. */
+export const LIVE_JOB_STATUSES: JobStatus[] = ['awarded', 'running', 'inspecting', 'shipping'];
+
+/**
+ * The runs under way, by pool: every run with no end yet whose job is still
+ * live (awarded, running, inspecting or shipping). A run whose PR waits on
+ * him keeps no end either, but its job is waiting and nothing works on it.
+ * The job board, the run pages and the treasury all count these, so the
+ * three screens agree whether a run holds one of the runner's slots (a real
+ * run) or not (the sample economy's).
+ */
+export function runsUnderWay(runs: Array<Pick<Run, 'model' | 'endedAt' | 'jobId'>>, jobs: Array<Pick<Job, 'id' | 'status'>>): RunsUnderWay {
+  const live = new Set(jobs.filter((j) => LIVE_JOB_STATUSES.includes(j.status)).map((j) => j.id));
+  const out: RunsUnderWay = { total: 0, claude: 0, local: 0, api: 0 };
+  for (const r of runs) {
+    if (r.endedAt !== null || !live.has(r.jobId)) continue;
+    out.total++;
+    out[poolOfModel(r.model)]++;
+  }
+  return out;
 }

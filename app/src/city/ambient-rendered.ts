@@ -11,578 +11,569 @@
 export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number] }> = {
   "walkup:red": {
     "sun": [
-      45,
+      44.9,
       19.5,
-      14.4
+      14.9
     ],
     "shade": [
-      37.6,
-      13.4,
-      7.9
+      36.9,
+      13.7,
+      7.8
     ]
   },
   "walkup:buff": {
     "sun": [
-      53.4,
-      17.1,
-      20.5
+      52.9,
+      16.7,
+      19.9
     ],
     "shade": [
-      42.1,
-      11.8,
+      42,
+      11.9,
       9.8
     ]
   },
   "walkup:ironspot": {
     "sun": [
-      40.4,
-      13.3,
-      10.5
+      40.2,
+      13.2,
+      10.3
     ],
     "shade": [
-      34.2,
-      11,
-      5.6
+      36.1,
+      10.6,
+      6
     ]
   },
   "walkup:white": {
     "sun": [
-      61.3,
-      13.3,
-      14.2
+      59.5,
+      13,
+      13.8
     ],
     "shade": [
-      47.2,
-      10.9,
-      3.3
+      46.7,
+      10.7,
+      3.6
     ]
   },
   "walkup:black": {
     "sun": [
-      37.7,
+      37.8,
       11.2,
-      8.3
+      8.2
     ],
     "shade": [
-      35.9,
+      35.2,
       10.1,
-      5.1
+      5
     ]
   },
   "walkup:sage": {
     "sun": [
-      44,
+      43.5,
       10.9,
-      10.6
+      10.4
     ],
     "shade": [
-      37.9,
-      9.5,
-      4.8
+      38.7,
+      9.4,
+      5.1
     ]
   },
   "walkup:grey": {
     "sun": [
-      46,
-      13.2,
-      11.1
+      46.2,
+      13.3,
+      11.2
     ],
     "shade": [
-      38.6,
-      10.5,
-      4.3
+      40.2,
+      10.3,
+      4.8
     ]
   },
   "walkup:navy": {
     "sun": [
-      36.9,
-      10.9,
-      6.8
+      36.5,
+      10.8,
+      6.7
     ],
     "shade": [
-      35.6,
-      10.2,
-      4.5
+      35.3,
+      10.3,
+      4.3
     ]
   },
   "walkup:cream": {
     "sun": [
-      60.9,
-      13.4,
-      16.6
+      59.1,
+      13.1,
+      15.8
     ],
     "shade": [
-      47.9,
-      10.8,
-      5.5
+      47.8,
+      11.5,
+      5.9
     ]
   },
   "commercial:limestone": {
     "sun": [
-      41.8,
-      12.2,
-      9.4
+      42.9,
+      12.4,
+      9.8
     ],
     "shade": [
-      40.5,
+      40.3,
       10.7,
       4.6
     ]
   },
   "commercial:white-terracotta": {
     "sun": [
-      44.1,
-      11.9,
-      9.1
+      46,
+      12.1,
+      9.5
     ],
     "shade": [
-      42.8,
+      43.3,
       10.8,
-      3.7
+      3.6
     ]
   },
   "commercial:buff": {
     "sun": [
-      39.9,
-      13.1,
-      11.1
+      41.4,
+      13.5,
+      12.2
     ],
     "shade": [
-      40.7,
-      11.5,
-      7.4
+      41.1,
+      11.6,
+      7.6
     ]
   },
   "commercial:granite": {
     "sun": [
-      36.1,
-      11.2,
-      6.6
+      37,
+      11.3,
+      6.8
     ],
     "shade": [
-      38.8,
+      38.6,
       10.8,
-      4
+      4.1
     ]
   },
   "commercial:black": {
     "sun": [
-      33.8,
+      33.9,
       11,
-      6.4
+      6.5
     ],
     "shade": [
-      38.2,
-      10.8,
-      5
+      37.6,
+      10.7,
+      4.9
     ]
   },
   "commercial:green-terracotta": {
     "sun": [
-      39.5,
+      39.3,
       10.2,
-      9.4
+      9.3
     ],
     "shade": [
-      40.5,
-      8.6,
-      6.7
+      42.4,
+      8.1,
+      7.1
     ]
   },
   "commercial:brownstone": {
     "sun": [
-      38.5,
-      13.2,
-      10.2
+      38.2,
+      12.9,
+      10.1
     ],
     "shade": [
-      38.4,
-      10,
-      7
+      41.1,
+      9.4,
+      7.5
     ]
   },
   "commercial:blue": {
     "sun": [
-      40.8,
-      11.5,
-      8
+      40.6,
+      11.4,
+      7.8
     ],
     "shade": [
-      40.3,
-      9.4,
-      4.5
+      43,
+      8.7,
+      5.1
     ]
   },
   "midcentury:teal": {
     "sun": [
-      39.3,
+      39.1,
       8.6,
-      7.2
+      6.8
     ],
     "shade": [
-      35.5,
-      9,
-      4.7
+      34.9,
+      9.1,
+      4.6
     ]
   },
   "midcentury:enamel": {
     "sun": [
-      37.3,
-      10.2,
-      7
+      37.5,
+      10.1,
+      6.7
     ],
     "shade": [
-      34.5,
+      34.1,
       9.7,
-      4.8
+      4.9
     ]
   },
   "midcentury:white": {
     "sun": [
-      47.9,
-      11.3,
-      8.7
+      48.6,
+      11.1,
+      8.4
     ],
     "shade": [
-      41,
-      9.7,
+      40.6,
+      10,
       2.8
     ]
   },
   "midcentury:slate": {
     "sun": [
-      36.2,
-      10.3,
-      5.3
+      36.6,
+      10.1,
+      5.1
     ],
     "shade": [
-      35.2,
-      9.7,
-      3.6
+      34.6,
+      9.8,
+      3.3
     ]
   },
   "midcentury:mies": {
     "sun": [
-      34,
-      10.2,
-      5.8
+      35.4,
+      9.8,
+      5.6
     ],
     "shade": [
-      35.3,
-      9.5,
-      4.4
+      35.2,
+      9.6,
+      4.7
     ]
   },
   "midcentury:olive": {
     "sun": [
-      36.4,
-      9.9,
-      8
+      37.1,
+      9.3,
+      7.5
     ],
     "shade": [
-      36.9,
-      9.3,
-      5.1
+      36.6,
+      9.5,
+      5.3
     ]
   },
   "midcentury:sky": {
     "sun": [
-      39.3,
-      9.7,
-      4.5
+      40.2,
+      9.3,
+      4.3
     ],
     "shade": [
       38.5,
       9.6,
-      2.3
+      2.5
     ]
   },
   "glass:silver": {
     "sun": [
       39.1,
-      9.6,
-      5.9
+      9.4,
+      6
     ],
     "shade": [
-      44.4,
-      10.7,
-      6.1
+      43.7,
+      10.6,
+      5.9
     ]
   },
   "glass:teal": {
     "sun": [
-      33.9,
-      8.2,
-      5.7
+      33.8,
+      8,
+      5.6
     ],
     "shade": [
-      41.9,
-      10.6,
-      5.5
+      42,
+      10.9,
+      6
     ]
   },
   "glass:blue": {
     "sun": [
-      32.6,
+      32.7,
       9.5,
-      4.2
+      4.3
     ],
     "shade": [
-      44.8,
-      11.9,
-      8.7
+      45,
+      11.5,
+      8.3
     ]
   },
   "glass:charcoal": {
     "sun": [
-      32.2,
-      9.5,
-      5.6
+      32.8,
+      9.4,
+      5.4
     ],
     "shade": [
-      44.9,
-      12.1,
-      8.8
+      45.2,
+      11.8,
+      8.4
     ]
   },
   "glass:smoked": {
     "sun": [
-      35,
-      9.8,
-      7.8
+      34.2,
+      10,
+      7.5
     ],
     "shade": [
-      31.1,
+      31,
       9.9,
       5.8
     ]
   },
   "glass:bronze": {
     "sun": [
-      36,
+      35.7,
       10.8,
-      8.9
+      8.7
     ],
     "shade": [
       31.3,
-      10.4,
+      10.3,
       5.6
     ]
   },
   "glass:white": {
     "sun": [
-      44.3,
-      8.9,
-      8.8
+      45.7,
+      8.8,
+      9.1
     ],
     "shade": [
-      36.1,
-      9.9,
-      3.7
+      35.6,
+      9.8,
+      3.8
     ]
   },
   "brutalist:grey": {
     "sun": [
-      44.2,
-      13.1,
-      10.3
+      45.2,
+      13,
+      10.7
     ],
     "shade": [
-      37.3,
+      37.2,
       10.3,
       4.1
     ]
   },
   "brutalist:cool": {
     "sun": [
-      42.9,
-      12.3,
-      8.6
+      44.7,
+      12.4,
+      9.3
     ],
     "shade": [
-      36.6,
+      36.8,
       10.1,
-      2.9
+      2.8
     ]
   },
   "brutalist:pale": {
     "sun": [
-      51.9,
-      13.7,
-      12.8
+      52.8,
+      13.6,
+      13.1
     ],
     "shade": [
-      41.8,
-      10.4,
-      3.9
+      42.5,
+      10.6,
+      3.8
     ]
   },
   "brutalist:dark": {
     "sun": [
-      35.2,
-      11.2,
-      7.3
+      36.3,
+      10.9,
+      7.5
     ],
     "shade": [
-      32.5,
+      32.1,
       9.8,
-      4.3
+      4.2
     ]
   },
   "brutalist:buff": {
     "sun": [
-      45.3,
-      14.8,
-      14.3
+      46.2,
+      14.7,
+      14.6
     ],
     "shade": [
-      38,
-      10.8,
-      6.7
+      37.7,
+      10.9,
+      6.5
     ]
   },
   "parking:grey": {
     "sun": [
-      45.2,
-      11.6,
-      7.7
+      46.1,
+      11.4,
+      7.6
     ],
     "shade": [
-      39.6,
-      8.8,
-      2.3
+      40.2,
+      8.7,
+      2.1
     ]
   },
   "parking:pale": {
     "sun": [
-      49.9,
-      11.9,
-      9.2
+      51,
+      11.3,
+      8.6
     ],
     "shade": [
-      43.8,
+      43.6,
       8.7,
       2
     ]
   },
   "parking:dark": {
     "sun": [
-      39.2,
+      39.4,
       10.2,
       5.5
     ],
     "shade": [
-      38.3,
-      8.2,
-      2.2
+      37.6,
+      8.4,
+      2.3
     ]
   },
   "parking:mesh": {
     "sun": [
-      41.3,
-      11.7,
-      7.9
+      41.9,
+      11.6,
+      7.7
     ],
     "shade": [
-      37.7,
+      37.4,
       10.3,
       3.1
     ]
   },
   "industrial:red": {
     "sun": [
-      35.8,
-      16.3,
-      9.7
+      36.5,
+      17.4,
+      10.4
     ],
     "shade": [
-      39.2,
+      39,
       12.1,
-      5.4
+      5.3
     ]
   },
   "industrial:white": {
     "sun": [
-      46.4,
-      12.1,
-      10
+      49.5,
+      12.4,
+      10.9
     ],
     "shade": [
-      47,
-      10.5,
-      3.1
+      47.5,
+      10.4,
+      3.2
     ]
   },
   "industrial:limewash": {
     "sun": [
-      60.1,
+      59.9,
       10.8,
-      12.2
+      12.1
     ],
     "shade": [
-      42.4,
+      42.3,
       10.5,
-      3.7
+      3.8
     ]
   },
   "industrial:green": {
     "sun": [
-      44.1,
+      44.3,
       9.5,
       9.3
     ],
     "shade": [
-      32.9,
-      9.4,
+      32.2,
+      9.6,
       5.3
     ]
   },
   "industrial:buff": {
     "sun": [
-      50.9,
-      13.3,
+      51.5,
+      13.2,
       15.1
     ],
     "shade": [
-      36.7,
-      11.3,
-      8
+      36.5,
+      11.1,
+      7.8
     ]
   },
   "industrial:steel": {
     "sun": [
-      43.6,
-      11.7,
-      10
+      44,
+      11.6,
+      9.9
     ],
     "shade": [
-      36.3,
-      9.7,
-      3
+      36.6,
+      9.6,
+      3.1
     ]
   },
   "industrial:blue": {
     "sun": [
-      37.7,
-      9.9,
+      38.2,
+      9.8,
       6.7
     ],
     "shade": [
-      33.8,
+      34.2,
       9.3,
-      2.8
+      2.7
     ]
   }
 };
 
-/**
- * The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it.
- * Restamped for Task 26 without a re-measure: post.ts and scene.ts name the same bloom threshold and exposure, and
- * the welders' point lights stand dark with no job site, and the floods light only the construction's own materials,
- * so nothing the ambient board renders changed.
- * Restamped for Task 29, also without a re-measure: sky.ts only exports its sky function (for the water) and post.ts
- * gives the frame a depth texture and draws the river's water after the scene; the boards stand off the river, so
- * no water is in their frame and every rendered value is unchanged. Restamped again in its fix round: post.ts leaves
- * meshes marked noAO (far river chunks) out of the AO pass, and the boards carry none.
- */
-export const AMBIENT_INPUTS = '324ff50736747b8a';
+/** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */
+export const AMBIENT_INPUTS = 'ab5a1119540cc262';

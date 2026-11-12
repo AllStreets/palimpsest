@@ -24,12 +24,15 @@ import { CopyShader } from 'three/addons/shaders/CopyShader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { BANKS, BRIDGE_DECK, BRIDGES, PIER_HALF, PIERS, QUAY, RIVER, type Pier } from '../../../shared/commute.js';
+import { LAYER, setLayers } from './lod.js';
 import { materials, texture } from './materials';
 import { chunkAt, chunkLod, chunks, waterSettings, type Chunk } from './river-lod.js';
 import { SKY_GLSL, SUN_DIRECTION } from './sky';
 
 /** The water's surface, metres below the quays. */
 export const WATER_Y = -6.2;
+/** The most boats whose wakes the water draws. */
+const WAKES = 4;
 /** The quay walls stand on footings this deep (hidden under the water). */
 const WALL_FOOT = -9;
 /** The river runs the length of the ground. */
@@ -336,7 +339,7 @@ class Build {
         const core = new THREE.Group();
         const detail = new THREE.Group();
         group.add(core, detail);
-        out.set(index, (rc = { chunk: all[index], group, core, detail, casters: [], triangles: { core: 0, detail: 0 }, lod: null }));
+        out.set(index, (rc = { chunk: all[index], group, core, detail, casters: [], coreGeos: new Map(), triangles: { core: 0, detail: 0 }, lod: null }));
       }
       for (const [mat, list] of mats) {
         const geo = mergeGeometries(list, false);
@@ -348,6 +351,7 @@ class Build {
         if (mesh.castShadow) rc.casters.push(mesh);
         mesh.name = `river:${mat.name || mat.type}`;
         (tier === 'core' ? rc.core : rc.detail).add(mesh);
+        if (tier === 'core') rc.coreGeos.set(mat, geo);
         rc.triangles[tier] += geo.attributes.position.count / 3;
       }
     }
@@ -363,8 +367,56 @@ interface RiverChunk {
   core: THREE.Group;
   detail: THREE.Group;
   casters: THREE.Mesh[];
+  /** The chunk's core, merged, by material (the far core copies it). */
+  coreGeos: Map<THREE.Material, THREE.BufferGeometry>;
   triangles: { core: number; detail: number };
   lod: { detail: boolean; shadow: boolean; ao: boolean } | null;
+}
+
+/**
+ * The far core: every chunk's core merged into one mesh per material, in
+ * chunk order, with each chunk's span. Chunks past the detail distance draw
+ * from it in at most two runs per material (those before the near chunks and
+ * those after), so the river far off costs a few calls, not one per material
+ * per chunk; the near chunks draw their own meshes and the frustum culls them.
+ */
+interface FarCore {
+  mesh: THREE.Mesh;
+  /** Each chunk's first vertex and vertex count in the merged mesh, by its index in the sorted chunks (absent: none). */
+  spans: Array<{ start: number; count: number } | null>;
+}
+
+function farCores(parts: RiverChunk[]): FarCore[] {
+  const mats = new Set<THREE.Material>();
+  for (const c of parts) for (const m of c.coreGeos.keys()) mats.add(m);
+  const out: FarCore[] = [];
+  for (const mat of mats) {
+    const list: THREE.BufferGeometry[] = [];
+    const spans: FarCore['spans'] = [];
+    let at = 0;
+    for (const c of parts) {
+      const g = c.coreGeos.get(mat);
+      if (!g) {
+        spans.push(null);
+        continue;
+      }
+      const n = g.attributes.position.count;
+      spans.push({ start: at, count: n });
+      at += n;
+      list.push(g);
+    }
+    const geo = mergeGeometries(list, false);
+    if (!geo) continue;
+    geo.computeBoundingSphere();
+    // One material slot, drawn in the runs set as groups (river update).
+    const mesh = new THREE.Mesh(geo, [mat]);
+    mesh.name = `river-far:${mat.name || mat.type}`;
+    mesh.receiveShadow = true;
+    // Far off it neither casts (river-lod.ts SHADOW_NEAR) nor joins the AO (AO_NEAR): the view draws it alone.
+    setLayers(mesh, LAYER.view);
+    out.push({ mesh, spans });
+  }
+  return out;
 }
 
 const Y = new THREE.Vector3(0, 1, 0);
@@ -1029,6 +1081,8 @@ function waterFragment(steps: number): string {
   uniform float uFog;
   uniform mat4 uProj;
   uniform int uSteps;
+  uniform vec4 uWakes[${WAKES}];
+  uniform int uWakeN;
   varying vec3 vW;
   ${SKY_GLSL}
   const float WEST = ${BANKS.west.toFixed(2)};
@@ -1071,6 +1125,89 @@ function waterFragment(steps: number): string {
     vec2 g = waveSlope(p + drift, t) * 0.8 + waveSlope(p * 2.3 + drift * 2.3 + 17.0, t * 1.5) * 0.3;
     g *= fade;
     return normalize(vec3(-g.x, 1.0, -g.y));
+  }
+
+  // A boat's wake (vehicles.ts ferries): the Kelvin wedge spreading from the bow at 19.5 degrees, its divergent
+  // crests along each arm and transverse ones inside, and the churned white water behind the stern, all fading with
+  // distance astern and with the boat's speed. Returns the surface's added slope (xy) and how much foam (z).
+  float wNoise(vec2 p) {
+    vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(wHash(i), wHash(i + vec2(1, 0)), f.x), mix(wHash(i + vec2(0, 1)), wHash(i + vec2(1, 1)), f.x), f.y);
+  }
+  vec3 wakes(vec2 p, float dist, float vy) {
+    vec2 g = vec2(0.0);
+    float foam = 0.0;
+    // Crests finer than a few pixels only alias: they fade with distance, and with how far their phase runs across
+    // one pixel (the pixel's footprint on the water, stretched at a glancing view), leaving the wake's broad shape
+    // and its foam. Worked out rather than taken from derivatives, which are not defined past the discard above.
+    float near = 1.0 - smoothstep(90.0, 260.0, dist);
+    float footprint = dist * 0.0007 / max(vy, 0.04);
+    for (int i = 0; i < ${WAKES}; i++) {
+      if (i >= uWakeN) break;
+      vec4 w = uWakes[i];
+      float sp = clamp(w.w, 0.0, 1.2);
+      if (sp < 0.03) continue;
+      vec2 dir = vec2(cos(w.z), sin(w.z));
+      vec2 side = vec2(-dir.y, dir.x);
+      vec2 r = p - w.xy;
+      float u = -dot(r, dir);
+      float a = dot(r, side);
+      float aa = abs(a);
+      float b = u + 10.0;
+      if (b < 0.0 || b > 220.0) continue;
+      // Outside the wedge (its arms at their widest wander) nothing of the wake reaches: skip the noise there.
+      if (aa > 2.4 + 0.394 * b + 3.0 * (1.1 + 0.05 * b) + 3.0) continue;
+      float decay = sp * exp(-b / 90.0);
+      float width = 1.1 + 0.05 * b;
+      float edge0 = 2.4 + 0.354 * b;
+      float wander = 0.3 + 0.02 * b;
+      // Close to the boat the arms stand up: a V that reads behind it, not only the churn in its track.
+      float close = 1.0 + 1.6 * exp(-b / 45.0);
+      // The arms: divergent crests as continuous ridge lines running in across each arm of the 19.5 degree wedge,
+      // their spacing and strength wandering with noise and fading astern and with distance; only the foam breaks up.
+      float band = 2.6 * width;
+      if (b < 150.0 && abs(aa - edge0) < band + wander + width) {
+        // One slow noise steers the arm's line, its ridges' spacing and their strength.
+        float flow = wNoise(vec2(aa * 0.05 + uTime * 0.05, b * 0.04 - uTime * 0.08));
+        float edge = edge0 + (flow - 0.5) * wander;
+        float armD = aa - edge;
+        // A broad, one-sided envelope: the ridges reach in from the arm's line toward the track, not out past it.
+        float env = exp(-armD * armD / (band * band)) * smoothstep(width * 1.2, -width * 0.2, armD);
+        // The ridge lines cross the arm at about 35 degrees; their spacing stretches and squeezes slowly.
+        float spacing = 1.0 + 0.35 * (flow - 0.5);
+        float ph = (aa * 0.82 + b * 0.57) * 1.15 / spacing - uTime * 2.0;
+        float crestFade = (1.0 - smoothstep(0.5, 1.4, 1.15 * footprint)) * near;
+        float strength = 0.6 + 0.8 * fract(flow * 3.7 + 0.21);
+        float s0 = sin(ph);
+        float c0 = 0.5 + 0.5 * s0;
+        float sharp = mix(3.0, 1.4, smoothstep(10.0, 140.0, b));
+        float dcrest = sharp * pow(c0, sharp - 1.0) * cos(ph) * 0.5;
+        vec2 across = normalize(side * sign(a) * 0.82 - dir * 0.57);
+        g += across * dcrest * env * decay * 0.17 * close * strength * crestFade;
+        // The swell under the arm: the gradient of a smooth ridge.
+        g += side * sign(a) * (-2.0 * armD / (width * width)) * exp(-armD * armD / (width * width)) * decay * 0.1 * close;
+        // Foam only on the ridge tops near the boat, broken up by its own noise.
+        float tip = pow(c0, 6.0) * env * smoothstep(80.0, 4.0, b) * crestFade;
+        if (tip > 0.01) foam += tip * decay * 0.5 * close * smoothstep(0.45, 0.85, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2)));
+      }
+      // The churn astern of the hull (its stern stands 11 m behind the middle), and white water along its sides.
+      float s = u - 10.5;
+      float churn = s > -1.0 ? exp(-aa * aa / (2.4 + 0.2 * max(s, 0.0))) * exp(-max(s, 0.0) / (24.0 + 40.0 * sp)) : 0.0;
+      float hullW = 3.15 * sqrt(max(0.0, 1.0 - (u / 11.2) * (u / 11.2)));
+      float sideF = exp(-pow(aa - hullW - 0.35, 2.0) / 0.35) * smoothstep(-11.6, -9.0, u) * (1.0 - smoothstep(6.0, 12.0, u));
+      if (churn + sideF > 0.01) {
+        vec2 q = vec2(a * 0.7, s * 0.32 - uTime * 0.45);
+        float n1 = wNoise(q);
+        float n = n1 * 0.55 + wNoise(q * 2.1 + 7.1) * 0.3 + wNoise(q * 4.3 + 2.0) * 0.15;
+        foam += churn * sp * smoothstep(0.15, 0.85, n + 0.35 * exp(-max(s, 0.0) / 10.0));
+        // Far off the churn's noise is finer than a pixel; a broad pale track stays, catching the sky, so the
+        // ferry's wake reads from home.
+        foam += churn * sp * 0.4 * smoothstep(140.0, 420.0, dist);
+        g += vec2(n - 0.5, n1 - n) * churn * sp * 0.5 * near;
+        foam += sideF * sp * 0.5 * smoothstep(0.2, 0.8, n);
+      }
+    }
+    return vec3(g, foam);
   }
 
   float viewZ(vec2 uv) {
@@ -1129,6 +1266,8 @@ function waterFragment(steps: number): string {
     // Ripples fade with distance (they would only alias) and at grazing angles, where water reads as a mirror.
     float fade = 1.0 / (1.0 + dist / 260.0);
     vec3 N = waterNormal(vW.xz, uTime, fade);
+    vec3 wk = wakes(vW.xz, dist, V.y);
+    N = normalize(vec3(N.x - wk.x, N.y, N.z - wk.y));
     vec3 R = reflect(-V, N);
     R.y = max(R.y, 0.004);
     R = normalize(R);
@@ -1166,6 +1305,10 @@ function waterFragment(steps: number): string {
     // for the march to find at that distance (close up the march draws each one itself).
     float row = exp(-max(dw - 0.5, 0.0) / 4.5) * (1.0 - smoothstep(${QUAY_LAMP_REACH.toFixed(1)} - 60.0, ${QUAY_LAMP_REACH.toFixed(1)}, abs(vW.z)));
     col += vec3(1.0, 0.72, 0.42) * 0.75 * row * far;
+
+    // Foam: broken white water lit by the dusk sky above it.
+    float foam = clamp(wk.z, 0.0, 1.0);
+    col = mix(col, skyHaze(vec3(0.0, 1.0, 0.0)) * 0.5 + refl * 0.25 + vec3(0.01, 0.011, 0.012), smoothstep(0.0, 1.0, foam) * 0.75);
 
     // The same sky-coloured haze the scene's fog draws.
     float ff = 1.0 - exp(-uFog * uFog * dist * dist);
@@ -1241,6 +1384,8 @@ export interface River {
   update(dt: number, fogDensity: number, eye: THREE.Vector3): boolean;
   /** The march's steps and the resolution of its colour source (river-lod.ts waterSettings); the quality drop lowers them. */
   setQuality(q: 'high' | 'medium'): void;
+  /** The boats' wakes on the water: where each boat is, which way it goes and how fast against its service speed (at most WAKES). */
+  setWakes(wakes: ReadonlyArray<{ x: number; z: number; heading: number; speed: number }>): void;
   /** Compiles the water's shader (it is not in the scene). */
   compile(renderer: THREE.WebGLRenderer, camera: THREE.Camera): void;
   /** Every lantern on the quays, bridges and piers, in the world (tests and captures). */
@@ -1301,6 +1446,29 @@ export function createRiver(quality: 'high' | 'medium'): River {
   const noShadow = new Set<THREE.Material>([M.lantern, M.lampHead, M.red, M.sign, M.glass, M.cable]);
   const parts = b.chunks((m) => !noShadow.has(m));
   for (const c of parts) group.add(c.group);
+  const far = farCores(parts);
+  for (const f of far) group.add(f.mesh);
+  /** Draws the chunks past the near run [i0, i1) (no near run: i0 = i1) from the far core, in at most two runs. */
+  function farRuns(i0: number, i1: number): void {
+    for (const f of far) {
+      const g = f.mesh.geometry;
+      g.clearGroups();
+      const run = (a: number, z: number): void => {
+        let start = -1;
+        let end = 0;
+        for (let k = a; k < z; k++) {
+          const sp = f.spans[k];
+          if (!sp) continue;
+          if (start < 0) start = sp.start;
+          end = sp.start + sp.count;
+        }
+        if (start >= 0) g.addGroup(start, end - start, 0);
+      };
+      run(0, i0);
+      run(i1, parts.length);
+      f.mesh.visible = g.groups.length > 0;
+    }
+  }
 
   // The water: one plane the length of the river, drawn by its own pass.
   const waterGeo = new THREE.PlaneGeometry(RIVER.width + 1, LENGTH, 1, 1).rotateX(-Math.PI / 2);
@@ -1319,6 +1487,8 @@ export function createRiver(quality: 'high' | 'medium'): River {
       uFog: { value: 0 },
       uProj: { value: new THREE.Matrix4() },
       uSteps: { value: settings.steps },
+      uWakes: { value: Array.from({ length: WAKES }, () => new THREE.Vector4()) },
+      uWakeN: { value: 0 },
     },
     depthTest: false,
     depthWrite: false,
@@ -1348,6 +1518,7 @@ export function createRiver(quality: 'high' | 'medium'): River {
       let meshes = 0;
       let triangles = 0;
       for (const c of parts) {
+        if (!c.group.visible) continue;
         for (const tier of [c.core, c.detail]) {
           if (!tier.visible) continue;
           for (const o of tier.children) {
@@ -1358,11 +1529,25 @@ export function createRiver(quality: 'high' | 'medium'): River {
           }
         }
       }
+      // The far core: one call per run.
+      for (const f of far) {
+        if (!f.mesh.visible) continue;
+        for (const gr of f.mesh.geometry.groups) {
+          meshes++;
+          triangles += gr.count / 3;
+        }
+      }
       const out = { meshes, triangles, drewWater: drew, ...settings };
       drew = false;
       return out;
     },
     pass: (camera) => new WaterPass(water, camera),
+    setWakes(wakes) {
+      const list = material.uniforms.uWakes.value as THREE.Vector4[];
+      const n = Math.min(wakes.length, WAKES);
+      for (let i = 0; i < n; i++) list[i].set(wakes[i].x, wakes[i].z, wakes[i].heading, wakes[i].speed);
+      material.uniforms.uWakeN.value = n;
+    },
     setQuality(q) {
       Object.assign(settings, waterSettings(q));
       material.uniforms.uSteps.value = settings.steps;
@@ -1374,6 +1559,18 @@ export function createRiver(quality: 'high' | 'medium'): River {
       if (eye.distanceToSquared(lodAt) < 25) return false;
       lodAt.copy(eye);
       let shadows = false;
+      // The chunks near enough to draw their detail draw their own core too; the rest draw from the far core.
+      let i0 = parts.length;
+      let i1 = parts.length;
+      parts.forEach((c, k) => {
+        if (!chunkLod(eye, c.chunk).detail) return;
+        if (i0 === parts.length) i0 = k;
+        i1 = k + 1;
+      });
+      parts.forEach((c, k) => {
+        c.group.visible = k >= i0 && k < i1;
+      });
+      farRuns(i0, i1);
       for (const c of parts) {
         const lod = chunkLod(eye, c.chunk);
         if (c.lod && c.lod.detail === lod.detail && c.lod.shadow === lod.shadow && c.lod.ao === lod.ao) continue;
@@ -1381,8 +1578,11 @@ export function createRiver(quality: 'high' | 'medium'): River {
         c.lod = lod;
         c.detail.visible = lod.detail;
         for (const m of c.casters) m.castShadow = lod.shadow;
-        // post.ts leaves meshes marked noAO out of the ambient occlusion pass.
-        for (const tier of [c.core, c.detail]) for (const o of tier.children) o.userData.noAO = !lod.ao;
+        // Past the AO's reach a chunk draws in the view and the shadow map only (lod.ts LAYER).
+        for (const tier of [c.core, c.detail]) for (const o of tier.children) {
+          if (lod.ao) o.layers.set(0);
+          else setLayers(o, LAYER.view, LAYER.shadow);
+        }
       }
       return shadows;
     },
@@ -1391,6 +1591,7 @@ export function createRiver(quality: 'high' | 'medium'): River {
     },
     dispose() {
       for (const c of parts) for (const tier of [c.core, c.detail]) for (const o of tier.children) (o as THREE.Mesh).geometry.dispose();
+      for (const f of far) f.mesh.geometry.dispose();
       for (const m of Object.values(M)) if (m !== L.darkMetal && m !== L.glass) m.dispose();
       signs.dispose();
       waterGeo.dispose();

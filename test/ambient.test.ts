@@ -248,3 +248,395 @@ test("a tower's look changing retones only the blocks in its ring; every block o
   assert.ok(outside > 100, `blocks outside the ring checked: ${outside}`);
   assert.ok(retoned > 0, 'a different tower look retones some lots in its ring');
 });
+
+// ---------------------------------------------------------------- ambient traffic and crowds (Task 32)
+
+import { readFileSync } from 'node:fs';
+import { extentBlocks, inChannel, network, streetLine, tramHalf } from '../shared/commute.js';
+import * as THREE from 'three';
+import { ambientDensity, ambientModels, createAmbient, AMBIENT_CAP, type Ambient } from '../app/src/city/ambient.js';
+
+/** The sample city's network, as the commute and vehicle tests lay it. */
+const SLOTS = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
+const NET = network({ blocks: extentBlocks(SLOTS), districts: SLOTS.slice(0, 6) });
+const PLAZAS = [{ x: 0, z: 0 }, ...SLOTS.slice(0, 6)];
+
+type Footprint = { x: number; z: number; yaw: number; length: number; width: number };
+/** Whether a point lies within a car's footprint, grown by `pad`. */
+function insideCar(c: Footprint, x: number, z: number, pad: number): boolean {
+  const dx = x - c.x;
+  const dz = z - c.z;
+  const u = dx * Math.cos(c.yaw) + dz * Math.sin(c.yaw);
+  const v = -dx * Math.sin(c.yaw) + dz * Math.cos(c.yaw);
+  return Math.abs(u) < c.length / 2 + pad && Math.abs(v) < c.width / 2 + pad;
+}
+/** Whether two cars' footprints, scaled by k, overlap (separating axes). */
+function boxesOverlap(p: Footprint, q: Footprint, k: number): boolean {
+  const axes = [p.yaw, p.yaw + Math.PI / 2, q.yaw, q.yaw + Math.PI / 2].map((a) => [Math.cos(a), Math.sin(a)]);
+  const corners = (c: Footprint): number[][] =>
+    [
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1],
+    ].map(([a, b]) => {
+      const u = (a * c.length * k) / 2;
+      const v = (b * c.width * k) / 2;
+      return [c.x + u * Math.cos(c.yaw) - v * Math.sin(c.yaw), c.z + u * Math.sin(c.yaw) + v * Math.cos(c.yaw)];
+    });
+  const P = corners(p);
+  const Q = corners(q);
+  for (const [ax, az] of axes) {
+    const pr = P.map(([x, z]) => x * ax + z * az);
+    const qr = Q.map(([x, z]) => x * ax + z * az);
+    if (Math.max(...pr) < Math.min(...qr) || Math.max(...qr) < Math.min(...pr)) return false;
+  }
+  return true;
+}
+
+/** Runs the ambient clock on in steps, calling `each` after every one. */
+function run(a: Ambient, seconds: number, step: number, each: (t: number) => void = () => {}): void {
+  for (let t = 0; t < seconds; t += step) {
+    a.update(step);
+    each(t);
+  }
+}
+
+test('ambient vehicles never leave the street grid', () => {
+  const a = createAmbient(NET, 'high', { seed: 7 });
+  a.setDensity(1);
+  const cars0 = a.cars();
+  assert.ok(cars0.length > 200, `a city's worth of traffic (${cars0.length})`);
+  let stopped = 0;
+  let moving = 0;
+  let turning = 0;
+  /** Junctions by key: which axes' traffic stood in the box at once. */
+  let clash = '';
+  let overlap = '';
+  let struck = '';
+  let inLane = '';
+  run(a, 240, 0.1, (t) => {
+    const inBox = new Map<string, Set<string>>();
+    const cars = a.cars();
+    // No two cars overlap, in a junction's box or anywhere (their footprints, a touch inset).
+    for (let i = 0; i < cars.length && !overlap; i++) {
+      for (let k = i + 1; k < cars.length; k++) {
+        const p = cars[i];
+        const q = cars[k];
+        if (Math.abs(p.x - q.x) > 6 || Math.abs(p.z - q.z) > 6) continue;
+        if (boxesOverlap(p, q, 0.9)) {
+          overlap = `${p.id} (${p.turn} on ${p.lane}) and ${q.id} (${q.turn} on ${q.lane}) at ${p.x.toFixed(1)}, ${p.z.toFixed(1)}, t ${t.toFixed(1)}`;
+          break;
+        }
+      }
+    }
+    // Nobody crossing walks into the lane of a car moving on, just ahead of it or alongside.
+    if (!inLane) {
+      for (const p of a.people()) {
+        if (p.state !== 'crossing') continue;
+        // On the carriageway itself, not on a kerb's edge.
+        if (Math.min(Math.abs(p.x - streetLine(p.x)), Math.abs(p.z - streetLine(p.z))) >= 4.2) continue;
+        for (const c of cars) {
+          if (c.speed < 1.5 || Math.abs(p.x - c.x) > 9 || Math.abs(p.z - c.z) > 9) continue;
+          const dx = p.x - c.x;
+          const dz = p.z - c.z;
+          const along = dx * Math.cos(c.yaw) + dz * Math.sin(c.yaw);
+          const lat = -dx * Math.sin(c.yaw) + dz * Math.cos(c.yaw);
+          if (Math.abs(lat) < c.width / 2 + 0.6 && along > -c.length / 2 - 0.5 && along < c.length / 2 + 3) {
+            inLane = `person ${p.id} in car ${c.id}'s lane (${c.turn}, ${c.speed.toFixed(1)} m/s) at ${p.x.toFixed(1)}, ${p.z.toFixed(1)}, t ${t.toFixed(1)}`;
+            break;
+          }
+        }
+        if (inLane) break;
+      }
+    }
+    // No moving car runs over a person.
+    if (!struck) {
+      for (const p of a.people()) {
+        for (const c of cars) {
+          if (c.speed < 0.3 || Math.abs(p.x - c.x) > 4 || Math.abs(p.z - c.z) > 4) continue;
+          if (insideCar(c, p.x, p.z, 0.25)) {
+            struck = `car ${c.id} (${c.turn}) over person ${p.id} (${p.state}) at ${p.x.toFixed(1)}, ${p.z.toFixed(1)}, t ${t.toFixed(1)}`;
+            break;
+          }
+        }
+        if (struck) break;
+      }
+    }
+    for (const c of a.cars()) {
+      const dx = Math.abs(c.x - streetLine(c.x));
+      const dz = Math.abs(c.z - streetLine(c.z));
+      // On a carriageway: within 4 m of a street's centre line (its two 4 m lanes), or in a junction's box.
+      assert.ok(Math.min(dx, dz) <= 4.05, `car ${c.id} on the carriageway at ${c.x.toFixed(1)}, ${c.z.toFixed(1)} (t ${t.toFixed(1)})`);
+      assert.ok(!inChannel(c.x, 1), `car ${c.id} off the river at ${c.x.toFixed(1)}`);
+      for (const p of PLAZAS) assert.ok(Math.hypot(c.x - p.x, c.z - p.z) > 72, `car ${c.id} outside the plaza at ${p.x}, ${p.z}`);
+      if (c.speed < 0.05) stopped++;
+      else moving++;
+      if (c.junction) {
+        if (c.turn !== 'straight') turning++;
+        const s = inBox.get(c.junction) ?? new Set<string>();
+        s.add(c.axis);
+        inBox.set(c.junction, s);
+      }
+    }
+    for (const [k, s] of inBox) if (s.size > 1 && !clash) clash = `${k} at ${t.toFixed(1)}`;
+  });
+  assert.ok(stopped > 0 && moving > stopped, `traffic moves and queues (${moving} moving, ${stopped} standing)`);
+  assert.ok(turning > 0, 'cars turn at junctions');
+  assert.equal(clash, '', 'a junction passes one axis at a time (in turn)');
+  assert.equal(overlap, '', 'no two cars overlap');
+  assert.equal(struck, '', 'no car drives through a person');
+  assert.equal(inLane, '', 'nobody crosses in the lane of a moving car');
+  // Cars keep their distance: nobody stands closer than a metre behind the car ahead in its lane.
+  const byLane = new Map<string, Array<{ s: number; len: number }>>();
+  for (const c of a.cars()) {
+    const l = byLane.get(c.lane) ?? [];
+    l.push({ s: c.s, len: c.length });
+    byLane.set(c.lane, l);
+  }
+  for (const [lane, cars] of byLane) {
+    cars.sort((p, q) => p.s - q.s);
+    for (let i = 1; i < cars.length; i++) assert.ok(cars[i].s - cars[i].len - cars[i - 1].s > 1, `gap on ${lane}: ${(cars[i].s - cars[i].len - cars[i - 1].s).toFixed(2)}`);
+  }
+  a.dispose();
+});
+
+test('density follows the quality setting', () => {
+  const high = createAmbient(NET, 'high', { seed: 3 });
+  const medium = createAmbient(NET, 'medium', { seed: 3 });
+  high.setDensity(1);
+  medium.setDensity(1);
+  const h = { cars: high.cars().length, people: high.people().length };
+  const m = { cars: medium.cars().length, people: medium.people().length };
+  assert.ok(h.cars <= AMBIENT_CAP.high.cars && h.people <= AMBIENT_CAP.high.people, `high stays within its cap (${h.cars}, ${h.people})`);
+  assert.ok(m.cars <= AMBIENT_CAP.medium.cars && m.people <= AMBIENT_CAP.medium.people, `medium stays within its cap (${m.cars}, ${m.people})`);
+  assert.ok(h.cars > m.cars * 1.6 && h.people > m.people * 1.6, `high fills the streets fuller than medium (${h.cars}/${m.cars} cars, ${h.people}/${m.people} people)`);
+  // The governor's step down reaches it at once, and does not throw.
+  high.setQuality('medium');
+  assert.equal(high.cars().length, m.cars);
+  assert.equal(high.people().length, m.people);
+  high.update(0.1);
+  // Density scales the population; none at all leaves the streets empty.
+  medium.setDensity(0.5);
+  assert.ok(Math.abs(medium.cars().length - m.cars / 2) <= 1 && Math.abs(medium.people().length - m.people / 2) <= 1, 'half the density, half the population');
+  // By the hour (scene.ts) the change drifts in a car and a person at a time, never all at once.
+  medium.setDensity(1);
+  const full = medium.cars().length;
+  medium.setDensity(0.5, true);
+  medium.update(0.5);
+  const after = medium.cars().length;
+  assert.ok(after < full && after > full * 0.8, `the drift is gradual (${full} to ${after})`);
+  medium.setDensity(0);
+  medium.update(0.1);
+  assert.equal(medium.cars().length + medium.people().length, 0);
+  // The time of day: the small hours are quiet, the evening rush is full.
+  assert.ok(ambientDensity(3.5) < 0.3, `3:30 am is quiet (${ambientDensity(3.5)})`);
+  assert.ok(ambientDensity(18) > 0.9 && ambientDensity(8.5) > 0.85, 'the rush hours are busy');
+  for (let hr = 0; hr < 24; hr += 0.25) assert.ok(ambientDensity(hr) > 0 && ambientDensity(hr) <= 1, `${hr}`);
+  high.dispose();
+  medium.dispose();
+});
+
+test('no ambient object carries a plate', () => {
+  const a = createAmbient(NET, 'high', { seed: 5 });
+  a.setDensity(1);
+  a.update(0.5);
+  a.group.traverse((o) => {
+    assert.ok(!/plate|label|persona|trip/i.test(o.name), `${o.name} is unlabelled`);
+    assert.equal(o.userData.plate, undefined, `${o.name} carries no plate`);
+    assert.equal(o.userData.pick, undefined, `${o.name} is not pickable`);
+  });
+  // Its cabs carry no roof light: every lamp on every model sits well under its roof, and none shows a light of its own.
+  for (const [name, m] of Object.entries(ambientModels())) {
+    assert.ok(m.lampTop < m.roof - 0.03, `${name}: lamps under the roof (${m.lampTop.toFixed(2)} against ${m.roof.toFixed(2)})`);
+    assert.equal(m.ownLights, 0, `${name}: no lamp of its own colour (a roof sign)`);
+  }
+  assert.ok(a.cars().some((c) => c.model === 'cab'), 'ambient cabs run');
+  // Ambient code never imports trips, the plates, or the persona vehicles.
+  const src = readFileSync(new URL('../app/src/city/ambient.ts', import.meta.url), 'utf8');
+  const imports = src.split('\n').filter((l) => /^import /.test(l)).join('\n');
+  assert.doesNotMatch(imports, /Trip|trips|labels|vehicles|people/);
+  a.dispose();
+});
+
+test('pedestrians keep to the pavements, plazas, stops and crossings', () => {
+  const a = createAmbient(NET, 'high', { seed: 11 });
+  a.setDensity(1);
+  const states = new Set<string>();
+  run(a, 120, 0.1, () => {
+    for (const p of a.people()) {
+      states.add(p.state);
+      const dx = Math.abs(p.x - streetLine(p.x));
+      const dz = Math.abs(p.z - streetLine(p.z));
+      const inPlaza = PLAZAS.some((q) => Math.hypot(p.x - q.x, p.z - q.z) < 70);
+      const onRoad = (dz < 4 && dx > 8) || (dx < 4 && dz > 8);
+      // A tram platform stands in the street's kerb lane, from 3.45 m out.
+      const onPlatform = p.state === 'waiting' && Math.min(dx, dz) >= 3.5;
+      assert.ok(inPlaza || !onRoad || onPlatform, `${p.id} (${p.state}) off the carriageway at ${p.x.toFixed(1)}, ${p.z.toFixed(1)}`);
+      assert.ok(!inChannel(p.x, 0), `${p.id} off the river`);
+    }
+  });
+  for (const s of ['walking', 'crossing', 'waiting', 'standing']) assert.ok(states.has(s), `someone is ${s} (${[...states].join(', ')})`);
+  a.dispose();
+});
+
+test('the crowd does not walk in step', () => {
+  const a = createAmbient(NET, 'high', { seed: 13 });
+  a.setDensity(1);
+  run(a, 20, 0.1);
+  const walking = a.people().filter((p) => p.state === 'walking');
+  assert.ok(walking.length > 200, `a crowd walks (${walking.length})`);
+  // Their strides are out of step: the phases spread round the circle.
+  const cx = walking.reduce((s, p) => s + Math.cos(p.phase), 0) / walking.length;
+  const sx = walking.reduce((s, p) => s + Math.sin(p.phase), 0) / walking.length;
+  assert.ok(Math.hypot(cx, sx) < 0.15, `stride phases spread (resultant ${Math.hypot(cx, sx).toFixed(3)})`);
+  const sd = (v: number[]): number => {
+    const m = v.reduce((s, x) => s + x, 0) / v.length;
+    return Math.sqrt(v.reduce((s, x) => s + (x - m) ** 2, 0) / v.length);
+  };
+  assert.ok(sd(walking.map((p) => p.cadence)) > 0.06, 'cadence varies');
+  assert.ok(sd(walking.map((p) => p.speed)) > 0.08, 'pace varies');
+  assert.ok(sd(walking.map((p) => p.height)) > 0.05, 'height varies');
+  assert.ok(sd(walking.map((p) => p.build)) > 0.04, 'build varies');
+  assert.ok(new Set(walking.map((p) => p.coat.join())).size >= 10, 'coats differ');
+  const groups = new Map<number, number>();
+  for (const p of a.people()) if (p.group >= 0) groups.set(p.group, (groups.get(p.group) ?? 0) + 1);
+  assert.ok([...groups.values()].filter((n) => n >= 2).length > 20, 'people go about in twos and threes');
+  a.dispose();
+});
+
+test('ambient traffic gives way to the persona cabs', () => {
+  const a = createAmbient(NET, 'high', { seed: 17 });
+  a.setDensity(1);
+  run(a, 20, 0.1);
+  // A cab standing in a car's lane ahead of it: the car stops behind it and never runs into it.
+  const car = a.cars().find((c) => c.s > 8 && c.s < 25 && !c.junction && c.speed > 2)!;
+  assert.ok(car, 'a car under way early in its lane');
+  const cab = { x: car.x + Math.cos(car.yaw) * 30, z: car.z + Math.sin(car.yaw) * 30, heading: car.yaw, speed: 0 };
+  a.setCabs([cab]);
+  let closest = Infinity;
+  run(a, 25, 0.1, () => {
+    const c = a.cars().find((x) => x.id === car.id)!;
+    closest = Math.min(closest, Math.hypot(c.x - cab.x, c.z - cab.z));
+  });
+  const now = a.cars().find((x) => x.id === car.id)!;
+  assert.ok(now.speed < 0.2, `the car stands behind the cab (${now.speed.toFixed(2)} m/s)`);
+  assert.ok(closest > car.length / 2 + 2.2 + 0.5, `and keeps its distance (${closest.toFixed(2)} m between middles)`);
+  // A cab in a junction's box: nobody goes in until it has gone.
+  a.setCabs([]);
+  run(a, 10, 0.1);
+  const held = a.cars().find((c) => c.hold === 'signal' || c.speed < 0.2 && !c.junction && c.s > 55)!;
+  const lane = held.lane.split('>')[1].split(',').map(Number);
+  const key = `${lane[0]},${lane[1]}`;
+  // Those already past the line when the cab stopped there carry on out; nobody else goes in.
+  const already = new Set(a.cars().filter((c) => c.junction === key || (c.lane.endsWith(`>${key}`) && c.s > 60)).map((c) => c.id));
+  a.setCabs([{ x: lane[0], z: lane[1], heading: 0, speed: 0 }]);
+  let entered = 0;
+  run(a, 60, 0.1, () => {
+    for (const c of a.cars()) if (c.junction === key && !already.has(c.id)) entered++;
+  });
+  assert.equal(entered, 0, 'no car enters a box a cab stands in');
+  a.dispose();
+});
+
+test('a plaza laid or a network relaid leaves the traffic and crowd elsewhere where they are', () => {
+  const a = createAmbient(NET, 'high', { seed: 19 });
+  a.setDensity(1);
+  run(a, 10, 0.1);
+  const before = new Map(a.cars().map((c) => [c.id, c]));
+  const people = new Map(a.people().map((p) => [p.id, p]));
+  // A new job site on a plot in the east: only the cars and people near it go.
+  const site = { x: 480, z: -240 };
+  const plazas = [{ x: 0, z: 0, kind: 'civic' as const }, ...SLOTS.slice(0, 6).map((o) => ({ ...o, kind: 'district' as const })), { ...site, kind: 'site' as const }];
+  a.setPlazas(plazas);
+  let kept = 0;
+  let far = 0;
+  for (const c of a.cars()) {
+    const b = before.get(c.id);
+    if (!b) continue;
+    kept++;
+    assert.ok(Math.hypot(b.x - c.x, b.z - c.z) < 1e-6, `car ${c.id} stays where it was`);
+  }
+  for (const b of before.values()) if (Math.hypot(b.x - site.x, b.z - site.z) > 150) far++;
+  assert.ok(kept >= far, `every car away from the site stays (${kept} kept, ${far} away from it)`);
+  assert.ok(kept < before.size, 'the cars on the site go');
+  let stayed = 0;
+  for (const p of a.people()) {
+    const b = people.get(p.id);
+    if (b && Math.hypot(b.x - p.x, b.z - p.z) < 1e-6) stayed++;
+  }
+  assert.ok(stayed > people.size * 0.8, `the crowd stays where it was (${stayed} of ${people.size})`);
+  // The parked cars: a site laid among them takes only those near it; every other stays exactly as it was.
+  const parked0 = new Map(a.parked().map((c) => [`${c.x.toFixed(3)},${c.z.toFixed(3)}`, c]));
+  const lot = { x: 960, z: -240 };
+  a.setPlazas([...plazas, { ...lot, kind: 'site' as const }]);
+  const parked1 = a.parked();
+  let gone = 0;
+  const now = new Set(parked1.map((c) => `${c.x.toFixed(3)},${c.z.toFixed(3)}`));
+  for (const [k, c] of parked0) if (!now.has(k)) gone++;
+  for (const c of parked1) {
+    const b = parked0.get(`${c.x.toFixed(3)},${c.z.toFixed(3)}`);
+    if (Math.hypot(c.x - lot.x, c.z - lot.z) < 120) continue;
+    assert.ok(b, `the parked car at ${c.x.toFixed(1)}, ${c.z.toFixed(1)} was there before`);
+    assert.deepEqual([c.yaw, c.model, c.paint, c.kerb], [b!.yaw, b!.model, b!.paint, b!.kerb], `and is the same car, parked the same way`);
+  }
+  for (const [, c] of parked0) {
+    if (Math.hypot(c.x - lot.x, c.z - lot.z) >= 120) assert.ok(now.has(`${c.x.toFixed(3)},${c.z.toFixed(3)}`), `the parked car at ${c.x.toFixed(1)}, ${c.z.toFixed(1)} away from the site stays`);
+  }
+  assert.ok(gone > 0, `the cars parked on the new site go (${gone})`);
+  // The same network again moves nobody; the quality's step down keeps a subset in place.
+  a.relay(NET);
+  a.setQuality('medium');
+  const after = new Map(a.cars().map((c) => [c.id, c]));
+  for (const [id, c] of after) {
+    const b = before.get(id);
+    if (b) assert.ok(Math.hypot(b.x - c.x, b.z - c.z) < 1e-6, `car ${id} stays through the step down`);
+  }
+  // Out of sight the streets fill again toward the density.
+  const n0 = a.cars().length;
+  run(a, 3, 0.1);
+  assert.ok(a.cars().length >= n0, 'the streets refill out of sight');
+  a.dispose();
+});
+
+test('every parked car the quality keeps has room to be drawn, on a large city too', () => {
+  const big = network({ blocks: 5, districts: SLOTS.slice(0, 6) });
+  const a = createAmbient(big, 'high', { seed: 29 });
+  a.setDensity(1);
+  const parked = a.parked();
+  assert.ok(parked.length > 4000, `a large city parks more than the old room held (${parked.length})`);
+  assert.ok(a.carRoom() >= a.cars().length + parked.length, `the buffers hold every car (${a.carRoom()} for ${a.cars().length} + ${parked.length})`);
+  // Seen all at once from high above, every car is drawn at the far level: none dropped.
+  const cam = new THREE.PerspectiveCamera(36, 1, 1, 30000);
+  cam.position.set(0, 12000, 1);
+  cam.lookAt(0, 0, 0);
+  cam.updateMatrixWorld();
+  a.update(0.05, cam, 1000);
+  const v = a.view(cam);
+  assert.equal(v.farCars, a.cars().length + parked.length, 'every car drawn');
+  // Two wheels up on the kerb only past the walkers' pavements.
+  const walked = tramHalf(big.blocks);
+  for (const c of parked) if (c.kerb) assert.ok(Math.max(Math.abs(c.x), Math.abs(c.z)) > walked + 10, `kerb-mounted at ${c.x.toFixed(1)}, ${c.z.toFixed(1)} lies past the pavements`);
+  assert.ok(parked.some((c) => c.kerb), 'some stand on the kerb');
+  a.dispose();
+});
+
+test('a network grown a ring keeps the parked cars inside the old reach where they were', () => {
+  const small = network({ blocks: 1, districts: SLOTS.slice(0, 6) });
+  const grown = network({ blocks: 2, districts: SLOTS.slice(0, 6) });
+  const a = createAmbient(small, 'high', { seed: 31 });
+  const key = (c: { x: number; z: number }): string => `${c.x.toFixed(3)},${c.z.toFixed(3)}`;
+  const inside = (c: { x: number; z: number }): boolean => Math.max(Math.abs(c.x), Math.abs(c.z)) < 400;
+  const before = new Map(a.parked().filter(inside).map((c) => [key(c), c]));
+  assert.ok(before.size > 20, `cars parked inside the old reach (${before.size})`);
+  a.relay(grown);
+  const after = new Map(a.parked().filter(inside).map((c) => [key(c), c]));
+  for (const [k, c] of before) {
+    const b = after.get(k);
+    assert.ok(b, `the car parked at ${k} stays`);
+    assert.deepEqual([b!.yaw, b!.model, b!.paint, b!.kerb], [c.yaw, c.model, c.paint, c.kerb]);
+  }
+  for (const k of after.keys()) assert.ok(before.has(k), `no new car appears inside the old reach (${k})`);
+  assert.ok(a.parked().length > before.size, 'the grown ring parks its own');
+  a.dispose();
+});

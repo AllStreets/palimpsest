@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import type { Archetype } from './lots';
 import { SECTIONS } from './lots';
 import { texture } from './materials';
+import { NAMES_PER_SET, PALETTES, signRows } from './shopfronts';
 
 /**
  * The ambient city's facades, one program per building type, drawn from
@@ -27,6 +28,58 @@ import { texture } from './materials';
  *   siding, roll-up doors at the dock.
  * Roofs (faces pointing up) are gravel, membrane, tar, metal or parking deck.
  */
+
+/** The room trace behind the shop glass runs at high quality; medium keeps the glass, joinery and signs and draws a plain glow. */
+const ROOMS = { value: 1 };
+export function setFacadeRooms(on: boolean): void {
+  ROOMS.value = on ? 1 : 0;
+}
+
+/** The sign atlas: columns of cells, each one name; the shader finds a cell from its row. */
+const SIGN = { cellW: 640, cellH: 56, cols: 4, rows: 45 } as const;
+
+let signAtlas: THREE.CanvasTexture | null = null;
+
+/**
+ * Every shop name (shopfronts.ts signRows) drawn once, white on clear, in
+ * the app's own faces: Newsreader for the older fronts' set, IBM Plex Sans
+ * for the modern set (style.css ships both). Drawn at once with the
+ * fallback faces and again when the faces have loaded, as the transit signs
+ * are. The shader reads the red channel as ink.
+ */
+function signTexture(): THREE.CanvasTexture {
+  if (signAtlas) return signAtlas;
+  const c = document.createElement('canvas');
+  c.width = SIGN.cellW * SIGN.cols;
+  c.height = SIGN.cellH * SIGN.rows;
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 8;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  const draw = (): void => {
+    const g = c.getContext('2d');
+    if (!g) return;
+    g.clearRect(0, 0, c.width, c.height);
+    g.fillStyle = '#fff';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    signRows().forEach((name, i) => {
+      const col = Math.floor(i / SIGN.rows);
+      const row = i % SIGN.rows;
+      // Rows alternate: within each kind the older set comes first (shopfronts.ts signRow).
+      const old = Math.floor(i / NAMES_PER_SET) % 2 === 0;
+      g.font = old ? `500 38px Newsreader, "Iowan Old Style", Georgia, serif` : `500 34px "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif`;
+      let text = name;
+      while (g.measureText(text).width > SIGN.cellW - 40 && text.length > 4) text = text.slice(0, -1);
+      g.fillText(text, col * SIGN.cellW + SIGN.cellW / 2, row * SIGN.cellH + SIGN.cellH / 2 + 1);
+    });
+    tex.needsUpdate = true;
+  };
+  draw();
+  void Promise.all([document.fonts?.load('500 38px Newsreader'), document.fonts?.load('500 34px "IBM Plex Sans"')]).then(draw, () => {});
+  signAtlas = tex;
+  return tex;
+}
 
 const ARCH_ID: Record<Archetype, number> = { walkup: 1, commercial: 2, midcentury: 3, glass: 4, brutalist: 5, parking: 6, industrial: 7 };
 
@@ -55,6 +108,11 @@ export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
   m.customProgramCacheKey = () => `palimpsest-ambient-${arch}`;
   m.onBeforeCompile = (sh) => {
     const mean = scan?.mean ?? [1, 1, 1];
+    // The shopfront schemes (shopfronts.ts PALETTES): the joinery and the lit sign of each.
+    sh.uniforms.uPalJ = { value: PALETTES.map((p) => new THREE.Vector3(...p.joinery)) };
+    sh.uniforms.uPalS = { value: PALETTES.map((p) => new THREE.Vector3(...p.sign)) };
+    sh.uniforms.uSigns = { value: signTexture() };
+    sh.uniforms.uRooms = ROOMS;
     sh.defines = {
       ...(sh.defines ?? {}),
       ARCH: ARCH_ID[arch],
@@ -62,13 +120,19 @@ export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
       GROUND: s.ground.toFixed(2),
       STOREY: s.floor.toFixed(2),
       PARAPET: s.parapet.toFixed(2),
+      // The signs: the older names on brick and stone fronts, the modern set on the rest; the atlas's layout.
+      SIGN_SET: arch === 'walkup' || arch === 'commercial' ? '0.0' : '1.0',
+      SIGN_COLS: SIGN.cols.toFixed(1),
+      SIGN_ROWS: SIGN.rows.toFixed(1),
+      SIGN_ASPECT: (SIGN.cellW / SIGN.cellH).toFixed(4),
+      NAMES_PER_SET: NAMES_PER_SET.toFixed(1),
     };
     sh.vertexShader = sh.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
-        attribute vec3 aAccent; attribute vec4 aStyle;
-        varying vec3 vWP; varying vec3 vWN; varying vec3 vSeed; varying vec3 vSize; varying vec3 vAccent; varying vec4 vStyle;`,
+        attribute vec3 aAccent; attribute vec4 aStyle; attribute vec4 aShop;
+        varying vec3 vWP; varying vec3 vWN; varying vec3 vSeed; varying vec3 vSize; varying vec3 vAccent; varying vec4 vStyle; varying vec4 vShop;`,
       )
       .replace(
         '#include <project_vertex>',
@@ -83,6 +147,7 @@ export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
         vSize = vec3(length(mm[0].xyz), length(mm[1].xyz), length(mm[2].xyz));
         vAccent = aAccent;
         vStyle = aStyle;
+        vShop = aShop;
         vec2 wuv = (abs(vWN.x) > 0.5 ? vWP.zy : abs(vWN.z) > 0.5 ? vWP.xy : vWP.xz) / FACADE_TILE;
         #ifdef USE_MAP
           vMapUv = wuv;
@@ -98,7 +163,9 @@ export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
       .replace(
         '#include <common>',
         `#include <common>
-        varying vec3 vWP; varying vec3 vWN; varying vec3 vSeed; varying vec3 vSize; varying vec3 vAccent; varying vec4 vStyle;
+        varying vec3 vWP; varying vec3 vWN; varying vec3 vSeed; varying vec3 vSize; varying vec3 vAccent; varying vec4 vStyle; varying vec4 vShop;
+        uniform vec3 uPalJ[${PALETTES.length}]; uniform vec3 uPalS[${PALETTES.length}];
+        uniform sampler2D uSigns; uniform float uRooms;
         float h21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
         float box1(float x, float a, float b, float e) { return smoothstep(a, a + e, x) * smoothstep(b, b - e, x); }`,
       )
@@ -177,33 +244,244 @@ const FACADE_GLSL = /* glsl */ `
         totalEmissiveRadiance += openDoor * vec3(1.0, 0.78, 0.5) * 0.35 * (0.6 + 0.4 * smoothstep(0.0, 3.5, y));
         roughnessFactor = mix(roughnessFactor, 0.5, door);
       #else
-        // Shopfronts and lobbies: tall glass bays under a fascia, most of them lit.
-        float bw = 4.2 + bs * 2.4;
+        // Shopfronts (shopfronts.ts): the plan comes packed in the instance; the bays here are the bays the awnings
+        // hang on. Each is a glazed front in painted or metal joinery over a stall riser, under a fascia with a lit
+        // sign box, with a lit room behind the glass traced into by the view ray (shelving, a cafe's counter and
+        // back bar, a lobby's desk) so it has depth; or shut for the night behind a shutter or dark glass.
+        float sw = vShop.w;
+        float hood = floor(sw / 32000.0);
+        float frontage = floor(mod(sw, 32000.0) / 16000.0);
+        float palette = floor(mod(sw, 16000.0) / 1000.0);
+        float bw = max(2.5, mod(sw, 1000.0) / 100.0);
         float n = max(1.0, floor(faceW / bw + 0.5));
         float cw = faceW / n;
+        float bi = floor(lu / cw);
         float bx = fract(lu / cw);
-        float bid = floor(lu / cw) + face * 31.0;
-        float top = GROUND - 1.0;
-        float glass = box1(bx, 0.06, 0.94, 0.01) * box1(y, 0.35, top, 0.06);
-        glass *= 1.0 - 0.85 * box1(bx, 0.495, 0.505, 0.004);
-        float open = step(0.32, h21(vec2(bid, bs * 31.0)));
-        // Shut shops pull a ribbed steel shutter down over the glass.
-        float shut = (1.0 - open) * step(0.5, h21(vec2(bid, bs * 5.0)));
-        vec3 shop = mix(vec3(1.0, 0.66, 0.36), vec3(0.82, 0.88, 1.0), step(0.8, h21(vec2(bid * 1.3, bs))));
-        // The shop's depth: brighter toward the ceiling, darker goods and people against the glass below.
-        float depth = 0.35 + 0.65 * smoothstep(0.4, top, y);
-        float goods = 0.6 + 0.4 * step(0.5, h21(floor(vec2(lu / 0.7, y / 0.6)) + bid));
-        totalEmissiveRadiance += glass * open * shop * depth * goods * (0.18 + 0.32 * h21(vec2(bid, 7.0)));
-        // A fascia band for the sign, painted per shop, and a stone or metal plinth under the glass.
-        float fascia = box1(y, top + 0.15, GROUND - 0.15, 0.02);
-        vec3 sign = mix(vec3(0.04, 0.045, 0.05), vAccent, step(0.5, h21(vec2(bid, 3.0))));
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.02), glass);
-        diffuseColor.rgb = mix(diffuseColor.rgb, sign, fascia * 0.85);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.16, 0.155) * (0.8 + 0.2 * step(0.5, fract(y / 0.09))), glass * shut);
-        roughnessFactor = mix(roughnessFactor, 0.1, glass * (1.0 - shut));
+        float slot = mod(bi, 12.0);
+        float kinds = onX ? vShop.x : vShop.y;
+        float kind = mod(floor(kinds / pow(2.0, slot * 2.0)), 4.0);
+        float awnBits = onX ? vShop.z : floor(vShop.z / 4096.0);
+        float awning = mod(floor(awnBits / pow(2.0, slot)), 2.0);
+        float bid = bi + face * 31.0 + bs * 97.0;
+        vec3 joinery = uPalJ[int(palette)];
+        vec3 signC = uPalS[int(palette)];
+        bool lobby = kind > 1.5 && kind < 2.5;
+        bool cafe = kind > 0.5 && kind < 1.5;
+        bool shutK = kind > 2.5;
+        float top = GROUND - 1.05;
+        float fasciaLo = top + 0.08;
+        float fasciaHi = GROUND - 0.12;
+        #if ARCH == 1
+          float pw = 0.5; float riser = 0.6; float paneW = 1.25; float barMetal = 0.1;
+        #elif ARCH == 2
+          float pw = 0.7; float riser = 0.45; float paneW = 1.6; float barMetal = 0.6;
+        #elif ARCH == 5
+          float pw = 0.6; float riser = 0.35; float paneW = 1.5; float barMetal = 0.1;
+        #else
+          float pw = 0.16; float riser = 0.25; float paneW = 1.5; float barMetal = 0.75;
+        #endif
+        if (frontage > 0.5 && lobby) { pw *= 0.5; riser = 0.12; }
+        float ub = bx * cw;
+        float px = pw * 0.5 / cw;
+        float inBay = box1(bx, px, 1.0 - px, 0.003);
+        float frameW = 0.07;
+        float gl0 = pw * 0.5 + frameW;
+        float gl1 = cw - pw * 0.5 - frameW;
+        // The door: one pane of the front, its glass running to the threshold.
+        float m = max(1.0, floor((gl1 - gl0) / paneW + 0.5));
+        float paneI = floor((ub - gl0) / (gl1 - gl0) * m);
+        float doorI = floor(h21(vec2(bid, 2.0)) * m);
+        float door = step(abs(paneI - doorI), 0.5) * step(ub, gl1) * step(gl0, ub);
+        float sill = mix(riser, 0.06, door);
+        float glassX = box1(ub, gl0, gl1, 0.01);
+        float glassY = box1(y, sill + frameW, top - frameW, 0.01);
+        float glass = glassX * glassY;
+        float frame = inBay * box1(y, sill, top, 0.01) * (1.0 - glass);
+        float mx = fract((ub - gl0) / (gl1 - gl0) * m);
+        float mull = (1.0 - box1(mx, 0.022, 0.978, 0.004)) * step(1.5, m);
+        float transomY = lobby ? top - 0.9 : 2.55;
+        float transom = box1(y, transomY - 0.03, transomY + 0.03, 0.008);
+        float bars = max(mull, transom) * glass;
+        // The stall riser and its plinth under the glass.
+        float stall = inBay * step(y, sill) * (1.0 - door);
+        float plinth = stall * step(y, 0.12);
+        // The fascia over the glass, and the sign box centred on it (a lobby's only over its door bay).
+        float fascia = inBay * box1(y, fasciaLo, fasciaHi, 0.01);
+        float cornice = inBay * box1(y, fasciaHi - 0.06, fasciaHi, 0.008);
+        vec3 fasciaC = lobby ? wall * 0.92 : joinery;
+        // The name: lettering from the district's and the era's own names (shopfronts.ts SHOP_NAMES), drawn in the
+        // app's faces on a canvas atlas and read here by row: lit letters on the fascia board, with the soft wash
+        // round them a downlight gives. A lobby names itself only over its door bay; a shut shop's sign is mostly dark.
+        float signH = 0.46;
+        float midY = (fasciaLo + fasciaHi) * 0.5;
+        // Read left to right from the pavement: along the face, the viewer's right runs against lu on two of the
+        // four faces, so the name is mirrored there.
+        float rightward = onX ? -sign(vWN.x) : sign(vWN.z);
+        float su = 0.5 + rightward * (ub - cw * 0.5) / (signH * SIGN_ASPECT);
+        float sv = (y - (midY - signH * 0.5)) / signH;
+        float onSign = inBay * step(0.0, su) * step(su, 1.0) * step(0.0, sv) * step(sv, 1.0);
+        if (lobby) onSign *= step(abs(bi - floor(n * 0.5)), 0.5);
+        float nameI = floor(h21(vec2(bid, 11.0)) * NAMES_PER_SET);
+        float kindI = lobby ? 2.0 : (cafe ? 1.0 : 0.0);
+        float row = ((hood * 3.0 + kindI) * 2.0 + SIGN_SET) * NAMES_PER_SET + nameI;
+        float colI = floor(row / SIGN_ROWS);
+        float rowIn = row - colI * SIGN_ROWS;
+        vec2 signUV = vec2((colI + su) / SIGN_COLS, 1.0 - (rowIn + 1.0 - sv) / SIGN_ROWS);
+        // The atlas's edge, filtered then firmed, so the letters stay crisp close up without stepping.
+        float ink = onSign > 0.5 ? smoothstep(0.3, 0.7, texture2D(uSigns, signUV).r) : 0.0;
+        float signOn = shutK ? step(0.85, h21(vec2(bid, 6.0))) : step(0.12, h21(vec2(bid, 6.0)));
+        float signLit = signOn * (0.75 + 0.45 * h21(vec2(bid, 8.0)));
+        float wash = fascia * signLit * 0.1 * exp(-abs(y - midY) / 0.3) * (1.0 - smoothstep(0.3, 0.5, abs(su - 0.5)));
+        // The awning's fixing rail at the head of the glass.
+        float rail = inBay * awning * box1(y, top - 0.02, top + 0.08, 0.008);
+        // Shut: a ribbed steel shutter down over the glass on most, dark glass on the rest.
+        float shutter = shutK ? step(h21(vec2(bid, 4.0)), 0.62) : 0.0;
+        float shutArea = shutter * inBay * box1(y, 0.0, top, 0.01);
+        float ribs = 0.8 + 0.2 * step(0.5, fract(y / 0.09));
+
+        // The room behind the glass: traced by the view ray at high quality; at medium a lit room's plain glow,
+        // brighter toward the ceiling, so the glass, joinery and signs stay and only the depth goes.
+        vec3 room = vec3(0.0);
+        vec3 lc = lobby ? vec3(0.88, 0.93, 1.0) : cafe ? vec3(1.0, 0.68, 0.38) : vec3(1.0, 0.9, 0.74);
+        float level = (lobby ? 1.1 : cafe ? 0.85 : 1.0) * (0.7 + 0.6 * h21(vec2(bid, 9.0)));
+        if (!shutK && uRooms < 0.5) {
+          room = lc * level * (0.16 + 0.3 * smoothstep(0.4, top, y)) * (0.85 + 0.3 * h21(vec2(bid, 12.0)));
+        } else if (!shutK) {
+          vec3 Vv = normalize(cameraPosition - vWP);
+          vec3 Nn = normalize(vWN);
+          vec3 rd = -Vv;
+          float dn = max(dot(rd, -Nn), 0.03);
+          vec3 Tt = onX ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+          float du = dot(rd, Tt);
+          float dy = rd.y;
+          float depth = (lobby ? 9.0 : 5.0) + 3.0 * h21(vec2(bid, 5.0));
+          float ceilH = top + 0.2;
+          float tB = depth / dn;
+          // The room runs on behind the piers to either side (a shop is wider than its window), so an oblique view
+          // lands on the back wall and its goods rather than on a side wall a metre in.
+          float tS = du > 0.0 ? (cw * 2.0 - ub) / du : (du < 0.0 ? (-cw - ub) / du : 1e9);
+          float tC = dy > 0.0 ? (ceilH - y) / dy : 1e9;
+          float tF = dy < 0.0 ? (0.02 - y) / dy : 1e9;
+          float t = min(min(tB, tS), min(tC, tF));
+          vec3 P = vec3(ub + du * t, y + dy * t, dn * t);
+          float hgt = clamp(P.y / ceilH, 0.0, 1.0);
+          if (t == tB) {
+            if (cafe) {
+              // The counter: a timber front lit by the strip under its lip and dark at the kick, a dark top; behind
+              // it the back bar, shelves of bottles each in its own tone with shoulders and a highlight, in shadow
+              // under the shelf above, against a mirror band; panelling below the bar.
+              float counterH = 1.1;
+              float counter = step(P.y, counterH);
+              float counterFront = 0.3 + 0.7 * smoothstep(0.15, counterH - 0.05, P.y);
+              float lip = box1(P.y, counterH - 0.06, counterH, 0.01);
+              float strip = box1(P.y, counterH - 0.16, counterH - 0.08, 0.015);
+              float sy = (P.y - 1.35) / 0.38;
+              float fy = fract(sy);
+              float onBar = step(1.35, P.y) * step(P.y, ceilH - 0.45);
+              float shelf = box1(fy, 0.0, 0.08, 0.02) * onBar;
+              float under = (1.0 - smoothstep(0.0, 0.2, 1.0 - fy)) * onBar;
+              float bw2 = 0.09 + 0.05 * h21(vec2(floor(P.x / 0.3), floor(sy) + bid));
+              float bx2 = fract(P.x / bw2);
+              float bi2 = floor(P.x / bw2) + floor(sy) * 17.0 + bid;
+              float bh = 0.5 + 0.4 * h21(vec2(bi2, 2.0));
+              float bodyTop = 0.08 + bh * 0.8;
+              float bottle = step(0.15, bx2) * step(bx2, 0.85) * step(0.08, fy) * step(fy, bodyTop) * step(0.25, h21(vec2(bi2, 4.0))) * onBar;
+              float neck = step(0.08 + bh * 0.55, fy) * (1.0 - box1(bx2, 0.36, 0.64, 0.02));
+              bottle *= 1.0 - neck;
+              vec3 bc = mix(vec3(0.3, 0.18, 0.08), vec3(h21(vec2(bi2, 6.0)), h21(vec2(bi2, 7.0)), h21(vec2(bi2, 8.0))) * 0.5 + 0.1, 0.55);
+              bc *= (0.45 + 0.55 * smoothstep(0.08, bodyTop, fy)) * (1.0 + 0.6 * box1(bx2, 0.3, 0.42, 0.04));
+              vec3 mirror = vec3(0.28, 0.24, 0.2) * (0.3 + 0.5 * hgt);
+              room = mix(vec3(0.3, 0.19, 0.11) * (0.3 + 0.5 * hgt), mirror, onBar);
+              room = mix(room, bc, bottle);
+              room = mix(room, vec3(0.5, 0.36, 0.2), shelf);
+              room *= 1.0 - 0.6 * under * (1.0 - shelf) * (1.0 - 0.5 * bottle);
+              room = mix(room, vec3(0.33, 0.2, 0.11) * counterFront, counter);
+              room = mix(room, vec3(0.08, 0.06, 0.05), lip);
+              room += counter * strip * vec3(1.0, 0.7, 0.4) * 0.5;
+              room *= lc;
+            } else if (lobby) {
+              // A pale wall, the desk, a lit panel in the tenant's colour.
+              float desk = box1(P.y, 0.0, 1.05, 0.02) * box1(P.x, cw * 0.2, cw * 0.8, 0.05);
+              float logo = box1(P.y, 2.2, 3.0, 0.03) * box1(P.x, cw * 0.5 - 0.6, cw * 0.5 + 0.6, 0.03);
+              room = vec3(0.42, 0.4, 0.38) * (0.3 + 0.7 * hgt);
+              room = mix(room, vec3(0.1, 0.09, 0.08), desk);
+              room = mix(room, signC * 1.2, logo);
+            } else {
+              // Shelving: each shelf a board with a shadow under the one above, the goods on it boxes of uneven
+              // width and height in dark, muted colours, lit from above and darker down their sides, with a gap
+              // here and there showing the shelf's back.
+              float pitch = 0.42;
+              float shelfY = (P.y - 0.3) / pitch;
+              float fy = fract(shelfY);
+              float onShelf = step(0.3, P.y) * step(P.y, ceilH - 0.6);
+              float board = box1(fy, 0.0, 0.07, 0.02) * onShelf;
+              float under = (1.0 - smoothstep(0.0, 0.16, 1.0 - fy)) * onShelf;
+              float gw = 0.22 + 0.3 * h21(vec2(floor(P.x / 0.5), floor(shelfY) + bid));
+              float gx = fract(P.x / gw);
+              float gi = floor(P.x / gw) + floor(shelfY) * 31.0 + bid;
+              float gh = 0.45 + 0.45 * h21(vec2(gi, 3.0));
+              float itemTop = 0.07 + gh * 0.85;
+              float item = step(0.08, gx) * step(gx, 0.92) * step(fy, itemTop) * step(0.07, fy) * step(0.2, h21(vec2(gi, 5.0))) * onShelf;
+              // Each item's own hue, round the wheel, then most of its chroma taken out: dyed cloth, card and paper
+              // under shop light, not toy boxes.
+              vec3 hue = 0.5 + 0.5 * cos(6.2831 * (h21(vec2(gi, 7.0)) + vec3(0.0, 0.33, 0.67)));
+              vec3 itemC = mix(vec3(dot(hue, vec3(0.3, 0.59, 0.11))), hue, 0.3) * (0.14 + 0.3 * h21(vec2(gi, 8.0)));
+              itemC *= (0.6 + 0.4 * smoothstep(0.07, itemTop, fy)) * (1.0 - 0.35 * smoothstep(0.7, 0.92, gx));
+              room = vec3(0.3, 0.27, 0.24) * (0.25 + 0.6 * hgt);
+              room = mix(room, itemC, item);
+              room = mix(room, vec3(0.42, 0.34, 0.26), board);
+              room *= 1.0 - 0.55 * under * (1.0 - board);
+            }
+            room *= lc;
+          } else if (t == tC) {
+            if (cafe) {
+              // Pendants over the tables.
+              vec2 qd = vec2(fract(P.x / 1.1) - 0.5, fract(P.z / 1.3) - 0.5);
+              float fit = 1.0 - smoothstep(0.08, 0.14, length(qd));
+              room = lc * (0.1 + fit * 1.4) * vec3(1.0, 0.85, 0.6);
+            } else {
+              // Rows of fittings across the ceiling.
+              float fit = (1.0 - smoothstep(0.05, 0.09, abs(fract(P.z / 1.6) - 0.5))) * (1.0 - smoothstep(0.34, 0.4, abs(fract(P.x / 1.5) - 0.5)));
+              room = lc * (0.07 + fit * 0.95);
+            }
+          } else if (t == tF) {
+            // Tiles or boards, pools under the fittings, darker toward the glass.
+            float tile = cafe ? 0.8 + 0.2 * step(0.5, fract(P.x / 0.14)) : 0.85 + 0.15 * step(0.5, fract(P.x / 0.6)) * step(0.5, fract(P.z / 0.6));
+            room = lc * tile * (0.1 + 0.16 * smoothstep(0.3, 3.0, P.z)) * (cafe ? vec3(0.6, 0.42, 0.26) : vec3(0.5));
+          } else {
+            room = lc * vec3(0.34, 0.3, 0.26) * (0.12 + 0.45 * hgt);
+          }
+          room *= exp(-P.z * (cafe ? 0.11 : 0.07)) * level;
+          float peak = max(room.r, max(room.g, room.b));
+          room *= 1.0 / (1.0 + 0.5 * peak);
+        }
+
+        vec3 col = diffuseColor.rgb;
+        col = mix(col, joinery * 0.8, stall);
+        col = mix(col, joinery * 0.5, plinth);
+        col = mix(col, joinery, frame);
+        col = mix(col, vec3(0.012, 0.014, 0.017), glass);
+        col = mix(col, joinery * 0.85, bars);
+        col = mix(col, fasciaC, fascia);
+        col = mix(col, fasciaC * 1.35 + 0.02, cornice);
+        col = mix(col, signC * 0.35, ink * fascia);
+        col = mix(col, vec3(0.04), rail);
+        col = mix(col, vec3(0.16, 0.16, 0.155) * ribs, shutArea);
+        diffuseColor.rgb = col;
+        // Glass, joinery, the fascia, the sign and a shutter are flat: the wall's scan relief stops at them.
+        float flatFace = clamp(glass + frame + bars + stall + fascia + shutArea, 0.0, 1.0);
+        normal = normalize(mix(normal, nonPerturbedNormal, flatFace));
+        totalEmissiveRadiance += glass * (1.0 - bars) * (1.0 - shutArea) * room;
+        totalEmissiveRadiance += (ink * fascia * signLit * 0.75 + wash) * signC;
+        roughnessFactor = mix(roughnessFactor, 0.08, glass);
+        roughnessFactor = mix(roughnessFactor, 0.4, bars + frame);
+        roughnessFactor = mix(roughnessFactor, 0.55, fascia);
+        roughnessFactor = mix(roughnessFactor, 0.5, shutArea);
+        metalnessFactor = mix(metalnessFactor, barMetal, bars + frame);
+        metalnessFactor = mix(metalnessFactor, 0.35, shutArea);
         #if ARCH == 2
           // Rusticated base: deep horizontal joints in the stone piers.
-          float rust = box1(fract(y / 0.62), 0.0, 0.07, 0.02) * (1.0 - glass);
+          float rust = box1(fract(y / 0.62), 0.0, 0.07, 0.02) * (1.0 - inBay);
           diffuseColor.rgb *= 1.0 - 0.45 * rust;
           normal = normalize(normal + vec3(0.0, 1.0, 0.0) * rust * 0.4);
         #endif

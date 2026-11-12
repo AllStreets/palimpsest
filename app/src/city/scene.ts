@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 
-import { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
+import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Era, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
-import { createCameraRig } from './camera';
+import { frameBreakdown, type Breakdown } from './breakdown.js';
+import { createCameraRig, type ScriptPose } from './camera';
+import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
 import type { BoardJob, Exchange } from './exchange.js';
@@ -15,11 +17,19 @@ import type { Lot } from './lots';
 import { configureMaterials, texturesSettled } from './materials';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor } from './governor';
+import { setFacadeRooms } from './facade';
 import { lightsOutTree } from './lightsout.js';
+import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
 import { quarterBuildKey, type QuarterShow } from './quarters.js';
 import { createPost, EXPOSURE, FLICKER } from './post';
 import { createRiver } from './river.js';
+import { createTransit, type TransitView } from './transit.js';
+import { createVehicles, type Vehicles } from './vehicles.js';
+import { createPeople, type People } from './people.js';
+import type { Agent, Trip } from '../../../shared/types';
+import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza, type CabPose } from './ambient.js';
+import { extentBlocks, type Network } from '../../../shared/commute.js';
 import { makeScaffold, type Scaffold } from './scaffold';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
 import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
@@ -29,7 +39,9 @@ export type PickHit =
   | { kind: 'tower'; repo: string; floorId: string | null }
   | { kind: 'agent'; agentId: string; firmId: string; floorId: string | null }
   | { kind: 'firm'; firmId: string }
-  | { kind: 'exchange'; route: string };
+  | { kind: 'exchange'; route: string }
+  /** A persona's plate (people.ts). */
+  | { kind: 'person'; agentId: string };
 
 /** What stands at a district's origin, and which of its parts can be clicked (mapped to a floor id, or null). */
 export interface Centerpiece {
@@ -63,6 +75,10 @@ export interface CityOptions {
   quarterKey?: (q: Quarter) => string;
   /** Builds the civic exchange on the plaza at the origin (exchange.ts); without it the plaza stands empty. */
   makeExchange?: (quality: 'high' | 'medium') => Exchange;
+  /** A persona's plate's second line for its trip (people.ts): "to <district> for <job title>". */
+  describeTrip?: (trip: Trip, agent: Agent) => string;
+  /** A persona's coat, linear RGB: its firm's colour. */
+  coatOf?: (agent: Agent) => [number, number, number];
 }
 
 /** A district site whose first analysis is still running: no tower yet, a scaffold stands there. */
@@ -130,10 +146,48 @@ export interface City {
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
   /** Draw calls and triangles in the last whole frame, every pass included. */
   stats(): { calls: number; triangles: number };
+  /** The next frame's draw calls and triangles by subsystem and pass, with the shadow map redrawn in it (debug and tests). */
+  breakdown(detail?: boolean): Promise<Breakdown>;
   /** The river (river.ts): its lanterns, its static draw calls, and whether its water drew since last asked (tests). */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
   plots(): { plazas: number; buildings: number };
+  /** The transit network (transit.ts): what of it the camera draws now, and how much of it stands (tests and captures). */
+  transit(): TransitView;
+  /** The trams, trains, pods, ferries and cabs running on the network (vehicles.ts), or null before it is laid. */
+  vehicles(): Vehicles | null;
+  /** The network as laid now (shared/commute.ts), or null before the city has districts. */
+  transitNetwork(): Network | null;
+  /** The ambient traffic and crowd (ambient.ts), or null before the network is laid. */
+  ambient(): Ambient | null;
+  /** The agent personas as people (people.ts), or null before the network is laid. */
+  people(): People | null;
+  /** The live trips and the agents they belong to: a figure per agent on its way (GET /api/live, trip.started, trip.ended). */
+  setTrips(trips: ReadonlyArray<Trip>, agents: ReadonlyArray<Agent>): void;
+  /**
+   * A tower's floors as the ride climbs them (ride.ts), in the world, root
+   * first: `key` is a district's repo, or `agent:<id>` for an agent's tower.
+   * Null when no such tower stands.
+   */
+  rideTower(key: string): RideFloor[] | null;
+  /** The crew's hoist on the site at work on a repo's tower, in the world, or null when no crane stands there. */
+  siteHoist(repo: string): { object: THREE.Object3D; height: number; setCar(y: number): void } | null;
+  /** Hands the camera to a scripted path (the ride) until a drag, a scroll, unscript() or the path's end; see camera.ts. */
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  unscript(): void;
+  /** Something that casts a shadow moved (the ride's car): the cached shadow map is drawn again. */
+  redrawShadows(): void;
+  /** Glides to an eye and a target. */
+  flyView(eye: THREE.Vector3, target: THREE.Vector3): void;
+  /** Tints and fades the floor mark (the ride's bronze, with its caption), or null for the inspector's own. */
+  highlightLook(look: { color: THREE.Color; alpha: number } | null): void;
+  /** What the view looks at now (the orbit's centre). */
+  viewTarget(): THREE.Vector3;
+  /** Flies to and follows an agent's figure, 12 m behind and above, until a drag, Escape, the trip's end or null. */
+  followAgent(agentId: string | null): void;
+  following(): string | null;
+  /** Holds the ambient density where a test or capture puts it (0 to 1), or null to follow the hour again; returns the hold it replaces. */
+  ambientDensity(n: number | null): number | null;
   /**
    * Stands objects at spots in the city outside the plots, each spot paved
    * and cleared of ambient blocks like a district (captures and the UI test:
@@ -211,6 +265,8 @@ export function plinthCenterpiece(): Centerpiece {
 }
 
 const SHADOW_HALF = 320;
+/** The sun's shadow camera stands this far up the sun's direction from the shadow's centre. */
+const SUN_OFFSET = 800;
 /** Below this eye height the skyline hides name plates behind it. */
 const STREET_EYE = 80;
 
@@ -221,6 +277,7 @@ const STREET_EYE = 80;
  */
 export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let quality = opts.quality;
+  setFacadeRooms(quality === 'high');
   installSkyFog();
   const makeCenterpiece = opts.makeDistrictCenterpiece ?? (() => plinthCenterpiece());
 
@@ -248,6 +305,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   const rig = createCameraRig(renderer.domElement, width() / height());
   const camera = rig.camera;
+  // Each pass sees its own layers (lod.ts): the view, the sun's shadow map and the AO (post.ts) skip what the others own.
+  const layers = passLayers();
+  camera.layers.mask = layers.view.mask;
 
   const sky = createSky(renderer);
   scene.add(sky.dome);
@@ -263,6 +323,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   sun.shadow.normalBias = 0.6;
   Object.assign(sun.shadow.camera, { left: -SHADOW_HALF, right: SHADOW_HALF, top: SHADOW_HALF, bottom: -SHADOW_HALF, near: 10, far: 1600 });
   sun.shadow.camera.updateProjectionMatrix();
+  sun.shadow.camera.layers.mask = layers.shadow.mask;
   sun.shadow.autoUpdate = false;
   sun.shadow.needsUpdate = true;
   scene.add(sun, sun.target);
@@ -275,7 +336,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     scene.add(l);
     return l;
   });
-  const sunOffset = SUN_DIRECTION.clone().multiplyScalar(800);
+  const sunOffset = SUN_DIRECTION.clone().multiplyScalar(SUN_OFFSET);
   let texel = (SHADOW_HALF * 2) / shadowSize;
 
   const sunNeedsUpdate = (): void => {
@@ -283,13 +344,77 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   };
   const ground = createGround();
   scene.add(ground.mesh);
-  const grid = createGrid(quality);
+  const grid = createGrid(quality, { sun: SUN_DIRECTION, half: SHADOW_HALF, offset: SUN_OFFSET, near: 10, far: 1600 });
   scene.add(grid.group);
   // The river, its quays, bridges and piers (river.ts); its water is drawn by a pass straight after the scene.
   const river = createRiver(quality);
   scene.add(river.group);
 
   let post = createPost(renderer, scene, camera, quality, [river.pass(camera)]);
+  // The tram, the elevated rail, the pods and the cab ranks (transit.ts), laid for the city as it stands.
+  const transit = createTransit();
+  scene.add(transit.group);
+  // Its vehicles (vehicles.ts), timetabled on the network as laid; replaced when the network is laid again.
+  const vehicleRoot = new THREE.Group();
+  vehicleRoot.name = 'vehicles';
+  scene.add(vehicleRoot);
+  let vehicles: Vehicles | null = null;
+  function layVehicles(): void {
+    const net = transit.network();
+    if (!net) return;
+    // Laid again on the new network, keeping the clock: nothing jumps, and riders' refs resolve on.
+    if (vehicles) vehicles.relay(net);
+    else {
+      vehicles = createVehicles(net, quality);
+      vehicleRoot.add(vehicles.group);
+    }
+    // The unlabelled traffic and crowd on the streets inside the loop (ambient.ts).
+    if (ambient) ambient.relay(net);
+    else {
+      ambient = createAmbient(net, quality, { plazas: ambientPlazas });
+      ambient.setDensity(forcedDensity ?? hourDensity());
+      ambientRoot.add(ambient.group);
+    }
+    // The personas (people.ts): they board the vehicles and are lit by the crowd's lamps.
+    if (!people) {
+      people = createPeople({
+        vehicles: () => vehicles,
+        net: () => transit.network(),
+        lampLight: (x, y, z, out) => ambient?.lampLight(x, y, z, out),
+        describe: opts.describeTrip,
+        coatOf: opts.coatOf,
+        onActivate: (agentId) => {
+          for (const fn of pickListeners) fn({ kind: 'person', agentId });
+        },
+        onRelease: () => rig.unfollow(),
+      });
+      peopleRoot.add(people.group);
+      people.set(pendingTrips.trips, pendingTrips.agents);
+    }
+  }
+  // ---------------------------------------------------------------- the people
+  const peopleRoot = new THREE.Group();
+  peopleRoot.name = 'people';
+  scene.add(peopleRoot);
+  let people: People | null = null;
+  /** The trips and agents as last set, for a people group made after they arrived. */
+  const pendingTrips: { trips: ReadonlyArray<Trip>; agents: ReadonlyArray<Agent> } = { trips: [], agents: [] };
+  let peoplePlatesVersion = -1;
+  // ---------------------------------------------------------------- the ambient life
+  // Unlabelled cars and people (ambient.ts). Their density follows the local hour, drifting out of sight.
+  const ambientRoot = new THREE.Group();
+  ambientRoot.name = 'traffic';
+  scene.add(ambientRoot);
+  let ambient: Ambient | null = null;
+  let ambientPlazas: AmbientPlaza[] = [{ x: 0, z: 0, kind: 'civic' }];
+  let forcedDensity: number | null = null;
+  const tramAt: Array<{ x: number; z: number }> = [];
+  const cabAt: CabPose[] = [];
+  let densityClock = 0;
+  const hourDensity = (): number => {
+    const now = new Date();
+    return ambientDensity(now.getHours() + now.getMinutes() / 60);
+  };
 
   // ---------------------------------------------------------------- the civic exchange
   // Built once on the plaza at the origin, and again at medium if the city steps down; it keeps the board and the switch.
@@ -316,6 +441,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(districtGroup);
   let centerpieces: Array<{ repo: string; key: string; piece: Centerpiece }> = [];
   let quarterPieces: Array<{ firmId: string; key: string; piece: Centerpiece }> = [];
+  /** Bumped whenever what stands in the districts changes, so the distance pass (districtLod) judges it afresh. */
+  let lodRevision = 0;
   /** Every pickable part in the city: towers' floors and roots, quarters' towers and plinths. */
   const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : [])];
   let scaffolds = new Map<string, Scaffold>();
@@ -362,6 +489,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const plazas = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z }))];
     grid.setPlazas(plazas);
     ground.setPlazas(plazas);
+    // The ambient traffic keeps off every plaza, court and site; the crowd walks the districts' and the civic plaza's.
+    ambientPlazas = [
+      { x: 0, z: 0, kind: 'civic' },
+      ...occ.districts.map((d) => ({ x: d.origin.x, z: d.origin.z, kind: 'district' as const })),
+      ...occ.sites.map((st) => ({ ...st.origin, kind: 'site' as const })),
+      ...occ.quarters.map((q) => ({ x: q.origin.x, z: q.origin.z, kind: 'court' as const, court: QUARTER_COURT })),
+      ...boardSpots.map((b) => ({ x: b.x, z: b.z, kind: 'site' as const })),
+    ];
+    ambient?.setPlazas(ambientPlazas);
     searchLitTree(grid.group);
     // Towers, scaffolds and the skyline around them may all have changed.
     sun.shadow.needsUpdate = true;
@@ -389,6 +525,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
+    if (built > 0 || old.size > 0) lodRevision++;
     if (highlighted) applyHighlight();
     return built;
   }
@@ -414,6 +551,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     exchange?.object.updateMatrixWorld(true);
     quarterBatch = batchPieces(roots);
     quarterBatch.group.name = 'quarters';
+    lodRevision++;
     for (const r of roots) r.visible = false;
     districtGroup.add(quarterBatch.group);
   }
@@ -563,6 +701,18 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     return best;
   }
 
+  /** How far the tower reaches past the site's centre on its +x face, root included: the crew's hoist stands off that. */
+  function clearOf(piece: Centerpiece, x: number): number {
+    let reach = 0;
+    const box = new THREE.Box3();
+    for (const o of piece.pickables.keys()) {
+      o.updateWorldMatrix(true, false);
+      box.set(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)).applyMatrix4(o.matrixWorld);
+      reach = Math.max(reach, box.max.x - x);
+    }
+    return reach;
+  }
+
   /** The era of the floor a run laid, once the city has it (the frame cures toward its tone). */
   function eraOf(s: SiteState): Era | null {
     const d = occNow.districts.find((x) => x.repo === s.repo);
@@ -609,7 +759,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         entry.c.touch();
         changed = true;
       }
-      if (entry.c.set(s, roof.top, roof.half, floorHeight, { era: eraOf(s) })) changed = true;
+      if (entry.c.set(s, roof.top, roof.half, floorHeight, { era: eraOf(s), clear: clearOf(piece!, roof.x) })) changed = true;
       entry.top = roof.top;
       entry.floorHeight = floorHeight;
     }
@@ -774,6 +924,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const built = placeDistricts(occ.districts) + placeQuarters(life.set(occ.quarters));
     reframe(occ);
     placeSites(occ.sites);
+    // The network grows with the city: its loops enclose every district, quarter and site, a rank at each plaza.
+    const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin)];
+    if (standing.length && transit.set({ blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) })) {
+      sun.shadow.needsUpdate = true;
+      layVehicles();
+    }
     // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
     placeConstructions();
     // The inspection's searchlights streak whatever they sweep: towers, quarters and the blocks round them.
@@ -793,6 +949,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const pieceOf = (repo: string): Centerpiece | null => centerpieces.find((c) => c.repo === repo)?.piece ?? null;
 
   function floorProxy(repo: string, floorId: string): THREE.Object3D | null {
+    // An agent's tower (the ride marks its floors as it passes them): `agent:<id>`.
+    if (repo.startsWith('agent:')) {
+      const agentId = repo.slice(6);
+      for (const { piece } of quarterPieces) for (const [o, id] of piece.pickables) if (id === floorId && piece.agents?.get(o) === agentId) return o;
+      return null;
+    }
     const piece = pieceOf(repo);
     if (!piece) return null;
     for (const [o, id] of piece.pickables) if (id === floorId) return o;
@@ -821,6 +983,30 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     return { center: box.getCenter(new THREE.Vector3()), width: Math.max(size.x, size.z), height: size.y };
   }
 
+  function rideTower(key: string): RideFloor[] | null {
+    const parts: Array<[THREE.Object3D, string | null]> = [];
+    if (key.startsWith('agent:')) {
+      const agentId = key.slice(6);
+      for (const { piece } of quarterPieces) for (const [o, id] of piece.pickables) if (piece.agents?.get(o) === agentId) parts.push([o, id]);
+    } else {
+      const piece = pieceOf(key);
+      if (piece) parts.push(...piece.pickables);
+    }
+    if (!parts.length) return null;
+    const at = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const turn = new THREE.Quaternion();
+    const euler = new THREE.Euler();
+    const floors = parts.map(([o, id]): RideFloor => {
+      o.updateWorldMatrix(true, false);
+      o.matrixWorld.decompose(at, turn, scale);
+      euler.setFromQuaternion(turn, 'YXZ');
+      // The root's proxy reaches three metres past its top on every side.
+      return { id, x: at.x, z: at.z, y0: at.y - scale.y / 2, h: scale.y, half: scale.x / 2, ry: euler.y };
+    });
+    return floors.sort((a, b) => a.y0 - b.y0 || (a.id === null ? -1 : 1));
+  }
+
   function agentFrame(agentId: string): Frame | null {
     for (const { piece } of quarterPieces) {
       const box = new THREE.Box3();
@@ -840,7 +1026,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let mark: THREE.Group | null = null;
   const markMaterials = {
     // Pale warm white, under the bloom threshold: it reads as a lit edge, never as neon.
-    edge: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.95, 0.82, 0.62) }),
+    edge: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.95, 0.82, 0.62), transparent: true }),
     // A faint warm wash on the slice itself, as if that floor were caught in a little more light.
     wash: new THREE.MeshBasicMaterial({
       color: new THREE.Color(1.0, 0.78, 0.5),
@@ -922,7 +1108,17 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     mark.updateWorldMatrix(true, false);
     const d = mark.getWorldPosition(markAt).distanceTo(camera.position);
     const px = (2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / Math.max(1, height());
-    (mark.userData.fit as (t: number) => void)(THREE.MathUtils.clamp(px * 2.5, 0.06, 1.4));
+    (mark.userData.fit as (t: number) => void)(THREE.MathUtils.clamp(px * 2.5, 0.015, 1.4));
+  }
+
+  const MARK_EDGE = markMaterials.edge.color.clone();
+  const MARK_WASH = markMaterials.wash.color.clone();
+  /** The ride's own look for the mark (a bronze tint, faded with its caption), or null for the inspector's. */
+  function highlightLook(look: { color: THREE.Color; alpha: number } | null): void {
+    markMaterials.edge.color.copy(look ? look.color : MARK_EDGE);
+    markMaterials.edge.opacity = look ? look.alpha : 1;
+    markMaterials.wash.color.copy(look ? look.color : MARK_WASH);
+    markMaterials.wash.opacity = 0.1 * (look ? look.alpha : 1);
   }
 
   function highlightFloor(repo: string, floorId: string | null): void {
@@ -933,6 +1129,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   // ---------------------------------------------------------------- picking
   const pickListeners: Array<(hit: PickHit) => void> = [];
   const raycaster = new THREE.Raycaster();
+  // Parts past the AO's reach draw on the view's and shadow's layers only (lod.ts): picking tests every layer.
+  raycaster.layers.enableAll();
   const pointer = new THREE.Vector2();
   let downAt: { x: number; y: number } | null = null;
 
@@ -991,6 +1189,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ...allPickables(),
     ...(camera.position.y < STREET_EYE ? grid.blockers : []),
   ]);
+  // The personas' plates stand over their figures, hidden behind the same towers.
+  const peoplePlates = createPlates(canvasHost, camera, () => [
+    ...allPickables(),
+    ...(camera.position.y < STREET_EYE ? grid.blockers : []),
+  ]);
   const observer = new ResizeObserver(resize);
   observer.observe(canvasHost);
 
@@ -1028,7 +1231,73 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     framesAfterLoad = 0;
   });
 
+  // ---------------------------------------------------------------- towers by distance (lod.ts)
+  /**
+   * What stands in the districts, judged from the eye each time it moves a
+   * few metres: a tower's thin repeated parts hide once under half a pixel
+   * wide (never its crown or its lit panes), and anything past AO_NEAR draws
+   * in the view and the shadow map but not the AO's normal pass.
+   */
+  const lodEye = new THREE.Vector3(Infinity, 0, 0);
+  let lodSeen = -1;
+  const lodSphere = new THREE.Sphere();
+  function districtLod(): boolean {
+    if (lodSeen === lodRevision && camera.position.distanceToSquared(lodEye) < 25) return false;
+    lodSeen = lodRevision;
+    lodEye.copy(camera.position);
+    const picks = new Set(allPickables());
+    let shadowChanged = false;
+    districtGroup.updateMatrixWorld();
+    // Every mesh, shown or not: an LOD level switching in, or a part coming back, carries the layers it should.
+    districtGroup.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || picks.has(o)) return;
+      const inst = mesh as THREE.InstancedMesh;
+      if (inst.isInstancedMesh && !inst.boundingSphere) inst.computeBoundingSphere();
+      if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+      const own = inst.isInstancedMesh ? inst.boundingSphere : mesh.geometry.boundingSphere;
+      if (!own) return;
+      lodSphere.copy(own).applyMatrix4(mesh.matrixWorld);
+      const d = Math.max(0, lodSphere.distanceToPoint(camera.position));
+      if (d > AO_NEAR) setLayers(mesh, LAYER.view, LAYER.shadow);
+      else mesh.layers.set(0);
+    });
+    // Thin parts, judged whether shown or hidden now.
+    for (const { piece } of centerpieces) {
+      piece.object.traverse((o) => {
+        const width = o.userData.detailWidth as number | undefined;
+        if (width === undefined) return;
+        const mesh = o as THREE.InstancedMesh;
+        if (!mesh.boundingSphere) mesh.computeBoundingSphere();
+        lodSphere.copy(mesh.boundingSphere!).applyMatrix4(mesh.matrixWorld);
+        const hidden = detailHidden({ size: width, distance: Math.max(0, lodSphere.distanceToPoint(camera.position)), hidden: !mesh.visible, viewHeight: height() });
+        if (hidden === mesh.visible) {
+          mesh.visible = !hidden;
+          if (mesh.castShadow) shadowChanged = true;
+        }
+      });
+    }
+    return shadowChanged;
+  }
+
   const lastFrame = { calls: 0, triangles: 0 };
+  const breakdownWanted: Array<{ detail: boolean; resolve: (b: Breakdown) => void }> = [];
+  const breakdownRoots = (): Array<[string, THREE.Object3D]> => [
+    ['ambient', grid.group],
+    ['river', river.group],
+    ['transit', transit.group],
+    ['vehicles', vehicleRoot],
+    ['traffic', ambientRoot],
+    ['people', peopleRoot],
+    ['ground', ground.mesh],
+    ['sky', sky.dome],
+    ['construction', field.group],
+    ['quarters', quarterBatch?.group ?? new THREE.Object3D()],
+    ['quarters', life.group],
+    ...(exchange ? [['exchange', exchange.object] as [string, THREE.Object3D]] : []),
+    ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
+    ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
+  ];
   const clock = new THREE.Clock();
   const dropListeners: Array<() => void> = [];
   const governor = qualityGovernor({ start: opts.autoQuality === false ? 'medium' : quality });
@@ -1039,6 +1308,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     renderer.setSize(width(), height());
     post.dispose();
     river.setQuality('medium');
+    vehicles?.setQuality('medium');
+    ambient?.setQuality('medium');
+    people?.setQuality('medium');
+    setFacadeRooms(false);
     post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
     texel = (SHADOW_HALF * 2) / shadowSize;
@@ -1075,12 +1348,66 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     applyLimits();
     // Each chunk of the river draws its detail, casts its shadow and joins the AO pass only near the eye.
     if (river.update(dt, fog.density, camera.position)) sun.shadow.needsUpdate = true;
+    if (transit.update(camera.position, fog.density)) sun.shadow.needsUpdate = true;
+    // The vehicles move every frame; they cast no sun shadow, so the shadow map is not redrawn for them.
+    if (vehicles) {
+      vehicles.update(dt, camera.position);
+      river.setWakes(vehicles.wakes(camera.position));
+    }
+    if (ambient) {
+      // Once a minute the streets drift toward the hour's density, out of sight.
+      if (forcedDensity === null && (densityClock += dt) > 60) {
+        densityClock = 0;
+        ambient.setDensity(hourDensity(), true);
+      }
+      // Cars give way to the trams at the tram's crossings, and keep clear of the persona cabs (vehicles.ts),
+      // read into arrays kept from frame to frame.
+      if (vehicles) {
+        const trams = vehicles.vehicles('tram');
+        while (tramAt.length < trams.length) tramAt.push({ x: 0, z: 0 });
+        tramAt.length = trams.length;
+        trams.forEach((t, i) => {
+          const p = t.position();
+          tramAt[i].x = p[0];
+          tramAt[i].z = p[2];
+        });
+        const cabs = vehicles.vehicles('cab');
+        while (cabAt.length < cabs.length) cabAt.push({ x: 0, z: 0, heading: 0, speed: 0 });
+        cabAt.length = cabs.length;
+        cabs.forEach((c, i) => {
+          const p = c.position();
+          cabAt[i].x = p[0];
+          cabAt[i].z = p[2];
+          cabAt[i].heading = c.heading();
+          cabAt[i].speed = c.speed();
+        });
+        ambient.setTrams(tramAt);
+        ambient.setCabs(cabAt);
+      }
+      ambient.update(dt, camera, renderer.domElement.height);
+    }
+    if (people) {
+      people.update(dt, camera);
+      if (people.platesVersion() !== peoplePlatesVersion) {
+        peoplePlatesVersion = people.platesVersion();
+        peoplePlates.set(people.plates());
+      }
+    }
     fitMark();
     plates.update();
+    peoplePlates.update();
     sky.dome.position.copy(camera.position);
     followShadow();
+    // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
+    if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
+    if (districtLod()) sun.shadow.needsUpdate = true;
     renderer.info.reset();
-    post.render();
+    if (breakdownWanted.length) {
+      sun.shadow.needsUpdate = true;
+      const asks = breakdownWanted.splice(0);
+      const b = frameBreakdown(renderer, scene, camera, breakdownRoots, () => post.render(), asks.some((a) => a.detail));
+      for (const a of asks) a.resolve(b);
+    } else post.render();
     lastFrame.calls = renderer.info.render.calls;
     lastFrame.triangles = renderer.info.render.triangles;
     if (framesAfterLoad >= 0 && ++framesAfterLoad === 3) resolveReady();
@@ -1131,8 +1458,79 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ready,
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
+    breakdown: (detail = false) => new Promise<Breakdown>((resolve) => breakdownWanted.push({ detail, resolve })),
     river: () => ({ lamps: river.lamps.length, ...river.view(camera) }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
+    transit: () => transit.view(camera),
+    vehicles: () => vehicles,
+    transitNetwork: () => transit.network(),
+    ambient: () => ambient,
+    people: () => people,
+    setTrips(trips, agents) {
+      pendingTrips.trips = trips;
+      pendingTrips.agents = agents;
+      people?.set(trips, agents);
+    },
+    followAgent(agentId) {
+      if (!people || agentId === null) {
+        people?.follow(null);
+        rig.unfollow();
+        return;
+      }
+      people.follow(agentId);
+      if (people.following() !== agentId) return;
+      // When a tower or a block stands between the eye and the figure's head, the eye is raised until it clears
+      // (tested every few frames, by the plates' occluders); it comes down again when the way is clear.
+      const ray = new THREE.Raycaster();
+      ray.layers.enableAll();
+      const head = new THREE.Vector3();
+      const dir = new THREE.Vector3();
+      let lift = 0;
+      let frame = 0;
+      rig.follow(
+        () => {
+          const pose = people?.followPose();
+          if (!pose) return null;
+          if (frame++ % 6 === 0) {
+            head.set(pose.position.x, pose.position.y + 1.6, pose.position.z);
+            dir.copy(camera.position).sub(head);
+            const d = dir.length();
+            if (d > 1e-3) {
+              ray.set(head, dir.multiplyScalar(1 / d));
+              ray.far = d - 0.5;
+              const blocked = ray.intersectObjects([...allPickables(), ...(camera.position.y < STREET_EYE ? grid.blockers : [])], false).length > 0;
+              lift = blocked ? Math.min(lift + 2.5, 40) : Math.max(0, lift - 1);
+            }
+          }
+          return { ...pose, lift };
+        },
+        () => people?.follow(null),
+      );
+    },
+    following: () => people?.following() ?? null,
+    rideTower,
+    siteHoist(repo) {
+      for (const { c, site } of constructions.values()) {
+        if (site.repo !== repo) continue;
+        const h = c.hoist();
+        if (h) return h;
+      }
+      return null;
+    },
+    script: (path, onRelease) => rig.script(path, onRelease),
+    unscript: () => rig.unscript(),
+    redrawShadows() {
+      sun.shadow.needsUpdate = true;
+    },
+    flyView: (eye, target) => rig.flyView(eye, target),
+    highlightLook,
+    viewTarget: () => rig.controls.target.clone(),
+    ambientDensity(n) {
+      const was = forcedDensity;
+      forcedDensity = n === null ? null : Math.max(0, Math.min(1, n));
+      ambient?.setDensity(forcedDensity ?? hourDensity());
+      return was;
+    },
     ambientBoard: (lots) => grid.board(lots),
     board(objects, spots) {
       const group = new THREE.Group();
@@ -1172,6 +1570,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       field.dispose();
       life.dispose();
       plates.dispose();
+      peoplePlates.dispose();
+      people?.dispose();
       markBox.dispose();
       markMaterials.edge.dispose();
       markMaterials.wash.dispose();
@@ -1179,6 +1579,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       post.dispose();
       grid.dispose();
       river.dispose();
+      transit.dispose();
+      vehicles?.dispose();
+      ambient?.dispose();
       ground.dispose();
       sky.dispose();
       renderer.dispose();

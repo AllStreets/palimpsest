@@ -17,7 +17,7 @@
  * rounds. UI_PORT=4811 runs it on another port, so two worktrees can each
  * run one at once.
  */
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -38,6 +38,7 @@ import { treasuryChecks } from './ui-test-treasury.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
+import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 import { uiPort } from './ui-port.js';
 
@@ -144,6 +145,14 @@ interface Debug {
   quarters: number;
   opened: string;
   lastPick: { kind: string; agentId?: string; firmId?: string; repo?: string } | null;
+}
+
+/** Holds the ambient traffic and crowd at full density (once the network is laid), so every budget sees its worst. */
+async function fullDensity(page: Page): Promise<void> {
+  await page
+    .waitForFunction('window.__palimpsest.ambient() !== null', null, { timeout: 30_000 })
+    .then(() => page.evaluate('window.__palimpsest.ambientDensity(1)'))
+    .catch(() => {});
 }
 
 function debug<T>(page: Page, read: (d: Debug) => T): Promise<T> {
@@ -260,6 +269,7 @@ async function earnedChecks(page: Page): Promise<void> {
   await seedEconomy(Date.now(), { holdSale: true });
   await page.reload();
   await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+  await fullDensity(page);
   await page.waitForTimeout(2500);
   const ds = await cityOf(page);
   const states = (d: District): Set<string> => new Set(d.tower.floors.map((f) => f.earned?.state ?? '').filter(Boolean));
@@ -551,16 +561,44 @@ async function darkTowerChecks(page: Page): Promise<void> {
  * construction.png close on the crane mid-weld, a four-frame strip of real
  * progress steps, and the frame rate held within 5 of the overview.
  */
+/**
+ * The city's frame budget from home (task PERF, tightened in Task 30 once
+ * the transit network stood): vehicles and crowds add to it, and this check
+ * fails if the city outgrows it silently. The governor's own budget is 24M
+ * (governor.ts).
+ */
+const HOME_TRIANGLES = 12_000_000;
+const HOME_CALLS = 850;
+
+/** A frame from the home framing with the shadow map redrawn: its draw calls and triangles, and the biggest subsystems. */
+async function homeBudget(page: Page): Promise<{ calls: number; triangles: number; parts: string }> {
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(1200);
+  type T = { calls: number; triangles: number };
+  const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
+  const sum = (p: Record<string, T>): T => Object.values(p).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  const total = sum(Object.fromEntries(Object.entries(b).map(([k, v]) => [k, sum(v)])));
+  const parts = Object.entries(b)
+    .map(([k, v]) => [k, sum(v)] as const)
+    .sort((x, y) => y[1].triangles - x[1].triangles)
+    .slice(0, 4)
+    .map(([k, t]) => `${k} ${(t.triangles / 1e6).toFixed(2)}M/${t.calls}`)
+    .join(', ');
+  return { ...total, parts };
+}
+
 async function constructionChecks(page: Page): Promise<void> {
   type SV = { stage: string; progress: number; beams: number; beamsTotal: number; columns: number; crane: number[]; weld: number[] | null; arc: number; top: number; floorHeight: number; centre: number[] };
   type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): SV | null };
   const { setMarketExtras } = await import('../engine/market/api.js');
-  const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
-  setMarketExtras({ sites: economySites, trips: economyTrips });
+  const { economyClock, economySites } = await import('../engine/market/sample-economy.js');
+  setMarketExtras({ sites: economySites });
   const clock = economyClock({ now: () => Date.now(), speed: 20 });
   try {
     await page.reload();
     await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+    await fullDensity(page);
     const found = await page
       .waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().some((s) => s.stage === 'framing'), null, { timeout: 10_000 })
       .then(() => true)
@@ -587,6 +625,23 @@ async function constructionChecks(page: Page): Promise<void> {
     await page.waitForTimeout(2000);
     const held = await view();
     check(held?.beams === s.beams && held?.progress === s.progress, 'between events the frame holds still');
+
+    // The ride up a framing tower takes the crew's hoist and ends at the work (Task 35).
+    check(await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(repo)})`) === true, 'a framing tower can be ridden');
+    await page.evaluate('window.__palimpsest.rideHold(true)');
+    const hr = await ridingNow(page);
+    check(hr?.hoist === true, 'the ride up a framing tower takes the crew’s hoist');
+    if (hr) {
+      const work = hr.stops[hr.stops.length - 1];
+      await page.evaluate(`window.__palimpsest.rideSeek(${work.t + 2})`);
+      await page.waitForTimeout(600);
+      const at = await ridingNow(page);
+      check(/is framing floor \d+$/.test(at?.caption ?? ''), `and ends with the framing caption (${at?.caption})`);
+      check(!!at && Math.abs(at.car - s.top) < 0.6, `the hoist car ends at the work on its mast (${at?.car.toFixed(1)} m against the roof at ${s.top.toFixed(1)} m)`);
+      await page.screenshot({ path: join(SHOTS, 'ride-hoist.png') });
+    }
+    await page.evaluate('window.__palimpsest.ride(null)');
+    await page.waitForTimeout(2000);
 
     const [cx, , cz] = s.crane;
     const eye: [number, number, number] = [cx - 70, s.top + 22, cz + 62];
@@ -637,6 +692,24 @@ async function constructionChecks(page: Page): Promise<void> {
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(true));
     console.log(`info  the ${nSites} live sites add ${home.calls - bare.calls} draw calls from home`);
     check(nSites >= 3 && home.calls - bare.calls < 60, `${nSites} live sites add fewer than 60 draw calls from home (${home.calls - bare.calls})`);
+    // The city's budget from home (task PERF): a frame with the shadow map redrawn, every pass counted.
+    let full = await homeBudget(page);
+    console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
+    // The governor judges frame time as well as triangles: on a GPU another test or capture shares, it can step
+    // down on a slow stretch the city did not cause. Once, the page is opened afresh and the budget measured again.
+    if ((await debug(page, (x) => x.quality())) !== 'high') {
+      console.log(`info  the governor stepped down at ${(full.triangles / 1e6).toFixed(2)}M triangles; reopening once (a shared GPU)`);
+      await page.reload();
+      await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+      await fullDensity(page);
+      await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length >= 3, null, { timeout: 10_000 }).catch(() => {});
+      await page.waitForTimeout(6000);
+      full = await homeBudget(page);
+      console.log(`info  again: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
+    }
+    check(full.triangles <= HOME_TRIANGLES, `the city from home draws at most ${HOME_TRIANGLES / 1e6}M triangles with live sites and the shadow map redrawn (${(full.triangles / 1e6).toFixed(2)}M)`);
+    check(full.calls < HOME_CALLS, `the city from home draws in under ${HOME_CALLS} calls with live sites and the shadow map redrawn (${full.calls})`);
+    check((await debug(page, (x) => x.quality())) === 'high', 'the quality governor has not stepped the city down');
   } finally {
     clock.stop();
     setMarketExtras({});
@@ -675,8 +748,8 @@ async function lifecycleChecks(page: Page): Promise<void> {
   };
   type Dbg = { liveSites(): Array<{ repo: string; stage: string; progress: number; runId: string }>; site(r: string): SV | null; home(): void };
   const { setMarketExtras } = await import('../engine/market/api.js');
-  const { economyClock, economySites, economyTrips } = await import('../engine/market/sample-economy.js');
-  setMarketExtras({ sites: economySites, trips: economyTrips });
+  const { economyClock, economySites } = await import('../engine/market/sample-economy.js');
+  setMarketExtras({ sites: economySites });
   const sites = (): Promise<Array<{ repo: string; stage: string; progress: number; runId: string }>> => page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites());
   const view = (repo: string): Promise<SV | null> => page.evaluate((r) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r), repo);
   // The repo whose inspection the clock fails: the one still working (the other passed during the construction checks).
@@ -950,6 +1023,131 @@ async function inspectorChecks(page: Page): Promise<void> {
   await page.waitForTimeout(400);
   check(!(await page.locator('.inspector').isVisible()), 'Escape closes the inspector');
   check((await debug(page, (x) => x.highlight)) === null, 'closing clears the floor highlight');
+}
+
+// ---------------------------------------------------------------- the ride up a tower (Task 35)
+
+type RideProbe = { key: string; t: number; length: number; car: number; eye: number; floorId: string | null; caption: string | null; held: boolean; hoist: boolean; stops: Array<{ t: number; dwell: number; mark: string | null; title: string | null }> };
+const ridingNow = (page: Page): Promise<RideProbe | null> => page.evaluate('window.__palimpsest.riding()') as Promise<RideProbe | null>;
+
+/**
+ * The ride: the inspector's Ride up starts it at street level, the camera climbs with the car over the first
+ * seconds and a floor's caption shows; Escape steps off and the view returns. R rides from the keyboard, and the
+ * agent page's Ride up rides the agent's own tower.
+ */
+async function rideChecks(page: Page): Promise<void> {
+  const ds = await cityOf(page);
+  const d = [...ds].sort((a, b) => b.tower.floors.length - a.tower.floors.length)[0];
+  const lay = layoutTower(d.tower);
+  await setView(page, [d.origin.x + BEARING.x * lay.top * 2.2, lay.top * 0.45, d.origin.z + BEARING.z * lay.top * 2.2], [d.origin.x, lay.top * 0.5, d.origin.z]);
+  await page.waitForTimeout(400);
+  await page.evaluate((repo) => (window as unknown as { __palimpsest: Debug }).__palimpsest.inspect(repo), d.repo);
+  await page.waitForSelector('.inspector.open', { timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(1800);
+  const button = page.locator('.inspector .insp-ride');
+  check((await button.count()) === 1 && /Ride up/.test((await button.textContent()) ?? ''), 'the inspector offers Ride up');
+  const before = await debug(page, (x) => x.camera());
+  await button.click();
+  // The camera comes to the car at street level, then climbs with it.
+  const started = await page.waitForFunction('(window.__palimpsest.riding()?.t ?? -1) >= 0', null, { timeout: 6000 }).then(() => true, () => false);
+  check(started, 'Ride up starts a ride');
+  const r0 = await ridingNow(page);
+  check(r0 !== null && r0.car < 1 && r0.eye < 3, `the ride starts at street level (car ${r0?.car.toFixed(1)} m)`);
+  check(await page.evaluate(() => document.querySelector('.inspector')?.checkVisibility({ visibilityProperty: true, opacityProperty: true }) === false && document.querySelector('.ride.on') !== null), 'the panel steps aside and the captions show');
+  const y0 = (await debug(page, (x) => x.camera()))[1];
+  await page.waitForTimeout(3000);
+  const y1 = (await debug(page, (x) => x.camera()))[1];
+  check(y1 > y0 + 4, `starting a ride moves the camera up over 3 s (${y0.toFixed(1)} to ${y1.toFixed(1)} m)`);
+  const titles = new Set(d.tower.floors.map((f) => f.title.replace(/^Failed inspection:\s*/, '')));
+  const captioned = await page
+    .waitForFunction((t) => t.includes(document.querySelector('.ride .ride-title')?.textContent ?? ''), [...titles], { timeout: 30_000 })
+    .then(() => true, () => false);
+  const shown = await page.locator('.ride .ride-title').textContent();
+  check(captioned, `the caption shows a floor title (${shown})`);
+  await page.screenshot({ path: join(SHOTS, 'ride-mid.png') });
+  const rideFps = await pageFps(page);
+  console.log(`info  riding: ${rideFps.toFixed(0)} fps`);
+  check(rideFps >= overviewFps - 5, `a ride holds the overview's frame rate (${rideFps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  // Space goes on to the next stop at once.
+  const beforeSkip = await ridingNow(page);
+  const nextStop = beforeSkip?.stops.find((x) => x.t > beforeSkip.t + 1e-3);
+  await page.keyboard.press(' ');
+  await page.waitForTimeout(150);
+  const afterSkip = await ridingNow(page);
+  check(!!nextStop && !!afterSkip && afterSkip.t >= nextStop.t && afterSkip.t < nextStop.t + 0.6, `Space skips to the next stop (${beforeSkip?.t.toFixed(1)} to ${afterSkip?.t.toFixed(1)} s, the stop at ${nextStop?.t.toFixed(1)})`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  check((await ridingNow(page)) === null, 'Escape ends the ride');
+  check(await page.locator('.inspector').isVisible(), 'and leaves the inspector open');
+  await page.waitForTimeout(2200);
+  const back = await debug(page, (x) => x.camera());
+  const off = Math.hypot(back[0] - before[0], back[1] - before[1], back[2] - before[2]);
+  check(off < 1.5, `Escape restores the view (${off.toFixed(2)} m from where it stood)`);
+  check((await page.locator('.ride').count()) === 0, 'and the captions go');
+
+  // With reduced motion the ride cuts from stop to stop: the car stands still at each, then is at the next.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const stillFrom = await debug(page, (x) => x.camera());
+  await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(d.repo)})`);
+  await page.waitForTimeout(900);
+  const s0 = await ridingNow(page);
+  await page.waitForTimeout(700);
+  const s1 = await ridingNow(page);
+  await page.waitForTimeout(2200);
+  const s2 = await ridingNow(page);
+  check(s0 !== null && s1 !== null && s0.car === s1.car && s2 !== null && s2.car > s1.car + 2, `with reduced motion the ride cuts from stop to stop (${s0?.car.toFixed(1)}, ${s1?.car.toFixed(1)}, ${s2?.car.toFixed(1)} m)`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  const stillBack = await debug(page, (x) => x.camera());
+  const cut = Math.hypot(stillBack[0] - stillFrom[0], stillBack[1] - stillFrom[1], stillBack[2] - stillFrom[2]);
+  check(cut < 0.5, `with reduced motion Escape cuts straight back (${cut.toFixed(2)} m off after 0.15 s)`);
+  await page.emulateMedia({ reducedMotion: null });
+  await page.waitForTimeout(500);
+
+  // R rides the open tower from the keyboard.
+  await page.locator('.inspector .insp-ride').focus();
+  await page.keyboard.press('r');
+  await page.waitForTimeout(400);
+  check((await ridingNow(page))?.key === d.repo, 'R rides the tower open in the inspector');
+  // A drag takes the camera back where it stands.
+  await page.waitForTimeout(2600);
+  const mid = await debug(page, (x) => x.camera());
+  await page.mouse.move(VIEWPORT.width / 2, VIEWPORT.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(VIEWPORT.width / 2 + 30, VIEWPORT.height / 2);
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const dragged = await debug(page, (x) => x.camera());
+  check((await ridingNow(page)) === null && Math.hypot(dragged[0] - mid[0], dragged[1] - mid[1], dragged[2] - mid[2]) < 25, 'a drag ends the ride where it stands');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+}
+
+/** The agent page's Ride up rides the agent's own tower (once the firms' quarters stand). */
+async function rideAgentChecks(page: Page): Promise<void> {
+  const firms = (await page.evaluate(() => fetch('/api/firms').then((r) => r.json()))) as Array<{ agents: Array<{ id: string; retired: boolean }> }>;
+  const quarters = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const standing = new Set(quarters.flatMap((q) => q.towers.filter((t) => !t.dark).map((t) => t.agentId)));
+  const agent = firms.flatMap((f) => f.agents).find((a) => !a.retired && standing.has(a.id));
+  if (!agent) {
+    check(false, 'an agent with a standing tower to ride');
+    return;
+  }
+  await page.evaluate((id) => {
+    location.hash = `#/agents/${id}`;
+  }, agent.id);
+  await page.waitForSelector('.agentpage .agent-ride', { timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(800);
+  await page.locator('.agentpage .agent-ride').click();
+  await page.waitForTimeout(1200);
+  const route = await page.evaluate(() => document.body.dataset.route);
+  const a = await ridingNow(page);
+  check(route === 'city' && a?.key === `agent:${agent.id}`, `the agent page's Ride up rides its tower (${route}, ${a?.key ?? 'no ride'})`);
+  // Step off is a tap too: a touch screen has no Escape.
+  await page.locator('.ride .ride-off').click();
+  await page.waitForTimeout(300);
+  check((await ridingNow(page)) === null, 'and tapping Step off steps off it');
+  await page.waitForTimeout(1800);
 }
 
 // ---------------------------------------------------------------- an analyzing site
@@ -1642,9 +1840,348 @@ async function riverChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'river-pier.png'), clip: { x: VIEWPORT.width * 0.2, y: VIEWPORT.height * 0.2, width: VIEWPORT.width * 0.6, height: VIEWPORT.height * 0.6 } });
 }
 
+// ---------------------------------------------------------------- the transit network (Task 30)
+
+/** The most the network may draw from home: its far cores only, in the view only. */
+const TRANSIT_HOME_TRIANGLES = 450_000;
+const TRANSIT_HOME_CALLS = 24;
+
+/**
+ * The network as it stands for the sample city: the loops laid for its
+ * extent, a rank at each district and the exchange, stations on every line;
+ * from home it draws only its far cores in a few calls; a tram stop with the
+ * viaduct behind (transit.png) and a pod station at height (pods.png); and
+ * up close it holds the overview's frame rate.
+ */
+async function transitChecks(page: Page): Promise<void> {
+  type TV = { meshes: number; triangles: number; stops: number; stations: number; podStations: number; ranks: number; poles: number; bents: number; pylons: number; blocks: number; builds: number; buildMs: number };
+  const transit = (): Promise<TV> => page.evaluate(() => (window as unknown as { __palimpsest: { transit(): TV } }).__palimpsest.transit());
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(600);
+  const far = await transit();
+  console.log(`info  transit from home: ${far.meshes} calls, ${(far.triangles / 1000).toFixed(0)}k triangles; ${far.stops} tram stops, ${far.stations} rail stations, ${far.podStations} pod stations, ${far.ranks} ranks, ${far.poles} poles, ${far.bents} bents, ${far.pylons} pylons`);
+  check(far.blocks === 2, `the network is laid for the sample city's extent (${far.blocks} rings)`);
+  check(far.stops >= 12 && far.stations >= 8 && far.podStations >= 10, `the tram, the rail and the pods have their stops and stations (${far.stops}, ${far.stations}, ${far.podStations})`);
+  const districts = await debug(page, (d) => d.districts);
+  console.log(`info  the network was laid ${far.builds} times, the last in ${far.buildMs.toFixed(0)} ms`);
+  check(far.ranks === districts + 1, `a cab rank at each of the ${districts} districts and one at the exchange (${far.ranks})`);
+  check(far.poles > 100 && far.bents > 100 && far.pylons > 40, `poles, bents and pylons stand along the lines (${far.poles}, ${far.bents}, ${far.pylons})`);
+  check(far.triangles > 0 && far.triangles <= TRANSIT_HOME_TRIANGLES, `from home the network draws at most ${TRANSIT_HOME_TRIANGLES / 1000}k triangles (${(far.triangles / 1000).toFixed(0)}k)`);
+  check(far.meshes > 0 && far.meshes <= TRANSIT_HOME_CALLS, `from home the network draws in at most ${TRANSIT_HOME_CALLS} calls, one per material (${far.meshes})`);
+
+  // A tram stop on the east side of the loop, looking down its street to the corner where the tram turns and the
+  // viaduct crosses the street's end.
+  await setView(page, [603.5, 3.2, 436], [598, 7.5, 640]);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(1500);
+  const near = await transit();
+  check(near.meshes > far.meshes, `near the line its chunks draw their own detail (${near.meshes} calls, ${(near.triangles / 1000).toFixed(0)}k triangles)`);
+  await page.screenshot({ path: join(SHOTS, 'transit.png') });
+  const fps = await pageFps(page);
+  const stats = await debug(page, (d) => d.stats());
+  console.log(`info  tram stop and viaduct: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+  check(fps >= overviewFps - 5, `the street by the lines holds the overview's frame rate (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  // A pod station at height, lit from within, the exchange beyond.
+  await setView(page, [264, 21, 152], [240, 19, 120]);
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: join(SHOTS, 'pods.png') });
+  check((await debug(page, (d) => d.quality())) === 'high', 'the network holds high quality');
+}
+
+// ---------------------------------------------------------------- the vehicles (Task 31)
+
+/** From home the vehicles draw every car at its far level: one call per model, a few tens of thousands of triangles. */
+const VEHICLE_HOME_CALLS = 8;
+const VEHICLE_HOME_TRIANGLES = 80_000;
+
+/**
+ * The trams, trains, pods, ferries and cabs: how many run on the sample
+ * city's network, what they cost from home, a synthetic trip boarding its
+ * tram and summoning its cab, the stills (tram.png: a tram standing at a
+ * stop, close; ferry.png: a ferry alongside a pier; cab.png: a rider at the
+ * kerb stepping into a summoned cab), and the frame rate by the lines with
+ * every vehicle running.
+ */
+async function vehicleChecks(page: Page): Promise<void> {
+  type VV = { trams: number; trains: number; pods: number; ferries: number; cabs: number; near: number; far: number; meshes: number; triangles: number; time: number };
+  type Probe = { id: string; kind: string; position: number[]; heading: number; speed: number; floorY: number; phase: string };
+  const call = <T>(js: string): Promise<T> => page.evaluate(`(function (d) { return ${js}; })(window.__palimpsest)`) as Promise<T>;
+  const view = (): Promise<VV> => call<VV>('d.vehicles()');
+  const around = (p: number[], h: number, fwd: number, right: number, y: number): number[] => [p[0] + Math.cos(h) * fwd - Math.sin(h) * right, y, p[2] + Math.sin(h) * fwd + Math.cos(h) * right];
+
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(800);
+  const far = await view();
+  const ranks = (await page.evaluate(() => (window as unknown as { __palimpsest: { transit(): { ranks: number } } }).__palimpsest.transit().ranks)) as number;
+  console.log(`info  vehicles: ${far.trams} trams, ${far.trains} trains, ${far.pods} pods, ${far.ferries} ferries, ${far.cabs} cabs; from home ${far.meshes} calls, ${(far.triangles / 1000).toFixed(0)}k triangles (${far.near} near, ${far.far} far)`);
+  check(far.trams >= 8 && far.trains >= 4 && far.pods >= 4 && far.ferries >= 3, `trams, trains, pods and ferries run on the network (${far.trams}, ${far.trains}, ${far.pods}, ${far.ferries})`);
+  check(far.cabs === ranks * 2, `two cabs wait at each of the ${ranks} ranks (${far.cabs})`);
+  check(far.near === 0, 'from home every vehicle draws at its far level');
+  check(far.meshes > 0 && far.meshes <= VEHICLE_HOME_CALLS, `from home the vehicles draw in at most ${VEHICLE_HOME_CALLS} calls (${far.meshes})`);
+  check(far.triangles <= VEHICLE_HOME_TRIANGLES, `from home the vehicles draw at most ${VEHICLE_HOME_TRIANGLES / 1000}k triangles (${(far.triangles / 1000).toFixed(0)}k)`);
+  const t0 = far.time;
+  await page.waitForTimeout(500);
+  check((await view()).time > t0, 'the vehicles run on their clock');
+
+  // A synthetic trip (persona trips are Task 33's): it boards the next tram on its leg, and a long one summons a cab.
+  const tramTrip = await call<Array<{ mode: string; id: string | null; boardsIn: number; alightsIn: number }>>('d.vehicleTrip([560, -300], [600, 200])');
+  const tramLeg = tramTrip.find((l) => l.mode === 'tram');
+  check(!!tramLeg?.id && tramLeg.boardsIn >= 0 && tramLeg.alightsIn > tramLeg.boardsIn, `a trip boards the next tram on its leg (${JSON.stringify(tramLeg)})`);
+
+  await call('d.vehicleHold(true)');
+  // A tram standing at a stop on the east side of the loop, close from the platform: its nose three-quarters on.
+  const tram = await call<Probe | null>('d.vehicleStage("tram", [680, 240])');
+  check(!!tram && tram.speed < 0.01, 'a tram stands at its stop');
+  if (tram) {
+    await setView(page, around(tram.position, tram.heading, 21, 5.2, tram.position[1] + 1.7), around(tram.position, tram.heading, 0, -0.5, tram.position[1] + 1.7));
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(900);
+    const near = await view();
+    check(near.near > 0 && near.meshes > far.meshes, `close by, the vehicles draw their near level (${near.near} cars, ${near.meshes} calls, ${(near.triangles / 1000).toFixed(0)}k triangles)`);
+    await page.screenshot({ path: join(SHOTS, 'tram.png') });
+  }
+  // A ferry alongside the pier at the foot of the civic axis, from above the quay.
+  const ferry = await call<Probe | null>('d.vehicleStage("ferry", [-332, 72])');
+  check(!!ferry && Math.abs(ferry.position[1] - -5.2) < 0.01, 'a ferry stands at a pier on the water');
+  if (ferry) {
+    await setView(page, around(ferry.position, ferry.heading, 26, 16, ferry.position[1] + 6.5), around(ferry.position, ferry.heading, 0, 0, ferry.position[1] + 0.5));
+    await page.waitForTimeout(900);
+    await page.screenshot({ path: join(SHOTS, 'ferry.png') });
+  }
+  // A cab summoned to a rider at the kerb: it drives from the nearest rank, pulls up, and the rider steps in.
+  const cabTrip = await call<Array<{ mode: string; id: string | null }>>('d.vehicleTrip([446.5, 330], [1100, -200])');
+  const cabLeg = cabTrip.find((l) => l.mode === 'cab');
+  check(!!cabLeg?.id, `a long trip summons a cab (${cabTrip.map((l) => l.mode).join(', ')})`);
+  if (cabLeg?.id) {
+    let cab = await call<Probe | null>(`d.vehicle(${JSON.stringify(cabLeg.id)})`);
+    check(cab?.phase === 'to-pickup', `the cab sets off from its rank (${cab?.phase})`);
+    for (let i = 0; i < 600 && cab && cab.phase !== 'pickup'; i++) {
+      await call('d.vehicleSkip(1)');
+      cab = await call<Probe | null>(`d.vehicle(${JSON.stringify(cabLeg.id)})`);
+    }
+    check(cab?.phase === 'pickup' && Math.hypot(cab.position[0] - 446.5, cab.position[2] - 330) < 0.5, 'the cab pulls up where the rider waits');
+    if (cab) {
+      await call('d.vehicleSkip(2)');
+      const kerb = around(cab.position, cab.heading, -0.35, 1.45, cab.position[1]);
+      await call(`d.vehicleRider(${JSON.stringify(kerb)}, ${cab.heading - Math.PI / 2 - 0.5})`);
+      await setView(page, around(cab.position, cab.heading, 6.5, 4.4, 1.45), around(cab.position, cab.heading, -0.3, 0.7, 0.95));
+      await page.waitForTimeout(900);
+      await page.screenshot({ path: join(SHOTS, 'cab.png') });
+      await call('d.vehicleRider(null)');
+    }
+  }
+  await call('d.vehicleHold(false)');
+
+  // By the lines with every vehicle running: trams through the stop, trains overhead, the shadow map following them.
+  await setView(page, [603.5, 3.2, 436], [598, 7.5, 640]);
+  await page.waitForTimeout(1500);
+  const fps = await pageFps(page);
+  const stats = await debug(page, (d) => d.stats());
+  const running = await view();
+  console.log(`info  by the lines with every vehicle running: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles (${running.near} cars near)`);
+  check(fps >= overviewFps - 5, `the street by the lines holds the overview's frame rate with every vehicle running (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  // Close by a ferry under way, its wake and the other ferries' (up to four) drawn in the water.
+  const found = await call<boolean>('d.vehicleSeek([{ kind: "ferry", near: [-360, 210], radius: 50, moving: 5 }])');
+  check(found, 'a ferry comes under way in mid-river');
+  if (found) {
+    const ferries = await call<Probe[]>('d.vehicleKinds("ferry")');
+    const f = ferries.sort((a, b) => Math.hypot(a.position[0] + 360, a.position[2] - 210) - Math.hypot(b.position[0] + 360, b.position[2] - 210))[0];
+    await setView(page, around(f.position, f.heading, -70, 8, 9), around(f.position, f.heading, 6, 0, -5));
+    await page.waitForTimeout(1500);
+    const wakeFps = await pageFps(page);
+    const moving = ferries.filter((x) => x.speed > 0.2).length;
+    console.log(`info  close by a ferry under way, ${ferries.length} wakes fed (${moving} moving): ${wakeFps.toFixed(0)} fps`);
+    check(wakeFps >= overviewFps - 5, `the river holds the overview's frame rate with the ferries' wakes (${wakeFps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  }
+  check((await debug(page, (d) => d.quality())) === 'high', 'the vehicles hold high quality');
+}
+
+// ---------------------------------------------------------------- the personas as people (Task 34)
+
+/**
+ * The agent personas on the economy's trips: figures in the city, none at
+ * its full level from home; a persona sent on the tram walks to its stop,
+ * waits on the platform under its plate (commute.png), boards the tram and
+ * rides in it; Follow brings the camera to it and Escape lets go.
+ */
+async function peopleChecks(page: Page): Promise<void> {
+  type PV = { figures: number; near: number; far: number; lanterns: number; meshes: number; triangles: number; following: string | null };
+  const view = (): Promise<PV | null> => callDebug<PV | null>(page, 'd.people()');
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(800);
+  const far = await view();
+  console.log(`info  people: ${far?.figures} figures; from home ${far?.near} near, ${far?.far} far, ${far?.lanterns} lanterns in ${far?.meshes} calls`);
+  check(!!far && far.figures >= 3, `the economy's trips put personas in the city (${far?.figures})`);
+  check(!!far && far.near === 0 && far.meshes <= 2, `from home no persona draws its full figure (${far?.near} near, ${far?.meshes} calls)`);
+
+  // Dagny on the tram: she walks to the stop, waits on the platform, and boards.
+  await callDebug(page, 'd.peopleHold(true)');
+  const id = 'dagny-hollis';
+  const tripId = await sendPerson(page, id, [560, -300], [600, 200]);
+  check(!!tripId, 'a persona is sent on a tram trip');
+  let f = await runUntil(page, id, (x) => x.mode === 'tram' && x.stage === 'wait');
+  check(!!f && f.mode === 'tram' && f.stage === 'wait' && !!f.ride, `she walks to the stop and waits for the tram (${f?.mode}, ${f?.stage})`);
+  if (f?.ride) {
+    // The tram coming in: the still a few seconds before it stands at the stop.
+    f = await runUntil(page, id, (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 34 && v.speed > 0.5), 1200);
+    if (f) {
+      await setView(page, aroundPerson(f.position, f.heading, 11, 2.4, f.position[1] + 2.4), aroundPerson(f.position, f.heading, -1.5, 0.3, f.position[1] + 1.2));
+      await debug(page, (d) => d.precompile());
+      await page.waitForTimeout(900);
+      const plates = page.locator('.plate.plate-person');
+      const plateText = (await plates.allTextContents()).join(' | ');
+      check((await plates.count()) >= 1 && /Dagny Hollis/.test(plateText), `her plate stands over her within 150 m (${plateText || 'none'})`);
+      const near = await view();
+      check(!!near && near.near >= 1 && near.triangles > 1500, `close by she draws at her full level (${near?.near} near, ${near?.triangles} triangles)`);
+      await page.screenshot({ path: join(SHOTS, 'commute.png') });
+    }
+    f = await runUntil(page, id, (x) => x.stage === 'ride', 300);
+    const v = f?.ride ? await callDebug<{ position: number[] } | null>(page, `d.vehicle(${JSON.stringify(f.ride.id)})`) : null;
+    check(!!f && f.stage === 'ride' && !!v && Math.hypot(f.position[0] - v.position[0], f.position[2] - v.position[2]) < 2.5, `she boards and rides in the tram (${f?.stage})`);
+    // The tram dwells 20 s at the stop: once it is under way, ten seconds more carry her down the line with it.
+    await runUntil(page, id, (_x, tv) => !!tv && tv.speed > 1, 60);
+    await callDebug(page, 'd.peopleSkip(10)');
+    const f2 = await person(page, id);
+    const v2 = f2?.ride ? await callDebug<{ position: number[] } | null>(page, `d.vehicle(${JSON.stringify(f2.ride.id)})`) : null;
+    const moved = f2 && f ? Math.hypot(f2.position[0] - f.position[0], f2.position[2] - f.position[2]) : 0;
+    const off = f2 && v2 ? Math.hypot(f2.position[0] - v2.position[0], f2.position[2] - v2.position[2]) : Infinity;
+    check(moved > 20 && off < 2.5, `and moves with it down the line (${moved.toFixed(0)} m on, ${off.toFixed(1)} m from the tram)`);
+  }
+  await callDebug(page, 'd.peopleHold(false)');
+
+  // Follow: the camera comes to her and keeps behind her; Escape lets go.
+  await callDebug(page, `d.follow(${JSON.stringify(id)})`);
+  await page.waitForTimeout(2500);
+  const followed = await person(page, id);
+  const eye = await debug(page, (d) => d.camera());
+  const off = followed ? Math.hypot(eye[0] - followed.position[0], eye[2] - followed.position[2]) : Infinity;
+  check((await callDebug<string | null>(page, 'd.following()')) === id && off < 18, `Follow brings the camera to her and keeps about 12 m behind, on the tram too (${off.toFixed(1)} m off in plan)`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  check((await callDebug<string | null>(page, 'd.following()')) === null, 'Escape lets the follow go');
+  // The agent page's Follow button does the same, and comes back to the city.
+  await page.goto(`http://127.0.0.1:${PORT}/?debug#/agents/${id}`);
+  await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  const btn = page.locator('.agentpage .agent-follow');
+  check((await btn.count()) === 1 && (await btn.getAttribute('aria-disabled')) === null, 'the agent page offers Follow');
+  await btn.click();
+  await page.waitForTimeout(2500);
+  const route = await page.evaluate(() => document.body.dataset.route);
+  check(route === 'city', `Follow comes back to the city (${route})`);
+  const now = await callDebug<string | null>(page, 'd.following()');
+  check(now === id || (await person(page, id)) === null, `and follows her figure (${now})`);
+  await callDebug(page, 'd.follow(null)');
+  // F on an agent with no figure in the city says so in the running head instead of flying anywhere.
+  const firms = (await page.evaluate(() => fetch('/api/firms').then((r) => r.json()))) as Array<{ agents: Array<{ id: string; retired: boolean }> }>;
+  const out = new Set((await callDebug<Array<{ agentId: string }>>(page, 'd.persons()')).map((p) => p.agentId));
+  const stayAt = firms.flatMap((f) => f.agents).find((a) => !a.retired && !out.has(a.id));
+  if (stayAt) {
+    await page.goto(`http://127.0.0.1:${PORT}/?debug#/agents/${stayAt.id}`);
+    await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+    await page.waitForTimeout(800);
+    await page.evaluate(() => {
+      location.hash = '#/';
+    });
+    await page.waitForTimeout(400);
+    await page.keyboard.press('f');
+    await page.waitForTimeout(300);
+    const said = await debug(page, (d) => d.notice());
+    check(/not out in the city/.test(said) && (await callDebug<string | null>(page, 'd.following()')) === null, `F on an agent with no figure says so (${said || 'nothing'})`);
+  } else check(false, 'an agent without a figure to try F on');
+  check((await debug(page, (d) => d.quality())) === 'high', 'the people hold high quality');
+}
+
+// ---------------------------------------------------------------- the ambient traffic and crowd (Task 32)
+
+/** From home the ambient life draws its far levels only: a few calls, and its share of the home budget's room. */
+const AMBIENT_HOME_CALLS = 8;
+const AMBIENT_HOME_TRIANGLES = 600_000;
+
+/**
+ * The unlabelled cars and people at full density: how many, what they cost
+ * from home, that they run and that the lights hold them in turn, the still
+ * street.png (dusk, at a person's height by a plaza, the streets full), and
+ * the frame rate there held within 5 of the overview at high quality.
+ */
+async function ambientChecks(page: Page): Promise<void> {
+  type AV = { cars: number; people: number; walking: number; waiting: number; nearCars: number; farCars: number; nearPeople: number; farPeople: number; meshes: number; triangles: number; density: number; time: number };
+  const call = <T>(js: string): Promise<T> => page.evaluate(`(function (d) { return ${js}; })(window.__palimpsest)`) as Promise<T>;
+  await call('d.ambientDensity(1)');
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(800);
+  const far = await call<AV>('d.ambient()');
+  type T = { calls: number; triangles: number };
+  const parts = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
+  const share = Object.values(parts.traffic ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  console.log(`info  the traffic and crowd's share of the home frame, every pass: ${share.calls} calls, ${(share.triangles / 1000).toFixed(0)}k triangles`);
+  check(share.calls >= 1 && share.calls <= AMBIENT_HOME_CALLS, `from home the traffic and crowd draw, in at most ${AMBIENT_HOME_CALLS} calls over every pass (${share.calls})`);
+  console.log(`info  ambient: ${far.cars} cars, ${far.people} people (${far.walking} walking, ${far.waiting} waiting); from home ${far.meshes} calls, ${(far.triangles / 1000).toFixed(0)}k triangles (${far.nearCars} cars near, ${far.farCars} far)`);
+  check(far.cars > 200 && far.people > 500, `cars and people fill the streets at full density (${far.cars}, ${far.people})`);
+  check(far.meshes <= AMBIENT_HOME_CALLS, `from home the ambient life draws in at most ${AMBIENT_HOME_CALLS} calls (${far.meshes})`);
+  check(far.triangles <= AMBIENT_HOME_TRIANGLES, `from home the ambient life draws at most ${AMBIENT_HOME_TRIANGLES / 1000}k triangles (${(far.triangles / 1000).toFixed(0)}k)`);
+  const t0 = far.time;
+  await page.waitForTimeout(600);
+  check((await call<AV>('d.ambient()')).time > t0, 'the ambient clock runs');
+  const queues = await call<Array<{ x: number; z: number; held: number }>>('d.ambientQueues([0, 0], 2000)');
+  check(queues.length > 3, `cars stand at the lights at several junctions (${queues.length})`);
+
+  // A street at dusk by the district plaza east of the exchange: at a person's height on the pavement, looking up
+  // the street into the plaza, traffic crossing at the junction ahead and people on both pavements.
+  await setView(page, [195.4, 1.62, -145], [207, 1.45, -30]);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(1500);
+  const near = await call<AV>('d.ambient()');
+  console.log(`info  street by a plaza: ${near.nearCars} cars and ${near.nearPeople} people near, ${near.meshes} calls, ${(near.triangles / 1000).toFixed(0)}k triangles`);
+  check(near.nearCars > 0 && near.nearPeople > 0, `at street level the near cars and figures draw (${near.nearCars}, ${near.nearPeople})`);
+  await page.screenshot({ path: join(SHOTS, 'street.png') });
+  const fps = await pageFps(page);
+  const stats = await debug(page, (d) => d.stats());
+  console.log(`info  street by a plaza: ${fps.toFixed(0)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles`);
+  check(fps >= overviewFps - 5, `the street by a plaza holds the overview's frame rate with the traffic and crowd (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
+  check((await debug(page, (d) => d.quality())) === 'high', 'the ambient life holds high quality');
+}
+
+/**
+ * The governor's step down to medium, taken on purpose at the river (where the water's own settings change with it)
+ * and then the views the city is most often seen from: the drop must leave no error behind, whatever is on screen.
+ * Runs last, since it leaves the city at medium.
+ */
+async function qualityDropChecks(page: Page, errors: string[]): Promise<void> {
+  const before = errors.length;
+  await setView(page, [-353, 2.6, 11.5], [-368, -3, 320]);
+  await page.evaluate('window.__palimpsest.dropQuality()');
+  await page.waitForTimeout(1500);
+  check((await debug(page, (d) => d.quality())) === 'medium', "the governor's step down takes the city to medium");
+  const home = await debug(page, (d) => d.limits().home);
+  for (const [eye, target] of [
+    [[-353, 2.6, 11.5], [-368, -3, 320]],
+    [[603.5, 3.2, 436], [598, 7.5, 640]],
+    [[-368, 21, 520], [-354, 5, 760]],
+    [home.eye, home.target],
+  ] as Array<[number[], number[]]>) {
+    await setView(page, eye, target);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(700);
+  }
+  const fresh = errors.slice(before);
+  check(fresh.length === 0, `stepping down to medium leaves no errors${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
+}
+
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/index.html missing: run npm run build first');
+  }
+  // A bundle older than the app's sources tests code that is no longer there (a merge after the last build, say).
+  const newest = (dir: string): number =>
+    readdirSync(dir, { withFileTypes: true }).reduce((m, e) => Math.max(m, e.isDirectory() ? newest(join(dir, e.name)) : statSync(join(dir, e.name)).mtimeMs), 0);
+  const built = statSync(join(DIST, 'index.html')).mtimeMs;
+  if (newest(join(ROOT, 'app', 'src')) > built || newest(join(ROOT, 'shared')) > built) {
+    throw new Error('dist is older than app/src or shared: run npm run build first');
   }
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-ui-test-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
@@ -1701,7 +2238,8 @@ async function main(): Promise<void> {
     page.on('console', (m) => {
       if (m.type() === 'error' && !(abortingRequests && /net::ERR_(FAILED|CONNECTION_REFUSED)/.test(m.text()))) consoleErrors.push(m.text());
     });
-    page.on('pageerror', (e) => consoleErrors.push(String(e)));
+    // With the stack, so an error in the page says where it was thrown.
+    page.on('pageerror', (e) => consoleErrors.push(e.stack ?? String(e)));
 
     if (process.env.UI_QUALITY) {
       await fetch(`http://127.0.0.1:${PORT}/api/settings`, {
@@ -1723,6 +2261,8 @@ async function main(): Promise<void> {
       .then(() => true)
       .catch(() => false);
     check(ready, 'city reports ready');
+    // The ambient life at full density throughout, whatever the hour: every budget is measured at its worst.
+    if (ready) await fullDensity(page);
     await page.waitForTimeout(3000);
 
     const canvas = await page.$('canvas');
@@ -1780,6 +2320,7 @@ async function main(): Promise<void> {
       await measureFps(page);
       check((await debug(page, (d) => d.quality())) === 'high', 'the city holds high quality at the default settings (no automatic drop)');
       await inspectorChecks(page);
+      await rideChecks(page);
       await siteChecks(page);
       await disconnectWhileInspecting(page);
       await reposChecks(page);
@@ -1801,6 +2342,7 @@ async function main(): Promise<void> {
       await detailChecks(page, check, SHOTS);
       // The firms list, a firm's page and the agent page (Task 38).
       await firmChecks(page, check, SHOTS);
+      await rideAgentChecks(page);
       // The treasury and the daily report (Task 39).
       await treasuryChecks(page, check, SHOTS);
       // The market switches on Repos, the district page and the provider settings (Task 40).
@@ -1817,6 +2359,11 @@ async function main(): Promise<void> {
       await lifecycleChecks(page);
       await silhouetteChecks(page);
       await riverChecks(page);
+      await transitChecks(page);
+      await vehicleChecks(page);
+      await peopleChecks(page);
+      await ambientChecks(page);
+      await qualityDropChecks(page, consoleErrors);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);

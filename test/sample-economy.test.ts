@@ -34,6 +34,8 @@ import { SAMPLE_INSTALLED, SAMPLE_ISSUES, SAMPLE_MARKER, sampleCodexHome, sample
 import { proposalKey } from '../shared/market-rules.js';
 import type { BriefItemKind, JobStatus, RunLogLine, Silhouette, Trip, Verdict } from '../shared/types.js';
 import { seedSample } from '../tools/sample.js';
+import { boardSections } from '../app/src/ui/board.js';
+import { runsUnderWay } from '../shared/market-rules.js';
 
 const NOW = Date.parse('2026-11-10T12:00:00Z');
 /** A Monday noon in Los Angeles: the morning the brief offers last week's tour. */
@@ -248,9 +250,13 @@ test('the economy seeds every job status and replays clean', async () => {
   assert.equal(codex.status, 'ready');
   assert.equal(codex.windows.length, 2);
 
-  // Trips in flight across every mode, a persona cab among them.
+  // Trips in flight, routed over the city's network (Task 33): the modes follow the distances, a persona cab among them.
   const live = trips().filter((t) => !t.endedAt);
-  assert.deepEqual(new Set(live.flatMap((t) => t.legs.map((l) => l.mode))), new Set(['walk', 'tram', 'rail', 'pod', 'ferry', 'cab']));
+  // The six seeded on their way, and the winners the scripted awards sent to their districts.
+  assert.ok(live.length >= 6, String(live.length));
+  const modes = new Set(live.flatMap((t) => t.legs.map((l) => l.mode)));
+  assert.ok(modes.has('cab') && modes.has('walk'), [...modes].join(','));
+  assert.ok(live.every((t) => t.legs.length >= 1 && t.legs.every((l) => l.path.length >= 2 && l.ms >= 1) && t.ms === t.legs.reduce((s, l) => s + l.ms, 0)), 'every trip has routed legs');
   assert.ok(live.every((t) => query({ kind: 'trip.started' }).some((e) => (e.data as { trip: Trip }).trip.id === t.id)), 'every trip is in the ledger');
 
   // Sites for every run in a live stage.
@@ -741,4 +747,20 @@ test('the economy reads his plan as measured, and has a stale reading to pause o
   assert.equal(stale.sevenDay.usedPct, 21, 'the week has not reset since');
   sampleReading(NOW);
   assert.notEqual(treasury(NOW).paused?.reason, 'stale', 'and a fresh one carries on');
+});
+
+test('the board, the run pages and the treasury count the same runs under way', async () => {
+  const { listRepos } = await import('../engine/repos.js');
+  await seed();
+  const running = boardSections(listJobs(), listRepos(), NOW).find((s) => s.key === 'running')?.jobs ?? [];
+  const under = runsUnderWay(listRuns(), listJobs());
+  assert.ok(under.total > 0, 'the sample has runs under way');
+  // The board's running section holds the jobs with a run under way, and may hold an awarded job whose run has not started.
+  const withRun = running.filter((j) => !!j.runId);
+  assert.equal(under.total, withRun.length, `the treasury counts ${under.total} runs under way against ${withRun.length} running on the board`);
+  assert.equal(under.claude + under.local + under.api, under.total);
+  for (const j of withRun) assert.ok(listRuns().some((r) => r.jobId === j.id && r.endedAt === null), `${j.id} (${j.status}) has a run under way`);
+  // A run whose PR waits on him keeps no end, but the board shows its job as waiting and the treasury does not count it.
+  const waiting = listJobs({ status: 'waiting' }).filter((j) => listRuns().some((r) => r.jobId === j.id && r.endedAt === null));
+  assert.ok(waiting.length > 0, 'the sample has a run waiting on his review');
 });

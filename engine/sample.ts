@@ -737,6 +737,9 @@ export const sampleSpawner: Spawner = (cmd, args = [], opts = {}) => {
   };
 };
 
+/** The percentages his sample reading holds, the only place they are written: the five-hour window and the week. */
+export const SAMPLE_USED = { five: 44, week: 21 } as const;
+
 /**
  * His usage reading as the statusline hook writes it: fresh (taken eight
  * minutes ago, 44% of the five-hour window against the 50% cap, so the brief
@@ -746,7 +749,7 @@ export const sampleSpawner: Spawner = (cmd, args = [], opts = {}) => {
  */
 export function sampleReading(now: number = Date.now(), opts: { stale?: boolean } = {}): void {
   const sec = Math.floor(now / 1000) - (opts.stale ? 6 * 3600 : 8 * 60);
-  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 44, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
+  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: SAMPLE_USED.five, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: SAMPLE_USED.week, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
   mkdirSync(paths().usage, { recursive: true });
   rmSync(join(paths().usage, 'latest.json'), { force: true });
   writeFileSync(join(paths().usage, 'readings.jsonl'), `${JSON.stringify(reading)}\n`);

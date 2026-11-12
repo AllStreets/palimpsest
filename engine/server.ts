@@ -13,7 +13,7 @@ import { pushModeRefusal as pushChecksRefusal } from '../shared/market-rules.js'
 import { handleMarketApi, scrub, setMarketExtras } from './market/api.js';
 import { fakeProvider } from './market/fake-provider.js';
 import { setProvider } from './market/providers.js';
-import { economyClock, economySites, economyTrips, sampleOllamaUsage } from './market/sample-economy.js';
+import { economyClock, economySites, sampleOllamaUsage } from './market/sample-economy.js';
 import { noteSseClients } from './market/budget.js';
 import { resumeRepo, updateKeepAwake } from './market/runs.js';
 import { availableRepos, GhError } from './github.js';
@@ -575,7 +575,7 @@ function enterSampleMode(): () => void {
   useSampleFolders();
   const fake = fakeProvider();
   for (const kind of ['claude', 'ollama', 'anthropic'] as const) setProvider(kind, fake);
-  setMarketExtras({ sites: economySites, trips: economyTrips, providers: { ollama: () => sampleOllamaUsage() } });
+  setMarketExtras({ sites: economySites, providers: { ollama: () => sampleOllamaUsage() } });
   if (process.env.PALIMPSEST_SAMPLE_ECONOMY !== 'live') return () => setMarketExtras({});
   const clock = economyClock({ now: () => Date.now(), speed: sampleSpeed(), board: true });
   const timer = setInterval(() => clock.tick(1000), 1000);

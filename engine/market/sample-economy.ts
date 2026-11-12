@@ -28,8 +28,7 @@
  * emits. At speed 20 a capture sees a crane rise, sparks, searchlights and a
  * cure in about forty seconds.
  *
- * Trips are stored with hand-written legs until the routing task (Task 33)
- * switches the seed and the clock to startTrip().
+ * Trips are routed by trips.ts over the city's network, as a real run's are.
  *
  * Phase 3 (Task 9) adds what the audit, the brief and the milestones need
  * a human to meet: four README audits (one done with fourteen claims and
@@ -70,8 +69,6 @@ import type {
   SiteStage,
   SiteState,
   Tier,
-  Trip,
-  TripMode,
   TripReason,
   Run,
   Verdict,
@@ -99,6 +96,7 @@ import { charge } from './budget.js';
 import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
 import { installMilestones } from './milestones.js';
+import { activeTrips, EXCHANGE, homeOf, siteOf, startTrip } from './trips.js';
 import { reputation } from './reputation.js';
 import { localDay, writeDailyReport } from './report.js';
 import { haltRepo, listRuns, run as storedRun } from './runs.js';
@@ -1221,77 +1219,6 @@ function shortLog(a: Agent, j: Job, files: string[], startedAt: number, endedAt:
 
 type P = { x: number; z: number };
 
-function legOf(mode: TripMode, pts: P[], y = 0): Trip['legs'][number] {
-  const speed: Record<TripMode, number> = { walk: 1.4, tram: 7, rail: 14, pod: 9, ferry: 5, cab: 11 };
-  let d = 0;
-  for (let i = 1; i < pts.length; i++) d += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z);
-  return { mode, path: pts.map((p) => [Math.round(p.x), y, Math.round(p.z)] as [number, number, number]), ms: Math.round((d / speed[mode]) * 1000) };
-}
-
-/** Where a firm's person stands at home: beside its tower in the quarter. */
-function homeOf(a: Agent): P {
-  const q = quarterOrigin(firm(a.firmId)?.slot ?? 0);
-  return { x: q.x + (a.towerIndex % 2 ? 30 : -30), z: q.z + (a.towerIndex < 2 ? -30 : 30) };
-}
-
-function siteOf(repo: string): P {
-  const r = getRepo(repo);
-  const o = districtOrigin(r?.slot ?? 0);
-  return { x: o.x + 40, z: o.z + 40 };
-}
-
-const EXCHANGE: P = { x: 0, z: 40 };
-/** The river (ruling 14) runs north to south at x = -360. */
-const RIVER_X = -360;
-
-/** A trip's legs by its main mode, walking to and from the stop. */
-function legsFor(mode: TripMode, from: P, to: P): Trip['legs'] {
-  if (mode === 'walk') return [legOf('walk', [from, { x: to.x, z: from.z }, to])];
-  if (mode === 'cab') return [legOf('cab', [from, { x: from.x, z: to.z }, to])];
-  if (mode === 'ferry') {
-    const on = { x: RIVER_X + 30, z: from.z };
-    const off = { x: RIVER_X + 30, z: to.z };
-    return [legOf('walk', [from, on]), legOf('ferry', [on, { x: RIVER_X, z: from.z }, { x: RIVER_X, z: to.z }, off]), legOf('walk', [off, to])];
-  }
-  const y = mode === 'rail' ? 12 : mode === 'pod' ? 6 : 0;
-  const a = { x: from.x, z: from.z + 60 };
-  const b = { x: to.x, z: from.z + 60 };
-  return [legOf('walk', [from, a]), legOf(mode, [a, b, { x: to.x, z: to.z - 40 }], y), legOf('walk', [{ x: to.x, z: to.z - 40 }, to])];
-}
-
-function startTrip(a: Agent, reason: TripReason, jobId: string | null, mode: TripMode, from: P, to: P, startedAt: number, msScale = 1): Trip {
-  const legs = legsFor(mode, from, to).map((l) => ({ ...l, ms: Math.max(1000, Math.round(l.ms * msScale)) }));
-  const trip: Trip = {
-    id: `trip-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
-    agentId: a.id,
-    firmId: a.firmId,
-    reason,
-    jobId,
-    from,
-    to,
-    legs,
-    startedAt: iso(startedAt),
-    ms: legs.reduce((s, l) => s + l.ms, 0),
-    endedAt: null,
-  };
-  openDb().prepare('INSERT OR REPLACE INTO trips (id, json) VALUES (?, ?)').run(trip.id, JSON.stringify(trip));
-  record('trip.started', { tripId: trip.id, agentId: a.id, firmId: a.firmId, jobId, trip });
-  emit('trip.started', { trip });
-  return trip;
-}
-
-function endTrip(t: Trip, at: number): void {
-  const ended: Trip = { ...t, endedAt: iso(at) };
-  openDb().prepare('UPDATE trips SET json = ? WHERE id = ?').run(JSON.stringify(ended), t.id);
-  const data = { tripId: t.id, agentId: t.agentId, firmId: t.firmId, reason: 'arrived', at: iso(at) };
-  record('trip.ended', data);
-  emit('trip.ended', data);
-}
-
-function liveTrips(): Trip[] {
-  return (openDb().prepare('SELECT json FROM trips').all() as Array<{ json: string }>).map((r) => JSON.parse(r.json) as Trip).filter((t) => !t.endedAt);
-}
-
 // ---------------------------------------------------------------- provider fixtures
 
 /** A Codex session and a Gemini chat under the sample home, for Settings' provider list (Task 19). */
@@ -1735,16 +1662,16 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
     ]);
   });
 
-  // People on their way, one in every mode.
+  // People on their way, routed by the city's own network (the modes follow the distances).
   q.push(ago(70_000), () => {
     const t = Date.now();
-    const go = (id: string, reason: TripReason, jobId: string | null, mode: TripMode, from: P, to: P) => startTrip(agentOf(id), reason, jobId, mode, from, to, t);
-    go('teodor-vane', 'inspect', byIssue(88).id, 'walk', homeOf(agentOf('teodor-vane')), siteOf(REPO.A));
-    go('mack-quickset', 'bid', byIssue(219).id, 'tram', homeOf(agentOf('mack-quickset')), EXCHANGE);
-    go('wren-sparrow', 'bid', byIssue(61).id, 'rail', homeOf(agentOf('wren-sparrow')), EXCHANGE);
-    go('oskar-kiln', 'job', byIssue(33).id, 'pod', homeOf(agentOf('oskar-kiln')), siteOf(REPO.Q));
-    go('ola-bergstrom', 'home', null, 'ferry', siteOf(REPO.K), homeOf(agentOf('ola-bergstrom')));
-    go('dagny-hollis', 'bid', byIssue(219).id, 'cab', homeOf(agentOf('dagny-hollis')), EXCHANGE);
+    const go = (id: string, reason: TripReason, jobId: string | null, from: P, to: P) => startTrip(agentOf(id), reason, jobId, from, to, t);
+    go('teodor-vane', 'inspect', byIssue(88).id, homeOf(agentOf('teodor-vane')), siteOf(REPO.A));
+    go('mack-quickset', 'bid', byIssue(219).id, homeOf(agentOf('mack-quickset')), EXCHANGE);
+    go('wren-sparrow', 'bid', byIssue(61).id, homeOf(agentOf('wren-sparrow')), EXCHANGE);
+    go('oskar-kiln', 'job', byIssue(33).id, homeOf(agentOf('oskar-kiln')), siteOf(REPO.Q));
+    go('ola-bergstrom', 'home', null, siteOf(REPO.K), homeOf(agentOf('ola-bergstrom')));
+    go('dagny-hollis', 'bid', byIssue(219).id, homeOf(agentOf('dagny-hollis')), EXCHANGE);
   });
 }
 
@@ -2345,11 +2272,6 @@ export function sampleOllamaUsage(now: number = Date.now()): ProviderUsage {
   };
 }
 
-/** Trips under way: every stored trip not yet ended. */
-export function economyTrips(): Trip[] {
-  return liveTrips();
-}
-
 // ---------------------------------------------------------------- the clock
 
 export interface EconomyClock {
@@ -2485,7 +2407,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
         transient.set(runId, cured);
         emit('site.changed', { site: cured });
         const a = storedAgent(r.agentId)!;
-        startTrip(a, 'home', r.jobId, 'tram', siteOf(r.repo), homeOf(a), opts.now(), 1 / opts.speed);
+        startTrip(a, 'home', r.jobId, siteOf(r.repo), homeOf(a), opts.now(), { msScale: 1 / opts.speed });
       });
       at(t + 60, () => {
         transient.delete(runId);
@@ -2536,7 +2458,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
           transient.delete(r.id);
         });
         const a = storedAgent(r.agentId)!;
-        startTrip(a, 'home', r.jobId, 'walk', siteOf(r.repo), homeOf(a), opts.now(), 1 / opts.speed);
+        startTrip(a, 'home', r.jobId, siteOf(r.repo), homeOf(a), opts.now(), { msScale: 1 / opts.speed });
       }
     });
   });
@@ -2621,8 +2543,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
         due();
         if (opts.board) chain = chain.then(board).catch((err: unknown) => console.warn(`palimpsest: the sample board: ${err instanceof Error ? err.message : String(err)}`));
         // Trips end when their time is up.
-        const t = opts.now();
-        for (const trip of liveTrips()) if (Date.parse(trip.startedAt) + trip.ms <= t) endTrip(trip, t);
+        activeTrips(opts.now());
       });
     },
     stop() {
