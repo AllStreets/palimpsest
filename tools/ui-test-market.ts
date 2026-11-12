@@ -10,6 +10,7 @@
  * Saves repos.png, district.png, settings-providers.png, settings-caps.png and
  * settings-privacy.png (as market-*.png) at 1600 x 1000 for the quality rounds.
  */
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { Page, Response } from 'playwright';
@@ -20,6 +21,8 @@ import type { Job, ProviderUsage, Repo } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
 
+const BRIEF_SENTENCE = 'A repo is audited by itself only once, the first time its market opens; any repo can be audited from its district page at any time.';
+const DIST = process.env.PALIMPSEST_DIST ?? join(process.cwd(), 'dist');
 const SIZE = { width: 1600, height: 1000 };
 /** A made-up key in the shape the engine accepts. It exists only in this test and the stand-in's memory. */
 const FAKE_KEY = 'sk-ant-api03-UITESTONLY-qz7Jm2Lw9Xc4Rv8Tn';
@@ -92,7 +95,7 @@ export async function marketChecks(page: Page, check: Check, shots: string): Pro
     await districtChecks(page, check, shots);
     await settingsChecks(page, check, shots, sampleKeychain.isSet);
   } finally {
-    patchSettings({ claudeConcurrency: savedSettings.claudeConcurrency, keepAwake: savedSettings.keepAwake, hardStopPct: savedSettings.hardStopPct, bidWindowSec: savedSettings.bidWindowSec });
+    patchSettings({ auditOnConnect: savedSettings.auditOnConnect, auditModel: savedSettings.auditModel, auditMaxCredits: savedSettings.auditMaxCredits, claudeConcurrency: savedSettings.claudeConcurrency, keepAwake: savedSettings.keepAwake, hardStopPct: savedSettings.hardStopPct, bidWindowSec: savedSettings.bidWindowSec });
     sampleKeychain.reset();
     if (before) await page.setViewportSize(before);
   }
@@ -139,6 +142,18 @@ async function repoChecks(
   check((await page.locator(`${rowSel(target)} [role="switch"].market`).getAttribute('aria-checked')) === 'true', 'and the switch shows on');
   await page.locator(`${rowSel(target)} [role="switch"].market`).click();
   check(await within(page, 4000, async () => (await repoOf(page, target))?.market === false), 'and off again');
+
+  // Each ready row says when its README was last audited, or that it never was; the word links to the district page.
+  const auditedLink = page.locator(`${rowSel(harbour)} a.repo-audited`);
+  const auditedText = ((await auditedLink.textContent()) ?? '').trim();
+  check(/^audited /.test(auditedText) && !/never/.test(auditedText), `the harbour repo reads audited (${auditedText})`);
+  check((await auditedLink.getAttribute('href')) === `#/repos/${harbour}`, 'and links to its district page');
+  const unaudited = (await api<Repo[]>(page, '/api/repos')).find((r) => r.connected && r.status === 'ready' && !r.auditedAt);
+  check(!!unaudited, 'a connected repo has never been audited');
+  if (unaudited) check(((await page.locator(`${rowSel(unaudited.fullName)} a.repo-audited`).textContent()) ?? '').trim() === 'never audited', `and its row reads never audited (${unaudited.fullName})`);
+  const built = (await readdir(join(DIST, 'assets'))).filter((f) => f.endsWith('.js'));
+  const bundle = (await Promise.all(built.map((f) => readFile(join(DIST, 'assets', f), 'utf8')))).join('\n');
+  check(built.length > 0 && !/market opens|when the market|opens later/i.test(bundle.split(BRIEF_SENTENCE).join('')), 'no built script says when the market opens');
 
   // Push mode beside it: the note says what it does; without a build command the switch is disabled and says why.
   check(((await page.locator(`${rowSel(harbour)} .repo-push .repo-push-note`).textContent()) ?? '').trim() === 'merges to main after inspection; needs a test and a build command', 'the push note says what push mode does and needs');
@@ -406,6 +421,91 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(shots, 'market-settings-caps.png') });
 
+  // Analysis: the audit switch, the model and the credit cap, each checked by the page before it is sent.
+  const analysis = sheet.locator('.set-sec.analysis');
+  const settingsNow = (): Promise<{ auditOnConnect: boolean; auditModel: string; auditMaxCredits: number }> => api(page, '/api/settings');
+  check((await analysis.count()) === 1 && (await analysis.locator('h2').textContent()) === 'Analysis', 'Settings has an Analysis section');
+  check(
+    (await sheet.locator('.set-sec').evaluateAll((s) => s.map((x) => x.className.replace('set-sec ', '')))).join(',').includes('caps,analysis'),
+    'which stands under Caps',
+  );
+  const auditSw = analysis.locator('[role="switch"].audit-on');
+  check(
+    /Audit a repo's README once, when you turn its market on/.test((await analysis.textContent()) ?? '') &&
+      /A repo is audited by itself only once, the first time its market opens; any repo can be audited from its district page at any time\./.test((await analysis.textContent()) ?? ''),
+    'it says what the switch audits, and that once is all',
+  );
+  const wasOn = (await settingsNow()).auditOnConnect;
+  check((await auditSw.getAttribute('aria-checked')) === String(wasOn), 'the audit switch shows what is stored');
+  await auditSw.click();
+  check(await within(page, 3000, async () => (await settingsNow()).auditOnConnect === !wasOn), 'the audit switch stores its flip');
+  await auditSw.click();
+  check(await within(page, 3000, async () => (await settingsNow()).auditOnConnect === wasOn), 'and flips back');
+  const settingsPatches: string[] = [];
+  const onSettingsReq = (r: { method(): string; url(): string }): void => {
+    if (r.method() === 'PATCH' && /\/api\/settings/.test(r.url())) settingsPatches.push(r.url());
+  };
+  const model = analysis.locator('input.audit-model');
+  check(/Claude Sonnet when your plan has room, else the largest local coder/.test((await analysis.textContent()) ?? ''), 'Audit with says what auto means');
+  check((await model.inputValue()) === 'auto', 'the model reads auto');
+  check((await model.evaluate((e) => getComputedStyle(e).textAlign)) === 'left', 'and sits at the left of its underline');
+  const mBox = await model.boundingBox();
+  const cBox = await analysis.locator('input.audit-credits').boundingBox();
+  check(!!mBox && !!cBox && Math.abs(mBox.x - cBox.x) < 3, 'in line with the credits field');
+  await model.fill('ollama:qwen2.5-coder:7b');
+  await model.press('Enter');
+  check(await within(page, 3000, async () => (await settingsNow()).auditModel === 'ollama:qwen2.5-coder:7b'), 'a model typed as ollama:<name> is stored');
+  await model.fill('claude:haiku');
+  await model.press('Enter');
+  check(await within(page, 3000, async () => (await settingsNow()).auditModel === 'claude:haiku'), 'and claude:<name>');
+  page.on('request', onSettingsReq);
+  await model.fill('gpt-4');
+  await model.press('Enter');
+  await page.waitForTimeout(300);
+  page.off('request', onSettingsReq);
+  check(settingsPatches.length === 0, `a model of the wrong shape sends no request (${settingsPatches.length})`);
+  check((await model.getAttribute('aria-invalid')) === 'true', 'and marks the field invalid');
+  await model.fill('x');
+  check((await model.getAttribute('aria-invalid')) === null && (await analysis.locator('.audit-model-why').isHidden()), 'typing again clears the mark and the message');
+  await model.fill('gpt-4');
+  await model.press('Enter');
+  await page.waitForTimeout(100);
+  check((await settingsNow()).auditModel === 'claude:haiku' && (await model.inputValue()) === 'claude:haiku', 'a model of the wrong shape is refused and the field goes back');
+  check(/ollama:<name> or claude:<name>/.test((await analysis.locator('.audit-model-why').textContent()) ?? ''), 'and says the shapes that are allowed');
+  await model.fill('auto');
+  await model.press('Enter');
+  check(await within(page, 3000, async () => (await settingsNow()).auditModel === 'auto'), 'auto is stored again');
+  const credits = analysis.locator('input.audit-credits');
+  await credits.fill('60');
+  await credits.press('Enter');
+  check(await within(page, 3000, async () => (await settingsNow()).auditMaxCredits === 60), 'the audit credit cap is stored');
+  check(/60 credits, 6% of a window/.test((await analysis.locator('.audit-credits-of').textContent()) ?? ''), 'and read as a share of a five-hour window');
+  page.on('request', onSettingsReq);
+  await credits.fill('5');
+  await credits.press('Enter');
+  await page.waitForTimeout(300);
+  page.off('request', onSettingsReq);
+  check(settingsPatches.length === 0, `five credits sends no request (${settingsPatches.length})`);
+  check((await credits.getAttribute('aria-invalid')) === 'true', 'and marks the field invalid');
+  await credits.fill('7');
+  check((await credits.getAttribute('aria-invalid')) === null && (await analysis.locator('.audit-credits-why').isHidden()), 'typing again clears the mark and the message');
+  await credits.fill('5');
+  await credits.press('Enter');
+  await page.waitForTimeout(100);
+  check((await settingsNow()).auditMaxCredits === 60 && (await credits.inputValue()) === '60', 'five credits is refused and the field goes back');
+  check(/10 to 200/.test((await analysis.locator('.audit-credits-why').textContent()) ?? ''), 'and says the range');
+  await credits.fill('40');
+  await credits.press('Enter');
+  check(await within(page, 3000, async () => (await settingsNow()).auditMaxCredits === 40), 'forty credits, the default, is stored again');
+  check(/40 credits, 4% of a window/.test((await analysis.locator('.audit-credits-of').textContent()) ?? ''), 'and reads 4% of a window');
+  const aMain = sheet.locator('.sheet-body');
+  await aMain.evaluate((b) => {
+    const c = b.querySelector('.set-sec.analysis') as HTMLElement;
+    b.scrollTop += c.getBoundingClientRect().top - b.getBoundingClientRect().top - 28;
+  });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: join(shots, 'market-settings-analysis.png') });
+
   const stopText = (await sheet.locator('.set-sec.stop').textContent()) ?? '';
   check(/new runs at once/.test(stopText) && /within five seconds/.test(stopText), `the kill switch says what stops (${stopText.replace(/\s+/g, ' ').slice(0, 140)})`);
   const leaves = sheet.locator('.settings-privacy .set-row[data-privacy="Leaves this Mac"]');
@@ -414,7 +514,13 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
     said === "Leaves this Mac: gh calls, your own claude CLI's calls to Anthropic made on your login exactly as when you use it yourself, package downloads from the registries a job needs, and, only if you turn it on, Anthropic API calls on your key. Ollama stays on this Mac.",
     `Privacy says what leaves this Mac (${said.slice(0, 60)})`,
   );
-  const all = ((await sheet.textContent()) ?? '') + ((await page.locator('.sheet.repos').textContent()) ?? '');
+  const audits = ((await sheet.locator('.settings-privacy .set-row[data-privacy="Audits"] .set-text').textContent()) ?? '').trim();
+  check(
+    audits ===
+      'An audit reads a fresh clone of your repo on this Mac inside the same sandbox as a job, and only changes nothing; what leaves is the same as a job\'s: your own claude CLI\'s calls on your login, or nothing for a local model. A repo whose market is off is audited only when you ask.',
+    `Privacy says what an audit reads and what leaves (${audits.slice(0, 60)})`,
+  );
+  const all = (((await sheet.textContent()) ?? '') + ((await page.locator('.sheet.repos').textContent()) ?? '')).split(BRIEF_SENTENCE).join('');
   check(!/market opens|when the market|opens later/i.test(all), 'no copy says the market opens later');
   await sheet.locator('.sheet-body').evaluate((b) => {
     const c = b.querySelector('.settings-privacy') as HTMLElement;

@@ -9,7 +9,7 @@ import type { Repo, RepoChecks, RootStyle, Settings } from '../shared/types.js';
 import type { Event } from './events.js';
 import { emit, subscribe } from './events.js';
 import { HttpError, readJsonBody, sendJson } from './http.js';
-import { pushModeRefusal as pushChecksRefusal } from '../shared/market-rules.js';
+import { AUDIT_CREDITS_RANGE, AUDIT_MODEL_SHAPE as AUDIT_MODEL, pushModeRefusal as pushChecksRefusal } from '../shared/market-rules.js';
 import { handleMarketApi, scrub, setMarketExtras } from './market/api.js';
 import { fakeProvider } from './market/fake-provider.js';
 import { setProvider } from './market/providers.js';
@@ -120,9 +120,6 @@ function intIn(v: unknown, lo: number, hi: number): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi;
 }
 
-/** A model reference by shape: a provider, a colon and a name (an Ollama name may carry a tag: `qwen2.5-coder:7b`). */
-const AUDIT_MODEL = /^(?:claude|ollama|anthropic|mlx):(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
-
 const OLLAMA_HOST = /^(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/;
 
 /** Validates a PATCH /api/settings body, returning the partial patch or null when any present field is invalid. */
@@ -180,7 +177,7 @@ function validateSettingsPatch(body: unknown, current: Settings): Partial<Settin
     patch.auditModel = b.auditModel as Settings['auditModel'];
   }
   if ('auditMaxCredits' in b) {
-    if (!intIn(b.auditMaxCredits, 10, 200)) return null;
+    if (!intIn(b.auditMaxCredits, AUDIT_CREDITS_RANGE.lo, AUDIT_CREDITS_RANGE.hi)) return null;
     patch.auditMaxCredits = b.auditMaxCredits;
   }
   if ('todayCapPct' in b) {

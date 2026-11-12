@@ -1,6 +1,8 @@
 import type { Agent, FirmView, ProviderUsage, Settings, UsageWindow } from '../../../shared/types';
+import { pctFor } from '../../../shared/credits';
 import { api, type EngineEvent, type UsageState } from '../api';
 import { cleanText } from './board';
+import { AUDIT_CREDITS_RANGE, AUDIT_MODEL_SHAPE } from '../../../shared/market-rules';
 import { ago, button, checkRadio, createSheet, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton } from './controls';
 
 export interface SettingsScreen {
@@ -17,6 +19,10 @@ const PRIVACY: Array<[string, string]> = [
   ['Stays here', 'Repo mirrors, the city, the ledger, every job and its work, and usage readings, all in ~/Library/Application Support/Palimpsest.'],
   ['Never read', "Your Claude, Codex and Gemini logins. Claude usage comes from the statusline hook; Codex and Gemini usage from those CLIs' own logs, read only. Palimpsest keeps no GitHub token."],
   ['Never shown', 'Your API key. It lives in your keychain, is read there only to make a call, and never comes back to this page.'],
+  [
+    'Audits',
+    "An audit reads a fresh clone of your repo on this Mac inside the same sandbox as a job, and only changes nothing; what leaves is the same as a job's: your own claude CLI's calls on your login, or nothing for a local model. A repo whose market is off is audited only when you ask.",
+  ],
   ['Never sent', 'No analytics, no telemetry, no account.'],
 ];
 
@@ -552,6 +558,156 @@ export function createSettings(
     };
   }
 
+  // ---------------------------------------------------------------- analysis
+
+  const analysis = section('Analysis', 'analysis');
+  const auditRow = row(analysis, 'Audit on connect');
+  auditRow.row.classList.add('audit-on-row');
+  const auditOn = createSwitch('audit-on', "Audit a repo's README once, when you turn its market on", (on) => auditSync.set(on));
+  const auditSync = latestWins<boolean>(
+    async (on) => {
+      auditOn.set((await api.patchSettings({ auditOnConnect: on })).auditOnConnect);
+    },
+    (busy) => markBusy(auditOn.el, busy),
+  );
+  const auditText = el('p', 'set-text audit-on-text', "Audit a repo's README once, when you turn its market on");
+  auditText.addEventListener('click', () => auditOn.el.click());
+  auditRow.main.append(
+    auditText,
+    el('p', 'set-note', 'A repo is audited by itself only once, the first time its market opens; any repo can be audited from its district page at any time.'),
+  );
+  auditRow.side.append(auditOn.el);
+  auditOn.el.hidden = true;
+
+  const modelRow = row(analysis, 'Audit with');
+  const modelField = el('label', 'cap-field audit-model-field');
+  const modelInput = el('input', 'cap audit-model');
+  modelInput.type = 'text';
+  modelInput.spellcheck = false;
+  modelInput.autocomplete = 'off';
+  modelInput.maxLength = 130;
+  modelInput.style.width = '30ch';
+  modelInput.setAttribute('aria-label', 'Model for audits: auto, or ollama:name or claude:name');
+  modelField.append(modelInput);
+  const modelWhy = el('p', 'set-error audit-model-why');
+  modelWhy.setAttribute('aria-live', 'polite');
+  modelWhy.hidden = true;
+  modelInput.setAttribute('aria-describedby', (modelWhy.id = 'audit-model-why'));
+  modelRow.main.append(
+    modelField,
+    el('p', 'set-note', 'auto is Claude Sonnet when your plan has room, else the largest local coder; or name a model as ollama:<name> or claude:<name>.'),
+    modelWhy,
+  );
+  let savedModel = 'auto';
+  const modelSync = latestWins<string>(
+    async (v) => {
+      savedModel = (await api.patchSettings({ auditModel: v as Settings['auditModel'] })).auditModel;
+    },
+    (busy) => {
+      if (!busy) modelInput.value = savedModel;
+    },
+  );
+  const commitModel = (): void => {
+    const v = modelInput.value.trim() === '' ? 'auto' : modelInput.value.trim();
+    if (v !== 'auto' && !AUDIT_MODEL_SHAPE.test(v)) {
+      modelInput.value = modelSync.busy ? (modelSync.want ?? savedModel) : savedModel;
+      modelInput.setAttribute('aria-invalid', 'true');
+      modelWhy.textContent = 'Say auto, or a model as ollama:<name> or claude:<name>.';
+      modelWhy.hidden = false;
+      return;
+    }
+    modelInput.removeAttribute('aria-invalid');
+    modelWhy.hidden = true;
+    modelInput.value = v;
+    if (modelSync.busy ? v === modelSync.want : v === savedModel) return;
+    modelSync.set(v);
+  };
+  modelInput.addEventListener('input', () => {
+    modelInput.removeAttribute('aria-invalid');
+    modelWhy.hidden = true;
+  });
+  modelInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitModel();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      modelInput.value = savedModel;
+      modelWhy.hidden = true;
+      modelInput.removeAttribute('aria-invalid');
+      modelInput.blur();
+    }
+  });
+  modelInput.addEventListener('blur', commitModel);
+  modelField.hidden = true;
+
+  const creditsRow = row(analysis, 'An audit may spend');
+  const creditsField = el('label', 'cap-field audit-credits-field');
+  const creditsInput = el('input', 'cap audit-credits');
+  creditsInput.type = 'text';
+  creditsInput.inputMode = 'numeric';
+  creditsInput.maxLength = String(AUDIT_CREDITS_RANGE.hi).length;
+  creditsInput.style.width = `${String(AUDIT_CREDITS_RANGE.hi).length + 0.6}ch`;
+  creditsInput.setAttribute('aria-label', `Credits an audit may spend, ${AUDIT_CREDITS_RANGE.lo} to ${AUDIT_CREDITS_RANGE.hi}`);
+  creditsField.append(creditsInput);
+  const creditsOf = el('span', 'cap-of audit-credits-of');
+  const creditsWhy = el('p', 'set-error audit-credits-why');
+  creditsWhy.setAttribute('aria-live', 'polite');
+  creditsWhy.hidden = true;
+  creditsInput.setAttribute('aria-describedby', (creditsWhy.id = 'audit-credits-why'));
+  creditsRow.main.append(creditsField, creditsOf, creditsWhy);
+  let savedCredits = 0;
+  const creditsText = (n: number): string => `${n} credits, ${Math.round(pctFor(n) * 10) / 10}% of a window`;
+  const creditsSync = latestWins<number>(
+    async (v) => {
+      savedCredits = (await api.patchSettings({ auditMaxCredits: v })).auditMaxCredits;
+    },
+    (busy) => {
+      if (!busy) {
+        creditsInput.value = String(savedCredits);
+        creditsOf.textContent = creditsText(savedCredits);
+      }
+    },
+  );
+  const commitCredits = (): void => {
+    const raw = creditsInput.value.trim();
+    const v = Number(raw);
+    if (!/^\d+$/.test(raw) || v < AUDIT_CREDITS_RANGE.lo || v > AUDIT_CREDITS_RANGE.hi) {
+      creditsInput.value = String(creditsSync.busy ? (creditsSync.want ?? savedCredits) : savedCredits);
+      creditsInput.setAttribute('aria-invalid', 'true');
+      creditsWhy.textContent = `An audit may spend ${AUDIT_CREDITS_RANGE.lo} to ${AUDIT_CREDITS_RANGE.hi} credits.`;
+      creditsWhy.hidden = false;
+      return;
+    }
+    creditsInput.removeAttribute('aria-invalid');
+    creditsWhy.hidden = true;
+    creditsOf.textContent = creditsText(v);
+    if (creditsSync.busy ? v === creditsSync.want : v === savedCredits) return;
+    creditsSync.set(v);
+  };
+  creditsInput.addEventListener('input', () => {
+    creditsInput.removeAttribute('aria-invalid');
+    creditsWhy.hidden = true;
+  });
+  creditsInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitCredits();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      creditsInput.value = String(savedCredits);
+      creditsOf.textContent = creditsText(savedCredits);
+      creditsWhy.hidden = true;
+      creditsInput.removeAttribute('aria-invalid');
+      creditsInput.blur();
+    }
+  });
+  creditsInput.addEventListener('blur', commitCredits);
+  creditsField.hidden = true;
+  analysis.append(el('p', 'set-foot', 'What the README audit may use. Its spend counts in the caps above, and the treasury shows it.'));
+
   // ---------------------------------------------------------------- quality
 
   const quality = section('Quality', 'quality');
@@ -687,6 +843,15 @@ export function createSettings(
       for (const n of NUMBERS) capFields.get(n.key)?.setSaved(s[n.key]);
       awake.set(awakeSync.want ?? s.keepAwake);
       awake.el.hidden = false;
+      auditOn.set(auditSync.want ?? s.auditOnConnect);
+      auditOn.el.hidden = false;
+      savedModel = s.auditModel;
+      if (document.activeElement !== modelInput) modelInput.value = savedModel;
+      modelField.hidden = false;
+      savedCredits = s.auditMaxCredits;
+      if (document.activeElement !== creditsInput) creditsInput.value = String(savedCredits);
+      creditsOf.textContent = creditsText(savedCredits);
+      creditsField.hidden = false;
       fillApiSettings(s);
       apiControls.hidden = false;
       checkRadio(qGroup, qGroup.querySelector<HTMLElement>(`[data-quality="${s.quality}"]`));
@@ -708,6 +873,9 @@ export function createSettings(
     for (const main of [capsDown, qNote]) main.replaceChildren(el('span', 'set-error', 'The engine did not answer.'));
     qGroup.hidden = true;
     awake.el.hidden = true;
+    auditOn.el.hidden = true;
+    modelField.hidden = true;
+    creditsField.hidden = true;
     apiControls.hidden = true;
     for (const f of capFields.values()) f.hide();
   }
