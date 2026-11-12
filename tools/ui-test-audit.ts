@@ -187,8 +187,13 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
       clock.stop();
     }
     const kumoGroup = page.locator(`.sec-proposed .audit-group[data-repo="${KUMO}"]`);
-    check(await within(page, 6000, async () => (await kumoGroup.locator('.prop-line').count()) === 2), `the clock ends the kumo audit and its two proposals appear under its heading (${await kumoGroup.locator('.prop-line').count()})`);
-    check(/README audit/.test((await kumoGroup.locator('.audit-group-head').textContent()) ?? ''), `the heading names the audit (${((await kumoGroup.locator('.audit-group-head').textContent()) ?? '').trim()})`);
+    // The engine's side first, so a miss on the board says which half missed.
+    const kumoDone = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(KUMO)}`))[0];
+    const kumoJobs = (await api<Job[]>(page, `/api/jobs?status=proposed&repo=${encodeURIComponent(KUMO)}`)).filter((j) => j.proposal?.auditId === kumoDone?.id);
+    check(kumoDone?.status === 'done' && kumoJobs.length === 2, `the clock ends the kumo audit done with two proposals (${kumoDone?.status}, ${kumoJobs.length})`);
+    check(await within(page, 10_000, async () => (await kumoGroup.locator('.prop-line').count()) === 2), `and they appear on the board under its heading (${await kumoGroup.locator('.prop-line').count()})`);
+    const kumoHead = ((await kumoGroup.locator('.audit-group-head').textContent({ timeout: 3000 }).catch(() => '')) ?? '').trim();
+    check(/README audit/.test(kumoHead), `the heading names the audit (${kumoHead})`);
     // Its own page carries the marks the harbour's has not: stubbed and partial among them.
     const kumoAudit = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(KUMO)}`))[0];
     await go(page, `#/audits/${kumoAudit?.id}`);
