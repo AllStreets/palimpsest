@@ -553,7 +553,7 @@ function barMatrix(a: THREE.Vector3, b: THREE.Vector3, t: number, d = t): THREE.
 let wearSeed = 0x51ed27;
 const wearRnd = (): number => ((wearSeed = (Math.imul(wearSeed ^ (wearSeed >>> 15), 0x2c1b3c6d) + 0x9e3779b9) >>> 0) / 4294967296);
 
-class Parts {
+export class Parts {
   private geos: THREE.BufferGeometry[] = [];
   private static box = new THREE.BoxGeometry(1, 1, 1);
   private static tube = new THREE.CylinderGeometry(0.5, 0.5, 1, 6, 1);
@@ -1028,7 +1028,13 @@ export interface Construction {
   /** Everything standing on the site, in the tower's space (the roof at `top`). */
   object: THREE.Group;
   /** Shows a site at a stage and progress over a roof at `top`, `half` wide, with a new floor `floorHeight` tall; null takes it all down. */
-  set(site: SiteState | null, top: number, half: number, floorHeight: number, finish?: { era?: Era | null }): boolean;
+  set(site: SiteState | null, top: number, half: number, floorHeight: number, finish?: { era?: Era | null; clear?: number }): boolean;
+  /**
+   * The crew's hoist standing against the tower's +x face (Task 35 rides its
+   * car), or null when no crane stands. `setCar` puts the car's floor at a
+   * height over the street and has the site copied again.
+   */
+  hoist(): { object: THREE.Object3D; height: number; setCar(y: number): void } | null;
   /** Eases the crane toward the pose the last event set and runs the sparks and lamps. True while something that casts a shadow moved. */
   update(dt: number): boolean;
   /** The welding arc's light this frame, in the site's space: where it is and how bright (candela), or null when nobody welds. */
@@ -1099,6 +1105,8 @@ interface Built {
   /** Last strike and net drop laid out, so the instances move only when they change. */
   laid: { strike: number; netDrop: number };
   craneFade: number;
+  /** The crew's hoist, against the tower's +x face, standing and coming down with the crane. */
+  hoist: Hoist;
   disposables: Array<{ dispose(): void }>;
 }
 
@@ -1141,7 +1149,7 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
   let revision = 0;
   let structure = 0;
 
-  function build(top: number, half: number, fh: number, state: ConstructionState): Built {
+  function build(top: number, half: number, fh: number, state: ConstructionState, clear: number): Built {
     const disposables: Array<{ dispose(): void }> = [];
     const own = <T extends { dispose(): void }>(x: T): T => {
       disposables.push(x);
@@ -1386,6 +1394,15 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     slew.add(lampMesh);
     object.add(crane);
 
+    // The crew's hoist: a rack-and-pinion mast up the tower's +x face from the street to the new floor, standing off
+    // the widest face below it, away from the crane's corner. It hangs off the crane, so it fades and is struck with it.
+    const hoist = own(makeHoist(top + fh + HOIST_OVER));
+    hoist.object.position.set(clear + HOIST_STANDOFF - cr.x, -top, -half * 0.35 - cr.z);
+    hoist.object.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).name ||= 'hoist';
+    });
+    crane.add(hoist.object);
+
     // the new floor's frame
     const colGeo = own(iSection(COL_D, 0.37, 0.025, 0.014));
     const columns = new THREE.InstancedMesh(colGeo, mats.primer, lay.columns.length);
@@ -1606,6 +1623,7 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       struck: false,
       laid: { strike: -1, netDrop: -1 },
       craneFade: 1,
+      hoist,
       disposables,
     };
   }
@@ -1788,7 +1806,8 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
     object,
     flickerPeak: FLICKER.peak,
     set(next, top, half, floorHeight, finish) {
-      const key = `${top.toFixed(3)}|${half.toFixed(3)}|${floorHeight.toFixed(3)}`;
+      const standOff = Math.max(half, finish?.clear ?? half);
+      const key = `${top.toFixed(3)}|${half.toFixed(3)}|${floorHeight.toFixed(3)}|${standOff.toFixed(3)}`;
       const nextEra = finish?.era ?? era;
       // The same stage and progress over the same roof is no change: nothing is rebuilt, recopied or redrawn.
       if (next && site && built && built.key === key && next.runId === site.runId && next.stage === site.stage && next.progress === site.progress && nextEra === era) {
@@ -1839,7 +1858,7 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       if (!built || built.key !== key) {
         const keep = built && !built.struck ? { slew: built.slew.rotation.y, trolley: built.trolley.position.x, hook: built.hook.position.y } : null;
         clear();
-        built = build(top, half, floorHeight, keep ? { ...state, ...keep } : state);
+        built = build(top, half, floorHeight, keep ? { ...state, ...keep } : state, standOff);
         built.key = key;
         structure++;
       }
@@ -1896,6 +1915,18 @@ export function makeConstruction(quality: 'high' | 'medium'): Construction {
       return structure;
     },
     lampLevel: () => built?.lampLevel ?? 0,
+    hoist() {
+      if (!built || built.struck || !built.state.crane) return null;
+      const h = built.hoist;
+      return {
+        object: h.object,
+        height: h.height,
+        setCar(y) {
+          h.setCar(y);
+          revision++;
+        },
+      };
+    },
     roof: () => (built ? { top: built.top, half: built.half, floorHeight: built.fh } : null),
     sparks() {
       if (!built || !built.state.weldAt) return null;
@@ -2671,6 +2702,10 @@ export interface Hoist {
 
 /** Mast section of a rack-and-pinion hoist: 0.65 m square, 1.508 m tall. */
 const HOIST_SECTION = 1.508;
+/** The hoist's mast reaches this far over the new floor's top (the landing gate and the top buffer). */
+const HOIST_OVER = 1.2;
+/** The mast's centre stands this far off the widest face below it: half the mast and a ties' gap. */
+const HOIST_STANDOFF = 0.68;
 
 /**
  * A construction hoist: a galvanised rack-and-pinion mast from the ground to
@@ -2683,6 +2718,10 @@ export function makeHoist(height: number): Hoist {
   const galv = new THREE.MeshStandardMaterial({ color: 0x9a9fa3, roughness: 0.5, metalness: 0.85 });
   const cage = new THREE.MeshStandardMaterial({ color: 0x5f6468, roughness: 0.6, metalness: 0.6 });
   const trim = new THREE.MeshStandardMaterial({ color: CRANE_YELLOW, roughness: 0.55, metalness: 0.25 });
+  // Named by kind as a site's own parts are, so the city draws a site's hoist in its steel batch (ConstructionField).
+  galv.name = 'deck';
+  cage.name = 'dark';
+  trim.name = 'yellow';
   const mast = new Parts();
   latticeY(mast, height, 0.65, HOIST_SECTION, 0.076, 0.03);
   // The rack: a toothed bar on the car side, drawn as a flat bar.

@@ -15,6 +15,12 @@ export interface FollowPose {
   lift?: number;
 }
 
+/** One frame of a scripted path: where the eye stands and what it looks at. */
+export interface ScriptPose {
+  eye: THREE.Vector3;
+  target: THREE.Vector3;
+}
+
 export interface CameraRig {
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
@@ -33,6 +39,16 @@ export interface CameraRig {
   follow(pose: () => FollowPose | null, onRelease?: () => void): void;
   unfollow(): void;
   following(): boolean;
+  /**
+   * A scripted path (the ride up a tower, ride.ts): each frame `path(dt)`
+   * answers the eye and the target, which the camera takes exactly (the
+   * path does its own easing), until the user drags or scrolls, unscript()
+   * is called, or `path` answers null. `onRelease` is told which: 'user'
+   * for a drag or a scroll, 'end' otherwise.
+   */
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  unscript(): void;
+  scripted(): boolean;
   update(dt: number): void;
   setAspect(aspect: number): void;
   dispose(): void;
@@ -76,10 +92,19 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
     follow = null;
     done?.();
   };
+  let script: { path: (dt: number) => ScriptPose | null; onRelease?: (why: 'user' | 'end') => void } | null = null;
+  const unscript = (why: 'user' | 'end'): void => {
+    if (!script) return;
+    const done = script.onRelease;
+    script = null;
+    controls.enabled = true;
+    done?.(why);
+  };
   const stopFlight = (): void => {
     flight = null;
     // A drag or a scroll is the user taking the camera back.
     release();
+    unscript('user');
   };
   dom.addEventListener('pointerdown', stopFlight);
   dom.addEventListener('wheel', stopFlight, { passive: true });
@@ -114,11 +139,35 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
     },
     follow(pose, onRelease) {
       flight = null;
+      unscript('end');
       follow = { pose, onRelease, heading: 0, started: false, last: new THREE.Vector3() };
     },
     unfollow: release,
     following: () => follow !== null,
+    script(path, onRelease) {
+      flight = null;
+      release();
+      unscript('end');
+      script = { path, onRelease };
+      // The path holds the camera: the orbit's damping must not carry it on between frames.
+      controls.enabled = false;
+    },
+    unscript: () => unscript('end'),
+    scripted: () => script !== null,
     update(dt) {
+      if (script) {
+        const p = script.path(dt);
+        if (!p) unscript('end');
+        else {
+          // The orbit may stand closer than its nearest here (the ride rides nine metres out).
+          controls.minDistance = Math.min(12, Math.max(0.5, p.eye.distanceTo(p.target)));
+          camera.position.copy(p.eye);
+          controls.target.copy(p.target);
+          camera.lookAt(controls.target);
+          if (camera.position.y < MIN_EYE_HEIGHT) camera.position.y = MIN_EYE_HEIGHT;
+          return;
+        }
+      }
       if (follow) {
         const p = follow.pose();
         if (!p) release();

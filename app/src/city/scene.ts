@@ -5,7 +5,8 @@ import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Era, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
-import { createCameraRig } from './camera';
+import { createCameraRig, type ScriptPose } from './camera';
+import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
 import type { BoardJob, Exchange } from './exchange.js';
@@ -163,6 +164,23 @@ export interface City {
   people(): People | null;
   /** The live trips and the agents they belong to: a figure per agent on its way (GET /api/live, trip.started, trip.ended). */
   setTrips(trips: ReadonlyArray<Trip>, agents: ReadonlyArray<Agent>): void;
+  /**
+   * A tower's floors as the ride climbs them (ride.ts), in the world, root
+   * first: `key` is a district's repo, or `agent:<id>` for an agent's tower.
+   * Null when no such tower stands.
+   */
+  rideTower(key: string): RideFloor[] | null;
+  /** The crew's hoist on the site at work on a repo's tower, in the world, or null when no crane stands there. */
+  siteHoist(repo: string): { object: THREE.Object3D; height: number; setCar(y: number): void } | null;
+  /** Hands the camera to a scripted path (the ride) until a drag, a scroll, unscript() or the path's end; see camera.ts. */
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  unscript(): void;
+  /** Something that casts a shadow moved (the ride's car): the cached shadow map is drawn again. */
+  redrawShadows(): void;
+  /** Glides to an eye and a target. */
+  flyView(eye: THREE.Vector3, target: THREE.Vector3): void;
+  /** What the view looks at now (the orbit's centre). */
+  viewTarget(): THREE.Vector3;
   /** Flies to and follows an agent's figure, 12 m behind and above, until a drag, Escape, the trip's end or null. */
   followAgent(agentId: string | null): void;
   following(): string | null;
@@ -681,6 +699,18 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     return best;
   }
 
+  /** How far the tower reaches past the site's centre on its +x face, root included: the crew's hoist stands off that. */
+  function clearOf(piece: Centerpiece, x: number): number {
+    let reach = 0;
+    const box = new THREE.Box3();
+    for (const o of piece.pickables.keys()) {
+      o.updateWorldMatrix(true, false);
+      box.set(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)).applyMatrix4(o.matrixWorld);
+      reach = Math.max(reach, box.max.x - x);
+    }
+    return reach;
+  }
+
   /** The era of the floor a run laid, once the city has it (the frame cures toward its tone). */
   function eraOf(s: SiteState): Era | null {
     const d = occNow.districts.find((x) => x.repo === s.repo);
@@ -727,7 +757,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         entry.c.touch();
         changed = true;
       }
-      if (entry.c.set(s, roof.top, roof.half, floorHeight, { era: eraOf(s) })) changed = true;
+      if (entry.c.set(s, roof.top, roof.half, floorHeight, { era: eraOf(s), clear: clearOf(piece!, roof.x) })) changed = true;
       entry.top = roof.top;
       entry.floorHeight = floorHeight;
     }
@@ -917,6 +947,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const pieceOf = (repo: string): Centerpiece | null => centerpieces.find((c) => c.repo === repo)?.piece ?? null;
 
   function floorProxy(repo: string, floorId: string): THREE.Object3D | null {
+    // An agent's tower (the ride marks its floors as it passes them): `agent:<id>`.
+    if (repo.startsWith('agent:')) {
+      const agentId = repo.slice(6);
+      for (const { piece } of quarterPieces) for (const [o, id] of piece.pickables) if (id === floorId && piece.agents?.get(o) === agentId) return o;
+      return null;
+    }
     const piece = pieceOf(repo);
     if (!piece) return null;
     for (const [o, id] of piece.pickables) if (id === floorId) return o;
@@ -943,6 +979,30 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (box.isEmpty()) return null;
     const size = box.getSize(new THREE.Vector3());
     return { center: box.getCenter(new THREE.Vector3()), width: Math.max(size.x, size.z), height: size.y };
+  }
+
+  function rideTower(key: string): RideFloor[] | null {
+    const parts: Array<[THREE.Object3D, string | null]> = [];
+    if (key.startsWith('agent:')) {
+      const agentId = key.slice(6);
+      for (const { piece } of quarterPieces) for (const [o, id] of piece.pickables) if (piece.agents?.get(o) === agentId) parts.push([o, id]);
+    } else {
+      const piece = pieceOf(key);
+      if (piece) parts.push(...piece.pickables);
+    }
+    if (!parts.length) return null;
+    const at = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const turn = new THREE.Quaternion();
+    const euler = new THREE.Euler();
+    const floors = parts.map(([o, id]): RideFloor => {
+      o.updateWorldMatrix(true, false);
+      o.matrixWorld.decompose(at, turn, scale);
+      euler.setFromQuaternion(turn, 'YXZ');
+      // The root's proxy reaches three metres past its top on every side.
+      return { id, x: at.x, z: at.z, y0: at.y - scale.y / 2, h: scale.y, half: scale.x / 2, ry: euler.y };
+    });
+    return floors.sort((a, b) => a.y0 - b.y0 || (a.id === null ? -1 : 1));
   }
 
   function agentFrame(agentId: string): Frame | null {
@@ -1046,7 +1106,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     mark.updateWorldMatrix(true, false);
     const d = mark.getWorldPosition(markAt).distanceTo(camera.position);
     const px = (2 * d * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / Math.max(1, height());
-    (mark.userData.fit as (t: number) => void)(THREE.MathUtils.clamp(px * 2.5, 0.06, 1.4));
+    (mark.userData.fit as (t: number) => void)(THREE.MathUtils.clamp(px * 2.5, 0.015, 1.4));
   }
 
   function highlightFloor(repo: string, floorId: string | null): void {
@@ -1436,6 +1496,22 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       );
     },
     following: () => people?.following() ?? null,
+    rideTower,
+    siteHoist(repo) {
+      for (const { c, site } of constructions.values()) {
+        if (site.repo !== repo) continue;
+        const h = c.hoist();
+        if (h) return h;
+      }
+      return null;
+    },
+    script: (path, onRelease) => rig.script(path, onRelease),
+    unscript: () => rig.unscript(),
+    redrawShadows() {
+      sun.shadow.needsUpdate = true;
+    },
+    flyView: (eye, target) => rig.flyView(eye, target),
+    viewTarget: () => rig.controls.target.clone(),
     ambientDensity(n) {
       const was = forcedDensity;
       forcedDensity = n === null ? null : Math.max(0, Math.min(1, n));

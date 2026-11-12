@@ -109,9 +109,6 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
     const ride = button('agent-ride', 'Ride up', () => opts.rideUp(a.id));
     ride.dataset.ride = a.id;
     ride.setAttribute('aria-label', `Ride up ${cleanText(a.name, 80)}’s tower`);
-    // Until the lift lands (Task 35) Ride up is in place but says it is not ready.
-    ride.setAttribute('aria-disabled', 'true');
-    ride.title = 'Arrives with the city tour';
     const jump = el('button', 'textbtn agent-jump', 'Read its persona');
     jump.type = 'button';
     jump.addEventListener('click', () => {

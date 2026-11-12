@@ -1004,6 +1004,114 @@ async function inspectorChecks(page: Page): Promise<void> {
   check((await debug(page, (x) => x.highlight)) === null, 'closing clears the floor highlight');
 }
 
+// ---------------------------------------------------------------- the ride up a tower (Task 35)
+
+type RideProbe = { key: string; t: number; length: number; car: number; eye: number; floorId: string | null; caption: string | null; held: boolean; hoist: boolean };
+const ridingNow = (page: Page): Promise<RideProbe | null> => page.evaluate('window.__palimpsest.riding()') as Promise<RideProbe | null>;
+
+/**
+ * The ride: the inspector's Ride up starts it at street level, the camera climbs with the car over the first
+ * seconds and a floor's caption shows; Escape steps off and the view returns. R rides from the keyboard, and the
+ * agent page's Ride up rides the agent's own tower.
+ */
+async function rideChecks(page: Page): Promise<void> {
+  const ds = await cityOf(page);
+  const d = [...ds].sort((a, b) => b.tower.floors.length - a.tower.floors.length)[0];
+  const lay = layoutTower(d.tower);
+  await setView(page, [d.origin.x + BEARING.x * lay.top * 2.2, lay.top * 0.45, d.origin.z + BEARING.z * lay.top * 2.2], [d.origin.x, lay.top * 0.5, d.origin.z]);
+  await page.waitForTimeout(400);
+  await page.evaluate((repo) => (window as unknown as { __palimpsest: Debug }).__palimpsest.inspect(repo), d.repo);
+  await page.waitForSelector('.inspector.open', { timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(1800);
+  const button = page.locator('.inspector .insp-ride');
+  check((await button.count()) === 1 && /Ride up/.test((await button.textContent()) ?? ''), 'the inspector offers Ride up');
+  const before = await debug(page, (x) => x.camera());
+  await button.click();
+  // The camera comes to the car at street level, then climbs with it.
+  const started = await page.waitForFunction('(window.__palimpsest.riding()?.t ?? -1) >= 0', null, { timeout: 6000 }).then(() => true, () => false);
+  check(started, 'Ride up starts a ride');
+  const r0 = await ridingNow(page);
+  check(r0 !== null && r0.car < 1 && r0.eye < 3, `the ride starts at street level (car ${r0?.car.toFixed(1)} m)`);
+  check(await page.evaluate(() => document.querySelector('.inspector')?.checkVisibility({ visibilityProperty: true, opacityProperty: true }) === false && document.querySelector('.ride.on') !== null), 'the panel steps aside and the captions show');
+  const y0 = (await debug(page, (x) => x.camera()))[1];
+  await page.waitForTimeout(3000);
+  const y1 = (await debug(page, (x) => x.camera()))[1];
+  check(y1 > y0 + 4, `starting a ride moves the camera up over 3 s (${y0.toFixed(1)} to ${y1.toFixed(1)} m)`);
+  const titles = new Set(d.tower.floors.map((f) => f.title.replace(/^Failed inspection:\s*/, '')));
+  const captioned = await page
+    .waitForFunction((t) => t.includes(document.querySelector('.ride .ride-title')?.textContent ?? ''), [...titles], { timeout: 30_000 })
+    .then(() => true, () => false);
+  const shown = await page.locator('.ride .ride-title').textContent();
+  check(captioned, `the caption shows a floor title (${shown})`);
+  await page.screenshot({ path: join(SHOTS, 'ride-mid.png') });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  check((await ridingNow(page)) === null, 'Escape ends the ride');
+  check(await page.locator('.inspector').isVisible(), 'and leaves the inspector open');
+  await page.waitForTimeout(2200);
+  const back = await debug(page, (x) => x.camera());
+  const off = Math.hypot(back[0] - before[0], back[1] - before[1], back[2] - before[2]);
+  check(off < 1.5, `Escape restores the view (${off.toFixed(2)} m from where it stood)`);
+  check((await page.locator('.ride').count()) === 0, 'and the captions go');
+
+  // With reduced motion the ride cuts from stop to stop: the car stands still at each, then is at the next.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(d.repo)})`);
+  await page.waitForTimeout(900);
+  const s0 = await ridingNow(page);
+  await page.waitForTimeout(700);
+  const s1 = await ridingNow(page);
+  await page.waitForTimeout(2200);
+  const s2 = await ridingNow(page);
+  check(s0 !== null && s1 !== null && s0.car === s1.car && s2 !== null && s2.car > s1.car + 2, `with reduced motion the ride cuts from stop to stop (${s0?.car.toFixed(1)}, ${s1?.car.toFixed(1)}, ${s2?.car.toFixed(1)} m)`);
+  await page.keyboard.press('Escape');
+  await page.emulateMedia({ reducedMotion: null });
+  await page.waitForTimeout(2000);
+
+  // R rides the open tower from the keyboard.
+  await page.locator('.inspector .insp-ride').focus();
+  await page.keyboard.press('r');
+  await page.waitForTimeout(400);
+  check((await ridingNow(page))?.key === d.repo, 'R rides the tower open in the inspector');
+  // A drag takes the camera back where it stands.
+  await page.waitForTimeout(2600);
+  const mid = await debug(page, (x) => x.camera());
+  await page.mouse.move(VIEWPORT.width / 2, VIEWPORT.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(VIEWPORT.width / 2 + 30, VIEWPORT.height / 2);
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const dragged = await debug(page, (x) => x.camera());
+  check((await ridingNow(page)) === null && Math.hypot(dragged[0] - mid[0], dragged[1] - mid[1], dragged[2] - mid[2]) < 25, 'a drag ends the ride where it stands');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+}
+
+/** The agent page's Ride up rides the agent's own tower (once the firms' quarters stand). */
+async function rideAgentChecks(page: Page): Promise<void> {
+  const firms = (await page.evaluate(() => fetch('/api/firms').then((r) => r.json()))) as Array<{ agents: Array<{ id: string; retired: boolean }> }>;
+  const quarters = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const standing = new Set(quarters.flatMap((q) => q.towers.filter((t) => !t.dark).map((t) => t.agentId)));
+  const agent = firms.flatMap((f) => f.agents).find((a) => !a.retired && standing.has(a.id));
+  if (!agent) {
+    check(false, 'an agent with a standing tower to ride');
+    return;
+  }
+  await page.evaluate((id) => {
+    location.hash = `#/agents/${id}`;
+  }, agent.id);
+  await page.waitForSelector('.agentpage .agent-ride', { timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(800);
+  await page.locator('.agentpage .agent-ride').click();
+  await page.waitForTimeout(1200);
+  const route = await page.evaluate(() => document.body.dataset.route);
+  const a = await ridingNow(page);
+  check(route === 'city' && a?.key === `agent:${agent.id}`, `the agent page's Ride up rides its tower (${route}, ${a?.key ?? 'no ride'})`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  check((await ridingNow(page)) === null, 'and Escape steps off it');
+}
+
 // ---------------------------------------------------------------- an analyzing site
 
 async function siteChecks(page: Page): Promise<void> {
@@ -2171,6 +2279,7 @@ async function main(): Promise<void> {
       await measureFps(page);
       check((await debug(page, (d) => d.quality())) === 'high', 'the city holds high quality at the default settings (no automatic drop)');
       await inspectorChecks(page);
+      await rideChecks(page);
       await siteChecks(page);
       await disconnectWhileInspecting(page);
       await reposChecks(page);
@@ -2192,6 +2301,7 @@ async function main(): Promise<void> {
       await detailChecks(page, check, SHOTS);
       // The firms list, a firm's page and the agent page (Task 38).
       await firmChecks(page, check, SHOTS);
+      await rideAgentChecks(page);
       // The treasury and the daily report (Task 39).
       await treasuryChecks(page, check, SHOTS);
       // The market switches on Repos, the district page and the provider settings (Task 40).

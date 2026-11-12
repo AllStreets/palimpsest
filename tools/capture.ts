@@ -14,7 +14,8 @@
  *   node --no-warnings --import tsx tools/capture.ts [shots...]
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
- * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles, life (the ambient traffic and crowd). With no shots named,
+ * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles, life (the ambient traffic and crowd),
+ * ride (the lift up the harbour tower, datum to roof). With no shots named,
  * all but probe, swatches, families and fidelity run. families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
@@ -230,6 +231,49 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       if (Object.keys(restyles).length) await page.waitForTimeout(3000);
       const views = JSON.parse(process.env.PROBE ?? '[[[600,160,700],[0,80,0]]]') as [V3, V3][];
       for (const [i, [eye, target]] of views.entries()) await still(page, `probe-${i}`, eye, target);
+    },
+
+    async ride(page) {
+      // The ride up the outside of a tower (Task 35): the harbour tower from its datum to the roof, the car on its rail
+      // and the captions at the lower left. Stills at street level, at the datum and over the roof (RIDE_ONLY='street,mid,top,clip').
+      const only = process.env.RIDE_ONLY?.split(',');
+      const want = (k: string): boolean => !only || only.includes(k);
+      await chrome(page, true);
+      type Riding = { length: number; stops: Array<{ t: number; dwell: number; mark: string | null }> };
+      const ok = await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(tall.repo)})`);
+      if (!ok) throw new Error('the ride did not start');
+      await page.evaluate('window.__palimpsest.rideHold(true)');
+      const r = (await page.evaluate('window.__palimpsest.riding()')) as Riding;
+      const datum = r.stops.find((s) => s.mark === 'datum') ?? r.stops[1] ?? r.stops[0];
+      const roof = r.stops[r.stops.length - 1];
+      const at = async (t: number): Promise<void> => {
+        await page.evaluate(`window.__palimpsest.rideSeek(${t})`);
+        await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+      };
+      const stillAt = async (name: string, t: number): Promise<void> => {
+        await at(t);
+        await page.waitForTimeout(900);
+        await at(t);
+        await shoot(page, name);
+      };
+      if (want('street')) await stillAt('ride-street', 0.9);
+      if (want('mid')) await stillAt('ride-mid', datum.t + 0.6);
+      if (want('top')) await stillAt('ride-top', roof.t + roof.dwell * 0.6);
+      if (want('clip')) {
+        const dir = mkdtempSync(join(tmpdir(), 'palimpsest-ride-'));
+        const from = Math.max(0, datum.t - 1.5);
+        const n = Math.round((r.length - from) * FPS);
+        console.log(`ride: ${n} frames`);
+        for (let i = 0; i < n; i++) {
+          await at(from + i / FPS);
+          await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
+          if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
+        }
+        encode(dir, 'ride');
+        if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
+        else rmSync(dir, { recursive: true, force: true });
+      }
+      await page.evaluate('window.__palimpsest.ride(null)');
     },
 
     async river(page) {

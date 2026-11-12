@@ -27,7 +27,11 @@ import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
 import { navigate, onRoute } from './router';
-import { createInspector, type MarketNames } from './ui/inspector';
+import { createInspector, ROOT_NAMES, type MarketNames } from './ui/inspector';
+import { startRide, type Ride, type RideState } from './city/ride';
+import { ridePlan } from '../../shared/ride.js';
+import { layoutTower } from '../../shared/tower-layout.js';
+import { crownFor } from '../../shared/silhouette.js';
 import { createAgentPage } from './ui/agent';
 import { createFirmPage } from './ui/firm';
 import { createFirms } from './ui/firms';
@@ -179,6 +183,13 @@ interface DebugHandle {
   site(repo: string): ReturnType<ReturnType<typeof createCity>['site']>;
   /** Every job site the page knows, as the engine last sent it. */
   liveSites(): SiteState[];
+  /** Rides up a tower (a repo, or `agent:<id>`) as Ride up and R do; null steps off as Escape does. False when it cannot. */
+  ride(key: string | null): boolean;
+  /** The ride under way, or null. */
+  riding(): RideState | null;
+  /** Holds the ride's clock, or sets it (captures). */
+  rideHold(on: boolean): void;
+  rideSeek(t: number): void;
   /** Hides or shows the sites' drawing, to measure what they cost (tests). */
   showSites(on: boolean): void;
 }
@@ -372,6 +383,16 @@ async function main(): Promise<void> {
     },
     site: (repo) => city.site(repo),
     liveSites: () => [...liveSites.values()],
+    ride: (key) => {
+      if (key === null) {
+        ride?.stop();
+        return true;
+      }
+      return rideUp(key);
+    },
+    riding: () => ride?.state() ?? null,
+    rideHold: (on) => ride?.hold(on),
+    rideSeek: (t) => ride?.seek(t),
     showSites: (on) => city.showSites(on),
     exchange() {
       const ex = city.exchange();
@@ -604,12 +625,69 @@ async function main(): Promise<void> {
       const f = city.floorFrame(repo, floorId);
       if (f) city.flyTo(f.center, Math.max(90, f.width * 4.4));
     },
+    onRide: (repo) => rideUp(repo),
     onClose() {
       city.highlightFloor('', null);
       debug.highlight = null;
       city.setInset(0);
     },
   });
+
+  // ---------------------------------------------------------------- the ride up a tower (Task 35)
+  /** The ride under way: the car on the facade and the camera beside it, until Escape, a drag or the roof. */
+  let ride: Ride | null = null;
+  /** The site stages a ride ends at the work for, as the plan reads them. */
+  const atWork = (s: SiteState): boolean => s.stage === 'crane' || s.stage === 'framing' || s.stage === 'inspecting' || s.stage === 'curing';
+  /**
+   * Rides the lift up a tower: a repo's, or an agent's (`agent:<id>`). The
+   * plan stops at the datum, the scars and Claude's floors, and ends over the
+   * roof or at the live work; the city draws the car and holds the camera.
+   */
+  function rideUp(key: string): boolean {
+    const agentId = key.startsWith('agent:') ? key.slice(6) : null;
+    const spec = agentId ? servedQuarters.flatMap((q) => q.towers).find((t) => t.agentId === agentId && !t.dark) : byRepo(key)?.tower;
+    if (!spec) {
+      notice.add('That tower is not standing in the city just now.');
+      return false;
+    }
+    ride?.stop();
+    const sites = agentId ? [] : [...liveSites.values()].filter((s) => s.repo === key && atWork(s));
+    const live = sites.sort((a, b) => b.progress - a.progress)[0] ?? null;
+    const earnedCount = spec.floors.filter((f) => !f.founding).length;
+    const crown = spec.kind === 'agent' && earnedCount > 0 ? crownFor(spec.silhouette ?? 'plain', earnedCount).height : 0;
+    const name = agentId ? (names.agents.get(agentId) ?? agentId) : (key.split('/')[1] ?? key);
+    const plan = ridePlan(layoutTower(spec), spec.floors, { live, names, name, root: `${ROOT_NAMES[spec.root]} root`, crown, agent: spec.kind === 'agent' });
+    if (document.body.dataset.route !== 'city') navigate('city');
+    const opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    const hoist = live && city.siteHoist(key) ? key : null;
+    city.followAgent(null);
+    const started = startRide(city, key, plan, {
+      parent: document.body,
+      still: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      hoist,
+      onEnd() {
+        if (ride === started) ride = null;
+        delete document.body.dataset.riding;
+        // The inspector's own floor is marked again, and its panel keeps the view beside it.
+        if (inspector.repo) {
+          city.highlightFloor(inspector.repo, debug.highlight?.floorId ?? null);
+          city.setInset(inspector.width);
+        }
+        if (opener?.isConnected && opener.checkVisibility()) opener.focus({ preventScroll: true });
+        else document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
+      },
+    });
+    if (!started) {
+      notice.add('That tower’s lift is not running just now.');
+      return false;
+    }
+    ride = started;
+    document.body.dataset.riding = '';
+    city.setInset(0);
+    // The focus leaves the panel the ride hides, for the city: Escape steps off from there.
+    if (opener && opener.closest('.inspector')) document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
+    return true;
+  }
 
   // ---------------------------------------------------------------- the market's names
   /** Agent and firm names for the earned floors, and each scar's inspection report, read from the engine. */
@@ -1005,6 +1083,14 @@ async function main(): Promise<void> {
       e.preventDefault();
       city.home();
     }
+    // R rides the lift up the tower open in the inspector, or the selected agent's (Task 35).
+    if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city' && !ride) {
+      const key = inspector.repo ?? (selectedAgent ? `agent:${selectedAgent}` : null);
+      if (key) {
+        e.preventDefault();
+        rideUp(key);
+      }
+    }
     // F follows the selected agent's figure (Task 34); Escape in the city lets go of it.
     if ((e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city' && selectedAgent) {
       e.preventDefault();
@@ -1059,8 +1145,7 @@ async function main(): Promise<void> {
     listen,
     onDismiss: toCity,
     follow: (agentId) => followAgent(agentId),
-    // TODO(Task 35): ride the lift up the agent's tower; until Ride up lands the button does nothing.
-    rideUp: () => {},
+    rideUp: (agentId) => rideUp(`agent:${agentId}`),
   });
 
   // The treasury: his plan's windows, what the city spends of them, and the daily report (Task 39).
@@ -1078,7 +1163,11 @@ async function main(): Promise<void> {
     const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent', 'repo'].includes(to)) ? to : 'city';
     document.body.dataset.route = route;
     runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route === 'repo' ? 'repos' : route);
-    if (route !== 'city') inspector.close();
+    if (route !== 'city') {
+      inspector.close();
+      // A sheet opened over the city ends a ride under way.
+      ride?.stop();
+    }
     if (route === 'repos') repos.show();
     else repos.hide();
     if (route === 'settings') settings.show();

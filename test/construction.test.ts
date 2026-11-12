@@ -590,3 +590,27 @@ test('a scar first seen by a fresh construction (the quality drop rebuilds every
     c.dispose();
   }
 });
+
+test('a site stands its crew hoist against the tower, clear of the widest floor below, and rides its car', () => {
+  const c = makeConstruction('high');
+  const CLEAR = HALF + 4.6;
+  c.set(site('framing', 0.4), TOP, HALF, FH, { clear: CLEAR });
+  c.object.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(part(c.object, 'hoist:mast'));
+  assert.ok(box.min.x > CLEAR, `the mast stands off the widest face below (${box.min.x.toFixed(2)} past ${CLEAR})`);
+  assert.ok(box.min.x < CLEAR + 2, 'and close against it');
+  assert.ok(box.min.y < 0.01 && box.max.y >= TOP + FH, `the mast runs from the street to the new floor (${box.min.y.toFixed(1)} to ${box.max.y.toFixed(1)})`);
+  const hoist = c.hoist();
+  assert.ok(hoist, 'the site hands the ride its hoist');
+  const rev = c.revision;
+  hoist.setCar(30);
+  assert.ok(c.revision > rev, 'moving the car is copied again');
+  const car = part(c.object, 'hoist:car');
+  c.object.updateMatrixWorld(true);
+  assert.ok(Math.abs(car.getWorldPosition(new THREE.Vector3()).y - 30) < 1e-6, 'the car stands where it was put');
+  // Struck, the hoist comes down with the crane.
+  c.set(site('teardown', 1), TOP, HALF, FH, { clear: CLEAR });
+  run(c, 9);
+  assert.equal(c.hoist(), null, 'the hoist is taken down with the site');
+  c.dispose();
+});

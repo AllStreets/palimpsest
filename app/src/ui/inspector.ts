@@ -151,6 +151,8 @@ export interface InspectorHandlers {
   onSelect(repo: string, floorId: string | null): void;
   /** Fly the camera to this floor. */
   onFly(repo: string, floorId: string): void;
+  /** Ride the lift up the outside of this tower (Task 35; R does the same). */
+  onRide?(repo: string): void;
   onClose(): void;
 }
 
@@ -387,6 +389,15 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
         ? `${ROOT_NAMES[d.tower.root]} root, no floors yet`
         : `${ROOT_NAMES[d.tower.root]} root, ${plural(d.tower.datumIndex, 'founding floor')}${floors.length > d.tower.datumIndex ? `, ${floors.length - d.tower.datumIndex} earned` : ''}`;
     head.append(close, el('p', 'insp-owner', owner ?? ''), title, el('p', 'insp-facts', facts));
+    if (h.onRide) {
+      const ride = el('button', 'insp-ride');
+      ride.type = 'button';
+      ride.append(el('span', 'insp-ride-word', 'Ride up'), el('kbd', 'insp-ride-key', 'R'));
+      ride.setAttribute('aria-label', `Ride the lift up the outside of ${name ?? d.repo}`);
+      ride.setAttribute('aria-keyshortcuts', 'R');
+      ride.addEventListener('click', () => h.onRide?.(d.repo));
+      head.append(ride);
+    }
 
     const built = floorList(d.tower, {
       names,

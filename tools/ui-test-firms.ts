@@ -118,7 +118,7 @@ export async function firmChecks(page: Page, check: Check, shots: string): Promi
     check((await page.locator('.agentpage .agent-ride').getAttribute('data-ride')) === 'dagny-hollis', 'Ride up points at its tower');
     check((await follow.getAttribute('aria-disabled')) === null && (await follow.getAttribute('title')) === null, 'Follow is live (Task 34)');
     const ride = page.locator('.agentpage .agent-ride');
-    check((await ride.getAttribute('aria-disabled')) === 'true' && (await ride.getAttribute('title')) === 'Arrives with the city tour', '.agent-ride says it is not ready yet');
+    check((await ride.getAttribute('aria-disabled')) === null && (await ride.getAttribute('title')) === null, 'Ride up is live (Task 35)');
     check(!/\.md/.test((await page.locator('.agentpage .persona .repos-sec').textContent()) ?? ''), 'the persona heading names no file path');
     check(/persona below/.test((await page.locator('.agentpage .design-row[data-field="instructions"] .design-gloss').textContent()) ?? ''), 'the design points down to the persona');
     check(!/his plan/.test((await page.locator('.agentpage .agent-design').textContent()) ?? ''), 'and speaks to you, not about you');
