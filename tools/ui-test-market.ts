@@ -21,6 +21,7 @@ import type { Job, ProviderUsage, Repo } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
 
+const BRIEF_SENTENCE = 'A repo is audited by itself only once, the first time its market opens; any repo can be audited from its district page at any time.';
 const DIST = process.env.PALIMPSEST_DIST ?? join(process.cwd(), 'dist');
 const SIZE = { width: 1600, height: 1000 };
 /** A made-up key in the shape the engine accepts. It exists only in this test and the stand-in's memory. */
@@ -152,7 +153,7 @@ async function repoChecks(
   if (unaudited) check(((await page.locator(`${rowSel(unaudited.fullName)} a.repo-audited`).textContent()) ?? '').trim() === 'never audited', `and its row reads never audited (${unaudited.fullName})`);
   const built = (await readdir(join(DIST, 'assets'))).filter((f) => f.endsWith('.js'));
   const bundle = (await Promise.all(built.map((f) => readFile(join(DIST, 'assets', f), 'utf8')))).join('\n');
-  check(built.length > 0 && !/when the market opens/i.test(bundle), 'no built script says when the market opens');
+  check(built.length > 0 && !/market opens|when the market|opens later/i.test(bundle.split(BRIEF_SENTENCE).join('')), 'no built script says when the market opens');
 
   // Push mode beside it: the note says what it does; without a build command the switch is disabled and says why.
   check(((await page.locator(`${rowSel(harbour)} .repo-push .repo-push-note`).textContent()) ?? '').trim() === 'merges to main after inspection; needs a test and a build command', 'the push note says what push mode does and needs');
@@ -440,18 +441,35 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
   check(await within(page, 3000, async () => (await settingsNow()).auditOnConnect === !wasOn), 'the audit switch stores its flip');
   await auditSw.click();
   check(await within(page, 3000, async () => (await settingsNow()).auditOnConnect === wasOn), 'and flips back');
+  const settingsPatches: string[] = [];
+  const onSettingsReq = (r: { method(): string; url(): string }): void => {
+    if (r.method() === 'PATCH' && /\/api\/settings/.test(r.url())) settingsPatches.push(r.url());
+  };
   const model = analysis.locator('input.audit-model');
   check(/Claude Sonnet when your plan has room, else the largest local coder/.test((await analysis.textContent()) ?? ''), 'Audit with says what auto means');
   check((await model.inputValue()) === 'auto', 'the model reads auto');
+  check((await model.evaluate((e) => getComputedStyle(e).textAlign)) === 'left', 'and sits at the left of its underline');
+  const mBox = await model.boundingBox();
+  const cBox = await analysis.locator('input.audit-credits').boundingBox();
+  check(!!mBox && !!cBox && Math.abs(mBox.x - cBox.x) < 3, 'in line with the credits field');
   await model.fill('ollama:qwen2.5-coder:7b');
   await model.press('Enter');
   check(await within(page, 3000, async () => (await settingsNow()).auditModel === 'ollama:qwen2.5-coder:7b'), 'a model typed as ollama:<name> is stored');
   await model.fill('claude:haiku');
   await model.press('Enter');
   check(await within(page, 3000, async () => (await settingsNow()).auditModel === 'claude:haiku'), 'and claude:<name>');
+  page.on('request', onSettingsReq);
   await model.fill('gpt-4');
   await model.press('Enter');
   await page.waitForTimeout(300);
+  page.off('request', onSettingsReq);
+  check(settingsPatches.length === 0, `a model of the wrong shape sends no request (${settingsPatches.length})`);
+  check((await model.getAttribute('aria-invalid')) === 'true', 'and marks the field invalid');
+  await model.fill('x');
+  check((await model.getAttribute('aria-invalid')) === null && (await analysis.locator('.audit-model-why').isHidden()), 'typing again clears the mark and the message');
+  await model.fill('gpt-4');
+  await model.press('Enter');
+  await page.waitForTimeout(100);
   check((await settingsNow()).auditModel === 'claude:haiku' && (await model.inputValue()) === 'claude:haiku', 'a model of the wrong shape is refused and the field goes back');
   check(/ollama:<name> or claude:<name>/.test((await analysis.locator('.audit-model-why').textContent()) ?? ''), 'and says the shapes that are allowed');
   await model.fill('auto');
@@ -462,9 +480,18 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
   await credits.press('Enter');
   check(await within(page, 3000, async () => (await settingsNow()).auditMaxCredits === 60), 'the audit credit cap is stored');
   check(/60 credits, 6% of a window/.test((await analysis.locator('.audit-credits-of').textContent()) ?? ''), 'and read as a share of a five-hour window');
+  page.on('request', onSettingsReq);
   await credits.fill('5');
   await credits.press('Enter');
   await page.waitForTimeout(300);
+  page.off('request', onSettingsReq);
+  check(settingsPatches.length === 0, `five credits sends no request (${settingsPatches.length})`);
+  check((await credits.getAttribute('aria-invalid')) === 'true', 'and marks the field invalid');
+  await credits.fill('7');
+  check((await credits.getAttribute('aria-invalid')) === null && (await analysis.locator('.audit-credits-why').isHidden()), 'typing again clears the mark and the message');
+  await credits.fill('5');
+  await credits.press('Enter');
+  await page.waitForTimeout(100);
   check((await settingsNow()).auditMaxCredits === 60 && (await credits.inputValue()) === '60', 'five credits is refused and the field goes back');
   check(/10 to 200/.test((await analysis.locator('.audit-credits-why').textContent()) ?? ''), 'and says the range');
   await credits.fill('40');
@@ -493,8 +520,8 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
       'An audit reads a fresh clone of your repo on this Mac inside the same sandbox as a job, and only changes nothing; what leaves is the same as a job\'s: your own claude CLI\'s calls on your login, or nothing for a local model. A repo whose market is off is audited only when you ask.',
     `Privacy says what an audit reads and what leaves (${audits.slice(0, 60)})`,
   );
-  const all = ((await sheet.textContent()) ?? '') + ((await page.locator('.sheet.repos').textContent()) ?? '');
-  check(!/when the market opens|opens later/i.test(all), 'no copy says the market opens later');
+  const all = (((await sheet.textContent()) ?? '') + ((await page.locator('.sheet.repos').textContent()) ?? '')).split(BRIEF_SENTENCE).join('');
+  check(!/market opens|when the market|opens later/i.test(all), 'no copy says the market opens later');
   await sheet.locator('.sheet-body').evaluate((b) => {
     const c = b.querySelector('.settings-privacy') as HTMLElement;
     b.scrollTop += c.getBoundingClientRect().top - b.getBoundingClientRect().top - 28;

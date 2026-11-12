@@ -622,6 +622,10 @@ export function createSettings(
     if (modelSync.busy ? v === modelSync.want : v === savedModel) return;
     modelSync.set(v);
   };
+  modelInput.addEventListener('input', () => {
+    modelInput.removeAttribute('aria-invalid');
+    modelWhy.hidden = true;
+  });
   modelInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -682,6 +686,10 @@ export function createSettings(
     if (creditsSync.busy ? v === creditsSync.want : v === savedCredits) return;
     creditsSync.set(v);
   };
+  creditsInput.addEventListener('input', () => {
+    creditsInput.removeAttribute('aria-invalid');
+    creditsWhy.hidden = true;
+  });
   creditsInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();

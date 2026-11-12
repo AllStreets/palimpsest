@@ -139,7 +139,7 @@ function colophon(v: AuditView, last = false): HTMLElement {
     parts.push(sha);
   }
   if (v.credits > 0) parts.push(`, ${money(Math.round(v.credits * 100) / 100)} credits charged to the city`);
-  parts.push(v.trigger === 'connect' ? '. It ran by itself when the market opened here.' : '.');
+  parts.push(v.trigger === 'connect' ? ". It ran by itself the first time this repo's market was turned on." : '.');
   p.append(...parts);
   return p;
 }

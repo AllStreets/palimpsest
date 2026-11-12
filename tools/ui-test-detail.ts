@@ -218,7 +218,7 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     // rows used to be read in separate calls. Wait for the slide to end, then read the head and every row in the one call.
     await page.waitForFunction(() => {
       const sheet = document.querySelector('.sheet.open');
-      return !!sheet && getComputedStyle(sheet).transform === 'none' && getComputedStyle(sheet).opacity === '1' && document.getAnimations().every((a) => a.playState !== 'running');
+      return !!sheet && getComputedStyle(sheet).transform === 'none' && getComputedStyle(sheet).opacity === '1' && sheet.getAnimations({ subtree: true }).every((a) => a.playState !== 'running');
     });
     const tracks = await page.locator('.insppage .checks .check-row').evaluateAll((rows) => {
       const head = rows[0].closest('table')!.querySelector('th.c-time')!.getBoundingClientRect().left;

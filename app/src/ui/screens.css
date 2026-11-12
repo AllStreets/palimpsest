@@ -1210,6 +1210,20 @@ a.repo-name:focus-visible {
   width: 74px;
   justify-content: flex-end;
 }
+/* Analysis: the model name reads from the left edge of its rule, on the same left edge as the credits field above or below it. */
+.set-sec.analysis .cap-field {
+  box-sizing: border-box;
+  padding: 3px 6px;
+  border-radius: 3px 3px 0 0;
+}
+.set-sec.analysis .cap-field:focus-within {
+  background: color-mix(in srgb, var(--bronze) 10%, transparent);
+}
+.set-sec.analysis .audit-model {
+  width: 30ch;
+  text-align: left;
+  font-size: 18px;
+}
 .cap-of {
   margin-left: 12px;
   font-size: 12.5px;
