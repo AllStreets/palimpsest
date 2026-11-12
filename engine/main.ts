@@ -7,6 +7,7 @@ import { paths } from './home.js';
 import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
 import { inspect } from './guild/inspect.js';
 import { installDeps } from './market/install.js';
+import { backfillMilestones, installMilestones } from './market/milestones.js';
 import { pollPRs, ship, watchReverts } from './market/ship.js';
 import { bankruptcyTick, dailyTick, DAY_MS, HOUR_MS, installTreasury } from './market/treasury.js';
 import { backfillReports, ensureDailyReport, latestReportDay } from './market/report.js';
@@ -35,6 +36,13 @@ async function main(): Promise<void> {
   installTreasury();
   // Phase 3 Task 5: every verified gap a done audit found becomes a proposed job that waits for his click.
   installProposals();
+  // Phase 3 Task 7: the spire, the finial, revivals and ribbons from the floors as they go up, backfilled once from the towers.
+  installMilestones();
+  try {
+    backfillMilestones(Date.now());
+  } catch (err) {
+    console.error('palimpsest: the milestone backfill failed:', err);
+  }
   const every = (name: string, fn: (now: number) => void, ms: number) => {
     const once = () => {
       try {
@@ -103,6 +111,12 @@ async function sampleMain(): Promise<void> {
   reviveAgents(installed);
   installTreasury();
   installProposals();
+  installMilestones();
+  try {
+    backfillMilestones(Date.now());
+  } catch (err) {
+    console.error('palimpsest: the milestone backfill failed:', err);
+  }
   const { close, port } = await startServer();
   // eslint-disable-next-line no-console
   console.log(`Palimpsest sample engine listening on 127.0.0.1:${port} (economy ${process.env.PALIMPSEST_SAMPLE_ECONOMY === 'live' ? 'live' : 'still'})`);

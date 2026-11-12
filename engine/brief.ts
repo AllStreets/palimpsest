@@ -25,6 +25,7 @@ import { query, record, type LedgerEntry } from './ledger.js';
 import { treasury } from './market/budget.js';
 import { listFirms } from './market/firms.js';
 import { acceptProposed, dismissProposed, job as storedJob, listJobs, plain, redact, repost, setTier } from './market/jobs.js';
+import { listMilestones, weekTour } from './market/milestones.js';
 import { claimOf, latestReport, num, reportData, type ReportData } from './market/report.js';
 import { listRuns, resumeRepo } from './market/runs.js';
 import { getRepo, listRepos } from './repos.js';
@@ -40,10 +41,18 @@ const TAUGHT: readonly BriefAction[] = ['dismiss', 'accept', 'tier', 'retry', 'c
 const FINISHING: readonly BriefAction[] = ['accept', 'dismiss', 'retry', 'resume', 'audit'];
 
 export interface BriefOptions {
-  /** Task 7's milestones, active now; empty until it lands. */
+  /** The milestones active now; by default Task 7's `listMilestones`. */
   milestones?: () => Milestone[];
-  /** Task 7's tour of the week that `week` (a Monday, YYYY-MM-DD) starts; null until it lands. */
+  /** The tour of the week that `week` (a Monday, YYYY-MM-DD) starts; by default Task 7's `weekTour`. */
   tour?: (week: string) => Tour | null;
+}
+
+/** The options with Task 7's milestones and tour wired in where the caller gave none. */
+function wired(opts: BriefOptions, now: number): Required<BriefOptions> {
+  return {
+    milestones: opts.milestones ?? (() => listMilestones(now, { active: true })),
+    tour: opts.tour ?? ((week) => weekTour(week)),
+  };
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -142,7 +151,8 @@ function mondayOf(ms: number): string {
 }
 
 /** The items from the ledger over the window and from the state now, in time order within their kind. */
-function gather(since: string, now: number, opts: BriefOptions): { drafts: Draft[]; tour: Tour | null } {
+function gather(since: string, now: number, given: BriefOptions): { drafts: Draft[]; tour: Tour | null } {
+  const opts = wired(given, now);
   const drafts: Draft[] = [];
   const firmName = new Map(listFirms().map((f) => [f.id, f.name]));
   const firm = (id: string | null) => (id ? (firmName.get(id) ?? id) : null);
@@ -228,12 +238,12 @@ function gather(since: string, now: number, opts: BriefOptions): { drafts: Draft
       actions: ['why', 'dismiss'],
     });
   }
-  // Task 7's milestones, when they are wired: a milestone reached in the window whose tower no longer stands is not news.
-  const standing = opts.milestones ? new Set(opts.milestones().map((m) => m.id)) : null;
+  // Milestones: one reached in the window whose tower no longer stands is not news.
+  const standing = new Set(opts.milestones().map((m) => m.id));
   for (const e of query({ kind: 'milestone.reached', from: since })) {
     const d = e.data as { milestone?: Milestone; id?: string };
     const m = d.milestone;
-    if (!m?.id || (standing && !standing.has(m.id))) continue;
+    if (!m?.id || !standing.has(m.id)) continue;
     drafts.push({
       id: `milestone:${m.id}`,
       kind: 'milestone',
@@ -344,7 +354,7 @@ function gather(since: string, now: number, opts: BriefOptions): { drafts: Draft
 
   // The week's tour, on a Monday morning: the week that just ended.
   let tour: Tour | null = null;
-  if (opts.tour && new Date(now).getDay() === 1) {
+  if (new Date(now).getDay() === 1) {
     const week = mondayOf(now - 7 * DAY_MS);
     tour = opts.tour(week);
     if (tour && tour.stops.length > 0) {
