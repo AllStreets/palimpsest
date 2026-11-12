@@ -588,6 +588,95 @@ async function ribbonChecks(page: Page): Promise<void> {
   check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `the city keeps its budget from home with the ribbons (${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
+/**
+ * The week tour (Phase 3 Task 17): T walks the camera from the exchange
+ * through the week's stops and back, a caption at each; Space goes on, a
+ * stop at a time; Escape ends it and the view returns home. With
+ * prefers-reduced-motion the walk cuts from stop to stop. Shots:
+ * tour-open.png (the exchange, the walk's first caption) and tour-stop.png
+ * (a stop mid-tour with its caption). Runs with the economy seeded.
+ */
+async function tourChecks(page: Page): Promise<void> {
+  type TS = { t: number; length: number; index: number; caption: string | null; dwelling: boolean };
+  const tourOf = (): Promise<TS | null> => page.evaluate('window.__palimpsest.tour()') as Promise<TS | null>;
+  const planned = (await page.evaluate(() => fetch('/api/tour').then((r) => r.json()))) as { stops: Array<{ kind: string; title: string; glide: number; dwell: number }>; seconds: number } | null;
+  check(!!planned && planned.stops.length >= 4, `the economy's week has a tour (${planned ? planned.stops.length - 2 : 0} stops, ${planned?.seconds ?? 0} s)`);
+  if (!planned) return;
+  await setView(page, (await debug(page, (d) => d.limits().home)).eye, (await debug(page, (d) => d.limits().home)).target);
+  const home = await debug(page, (d) => d.camera());
+  await page.locator('#city canvas').focus();
+  await page.keyboard.press('t');
+  const walking = await page.waitForFunction('window.__palimpsest.tour() !== null', null, { timeout: 8000 }).then(() => true).catch(() => false);
+  check(walking, 'T walks the week');
+  if (!walking) return;
+  await page.evaluate('window.__palimpsest.tourHold(true)');
+  // The opening: the exchange, settled, its caption showing.
+  await page.evaluate('window.__palimpsest.tourSeek(1.5)');
+  await page.waitForTimeout(1600);
+  const open = (await tourOf())!;
+  check(open.index === 0 && open.caption === 'The exchange', `it opens at the exchange (${open.caption})`);
+  await page.screenshot({ path: join(SHOTS, 'tour-open.png') });
+  // Each stop: dwelt at, its caption its own, the camera moved from the last.
+  const length = open.length;
+  let t = 0;
+  const captions: string[] = [];
+  let moved = 0;
+  let last = await debug(page, (d) => d.camera());
+  const mid = Math.floor(planned.stops.length / 2);
+  for (let i = 0; i < planned.stops.length; i++) {
+    const s = planned.stops[i];
+    const at = t + s.glide + s.dwell / 2;
+    t += s.glide + s.dwell;
+    if (at >= length) break;
+    await page.evaluate((x) => (window as unknown as { __palimpsest: { tourSeek(t: number): void } }).__palimpsest.tourSeek(x), at);
+    await page.waitForTimeout(500);
+    const st = (await tourOf())!;
+    captions.push(st.caption ?? '');
+    const cam = await debug(page, (d) => d.camera());
+    if (Math.hypot(cam[0] - last[0], cam[1] - last[1], cam[2] - last[2]) > 5) moved++;
+    last = cam;
+    if (i === mid) {
+      await page.waitForTimeout(1200);
+      await page.screenshot({ path: join(SHOTS, 'tour-stop.png') });
+      await page.screenshot({ path: join(SHOTS, 'tour-stop-caption.png'), clip: { x: 0, y: VIEWPORT.height - 260, width: 760, height: 260 } });
+    }
+  }
+  const inner = captions.slice(1, -1);
+  check(inner.length === planned.stops.length - 2 && inner.every((c, i) => c === planned.stops[i + 1].title), `the caption changes at each of the ${planned.stops.length - 2} stops (${inner.join(' | ').slice(0, 160)})`);
+  check(moved >= planned.stops.length - 2, `and the camera moves from stop to stop (${moved})`);
+  // Space: on to the next stop.
+  await page.evaluate('window.__palimpsest.tourSeek(1)');
+  await page.waitForTimeout(200);
+  await page.keyboard.press(' ');
+  await page.waitForTimeout(200);
+  check(((await tourOf())?.index ?? 0) >= 1, 'Space goes on to the next stop');
+  // Escape: the walk ends and the view glides home.
+  await page.evaluate('window.__palimpsest.tourHold(false)');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(2600);
+  check((await tourOf()) === null, 'Escape ends the tour');
+  const back = await debug(page, (d) => d.camera());
+  check(Math.hypot(back[0] - home[0], back[1] - home[1], back[2] - home[2]) < 5, `and the view returns home (${Math.hypot(back[0] - home[0], back[1] - home[1], back[2] - home[2]).toFixed(1)} m off)`);
+  // Reduced motion: the walk cuts, so the eye stands still through what would be a glide.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.evaluate('window.__palimpsest.tourStart()');
+  await page.waitForFunction('window.__palimpsest.tour() !== null', null, { timeout: 8000 }).catch(() => {});
+  await page.evaluate('window.__palimpsest.tourHold(true)');
+  const s1 = planned.stops[0].glide + planned.stops[0].dwell;
+  await page.evaluate((x) => (window as unknown as { __palimpsest: { tourSeek(t: number): void } }).__palimpsest.tourSeek(x), s1 + 0.2);
+  await page.waitForTimeout(400);
+  const a = await debug(page, (d) => d.camera());
+  await page.evaluate((x) => (window as unknown as { __palimpsest: { tourSeek(t: number): void } }).__palimpsest.tourSeek(x), s1 + planned.stops[1].glide - 0.2);
+  await page.waitForTimeout(400);
+  const b = await debug(page, (d) => d.camera());
+  check(Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) < 0.01, 'with reduced motion the tour cuts from stop to stop, never gliding');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(600);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const budget = await homeBudget(page);
+  console.log(`info  the city from home after the tour: ${budget.calls} calls`);
+}
+
 type Tally = { calls: number; triangles: number };
 type Breakdown = Record<string, Record<string, Tally>>;
 /** The home view's draws by subsystem (or by drawn mesh, with `detail`) and pass, the shadow map redrawn. */
@@ -2622,7 +2711,7 @@ async function main(): Promise<void> {
     // name what it saw. A quick run for the notice rounds; the full run takes the same checks in their places.
     const forceDrop = process.env.UI_FORCE_DROP === '1';
     // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'budget'].includes(process.env.UI_ONLY ?? '');
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'budget'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -2635,6 +2724,7 @@ async function main(): Promise<void> {
         await spireChecks(page);
         await revivalChecks(page);
         await ribbonChecks(page);
+        await tourChecks(page);
         const before = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(1500);
@@ -2719,6 +2809,7 @@ async function main(): Promise<void> {
         await spireChecks(page);
         await revivalChecks(page);
         await ribbonChecks(page);
+        await tourChecks(page);
         await quarterChecks(page);
         await darkTowerChecks(page);
         await exchangeChecks(page);

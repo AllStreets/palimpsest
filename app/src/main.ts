@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import './ui/style.css';
 import './ui/screens.css';
 
-import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, TowerSpec } from '../../shared/types';
+import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, Tour, TourStop, TowerSpec } from '../../shared/types';
 import { weekOf } from '../../shared/tour';
 import { api } from './api';
 import { coalesced } from './coalesce';
@@ -33,6 +33,7 @@ import type { EngineEvent } from './api';
 import { currentRoute, navigate, onRoute, type Place, type Route } from './router';
 import { createInspector, ROOT_NAMES, type MarketNames } from './ui/inspector';
 import { startRide, type Ride, type RideState } from './city/ride';
+import { startTour as startTourWalk, tourKeys, type TourFrame, type TourWalk } from './city/tour';
 import { ridePlan } from '../../shared/ride.js';
 import { layoutTower } from '../../shared/tower-layout.js';
 import { crownFor } from '../../shared/silhouette.js';
@@ -46,7 +47,7 @@ import { createJobs } from './ui/jobs';
 import { createRunPage } from './ui/run';
 import { createDistrictPage } from './ui/repo';
 import { createAuditPage } from './ui/audit';
-import { createBrief, TOUR_LATER } from './ui/brief';
+import { createBrief, NO_TOUR } from './ui/brief';
 import { emptyMorning } from './ui/brief-words';
 import { createRepos } from './ui/repos';
 import { createNotices } from './ui/notices';
@@ -174,6 +175,12 @@ interface DebugHandle {
   agentBoard(towers: TowerSpec[], spots: Array<{ x: number; z: number }>): Promise<void>;
   /** Takes the agent board down again, its towers disposed. */
   clearAgentBoard(): void;
+  /** Starts the week's tour (as T does), resolving whether it walks. */
+  tourStart(week?: string): Promise<boolean>;
+  /** The tour walking now, or null; its clock held or set (tests and captures). */
+  tour(): { t: number; length: number; index: number; caption: string | null; dwelling: boolean } | null;
+  tourHold(on: boolean): void;
+  tourSeek(t: number): void;
   /** Stands the ambient tone board in the city's light and returns where to read each tone (captures only; reload to clear). */
   ambientBoard(): Promise<AmbientSwatchPoint[]>;
   /** Firms' quarters standing in the city. */
@@ -530,6 +537,10 @@ async function main(): Promise<void> {
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
     clearAgentBoard: () => clearAgentBoard(),
+    tourStart: (week) => startTour(week ?? weekOf(Date.now()).week),
+    tour: () => tourWalk?.state() ?? null,
+    tourHold: (on) => tourWalk?.hold(on),
+    tourSeek: (t) => tourWalk?.seek(t),
     async swatchBoard() {
       // As the ambient board: empty streets while the board stands, the density restored if laying it fails.
       const was = city.ambientDensity(0);
@@ -1099,10 +1110,10 @@ async function main(): Promise<void> {
     // T in the city walks through the week (Decision 5), any day.
     if ((e.key === 't' || e.key === 'T') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city') {
       e.preventDefault();
-      if (!startTour(weekOf(Date.now()).week)) tourLater();
+      void startTour(weekOf(Date.now()).week);
     }
     // R rides the lift up the tower open in the inspector, or the selected agent's (Task 35).
-    if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city' && !ride) {
+    if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city' && !ride && !tourWalk) {
       const key = inspector.repo ?? (selectedAgent ? `agent:${selectedAgent}` : null);
       if (key) {
         e.preventDefault();
@@ -1174,13 +1185,58 @@ async function main(): Promise<void> {
   // A README audit's own page (Phase 3 Task 10): the claims, their evidence and the jobs that close the gap.
   const auditPage = createAuditPage(document.body, { listen, onDismiss: toCity });
 
-  /** The week's tour. TODO(Task 17): the city walks it; until then it says when it comes. */
-  const startTour = (week: string): boolean => {
-    void week;
-    return false;
+  // ---------------------------------------------------------------- the week tour (Phase 3 Task 17)
+  let tourWalk: TourWalk | null = null;
+  /** Where a stop stands: its floor (on a district's or an agent's tower), else its whole tower. */
+  const stopFrame = (s: TourStop): TourFrame | null => {
+    const agentKey = s.towerId?.startsWith('agent:') ? s.towerId : null;
+    if (s.floorId) {
+      const f = city.floorFrame(agentKey ?? s.repo ?? '', s.floorId);
+      if (f) return f;
+    }
+    if (agentKey) return city.agentFrame(agentKey.slice(6));
+    return s.repo ? city.towerFrame(s.repo) : null;
   };
-  const tourLater = (): void => {
-    notice.add(TOUR_LATER, { key: 'tour' });
+  /**
+   * Walks the city through the week (Decision 5): the engine's plan, the
+   * camera on its scripted path, the captions at the lower left. Resolves
+   * true once it walks; a week with fewer than two stops says so and
+   * resolves false.
+   */
+  const startTour = async (week: string): Promise<boolean> => {
+    if (ride || tourWalk) return false;
+    let tour: Tour | null;
+    try {
+      tour = await api.tour(week);
+    } catch {
+      notice.add("The engine did not answer with the week's tour.", { key: 'tour' });
+      return false;
+    }
+    const ex = city.exchange();
+    const exFrame: TourFrame = { center: ex ? ex.object.getWorldPosition(new THREE.Vector3()).setY(14) : new THREE.Vector3(0, 14, 0), width: 90, height: 28 };
+    const towers: TourFrame[] = [
+      ...served.map((d) => city.towerFrame(d.repo)).filter((f): f is TourFrame => !!f),
+      ...servedQuarters.flatMap((q) => q.towers.map((t) => (t.agentId ? city.agentFrame(t.agentId) : null))).filter((f): f is TourFrame => !!f),
+    ];
+    const keys = tour ? tourKeys(tour, stopFrame, exFrame, towers) : [];
+    if (keys.length < 4) {
+      notice.add(NO_TOUR, { key: 'tour' });
+      return false;
+    }
+    navigate('city');
+    inspector.close();
+    const w = new Date(`${tour!.week}T12:00:00`);
+    tourWalk = startTourWalk(city, keys, {
+      parent: document.body,
+      still: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      weekLine: `The week of ${w.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`,
+      onEnd: () => {
+        tourWalk = null;
+        delete document.body.dataset.touring;
+      },
+    });
+    document.body.dataset.touring = '';
+    return true;
   };
   // The morning brief (Phase 3 Task 11): every action in place; the floor and the diff go through the job page's own hooks.
   const brief = createBrief(document.body, {

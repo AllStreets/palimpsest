@@ -120,7 +120,7 @@ const KITS = 'The architecture kits did not load (kits/kits.glb is missing or da
 const TOWER = 'That tower is not standing in the city just now.';
 const AUDIT_1 = 'An audit of harbor-ledger is reading its README.';
 const AUDIT_2 = 'The audit of harbor-ledger found 3 claims missing.';
-const TOUR = 'The tour arrives with the city track.';
+const TOUR = 'Not enough happened this week for a walk through it.';
 
 export async function noticeChecks(page: Page, check: Check, shots: string): Promise<void> {
   await go(page, '#/');

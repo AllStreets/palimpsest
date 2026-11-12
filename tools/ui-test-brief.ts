@@ -298,16 +298,18 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await row.evaluate((r) => r.scrollIntoView({ block: 'center' }));
       await tourPage.waitForTimeout(400);
       await tourPage.screenshot({ path: join(shots, 'brief-tour.png') });
-      // Until the city walks it (Task 17), taking the tour says when it comes, and nothing is recorded as taken.
-      const toursBefore = query({ kind: 'brief.action' }).filter((e) => (e.data as { action?: string }).action === 'tour').length;
+      // Taking the tour (Task 17): the brief gives way to the city, the camera walks the week, and the ledger keeps it.
+      // The row here is Monday's, set into today's brief, so the engine (which acts only on today's items) may refuse to
+      // record it: what is checked is that the brief asks it to, once the walk has started.
+      const asked = tourPage.waitForRequest((r) => r.method() === 'POST' && /\/api\/brief\/items\/tour%3A[^/]+\/tour$/.test(r.url()), { timeout: 8000 }).then(() => true).catch(() => false);
       await row.locator('.brief-act[data-action="tour"]').focus();
       await tourPage.keyboard.press('Enter');
-      const later = await within(tourPage, 3000, async () => ((await row.locator('.brief-quiet').textContent()) ?? '').trim() === 'The tour arrives with the city track.');
-      check(later, `Walk through the week says the tour arrives with the city track (${((await row.locator('.brief-quiet').textContent().catch(() => '')) ?? '').trim()})`);
-      await tourPage.waitForTimeout(500);
-      check(!/Walked through the week/.test((await row.textContent()) ?? '') && (await row.locator('.brief-error').count()) === 0, 'and the row does not say he walked it');
-      check(query({ kind: 'brief.action' }).filter((e) => (e.data as { action?: string }).action === 'tour').length === toursBefore, 'and no tour is recorded until one starts');
-      check(await tourPage.evaluate(() => document.activeElement?.classList.contains('brief-quiet') ?? false), 'focus lands on the quiet line');
+      const walking = await within(tourPage, 8000, async () => (await tourPage.evaluate(() => (window as unknown as { __palimpsest: { tour(): unknown } }).__palimpsest.tour())) !== null);
+      check(walking, 'Walk through the week starts the tour in the city');
+      check(await within(tourPage, 3000, async () => (await tourPage.evaluate(() => document.body.dataset.route)) === 'city'), 'and the brief gives way to it');
+      check(await asked, 'and the brief records that he took it');
+      await tourPage.keyboard.press('Escape');
+      check(await within(tourPage, 3000, async () => (await tourPage.evaluate(() => (window as unknown as { __palimpsest: { tour(): unknown } }).__palimpsest.tour())) === null), 'Escape ends it');
       await tourPage.close();
     }
 
@@ -325,13 +327,13 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       check((flew?.data as { action?: string } | undefined)?.action === 'fly', 'and the ledger keeps that he flew');
     }
 
-    // ------------------------------------------------------------ T in the city: the tour, or the quiet line saying when it comes
+    // ------------------------------------------------------------ T in the city: the week's tour walks
     await page.locator('#city canvas').focus();
     await page.keyboard.press('t');
-    const said = await within(page, 2000, async () => /The tour arrives with the city track/.test(await page.evaluate(() => (window as unknown as { __palimpsest: { notice(): string } }).__palimpsest.notice())));
-    check(said, 'T in the city says the tour arrives with the city track');
-    await page.locator('.city-notice-line[data-key="tour"] .city-notice-dismiss').click().catch(() => {});
+    const walks = await within(page, 8000, async () => (await page.evaluate(() => (window as unknown as { __palimpsest: { tour(): unknown } }).__palimpsest.tour())) !== null);
+    check(walks, 'T in the city walks the week');
     await page.keyboard.press('Escape');
+    await within(page, 3000, async () => (await page.evaluate(() => (window as unknown as { __palimpsest: { tour(): unknown } }).__palimpsest.tour())) === null);
   } finally {
     if (before) await page.setViewportSize(before);
   }

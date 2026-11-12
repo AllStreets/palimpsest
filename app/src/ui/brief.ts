@@ -40,8 +40,8 @@ export interface BriefOptions {
   flyToFloor(where: { repo: string | null; floorId: string | null; agentId: string | null }): boolean;
   /** Opens the run's page at its diff. */
   openDiff(runId: string): void;
-  /** Starts the week's tour; false until the city can walk it (Task 17). */
-  startTour(week: string): boolean;
+  /** Starts the week's tour in the city (Task 17): true once it walks, false when the week has none to walk. */
+  startTour(week: string): Promise<boolean>;
 }
 
 const SECTIONS: Array<[keyof Brief['sections'], string]> = [
@@ -52,8 +52,8 @@ const SECTIONS: Array<[keyof Brief['sections'], string]> = [
 ];
 /** The engine events after which the brief is read again: anything that moves an item or adds one. */
 const READ_ON = /^(brief\.action|job\.(changed|proposed|posted)|audit\.(ended|started)|milestone\.reached|repo\.(halted|resumed|connected|disconnected)|run\.ended|merge\.(detected|reverted)|report\.written)$/;
-/** The words for the tour until the city can walk it. */
-export const TOUR_LATER = 'The tour arrives with the city track.';
+/** The words for a week with fewer than two things to walk through. */
+export const NO_TOUR = 'Not enough happened this week for a walk through it.';
 
 /** The headline of a row. Today's limit and the reading are about the plan, so they say so plainly. */
 function headOf(item: BriefItem): string {
@@ -224,15 +224,20 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
 
   function tour(item: BriefItem): void {
     const week = brief?.tour?.week ?? item.id.replace(/^tour:/, '');
-    // Recorded only once a tour has started: until the city walks it (Task 17), the row says when it comes.
-    if (opts.startTour(week)) {
-      void act(item, 'tour');
-      return;
-    }
-    quiet.set(item.id, TOUR_LATER);
-    focusNext = { id: item.id, sel: '.brief-quiet' };
-    rows.delete(item.id);
-    render();
+    // Recorded only once the walk has started; a week with nothing to walk says so under the row.
+    void opts.startTour(week).then(
+      (walking) => {
+        if (walking) {
+          void act(item, 'tour');
+          return;
+        }
+        quiet.set(item.id, NO_TOUR);
+        focusNext = { id: item.id, sel: '.brief-quiet' };
+        rows.delete(item.id);
+        render();
+      },
+      () => {},
+    );
   }
 
   // ---------------------------------------------------------------- Ask why
