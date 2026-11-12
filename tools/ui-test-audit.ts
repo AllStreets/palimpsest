@@ -151,6 +151,8 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     check((await answered).status() === 202, 'Audit the README starts an audit (202)');
     check(await within(page, 4000, async () => (await start.isDisabled()) && /^An audit is waiting/.test(((await sheet.locator('.district-audit .audit-held').textContent()) ?? '').trim())), `and the button holds with the reason (${await sheet.locator('.district-audit .audit-held').textContent()})`);
     check(await within(page, 4000, async () => /Waiting/.test((await sheet.locator('.district-audit .audit-stage').textContent()) ?? '')), 'the waiting audit shows where it stands');
+    check(await within(page, 3000, async () => (await sheet.locator('.district-audit .audit-lead').count()) === 0), 'the last audit\'s lead steps aside while the new one waits');
+    check(/^The last audit: Read /.test(((await sheet.locator('.district-audit .audit-colophon').textContent()) ?? '').trim()), `and the last audit says it is the last (${((await sheet.locator('.district-audit .audit-colophon').textContent()) ?? '').trim()})`);
     await sheet.locator('.district-audit').evaluate((s) => s.scrollIntoView({ block: 'start' }));
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(shots, 'district-audit-waiting.png') });
@@ -164,6 +166,17 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     check(/^Invoices can also be sent/.test(((await harbourGroup.locator(`.prop-line[data-job="${ubl?.id}"] .prop-claim-text`).textContent()) ?? '').trim()), 'each with the claim behind it');
     const kumoBefore = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(KUMO)}`))[0];
     check(kumoBefore?.status === 'reading', `the kumo audit is reading (${kumoBefore?.status})`);
+    // Stop on the reading audit: the engine has no live session behind the sample's, and its refusal shows in place.
+    await go(page, `#/repos/${KUMO}`);
+    const stop = sheet.locator('.district-audit .audit-stop');
+    check(await within(page, 6000, async () => (await stop.count()) === 1 && /Reading/.test((await sheet.locator('.district-audit .audit-stage').textContent()) ?? '')), 'the reading kumo audit offers Stop beside its stage');
+    await stop.click();
+    refusals++;
+    const stopErr = sheet.locator('.district-audit .audit-block .job-error');
+    check(await within(page, 4000, async () => /^Stop refused: the audit is not live/.test(((await stopErr.textContent()) ?? '').trim())), `a refused Stop says why in place (${((await stopErr.textContent().catch(() => '')) ?? '').trim()})`);
+    check((await stopErr.getAttribute('role')) === 'alert', 'as an alert');
+    await go(page, '#/jobs');
+    check(await within(page, 6000, async () => (await page.locator('.sec-proposed').count()) === 1), 'back on the board');
     const clock = economyClock({ now: () => Date.now(), speed: 20, runs: false });
     try {
       for (let i = 0; i < 24; i++) {
@@ -214,19 +227,50 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
 
     const add = jp.locator('.term-add[data-list="scope"]');
     check(await within(page, 3000, async () => (await add.count()) === 1), 'its scope can be edited while it is proposed');
-    await add.fill('src/**');
-    await add.press('Enter');
-    await jp.locator('.terms-save').click();
-    check(await within(page, 4000, async () => (await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.scope.includes('src/**')), 'a glob added and saved is stored');
+    check((await add.getAttribute('aria-label')) === 'Add a glob to the scope', 'the add row is labelled');
+    const rowLabels = await jp.locator('.job-globs .term-input').evaluateAll((is) => is.map((i) => i.getAttribute('aria-label')));
+    check(rowLabels.length > 0 && rowLabels.every((l, i) => l === `Glob ${i + 1} of the scope`), `each glob is labelled by its place (${rowLabels.join(', ')})`);
+    check((await jp.locator('.terms-why').getAttribute('aria-live')) === 'polite', 'the editor says what happened through a polite live region');
+    const focused = (): Promise<string> => page.evaluate(() => {
+      const a = document.activeElement as HTMLElement | null;
+      return a ? `${a.className}|${a.dataset.list ?? ''}` : '';
+    });
+    /** Tabs on until `want` holds focus, at most `n` times. */
+    const tabTo = async (want: RegExp, n = 12): Promise<boolean> => {
+      for (let i = 0; i < n; i++) {
+        if (want.test(await focused())) return true;
+        await page.keyboard.press('Tab');
+      }
+      return want.test(await focused());
+    };
+    // By keyboard alone: from the last glob's Remove, Tab reaches the add row; type, Enter, Tab to Save, Enter.
+    await jp.locator('.job-globs .term-remove').last().focus();
+    await page.keyboard.press('Tab');
+    check(/term-add.*\|scope$/.test(await focused()), `Tab from the last glob reaches the add row (${await focused()})`);
+    await page.keyboard.type('src/**');
+    await page.keyboard.press('Enter');
+    check(await tabTo(/terms-save/), 'Tab reaches Save');
+    await page.keyboard.press('Enter');
+    check(await within(page, 4000, async () => (await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.scope.includes('src/**')), 'a glob added and saved by keyboard is stored');
     check(await within(page, 4000, async () => (await jp.locator('.job-globs .term-input').evaluateAll((is) => is.map((i) => (i as HTMLInputElement).value))).includes('src/**')), 'and shows in the list');
-    check(await within(page, 3000, async () => (await jp.locator('.terms-save').count()) === 0 || !(await jp.locator('.terms-save').isVisible())), 'the editor is quiet again once saved');
+    check(await within(page, 3000, async () => (await jp.locator('.terms-foot').isHidden()) && ((await jp.locator('.terms-why').textContent()) ?? '') === ''), 'the editor is quiet again once saved: no Save, no Discard, nothing said');
+    check(await within(page, 3000, async () => /term-add.*\|scope$/.test(await focused())), `and focus waits in the scope's add row (${await focused()})`);
     const stored = (await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.scope;
-    await add.fill('**/.env');
-    await add.press('Enter');
-    await jp.locator('.terms-save').click();
+    // Focus is in the add row already: type a denied glob, Enter, Tab to Save, Enter.
+    await page.keyboard.type('**/.env');
+    await page.keyboard.press('Enter');
+    check(await tabTo(/terms-save/), 'Tab reaches Save again');
+    await page.keyboard.press('Enter');
     refusals++;
     const want = scopeRefused('**/.env') ?? '';
-    check(await within(page, 4000, async () => ((await jp.locator('.terms-why').textContent()) ?? '').includes(want)), `a denied glob is refused with the engine's reason in place (${await jp.locator('.terms-why').textContent()})`);
+    check(want.length > 0, `the engine refuses **/.env (${want})`);
+    const whyEl = jp.locator('.terms-why');
+    check(await within(page, 4000, async () => want.length > 0 && ((await whyEl.textContent()) ?? '').includes(want)), `a denied glob is refused with the engine's reason in place (${await whyEl.textContent()})`);
+    const refusedInput = jp.locator('.job-globs li.refused .term-input');
+    check((await refusedInput.count()) === 1 && (await refusedInput.inputValue()) === '**/.env', 'the refused row is marked');
+    check((await refusedInput.getAttribute('aria-invalid')) === 'true', 'and invalid to a screen reader');
+    const whyId = (await whyEl.getAttribute('id')) ?? '';
+    check(whyId !== '' && (await refusedInput.getAttribute('aria-describedby')) === whyId, `and described by the reason (${await refusedInput.getAttribute('aria-describedby')})`);
     check(JSON.stringify((await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.scope) === JSON.stringify(stored), 'and nothing changed');
     await jp.locator('.job-issue').scrollIntoViewIfNeeded();
     await page.waitForTimeout(400);
@@ -234,11 +278,33 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     await jp.locator('.terms-discard').click();
     check(await within(page, 3000, async () => !(await jp.locator('.job-globs .term-input').evaluateAll((is) => is.map((i) => (i as HTMLInputElement).value))).includes('**/.env')), 'Discard puts the stored scope back');
 
-    // Read only once it is under way.
-    const running = (await api<Job[]>(page, '/api/jobs?status=running'))[0];
-    if (running) {
-      await go(page, `#/jobs/${running.id}`);
-      check(await within(page, 5000, async () => (await jp.locator('.job-globs').count()) === 1 && (await jp.locator('.job-globs .term-input, .term-add').count()) === 0), 'a running job’s scope is read only');
+    // Read only once it is under way: a running job, seeded from the accepted proposal if the economy has none left.
+    let running = (await api<Job[]>(page, '/api/jobs?status=running'))[0];
+    if (!running && reason) {
+      const { job: storedJob, transition } = await import('../engine/market/jobs.js');
+      let cur = storedJob(reason.id)!;
+      for (const step of ['bidding', 'awarded', 'running'] as const) {
+        const road = ['open', 'bidding', 'awarded', 'running'];
+        if (road.indexOf(cur.status) < road.indexOf(step)) cur = transition(cur, step);
+      }
+      running = cur;
+    }
+    check(running?.status === 'running', `a running job to read (${running?.id ?? 'none'})`);
+    await go(page, `#/jobs/${running?.id}`);
+    check(await within(page, 5000, async () => (await jp.locator('.job-globs').count()) === 1 && (await jp.locator('.job-globs .term-input, .term-add, .terms-save').count()) === 0), 'a running job’s scope is read only');
+
+    // Propose again weighs every job on the key in the repo, not only the audit's own: a newer one from another audit holds it.
+    const again = (await api<Job[]>(page, `/api/jobs?status=proposed&repo=${encodeURIComponent(HARBOUR)}`)).find((j) => j.key === schedule?.key);
+    check(!!again, 'the schedule proposal is proposed again');
+    if (again) {
+      await page.evaluate((id) => fetch(`/api/jobs/${id}/dismiss`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), again.id);
+      const { postProposal } = await import('../engine/market/jobs.js');
+      const other = postProposal({ repo: HARBOUR, title: again.title, body: 'Another audit found it too.', scope: again.scope, acceptance: again.acceptance, tier: again.tier, key: again.key!, source: 'proposal', proposal: { auditId: 'audit-elsewhere', findingId: 'f1' } });
+      await go(page, `#/repos/${HARBOUR}`);
+      const row = sheet.locator(`.district-audit .claim-proposal[data-job="${again.id}"]`);
+      check(await within(page, 6000, async () => (await row.getAttribute('data-state')) === 'withdrawn'), 'the dismissed proposal stands dismissed on the district page');
+      check((await row.locator('.prop-again').count()) === 0, 'and offers no Propose again while a newer job holds its key');
+      await page.evaluate((id) => fetch(`/api/jobs/${id}/dismiss`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), other.id);
     }
     check((await page.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload)) === true, 'nothing reloaded the page');
     await page.keyboard.press('Escape');

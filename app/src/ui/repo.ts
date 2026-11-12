@@ -692,8 +692,8 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
       aside = a;
     } else if (liveAudit) aside = 'an audit is under way';
     sec.append(secHead('README against the code', aside));
-    if (liveAudit) sec.append(renderAuditBlock(liveAudit, namesOf(firms), auditActions));
-    if (v && v.id !== liveAudit?.id) sec.append(renderAuditBlock(v, namesOf(firms), auditActions));
+    if (liveAudit) sec.append(renderAuditBlock(liveAudit, namesOf(firms), { ...auditActions, jobs }));
+    if (v && v.id !== liveAudit?.id) sec.append(renderAuditBlock(v, namesOf(firms), { ...auditActions, jobs, lead: !liveAudit }));
     if (!v && !liveAudit) {
       sec.append(el('p', 'audit-never', 'Never audited. An audit reads the README at the head commit, marks each claim real, partial, missing, stubbed or broken with the file and line that show it, and proposes a job for each gap. Nothing is posted to the market until you accept it.'));
     }
@@ -799,7 +799,7 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     fillChecks(r);
     slots.network(r.connected ? JSON.stringify(r.checks?.ecosystems ?? []) : 'off', () => (r.connected ? networkSection(r) : null));
     slots.halt(r.connected ? JSON.stringify([r.halted, r.strikes, Math.floor(Date.now() / 60_000)]) : 'off', () => (r.connected ? haltSection(r) : null));
-    slots.audit(r.connected ? JSON.stringify([audits.map((a) => [a.id, a.status, a.waitingReason]), shownAudit, liveAudit, [...auditBusy], [...auditErrors], firms.length]) : 'off', () => (r.connected ? auditSection() : null));
+    slots.audit(r.connected ? JSON.stringify([audits.map((a) => [a.id, a.status, a.waitingReason]), shownAudit, liveAudit, jobs.map((j) => [j.id, j.status, j.key]), [...auditBusy], [...auditErrors], firms.length]) : 'off', () => (r.connected ? auditSection() : null));
     slots.jobs(r.connected ? JSON.stringify([jobs.map((j) => [j.id, j.status, j.title]), r.market, r.label, [...auditErrors]]) : 'off', () => (r.connected ? jobsSection() : null));
     slots.floors(r.connected ? JSON.stringify([district?.tower.floors.filter((f) => f.earned).map((f) => [f.id, f.earned?.state]), firms.length]) : 'off', () => (r.connected ? floorsSection() : null));
   }

@@ -366,6 +366,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
       sync();
     });
     const why = el('p', 'terms-why');
+    why.id = `terms-why-${j.id.replace(/[^A-Za-z0-9_-]/g, '-')}`;
     why.setAttribute('aria-live', 'polite');
     foot.append(save, discard, why);
     let saving = false;
@@ -414,6 +415,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
           lists[kind][i] = input.value;
           li.classList.remove('refused');
           input.removeAttribute('aria-invalid');
+          input.removeAttribute('aria-describedby');
           sync();
         });
         input.addEventListener('keydown', (e: Event) => {
@@ -484,6 +486,8 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
         if (detail && detail.job.id === next.id) detail = { ...detail, job: next };
         saving = false;
         render();
+        // The editor is rebuilt from what was stored; the hand goes back to where the next glob is written.
+        body.querySelector<HTMLElement>('.term-add[data-list="scope"]')?.focus({ preventScroll: true });
       } catch (err) {
         saving = false;
         const msg = err instanceof Error ? err.message : String(err);
@@ -494,7 +498,13 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
           const input = li.querySelector<HTMLInputElement>('input');
           const bad = !!input && !!input.value.trim() && reason.startsWith(`${input.value.trim()} `);
           li.classList.toggle('refused', bad);
-          if (bad) input!.setAttribute('aria-invalid', 'true');
+          if (bad) {
+            input!.setAttribute('aria-invalid', 'true');
+            input!.setAttribute('aria-describedby', why.id);
+          } else {
+            input?.removeAttribute('aria-invalid');
+            input?.removeAttribute('aria-describedby');
+          }
         }
         sync();
       }

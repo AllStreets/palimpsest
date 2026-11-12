@@ -116,13 +116,17 @@ export interface AuditBlockOptions {
   busy?: ReadonlySet<string>;
   /** The engine's refusal of an action, by job id (or the audit's id for Stop), shown in place. */
   errors?: ReadonlyMap<string, string>;
+  /** Every job on the repo as last read, so "Propose again" weighs a newer job on the key from another audit; the audit's own proposals when absent. */
+  jobs?: readonly Job[];
+  /** False sets the block as the last audit while a new one waits or reads: its lead steps aside. */
+  lead?: boolean;
 }
 
 /** "Read 11 November 2026 on claude:sonnet at 872bfe8, 23.4 credits charged to the city." */
-function colophon(v: AuditView): HTMLElement {
-  const p = el('p', 'audit-colophon');
+function colophon(v: AuditView, last = false): HTMLElement {
+  const p = el('p', `audit-colophon${last ? ' last' : ''}`);
   const when = v.endedAt ?? v.startedAt;
-  const parts: Array<string | Node> = [`${v.endedAt ? 'Read' : 'Started'} ${longDate(when)}`];
+  const parts: Array<string | Node> = [`${last ? 'The last audit: ' : ''}${v.endedAt ? 'Read' : 'Started'} ${longDate(when)}`];
   if (v.model) parts.push(` on ${cleanText(v.model, 60)}`);
   if (v.baseSha && /^[0-9a-f]{7,40}$/.test(v.baseSha)) {
     parts.push(' at ');
@@ -170,7 +174,7 @@ function proposalLine(v: AuditView, f: Finding, opts: AuditBlockOptions): HTMLEl
     line.append(el('span', 'prop-word', 'waiting on you; no firm bids until you accept it'));
   } else {
     line.append(el('span', 'prop-word', `${proposalWord(j)}${j && j.status !== 'withdrawn' ? `, ${j.tier} tier, ${money(j.value)} credits` : ''}`));
-    if (j && opts.onProposeAgain && canProposeAgain(j, v.proposals)) {
+    if (j && opts.onProposeAgain && canProposeAgain(j, [...(opts.jobs ?? []), ...v.proposals])) {
       const again = textButton('prop-again', 'Propose again', () => opts.onProposeAgain!(j.id));
       again.setAttribute('aria-label', `Propose again: ${title}`);
       line.append(again);
@@ -235,12 +239,17 @@ export function renderAuditBlock(v: AuditView, _names: Names, opts: AuditBlockOp
     if (v.status !== 'waiting' && opts.onStop) line.append(textButton('audit-stop', 'Stop', () => opts.onStop!(v.id)));
     block.append(line);
     const err = opts.errors?.get(v.id);
-    if (err) block.append(el('p', 'job-error', err));
+    if (err) {
+      const e = el('p', 'job-error', err);
+      e.setAttribute('role', 'alert');
+      block.append(e);
+    }
     if (v.status === 'waiting') block.append(el('p', 'audit-note', 'It starts when a Claude slot and the caps allow, reads the README at the repo’s head commit and charges what it spends to the city.'));
     return block;
   }
-  block.append(el('p', 'audit-lead', leadOf(v)));
-  block.append(colophon(v));
+  // While a new audit waits or reads, the last one stands below it without its lead, which the new one is about to replace.
+  if (opts.lead !== false) block.append(el('p', 'audit-lead', leadOf(v)));
+  block.append(colophon(v, opts.lead === false));
   if (!v.findings.length) return block;
   const list = el('ol', 'audit-claims');
   list.setAttribute('aria-label', `Claims in the README of ${cleanText(v.repo, 120)}`);
@@ -279,6 +288,7 @@ export function createAuditPage(parent: HTMLElement, opts: { listen(fn: (e: Engi
   let id: string | null = null;
   let view: AuditView | null = null;
   let firms: FirmView[] = [];
+  let repoJobs: Job[] = [];
   let unlisten: (() => void) | null = null;
   const busy = new Set<string>();
   const errors = new Map<string, string>();
@@ -288,8 +298,10 @@ export function createAuditPage(parent: HTMLElement, opts: { listen(fn: (e: Engi
     if (!want) return;
     try {
       const [v, fs] = await Promise.all([api.audit(want), firms.length ? Promise.resolve(firms) : api.firms().catch(() => [] as FirmView[])]);
+      const js = await api.jobs({ repo: v.repo }).catch(() => [] as Job[]);
       if (want !== id) return;
       view = v;
+      repoJobs = js;
       firms = fs;
       trouble.hidden = true;
     } catch (err) {
@@ -339,7 +351,7 @@ export function createAuditPage(parent: HTMLElement, opts: { listen(fn: (e: Engi
     const title = 'The README against the code';
     if (sheet.title.textContent !== title) sheet.title.textContent = title;
     sheet.sub.textContent = `${cleanText(v.repo, 120)}, ${v.trigger === 'connect' ? 'audited by itself when its market opened' : 'audited on your word'}.`;
-    slot(JSON.stringify([v, [...busy], [...errors]]), () => renderAuditBlock(v, namesOf(firms), actions));
+    slot(JSON.stringify([v, repoJobs.map((j) => [j.id, j.status, j.key]), [...busy], [...errors]]), () => renderAuditBlock(v, namesOf(firms), { ...actions, jobs: repoJobs }));
   }
 
   function onEvent(e: EngineEvent): void {
