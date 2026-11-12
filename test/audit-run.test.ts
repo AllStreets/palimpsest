@@ -41,7 +41,7 @@ import {
   WROTE_CLONE,
 } from '../engine/audit/run.js';
 import { audit as storedAudit, latestAudit, listAudits, liveAuditIds, saveAudit } from '../engine/audit/store.js';
-import { analyze, connect, getRepo, patchRepo } from '../engine/repos.js';
+import { analyze, connect, getRepo, holdAuditTrigger, patchRepo } from '../engine/repos.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { AUDIT_ESTIMATE, repoMarketDefaults } from '../shared/market-rules.js';
 import type { Audit, CheckResult, Repo, RepoChecks } from '../shared/types.js';
@@ -839,6 +839,24 @@ test('an on-demand audit runs on a market-off repo while a connect audit is not 
   assert.equal(shouldAutoAudit(on, { ...getSettings(), auditOnConnect: false }), false);
   queueAudit(on, 'demand');
   assert.equal(shouldAutoAudit(on, getSettings()), false, 'a repo with any audit is never audited by itself');
+});
+
+test('while the automatic audit is held nothing is queued, and releasing a hold twice leaves another hold in place', () => {
+  makeRepo(FULL, { market: false });
+  makeRepo('acme/other', { market: false });
+  makeRepo('acme/third', { market: false });
+  const first = holdAuditTrigger();
+  patchRepo(FULL, { market: true });
+  assert.equal(listAudits({ repo: FULL }).length, 0, 'the market switch queues nothing while held');
+  const second = holdAuditTrigger();
+  first();
+  first();
+  patchRepo('acme/other', { market: true });
+  assert.equal(listAudits({ repo: 'acme/other' }).length, 0, 'the second hold still holds after the first is released twice');
+  second();
+  patchRepo('acme/third', { market: true });
+  assert.deepEqual(listAudits({ repo: 'acme/third' }).map((a) => a.trigger), ['connect'], 'released, the switch queues its audit');
+  assert.equal(listAudits({ repo: FULL }).length, 0, 'nothing held back is queued later');
 });
 
 test('turning the market on queues the one automatic audit, and turning it off and on again does not queue a second', () => {

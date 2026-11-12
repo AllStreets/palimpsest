@@ -34,7 +34,7 @@ import type { Commit } from '../engine/mirror.js';
 import type { SampleRepo } from '../engine/sample.js';
 import { isRealDataHome } from '../engine/home.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import { SAMPLE, SAMPLE_MARKER } from '../engine/sample.js';
+import { SAMPLE, SAMPLE_MARKER, sampleReading } from '../engine/sample.js';
 import type { Repo, TowerSpec } from '../shared/types.js';
 
 export type { SampleRepo } from '../engine/sample.js';
@@ -126,7 +126,6 @@ export const SAMPLE_TALL: SampleRepo[] = SAMPLE.map((s) => {
  */
 export async function seedSample(now: number = Date.now(), repos: SampleRepo[] = SAMPLE): Promise<void> {
   const { openDb } = await import('../engine/db.js');
-  const { paths } = await import('../engine/home.js');
   const { foundingFloors } = await import('../engine/history.js');
   const db = openDb();
   for (const s of repos) {
@@ -161,10 +160,8 @@ export async function seedSample(now: number = Date.now(), repos: SampleRepo[] =
     db.prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(s.fullName, JSON.stringify(repo));
     db.prepare('INSERT OR REPLACE INTO towers (repo, json) VALUES (?, ?)').run(s.fullName, JSON.stringify(tower));
   }
-  // A usage reading taken a few minutes ago, as the statusline hook writes it: 44% of the five-hour window, ten points under the 50% cap, so the brief offers today's limit.
-  const sec = Math.floor(now / 1000) - 8 * 60;
-  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 44, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
-  writeFileSync(`${paths().usage}/readings.jsonl`, `${JSON.stringify(reading)}\n`);
+  // A usage reading taken a few minutes ago, as the statusline hook writes it.
+  sampleReading(now);
 }
 
 /**

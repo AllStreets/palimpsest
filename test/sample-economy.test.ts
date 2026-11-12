@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -25,11 +25,11 @@ import { listMilestones, weekTour } from '../engine/market/milestones.js';
 import { resetProviders } from '../engine/market/providers.js';
 import { verifyReplay } from '../engine/market/replay.js';
 import { listRuns, resetRuns } from '../engine/market/runs.js';
-import { economyClock, economySites, seedEconomy } from '../engine/market/sample-economy.js';
+import { economyClock, economySites, sampleReading, seedEconomy } from '../engine/market/sample-economy.js';
 import { resetShipping } from '../engine/market/ship.js';
 import { installTreasury } from '../engine/market/treasury.js';
 import { openaiUsage } from '../engine/providers-usage.js';
-import { connect, disconnect, earnedFloors, getRepo } from '../engine/repos.js';
+import { connect, disconnect, earnedFloors, getRepo, listRepos, patchRepo } from '../engine/repos.js';
 import { SAMPLE_INSTALLED, SAMPLE_ISSUES, SAMPLE_MARKER, sampleCodexHome, sampleGh, samplePRs } from '../engine/sample.js';
 import { proposalKey } from '../shared/market-rules.js';
 import type { BriefItemKind, JobStatus, RunLogLine, Silhouette, Trip, Verdict } from '../shared/types.js';
@@ -113,6 +113,52 @@ afterEach(() => {
   }
   rmSync(tempDir, { recursive: true, force: true });
 });
+
+/** Sets `full`'s market switch in the store, without the switch's own trigger. */
+function setMarket(full: string, on: boolean): void {
+  const repo = getRepo(full)!;
+  openDb().prepare('UPDATE repos SET json = ? WHERE full_name = ?').run(JSON.stringify({ ...repo, market: on }), full);
+}
+
+/** Every audit as `repo trigger status`, sorted. */
+function scriptedAudits(): string[] {
+  return listAudits().map((a) => `${a.repo} ${a.trigger} ${a.status}`).sort();
+}
+
+const FOUR_AUDITS = ['ferro/quarry connect capped', 'hoshi/kumo demand reading', 'lantern/assay-kit demand done', 'tidewater/harbor-ledger demand done'];
+
+/** The founding floor count of `full`'s tower. */
+function foundingFloorCount(full: string): string {
+  const row = openDb().prepare('SELECT json FROM towers WHERE repo = ?').get(full) as { json: string } | undefined;
+  return `${row ? (JSON.parse(row.json) as { floors: unknown[] }).floors.length : 0} floors`;
+}
+
+/** The sample layout (unchanged since before Task 9): each repo's founding floor count, and the states of each tower's earned floors in laid order. */
+const SAMPLE_LAYOUT: Record<string, string> = {
+  'tidewater/harbor-ledger founding': '92 floors',
+  'kestrel/fieldnotes founding': '38 floors',
+  'lantern/assay-kit founding': '66 floors',
+  'ferro/quarry founding': '24 floors',
+  'hoshi/kumo founding': '52 floors',
+  'alder/blank-slate founding': '0 floors',
+  'agent:bruno-kiln': 'lit lit lit lit',
+  'agent:corin-hale': 'lit lit lit lit',
+  'agent:dagny-hollis': 'lit lit lit',
+  'agent:hal-meridian': 'lit lit lit',
+  'agent:ines-ashlar': 'lit lit lit lit lit lit lit',
+  'agent:juno-pike': 'lit lit lit',
+  'agent:mack-quickset': 'lit lit lit lit lit lit lit lit lit',
+  'agent:ola-bergstrom': 'lit lit lit lit lit waiting',
+  'agent:oskar-kiln': 'lit lit lit lit lit lit',
+  'agent:priya-rao': 'lit lit lit lit lit lit lit lit lit lit lit lit',
+  'agent:teodor-vane': 'lit lit lit lit',
+  'agent:wren-sparrow': 'lit lit lit lit lit lit lit lit',
+  'ferro/quarry#founding': 'lit lit scar lit lit lit lit lit lit lit lit lit lit',
+  'hoshi/kumo#founding': 'lit lit lit lit lit scar lit lit lit lit lit scar scar lit lit waiting',
+  'kestrel/fieldnotes#founding': 'lit lit scar lit lit lit lit',
+  'lantern/assay-kit#founding': 'lit lit lit scar lit lit lit lit lit lit lit lit lit lit lit lit lit',
+  'tidewater/harbor-ledger#founding': 'lit lit lit lit lit lit lit scar lit lit lit lit lit lit lit lit lit lit lit lit lit lit lit',
+};
 
 async function seed(): Promise<void> {
   await seedSample(NOW);
@@ -421,14 +467,63 @@ test('the economy seeds four audits and their proposals and replays clean', asyn
 test('a reconnect still analysing when the economy is seeded, as in ui-test, leaves the four scripted audits', async () => {
   // ui-test's reconnectChecks disconnects the harbour and connects it again, and earnedChecks seeds at once:
   // that analysis must not end inside the history, where the market is on, and queue an audit of its own.
+  // Its market starts on, so the analysis would queue that audit even if it ended before the history began.
   await seedSample(NOW);
+  setMarket(H, true);
   disconnect(H);
   await connect(H);
   assert.equal(getRepo(H)?.status, 'analyzing');
   await seedEconomy(NOW);
   assert.equal(getRepo(H)?.status, 'ready');
-  const audits = listAudits().map((a) => `${a.repo} ${a.trigger} ${a.status}`).sort();
-  assert.deepEqual(audits, ['ferro/quarry connect capped', 'hoshi/kumo demand reading', 'lantern/assay-kit demand done', 'tidewater/harbor-ledger demand done']);
+  assert.deepEqual(scriptedAudits(), FOUR_AUDITS);
+});
+
+test('a reconnect still analysing when the economy is seeded on the real runner finishes on the sample stand-in', async () => {
+  await seedSample(NOW);
+  disconnect(H);
+  await connect(H);
+  // The seed installs the stand-in only when the real runner is in place, as in tools/sample.ts.
+  setRunner(realRunner);
+  await seedEconomy(NOW);
+  assert.equal(getRepo(H)?.status, 'ready', `the analysis ended ${getRepo(H)?.status}: ${getRepo(H)?.error ?? ''}`);
+  assert.deepEqual(scriptedAudits(), FOUR_AUDITS);
+});
+
+test('a seed that throws while it writes the history releases the hold on the automatic audit', async () => {
+  const { queueAudit } = await import('../engine/audit/run.js');
+  await seedSample(NOW);
+  // An audit already waiting on the harbour stops the history at its scripted audit.
+  queueAudit(getRepo(H)!, 'demand', NOW - 9 * 86_400_000);
+  await assert.rejects(seedEconomy(NOW), /already has an audit waiting or under way/);
+  setMarket(K, false);
+  patchRepo(K, { market: true });
+  assert.deepEqual(
+    listAudits({ repo: K }).map((a) => a.trigger),
+    ['connect'],
+    'the market switch queues its automatic audit again',
+  );
+});
+
+test('the sample layout holds: every tower keeps its founding and earned floors', async () => {
+  await seed();
+  const towers = (openDb().prepare('SELECT DISTINCT tower_id AS t FROM earned_floors ORDER BY tower_id').all() as Array<{ t: string }>).map((r) => r.t);
+  const layout = Object.fromEntries([
+    ...listRepos().map((r) => [`${r.fullName} founding`, foundingFloorCount(r.fullName)] as const),
+    ...towers.map((t) => [t, earnedFloors(t).map((f) => f.earned?.state ?? '?').join(' ')] as const),
+  ]);
+  assert.deepEqual(layout, SAMPLE_LAYOUT);
+});
+
+test('seedSample writes the reading sampleReading writes, and clears a latest.json left in the home', async () => {
+  mkdirSync(paths().usage, { recursive: true });
+  const latest = join(paths().usage, 'latest.json');
+  writeFileSync(latest, '{}');
+  await seedSample(NOW);
+  assert.equal(existsSync(latest), false, 'a latest.json would stand in front of the seeded reading');
+  const readings = join(paths().usage, 'readings.jsonl');
+  const seeded = readFileSync(readings, 'utf8');
+  sampleReading(NOW);
+  assert.equal(readFileSync(readings, 'utf8'), seeded);
 });
 
 test('the clock ends the reading audit done with two new proposals and events', async () => {

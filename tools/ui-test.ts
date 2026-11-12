@@ -813,7 +813,7 @@ async function exchangeChecks(page: Page): Promise<void> {
   const plate = await page.$$eval('.plate', (els) => els.map((e) => `${e.querySelector('.plate-name')?.textContent}|${e.querySelector('.plate-sub')?.textContent}`).find((t) => t.startsWith('The exchange|')) ?? '');
   check(plate === `The exchange|${posted.length} jobs posted, 3 taking bids`, `the exchange's plate reads (${plate})`);
 
-  // exchange.png: close on the hall at dusk, the two bidding slots lit under the clock.
+  // exchange.png: close on the hall at dusk, the three bidding slots lit under the clock.
   await setView(page, [30, 12, 82], [0, 24, -6]);
   await debug(page, (x) => x.precompile());
   await page.waitForTimeout(1500);

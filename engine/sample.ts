@@ -6,13 +6,13 @@
  * that marker answers every gh and git call from sampleGh and keeps the usage
  * hook's Claude settings inside the sample home.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 import type { RootStyle } from '../shared/types.js';
 import { openDb } from './db.js';
 import type { Spawned, Spawner } from './exec.js';
-import { home } from './home.js';
+import { home, paths } from './home.js';
 
 /** The file tools/sample.ts writes into a sample home: its presence makes the engine a sample engine. */
 export const SAMPLE_MARKER = 'sample.json';
@@ -736,3 +736,18 @@ export const sampleSpawner: Spawner = (cmd, args = [], opts = {}) => {
     done,
   };
 };
+
+/**
+ * His usage reading as the statusline hook writes it: fresh (taken eight
+ * minutes ago, 44% of the five-hour window against the 50% cap, so the brief
+ * offers today's limit, and 21% of the week, which seedSample writes too) or,
+ * with `stale`, the variant the treasury pauses on: the same reading taken
+ * six hours ago, its five-hour window reset since.
+ */
+export function sampleReading(now: number = Date.now(), opts: { stale?: boolean } = {}): void {
+  const sec = Math.floor(now / 1000) - (opts.stale ? 6 * 3600 : 8 * 60);
+  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 44, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
+  mkdirSync(paths().usage, { recursive: true });
+  rmSync(join(paths().usage, 'latest.json'), { force: true });
+  writeFileSync(join(paths().usage, 'readings.jsonl'), `${JSON.stringify(reading)}\n`);
+}

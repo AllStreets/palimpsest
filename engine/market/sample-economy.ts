@@ -43,7 +43,7 @@
  * or moved, so the README stills stand.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -91,7 +91,7 @@ import { paths } from '../home.js';
 import { districtOrigin, quarterOrigin } from '../layout.js';
 import { query, record } from '../ledger.js';
 import { analysesSettled, earnedFloors, getRepo, holdAuditTrigger, listRepos, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
-import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, SAMPLE_TREES, useSampleFolders } from '../sample.js';
+import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, sampleReading, SAMPLE_TREES, useSampleFolders } from '../sample.js';
 import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
@@ -105,7 +105,7 @@ import { haltRepo, listRuns, run as storedRun } from './runs.js';
 import { agentFloorId, layJobFloors, layScar, pollPRs, repoFloorId, repoTowerId, resetShipping } from './ship.js';
 import { bankruptcyTick, dailyTick, installTreasury, sellDarkTowers, settle } from './treasury.js';
 
-export { SAMPLE_INSTALLED } from '../sample.js';
+export { SAMPLE_INSTALLED, sampleReading } from '../sample.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -1337,48 +1337,38 @@ function writeProviderFixtures(now: number): void {
  */
 export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: boolean } = {}): Promise<void> {
   for (const s of SAMPLE) if (!getRepo(s.fullName)) throw new Error(`seedEconomy runs on top of seedSample(): ${s.fullName} is missing`);
-  // An analysis still running (ui-test reconnects the harbour just before it seeds) would end inside the history,
-  // where the market is on, and queue the repo's automatic audit beside the scripted ones. It ends first, and the
-  // trigger is held while the history is written, so the audits are the script's alone.
-  await analysesSettled();
-  useSampleFolders();
-  mkdirSync(sampleProjectsDir(), { recursive: true });
+  // gh and git go to the stand-in from here, so an analysis still running finishes on it too.
   const own = getRunner() === realRunner;
   if (own) setRunner(sampleGh());
-  const start = now - HISTORY_DAYS * DAY;
-  const time = scriptTime(start);
-  let offTreasury: () => void = () => {};
-  // The milestones listen while the history is written, so the spire, the finial, the revival and the
-  // ribbons are reached by the market's own rules as each floor goes up, each at its own time.
-  const offMilestones = installMilestones({ now: () => Date.now() });
+  // An analysis still running (ui-test reconnects the harbour just before it seeds) would queue the repo's
+  // automatic audit when it ends, beside the scripted ones. The trigger is held before it is waited for and
+  // until the history is written, so the audits are the script's alone.
   const releaseTrigger = holdAuditTrigger();
   try {
-    offTreasury = installTreasury({ now: () => Date.now() });
-    await writeHistory(now, start, time, opts.holdSale === true);
-    await settleJobEffects();
+    await analysesSettled();
+    useSampleFolders();
+    mkdirSync(sampleProjectsDir(), { recursive: true });
+    const start = now - HISTORY_DAYS * DAY;
+    const time = scriptTime(start);
+    let offTreasury: () => void = () => {};
+    // The milestones listen while the history is written, so the spire, the finial, the revival and the
+    // ribbons are reached by the market's own rules as each floor goes up, each at its own time.
+    const offMilestones = installMilestones({ now: () => Date.now() });
+    try {
+      offTreasury = installTreasury({ now: () => Date.now() });
+      await writeHistory(now, start, time, opts.holdSale === true);
+      await settleJobEffects();
+    } finally {
+      offMilestones();
+      offTreasury();
+      time.restore();
+    }
   } finally {
     releaseTrigger();
-    offMilestones();
-    offTreasury();
-    time.restore();
     if (own) setRunner(realRunner);
   }
   sampleReading(now);
   writeProviderFixtures(now);
-}
-
-/**
- * His usage reading as the statusline hook writes it: fresh (taken eight
- * minutes ago, 44% of the five-hour window against the 50% cap, so the brief
- * offers today's limit, and 21% of the week, as seedSample writes it) or,
- * with `stale`, the variant the treasury pauses on: the same reading taken
- * six hours ago, its five-hour window reset since.
- */
-export function sampleReading(now: number = Date.now(), opts: { stale?: boolean } = {}): void {
-  const sec = Math.floor(now / 1000) - (opts.stale ? 6 * 3600 : 8 * 60);
-  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 44, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
-  rmSync(join(paths().usage, 'latest.json'), { force: true });
-  writeFileSync(join(paths().usage, 'readings.jsonl'), `${JSON.stringify(reading)}\n`);
 }
 
 async function writeHistory(now: number, start: number, time: { set(ms: number): void }, holdSale: boolean): Promise<void> {
