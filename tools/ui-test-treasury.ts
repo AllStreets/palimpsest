@@ -1,7 +1,7 @@
 /**
  * The treasury screen's UI checks (Task 39), run by tools/ui-test.ts on its
  * own engine (port 4779, a temp home) after the firm pages' checks, on the
- * sample economy: his reading at 34% of the five-hour window and 21% of the
+ * sample economy: his reading at 44% of the five-hour window and 21% of the
  * week, a calibration measured from 14 pairs, three daily reports and the
  * assay-kit harness job waiting on him. Then the stale variant: the same
  * reading six hours old pauses the city, and Resume anyway clears it.
@@ -55,7 +55,7 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     check((await page.locator('.runhead-link[data-route="treasury"]').getAttribute('aria-current')) === 'page', 'the running head marks Treasury');
     const five = sheet.locator('.meter[data-window="five"]');
     const seven = sheet.locator('.meter[data-window="seven"]');
-    check((await text(page, '.meter[data-window="five"] .meter-used')) === '34%', `the five-hour meter reads the seeded 34% (${await text(page, '.meter[data-window="five"] .meter-used')})`);
+    check((await text(page, '.meter[data-window="five"] .meter-used')) === '44%', `the five-hour meter reads the seeded 44% (${await text(page, '.meter[data-window="five"] .meter-used')})`);
     check((await text(page, '.meter[data-window="seven"] .meter-used')) === '21%', `the seven-day meter reads the seeded 21% (${await text(page, '.meter[data-window="seven"] .meter-used')})`);
     for (const [name, m] of [['five-hour', five], ['seven-day', seven]] as const) {
       check((await m.locator('svg.meter-rule .meter-his').count()) === 1, `the ${name} meter draws his use`);

@@ -26,8 +26,10 @@
  *   `inspection.done` (a pass clears the strikes, a fail adds one).
  * - audits (Phase 3): `audit.started { audit }` and `audit.ended { audit }`
  *   hold the whole audit; `audit.stage { auditId, status, waitingReason? }`
- *   moves one in flight. Milestones: `milestone.reached { milestone }`,
- *   idempotent by id. `brief.opened` and `brief.action` carry no table.
+ *   moves one in flight; a `job.proposed` whose job names its finding writes
+ *   the job id onto that finding's proposal, as proposeFromAudit does after
+ *   the end. Milestones: `milestone.reached { milestone }`, idempotent by
+ *   id. `brief.opened` and `brief.action` carry no table.
  */
 import type { Agent, Audit, AuditStatus, Bid, Firm, Floor, Inspection, Job, JobStatus, Milestone, Run, RunStage } from '../../shared/types.js';
 import { isLedgerKind, type LedgerKind } from '../../shared/ledger-kinds.js';
@@ -251,7 +253,12 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     case 'job.proposed':
     case 'job.posted': {
       const j = d.job as Job | undefined;
-      if (j?.id) s.jobs[j.id] = clone(j);
+      if (!j?.id) return s;
+      s.jobs[j.id] = clone(j);
+      // A proposal's job id is written back onto its audit's finding (proposeFromAudit), after the audit ended whole.
+      const p = j.proposal;
+      const f = p ? s.audits[p.auditId]?.findings.find((x) => x.id === p.findingId) : undefined;
+      if (f?.proposal) f.proposal = { ...f.proposal, jobId: j.id };
       return s;
     }
     case 'job.changed': {

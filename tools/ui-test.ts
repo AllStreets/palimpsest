@@ -791,7 +791,7 @@ async function exchangeChecks(page: Page): Promise<void> {
     posted.map((j) => page.evaluate((id) => fetch(`/api/jobs/${id}`).then((r) => r.json()).then((d: { bids: unknown[] }) => d.bids.length), j.id) as Promise<number>),
   );
   const bidding = posted.filter((j) => j.status === 'bidding');
-  check(bidding.length === 2, `the economy has two jobs taking bids (${bidding.length})`);
+  check(bidding.length === 3, `the economy has three jobs taking bids, two issues and the proposal he accepted (${bidding.length})`);
   const want = posted.map((j, i) => ({ state: j.status, lamps: j.status === 'bidding' ? Math.min(6, bids[i]) : 0 }));
   const shows = await page
     .waitForFunction(
@@ -806,12 +806,12 @@ async function exchangeChecks(page: Page): Promise<void> {
     .catch(() => false);
   const ex = await page.evaluate(() => (window as unknown as { __palimpsest: Ex }).__palimpsest.exchange());
   check(shows, `the tote board shows each posted job with a lamp per real bid (want ${JSON.stringify(want)}, got ${JSON.stringify(ex?.slots.filter((s) => s.state !== 'empty'))})`);
-  check(ex?.slots.filter((s) => s.state === 'bidding').length === 2, 'two slots are lit');
+  check(ex?.slots.filter((s) => s.state === 'bidding').length === 3, 'three slots are lit');
   check(ex?.slots.filter((s) => s.state === 'empty').length === 24 - posted.length, 'every other slot stands dark');
   check(!!ex?.slots.filter((s) => s.state !== 'empty').every((s) => !!s.label && !/[/~]|ghp_|sk-/.test(s.label)), `cards carry only a repo's short name and an issue number (${ex?.slots.filter((s) => s.label).map((s) => s.label).join(', ')})`);
   // The exchange's plate on its forecourt, in counts.
   const plate = await page.$$eval('.plate', (els) => els.map((e) => `${e.querySelector('.plate-name')?.textContent}|${e.querySelector('.plate-sub')?.textContent}`).find((t) => t.startsWith('The exchange|')) ?? '');
-  check(plate === `The exchange|${posted.length} jobs posted, 2 taking bids`, `the exchange's plate reads (${plate})`);
+  check(plate === `The exchange|${posted.length} jobs posted, 3 taking bids`, `the exchange's plate reads (${plate})`);
 
   // exchange.png: close on the hall at dusk, the two bidding slots lit under the clock.
   await setView(page, [30, 12, 82], [0, 24, -6]);

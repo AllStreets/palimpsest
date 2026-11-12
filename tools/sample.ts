@@ -161,9 +161,9 @@ export async function seedSample(now: number = Date.now(), repos: SampleRepo[] =
     db.prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(s.fullName, JSON.stringify(repo));
     db.prepare('INSERT OR REPLACE INTO towers (repo, json) VALUES (?, ?)').run(s.fullName, JSON.stringify(tower));
   }
-  // A usage reading taken a few minutes ago, as the statusline hook writes it.
+  // A usage reading taken a few minutes ago, as the statusline hook writes it: 44% of the five-hour window, ten points under the 50% cap, so the brief offers today's limit.
   const sec = Math.floor(now / 1000) - 8 * 60;
-  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 34, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
+  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 44, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
   writeFileSync(`${paths().usage}/readings.jsonl`, `${JSON.stringify(reading)}\n`);
 }
 
@@ -239,6 +239,9 @@ async function main(): Promise<void> {
     const by = new Map<string, number>();
     for (const j of jobs) by.set(j.status, (by.get(j.status) ?? 0) + 1);
     console.log(`economy: ${jobs.length} jobs (${[...by].map(([s, n]) => `${n} ${s}`).join(', ')})`);
+    const { listAudits } = await import('../engine/audit/store.js');
+    const audits = listAudits();
+    console.log(`economy: ${audits.length} audits (${audits.map((a) => `${a.repo} ${a.status}`).join(', ')})`);
   }
   console.log(`wrote ${home}`);
 }

@@ -14,7 +14,8 @@ import { installProposals, proposeFromAudit } from '../engine/audit/proposals.js
 import { audit as storedAudit, saveAudit } from '../engine/audit/store.js';
 import { openDb } from '../engine/db.js';
 import { emit, subscribe } from '../engine/events.js';
-import { entries } from '../engine/ledger.js';
+import { entries, record } from '../engine/ledger.js';
+import { verifyReplay } from '../engine/market/replay.js';
 import { CITY_MARKER, acceptProposed, dismissProposed, job, keyTaken, listJobs, settleJobEffects, setScope, transition } from '../engine/market/jobs.js';
 import { DENY_SCOPE, denied, proposalKey, repoMarketDefaults, TIER_VALUE } from '../shared/market-rules.js';
 import type { Audit, Finding, Job, JobStatus, Proposal, Repo, Verdict } from '../shared/types.js';
@@ -174,6 +175,17 @@ test('an audit with three gaps posts three proposed jobs with the marker, the ti
 
   assert.deepEqual(proposeFromAudit(stored), [], 'the same audit posts nothing twice');
   assert.equal(proposedOf().length, 3);
+});
+
+test('replay learns each proposal\'s job id from job.proposed, so a done audit still compares whole', () => {
+  const a = auditOf([gap('Exports CSV', 'MISSING'), gap('Hot reload works', 'BROKEN')]);
+  // The runner records the audit's end whole, before its proposals exist.
+  record('audit.ended', { auditId: a.id, repo: a.repo, status: 'done', reason: null, audit: a });
+  const posted = proposeFromAudit(a);
+  assert.equal(posted.length, 2);
+  const stored = storedAudit(a.id)!;
+  assert.deepEqual(stored.findings.map((f) => f.proposal?.jobId).sort(), posted.map((j) => j.id).sort(), 'the table holds the job ids');
+  assert.deepEqual(verifyReplay().diffs, []);
 });
 
 test('a proposal key already open is not posted again', () => {

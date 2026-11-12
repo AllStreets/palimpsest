@@ -30,6 +30,17 @@
  *
  * Trips are stored with hand-written legs until the routing task (Task 33)
  * switches the seed and the clock to startTrip().
+ *
+ * Phase 3 (Task 9) adds what the audit, the brief and the milestones need
+ * a human to meet: four README audits (one done with fourteen claims and
+ * four proposals, one done with no README to check, one reading now that
+ * the clock ends, one that ran out of credits last week), six mornings of
+ * briefs with his answers, two jobs from yesterday that the brief reports
+ * (a run that changed nothing, a PR he merged into another branch), and the
+ * milestones the market's own rules reach as the floors go up (the spire,
+ * the finial, a revival, the ribbons). The READMEs the audits read are in
+ * SAMPLE_TREES. Nothing here changes the city's layout: no floor is added
+ * or moved, so the README stills stand.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
@@ -37,13 +48,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CREDIT_PCT } from '../../shared/credits.js';
-import { calibrated as calibrate, expectedValue, TIER_VALUE } from '../../shared/market-rules.js';
+import { calibrated as calibrate, expectedValue, proposalKey, TIER_VALUE } from '../../shared/market-rules.js';
 import { silhouetteFor } from '../../shared/silhouette.js';
 import type {
   Agent,
+  Audit,
+  AuditStatus,
   Bid,
   CheckName,
   CheckResult,
+  Finding,
   Firm,
   FloorSize,
   Inspection,
@@ -60,7 +74,13 @@ import type {
   TripMode,
   TripReason,
   Run,
+  Verdict,
 } from '../../shared/types.js';
+import { proposeFromAudit } from '../audit/proposals.js';
+import { auditSlug, countVerdicts, renderAudit } from '../audit/schema.js';
+import { audit as storedAudit, listAudits, saveAudit } from '../audit/store.js';
+import { queueAudit } from '../audit/run.js';
+import { actOn, briefItems, openBrief } from '../brief.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
 import { getRunner, realRunner, setRunner } from '../exec.js';
@@ -78,6 +98,7 @@ import { storedCalibration } from '../usage.js';
 import { charge } from './budget.js';
 import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
+import { installMilestones } from './milestones.js';
 import { reputation } from './reputation.js';
 import { localDay, writeDailyReport } from './report.js';
 import { haltRepo, listRuns, run as storedRun } from './runs.js';
@@ -340,6 +361,8 @@ interface Story {
   by: Attempt[];
   /** A day his revert of the merge landed on the default branch. */
   revertDay?: number;
+  /** The day he merged the PR, when the story fixes it (else his own time, 1.2 to 11 hours after it shipped). */
+  mergeDay?: number;
 }
 
 /** The four jobs on the board when the daily tick sells Lodestar's tower and Quickset hires. */
@@ -357,7 +380,8 @@ const c = (agent: string): Attempt => ({ agent, end: 'closed' });
  * afford to hire. Days 6.0 to 6.003 are that board.
  */
 const HISTORY: Story[] = [
-  { day: 0.2, repo: 'H', tier: 'normal', title: 'Customs forms: prefill the IMO number from the vessel record', by: [m('priya-rao')] },
+  // He left the first harbour PR until the next morning, so assay-kit's large first floor held the skyline for a few hours (Task 9: a mast that was lit once).
+  { day: 0.2, repo: 'H', tier: 'normal', title: 'Customs forms: prefill the IMO number from the vessel record', by: [m('priya-rao')], mergeDay: 0.9 },
   { day: 0.25, repo: 'A', tier: 'high', title: 'LIMS bridge times out on batches over 500 samples', by: [m('corin-hale')] },
   { day: 0.3, repo: 'K', tier: 'low', title: 'Add a /healthz endpoint for the Pi watchdog', by: [m('wren-sparrow')] },
   { day: 0.4, repo: 'H', tier: 'normal', title: "Pilot booking form loses the pilot's phone number on save", by: [m('ines-ashlar')] },
@@ -397,7 +421,8 @@ const HISTORY: Story[] = [
   { day: 3.7, repo: 'A', tier: 'low', title: 'Add tests for the custody chain signatures', by: [m('juno-pike')] },
   { day: 3.8, repo: 'H', tier: 'low', title: 'Invoice PDF cuts off long vessel names', by: [m('wren-sparrow')] },
   { day: 3.9, repo: 'K', tier: 'normal', title: 'Tile cache: serve stale tiles while a refresh is in flight', by: [m('ola-bergstrom')] },
-  { day: 4.0, repo: 'F', tier: 'normal', title: 'Photo notes: keep the EXIF location when a photo is attached', by: [m('teodor-vane')], revertDay: 6.8 },
+  // Reverted yesterday, inside the brief's window (Task 9).
+  { day: 4.0, repo: 'F', tier: 'normal', title: 'Photo notes: keep the EXIF location when a photo is attached', by: [m('teodor-vane')], revertDay: 7.3 },
   { day: 4.1, repo: 'Q', tier: 'normal', title: 'Typed rows: support chrono timestamps behind a feature flag', by: [m('oskar-kiln')] },
   { day: 4.2, repo: 'A', tier: 'normal', title: 'Audit trail: record who voided a result and why', by: [m('ines-ashlar')] },
   { day: 4.4, repo: 'H', tier: 'normal', title: 'Pilot bookings: warn when two pilots are booked for one tide', by: [m('priya-rao')] },
@@ -804,6 +829,37 @@ class Pipeline {
     samplePRs.close(r.repo, r.prNumber!, iso());
     resetShipping();
     await pollPRs(Date.now());
+  }
+
+  /**
+   * He merged the PR into another branch than the default: the market's
+   * poll calls that merged with changes, takes the waiting floors down,
+   * closes the job unpaid and leaves a note for his brief.
+   */
+  async mergeInto(r: Run, branch: string): Promise<void> {
+    samplePRs.merge(r.repo, r.prNumber!, { headRefOid: r.headSha!, mergeCommit: sha(`${r.id}@merge`), at: iso(), baseRefName: branch });
+    resetShipping();
+    await pollPRs(Date.now());
+  }
+
+  /**
+   * The agent stops without touching a file: the run is charged and ends
+   * failed with the runner's own reason, no scar is laid, and the job
+   * returns to the board once (ruling 16), as the runner settles it.
+   */
+  giveUp(r: Run, credits: number): Run {
+    const charged = charge({ runId: r.id, firmId: r.firmId, model: r.model, kind: 'run', usage: usageOf(r.model, credits), unattended: r.unattended, at: Date.now(), minCredits: credits });
+    const turns = Math.round(this.between(4, 9));
+    const progress = { ...r.progress, toolCalls: turns * 2, turns, credits: charged, weightedTokens: r.model.startsWith('ollama:') ? 0 : Math.round(charged * tokensPerCredit()) };
+    const reason = 'The run finished without changing anything.';
+    const ended: Run = { ...r, progress, outcome: 'failed', endedReason: reason, endedAt: iso(), stage: 'done', scar: false };
+    saveRun(ended);
+    record('run.ended', { runId: r.id, jobId: r.jobId, outcome: 'failed', reason, summary: null, run: ended });
+    emit('run.ended', { runId: r.id, outcome: 'failed', reason });
+    const cur = storedJob(r.jobId)!;
+    const failed = transition(cur, 'failed', { excludedFirms: [...cur.excludedFirms, r.firmId] });
+    if (failed.attempts < 2) transition(failed, 'open', { runId: null, awardedBid: null, bidsCloseAt: null });
+    return ended;
   }
 }
 
@@ -1288,27 +1344,33 @@ export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: b
   const start = now - HISTORY_DAYS * DAY;
   const time = scriptTime(start);
   let offTreasury: () => void = () => {};
+  // The milestones listen while the history is written, so the spire, the finial, the revival and the
+  // ribbons are reached by the market's own rules as each floor goes up, each at its own time.
+  const offMilestones = installMilestones({ now: () => Date.now() });
   try {
     offTreasury = installTreasury({ now: () => Date.now() });
     await writeHistory(now, start, time, opts.holdSale === true);
     await settleJobEffects();
   } finally {
+    offMilestones();
     offTreasury();
     time.restore();
     if (own) setRunner(realRunner);
   }
+  sampleReading(now);
   writeProviderFixtures(now);
 }
 
 /**
  * His usage reading as the statusline hook writes it: fresh (taken eight
- * minutes ago, 34% of the five-hour window and 21% of the week, as
- * seedSample writes it) or, with `stale`, the variant the treasury pauses
- * on: the same reading taken six hours ago, its five-hour window reset since.
+ * minutes ago, 44% of the five-hour window against the 50% cap, so the brief
+ * offers today's limit, and 21% of the week, as seedSample writes it) or,
+ * with `stale`, the variant the treasury pauses on: the same reading taken
+ * six hours ago, its five-hour window reset since.
  */
 export function sampleReading(now: number = Date.now(), opts: { stale?: boolean } = {}): void {
   const sec = Math.floor(now / 1000) - (opts.stale ? 6 * 3600 : 8 * 60);
-  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 34, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
+  const reading = { at: sec, rate_limits: { five_hour: { used_percentage: 44, resets_at: sec + 3 * 3600 + 1200 }, seven_day: { used_percentage: 21, resets_at: sec + 4 * 86400 + 5 * 3600 } } };
   rmSync(join(paths().usage, 'latest.json'), { force: true });
   writeFileSync(join(paths().usage, 'readings.jsonl'), `${JSON.stringify(reading)}\n`);
 }
@@ -1428,9 +1490,9 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
           }
           const i = p.inspect(run, { passed: true, reviewer });
           run = await p.ship(run, i, lines);
-          // He reads and merges in his own time, never after the board at `now`.
+          // He reads and merges in his own time, never after the board at `now`; a story may fix the day.
           const later = Math.min(Date.now() + between(1.2, 11) * HOUR, now - 3 * HOUR);
-          q.push(Math.max(Date.now() + 20 * MIN, later), async () => {
+          q.push(s.mergeDay !== undefined ? at(s.mergeDay) : Math.max(Date.now() + 20 * MIN, later), async () => {
             if (a.end === 'closed') await p.close(run);
             else await p.merge(run);
           });
@@ -1489,6 +1551,11 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
   }
 
   scheduleBoard(now, p, q);
+  // Yesterday's two jobs, the audits and his mornings draw from their own seeds, so the history above is unchanged.
+  const y = new Pipeline(rng('sample-yesterday'));
+  scheduleAudits(now, start, q);
+  scheduleYesterday(now, y, q);
+  scheduleBriefs(now, q);
   await q.drain(time, now);
   time.set(now);
   settle(now);
@@ -1685,6 +1752,560 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
   });
 }
 
+// ---------------------------------------------------------------- the audits (Phase 3)
+
+const AUDIT_MODEL: ModelRef = 'claude:sonnet';
+
+/** One claim of a sample README as the audit read it, with the evidence it cited and what it proposed. */
+interface SampleClaim {
+  /** The claim, as the README's bullet begins; its line is found in the README itself. */
+  claim: string;
+  verdict: Verdict;
+  tested: boolean;
+  /** `[file, line, note]`; every piece is verified at the base commit unless the finding is `unverified`. */
+  evidence: Array<[string, number | null, string]>;
+  /** The agent cited a file that is not in the tree: nothing verified, no proposal (ruling 3). */
+  unverified?: boolean;
+  proposal?: { title: string; body: string; scope: string[]; acceptance: string[]; tier: Tier };
+}
+
+/**
+ * The harbour's fourteen claims: eight real, two partial, three missing and
+ * one broken (the UTC day that issue #214 is fixing right now). One
+ * finding cites a mailer that is not in the tree. Four proposals.
+ */
+const HARBOR_CLAIMS: SampleClaim[] = [
+  {
+    claim: "The schedule groups arrivals by the harbour's calendar day",
+    verdict: 'BROKEN',
+    tested: true,
+    evidence: [
+      ['src/schedule/days.ts', 7, 'dayOf() slices the ISO string, so an arrival after midnight UTC lands on the next day'],
+      ['test/schedule/days.test.ts', 30, 'the one day test uses noon arrivals and passes either way'],
+    ],
+    proposal: {
+      title: "Group arrivals by the harbour's day, not the UTC date",
+      body: 'dayOf() in src/schedule/days.ts takes the UTC date from the ISO string. Take the harbour zone from src/config/harbour.ts, bucket with localDate() from src/time/zones.ts, and cover 00:00 to 01:00 UTC on both sides of the March clock change.',
+      scope: ['src/schedule/**', 'test/schedule/**'],
+      acceptance: ['An arrival at 00:40 UTC on 12 March is on the 12th in the harbour zone', 'The schedule tests cover both sides of the March clock change'],
+      tier: 'normal',
+    },
+  },
+  {
+    claim: 'Manifest export writes a CSV with every column customs asks for',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['src/manifest/csv.ts', 12, 'COLUMNS lists the fourteen customs columns in their published order'],
+      ['test/manifest/csv.test.ts', 8, 'asserts the header row against the customs schema'],
+    ],
+  },
+  {
+    claim: 'Port fees are computed from the published tariff, with the weekend surcharge',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['src/fees/tariff.ts', 40, 'surcharge() checks the day against Saturday and Sunday'],
+      ['test/fees/tariff.test.ts', 21, 'a Saturday arrival pays the surcharge and a Monday does not'],
+    ],
+  },
+  {
+    claim: "Invoices render to PDF with the harbour's letterhead",
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['src/invoice/pdf.ts', 18, 'renderInvoice() draws the letterhead from assets/letterhead.svg'],
+      ['test/invoice/pdf.test.ts', 5, 'the rendered PDF carries the letterhead and the invoice number'],
+    ],
+  },
+  {
+    claim: 'Invoices can also be sent as e-invoices in the UBL format',
+    verdict: 'MISSING',
+    tested: false,
+    evidence: [['src/invoice/pdf.ts', 1, 'the only invoice output in the tree is the PDF; nothing writes UBL']],
+    proposal: {
+      title: 'Export invoices as UBL e-invoices',
+      body: 'The README promises UBL e-invoices and the code has only the PDF renderer. Add a UBL 2.1 writer beside it, driven by the same invoice model, with a fixture invoice and a golden file.',
+      scope: ['src/invoice/**', 'test/invoice/**'],
+      acceptance: ['An invoice exports as a UBL 2.1 document that validates against the schema', 'A test renders the fixture invoice and compares it with the golden file'],
+      tier: 'high',
+    },
+  },
+  {
+    claim: 'Pilot bookings warn when two pilots are booked for one tide',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['src/pilots/bookings.ts', 66, 'conflicts() pairs bookings by tide and returns one warning per clash'],
+      ['test/pilots/bookings.test.ts', 40, 'two pilots on one tide produce one warning'],
+    ],
+  },
+  {
+    claim: 'Berth conflicts are emailed to the harbour master',
+    verdict: 'MISSING',
+    tested: false,
+    unverified: true,
+    evidence: [['src/notify/email.ts', 12, 'the audit cited a mailer module that is not in the tree at the base commit']],
+  },
+  {
+    claim: "The crew roster imports the agency's CSV, rank column included",
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['src/crew/roster.ts', 22, 'importRoster() maps the rank column onto Crew.rank'],
+      ['test/crew/roster.test.ts', 14, 'the fixture roster imports with its ranks'],
+    ],
+  },
+  {
+    claim: 'Customs forms prefill the IMO number from the vessel record',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['src/customs/forms.ts', 31, 'prefill() copies vessel.imo into the form'],
+      ['test/customs/forms.test.ts', 9, 'a form for a known vessel carries its IMO'],
+    ],
+  },
+  {
+    claim: "Arrivals can be imported from the port authority's XML feed",
+    verdict: 'MISSING',
+    tested: false,
+    evidence: [
+      ['src/sync/worker.ts', 1, 'the worker speaks JSON to the customs API only; no XML parser is in the tree'],
+      ['package.json', 1, 'no XML dependency'],
+    ],
+    proposal: {
+      title: "Import arrivals from the port authority's XML feed",
+      body: "Nothing in the code reads the port authority feed. Add an importer under src/sync that fetches the feed, maps its arrivals onto the schedule model and runs on the worker's timer, with a recorded fixture of the feed for the tests.",
+      scope: ['src/sync/**', 'test/sync/**', 'fixtures/**'],
+      acceptance: ['A recorded feed fixture imports into the schedule with every arrival on the right day', 'The worker refuses a feed that does not validate and logs why'],
+      tier: 'normal',
+    },
+  },
+  {
+    claim: 'The sync worker backs off after a 409 from the customs API',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['src/sync/worker.ts', 58, 'a 409 doubles the delay, up to an hour'],
+      ['test/sync/worker.test.ts', 33, 'three 409s in a row back off to eight minutes'],
+    ],
+  },
+  {
+    claim: 'Tide tables are cached for the day and refreshed at midnight',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['src/tides/tables.ts', 14, 'the cache is keyed by the local day'],
+      ['test/tides/tables.test.ts', 27, 'a request after midnight misses the cache once'],
+    ],
+  },
+  {
+    claim: "The berth map shows each berth's draught limit on hover",
+    verdict: 'PARTIAL',
+    tested: false,
+    evidence: [['src/map/berths.ts', 71, 'the hover card shows the limit only for berths with a survey on file; the others show nothing']],
+  },
+  {
+    claim: 'Every fee override is written to the audit log with who made it and why',
+    verdict: 'PARTIAL',
+    tested: true,
+    evidence: [
+      ['src/audit/log.ts', 20, 'logOverride() records the user and the amounts; no reason is taken or stored'],
+      ['test/audit/log.test.ts', 11, 'the test checks the user and the amount only'],
+    ],
+    proposal: {
+      title: 'Record the reason on fee override audit entries',
+      body: 'The audit log records who overrode a fee and by how much, but the README also promises why. Take a reason on the override form, store it on the entry and show it in the log view.',
+      scope: ['src/audit/**', 'src/fees/**', 'test/audit/**'],
+      acceptance: ['An override without a reason is refused', 'The audit log entry carries the reason and the log view shows it'],
+      tier: 'low',
+    },
+  },
+];
+
+/** Kumo's seven claims, every verdict among them; the clock's audit reads them. Two proposals. */
+const KUMO_CLAIMS: SampleClaim[] = [
+  {
+    claim: 'Radar tiles are served at 256 and 512 px',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['radar/tiles.go', 30, 'Size is 256 or 512; anything else is a 400'],
+      ['radar/tiles_test.go', 12, 'both sizes are requested and decoded'],
+    ],
+  },
+  {
+    claim: 'A /healthz endpoint answers the watchdog',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['server/health.go', 9, 'GET /healthz answers 200 with the uptime'],
+      ['server/health_test.go', 6, 'the handler answers 200'],
+    ],
+  },
+  {
+    claim: 'The colour ramp is read from config',
+    verdict: 'REAL',
+    tested: true,
+    evidence: [
+      ['render/ramp.go', 14, 'Load() reads ramp.toml and falls back to the built-in steps'],
+      ['render/ramp_test.go', 9, 'a config ramp replaces the built-in one'],
+    ],
+  },
+  {
+    claim: 'Alerts fire once per threshold crossing, with quiet hours from 23:00 to 07:00',
+    verdict: 'PARTIAL',
+    tested: false,
+    evidence: [['alerts/alerts.go', 52, 'quiet hours are honoured; the once-per-crossing guard is per station, so two stations crossing together still fire twice']],
+  },
+  {
+    claim: 'Readings stamped in the future are dropped before they reach the nowcast',
+    verdict: 'BROKEN',
+    tested: true,
+    evidence: [
+      ['feed/station.go', 41, 'the guard compares seconds with milliseconds, so every reading passes'],
+      ['feed/station_test.go', 60, 'the test asserts in the wrong unit and passes'],
+    ],
+    proposal: {
+      title: 'Drop station readings stamped in the future',
+      body: 'The guard in feed/station.go compares a Unix second with a millisecond clock, so no reading is ever in the future. Compare in one unit, count what is dropped, and fix the test that asserts the wrong unit.',
+      scope: ['feed/**'],
+      acceptance: ['A reading stamped a minute ahead of the station clock is dropped and counted', 'The feed test asserts in seconds and fails on the old guard'],
+      tier: 'normal',
+    },
+  },
+  {
+    claim: "The dashboard widget shows each station's battery level",
+    verdict: 'STUBBED',
+    tested: false,
+    evidence: [['dashboard/widget.go', 88, 'Battery() returns 100 whatever the feed says; the feed carries no battery field yet']],
+  },
+  {
+    claim: 'The last hour of tiles can be exported as an animated GIF',
+    verdict: 'MISSING',
+    tested: false,
+    evidence: [
+      ['render/ramp.go', 1, 'nothing in render or radar encodes GIF; the only encoder is PNG'],
+      ['go.mod', 1, 'no imaging module beyond the standard library'],
+    ],
+    proposal: {
+      title: 'Export the last hour of tiles as an animated GIF',
+      body: 'The README promises an animated GIF of the last hour and nothing encodes one. Add an export route that stacks the cached tiles of the last hour into a GIF with image/gif, one frame a minute, at 256 px.',
+      scope: ['render/**', 'server/**'],
+      acceptance: ['GET /export.gif returns an animated GIF of the last hour at 256 px', 'A test decodes the GIF and counts its frames'],
+      tier: 'normal',
+    },
+  },
+];
+
+/** The README line a claim's bullet starts on (1-based), or null when the README does not carry it. */
+function readmeLine(readme: string, claim: string): number | null {
+  const head = claim.split(' ').slice(0, 4).join(' ').toLowerCase();
+  const lines = readme.split('\n');
+  const i = lines.findIndex((l) => l.toLowerCase().includes(head));
+  return i < 0 ? null : i + 1;
+}
+
+/** The findings of a sample audit, as verifyEvidence() would leave them: ids in order, the source line found in the README, each piece verified unless the finding is unverified. */
+function findingsOf(repo: string, claims: SampleClaim[]): Finding[] {
+  const readme = SAMPLE_TREES[repo]?.['README.md'] ?? '';
+  return claims.map((c, i) => ({
+    id: `f${i + 1}`,
+    claim: c.claim,
+    source: { file: 'README.md', line: readmeLine(readme, c.claim) },
+    verdict: c.verdict,
+    tested: c.tested,
+    evidence: c.evidence.map(([file, line, note]) => ({ file, line, note, verified: !c.unverified })),
+    unverified: c.unverified === true,
+    proposal: c.proposal && !c.unverified ? { key: proposalKey(repo, c.claim), title: c.proposal.title, body: c.proposal.body, scope: c.proposal.scope, acceptance: c.proposal.acceptance, tier: c.proposal.tier, jobId: null } : null,
+  }));
+}
+
+function auditLog(auditId: string, lines: Array<[RunLogLine['kind'], string]>, live = false): void {
+  const dir = join(paths().runs, auditId);
+  mkdirSync(dir, { recursive: true });
+  const rows: RunLogLine[] = lines.map(([kind, text]) => ({ at: iso(), kind, text }));
+  appendFileSync(join(dir, 'log.jsonl'), rows.map((l) => JSON.stringify(l) + '\n').join(''));
+  if (live) for (const line of rows) emit('audit.log', { auditId, line });
+}
+
+/** A stage of an audit, recorded and emitted as the runner records one (replay reads this shape). */
+function auditStage(id: string, status: AuditStatus, extra: Partial<Pick<Audit, 'model' | 'baseSha' | 'unattended' | 'startedAt'>> = {}): Audit {
+  const a = storedAudit(id)!;
+  const next: Audit = { ...a, ...extra, status, waitingReason: null };
+  saveAudit(next);
+  const data = { auditId: id, status, waitingReason: null, ...extra, at: iso() };
+  record('audit.stage', data);
+  emit('audit.stage', data);
+  return next;
+}
+
+/** An audit's end, recorded and emitted as the runner ends one; a done audit dates its repo. */
+function auditEnd(id: string, status: 'done' | 'capped', reason: string | null, patch: Partial<Audit>): Audit {
+  const a = storedAudit(id)!;
+  const ended: Audit = { ...a, ...patch, status, endedReason: reason, endedAt: iso(), waitingReason: null };
+  saveAudit(ended);
+  record('audit.ended', { auditId: id, repo: ended.repo, status, reason, audit: ended });
+  emit('audit.ended', { audit: ended });
+  if (status === 'done') updateRepoMarket(ended.repo, { auditedAt: ended.endedAt });
+  auditLog(id, [['engine', `audit ended ${status}${reason ? `: ${reason}` : ''}`]], status === 'done' && id === liveKumoAudit);
+  return ended;
+}
+
+/** The session's spend, charged to the city under kind audit as the runner charges it. */
+function chargeAudit(id: string, credits: number): void {
+  charge({ runId: id, firmId: null, model: AUDIT_MODEL, kind: 'audit', usage: usageOf(AUDIT_MODEL, credits), unattended: false, at: Date.now(), minCredits: credits });
+  const a = storedAudit(id)!;
+  saveAudit({ ...a, credits: round2(a.credits + credits) });
+}
+
+/** The page under reports/audits, rendered by the engine's own renderer; its path, for the audit's row. */
+function auditPage(a: Audit): string {
+  const dir = join(paths().reports, 'audits');
+  mkdirSync(dir, { recursive: true });
+  const markdownPath = join(dir, `${auditSlug(a.repo, a.id)}.md`);
+  writeFileSync(markdownPath, renderAudit({ ...a, markdownPath }, { repoDescription: getRepo(a.repo)?.description ?? null }));
+  return markdownPath;
+}
+
+/** A done audit's findings, counts and page, then its end and its proposals (the key rule and the write-back are proposeFromAudit's). */
+function finishAudit(id: string, claims: SampleClaim[], credits: number): Audit {
+  const a = storedAudit(id)!;
+  const findings = findingsOf(a.repo, claims);
+  chargeAudit(id, credits);
+  const done: Audit = { ...storedAudit(id)!, findings, counts: countVerdicts(findings), unverified: findings.filter((f) => f.unverified).length, claimsRead: claims.length };
+  const markdownPath = auditPage({ ...done, status: 'done', endedAt: iso() });
+  const ended = auditEnd(id, 'done', null, { findings: done.findings, counts: done.counts, unverified: done.unverified, claimsRead: done.claimsRead, markdownPath });
+  proposeFromAudit(ended);
+  return storedAudit(id)!;
+}
+
+/** The three stages a live audit passes through, a minute apart as the runner would, with the log a real one writes. */
+function auditPrepares(q: Queue, id: string, t0: number, repo: string): void {
+  q.push(t0, () => {
+    auditStage(id, 'preparing', { model: AUDIT_MODEL, unattended: false, startedAt: iso() });
+    auditLog(id, [['engine', `[preparing] cloned ${repo} into the audit at its base commit`], ['egress', 'proxy on 127.0.0.1 for the install stage']]);
+  });
+  q.push(t0 + 40_000, () => {
+    auditStage(id, 'installing', { baseSha: sha(`${repo}@main@audit@${id}`) });
+    const install = getRepo(repo)?.checks?.install;
+    auditLog(id, [['engine', install ? `[installing] ${install}` : '[palimpsest] no check to run, so nothing is installed']]);
+  });
+  q.push(t0 + 70_000, () => {
+    auditStage(id, 'reading');
+    auditLog(id, [
+      ['system', 'claude -p sonnet: Read, Glob and Grep, the run tool for the declared checks, at most 60 turns'],
+      ['assistant', 'Reading the README first, then the files each claim names.'],
+      ['tool', 'Read README.md'],
+    ]);
+  });
+}
+
+/** The kumo audit the clock ends; null until the seed has started it. */
+let liveKumoAudit: string | null = null;
+
+/**
+ * The four audits (Task 9): quarry's ran out of credits the morning the
+ * market opened; assay-kit's found no README three days ago; the harbour's
+ * ran yesterday morning and proposed four jobs, two of which he answered
+ * that evening (scheduleBriefs); kumo's is reading as the board stands, and
+ * the clock ends it.
+ */
+function scheduleAudits(now: number, start: number, q: Queue): void {
+  const ids: Record<string, string> = {};
+  const queue = (at: number, repo: string, trigger: 'connect' | 'demand') =>
+    q.push(at, () => {
+      ids[repo] = queueAudit(getRepo(repo)!, trigger, Date.now()).id;
+      auditLog(ids[repo], [['engine', `audit queued on ${repo} (${trigger})`]]);
+    });
+
+  // Quarry, the morning the market opened: a connect audit that read past its credit cap.
+  queue(start + 12 * MIN, REPO.Q, 'connect');
+  q.push(start + 13 * MIN, () => auditPrepares(q, ids[REPO.Q], Date.now(), REPO.Q));
+  q.push(start + 38 * MIN, () => {
+    auditLog(ids[REPO.Q], [['tool', 'Grep "derive" src'], ['tool', 'Read src/planner/join.rs'], ['tool', 'run cargo test'], ['engine', 'capped: credit cap of 40']]);
+    chargeAudit(ids[REPO.Q], 40.6);
+    auditEnd(ids[REPO.Q], 'capped', 'credit cap of 40', {});
+  });
+
+  // Assay-kit, three days ago: nothing to read.
+  queue(localTime(now, 3, 11, 20), REPO.A, 'demand');
+  q.push(localTime(now, 3, 11, 21), () => auditPrepares(q, ids[REPO.A], Date.now(), REPO.A));
+  q.push(localTime(now, 3, 11, 24), () => {
+    auditLog(ids[REPO.A], [['engine', '[palimpsest] no README at the base commit; the session was given the docs alone and found no claim']]);
+    finishAudit(ids[REPO.A], [], 2.1);
+  });
+
+  // The harbour, yesterday morning, on his click from the district page.
+  queue(localTime(now, 1, 9, 0), REPO.H, 'demand');
+  q.push(localTime(now, 1, 9, 1), () => auditPrepares(q, ids[REPO.H], Date.now(), REPO.H));
+  q.push(localTime(now, 1, 9, 19), () => {
+    auditLog(ids[REPO.H], [
+      ['tool', 'Glob src/**'],
+      ['tool', 'Read src/schedule/days.ts'],
+      ['tool', 'Read test/schedule/days.test.ts'],
+      ['assistant', 'dayOf() slices the ISO string: the schedule claim is broken, and the one test passes because it uses noon arrivals.'],
+      ['tool', 'Grep "ubl" src'],
+      ['tool', 'Grep "xml" src package.json'],
+      ['tool', 'run npm test'],
+      ['tool', 'tests 286, pass 286, fail 0'],
+      ['assistant', 'Eight claims hold with a test behind each. Writing the findings.'],
+    ]);
+    finishAudit(ids[REPO.H], HARBOR_CLAIMS, 23.4);
+  });
+
+  // Kumo, nine minutes ago: reading as the board stands.
+  queue(now - 9 * MIN, REPO.K, 'demand');
+  q.push(now - 8 * MIN, () => {
+    liveKumoAudit = ids[REPO.K];
+    auditPrepares(q, ids[REPO.K], Date.now(), REPO.K);
+  });
+  q.push(now - 5 * MIN, () => {
+    auditLog(ids[REPO.K], [['tool', 'Glob **/*.go'], ['tool', 'Read radar/tiles.go'], ['tool', 'Read radar/tiles_test.go'], ['tool', 'Read server/health.go']]);
+  });
+}
+
+/** The lines the kumo audit still writes before it answers, one every 30 script seconds while the clock runs. */
+const KUMO_MORE: Array<[RunLogLine['kind'], string]> = [
+  ['tool', 'Read render/ramp.go'],
+  ['tool', 'Read alerts/alerts.go'],
+  ['assistant', 'The once-per-crossing guard is keyed by station, so two stations crossing together still fire twice: partial.'],
+  ['tool', 'Read feed/station.go'],
+  ['tool', 'Read feed/station_test.go'],
+  ['assistant', 'The future-reading guard compares seconds with milliseconds. The test asserts in the wrong unit, so it passes: broken.'],
+  ['tool', 'Read dashboard/widget.go'],
+  ['assistant', 'Battery() returns 100 whatever the feed says: stubbed.'],
+  ['tool', 'Grep "gif" .'],
+  ['tool', 'run go test ./...'],
+  ['tool', 'ok  	example.com/kumo/...	4.812s'],
+  ['assistant', 'Seven claims read. Writing the findings.'],
+];
+
+/** The local time `back` days before `now`'s day, at `h`:`m`, in this process's zone (the brief's days are local days). */
+function localTime(now: number, back: number, h: number, m: number): number {
+  const d = new Date(now);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - back, h, m).getTime();
+}
+
+/**
+ * Yesterday's two jobs the brief reports, on their own seed: on kumo a low
+ * job Wren Sparrow won and gave up on without touching a file (failed, one
+ * attempt left, back on the board); on quarry a docs job Juno Pike shipped
+ * that he merged into a release branch, so the poll took its floors down,
+ * closed it unpaid and left a note. Neither adds a floor to the city.
+ */
+function scheduleYesterday(now: number, y: Pipeline, q: Queue): void {
+  const agentOf = (id: string) => storedAgent(id)!;
+  const ago = (ms: number) => now - ms;
+
+  // Kumo, yesterday afternoon.
+  let widget: Job;
+  let wrenRun: Run;
+  q.push(ago(16 * HOUR), () => {
+    widget = postManualJob({ repo: REPO.K, title: 'Dashboard widget: show the station name on hover', tier: 'low', body: 'Dashboard widget: show the station name on hover.\n\nKeep the change inside the scope and show it with a test.' });
+  });
+  q.push(ago(16 * HOUR) + 15_000, () => {
+    const j = openBidding(storedJob(widget.id)!, Date.now());
+    const bid = y.round(j, agentOf('wren-sparrow'), [agentOf('juno-pike')]);
+    q.push(Date.parse(j.bidsCloseAt!) + 5_000, () => {
+      y.award(j, bid);
+    });
+    q.push(Date.parse(j.bidsCloseAt!) + 45_000, () => {
+      wrenRun = y.begin(storedJob(widget.id)!, bid);
+    });
+    q.push(Date.parse(j.bidsCloseAt!) + 105_000, () => {
+      wrenRun = y.install(wrenRun);
+    });
+    q.push(Date.parse(j.bidsCloseAt!) + 3 * MIN, () => {
+      wrenRun = y.working(wrenRun);
+    });
+    q.push(Date.parse(j.bidsCloseAt!) + 21 * MIN, () => {
+      writeLog(wrenRun.id, [
+        { at: iso(Date.now() - 17 * MIN), kind: 'system', text: 'tool loop qwen2.5-coder:7b-instruct: six tools, at most 25 turns' },
+        { at: iso(Date.now() - 16 * MIN), kind: 'tool', text: 'read_file dashboard/widget.go' },
+        { at: iso(Date.now() - 12 * MIN), kind: 'tool', text: 'read_file dashboard/widget_test.go' },
+        { at: iso(Date.now() - 6 * MIN), kind: 'assistant', text: 'The hover card is drawn by the dashboard, not by this widget. I cannot change it from here.' },
+        { at: iso(), kind: 'result', text: 'No change made: the station name on hover belongs to the dashboard that embeds the widget.' },
+      ]);
+      wrenRun = y.giveUp(wrenRun, 2.4);
+    });
+  });
+
+  // Quarry, yesterday evening.
+  let docs: Job;
+  let junoRun: Run;
+  q.push(ago(13 * HOUR), () => {
+    docs = postManualJob({ repo: REPO.Q, title: 'Docs: name the SQLite version the crate needs', tier: 'low', body: 'Docs: name the SQLite version the crate needs.\n\nKeep the change inside the scope and show it with a test.' });
+  });
+  q.push(ago(13 * HOUR) + 15_000, () => {
+    const j = openBidding(storedJob(docs.id)!, Date.now());
+    const bid = y.round(j, agentOf('juno-pike'), [agentOf('wren-sparrow')]);
+    const close = Date.parse(j.bidsCloseAt!);
+    q.push(close + 5_000, () => {
+      y.award(j, bid);
+    });
+    q.push(close + 45_000, () => {
+      junoRun = y.begin(storedJob(docs.id)!, bid);
+    });
+    q.push(close + 105_000, () => {
+      junoRun = y.install(junoRun);
+    });
+    q.push(close + 3 * MIN, () => {
+      junoRun = y.working(junoRun);
+    });
+    q.push(close + 19 * MIN, () => {
+      const summary = 'README.md names SQLite 3.45 or later under Requirements, with the reason (RETURNING in the planner).';
+      writeLog(junoRun.id, shortLog(agentOf('juno-pike'), storedJob(docs.id)!, ['README.md'], close + 3 * MIN, Date.now(), summary));
+      junoRun = y.finishWork(junoRun, { files: ['README.md'], lines: 6, credits: 0.6, summary });
+    });
+    q.push(close + 27 * MIN, async () => {
+      const i = y.inspect(junoRun, { passed: true, reviewer: agentOf('teodor-vane') });
+      junoRun = await y.ship(junoRun, i, 6);
+    });
+    // He merged it himself an hour later, into the release branch he was cutting.
+    q.push(close + 87 * MIN, async () => {
+      await y.mergeInto(storedRun(junoRun.id)!, 'release/2.4');
+    });
+  });
+
+  // The harbour proposal he accepted last night opened for bids a moment ago (the board's clock would have, on the next tick).
+  q.push(ago(50_000), () => {
+    const accepted = listJobs({ repo: REPO.H, source: 'proposal', status: 'open' })[0];
+    if (!accepted) throw new Error('sample economy: no accepted proposal to open for bids');
+    const j = openBidding(accepted, Date.now());
+    y.round(j, agentOf('dagny-hollis'), [agentOf('ines-ashlar'), agentOf('oskar-kiln')]);
+  });
+}
+
+/**
+ * His mornings (Decision 8): the brief opened at 06:40 on each of the last
+ * six days, through openBrief itself, so each `brief.opened` lists what
+ * that morning showed; three days ago he set today's limit to 30% from the
+ * brief; last night he accepted the harbour's XML feed proposal and
+ * dismissed the schedule one (issue #214 already has it). His reading is
+ * rewritten for each morning and restored at the end (seedEconomy).
+ */
+function scheduleBriefs(now: number, q: Queue): void {
+  for (let back = 6; back >= 1; back--) {
+    q.push(localTime(now, back, 6, 40), () => {
+      sampleReading(Date.now());
+      openBrief(Date.now());
+    });
+  }
+  q.push(localTime(now, 3, 6, 41), () => {
+    actOn('usage', 'cap', { pct: 30 }, Date.now());
+  });
+  q.push(localTime(now, 1, 18, 30), () => {
+    const items = briefItems(openBrief(Date.now())).filter((i) => i.kind === 'proposal' && i.repo === REPO.H && i.actions.includes('accept'));
+    const byTitle = (re: RegExp) => items.find((i) => re.test(i.title));
+    const feed = byTitle(/XML feed/);
+    const day = byTitle(/harbour's day/);
+    if (!feed || !day) throw new Error("sample economy: the harbour's proposals are not in the brief");
+    actOn(feed.id, 'accept', {}, Date.now());
+    actOn(day.id, 'dismiss', {}, Date.now() + 40_000);
+  });
+}
+
 // ---------------------------------------------------------------- the city's live view
 
 const progressOf = new Map<string, number>();
@@ -1760,8 +2381,14 @@ export interface EconomyClock {
  * or a local agent sitting out for want of a slot), and the round is
  * awarded by the market's own rule once everyone has answered or the
  * window it opened has closed.
+ *
+ * With `audit` (the default), the audit reading on kumo at the start writes
+ * its last log lines, reports its progress and ends done 400 script seconds
+ * in (20 wall seconds at speed 20): its findings carry every verdict, its
+ * page is rendered, its session charged to the city, `audit.ended` recorded
+ * and emitted, and its two proposals posted.
  */
-export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number; board?: boolean }): EconomyClock {
+export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number; board?: boolean; audit?: boolean }): EconomyClock {
   const S = 1000;
   const p = new Pipeline(rng('sample-clock'));
   const steps: Array<{ at: number; run: () => void | Promise<void> }> = [];
@@ -1869,6 +2496,26 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
   // A dark tower held back from the daily tick (seedEconomy's holdSale) is sold `sell` script seconds in: the
   // richest firm buys it and re-clads it, with the same tower.sold a real daily tick sends.
   if (opts.sell !== undefined) at(opts.sell, () => sellDarkTowers(opts.now()));
+
+  // The reading audit: a log line every 30 s with its progress, then its answer at 400 s.
+  if (opts.audit !== false) {
+    const reading = listAudits({ status: ['reading'] }).find((a) => a.repo === REPO.K);
+    if (reading) {
+      const id = reading.id;
+      KUMO_MORE.forEach(([kind, text], i) => {
+        at(30 + i * 30, () => {
+          if (storedAudit(id)?.status !== 'reading') return;
+          auditLog(id, [[kind, text]], true);
+          emit('audit.progress', { auditId: id, progress: { turns: 7 + i, toolCalls: 9 + i, credits: round2(4 + i * 1.1) } });
+        });
+      });
+      at(400, () => {
+        if (storedAudit(id)?.status !== 'reading') return;
+        liveKumoAudit = id;
+        finishAudit(id, KUMO_CLAIMS, 18.2);
+      });
+    }
+  }
 
   // What is under way at the start, in script seconds.
   const live = listRuns().filter((r) => r.outcome === null);

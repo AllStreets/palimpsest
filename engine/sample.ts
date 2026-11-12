@@ -180,6 +180,70 @@ export const SAMPLE_OTHERS = [
 /** The one listed repo gh cannot read, so connecting it ends in a readable error. */
 export const SAMPLE_UNREADABLE = 'marlow/locked-vault';
 
+/** Harbor ledger's README: the fourteen claims the sample audit reads, as a maintainer would write them. */
+const HARBOR_README = `# Harbor ledger
+
+Berth schedules, manifests and port fees for a small harbour. One Vite app,
+one SQLite file, run by the harbour office on a Mac mini in the back room.
+
+## What it does
+
+- The schedule groups arrivals by the harbour's calendar day, so a ship that
+  docks at ten past midnight is on the right page.
+- Manifest export writes a CSV with every column customs asks for, in the
+  order they ask for it.
+- Port fees are computed from the published tariff, with the weekend
+  surcharge applied on Saturdays and Sundays.
+- Invoices render to PDF with the harbour's letterhead.
+- Invoices can also be sent as e-invoices in the UBL format.
+- Pilot bookings warn when two pilots are booked for one tide.
+- Berth conflicts are emailed to the harbour master as soon as they appear.
+- The crew roster imports the agency's CSV, rank column included.
+- Customs forms prefill the IMO number from the vessel record.
+- Arrivals can be imported from the port authority's XML feed.
+- The sync worker backs off after a 409 from the customs API instead of
+  retrying forever.
+- Tide tables are cached for the day and refreshed at midnight.
+- The berth map shows each berth's draught limit on hover.
+- Every fee override is written to the audit log with who made it and why.
+
+## Running it
+
+\`\`\`
+npm ci
+npm test
+npm run build
+\`\`\`
+
+The schedule, the fees and the manifests each have a test file beside them
+under \`test/\`. \`npm run typecheck\` and \`npm run lint\` run in CI.
+`;
+
+/** Kumo's README: the seven claims the sample audit reads while the clock runs. */
+const KUMO_README = `# Kumo
+
+Weather radar tiles for a home dashboard, served from a Raspberry Pi in the
+hall cupboard. Go, no database, one binary.
+
+## Features
+
+- Radar tiles are served at 256 and 512 px.
+- A /healthz endpoint answers the watchdog.
+- The colour ramp is read from config, so the dashboard can match the room.
+- Alerts fire once per threshold crossing, with quiet hours from 23:00 to
+  07:00.
+- Readings stamped in the future are dropped before they reach the nowcast.
+- The dashboard widget shows each station's battery level.
+- The last hour of tiles can be exported as an animated GIF.
+
+## Running it
+
+\`\`\`
+go build ./...
+go test ./...
+\`\`\`
+`;
+
 /**
  * The root files of each sample repo's default branch, as check detection
  * (engine/guild/checks.ts) reads them: harbor-ledger is a Vite app with every
@@ -188,6 +252,11 @@ export const SAMPLE_UNREADABLE = 'marlow/locked-vault';
  * not listed here (blank-slate, the other repos) has an empty tree. Two of
  * them therefore get the harness proposal (ruling 23). Of the other repos,
  * tidepool-notes has a test and a build, so push mode can go on there.
+ *
+ * Two READMEs are written out in full, because the sample economy's README
+ * audits (Phase 3 Task 9) read them: harbor-ledger's makes the fourteen
+ * claims its audit checks, kumo's the seven. Assay-kit has no README at
+ * all, so its audit ends with "No README to check."
  */
 export const SAMPLE_TREES: Record<string, Record<string, string>> = {
   'tidewater/harbor-ledger': {
@@ -204,7 +273,7 @@ export const SAMPLE_TREES: Record<string, Record<string, string>> = {
     'package-lock.json': '{}\n',
     'tsconfig.json': '{}\n',
     'index.html': '<!doctype html>\n<title>Harbor ledger</title>\n',
-    'README.md': '# Harbor ledger\n',
+    'README.md': HARBOR_README,
   },
   'kestrel/fieldnotes': {
     'Package.swift': '// swift-tools-version:5.9\n',
@@ -214,7 +283,6 @@ export const SAMPLE_TREES: Record<string, Record<string, string>> = {
     'pyproject.toml': '[project]\nname = "assay-kit"\n',
     'requirements.txt': 'pytest\n',
     'pytest.ini': '[pytest]\n',
-    'README.md': '# Assay kit\n',
   },
   'ferro/quarry': {
     'Cargo.toml': '[package]\nname = "quarry"\n',
@@ -231,7 +299,7 @@ export const SAMPLE_TREES: Record<string, Record<string, string>> = {
   'hoshi/kumo': {
     'go.mod': 'module example.com/kumo\n',
     'go.sum': '',
-    'README.md': '# Kumo\n',
+    'README.md': KUMO_README,
   },
 };
 
@@ -507,10 +575,10 @@ const prNext = new Map<string, number>();
 const FIRST_PR = 300;
 
 export const samplePRs = {
-  /** Marks a PR merged with the head the city pushed and a merge commit. */
-  merge(repo: string, number: number, o: { headRefOid: string; mergeCommit: string; at?: string }): void {
+  /** Marks a PR merged with the head the city pushed and a merge commit; `baseRefName` when he merged it into another branch than main. */
+  merge(repo: string, number: number, o: { headRefOid: string; mergeCommit: string; at?: string; baseRefName?: string }): void {
     const at = o.at ?? new Date().toISOString();
-    prBook.set(`${repo}#${number}`, { state: 'MERGED', mergedAt: at, mergeCommit: { oid: o.mergeCommit }, closedAt: at, headRefOid: o.headRefOid, baseRefName: 'main' });
+    prBook.set(`${repo}#${number}`, { state: 'MERGED', mergedAt: at, mergeCommit: { oid: o.mergeCommit }, closedAt: at, headRefOid: o.headRefOid, baseRefName: o.baseRefName ?? 'main' });
   },
   /** Marks a PR closed without a merge. */
   close(repo: string, number: number, at: string = new Date().toISOString()): void {
