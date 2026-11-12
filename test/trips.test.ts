@@ -10,15 +10,18 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { openDb } from '../engine/db.js';
 import { emit, subscribe, type Event } from '../engine/events.js';
 import { entries } from '../engine/ledger.js';
-import { award, openBidding } from '../engine/market/bids.js';
+import { award, collectBid, eligibleAgents, openBidding } from '../engine/market/bids.js';
 import { charge } from '../engine/market/budget.js';
+import { fakeProvider } from '../engine/market/fake-provider.js';
+import { review } from '../engine/guild/review.js';
+import { setProvider } from '../engine/market/providers.js';
 import { agent as storedAgent, firm, seedFirms } from '../engine/market/firms.js';
 import { job as storedJob, transition } from '../engine/market/jobs.js';
 import { finishWaitingRun } from '../engine/market/runs.js';
 import { bankruptcyTick, installTreasury } from '../engine/market/treasury.js';
-import { activeTrips, EXCHANGE, homeOf, siteOf, startTrip } from '../engine/market/trips.js';
+import { activeTrips, EXCHANGE, homeOf, siteOf, startTrip, whereIs } from '../engine/market/trips.js';
 import type { Agent, Bid, Job, ModelRef, Run, Trip } from '../shared/types.js';
-import { checks, FULL, HOUR, makeRepo, postJob, setUp, tearDown } from './guild-fixtures.js';
+import { addAgent, checks, FULL, HOUR, makeRepo, makeRun, MIN, postJob, setUp, tearDown, workLease, write } from './guild-fixtures.js';
 
 const T0 = Date.parse('2026-11-10T09:00:00.000Z');
 const INSTALLED = ['qwen3-coder:30b-a3b-q4_K_M', 'gpt-oss:20b', 'qwen2.5-coder:7b', 'qwen3:1.7b'];
@@ -176,4 +179,83 @@ test('retiring an agent ends its trip and records trip.ended', () => {
   assert.ok(ended, 'trip.ended in the ledger');
   assert.equal((ended.data as { reason: string }).reason, 'firm bankrupt');
   assert.ok(events.some((e) => e.type === 'trip.ended' && (e.data as { tripId: string }).tripId === trip.id));
+});
+
+test('a bid through collectBid sends the bidder to the exchange', async () => {
+  farRepo();
+  const a = worker();
+  for (const kind of ['claude', 'ollama', 'anthropic'] as const) setProvider(kind, fakeProvider());
+  const j = openBidding(postJob(['**']), T0);
+  assert.ok(eligibleAgents(j).some((e) => e.id === a.id), 'eligible');
+  const bid = await collectBid(j, a, T0);
+  assert.ok(bid, 'a bid');
+  const trip = activeTrips(T0).find((t) => t.agentId === a.id);
+  assert.ok(trip, 'a trip');
+  assert.equal(trip.reason, 'bid');
+  assert.equal(trip.jobId, j.id);
+  assert.deepEqual(trip.from, homeOf(a));
+  assert.deepEqual(trip.to, EXCHANGE);
+  assert.ok(trip.legs.length >= 1);
+});
+
+test('a review sends the reviewer to the site and then home', { timeout: 60_000 }, async () => {
+  const repo = makeRepo(checks(), { 'src/a.ts': 'export const a = 1;\n' });
+  const job = postJob(['src/**']);
+  const w = addAgent('ann', 'aaa', 'claude:sonnet');
+  const { run, diff } = await makeRun(repo, job, w, (dir) => write(dir, 'src/a.ts', 'export const a = 2;\n'));
+  const p = fakeProvider({ review: () => ({ approve: true, notes: 'Fine.', concerns: [], usage: { weightedTokens: 600, seconds: 2, usd: 0, credits: 1 } }) });
+  setProvider('claude', p);
+  const lease = await workLease();
+  let out: Awaited<ReturnType<typeof review>>;
+  try {
+    out = await review(run, job, diff.patch, [], lease);
+  } finally {
+    lease.release();
+  }
+  assert.equal(out.result.status, 'pass');
+  const bea = storedAgent(out.reviewerAgentId ?? '');
+  assert.ok(bea && bea.firmId !== w.firmId, 'a reviewer from another firm');
+  const mine = storedTrips().filter((t) => t.agentId === bea.id).sort((x, y) => x.startedAt.localeCompare(y.startedAt));
+  assert.deepEqual(mine.map((t) => t.reason), ['inspect', 'home']);
+  const [inspect, home] = mine;
+  assert.equal(inspect.jobId, job.id);
+  assert.deepEqual(inspect.from, homeOf(bea));
+  assert.deepEqual(inspect.to, siteOf(FULL));
+  assert.ok(inspect.endedAt, 'the trip to the site ended when the trip home began');
+  assert.deepEqual(home.from, siteOf(FULL));
+  assert.deepEqual(home.to, homeOf(bea));
+  assert.equal(home.endedAt, null);
+  assert.ok(storedTrips().every((t) => t.agentId !== w.id), 'the worker, who did not travel, stays put');
+});
+
+test('a trip over 1,500 m rides the rail or the pods', () => {
+  farRepo();
+  const a = worker();
+  const trip = startTrip(a, 'job', null, { x: 600, z: -600 }, { x: -600, z: 600 }, T0);
+  const ride = trip.legs.find((l) => l.mode === 'rail' || l.mode === 'pod');
+  assert.ok(ride, trip.legs.map((l) => l.mode).join(','));
+  assert.ok(ride.path.every((p) => p[1] >= 12), 'the ride runs at its line height');
+  assert.ok(trip.legs.length >= 3, 'walks to and from the station');
+});
+
+test('the trips table stays bounded: ended trips older than an hour go, each agent keeps its latest', () => {
+  const a = worker();
+  const wren = storedAgent('wren-sparrow');
+  assert.ok(wren);
+  const count = () => (openDb().prepare('SELECT COUNT(*) AS n FROM trips').get() as { n: number }).n;
+  const other = startTrip(wren, 'bid', null, homeOf(wren), EXCHANGE, T0);
+  for (let i = 0; i < 40; i++) startTrip(a, i % 2 ? 'home' : 'bid', null, homeOf(a), EXCHANGE, T0 + i * MIN);
+  assert.equal(count(), 41);
+  // Within the hour nothing is pruned.
+  activeTrips(T0 + 40 * MIN);
+  assert.equal(count(), 41);
+  // Three hours on, the worker keeps only its latest row and wren keeps hers, though both ended long ago.
+  activeTrips(T0 + 3 * HOUR);
+  assert.equal(count(), 2);
+  const left = storedTrips();
+  assert.ok(left.some((t) => t.id === other.id));
+  const mine = left.find((t) => t.agentId === a.id);
+  assert.equal(mine?.startedAt, new Date(T0 + 39 * MIN).toISOString());
+  assert.deepEqual(whereIs(a), EXCHANGE);
+  assert.deepEqual(whereIs(wren), EXCHANGE);
 });

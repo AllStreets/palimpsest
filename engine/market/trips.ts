@@ -8,9 +8,11 @@
  *
  * An agent has at most one trip under way: a new one ends the old
  * (`superseded`). A trip whose time is up ends `arrived` the next time the
- * live trips are asked for. A bankrupt firm's trips end at once (the
+ * live trips are asked for, and that look also prunes the table: ended
+ * trips older than an hour go, except each agent's latest, which says
+ * where the agent stands. A bankrupt firm's trips end at once (the
  * treasury). Every trip is stored, recorded (`trip.started`,
- * `trip.ended`) and emitted.
+ * `trip.ended`) and emitted; the ledger keeps the history the table drops.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -43,12 +45,19 @@ export function siteOf(repo: string): P {
   return { x: o.x + 40, z: o.z + 40 };
 }
 
+/** Ended trips older than this are dropped from the table (not the ledger), except an agent's latest. */
+export const KEEP_ENDED_MS = 3600_000;
+
+const parse = (rows: unknown): Trip[] => (rows as Array<{ json: string }>).map((r) => JSON.parse(r.json) as Trip);
+
+/** An agent's trips, oldest first, by the agent index. */
+function tripsOf(agentId: string): Trip[] {
+  return parse(openDb().prepare("SELECT json FROM trips WHERE agent_id = ? ORDER BY json_extract(json, '$.startedAt')").all(agentId));
+}
+
 /** Where an agent is now: the end of its latest trip, or home when it has never travelled. */
 export function whereIs(a: Agent): P {
-  const latest = storedTrips()
-    .filter((t) => t.agentId === a.id)
-    .sort((x, y) => x.startedAt.localeCompare(y.startedAt))
-    .at(-1);
+  const latest = tripsOf(a.id).at(-1);
   return latest ? latest.to : homeOf(a);
 }
 
@@ -69,17 +78,28 @@ function currentNetwork(): Network {
   return net;
 }
 
-function storedTrips(): Trip[] {
-  return (openDb().prepare('SELECT json FROM trips').all() as Array<{ json: string }>).map((r) => JSON.parse(r.json) as Trip);
+function tripById(id: string): Trip | null {
+  const row = openDb().prepare('SELECT json FROM trips WHERE id = ?').get(id) as { json: string } | undefined;
+  return row ? (JSON.parse(row.json) as Trip) : null;
 }
 
 function save(t: Trip): void {
-  openDb().prepare('INSERT OR REPLACE INTO trips (id, json) VALUES (?, ?)').run(t.id, JSON.stringify(t));
+  openDb().prepare('INSERT OR REPLACE INTO trips (id, json, agent_id) VALUES (?, ?, ?)').run(t.id, JSON.stringify(t), t.agentId);
 }
 
 /** Every stored trip not yet ended, whether or not its time is up. */
 export function liveTrips(): Trip[] {
-  return storedTrips().filter((t) => !t.endedAt);
+  return parse(openDb().prepare("SELECT json FROM trips WHERE json_extract(json, '$.endedAt') IS NULL").all());
+}
+
+/** Drops ended trips older than KEEP_ENDED_MS, keeping each agent's latest row (where it stands). */
+function prune(now: number): void {
+  openDb()
+    .prepare(
+      `DELETE FROM trips WHERE json_extract(json, '$.endedAt') IS NOT NULL AND json_extract(json, '$.endedAt') < ?
+         AND id NOT IN (SELECT id FROM trips GROUP BY agent_id HAVING MAX(json_extract(json, '$.startedAt')))`,
+    )
+    .run(iso(now - KEEP_ENDED_MS));
 }
 
 export interface TripOptions {
@@ -95,7 +115,7 @@ export interface TripOptions {
  */
 export function startTrip(a: Agent, reason: TripReason, jobId: string | null, from: P, to: P, now: number = Date.now(), opts: TripOptions = {}): Trip {
   const announce = opts.announce ?? emit;
-  for (const old of liveTrips()) if (old.agentId === a.id) endTrip(old.id, 'superseded', now, announce);
+  for (const old of tripsOf(a.id)) if (!old.endedAt) endTrip(old.id, 'superseded', now, announce);
   const scale = opts.msScale ?? 1;
   const legs = route(from, to, currentNetwork()).map((l) => ({ ...l, ms: Math.max(1, Math.round(l.ms * scale)) }));
   const trip: Trip = {
@@ -119,7 +139,7 @@ export function startTrip(a: Agent, reason: TripReason, jobId: string | null, fr
 
 /** Ends a trip for `why` (redacted). Records and emits `trip.ended`. Null when there is no such live trip. */
 export function endTrip(tripId: string, why: string, now: number = Date.now(), announce: (type: string, data: object) => void = emit): Trip | null {
-  const t = storedTrips().find((x) => x.id === tripId);
+  const t = tripById(tripId);
   if (!t || t.endedAt) return null;
   const ended: Trip = { ...t, endedAt: iso(now) };
   save(ended);
@@ -141,13 +161,17 @@ export function endTripsOf(who: { firmId?: string; agentId?: string }, why: stri
   return out;
 }
 
-/** The trips under way at `now`. A trip whose time is up ends `arrived` here, before the rest are answered. */
+/**
+ * The trips under way at `now`. A trip whose time is up ends `arrived`
+ * here, before the rest are answered, and the table is pruned.
+ */
 export function activeTrips(now: number = Date.now()): Trip[] {
   const out: Trip[] = [];
   for (const t of liveTrips()) {
     if (Date.parse(t.startedAt) + t.ms <= now) endTrip(t.id, 'arrived', now);
     else out.push(t);
   }
+  prune(now);
   return out;
 }
 

@@ -82,8 +82,10 @@ const MARKET_SCHEMA = `
   CREATE INDEX IF NOT EXISTS earned_floors_tower ON earned_floors (tower_id, seq);
   CREATE TABLE IF NOT EXISTS trips (
     id TEXT PRIMARY KEY,
-    json TEXT NOT NULL
+    json TEXT NOT NULL,
+    agent_id TEXT
   );
+  CREATE INDEX IF NOT EXISTS trips_agent ON trips (agent_id);
   CREATE TABLE IF NOT EXISTS slots (
     kind TEXT NOT NULL,
     owner TEXT NOT NULL,
@@ -116,6 +118,7 @@ export function migrate(db: DatabaseSync): void {
   db.exec(SCHEMA);
   migrateLedgerIndex(db);
   db.exec(MARKET_SCHEMA);
+  migrateTripsAgent(db);
 
   const rows = db.prepare('SELECT full_name, json FROM repos').all() as Array<{ full_name: string; json: string }>;
   const update = db.prepare('UPDATE repos SET json = ? WHERE full_name = ?');
@@ -154,6 +157,22 @@ const RUN_REF = `COALESCE(json_extract(json, '$.runId'), json_extract(json, '$.r
  * reads, the daily report) never scans the whole ledger. A ledger written
  * before the columns existed gets them and is filled in once, from the json.
  */
+/** Trips written before the agent column existed (Task 33) get it from their json, so a person's trips are read by index. */
+function migrateTripsAgent(db: DatabaseSync): void {
+  const cols = new Set((db.prepare('PRAGMA table_info(trips)').all() as Array<{ name: string }>).map((c) => c.name));
+  if (cols.has('agent_id')) return;
+  db.exec('BEGIN');
+  try {
+    db.exec('ALTER TABLE trips ADD COLUMN agent_id TEXT');
+    db.exec("UPDATE trips SET agent_id = json_extract(json, '$.agentId')");
+    db.exec('CREATE INDEX IF NOT EXISTS trips_agent ON trips (agent_id)');
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 function migrateLedgerIndex(db: DatabaseSync): void {
   const cols = new Set((db.prepare('PRAGMA table_info(ledger)').all() as Array<{ name: string }>).map((c) => c.name));
   if (!cols.has('job_id') || !cols.has('run_id')) {

@@ -1152,6 +1152,16 @@ async function main(): Promise<void> {
     const { setMarketExtras } = await import('../engine/market/api.js');
     const { economyClock, economySites } = await import('../engine/market/sample-economy.js');
     setMarketExtras({ sites: economySites });
+    // Two long rides for the stills, on top of the economy's own trips: the pods along z 120 and the rail round the city.
+    const { agent } = await import('../engine/market/firms.js');
+    const { startTrip } = await import('../engine/market/trips.js');
+    const rider = (id: string) => {
+      const a = agent(id);
+      if (!a) throw new Error(`no sample agent ${id}`);
+      return a;
+    };
+    startTrip(rider('hal-meridian'), 'job', null, { x: -700, z: 120 }, { x: 900, z: 120 });
+    startTrip(rider('bruno-kiln'), 'home', null, { x: 600, z: -600 }, { x: -600, z: 600 });
     // The lifecycle shot has the clock fail the inspecting repo's inspection, so a scar is struck (CAPTURE_FAIL overrides).
     const fail = process.env.CAPTURE_FAIL ? process.env.CAPTURE_FAIL.split(',') : wanted.includes('lifecycle') ? ['lantern/assay-kit'] : [];
     economy = economyClock({ now: () => Date.now(), speed: 20, fail, sell: process.env.CAPTURE_HOLD_SALE ? 5 : undefined });
