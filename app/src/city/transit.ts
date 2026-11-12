@@ -20,6 +20,7 @@ import {
 } from '../../../shared/commute.js';
 import { CONTACT_Y, filleted, miters, offsetLoop, POD_BEAM, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK } from './lines.js';
 import { LAYER, setLayers } from './lod.js';
+import { signPlates } from './sign-plates.js';
 import { materials } from './materials';
 
 /**
@@ -745,14 +746,12 @@ class SignAtlas {
   }
 }
 
-/** A sign panel w by h facing along `face` (a unit vector in the ground plane), centred at p, reading the atlas rectangle. */
+/** A sign panel facing along `face`, readable from both sides (signPlates), drawn front faces only. */
 function signPanel(b: Build, mat: THREE.Material, p: V3, face: V2, w: number, h: number, uv: [number, number, number, number]): void {
-  const g = new THREE.PlaneGeometry(w, h);
-  const a = g.attributes.uv as THREE.BufferAttribute;
-  for (let i = 0; i < a.count; i++) a.setXY(i, a.getX(i) ? uv[2] : uv[0], a.getY(i) ? uv[3] : uv[1]);
-  const ry = Math.atan2(face.x, face.z);
-  b.put(mat, g, p[0], p[1], p[2], ry);
-  g.dispose();
+  for (const g of signPlates(p, face, w, h, uv)) {
+    b.put(mat, g, 0, 0, 0);
+    g.dispose();
+  }
 }
 
 // ---------------------------------------------------------------- the tram
@@ -1671,7 +1670,8 @@ export function createTransit(): Transit {
     lampWarm: new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.8, 0.56).multiplyScalar(2.8) }),
     lampCool: new THREE.MeshBasicMaterial({ color: new THREE.Color(0.78, 0.9, 1.0).multiplyScalar(2.6) }),
     red: new THREE.MeshBasicMaterial({ color: new THREE.Color(4.0, 0.25, 0.12) }),
-    sign: new THREE.MeshBasicMaterial({ map: signs.texture, color: new THREE.Color(SIGN_LIFT, SIGN_LIFT, SIGN_LIFT), side: THREE.DoubleSide }),
+    // Front faces only: each sign is two plates back to back (signPlates), so neither reads mirrored.
+    sign: new THREE.MeshBasicMaterial({ map: signs.texture, color: new THREE.Color(SIGN_LIFT, SIGN_LIFT, SIGN_LIFT) }),
   };
   for (const [k, m] of Object.entries(M)) if (!m.name) m.name = k;
   const wireMat = new THREE.LineBasicMaterial({ color: 0x15171a, transparent: true, opacity: 0.85, fog: true });
