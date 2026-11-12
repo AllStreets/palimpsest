@@ -29,6 +29,9 @@
  * measured (the titanium era now has its own TITANIUM_CLAD, the values its
  * entry was measured with), and the other inputs that changed (the merged
  * lines, firm marks and datum course in look.ts) stand on no swatch.
+ * Fix round 2 dims the lines and marks again and restamps the same way:
+ * verified against swatches.ts, whose board towers are eight founding
+ * floors (no earned lines or marks) sampled on their walls.
  */
 export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = {
   "stone:limestone": {
@@ -649,4 +652,4 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   }
 };
 
-export const RENDERED_INPUTS = 'a75bbb02e6b5a1d9';
+export const RENDERED_INPUTS = 'db4a037999dae375';

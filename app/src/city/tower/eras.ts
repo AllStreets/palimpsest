@@ -927,7 +927,7 @@ export function firmMarkColor(firmId: string, slots?: Map<string, number>): THRE
 /** The firm's mark: a band inlaid into the slab edge just above its light line, in the firm's colour, set back behind the face. */
 export function firmMark(k: Kit, edge: FloorShape['edge'], color: THREE.Color): void {
   const was = k.tint;
-  k.tint = color.clone().multiplyScalar(0.7);
+  k.tint = color.clone().multiplyScalar(0.5);
   k.add('firmMark', edgeSweep(edge, [
     [-0.14, 0.14],
     [-0.03, 0.14],

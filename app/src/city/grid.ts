@@ -158,6 +158,72 @@ class Batch {
   }
 }
 
+/**
+ * The oriel bay's body: painted timber in the instance colour, shaded as a
+ * built thing rather than a flat box: darker at the foot under each sill,
+ * darker on its underside, and a little darker where the cheeks meet the
+ * wall.
+ */
+function bayBodyMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, vertexColors: true });
+  m.customProgramCacheKey = () => 'palimpsest-bay-body';
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBayP;\nvarying float vBayNy;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBayP = position;\nvBayNy = normalize(mat3(modelMatrix * instanceMatrix) * objectNormal).y;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBayP;\nvarying float vBayNy;')
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        diffuseColor.rgb *= (0.72 + 0.28 * smoothstep(-0.5, -0.15, vBayP.y)) * (vBayNy < -0.5 ? 0.42 : 1.0) * (0.82 + 0.18 * smoothstep(-0.5, -0.05, vBayP.z));`,
+      );
+  };
+  return m;
+}
+
+/**
+ * The oriel bay's panes over the glass material given: a sash grid (uprights
+ * every half metre, a meeting rail), a painted head and sill, and each pane's
+ * own brightness and blind from a hash of where it stands, so a stack of bays
+ * reads as rooms and not one lit strip.
+ */
+function bayPaneMaterial(base: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
+  const m = base.clone();
+  m.customProgramCacheKey = () => `palimpsest-bay-pane-${base.emissiveIntensity.toFixed(2)}`;
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vPaneP;\nvarying float vPaneU;\nvarying float vPaneH;')
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vPaneP = position;
+        vPaneU = position.x * length(instanceMatrix[0].xyz) + position.z * length(instanceMatrix[2].xyz);
+        vPaneH = fract(sin(dot(instanceMatrix[3].xyz, vec3(12.9898, 78.233, 37.719))) * 43758.5453);`,
+      );
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vPaneP;\nvarying float vPaneU;\nvarying float vPaneH;\nfloat bayBox(float x, float a, float b, float e) { return smoothstep(a, a + e, x) * smoothstep(b, b - e, x); }')
+      .replace(
+        '#include <color_fragment>',
+        `#include <color_fragment>
+        float upright = 1.0 - bayBox(fract(vPaneU / 0.5), 0.05, 0.95, 0.01);
+        float rail = bayBox(vPaneP.y, -0.005, 0.025, 0.004);
+        float head = step(0.27, vPaneP.y);
+        float sill = step(vPaneP.y, -0.25);
+        float frame = clamp(upright + rail + head + sill, 0.0, 1.0);
+        float drop = vPaneH < 0.3 ? 0.25 + 0.4 * fract(vPaneH * 7.0) : 0.0;
+        float blind = step(0.32 - drop * 0.62, vPaneP.y) * (1.0 - head);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.4, 0.36), frame);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.5, 0.46, 0.4), blind * (1.0 - frame));
+        vBayFrame = frame;
+        vBayBlind = blind;`,
+      )
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= (1.0 - vBayFrame) * mix(1.0, 0.3, vBayBlind) * (0.55 + 0.7 * fract(vPaneH * 3.0));')
+      .replace('void main() {', 'float vBayFrame = 0.0;\nfloat vBayBlind = 0.0;\nvoid main() {');
+  };
+  return m;
+}
+
 /** A triangular prism a unit each way, its steep face at -z and its slope falling to +z: a sawtooth roof's tooth. */
 function prismGeometry(): THREE.BufferGeometry {
   const fb = (x: number): number[] => [x, -0.5, -0.5];
@@ -297,7 +363,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const kitMasonry = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, vertexColors: true });
   const kitMetal = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.45, vertexColors: true });
   const kitPaint = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.32, metalness: 0.5, vertexColors: true, envMapIntensity: 1.4 });
-  const kitBayMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, vertexColors: true });
+  const kitBayMat = bayBodyMaterial();
   const sawMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.35 });
   // Clerestory and sawtooth glass: lit ones glow warm (HDR, so bloom finds them), dark ones mirror the sky.
   // Lit glass over a warm room, glossy enough to hold a little of the sky, rather than a flat orange panel.
@@ -305,6 +371,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   // Unlit glass still holds a little of the room behind it: without the faint warmth, a stack of dark oriel bays read
   // as flat black slabs down a street front (AUD-C).
   const glazeDarkMat = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.12, metalness: 0.25, envMapIntensity: 1.5, emissive: new THREE.Color(0.25, 0.19, 0.13), emissiveIntensity: 0.16 });
+  const bayLitMat = bayPaneMaterial(glazeLitMat);
+  const bayDarkMat = bayPaneMaterial(glazeDarkMat);
   const planterMat = new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.95 });
   const treeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true });
   const deckLightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.3, 2.5) });
@@ -325,8 +393,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       unit: new Batch(kitUnit, kitMetal, capOf('unit'), false),
       car: new Batch(kitCar, kitPaint, capOf('car'), false),
       bay: new Batch(kitBay, kitBayMat, capOf('bay'), shadows),
-      bayGlass: new Batch(kitBayGlass, glazeDarkMat, capOf('bayGlass'), false),
-      bayLit: new Batch(kitBayGlass, glazeLitMat, capOf('bayLit'), false),
+      bayGlass: new Batch(kitBayGlass, bayDarkMat, capOf('bayGlass'), false),
+      bayLit: new Batch(kitBayGlass, bayLitMat, capOf('bayLit'), false),
       tank: new Batch(kitTank, tankMat, capOf('tank'), shadows),
       tankCap: new Batch(kitCap, M.darkMetal, capOf('tankCap'), shadows),
       stand: new Batch(kitStand, M.darkMetal, capOf('stand'), shadows),
@@ -782,7 +850,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     dispose() {
       for (const g of [box, stackGeo, prismGeo, treeGeo, poleGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
       for (const b of [...Object.values(walls), ...Object.values(cuts)]) b.mesh.geometry.dispose();
-      for (const m of [...Object.values(facadeMats), trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, treeMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
+      for (const m of [...Object.values(facadeMats), trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, treeMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
       for (const b of batches) b.mesh.dispose();
       for (const c of [...shadowCopies, ...aoCopies, ...nearCopies]) c.dispose();
     },

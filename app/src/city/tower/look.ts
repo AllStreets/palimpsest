@@ -735,9 +735,9 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     // Cool moonlight blue-white, darker than the neutral light line: a merged floor's slab edge reads as lit
     // from the city's distance without reaching the bloom threshold (0.97), and never as the Claude amber.
     // Dimmed (AUD-C) so the line reads as a lit reveal under the floor's own lit rooms, not a strip in front of them.
-    earnedLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.68, 0.95).multiplyScalar(0.5) })),
+    earnedLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 0.68, 0.95).multiplyScalar(0.3) })),
     // Warm ivory (about 3200 K), a pair of lines: his own hand in the floor, apart from the cool line and the amber.
-    handLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.84, 0.62).multiplyScalar(0.4) })),
+    handLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.84, 0.62).multiplyScalar(0.25) })),
     // Painted metal, satin: the firm's colour arrives as the vertex colour, so one material serves every firm.
     // Set back into the slab edge (eras.ts firmMark) and matte, so it reads as an inlaid band, not a strip.
     firmMark: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.1, vertexColors: true, envMapIntensity: 0.5 }),

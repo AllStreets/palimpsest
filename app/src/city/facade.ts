@@ -36,7 +36,7 @@ export function setFacadeRooms(on: boolean): void {
 }
 
 /** The sign atlas: columns of cells, each one name; the shader finds a cell from its row. */
-const SIGN = { cellW: 512, cellH: 44, cols: 4, rows: 46 } as const;
+const SIGN = { cellW: 640, cellH: 56, cols: 4, rows: 45 } as const;
 
 let signAtlas: THREE.CanvasTexture | null = null;
 
@@ -68,7 +68,7 @@ function signTexture(): THREE.CanvasTexture {
       const row = i % SIGN.rows;
       // Rows alternate: within each kind the older set comes first (shopfronts.ts signRow).
       const old = Math.floor(i / NAMES_PER_SET) % 2 === 0;
-      g.font = old ? `500 30px Newsreader, "Iowan Old Style", Georgia, serif` : `500 27px "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif`;
+      g.font = old ? `500 38px Newsreader, "Iowan Old Style", Georgia, serif` : `500 34px "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif`;
       let text = name;
       while (g.measureText(text).width > SIGN.cellW - 40 && text.length > 4) text = text.slice(0, -1);
       g.fillText(text, col * SIGN.cellW + SIGN.cellW / 2, row * SIGN.cellH + SIGN.cellH / 2 + 1);
@@ -76,7 +76,7 @@ function signTexture(): THREE.CanvasTexture {
     tex.needsUpdate = true;
   };
   draw();
-  void Promise.all([document.fonts?.load('500 30px Newsreader'), document.fonts?.load('500 27px "IBM Plex Sans"')]).then(draw, () => {});
+  void Promise.all([document.fonts?.load('500 38px Newsreader'), document.fonts?.load('500 34px "IBM Plex Sans"')]).then(draw, () => {});
   signAtlas = tex;
   return tex;
 }
@@ -327,7 +327,8 @@ const FACADE_GLSL = /* glsl */ `
         float colI = floor(row / SIGN_ROWS);
         float rowIn = row - colI * SIGN_ROWS;
         vec2 signUV = vec2((colI + su) / SIGN_COLS, 1.0 - (rowIn + 1.0 - sv) / SIGN_ROWS);
-        float ink = onSign > 0.5 ? texture2D(uSigns, signUV).r : 0.0;
+        // The atlas's edge, filtered then firmed, so the letters stay crisp close up without stepping.
+        float ink = onSign > 0.5 ? smoothstep(0.3, 0.7, texture2D(uSigns, signUV).r) : 0.0;
         float signOn = shutK ? step(0.85, h21(vec2(bid, 6.0))) : step(0.12, h21(vec2(bid, 6.0)));
         float signLit = signOn * (0.75 + 0.45 * h21(vec2(bid, 8.0)));
         float wash = fascia * signLit * 0.1 * exp(-abs(y - midY) / 0.3) * (1.0 - smoothstep(0.3, 0.5, abs(su - 0.5)));
@@ -366,16 +367,38 @@ const FACADE_GLSL = /* glsl */ `
           float hgt = clamp(P.y / ceilH, 0.0, 1.0);
           if (t == tB) {
             if (cafe) {
-              // The counter, timber panelling and a back bar of lit bottles.
-              float counter = step(P.y, 1.1);
-              float shelfY = (P.y - 1.4) / 0.4;
-              float onBar = step(1.4, P.y) * step(P.y, ceilH - 0.4);
-              float shelves = box1(fract(shelfY), 0.0, 0.1, 0.03) * onBar;
-              float bottles = step(0.5, h21(floor(vec2(P.x / 0.12, shelfY)) + bid)) * onBar * step(0.3, fract(shelfY));
-              room = vec3(0.36, 0.23, 0.13) * (0.35 + 0.65 * hgt);
-              room = mix(room, vec3(0.1, 0.06, 0.035), counter);
-              room = mix(room, vec3(0.9, 0.75, 0.5), shelves * 0.6);
-              room += bottles * vec3(0.7, 0.5, 0.28) * 0.4;
+              // The counter: a timber front lit by the strip under its lip and dark at the kick, a dark top; behind
+              // it the back bar, shelves of bottles each in its own tone with shoulders and a highlight, in shadow
+              // under the shelf above, against a mirror band; panelling below the bar.
+              float counterH = 1.1;
+              float counter = step(P.y, counterH);
+              float counterFront = 0.3 + 0.7 * smoothstep(0.15, counterH - 0.05, P.y);
+              float lip = box1(P.y, counterH - 0.06, counterH, 0.01);
+              float strip = box1(P.y, counterH - 0.16, counterH - 0.08, 0.015);
+              float sy = (P.y - 1.35) / 0.38;
+              float fy = fract(sy);
+              float onBar = step(1.35, P.y) * step(P.y, ceilH - 0.45);
+              float shelf = box1(fy, 0.0, 0.08, 0.02) * onBar;
+              float under = (1.0 - smoothstep(0.0, 0.2, 1.0 - fy)) * onBar;
+              float bw2 = 0.09 + 0.05 * h21(vec2(floor(P.x / 0.3), floor(sy) + bid));
+              float bx2 = fract(P.x / bw2);
+              float bi2 = floor(P.x / bw2) + floor(sy) * 17.0 + bid;
+              float bh = 0.5 + 0.4 * h21(vec2(bi2, 2.0));
+              float bodyTop = 0.08 + bh * 0.8;
+              float bottle = step(0.15, bx2) * step(bx2, 0.85) * step(0.08, fy) * step(fy, bodyTop) * step(0.25, h21(vec2(bi2, 4.0))) * onBar;
+              float neck = step(0.08 + bh * 0.55, fy) * (1.0 - box1(bx2, 0.36, 0.64, 0.02));
+              bottle *= 1.0 - neck;
+              vec3 bc = mix(vec3(0.3, 0.18, 0.08), vec3(h21(vec2(bi2, 6.0)), h21(vec2(bi2, 7.0)), h21(vec2(bi2, 8.0))) * 0.5 + 0.1, 0.55);
+              bc *= (0.45 + 0.55 * smoothstep(0.08, bodyTop, fy)) * (1.0 + 0.6 * box1(bx2, 0.3, 0.42, 0.04));
+              vec3 mirror = vec3(0.28, 0.24, 0.2) * (0.3 + 0.5 * hgt);
+              room = mix(vec3(0.3, 0.19, 0.11) * (0.3 + 0.5 * hgt), mirror, onBar);
+              room = mix(room, bc, bottle);
+              room = mix(room, vec3(0.5, 0.36, 0.2), shelf);
+              room *= 1.0 - 0.6 * under * (1.0 - shelf) * (1.0 - 0.5 * bottle);
+              room = mix(room, vec3(0.33, 0.2, 0.11) * counterFront, counter);
+              room = mix(room, vec3(0.08, 0.06, 0.05), lip);
+              room += counter * strip * vec3(1.0, 0.7, 0.4) * 0.5;
+              room *= lc;
             } else if (lobby) {
               // A pale wall, the desk, a lit panel in the tenant's colour.
               float desk = box1(P.y, 0.0, 1.05, 0.02) * box1(P.x, cw * 0.2, cw * 0.8, 0.05);
@@ -399,8 +422,11 @@ const FACADE_GLSL = /* glsl */ `
               float gh = 0.45 + 0.45 * h21(vec2(gi, 3.0));
               float itemTop = 0.07 + gh * 0.85;
               float item = step(0.08, gx) * step(gx, 0.92) * step(fy, itemTop) * step(0.07, fy) * step(0.2, h21(vec2(gi, 5.0))) * onShelf;
-              vec3 itemC = mix(vec3(0.22, 0.19, 0.16), vec3(h21(vec2(gi, 7.0)), h21(vec2(gi, 8.0)), h21(vec2(gi, 9.0))) * 0.4 + 0.08, 0.5);
-              itemC *= (0.8 + 0.4 * h21(vec2(gi, 10.0))) * (0.6 + 0.4 * smoothstep(0.07, itemTop, fy)) * (1.0 - 0.35 * smoothstep(0.7, 0.92, gx));
+              // Each item's own hue, round the wheel, then most of its chroma taken out: dyed cloth, card and paper
+              // under shop light, not toy boxes.
+              vec3 hue = 0.5 + 0.5 * cos(6.2831 * (h21(vec2(gi, 7.0)) + vec3(0.0, 0.33, 0.67)));
+              vec3 itemC = mix(vec3(dot(hue, vec3(0.3, 0.59, 0.11))), hue, 0.3) * (0.14 + 0.3 * h21(vec2(gi, 8.0)));
+              itemC *= (0.6 + 0.4 * smoothstep(0.07, itemTop, fy)) * (1.0 - 0.35 * smoothstep(0.7, 0.92, gx));
               room = vec3(0.3, 0.27, 0.24) * (0.25 + 0.6 * hgt);
               room = mix(room, itemC, item);
               room = mix(room, vec3(0.42, 0.34, 0.26), board);
@@ -425,7 +451,7 @@ const FACADE_GLSL = /* glsl */ `
           } else {
             room = lc * vec3(0.34, 0.3, 0.26) * (0.12 + 0.45 * hgt);
           }
-          room *= exp(-P.z * 0.07) * level;
+          room *= exp(-P.z * (cafe ? 0.11 : 0.07)) * level;
           float peak = max(room.r, max(room.g, room.b));
           room *= 1.0 / (1.0 + 0.5 * peak);
         }
