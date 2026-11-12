@@ -214,20 +214,39 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     check((await page.locator('.insppage .check-row.s-fail .status-word').first().textContent()) === 'fail' && (await page.locator('.insppage .check-row.s-fail .status-shape').count()) === 2, 'each status is a word with a small shape');
     check(((await page.locator('.insppage .sheet-title').textContent()) ?? '').trim() === 'Failed: scope, review', 'the verdict line reads Failed: scope, review');
     // The table keeps its cells on fixed column tracks: nothing is drawn over its neighbour, Took stands under Took, and the rows do not overlap.
-    const tracks = await page.locator('.insppage .checks .check-row').evaluateAll((rows) =>
-      rows.map((tr) => {
+    // The sheet slides in over 0.34 s (translateX from -14 px): a rect read while it moves is off by up to that much, and the head and the
+    // rows used to be read in separate calls. Wait for the slide to end, then read the head and every row in the one call.
+    await page.waitForFunction(() => {
+      const sheet = document.querySelector('.sheet.open');
+      return !!sheet && getComputedStyle(sheet).transform === 'none' && getComputedStyle(sheet).opacity === '1' && document.getAnimations().every((a) => a.playState !== 'running');
+    });
+    const tracks = await page.locator('.insppage .checks .check-row').evaluateAll((rows) => {
+      const head = rows[0].closest('table')!.querySelector('th.c-time')!.getBoundingClientRect().left;
+      return rows.map((tr) => {
         // No function is defined in here: the bundler's name helper would not exist in the page.
         const st = tr.querySelector('.c-status')!.getBoundingClientRect();
         const nm = tr.querySelector('.c-name')!.getBoundingClientRect();
         const dt = tr.querySelector('.c-detail')!.getBoundingClientRect();
         const tm = tr.querySelector('.c-time')!.getBoundingClientRect();
         const fd = tr.querySelector('.c-fold')!.getBoundingClientRect();
-        return { apart: nm.left >= st.right - 1 && dt.left >= nm.right - 1 && tm.left >= dt.right - 1 && tm.width > 30, level: Math.abs(fd.bottom - st.bottom) < 1, top: Math.min(st.top, nm.top, dt.top, tm.top), bottom: Math.max(st.bottom, nm.bottom, dt.bottom, tm.bottom), time: tm.left };
-      }),
-    );
-    const tookLeft = await page.locator('.insppage .checks th.c-time').evaluate((th) => th.getBoundingClientRect().left);
+        return { apart: nm.left >= st.right - 1 && dt.left >= nm.right - 1 && tm.left >= dt.right - 1 && tm.width > 30, level: Math.abs(fd.bottom - st.bottom) < 1, top: Math.min(st.top, nm.top, dt.top, tm.top), bottom: Math.max(st.bottom, nm.bottom, dt.bottom, tm.bottom), time: tm.left, head };
+      });
+    });
     check(tracks.length === 8 && tracks.every((t) => t.apart), 'each check keeps its result, name, finding and time in their own column tracks');
-    check(tracks.every((t) => Math.abs(t.time - tookLeft) < 1), 'the Took column stands under its head');
+    check(tracks.every((t) => Math.abs(t.time - t.head) < 1), 'the Took column stands under its head');
+    // Five fresh opens, read the moment the rows exist and with no wait for the slide: head and rows in one call, so the column stays under its head.
+    let steady = 0;
+    for (let i = 0; i < 5; i++) {
+      await go(page, '#/');
+      await go(page, `#/inspections/${insp.id}`);
+      await page.locator('.insppage .checks .check-row').nth(7).waitFor();
+      const off = await page.locator('.insppage .checks .check-row').evaluateAll((rows) => {
+        const head = rows[0].closest('table')!.querySelector('th.c-time')!.getBoundingClientRect().left;
+        return Math.max(...rows.map((tr) => Math.abs(tr.querySelector('.c-time')!.getBoundingClientRect().left - head)));
+      });
+      if (off < 1) steady++;
+    }
+    check(steady === 5, `the Took column stood under its head on each of five fresh opens (${steady} of 5)`);
     check(tracks.every((t, i) => i === 0 || t.top >= tracks[i - 1].bottom - 1), 'the rows stand one under the next, with no two drawn together');
     check(tracks.every((t) => t.level), 'the hairline runs unbroken across the fold cell, empty or not');
     await page.locator('.insppage .check-row[data-check="test"] .check-log-btn').click();

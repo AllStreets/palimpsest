@@ -368,3 +368,8 @@ export function runsUnderWay(runs: Array<Pick<Run, 'model' | 'endedAt' | 'jobId'
   }
   return out;
 }
+
+/** A model reference by shape: a provider, a colon and a name (an Ollama name may carry a tag: `qwen2.5-coder:7b`). */
+export const AUDIT_MODEL_SHAPE = /^(?:claude|ollama|anthropic|mlx):(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
+/** The range the audit's credit cap may take. */
+export const AUDIT_CREDITS_RANGE = { lo: 10, hi: 200 } as const;
