@@ -16,7 +16,7 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 
-import { legalMove, MAX_ATTEMPTS, TIER_LABELS, TIER_VALUE, tierFromLabels } from '../../shared/market-rules.js';
+import { AUDIT_TEXT_CAPS, denied, HARNESS_KEY, legalMove, MAX_ATTEMPTS, TIER_LABELS, TIER_VALUE, tierFromLabels } from '../../shared/market-rules.js';
 import type { Job, JobSource, JobStatus, Repo, Tier } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
@@ -135,6 +135,44 @@ export function parseAcceptance(body: string, title = ''): string[] {
   return items.length ? items : [title.trim()].filter(Boolean);
 }
 
+/**
+ * Why a scope glob is refused, or null when it may stand: it must be a
+ * clone-relative path form (no `..`, no leading slash, no backslash, no
+ * whitespace), and neither it, its literal part nor its form under a leading
+ * `**` may name anything `DENY_SCOPE` covers. The audit's parser and
+ * `setScope()` share this one check.
+ */
+export function scopeRefused(glob: string): string | null {
+  const g = glob.trim();
+  if (!g) return 'an empty glob is not a path';
+  if (/\s/.test(g) || /[\\]/.test(g) || g.startsWith('/') || g.split('/').includes('..') || !/[/*.]/.test(g)) return `${g} is not a path in the repo`;
+  const hit = denied(g) ?? deniedLiteral(g);
+  return hit === null ? null : `${g} is denied by ${hit}`;
+}
+
+/** A glob whose literal part sits inside a denied folder, or that names a denied file at any depth. */
+function deniedLiteral(g: string): string | null {
+  const literal = g.replace(/\*\*\/?/g, '').replace(/[*?{}]/g, '');
+  const stripped = g.replace(/^(\*\*\/)+/, '');
+  if (literal && denied(literal) !== null) return denied(literal);
+  if (stripped !== g && denied(stripped) !== null) return denied(stripped);
+  return null;
+}
+
+/**
+ * The globs of `scope` that may stand, each cleaned as a body's list item is,
+ * with duplicates gone; `['**']` when none is left, as `parseScope` gives for
+ * a body that names none (the guard still filters every path at write time).
+ */
+export function allowedScope(scope: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of scope) {
+    const g = String(raw ?? '').replace(/`/g, '').trim();
+    if (g && scopeRefused(g) === null && !out.includes(g)) out.push(g);
+  }
+  return out.length ? out : ['**'];
+}
+
 // ------------------------------------------------------------------ posting
 
 function makeJob(p: {
@@ -148,6 +186,8 @@ function makeJob(p: {
   status: JobStatus;
   scope?: string[];
   acceptance?: string[];
+  key?: string | null;
+  proposal?: Job['proposal'];
 }): Job {
   return {
     id: newId(),
@@ -171,6 +211,8 @@ function makeJob(p: {
     closedAt: null,
     excludedFirms: [],
     haltedFrom: null,
+    key: p.key ?? null,
+    proposal: p.proposal ?? null,
   };
 }
 
@@ -279,13 +321,16 @@ export function postManualJob(input: ManualJobInput): Job {
 }
 
 /**
- * Proposes the baseline harness job (ruling 23). Idempotent per repo: while a
- * harness job exists that has not merged (proposed, open, in work, failed or
- * dismissed) that job is returned and nothing is recorded, so a dismissal
- * stays dismissed across re-analyses.
+ * Proposes the baseline harness job (ruling 23) under `HARNESS_KEY`. The key
+ * rule makes it idempotent per repo: while any harness job holds the key
+ * (proposed, open, in work, failed, merged or dismissed by him) that job is
+ * returned and nothing is recorded, so a dismissal stays dismissed and a
+ * merge is not proposed again across re-analyses (the district page's
+ * "Propose again" is the way back).
  */
 export function proposeHarnessJob(repo: Repo): Job {
-  const existing = listJobs({ repo: repo.fullName, source: 'harness' }).find((j) => j.status !== 'merged');
+  const key = HARNESS_KEY(repo.fullName);
+  const existing = keyTaken(repo.fullName, key);
   if (existing) return existing;
   return post(makeJob({
     repo: repo.fullName,
@@ -297,7 +342,104 @@ export function proposeHarnessJob(repo: Repo): Job {
     tier: 'normal',
     status: 'proposed',
     scope: ['**'],
+    key,
   }));
+}
+
+/**
+ * The newest job holding `key` on `repo`, or null when the key is free. A
+ * job in any status holds its key but one the city withdrew (`withdrawnBy`
+ * `city`); one he withdrew or dismissed keeps holding it, so a key he said no
+ * to is not proposed again by itself.
+ */
+export function keyTaken(repo: string, key: string): Job | null {
+  const rows = openDb().prepare('SELECT json FROM jobs WHERE repo = ? AND key = ?').all(repo, key) as Array<{ json: string }>;
+  const held = rows
+    .map((r) => JSON.parse(r.json) as Job)
+    .filter((j) => !(j.status === 'withdrawn' && j.withdrawnBy === 'city'))
+    .sort((a, b) => b.postedAt.localeCompare(a.postedAt) || b.id.localeCompare(a.id));
+  return held[0] ?? null;
+}
+
+export interface ProposalInput {
+  repo: string;
+  title: string;
+  body: string;
+  scope: string[];
+  acceptance: string[];
+  tier: Tier;
+  key: string;
+  source: 'proposal' | 'brief';
+  proposal: Job['proposal'];
+}
+
+/**
+ * Posts a proposal as a `proposed` job that waits for his click (Phase 3
+ * ruling 4). The title and body came from a model that read his README, so
+ * they are redacted and capped here again, the body opens with CITY_MARKER
+ * (the city's signature; never an issue, never a bid), the scope is filtered
+ * through the deny list and the acceptance always has a line. Records and
+ * emits `job.proposed`. The caller settles the key rule (`keyTaken`).
+ */
+export function postProposal(input: ProposalInput): Job {
+  const title = plain(input.title, AUDIT_TEXT_CAPS.title);
+  if (!title) throw new Error('a proposal needs a title');
+  const body = redact(String(input.body ?? '')).slice(0, PROPOSAL_BODY_MAX - CITY_MARKER.length - 1).trim();
+  const acceptance = input.acceptance.map((a) => plain(a, AUDIT_TEXT_CAPS.claim)).filter(Boolean);
+  return post(makeJob({
+    repo: input.repo,
+    source: input.source,
+    issue: null,
+    url: null,
+    title,
+    body: `${CITY_MARKER}\n${body}`,
+    tier: input.tier,
+    status: 'proposed',
+    scope: allowedScope(input.scope),
+    acceptance: acceptance.length ? acceptance : [title],
+    key: input.key,
+    proposal: input.proposal ?? null,
+  }));
+}
+
+/** The longest body a proposed job carries: the model's capped body with the claim, the evidence and the acceptance around it. */
+export const PROPOSAL_BODY_MAX = AUDIT_TEXT_CAPS.body + 2000;
+
+export interface ScopePatch {
+  scope?: string[];
+  acceptance?: string[];
+}
+
+/**
+ * His edit of a job's scope and acceptance, while it is proposed or open
+ * (spec 11, "change scope first": before any bid is priced against it). Every
+ * glob is checked as `parseScope` reads one and against `DENY_SCOPE`; a
+ * denied glob refuses the whole patch with the reason. An empty scope means
+ * the whole repo. Records and emits `job.changed` with the status unchanged,
+ * as `setTier` does.
+ */
+export function setScope(jobId: string, patch: ScopePatch): Job {
+  const cur = job(jobId);
+  if (!cur) throw new Error(`no job ${jobId}`);
+  if (cur.status !== 'proposed' && cur.status !== 'open') throw new Error(`job ${jobId} is ${cur.status}: its scope can change only while proposed or open`);
+  const next: Job = { ...cur };
+  if (patch.scope !== undefined) {
+    const globs = patch.scope.map((g) => String(g ?? '').replace(/`/g, '').trim()).filter(Boolean);
+    for (const g of globs) {
+      const why = scopeRefused(g);
+      if (why) throw new Error(`scope refused: ${why}`);
+    }
+    next.scope = globs.length ? [...new Set(globs)] : ['**'];
+  }
+  if (patch.acceptance !== undefined) {
+    const lines = patch.acceptance.map((a) => plain(a, AUDIT_TEXT_CAPS.claim)).filter(Boolean);
+    if (!lines.length) throw new Error('acceptance needs at least one line');
+    next.acceptance = lines;
+  }
+  save(next);
+  record('job.changed', { id: next.id, from: cur.status, to: cur.status, job: next });
+  emit('job.changed', { job: next, from: cur.status });
+  return next;
 }
 
 function proposed(jobId: string): Job {
@@ -328,9 +470,9 @@ export function setTier(jobId: string, tier: Tier): Job {
   return next;
 }
 
-/** His other click: the proposal is withdrawn and not proposed again. */
+/** His other click: the proposal is withdrawn by him, so its key stays taken and it is not proposed again. */
 export function dismissProposed(jobId: string): Job {
-  return transition(proposed(jobId), 'withdrawn');
+  return transition(proposed(jobId), 'withdrawn', {}, { by: 'him' });
 }
 
 // --------------------------------------------------------------- transitions
@@ -363,6 +505,8 @@ export interface TransitionNote {
   prUrl?: string;
   /** The inspection summary, commented on the issue at the final failure. */
   summary?: string;
+  /** Who withdraws, on a move to `withdrawn`: `him` (the API, the brief, a dismissal) holds the job's key; `city` (the default, reserved) frees it. */
+  by?: 'him' | 'city';
 }
 
 /**
@@ -387,11 +531,12 @@ export function transition(j: Job, to: JobStatus, patch: Partial<Job> = {}, note
   if (to === 'failed' && patch.attempts === undefined) next.attempts = cur.attempts + 1;
   if (to === 'halted') next.haltedFrom = from;
   if (from === 'halted') next.haltedFrom = null;
+  if (to === 'withdrawn') next.withdrawnBy = note.by ?? 'city';
   const final = TERMINAL.includes(to) || (to === 'failed' && next.attempts >= MAX_ATTEMPTS);
   if (final && !next.closedAt) next.closedAt = new Date().toISOString();
 
   save(next);
-  record('job.changed', { id: next.id, from, to, job: next });
+  record('job.changed', { id: next.id, from, to, job: next, ...(to === 'withdrawn' ? { by: next.withdrawnBy } : {}) });
   emit('job.changed', { job: next, from });
 
   if (next.source === 'issue' && next.issue !== null) {

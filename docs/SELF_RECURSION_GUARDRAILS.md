@@ -28,6 +28,16 @@ PR poll sees a merge                   Task 16
 
 revert watch sees a city merge reverted   Task 16
   > the repo halts until he clears it
+
+first analysis of a market-on repo        engine/audit/run.ts queueAudit (Phase 3 ruling 6)
+  > audit (once)                         engine/audit/run.ts
+  > proposed job                         engine/audit/proposals.ts proposeFromAudit, engine/market/jobs.ts postProposal
+  > his click                            engine/market/jobs.ts acceptProposed
+  > open > bid > ... as above
+
+his click on the district page or the brief
+  > audit                                engine/audit/run.ts queueAudit (trigger demand or brief)
+  > proposed job > his click > open      as above
 ```
 
 ## Why there is no cycle
@@ -38,7 +48,8 @@ The only writes the city makes to GitHub are branches named `palimpsest/*`, pull
 - A reopened issue that once held a job stays off the board (`held` in `pollJobs`).
 - City merges are excluded from founding history by the `Palimpsest-Job:` trailer and the `palimpsest/` head branch (`engine/history.ts`, `JOB_TRAILER`, `CITY_BRANCH`, `foundingFloors`), so a re-analysis never turns city work into history.
 - The harness job is proposed, never posted: it does not bid until he accepts it (`proposeHarnessJob`, `acceptProposed`, `LEGAL_MOVES` in `shared/market-rules.ts`).
-- Proposals that agents make arrive in Phase 3 and will pass the same marker and label filter before they can become jobs.
+- The audit's proposals are proposed, never posted (Phase 3 ruling 4). An audit runs once after a market-on repo's first analysis or on his click, never on a schedule, never on re-analysis and never after a city merge, so a merge the city made cannot start the audit that would propose the next job. Each verified gap becomes one `proposed` job (`engine/audit/proposals.ts`, `proposeFromAudit`; `engine/market/jobs.ts`, `postProposal`) whose body opens with `CITY_MARKER`; it does not bid until he accepts it (`acceptProposed`), and nothing of it ever becomes a GitHub issue. Every proposal carries a key (`proposalKey()` on the claim, `HARNESS_KEY()` for the harness; `shared/market-rules.ts`): a key with a job in any status, his dismissal included, is not proposed again by itself (`keyTaken`), and a merged key only while the next audit still finds the claim missing or broken. The scheduler's tick reads `open` jobs only (`test/runs.test.ts`, "proposed jobs never bid").
+- The audit's tools cannot write. Under claude they are `Read`, `Glob` and `Grep` plus the run tool, which runs only the repo's declared checks (`engine/audit/schema.ts`, `AUDIT_TOOLS`, `checkCommands`); the loops get `read_file`, `list_files`, `search` and `run` (`AUDIT_LOOP_TOOLS`). The clone is checked clean after the session (`cloneClean`; anything written ends the audit `failed`), every evidence path is verified against the base commit through `git ls-tree` and `git show`, never the working tree (`verifyEvidence`), a finding with no verified evidence loses its proposal, and a proposal's scope goes through `DENY_SCOPE` at parse time and again when it is posted or edited (`scopeRefused`, `allowedScope`, `setScope`).
 
 ## Three layers that stop an agent pushing
 

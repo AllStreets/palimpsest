@@ -12,9 +12,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AUDIT_MAX_EVIDENCE, AUDIT_MAX_FINDINGS, AUDIT_READ_CAPS, AUDIT_TEXT_CAPS, denied, proposalKey } from '../../shared/market-rules.js';
+import { AUDIT_MAX_EVIDENCE, AUDIT_MAX_FINDINGS, AUDIT_READ_CAPS, AUDIT_TEXT_CAPS, proposalKey } from '../../shared/market-rules.js';
 import type { Audit, Evidence, Finding, ModelRef, Proposal, RepoChecks, Tier, Verdict } from '../../shared/types.js';
-import { plain, redact } from '../market/jobs.js';
+import { plain, redact, scopeRefused } from '../market/jobs.js';
 import type { AuditInput } from '../market/provider.js';
 import { engineGit } from '../market/worktree.js';
 
@@ -251,17 +251,11 @@ export function auditPath(x: unknown): string | null {
   return parts.join('/');
 }
 
-/** A scope glob the audit may name: a clone-relative path form, not one `DENY_SCOPE` covers. */
+/** A scope glob the audit may name: a clone-relative path form, not one `DENY_SCOPE` covers (`scopeRefused`, the one check `setScope` uses too). */
 function scopeGlob(x: unknown): string | null {
   const g = auditPath(x);
   if (g === null) return null;
-  if (denied(g) !== null) return null;
-  // A glob whose literal part sits inside a denied folder, or that names a denied file at any depth.
-  const literal = g.replace(/\*\*\/?/g, '').replace(/[*?{}]/g, '');
-  const stripped = g.replace(/^(\*\*\/)+/, '');
-  if (literal && denied(literal) !== null) return null;
-  if (stripped !== g && denied(stripped) !== null) return null;
-  return g;
+  return scopeRefused(g) === null ? g : null;
 }
 
 function evidenceOf(x: unknown): Evidence | null {

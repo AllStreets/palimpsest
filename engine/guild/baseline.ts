@@ -149,8 +149,10 @@ async function compute(repo: Repo, sha: string, opts: BaselineOptions): Promise<
 /**
  * Proposes "Add a baseline test and build harness" (ruling 23) when the
  * repo's detected checks have no test or no build command. The proposal
- * waits for his click; one already posted (or dismissed) is returned and
- * never doubled. Null when checks are not detected yet or both exist.
+ * waits for his click; the key rule (`HARNESS_KEY`, `keyTaken`) returns the
+ * job already posted, dismissed or merged under it, so a re-analysis never
+ * doubles it and a merged harness is not proposed again by itself. Null
+ * when checks are not detected yet or both exist.
  */
 export function ensureHarnessProposal(repo: Repo): Job | null {
   const c = repo.checks;

@@ -289,7 +289,7 @@ async function withdraw(j: Job): Promise<Job> {
   if (j.status === 'running' || j.status === 'inspecting' || (j.status === 'awarded' && j.runId)) await killJob(j.id, 'He withdrew the job.');
   const now = job(j.id);
   if (!now || !withdrawable(now)) throw new HttpError(409, { error: 'the job moved on; look again' });
-  return moving(() => transition(now, 'withdrawn'));
+  return moving(() => transition(now, 'withdrawn', {}, { by: 'him' }));
 }
 
 // ------------------------------------------------------------------ firms, agents
@@ -482,7 +482,7 @@ export async function handleMarketApi(
         return send(200, moving(() => transition(j, 'open')));
       case 'dismiss':
         if (j.status !== 'proposed') throw new HttpError(409, { error: 'only a proposed job can be dismissed' });
-        return send(200, moving(() => transition(j, 'withdrawn')));
+        return send(200, moving(() => transition(j, 'withdrawn', {}, { by: 'him' })));
       default:
         if (j.status !== 'halted') throw new HttpError(409, { error: 'the job is not halted' });
         if (getRepo(j.repo)?.halted) throw new HttpError(409, { error: `the market on ${j.repo} is halted: resume the repo first` });

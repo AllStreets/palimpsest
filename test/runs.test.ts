@@ -22,7 +22,7 @@ import { acquire, noteSseClients, resetBudget, treasury } from '../engine/market
 import { resolvedBids } from '../engine/market/reputation.js';
 import { fakeDefaults, fakeProvider, type FakeScript } from '../engine/market/fake-provider.js';
 import { bidList, openBidding } from '../engine/market/bids.js';
-import { job, postManualJob, settleJobEffects, transition } from '../engine/market/jobs.js';
+import { job, postManualJob, postProposal, settleJobEffects, transition } from '../engine/market/jobs.js';
 import type { RunContext } from '../engine/market/install.js';
 import type { WorkInput } from '../engine/market/provider.js';
 import { resetProviders, setProvider } from '../engine/market/providers.js';
@@ -1225,4 +1225,36 @@ test('a run killed by the stop file ends killed even when its deadline has also 
   assert.equal(r.outcome, 'killed');
   assert.match(r.endedReason ?? '', /stop/i);
   assert.equal(job(j.id)?.attempts, 0);
+});
+
+// ---------------------------------------------------------------- Phase 3 Task 5 pin
+
+test('proposed jobs never bid', async () => {
+  // Passes today because the tick reads `open` jobs only; kept so a later change to the tick cannot pick up proposals.
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  useScript({ plan: (i) => ({ ...fakeDefaults.plan(i), price: 10, confidence: 0.8 }) });
+  const p = postProposal({
+    repo: FULL,
+    title: 'Export CSV',
+    body: 'The README promises a CSV export and nothing does it.',
+    scope: ['src/**'],
+    acceptance: ['A CSV comes out.'],
+    tier: 'normal',
+    key: `${FULL}#abc`,
+    source: 'proposal',
+    proposal: { auditId: 'audit-1', findingId: 'f1' },
+  });
+  assert.equal(p.status, 'proposed');
+  const { deps: d } = deps();
+  const s = createScheduler(d);
+  await s.tick();
+  await s.idle();
+  await s.tick();
+  await s.idle();
+  assert.equal(job(p.id)?.status, 'proposed');
+  assert.equal(bidList(p.id).bids.length, 0);
+  assert.equal(runsOf(p.id).length, 0);
+  assert.equal(evOf('bid.placed').length, 0);
+  assert.deepEqual(jobMoves(p.id), []);
 });

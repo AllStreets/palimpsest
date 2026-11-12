@@ -16,9 +16,10 @@ import { realSpawner, setSpawner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { mirrorDir } from '../engine/mirror.js';
 import { baseline, baselineRunId, cachedBaseline, ensureHarnessProposal } from '../engine/guild/baseline.js';
-import { listJobs } from '../engine/market/jobs.js';
+import { entries } from '../engine/ledger.js';
+import { acceptProposed, dismissProposed, listJobs, transition } from '../engine/market/jobs.js';
 import { SANDBOX_EXEC } from '../engine/market/sandbox.js';
-import { repoMarketDefaults } from '../shared/market-rules.js';
+import { HARNESS_KEY, repoMarketDefaults } from '../shared/market-rules.js';
 import type { Repo, RepoChecks } from '../shared/types.js';
 
 let tempDir: string;
@@ -166,4 +167,27 @@ test('a repo with both commands gets none', () => {
   const { repo } = makeRepo(checks({ test: 'node --test', build: 'npm run build' }));
   assert.equal(ensureHarnessProposal(repo), null);
   assert.equal(listJobs({ repo: repo.fullName, source: 'harness' }).length, 0);
+});
+
+test('a harness job that merged is not proposed again by the next analysis', () => {
+  const { repo } = makeRepo(checks({ test: 'node --test' }));
+  const one = ensureHarnessProposal(repo)!;
+  assert.equal(one.key, HARNESS_KEY(repo.fullName));
+  let cur = acceptProposed(one.id);
+  for (const step of ['bidding', 'awarded', 'running', 'inspecting', 'shipping', 'merged'] as const) cur = transition(cur, step);
+  assert.equal(cur.status, 'merged');
+
+  // The next analysis still finds no build command: the merged key holds, nothing new is proposed.
+  const again = ensureHarnessProposal(repo);
+  assert.equal(again?.id, one.id);
+  assert.equal(listJobs({ repo: repo.fullName, source: 'harness' }).length, 1);
+  assert.equal(entries().filter((e) => e.kind === 'job.proposed').length, 1);
+
+  // His dismissal holds the key too.
+  const other = { ...repo, fullName: 'acme/other' };
+  openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(other.fullName, JSON.stringify(other));
+  const p = ensureHarnessProposal(other)!;
+  dismissProposed(p.id);
+  assert.equal(ensureHarnessProposal(other)?.id, p.id);
+  assert.equal(listJobs({ repo: other.fullName, source: 'harness' }).length, 1);
 });

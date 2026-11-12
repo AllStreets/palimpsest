@@ -182,6 +182,8 @@ export interface Job {
   proposal?: { auditId: string; findingId: string } | null;
   /** The proposal's key (`proposalKey()` or `HARNESS_KEY()`): a key with a job is not proposed again by itself. */
   key?: string | null;
+  /** Who withdrew a `withdrawn` job: `him` (a dismissal, a withdraw) holds its key; `city` (reserved: the city withdraws nothing today) frees it. */
+  withdrawnBy?: 'him' | 'city' | null;
 }
 
 export type ModelRef = `claude:${string}` | `ollama:${string}` | `anthropic:${string}` | `mlx:${string}`;

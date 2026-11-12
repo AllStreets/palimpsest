@@ -12,16 +12,18 @@ import {
   acceptProposed,
   dismissProposed,
   job,
+  keyTaken,
   listJobs,
   parseAcceptance,
   parseScope,
   pollJobs,
   postManualJob,
   proposeHarnessJob,
+  setScope,
   settleJobEffects,
   transition,
 } from '../engine/market/jobs.js';
-import { repoMarketDefaults } from '../shared/market-rules.js';
+import { HARNESS_KEY, repoMarketDefaults } from '../shared/market-rules.js';
 import type { Job, JobStatus, Repo } from '../shared/types.js';
 
 let tempDir: string;
@@ -620,4 +622,79 @@ test('the failure comment is trimmed and keeps tokens and home paths out', async
   for (const secret of ['ghp_', 'github_pat_', 'sk-ant-', 'AKIA']) assert.ok(!body.includes(secret), secret);
   assert.match(body, /Lint failed in/);
   assert.ok(body.length < 900, `comment is ${body.length} chars`);
+});
+
+// ---------------------------------------------------------------- Phase 3 Task 5: keys, withdrawnBy and scope edits
+
+test('every job carries a key: the harness its HARNESS_KEY, an issue or manual job none', async () => {
+  const repo = storeRepo();
+  const h = proposeHarnessJob(repo);
+  assert.equal(h.key, HARNESS_KEY(repo.fullName));
+  assert.equal(h.key, 'acme/widgets#harness');
+  assert.equal(keyTaken(repo.fullName, HARNESS_KEY(repo.fullName))?.id, h.id);
+  const m = postManualJob({ repo: FULL, title: 'Fix it' });
+  assert.equal(m.key, null);
+  fakeGh([{ number: 3, labels: ['palimpsest'] }]);
+  const [i] = await pollJobs(repo);
+  assert.equal(i.key, null);
+  const row = openDb().prepare('SELECT key FROM jobs WHERE id = ?').get(h.id) as { key: string | null };
+  assert.equal(row.key, h.key, 'the key column is written');
+});
+
+test('a merged harness job holds its key, so it is not proposed again; a city withdrawal frees it', () => {
+  const repo = storeRepo();
+  const h = proposeHarnessJob(repo);
+  acceptProposed(h.id);
+  walk(job(h.id)!, ['bidding', 'awarded', 'running', 'inspecting', 'shipping', 'merged']);
+  assert.equal(proposeHarnessJob(repo).id, h.id, 'a merged harness is not proposed again by itself');
+  assert.equal(entries().filter((e) => e.kind === 'job.proposed').length, 1);
+
+  const other = storeRepo(makeRepo({ fullName: 'acme/gadgets', slot: 1 }));
+  const q = proposeHarnessJob(other);
+  transition(q, 'withdrawn');
+  assert.equal(job(q.id)?.withdrawnBy, 'city');
+  assert.equal(keyTaken(other.fullName, q.key!), null, 'a city withdrawal frees the key');
+  const again = proposeHarnessJob(other);
+  assert.notEqual(again.id, q.id);
+  assert.equal(again.status, 'proposed');
+});
+
+test('a withdrawal notes who made it: him from dismiss, the city otherwise', () => {
+  const repo = storeRepo();
+  const h = proposeHarnessJob(repo);
+  const d = dismissProposed(h.id);
+  assert.equal(d.withdrawnBy, 'him');
+  const moves = entries().filter((e) => e.kind === 'job.changed' && (e.data as { to: string }).to === 'withdrawn');
+  assert.equal((moves.at(-1)!.data as { by: string }).by, 'him');
+
+  const m = postManualJob({ repo: FULL, title: 'Fix it' });
+  const w = transition(m, 'withdrawn', {}, { by: 'him' });
+  assert.equal(w.withdrawnBy, 'him');
+  const m2 = postManualJob({ repo: FULL, title: 'Fix it too' });
+  assert.equal(transition(m2, 'withdrawn').withdrawnBy, 'city');
+  assert.equal(job(m2.id)?.withdrawnBy, 'city');
+  assert.equal(job(m.id)?.withdrawnBy, 'him');
+  assert.ok(job(h.id)?.closedAt, 'a withdrawal is final');
+  assert.equal(listJobs({ status: 'withdrawn' }).length, 3);
+  assert.equal(postManualJob({ repo: FULL, title: 'Stays' }).withdrawnBy, undefined);
+});
+
+test('setScope edits a proposed or open job and refuses a denied glob with the reason', () => {
+  const repo = storeRepo();
+  const h = proposeHarnessJob(repo);
+  const events: string[] = [];
+  const off = subscribe((e) => events.push(e.type));
+  const edited = setScope(h.id, { scope: ['package.json', 'test/**'], acceptance: ['npm test runs the suite'] });
+  off();
+  assert.deepEqual(edited.scope, ['package.json', 'test/**']);
+  assert.deepEqual(edited.acceptance, ['npm test runs the suite']);
+  assert.equal(edited.status, 'proposed');
+  assert.deepEqual(events, ['job.changed']);
+  assert.throws(() => setScope(h.id, { scope: ['.github/workflows/ci.yml'] }), /\.github\/workflows\/\*\*/);
+  assert.throws(() => setScope(h.id, { scope: ['src/**', 'id_rsa'] }), /id_rsa/);
+  assert.deepEqual(job(h.id)?.scope, ['package.json', 'test/**']);
+  const m = postManualJob({ repo: FULL, title: 'Fix it' });
+  assert.deepEqual(setScope(m.id, { scope: ['src/*.ts'] }).scope, ['src/*.ts']);
+  transition(job(m.id)!, 'bidding');
+  assert.throws(() => setScope(m.id, { scope: ['src/**'] }), /only while proposed or open/);
 });

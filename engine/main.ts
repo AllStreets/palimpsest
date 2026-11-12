@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs';
 
+import { installProposals } from './audit/proposals.js';
+
 import { baseline } from './guild/baseline.js';
 import { paths } from './home.js';
 import { installedModels, reviveAgents, seedFirms } from './market/firms.js';
@@ -31,6 +33,8 @@ async function main(): Promise<void> {
   // Task 17: the treasury books every payment and cost from the event bus. Every hour it checks
   // for bankruptcy (72 hours below zero); once a day it sells dark towers and hires (ruling 6).
   installTreasury();
+  // Phase 3 Task 5: every verified gap a done audit found becomes a proposed job that waits for his click.
+  installProposals();
   const every = (name: string, fn: (now: number) => void, ms: number) => {
     const once = () => {
       try {
@@ -98,6 +102,7 @@ async function sampleMain(): Promise<void> {
   seedFirms(installed);
   reviveAgents(installed);
   installTreasury();
+  installProposals();
   const { close, port } = await startServer();
   // eslint-disable-next-line no-console
   console.log(`Palimpsest sample engine listening on 127.0.0.1:${port} (economy ${process.env.PALIMPSEST_SAMPLE_ECONOMY === 'live' ? 'live' : 'still'})`);
