@@ -106,6 +106,8 @@ test('the usage line names both windows and today\'s limit, and says when the li
   assert.equal(usageLine(usage(), 50), 'The five-hour window stands at 45% against today\'s limit of 50%, the usual cap; the seven-day window at 21%.');
   const his = usage({ fiveHour: win({ capPct: 60 }), todayCapPct: 60 });
   assert.equal(usageLine(his, 50), 'The five-hour window stands at 45% against today\'s limit of 60%, set by you until midnight; the seven-day window at 21%.');
+  const same = usage({ todayCapPct: 50 });
+  assert.equal(usageLine(same, 50), 'The five-hour window stands at 45% against today\'s limit of 50%, the usual cap, held by you until midnight; the seven-day window at 21%.');
   const unread = usage({ fiveHour: win({ usedPct: null, estimatedPct: 0 }), sevenDay: win({ usedPct: null, estimatedPct: 0, capPct: 90 }) });
   assert.match(usageLine(unread, 50), /^No reading of your plan yet;/);
 });

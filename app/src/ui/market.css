@@ -4933,3 +4933,19 @@ a.brief-act {
   font-size: 13.5px;
   color: var(--bronze);
 }
+
+/* The brief's head stands on solid paper, so a row scrolled under the title never shows through it; scrolled, a hairline rules it off. */
+.sheet.brief .sheet-head {
+  position: relative;
+  z-index: 1;
+  padding-bottom: 14px;
+  background: #0a0b0f;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s ease;
+}
+.sheet.brief[data-scrolled='true'] .sheet-head {
+  border-bottom-color: var(--rule-strong);
+}
+.sheet.brief .sheet-body {
+  margin-top: 0;
+}

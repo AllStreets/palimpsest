@@ -164,7 +164,7 @@ export function usageLine(usage: Brief['usage'], dayCapPct: number): string {
   const five = pctOf(usage.fiveHour);
   const seven = pctOf(usage.sevenDay);
   const limit = Math.round(usage.todayCapPct ?? usage.fiveHour.capPct ?? dayCapPct);
-  const whose = usage.todayCapPct !== null ? 'set by you until midnight' : 'the usual cap';
+  const whose = usage.todayCapPct === null ? 'the usual cap' : Math.round(usage.todayCapPct) === Math.round(dayCapPct) ? 'the usual cap, held by you until midnight' : 'set by you until midnight';
   if (five === null && seven === null) return `No reading of your plan yet; today's limit is ${limit}%, ${whose}.`;
   return `The five-hour window stands at ${five ?? 0}% against today's limit of ${limit}%, ${whose}; the seven-day window at ${seven ?? 0}%.`;
 }

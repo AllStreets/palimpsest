@@ -67,6 +67,11 @@ const isGithub = (url: string | undefined): url is string => typeof url === 'str
 export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScreen {
   const sheet = createSheet(parent, 'brief', '', opts.onDismiss);
   const head = sheet.root.querySelector<HTMLElement>('.sheet-head')!;
+  // Scrolled, the head is ruled off from the rows passing under it.
+  sheet.body.addEventListener('scroll', () => {
+    const on = sheet.body.scrollTop > 4;
+    if ((sheet.root.dataset.scrolled === 'true') !== on) sheet.root.dataset.scrolled = String(on);
+  }, { passive: true });
   const title = head.querySelector<HTMLElement>('.sheet-title')!;
   const kicker = el('p', 'brief-kicker', 'Brief');
   head.insertBefore(kicker, title);
@@ -219,14 +224,15 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
 
   function tour(item: BriefItem): void {
     const week = brief?.tour?.week ?? item.id.replace(/^tour:/, '');
-    void act(item, 'tour').then(() => {
-      if (!opts.startTour(week)) {
-        quiet.set(item.id, TOUR_LATER);
-        focusNext = { id: item.id, sel: '.brief-quiet' };
-        rows.delete(item.id);
-        render();
-      }
-    });
+    // Recorded only once a tour has started: until the city walks it (Task 17), the row says when it comes.
+    if (opts.startTour(week)) {
+      void act(item, 'tour');
+      return;
+    }
+    quiet.set(item.id, TOUR_LATER);
+    focusNext = { id: item.id, sel: '.brief-quiet' };
+    rows.delete(item.id);
+    render();
   }
 
   // ---------------------------------------------------------------- Ask why

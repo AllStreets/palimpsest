@@ -18,7 +18,7 @@ import { installTreasury } from '../engine/market/treasury.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localDay } from '../shared/day.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { Audit, Bid, Brief, BriefItem, Job, Repo, Run } from '../shared/types.js';
+import type { Audit, Bid, Brief, BriefItem, Job, Repo, Run, Tour, TourStop } from '../shared/types.js';
 import { checks, FULL, HOUR, noReading, setUp, tearDown } from './guild-fixtures.js';
 import { paths } from '../engine/home.js';
 import { writeFileSync } from 'node:fs';
@@ -581,4 +581,36 @@ test('every value in the brief is redacted, the PR link and the pause included',
   assert.equal(b.usage.paused?.reason, 'stale');
   assert.equal(b.usage.paused?.detail, 'No usage reading yet.');
   assert.equal(item(b, 'stale').kind, 'stale');
+});
+
+test("the Monday tour counts its real stops, not the exchange's two ends", () => {
+  seedFirms([]);
+  const d = new Date();
+  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() + (((8 - d.getDay()) % 7) || 7), 8).getTime();
+  const stop = (kind: TourStop['kind']): TourStop => ({ kind, towerId: null, repo: null, floorId: null, agentId: null, firmId: null, title: kind, caption: kind, at: new Date(monday - DAY).toISOString(), dwell: 6, glide: 4 });
+  const tour: Tour = { week: '2026-11-09', from: '', to: new Date(monday - HOUR).toISOString(), stops: [stop('exchange'), stop('merged'), stop('scar'), stop('ribbon'), stop('exchange')], seconds: 46 };
+  const b = briefData(monday, { tour: () => tour, milestones: () => [] });
+  const it = item(b, 'tour:2026-11-09');
+  assert.match(it.text, /3 stops in about 46 seconds/);
+  assert.equal(b.tour?.stops, 3);
+});
+
+test('a look after a dismiss keeps the dismiss on the item', () => {
+  seedFirms([]);
+  addRepo(FULL);
+  const merged = mergedJob(FULL, 'Fix the header');
+  const now = Date.now();
+  const id = `merged:${merged.id}`;
+  actOn(id, 'dismiss', {}, now);
+  const r = actOn(id, 'fly', {}, now + 1000);
+  assert.equal(r.item.acted?.action, 'dismiss');
+  assert.equal(item(briefData(now + 2000), id).acted?.action, 'dismiss');
+});
+
+test("a limit of his equal to the usual cap says so plainly", () => {
+  seedFirms([]);
+  patchSettings({ dayCapPct: 20, hardStopPct: 90 });
+  const now = Date.now();
+  actOn('usage', 'cap', { pct: 20 }, now);
+  assert.match(item(briefData(now), 'usage').text, /^Today's limit is 20%, the usual cap, held by you until midnight\./);
 });

@@ -147,6 +147,9 @@ function proposalText(j: Job): string {
   return body[0] ?? j.title;
 }
 
+/** The tour's stops he will see, not counting the exchange it starts and ends at. */
+const realStops = (t: Tour): number => t.stops.filter((s) => s.kind !== 'exchange').length;
+
 /** The Monday (local, YYYY-MM-DD) of the week that holds `ms`. */
 function mondayOf(ms: number): string {
   const d = new Date(ms);
@@ -336,7 +339,9 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       repo: null,
       title: daily ? `The five-hour window is at ${pct}%` : `The seven-day window is at ${pct}%`,
       text: daily
-        ? t.todayCapPct
+        ? t.todayCapPct && t.todayCapPct.pct === getSettings().dayCapPct
+          ? `Today's limit is ${t.todayCapPct.pct}%, the usual cap, held by you until midnight. You can change it again here, for today only.`
+          : t.todayCapPct
           ? `Today's limit is ${t.todayCapPct.pct}%, set by you, in place of the ${getSettings().dayCapPct}% cap. You can change it again here, for today only.`
           : `The cap is ${w.capPct}%. The city pauses at the cap; you can change today's limit here, for today only.`
         : `The week's hard stop is ${w.capPct}%, and every Claude call stops there. Today's limit does not move it.`,
@@ -361,13 +366,13 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
   if (new Date(now).getDay() === 1) {
     const week = mondayOf(now - 7 * DAY_MS);
     tour = opts.tour(week);
-    if (tour && tour.stops.length > 0) {
+    if (tour && realStops(tour) > 0) {
       drafts.push({
         id: `tour:${tour.week}`,
         kind: 'tour',
         repo: null,
         title: 'The week in the city',
-        text: `A walk through last week, ${plural(tour.stops.length, 'stop')} in about ${Math.round(tour.seconds)} seconds. Escape ends it.`,
+        text: `A walk through last week, ${plural(realStops(tour), 'stop')} in about ${Math.round(tour.seconds)} seconds. Escape ends it.`,
         at: tour.to,
         actions: ['tour'],
       });
@@ -488,7 +493,7 @@ export function briefData(now: number, opts: BriefOptions = {}): Brief {
     lead: plain(lead(all, numbers(since, day), since, day), 600),
     usage: { fiveHour: t.fiveHour, sevenDay: t.sevenDay, todayCapPct: t.todayCapPct?.pct ?? null, paused: t.paused ? { reason: t.paused.reason, detail: plain(t.paused.detail, 300) } : null },
     sections,
-    tour: tour ? { week: tour.week, stops: tour.stops.length } : null,
+    tour: tour ? { week: tour.week, stops: realStops(tour) } : null,
   };
 }
 

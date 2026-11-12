@@ -239,6 +239,13 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await input.fill('60');
       await page.waitForTimeout(250);
       await page.screenshot({ path: join(shots, 'brief-cap.png') });
+      // Scrolled, the title stands on an opaque head, ruled off from the rows passing under it.
+      const head = await sheet.locator('.sheet-head').evaluate((h) => {
+        const cs = getComputedStyle(h);
+        const alpha = /rgba\([^)]*,\s*([\d.]+)\)/.exec(cs.backgroundColor)?.[1];
+        return { bg: cs.backgroundColor, opaque: cs.backgroundColor.startsWith('rgb(') || alpha === '1', ruled: parseFloat(cs.borderBottomWidth) >= 1, scrolled: (h.closest('.sheet') as HTMLElement).dataset.scrolled };
+      });
+      check(head.opaque && head.ruled && head.scrolled === 'true', `scrolled, the head is opaque and ruled off from the rows (${JSON.stringify(head)})`);
       // Escape in the field puts it away and stays on the brief.
       await page.keyboard.press('Escape');
       check(await within(page, 2000, async () => (await input.count()) === 0), 'Escape puts the field away');
@@ -291,6 +298,16 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       await row.evaluate((r) => r.scrollIntoView({ block: 'center' }));
       await tourPage.waitForTimeout(400);
       await tourPage.screenshot({ path: join(shots, 'brief-tour.png') });
+      // Until the city walks it (Task 17), taking the tour says when it comes, and nothing is recorded as taken.
+      const toursBefore = query({ kind: 'brief.action' }).filter((e) => (e.data as { action?: string }).action === 'tour').length;
+      await row.locator('.brief-act[data-action="tour"]').focus();
+      await tourPage.keyboard.press('Enter');
+      const later = await within(tourPage, 3000, async () => ((await row.locator('.brief-quiet').textContent()) ?? '').trim() === 'The tour arrives with the city track.');
+      check(later, `Walk through the week says the tour arrives with the city track (${((await row.locator('.brief-quiet').textContent().catch(() => '')) ?? '').trim()})`);
+      await tourPage.waitForTimeout(500);
+      check(!/Walked through the week/.test((await row.textContent()) ?? '') && (await row.locator('.brief-error').count()) === 0, 'and the row does not say he walked it');
+      check(query({ kind: 'brief.action' }).filter((e) => (e.data as { action?: string }).action === 'tour').length === toursBefore, 'and no tour is recorded until one starts');
+      check(await tourPage.evaluate(() => document.activeElement?.classList.contains('brief-quiet') ?? false), 'focus lands on the quiet line');
       await tourPage.close();
     }
 
