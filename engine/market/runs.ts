@@ -89,6 +89,7 @@ import { sandboxOff } from './sandbox.js';
 import { sandboxCheckBin } from './sandbox-check.js';
 import { layScar, ship as defaultShip, type ShipContext } from './ship.js';
 import { commitAll, diffOf, removeRunDir, createRunDir } from './worktree.js';
+import { failInterruptedAudits, killAudit, killLiveAudits, liveAuditsNow, liveAuditRoots, resetAudits, startQueuedAudit, watchAudits } from '../audit/run.js';
 
 // ---------------------------------------------------------------- constants
 
@@ -454,6 +455,8 @@ let watcher: NodeJS.Timeout | null = null;
 /** One watcher pass: the stop file kills every live run; the treasury read catches a hard stop with nothing in flight. */
 export function watchOnce(): void {
   if (existsSync(paths().stop)) for (const id of [...live.keys()]) kill(id, STOP_REASON);
+  // The audits (Phase 3): the stop file and their wall deadline.
+  watchAudits(config.now());
   const t = Date.now();
   for (const st of [...live.values()]) {
     // A run already being stopped (the stop file, him, a halt) ends as that, never as a deadline.
@@ -991,6 +994,8 @@ export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Pr
     removeRunDir(r.id);
     out.push(ended);
   }
+  // Likewise the README audits the last engine had live (Phase 3).
+  await failInterruptedAudits({ reap });
   return out;
 }
 
@@ -1115,6 +1120,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     const now = config.now();
     if (existsSync(paths().stop)) {
       for (const id of [...live.keys()]) kill(id, STOP_REASON);
+      for (const id of liveAuditsNow()) killAudit(id, STOP_REASON);
       // The treasury read sees the stop file and aborts every lease, bid-time plan calls included, even with no run live.
       try {
         treasury(now);
@@ -1174,6 +1180,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     for (const key of [...collecting]) if (!biddingNow.has(key)) collecting.delete(key);
 
     await startRuns(now, eligible);
+    // The README audits (Phase 3) start outside the market-on filter, so an on-demand audit on a market-off repo runs.
+    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
 
     for (const step of [config.pollPRs, config.watchReverts]) {
       try {
@@ -1217,8 +1225,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       // Shutdown: every live run is killed, then closed, reaped and released by its own lifecycle;
       // every other lease (bid-time plan calls, queued ones too) is aborted so nothing keeps the wait open.
       for (const id of [...live.keys()]) kill(id, SHUTDOWN_REASON);
+      const audits = killLiveAudits(SHUTDOWN_REASON);
       abortAllLeases(new Error(SHUTDOWN_REASON));
       while (current || pending.size > 0) await Promise.allSettled([current, ...pending]);
+      await audits;
     },
     async idle() {
       while (current || pending.size > 0) {
@@ -1235,8 +1245,8 @@ export const SHUTDOWN_GRACE_MS = 10_000;
 /** Reaps every live run's root, best effort, each bounded by `ms`. */
 export async function reapLiveRuns(ms = 3_000): Promise<void> {
   await Promise.allSettled(
-    [...live.values()].map((st) =>
-      Promise.race([config.reap(st.runRoot), new Promise((r) => setTimeout(r, ms).unref?.())]),
+    [...[...live.values()].map((st) => st.runRoot), ...liveAuditRoots()].map((runRoot) =>
+      Promise.race([config.reap(runRoot), new Promise((r) => setTimeout(r, ms).unref?.())]),
     ),
   );
 }
@@ -1285,6 +1295,7 @@ export function shutdownHandler(
 export function resetRuns(): void {
   for (const st of live.values()) abortLease(st.lease, new Error('reset'));
   live.clear();
+  resetAudits();
   pending.clear();
   if (watcher) clearInterval(watcher);
   watcher = null;

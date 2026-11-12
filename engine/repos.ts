@@ -385,6 +385,8 @@ async function runAnalysis(fullName: string): Promise<void> {
     emit('repo.analyzed', { repo });
     record('repo.analyzed', { repo: fullName, floors: floors.length });
     proposeHarnessIfNeeded(repo);
+    // Phase 3 ruling 6: a repo analysed with its market already on is audited once, by itself.
+    queueAutoAudit(repo);
   } catch (err) {
     const message = err instanceof GhError ? err.message : readableMessage(err);
     // Guarded: loadRepo/saveRepo/emit/record can themselves throw (a closed
@@ -423,10 +425,10 @@ export function getRepo(fullName: string): Repo | null {
 }
 
 /**
- * Writes the market state of a repo (its halt and its strikes). The caller
+ * Writes the market state of a repo (its halt, its strikes and, Phase 3, when its README audit last ended). The caller
  * records and emits what it means (`repo.halted`, `repo.resumed`).
  */
-export function updateRepoMarket(fullName: string, p: Partial<Pick<Repo, 'halted' | 'strikes'>>): Repo {
+export function updateRepoMarket(fullName: string, p: Partial<Pick<Repo, 'halted' | 'strikes' | 'auditedAt'>>): Repo {
   const repo = loadRepo(fullName);
   if (!repo) throw new Error(`updateRepoMarket: ${fullName} has not been connected`);
   return saveRepo({ ...repo, ...p });
@@ -451,6 +453,22 @@ function commandsChanged(a: RepoChecks | null, b: RepoChecks | null): boolean {
 function mergeDetected(stored: RepoChecks | null, detected: RepoChecks): RepoChecks {
   if (stored && stored.detected === false) return stored;
   return { ...detected, shots: stored?.shots?.length ? stored.shots : detected.shots };
+}
+
+/** The audit runner (engine/audit/run.ts) registers its trigger here at load, so this module never imports the market graph. */
+let auditTrigger: ((repo: Repo) => void) | null = null;
+
+export function registerAuditTrigger(fn: ((repo: Repo) => void) | null): void {
+  auditTrigger = fn;
+}
+
+/** The automatic README audit (Phase 3 ruling 6), never worth failing an analysis or a patch over. */
+function queueAutoAudit(repo: Repo): void {
+  try {
+    auditTrigger?.(repo);
+  } catch (err) {
+    console.warn(`palimpsest: queueing the audit of ${repo.fullName} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** A harness proposal is never worth failing an analysis or a patch over. */
@@ -506,6 +524,8 @@ export function patchRepo(fullName: string, p: RepoPatch): Repo {
   record('repo.patched', { repo: fullName, patch: p });
   emit('repo.patched', { repo: updated });
   if (checksPatch) proposeHarnessIfNeeded(updated);
+  // The market turned on for the first time on a ready repo: its one automatic audit (Phase 3 ruling 6).
+  if (p.market === true && !repo.market) queueAutoAudit(updated);
   return updated;
 }
 

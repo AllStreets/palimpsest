@@ -369,7 +369,10 @@ export async function execTool(o: ExecToolInput): Promise<ToolResult> {
 
   o.log({ at: now(), kind: 'tool', text: `$ ${o.command}`, data: { stage: o.stage, timeoutMs } });
   const r = await runSandboxed(o, ['/bin/sh', '-c', o.command], timeoutMs, undefined, MAX_RETURN_BYTES, true);
-  return { code: r.aborted && r.code === 0 ? null : r.code, stdout: r.stdout, stderr: r.stderr, refused: null };
+  const code = r.aborted && r.code === 0 ? null : r.code;
+  // How the command ended, for the log and for the audit runner (a passing test check vouches for a REAL finding).
+  o.log({ at: now(), kind: 'engine', text: `exit ${code === null ? 'none' : code}: ${o.command}`, data: { exit: { command: o.command, code, stage: o.stage ?? null } } });
+  return { code, stdout: r.stdout, stderr: r.stderr, refused: null };
 }
 
 /**

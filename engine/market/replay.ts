@@ -448,10 +448,14 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
       return s;
     }
     case 'audit.stage': {
+      // A stage moves one audit in flight; one naming a status outside AuditStatus is ignored whole.
       const a = s.audits[str(d.auditId) ?? ''];
-      if (a && str(d.status)) {
+      if (a && AUDIT_STATUSES.has(d.status as AuditStatus)) {
         a.status = d.status as AuditStatus;
         if ('waitingReason' in d) a.waitingReason = str(d.waitingReason);
+        if (str(d.model)) a.model = d.model as Audit['model'];
+        if (str(d.baseSha)) a.baseSha = d.baseSha as string;
+        if (typeof d.unattended === 'boolean') a.unattended = d.unattended;
       }
       return s;
     }
@@ -506,6 +510,7 @@ function compare(label: string, stored: Record<string, unknown>, replayed: Recor
 const LIVE_RUN_FIELDS: Array<keyof Run> = ['id', 'jobId', 'bidId', 'agentId', 'firmId', 'repo', 'model', 'branch', 'stage', 'outcome', 'headSha', 'prNumber', 'prUrl', 'inspectionId', 'startedAt', 'unattended'];
 /** The fields of an audit still in flight that the ledger carries (its findings and counts arrive whole with `audit.ended`). */
 const LIVE_AUDIT_FIELDS: Array<keyof Audit> = ['id', 'repo', 'model', 'trigger', 'baseSha', 'status', 'waitingReason', 'startedAt', 'unattended'];
+const AUDIT_STATUSES: ReadonlySet<AuditStatus> = new Set<AuditStatus>(['waiting', 'preparing', 'installing', 'reading', 'done', 'failed', 'capped', 'killed', 'crashed']);
 const ENDED_AUDIT: ReadonlySet<AuditStatus> = new Set<AuditStatus>(['done', 'failed', 'capped', 'killed', 'crashed']);
 
 /**

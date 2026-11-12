@@ -178,11 +178,18 @@ export function ollamaListEnv(host?: string): Record<string, string> {
 export async function installedModels(): Promise<string[]> {
   try {
     const { stdout, code } = await getRunner()('ollama', ['list'], { timeoutMs: 10_000, env: ollamaListEnv() });
-    if (code !== 0) return [];
-    return parseOllamaList(stdout);
+    installed = code !== 0 ? [] : parseOllamaList(stdout);
   } catch {
-    return [];
+    installed = [];
   }
+  return installed;
+}
+
+let installed: string[] = [];
+
+/** The last answer `installedModels()` took (the engine asks at start and when it revives agents); the audit's model pick reads it, so no route or tick runs `ollama list`. */
+export function lastInstalled(): string[] {
+  return installed;
 }
 
 /** The model an agent seeds with, and whether it can run here. */

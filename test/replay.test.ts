@@ -315,3 +315,38 @@ test('replay rebuilds an audit and a milestone from their entries and verifyRepl
   assert.ok(corrupt.diffs.some((x) => /^audit audit-1: the tables hold/.test(x)), corrupt.diffs.join('\n'));
   assert.ok(corrupt.diffs.some((x) => /^milestone skyline:.*the tables hold/.test(x)), corrupt.diffs.join('\n'));
 });
+
+test('replay applies an audit stage only for a known status, and takes the model, base sha and unattended flag it carries', () => {
+  const waiting: Audit = {
+    id: 'audit-2',
+    repo: FULL,
+    model: null,
+    trigger: 'connect',
+    baseSha: null,
+    status: 'waiting',
+    waitingReason: null,
+    startedAt: '2026-11-10T08:00:00.000Z',
+    endedAt: null,
+    endedReason: null,
+    findings: [],
+    counts: { REAL: 0, PARTIAL: 0, MISSING: 0, STUBBED: 0, BROKEN: 0 },
+    unverified: 0,
+    claimsRead: 0,
+    credits: 0,
+    unattended: false,
+    markdownPath: null,
+  };
+  record('audit.started', { audit: waiting });
+  record('audit.stage', { auditId: waiting.id, status: 'bogus', waitingReason: 'nonsense' });
+  assert.equal(replay(entries()).audits[waiting.id].status, 'waiting');
+  assert.equal(replay(entries()).audits[waiting.id].waitingReason, null, 'a stage with an unknown status is ignored whole');
+  record('audit.stage', { auditId: waiting.id, status: 'preparing', waitingReason: null, model: 'claude:sonnet', unattended: true });
+  record('audit.stage', { auditId: waiting.id, status: 'installing', baseSha: 'c'.repeat(40) });
+  const a = replay(entries()).audits[waiting.id];
+  assert.equal(a.status, 'installing');
+  assert.equal(a.model, 'claude:sonnet');
+  assert.equal(a.baseSha, 'c'.repeat(40));
+  assert.equal(a.unattended, true);
+  openDb().prepare('INSERT INTO audits (id, repo, status, started_at, json) VALUES (?, ?, ?, ?, ?)').run(a.id, a.repo, a.status, a.startedAt, JSON.stringify(a));
+  assert.deepEqual(verifyReplay().diffs, []);
+});
