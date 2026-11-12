@@ -90,7 +90,7 @@ import { canPush, inspectionSummary } from '../guild/inspect.js';
 import { paths } from '../home.js';
 import { districtOrigin, quarterOrigin } from '../layout.js';
 import { query, record } from '../ledger.js';
-import { earnedFloors, getRepo, listRepos, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
+import { analysesSettled, earnedFloors, getRepo, holdAuditTrigger, listRepos, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
 import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, SAMPLE_TREES, useSampleFolders } from '../sample.js';
 import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
 import { getSettings } from '../settings.js';
@@ -1337,6 +1337,10 @@ function writeProviderFixtures(now: number): void {
  */
 export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: boolean } = {}): Promise<void> {
   for (const s of SAMPLE) if (!getRepo(s.fullName)) throw new Error(`seedEconomy runs on top of seedSample(): ${s.fullName} is missing`);
+  // An analysis still running (ui-test reconnects the harbour just before it seeds) would end inside the history,
+  // where the market is on, and queue the repo's automatic audit beside the scripted ones. It ends first, and the
+  // trigger is held while the history is written, so the audits are the script's alone.
+  await analysesSettled();
   useSampleFolders();
   mkdirSync(sampleProjectsDir(), { recursive: true });
   const own = getRunner() === realRunner;
@@ -1347,11 +1351,13 @@ export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: b
   // The milestones listen while the history is written, so the spire, the finial, the revival and the
   // ribbons are reached by the market's own rules as each floor goes up, each at its own time.
   const offMilestones = installMilestones({ now: () => Date.now() });
+  const releaseTrigger = holdAuditTrigger();
   try {
     offTreasury = installTreasury({ now: () => Date.now() });
     await writeHistory(now, start, time, opts.holdSale === true);
     await settleJobEffects();
   } finally {
+    releaseTrigger();
     offMilestones();
     offTreasury();
     time.restore();

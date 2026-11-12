@@ -29,7 +29,7 @@ import { economyClock, economySites, seedEconomy } from '../engine/market/sample
 import { resetShipping } from '../engine/market/ship.js';
 import { installTreasury } from '../engine/market/treasury.js';
 import { openaiUsage } from '../engine/providers-usage.js';
-import { earnedFloors, getRepo } from '../engine/repos.js';
+import { connect, disconnect, earnedFloors, getRepo } from '../engine/repos.js';
 import { SAMPLE_INSTALLED, SAMPLE_ISSUES, SAMPLE_MARKER, sampleCodexHome, sampleGh, samplePRs } from '../engine/sample.js';
 import { proposalKey } from '../shared/market-rules.js';
 import type { BriefItemKind, JobStatus, RunLogLine, Silhouette, Trip, Verdict } from '../shared/types.js';
@@ -416,6 +416,19 @@ test('the economy seeds four audits and their proposals and replays clean', asyn
 
   const v = verifyReplay();
   assert.ok(v.ok, v.diffs.join('\n'));
+});
+
+test('a reconnect still analysing when the economy is seeded, as in ui-test, leaves the four scripted audits', async () => {
+  // ui-test's reconnectChecks disconnects the harbour and connects it again, and earnedChecks seeds at once:
+  // that analysis must not end inside the history, where the market is on, and queue an audit of its own.
+  await seedSample(NOW);
+  disconnect(H);
+  await connect(H);
+  assert.equal(getRepo(H)?.status, 'analyzing');
+  await seedEconomy(NOW);
+  assert.equal(getRepo(H)?.status, 'ready');
+  const audits = listAudits().map((a) => `${a.repo} ${a.trigger} ${a.status}`).sort();
+  assert.deepEqual(audits, ['ferro/quarry connect capped', 'hoshi/kumo demand reading', 'lantern/assay-kit demand done', 'tidewater/harbor-ledger demand done']);
 });
 
 test('the clock ends the reading audit done with two new proposals and events', async () => {

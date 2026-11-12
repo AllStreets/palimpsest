@@ -235,6 +235,11 @@ export function nextSlot(kind: 'repo' | 'firm', owner: string): number {
 /** Analyses running in this process, by repo. A second call for a repo joins the one already running. */
 const running = new Map<string, Promise<void>>();
 
+/** Resolves once no analysis is running in this process, including any that start while it waits. */
+export async function analysesSettled(): Promise<void> {
+  while (running.size > 0) await Promise.allSettled([...running.values()]);
+}
+
 /**
  * Stores `fullName` as connected and starts analysis without awaiting it.
  * A repo whose analysis is running in this process is returned unchanged,
@@ -458,6 +463,19 @@ function mergeDetected(stored: RepoChecks | null, detected: RepoChecks): RepoChe
 /** The audit runner (engine/audit/run.ts) registers its trigger here at load, so this module never imports the market graph. */
 let auditTrigger: ((repo: Repo) => void) | null = null;
 let warnedNoTrigger = false;
+/** While held (the sample economy writing its scripted history), the automatic audit queues nothing. */
+let triggerHolds = 0;
+
+/** Holds the automatic audit until the returned release is called. */
+export function holdAuditTrigger(): () => void {
+  triggerHolds++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    triggerHolds--;
+  };
+}
 
 export function registerAuditTrigger(fn: ((repo: Repo) => void) | null): void {
   auditTrigger = fn;
@@ -466,6 +484,7 @@ export function registerAuditTrigger(fn: ((repo: Repo) => void) | null): void {
 
 /** The automatic README audit (Phase 3 ruling 6), never worth failing an analysis or a patch over. */
 function queueAutoAudit(repo: Repo): void {
+  if (triggerHolds > 0) return;
   try {
     if (!auditTrigger) {
       if (repo.market && !warnedNoTrigger) {
