@@ -364,6 +364,38 @@ export function keyTaken(repo: string, key: string): Job | null {
   return held[0] ?? null;
 }
 
+/**
+ * His "Propose again" (the district page): a harness or proposal job that
+ * merged, or that he dismissed, goes back on the board as a new `proposed`
+ * job on the same terms and key, waiting for his click as before. Only the
+ * newest holder of its key may be proposed again, so a second click does
+ * nothing new. Records and emits `job.proposed`. The caller writes the new
+ * id back onto an audit's finding (`proposeAgain` in engine/audit).
+ */
+export function reproposeJob(jobId: string): Job {
+  const cur = job(jobId);
+  if (!cur) throw new Error(`no job ${jobId}`);
+  const why = (s: string) => new Error(`job ${jobId} cannot be proposed again: ${s}`);
+  if (!cur.key || (cur.source !== 'harness' && cur.source !== 'proposal')) throw why('the city did not propose it');
+  if (cur.status !== 'merged' && !(cur.status === 'withdrawn' && cur.withdrawnBy === 'him')) throw why('only a merged or dismissed proposal can be');
+  const held = keyTaken(cur.repo, cur.key);
+  if (held && held.id !== cur.id) throw why(`${held.id} holds its key now`);
+  return post(makeJob({
+    repo: cur.repo,
+    source: cur.source,
+    issue: null,
+    url: null,
+    title: cur.title,
+    body: cur.body,
+    tier: cur.tier,
+    status: 'proposed',
+    scope: [...cur.scope],
+    acceptance: [...cur.acceptance],
+    key: cur.key,
+    proposal: cur.proposal ?? null,
+  }));
+}
+
 export interface ProposalInput {
   repo: string;
   title: string;

@@ -10,13 +10,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
-import { installProposals, proposeFromAudit } from '../engine/audit/proposals.js';
+import { installProposals, proposeAgain, proposeFromAudit } from '../engine/audit/proposals.js';
 import { audit as storedAudit, saveAudit } from '../engine/audit/store.js';
 import { openDb } from '../engine/db.js';
 import { emit, subscribe } from '../engine/events.js';
 import { entries, record } from '../engine/ledger.js';
 import { verifyReplay } from '../engine/market/replay.js';
-import { CITY_MARKER, acceptProposed, dismissProposed, job, keyTaken, listJobs, settleJobEffects, setScope, transition } from '../engine/market/jobs.js';
+import { CITY_MARKER, acceptProposed, dismissProposed, job, keyTaken, listJobs, proposeHarnessJob, settleJobEffects, setScope, transition } from '../engine/market/jobs.js';
 import { DENY_SCOPE, denied, proposalKey, repoMarketDefaults, TIER_VALUE } from '../shared/market-rules.js';
 import type { Audit, Finding, Job, JobStatus, Proposal, Repo, Verdict } from '../shared/types.js';
 
@@ -241,6 +241,46 @@ test('a merged key is posted again only while the claim is still missing or brok
   // And the new proposal now holds the key.
   assert.deepEqual(proposeFromAudit(auditOf([gap('Exports CSV', 'BROKEN')])), []);
   assert.equal(keyTaken(FULL, p.key!)?.id, again.id);
+});
+
+test('Propose again puts a dismissed or merged key back as a proposed job on his click, and refuses the rest', () => {
+  const a = auditOf([gap('Exports CSV'), gap('Imports XML')]);
+  record('audit.ended', { auditId: a.id, repo: a.repo, status: 'done', reason: null, audit: a });
+  const [p, q] = proposeFromAudit(a);
+  dismissProposed(p.id);
+  const events: string[] = [];
+  const off = subscribe((e) => events.push(e.type));
+  const again = proposeAgain(p.id);
+  off();
+  assert.notEqual(again.id, p.id);
+  assert.equal(again.status, 'proposed');
+  assert.equal(again.key, p.key);
+  assert.equal(again.title, p.title);
+  assert.deepEqual(again.scope, p.scope);
+  assert.deepEqual(again.acceptance, p.acceptance);
+  assert.equal(again.body, job(p.id)!.body, 'the body as it was, marker and all');
+  assert.deepEqual(again.proposal, p.proposal);
+  assert.ok(events.includes('job.proposed'));
+  assert.equal(keyTaken(FULL, p.key!)?.id, again.id, 'the new proposal holds the key');
+  assert.equal(storedAudit(a.id)!.findings.find((f) => f.id === p.proposal!.findingId)!.proposal!.jobId, again.id, 'the audit names the new job, as replay will');
+  assert.deepEqual(verifyReplay().diffs, [], 'replay agrees');
+
+  // Only the newest holder of a key, and only once it merged or he dismissed it.
+  assert.throws(() => proposeAgain(p.id), /cannot be proposed again/);
+  assert.throws(() => proposeAgain(again.id), /cannot be proposed again/, 'a proposed job is not');
+  acceptProposed(q.id);
+  assert.throws(() => proposeAgain(q.id), /cannot be proposed again/, 'an open job is not');
+  moveTo(q, 'merged');
+  assert.equal(proposeAgain(q.id).status, 'proposed', 'a merged one is');
+  assert.throws(() => proposeAgain('job-nope'), /no job/);
+
+  // The harness key too.
+  const h = proposeHarnessJob(storeRepo());
+  dismissProposed(h.id);
+  const h2 = proposeAgain(h.id);
+  assert.equal(h2.source, 'harness');
+  assert.equal(h2.status, 'proposed');
+  assert.equal(keyTaken(FULL, h.key!)?.id, h2.id);
 });
 
 test('a key the city withdrew is free again', () => {

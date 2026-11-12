@@ -1,0 +1,250 @@
+/**
+ * The README audit's screens (Phase 3 Task 10), run by tools/ui-test.ts on
+ * its own engine (port 4779, a temp home) once the sample economy is
+ * seeded: the audit on the harbour's district page with its proposals, the
+ * audit's own page, "Audit the README" on assay-kit, the kumo audit the
+ * economy's clock ends (runs held, so the construction checks after these
+ * find the sites where the seed left them), its proposals on the board, a
+ * proposal's job page with the claim behind it, and the scope editor.
+ *
+ * The engine in ui-test runs no scheduler, so the audit started here waits
+ * and never reaches a model.
+ *
+ * Saves district-audit.png, district-audit-waiting.png, audit.png,
+ * audit-kumo.png, audit-proposals.png and job-scope.png at 1600 x 1000 for
+ * the quality rounds.
+ */
+import { join } from 'node:path';
+
+import type { Page } from 'playwright';
+
+import type { AuditView, Job } from '../shared/types.js';
+
+type Check = (ok: boolean, what: string) => void;
+
+const SIZE = { width: 1600, height: 1000 };
+const HARBOUR = 'tidewater/harbor-ledger';
+const ASSAY = 'lantern/assay-kit';
+const KUMO = 'hoshi/kumo';
+
+async function within(page: Page, ms: number, ok: () => Promise<boolean>): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (await ok().catch(() => false)) return true;
+    await page.waitForTimeout(80);
+  }
+  return false;
+}
+
+async function api<T>(page: Page, path: string): Promise<T> {
+  return (await page.evaluate((p) => fetch(p).then((r) => r.json()), path)) as T;
+}
+
+async function go(page: Page, hash: string): Promise<void> {
+  await page.evaluate((h) => {
+    location.hash = h;
+  }, hash);
+}
+
+type AuditRow = Omit<AuditView, 'markdown' | 'proposals'>;
+
+/**
+ * Returns how many refusals it provoked on purpose: each shows in the
+ * browser's console as a failed resource (409), which the caller excuses.
+ */
+export async function auditChecks(page: Page, check: Check, shots: string): Promise<number> {
+  let refusals = 0;
+  const { scopeRefused } = await import('../engine/market/jobs.js');
+  const { economyClock } = await import('../engine/market/sample-economy.js');
+  const before = page.viewportSize();
+  await page.setViewportSize(SIZE);
+  try {
+    await page.evaluate(() => {
+      (window as unknown as { __noReload: boolean }).__noReload = true;
+    });
+
+    // ------------------------------------------------------------ the harbour's district page
+    const harbourAudit = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(HARBOUR)}`)).find((a) => a.status === 'done');
+    check(!!harbourAudit, 'the harbour has a done audit');
+    if (!harbourAudit) return refusals;
+    const view = await api<AuditView>(page, `/api/audits/${harbourAudit.id}`);
+    const byTitle = (re: RegExp): Job | undefined => view.proposals.find((j) => re.test(j.title));
+    const ubl = byTitle(/UBL/);
+    const reason = byTitle(/reason on fee override/);
+    const schedule = byTitle(/harbour's day/);
+    check(!!ubl && !!reason && !!schedule, 'the harbour audit proposed the UBL, override reason and schedule jobs');
+
+    await go(page, `#/repos/${HARBOUR}`);
+    const sheet = page.locator('.sheet.district');
+    const sec = sheet.locator('.district-audit');
+    const shown = await within(page, 8000, async () => (await sec.locator('.audit-claims .claim').count()) === 14);
+    check(shown, `the district page lists the audit's 14 claims (${await sec.locator('.audit-claims .claim').count()})`);
+    if (!shown) return refusals;
+    check(((await sec.locator('.repos-sec-name').first().textContent()) ?? '') === 'README against the code', 'under the heading "README against the code"');
+    const lead = ((await sec.locator('.audit-lead').textContent()) ?? '').trim();
+    check(lead.startsWith('Of 14 claims in the README, 8 are real, 2 partial, 3 missing and 1 broken.'), `the lead gives the counts (${lead})`);
+    const unverified = sec.locator('.claim.unverified');
+    check((await unverified.count()) === 1 && /evidence not found at the commit/.test((await unverified.textContent()) ?? ''), 'one claim says its evidence was not found at the commit');
+    check((await unverified.locator('a.claim-evidence').count()) === 0, 'and its evidence is not a link');
+    const marks = await sec.locator('.claim .verdict-mark').evaluateAll((els) => [...new Set(els.map((e) => (e as HTMLElement).dataset.mark))].sort());
+    check(JSON.stringify(marks) === JSON.stringify(['empty', 'full', 'half', 'struck']), `each verdict has its own drawn mark (${marks.join(', ')})`);
+    const words = await sec.locator('.claim .verdict-word').allTextContents();
+    check(words.length === 14 && words.every((w) => /^(real|partial|missing|stubbed|broken)$/.test(w)), 'and its word');
+    const href = (await sec.locator('a.claim-evidence').first().getAttribute('href')) ?? '';
+    check(new RegExp(`^https://github\\.com/${HARBOUR}/blob/${harbourAudit.baseSha}/[\\w/.%-]+#L\\d+$`).test(href), `evidence links to GitHub at the audited commit (${href})`);
+    check((await sec.locator('a.claim-evidence').evaluateAll((as) => as.every((a) => (a as HTMLAnchorElement).target === '_blank' && /noopener/.test((a as HTMLAnchorElement).rel)))), 'and leaves the app safely');
+    const props = sec.locator('.claim-proposal');
+    const states = await props.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.state).sort());
+    // The one he accepted last night is wherever the board's clock has taken it since: taking bids, or awarded on a full run.
+    const accepted = ['open', 'bidding', 'awarded', 'running', 'inspecting', 'shipping', 'waiting', 'merged'];
+    const rest = states.filter((x) => !accepted.includes(x ?? ''));
+    check(states.length === 4 && JSON.stringify(rest) === JSON.stringify(['proposed', 'proposed', 'withdrawn']), `four proposals stand with their states: one accepted, two waiting on him, one dismissed (${states.join(', ')})`);
+    const acceptedRow = props.and(page.locator(`[data-job="${view.proposals.find((j) => accepted.includes(j.status))?.id}"]`));
+    check(/^accepted/.test(((await acceptedRow.locator('.prop-word').textContent()) ?? '').trim()), `the accepted one says so (${((await acceptedRow.locator('.prop-word').textContent()) ?? '').trim()})`);
+    const dismissedRow = props.and(page.locator(`[data-job="${schedule?.id}"]`));
+    check(/dismissed/.test((await dismissedRow.locator('.prop-word').textContent()) ?? ''), 'the dismissed one says so');
+    check((await dismissedRow.locator('.prop-again').count()) === 1, 'and offers Propose again');
+    check((await props.and(page.locator(`[data-job="${ubl?.id}"]`)).locator('.prop-accept, .prop-dismiss, .prop-tier [role="radio"]').count()) === 5, 'a proposed one offers Accept, three tiers and Dismiss');
+    check((await sec.locator('img, script, iframe').count()) === 0, 'the audit is set as text only');
+    await sec.evaluate((s) => s.scrollIntoView({ block: 'start' }));
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(shots, 'district-audit.png') });
+
+    // The tier picker patches the value.
+    const ublRow = props.and(page.locator(`[data-job="${ubl?.id}"]`));
+    await ublRow.locator('.prop-tier [role="radio"][data-tier="normal"]').click();
+    check(await within(page, 4000, async () => (await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.tier === 'normal'), 'the tier picker sets the tier');
+    check((await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.value === 60, 'and the value with it');
+    check(await within(page, 3000, async () => (await ublRow.locator('[role="radio"][aria-checked="true"]').getAttribute('data-tier')) === 'normal'), 'and the picker shows it');
+
+    // Accept: the row's state moves without a reload, and the job stands under Bidding on the board.
+    const reasonRow = props.and(page.locator(`[data-job="${reason?.id}"]`));
+    await reasonRow.locator('.prop-accept').click();
+    check(await within(page, 4000, async () => (await reasonRow.getAttribute('data-state')) === 'open'), `Accept moves the row on in place (${await reasonRow.getAttribute('data-state')})`);
+    check(/accepted/.test((await reasonRow.locator('.prop-word').textContent()) ?? ''), 'and it says accepted');
+
+    // Propose again: the dismissed proposal is back, waiting on him.
+    await dismissedRow.locator('.prop-again').click();
+    check(
+      await within(page, 4000, async () => (await api<Job[]>(page, `/api/jobs?status=proposed&repo=${encodeURIComponent(HARBOUR)}`)).some((j) => j.key === schedule?.key)),
+      'Propose again puts the dismissed proposal back on the board',
+    );
+    check(await within(page, 4000, async () => (await props.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.state))).filter((s) => s === 'proposed').length === 2), 'and its row waits on him again');
+
+    // ------------------------------------------------------------ the audit's own page
+    await sec.locator('a.audit-page-link').first().click();
+    const onPage = await within(page, 5000, async () => (await page.evaluate(() => location.hash)) === `#/audits/${harbourAudit.id}` && (await page.locator('.sheet.auditpage .claim').count()) === 14);
+    check(onPage, 'the audit opens on its own page with its claims');
+    const trail = (await page.locator('.sheet.auditpage .detail-trail > *:not(.detail-trail-sep)').allTextContents()).map((t) => t.trim());
+    check(trail.length === 3 && trail[0] === 'Repos' && trail[1] === 'harbor-ledger' && /^audit of \d+ \w+ \d{4}$/.test(trail[2]), `its trail reads Repos, the repo, the audit's date (${trail.join(' / ')})`);
+    check((await page.locator('.sheet.auditpage .detail-trail a').nth(1).getAttribute('href')) === `#/repos/${HARBOUR}`, 'and leads back to the district');
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(shots, 'audit.png') });
+
+    // ------------------------------------------------------------ Audit the README on assay-kit
+    await go(page, `#/repos/${ASSAY}`);
+    const start = sheet.locator('.district-audit .audit-start');
+    check(await within(page, 6000, async () => (await start.count()) === 1 && (await start.isEnabled())), 'assay-kit offers Audit the README');
+    check(((await sheet.locator('.district-audit .audit-lead').textContent()) ?? '').trim() === 'No README to check.', 'its last audit found no README to check');
+    const answered = page.waitForResponse((r) => r.url().endsWith(`/api/repos/${ASSAY}/audit`) && r.request().method() === 'POST');
+    await start.click();
+    check((await answered).status() === 202, 'Audit the README starts an audit (202)');
+    check(await within(page, 4000, async () => (await start.isDisabled()) && /^An audit is waiting/.test(((await sheet.locator('.district-audit .audit-held').textContent()) ?? '').trim())), `and the button holds with the reason (${await sheet.locator('.district-audit .audit-held').textContent()})`);
+    check(await within(page, 4000, async () => /Waiting/.test((await sheet.locator('.district-audit .audit-stage').textContent()) ?? '')), 'the waiting audit shows where it stands');
+    await sheet.locator('.district-audit').evaluate((s) => s.scrollIntoView({ block: 'start' }));
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(shots, 'district-audit-waiting.png') });
+
+    // ------------------------------------------------------------ the kumo audit ends on the clock
+    await go(page, '#/jobs');
+    check(await within(page, 6000, async () => (await page.locator('.sec-proposed').count()) === 1), 'the board opens with its proposals');
+    check(await within(page, 4000, async () => (await page.locator(`.sec-bidding .job-row[data-job="${reason?.id}"]`).count()) === 1), 'the accepted proposal stands under Bidding');
+    const harbourGroup = page.locator(`.sec-proposed .audit-group[data-repo="${HARBOUR}"]`);
+    check((await harbourGroup.count()) === 1 && (await harbourGroup.locator('.prop-line').count()) === 2, `the harbour's proposals stand under its audit (${await harbourGroup.locator('.prop-line').count()})`);
+    check(/^Invoices can also be sent/.test(((await harbourGroup.locator(`.prop-line[data-job="${ubl?.id}"] .prop-claim-text`).textContent()) ?? '').trim()), 'each with the claim behind it');
+    const kumoBefore = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(KUMO)}`))[0];
+    check(kumoBefore?.status === 'reading', `the kumo audit is reading (${kumoBefore?.status})`);
+    const clock = economyClock({ now: () => Date.now(), speed: 20, runs: false });
+    try {
+      for (let i = 0; i < 24; i++) {
+        clock.tick(1000);
+        await clock.idle();
+      }
+    } finally {
+      clock.stop();
+    }
+    const kumoGroup = page.locator(`.sec-proposed .audit-group[data-repo="${KUMO}"]`);
+    check(await within(page, 6000, async () => (await kumoGroup.locator('.prop-line').count()) === 2), `the clock ends the kumo audit and its two proposals appear under its heading (${await kumoGroup.locator('.prop-line').count()})`);
+    check(/README audit/.test((await kumoGroup.locator('.audit-group-head').textContent()) ?? ''), `the heading names the audit (${((await kumoGroup.locator('.audit-group-head').textContent()) ?? '').trim()})`);
+    // Its own page carries the marks the harbour's has not: stubbed and partial among them.
+    const kumoAudit = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(KUMO)}`))[0];
+    await go(page, `#/audits/${kumoAudit?.id}`);
+    check(await within(page, 5000, async () => (await page.locator('.sheet.auditpage .claim').count()) === kumoAudit?.findings.length), 'the kumo audit opens on its own page');
+    const kumoMarks = await page.locator('.sheet.auditpage .claim .verdict-mark').evaluateAll((els) => [...new Set(els.map((e) => (e as HTMLElement).dataset.mark))].sort());
+    check(JSON.stringify(kumoMarks) === JSON.stringify(['empty', 'full', 'half', 'hatched', 'struck']), `all five marks stand in its ledger (${kumoMarks.join(', ')})`);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(shots, 'audit-kumo.png') });
+    await go(page, '#/jobs');
+    check(await within(page, 5000, async () => (await kumoGroup.locator('.prop-line').count()) === 2), 'back on the board');
+    await page.locator('.sec-proposed').scrollIntoViewIfNeeded();
+    await page.locator('.sheet.jobs .sheet-body').evaluate((b) => {
+      b.scrollTop = 0;
+    });
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(shots, 'audit-proposals.png') });
+
+    // The tier picker on the board, then Dismiss withdraws.
+    const kumoFirst = kumoGroup.locator('.prop-line').first();
+    const kumoId = (await kumoFirst.getAttribute('data-job')) ?? '';
+    await kumoFirst.locator('.prop-tier [role="radio"][data-tier="high"]').click();
+    check(await within(page, 4000, async () => (await api<{ job: Job }>(page, `/api/jobs/${kumoId}`)).job.tier === 'high'), 'the board’s tier picker sets the tier');
+    await kumoGroup.locator(`.prop-line[data-job="${kumoId}"] .job-dismiss`).click();
+    check(await within(page, 4000, async () => (await api<{ job: Job }>(page, `/api/jobs/${kumoId}`)).job.status === 'withdrawn'), 'Dismiss withdraws the proposal');
+    check(await within(page, 4000, async () => (await page.locator(`.sec-proposed [data-job="${kumoId}"]`).count()) === 0), 'and it leaves the board');
+
+    // ------------------------------------------------------------ a proposal's own page and its scope
+    await go(page, `#/jobs/${ubl?.id}`);
+    const jp = page.locator('.sheet.jobpage');
+    const why = jp.locator('.job-why');
+    check(await within(page, 5000, async () => (await why.count()) === 1), 'the proposal’s page says why the city proposes it');
+    check(/Invoices can also be sent as e-invoices in the UBL format/.test((await why.locator('.why-claim').textContent()) ?? ''), 'with the claim');
+    check(((await why.locator('.verdict-word').textContent()) ?? '') === 'missing', 'the verdict');
+    const ev = (await why.locator('a.claim-evidence').first().getAttribute('href')) ?? '';
+    check(new RegExp(`^https://github\\.com/${HARBOUR}/blob/${harbourAudit.baseSha}/`).test(ev), `and the evidence, linked at the audited commit (${ev})`);
+
+    const add = jp.locator('.term-add[data-list="scope"]');
+    check(await within(page, 3000, async () => (await add.count()) === 1), 'its scope can be edited while it is proposed');
+    await add.fill('src/**');
+    await add.press('Enter');
+    await jp.locator('.terms-save').click();
+    check(await within(page, 4000, async () => (await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.scope.includes('src/**')), 'a glob added and saved is stored');
+    check(await within(page, 4000, async () => (await jp.locator('.job-globs .term-input').evaluateAll((is) => is.map((i) => (i as HTMLInputElement).value))).includes('src/**')), 'and shows in the list');
+    check(await within(page, 3000, async () => (await jp.locator('.terms-save').count()) === 0 || !(await jp.locator('.terms-save').isVisible())), 'the editor is quiet again once saved');
+    const stored = (await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.scope;
+    await add.fill('**/.env');
+    await add.press('Enter');
+    await jp.locator('.terms-save').click();
+    refusals++;
+    const want = scopeRefused('**/.env') ?? '';
+    check(await within(page, 4000, async () => ((await jp.locator('.terms-why').textContent()) ?? '').includes(want)), `a denied glob is refused with the engine's reason in place (${await jp.locator('.terms-why').textContent()})`);
+    check(JSON.stringify((await api<{ job: Job }>(page, `/api/jobs/${ubl?.id}`)).job.scope) === JSON.stringify(stored), 'and nothing changed');
+    await jp.locator('.job-issue').scrollIntoViewIfNeeded();
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(shots, 'job-scope.png') });
+    await jp.locator('.terms-discard').click();
+    check(await within(page, 3000, async () => !(await jp.locator('.job-globs .term-input').evaluateAll((is) => is.map((i) => (i as HTMLInputElement).value))).includes('**/.env')), 'Discard puts the stored scope back');
+
+    // Read only once it is under way.
+    const running = (await api<Job[]>(page, '/api/jobs?status=running'))[0];
+    if (running) {
+      await go(page, `#/jobs/${running.id}`);
+      check(await within(page, 5000, async () => (await jp.locator('.job-globs').count()) === 1 && (await jp.locator('.job-globs .term-input, .term-add').count()) === 0), 'a running job’s scope is read only');
+    }
+    check((await page.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload)) === true, 'nothing reloaded the page');
+    await page.keyboard.press('Escape');
+    await within(page, 3000, async () => (await page.evaluate(() => document.body.dataset.route)) === 'city');
+  } finally {
+    if (before) await page.setViewportSize(before);
+  }
+  return refusals;
+}

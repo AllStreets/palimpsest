@@ -11,7 +11,7 @@
  */
 import type { Audit, Finding, Job } from '../../shared/types.js';
 import { subscribe } from '../events.js';
-import { keyTaken, plain, postProposal, redact } from '../market/jobs.js';
+import { keyTaken, plain, postProposal, redact, reproposeJob } from '../market/jobs.js';
 import { audit as storedAudit, saveAudit } from './store.js';
 
 /** The line a body carries when a merged job's claim is still missing or broken. */
@@ -59,6 +59,23 @@ export function proposeFromAudit(a: Audit): Job[] {
   });
   if (changed) saveAudit({ ...current, findings });
   return posted;
+}
+
+/**
+ * His "Propose again" on a merged or dismissed proposal (or harness job):
+ * a new `proposed` job on the same terms and key (`reproposeJob`), and for a
+ * proposal its audit's finding names the new job, as replay learns it from
+ * `job.proposed`.
+ */
+export function proposeAgain(jobId: string): Job {
+  const next = reproposeJob(jobId);
+  const p = next.proposal;
+  const a = p ? storedAudit(p.auditId) : null;
+  if (a && p) {
+    const findings = a.findings.map((f) => (f.id === p.findingId && f.proposal ? { ...f, proposal: { ...f.proposal, jobId: next.id } } : f));
+    saveAudit({ ...a, findings });
+  }
+  return next;
 }
 
 /**

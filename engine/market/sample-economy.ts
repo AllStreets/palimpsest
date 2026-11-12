@@ -2383,8 +2383,12 @@ export interface EconomyClock {
  * in (20 wall seconds at speed 20): its findings carry every verdict, its
  * page is rendered, its session charged to the city, `audit.ended` recorded
  * and emitted, and its two proposals posted.
+ *
+ * With `runs: false`, the runs and the awarded jobs stay where the seed left
+ * them (the audit screens' checks end the kumo audit without moving the
+ * construction the city checks after them expect).
  */
-export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number; board?: boolean; audit?: boolean }): EconomyClock {
+export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number; board?: boolean; audit?: boolean; runs?: boolean }): EconomyClock {
   const S = 1000;
   const p = new Pipeline(rng('sample-clock'));
   const steps: Array<{ at: number; run: () => void | Promise<void> }> = [];
@@ -2514,7 +2518,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
   }
 
   // What is under way at the start, in script seconds.
-  const live = listRuns().filter((r) => r.outcome === null);
+  const live = opts.runs === false ? [] : listRuns().filter((r) => r.outcome === null);
   live.filter((r) => r.stage === 'working').forEach((r, i) => carry(r.id, 'working', i * 60, true));
   live.filter((r) => r.stage === 'inspecting').forEach((r, i) => carry(r.id, 'inspecting', 40 + i * 60, false));
   live.filter((r) => r.stage === 'waiting').forEach((r, i) => {
@@ -2536,7 +2540,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
       }
     });
   });
-  for (const [i, j] of listJobs({ status: 'awarded' }).entries()) {
+  for (const [i, j] of (opts.runs === false ? [] : listJobs({ status: 'awarded' })).entries()) {
     const t0 = 30 + i * 60;
     let runId = '';
     at(t0, () => {

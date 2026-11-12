@@ -1,4 +1,4 @@
-import type { Bid, FirmView, Job, JobDetail, Repo, RunView, Tier } from '../../../shared/types';
+import type { AuditView, Bid, FirmView, Job, JobDetail, Repo, RunView, Tier } from '../../../shared/types';
 import { TIER_VALUE } from '../../../shared/market-rules';
 import { api, ApiError, type EngineEvent } from '../api';
 import { placeHref } from '../router';
@@ -19,6 +19,8 @@ import {
   stageOf,
 } from './board';
 import { ago, button, checkRadio, createSheet, el, plural, rovingRadios, textButton } from './controls';
+import { tierPicker } from './audit';
+import { longDate } from './story';
 import './market.css';
 
 export interface JobsScreen {
@@ -96,6 +98,8 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
   const fresh = new Map<string, number>();
   const rows = new Map<string, { el: HTMLElement; key: string }>();
   let loaded = false;
+  /** The audits behind the proposals on the board, read once each (again when one ends), for the claim behind each proposal. */
+  const audits = new Map<string, AuditView | null>();
   let unlisten: (() => void) | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -155,6 +159,19 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
     const now = Date.now();
     await Promise.all([...jobs.values()].filter((j) => NEEDS_DETAIL.has(sectionOf(j, now) ?? '')).map((j) => readDetail(j.id)));
     if (focusId) reveal(focusId);
+  }
+
+  /** Reads an audit a proposal on the board came from; the board redraws once it is in. */
+  function readAudit(id: string, again = false): void {
+    if (audits.has(id) && !again) return;
+    if (!audits.has(id)) audits.set(id, null);
+    void api.audit(id).then(
+      (v) => {
+        audits.set(id, v);
+        render();
+      },
+      () => {},
+    );
   }
 
   const readRepos = (): void => {
@@ -256,6 +273,11 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
         const runId = data.runId ?? data.inspection?.runId;
         const jobId = data.jobId ?? (runId ? runJob.get(runId) : undefined);
         if (jobId) void readDetail(jobId);
+        return;
+      }
+      case 'audit.ended': {
+        const id = data.audit?.id ?? data.auditId;
+        if (typeof id === 'string' && audits.has(id)) readAudit(id, true);
         return;
       }
       case 'repo.halted':
@@ -595,17 +617,94 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
    * repo; a proposal of its own keeps its own row.
    */
   function proposedRows(list: Job[], live: Set<string>): HTMLElement[] {
+    // An audit's proposals stand together, under the audit that made them, one group per repo and audit.
+    const fromAudits = new Map<string, Job[]>();
     const groups = new Map<string, Job[]>();
     for (const j of list) {
+      if (j.source === 'proposal' && j.proposal?.auditId) {
+        const k = `${j.repo}|${j.proposal.auditId}`;
+        fromAudits.set(k, [...(fromAudits.get(k) ?? []), j]);
+        continue;
+      }
       const k = `${j.source}|${cleanText(j.title, 160)}`;
       groups.set(k, [...(groups.get(k) ?? []), j]);
     }
-    return [...groups.entries()].map(([k, js]) => {
+    const audited = [...fromAudits.entries()]
+      .sort(([a], [b]) => shortName(a.split('|')[0]).localeCompare(shortName(b.split('|')[0])))
+      .map(([k, js]) => {
+        live.add(`audit:${k}`);
+        return auditGroup(k, js);
+      });
+    const rest = [...groups.entries()].map(([k, js]) => {
       if (js.length === 1) return jobRow('proposed', js[0]);
       live.add(`group:${k}`);
       return proposalGroup(k, js);
     });
+    return [...audited, ...rest];
   }
+
+  /**
+   * One audit's proposals on one repo: the repo and the audit as the head
+   * (the audit's own page a click away), then a line per proposal with the
+   * claim behind it in quiet text, Accept, the tier and Dismiss.
+   */
+  function auditGroup(k: string, js: Job[]): HTMLElement {
+    const [repo, auditId] = k.split('|');
+    readAudit(auditId);
+    const audit = audits.get(auditId) ?? null;
+    const claimOf = (j: Job): string => cleanText(audit?.findings.find((f) => f.id === j.proposal?.findingId)?.claim ?? '', 300);
+    const id = `audit:${k}`;
+    const key = JSON.stringify([js, js.map((j) => [errors.get(j.id), busy.has(j.id), claimOf(j)]), audit?.endedAt ?? null, Math.floor(Date.now() / 60_000)]);
+    const cached = rows.get(id);
+    if (cached && cached.key === key) return cached.el;
+    const li = el('li', 'job-row proposed audit-group');
+    li.dataset.repo = repo;
+    li.dataset.audit = auditId;
+    const head = el('div', 'job-head audit-group-head');
+    head.append(el('span', 'job-title plain', shortName(repo)));
+    const link = el('a', 'audit-group-link', audit?.endedAt ? `README audit of ${longDate(audit.endedAt)}` : 'its README audit');
+    link.href = placeHref('audit', auditId);
+    link.title = `What ${repo}'s README promises against what its code does`;
+    head.append(link);
+    li.append(head);
+    li.append(el('div', 'job-line', `${plural(js.length, 'gap')} the city found between the README and the code, proposed ${ago(Math.min(...js.map((j) => Date.parse(j.postedAt))))}`));
+    const ul = el('ul', 'prop-lines audit-lines');
+    for (const j of js) {
+      const row = el('li', 'prop-line audit-line');
+      row.dataset.job = j.id;
+      if (busy.has(j.id)) row.setAttribute('aria-busy', 'true');
+      const main = el('div', 'audit-line-main');
+      const title = el('a', 'audit-line-title', cleanText(j.title, 160) || 'Untitled');
+      title.href = placeHref('job', j.id);
+      main.append(title);
+      const claim = claimOf(j);
+      if (claim) {
+        const p = el('p', 'prop-claim');
+        p.append(el('span', 'prop-claim-word', 'The README says '), el('q', 'prop-claim-text', claim));
+        main.append(p);
+      }
+      const act = el('div', 'audit-line-act');
+      const accept = button('job-accept', 'Accept', () => void act2(j.id, 'Accept', () => api.acceptJob(j.id)));
+      accept.setAttribute('aria-label', `Accept: ${cleanText(j.title, 120)}`);
+      const dismiss = textButton('job-dismiss', 'Dismiss', () => void act2(j.id, 'Dismiss', () => api.dismissJob(j.id)));
+      dismiss.setAttribute('aria-label', `Dismiss: ${cleanText(j.title, 120)}`);
+      act.append(accept, tierPicker(j.tier, `Tier for ${cleanText(j.title, 120)}`, (t) => void act2(j.id, 'Changing the tier', () => api.setJobTier(j.id, t)), busy.has(j.id)), dismiss);
+      row.append(main, act);
+      const err = errorLine(j.id);
+      if (err) row.append(err);
+      ul.append(row);
+    }
+    li.append(ul, el('p', 'job-note', 'No firm bids on any of them until you accept it.'));
+    const had = cached?.el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+    const hadJob = had?.closest<HTMLElement>('.prop-line')?.dataset.job;
+    const hadClass = had?.className ?? '';
+    const hadTier = had?.dataset.tier;
+    if (cached) cached.el.replaceWith(li);
+    rows.set(id, { el: li, key });
+    if (hadJob && hadClass) li.querySelector<HTMLElement>(`.prop-line[data-job="${CSS.escape(hadJob)}"] .${hadClass.split(' ').filter(Boolean).join('.')}${hadTier ? `[data-tier="${hadTier}"]` : ''}`)?.focus({ preventScroll: true });
+    return li;
+  }
+  const act2 = (key: string, what: string, call: () => Promise<unknown>): Promise<void> => act(key, what, call, takeJob);
 
   function proposalGroup(k: string, js: Job[]): HTMLElement {
     const key = JSON.stringify([js, js.map((j) => [errors.get(j.id), busy.has(j.id)]), Math.floor(Date.now() / 60_000)]);

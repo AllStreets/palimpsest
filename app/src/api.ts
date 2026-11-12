@@ -187,6 +187,8 @@ export const api = {
   repostJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/repost`),
   acceptJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/accept`),
   dismissJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/dismiss`),
+  /** A merged or dismissed proposal (or harness job) back on the board as a new proposed job; 409 with the reason otherwise. */
+  proposeAgain: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/propose-again`),
   /** Resumes one halted job (a waiting one goes back to waiting, any other to open). */
   resumeJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/resume`),
   setJobTier: (id: string, tier: Tier) => request<Job>('PATCH', `/api/jobs/${enc(id)}`, { tier }),

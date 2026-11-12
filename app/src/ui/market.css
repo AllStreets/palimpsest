@@ -3969,3 +3969,709 @@ body[data-route='repo'] {
 .district-note[hidden] {
   display: none;
 }
+
+/* ================================================================ the README against the code (Phase 3 Task 10) */
+
+body[data-route='audit'] {
+  --sheet-w: clamp(680px, 58vw, 980px);
+}
+
+/* A verdict: a drawn square in the margin and its word in small capitals. The five shapes differ in ink, not colour. */
+.verdict {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 9px;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.verdict-mark {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  overflow: visible;
+  transform: translateY(1px);
+}
+.verdict-mark .mark-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.verdict-mark .mark-line.thin {
+  stroke-width: 0.75;
+}
+.verdict-mark .mark-line.bold {
+  stroke-width: 1.5;
+}
+.verdict-mark .mark-fill {
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.1;
+  stroke-linejoin: round;
+}
+.verdict-word {
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+/* What holds is set quieter than what does not: the gaps are what he reads for. */
+.verdict.v-full {
+  color: var(--ink-3);
+}
+.verdict.v-struck {
+  color: #e7a48f;
+}
+
+/* ---------------------------------------------------------------- the block */
+
+.audit-lead {
+  margin-top: 16px;
+  max-width: 58ch;
+  font-family: var(--serif);
+  font-size: 19.5px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.audit-colophon {
+  margin-top: 6px;
+  max-width: 74ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.audit-sha {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.audit-sha:hover {
+  color: var(--ink);
+}
+.audit-stage-line {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  margin-top: 16px;
+}
+.audit-stage {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 16.5px;
+  color: var(--ink-2);
+}
+.audit-stage::before {
+  /* A lamp at the desk: someone is reading. */
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 11px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 6px rgba(229, 138, 74, 0.55);
+  transform: translateY(-2px);
+}
+.audit-block.status-waiting .audit-stage::before {
+  background: transparent;
+  box-shadow: none;
+  border: 1px solid var(--ink-3);
+  box-sizing: border-box;
+}
+.audit-stop {
+  font-size: 12.5px;
+}
+.audit-note,
+.audit-never {
+  margin-top: 8px;
+  max-width: 68ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-3);
+}
+.audit-never {
+  margin-top: 14px;
+}
+.audit-block + .audit-block {
+  margin-top: 22px;
+  padding-top: 4px;
+  border-top: 1px solid var(--rule);
+}
+
+/* The claims, in the README's order: the verdict in the margin, then the claim and what shows it. */
+.audit-claims {
+  list-style: none;
+  margin-top: 20px;
+  border-top: 1px solid var(--rule);
+}
+.claim {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  column-gap: 22px;
+  align-items: baseline;
+  padding: 12px 0 13px;
+  border-bottom: 1px solid var(--rule);
+}
+.claim-main {
+  min-width: 0;
+}
+.claim-text {
+  max-width: 64ch;
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1.38;
+  color: var(--ink);
+}
+.claim.v-full .claim-text {
+  color: var(--ink-2);
+}
+.claim-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 14px;
+  row-gap: 2px;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.claim-tested.yes {
+  color: var(--ink-2);
+}
+.claim-refs {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.claim-evidence,
+.claim-ref {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+a.claim-evidence {
+  text-decoration: underline;
+  text-decoration-color: rgba(185, 140, 90, 0.5);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+a.claim-evidence:hover {
+  color: var(--ink);
+  text-decoration-color: var(--bronze);
+}
+a.claim-evidence:focus-visible,
+.prop-title:focus-visible,
+.audit-page-link:focus-visible,
+.audit-group-link:focus-visible,
+.audit-line-title:focus-visible,
+.why-audit-link:focus-visible,
+.repo-audited:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.claim-ref.unfound {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-color: rgba(236, 230, 218, 0.35);
+}
+.claim-unfound {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.claim-source {
+  margin-left: auto;
+  color: rgba(236, 230, 218, 0.3);
+  font-variant-numeric: tabular-nums;
+}
+.claim-note {
+  margin-top: 5px;
+  max-width: 66ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* The job a gap proposes, hung from the claim on a hairline. */
+.claim-proposal {
+  margin-top: 10px;
+  padding: 1px 0 1px 14px;
+  border-left: 1px solid var(--rule-strong);
+}
+.claim-proposal[data-state='proposed'] {
+  border-left-color: var(--bronze);
+}
+.claim-proposal[aria-busy='true'] .btn,
+.claim-proposal[aria-busy='true'] .textbtn,
+.claim-proposal[aria-busy='true'] .prop-tier {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.prop-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.prop-label {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.prop-title {
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--ink);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+a.prop-title:hover {
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.35);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.claim-proposal[data-state='withdrawn'] .prop-title {
+  color: var(--ink-3);
+}
+.prop-act {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 16px;
+  row-gap: 6px;
+  margin-top: 7px;
+}
+.prop-act .btn {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+.prop-act .textbtn {
+  font-size: 12.5px;
+}
+.prop-word {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.claim-proposal[data-state='proposed'] .prop-word {
+  flex-basis: 100%;
+  order: 9;
+}
+
+/* Three tiers as a ruled choice: the chosen one in ink over a bronze hairline, each with what the city would pay. */
+.prop-tier {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+}
+.prop-tier-choice {
+  all: unset;
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 6px 4px;
+  font-size: 12px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.prop-tier-choice:hover {
+  color: var(--ink-2);
+}
+.prop-tier-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(236, 230, 218, 0.3);
+}
+.prop-tier-choice[aria-checked='true'] {
+  color: var(--ink);
+}
+.prop-tier-choice[aria-checked='true'] .prop-tier-value {
+  color: var(--ink-2);
+}
+.prop-tier-choice[aria-checked='true']::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 0;
+  height: 1px;
+  background: var(--bronze);
+}
+.prop-tier-choice:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* ---------------------------------------------------------------- on the district page */
+
+.audit-page-link {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.audit-page-link:hover {
+  color: var(--ink);
+}
+.audit-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 18px;
+  row-gap: 6px;
+  margin-top: 18px;
+}
+.audit-held {
+  max-width: 62ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.audit-held.quiet {
+  color: var(--ink-3);
+}
+.audit-held.err {
+  color: var(--err);
+}
+.audit-past {
+  margin-top: 24px;
+}
+.audit-past-head {
+  font-weight: 400;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-2);
+}
+.audit-past-list {
+  list-style: none;
+  margin-top: 6px;
+  border-top: 1px solid var(--rule);
+}
+.audit-past-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12.5px;
+}
+.audit-past-link {
+  min-width: 150px;
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.audit-past-link:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.audit-past-what {
+  color: var(--ink-3);
+}
+.djob-again {
+  align-self: center;
+  font-size: 12.5px;
+}
+
+/* ---------------------------------------------------------------- on the board */
+
+.audit-group-head .job-title {
+  font-style: italic;
+}
+.audit-group-link {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.audit-group-link:hover {
+  color: var(--ink);
+}
+.prop-line.audit-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 28px;
+  align-items: start;
+  padding: 11px 0 12px;
+}
+.audit-line-title {
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--ink);
+  text-decoration: none;
+}
+.audit-line-title:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--ink-3);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.prop-claim {
+  margin-top: 4px;
+  max-width: 60ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.prop-claim-text {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  quotes: '\201C' '\201D';
+}
+.audit-line-act {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 1px;
+}
+.audit-line-act .btn {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+.audit-line-act .textbtn {
+  font-size: 12.5px;
+}
+.audit-line .job-error {
+  grid-column: 1 / -1;
+}
+.prop-line.audit-line[aria-busy='true'] .prop-tier {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------- on the job page */
+
+.why-audit-link {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.why-claim {
+  margin-top: 16px;
+  max-width: 62ch;
+  padding-left: 16px;
+  border-left: 1px solid var(--bronze);
+}
+.why-claim-text {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 19px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.why-claim-source {
+  display: block;
+  margin-top: 4px;
+  font-style: normal;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.why-verdict {
+  margin-top: 14px;
+  max-width: 70ch;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.why-verdict .verdict {
+  margin-right: 4px;
+}
+.why-evidence {
+  list-style: none;
+  margin-top: 8px;
+}
+.why-ev {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+  padding: 3px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.why-ev-note {
+  color: var(--ink-3);
+}
+
+/* The scope and the checklist, editable in place while the job waits: the rows stay rows, a hairline shows only under the one in hand. */
+.job-terms.editable .term-input {
+  all: unset;
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 2px;
+  border-bottom: 1px solid transparent;
+  font: inherit;
+  color: inherit;
+  cursor: text;
+}
+.job-terms.editable .job-glob .term-input {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.job-terms.editable .term-input:hover {
+  border-bottom-color: var(--rule-strong);
+}
+.job-terms.editable .term-input:focus {
+  border-bottom-color: var(--bronze);
+}
+.job-terms.editable .job-glob,
+.job-terms.editable .job-checklist li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 1px 0;
+}
+.job-terms.editable .job-checklist .job-box {
+  transform: translateY(0);
+}
+.term-remove {
+  flex-shrink: 0;
+  font-size: 11.5px !important;
+  color: var(--ink-3) !important;
+  opacity: 0;
+}
+li:hover > .term-remove,
+li:focus-within > .term-remove,
+.term-remove:focus-visible {
+  opacity: 1;
+}
+.term-hint {
+  flex-shrink: 0;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.job-terms.editable li.refused .term-input {
+  color: var(--err);
+  border-bottom-color: var(--err);
+}
+.term-add-row {
+  margin-top: 2px;
+}
+.job-terms.editable .term-add {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  height: 26px;
+  padding: 0 2px;
+  border-bottom: 1px dotted rgba(236, 230, 218, 0.16);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: text;
+}
+.job-terms.editable .term-add.mono-field {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.job-terms.editable .term-add::placeholder {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--ink-3);
+}
+.job-terms.editable .term-add:hover {
+  border-bottom-color: var(--rule-strong);
+}
+.job-terms.editable .term-add:focus {
+  border-bottom: 1px solid var(--bronze);
+}
+.job-terms.editable .job-checklist .term-add-row,
+.job-terms.editable .job-term:last-of-type .term-add {
+  padding-left: 0;
+}
+.terms-foot {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 16px;
+  row-gap: 6px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+.terms-foot[hidden],
+.terms-discard[hidden] {
+  display: none;
+}
+.terms-foot .btn {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+.terms-discard {
+  font-size: 12.5px;
+}
+.terms-why {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--err);
+  overflow-wrap: anywhere;
+}
+.terms-why:empty {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- on Repos */
+
+.repo-audited {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.16);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.repo-audited:hover {
+  color: var(--ink-2);
+}
+.job-again {
+  margin-top: 10px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14.5px;
+  color: var(--amber);
+}
+.why-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+.job-terms.editable textarea.term-line {
+  resize: none;
+  height: auto;
+  min-height: 22px;
+  padding: 2px 2px 3px;
+  line-height: 1.45;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow: hidden;
+}

@@ -14,6 +14,7 @@ import { join, sep } from 'node:path';
 
 import { audit as storedAudit, listAudits } from '../audit/store.js';
 import { killAudit, queueAudit } from '../audit/run.js';
+import { proposeAgain } from '../audit/proposals.js';
 import { actOn, briefData, openBrief } from '../brief.js';
 import { LEGAL_MOVES, MAX_ATTEMPTS } from '../../shared/market-rules.js';
 import type {
@@ -561,6 +562,15 @@ export async function handleMarketApi(
       if (scope !== undefined || acceptance !== undefined) out = moving(() => setScope(j.id, { scope, acceptance }));
       if (tier !== undefined) out = moving(() => setTier(j.id, tier));
       return send(200, out);
+    }
+  }
+  if ((m = pathname.match(/^\/api\/jobs\/([^/]+)\/propose-again$/)) && method === 'POST') {
+    const j = mustJob(m[1]);
+    try {
+      return send(200, proposeAgain(j.id));
+    } catch (err) {
+      if (err instanceof Error && /cannot be proposed again/.test(err.message)) throw new HttpError(409, { error: err.message });
+      throw err;
     }
   }
   if ((m = pathname.match(/^\/api\/jobs\/([^/]+)\/(withdraw|repost|accept|dismiss|resume)$/)) && method === 'POST') {

@@ -167,6 +167,22 @@ test('a proposed job accepts into open, dismisses to withdrawn, and a tier chang
   assert.equal((await call('PATCH', `/api/jobs/${bidding.id}`, { tier: 'low' })).status, 409, 'no tier change once bidding');
 });
 
+test('Propose again answers a dismissed proposal with a new proposed job, and 409 with the reason otherwise', async () => {
+  const repo = repoOf();
+  const h = proposeHarnessJob(repo);
+  assert.equal((await call('POST', `/api/jobs/${h.id}/propose-again`)).status, 409, 'a proposed job is not proposed again');
+  const refused = await call('POST', `/api/jobs/${h.id}/propose-again`);
+  assert.match(refused.json.error, /cannot be proposed again/);
+  assert.equal((await call('POST', `/api/jobs/${h.id}/dismiss`)).status, 200);
+  const again = await call('POST', `/api/jobs/${h.id}/propose-again`);
+  assert.equal(again.status, 200);
+  assert.equal(again.json.status, 'proposed');
+  assert.notEqual(again.json.id, h.id);
+  assert.equal(job(again.json.id)?.key, h.key);
+  assert.equal((await call('POST', `/api/jobs/${h.id}/propose-again`)).status, 409, 'once: the new job holds the key');
+  assert.equal((await call('POST', '/api/jobs/job-nope/propose-again')).status, 404);
+});
+
 test('job detail carries bids, award, sat-out agents and ledger', async () => {
   repoOf();
   const winner = addAgent('a1', 'alpha', 'claude:sonnet');

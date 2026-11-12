@@ -1,11 +1,14 @@
 import { legalMove, MAX_ATTEMPTS, TIER_VALUE } from '../../../shared/market-rules';
-import type { Bid, FirmView, Job, JobDetail, LedgerRow, RunView, Tier } from '../../../shared/types';
-import { api, type EngineEvent } from '../api';
+import type { AuditView, Bid, FirmView, Job, JobDetail, LedgerRow, RunView, Tier } from '../../../shared/types';
+import { api, ApiError, type EngineEvent } from '../api';
 import { placeHref } from '../router';
 import { bidOrder, cleanText, closesIn, githubUrl, money, pct, progressWords, stageOf } from './board';
 import { ago, button, checkRadio, el, plural, rovingRadios, textButton } from './controls';
 import { acceptanceTicks, awardRounds, issueBlocks, ledgerTrail, type Names, type Round, verdict } from './detail';
 import { blockNodes, coalesce, detailSheet, keyedSlot, namesOf, outLink, pageLink, refusal, secHead, setTrail } from './pages';
+import { evidenceRef, verdictOf } from './audit';
+import { VERDICT_MEANING, whatToBuild } from './audit-words';
+import { longDate } from './story';
 import './market.css';
 
 export interface JobPage {
@@ -91,7 +94,9 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
   body.append(trouble);
   const slots = {
     head: keyedSlot(sheet.actions),
+    why: keyedSlot(body),
     issue: keyedSlot(body),
+    terms: keyedSlot(body),
     bids: keyedSlot(body),
     work: keyedSlot(body),
     floor: keyedSlot(body),
@@ -100,6 +105,8 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
 
   let id: string | null = null;
   let detail: JobDetail | null = null;
+  /** The audit a proposal came from, for the claim behind it. */
+  let audit: AuditView | null = null;
   let firms: FirmView[] = [];
   let names: Names = namesOf([]);
   let unlisten: (() => void) | null = null;
@@ -116,8 +123,11 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     if (!want) return;
     try {
       const [d, fs] = await Promise.all([api.job(want), firms.length ? Promise.resolve(firms) : api.firms().catch(() => [] as FirmView[])]);
+      const auditId = d.job.proposal?.auditId ?? null;
+      const a = auditId ? await api.audit(auditId).catch(() => (audit?.id === auditId ? audit : null)) : null;
       if (want !== id) return;
       detail = d;
+      audit = a;
       firms = fs;
       names = namesOf(fs);
       trouble.hidden = true;
@@ -257,13 +267,66 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     const sec = el('section', 'detail-sec job-issue');
     const url = githubUrl(j.url);
     const aside = j.source === 'issue' && j.issue !== null ? (url ? outLink('job-issue-link', `Issue #${j.issue} on GitHub`, url) : el('span', 'job-issue-link', `Issue #${j.issue}`)) : j.source === 'manual' ? 'posted by you' : 'proposed by the city';
-    sec.append(secHead('The issue', aside));
-    const blocks = issueBlocks(j.body);
+    // A proposal's body opens with its claim and evidence, which "Why the city proposes this" sets above; here, what to build.
+    const build = j.proposal ? whatToBuild(j.body) : null;
+    sec.append(secHead(build ? 'What to build' : 'The issue', aside));
+    if (build?.again) sec.append(el('p', 'job-again', 'Proposed again: the merge did not close it.'));
+    const blocks = issueBlocks(build ? build.text : j.body);
     const prose = el('div', 'md');
     if (blocks.length) prose.append(...blockNodes(blocks));
     else prose.append(el('p', 'md-p quiet', 'No details beyond the title.'));
     sec.append(prose);
+    return sec;
+  }
 
+  // ---------------------------------------------------------------- why the city proposes it
+
+  function whySection(j: Job, a: AuditView | null): HTMLElement | null {
+    const p = j.proposal;
+    if (!p) return null;
+    const sec = el('section', 'detail-sec job-why');
+    const still = j.status === 'proposed' || j.status === 'open';
+    const link = el('a', 'why-audit-link', a ? `README audit of ${longDate(a.endedAt ?? a.startedAt)}` : 'its README audit');
+    link.href = placeHref('audit', p.auditId);
+    sec.append(secHead(still ? 'Why the city proposes this' : 'Why the city proposed this', link));
+    const f = a?.findings.find((x) => x.id === p.findingId);
+    if (!a || !f) {
+      sec.append(el('p', 'detail-quiet', a ? 'The finding behind it is no longer in its audit.' : 'The audit behind it could not be read.'));
+      return sec;
+    }
+    const claim = el('blockquote', 'why-claim');
+    claim.append(el('p', 'why-claim-text', cleanText(f.claim, 400)));
+    const where = f.source?.file ? `${cleanText(f.source.file, 120)}${f.source.line ? `, line ${f.source.line}` : ''}` : 'the README';
+    claim.append(el('cite', 'why-claim-source', `${cleanText(j.repo, 120)}, ${where}`));
+    sec.append(claim);
+    const said = el('p', 'why-verdict');
+    const meaning = VERDICT_MEANING[f.verdict];
+    said.append(verdictOf(f.verdict), el('span', 'why-verdict-text', `${meaning.charAt(0).toUpperCase()}${meaning.slice(1)}${f.tested ? '' : ', and no test covers it'}.`));
+    sec.append(said);
+    const ev = el('ul', 'why-evidence');
+    for (const e of f.evidence.slice(0, 3)) {
+      const li = el('li', `why-ev${e.verified ? '' : ' unfound'}`);
+      li.append(evidenceRef(j.repo, a.baseSha, e));
+      const note = cleanText(e.note, 300);
+      if (note) li.append(el('span', 'why-ev-note', note.replace(/[.!?]?$/, '.')));
+      if (!e.verified) li.append(el('span', 'why-ev-note', 'Not found at the commit.'));
+      ev.append(li);
+    }
+    sec.append(ev);
+    return sec;
+  }
+
+  // ---------------------------------------------------------------- scope and acceptance
+
+  /**
+   * The scope and the checklist. While the job is proposed or open each is
+   * a list he can edit in place, one glob or line a row; Save sends both
+   * through the engine, which refuses a denied glob with its reason, shown
+   * here as it says it. Read only once bidding opens.
+   */
+  function termsSection(j: Job): HTMLElement {
+    const editable = j.status === 'proposed' || j.status === 'open';
+    if (editable) return termsEditor(j);
     const terms = el('div', 'job-terms');
     const scope = el('div', 'job-term');
     scope.append(el('h3', 'job-term-head', 'Scope'), el('p', 'job-term-note', 'The files the change may touch. Anything else fails the scope check.'));
@@ -282,8 +345,168 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     }
     done.append(list);
     terms.append(scope, done);
-    sec.append(terms);
-    return sec;
+    return terms;
+  }
+
+  function termsEditor(j: Job): HTMLElement {
+    const terms = el('div', 'job-terms editable');
+    type Kind = 'scope' | 'acceptance';
+    const saved: Record<Kind, string[]> = { scope: j.scope.length ? [...j.scope] : ['**'], acceptance: [...j.acceptance] };
+    const lists: Record<Kind, string[]> = { scope: [...saved.scope], acceptance: [...saved.acceptance] };
+    const uls = {} as Record<Kind, HTMLUListElement>;
+    const adds = {} as Record<Kind, HTMLInputElement>;
+    const foot = el('div', 'terms-foot');
+    const save = button('terms-save', 'Save', () => void commit());
+    const discard = textButton('terms-discard', 'Discard', () => {
+      lists.scope = [...saved.scope];
+      lists.acceptance = [...saved.acceptance];
+      why.textContent = '';
+      draw('scope');
+      draw('acceptance');
+      sync();
+    });
+    const why = el('p', 'terms-why');
+    why.setAttribute('aria-live', 'polite');
+    foot.append(save, discard, why);
+    let saving = false;
+
+    const clean = (xs: string[]): string[] => xs.map((x) => x.trim()).filter(Boolean);
+    const fit = (t: HTMLTextAreaElement): void => {
+      t.style.height = 'auto';
+      t.style.height = `${t.scrollHeight}px`;
+    };
+    const dirty = (): boolean => JSON.stringify(clean(lists.scope)) !== JSON.stringify(saved.scope) || JSON.stringify(clean(lists.acceptance)) !== JSON.stringify(saved.acceptance);
+    function sync(): void {
+      const d = dirty();
+      foot.hidden = !d && !why.textContent;
+      save.hidden = !d;
+      discard.hidden = !d;
+      save.disabled = saving;
+    }
+
+    function draw(kind: Kind): void {
+      const ul = uls[kind];
+      ul.replaceChildren();
+      lists[kind].forEach((v, i) => {
+        const li = el('li', kind === 'scope' ? 'job-glob' : 'job-line-item');
+        if (kind === 'acceptance') {
+          const box = el('i', 'job-box');
+          box.setAttribute('aria-hidden', 'true');
+          li.append(box);
+        }
+        // A glob is one short line; a line of what done means wraps, and grows with what he writes.
+        const input = kind === 'scope' ? el('input', 'term-input mono-field') : el('textarea', 'term-input term-line');
+        if (input instanceof HTMLTextAreaElement) {
+          input.rows = 1;
+          requestAnimationFrame(() => fit(input));
+        }
+        input.value = v;
+        input.dataset.list = kind;
+        input.spellcheck = kind === 'acceptance';
+        input.autocomplete = 'off';
+        input.maxLength = kind === 'scope' ? 200 : 400;
+        input.setAttribute('aria-label', kind === 'scope' ? `Glob ${i + 1} of the scope` : `Line ${i + 1} of what done means`);
+        input.addEventListener('input', () => {
+          if (input instanceof HTMLTextAreaElement) {
+            input.value = input.value.replace(/\n/g, ' ');
+            fit(input);
+          }
+          lists[kind][i] = input.value;
+          li.classList.remove('refused');
+          input.removeAttribute('aria-invalid');
+          sync();
+        });
+        input.addEventListener('keydown', (e: Event) => {
+          if ((e as KeyboardEvent).key === 'Enter') {
+            e.preventDefault();
+            if (dirty()) void commit();
+          }
+        });
+        const x = textButton('term-remove', 'Remove', () => {
+          lists[kind].splice(i, 1);
+          draw(kind);
+          sync();
+          adds[kind].focus({ preventScroll: true });
+        });
+        x.setAttribute('aria-label', `Remove ${v || 'this line'}`);
+        li.append(input, x);
+        if (kind === 'scope' && v.trim() === '**') li.append(el('span', 'term-hint', 'the whole repo'));
+        ul.append(li);
+      });
+    }
+
+    function column(kind: Kind, title: string, note: string, placeholder: string): HTMLElement {
+      const col = el('div', 'job-term');
+      col.append(el('h3', 'job-term-head', title), el('p', 'job-term-note', note));
+      const ul = el('ul', kind === 'scope' ? 'job-globs' : 'job-checklist');
+      ul.setAttribute('aria-label', title);
+      uls[kind] = ul;
+      const add = el('input', `term-add${kind === 'scope' ? ' mono-field' : ''}`);
+      add.dataset.list = kind;
+      add.placeholder = placeholder;
+      add.autocomplete = 'off';
+      add.spellcheck = kind === 'acceptance';
+      add.maxLength = kind === 'scope' ? 200 : 400;
+      add.setAttribute('aria-label', kind === 'scope' ? 'Add a glob to the scope' : 'Add a line to what done means');
+      add.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const v = add.value.trim();
+          if (!v) {
+            if (dirty()) void commit();
+            return;
+          }
+          if (!lists[kind].map((x) => x.trim()).includes(v)) lists[kind].push(v);
+          add.value = '';
+          draw(kind);
+          sync();
+        } else if (e.key === 'Escape' && add.value) {
+          e.preventDefault();
+          e.stopPropagation();
+          add.value = '';
+        }
+      });
+      adds[kind] = add;
+      const addRow = el('div', 'term-add-row');
+      addRow.append(add);
+      col.append(ul, addRow);
+      draw(kind);
+      return col;
+    }
+
+    async function commit(): Promise<void> {
+      if (saving || !dirty()) return;
+      saving = true;
+      why.textContent = '';
+      sync();
+      try {
+        const next = await api.setJobScope(j.id, { scope: clean(lists.scope), acceptance: clean(lists.acceptance) });
+        if (detail && detail.job.id === next.id) detail = { ...detail, job: next };
+        saving = false;
+        render();
+      } catch (err) {
+        saving = false;
+        const msg = err instanceof Error ? err.message : String(err);
+        // The engine's reason, as it says it: "scope refused: **/.env is denied by .env".
+        const reason = msg.replace(/^scope refused: /, '');
+        why.textContent = err instanceof ApiError && err.status < 500 ? `Not saved: ${reason}` : `Saving failed: ${msg}`;
+        for (const li of uls.scope.querySelectorAll<HTMLElement>('li')) {
+          const input = li.querySelector<HTMLInputElement>('input');
+          const bad = !!input && !!input.value.trim() && reason.startsWith(`${input.value.trim()} `);
+          li.classList.toggle('refused', bad);
+          if (bad) input!.setAttribute('aria-invalid', 'true');
+        }
+        sync();
+      }
+    }
+
+    terms.append(
+      column('scope', 'Scope', 'The files the change may touch, one glob a row. Anything else fails the scope check. It can change until bidding opens.', 'Add a glob, such as src/export/**'),
+      column('acceptance', 'Done when', 'What the reviewer checks the change against, one line a row.', 'Add a line'),
+    );
+    terms.append(foot);
+    sync();
+    return terms;
   }
 
   // ---------------------------------------------------------------- the bids
@@ -519,7 +742,9 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     sheet.sub.textContent = `${standing(j, run, names)} Worth ${money(j.value)} credits, ${j.tier} tier.`;
     const minute = Math.floor(Date.now() / 60_000);
     slots.head(JSON.stringify([j.status, j.tier, j.attempts, j.haltedFrom, asking, busy, error, liveRun()?.id ?? null]), () => headActions(j));
-    slots.issue(JSON.stringify([j.title, j.body, j.scope, j.acceptance, j.url, j.issue]), () => issueSection(j));
+    slots.why(JSON.stringify([j.proposal ?? null, j.status === 'proposed' || j.status === 'open', audit?.id ?? null, audit?.findings.find((f) => f.id === j.proposal?.findingId) ?? null]), () => whySection(j, audit));
+    slots.issue(JSON.stringify([j.title, j.body, j.url, j.issue, j.source]), () => issueSection(j));
+    slots.terms(JSON.stringify([j.id, j.status === 'proposed' || j.status === 'open', j.scope, j.acceptance, j.status === 'proposed' || j.status === 'open' ? '' : j.body]), () => termsSection(j));
     slots.bids(JSON.stringify([j.status, j.bidsCloseAt, d.bids, d.satOut, d.ledger.filter((r) => r.kind === 'job.awarded' || r.kind === 'bid.placed').length, d.runs.map((r) => r.outcome), firms.length]), () => bidsSection(j, d));
     const clockEl = body.querySelector<HTMLElement>('.job-clock');
     if (clockEl) clockEl.textContent = closesIn(j.bidsCloseAt, Date.now());
@@ -534,6 +759,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
       id = next;
       if (changed) {
         detail = null;
+        audit = null;
         error = '';
         asking = null;
         sheet.title.textContent = '';

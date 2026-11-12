@@ -1,12 +1,14 @@
 import { pushModeRefusal, REGISTRY_HOSTS, TIER_LABELS } from '../../../shared/market-rules';
-import type { District, FirmView, Floor, Job, JobStatus, Repo, RepoChecks } from '../../../shared/types';
+import type { Audit, AuditView, District, FirmView, Floor, Job, JobStatus, Repo, RepoChecks, Tier } from '../../../shared/types';
 import { api, ApiError, type EngineEvent, type RepoPatchBody } from '../api';
 import { placeHref } from '../router';
 import { cleanText, money } from './board';
 import { ago, button, checkRadio, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton, type Switch } from './controls';
 import { ROOT_NAMES } from './inspector';
 import { isRoute, sourceOf } from './district-words';
-import { coalesce, detailSheet, keyedSlot, outLink, secHead, setTrail } from './pages';
+import { coalesce, detailSheet, keyedSlot, namesOf, outLink, refusal, secHead, setTrail } from './pages';
+import { renderAuditBlock, touchesAudit, type AuditBlockOptions } from './audit';
+import { auditHeld, canProposeAgain, OPEN_STATUSES } from './audit-words';
 import { marketNote, PUSH_NOTE } from './repos';
 import { longDate, shortDate } from './story';
 import './market.css';
@@ -86,6 +88,7 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     actions: keyedSlot(sheet.actions),
     network: keyedSlot(body),
     halt: keyedSlot(body),
+    audit: keyedSlot(body),
     jobs: keyedSlot(body),
     floors: keyedSlot(body),
   };
@@ -97,7 +100,15 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
   let jobs: Job[] = [];
   let district: District | null = null;
   let firms: FirmView[] = [];
+  /** Its audits, newest first, and the newest that ended, read whole. */
+  let audits: Array<Omit<Audit, 'markdownPath'>> = [];
+  let shownAudit: AuditView | null = null;
+  /** An audit waiting or under way, shown above the last one that ended. */
+  let liveAudit: AuditView | null = null;
   let unlisten: (() => void) | null = null;
+  /** Proposals and audits with a request in flight here, and the engine's refusal of one, shown in place. */
+  const auditBusy = new Set<string>();
+  const auditErrors = new Map<string, string>();
   /** The last refusal or failure of a change made here, shown beside what was changed. */
   const why = new Map<string, string>();
 
@@ -105,8 +116,18 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     const want = fullName;
     if (!want) return;
     try {
-      const [repos, js, ds, fs] = await Promise.all([api.repos(), api.jobs({ repo: want }), api.city().catch(() => [] as District[]), api.firms().catch(() => firms)]);
+      const [repos, js, ds, fs, as] = await Promise.all([api.repos(), api.jobs({ repo: want }), api.city().catch(() => [] as District[]), api.firms().catch(() => firms), api.audits(want).catch(() => audits)]);
       if (want !== fullName) return;
+      const ended = as.find((a) => !OPEN_STATUSES.has(a.status));
+      const open = as.find((a) => OPEN_STATUSES.has(a.status));
+      const showId = open?.id ?? ended?.id ?? null;
+      const v = showId ? await api.audit(showId).catch(() => null) : null;
+      // An open audit shows where it stands above the newest that ended.
+      const last = open && ended ? await api.audit(ended.id).catch(() => null) : null;
+      if (want !== fullName) return;
+      audits = as;
+      shownAudit = last ?? v;
+      liveAudit = open && v?.id === open.id ? v : null;
       repo = repos.find((r) => r.fullName === want) ?? null;
       jobs = js;
       district = ds.find((d) => d.repo === want) ?? null;
@@ -126,7 +147,8 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     if (e.type === 'engine.reconnected') return read();
     const d = (e.data ?? {}) as Record<string, any>;
     const repoName = d.repo?.fullName ?? (typeof d.repo === 'string' ? d.repo : null) ?? d.job?.repo ?? d.run?.repo ?? null;
-    if (repoName === fullName || e.type.startsWith('floor.') || e.type === 'merge.detected') read();
+    if (repoName === fullName || e.type.startsWith('floor.') || e.type === 'merge.detected') return read();
+    if (e.type.startsWith('audit.') && audits.some((a) => touchesAudit(e, a.id, new Set()))) read();
   }
 
   // ---------------------------------------------------------------- changes
@@ -585,7 +607,13 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
         const a = button('djob-accept', 'Accept', () => void accept(j, a));
         a.setAttribute('aria-label', `Accept the harness job: ${cleanText(j.title, 120)}`);
         li.append(a);
+      } else if (j.source === 'harness' && canProposeAgain(j, jobs)) {
+        const again = textButton('djob-again', 'Propose again', () => void auditAct(j.id, 'Propose again', () => api.proposeAgain(j.id)));
+        again.setAttribute('aria-label', `Propose the harness job again: ${cleanText(j.title, 120)}`);
+        li.append(again);
       } else li.append(el('span', 'djob-side'));
+      const err = auditErrors.get(j.id);
+      if (err && j.source === 'harness') main.append(el('p', 'job-error', err));
       list.append(li);
     }
     sec.append(list);
@@ -608,6 +636,102 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
       trouble.hidden = false;
     }
     read();
+  }
+
+  // ---------------------------------------------------------------- the README against the code
+
+  async function auditAct(key: string, what: string, call: () => Promise<unknown>): Promise<void> {
+    if (auditBusy.has(key)) return;
+    auditBusy.add(key);
+    auditErrors.delete(key);
+    render();
+    try {
+      await call();
+    } catch (err) {
+      auditErrors.set(key, refusal(what, err));
+    } finally {
+      auditBusy.delete(key);
+      render();
+      read();
+    }
+  }
+
+  const auditActions: AuditBlockOptions = {
+    onAccept: (j) => void auditAct(j, 'Accept', () => api.acceptJob(j)),
+    onDismiss: (j) => void auditAct(j, 'Dismiss', () => api.dismissJob(j)),
+    onTier: (j, t: Tier) => void auditAct(j, 'Changing the tier', () => api.setJobTier(j, t)),
+    onProposeAgain: (j) => void auditAct(j, 'Propose again', () => api.proposeAgain(j)),
+    onStop: (a) => void auditAct(a, 'Stop', () => api.killAudit(a)),
+    busy: auditBusy,
+    errors: auditErrors,
+  };
+
+  async function startAudit(): Promise<void> {
+    if (!fullName || auditBusy.has('start')) return;
+    const [owner, name] = fullName.split('/');
+    auditBusy.add('start');
+    auditErrors.delete('start');
+    render();
+    try {
+      await api.startAudit(owner, name ?? '');
+    } catch (err) {
+      auditErrors.set('start', err instanceof ApiError && err.status === 409 ? `${err.message.charAt(0).toUpperCase()}${err.message.slice(1).replace(/[.!?]?$/, '.')}` : refusal('Audit', err));
+    } finally {
+      auditBusy.delete('start');
+      read();
+    }
+  }
+
+  function auditSection(): HTMLElement {
+    const sec = el('section', 'detail-sec district-sec district-audit');
+    const v = shownAudit;
+    let aside: HTMLElement | string = 'never audited';
+    if (v && !OPEN_STATUSES.has(v.status)) {
+      const a = el('a', 'audit-page-link', `audit of ${longDate(v.endedAt ?? v.startedAt)}`);
+      a.href = placeHref('audit', v.id);
+      aside = a;
+    } else if (liveAudit) aside = 'an audit is under way';
+    sec.append(secHead('README against the code', aside));
+    if (liveAudit) sec.append(renderAuditBlock(liveAudit, namesOf(firms), auditActions));
+    if (v && v.id !== liveAudit?.id) sec.append(renderAuditBlock(v, namesOf(firms), auditActions));
+    if (!v && !liveAudit) {
+      sec.append(el('p', 'audit-never', 'Never audited. An audit reads the README at the head commit, marks each claim real, partial, missing, stubbed or broken with the file and line that show it, and proposes a job for each gap. Nothing is posted to the market until you accept it.'));
+    }
+
+    // Audit the README: held, with the reason, while one waits or reads.
+    const held = auditHeld(audits);
+    const foot = el('div', 'audit-foot');
+    const start = button('audit-start', 'Audit the README', () => void startAudit());
+    start.disabled = held !== null || auditBusy.has('start');
+    const said = el('p', 'audit-held');
+    said.id = `audit-held-${fullName?.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+    said.setAttribute('aria-live', 'polite');
+    said.textContent = auditErrors.get('start') ?? held ?? 'Read on claude:sonnet when the caps allow, else the largest local coder; what it spends is charged to the city.';
+    said.classList.toggle('err', auditErrors.has('start'));
+    said.classList.toggle('quiet', !held && !auditErrors.has('start'));
+    start.setAttribute('aria-describedby', said.id);
+    foot.append(start, said);
+    sec.append(foot);
+
+    // The audits before, each on its own page.
+    const past = audits.filter((a) => a.id !== v?.id && a.id !== liveAudit?.id);
+    if (past.length) {
+      const box = el('div', 'audit-past');
+      box.append(el('h3', 'audit-past-head', 'Earlier audits'));
+      const ol = el('ol', 'audit-past-list');
+      for (const a of past.slice(0, 8)) {
+        const li = el('li', `audit-past-row status-${a.status}`);
+        const link = el('a', 'audit-past-link', longDate(a.endedAt ?? a.startedAt));
+        link.href = placeHref('audit', a.id);
+        const n = a.findings.length;
+        const what = a.status === 'done' ? (n ? `${n} ${n === 1 ? 'claim' : 'claims'} read` : 'no README to check') : `ended ${a.status}${a.endedReason ? `: ${cleanText(a.endedReason, 120)}` : ''}`;
+        li.append(link, el('span', 'audit-past-what', what));
+        ol.append(li);
+      }
+      box.append(ol);
+      sec.append(box);
+    }
+    return sec;
   }
 
   // ---------------------------------------------------------------- floors earned
@@ -675,7 +799,8 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     fillChecks(r);
     slots.network(r.connected ? JSON.stringify(r.checks?.ecosystems ?? []) : 'off', () => (r.connected ? networkSection(r) : null));
     slots.halt(r.connected ? JSON.stringify([r.halted, r.strikes, Math.floor(Date.now() / 60_000)]) : 'off', () => (r.connected ? haltSection(r) : null));
-    slots.jobs(r.connected ? JSON.stringify([jobs.map((j) => [j.id, j.status, j.title]), r.market, r.label]) : 'off', () => (r.connected ? jobsSection() : null));
+    slots.audit(r.connected ? JSON.stringify([audits.map((a) => [a.id, a.status, a.waitingReason]), shownAudit, liveAudit, [...auditBusy], [...auditErrors], firms.length]) : 'off', () => (r.connected ? auditSection() : null));
+    slots.jobs(r.connected ? JSON.stringify([jobs.map((j) => [j.id, j.status, j.title]), r.market, r.label, [...auditErrors]]) : 'off', () => (r.connected ? jobsSection() : null));
     slots.floors(r.connected ? JSON.stringify([district?.tower.floors.filter((f) => f.earned).map((f) => [f.id, f.earned?.state]), firms.length]) : 'off', () => (r.connected ? floorsSection() : null));
   }
 
@@ -687,6 +812,11 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
         repo = null;
         jobs = [];
         district = null;
+        audits = [];
+        shownAudit = null;
+        liveAudit = null;
+        auditBusy.clear();
+        auditErrors.clear();
         why.clear();
         trouble.hidden = true;
         for (const s of Object.values(slots)) s('', () => null);

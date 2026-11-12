@@ -207,7 +207,8 @@ export function createRepos(
       reloadProposals();
       return;
     }
-    if (e.type === 'repo.halted' || e.type === 'repo.resumed') {
+    // An audit's end dates its repo (auditedAt), which no repo event carries.
+    if (e.type === 'repo.halted' || e.type === 'repo.resumed' || e.type === 'audit.ended') {
       void loadStored().then(render);
       return;
     }
@@ -474,7 +475,8 @@ export function createRepos(
     row.el.dataset.status = state;
     const step = steps.get(row.fullName) ?? '';
     const n = floors.get(row.fullName);
-    const key = [state, callError ?? '', step, n ?? '', repo?.error ?? '', on].join('|');
+    const audited = repo?.auditedAt ? `audited ${ago(Date.parse(repo.auditedAt))}` : 'never audited';
+    const key = [state, callError ?? '', step, n ?? '', repo?.error ?? '', on, audited].join('|');
     if (on && row.disconnect.parentElement !== row.status) row.status.append(row.disconnect);
     if (!on && row.disconnect.parentElement) row.disconnect.remove();
     if (key === row.statusKey) return;
@@ -494,6 +496,11 @@ export function createRepos(
       s.append(ticks, el('span', 'repo-step', at >= 0 ? `${STEPS[at][1]}, step ${at + 1} of ${STEPS.length}` : 'Surveying the site'));
     } else if (state === 'ready') {
       s.append(el('span', 'repo-ready', n === undefined ? 'Ready' : n === 0 ? 'Ready, root only: no merged changes yet' : `Ready, ${plural(n, 'floor')}`));
+      // When the README was last read against the code: the district page holds the audit.
+      const audit = el('a', `repo-audited${repo?.auditedAt ? '' : ' never'}`, audited);
+      audit.href = placeHref('repo', row.fullName);
+      audit.title = repo?.auditedAt ? 'The README against the code, on the district page' : 'Audit the README from the district page';
+      s.append(audit);
     } else if (state === 'error') {
       const raw = repo?.error ?? 'The analysis failed.';
       const msg = el('span', 'repo-error', plainError(raw));

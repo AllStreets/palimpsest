@@ -563,6 +563,23 @@ test('the clock ends the reading audit done with two new proposals and events', 
   }
 });
 
+test('with runs off the clock ends the reading audit and leaves every run and job where the seed left it', async () => {
+  await seed();
+  const runsBefore = JSON.stringify(listRuns().map((r) => [r.id, r.stage, r.outcome]));
+  const jobsBefore = JSON.stringify(listJobs().filter((j) => j.source !== 'proposal').map((j) => [j.id, j.status]));
+  let t = NOW;
+  const clock = economyClock({ now: () => t, speed: 20, runs: false });
+  for (let i = 0; i < 25; i++) {
+    t += 1000;
+    clock.tick(1000);
+    await clock.idle();
+  }
+  clock.stop();
+  assert.equal(listAudits({ repo: K })[0]?.status, 'done', 'the kumo audit ended');
+  assert.equal(JSON.stringify(listRuns().map((r) => [r.id, r.stage, r.outcome])), runsBefore, 'no run moved');
+  assert.equal(JSON.stringify(listJobs().filter((j) => j.source !== 'proposal').map((j) => [j.id, j.status])), jobsBefore, 'no job moved');
+});
+
 test("today's brief holds every item kind", async () => {
   await inLosAngeles(async () => {
     await seedSample(MONDAY);

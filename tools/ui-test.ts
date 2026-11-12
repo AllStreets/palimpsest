@@ -34,6 +34,7 @@ import { firmChecks } from './ui-test-firms.js';
 import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
+import { auditChecks } from './ui-test-audit.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1797,6 +1798,12 @@ async function main(): Promise<void> {
       await treasuryChecks(page, check, SHOTS);
       // The market switches on Repos, the district page and the provider settings (Task 40).
       await marketChecks(page, check, SHOTS);
+      // The README audit on the district page, its own page, proposals with their claims and the scope editor (Phase 3 Task 10).
+      const scopeRefusals = await auditChecks(page, check, SHOTS);
+      for (let i = 0; i < scopeRefusals; i++) {
+        const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
+        if (k >= 0) consoleErrors.splice(k, 1);
+      }
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);
