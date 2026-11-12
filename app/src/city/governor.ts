@@ -63,14 +63,15 @@ export interface Governor {
 const RECENT = 60;
 
 /**
- * The drop notice: what the city did and what it saw, in its own numbers.
+ * The drop notice: what the city did and what it saw, in its own numbers,
+ * and where to undo it.
  * `fromHome` when the camera stood at the home framing (the view the
  * triangle guard is set from), so the count is read against the right view.
  */
 export function dropText(saw: DropReading, fromHome: boolean): string {
   const fps = Math.round(saw.fps);
   const tri = (saw.triangles / 1e6).toFixed(1);
-  return `The city stepped down to medium quality: ${fps} fps and ${tri}M triangles${fromHome ? ' from home' : ''}.`;
+  return `The city stepped down to medium quality: ${fps} fps and ${tri}M triangles${fromHome ? ' from home' : ''}. Settings can set it back to high.`;
 }
 
 /** Gaps longer than this are a hidden tab, a rebuild or a hitch, not a frame rate. */

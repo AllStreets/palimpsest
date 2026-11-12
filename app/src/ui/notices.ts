@@ -127,7 +127,11 @@ export function createNotices(parent: HTMLElement): Notices {
       const p = doc.createElement('p');
       p.id = `${list.id}-${++ids}`;
       p.textContent = n.text;
-      p.title = n.text;
+      // A pointer hint only, for a line cut short: the words are in the page whole, for a screen reader as for search.
+      li.addEventListener('pointerenter', () => {
+        if (p.scrollWidth > p.clientWidth) p.title = n.text;
+        else p.removeAttribute('title');
+      });
       const close = doc.createElement('button');
       close.type = 'button';
       close.className = 'city-notice-dismiss';

@@ -464,8 +464,11 @@
 .city-notice-list {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  height: 1.3em;
+  /* Each backing hugs its own words rather than the widest line's. */
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+  height: calc(1.3em + 4px);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -482,8 +485,11 @@
   display: flex;
   align-items: baseline;
   gap: 12px;
-  padding-left: 10px;
+  min-width: 0;
+  padding: 2px 9px 2px 10px;
   border-left: 2px solid var(--bronze);
+  /* Its own backing, so the words keep 4.5:1 over a lit facade or the bright sky behind the head. */
+  background: rgba(18, 16, 24, 0.8);
 }
 /* The older lines step back a shade, so the newest reads first. */
 .city-notice-line + .city-notice-line {
@@ -495,6 +501,7 @@ body[data-route='city'] .city-notice-line + .city-notice-line,
   color: #cfc7ba;
 }
 .city-notice-line p {
+  min-width: 0;
   margin: 0;
   max-width: min(44vw, 560px);
   overflow: hidden;
@@ -537,12 +544,13 @@ body[data-route='city'] .city-notice-recall,
    the head's line, and its lines are cut to the room left there, so no part of it ever draws over the sheet. */
 .city-notice[data-beside] {
   position: fixed;
-  top: 26px;
+  top: 24px;
   left: var(--sheet-width);
+  max-width: calc(100vw - var(--sheet-width) - var(--gutter, 44px));
   margin-left: 0;
 }
 .city-notice[data-beside] .city-notice-line p {
-  max-width: max(120px, calc(100vw - var(--sheet-width) - var(--gutter, 44px) - 140px));
+  max-width: max(40px, calc(100vw - var(--sheet-width) - var(--gutter, 44px) - 140px));
 }
 /* Last, so hover outranks every lifted grey above. */
 body .city-notice .city-notice-dismiss:hover,

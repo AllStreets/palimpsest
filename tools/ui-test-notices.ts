@@ -7,8 +7,12 @@
  * handle's say(), as the city's own notices are made.
  */
 import { join } from 'node:path';
+import { inflateSync } from 'node:zlib';
 
 import type { Page } from 'playwright';
+
+import { layoutTower } from '../shared/tower-layout.js';
+import type { District } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
 
@@ -38,6 +42,71 @@ const focused = (page: Page): Promise<string> =>
     const li = a.closest('.city-notice-line') as HTMLElement | null;
     return `${a.className}${li ? `@${li.dataset.key}` : ''}`;
   });
+/** RGB of a 1x1 PNG: every PNG filter reduces to the raw bytes for a single pixel with no prior row. */
+function rgbOf1x1(png: Buffer): [number, number, number] {
+  let off = 8;
+  const idat: Buffer[] = [];
+  while (off < png.length) {
+    const len = png.readUInt32BE(off);
+    if (png.toString('ascii', off + 4, off + 8) === 'IDAT') idat.push(png.subarray(off + 8, off + 8 + len));
+    off += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  return [raw[1], raw[2], raw[3]];
+}
+
+/** WCAG relative luminance of an sRGB colour, 0 to 255 a channel. */
+function luminance([r, g, b]: number[]): number {
+  const lin = (c: number): number => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/**
+ * The brightest pixel behind the notice lines, the words hidden (and, with `bare`, the lines' own backing too),
+ * sampled on a grid across every line's box.
+ */
+async function brightestBehind(page: Page, bare: boolean): Promise<number> {
+  await page.addStyleTag({
+    content: `.city-notice-line p, .city-notice-line button { color: transparent !important; text-shadow: none !important; }${bare ? ' .city-notice-line { background: none !important; }' : ''}`,
+  }).then((h) => h.evaluate((e) => (e as Element).setAttribute('data-sampling', '')));
+  await page.waitForTimeout(150);
+  const boxes = await page.locator('.city-notice-line').evaluateAll((ls) => ls.map((l) => l.getBoundingClientRect()).map((b) => ({ x: b.x, y: b.y, w: b.width, h: b.height })));
+  let most = 0;
+  for (const b of boxes) {
+    for (let i = 0; i < 10; i++) {
+      for (const fy of [0.3, 0.5, 0.7]) {
+        const x = Math.round(b.x + 6 + ((b.w - 10) * i) / 9);
+        const y = Math.round(b.y + b.h * fy);
+        most = Math.max(most, luminance(rgbOf1x1(await page.screenshot({ clip: { x, y, width: 1, height: 1 } }))));
+      }
+    }
+  }
+  await page.evaluate(() => document.querySelectorAll('style[data-sampling]').forEach((e) => e.remove()));
+  return most;
+}
+
+/** The dimmest of the notice lines' words and Dismisses, as luminance. */
+const dimmestWords = (page: Page): Promise<number> =>
+  page.locator('.city-notice-line p, .city-notice-dismiss').evaluateAll((es) => es.map((e) => getComputedStyle(e).color)).then((cs) =>
+    Math.min(...cs.map((c) => luminance((c.match(/[\d.]+/g) ?? ['0', '0', '0']).slice(0, 3).map(Number)))),
+  );
+
+/** Stands the camera close on the tallest tower's lit face, so it fills the frame behind the running head. */
+async function faceTallestTower(page: Page): Promise<void> {
+  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+  const d = city.reduce((a, b) => (layoutTower(b.tower).top > layoutTower(a.tower).top ? b : a));
+  const y = layoutTower(d.tower).top * 0.62;
+  const { x, z } = d.origin;
+  await page.evaluate(
+    ([e, t]) => (window as unknown as { __palimpsest: { view(e: number[], t: number[]): void } }).__palimpsest.view(e, t),
+    [[x + 0.63 * 48, y - 4, z + 0.78 * 48], [x, y + 6, z]],
+  );
+  await page.waitForTimeout(2000);
+}
+
 const status = (page: Page): Promise<string> => page.locator('.city-notice [role="status"]').evaluate((p) => p.textContent ?? '');
 
 /** Takes every notice away, by its own Dismiss, so a check starts from an empty column. */
@@ -122,6 +191,14 @@ export async function noticeChecks(page: Page, check: Check, shots: string): Pro
   const joined = [TOWER, TOUR, AUDIT_2].join(' ');
   check(await within(page, 1000, async () => (await status(page)) === joined), `the recalled notices are announced again through role=status (${(await status(page)).slice(0, 50)})`);
   await page.mouse.move(800, 600);
+  // Over a lit tower the lines keep their words legible: WCAG 4.5:1 against the brightest pixel behind them.
+  await faceTallestTower(page);
+  const bare = await brightestBehind(page, true);
+  check(bare > 0.12, `the column stands over a lit facade (brightest behind it ${bare.toFixed(2)})`);
+  const behind = await brightestBehind(page, false);
+  const words = await dimmestWords(page);
+  const ratio = (words + 0.05) / (behind + 0.05);
+  check(ratio >= 4.5, `and every line reads at 4.5:1 or better over it (${ratio.toFixed(1)}:1)`);
   await page.waitForTimeout(400);
   await page.screenshot({ path: join(shots, 'notices-recalled.png') });
   await page.screenshot({ path: join(shots, 'notices-recalled-crop.png'), clip: { x: 0, y: 0, width: 1600, height: 140 } });
@@ -158,8 +235,9 @@ export async function noticeChecks(page: Page, check: Check, shots: string): Pro
 /** The governor's own notice, from a drop taken where the caller stands the camera: it names what it saw. */
 export async function dropNoticeChecks(page: Page, check: Check, fromHome: boolean): Promise<void> {
   const text = await said(page);
-  const re = /^The city stepped down to medium quality: \d+ fps and \d+\.\dM triangles( from home)?\.$/;
+  const re = /^The city stepped down to medium quality: \d+ fps and \d+\.\dM triangles( from home)?\. Settings can set it back to high\.$/;
   const line = (await lines(page))[0] ?? '';
   check(re.test(line) && /\d+ fps/.test(text), `the quality-drop notice names the frame rate and the triangles (${line})`);
-  check(/ from home\.$/.test(line) === fromHome, `and says from home only when the camera stood there (${fromHome})`);
+  check(/Settings can set it back to high\./.test(text), 'and says Settings can set it back to high');
+  check(/ from home\./.test(line) === fromHome, `and says from home only when the camera stood there (${fromHome})`);
 }

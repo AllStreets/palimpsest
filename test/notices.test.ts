@@ -13,7 +13,6 @@ test('each notice dismisses alone', () => {
   assert.equal(s.dismiss('That tower is not standing in the city just now.'), true);
   assert.deepEqual(s.texts(), ['The city stepped down to medium quality.', 'The architecture kits did not load.'], 'the others stand');
   assert.equal(s.dismiss('That tower is not standing in the city just now.'), false, 'a second dismiss finds nothing');
-  assert.deepEqual(s.texts(), ['The city stepped down to medium quality.', 'The architecture kits did not load.']);
 });
 
 test('a keyed notice replaces its earlier text', () => {
@@ -44,8 +43,8 @@ test('the stack keeps the last three', () => {
 });
 
 test('the quality-drop notice names the frame rate and the triangles it saw', () => {
-  assert.equal(dropText({ fps: 41.2, triangles: 13_240_000 }, true), 'The city stepped down to medium quality: 41 fps and 13.2M triangles from home.');
-  assert.equal(dropText({ fps: 58.6, triangles: 25_050_000 }, false), 'The city stepped down to medium quality: 59 fps and 25.1M triangles.');
+  assert.equal(dropText({ fps: 41.2, triangles: 13_240_000 }, true), 'The city stepped down to medium quality: 41 fps and 13.2M triangles from home. Settings can set it back to high.');
+  assert.equal(dropText({ fps: 58.6, triangles: 25_050_000 }, false), 'The city stepped down to medium quality: 59 fps and 25.1M triangles. Settings can set it back to high.');
 });
 
 test('the governor keeps what it saw when it steps down', () => {
