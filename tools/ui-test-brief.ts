@@ -330,7 +330,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
     await page.keyboard.press('t');
     const said = await within(page, 2000, async () => /The tour arrives with the city track/.test(await page.evaluate(() => (window as unknown as { __palimpsest: { notice(): string } }).__palimpsest.notice())));
     check(said, 'T in the city says the tour arrives with the city track');
-    await page.locator('.city-notice-close').click().catch(() => {});
+    await page.locator('.city-notice-line[data-key="tour"] .city-notice-dismiss').click().catch(() => {});
     await page.keyboard.press('Escape');
   } finally {
     if (before) await page.setViewportSize(before);

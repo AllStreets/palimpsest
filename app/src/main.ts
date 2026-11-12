@@ -8,6 +8,7 @@ import { weekOf } from '../../shared/tour';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
+import { dropText } from './city/governor';
 import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
@@ -46,6 +47,7 @@ import { createAuditPage } from './ui/audit';
 import { createBrief, TOUR_LATER } from './ui/brief';
 import { emptyMorning } from './ui/brief-words';
 import { createRepos } from './ui/repos';
+import { createNotices } from './ui/notices';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
 
@@ -136,10 +138,13 @@ interface DebugHandle {
   quality(): 'high' | 'medium';
   /** Steps down to medium as the automatic drop does (tests). */
   dropQuality(): void;
-  /** The notice line's text, or '' when none shows. */
+  /** The notices showing, joined newest first, or '' when none shows. */
   notice(): string;
+  /** Every notice the column keeps, newest first, shown or faded. */
+  notices(): string[];
   /** Puts a line in the running head, as the city does for what it did by itself (the UI test). */
-  say(text: string): void;
+  /** Adds a notice as the city would; with a key it replaces the notice that has that key. */
+  say(text: string, key?: string): void;
   /** Plazas paved (the civic plaza included) and ambient buildings standing. */
   plots(): { plazas: number; buildings: number };
   /**
@@ -231,69 +236,6 @@ const LIVE_ON = new Set(['run.started', 'run.ended', 'floor.laid', 'floor.lit', 
 /** Events that change what the exchange's tote board shows: a job posted or moved on, a bid placed or declined. */
 const BOARD_ON = new Set(['job.posted', 'job.proposed', 'job.changed', 'job.awarded', 'bid.placed', 'bid.satOut']);
 
-/** How long a notice stands in the running head before it fades. */
-const NOTICE_MS = 6000;
-/** How many notices the recall mark keeps. */
-const NOTICES_KEPT = 3;
-
-/**
- * A one-line notice in the running head for what the city did by itself
- * (stood on plain stand-ins when the kits would not load, stepped down to
- * medium quality). It stands a few seconds and fades; a small mark stays at
- * the head's end to recall it: the last three, joined, so none is lost.
- */
-function createNotice(head: HTMLElement): { add(text: string): void; text(): string } {
-  const box = document.createElement('div');
-  box.className = 'city-notice';
-  box.hidden = true;
-  const line = document.createElement('p');
-  line.setAttribute('role', 'status');
-  const recall = document.createElement('button');
-  recall.type = 'button';
-  recall.className = 'city-notice-recall';
-  recall.textContent = 'Notice';
-  recall.title = 'Show the last notice again';
-  box.append(line, recall);
-  head.append(box);
-  /** The last few notices, oldest first; the recall shows them all. */
-  const kept: string[] = [];
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  /** Sets the line's text so a screen reader announces it again, even when the words are the same. */
-  const announce = (text: string): void => {
-    line.textContent = '';
-    line.title = text;
-    requestAnimationFrame(() => {
-      line.textContent = text;
-    });
-  };
-  const fade = (): void => {
-    timer = null;
-    delete box.dataset.shown;
-    recall.setAttribute('aria-expanded', 'false');
-  };
-  const show = (): void => {
-    box.dataset.shown = '';
-    recall.setAttribute('aria-expanded', 'true');
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(fade, NOTICE_MS);
-  };
-  recall.addEventListener('click', () => {
-    if (box.dataset.shown !== undefined) return fade();
-    announce(kept.join(' '));
-    show();
-  });
-  return {
-    add(text) {
-      kept.push(text);
-      if (kept.length > NOTICES_KEPT) kept.splice(0, kept.length - NOTICES_KEPT);
-      announce(text);
-      box.hidden = false;
-      show();
-    },
-    text: () => (box.hidden || box.dataset.shown === undefined ? '' : (line.textContent ?? '')),
-  };
-}
-
 /** What the plate under an analyzing site says for each step of the engine's analysis. */
 const STEP_TEXT: Record<string, string> = {
   mirror: 'Cloning history',
@@ -314,7 +256,7 @@ async function main(): Promise<void> {
 
   // The running head stands first, so the notices the city makes while it loads have their line in it.
   const runhead = createRunhead(document.body);
-  const notice = createNotice(runhead.el);
+  const notice = createNotices(runhead.el);
   // The brief is asked for first, while the kits and the city load: on the day's first open it is recorded
   // (Decision 8, empty morning or not) and, when it carries an item, it draws over the veil (Decision 2).
   const briefOpened = api.brief().then(
@@ -529,7 +471,8 @@ async function main(): Promise<void> {
     quality: () => city.quality(),
     dropQuality: () => city.dropQuality(),
     notice: () => notice.text(),
-    say: (text) => notice.add(text),
+    notices: () => notice.texts(),
+    say: (text, key) => notice.add(text, key ? { key } : undefined),
     plots: () => city.plots(),
     async ambientBoard() {
       // A board is measured with the streets empty: no car or person passes in front of it. The board stands on
@@ -1076,10 +1019,10 @@ async function main(): Promise<void> {
   });
 
   // Stepped down to medium by itself: every tower rebuilds at medium, and the notice says why.
-  city.onQualityDrop(() => {
+  city.onQualityDrop((saw) => {
     quality = 'medium';
     place();
-    notice.add('The city stepped down to medium quality to hold its frame rate. Settings can set it back to high for the next time it opens.');
+    notice.add(dropText(saw, saw.fromHome), { key: 'quality' });
   });
 
   // Escape on a sheet returns to the city, unless a field used it first (clearing a search, undoing a cap).
@@ -1178,7 +1121,7 @@ async function main(): Promise<void> {
     return false;
   };
   const tourLater = (): void => {
-    if (!notice.text().includes(TOUR_LATER)) notice.add(TOUR_LATER);
+    notice.add(TOUR_LATER, { key: 'tour' });
   };
   // The morning brief (Phase 3 Task 11): every action in place; the floor and the diff go through the job page's own hooks.
   const brief = createBrief(document.body, {

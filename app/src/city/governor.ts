@@ -43,10 +43,34 @@ export interface GovernorOptions {
   triangleBudget?: number;
 }
 
+/** What the city drew when it stepped down: the frame rate and the triangles per frame, each a mean. */
+export interface DropReading {
+  fps: number;
+  triangles: number;
+}
+
 export interface Governor {
   /** One frame's time in ms and the triangles it drew. Returns 'medium' on the frame the drop is due, else null. */
   frame(ms: number, triangles: number): 'medium' | null;
   readonly dropped: boolean;
+  /** The window the drop was judged on, once the governor stepped down by itself; null before. */
+  readonly saw: DropReading | null;
+  /** The last second or so of frames, judged or not (a drop asked for by hand says these); null before any frame. */
+  reading(): DropReading | null;
+}
+
+/** How many recent frames `reading()` averages: about a second at 60 fps. */
+const RECENT = 60;
+
+/**
+ * The drop notice: what the city did and what it saw, in its own numbers.
+ * `fromHome` when the camera stood at the home framing (the view the
+ * triangle guard is set from), so the count is read against the right view.
+ */
+export function dropText(saw: DropReading, fromHome: boolean): string {
+  const fps = Math.round(saw.fps);
+  const tri = (saw.triangles / 1e6).toFixed(1);
+  return `The city stepped down to medium quality: ${fps} fps and ${tri}M triangles${fromHome ? ' from home' : ''}.`;
 }
 
 /** Gaps longer than this are a hidden tab, a rebuild or a hitch, not a frame rate. */
@@ -66,13 +90,27 @@ export function qualityGovernor(o: GovernorOptions = {}): Governor {
   let span = 0;
   let slowFor = 0;
   let over = 0;
+  let frames = 0;
+  let drawn = 0;
+  let saw: DropReading | null = null;
+  // The recent frames, judged or not, in a ring: their times and triangles.
+  const recentMs: number[] = [];
+  const recentTri: number[] = [];
+  let at = 0;
   const reset = (): void => {
     span = 0;
     slowFor = 0;
     over = 0;
+    frames = 0;
+    drawn = 0;
   };
   return {
     frame(ms, triangles) {
+      if (ms <= GAP_MS) {
+        recentMs[at] = ms;
+        recentTri[at] = triangles;
+        at = (at + 1) % RECENT;
+      }
       if (dropped) return null;
       if (ms > GAP_MS) {
         reset();
@@ -86,17 +124,29 @@ export function qualityGovernor(o: GovernorOptions = {}): Governor {
         return null;
       }
       span += ms;
+      frames += 1;
+      drawn += triangles;
       if (ms > slow) slowFor += ms;
       if (triangles > budget) over += ms;
       if (span < sustain) return null;
       const due = slowFor >= span * SLOW_SHARE || over >= span * 0.9;
+      const window: DropReading = { fps: (frames * 1000) / span, triangles: drawn / frames };
       reset();
       if (!due) return null;
       dropped = true;
+      saw = window;
       return 'medium';
     },
     get dropped() {
       return dropped;
+    },
+    get saw() {
+      return saw;
+    },
+    reading() {
+      if (recentMs.length === 0) return null;
+      const ms = recentMs.reduce((a, b) => a + b, 0);
+      return { fps: (recentMs.length * 1000) / ms, triangles: recentTri.reduce((a, b) => a + b, 0) / recentTri.length };
     },
   };
 }

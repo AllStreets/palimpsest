@@ -14,7 +14,8 @@
  * Run after `npm run build`: `npm run ui-test`. Optional: UI_DPR=2 renders
  * at retina density, UI_QUALITY=medium switches the quality setting first,
  * UI_TOWER_SHOTS=all adds close shots of every root and era for the quality
- * rounds. UI_PORT=4811 runs it on another port, so two worktrees can each
+ * rounds. UI_FORCE_DROP=1 runs the notice stack's checks alone and then
+ * drops the quality from home, checking that the notice names what it saw. UI_PORT=4811 runs it on another port, so two worktrees can each
  * run one at once.
  */
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -38,6 +39,7 @@ import { treasuryChecks } from './ui-test-treasury.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
+import { dropNoticeChecks, noticeChecks } from './ui-test-notices.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 import { uiPort } from './ui-port.js';
@@ -248,7 +250,7 @@ async function kitFailureChecks(browser: Browser): Promise<void> {
   check(ready && thrown.length === 0, `a corrupt kits.glb still opens the city (${thrown.join(' | ') || 'no errors'})`);
   const districts = (await page.evaluate(() => (window as unknown as { __palimpsest?: { districts: number } }).__palimpsest?.districts ?? 0)) as number;
   check(districts === SAMPLE.length, `and stands every district on plain blocks (${districts})`);
-  const notice = (await page.locator('.city-notice p').textContent()) ?? '';
+  const notice = (await page.locator('.city-notice-line p').allTextContents()).join(' ');
   check(/kits did not load/.test(notice), `and says so (${notice.slice(0, 60)})`);
   // Past the veil's fade, so the shot shows the plain city under the notice.
   await page.waitForTimeout(2500);
@@ -2157,6 +2159,7 @@ async function qualityDropChecks(page: Page, errors: string[]): Promise<void> {
   await page.evaluate('window.__palimpsest.dropQuality()');
   await page.waitForTimeout(1500);
   check((await debug(page, (d) => d.quality())) === 'medium', "the governor's step down takes the city to medium");
+  await dropNoticeChecks(page, check, false);
   const home = await debug(page, (d) => d.limits().home);
   for (const [eye, target] of [
     [[-353, 2.6, 11.5], [-368, -3, 320]],
@@ -2265,115 +2268,135 @@ async function main(): Promise<void> {
     if (ready) await fullDensity(page);
     await page.waitForTimeout(3000);
 
-    const canvas = await page.$('canvas');
-    check(canvas !== null, 'a canvas is on the page');
+    // UI_FORCE_DROP=1: the notice stack alone, then the governor's step down taken from home, whose notice must
+    // name what it saw. A quick run for the notice rounds; the full run takes the same checks in their places.
+    const forceDrop = process.env.UI_FORCE_DROP === '1';
+    if (forceDrop && ready) {
+      await noticeChecks(page, check, SHOTS);
+      const home = await debug(page, (d) => d.limits().home);
+      await setView(page, home.eye, home.target);
+      await page.waitForTimeout(1500);
+      await page.evaluate('window.__palimpsest.dropQuality()');
+      await page.waitForTimeout(800);
+      check((await debug(page, (d) => d.quality())) === 'medium', 'UI_FORCE_DROP steps the city down to medium');
+      await dropNoticeChecks(page, check, true);
+      await page.screenshot({ path: join(SHOTS, 'notices-quality-drop.png') });
+    } else {
 
-    const [r, g, b] = await pixel(page, VIEWPORT.width / 2, VIEWPORT.height / 2);
-    check(r + g + b > 0, `center pixel is not pure black (rgb ${r},${g},${b})`);
+      const canvas = await page.$('canvas');
+      check(canvas !== null, 'a canvas is on the page');
 
-    const districts = await page.evaluate(
-      () => (window as unknown as { __palimpsest?: { districts: number } }).__palimpsest?.districts ?? -1,
-    );
-    check(districts === SAMPLE.length, `city shows ${SAMPLE.length} districts (got ${districts})`);
+      const [r, g, b] = await pixel(page, VIEWPORT.width / 2, VIEWPORT.height / 2);
+      check(r + g + b > 0, `center pixel is not pure black (rgb ${r},${g},${b})`);
 
-    await page.screenshot({ path: join(SHOTS, 'city-overview.png') });
+      const districts = await page.evaluate(
+        () => (window as unknown as { __palimpsest?: { districts: number } }).__palimpsest?.districts ?? -1,
+      );
+      check(districts === SAMPLE.length, `city shows ${SAMPLE.length} districts (got ${districts})`);
 
-    if (ready) {
-      for (const [name, eye, target] of VIEWS) {
-        await setView(page, eye, target);
-        await page.screenshot({ path: join(SHOTS, `${name}.png`) });
-      }
-    }
+      await page.screenshot({ path: join(SHOTS, 'city-overview.png') });
 
-    if (ready) {
-      const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
-      const all = process.env.UI_TOWER_SHOTS === 'all';
-      const seen = new Set<string>();
-      for (const d of city) {
-        // One set of shots per root style, from the first tower with floors.
-        if (d.tower.floors.length === 0 || seen.has(d.tower.root)) continue;
-        seen.add(d.tower.root);
-        for (const [name, eye, target] of towerViews(d, all)) {
+      if (ready) {
+        for (const [name, eye, target] of VIEWS) {
           await setView(page, eye, target);
           await page.screenshot({ path: join(SHOTS, `${name}.png`) });
         }
       }
-      check(seen.size === 5, `towers stand for all five roots (got ${[...seen].join(', ')})`);
-      const empty = city.find((d) => d.tower.floors.length === 0);
-      if (empty) {
-        const [, eye, target] = towerViews(empty, true)[1];
-        await setView(page, eye, target);
-        await page.screenshot({ path: join(SHOTS, 'tower-empty.png') });
-      }
-    }
 
-    if (ready) {
-      // Picking: look straight at the first district's plinth and click the middle of the screen.
-      const o = await page.evaluate(() => fetch('/api/city').then((r) => r.json()).then((d) => d[0].origin));
-      await setView(page, [o.x + 40, 18, o.z + 40], [o.x, 2, o.z]);
-      await page.mouse.click(VIEWPORT.width / 2, VIEWPORT.height / 2);
-      const pick = await page.evaluate(
-        () => (window as unknown as { __palimpsest: { lastPick: { repo: string } | null } }).__palimpsest.lastPick,
-      );
-      check(pick?.repo === SAMPLE[0].fullName, `clicking a plinth picks its district (got ${pick?.repo ?? 'nothing'})`);
+      if (ready) {
+        const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+        const all = process.env.UI_TOWER_SHOTS === 'all';
+        const seen = new Set<string>();
+        for (const d of city) {
+          // One set of shots per root style, from the first tower with floors.
+          if (d.tower.floors.length === 0 || seen.has(d.tower.root)) continue;
+          seen.add(d.tower.root);
+          for (const [name, eye, target] of towerViews(d, all)) {
+            await setView(page, eye, target);
+            await page.screenshot({ path: join(SHOTS, `${name}.png`) });
+          }
+        }
+        check(seen.size === 5, `towers stand for all five roots (got ${[...seen].join(', ')})`);
+        const empty = city.find((d) => d.tower.floors.length === 0);
+        if (empty) {
+          const [, eye, target] = towerViews(empty, true)[1];
+          await setView(page, eye, target);
+          await page.screenshot({ path: join(SHOTS, 'tower-empty.png') });
+        }
+      }
 
-      await measureFps(page);
-      check((await debug(page, (d) => d.quality())) === 'high', 'the city holds high quality at the default settings (no automatic drop)');
-      await inspectorChecks(page);
-      await rideChecks(page);
-      await siteChecks(page);
-      await disconnectWhileInspecting(page);
-      await reposChecks(page);
-      await freedPlotChecks(page);
-      await settingsChecks(page, claudeSettingsPath);
-      await viewGrowsChecks(page);
-      await reconnectChecks(page, restart);
-      await earnedChecks(page);
-      await quarterChecks(page);
-      await darkTowerChecks(page);
-      await exchangeChecks(page);
-      // The job board (Task 36): a refusal it provokes on purpose shows in the console as a failed 409, excused here.
-      const refusals = await jobBoardChecks(page, check, SHOTS);
-      for (let i = 0; i < refusals; i++) {
-        const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
-        if (k >= 0) consoleErrors.splice(k, 1);
+      if (ready) {
+        // Picking: look straight at the first district's plinth and click the middle of the screen.
+        const o = await page.evaluate(() => fetch('/api/city').then((r) => r.json()).then((d) => d[0].origin));
+        await setView(page, [o.x + 40, 18, o.z + 40], [o.x, 2, o.z]);
+        await page.mouse.click(VIEWPORT.width / 2, VIEWPORT.height / 2);
+        const pick = await page.evaluate(
+          () => (window as unknown as { __palimpsest: { lastPick: { repo: string } | null } }).__palimpsest.lastPick,
+        );
+        check(pick?.repo === SAMPLE[0].fullName, `clicking a plinth picks its district (got ${pick?.repo ?? 'nothing'})`);
+
+        await measureFps(page);
+        check((await debug(page, (d) => d.quality())) === 'high', 'the city holds high quality at the default settings (no automatic drop)');
+        await inspectorChecks(page);
+        await rideChecks(page);
+        await siteChecks(page);
+        await disconnectWhileInspecting(page);
+        await reposChecks(page);
+        await freedPlotChecks(page);
+        await settingsChecks(page, claudeSettingsPath);
+        await viewGrowsChecks(page);
+        await reconnectChecks(page, restart);
+        await earnedChecks(page);
+        await quarterChecks(page);
+        await darkTowerChecks(page);
+        await exchangeChecks(page);
+        // The job board (Task 36): a refusal it provokes on purpose shows in the console as a failed 409, excused here.
+        const refusals = await jobBoardChecks(page, check, SHOTS);
+        for (let i = 0; i < refusals; i++) {
+          const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
+          if (k >= 0) consoleErrors.splice(k, 1);
+        }
+        // The job, run and inspection pages (Task 37).
+        await detailChecks(page, check, SHOTS);
+        // The firms list, a firm's page and the agent page (Task 38).
+        await firmChecks(page, check, SHOTS);
+        await rideAgentChecks(page);
+        // The treasury and the daily report (Task 39).
+        await treasuryChecks(page, check, SHOTS);
+        // The notice stack: one Dismiss each, keyed replacement, recall, the keyboard, and clear of an open sheet (Phase 3 Task 12).
+        await noticeChecks(page, check, SHOTS);
+        // The market switches on Repos, the district page and the provider settings (Task 40).
+        await marketChecks(page, check, SHOTS);
+        // The README audit on the district page, its own page, proposals with their claims and the scope editor (Phase 3 Task 10).
+        const scopeRefusals = await auditChecks(page, check, SHOTS);
+        for (let i = 0; i < scopeRefusals; i++) {
+          const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
+          if (k >= 0) consoleErrors.splice(k, 1);
+        }
+        // The morning brief: the day's first open, every action in place, a second window (Phase 3 Task 11).
+        await briefChecks(page, check, SHOTS);
+        await constructionChecks(page);
+        await lifecycleChecks(page);
+        await silhouetteChecks(page);
+        await riverChecks(page);
+        await transitChecks(page);
+        await vehicleChecks(page);
+        await peopleChecks(page);
+        await ambientChecks(page);
+        await qualityDropChecks(page, consoleErrors);
       }
-      // The job, run and inspection pages (Task 37).
-      await detailChecks(page, check, SHOTS);
-      // The firms list, a firm's page and the agent page (Task 38).
-      await firmChecks(page, check, SHOTS);
-      await rideAgentChecks(page);
-      // The treasury and the daily report (Task 39).
-      await treasuryChecks(page, check, SHOTS);
-      // The market switches on Repos, the district page and the provider settings (Task 40).
-      await marketChecks(page, check, SHOTS);
-      // The README audit on the district page, its own page, proposals with their claims and the scope editor (Phase 3 Task 10).
-      const scopeRefusals = await auditChecks(page, check, SHOTS);
-      for (let i = 0; i < scopeRefusals; i++) {
-        const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
-        if (k >= 0) consoleErrors.splice(k, 1);
-      }
-      // The morning brief: the day's first open, every action in place, a second window (Phase 3 Task 11).
-      await briefChecks(page, check, SHOTS);
-      await constructionChecks(page);
-      await lifecycleChecks(page);
-      await silhouetteChecks(page);
-      await riverChecks(page);
-      await transitChecks(page);
-      await vehicleChecks(page);
-      await peopleChecks(page);
-      await ambientChecks(page);
-      await qualityDropChecks(page, consoleErrors);
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);
 
     // The empty morning (Phase 3 Task 11), last: on a fresh home with no repos, since the economy's is never empty.
     await page.close();
-    await server.close();
-    process.env.PALIMPSEST_HOME = join(tmp, 'home-empty');
-    server = await startServer({ port: PORT, claudeSettingsPath, keychain });
-    await emptyMorningChecks(browser, `http://127.0.0.1:${PORT}`, check, SHOTS);
+    if (!forceDrop) {
+      await server.close();
+      process.env.PALIMPSEST_HOME = join(tmp, 'home-empty');
+      server = await startServer({ port: PORT, claudeSettingsPath, keychain });
+      await emptyMorningChecks(browser, `http://127.0.0.1:${PORT}`, check, SHOTS);
+    }
   } finally {
     await browser.close();
     await server.close();

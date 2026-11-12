@@ -16,7 +16,7 @@ import { createPlates, type Plate } from './labels';
 import type { Lot } from './lots';
 import { configureMaterials, texturesSettled } from './materials';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
-import { qualityGovernor } from './governor';
+import { qualityGovernor, type DropReading } from './governor';
 import { setFacadeRooms } from './facade';
 import { lightsOutTree } from './lightsout.js';
 import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
@@ -205,7 +205,13 @@ export interface City {
    * built at high quality.
    */
   dropQuality(): void;
-  onQualityDrop(fn: () => void): void;
+  /** Each listener hears what the city drew when it stepped down, and whether the camera stood at home then. */
+  onQualityDrop(fn: (saw: QualityDrop) => void): void;
+}
+
+/** The frame rate and triangles the city drew when it stepped down, and whether that was the home view. */
+export interface QualityDrop extends DropReading {
+  fromHome: boolean;
 }
 
 /** A job site as the city shows it. */
@@ -1299,10 +1305,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
   ];
   const clock = new THREE.Clock();
-  const dropListeners: Array<() => void> = [];
+  const dropListeners: Array<(saw: QualityDrop) => void> = [];
   const governor = qualityGovernor({ start: opts.autoQuality === false ? 'medium' : quality });
   function dropQuality(): void {
     if (quality === 'medium') return;
+    // What it saw: the window the governor judged, or the last second of frames for a drop asked for by hand.
+    const reading = governor.saw ?? governor.reading() ?? { fps: 0, triangles: lastFrame.triangles };
+    const fromHome = camera.position.distanceTo(toV(limits.home.eye)) < Math.max(1, limits.homeDistance * 0.05);
+    const saw: QualityDrop = { ...reading, fromHome };
     quality = 'medium';
     renderer.setPixelRatio(1);
     renderer.setSize(width(), height());
@@ -1328,7 +1338,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     field = makeConstructionField('medium');
     scene.add(field.group);
     placeConstructions();
-    for (const fn of dropListeners) fn();
+    for (const fn of dropListeners) fn(saw);
   }
   renderer.setAnimationLoop(() => {
     const raw = clock.getDelta();
