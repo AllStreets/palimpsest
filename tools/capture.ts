@@ -15,8 +15,12 @@
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
  * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles, life (the ambient traffic and crowd),
- * ride (the lift up the harbour tower, datum to roof). With no shots named,
- * all but probe, swatches, families and fidelity run. families rebuilds the tallest
+ * ride (the lift up the harbour tower, datum to roof), market-overview, screens (jobs, job,
+ * run-log, inspection, firms, agent, treasury, each also a shot of its own),
+ * construction-clip (construction.mp4: forty seconds of the economy's clock,
+ * crane to cure) and commute (commute.mp4: a tram rider and a cab). With no
+ * shots named, it writes exactly the README's media (README_SHOTS) on the
+ * sample economy with its clock running (CAPTURE_ECONOMY=live). families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
  * rendered colour at the overview's distance (SWATCH_WRITE=1 writes
  * app/src/city/tower/rendered.ts).
@@ -41,7 +45,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright';
@@ -54,7 +58,7 @@ import type { District, Quarter } from '../shared/types.js';
 import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
-import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
+import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, type FigureProbe, type VehicleProbe } from './people-stage.js';
 import { decodePng, labOf } from './png.js';
 import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sample.js';
 
@@ -154,6 +158,100 @@ async function record(page: Page, shot: Shot): Promise<void> {
   else rmSync(dir, { recursive: true, force: true });
 }
 
+/**
+ * The README's clips, kept small enough to sit in the repo: a 1280x800 H.264
+ * MP4 to click through to and, for the inline ones, an 800x500 animated AVIF
+ * the page plays. No card or GIF set: those are the flyover's and the rise's.
+ */
+function encodeClip(dir: string, name: string, inline: boolean, posterAt?: number): void {
+  // A still from the clip itself, for the README to show where the clip is linked rather than played.
+  if (posterAt !== undefined) {
+    const frames = readdirSync(dir).filter((f) => /^f\d+\.png$/.test(f)).sort();
+    const pick = frames[Math.min(frames.length - 1, Math.round(posterAt * (frames.length - 1)))];
+    const poster = join(MEDIA, `${name}-poster.webp`);
+    execFileSync('cwebp', ['-q', '86', '-m', '6', '-resize', '1600', '1000', join(dir, pick), '-o', poster], { stdio: 'ignore' });
+    console.log(`  ${name}-poster.webp ${mb(poster)} (frame ${pick})`);
+  }
+  const input = ['-framerate', String(FPS), '-i', join(dir, 'f%04d.png')];
+  const mp4 = join(MEDIA, `${name}.mp4`);
+  ff([...input, '-vf', 'scale=1280:800:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]);
+  let line = `  ${name}: mp4 ${mb(mp4)}`;
+  if (inline) {
+    const avif = join(MEDIA, `${name}.avif`);
+    ff([...input, '-vf', 'fps=24,scale=800:500:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', '36', '-g', '96', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]);
+    line += `, avif ${mb(avif)}`;
+  }
+  console.log(line);
+}
+
+/**
+ * Puts the page on a virtual clock: `performance.now()` (which the scene's
+ * frame clock reads) stands still until `tick()` moves it on, so each frame of
+ * a clip is exactly 1/FPS of the city's time however long its screenshot
+ * takes. The vehicles, the people, the crowd, the crane and the sparks all
+ * step on that clock. `off()` gives the page its own clock back.
+ */
+async function virtualClock(page: Page): Promise<{ tick(seconds: number): Promise<void>; off(): Promise<void> }> {
+  await page.evaluate(() => {
+    const w = window as unknown as { __realNow?: () => number; __vt: number };
+    w.__realNow ??= performance.now.bind(performance);
+    w.__vt = w.__realNow();
+    performance.now = () => w.__vt;
+  });
+  return {
+    async tick(seconds) {
+      await page.evaluate((ms) => {
+        (window as unknown as { __vt: number }).__vt += ms;
+      }, seconds * 1000);
+      await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+    },
+    async off() {
+      await page.evaluate(() => {
+        const w = window as unknown as { __realNow?: () => number };
+        if (w.__realNow) performance.now = w.__realNow;
+      });
+    },
+  };
+}
+
+/**
+ * A clip on the virtual clock: `each(i, t)` sets the camera (and moves
+ * anything else on) before each frame, then the city steps one frame's time
+ * and the frame is taken.
+ */
+async function film(page: Page, name: string, frames: number, each: (i: number, t: number) => Promise<{ eye: V3; target: V3 }>, inline: boolean, posterAt?: number): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), `palimpsest-${name}-`));
+  console.log(`${name}: ${frames} frames`);
+  const clock = await virtualClock(page);
+  try {
+    for (let i = 0; i < frames; i++) {
+      const { eye, target } = await each(i, frames === 1 ? 0 : i / (frames - 1));
+      await page.evaluate(([e, t]) => {
+        (window as unknown as { __palimpsest: { view(e: number[], t: number[]): void } }).__palimpsest.view(e, t);
+      }, [eye, target] as [V3, V3]);
+      await clock.tick(1 / FPS);
+      await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
+      if (i % 60 === 0) process.stdout.write(`  ${i}/${frames}\r`);
+    }
+  } finally {
+    await clock.off();
+  }
+  encodeClip(dir, name, inline, posterAt);
+  if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
+  else rmSync(dir, { recursive: true, force: true });
+}
+
+/** Eases a camera toward a moving aim, so a followed figure's turns never jerk the frame. */
+function chase(rate: number): (eye: V3, target: V3) => { eye: V3; target: V3 } {
+  let e: V3 | null = null;
+  let t: V3 | null = null;
+  return (eye, target) => {
+    e = e ? lerp3(e, eye, rate) : eye;
+    t = t ? lerp3(t, target, rate) : target;
+    return { eye: e, target: t };
+  };
+}
+
 async function still(page: Page, name: string, eye: V3, target: V3): Promise<void> {
   await frame(page, eye, target);
   await page.waitForTimeout(300);
@@ -202,6 +300,25 @@ async function openScreen(page: Page, route: 'city' | 'repos' | 'settings', read
   await page.locator(`.runhead a[data-route="${route}"]`).click();
   await page.waitForSelector(ready, { timeout: 10_000 });
   await page.waitForTimeout(1200);
+}
+
+/** Opens a screen by its address, over the city's screens framing, and waits for it to settle. */
+async function openHash(page: Page, hash: string, ready: string): Promise<void> {
+  await chrome(page, true);
+  if (hash !== '#/') await frame(page, SCREENS.eye, SCREENS.target);
+  await page.evaluate((h) => {
+    location.hash = h;
+  }, hash);
+  await page.waitForSelector(ready, { timeout: 10_000 });
+  await page.waitForTimeout(hash === '#/' ? 800 : 1800);
+}
+
+/** The economy's running harbour job, the one the job and run stills show. */
+async function runningHarbour(page: Page): Promise<{ id: string; runId: string }> {
+  const jobs = (await page.evaluate(() => fetch('/api/jobs').then((r) => r.json()))) as Array<{ id: string; status: string; repo: string; runId: string | null }>;
+  const j = jobs.find((x) => x.status === 'running' && x.repo === 'tidewater/harbor-ledger');
+  if (!j?.runId) throw new Error('the economy has no running harbour job');
+  return { id: j.id, runId: j.runId };
 }
 
 function shots(city: District[]): Record<string, (page: Page) => Promise<void>> {
@@ -274,7 +391,12 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         });
       }
       if (only && !only.some((k) => ['street', 'mid', 'top', 'clip'].includes(k))) return;
-      const ok = await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(tall.repo)})`);
+      // The tallest tower with no job site on it: on a tower at work the ride is the crew's hoist, whose car fills the frame.
+      // RIDE_TOWER names another.
+      const busy = new Set(((await page.evaluate('window.__palimpsest.liveSites()')) as Array<{ repo: string }>).map((x) => x.repo));
+      const rideOn = process.env.RIDE_TOWER ?? [...city].filter((d) => !busy.has(d.repo)).sort((a, b) => b.tower.floors.length - a.tower.floors.length)[0]?.repo ?? tall.repo;
+      console.log(`  riding ${rideOn}`);
+      const ok = await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(rideOn)})`);
       if (!ok) throw new Error('the ride did not start');
       await page.evaluate('window.__palimpsest.rideHold(true)');
       const r = (await page.evaluate('window.__palimpsest.riding()')) as Riding;
@@ -294,20 +416,29 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       if (want('mid')) await stillAt('ride-mid', datum.t + 0.6);
       if (want('top')) await stillAt('ride-top', roof.t + roof.dwell * 0.6);
       if (want('clip')) {
+        // From just below the datum to the roof, on the virtual clock so the streets below move at the ride's pace.
         const dir = mkdtempSync(join(tmpdir(), 'palimpsest-ride-'));
         const from = Math.max(0, datum.t - 1.5);
         const n = Math.round((r.length - from) * FPS);
         console.log(`ride: ${n} frames`);
-        for (let i = 0; i < n; i++) {
-          await at(from + i / FPS);
-          await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
-          if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
+        const clock = await virtualClock(page);
+        try {
+          for (let i = 0; i < n; i++) {
+            await page.evaluate(`window.__palimpsest.rideSeek(${from + i / FPS})`);
+            await clock.tick(1 / FPS);
+            await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
+            if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
+          }
+        } finally {
+          await clock.off();
         }
-        encode(dir, 'ride');
+        encodeClip(dir, 'ride', true, Number(process.env.RIDE_POSTER ?? 0.5));
         if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
         else rmSync(dir, { recursive: true, force: true });
       }
       await page.evaluate('window.__palimpsest.ride(null)');
+      // The ride's last caption holds a moment after the ride ends: let it go before the next shot.
+      await page.waitForTimeout(4000);
     },
 
     async river(page) {
@@ -1070,7 +1201,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await shoot(page, 'inspection-home');
       await chrome(page, false);
       const lens = s.searchlights[0]?.at ?? [cx + 40, 2, cz + 40];
-      await still(page, 'inspection', [cx + B[0] * 150 - 40, Math.max(18, top * 0.25), cz + B[1] * 150 + 30], [cx, top * 0.72, cz]);
+      await still(page, 'inspection-site', [cx + B[0] * 150 - 40, Math.max(18, top * 0.25), cz + B[1] * 150 + 30], [cx, top * 0.72, cz]);
       await still(page, 'inspection-plaza', [lens[0] + B[0] * 14 - 6, 3.2, lens[2] + B[1] * 14 + 4], [cx, top + 2, cz]);
       await still(page, 'inspection-up', [cx + B[0] * 70 + 25, top - 70, cz + B[1] * 70 - 20], [cx, top + 1, cz]);
       await still(page, 'inspection-close', [cx + B[0] * 34 + 6, top + 11, cz + B[1] * 34 - 6], [cx, top + s.floorHeight * 0.5, cz]);
@@ -1125,6 +1256,207 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.home());
       await page.waitForTimeout(3500);
       await shoot(page, 'lifecycle-home');
+    },
+
+    async 'market-overview'(page) {
+      // The market at work (CAPTURE_ECONOMY=live): the city with the harbour tower's crane up, a tram passing, the
+      // exchange lit, and the firms' lens, cantilever and needle towers on the skyline. MARKET_VIEW='[[eye],[target]]'
+      // overrides the framing; the positions it is framed on are logged.
+      await page.waitForFunction('window.__palimpsest.liveSites().some((s) => s.stage === "framing")', null, { timeout: 15_000 }).catch(() => {});
+      const quarters = (await page.evaluate(() => fetch('/api/quarters').then((x) => x.json()))) as Quarter[];
+      const crowns = quarters.flatMap((q) => q.towers.filter((t) => t.agentId && !t.dark && t.silhouette && t.silhouette !== 'plain').map((t) => `${t.silhouette} ${t.agentId} at ${Math.round(q.origin.x + QUARTER_OFFSETS_CAPTURE[t.towerIndex ?? 0].x)},${Math.round(q.origin.z + QUARTER_OFFSETS_CAPTURE[t.towerIndex ?? 0].z)}`));
+      console.log(`  crowns: ${crowns.join(' | ')}`);
+      const sites = (await page.evaluate('window.__palimpsest.liveSites()')) as Array<{ repo: string; stage: string }>;
+      console.log(`  sites: ${sites.map((s) => `${s.repo} ${s.stage}`).join(', ')}`);
+      const [eye, target] = (process.env.MARKET_VIEW ? JSON.parse(process.env.MARKET_VIEW) : MARKET_VIEW_DEFAULT) as [V3, V3];
+      // A tram where the frame crosses its loop, moving.
+      const near = (process.env.MARKET_TRAM ? JSON.parse(process.env.MARKET_TRAM) : MARKET_TRAM_DEFAULT) as number[];
+      const passing = await callDebug<boolean>(page, `d.vehicleSeek([{ kind: 'tram', near: ${JSON.stringify(near)}, radius: 40, moving: 4 }], 4000)`);
+      if (!passing) console.log('  no tram passing where the frame looks for one');
+      await chrome(page, false);
+      await still(page, 'market-overview', eye, target);
+    },
+
+    async screens(page) {
+      // The market's screens (CAPTURE_ECONOMY=live), each over the city as it opens: the job board, the harbour job
+      // that is running, its run's live transcript, the scarred job's inspection report, the firms, Dagny Hollis's
+      // agent page and the treasury. Taken before any clip ticks the economy's clock on.
+      const table = this as unknown as Record<string, (p: Page) => Promise<void>>;
+      for (const name of ['jobs', 'job', 'run-log', 'inspection', 'firms', 'agent', 'treasury']) await table[name](page);
+    },
+
+    async jobs(page) {
+      await openHash(page, '#/jobs', '.sheet .sec-bidding .job-row');
+      await shoot(page, 'jobs');
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async job(page) {
+      const running = await runningHarbour(page);
+      await openHash(page, `#/jobs/${running.id}`, '.jobpage .job-award');
+      await shoot(page, 'job');
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'run-log'(page) {
+      // The live run's first view: its stage, its figures and the transcript's tail together.
+      const running = await runningHarbour(page);
+      await openHash(page, `#/runs/${running.runId}`, '.runpage .run-log .log-row');
+      await page.waitForTimeout(800);
+      await shoot(page, 'run-log');
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async inspection(page) {
+      // The scarred job's first attempt: eight checks, two failed (scope and review), the reviewer's concerns.
+      const jobs = (await page.evaluate(() => fetch('/api/jobs').then((r) => r.json()))) as Array<{ id: string; title: string }>;
+      const scarred = jobs.find((j) => j.title === 'Search index rebuild blocks the API for 40 seconds');
+      if (!scarred) throw new Error('no scarred job in the economy');
+      const d = (await page.evaluate((id) => fetch(`/api/jobs/${id}`).then((r) => r.json()), scarred.id)) as { runs: Array<{ id: string; outcome: string }>; inspections: Array<{ id: string; runId: string }> };
+      const failed = d.runs.find((r) => r.outcome === 'failed');
+      const insp = d.inspections.find((i) => i.runId === failed?.id);
+      if (!insp) throw new Error('the scarred job has no failed inspection');
+      await openHash(page, `#/inspections/${insp.id}`, '.insppage .check-row');
+      await shoot(page, 'inspection');
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async firms(page) {
+      await openHash(page, '#/firms', '.sheet.firms .firm-row');
+      await shoot(page, 'firms');
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async agent(page) {
+      // Dagny Hollis, the specialist Quickset hired from the roster: her design, lineage and tower.
+      await openHash(page, '#/agents/dagny-hollis', '.sheet.agentpage .agent-design');
+      await shoot(page, 'agent');
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async treasury(page) {
+      // A fresh reading of the sample plan (34% and 21%), so the meters read as they do in use.
+      const { sampleReading } = await import('../engine/market/sample-economy.js');
+      sampleReading(Date.now());
+      await openHash(page, '#/treasury', '.sheet.treasury .meter');
+      await shoot(page, 'treasury');
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'construction-clip'(page) {
+      // Forty seconds of the economy's clock at speed 20 (CAPTURE_ECONOMY=live), one tick a frame: the harbour run's
+      // crane over a frame going up in sparks, the guild's searchlights on the finished frame, the frame curing into
+      // its floor, the merge, the windows lighting and the crane climbing down. Written as construction.mp4.
+      type SV = { stage: string; crane: number[]; top: number; floorHeight: number; centre: number[] };
+      type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): SV | null };
+      await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().some((s) => s.stage === 'framing'), null, { timeout: 15_000 });
+      const repo = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites())).find((s) => s.stage === 'framing')!.repo;
+      const s = (await page.evaluate((r) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r), repo))!;
+      const [cx, cz] = s.centre;
+      const top = s.top;
+      const seconds = Number(process.env.CONSTRUCTION_SECONDS ?? 40);
+      // From the plaza's city side (the lifecycle's bearing), drifting a little round the site as it works.
+      const a0 = Math.atan2(0.78, 0.63);
+      const span = Number(process.env.CONSTRUCTION_SPAN ?? 0.5);
+      const r = Number(process.env.CONSTRUCTION_RADIUS ?? 110);
+      await chrome(page, false);
+      await film(
+        page,
+        'construction',
+        Math.round(seconds * FPS),
+        async (_i, t) => {
+          economy?.tick(1000 / FPS);
+          await economy?.idle();
+          const a = a0 - span / 2 + span * easeSine(t);
+          return { eye: [cx + Math.cos(a) * r, top + 10, cz + Math.sin(a) * r], target: [cx, top + 16, cz] };
+        },
+        false,
+        Number(process.env.CONSTRUCTION_POSTER ?? 0.4),
+      );
+    },
+
+    async commute(page) {
+      // Two people on their way to work (CAPTURE_ECONOMY=live): Dagny Hollis walking to the tram from her firm's side
+      // of the city, on the platform as the tram comes in, and riding it; then Hal Meridian stepping into a cab at the
+      // kerb and the cab pulling away. The city routes a trip from the exchange to a site on foot (the tram loop runs
+      // outside the districts), so the tram trip is one the router does put on a tram. Each part is filmed on the
+      // virtual clock; between parts the people's clock is moved on. COMMUTE_TRAM and COMMUTE_CAB='[[from],[to]]' move the trips.
+      const dir = mkdtempSync(join(tmpdir(), 'palimpsest-commute-'));
+      let n = 0;
+      const clock = await virtualClock(page);
+      const shoot1 = async (eye: V3, target: V3): Promise<void> => {
+        await page.evaluate(([e, t]) => (window as unknown as { __palimpsest: { view(e: number[], t: number[]): void } }).__palimpsest.view(e, t), [eye, target] as [V3, V3]);
+        await clock.tick(1 / FPS);
+        await page.screenshot({ path: join(dir, `f${String(n++).padStart(4, '0')}.png`) });
+        if (n % 60 === 0) process.stdout.write(`  ${n}\r`);
+      };
+      /** Follows a figure for `seconds`, the camera easing after it; `aim` frames it (the follow camera's framing by default). */
+      const follow = async (id: string, seconds: number, aim: (f: FigureProbe, v: { position: number[]; heading: number } | null) => [V3, V3] = (f) => followView(f)): Promise<void> => {
+        const ease = chase(0.12);
+        for (let i = 0; i < Math.round(seconds * FPS); i++) {
+          const f = await person(page, id);
+          if (!f) return;
+          const v = f.ride ? await callDebug<{ position: number[]; heading: number } | null>(page, `d.vehicle(${JSON.stringify(f.ride.id)})`) : null;
+          const [e, t] = aim(f, v);
+          const c = ease(e, t);
+          await shoot1(c.eye, c.target);
+        }
+      };
+      /** runUntil, but null unless the figure really reached the state asked for. */
+      const until = async (id: string, ok: (f: FigureProbe, v: VehicleProbe | null) => boolean, max = 900, step = 0.5): Promise<FigureProbe | null> => {
+        const f = await runUntil(page, id, ok, max, step);
+        if (!f) return null;
+        const v = f.ride ? await callDebug<VehicleProbe | null>(page, `d.vehicle(${JSON.stringify(f.ride.id)})`) : null;
+        return ok(f, v) ? f : null;
+      };
+      try {
+        await chrome(page, false);
+        await callDebug(page, 'd.peopleLantern(true)');
+        const [tFrom, tTo] = (process.env.COMMUTE_TRAM ? JSON.parse(process.env.COMMUTE_TRAM) : [[560, -300], [600, 200]]) as [[number, number], [number, number]];
+        await sendPerson(page, 'dagny-hollis', tFrom, tTo);
+        const legs = ((await person(page, 'dagny-hollis')) ? await callDebug<Array<{ mode: string }>>(page, `d.vehicleTrip(${JSON.stringify(tFrom)}, ${JSON.stringify(tTo)})`) : []).map((l) => l.mode);
+        console.log(`  tram trip legs: ${legs.join(' > ')}`);
+        await callDebug(page, 'd.peopleSkip(8)');
+        await follow('dagny-hollis', 4);
+        // On the platform, as the tram comes in: from up the platform, looking back at her.
+        const w = await until('dagny-hollis', (x) => x.mode === 'tram' && x.stage === 'wait');
+        if (w) {
+          const f0 = await until('dagny-hollis', (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 90 && v.speed > 0.5), 1200);
+          const at = f0 ?? w;
+          const eye = aroundPerson(at.position, at.heading, 11, 2.4, at.position[1] + 2.4);
+          const target = aroundPerson(at.position, at.heading, -1.5, 0.3, at.position[1] + 1.2);
+          for (let i = 0; i < Math.round(6 * FPS); i++) await shoot1(eye, target);
+          // Riding: beside the tram, keeping pace with it.
+          const r = await until('dagny-hollis', (x) => x.stage === 'ride', 240);
+          if (r) {
+            await callDebug(page, 'd.peopleSkip(4)');
+            await follow('dagny-hollis', 5, (f, v) => (v ? [aroundPerson(v.position, v.heading, -20, 1.5, v.position[1] + 7), aroundPerson(v.position, v.heading, 10, 0, v.position[1] + 1.5)] : followView(f)));
+          } else console.log('  dagny never rode the tram');
+        } else console.log('  dagny never waited for a tram');
+        // Hal's cab: at the kerb as it pulls up, then away.
+        const [cFrom, cTo] = (process.env.COMMUTE_CAB ? JSON.parse(process.env.COMMUTE_CAB) : [[446.5, 330], [1100, -200]]) as [[number, number], [number, number]];
+        await sendPerson(page, 'hal-meridian', cFrom, cTo);
+        const b = await until('hal-meridian', (x) => x.stage === 'board', 900, 1);
+        if (b) {
+          const v0 = b.ride ? await callDebug<{ position: number[]; heading: number } | null>(page, `d.vehicle(${JSON.stringify(b.ride.id)})`) : null;
+          if (v0) {
+            const eye = aroundPerson(v0.position, v0.heading, 7.5, 5.2, 1.6);
+            const target = aroundPerson(v0.position, v0.heading, -0.5, 0.6, 1.0);
+            for (let i = 0; i < Math.round(3.5 * FPS); i++) await shoot1(eye, target);
+          }
+          // Then from the kerb as it pulls away into the street.
+          const kerb = v0 ? aroundPerson(v0.position, v0.heading, 9, 5.5, 1.7) : null;
+          if (!(await until('hal-meridian', (x) => x.stage === 'ride', 120, 0.25))) console.log('  hal never rode off');
+          await follow('hal-meridian', 6, (f, v) => (v && kerb ? [kerb, [v.position[0], 1.2, v.position[2]]] : followView(f)));
+        } else console.log('  hal never boarded a cab');
+      } finally {
+        await clock.off();
+        await callDebug(page, 'd.peopleLantern(null)');
+      }
+      console.log(`commute: ${n} frames`);
+      encodeClip(dir, 'commute', false, Number(process.env.COMMUTE_POSTER ?? 0.4));
+      if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
+      else rmSync(dir, { recursive: true, force: true });
     },
 
     async hero(page) {
@@ -1235,6 +1567,13 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
   };
 }
 
+/** What a bare `tools/capture.ts` writes: the README's media. */
+const README_SHOTS = ['hero', 'stills', 'overview', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'people', 'life', 'ride', 'flyover', 'rise', 'construction-clip', 'commute'];
+
+/** The market overview's framing and where it looks for a passing tram (MARKET_VIEW and MARKET_TRAM override). */
+const MARKET_VIEW_DEFAULT: [V3, V3] = [[620, 190, 560], [60, 60, -40]];
+const MARKET_TRAM_DEFAULT = [600, -150];
+
 /** Framings tuned by eye in the quality rounds (see the probe shot), on the sample city; followCity fits them to the city served. */
 let HERO: { eye: V3; target: V3 } = { eye: [700, 70, 700], target: [0, 170, 80] };
 let OVERVIEW: { eye: V3; target: V3 } = { eye: [540, 380, 960], target: [-40, 70, 0] };
@@ -1268,7 +1607,16 @@ function followCity(city: District[]): void {
 
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) throw new Error('dist/index.html missing: run npm run build first');
-  const wanted = process.argv.slice(2).length ? process.argv.slice(2) : ['hero', 'stills', 'overview', 'inspector', 'repos', 'settings', 'flyover', 'rise'];
+  // With no shots named: every still and clip the README shows, on the sample economy with its clock running, in an
+  // order where nothing that ticks the clock comes before the screens and stills that show the board as it stands.
+  const readme = process.argv.slice(2).length === 0;
+  const wanted = readme ? README_SHOTS : process.argv.slice(2);
+  if (readme) {
+    process.env.CAPTURE_ECONOMY ??= 'live';
+    process.env.PEOPLE_ONLY ??= 'follow';
+    process.env.LIFE_ONLY ??= 'street';
+    process.env.RIDE_ONLY ??= 'clip';
+  }
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-capture-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
   process.env.PALIMPSEST_DIST = DIST;
@@ -1285,6 +1633,14 @@ async function main(): Promise<void> {
     const { seedEconomy } = await import('../engine/market/sample-economy.js');
     // CAPTURE_HOLD_SALE=1: Lodestar's dark tower is not sold in the history, so the `dark` shot sees it dark and then sold live.
     await seedEconomy(Date.now(), { holdSale: !!process.env.CAPTURE_HOLD_SALE });
+    // The treasury reads a transcripts folder. As in the UI test, the run says it is a test so the guard lets it read
+    // the sample's own empty folder, and that folder is pinned inside the temp home, so ~/.claude/projects is never read.
+    process.env.PALIMPSEST_TEST_PROJECTS = '1';
+    const projects = process.env.PALIMPSEST_CLAUDE_PROJECTS;
+    const inside = projects ? relative(resolve(tmp), resolve(projects)) : '..';
+    if (!projects || inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+      throw new Error(`capture: the transcripts folder ${projects ?? '(unset)'} is not inside the temp home ${tmp}; refusing to run`);
+    }
   }
   // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
   const { setRunner } = await import('../engine/exec.js');

@@ -2168,6 +2168,48 @@ async function qualityDropChecks(page: Page, errors: string[]): Promise<void> {
   check(fresh.length === 0, `stepping down to medium leaves no errors${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
 }
 
+/**
+ * Every screen once more, by its address, after the whole run has moved the economy on (Task 42): each opens on its
+ * sheet and adds no console error of its own. The ids are read from the engine, so each page opens on a real record.
+ */
+async function everyScreenChecks(page: Page, errors: string[]): Promise<void> {
+  const api = <T>(path: string): Promise<T> => page.evaluate((p) => fetch(p).then((r) => r.json()), path) as Promise<T>;
+  const jobs = await api<Array<{ id: string; runId: string | null }>>('/api/jobs');
+  const firms = await api<FirmView[]>('/api/firms');
+  const withRun = jobs.find((j) => j.runId);
+  const detail = withRun ? await api<{ inspections: Array<{ id: string }> }>(`/api/jobs/${withRun.id}`) : null;
+  const screens: Array<[string, string, string]> = [
+    ['city', '#/', '.runhead'],
+    ['job board', '#/jobs', '.sheet.jobs, .sheet .sec-bidding, .sheet-title'],
+    ...(jobs[0] ? ([['job', `#/jobs/${jobs[0].id}`, '.sheet.jobpage .sheet-title']] as Array<[string, string, string]>) : []),
+    ...(withRun?.runId ? ([['run', `#/runs/${withRun.runId}`, '.runpage .sheet-title']] as Array<[string, string, string]>) : []),
+    ...(detail?.inspections[0] ? ([['inspection', `#/inspections/${detail.inspections[0].id}`, '.insppage .sheet-title']] as Array<[string, string, string]>) : []),
+    ['firms', '#/firms', '.sheet.firms .firm-row'],
+    ...(firms[0] ? ([['firm', `#/firms/${firms[0].id}`, '.sheet.firmpage .sheet-title']] as Array<[string, string, string]>) : []),
+    ...(firms[0]?.agents[0] ? ([['agent', `#/agents/${firms[0].agents[0].id}`, '.sheet.agentpage .sheet-title']] as Array<[string, string, string]>) : []),
+    ['treasury', '#/treasury', '.sheet.treasury .sheet-title'],
+    ['repos', '#/repos', '.sheet.repos .sheet-title'],
+    ['district', `#/repos/${SAMPLE[0].fullName}`, '.sheet.district .sheet-title'],
+    ['settings', '#/settings', '.sheet.settings .sheet-title'],
+  ];
+  for (const [name, hash, ready] of screens) {
+    const before = errors.length;
+    await page.evaluate((h) => {
+      location.hash = h;
+    }, hash);
+    const shown = await page
+      .waitForSelector(ready, { state: 'attached', timeout: 8000 })
+      .then(() => true)
+      .catch(() => false);
+    await page.waitForTimeout(600);
+    const fresh = errors.slice(before);
+    check(shown && fresh.length === 0, `the ${name} screen opens at ${hash} with no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
+  }
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
+}
+
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/index.html missing: run npm run build first');
@@ -2348,6 +2390,7 @@ async function main(): Promise<void> {
       await vehicleChecks(page);
       await peopleChecks(page);
       await ambientChecks(page);
+      await everyScreenChecks(page, consoleErrors);
       await qualityDropChecks(page, consoleErrors);
     }
 
