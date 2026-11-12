@@ -197,7 +197,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
   function onEvent(e: EngineEvent): void {
     if (e.type === 'engine.reconnected' || e.type === 'report.written') reportStale = true;
     if (e.type === 'engine.reconnected') return read();
-    if (/^(credits\.moved|run\.(started|ended|stage)|bid\.placed|report\.written|settings\.|firm\.)/.test(e.type)) read();
+    if (/^(credits\.moved|run\.(started|ended|stage)|bid\.placed|report\.written|settings\.|firm\.|brief\.action)/.test(e.type)) read();
   }
 
   // ---------------------------------------------------------------- the pause
@@ -270,7 +270,9 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const head = el('div', 'meter-head');
     head.append(el('span', 'meter-reset', resetWords(w.resetsAt, now)));
     const cap = w.capPct;
-    const capLabel = which === 'five' ? `city cap ${pctOf(cap)}` : 'week';
+    // Today's limit, when he set one from the brief, stands in place of the city's cap until midnight (ruling 10).
+    const mine = which === 'five' && v.todayCapPct !== null;
+    const capLabel = which === 'five' ? (mine ? `today's limit ${pctOf(cap)}` : `city cap ${pctOf(cap)}`) : 'week';
     const label = `${name}: ${w.usedPct === null ? 'unread' : `${pctOf(w.usedPct)} used`} by the last reading, about ${pctOf(w.estimatedPct)} now; the city's share ${pctOf(w.cityPct)}${which === 'five' ? ` against its ${pctOf(cap)} cap` : `, unattended ${pctOf(v.night.usedPct)} against the ${pctOf(v.night.capPct)} night cap`}; hard stop at ${v.hardStopPct}%; ${resetWords(w.resetsAt, now)}.`;
     right.append(head, meterRule(w, which === 'five' ? { cap, capLabel, stop: v.hardStopPct, label } : { cap: null, capLabel, stop: v.hardStopPct, label, night: v.night }));
     const legend = el('p', 'meter-legend');
@@ -288,6 +290,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
       ...(which === 'seven' ? [key('night', `Unattended, ${pctOf(v.night.usedPct)} of the week, against the ${pctOf(v.night.capPct)} night cap`)] : []),
     );
     right.append(legend);
+    if (mine) right.append(el('p', 'meter-today', `Today's limit ${pctOf(cap)}, set by you from the brief, in place of the city's cap until midnight.`));
     box.append(fig, right);
     return box;
   }
@@ -617,6 +620,12 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     checkRadio(picker, chosen);
     rovingRadios(picker, (r) => pickDay(r.dataset.day!));
     sec.append(secHead('Daily report', v.reports.length ? picker : 'none yet'));
+    // The report keeps the day's numbers; the brief is what he can act on this morning. Each links to the other.
+    const toBrief = el('p', 'jobs-key report-brief');
+    const a = el('a', 'brief-why-link', 'This morning’s brief');
+    a.href = routeHref('brief');
+    toBrief.append(a, document.createTextNode(' holds what waits on you, each with its action.'));
+    sec.append(toBrief);
     const body = el('article', 'report');
     if (!shown) body.append(el('p', 'entries-note', 'The first report is written ten minutes after the first full day ends.'));
     else if (!report || report.day !== shown) body.append(el('p', 'entries-note', 'Reading the report.'));

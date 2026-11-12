@@ -39,6 +39,10 @@ const USAGE_MARGIN = 10;
 const TAUGHT: readonly BriefAction[] = ['dismiss', 'accept', 'tier', 'retry', 'cap'];
 /** The actions that finish an item: once taken, the item shows it and offers nothing else. A cap can be changed again. */
 const FINISHING: readonly BriefAction[] = ['accept', 'dismiss', 'retry', 'resume', 'audit'];
+/** Looking, not acting: recorded, but never covering what he did with the item (he may ask why after posting it). */
+const LOOKS: readonly BriefAction[] = ['why', 'diff', 'fly', 'open-pr'];
+/** Whether `next` should stand as the item's action over `was`. */
+const covers = (was: BriefItem['acted'], next: BriefAction): boolean => !was || !LOOKS.includes(next) || LOOKS.includes(was.action);
 
 export interface BriefOptions {
   /** The milestones active now; by default Task 7's `listMilestones`. */
@@ -467,7 +471,7 @@ export function briefData(now: number, opts: BriefOptions = {}): Brief {
     const d = e.data as { itemId?: string; action?: BriefAction; at?: string };
     const it = d.itemId ? items.get(d.itemId) : undefined;
     if (!it || !d.action) continue;
-    it.acted = { action: d.action, at: d.at ?? e.at };
+    if (covers(it.acted, d.action)) it.acted = { action: d.action, at: d.at ?? e.at };
     if (FINISHING.includes(d.action)) it.actions = it.actions.filter((a) => !FINISHING.includes(a) && a !== 'tier');
   }
   const sections: Brief['sections'] = { waiting: [], overnight: [], recommendations: [], city: [] };
@@ -572,7 +576,7 @@ export function actOn(itemId: string, action: BriefAction, body: { tier?: Tier; 
   const row = { day: b.day, itemId, kind: item.kind, action, taught, at, patch };
   record('brief.action', row);
   emit('brief.action', row);
-  const acted: BriefItem = { ...item, acted: { action, at } };
+  const acted: BriefItem = { ...item, acted: covers(item.acted, action) ? { action, at } : item.acted };
   if (action === 'tier' && patch.tier) acted.tier = patch.tier;
   if (FINISHING.includes(action)) acted.actions = acted.actions.filter((a) => !FINISHING.includes(a) && a !== 'tier');
   return { item: acted, result };

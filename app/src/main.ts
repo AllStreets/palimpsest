@@ -4,6 +4,7 @@ import './ui/style.css';
 import './ui/screens.css';
 
 import type { District, FirmView, Job, Quarter, Repo, SiteState, TowerSpec } from '../../shared/types';
+import { weekOf } from '../../shared/tour';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
@@ -19,7 +20,7 @@ import { loadKits, registerFallbackKits } from './city/kits';
 import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
-import { navigate, onRoute } from './router';
+import { currentRoute, navigate, onRoute, type Place, type Route } from './router';
 import { createInspector, type MarketNames } from './ui/inspector';
 import { createAgentPage } from './ui/agent';
 import { createFirmPage } from './ui/firm';
@@ -31,6 +32,8 @@ import { createJobs } from './ui/jobs';
 import { createRunPage } from './ui/run';
 import { createDistrictPage } from './ui/repo';
 import { createAuditPage } from './ui/audit';
+import { createBrief, TOUR_LATER } from './ui/brief';
+import { emptyMorning } from './ui/brief-words';
 import { createRepos } from './ui/repos';
 import { createRunhead } from './ui/runhead';
 import { createSettings } from './ui/settings';
@@ -199,6 +202,12 @@ async function main(): Promise<void> {
   if (!host) throw new Error('missing #city');
 
   const notice = createNotice(document.body);
+  // The brief is asked for first, while the kits and the city load: on the day's first open it is recorded
+  // (Decision 8, empty morning or not) and, when it carries an item, it draws over the veil (Decision 2).
+  const briefOpened = api.brief().then(
+    async (b) => (b.firstOpen ? { brief: await api.openBrief(), first: true } : { brief: b, first: false }),
+    () => null,
+  );
   // The Blender-authored kits (masonry courses, crowns, roof pieces) load before anything is built from them.
   // Missing or corrupt, the city stands on plain stand-ins and says so, rather than going blank.
   /** Each firm's slot, which picks the colour of its mark on the floors it earned. */
@@ -724,6 +733,11 @@ async function main(): Promise<void> {
       e.preventDefault();
       city.home();
     }
+    // T in the city walks through the week (Decision 5), any day.
+    if ((e.key === 't' || e.key === 'T') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city') {
+      e.preventDefault();
+      if (!startTour(weekOf(Date.now()).week)) tourLater();
+    }
   });
 
   // A job, a run and an inspection report each have a page (Task 37). The job's floor flies the city to it.
@@ -785,12 +799,49 @@ async function main(): Promise<void> {
   // A README audit's own page (Phase 3 Task 10): the claims, their evidence and the jobs that close the gap.
   const auditPage = createAuditPage(document.body, { listen, onDismiss: toCity });
 
+  /** The week's tour. TODO(Task 17): the city walks it; until then it says when it comes. */
+  const startTour = (week: string): boolean => {
+    void week;
+    return false;
+  };
+  const tourLater = (): void => {
+    if (!notice.text().includes(TOUR_LATER)) notice.add(TOUR_LATER);
+  };
+  // The morning brief (Phase 3 Task 11): every action in place; the floor and the diff go through the job page's own hooks.
+  const brief = createBrief(document.body, {
+    listen,
+    onDismiss: toCity,
+    flyToFloor({ repo, floorId, agentId }) {
+      const floor = repo && floorId ? city.floorFrame(repo, floorId) : null;
+      const tower = floor ? null : agentId ? city.agentFrame(agentId) : repo ? city.towerFrame(repo) : null;
+      if (!floor && !tower) return false;
+      navigate('city');
+      if (floor && repo && floorId) {
+        inspect(repo, floorId);
+        city.flyTo(floor.center, Math.max(90, floor.width * 4.4));
+      } else if (tower) city.flyTo(tower.center, Math.max(120, tower.height * 2.4));
+      return true;
+    },
+    openDiff(runId) {
+      navigate('run', runId);
+      // The run's page reads its diff after it draws: bring the change into view once it stands.
+      const t0 = performance.now();
+      const find = (): void => {
+        const diff = document.querySelector<HTMLElement>('.sheet.run .run-diff');
+        if (diff && diff.childElementCount > 1) diff.scrollIntoView({ block: 'start' });
+        else if (performance.now() - t0 < 4000) requestAnimationFrame(find);
+      };
+      requestAnimationFrame(find);
+    },
+    startTour,
+  });
+
   // Repos, Settings, the job board, the job, run and inspection pages, the firms and a firm's and an
   // agent's page and the treasury draw over the city, which keeps running beside them. A place with no
   // screen yet (a district) leaves the city showing.
-  const SCREENS = new Set(['repos', 'repo', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent', 'treasury', 'audit']);
+  const SCREENS = new Set(['repos', 'repo', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent', 'treasury', 'audit', 'brief']);
   let lastRoute = 'city';
-  onRoute((to, place) => {
+  const applyRoute = (to: Route, place: Place): void => {
     const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent', 'repo', 'audit'].includes(to)) ? to : 'city';
     document.body.dataset.route = route;
     runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route === 'repo' || route === 'audit' ? 'repos' : route);
@@ -819,10 +870,26 @@ async function main(): Promise<void> {
     else districtPage.hide();
     if (route === 'audit') auditPage.show(place.id!);
     else auditPage.hide();
+    if (route === 'brief') brief.show();
+    else brief.hide();
     // Back in the city, focus returns to it rather than to a sheet that has gone.
     if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
     lastRoute = route;
-  });
+  };
+  onRoute(applyRoute);
+
+  // The day's first open: the brief draws over the veil while the city finishes behind it, unless he came
+  // to another page by its address; an empty morning says so in one quiet line instead.
+  const opened = await briefOpened;
+  if (opened) {
+    brief.prime(opened.brief, opened.first);
+    if (opened.first && opened.brief.due && currentRoute() === 'city') {
+      navigate('brief');
+      // Drawn now, not on the hashchange after it, so the brief stands before the veil lifts.
+      applyRoute('brief', { route: 'brief', id: null });
+    }
+    else if (opened.first && !opened.brief.due) notice.add(`${emptyMorning()}.`);
+  }
 
   await city.ready;
   debug.ready = true;

@@ -4675,3 +4675,261 @@ li:focus-within > .term-remove,
   white-space: pre-wrap;
   overflow: hidden;
 }
+
+/* ---------------------------------------------------------------- the brief (Phase 3 Task 11) */
+
+/* His morning page: the day in large type, two sentences, then short ruled ledgers. Each story a headline, a dateline and its sentence, the actions set in the same line as text. */
+.brief-kicker {
+  margin-bottom: 8px;
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--bronze);
+}
+.brief-lead {
+  margin-top: 14px;
+  max-width: 54ch;
+  font-family: var(--serif);
+  font-size: 20.5px;
+  line-height: 1.42;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.brief-since,
+.brief-usage {
+  max-width: 74ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.brief-since {
+  margin-top: 10px;
+}
+.brief-empty {
+  margin-top: 14px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 20.5px;
+  color: var(--ink-2);
+}
+.brief-lead[hidden] {
+  display: none;
+}
+.brief-empty[hidden],
+.brief-sec[hidden],
+.brief-key[hidden] {
+  display: none;
+}
+.brief-sec .repos-sec {
+  padding-top: 34px;
+}
+.brief-key {
+  margin-top: 10px;
+}
+.brief-list {
+  list-style: none;
+}
+.brief-item {
+  padding: 15px 0 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.brief-item[aria-busy='true'] {
+  opacity: 0.72;
+}
+.brief-head {
+  max-width: 60ch;
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 17.5px;
+  line-height: 1.32;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.brief-line {
+  margin-top: 4px;
+  max-width: 76ch;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.brief-dateline {
+  margin-right: 9px;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+/* The actions follow the sentence as one group, spaced after each word rather than before, so a group that wraps starts flush. */
+.brief-sentence {
+  margin-right: 16px;
+}
+.brief-acts {
+  display: inline-block;
+  margin-right: 16px;
+  white-space: nowrap;
+}
+.brief-act {
+  margin-right: 14px;
+}
+.brief-act:last-child {
+  margin-right: 0;
+}
+a.brief-act {
+  color: var(--ink-2);
+}
+.brief-act:disabled {
+  color: var(--ink-3);
+  cursor: default;
+}
+.brief-acted {
+  display: inline-block;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  outline: none;
+}
+.brief-acted:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+/* What he dismissed steps back: still in its place, read once more if he wants it. */
+.brief-item[data-acted='dismiss'] .brief-head,
+.brief-item[data-acted='dismiss'] .brief-sentence {
+  color: var(--ink-3);
+}
+.brief-tier {
+  margin-left: 12px;
+  vertical-align: baseline;
+}
+
+/* Today's limit, a field in the line of the page: a number over a hairline, until midnight. */
+.brief-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 4px;
+  margin-top: 10px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+.brief-cap-label {
+  color: var(--ink);
+}
+.brief-cap-input {
+  all: unset;
+  box-sizing: border-box;
+  width: 3.4ch;
+  padding: 0 2px 2px;
+  border-bottom: 1px solid var(--bronze);
+  font-family: var(--mono);
+  font-size: 14px;
+  text-align: right;
+  color: var(--ink);
+  -moz-appearance: textfield;
+}
+.brief-cap-input::-webkit-outer-spin-button,
+.brief-cap-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.brief-cap-input:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.brief-cap-unit {
+  margin-left: -6px;
+  color: var(--ink);
+}
+.brief-cap-until {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+}
+.brief-cap-set {
+  margin-left: 8px;
+}
+.brief-cap-note {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* Ask why: the reason under the row, ruled in bronze as a quotation is. */
+.brief-why {
+  margin-top: 12px;
+  max-width: 68ch;
+  padding: 2px 0 2px 16px;
+  border-left: 1px solid var(--bronze);
+}
+.brief-why .why-claim {
+  margin-top: 0;
+  padding-left: 0;
+  border-left: 0;
+}
+.brief-why .why-claim-text {
+  font-size: 17px;
+}
+.brief-why .why-verdict {
+  margin-top: 8px;
+}
+.brief-why-text {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.brief-why-text:first-child {
+  margin-top: 0;
+}
+.brief-why-text.reading {
+  font-style: italic;
+  color: var(--ink-3);
+}
+.brief-why-summary {
+  margin-top: 8px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+.brief-why-more {
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+.brief-why-link {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.brief-why-link:hover {
+  color: var(--ink);
+}
+.brief-quiet {
+  margin-top: 6px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink-3);
+  outline: none;
+}
+.brief-error {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--err);
+}
+
+/* The treasury's five-hour meter, while he holds today's limit. */
+.meter-today {
+  margin-top: 6px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--bronze);
+}

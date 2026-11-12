@@ -22,6 +22,7 @@ export function createRunhead(parent: HTMLElement): Runhead {
   nav.append(mark);
   for (const [route, text] of [
     ['city', 'City'],
+    ['brief', 'Brief'],
     ['jobs', 'Jobs'],
     ['firms', 'Firms'],
     ['treasury', 'Treasury'],

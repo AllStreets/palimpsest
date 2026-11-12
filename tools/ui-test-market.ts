@@ -1,7 +1,7 @@
 /**
  * The market's switches on the Repos screen, the district page and the
  * provider settings (Task 40), run by tools/ui-test.ts on its own engine
- * (port 4779, a temp home) after the treasury's checks, on the sample
+ * (port UI_PORT, default 4779, a temp home) after the treasury's checks, on the sample
  * economy. gh, git and `ollama list` go to the sample stand-in; the API key
  * goes to the sample keychain in this process's memory (installKeychainStandIn),
  * so `security` never runs and no keychain on this Mac is touched; the Codex

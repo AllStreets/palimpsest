@@ -1,6 +1,6 @@
 /**
  * The firm pages and the agent page's UI checks (Task 38), run by
- * tools/ui-test.ts on its own engine (port 4779, a temp home) after the job
+ * tools/ui-test.ts on its own engine (port UI_PORT, default 4779, a temp home) after the job
  * pages' checks, on the sample economy: six firms with Lodestar bankrupt and
  * its tower sold to Quickset, Dagny Hollis hired from the roster, the rest
  * seeded with the city. The firms list shows all six with one bankrupt, a

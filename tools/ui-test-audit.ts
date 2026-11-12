@@ -1,6 +1,6 @@
 /**
  * The README audit's screens (Phase 3 Task 10), run by tools/ui-test.ts on
- * its own engine (port 4779, a temp home) once the sample economy is
+ * its own engine (port UI_PORT, default 4779, a temp home) once the sample economy is
  * seeded: the audit on the harbour's district page with its proposals, the
  * audit's own page, "Audit the README" on assay-kit, the kumo audit the
  * economy's clock ends (runs held, so the construction checks after these

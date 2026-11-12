@@ -350,6 +350,23 @@ test('accept on a proposal opens it and records a taught action', () => {
   assert.ok(!it.actions.includes('accept'));
 });
 
+test('asking why after acting keeps what he did on the item; looking alone leaves the look', () => {
+  seedFirms([]);
+  addRepo(FULL);
+  const { job } = auditWithProposal(FULL);
+  const now = Date.now();
+  openBrief(now);
+  actOn(`proposal:${job.id}`, 'accept', {}, now);
+  const r = actOn(`proposal:${job.id}`, 'why', {}, now + 60_000);
+  assert.equal(r.item.acted?.action, 'accept', 'the answer to Ask why still carries the accept');
+  assert.equal(item(briefData(now + 120_000), `proposal:${job.id}`).acted?.action, 'accept', 'and so does the brief');
+  // Both are in the ledger: the look is recorded, it only does not cover the act.
+  assert.deepEqual(entries().filter((e) => e.kind === 'brief.action').map((e) => (e.data as { action: string }).action), ['accept', 'why']);
+  const { job: other } = auditWithProposal(FULL);
+  actOn(`proposal:${other.id}`, 'why', {}, now);
+  assert.equal(item(briefData(now + 1000), `proposal:${other.id}`).acted?.action, 'why');
+});
+
 test('dismiss withdraws a proposal by him and is recorded as taught', () => {
   seedFirms([]);
   addRepo(FULL);

@@ -1,6 +1,6 @@
 /**
  * The job board's UI checks (Task 36), run by tools/ui-test.ts on its own
- * engine (port 4779, a temp home) once the sample economy is seeded. The
+ * engine (port UI_PORT, default 4779, a temp home) once the sample economy is seeded. The
  * economy's clock is ticked on demand with the board on (test safety rule
  * 8), a little at a time, so the runs the later checks expect are where the
  * seed left them: no step past the clock's first 30 script seconds runs.

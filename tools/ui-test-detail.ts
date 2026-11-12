@@ -1,6 +1,6 @@
 /**
  * The job, run and inspection pages' UI checks (Task 37), run by
- * tools/ui-test.ts on its own engine (port 4779, a temp home) after the job
+ * tools/ui-test.ts on its own engine (port UI_PORT, default 4779, a temp home) after the job
  * board's checks, with the sample economy's clock ticked on demand (test
  * safety rule 8). The running job's log grows live and the hold toggle
  * stops it following; refusals show with their reason; the scarred job's

@@ -1,5 +1,6 @@
 /**
- * End-to-end UI check. Starts its own engine in-process on port 4779 with a
+ * End-to-end UI check. Starts its own engine in-process on port UI_PORT
+ * (default 4779; tools/ui-port.ts refuses 4770 and 4771) with a
  * temp data home (never the real engine on 4770), seeds the sample city
  * (tools/sample.ts), opens the built UI in Chromium and checks that the
  * city renders without console errors. Saves screenshots to shots/.
@@ -13,7 +14,8 @@
  * Run after `npm run build`: `npm run ui-test`. Optional: UI_DPR=2 renders
  * at retina density, UI_QUALITY=medium switches the quality setting first,
  * UI_TOWER_SHOTS=all adds close shots of every root and era for the quality
- * rounds.
+ * rounds. UI_PORT=4811 runs it on another port, so two worktrees can each
+ * run one at once.
  */
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,12 +37,14 @@ import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
+import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
+import { uiPort } from './ui-port.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 const SHOTS = join(ROOT, 'shots');
-const PORT = 4779;
+const PORT = uiPort(process.env.UI_PORT);
 const VIEWPORT = { width: 1600, height: 940 };
 
 const failures: string[] = [];
@@ -1676,6 +1680,9 @@ async function main(): Promise<void> {
   writeFileSync(keychain, '');
   const { startServer } = await import('../engine/server.js');
   let server = await startServer({ port: PORT, claudeSettingsPath, keychain });
+  // Today's brief is opened first, as his first window would, so every check before the brief's own finds the
+  // city; briefChecks takes today's open out again to see the day's first open (tools/ui-test-brief.ts).
+  await fetch(`http://127.0.0.1:${PORT}/api/brief/open`, { method: 'POST', headers: { 'x-palimpsest': '1' } });
   const restart = async (whileDown: () => Promise<void>): Promise<void> => {
     await server.close();
     await whileDown();
@@ -1804,6 +1811,8 @@ async function main(): Promise<void> {
         const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
         if (k >= 0) consoleErrors.splice(k, 1);
       }
+      // The morning brief: the day's first open, every action in place, a second window (Phase 3 Task 11).
+      await briefChecks(page, check, SHOTS);
       await constructionChecks(page);
       await lifecycleChecks(page);
       await silhouetteChecks(page);
@@ -1811,6 +1820,13 @@ async function main(): Promise<void> {
     }
 
     check(consoleErrors.length === 0, `no console errors${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`);
+
+    // The empty morning (Phase 3 Task 11), last: on a fresh home with no repos, since the economy's is never empty.
+    await page.close();
+    await server.close();
+    process.env.PALIMPSEST_HOME = join(tmp, 'home-empty');
+    server = await startServer({ port: PORT, claudeSettingsPath, keychain });
+    await emptyMorningChecks(browser, `http://127.0.0.1:${PORT}`, check, SHOTS);
   } finally {
     await browser.close();
     await server.close();

@@ -1,6 +1,6 @@
 /**
  * The treasury screen's UI checks (Task 39), run by tools/ui-test.ts on its
- * own engine (port 4779, a temp home) after the firm pages' checks, on the
+ * own engine (port UI_PORT, default 4779, a temp home) after the firm pages' checks, on the
  * sample economy: his reading at 44% of the five-hour window and 21% of the
  * week, a calibration measured from 14 pairs, three daily reports and the
  * assay-kit harness job waiting on him. Then the stale variant: the same
