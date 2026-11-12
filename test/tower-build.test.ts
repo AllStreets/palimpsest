@@ -853,3 +853,29 @@ test('earned floors of one era stand as one run, one width', () => {
   const brick = w(6) - 0.6;
   assert.ok(Math.abs(scar - brick) < 1e-6, `the scar stands at its run's width (${scar.toFixed(2)} vs ${brick.toFixed(2)})`);
 });
+
+/** A tower's instanced parts that cast the sun's shadow at any distance: not in a LOD, or in a LOD's far level. */
+function farCasters(o: THREE.Object3D): string[] {
+  const out: string[] = [];
+  o.traverse((c) => {
+    const m = c as THREE.InstancedMesh;
+    if (!m.isInstancedMesh || !m.castShadow) return;
+    const lod = m.parent as THREE.LOD;
+    if (lod?.isLOD && lod.levels[0]?.object === m) return;
+    out.push(m.name);
+  });
+  return out;
+}
+
+test('at medium a kit part casts its shadow only near, as at high, so the step down never adds shadow draws', () => {
+  for (const root of ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago'] as const) {
+    const s = spec(root, 3);
+    const high = buildTower(s, 'high', plainMaterials());
+    const medium = buildTower(s, 'medium', plainMaterials());
+    const h = farCasters(high.group);
+    const m = farCasters(medium.group);
+    assert.ok(m.length <= h.length, `${root}: medium casts from as far as high with no more parts (${m.length} against ${h.length}: ${m.filter((x) => !h.includes(x)).slice(0, 4).join(', ')})`);
+    high.dispose();
+    medium.dispose();
+  }
+});

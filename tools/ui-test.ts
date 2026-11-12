@@ -15,8 +15,9 @@
  * at retina density, UI_QUALITY=medium switches the quality setting first,
  * UI_TOWER_SHOTS=all adds close shots of every root and era for the quality
  * rounds. UI_FORCE_DROP=1 runs the notice stack's checks alone and then
- * drops the quality from home, checking that the notice names what it saw. UI_ONLY=spire seeds the economy and
- * runs the skyline's checks and shots alone. Both partial modes end "PARTIAL run (...): not a full pass" and
+ * drops the quality from home, checking that the notice names what it saw. UI_ONLY=spire (or revival) seeds the economy and
+ * runs the skyline's checks and shots alone; UI_ONLY=budget seeds it and compares the tiers' calls from home
+ * (UI_BUDGET=detail names each drawn mesh). Both partial modes end "PARTIAL run (...): not a full pass" and
  * exit 3 when every check they ran held (tools/ui-verdict.ts), never as a full pass. UI_PORT=4811 runs it on another port, so two worktrees can each
  * run one at once.
  */
@@ -535,6 +536,38 @@ async function revivalChecks(page: Page): Promise<void> {
   check(own <= 32 && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `the spires and the revival draw in at most 32 calls and the city keeps its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
+type Tally = { calls: number; triangles: number };
+type Breakdown = Record<string, Record<string, Tally>>;
+/** The home view's draws by subsystem (or by drawn mesh, with `detail`) and pass, the shadow map redrawn. */
+async function homeBreakdown(page: Page, detail = false): Promise<Breakdown> {
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(1500);
+  return (await page.evaluate(`window.__palimpsest.breakdown(${detail})`)) as Breakdown;
+}
+const callsOf = (b: Breakdown): number => Object.values(b).reduce((n, v) => n + Object.values(v).reduce((m, t) => m + t.calls, 0), 0);
+
+/**
+ * The medium tier's draws against the high tier's from home (Phase 4 Task 0,
+ * pulled forward): stepping down takes detail away, so it must never cost
+ * more calls than high, give or take a few for the shadow map's own cut. The
+ * difference is printed by subsystem and pass, and with UI_BUDGET=detail by
+ * drawn mesh, so a regression names itself.
+ */
+async function tierBudgetChecks(page: Page, high: Breakdown): Promise<void> {
+  const medium = await homeBreakdown(page, process.env.UI_BUDGET === 'detail');
+  const hc = callsOf(high);
+  const mc = callsOf(medium);
+  const keys = [...new Set([...Object.keys(high), ...Object.keys(medium)])];
+  const rows = keys
+    .flatMap((k) => ['main', 'shadow', 'ao', 'post'].map((p) => [k, p, high[k]?.[p]?.calls ?? 0, medium[k]?.[p]?.calls ?? 0] as const))
+    .filter(([, , a, b]) => a !== b)
+    .sort((x, y) => Math.abs(y[3] - y[2]) - Math.abs(x[3] - x[2]));
+  for (const [k, p, a, b] of rows.slice(0, 40)) console.log(`info  tier ${k} ${p}: high ${a}, medium ${b}`);
+  console.log(`info  from home: high ${hc} calls, medium ${mc} calls`);
+  check(mc <= hc + 5, `on medium the city from home draws no more than high plus 5 calls (${mc} against ${hc})`);
+}
+
 /**
  * After the step down to medium: the skyline's ornaments are rebuilt at
  * medium and stand where they stood, and the city from home keeps within
@@ -612,6 +645,9 @@ async function silhouetteChecks(page: Page): Promise<void> {
     await page.screenshot({ path: join(SHOTS, file) });
   }
   check((await debug(page, (x) => x.quality())) === 'high', 'the silhouette board holds high quality');
+  // The board comes down: every later budget sees the city alone.
+  await page.evaluate('window.__palimpsest.clearAgentBoard()');
+  await page.waitForTimeout(500);
 }
 
 // ---------------------------------------------------------------- quarters (Task 24)
@@ -2534,16 +2570,23 @@ async function main(): Promise<void> {
     // name what it saw. A quick run for the notice rounds; the full run takes the same checks in their places.
     const forceDrop = process.env.UI_FORCE_DROP === '1';
     // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
-    const spireOnly = process.env.UI_ONLY === 'spire' || process.env.UI_ONLY === 'revival';
+    const spireOnly = process.env.UI_ONLY === 'spire' || process.env.UI_ONLY === 'revival' || process.env.UI_ONLY === 'budget';
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
-      await spireChecks(page);
-      await revivalChecks(page);
-      const before = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
-      await page.evaluate('window.__palimpsest.dropQuality()');
-      await page.waitForTimeout(1500);
-      await spireAfterDropChecks(page, before);
+      if (process.env.UI_ONLY === 'budget') {
+        const high = await homeBreakdown(page, process.env.UI_BUDGET === 'detail');
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await tierBudgetChecks(page, high);
+      } else {
+        await spireChecks(page);
+        await revivalChecks(page);
+        const before = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(1500);
+        await spireAfterDropChecks(page, before);
+      }
     } else if (forceDrop && ready) {
       await noticeChecks(page, check, SHOTS);
       const home = await debug(page, (d) => d.limits().home);
@@ -2660,8 +2703,10 @@ async function main(): Promise<void> {
         await ambientChecks(page);
         await everyScreenChecks(page, consoleErrors);
         const spiresBefore = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
+        const highHome = await homeBreakdown(page);
         await qualityDropChecks(page, consoleErrors);
         await spireAfterDropChecks(page, spiresBefore);
+        await tierBudgetChecks(page, highHome);
       }
     }
 

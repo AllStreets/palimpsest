@@ -374,6 +374,13 @@ export class Kit {
   instLod(key: string, mat: MatKey, hi: () => THREE.BufferGeometry, lo: () => THREE.BufferGeometry, local: THREE.Matrix4, color?: THREE.Color): void {
     if (!this.detail) {
       this.inst(`${key}:lo`, mat, lo, local, color);
+      // As at high, the part casts the sun's shadow only within LOD_FAR: its far level (the same blocks) casts none.
+      // Without it, medium drew every distant tower's kit parts into the shadow map that high leaves out.
+      const to = this.resolve(mat);
+      if (to !== null) {
+        const b = this.batches.get(to === mat ? `${key}:lo` : `${key}:lo|${to}`)!;
+        b.lo ??= b.geo;
+      }
       return;
     }
     const to = this.resolve(mat);

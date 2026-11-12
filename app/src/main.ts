@@ -172,6 +172,8 @@ interface DebugHandle {
    * towers grown past their real heights; reload to clear).
    */
   agentBoard(towers: TowerSpec[], spots: Array<{ x: number; z: number }>): Promise<void>;
+  /** Takes the agent board down again, its towers disposed. */
+  clearAgentBoard(): void;
   /** Stands the ambient tone board in the city's light and returns where to read each tone (captures only; reload to clear). */
   ambientBoard(): Promise<AmbientSwatchPoint[]>;
   /** Firms' quarters standing in the city. */
@@ -335,6 +337,12 @@ async function main(): Promise<void> {
     },
   });
 
+  /** The agent board standing now (captures and the UI test), and how to take it down. */
+  let agentBoardDown: (() => void) | null = null;
+  function clearAgentBoard(): void {
+    agentBoardDown?.();
+    agentBoardDown = null;
+  }
   const debug: DebugHandle = {
     ready: false,
     quarters: 0,
@@ -505,15 +513,21 @@ async function main(): Promise<void> {
       }
     },
     async agentBoard(towers, spots) {
+      clearAgentBoard();
       const pieces = towers.map((t, i) => {
         const piece = towerCenterpiece({ repo: t.id, index: i, origin: spots[i], tower: t }, quality, lookFor(t.firmId ?? t.id), { firmSlots });
         piece.object.position.set(spots[i].x, 0, spots[i].z);
-        return piece.object;
+        return piece;
       });
-      city.board(pieces, spots);
+      const stood = city.board(pieces.map((p) => p.object), spots);
+      agentBoardDown = () => {
+        stood.dispose();
+        for (const p of pieces) p.dispose?.();
+      };
       await city.precompile();
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
+    clearAgentBoard: () => clearAgentBoard(),
     async swatchBoard() {
       // As the ambient board: empty streets while the board stands, the density restored if laying it fails.
       const was = city.ambientDensity(0);

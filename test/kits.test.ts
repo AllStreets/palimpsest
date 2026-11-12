@@ -105,13 +105,19 @@ test('stone and brick floors are laid in coursed kit blocks, near and far levels
   }
   t.dispose();
   const m = buildTower(stoneTower(6), 'medium', plain(), lookFor('acme/s'));
-  let lodsMedium = 0;
+  let reliefMedium = 0;
   let courses = 0;
   m.group.traverse((o) => {
-    if ((o as THREE.LOD).isLOD) lodsMedium++;
+    const l = o as THREE.LOD;
+    if (l.isLOD) {
+      // At medium both levels are the far blocks: the near one casts the shadow, the far one none (as at high).
+      const [near, far] = l.levels.map((x) => x.object as THREE.InstancedMesh);
+      if (near.geometry !== far.geometry) reliefMedium++;
+      assert.ok(near.castShadow && !far.castShadow, 'a far block casts no shadow past LOD_FAR');
+    }
     if (o.name.startsWith('tower:course:') && o.name.endsWith(':lo')) courses++;
   });
-  assert.equal(lodsMedium, 0, 'medium quality builds no near level');
+  assert.equal(reliefMedium, 0, 'medium quality builds no near level');
   assert.ok(courses >= 2, 'medium quality still lays the far blocks');
   m.dispose();
 });
