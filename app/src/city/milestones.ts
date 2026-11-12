@@ -73,7 +73,8 @@ export function findTowerPiece(towerId: string, districts: ReadonlyArray<PlacedD
       break;
     }
   }
-  if (!spec || !group) return null;
+  // A tower the scene has taken out of the city (disconnected, sold, rebuilt) carries nothing.
+  if (!spec || !group || !group.parent) return null;
   const picks = group.getObjectByName('tower:picks');
   if (!picks || picks.children.length === 0) return null;
   // The top floor's proxy (the root's, before any floor): its centre and width are the roof's.
@@ -82,6 +83,7 @@ export function findTowerPiece(towerId: string, districts: ReadonlyArray<PlacedD
   const layout = layoutTower(spec);
   const earned = spec.floors.filter((f, i) => i >= spec.datumIndex && !f.founding).length;
   const crown = spec.kind === 'agent' && earned > 0 ? crownFor(spec.silhouette ?? 'plain', earned).height : 0;
+  // The root's pick proxy is built 3 m wider than its top on every side (build.ts rootPick), so a bare root's roof is 3 m in from it.
   const half = spec.floors.length ? top.scale.x / 2 : top.scale.x / 2 - 3;
   const cx = top.position.x;
   const cz = top.position.z;
@@ -112,12 +114,12 @@ export function spireHeight(top: number): number {
 export const SPIRE = {
   height: 16,
   anchor: 4.2,
-  lamp: [1.0, 0.5, 0.19] as [number, number, number],
+  lamp: [1.0, 0.42, 0.11] as [number, number, number],
   breath: [0.5, 1.06] as [number, number],
   /** Seconds per breath. */
   period: 4,
   /** The far point's size in pixels. */
-  point: 2.5,
+  point: 3.5,
 } as const;
 
 /** How a milestone shows in the city now (tests and captures). */
@@ -134,9 +136,15 @@ export interface MilestoneShow {
 
 export interface Milestones {
   group: THREE.Group;
-  /** The lit lamps' material (tests). */
+  /** The lit lamps' material and the far point's (tests). */
   lamp: THREE.MeshBasicMaterial;
-  set(ms: ReadonlyArray<Milestone>, towers: (towerId: string) => TowerPiece | null): void;
+  point: THREE.PointsMaterial;
+  /**
+   * Stands each milestone on its tower; one whose `until` is past at `now`
+   * shows nothing. Returns when the next one still standing ends (ms since
+   * the epoch), or null: the caller sets them again then, so it goes dark.
+   */
+  set(ms: ReadonlyArray<Milestone>, towers: (towerId: string) => TowerPiece | null, now?: number): number | null;
   update(dt: number, clock: number): void;
   shows(): Map<string, MilestoneShow>;
   dispose(): void;
@@ -212,7 +220,8 @@ const LAMPS = lampSpots();
 
 /** The steel: the needle's mast, the galleries, the stays and their anchor plates. */
 function mastKit(k: Kit): void {
-  k.remap = { beacon: null };
+  // In galvanised steel throughout, its joint collars included: the needle's dark collars read as black bands on a lit mast.
+  k.remap = { beacon: null, steel: 'galvanised' };
   makeSpire(k, SPIRE.height, 8);
   k.remap = {};
   for (const g of GALLERIES) {
@@ -384,16 +393,21 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
   return {
     group,
     lamp,
-    set(ms, towers) {
+    point: pointMat,
+    set(ms, towers, now = Date.now()) {
       const byTower = new Map<string, { sky?: Milestone; founding?: Milestone }>();
+      let next: number | null = null;
       for (const r of ms) {
         if (r.kind !== 'skyline' && r.kind !== 'founding-skyline') continue;
+        const until = r.until === null ? null : Date.parse(r.until);
+        if (until !== null && until <= now) continue;
+        if (until !== null && (next === null || until < next)) next = until;
         const e = byTower.get(r.towerId) ?? {};
         if (r.kind === 'skyline') e.sky = r;
         else e.founding = r;
         byTower.set(r.towerId, e);
       }
-      const next = new Map<string, MilestoneShow>();
+      const nextShows = new Map<string, MilestoneShow>();
       const at = { stays: [] as THREE.Matrix4[], mast: [] as THREE.Matrix4[], lit: [] as THREE.Matrix4[], dark: [] as THREE.Matrix4[], finial: [] as THREE.Matrix4[], sleeve: [] as THREE.Matrix4[] };
       const tips: THREE.Vector3[] = [];
       for (const [towerId, e] of byTower) {
@@ -422,7 +436,7 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
         if (lit) tips.push(tip);
         const tipTop = foot.clone().add(new THREE.Vector3(0, height, 0));
         for (const r of [e.sky, e.founding]) {
-          if (r) next.set(r.id, { kind: r.kind, towerId, lit: r.kind === 'skyline' && r.lit, y: foot.y, height, tip: (lit ? tip : tipTop).toArray() });
+          if (r) nextShows.set(r.id, { kind: r.kind, towerId, lit: r.kind === 'skyline' && r.lit, y: foot.y, height, tip: (lit ? tip : tipTop).toArray() });
         }
       }
       for (const d of mast) d.set(at.mast);
@@ -440,7 +454,8 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
       pos.needsUpdate = true;
       pointGeo.setDrawRange(0, tips.length);
       points.visible = tips.length > 0;
-      shows = next;
+      shows = nextShows;
+      return next;
     },
     update(_dt, clock) {
       const t = 0.5 - 0.5 * Math.cos((clock / SPIRE.period) * Math.PI * 2);

@@ -16,6 +16,7 @@ import { buildTower } from '../app/src/city/tower/build.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
 import { lookFor } from '../app/src/city/tower/variants.js';
 import { crownFor } from '../shared/silhouette.js';
+import { BLOOM_THRESHOLD, EXPOSURE } from '../app/src/city/post.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { Era, Floor, Milestone, Quarter, TowerSpec } from '../shared/types.js';
 
@@ -159,8 +160,19 @@ test('a lit spire has an emissive tip and an unlit one has none', () => {
   const perSpire = lamps.reduce((n, p) => n + p.count, 0);
   assert.ok(perSpire >= 3, `the holder draws its lamps lit: the tip, the mid lamp and the galleries' (${perSpire})`);
   assert.ok(ms.lamp instanceof THREE.MeshBasicMaterial, 'the lamp is a real emitter');
-  const peak = Math.max(...SPIRE.lamp.map((c) => c * SPIRE.breath[1]));
-  assert.ok(peak * 0.85 < 0.97, `the lamp breathes under the bloom threshold (${(peak * 0.85).toFixed(2)})`);
+  // Through a whole breath, the colours the lamp and its far point draw in, after the exposure, stay under the bloom threshold.
+  let peak = 0;
+  let low = Infinity;
+  for (let t = 0; t <= SPIRE.period; t += 0.05) {
+    ms.update(0.05, t);
+    const lamp = Math.max(ms.lamp.color.r, ms.lamp.color.g, ms.lamp.color.b) * EXPOSURE;
+    const point = Math.max(ms.point.color.r, ms.point.color.g, ms.point.color.b) * EXPOSURE;
+    peak = Math.max(peak, lamp, point);
+    low = Math.min(low, lamp);
+    assert.ok(ms.lamp.color.r > ms.lamp.color.g * 1.8 && ms.lamp.color.g > ms.lamp.color.b * 2, 'a warm amber, never white');
+  }
+  assert.ok(peak < BLOOM_THRESHOLD, `the lamp breathes under the bloom threshold (${peak.toFixed(3)})`);
+  assert.ok(low < peak * 0.6, `and breathes (${low.toFixed(2)} to ${peak.toFixed(2)})`);
   assert.equal(ms.shows().get(`skyline:${s.district.id}`)!.lit, true);
 
   ms.set([row('skyline', s.district.id, false)], towers);
@@ -186,21 +198,37 @@ test('a lit spire has an emissive tip and an unlit one has none', () => {
 test('a tower removed takes its spire, and the lit spire moves at once', () => {
   const s = scene();
   const ms = createMilestones({ quality: 'high', materials: plainMaterials() });
-  let standing = true;
-  const towers = (id: string): TowerPiece | null => (standing || id !== s.district.id ? findTowerPiece(id, s.districts, s.quarters) : null);
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
   ms.set([row('skyline', s.district.id, true)], towers);
   assert.equal(ms.shows().size, 1);
   // Passed to the agent tower: the next set moves the lamp there, the old holder dark.
   ms.set([row('skyline', s.district.id, false), row('skyline', 'agent:a2', true)], towers);
   assert.equal(ms.shows().get('skyline:agent:a2')!.lit, true);
   assert.equal(ms.shows().get(`skyline:${s.district.id}`)!.lit, false);
-  standing = false;
+  // Disconnected: the scene takes the tower out of the city, as placeDistricts does.
+  s.districts[0].object.removeFromParent();
   ms.set([row('skyline', s.district.id, false), row('skyline', 'agent:a2', true)], towers);
   assert.equal(ms.shows().has(`skyline:${s.district.id}`), false, 'the disconnected tower takes its mast');
   assert.ok(drawn(ms.group).filter((p) => /mast/.test(p.name)).every((p) => p.count === 1), 'one mast stands');
   ms.set([], towers);
   assert.equal(ms.shows().size, 0);
   assert.ok(drawn(ms.group).every((p) => p.count === 0), 'nothing draws');
+  ms.dispose();
+  s.dispose();
+});
+
+test('a milestone past its end goes dark, and set says when the next one ends', () => {
+  const s = scene();
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials() });
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const now = Date.parse('2026-11-12T12:00:00Z');
+  const ends = '2026-11-12T12:00:30Z';
+  const sky = { ...row('skyline', s.district.id, true), until: ends };
+  const ended = { ...row('skyline', 'agent:a1', false), until: '2026-11-12T11:00:00Z' };
+  assert.equal(ms.set([sky, ended], towers, now), Date.parse(ends), 'the earliest end still to come');
+  assert.deepEqual([...ms.shows().keys()], [sky.id], 'an ended milestone shows nothing');
+  assert.equal(ms.set([sky], towers, Date.parse(ends)), null, 'nothing left to end');
+  assert.equal(ms.shows().size, 0, 'at its end it goes dark');
   ms.dispose();
   s.dispose();
 });

@@ -16,7 +16,8 @@
  * UI_TOWER_SHOTS=all adds close shots of every root and era for the quality
  * rounds. UI_FORCE_DROP=1 runs the notice stack's checks alone and then
  * drops the quality from home, checking that the notice names what it saw. UI_ONLY=spire seeds the economy and
- * runs the skyline's checks and shots alone. UI_PORT=4811 runs it on another port, so two worktrees can each
+ * runs the skyline's checks and shots alone. Both partial modes end "PARTIAL run (...): not a full pass" and
+ * exit 3 when every check they ran held (tools/ui-verdict.ts), never as a full pass. UI_PORT=4811 runs it on another port, so two worktrees can each
  * run one at once.
  */
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -46,6 +47,7 @@ import { apart, around as aroundPerson, callDebug, followView, person, runUntil,
 import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
 import { decodePng } from './png.js';
 import { uiPort } from './ui-port.js';
+import { partialMode, verdict } from './ui-verdict.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -356,14 +358,12 @@ type SpireShow = { id: string; kind: string; towerId: string; lit: boolean; y: n
  */
 async function spireChecks(page: Page): Promise<void> {
   const shows = async (): Promise<SpireShow[]> => (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
-  const H = 'tidewater/harbor-ledger#founding';
   const A = 'lantern/assay-kit#founding';
   await page.waitForFunction(`window.__palimpsest.milestones().some((m) => m.kind === 'skyline' && m.lit)`, null, { timeout: 10_000 }).catch(() => {});
   const ms = await shows();
   const lit = ms.filter((m) => m.kind === 'skyline' && m.lit);
   const passed = ms.filter((m) => m.kind === 'skyline' && !m.lit);
   const founding = ms.filter((m) => m.kind === 'founding-skyline');
-  check(lit.length === 1 && lit[0].towerId === H, `the harbour tower carries the lit spire (${lit.map((m) => m.towerId).join(', ') || 'none'})`);
   check(passed.some((m) => m.towerId === A), `assay-kit, the previous holder, keeps an unlit spire (${passed.map((m) => m.towerId).join(', ') || 'none'})`);
   const ds = await cityOf(page);
   const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
@@ -371,6 +371,12 @@ async function spireChecks(page: Page): Promise<void> {
   // The founding skyline is the tallest tower by total height: the harbour tower on the seeded economy alone (its sleeve on the lit mast),
   // or whichever tower earlier checks raised past it in the full run.
   const tallest = specs.reduce((a, b) => (layoutTower(b).top > layoutTower(a).top ? b : a));
+  // The lit spire: the greatest earned height above its datum among towers with a lit earned floor (ruling 11; a holder keeps a tie).
+  const earnedHeight = (t: TowerSpec): number => layoutTower(t).top - layoutTower(t).datumY;
+  const contenders = specs.filter((t) => t.floors.some((f) => f.earned?.state === 'lit'));
+  const most = Math.max(...contenders.map(earnedHeight));
+  const holder = specs.find((t) => t.id === lit[0]?.towerId);
+  check(lit.length === 1 && !!holder && Math.abs(earnedHeight(holder) - most) < 1e-6, `the lit spire stands on the tower with the greatest earned height (${lit.map((m) => m.towerId).join(', ') || 'none'}, ${holder ? earnedHeight(holder).toFixed(1) : '?'} of ${most.toFixed(1)} m)`);
   check(founding.length === 1 && founding[0].towerId === tallest.id, `the founding skyline stands on the tallest tower (${founding.map((m) => m.towerId).join(', ') || 'none'} against ${tallest.id})`);
   for (const m of [...lit, ...passed]) {
     const t = specs.find((x) => x.id === m.towerId);
@@ -381,7 +387,11 @@ async function spireChecks(page: Page): Promise<void> {
     check(Math.abs(m.y - top) < 0.05, `the spire on ${m.towerId} stands on its true top (${m.y.toFixed(2)} against ${top.toFixed(2)} m)`);
   }
   if (!lit[0]) return;
-  const harbour = ds.find((x) => x.tower.id === H)!;
+  const harbour = ds.find((x) => x.tower.id === lit[0].towerId);
+  if (!harbour) {
+    check(false, `the lit spire's tower is a district tower for the close shot (${lit[0].towerId})`);
+    return;
+  }
   const s = lit[0];
   const foot = [harbour.origin.x, s.y, harbour.origin.z];
 
@@ -401,7 +411,7 @@ async function spireChecks(page: Page): Promise<void> {
   const ad = ds.find((x) => x.tower.id === A);
   if (a && ad) {
     const row = (kind: string, towerId: string, l: boolean) => ({ id: `${kind}:${towerId}`, kind, towerId, repo: null, firmId: null, agentId: null, floorId: null, at: new Date().toISOString(), until: null, lit: l, title: '', detail: '' });
-    await page.evaluate((rows) => (window as unknown as { __palimpsest: { stageMilestones(r: unknown): void } }).__palimpsest.stageMilestones(rows), [row('skyline', H, true), row('skyline', A, false), row('founding-skyline', A, false)]);
+    await page.evaluate((rows) => (window as unknown as { __palimpsest: { stageMilestones(r: unknown): void } }).__palimpsest.stageMilestones(rows), [row('skyline', lit[0].towerId, true), row('skyline', A, false), row('founding-skyline', A, false)]);
     await setView(page, [ad.origin.x + a.height * 1.0, a.y + a.height * 0.8, ad.origin.z + a.height * 1.3], [ad.origin.x, a.y + a.height * 0.72, ad.origin.z]);
     await page.waitForTimeout(1800);
     await page.screenshot({ path: join(SHOTS, 'finial.png') });
@@ -410,6 +420,29 @@ async function spireChecks(page: Page): Promise<void> {
     await page.waitForTimeout(300);
     const again = (await shows()).filter((m) => m.kind === 'founding-skyline').map((m) => m.towerId);
     check(again.join() === founding.map((m) => m.towerId).join(), `the engine's milestones stand again after the staged finial (${again.join(', ')})`);
+  }
+
+  // An agent's tower holding the spire: staged, it stands above the agent's own crown.
+  const q = qs.find((x) => x.towers.length > 0);
+  const at = q?.towers.find((t) => t.floors.some((f) => f.earned?.state === 'lit')) ?? q?.towers[0];
+  if (q && at) {
+    const row = { id: `skyline:${at.id}`, kind: 'skyline', towerId: at.id, repo: null, firmId: q.firmId, agentId: at.agentId ?? null, floorId: null, at: new Date().toISOString(), until: null, lit: true, title: 'The skyline', detail: '' };
+    await page.evaluate((rows) => (window as unknown as { __palimpsest: { stageMilestones(r: unknown): void } }).__palimpsest.stageMilestones(rows), [row]);
+    await page.waitForTimeout(300);
+    const staged = (await shows()).find((m) => m.towerId === at.id);
+    const earned = at.floors.filter((f, i) => i >= at.datumIndex && !f.founding).length;
+    const crown = earned > 0 ? crownFor(at.silhouette ?? 'plain', earned).height : 0;
+    const want = layoutTower(at).top + crown;
+    check(!!staged && staged.lit && Math.abs(staged.y - want) < 0.05, `an agent's tower carries the lit spire on its true top, above its ${at.silhouette ?? 'plain'} crown (${staged?.y.toFixed(2) ?? 'none'} against ${want.toFixed(2)} m)`);
+    if (staged) {
+      const off = QUARTER_OFFSETS[at.towerIndex ?? 0] ?? { x: 0, z: 0 };
+      const [x, z] = [q.origin.x + off.x, q.origin.z + off.z];
+      await setView(page, [x - staged.height * 1.4, staged.y + staged.height * 0.5, z + staged.height * 1.8], [x, staged.y + staged.height * 0.45, z]);
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: join(SHOTS, 'spire-agent.png') });
+    }
+    await page.evaluate(() => (window as unknown as { __palimpsest: { stageMilestones(r: null): void } }).__palimpsest.stageMilestones(null));
+    await page.waitForTimeout(300);
   }
 
   // From home: the lit tip reads as a warm point against what stands behind it.
@@ -454,6 +487,24 @@ async function spireChecks(page: Page): Promise<void> {
   console.log(`info  the skyline from home: ${own.calls} draw calls, ${(own.triangles / 1000).toFixed(1)}k triangles; the city ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles`);
   check(own.calls > 0 && own.calls <= 24, `the spires and the finial draw in at most 24 calls from home, every pass counted (${own.calls})`);
   check(budget.triangles <= HOME_TRIANGLES && budget.calls < HOME_CALLS, `the city from home stays within ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M triangles with the spires (${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+}
+
+/**
+ * After the step down to medium: the skyline's ornaments are rebuilt at
+ * medium and stand where they stood, and the city from home keeps within
+ * its budget with them.
+ */
+async function spireAfterDropChecks(page: Page, before: SpireShow[]): Promise<void> {
+  check((await debug(page, (x) => x.quality())) === 'medium', 'the city stands at medium for the skyline after the drop');
+  const after = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
+  const key = (ms: SpireShow[]): string => ms.map((m) => `${m.id}:${m.lit}:${m.y.toFixed(2)}`).sort().join('|');
+  check(after.length > 0 && key(after) === key(before), `the spires stand as they stood after the step down (${after.length} of ${before.length})`);
+  const budget = await homeBudget(page);
+  type T = { calls: number; triangles: number };
+  const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
+  const own = Object.values(b.milestones ?? {}).reduce((acc, t) => acc + t.calls, 0);
+  console.log(`info  at medium from home: ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles, the skyline ${own} calls`);
+  check(own > 0 && own <= 24 && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `at medium the spires draw in at most 24 calls and the city stays within its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
 // ---------------------------------------------------------------- silhouettes (Task 23)
@@ -2442,6 +2493,10 @@ async function main(): Promise<void> {
       await measureFps(page);
       await earnedChecks(page);
       await spireChecks(page);
+      const before = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
+      await page.evaluate('window.__palimpsest.dropQuality()');
+      await page.waitForTimeout(1500);
+      await spireAfterDropChecks(page, before);
     } else if (forceDrop && ready) {
       await noticeChecks(page, check, SHOTS);
       const home = await debug(page, (d) => d.limits().home);
@@ -2556,7 +2611,9 @@ async function main(): Promise<void> {
         await peopleChecks(page);
         await ambientChecks(page);
         await everyScreenChecks(page, consoleErrors);
+        const spiresBefore = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
         await qualityDropChecks(page, consoleErrors);
+        await spireAfterDropChecks(page, spiresBefore);
       }
     }
 
@@ -2576,12 +2633,10 @@ async function main(): Promise<void> {
     rmSync(tmp, { recursive: true, force: true });
   }
 
-  if (failures.length > 0) {
-    console.log(`\n${failures.length} check(s) failed`);
-    process.exit(1);
-  }
-  console.log('\nui-test passed');
-  process.exit(0);
+  // A partial mode never reads as a full pass (tools/ui-verdict.ts).
+  const v = verdict(failures, partialMode(process.env));
+  console.log(`\n${v.line}`);
+  process.exit(v.code);
 }
 
 main().catch((err) => {

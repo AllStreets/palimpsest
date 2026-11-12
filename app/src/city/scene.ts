@@ -480,10 +480,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     );
   }
   /** Stands each milestone on its tower as built now: a tower rebuilt carries its ornament up, one removed takes it. */
+  let milestoneTimer: ReturnType<typeof setTimeout> | null = null;
   function placeMilestones(): void {
     if (!milestones) return;
-    milestones.set(milestoneRows, towerPiece);
+    const next = milestones.set(milestoneRows, towerPiece, Date.now());
     sun.shadow.needsUpdate = true;
+    // A milestone with an end (a revival's lights, a ribbon) goes dark at it, with no event to say so: placed again then.
+    if (milestoneTimer) clearTimeout(milestoneTimer);
+    milestoneTimer = next === null ? null : setTimeout(placeMilestones, Math.min(Math.max(0, next - Date.now()) + 50, 2 ** 31 - 1));
   }
 
   // ---------------------------------------------------------------- the view grows with the city
@@ -1639,6 +1643,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       river.dispose();
       transit.dispose();
       vehicles?.dispose();
+      if (milestoneTimer) clearTimeout(milestoneTimer);
       milestones?.dispose();
       ambient?.dispose();
       ground.dispose();
