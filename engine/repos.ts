@@ -473,7 +473,7 @@ export function holdAuditTrigger(): () => void {
   return () => {
     if (released) return;
     released = true;
-    triggerHolds--;
+    triggerHolds -= 1;
   };
 }
 

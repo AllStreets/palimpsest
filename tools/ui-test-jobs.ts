@@ -45,8 +45,8 @@ export async function jobBoardChecks(page: Page, check: Check, shots: string): P
       (window as unknown as { __noReload: boolean }).__noReload = true;
     });
     await page.locator('.runhead a[data-route="jobs"]').click();
-    const opened = await within(page, 8000, async () => (await page.locator('.sec-bidding .job-row[data-status="bidding"]').count()) === 2);
-    check(opened, 'the Jobs link opens the board with the two jobs taking bids');
+    const opened = await within(page, 8000, async () => (await page.locator('.sec-bidding .job-row[data-status="bidding"]').count()) === 3);
+    check(opened, 'the Jobs link opens the board with the three jobs taking bids');
     if (!opened) return refusals;
     check((await page.locator('.sheet-title', { hasText: 'Job board' }).count()) === 1, 'the board is titled Job board');
     check((await page.evaluate(() => location.hash)) === '#/jobs', 'at #/jobs');
