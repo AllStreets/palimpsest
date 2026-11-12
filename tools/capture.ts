@@ -164,7 +164,7 @@ async function record(page: Page, shot: Shot): Promise<void> {
  * MP4 to click through to and, for the inline ones, an 800x500 animated AVIF
  * the page plays. No card or GIF set: those are the flyover's and the rise's.
  */
-function encodeClip(dir: string, name: string, inline: boolean, posterAt?: number): void {
+function encodeClip(dir: string, name: string, inline: boolean, posterAt?: number, fps: number = FPS, mp4Opts: { size: string; crf: number; film?: boolean } = { size: '1280:800', crf: 24 }): void {
   // A still from the clip itself, for the README to show where the clip is linked rather than played.
   if (posterAt !== undefined) {
     const frames = readdirSync(dir).filter((f) => /^f\d+\.png$/.test(f)).sort();
@@ -173,9 +173,10 @@ function encodeClip(dir: string, name: string, inline: boolean, posterAt?: numbe
     execFileSync('cwebp', ['-q', '86', '-m', '6', '-resize', '1600', '1000', join(dir, pick), '-o', poster], { stdio: 'ignore' });
     console.log(`  ${name}-poster.webp ${mb(poster)} (frame ${pick})`);
   }
-  const input = ['-framerate', String(FPS), '-i', join(dir, 'f%04d.png')];
+  const input = ['-framerate', String(fps), '-i', join(dir, 'f%04d.png')];
   const mp4 = join(MEDIA, `${name}.mp4`);
-  ff([...input, '-vf', 'scale=1280:800:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]);
+  const tuning = mp4Opts.film ? ['-preset', 'veryslow', '-tune', 'film'] : ['-preset', 'slow'];
+  ff([...input, '-vf', `scale=${mp4Opts.size}:flags=lanczos`, '-c:v', 'libx264', ...tuning, '-crf', String(mp4Opts.crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]);
   let line = `  ${name}: mp4 ${mb(mp4)}`;
   if (inline) {
     const avif = join(MEDIA, `${name}.avif`);
@@ -281,6 +282,28 @@ async function save(page: Page, name: string, quality: number): Promise<void> {
 async function shoot(page: Page, name: string): Promise<void> {
   await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
   await save(page, name, 92);
+}
+
+/**
+ * Phase 3's stills, kept small for the README: the page at 2x, written as a
+ * 1600 x 1000 WebP (the README shows them at most that wide), quality 84 for
+ * the city and 90 for a screen of text.
+ */
+async function lean(page: Page, name: string, text = false): Promise<void> {
+  await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+  const path = join(MEDIA, `${name}.png`);
+  const webp = join(MEDIA, `${name}.webp`);
+  await page.screenshot({ path });
+  execFileSync('cwebp', ['-q', text ? '90' : '84', '-m', '6', '-resize', '1600', '1000', path, '-o', webp], { stdio: 'ignore' });
+  console.log(`  ${name}.webp ${mb(webp)}`);
+  if (!process.env.CAPTURE_OUT) rmSync(path);
+}
+
+type Show = { id: string; kind: string; towerId: string; lit: boolean; y: number; height: number; tip: number[] };
+/** The milestones as the city shows them now (the debug handle's milestones()). */
+async function shows(page: Page): Promise<Show[]> {
+  await page.waitForFunction('window.__palimpsest.milestones().length > 0', null, { timeout: 15_000 });
+  return (await page.evaluate('window.__palimpsest.milestones()')) as Show[];
 }
 
 /** Hides the running head and the name plates, for the shots that show only the city. */
@@ -442,6 +465,97 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await page.waitForTimeout(4000);
     },
 
+    async brief(page) {
+      // The morning brief (Phase 3 Task 11) as the sample economy's morning stands: its items and every action in place.
+      await openHash(page, '#/brief', '.sheet.brief .brief-item');
+      await page.waitForTimeout(800);
+      await lean(page, 'brief', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async audit(page) {
+      // The harbour README audit's own page: the claims, each verdict with its evidence at file and line, the proposals.
+      const audits = (await page.evaluate(() => fetch('/api/audits?repo=tidewater%2Fharbor-ledger').then((r) => r.json()))) as Array<{ id: string; status: string }>;
+      const done = audits.find((a) => a.status === 'done');
+      if (!done) throw new Error('the economy has no finished harbour audit');
+      await openHash(page, `#/audits/${done.id}`, '.sheet.auditpage .claim');
+      await page.waitForTimeout(600);
+      await lean(page, 'audit', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async spire(page) {
+      // The lit spire at dusk on the tower that stands tallest above its datum (Phase 3 Task 14).
+      // On the city, with no sheet open over it (the day's first open shows the brief).
+      await openHash(page, '#/', 'body[data-route="city"]');
+      await chrome(page, false);
+      const lit = (await shows(page)).find((m) => m.kind === 'skyline' && m.lit);
+      const d = lit ? city.find((x) => x.tower.id === lit.towerId) : undefined;
+      if (!lit || !d) throw new Error('no lit spire on a district tower');
+      const foot: V3 = [d.origin.x, lit.y, d.origin.z];
+      // The live economy has a crew at work on that roof: the job sites stand aside for the still, so the mast reads alone.
+      await page.evaluate('window.__palimpsest.showSites(false)');
+      await frame(page, [foot[0] - lit.height * 1.15, lit.y + lit.height * 0.55, foot[2] + lit.height * 1.55], [foot[0], lit.y + lit.height * 0.5, foot[2]]);
+      await page.waitForTimeout(1800);
+      await lean(page, 'spire');
+      await page.evaluate('window.__palimpsest.showSites(true)');
+      await chrome(page, true);
+    },
+
+    async revival(page) {
+      // Scaffolding lights on a repo that came back to life (Phase 3 Task 15): the festoon round its floor and the one below.
+      // On the city, with no sheet open over it (the day's first open shows the brief).
+      await openHash(page, '#/', 'body[data-route="city"]');
+      await chrome(page, false);
+      const r = (await shows(page)).find((m) => m.kind === 'revival');
+      const d = r ? city.find((x) => x.tower.id === r.towerId) : undefined;
+      if (!r || !d) throw new Error('no revival in the economy');
+      const mid = r.y + r.height * 0.5;
+      await frame(page, [d.origin.x - 38, mid + 4, d.origin.z + 46], [d.origin.x, mid - 1, d.origin.z]);
+      await page.waitForTimeout(1800);
+      await lean(page, 'revival');
+      await chrome(page, true);
+    },
+
+    async ribbon(page) {
+      // The ribbon on a new firm's first PR floor (Phase 3 Task 16), from the street corner its bow faces.
+      // On the city, with no sheet open over it (the day's first open shows the brief).
+      await openHash(page, '#/', 'body[data-route="city"]');
+      await chrome(page, false);
+      const r = (await shows(page)).find((m) => m.kind === 'ribbon');
+      const d = r ? city.find((x) => x.tower.id === r.towerId) : undefined;
+      if (!r || !d) throw new Error('no ribbon in the economy');
+      await frame(page, [d.origin.x + 30, r.y - 3, d.origin.z + 34], [d.origin.x + 4, r.y - 0.5, d.origin.z + 4]);
+      await page.waitForTimeout(1800);
+      await lean(page, 'ribbon');
+      await chrome(page, true);
+    },
+
+    async 'ride-dossier'(page) {
+      await openHash(page, '#/', 'body[data-route="city"]');
+      // The ride's floor dossier (Phase 3 Task 18): a ride held at its tower's newest floor, the dossier under the caption.
+      // A tower with a crew at work rides the crew's hoist, whose car fills the frame: the tallest tower without one.
+      const busy = new Set(((await page.evaluate('window.__palimpsest.liveSites()')) as Array<{ repo: string }>).map((x) => x.repo));
+      const repo = [...city].filter((x) => !busy.has(x.repo) && x.tower.floors.some((f) => f.earned)).sort((a, b) => b.tower.floors.length - a.tower.floors.length)[0]?.repo;
+      if (!repo) throw new Error('no tower without a crew to ride');
+      console.log(`  ride-dossier on ${repo}`);
+      await page.evaluate((r) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(r), repo);
+      await page.waitForTimeout(2500);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
+      if (!(await page.evaluate((r) => (window as unknown as { __palimpsest: { ride(k: string): boolean } }).__palimpsest.ride(r), repo))) throw new Error('the harbour ride did not start');
+      await page.evaluate('window.__palimpsest.rideHold(true)');
+      const r = (await page.evaluate('window.__palimpsest.riding()')) as { stops: Array<{ t: number; dossier: boolean }> };
+      const stop = r.stops.filter((x) => x.dossier).at(-1);
+      if (!stop) throw new Error('the harbour ride has no dossier stop');
+      await page.evaluate(`window.__palimpsest.rideSeek(${stop.t + 0.8})`);
+      await page.waitForTimeout(1600);
+      await page.evaluate(`window.__palimpsest.rideSeek(${stop.t + 0.8})`);
+      await lean(page, 'ride-dossier', true);
+      await page.evaluate('window.__palimpsest.ride(null)');
+      await page.waitForTimeout(4000);
+    },
+
     async week(page) {
       // The week tour (Phase 3 Task 17): the camera's walk through the economy's week, exchange to exchange, its
       // captions at the lower left. Forty-five seconds: the walk's ninety on the virtual clock at twice its pace,
@@ -452,21 +566,25 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await page.evaluate('window.__palimpsest.tourHold(true)');
       const tour = (await page.evaluate('window.__palimpsest.tour()')) as { length: number };
       const speed = Number(process.env.WEEK_SPEED ?? 2);
-      const n = Math.round((tour.length / speed) * FPS);
+      // Lean: 24 frames a second is enough for a camera that glides and holds.
+      const fps = Number(process.env.WEEK_FPS ?? 24);
+      const n = Math.round((tour.length / speed) * fps);
       const dir = mkdtempSync(join(tmpdir(), 'palimpsest-week-'));
       console.log(`week: ${n} frames`);
       const clock = await virtualClock(page);
       try {
         for (let i = 0; i < n; i++) {
-          await page.evaluate(`window.__palimpsest.tourSeek(${(i * speed) / FPS})`);
-          await clock.tick(1 / FPS);
+          await page.evaluate(`window.__palimpsest.tourSeek(${(i * speed) / fps})`);
+          await clock.tick(1 / fps);
           await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
           if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
         }
       } finally {
         await clock.off();
       }
-      encodeClip(dir, 'week', true, Number(process.env.WEEK_POSTER ?? 0.45));
+      // The walk moves the whole frame for most of its length, so the ride's encoding would run to tens of megabytes: the
+      // week is linked from its poster rather than played inline, and kept to 960 x 600 at CRF 32 (about 5 MB).
+      encodeClip(dir, 'week', false, Number(process.env.WEEK_POSTER ?? 0.45), fps, { size: '960:600', crf: 32, film: true });
       if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
       else rmSync(dir, { recursive: true, force: true });
       await page.evaluate('window.__palimpsest.tourHold(false)');
@@ -1601,7 +1719,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
 }
 
 /** What a bare `tools/capture.ts` writes: the README's media. */
-const README_SHOTS = ['hero', 'stills', 'overview', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'people', 'life', 'ride', 'flyover', 'rise', 'construction-clip', 'commute'];
+const README_SHOTS = ['hero', 'stills', 'overview', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'brief', 'audit', 'spire', 'revival', 'ribbon', 'ride-dossier', 'people', 'life', 'ride', 'week', 'flyover', 'rise', 'construction-clip', 'commute'];
 
 /** The market overview's framing and where it looks for a passing tram (MARKET_VIEW and MARKET_TRAM override). */
 const MARKET_VIEW_DEFAULT: [V3, V3] = [[620, 190, 560], [60, 60, -40]];
@@ -1664,16 +1782,19 @@ async function main(): Promise<void> {
   // CAPTURE_ECONOMY=1: the sample economy on top, its firms' floors standing above every datum.
   if (process.env.CAPTURE_ECONOMY) {
     const { seedEconomy } = await import('../engine/market/sample-economy.js');
-    // CAPTURE_HOLD_SALE=1: Lodestar's dark tower is not sold in the history, so the `dark` shot sees it dark and then sold live.
-    await seedEconomy(Date.now(), { holdSale: !!process.env.CAPTURE_HOLD_SALE });
-    // The treasury reads a transcripts folder. As in the UI test, the run says it is a test so the guard lets it read
-    // the sample's own empty folder, and that folder is pinned inside the temp home, so ~/.claude/projects is never read.
+    // The treasury reads a transcripts folder, and so does the brief the history opens (Phase 3). As in the UI test, the
+    // run says it is a test so the guard lets it read the sample's own empty folder, and that folder is pinned inside the
+    // temp home before anything reads it, so ~/.claude/projects is never read.
     process.env.PALIMPSEST_TEST_PROJECTS = '1';
+    const { useSampleFolders } = await import('../engine/sample.js');
+    useSampleFolders();
     const projects = process.env.PALIMPSEST_CLAUDE_PROJECTS;
     const inside = projects ? relative(resolve(tmp), resolve(projects)) : '..';
     if (!projects || inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
       throw new Error(`capture: the transcripts folder ${projects ?? '(unset)'} is not inside the temp home ${tmp}; refusing to run`);
     }
+    // CAPTURE_HOLD_SALE=1: Lodestar's dark tower is not sold in the history, so the `dark` shot sees it dark and then sold live.
+    await seedEconomy(Date.now(), { holdSale: !!process.env.CAPTURE_HOLD_SALE });
   }
   // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
   const { setRunner } = await import('../engine/exec.js');
