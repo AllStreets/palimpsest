@@ -86,3 +86,18 @@ test('patchSettings persists across reopen', () => {
   assert.equal(reread.dayCapPct, 75);
   assert.equal(reread.nightCapPct, 20);
 });
+
+test('migrate adds agent_id and its index to an older trips table, twice', async () => {
+  const { migrate } = await import('../engine/db.js');
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE trips (id TEXT PRIMARY KEY, json TEXT NOT NULL)');
+  db.prepare('INSERT INTO trips (id, json) VALUES (?, ?)').run('t1', JSON.stringify({ agentId: 'a1' }));
+  migrate(db);
+  migrate(db);
+  const cols = (db.prepare('PRAGMA table_info(trips)').all() as Array<{ name: string }>).map((c) => c.name);
+  assert.ok(cols.includes('agent_id'));
+  const idx = (db.prepare('PRAGMA index_list(trips)').all() as Array<{ name: string }>).map((i) => i.name);
+  assert.ok(idx.includes('trips_agent'));
+  assert.equal((db.prepare('SELECT agent_id FROM trips WHERE id = ?').get('t1') as { agent_id: string }).agent_id, 'a1');
+  db.close();
+});

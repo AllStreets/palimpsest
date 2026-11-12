@@ -137,19 +137,27 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
     return p;
   }
 
+  /** Jobs the event stream brought while a load was in flight, which the load's older read must not undo. */
+  let heard: Map<string, Job> | null = null;
+
   async function load(): Promise<void> {
+    const since = new Map<string, Job>();
+    heard = since;
     try {
       const [js, rs, fs] = await Promise.all([api.jobs(), api.repos(), api.firms().catch(() => [] as FirmView[])]);
       jobs.clear();
       for (const j of js) jobs.set(j.id, j);
+      for (const [id, j] of since) jobs.set(id, j);
       repos = rs;
       firms = fs;
       trouble.hidden = true;
     } catch (err) {
+      if (heard === since) heard = null;
       trouble.replaceChildren(el('p', 'repos-trouble-text', `The engine did not answer. ${err instanceof Error ? err.message : String(err)}`), button('jobs-retry', 'Try again', () => void load()));
       trouble.hidden = false;
       return;
     }
+    if (heard === since) heard = null;
     loaded = true;
     render();
     const now = Date.now();
@@ -193,6 +201,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
         const j = data.job as Job | undefined;
         if (!j?.id) return;
         jobs.set(j.id, j);
+        heard?.set(j.id, j);
         errors.delete(j.id);
         confirming.delete(j.id);
         if (NEEDS_DETAIL.has(sectionOf(j, Date.now()) ?? '')) void readDetail(j.id);

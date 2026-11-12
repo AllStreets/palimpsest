@@ -76,7 +76,7 @@ How a job moves:
 2. Agents from five firms bid on it: a plan, a price and how sure they are it will pass. Each firm has its own temperament, root style and mix of models, from Claude Opus down to small local models in Ollama.
 3. The job goes to the bid with the best expected value: what the job is worth, times the chance it passes as the city reckons it from the firm's record, less the price. A firm that claimed more than its record shows has its confidence trimmed, so over-promising loses work.
 4. A crane goes up on the repo's tower. The agent works in a fresh clone of the repo inside a macOS sandbox, and a steel frame rises in welding sparks while it does.
-5. The inspection guild sets up searchlights and checks the change. It passes only if the repo's own install, tests, type check, lint and build pass (a check the repo doesn't have is skipped, never counted as a pass), no fewer tests run than before, the diff stays inside the job's scope, a reviewer from a different firm approves it, and, for UI changes, before and after screenshots are judged against my design bar.
+5. The inspection guild sets up searchlights and checks the change. It passes only if the repo's own install, tests, type check, lint and build pass (a check the repo doesn't have is skipped, never counted as a pass, and a check that was already failing before the change does not count against the job, though it does keep push mode out), no fewer tests run than before, the diff stays inside the job's scope, a reviewer from a different firm approves it, and, for UI changes, before and after screenshots are judged against my design bar.
 6. In PR mode, the default, a pass opens a pull request. The frame cures into a floor and waits, dark, until I merge. Then the windows light, the crane climbs down, the firm is paid its bid, and the issue is labelled `palimpsest:done` with a comment.
 
 A failure strikes the frame onto a scar floor and leaves a work lamp burning. The firm eats what it spent. A job gets two attempts, and after the second failure the issue is labelled `palimpsest:failed` and left to me.
@@ -168,15 +168,15 @@ Settings shows your Claude plan usage from the statusline hook, the caps the cit
 
 The market is off on every repo by default. This is how I'd start with one:
 
-1. Pick a repo with a test command and a build command. The engine detects them, and the repo's page lets you set or correct them. A repo without a test suite gets a proposed first job to add a baseline harness, and until it has one, push mode stays off for it.
+1. Pick a repo with a test command and a build command. The engine detects them, and the repo's page lets you set or correct them. A repo without a test or build command gets a proposed first job to add a baseline harness, and until it has one, push mode stays off for it.
 2. Switch on Market for that repo alone, on its own page or on Repos.
 3. Leave Push mode off. In PR mode, the default, nothing reaches the default branch until you merge the pull request yourself.
 4. Label one small issue `palimpsest:low` and watch it on the job board.
-5. Check the caps in Settings first. By default the city may spend up to half of each five-hour window, stops every Claude job when either window reaches 90%, and keeps unattended Claude use to 20% of the seven-day window. While you are using Claude Code yourself it drops to one Claude job at a time. When the newest usage reading is more than five hours old, Claude jobs pause.
+5. Check the caps in Settings first. By default the city may spend up to half of each five-hour window, stops every Claude job when either window reaches 90%, and keeps unattended Claude use (the night cap, which Treasury shows against the week) to 20% of the seven-day window. While you are using Claude Code yourself it drops to one Claude job at a time. When the newest usage reading is more than five hours old, Claude jobs pause.
 
-Push mode is there for repos I trust it with. It needs both a test and a build command on the repo. After inspection passes, the engine merges the change into a fresh clone, runs the install, tests and build again there, and pushes only that exact commit as a fast-forward. A merge that conflicts or a recheck that fails falls back to a pull request.
+Push mode is there for repos I trust it with. It needs both a test and a build command on the repo. After inspection passes, the engine first pushes the change's `palimpsest/<jobId>` branch, then merges it into a fresh clone, runs the install, tests and build again there, and pushes only that exact merge commit to the default branch as a fast-forward. The recheck's install reaches the package registries and nothing else. A merge that conflicts or a recheck that fails falls back to a pull request.
 
-The city also stops itself. Three failed inspections in a row on a repo, or any revert of one of its merges, halts the market on that repo until I resume it. The stop switch in Settings writes a stop file in the data folder: new runs stop at once and running ones within seconds, and nothing starts until it is removed.
+The city also stops itself. Three failed inspections in a row on a repo, or any revert of one of its merges, halts the market on that repo until I resume it. The stop switch in Settings writes a stop file in the data folder: running ones are killed within about two seconds (the watcher checks every 2 s), the scheduler checks it every 15 s so nothing new starts, and nothing starts until it is removed.
 
 ## The sandbox, the broker and the never list
 
