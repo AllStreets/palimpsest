@@ -369,6 +369,8 @@ export interface TreasuryState {
   api: { enabled: boolean; spentUsdToday: number; dailyUsd: number };
   keepAwake: { on: boolean; held: boolean };
   citySpent: { today: number; week: number };
+  /** The limit he set for today from the brief, clamped, while it holds (ruling 10); null otherwise. */
+  todayCapPct: { day: string; pct: number } | null;
 }
 
 export interface Quarter {

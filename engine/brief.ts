@@ -24,7 +24,7 @@ import { emit } from './events.js';
 import { query, record, type LedgerEntry } from './ledger.js';
 import { treasury } from './market/budget.js';
 import { listFirms } from './market/firms.js';
-import { acceptProposed, dismissProposed, job as storedJob, listJobs, plain, redact, setTier, transition } from './market/jobs.js';
+import { acceptProposed, dismissProposed, job as storedJob, listJobs, plain, redact, repost, setTier } from './market/jobs.js';
 import { claimOf, latestReport, num, reportData, type ReportData } from './market/report.js';
 import { listRuns, resumeRepo } from './market/runs.js';
 import { getRepo, listRepos } from './repos.js';
@@ -149,7 +149,6 @@ function gather(since: string, now: number, opts: BriefOptions): { drafts: Draft
   const jobOf = (id: string, e?: LedgerEntry) => storedJob(id) ?? ((e?.data as { job?: Job } | undefined)?.job ?? null);
 
   // From the ledger: how jobs ended since his last look.
-  const seen = new Set<string>();
   for (const e of query({ kind: 'job.changed', from: since })) {
     const d = e.data as { id: string; from: string; to: string; job?: Job };
     const j = jobOf(d.id, e);
@@ -158,7 +157,6 @@ function gather(since: string, now: number, opts: BriefOptions): { drafts: Draft
     if (d.to === 'merged' && d.from !== 'merged') {
       const award = query({ kind: 'job.awarded', jobId: d.id }).reverse().find((a) => (a.data as { chosen?: { firmId: string } | null }).chosen);
       const chosen = (award?.data as { chosen?: { firmId: string; price: number } } | undefined)?.chosen ?? null;
-      seen.delete(`merged:${d.id}`);
       drafts.push({
         id: `merged:${d.id}`,
         kind: 'merged',
@@ -258,7 +256,7 @@ function gather(since: string, now: number, opts: BriefOptions): { drafts: Draft
       title: j?.title ?? r.jobId,
       text: `PR #${r.prNumber} on ${r.repo} by ${firm(r.firmId)} waits for your review.`,
       at: r.startedAt,
-      refs: { jobId: r.jobId, runId: r.id, firmId: r.firmId, ...(r.prUrl ? { prUrl: r.prUrl } : {}), ...(r.inspectionId ? { inspectionId: r.inspectionId } : {}) },
+      refs: { jobId: r.jobId, runId: r.id, firmId: r.firmId, ...(r.prUrl ? { prUrl: redact(r.prUrl) } : {}), ...(r.inspectionId ? { inspectionId: r.inspectionId } : {}) },
       actions: ['open-pr', 'diff', 'why'],
     });
   }
@@ -311,20 +309,25 @@ function gather(since: string, now: number, opts: BriefOptions): { drafts: Draft
     });
   }
 
-  // The windows and the reading.
+  // The windows and the reading. Today's limit is the lever on the five-hour window alone, and the line stays while his limit holds, so he can lower it again.
   const t = treasury(now);
   const near = (w: { capPct: number; usedPct: number | null; estimatedPct: number }) => Math.max(w.estimatedPct, w.usedPct ?? 0) >= w.capPct - USAGE_MARGIN;
-  if (near(t.fiveHour) || near(t.sevenDay)) {
-    const w = near(t.fiveHour) ? t.fiveHour : t.sevenDay;
-    const which = near(t.fiveHour) ? 'five-hour window' : 'seven-day window';
+  const daily = near(t.fiveHour) || t.todayCapPct !== null;
+  if (daily || near(t.sevenDay)) {
+    const w = daily ? t.fiveHour : t.sevenDay;
+    const pct = num(Math.max(w.estimatedPct, w.usedPct ?? 0));
     drafts.push({
       id: 'usage',
       kind: 'usage',
       repo: null,
-      title: `The ${which} is at ${num(Math.max(w.estimatedPct, w.usedPct ?? 0))}%`,
-      text: `The cap is ${w.capPct}%. The city pauses at the cap; you can change today's limit here, for today only.`,
+      title: daily ? `The five-hour window is at ${pct}%` : `The seven-day window is at ${pct}%`,
+      text: daily
+        ? t.todayCapPct
+          ? `Today's limit is ${t.todayCapPct.pct}%, set by you, in place of the ${getSettings().dayCapPct}% cap. You can change it again here, for today only.`
+          : `The cap is ${w.capPct}%. The city pauses at the cap; you can change today's limit here, for today only.`
+        : `The week's hard stop is ${w.capPct}%, and every Claude call stops there. Today's limit does not move it.`,
       at: iso(now),
-      actions: ['cap'],
+      actions: daily ? ['cap'] : [],
     });
   }
   if (t.paused?.reason === 'stale') {
@@ -387,8 +390,10 @@ function storedReports(): Map<string, ReportData> {
 
 /** The window's numbers: today's report data plus the stored reports of the earlier days in the window, never recomputed. */
 function numbers(since: string, today: string): { all: number; audit: number; merged: number; failed: number } {
-  const days = new Set<string>();
-  for (let t = Date.parse(since); localDay(t) < today; t += DAY_MS) days.add(localDay(t));
+  // By calendar day, not by 24 hours: a day that changes the clocks is 23 or 25 hours long.
+  const days: string[] = [];
+  const s = new Date(Date.parse(since));
+  for (let d = new Date(s.getFullYear(), s.getMonth(), s.getDate()); localDay(d.getTime()) < today; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) days.push(localDay(d.getTime()));
   const stored = storedReports();
   const sum = { all: 0, audit: 0, merged: 0, failed: 0 };
   const add = (r: ReportData) => {
@@ -419,11 +424,10 @@ function sinceWords(since: string, today: string): string {
 /** Two sentences: what happened in the window, and what the city spent. */
 function lead(items: BriefItem[], n: ReturnType<typeof numbers>, since: string, today: string): string {
   const count = (k: BriefItemKind) => items.filter((i) => i.kind === k).length;
-  const merged = Math.max(n.merged, count('merged'));
-  const failed = Math.max(n.failed, count('failed'));
+  // The merged and failed counts are the reports' (ruling 8), never recounted from the items.
   const parts: string[] = [];
-  if (merged) parts.push(`${merged} merged`);
-  if (failed) parts.push(`${failed} failed`);
+  if (n.merged) parts.push(`${n.merged} merged`);
+  if (n.failed) parts.push(`${n.failed} failed`);
   if (count('pr')) parts.push(`${plural(count('pr'), 'PR')} ${count('pr') === 1 ? 'waits' : 'wait'} for your review`);
   if (count('proposal')) parts.push(`${plural(count('proposal'), 'proposal')} ${count('proposal') === 1 ? 'waits' : 'wait'} for your click`);
   if (count('halt')) parts.push(`${plural(count('halt'), 'repo')} halted`);
@@ -462,14 +466,13 @@ export function briefData(now: number, opts: BriefOptions = {}): Brief {
   const all = [...sections.waiting, ...sections.overnight, ...sections.recommendations, ...sections.city];
   const firstOpen = openedToday(day) === null;
   const t = treasury(now);
-  const settings = getSettings();
   return {
     day,
     since,
     firstOpen,
     due: firstOpen && all.length > 0,
     lead: plain(lead(all, numbers(since, day), since, day), 600),
-    usage: { fiveHour: t.fiveHour, sevenDay: t.sevenDay, todayCapPct: settings.todayCapPct?.day === day ? t.fiveHour.capPct : null, paused: t.paused },
+    usage: { fiveHour: t.fiveHour, sevenDay: t.sevenDay, todayCapPct: t.todayCapPct?.pct ?? null, paused: t.paused ? { reason: t.paused.reason, detail: plain(t.paused.detail, 300) } : null },
     sections,
     tour: tour ? { week: tour.week, stops: tour.stops.length } : null,
   };
@@ -531,12 +534,9 @@ export function actOn(itemId: string, action: BriefAction, body: { tier?: Tier; 
       // A proposal is withdrawn by him and its key stays taken; any other line is only hidden.
       result = item.kind === 'proposal' ? dismissProposed(jobId!) : null;
       break;
-    case 'retry': {
-      const j = jobId ? storedJob(jobId) : null;
-      if (!j || j.status !== 'failed' || j.attempts >= MAX_ATTEMPTS) throw new Error('only a failed job with attempts left can be retried');
-      result = transition(j, 'open');
+    case 'retry':
+      result = repost(jobId!);
       break;
-    }
     case 'resume':
       result = resumeRepo(item.repo!, iso(now));
       break;

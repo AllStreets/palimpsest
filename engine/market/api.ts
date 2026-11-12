@@ -48,7 +48,7 @@ import { apiKeyStored, setApiKey, removeApiKey } from './anthropic-api.js';
 import { bidList } from './bids.js';
 import { MAX_RESUME_MS, treasury } from './budget.js';
 import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
-import { job, listJobs, postManualJob, redact, setTier, transition, withdrawable } from './jobs.js';
+import { job, listJobs, postManualJob, redact, repost, setTier, transition, withdrawable } from './jobs.js';
 import { latestReport } from './report.js';
 import { firmBooks, firmDeals, firmRounds } from './firm-story.js';
 import { reputation, reputationLine, reputationLog } from './reputation.js';
@@ -476,7 +476,7 @@ export async function handleMarketApi(
         return send(200, await withdraw(j));
       case 'repost':
         if (j.status !== 'failed' || j.attempts >= MAX_ATTEMPTS) throw new HttpError(409, { error: 'only a failed job with attempts left can be reposted' });
-        return send(200, moving(() => transition(j, 'open')));
+        return send(200, moving(() => repost(j.id)));
       case 'accept':
         if (j.status !== 'proposed') throw new HttpError(409, { error: 'only a proposed job can be accepted' });
         return send(200, moving(() => transition(j, 'open')));

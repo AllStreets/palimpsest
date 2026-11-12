@@ -664,6 +664,7 @@ export function treasury(now: number = Date.now()): TreasuryState {
       today: round(spentCredits(localMidnight(now), now, '%')),
       week: round(spentCredits(now - SEVEN_DAYS_MS, now, '%')),
     },
+    todayCapPct: c.settings.todayCapPct?.day === localDay(now) ? { day: c.settings.todayCapPct.day, pct: c.capPct } : null,
   };
 }
 

@@ -9,6 +9,7 @@
  * GitHub is untrusted: it is cleaned and redacted here and the pages only
  * ever set it as text.
  */
+import { localDay as dayOf } from '../../../shared/day.js';
 import { TIER_VALUE } from '../../../shared/market-rules.js';
 import type { Bid, CheckName, InspectionView, LedgerRow, RunLogLine, Tier } from '../../../shared/types.js';
 import { bidOrder, cleanText, githubUrl, HIDDEN, money, pct } from './board.js';
@@ -546,7 +547,7 @@ export interface TrailDay {
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-const localDay = (d: Date): string => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const localDay = (d: Date): string => dayOf(d.getTime());
 
 /** "Today", "Yesterday", or "Wednesday 4 November". */
 export function dayHeading(at: string, now = Date.now()): string {

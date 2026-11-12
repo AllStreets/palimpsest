@@ -473,6 +473,20 @@ export function setTier(jobId: string, tier: Tier): Job {
   return next;
 }
 
+/**
+ * His click on a failed job: it goes back on the board for another attempt
+ * (the board's Repost and the brief's Retry both come here). Throws
+ * `job <id> is <status>: only a failed job with attempts left can be reposted`.
+ */
+export function repost(jobId: string): Job {
+  const cur = job(jobId);
+  if (!cur) throw new Error(`no job ${jobId}`);
+  if (cur.status !== 'failed' || cur.attempts >= MAX_ATTEMPTS) {
+    throw new Error(`job ${jobId} is ${cur.status === 'failed' ? 'out of attempts' : cur.status}: only a failed job with attempts left can be reposted`);
+  }
+  return transition(cur, 'open');
+}
+
 /** His other click: the proposal is withdrawn by him, so its key stays taken and it is not proposed again. */
 export function dismissProposed(jobId: string): Job {
   return transition(proposed(jobId), 'withdrawn', {}, { by: 'him' });

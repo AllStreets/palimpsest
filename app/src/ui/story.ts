@@ -5,6 +5,7 @@
  * its quarter, a round said in a line, the step line its reputation is
  * drawn as, and an agent's workflow and lineage in words.
  */
+import { localDay as dayOf } from '../../../shared/day.js';
 import { BANKRUPT_HOURS } from '../../../shared/market-rules.js';
 import type { Agent, BookRow, FirmRound, Quarter, WorkflowShape } from '../../../shared/types.js';
 import { cleanText, money } from './board.js';
@@ -60,10 +61,7 @@ export interface BookLine {
 const MICRO = 1_000_000;
 
 /** The local calendar day an instant falls on. */
-function localDay(at: string): string {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-}
+const localDay = (at: string): string => dayOf(Date.parse(at));
 const micro = (x: number): number => Math.round(x * MICRO);
 
 function bookText(r: BookRow, count: number, names: StoryNames): string {

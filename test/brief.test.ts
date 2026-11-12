@@ -12,14 +12,17 @@ import { openDb } from '../engine/db.js';
 import { entries, record } from '../engine/ledger.js';
 import { treasury } from '../engine/market/budget.js';
 import { seedFirms } from '../engine/market/firms.js';
-import { job as storedJob, postManualJob, postProposal, transition } from '../engine/market/jobs.js';
+import { job as storedJob, postManualJob, postProposal, repost, transition } from '../engine/market/jobs.js';
 import { haltRepo } from '../engine/market/runs.js';
 import { installTreasury } from '../engine/market/treasury.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localDay } from '../shared/day.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Audit, Bid, Brief, BriefItem, Job, Repo, Run } from '../shared/types.js';
-import { checks, FULL, setUp, tearDown } from './guild-fixtures.js';
+import { checks, FULL, HOUR, noReading, setUp, tearDown } from './guild-fixtures.js';
+import { paths } from '../engine/home.js';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 let off: () => void = () => {};
 beforeEach(() => {
@@ -176,6 +179,21 @@ function item(b: Brief, id: string): BriefItem {
 /** A ledger row at a chosen time, as the engine would have written it. */
 function put(ms: number, kind: string, data: object): void {
   openDb().prepare('INSERT INTO ledger (at, kind, json) VALUES (?, ?, ?)').run(new Date(ms).toISOString(), kind, JSON.stringify(data));
+}
+
+/** His usage reading, taken now, with both windows chosen. */
+function readingOf(o: { five: number; seven: number }): void {
+  const now = Date.now();
+  writeFileSync(
+    join(paths().usage, 'latest.json'),
+    JSON.stringify({
+      at: Math.floor(now / 1000),
+      rate_limits: {
+        five_hour: { used_percentage: o.five, resets_at: Math.floor((now + HOUR) / 1000) },
+        seven_day: { used_percentage: o.seven, resets_at: Math.floor((now + 3 * 24 * HOUR) / 1000) },
+      },
+    }),
+  );
 }
 
 function morningOf(ms: number, hour: number): number {
@@ -384,24 +402,28 @@ test("cap sets today's limit above the day cap, clamps it and the treasury repor
   assert.deepEqual(item(b, 'usage').actions, ['cap']);
   assert.ok(b.sections.recommendations.some((x) => x.id === 'usage'));
 
+  assert.equal(treasury(now).todayCapPct, null, 'no limit of his yet');
+
   // Raised above the day cap, for today.
   const r = actOn('usage', 'cap', { pct: 25 }, now);
   assert.equal(r.item.acted?.action, 'cap');
   assert.deepEqual(getSettings().todayCapPct, { day: localDay(now), pct: 25 });
   assert.equal(treasury(now).fiveHour.capPct, 25);
+  assert.deepEqual(treasury(now).todayCapPct, { day: localDay(now), pct: 25 }, 'the treasury names it as his');
   assert.equal(briefData(now).usage.todayCapPct, 25);
   assert.equal(briefData(now).usage.fiveHour.capPct, 25);
 
-  // With the limit raised, the window is no longer near it: the line leaves.
-  assert.ok(!allItems(briefData(now)).some((x) => x.id === 'usage'));
+  // With the limit raised, the window is no longer near it, but the line stays while his limit holds, so he can lower it again.
+  const kept = item(briefData(now), 'usage');
+  assert.deepEqual(kept.actions, ['cap']);
+  assert.equal(kept.acted?.action, 'cap');
 
   // Clamped under the hard stop.
-  patchSettings({ todayCapPct: null });
   actOn('usage', 'cap', { pct: 99 }, now);
   assert.deepEqual(getSettings().todayCapPct, { day: localDay(now), pct: 85 });
   assert.equal(treasury(now).fiveHour.capPct, 85);
+  assert.deepEqual(treasury(now).todayCapPct, { day: localDay(now), pct: 85 });
   // And no lower than 5.
-  patchSettings({ todayCapPct: null });
   actOn('usage', 'cap', { pct: 1 }, now);
   assert.equal(getSettings().todayCapPct?.pct, 5);
   assert.throws(() => actOn('usage', 'cap', {}, now), /pct/);
@@ -413,6 +435,64 @@ test("cap sets today's limit above the day cap, clamps it and the treasury repor
   // A window well under the cap offers nothing.
   patchSettings({ dayCapPct: 50, todayCapPct: null });
   assert.ok(!allItems(briefData(now)).some((x) => x.id === 'usage'));
+  // Yesterday's limit has expired: no line for it.
+  patchSettings({ todayCapPct: { day: localDay(now - DAY), pct: 25 } });
+  assert.equal(treasury(now).todayCapPct, null);
+  assert.ok(!allItems(briefData(now)).some((x) => x.id === 'usage'));
+});
+
+test('the usage line offers cap only when the five-hour window is the trigger', () => {
+  seedFirms([]);
+  patchSettings({ dayCapPct: 50, hardStopPct: 90 });
+  const now = Date.now();
+  // The seven-day window near the hard stop, the five-hour one far from its cap: the line says so and offers no cap.
+  readingOf({ five: 10, seven: 85 });
+  const weekly = item(briefData(now), 'usage');
+  assert.match(weekly.title, /seven-day/);
+  assert.deepEqual(weekly.actions, []);
+  assert.throws(() => actOn('usage', 'cap', { pct: 60 }, now), /does not offer cap/);
+  // The five-hour window near its cap: today's limit is the lever.
+  readingOf({ five: 45, seven: 10 });
+  const daily = item(briefData(now), 'usage');
+  assert.match(daily.title, /five-hour/);
+  assert.deepEqual(daily.actions, ['cap']);
+});
+
+test("the window's numbers step by calendar day across a change to summer time", () => {
+  const tz = process.env.TZ;
+  process.env.TZ = 'America/Los_Angeles';
+  try {
+    // Clocks went forward on Sunday 8 March 2026. He last opened the app late on the Friday.
+    const at = (y: number, m: number, d: number, h: number, min = 0) => new Date(y, m - 1, d, h, min).getTime();
+    put(at(2026, 3, 6, 23, 30), 'brief.opened', { day: '2026-03-06', since: '', items: [] });
+    const report = (day: string, all: number) => put(at(...(day.split('-').map(Number) as [number, number, number]), 23, 59), 'report.written', { day, path: null, data: { day, jobs: { merged: [], failed: [] }, spend: { total: { all } } } });
+    report('2026-03-06', 1);
+    report('2026-03-07', 2);
+    report('2026-03-08', 4);
+    const now = at(2026, 3, 9, 9);
+    const b = briefData(now);
+    assert.equal(b.since, new Date(at(2026, 3, 6, 23, 30)).toISOString());
+    assert.match(b.lead, /spent 7 credits/, `the 23-hour day is counted: ${b.lead}`);
+  } finally {
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  }
+});
+
+test('retry reposts a failed job with an attempt left through the same path as the board', () => {
+  seedFirms([]);
+  addRepo(FULL);
+  const failed = failedJob(FULL, 'Rename the gears');
+  const now = Date.now();
+  const r = actOn(`failed:${failed.id}`, 'retry', {}, now);
+  assert.equal(storedJob(failed.id)?.status, 'open');
+  assert.equal(r.item.acted?.action, 'retry');
+  assert.ok(!r.item.actions.includes('retry'));
+  const d = entries().find((e) => e.kind === 'brief.action')?.data as { taught: boolean };
+  assert.equal(d.taught, true);
+  // The job is open now, so the line in a fresh brief offers no retry.
+  assert.ok(!item(briefData(now), `failed:${failed.id}`).actions.includes('retry'));
+  assert.throws(() => repost(failed.id), /not failed|is open/);
 });
 
 test('an action the item does not offer is refused', () => {
@@ -467,14 +547,21 @@ test('a halted repo appears with Resume, and resume clears it', () => {
   assert.equal(d.taught, false);
 });
 
-test('every value in the brief is redacted', () => {
+test('every value in the brief is redacted, the PR link and the pause included', () => {
   seedFirms([]);
   addRepo(FULL);
   const token = `ghp_${'A1b2C3d4'.repeat(4)}`;
   haltRepo(FULL, `Halted \u2014 ${token} at /Users/someone/.ssh/id_rsa`);
+  const { run } = prJob(FULL, 'Tidy the gear table', 41);
+  openDb().prepare('UPDATE runs SET json = ? WHERE id = ?').run(JSON.stringify({ ...run, prUrl: `https://github.com/${FULL}/pull/41?token=${token}` }), run.id);
+  noReading();
   const b = briefData(Date.now());
   const text = JSON.stringify(b);
   assert.ok(!text.includes(token));
   assert.ok(!text.includes('/Users/someone'));
   assert.match(item(b, `halt:${FULL}`).text, /\[redacted\]/);
+  assert.match(item(b, `pr:${run.id}`).refs.prUrl ?? '', /^https:\/\/github\.com\/acme\/widgets\/pull\/41\?token=\[redacted\]$/);
+  assert.equal(b.usage.paused?.reason, 'stale');
+  assert.equal(b.usage.paused?.detail, 'No usage reading yet.');
+  assert.equal(item(b, 'stale').kind, 'stale');
 });
