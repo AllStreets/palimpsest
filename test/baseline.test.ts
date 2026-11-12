@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
@@ -190,4 +191,36 @@ test('a harness job that merged is not proposed again by the next analysis', () 
   dismissProposed(p.id);
   assert.equal(ensureHarnessProposal(other)?.id, p.id);
   assert.equal(listJobs({ repo: other.fullName, source: 'harness' }).length, 1);
+});
+
+test('legacy keyless harness rows are backfilled on open, so a proposed, dismissed or merged one is never doubled', () => {
+  // A Phase 2 database: a jobs table without the key column, holding three harness jobs with no key in their json.
+  mkdirSync(dirname(paths().db), { recursive: true });
+  const direct = new DatabaseSync(paths().db);
+  direct.exec('CREATE TABLE jobs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, status TEXT NOT NULL, json TEXT NOT NULL)');
+  const legacy = (id: string, repo: string, status: string) => {
+    const j = {
+      id, repo, source: 'harness', issue: null, url: null, title: 'Add a baseline test and build harness', body: 'legacy', scope: ['**'], acceptance: ['x'],
+      tier: 'normal', value: 60, status, attempts: 0, postedAt: '2026-10-01T00:00:00.000Z', bidsCloseAt: null, awardedBid: null, runId: null, floorId: null,
+      closedAt: status === 'proposed' ? null : '2026-10-02T00:00:00.000Z', excludedFirms: [], haltedFrom: null,
+    };
+    direct.prepare('INSERT INTO jobs (id, repo, status, json) VALUES (?, ?, ?, ?)').run(id, repo, status, JSON.stringify(j));
+  };
+  legacy('job-p', 'acme/proposed', 'proposed');
+  legacy('job-w', 'acme/dismissed', 'withdrawn');
+  legacy('job-m', 'acme/merged', 'merged');
+  direct.close();
+
+  const { repo } = makeRepo(checks({ test: 'node --test' }));
+  for (const [full, id] of [['acme/proposed', 'job-p'], ['acme/dismissed', 'job-w'], ['acme/merged', 'job-m']] as const) {
+    const r = { ...repo, fullName: full };
+    openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(full, JSON.stringify(r));
+    const found = ensureHarnessProposal(r);
+    assert.equal(found?.id, id, `${full}: the legacy row is found`);
+    assert.equal(found?.key, HARNESS_KEY(full), `${full}: the key is in the json`);
+    assert.equal(listJobs({ repo: full, source: 'harness' }).length, 1, `${full}: no duplicate`);
+    const row = openDb().prepare('SELECT key FROM jobs WHERE id = ?').get(id) as { key: string | null };
+    assert.equal(row.key, HARNESS_KEY(full), `${full}: the key column is filled`);
+  }
+  assert.equal(entries().filter((e) => e.kind === 'job.proposed').length, 0, 'nothing was proposed');
 });

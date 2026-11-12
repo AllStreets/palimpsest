@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { repoMarketDefaults } from '../shared/market-rules.js';
+import { HARNESS_KEY, repoMarketDefaults } from '../shared/market-rules.js';
 import type { Repo } from '../shared/types.js';
 import { paths } from './home.js';
 
@@ -206,10 +206,33 @@ function migrateLedgerIndex(db: DatabaseSync): void {
  * A proposal's key on its job row (Phase 3 Task 1): a jobs table written
  * before the column existed gets it, empty, and the index on it.
  */
+/**
+ * Adds `jobs.key` to an older table and backfills it for every harness job
+ * posted before keys existed, in the column and in the json, built exactly
+ * as HARNESS_KEY builds it. Without the backfill a harness he dismissed, or
+ * one that merged, would be proposed again by the first analysis after the
+ * upgrade (Phase 3 Task 5's key rule reads the key column).
+ */
 function migrateJobKey(db: DatabaseSync): void {
   const cols = new Set((db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map((c) => c.name));
   if (!cols.has('key')) db.exec('ALTER TABLE jobs ADD COLUMN key TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS jobs_key ON jobs (key)');
+  const keyless = db
+    .prepare("SELECT id, repo, json FROM jobs WHERE key IS NULL AND json_extract(json, '$.source') = 'harness'")
+    .all() as Array<{ id: string; repo: string; json: string }>;
+  if (!keyless.length) return;
+  const update = db.prepare('UPDATE jobs SET key = ?, json = ? WHERE id = ?');
+  db.exec('BEGIN');
+  try {
+    for (const row of keyless) {
+      const key = HARNESS_KEY(row.repo);
+      update.run(key, JSON.stringify({ ...(JSON.parse(row.json) as Record<string, unknown>), key }), row.id);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 // Cached per resolved db file path, so a changed PALIMPSEST_HOME (as every

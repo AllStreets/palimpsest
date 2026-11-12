@@ -138,13 +138,15 @@ export function parseAcceptance(body: string, title = ''): string[] {
 /**
  * Why a scope glob is refused, or null when it may stand: it must be a
  * clone-relative path form (no `..`, no leading slash, no backslash, no
- * whitespace), and neither it, its literal part nor its form under a leading
- * `**` may name anything `DENY_SCOPE` covers. The audit's parser and
- * `setScope()` share this one check.
+ * whitespace, no braces or character classes, which could spell a denied
+ * folder letter by letter), and neither it, its literal part nor its form
+ * under a leading `**` may name anything `DENY_SCOPE` covers. The audit's
+ * parser and `setScope()` share this one check.
  */
 export function scopeRefused(glob: string): string | null {
   const g = glob.trim();
   if (!g) return 'an empty glob is not a path';
+  if (/[{}[\]]/.test(g)) return `${g} is not a plain glob: braces and classes are not allowed`;
   if (/\s/.test(g) || /[\\]/.test(g) || g.startsWith('/') || g.split('/').includes('..') || !/[/*.]/.test(g)) return `${g} is not a path in the repo`;
   const hit = denied(g) ?? deniedLiteral(g);
   return hit === null ? null : `${g} is denied by ${hit}`;
@@ -273,7 +275,8 @@ export async function pollJobs(repo: Repo, deps: PollDeps = {}): Promise<Job[]> 
     if ((await issueState(repo.fullName, j.issue)) !== 'CLOSED') continue;
     if (LIVE.includes(j.status) || (j.status === 'awarded' && j.runId)) await deps.kill?.(j.id);
     const now = job(j.id);
-    if (now && withdrawable(now)) transition(now, 'withdrawn');
+    // The closed issue is read by the city's poll, not clicked here: the city withdraws (issue jobs carry no key, so nothing hangs on it).
+    if (now && withdrawable(now)) transition(now, 'withdrawn', {}, { by: 'city' });
   }
   return posted;
 }

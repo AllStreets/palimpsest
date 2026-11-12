@@ -255,6 +255,9 @@ test('a closed issue withdraws its open job', async () => {
 
   assert.equal(job(j1.id)!.status, 'withdrawn');
   assert.ok(job(j1.id)!.closedAt);
+  assert.equal(job(j1.id)!.withdrawnBy, 'city', 'a closed issue is withdrawn by the city, explicitly');
+  const row = entries().filter((e) => e.kind === 'job.changed' && (e.data as { id: string }).id === j1.id).at(-1)!.data as { by: string };
+  assert.equal(row.by, 'city');
   assert.deepEqual(killed, [j2.id], 'the running job is killed first');
   assert.equal(job(j2.id)!.status, 'withdrawn');
   assert.equal(job(j3.id)!.status, 'open', 'an open issue keeps its job');
@@ -692,9 +695,24 @@ test('setScope edits a proposed or open job and refuses a denied glob with the r
   assert.deepEqual(events, ['job.changed']);
   assert.throws(() => setScope(h.id, { scope: ['.github/workflows/ci.yml'] }), /\.github\/workflows\/\*\*/);
   assert.throws(() => setScope(h.id, { scope: ['src/**', 'id_rsa'] }), /id_rsa/);
+  assert.throws(() => setScope(h.id, { scope: ['{.git,src}/**'] }), /refused/, 'braces cannot smuggle a denied folder');
+  assert.throws(() => setScope(h.id, { scope: ['[.]git/**'] }), /refused/, 'a class cannot smuggle a denied folder');
+  assert.throws(() => setScope(h.id, { scope: ['src/{a,b}/**'] }), /refused/, 'no braces at all');
   assert.deepEqual(job(h.id)?.scope, ['package.json', 'test/**']);
   const m = postManualJob({ repo: FULL, title: 'Fix it' });
   assert.deepEqual(setScope(m.id, { scope: ['src/*.ts'] }).scope, ['src/*.ts']);
   transition(job(m.id)!, 'bidding');
   assert.throws(() => setScope(m.id, { scope: ['src/**'] }), /only while proposed or open/);
+});
+
+test('a legacy withdrawn row with no withdrawnBy counts as taken', () => {
+  const repo = storeRepo();
+  const key = HARNESS_KEY(repo.fullName);
+  const legacy = { ...proposeHarnessJob(repo), id: 'job-legacy', status: 'withdrawn', closedAt: '2026-10-02T00:00:00.000Z', postedAt: '2026-10-01T00:00:00.000Z' } as Job;
+  delete (legacy as { withdrawnBy?: unknown }).withdrawnBy;
+  openDb().prepare('DELETE FROM jobs').run();
+  openDb().prepare('INSERT INTO jobs (id, repo, status, json, key) VALUES (?, ?, ?, ?, ?)').run(legacy.id, legacy.repo, legacy.status, JSON.stringify(legacy), key);
+  assert.equal(job(legacy.id)?.withdrawnBy, undefined);
+  assert.equal(keyTaken(repo.fullName, key)?.id, 'job-legacy');
+  assert.equal(proposeHarnessJob(repo).id, 'job-legacy', 'not proposed again');
 });
