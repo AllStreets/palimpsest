@@ -351,6 +351,9 @@ function startAudit(ownerRaw: string, nameRaw: string): Omit<Audit, 'markdownPat
 
 // ------------------------------------------------------------------ the brief
 
+/** What actOn and the moves behind it say when they refuse: the item or action is not offered, a job is not where the action needs it, a repo is gone or already audited. */
+const REFUSED = /^no brief item |^\S+ does not offer |^tier needs |^cap needs |^no repo |^no job |^illegal move|^job \S+ is |^job \S+ cannot |^scope refused: |already has an audit|is halted|not halted/;
+
 async function briefAction(req: IncomingMessage, itemRaw: string, actionRaw: string): Promise<{ item: unknown; result: unknown }> {
   let itemId: string;
   try {
@@ -371,7 +374,8 @@ async function briefAction(req: IncomingMessage, itemRaw: string, actionRaw: str
   try {
     return actOn(itemId, actionRaw as BriefAction, body);
   } catch (err) {
-    throw new HttpError(409, { error: err instanceof Error ? err.message : String(err) });
+    if (err instanceof Error && REFUSED.test(err.message)) throw new HttpError(409, { error: err.message });
+    throw err;
   }
 }
 

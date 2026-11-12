@@ -29,6 +29,7 @@ import type {
   TreasuryView,
   UsageReading,
 } from '../../shared/types.js';
+import { weekOf } from '../../shared/tour.js';
 
 /** A failed engine call: the HTTP status plus the engine's readable message. */
 export class ApiError extends Error {
@@ -204,8 +205,8 @@ export const api = {
   briefAct: (itemId: string, action: BriefAction, body: { tier?: Tier; pct?: number } = {}) =>
     request<{ item: BriefItem; result: unknown }>('POST', `/api/brief/items/${enc(itemId)}/${enc(action)}`, body),
   milestones: (active = false) => request<Milestone[]>('GET', `/api/milestones${active ? '?active=1' : ''}`),
-  /** The tour of a week (a Monday, YYYY-MM-DD); without one, this week's. */
-  tour: (week?: string) => request<Tour | null>('GET', `/api/tour${queryOf({ week })}`),
+  /** The tour of a week (a Monday, YYYY-MM-DD); without one, the week that holds today, named by its Monday here. */
+  tour: (week: string = weekOf(Date.now()).week) => request<Tour | null>('GET', `/api/tour${queryOf({ week })}`),
   firms: () => request<FirmView[]>('GET', '/api/firms'),
   firm: (id: string) => request<FirmDetail>('GET', `/api/firms/${enc(id)}`),
   agent: (id: string) => request<AgentDetail>('GET', `/api/agents/${enc(id)}`),

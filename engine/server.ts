@@ -121,7 +121,7 @@ function intIn(v: unknown, lo: number, hi: number): v is number {
 }
 
 /** A model reference by shape: a provider, a colon and a name (an Ollama name may carry a tag: `qwen2.5-coder:7b`). */
-const AUDIT_MODEL = /^(?:claude|ollama|anthropic|mlx):[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
+const AUDIT_MODEL = /^(?:claude|ollama|anthropic|mlx):(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
 
 const OLLAMA_HOST = /^(127\.0\.0\.1|localhost|\[::1\]):(\d{1,5})$/;
 

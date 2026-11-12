@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
+import { weekOf } from '../shared/tour.js';
 import { api } from '../app/src/api.js';
 import type { EngineEvent } from '../app/src/api.js';
 
@@ -192,7 +193,7 @@ test('the client names the Phase 3 routes and listens for the Phase 3 events', a
       'POST /api/brief/items/proposal%3Ajob-1/tier',
       'GET /api/milestones?active=1',
       'GET /api/tour?week=2026-11-09',
-      'GET /api/tour',
+      `GET /api/tour?week=${weekOf(Date.now()).week}`,
       'PATCH /api/jobs/job-1',
     ],
   );

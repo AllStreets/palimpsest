@@ -12,6 +12,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { saveAudit } from '../engine/audit/store.js';
+import { api } from '../app/src/api.js';
+import { agentTowerId } from '../engine/market/firms.js';
+import { weekOf } from '../shared/tour.js';
+import { localDay } from '../shared/day.js';
 import { openDb } from '../engine/db.js';
 import { emit } from '../engine/events.js';
 import { realRunner, setRunner, setSpawner, type Spawned } from '../engine/exec.js';
@@ -25,9 +29,10 @@ import { createScheduler, haltRepo, run as storedRun } from '../engine/market/ru
 import { getRepo } from '../engine/repos.js';
 import { startServer, type StartedServer } from '../engine/server.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
-import type { Audit, Bid, Inspection, Job, Run } from '../shared/types.js';
+import type { Audit, Bid, Inspection, Job, Milestone, Run } from '../shared/types.js';
 import { FULL, HOUR, PNG, addAgent, addFirm, checks, git, makeRepo, makeRun, noReading, postJob, reading, setUp, tearDown, tempDir, write } from './guild-fixtures.js';
 
+const DAY_MS = 24 * 3_600_000;
 let server: StartedServer | null = null;
 let fakeKc = '';
 
@@ -992,6 +997,20 @@ test('a refused brief action is 409 with its reason', async () => {
   assert.equal((await call('POST', '/api/brief/items/usage/cap', { pct: 'lots' })).status, 400, 'a body that is not a number');
 });
 
+test('a job patch with a scope and a tier that cannot both apply changes nothing', async () => {
+  repoOf();
+  const j = postManualJob({ repo: FULL, title: 'Change it', body: 'b' });
+  const before = job(j.id)!;
+  const bad = await call('PATCH', `/api/jobs/${j.id}`, { scope: ['src/**'], tier: 'huge' });
+  assert.equal(bad.status, 400, 'a bad tier is refused before the scope is written');
+  assert.deepEqual(job(j.id)!.scope, before.scope);
+  openDb().prepare('UPDATE jobs SET json = ? WHERE id = ?').run(JSON.stringify({ ...before, status: 'running' }), j.id);
+  const late = await call('PATCH', `/api/jobs/${j.id}`, { scope: ['src/**'], tier: 'high' });
+  assert.equal(late.status, 409);
+  assert.deepEqual(job(j.id)!.scope, before.scope);
+  assert.equal(job(j.id)!.tier, before.tier);
+});
+
 test('a proposed job scope patches and a denied glob is 409', async () => {
   repoOf();
   const j = postManualJob({ repo: FULL, title: 'Change it', body: 'b' });
@@ -1032,7 +1051,8 @@ test('settings validate auditMaxCredits and auditModel by shape without running 
   assert.equal((await patch({ auditModel: 'ollama:qwen2.5-coder:7b' })).json.auditModel, 'ollama:qwen2.5-coder:7b');
   assert.equal((await patch({ auditModel: 'mlx:some-model' })).status, 200);
   assert.equal((await patch({ auditModel: 'auto' })).json.auditModel, 'auto');
-  for (const bad of ['gpt:4', 'ollama:', 'ollama:../x', 'ollama:a b', 'claude:' + 'x'.repeat(200), 5, '']) assert.equal((await patch({ auditModel: bad })).status, 400, String(bad));
+  assert.equal((await patch({ auditModel: 'ollama:hf.co/user/model:tag' })).status, 200, 'one slash is fine');
+  for (const bad of ['ollama:a/../b', 'ollama:a//b', 'ollama:a..b', 'gpt:4', 'ollama:', 'ollama:../x', 'ollama:a b', 'claude:' + 'x'.repeat(200), 5, '']) assert.equal((await patch({ auditModel: bad })).status, 400, String(bad));
   // todayCapPct: only cleared here; the brief's cap sets it.
   assert.equal((await patch({ todayCapPct: { day: '2026-11-11', pct: 50 } })).status, 400);
   assert.equal((await patch({ todayCapPct: 50 })).status, 400);
@@ -1042,15 +1062,50 @@ test('settings validate auditMaxCredits and auditModel by shape without running 
 });
 
 test('milestones and the tour serve from fixtures', async () => {
-  const ms = await call('GET', '/api/milestones?active=1');
-  assert.equal(ms.status, 200);
-  assert.deepEqual(ms.json, []);
-  assert.equal((await call('GET', '/api/milestones')).status, 200);
-  const tour = await call('GET', '/api/tour?week=2026-11-09');
+  addFirm('quickset');
+  const agent = addAgent('ola', 'quickset', 'claude:sonnet');
+  const towerId = agentTowerId(agent.id);
+  const ms = (id: string, until: string | null): Milestone => ({ id, kind: 'ribbon', towerId, repo: null, firmId: 'quickset', agentId: agent.id, floorId: null, at: new Date().toISOString(), until, lit: false, title: id, detail: 'd' });
+  const put = (m: Milestone) => openDb().prepare('INSERT INTO milestones (id, kind, tower_id, at, until, json) VALUES (?, ?, ?, ?, ?, ?)').run(m.id, m.kind, m.towerId, m.at, m.until, JSON.stringify(m));
+  put(ms('ribbon:live', new Date(Date.now() + 3 * DAY_MS).toISOString()));
+  put(ms('ribbon:forever', null));
+  put(ms('ribbon:over', new Date(Date.now() - DAY_MS).toISOString()));
+  // The active filter drops the one whose days are over (pin: the route passes the flag through).
+  const active = await call('GET', '/api/milestones?active=1');
+  assert.equal(active.status, 200);
+  assert.deepEqual(active.json.map((m: Milestone) => m.id).sort(), ['ribbon:forever', 'ribbon:live']);
+  assert.deepEqual((await call('GET', '/api/milestones')).json.map((m: Milestone) => m.id).sort(), ['ribbon:forever', 'ribbon:live', 'ribbon:over']);
+
+  // A hire this week makes a tour of this week; its week is the Monday that holds today.
+  const rin = addAgent('rin', 'quickset', 'claude:sonnet', { towerIndex: 1 });
+  record('agent.hired', { agent: { id: agent.id, firmId: 'quickset', name: 'Ola' } });
+  record('agent.hired', { agent: { id: rin.id, firmId: 'quickset', name: 'Rin' } });
+  const monday = weekOf(Date.now()).week;
+  const tour = await call('GET', `/api/tour?week=${monday}`);
   assert.equal(tour.status, 200);
-  assert.ok(tour.json === null || tour.json.week === '2026-11-09');
+  assert.equal(tour.json?.week, monday, 'a tour for the current Monday');
+  assert.ok(tour.json.stops.length > 0);
+  const bare = await call('GET', '/api/tour');
+  assert.equal(bare.json?.week, monday, 'no week means the current Monday');
+  // Any day of the week names its Monday.
+  assert.equal((await call('GET', `/api/tour?week=${localDay(Date.now())}`)).json?.week, monday);
+  assert.equal((await call('GET', '/api/tour?week=2020-01-06')).json, null, 'a week with nothing is no tour');
   assert.equal((await call('GET', '/api/tour?week=soon')).status, 400);
-  assert.equal((await call('GET', '/api/tour')).status, 200, 'no week means this week');
+});
+
+test('the same-week tour is what the client asks for: it sends its own Monday', async () => {
+  const urls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string) => {
+    urls.push(url);
+    return new Response('null', { status: 200 });
+  }) as typeof fetch;
+  try {
+    await api.tour();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(urls, [`/api/tour?week=${weekOf(Date.now()).week}`]);
 });
 
 test('SSE forwards audit.ended and brief.action scrubbed', async () => {
