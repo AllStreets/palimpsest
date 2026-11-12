@@ -8,15 +8,17 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
+import { saveAudit } from '../engine/audit/store.js';
 import { openDb } from '../engine/db.js';
 import { paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
 import { charge } from '../engine/market/budget.js';
 import { hire, seedFirms } from '../engine/market/firms.js';
-import { postManualJob, proposeHarnessJob, transition } from '../engine/market/jobs.js';
+import { postManualJob, postProposal, proposeHarnessJob, transition } from '../engine/market/jobs.js';
 import { backfillReports, ensureDailyReport, latestReport, latestReportDay, writeDailyReport } from '../engine/market/report.js';
 import { createScheduler, haltRepo } from '../engine/market/runs.js';
 import { installTreasury } from '../engine/market/treasury.js';
+import { patchSettings } from '../engine/settings.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Bid, Job, Repo, Run } from '../shared/types.js';
 import { checks, FULL, setUp, tearDown } from './guild-fixtures.js';
@@ -310,4 +312,55 @@ test('the balance a report gives each firm is the one every screen reads, charge
   const row = data.spend.firms.find((f) => f.firmId === 'quickset')!;
   assert.equal(row.balance, Math.round(balances().quickset * 100) / 100);
   assert.notEqual(row.balance, 300, 'not the stored balance the last settle wrote');
+});
+
+test("the daily report lists the audit's spend under the city's own calls and names today's cap", () => {
+  seedFirms([]);
+  addRepo(FULL);
+  // An audit the city paid for, and the proposal it made.
+  charge({ runId: 'audit-abc123', firmId: null, model: 'claude:sonnet', kind: 'audit', usage: { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 }, unattended: false, minCredits: 4 });
+  charge({ runId: 'run-x', firmId: 'quickset', model: 'claude:sonnet', kind: 'run', usage: { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 }, unattended: false, minCredits: 6 });
+  const claim = 'The CLI exports every report as CSV';
+  saveAudit({
+    id: 'audit-abc123',
+    repo: FULL,
+    model: 'claude:sonnet',
+    trigger: 'demand',
+    baseSha: 'a'.repeat(40),
+    status: 'done',
+    waitingReason: null,
+    startedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    endedReason: null,
+    findings: [{ id: 'f1', claim, source: { file: 'README.md', line: 12 }, verdict: 'MISSING', tested: false, evidence: [], unverified: false, proposal: null }],
+    counts: { REAL: 0, PARTIAL: 0, MISSING: 1, STUBBED: 0, BROKEN: 0 },
+    unverified: 0,
+    claimsRead: 1,
+    credits: 4,
+    unattended: false,
+    markdownPath: null,
+  });
+  postProposal({ repo: FULL, title: 'Add the CSV export', body: 'Add it.', scope: ['src/**'], acceptance: ['CSV export exists'], tier: 'normal', key: `${FULL}#abcdef123456`, source: 'proposal', proposal: { auditId: 'audit-abc123', findingId: 'f1' } });
+  // Today's limit, set from the brief.
+  const day = localDay();
+  patchSettings({ dayCapPct: 20, todayCapPct: { day, pct: 30 } });
+
+  const md = writeDailyReport(day);
+  const credits = md.slice(md.indexOf('## Credits'), md.indexOf('## Halts'));
+  assert.match(credits, /4 on README audits/, "the audit's spend is its own part of the city's calls");
+  assert.match(credits, /Model calls cost 10 credits/);
+  assert.match(credits, /Today's limit is 30% of each five-hour window, set by you, in place of the 20% cap/);
+  const waits = md.slice(md.indexOf('## Waiting on you'), md.indexOf('## Jobs'));
+  assert.match(waits, /Add the CSV export/);
+  assert.match(waits, new RegExp(claim), 'a proposal from an audit carries its claim');
+  const data = latestReport()!.data;
+  assert.equal(data.spend.total.audit, 4);
+  assert.equal(data.spend.caps.todayCapPct, 30);
+  assert.equal(data.waiting.proposed[0].claim, claim);
+
+  // Without today's limit, the cap line is the plain one.
+  patchSettings({ todayCapPct: null });
+  const plainMd = writeDailyReport(day);
+  assert.doesNotMatch(plainMd, /Today's limit/);
+  assert.match(plainMd, /The cap is 20%/);
 });

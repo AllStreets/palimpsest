@@ -16,6 +16,7 @@
 import { existsSync } from 'node:fs';
 
 import { apiCredits, claudeCredits, CREDIT_PCT, pctFor } from '../../shared/credits.js';
+import { localDay } from '../../shared/day.js';
 import { CREDITS_PER_USD, todayCap } from '../../shared/market-rules.js';
 import type { BudgetWindow, ModelRef, TreasuryState, UsageReading } from '../../shared/types.js';
 import { openDb } from '../db.js';
@@ -130,12 +131,6 @@ function localMidnight(now: number): number {
   const d = new Date(now);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
-}
-
-/** The local day (YYYY-MM-DD) that holds `ms`, as report.ts `localDay()` writes it: the key today's cap is set under. */
-function dayOf(ms: number): string {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 const KIND_LIST = SPEND_KINDS.map((k) => `'${k}'`).join(', ');
@@ -289,7 +284,7 @@ function core(now: number): Core {
   const reading = latestReading();
   const cal = storedCalibration();
   const week = weekPerWindowPct(cal);
-  const capPct = todayCap(settings, dayOf(now));
+  const capPct = todayCap(settings, localDay(now));
   const fiveHour = windowOf(reading?.fiveHour ?? null, reading, FIVE_HOURS_MS, 1, capPct, cal.value, now);
   const sevenDay = windowOf(reading?.sevenDay ?? null, reading, SEVEN_DAYS_MS, week, settings.hardStopPct, cal.value, now);
   const weekStart =

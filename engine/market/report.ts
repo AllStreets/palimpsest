@@ -10,8 +10,10 @@ import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { CREDIT_PCT } from '../../shared/credits.js';
-import { MAX_ATTEMPTS } from '../../shared/market-rules.js';
+import { localDay } from '../../shared/day.js';
+import { MAX_ATTEMPTS, todayCap } from '../../shared/market-rules.js';
 import type { Bid, Job } from '../../shared/types.js';
+import { audit as storedAudit } from '../audit/store.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
 import { paths } from '../home.js';
@@ -26,6 +28,8 @@ import { balances } from './treasury.js';
 
 /** `plain()` lives beside `publicSummary()` in jobs.ts, so the audit's page can import it without this module's graph; re-exported for the report's callers. */
 export { plain };
+/** The day function lives in shared/ (Task 6), so the brief, the budget and the sample economy share one midnight; re-exported for the report's callers. */
+export { localDay };
 
 export interface ReportJob {
   id: string;
@@ -52,7 +56,8 @@ export interface ReportData {
     total: { bid: number; run: number; review: number; judge: number; audit: number; all: number };
     paid: { pay: number; reviewPay: number };
     received: { hire: number; sale: number };
-    caps: { dayCapPct: number; dayCapCredits: number; nightCapPct: number };
+    /** `todayCapPct` is the limit he set from the brief for this day, when he did (ruling 10). */
+    caps: { dayCapPct: number; dayCapCredits: number; nightCapPct: number; todayCapPct: number | null };
     claudeCredits: number;
   };
   calibration: { tokensPerPct: number; measured: boolean; samples: number };
@@ -67,7 +72,8 @@ export interface ReportData {
   notes: ReportNote[];
   waiting: {
     prs: Array<ReportJob & { number: number; url: string | null; firmId: string; since: string }>;
-    proposed: ReportJob[];
+    /** `claim` is the README claim an audit's proposal answers; null for a harness or manual proposal. */
+    proposed: Array<ReportJob & { claim: string | null }>;
     haltedRepos: Array<{ repo: string; reason: string; at: string }>;
     haltedJobs: Array<ReportJob & { note: string }>;
     /** The day's notes that ask something of him and are not yet answered. */
@@ -265,7 +271,7 @@ export function reportData(day: string): ReportData {
     .filter((r) => r.stage === 'waiting' && r.outcome === null && r.prNumber)
     .map((r) => ({ ...jobRef(storedJob(r.jobId), r.jobId), repo: r.repo, number: r.prNumber as number, url: r.prUrl, firmId: r.firmId, since: r.startedAt }))
     .sort((a, b) => a.since.localeCompare(b.since));
-  const proposed = listJobs({ status: 'proposed' }).map((j) => jobRef(j, j.id));
+  const proposed = listJobs({ status: 'proposed' }).map((j) => ({ ...jobRef(j, j.id), claim: claimOf(j) }));
   const haltedRepos = listRepos()
     .filter((r) => r.halted)
     .map((r) => ({ repo: r.fullName, reason: plain(r.halted!.reason), at: r.halted!.at }));
@@ -311,7 +317,7 @@ export function reportData(day: string): ReportData {
       total: { bid: round2(total.bid), run: round2(total.run), review: round2(total.review), judge: round2(total.judge), audit: round2(total.audit), all: round2(total.all) },
       paid: { pay: round2(paid.pay), reviewPay: round2(paid.reviewPay) },
       received: { hire: round2(received.hire), sale: round2(received.sale) },
-      caps: { dayCapPct: settings.dayCapPct, dayCapCredits: round2(settings.dayCapPct / CREDIT_PCT), nightCapPct: settings.nightCapPct },
+      caps: { dayCapPct: settings.dayCapPct, dayCapCredits: round2(settings.dayCapPct / CREDIT_PCT), nightCapPct: settings.nightCapPct, todayCapPct: settings.todayCapPct?.day === day ? todayCap(settings, day) : null },
       claudeCredits: round2(claudeCredits),
     },
     calibration: { tokensPerPct: Math.round(cal.value), measured: cal.samples > 0, samples: cal.samples },
@@ -325,6 +331,13 @@ export function reportData(day: string): ReportData {
     notes,
     waiting: { prs, proposed, haltedRepos, haltedJobs, notes: notes.filter((n) => n.asks && !n.resolved) },
   };
+}
+
+/** The README claim behind a proposal from an audit, or null when the job was not proposed from one. */
+export function claimOf(j: Pick<Job, 'proposal'>): string | null {
+  if (!j.proposal) return null;
+  const f = storedAudit(j.proposal.auditId)?.findings.find((x) => x.id === j.proposal!.findingId);
+  return f ? plain(f.claim, 400) : null;
 }
 
 /** A note the city keeps for replay (a merge sha it found), not one for his brief. */
@@ -388,7 +401,7 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
   out.push('## Waiting on you', '');
   const waits: string[] = [];
   for (const p of waiting.prs) waits.push(`- PR #${p.number} on ${p.repo}, "${clean(p.title)}" by ${firm(p.firmId)}, waits for your review${p.url ? ` (${p.url})` : ''}.`);
-  for (const j of waiting.proposed) waits.push(`- A proposed job on ${j.repo}, "${clean(j.title)}". Nothing bids on it until you accept it on the job board or the district page.`);
+  for (const j of waiting.proposed) waits.push(`- A proposed job on ${j.repo}, "${clean(j.title)}"${j.claim ? `, from the README's claim "${clean(j.claim)}"` : ''}. Nothing bids on it until you accept it on the job board or the district page.`);
   for (const h of waiting.haltedRepos) waits.push(`- ${h.repo} is halted: ${sentence(clean(h.reason))} The market there stays off until you resume it.`);
   for (const j of waiting.haltedJobs) waits.push(`- "${clean(j.title)}" on ${j.repo} is halted: ${sentence(clean(j.note))}`);
   for (const n of waiting.notes) waits.push(...noteLines(n));
@@ -416,6 +429,9 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
   if (spend.total.all > 0) {
     const parts = [`${num(spend.total.bid)} on bids`, `${num(spend.total.run)} on runs`];
     if (spend.total.review + spend.total.judge > 0) parts.push(`${num(spend.total.review + spend.total.judge)} on reviews and design checks`);
+    // Reports written before the audit existed have no audit total.
+    const auditSpend = spend.total.audit ?? 0;
+    if (auditSpend > 0) parts.push(`${num(auditSpend)} on README audits`);
     const pay = [spend.paid.pay > 0 ? `${num(spend.paid.pay)} for merges` : '', spend.paid.reviewPay > 0 ? `${num(spend.paid.reviewPay)} for reviews` : ''].filter(Boolean);
     out.push(`Model calls cost ${num(spend.total.all)} credits: ${listOf(parts)}.${pay.length ? ` The city paid firms ${listOf(pay)}.` : ''}`, '');
   } else {
@@ -428,10 +444,11 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
     out.push(...table(['Model', 'Credits', 'Share of a five-hour window'], spend.models.map((m) => [m.model, num(m.credits), m.windowPct === null ? (m.usd > 0 ? `API, ${usd(m.usd)}` : 'local') : `${num(m.windowPct)}%`])), '');
   }
   const c = spend.caps;
-  out.push(
-    `The cap is ${c.dayCapPct}% of each five-hour window, ${num(c.dayCapCredits)} credits a window, and ${c.nightCapPct}% of the week at night. Claude calls today came to ${num(spend.claudeCredits)} credits, ${num(spend.claudeCredits * CREDIT_PCT)}% of one window.`,
-    '',
-  );
+  const capLine =
+    c.todayCapPct !== null && c.todayCapPct !== undefined
+      ? `Today's limit is ${c.todayCapPct}% of each five-hour window, set by you, in place of the ${c.dayCapPct}% cap, and ${c.nightCapPct}% of the week at night.`
+      : `The cap is ${c.dayCapPct}% of each five-hour window, ${num(c.dayCapCredits)} credits a window, and ${c.nightCapPct}% of the week at night.`;
+  out.push(`${capLine} Claude calls today came to ${num(spend.claudeCredits)} credits, ${num(spend.claudeCredits * CREDIT_PCT)}% of one window.`, '');
   out.push(
     r.calibration.measured
       ? `1% of the five-hour window is about ${num(r.calibration.tokensPerPct)} weighted tokens, measured from ${plural(r.calibration.samples, 'pair')} of readings.`
@@ -494,12 +511,6 @@ export function latestReport(): { day: string; markdown: string; data: ReportDat
   const path = d.path ?? join(paths().reports, `${d.day}.md`);
   const markdown = existsSync(path) ? readFileSync(path, 'utf8') : '';
   return { day: d.day, markdown, data: d.data };
-}
-
-/** The local day (YYYY-MM-DD) that holds `ms`. */
-export function localDay(ms: number): string {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /** Every day a report was written for. */

@@ -36,6 +36,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { localDay } from '../../shared/day.js';
 import { MAX_ATTEMPTS } from '../../shared/market-rules.js';
 import type {
   Agent,
@@ -1055,11 +1056,6 @@ export function resumeRepo(fullName: string, at: string = new Date().toISOString
 }
 
 // ---------------------------------------------------------------- the scheduler
-
-function localDay(ms: number): string {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
