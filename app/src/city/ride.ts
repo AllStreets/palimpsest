@@ -14,7 +14,7 @@
  */
 import * as THREE from 'three';
 
-import { dossierParts, dossierWords, RIDE, rideAt, rideLength, rideNextStop, rideSway, type Dossier, type RideCaption, type RideKey } from '../../../shared/ride.js';
+import { dossierParts, RIDE, rideAt, rideLength, rideNextStop, rideSway, type Dossier, type RideCaption, type RideKey } from '../../../shared/ride.js';
 import type { ScriptPose } from './camera';
 import { Parts } from './construction.js';
 
@@ -507,8 +507,6 @@ export function dossierBlock(d: Dossier): HTMLElement {
   para('ride-dossier-line', w.facts);
   para('ride-dossier-plan', w.plan);
   if (w.verdict) el.dataset.verdict = w.verdict;
-  // Read out whole, in the order of dossierWords, however the lines are set.
-  el.setAttribute('aria-label', [w.claim, dossierWords(d).line].filter(Boolean).join(' '));
   return el;
 }
 

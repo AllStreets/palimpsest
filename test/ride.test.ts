@@ -240,6 +240,34 @@ test('ridePlan dwells longer on a floor with a dossier, and stops at it', () => 
   assert.ok(keys.filter((k) => k.caption && k.floorId !== floors[13].id).every((k) => !k.caption!.dossier), 'nothing on the other stops');
 });
 
+test('a dossier is redacted, and its text keeps no control, bidi or zero-width characters', () => {
+  const f = floor(30, { founding: false, era: 'glass', lines: 12, earned: earned('lit') });
+  const d = dossierOf(f, {
+    job: job(),
+    bids: [bid({ plan: 'Use ghp_abcdefghijklmnopqrstuvwxyz0123 then \u202eevil\u202c fix\u200b it\ufeff.' })],
+    run: run(),
+    inspection: null,
+    claim: null,
+    firm: 'Quick\u2066set\u2069',
+    redact: (x) => x.replace(/ghp_\w+/g, '[redacted]'),
+  })!;
+  assert.equal(d.plan, 'Use [redacted] then evil fix it.');
+  assert.equal(d.firm, 'Quickset');
+});
+
+test('a tower with many scars still keeps the newest floors, and its dossiers stop at six', () => {
+  const floors = [
+    ...Array.from({ length: 2 }, (_, i) => floor(i)),
+    ...Array.from({ length: 12 }, (_, j) => floor(2 + j, { founding: false, at: `2025-03-${String(5 + j).padStart(2, '0')}T10:00:00Z`, earned: { ...earned(j < 10 ? 'scar' : 'lit'), jobId: `job-${j}` } })),
+  ];
+  const picked = dossierFloors(floors);
+  assert.equal(picked.length, RIDE.dossiers, 'the cap is reached');
+  assert.ok(picked.includes(floors[13].id) && picked.includes(floors[12].id), 'the newest two floors keep their places');
+  const scars = picked.filter((id) => floors.find((f) => f.id === id)!.earned!.state === 'scar');
+  // The scars taken are the newest ones.
+  assert.ok(scars.includes(floors[11].id) && !scars.includes(floors[2].id), 'newest scars first');
+});
+
 test('dossierFloors picks the scars, the proposals and the newest earned floors, and none founding', () => {
   const floors = [
     ...Array.from({ length: 4 }, (_, i) => floor(i)),

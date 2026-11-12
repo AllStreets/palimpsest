@@ -122,11 +122,11 @@ export type SettingsPatch = Partial<
 /** What a repo patch may carry (the engine checks every value again). */
 export type RepoPatchBody = Partial<Pick<Repo, 'pushMode' | 'root' | 'market' | 'label'>> & { checks?: Partial<RepoChecks> };
 
-async function request<T>(method: string, path: string, body?: unknown, as: 'json' | 'text' = 'json'): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, as: 'json' | 'text' = 'json', signal?: AbortSignal): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== 'GET') headers['x-palimpsest'] = '1';
   if (body !== undefined) headers['content-type'] = 'application/json';
-  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal });
   const text = await res.text();
   if (!res.ok) {
     // Error bodies are usually JSON from the engine, but a proxy or crash can send plain text.
@@ -181,7 +181,7 @@ export const api = {
 
   // ------------------------------------------------------------ the market
   jobs: (f: { status?: JobStatus; repo?: string } = {}) => request<Job[]>('GET', `/api/jobs${queryOf(f)}`),
-  job: (id: string) => request<JobDetail>('GET', `/api/jobs/${enc(id)}`),
+  job: (id: string, signal?: AbortSignal) => request<JobDetail>('GET', `/api/jobs/${enc(id)}`, undefined, 'json', signal),
   postJob: (body: ManualJobBody) => request<Job>('POST', '/api/jobs', body),
   withdrawJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/withdraw`),
   repostJob: (id: string) => request<Job>('POST', `/api/jobs/${enc(id)}/repost`),
@@ -196,7 +196,7 @@ export const api = {
   setJobScope: (id: string, patch: { scope?: string[]; acceptance?: string[] }) => request<Job>('PATCH', `/api/jobs/${enc(id)}`, patch),
   /** The repo's audits, newest first, without the page. */
   audits: (repo?: string) => request<Omit<Audit, 'markdownPath'>[]>('GET', `/api/audits${queryOf({ repo })}`),
-  audit: (id: string) => request<AuditView>('GET', `/api/audits/${enc(id)}`),
+  audit: (id: string, signal?: AbortSignal) => request<AuditView>('GET', `/api/audits/${enc(id)}`, undefined, 'json', signal),
   /** Queues an audit on demand; 409 when one is waiting or under way. */
   startAudit: (owner: string, name: string) => request<Omit<Audit, 'markdownPath'>>('POST', `/api/repos/${enc(owner)}/${enc(name)}/audit`),
   killAudit: (id: string) => request<{ ok: boolean }>('POST', `/api/audits/${enc(id)}/kill`),

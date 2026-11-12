@@ -745,7 +745,7 @@ async function dossierChecks(page: Page): Promise<void> {
   const d = withDossier[withDossier.length - 1];
   if (d) {
     await seek(d.t + 0.8);
-    const text = ((await page.locator('.ride .ride-dossier-body').getAttribute('aria-label').catch(() => null)) ?? '').trim();
+    const text = ((await page.locator('.ride .ride-dossier-body').textContent().catch(() => null)) ?? '').trim();
     check(/\d+ lines?\./.test(text) && /Plan: /.test(text) && /(Passed|Failed|Inconclusive)/.test(text), `an earned floor's stop shows its dossier ("${text.slice(0, 140)}")`);
     const fits = await page.evaluate(() => {
       const b = document.querySelector('.ride .ride-dossier')!.getBoundingClientRect();
@@ -753,7 +753,7 @@ async function dossierChecks(page: Page): Promise<void> {
       return b.right <= c.right + 1 && b.width <= 441;
     });
     check(fits, 'the dossier never runs wider than the caption\'s column');
-    check((await page.locator('.ride .ride-caption[role="status"] .ride-dossier-body[aria-label]').count()) === 1, 'it is read out with the caption (role status), whole');
+    check((await page.locator('.ride .ride-caption[role="status"] .ride-dossier-body').count()) === 1, 'it is read out with the caption (inside its role status)');
     await page.screenshot({ path: join(SHOTS, 'ride-dossier.png') });
     await page.screenshot({ path: join(SHOTS, 'ride-dossier-crop.png'), clip: { x: 0, y: VIEWPORT.height - 380, width: 760, height: 380 } });
   }
@@ -763,6 +763,43 @@ async function dossierChecks(page: Page): Promise<void> {
     check((await page.locator('.ride .ride-dossier-body').count()) === 0, `a founding floor's stop carries no dossier (${founding.title})`);
   }
   await off();
+  // A plan carrying markup is set as text: no element is made from it and nothing in it runs.
+  // (On another dossier floor than the claim's, so the claim's still keeps its own plan.)
+  const marked = withDossier.find((x) => x.floorId !== d?.floorId) ?? d;
+  if (marked?.floorId) {
+    await page.evaluate((f) => (window as unknown as { __palimpsest: { stageDossier(f: string, p: { plan: string }): boolean } }).__palimpsest.stageDossier(f, { plan: '<img src=x onerror="window.__dossierRan=1"> then the fix' }), marked.floorId);
+    const again = await ride('tidewater/harbor-ledger');
+    const at = again?.stops.find((x) => x.floorId === marked.floorId);
+    if (at) {
+      await seek(at.t + 0.8);
+      const plan = ((await page.locator('.ride .ride-dossier-plan').textContent().catch(() => null)) ?? '').trim();
+      const imgs = await page.locator('.ride .ride-dossier img').count();
+      const ran = await page.evaluate(() => (window as unknown as { __dossierRan?: number }).__dossierRan === 1);
+      check(imgs === 0 && !ran && plan.includes('<img src=x'), `a plan with markup is set as plain text (${imgs} elements, "${plan.slice(0, 60)}")`);
+    }
+    await off();
+  }
+  // Reduced motion: the ride cuts from stop to stop; a dossier stop still shows its dossier, and nothing fades in.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const still = await ride('tidewater/harbor-ledger');
+  const target = still?.stops.find((x) => x.dossier);
+  let seen = false;
+  let fades = 'n/a';
+  if (still && target) {
+    await page.evaluate('window.__palimpsest.rideHold(false)');
+    for (let i = 0; i < 16 && !seen; i++) {
+      await page.keyboard.press(' ');
+      await page.waitForTimeout(450);
+      const st = (await page.evaluate('window.__palimpsest.riding()')) as { caption: string | null } | null;
+      if (st?.caption === target.title && (await page.locator('.ride .ride-dossier-body').count()) === 1) {
+        seen = true;
+        fades = await page.evaluate(() => getComputedStyle(document.querySelector('.ride .ride-dossier')!).animationName);
+      }
+    }
+  }
+  check(seen && fades === 'none', `with reduced motion a dossier stop shows its dossier, cut in without a fade (${seen}, animation ${fades})`);
+  await off();
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   // A floor a README proposal built: the claim, quoted. The economy merges no proposal, so when none stands one is
   // staged: the claim set into the newest dossier floor, as a proposal floor carries it (stageClaim).
   const jobs = (await page.evaluate(() => fetch('/api/jobs').then((x) => x.json()))) as Array<{ id: string; source: string; status: string; repo: string }>;
@@ -772,7 +809,7 @@ async function dossierChecks(page: Page): Promise<void> {
   const floorId = built ? ds.find((x) => x.repo === built.repo)!.tower.floors.find((f) => f.earned?.jobId === built.id)!.id : (d?.floorId ?? null);
   console.log(`info  the README claim: ${built ? `a proposal floor on ${repo}` : 'staged on the harbour tower'}`);
   if (!floorId) return;
-  if (!built) await page.evaluate(([f, c]) => (window as unknown as { __palimpsest: { stageClaim(f: string, c: string): boolean } }).__palimpsest.stageClaim(f, c), [floorId, 'Tide tables are cached per port and refreshed at local midnight'] as [string, string]);
+  if (!built) await page.evaluate(([f, c]) => (window as unknown as { __palimpsest: { stageDossier(f: string, p: { claim: string }): boolean } }).__palimpsest.stageDossier(f, { claim: c }), [floorId, 'Tide tables are cached per port and refreshed at local midnight'] as [string, string]);
   const pr = await ride(repo);
   const stop = pr?.stops.find((s) => s.floorId === floorId);
   check(!!stop && stop.dossier, "the claim's floor is a dossier stop");

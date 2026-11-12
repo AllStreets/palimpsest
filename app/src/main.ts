@@ -33,7 +33,9 @@ import type { EngineEvent } from './api';
 import { currentRoute, navigate, onRoute, type Place, type Route } from './router';
 import { createInspector, ROOT_NAMES, type MarketNames } from './ui/inspector';
 import { dossierBlock, startRide, type Ride, type RideState } from './city/ride';
-import { dossierFloors, dossierOf, type Dossier } from '../../shared/ride';
+import type { Dossier } from '../../shared/ride';
+import { createDossierReader } from './city/dossier-reader';
+import { redactLog } from './ui/detail';
 import { startTour as startTourWalk, tourKeys, type TourFrame, type TourWalk } from './city/tour';
 import { ridePlan } from '../../shared/ride.js';
 import { layoutTower } from '../../shared/tower-layout.js';
@@ -176,8 +178,8 @@ interface DebugHandle {
   agentBoard(towers: TowerSpec[], spots: Array<{ x: number; z: number }>): Promise<void>;
   /** Takes the agent board down again, its towers disposed. */
   clearAgentBoard(): void;
-  /** Sets a README claim into a floor's dossier as a proposal floor would carry it (captures: the economy has no merged proposal). */
-  stageClaim(floorId: string, claim: string): boolean;
+  /** Sets parts of a floor's dossier by hand (captures and the UI test: a README claim, the economy merging no proposal; a plan with markup). */
+  stageDossier(floorId: string, patch: Partial<Dossier>): boolean;
   /** Starts the week's tour (as T does), resolving whether it walks. */
   tourStart(week?: string): Promise<boolean>;
   /** The tour walking now, or null; its clock held or set (tests and captures). */
@@ -540,10 +542,10 @@ async function main(): Promise<void> {
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     },
     clearAgentBoard: () => clearAgentBoard(),
-    stageClaim: (floorId, claim) => {
-      const d = dossiers.get(floorId);
+    stageDossier: (floorId, patch) => {
+      const d = dossierReader.get(floorId);
       if (!d) return false;
-      dossiers.set(floorId, { ...d, claim });
+      dossierReader.put(floorId, { ...d, ...patch });
       return true;
     },
     tourStart: (week) => startTour(week ?? weekOf(Date.now()).week),
@@ -631,6 +633,8 @@ async function main(): Promise<void> {
       city.highlightFloor('', null);
       debug.highlight = null;
       city.setInset(0);
+      // The dossiers it warmed are no longer wanted, unless a ride up the tower is reading them.
+      if (!ride) coolDossiers();
     },
   });
 
@@ -645,64 +649,27 @@ async function main(): Promise<void> {
    * roof or at the live work; the city draws the car and holds the camera.
    */
   // ---------------------------------------------------------------- the floor dossier (Phase 3 Task 18)
-  /** Each earned floor's dossier once read, by floor id: the ride reads it, never waits for it. */
-  const dossiers = new Map<string, Dossier>();
-  /** The jobs a proposal built (read once, from the job list), so a tower's proposal floors carry their claim. */
-  let proposalJobs: Promise<Set<string>> | null = null;
-  const claims = new Map<string, Promise<Map<string, string>>>();
-  const reading = new Set<string>();
   /**
-   * Reads the dossiers of a tower's picked floors (dossierFloors) that are
-   * not read yet, a few at a time, in the background: opening the inspector
-   * on a tower and starting its ride both ask, so the ride usually finds
-   * them read, and one that arrives late shows when its floor comes.
+   * The dossiers, read in the background (city/dossier-reader.ts): opening
+   * the inspector on a tower warms them, a ride reads what is missing, and
+   * the ride never waits. A ride ending, the inspector closing or another
+   * tower cancels what is still reading.
    */
-  async function readDossiers(spec: TowerSpec): Promise<void> {
-    proposalJobs ??= api.jobs().then(
-      (js) => new Set(js.filter((j) => j.source === 'proposal').map((j) => j.id)),
-      () => new Set<string>(),
-    );
-    const proposals = await proposalJobs;
-    const want = dossierFloors(spec.floors, proposals).filter((id) => !dossiers.has(id) && !reading.has(id));
-    const floors = want.map((id) => spec.floors.find((f) => f.id === id)!).filter(Boolean);
-    for (const f of floors) reading.add(f.id);
-    const one = async (f: (typeof floors)[number]): Promise<void> => {
-      try {
-        const e = f.earned!;
-        const d = await api.job(e.jobId);
-        const run = d.runs.find((r) => r.id === e.runId) ?? null;
-        const inspection = d.inspections.find((i) => i.runId === e.runId) ?? null;
-        let claim: string | null = null;
-        const prop = d.job.proposal;
-        if (d.job.source === 'proposal' && prop) {
-          let found = claims.get(prop.auditId);
-          if (!found) {
-            found = api.audit(prop.auditId).then(
-              (a) => new Map(a.findings.map((x) => [x.id, x.claim])),
-              () => new Map<string, string>(),
-            );
-            claims.set(prop.auditId, found);
-          }
-          claim = (await found).get(prop.findingId) ?? null;
-        }
-        const firm = names.firms.get(e.firmId) ?? firmViews.get(e.firmId)?.name ?? null;
-        const dossier = dossierOf(f, { job: d.job, bids: d.bids, award: d.award, run, inspection, claim, firm });
-        if (dossier) dossiers.set(f.id, dossier);
-      } catch {
-        /* the floor rides without its dossier */
-      } finally {
-        reading.delete(f.id);
-      }
-    };
-    // Three at a time: the engine answers each from its own tables.
-    for (let i = 0; i < floors.length; i += 3) await Promise.all(floors.slice(i, i + 3).map(one));
-  }
-  /** The floors a ride waits at for their dossier: every picked floor, its dossier now or an empty one the hook fills later. */
-  function rideDossiers(spec: TowerSpec, proposals: ReadonlySet<string>): Map<string, Dossier> {
-    const empty: Dossier = { diff: null, plan: null, verdict: null, claim: null, firm: null };
-    return new Map(dossierFloors(spec.floors, proposals).map((id) => [id, dossiers.get(id) ?? empty]));
-  }
-  let knownProposals: ReadonlySet<string> = new Set();
+  const dossierReader = createDossierReader(api, {
+    firm: (id) => names.firms.get(id) ?? firmViews.get(id)?.name ?? null,
+    redact: redactLog,
+  });
+  let dossierTower: string | null = null;
+  /** Reads a tower's dossiers; another tower's reads still under way are cancelled first. */
+  const warmDossiers = (spec: TowerSpec): void => {
+    if (dossierTower !== spec.id) dossierReader.cancel();
+    dossierTower = spec.id;
+    void dossierReader.read(spec);
+  };
+  const coolDossiers = (): void => {
+    dossierReader.cancel();
+    dossierTower = null;
+  };
 
   function rideUp(key: string): boolean {
     // The ride takes the camera: a tour under way ends first.
@@ -719,10 +686,11 @@ async function main(): Promise<void> {
     const earnedCount = spec.floors.filter((f) => !f.founding).length;
     const crown = spec.kind === 'agent' && earnedCount > 0 ? crownFor(spec.silhouette ?? 'plain', earnedCount).height : 0;
     const name = agentId ? (names.agents.get(agentId) ?? agentId) : (key.split('/')[1] ?? key);
-    // The dossiers read so far; the rest are read now, behind the ride, and shown when their floors come.
-    void readDossiers(spec);
-    void proposalJobs?.then((p) => (knownProposals = p));
-    const plan = ridePlan(layoutTower(spec), spec.floors, { live, names, name, root: `${ROOT_NAMES[spec.root]} root`, crown, agent: spec.kind === 'agent', dossiers: rideDossiers(spec, knownProposals) });
+    // The dossiers read so far; the rest are read now, behind the ride, and shown when their floors come. The proposal
+    // set is read again for the next ride, so a proposal merged since shows its claim then.
+    warmDossiers(spec);
+    void dossierReader.proposals(true);
+    const plan = ridePlan(layoutTower(spec), spec.floors, { live, names, name, root: `${ROOT_NAMES[spec.root]} root`, crown, agent: spec.kind === 'agent', dossiers: dossierReader.planFor(spec) });
     if (document.body.dataset.route !== 'city') navigate('city');
     const opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     const hoist = live && city.siteHoist(key) ? key : null;
@@ -731,12 +699,14 @@ async function main(): Promise<void> {
     const started = startRide(city, key, plan, {
       parent: document.body,
       dossier: (floorId) => {
-        const d = dossiers.get(floorId);
+        const d = dossierReader.get(floorId);
         return d ? dossierBlock(d) : null;
       },
       still: matchMedia('(prefers-reduced-motion: reduce)').matches,
       hoist,
       onEnd() {
+        // What is still reading for this ride is no longer wanted.
+        coolDossiers();
         if (ride === started) ride = null;
         delete document.body.dataset.riding;
         // The inspector's own floor is marked again, and its panel keeps the view beside it.
@@ -825,7 +795,7 @@ async function main(): Promise<void> {
     inspector.open(d, floorId);
     city.setInset(inspector.width);
     // The ride starts from here (R): its floors' dossiers are read now, in the background.
-    void readDossiers(d.tower).then(() => proposalJobs?.then((p) => (knownProposals = p)));
+    warmDossiers(d.tower);
     // From afar, approach the tower so it stands whole beside the panel; up close, the view stays where it is.
     const t = city.towerFrame(repo);
     if (t && city.camera.position.distanceTo(t.center) > Math.max(420, t.height * 3.5)) {

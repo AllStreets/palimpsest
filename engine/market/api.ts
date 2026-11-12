@@ -238,12 +238,14 @@ function jobDetail(j: Job): JobDetail {
   const a = awarded?.data as { chosen?: unknown; why?: unknown; satOut?: unknown } | undefined;
   const runs = listRuns({ jobId: j.id });
   const ledger: LedgerRow[] = query({ jobId: j.id }).slice(-LEDGER_CAP).map((e) => ({ id: e.id, at: e.at, kind: e.kind, data: scrub(e.data) }));
+  // A bid's plan is model output: redacted here, field by field, as well as by send()'s scrub of the whole answer.
+  const plain = (b: JobDetail['bids'][number] | null): JobDetail['bids'][number] | null => (b ? { ...b, plan: redact(String(b.plan ?? '')) } : null);
   return {
     job: j,
-    bids,
+    bids: bids.map((b) => plain(b)!),
     award: a
       ? {
-          chosen: (a.chosen as JobDetail['bids'][number] | null) ?? null,
+          chosen: plain((a.chosen as JobDetail['bids'][number] | null) ?? null),
           why: typeof a.why === 'string' ? redact(a.why) : '',
           satOut: Array.isArray(a.satOut) ? (a.satOut as Array<{ agentId: string; reason: string }>).map((s) => ({ agentId: s.agentId, reason: redact(String(s.reason)) })) : [],
         }

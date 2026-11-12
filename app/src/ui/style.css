@@ -736,11 +736,16 @@ body[data-riding] .runhead {
   font-size: 16px;
   line-height: 1.3;
   color: var(--ink);
+  /* Two lines at most: the wait at a floor is a glance, not a read. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .ride-dossier-line {
   margin: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
   line-height: 1.5;
   color: var(--ink);
@@ -751,9 +756,9 @@ body[data-riding] .runhead {
 }
 .ride-dossier-plan {
   margin: 4px 0 0;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.45;
-  color: var(--ink-2);
+  color: var(--ink);
   overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;

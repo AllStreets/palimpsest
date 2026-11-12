@@ -82,13 +82,17 @@ export interface DossierData {
   inspection?: InspectionView | null;
   claim?: string | null;
   firm?: string | null;
+  /** The page's own redaction (app/src/ui/detail.ts redactLog), run on every string before it is cleaned. */
+  redact?: (s: string) => string;
 }
 
 /** A line of model or engine text made safe to set in the city: one line, no control characters, cut at a word. */
 export function dossierText(text: string | null | undefined, max = 160): string | null {
   if (!text) return null;
+  // Bidi overrides and isolates, zero-width marks and the byte-order mark go first (they could turn a line round or hide
+  // what it says), then control characters become spaces.
   // eslint-disable-next-line no-control-regex
-  const one = text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const one = text.replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, '').replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (!one) return null;
   if (one.length <= max) return one;
   const cut = one.slice(0, max - 1);
@@ -113,26 +117,28 @@ export function dossierOf(floor: Floor, data: DossierData | null): Dossier | nul
     }
   }
   const files = run?.progress?.filesChanged ?? 0;
+  const red = (t: string | null | undefined): string | null => (t ? (data.redact ? data.redact(t) : t) : null);
   return {
     diff: files > 0 || floor.lines > 0 ? { files, lines: floor.lines } : null,
-    plan: dossierText(bid?.plan ?? run?.summary ?? null),
+    plan: dossierText(red(bid?.plan ?? run?.summary ?? null)),
     verdict,
-    claim: data.job?.source === 'proposal' ? dossierText(data.claim ?? null, 120) : null,
-    firm: dossierText(data.firm ?? null, 60),
+    claim: data.job?.source === 'proposal' ? dossierText(red(data.claim), 120) : null,
+    firm: dossierText(red(data.firm), 60),
   };
 }
 
 /** The dossier in words, as the caption sets it: "4 files, 212 lines. Plan: add the retry. Passed, pushable." and the claim. */
 export function dossierWords(d: Dossier): { line: string; claim: string | null } {
-  const parts: string[] = [];
-  if (d.diff) parts.push(`${d.diff.files ? `${plural(d.diff.files, 'file')}, ` : ''}${plural(d.diff.lines, 'line')}.`);
-  if (d.plan) {
-    // Set inside the sentence: its first letter lowered unless it starts an acronym or a name in capitals.
-    const p = /^[A-Z][a-z]/.test(d.plan) ? d.plan[0].toLowerCase() + d.plan.slice(1) : d.plan;
-    parts.push(`Plan: ${p}${/[.!?\u2026]$/.test(p) ? '' : '.'}`);
-  }
-  if (d.verdict) parts.push(`${d.verdict}.`);
-  return { line: parts.join(' '), claim: d.claim ? `From the README: \u2018${d.claim}\u2019` : null };
+  const diff = d.diff ? `${d.diff.files ? `${plural(d.diff.files, 'file')}, ` : ''}${plural(d.diff.lines, 'line')}.` : null;
+  const line = [diff, planLine(d.plan), d.verdict ? `${d.verdict}.` : null].filter(Boolean).join(' ');
+  return { line, claim: d.claim ? `From the README: \u2018${d.claim}\u2019` : null };
+}
+
+/** The plan set inside a sentence: "Plan: " and its first letter lowered, unless it starts an acronym or a name in capitals. */
+function planLine(plan: string | null): string | null {
+  if (!plan) return null;
+  const p = /^[A-Z][a-z]/.test(plan) ? plan[0].toLowerCase() + plan.slice(1) : plan;
+  return `Plan: ${p}${/[.!?\u2026]$/.test(p) ? '' : '.'}`;
 }
 
 /** The dossier as the caption lays it out: the facts (the change and the verdict), the plan, and the claim, each its own line. */
@@ -140,10 +146,9 @@ export function dossierParts(d: Dossier): { facts: string | null; plan: string |
   const facts: string[] = [];
   if (d.diff) facts.push(`${d.diff.files ? `${plural(d.diff.files, 'file')}, ` : ''}${plural(d.diff.lines, 'line')}.`);
   if (d.verdict) facts.push(`${d.verdict}.`);
-  const p = d.plan ? (/^[A-Z][a-z]/.test(d.plan) ? d.plan[0].toLowerCase() + d.plan.slice(1) : d.plan) : null;
   return {
     facts: facts.length ? facts.join(' ') : null,
-    plan: p ? `Plan: ${p}${/[.!?\u2026]$/.test(p) ? '' : '.'}` : null,
+    plan: planLine(d.plan),
     claim: dossierWords(d).claim,
     verdict: d.verdict ? (d.verdict.startsWith('Passed') ? 'pass' : d.verdict.startsWith('Failed') ? 'fail' : 'open') : null,
   };
@@ -151,18 +156,20 @@ export function dossierParts(d: Dossier): { facts: string | null; plan: string |
 
 /**
  * The floors of a tower that carry a dossier on the ride, at most
- * RIDE.dossiers: every scar, every floor a proposal built (its job id in
- * `proposals`), then the newest earned floors; never a founding floor.
+ * RIDE.dossiers: the newest two earned floors always (what he most likely
+ * rides up to see), then the scars and the floors a proposal built (its job
+ * id in `proposals`), newest first, then the third newest; never a founding
+ * floor. In the order they were picked.
  */
 export function dossierFloors(floors: ReadonlyArray<Floor>, proposals: ReadonlySet<string> = new Set()): string[] {
-  const earned = floors.filter((f) => !f.founding && f.earned);
+  const newest = floors.filter((f) => !f.founding && f.earned).sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
   const out: string[] = [];
   const add = (f: Floor): void => {
     if (out.length < RIDE.dossiers && !out.includes(f.id)) out.push(f.id);
   };
-  for (const f of earned) if (f.earned!.state === 'scar') add(f);
-  for (const f of earned) if (proposals.has(f.earned!.jobId)) add(f);
-  for (const f of [...earned].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 3)) add(f);
+  for (const f of newest.slice(0, 2)) add(f);
+  for (const f of newest) if (f.earned!.state === 'scar' || proposals.has(f.earned!.jobId)) add(f);
+  for (const f of newest.slice(2, 3)) add(f);
   return out;
 }
 

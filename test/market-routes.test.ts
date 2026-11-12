@@ -226,6 +226,37 @@ test('job detail carries bids, award, sat-out agents and ledger', async () => {
   assert.equal((await call('GET', '/api/jobs/job-nope')).status, 404);
 });
 
+test("a secret or a home path in a bid's plan never reaches the job's detail, in its bids or its award", async () => {
+  repoOf();
+  const winner = addAgent('a1', 'alpha', 'claude:sonnet');
+  const posted = postJob(['**']);
+  const open = openBidding(posted, Date.now());
+  const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+  const bid: Bid = {
+    id: 'bid-s1',
+    jobId: posted.id,
+    firmId: winner.firmId,
+    agentId: winner.id,
+    plan: `Read the token ${secret} from ${paths().runs}/keys and fix the uploader.`,
+    price: 20,
+    confidence: 0.8,
+    calibrated: 0.7,
+    appraisal: null,
+    ev: 20,
+    cost: 3,
+    at: new Date().toISOString(),
+  };
+  openDb().prepare('INSERT INTO bids (id, job_id, json) VALUES (?, ?, ?)').run(bid.id, bid.jobId, JSON.stringify({ round: open.bidsCloseAt, bid }));
+  record('job.awarded', { jobId: posted.id, tier: 'normal', considered: [bid], satOut: [], chosen: bid, why: 'Chose it.', at: new Date().toISOString(), coolOffUntil: null });
+  transition(open, 'awarded', { awardedBid: bid.id });
+  const d = await call('GET', `/api/jobs/${posted.id}`);
+  assert.equal(d.status, 200);
+  assert.ok(!d.text.includes(secret), 'the token never leaves the engine');
+  assert.ok(!d.text.includes(paths().runs), 'nor the home path');
+  assert.match(d.json.bids[0].plan, /fix the uploader/, 'the plan keeps its words');
+  assert.match(d.json.award.chosen.plan, /\[redacted\]/, "the award's chosen bid is redacted too");
+});
+
 test('job detail names who sat out of the round still taking bids, before any award', async () => {
   repoOf();
   addAgent('l1', 'beta', 'ollama:qwen3');
