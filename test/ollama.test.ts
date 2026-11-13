@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { modelGBFromShow, ollamaProvider, resetOllamaCache, REVIEW_NUM_CTX } from '../engine/market/ollama.js';
-import type { AuditInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
+import type { AuditInput, CompleteInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { patchSettings } from '../engine/settings.js';
 import { localCredits } from '../shared/credits.js';
@@ -374,5 +374,47 @@ describe('ollama audit', () => {
     assert.match(tools[1].content, /no tool named/);
     assert.match(tools[2].content, /^Refused:.*own checks/);
     assert.ok(!existsSync(join(dir, 'src', 'b.ts')));
+  });
+});
+
+describe('ollama complete', () => {
+  const input = (over: Partial<CompleteInput> = {}): CompleteInput => ({
+    model: `ollama:${MODEL}`, system: 'You design agents.', turns: [{ role: 'user', content: 'Q1' }, { role: 'assistant', content: 'A1' }, { role: 'user', content: 'Q2' }],
+    schema: null, signal: new AbortController().signal, maxMs: 60_000, ...over,
+  });
+
+  test('ollama complete returns the text and its seconds', async () => {
+    fakeRunner();
+    const { bodies } = await fakeOllama([
+      { json: { message: { role: 'assistant', content: 'A plain answer.' }, done: true, total_duration: 3e9 } },
+      { json: { message: { role: 'assistant', content: '{"edits": []}' }, done: true, total_duration: 2e9 } },
+    ]);
+    const p = ollamaProvider();
+    const out = await p.complete(input());
+    assert.equal(out.text, 'A plain answer.');
+    assert.equal(out.json, null);
+    assert.equal(out.usage.seconds, 3);
+    assert.equal(out.usage.usd, 0);
+    assert.equal(out.usage.credits, Math.round(localCredits(3, GB_7B) * 1e6) / 1e6);
+    assert.equal(bodies[0].stream, false);
+    assert.equal(bodies[0].format, undefined, 'free text has no format');
+    assert.deepEqual(bodies[0].messages, [
+      { role: 'system', content: 'You design agents.' },
+      { role: 'user', content: 'Q1' },
+      { role: 'assistant', content: 'A1' },
+      { role: 'user', content: 'Q2' },
+    ]);
+    const schema = { type: 'object', required: ['edits'], properties: { edits: { type: 'array' } } };
+    const shaped = await p.complete(input({ schema }));
+    assert.deepEqual(shaped.json, { edits: [] });
+    assert.deepEqual(bodies[1].format, schema, 'a schema is Ollama\'s structured output');
+  });
+
+  test('ollama complete stops on the signal', async () => {
+    fakeRunner();
+    await fakeOllama([]);
+    const ac = new AbortController();
+    ac.abort();
+    await assert.rejects(ollamaProvider().complete(input({ signal: ac.signal })), /abort/i);
   });
 });

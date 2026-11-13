@@ -43,7 +43,7 @@ import { CLAUDE_HOSTS, isAnthropicHost, refusedHosts, startEgress } from './egre
 import { record } from '../ledger.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
 import { AUDIT_PERSONA, AUDIT_SCHEMA, AUDIT_TOOLS, auditPrompt } from '../audit/schema.js';
-import type { AuditInput, AuditResult, JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
+import type { AuditInput, AuditResult, CompleteInput, CompleteResult, JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
 import { CLAUDE_TMP, detectToolchains, proxyUrl, realish, SYSTEM_PATH, wrap, type CliProfileInput } from './sandbox.js';
 import { controlFiles } from './worktree.js';
 import { diffSection, planSection, quoteAsData } from './quote.js';
@@ -625,6 +625,16 @@ const JUDGE_SCHEMA = {
 /* The provider                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A conversation as one message: a single user turn as it is, else each
+ * turn marked as his or the model's own earlier one (Beagle's models/claude.ts
+ * does the same), since a call answers one turn.
+ */
+export function foldTurns(turns: CompleteInput['turns']): string {
+  if (turns.length === 1) return turns[0].content;
+  return turns.map((t) => (t.role === 'user' ? `<turn>\n${t.content}\n</turn>` : `<your earlier turn>\n${t.content}\n</your earlier turn>`)).join('\n\n');
+}
+
 export function claudeProvider(o: ClaudeOptions = {}): Provider {
   const bin = () => o.claudeBin ?? findClaude();
   const settingSources = o.settingSources ?? '';
@@ -854,9 +864,11 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
   /**
    * One tool-less call in its own scratch root: `<home>/runs/call-<id>`
    * with an empty `work` dir, its own egress proxy (Claude hosts only) and
-   * its own CLI profile. The root is removed when the call ends.
+   * its own CLI profile. The root is removed when the call ends. `system`
+   * is the whole system prompt; `schema` null asks for free text (no
+   * `--json-schema`); `maxMs` caps the session (never past CALL_MAX_MS).
    */
-  async function call(kind: string, model: string, persona: string, instructions: string | undefined, prompt: string, schema: object, signal: AbortSignal): Promise<SessionOut> {
+  async function call(kind: string, model: string, persona: string, system: string, prompt: string, schema: object | null, signal: AbortSignal, maxMs: number = CALL_MAX_MS): Promise<SessionOut> {
     if (signal.aborted) throw new Error(`claude ${kind} aborted`);
     const runId = `call-${randomBytes(8).toString('hex')}`;
     const root = join(paths().runs, runId);
@@ -878,11 +890,10 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
         ...head(model, ctl),
         '--tools',
         '',
-        '--json-schema',
-        JSON.stringify(schema),
+        ...(schema ? ['--json-schema', JSON.stringify(schema)] : []),
         ...(o.maxTurnsFlag !== false ? ['--max-turns', String(CALL_MAX_TURNS)] : []),
         '--append-system-prompt',
-        systemPrompt(persona, instructions),
+        system,
       ];
       const argv = wrap([claudeBin, ...args], 'cli', profileInput(root, claudeBin, egress.port, null, join(root, 'work')), (l) => log({ at: now(), kind: 'engine', text: l }));
       const out = await session({
@@ -894,7 +905,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
         model,
         tools: [],
         mcpServers: [],
-        caps: { maxTurns: CALL_MAX_TURNS, maxMs: CALL_MAX_MS, maxCredits: Number.POSITIVE_INFINITY },
+        caps: { maxTurns: CALL_MAX_TURNS, maxMs: Math.max(1, Math.min(maxMs, CALL_MAX_MS)), maxCredits: Number.POSITIVE_INFINITY },
         signal,
         log,
         tokensPerPct: tokensPerPct(),
@@ -938,8 +949,22 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     work,
     audit,
 
+    /**
+     * One turn for the school (Phase 4 ruling 5) through the same locked
+     * down call as a plan: no tools, an empty strict MCP config, CALL_DENY,
+     * the CLI profile, its own egress and `--max-turns 3`; free text when
+     * there is no schema. A conversation travels as one message, as Beagle
+     * sends it. The caller charges the usage.
+     */
+    async complete(i: CompleteInput): Promise<CompleteResult> {
+      const out = await call('complete', i.model, i.system, i.system, foldTurns(i.turns), i.schema, i.signal, i.maxMs);
+      if (!i.schema) return { text: out.text, json: null, usage: out.usage };
+      const json = answer(out);
+      return { text: out.structured !== null && out.structured !== undefined ? JSON.stringify(out.structured) : out.text, json, usage: out.usage };
+    },
+
     async plan(i, signal) {
-      const out = await call('plan', i.agent.model, i.persona, i.agent.instructions, planPrompt(i), PLAN_SCHEMA, signal);
+      const out = await call('plan', i.agent.model, i.persona, systemPrompt(i.persona, i.agent.instructions), planPrompt(i), PLAN_SCHEMA, signal);
       const a = answer(out);
       if (!a || typeof a.plan !== 'string' || !a.plan.trim() || !finite(a.price) || a.price < 0 || !finite(a.confidence) || a.confidence < 0 || a.confidence > 1) {
         throw new Error('claude plan: the answer does not match the shape');
@@ -948,7 +973,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     },
 
     async review(i, signal) {
-      const out = await call('review', i.agent.model, i.persona, i.agent.instructions, reviewPrompt(i), REVIEW_SCHEMA, signal);
+      const out = await call('review', i.agent.model, i.persona, systemPrompt(i.persona, i.agent.instructions), reviewPrompt(i), REVIEW_SCHEMA, signal);
       const a = answer(out);
       if (!a || typeof a.approve !== 'boolean' || typeof a.notes !== 'string' || !Array.isArray(a.concerns) || !a.concerns.every((c) => typeof c === 'string')) {
         throw new Error('claude review: the answer does not match the shape');
@@ -958,7 +983,8 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
 
     /** Text only: claude here sees the diff and the bar, never the screenshots (the vision judge is Ollama's, Task 10). */
     async judge(i, signal) {
-      const out = await call('judge', 'claude:sonnet', 'You judge interface changes against a design bar.', undefined, judgePrompt(i), JUDGE_SCHEMA, signal);
+      const judgePersona = 'You judge interface changes against a design bar.';
+      const out = await call('judge', 'claude:sonnet', judgePersona, systemPrompt(judgePersona, undefined), judgePrompt(i), JUDGE_SCHEMA, signal);
       const a = answer(out);
       if (!a || !finite(a.after) || typeof a.notes !== 'string') throw new Error('claude judge: the answer does not match the shape');
       return { before: null, after: Math.max(0, Math.min(10, a.after)), notes: `Scored from the diff text alone. ${a.notes}`, usage: out.usage };

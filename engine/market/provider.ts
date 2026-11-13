@@ -82,8 +82,34 @@ export interface AuditResult {
   reason: string | null;
 }
 
+/**
+ * One turn, no tools (Phase 4 ruling 5): the school's model calls (Beagle's
+ * designer and races, graduation) go through it. `schema` shapes the answer
+ * as JSON; null asks for free text. `turns` is a conversation so far, ending
+ * with a user turn. `runId` is what the call is charged under by a backend
+ * that charges itself (the Anthropic API): the voyage, net version or LoRA.
+ */
+export interface CompleteInput {
+  model: ModelRef;
+  system: string;
+  turns: Array<{ role: 'user' | 'assistant'; content: string }>;
+  schema: object | null;
+  signal: AbortSignal;
+  maxMs: number;
+  runId?: string | null;
+}
+
+/** `json` is the parsed answer when a schema was given (null when it did not parse), else null. */
+export interface CompleteResult {
+  text: string;
+  json: unknown | null;
+  usage: Usage;
+}
+
 export interface Provider {
   kind: 'claude' | 'ollama' | 'anthropic' | 'fake';
+  /** One turn for the school. Claude and Ollama return the usage for the caller to charge; the Anthropic API charges itself as `school` to the city. */
+  complete(i: CompleteInput): Promise<CompleteResult>;
   plan(i: PlanInput, signal: AbortSignal): Promise<{ plan: string; price: number; confidence: number; usage: Usage }>;
   /**
    * `spendsAttempt: false` marks a run that failed for the city's reasons

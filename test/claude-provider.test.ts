@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { realSpawner, setSpawner, type SpawnLine, type SpawnOpts, type Spawned } from '../engine/exec.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from '../engine/market/guard.js';
 import { BUILTIN_PLUGINS, CALL_DENY, CLAUDE_SANDBOX, HOOK_MATCHER, KILL_AFTER_MS, claudeProvider, type ClaudeOptions } from '../engine/market/claude.js';
-import type { AuditInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
+import type { AuditInput, CompleteInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { startEgress } from '../engine/market/egress.js';
 import { entries } from '../engine/ledger.js';
@@ -989,5 +989,76 @@ describe('audit', () => {
     rmSync(join(work.run.runRoot, 'ctl', 'broker.json'));
     await provider().p.work(work.input);
     assert.ok(work.logs.some((l) => l.kind === 'engine' && /^claude run crashed:/.test(l.text)), 'the crash line names the run');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* complete() (Phase 4): one turn for the school                        */
+/* ------------------------------------------------------------------ */
+
+const EDITS_SCHEMA = { type: 'object', required: ['edits'], properties: { edits: { type: 'array' } } };
+
+function completeInput(over: Partial<CompleteInput> = {}): CompleteInput {
+  return { model: 'claude:sonnet', system: 'You design agents.', turns: [{ role: 'user', content: 'Design the next generation.' }], schema: EDITS_SCHEMA, signal: new AbortController().signal, maxMs: 60_000, ...over };
+}
+
+describe('complete', () => {
+  test('claude complete with a schema builds the no-tool argv with the CLI profile, --max-turns 3 and --json-schema and reads structured_output', async () => {
+    const { calls } = fake([callInit(), result({ result: 'see structured', structured_output: { edits: [{ file: 'src/a.ts', find: 'a', replace: 'b' }] } })]);
+    const { p, reaps } = provider();
+    const out = await p.complete(completeInput());
+    assert.deepEqual(out.json, { edits: [{ file: 'src/a.ts', find: 'a', replace: 'b' }] });
+    assert.equal(out.text, JSON.stringify(out.json));
+    assert.equal(out.usage.weightedTokens, 1800);
+    const a = claudeArgs(calls[0]);
+    assert.equal(a[0], '-p');
+    assert.equal(flagValue(a, '--model'), 'sonnet');
+    assert.equal(flagValue(a, '--tools'), '');
+    assert.equal(flagValue(a, '--setting-sources'), '');
+    assert.ok(a.includes('--strict-mcp-config'));
+    assert.ok(a.includes('--no-session-persistence'));
+    assert.equal(flagValue(a, '--max-turns'), '3');
+    assert.deepEqual(JSON.parse(flagValue(a, '--json-schema')), EDITS_SCHEMA);
+    assert.match(flagValue(a, '--append-system-prompt'), /You design agents\./);
+    assert.deepEqual(JSON.parse(calls[0].seen['settings.json']!), { enabledPlugins: Object.fromEntries(BUILTIN_PLUGINS.map((n) => [`${n}@builtin`, false])), permissions: { deny: CALL_DENY } });
+    assert.deepEqual(JSON.parse(calls[0].seen['mcp.json']!), { mcpServers: {} });
+    assert.equal(calls[0].opts.stdin, 'Design the next generation.');
+    if (onMac) assert.equal(calls[0].cmd, SANDBOX_EXEC, 'under the CLI profile');
+    const env = calls[0].opts.env ?? {};
+    assert.equal(calls[0].opts.clearEnv, true);
+    for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK']) assert.equal(env[k], undefined, k);
+    assert.equal(reaps.length, 1, 'its scratch root is reaped and removed');
+  });
+
+  test('claude complete without a schema omits --json-schema and returns the result text', async () => {
+    const { calls } = fake([callInit(), result({ result: 'A plain answer.' })]);
+    const out = await provider().p.complete(
+      completeInput({ schema: null, turns: [{ role: 'user', content: 'First question.' }, { role: 'assistant', content: 'First answer.' }, { role: 'user', content: 'Second question.' }] }),
+    );
+    assert.equal(out.text, 'A plain answer.');
+    assert.equal(out.json, null);
+    const a = claudeArgs(calls[0]);
+    assert.ok(!a.includes('--json-schema'));
+    assert.equal(flagValue(a, '--max-turns'), '3');
+    // a conversation travels as one message, each turn marked
+    const stdin = calls[0].opts.stdin ?? '';
+    assert.match(stdin, /First question\.[\s\S]*First answer\.[\s\S]*Second question\./);
+    assert.match(stdin, /<your earlier turn>\nFirst answer\.\n<\/your earlier turn>/);
+  });
+
+  test('claude complete aborts on the signal within 5 s', async () => {
+    const { calls } = fake([callInit()], { hang: true });
+    const ac = new AbortController();
+    const started = Date.now();
+    const pending = provider().p.complete(completeInput({ signal: ac.signal }));
+    setTimeout(() => ac.abort(), 20);
+    await assert.rejects(pending, /aborted/);
+    assert.ok(Date.now() - started < 5000);
+    assert.ok(calls[0].kills.includes('SIGTERM'));
+  });
+
+  test('claude complete keeps the call guards: a session that would bill an API key is refused', async () => {
+    fake([callInit({ apiKeySource: 'ANTHROPIC_API_KEY' }), result({ result: 'x' })], { hang: true });
+    await assert.rejects(provider().p.complete(completeInput()), /API key/);
   });
 });

@@ -19,7 +19,7 @@ import { getSettings } from '../settings.js';
 import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
 import { installedModels, resolveModel } from './firms.js';
 import { diffSection } from './quote.js';
-import type { AuditInput, AuditResult, JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
+import type { AuditInput, AuditResult, CompleteInput, CompleteResult, JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
 import { auditLoopTools, runLoop, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ToolSpec } from './toolloop.js';
 
 /** The vision model the design judge uses, by prefix. */
@@ -352,9 +352,43 @@ function usageOf(seconds: number, gb: number): Usage {
   return { weightedTokens: 0, seconds: Math.round(seconds * 1000) / 1000, usd: 0, credits: Math.round(localCredits(seconds, gb) * 1e6) / 1e6 };
 }
 
+/**
+ * One turn for the school (Phase 4 ruling 5): the system prompt and the
+ * conversation, unstreamed, the schema as Ollama's structured output (none
+ * for free text), stopped by the signal or after `maxMs`. Local credits from
+ * the seconds Ollama reports and the model's size; the caller charges them.
+ */
+async function completeCall(i: CompleteInput): Promise<CompleteResult> {
+  i.signal.throwIfAborted();
+  const model = modelName(i.model);
+  const gb = await modelGB(model);
+  const started = Date.now();
+  const ctl = new AbortController();
+  const onAbort = () => ctl.abort(i.signal.reason);
+  i.signal.addEventListener('abort', onAbort, { once: true });
+  if (i.signal.aborted) ctl.abort(i.signal.reason);
+  const timer = setTimeout(() => ctl.abort(new Error('ollama complete ran out of time')), Math.max(1, Math.min(i.maxMs, CALL_MAX_MS)));
+  try {
+    const messages = [{ role: 'system', content: i.system }, ...i.turns.map((t) => ({ role: t.role, content: t.content }))];
+    const res = await post({ model, messages, stream: false, ...(i.schema ? { format: i.schema } : {}) }, ctl.signal);
+    const raw = await res.text();
+    if (raw.length > MAX_LINE_BYTES) throw new Error('ollama answered with too much');
+    const body = JSON.parse(raw) as OllamaLine;
+    if (body.error !== undefined) throw new Error(`ollama: ${String(body.error).slice(0, 500)}`);
+    const text = typeof body.message?.content === 'string' ? body.message.content : '';
+    const ns = num(body.total_duration);
+    return { text, json: i.schema ? parseAnswer(text) : null, usage: usageOf(ns ? ns / 1e9 : (Date.now() - started) / 1000, gb) };
+  } finally {
+    clearTimeout(timer);
+    i.signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export function ollamaProvider(): Provider {
   return {
     kind: 'ollama',
+
+    complete: completeCall,
 
     /**
      * The README audit (Phase 3 ruling 13) on a local model: the read tools

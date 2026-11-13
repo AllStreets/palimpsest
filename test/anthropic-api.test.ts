@@ -16,7 +16,7 @@ import { describeCommand, realRunner, realSpawner, setRunner, setSpawner, type R
 import { entries } from '../engine/ledger.js';
 import { API_PRICES, KEY_SERVICE, anthropicProvider, apiKey, removeApiKey, setApiKey, usdFor } from '../engine/market/anthropic-api.js';
 import { resetBudget } from '../engine/market/budget.js';
-import type { AuditInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
+import type { AuditInput, CompleteInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { apiCredits } from '../shared/credits.js';
@@ -504,5 +504,44 @@ describe('anthropic api audit', () => {
     assert.match(r.reason ?? '', /off/);
     assert.equal(api.requests.length, 0);
     assert.equal(sec.calls.length, 0);
+  });
+});
+
+describe('anthropic api complete', () => {
+  const input = (over: Partial<CompleteInput> = {}): CompleteInput => ({
+    model: MODEL, system: 'You design agents.', turns: [{ role: 'user', content: 'Q1' }, { role: 'assistant', content: 'A1' }, { role: 'user', content: 'Q2' }],
+    schema: null, signal: new AbortController().signal, maxMs: 60_000, runId: 'voyage-1', ...over,
+  });
+
+  test('anthropic complete charges dollars', async () => {
+    fakeSecurity();
+    const api = await fakeApi([
+      { blocks: [{ type: 'text', text: 'A plain answer.' }], usage: { input_tokens: 2000, output_tokens: 1000 } },
+      { blocks: [{ type: 'text', text: '{"edits": []}' }] },
+    ]);
+    enable();
+    const p = anthropicProvider({ baseUrl: api.base, keychain: fakeKc });
+    const out = await p.complete(input());
+    const usd = usdFor({ input: 2000, output: 1000, cacheRead: 0, cacheCreation: 0 }, 'claude-sonnet-5-5');
+    assert.equal(out.text, 'A plain answer.');
+    assert.equal(out.json, null);
+    assert.equal(out.usage.usd, usd);
+    assert.equal(out.usage.credits, apiCredits(usd));
+    // the school's own spend: charged to the city, never a firm
+    const rows = openDb().prepare('SELECT kind, amount, usd, firm_id, run_id FROM credits').all() as Array<Record<string, unknown>>;
+    assert.deepEqual(rows.map((r) => ({ ...r })), [{ kind: 'school', amount: apiCredits(usd), usd, firm_id: null, run_id: 'voyage-1' }]);
+    assert.equal(api.requests[0].body.system, 'You design agents.');
+    assert.deepEqual((api.requests[0].body.messages as Array<{ role: string }>).map((m) => m.role), ['user', 'assistant', 'user']);
+    assert.equal(api.requests[0].body.tools, undefined);
+    const shaped = await p.complete(input({ schema: { type: 'object', required: ['edits'], properties: { edits: { type: 'array' } } } }));
+    assert.deepEqual(shaped.json, { edits: [] });
+    assert.match(JSON.stringify(api.requests[1].body.messages), /JSON/, 'the schema is asked for in words');
+  });
+
+  test('anthropic complete refuses while the backend is off and calls nothing', async () => {
+    fakeSecurity();
+    const api = await fakeApi([]);
+    await assert.rejects(anthropicProvider({ baseUrl: api.base, keychain: fakeKc }).complete(input()), /off/);
+    assert.equal(api.requests.length, 0);
   });
 });

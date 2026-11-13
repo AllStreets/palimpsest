@@ -19,7 +19,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 
 import type { Job } from '../../shared/types.js';
-import type { AuditInput, AuditResult, JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
+import type { AuditInput, AuditResult, CompleteInput, CompleteResult, JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
 
 type Awaitable<T> = T | Promise<T>;
 type PlanResult = Awaited<ReturnType<Provider['plan']>>;
@@ -33,6 +33,8 @@ export type FakeScript = {
   review?: (i: ReviewInput, signal: AbortSignal) => Awaitable<ReviewResult>;
   judge?: (i: JudgeInput, signal: AbortSignal) => Awaitable<JudgeResult>;
   audit?: (i: AuditInput) => Awaitable<AuditResult>;
+  /** The school's one turn (Phase 4): by default `{ "edits": [] }` with a schema, `ok` without, at no cost. */
+  complete?: (i: CompleteInput) => Awaitable<CompleteResult>;
   /** Milliseconds between work steps (the sample economy paces runs with it). Default 0. */
   stepMs?: number;
 };
@@ -181,6 +183,11 @@ function defaultAudit(i: AuditInput): AuditResult {
   return finish({ claims: 2, findings }, 2);
 }
 
+function defaultComplete(i: CompleteInput): CompleteResult {
+  if (i.schema) return { text: JSON.stringify({ edits: [] }), json: { edits: [] }, usage: usage(0, 0) };
+  return { text: 'ok', json: null, usage: usage(0, 0) };
+}
+
 /** The defaults, for scripts that want to vary one rather than replace it. */
 export const fakeDefaults = {
   plan: defaultPlan,
@@ -188,6 +195,7 @@ export const fakeDefaults = {
   review: defaultReview,
   judge: defaultJudge,
   audit: defaultAudit,
+  complete: defaultComplete,
 };
 
 export function fakeProvider(script: FakeScript = {}): Provider {
@@ -198,5 +206,9 @@ export function fakeProvider(script: FakeScript = {}): Provider {
     review: async (i, signal) => (script.review ? script.review(i, signal) : defaultReview()),
     judge: async (i, signal) => (script.judge ? script.judge(i, signal) : defaultJudge()),
     audit: async (i) => (script.audit ? script.audit(i) : defaultAudit(i)),
+    complete: async (i) => {
+      i.signal.throwIfAborted();
+      return script.complete ? script.complete(i) : defaultComplete(i);
+    },
   };
 }

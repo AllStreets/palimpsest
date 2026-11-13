@@ -33,7 +33,7 @@ import { getSettings } from '../settings.js';
 import { acquire, charge, unattended, type Lease } from './budget.js';
 import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
 import { cleanImages, judgeAnswer, judgeText, parseAnswer, planAnswer, PLAN_JSON, reviewAnswer, REVIEW_JSON } from './ollama.js';
-import type { AuditInput, AuditResult, JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
+import type { AuditInput, AuditResult, CompleteInput, CompleteResult, JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
 import { auditLoopTools, LoopCap, runLoop, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ChatUsage, type ToolSpec } from './toolloop.js';
 
 export const KEY_SERVICE = 'Palimpsest Anthropic API key';
@@ -370,7 +370,7 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
   async function call(
     ref: ModelRef,
     body: Record<string, unknown>,
-    ctx: { kind: 'bid' | 'run' | 'review' | 'judge' | 'audit'; runId: string | null; firmId: string | null },
+    ctx: { kind: 'bid' | 'run' | 'review' | 'judge' | 'audit' | 'school'; runId: string | null; firmId: string | null },
     signal: AbortSignal,
     onChunk: (c: ChatChunk) => void = () => {},
   ): Promise<CallResult> {
@@ -520,8 +520,37 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
     }
   }
 
+  /**
+   * One turn for the school (Phase 4 ruling 5): no tools, the conversation
+   * as it stands, a schema asked for in words and read back with
+   * `parseAnswer`. Charged as `school` to the city under `runId`, never a firm.
+   */
+  async function complete(i: CompleteInput): Promise<CompleteResult> {
+    i.signal.throwIfAborted();
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    i.signal.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => ctl.abort(), Math.max(1, Math.min(i.maxMs, CALL_MAX_MS)));
+    try {
+      const last = i.turns.length - 1;
+      const messages = i.turns.map((t, n) => ({
+        role: t.role,
+        content: [{ type: 'text', text: n === last && i.schema ? `${t.content}\n\nAnswer only with a JSON object matching this JSON schema: ${JSON.stringify(i.schema)}` : t.content }],
+      }));
+      const body = { model: apiModel(i.model), max_tokens: CALL_MAX_TOKENS, stream: true, system: i.system, messages };
+      const res = await call(i.model, body, { kind: 'school', runId: i.runId ?? null, firmId: null }, ctl.signal);
+      const text = res.blocks.filter((b) => b.type === 'text').map((b) => String(b.text ?? '')).join('');
+      const usage: Usage = { weightedTokens: 0, seconds: Math.round(res.seconds * 1000) / 1000, usd: res.usd, credits: apiCredits(res.usd) };
+      return { text, json: i.schema ? parseAnswer(text) : null, usage };
+    } finally {
+      clearTimeout(timer);
+      i.signal.removeEventListener('abort', onAbort);
+    }
+  }
+
   return {
     kind: 'anthropic',
+    complete,
 
     /**
      * The README audit (Phase 3 ruling 13) through the API: the read tools

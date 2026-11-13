@@ -208,3 +208,24 @@ test('the default fake audit answers one REAL and one MISSING finding and writes
   ac.abort();
   assert.equal((await fakeProvider().audit(auditInput({ signal: ac.signal }).input)).ended, 'aborted');
 });
+
+test('the fake complete answers by its script', async () => {
+  const signal = new AbortController().signal;
+  const base = { model: 'claude:sonnet' as const, system: 'You design agents.', turns: [{ role: 'user' as const, content: 'Go.' }], signal, maxMs: 1000 };
+  const p = fakeProvider();
+  const shaped = await p.complete({ ...base, schema: { type: 'object' } });
+  assert.deepEqual(shaped.json, { edits: [] });
+  assert.equal(shaped.text, '{"edits":[]}');
+  const plain = await p.complete({ ...base, schema: null });
+  assert.equal(plain.text, 'ok');
+  assert.equal(plain.json, null);
+  assert.deepEqual(plain.usage, { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 });
+  // a script answers instead
+  const seen: string[] = [];
+  const scripted = fakeProvider({ complete: (i) => { seen.push(i.turns[0].content); return { text: 'scripted', json: null, usage: { weightedTokens: 600, seconds: 0, usd: 0, credits: 1 } }; } });
+  assert.equal((await scripted.complete({ ...base, schema: null })).text, 'scripted');
+  assert.deepEqual(seen, ['Go.']);
+  // a stopped call never answers
+  const ac = new AbortController(); ac.abort();
+  await assert.rejects(p.complete({ ...base, schema: null, signal: ac.signal }), /abort/i);
+});
