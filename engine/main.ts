@@ -14,7 +14,7 @@ import { backfillReports, ensureDailyReport, latestReportDay } from './market/re
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { ensureCampus } from './school/campus.js';
-import { catchUpPredictions } from './school/decisions.js';
+import { catchUpPredictions, installDecisions } from './school/decisions.js';
 import { startSchool } from './school/tick.js';
 import { ENGINE_STOPPED_REASON, failInterruptedTrains, pauseAll } from './school/trainer.js';
 import { isSampleHome } from './sample.js';
@@ -46,6 +46,8 @@ async function main(): Promise<void> {
   installProposals();
   // Phase 3 Task 7: the spire, the finial, revivals and ribbons from the floors as they go up, backfilled once from the towers.
   installMilestones();
+  // Phase 4 ruling 14: his accepts, dismissals, merges, closes and reverts, against the master's earlier guess; never the city's own acts.
+  installDecisions();
   try {
     backfillMilestones(Date.now());
   } catch (err) {

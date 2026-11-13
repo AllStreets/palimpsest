@@ -1,7 +1,6 @@
 /**
  * The nets at work and the master's prospective guesses (Phase 4 Task 14,
- * ruling 15): the prediction half of his decisions. Task 15 adds the
- * decision half.
+ * ruling 15) and his decisions against them (Task 15, rulings 14 and 16).
  *
  * - `predict(net, raw)` runs a net on one raw row, or answers null: when
  *   the school is off (read on every call), when the net has no current
@@ -25,6 +24,13 @@
  *   onto `decision.resolved` and the master learns from what it would have
  *   seen.
  *
+ * - `resolve(job, by, at)` records one of his decisions (`decision.resolved`
+ *   and the `decisions` table), with the guess's inputs copied on for the
+ *   master's rows; never the city's own acts (`autonomy.acted` by jobId),
+ *   whose undoing by him is an `undo` that suspends the pair.
+ *   `installDecisions()` hears them on the bus (main.ts installs it).
+ * - `agreement(kind, repo?)` and `agreements()`: the window autonomy reads.
+ *
  * - `appraiseBid(job, bid)` is the appraiser's estimate the award weighs
  *   (Decision 14).
  *
@@ -38,19 +44,21 @@ import { localDay } from '../../shared/day.js';
 import { encode, type RawRow } from '../../shared/net-features.js';
 import { forward } from '../../shared/nets.js';
 import { AGREE, itemKey, WORK_KINDS, workKind } from '../../shared/school-rules.js';
-import type { Bid, Inspection, Job, JobSchool, NetName, Prediction, Run } from '../../shared/types.js';
+import type { Agreement, Bid, Decision, Inspection, Job, JobSchool, NetName, Prediction, Run, WorkKind } from '../../shared/types.js';
 import { openDb } from '../db.js';
-import { emit } from '../events.js';
+import { emit, subscribe } from '../events.js';
 import { record } from '../ledger.js';
 import { agent, listAgents } from '../market/firms.js';
 import { reputation } from '../market/reputation.js';
-import { listJobs } from '../market/jobs.js';
-import { listRuns } from '../market/runs.js';
+import { job as storedJob, listJobs } from '../market/jobs.js';
+import { listRuns, run as storedRun } from '../market/runs.js';
+import { PR_CLOSED_REASON } from '../market/ship.js';
 import { getRepo } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { bidRaw, durabilityRaw, latestInspection, repoAcceptShare, repoApprovalShare, runDiff, setDistilPredict, tasteRaw } from './datasets.js';
 import { setAppraiserHook, setPendingHook } from './hooks.js';
-import { loadCurrent } from './nets.js';
+import { loadCurrent, skewedKinds } from './nets.js';
+import { ci } from './stats.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -335,6 +343,239 @@ export function catchUpPredictions(now: number = Date.now()): Prediction[] {
     console.error(`palimpsest: the master's missed guesses could not be read: ${errText(err)}`);
   }
   return out;
+}
+
+// ---------------------------------------------------------------- his decisions (ruling 14)
+
+/** What Task 16's `suspend()` does with a pair the city acted for and he undid; injected until it lands. */
+export type Suspend = (kind: WorkKind, repo: string, reason: string, now: number) => void;
+/** Why a pair is suspended when he undoes what it did. */
+export const UNDO_REASON = 'he undid it';
+
+const noSuspend: Suspend = () => {};
+
+/**
+ * What the city did on its own to a job (Task 17's `autonomy.acted` rows,
+ * matched by `jobId`, never by key): whether it acted at all, and the pair
+ * of the latest act whose kind it can read. Empty until Task 17 lands.
+ */
+function actedOn(jobId: string): { acted: boolean; last: { kind: WorkKind; repo: string | null } | null } {
+  const rows = openDb()
+    .prepare("SELECT json FROM ledger WHERE kind = 'autonomy.acted' AND json_extract(json, '$.jobId') = ? ORDER BY id")
+    .all(jobId) as Array<{ json: string }>;
+  let last: { kind: WorkKind; repo: string | null } | null = null;
+  for (const row of rows) {
+    let d: Record<string, unknown> = {};
+    try {
+      d = (JSON.parse(row.json) as Record<string, unknown>) ?? {};
+    } catch {
+      continue;
+    }
+    const grant = d.grant && typeof d.grant === 'object' ? (d.grant as Record<string, unknown>) : {};
+    const kind = d.kind ?? grant.kind;
+    const repo = d.repo ?? grant.repo;
+    if (typeof kind === 'string' && (WORK_KINDS as readonly string[]).includes(kind)) last = { kind: kind as WorkKind, repo: typeof repo === 'string' ? repo : null };
+  }
+  return { acted: rows.length > 0, last };
+}
+
+/** Every resolution of `key`, oldest first. */
+function resolutions(key: string): Decision[] {
+  return (openDb().prepare('SELECT json FROM decisions WHERE key = ? ORDER BY rowid').all(key) as Array<{ json: string }>).map((r) => JSON.parse(r.json) as Decision);
+}
+
+/** The latest resolution of each key of this job's PR (a `merge:*` key), the newest last. */
+function latestMergeOf(jobId: string): Decision | null {
+  const rows = (openDb().prepare("SELECT json FROM decisions WHERE kind LIKE 'merge:%' ORDER BY rowid").all() as Array<{ json: string }>)
+    .map((r) => JSON.parse(r.json) as Decision)
+    .filter((d) => d.jobId === jobId);
+  return rows.at(-1) ?? null;
+}
+
+/** The run that carried this job's PR: the job's own run when it has one, else its newest run with a PR. */
+function prRun(job: Job): Run | null {
+  const own = job.runId ? storedRun(job.runId) : null;
+  if (own && own.prNumber !== null) return own;
+  return (
+    listRuns({ jobId: job.id })
+      .filter((r) => r.prNumber !== null)
+      .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+      .at(-1) ?? null
+  );
+}
+
+/** The kind of decision `by` puts on this job: the proposal itself, or its PR (by the run's inspection). */
+function kindFor(job: Job, by: Decision['by'], r: Run | null): WorkKind {
+  if (by === 'accept' || by === 'dismiss') return workKind(job, null);
+  const pr = r ?? prRun(job);
+  if (!pr) return workKind(job, by === 'undo' ? null : {});
+  return workKind(job, latestInspection(pr.id) ?? {});
+}
+
+/** The inputs the master read for a prediction, from its `master.predicted` row. */
+function inputsOf(predictionId: number): Record<string, unknown> | null {
+  const row = openDb().prepare("SELECT json FROM ledger WHERE id = ? AND kind = 'master.predicted'").get(predictionId) as { json: string } | undefined;
+  if (!row) return null;
+  const d = JSON.parse(row.json) as { inputs?: unknown };
+  return d.inputs && typeof d.inputs === 'object' ? (d.inputs as Record<string, unknown>) : null;
+}
+
+/**
+ * Records one of his decisions on `job` at `at` (ruling 14), against the
+ * master's guess on its key if that guess was written strictly before
+ * (ruling 15): `agreed` is whether the guess (approve at 0.5 or more) matches
+ * him, false for an abstention, null with no earlier guess (in no window).
+ *
+ * The city's own acts are never his: on a job with an `autonomy.acted` row
+ * (by `jobId`) an accept or a merge records nothing, and his dismissal,
+ * withdrawal or close is an `undo` under the kind of the act he undid,
+ * approved false and agreed false, which suspends that act's pair. His
+ * revert supersedes his earlier approve of the job's PR as a decline (on a
+ * job the city merged itself it enters the window as agreed false; its
+ * revocation is Task 17's). A key he has already decided is not decided
+ * again, but for that revert. Returns the decision, or null when nothing is
+ * recorded.
+ */
+export function resolve(job: Job, by: Decision['by'], at: number = Date.now(), o: { run?: Run | null; suspend?: Suspend } = {}): Decision | null {
+  const city = actedOn(job.id);
+  let kind: WorkKind;
+  let forced = false;
+  let pair: { kind: WorkKind; repo: string } | null = null;
+  if (city.acted) {
+    if (by === 'accept' || by === 'merge') return null;
+    if (by !== 'revert') by = 'undo';
+    kind = city.last?.kind ?? kindFor(job, by, o.run ?? null);
+    forced = true;
+    if (by === 'undo') pair = { kind, repo: city.last?.repo ?? job.repo };
+  } else if (by === 'undo') {
+    return null;
+  } else if (by === 'revert') {
+    const prior = latestMergeOf(job.id);
+    if (!prior || !prior.approved) return null;
+    kind = prior.kind;
+  } else {
+    kind = kindFor(job, by, o.run ?? null);
+  }
+
+  const key = itemKey(kind, job.id);
+  const history = resolutions(key);
+  // Decided once; a revert only turns an approve (or, on a job the city merged, nothing yet) into a decline.
+  const latest = history.at(-1);
+  if (by === 'revert' ? latest !== undefined && !latest.approved : latest !== undefined) return null;
+
+  const approved = by === 'accept' || by === 'merge';
+  const pred = registered(key);
+  const before = pred !== null && Date.parse(pred.at) < at;
+  const agreed = forced ? false : before ? pred.p !== null && pred.p >= 0.5 === approved : null;
+  const predictionId = before ? pred.id : null;
+  const decision: Decision = { key, kind, repo: job.repo, jobId: job.id, approved, by, predictionId, agreed, at: new Date(at).toISOString() };
+  const inputs = predictionId !== null ? inputsOf(predictionId) : null;
+  record('decision.resolved', { ...decision, ...(inputs ? { inputs } : {}) });
+  openDb().prepare('INSERT INTO decisions (key, at, kind, repo, json) VALUES (?, ?, ?, ?, ?)').run(key, decision.at, kind, job.repo, JSON.stringify(decision));
+  emit('decision.resolved', { decision });
+  if (pair) {
+    try {
+      (o.suspend ?? noSuspend)(pair.kind, pair.repo, UNDO_REASON, at);
+    } catch (err) {
+      console.error(`palimpsest: the ${pair.kind} pair on ${pair.repo} could not be suspended: ${errText(err)}`);
+    }
+  }
+  return decision;
+}
+
+/** One event on the bus, as his decision or nothing. */
+function hear(type: string, data: unknown, at: number, suspend: Suspend): void {
+  const d = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  if (type === 'job.changed') {
+    const j = d.job as Job | undefined;
+    const from = d.from;
+    if (!j || typeof j.id !== 'string' || from === j.status) return;
+    if (from === 'proposed' && j.status === 'open') resolve(j, 'accept', at, { suspend });
+    else if (j.status === 'withdrawn' && j.withdrawnBy === 'him') resolve(j, from === 'proposed' ? 'dismiss' : 'undo', at, { suspend });
+    else if (j.status === 'merged' && from === 'waiting') {
+      // PR mode only: a push-mode merge comes from `shipping` and is not his decision.
+      const r = prRun(j);
+      if (r) resolve(j, 'merge', at, { run: r, suspend });
+    }
+    return;
+  }
+  if (type === 'run.ended') {
+    const r = typeof d.runId === 'string' ? storedRun(d.runId) : null;
+    if (!r || r.outcome !== 'closed' || r.prNumber === null) return;
+    const j = storedJob(r.jobId);
+    if (!j) return;
+    // Merged with changes still approves; closed by him declines; any other close (its issue closed) is no decision.
+    if (r.mergedWithChanges) resolve(j, 'merge', at, { run: r, suspend });
+    else if (r.endedReason === PR_CLOSED_REASON) resolve(j, 'close', at, { run: r, suspend });
+    return;
+  }
+  if (type === 'merge.reverted') {
+    const j = typeof d.jobId === 'string' ? storedJob(d.jobId) : null;
+    if (j) resolve(j, 'revert', at, { suspend });
+  }
+}
+
+/**
+ * Hears his decisions on the bus (ruling 14): `job.changed` (an accept, a
+ * dismissal, a withdrawal, a PR-mode merge), `run.ended` (a PR merged with
+ * changes, or closed by him) and `merge.reverted`. `suspend` is Task 16's,
+ * injected until it lands. main.ts installs it; returns the unsubscribe.
+ */
+export function installDecisions(o: { now?: () => number; suspend?: Suspend } = {}): () => void {
+  const now = o.now ?? (() => Date.now());
+  const suspend = o.suspend ?? noSuspend;
+  return subscribe((e) => {
+    if (e.type !== 'job.changed' && e.type !== 'run.ended' && e.type !== 'merge.reverted') return;
+    try {
+      hear(e.type, e.data, now(), suspend);
+    } catch (err) {
+      console.error(`palimpsest: his decision on ${e.type} could not be recorded: ${errText(err)}`);
+    }
+  });
+}
+
+// ---------------------------------------------------------------- the agreement (ruling 16)
+
+/** The latest resolution of each key of `kind` with a non-null `agreed`, in the order they were last resolved. */
+function windowOf(kind: WorkKind): Decision[] {
+  const latest = new Map<string, Decision>();
+  for (const r of openDb().prepare('SELECT key, json FROM decisions WHERE kind = ? ORDER BY rowid').all(kind) as Array<{ key: string; json: string }>) {
+    latest.delete(r.key);
+    latest.set(r.key, JSON.parse(r.json) as Decision);
+  }
+  return [...latest.values()].filter((d) => d.agreed !== null);
+}
+
+/**
+ * The master's agreement with him on `kind` (ruling 16): over the last 50
+ * non-null `agreed` rows of the kind, pooled across repos, the rate with its
+ * interval; eligible with 50 rows at 0.95 or better. With a repo, its own
+ * test: at least 10 of its rows of the kind and none of its last 10 against.
+ * `skewed` is the current master's mark for the kind (ruling 11).
+ */
+export function agreement(kind: WorkKind, repo?: string | null): Agreement {
+  const all = windowOf(kind);
+  const last = all.slice(-AGREE.window);
+  const agreed = last.filter((d) => d.agreed === true).length;
+  const rate = last.length ? ci(last.map((d) => (d.agreed ? 1 : 0))) : null;
+  const eligible = last.length >= AGREE.window && rate !== null && rate.value >= AGREE.rate;
+  let repoOk: boolean | null = null;
+  if (repo) {
+    const mine = all.filter((d) => d.repo === repo);
+    repoOk = mine.length >= AGREE.repoMin && mine.slice(-AGREE.repoLast).every((d) => d.agreed === true);
+  }
+  let skewed = false;
+  try {
+    skewed = skewedKinds().includes(kind);
+  } catch {
+    skewed = false;
+  }
+  return { kind, repo: repo ?? null, rows: last.length, agreed, rate, eligible, repoOk, skewed };
+}
+
+/** The agreement on each of the six kinds, pooled across repos. */
+export function agreements(): Agreement[] {
+  return WORK_KINDS.map((k) => agreement(k));
 }
 
 // The market asks through hooks.ts (a pending decision, a bid to appraise) ...
