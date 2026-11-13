@@ -329,7 +329,7 @@ const shortDate = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numer
  */
 export function milestoneNote(m: Milestone, now: number = Date.now()): string {
   const what = m.title.replace(/^The /, 'the ');
-  if (m.kind === 'skyline' && !m.lit) return `held ${what}`;
+  if (m.kind === 'skyline' && !m.lit) return 'held the skyline';
   // A ribbon names its firm, and needs no date: "first PR of Quickset".
   if (m.kind === 'ribbon') return m.title.replace(/^The /, '');
   const at = Date.parse(m.at);

@@ -116,3 +116,19 @@ export function tourPlan(w: Week, events: TourEvent[], standing: ReadonlySet<str
   const seconds = stops.reduce((sum, s) => sum + s.dwell + s.glide, 0);
   return { week: w.week, from: w.from, to: w.to, stops, seconds };
 }
+
+/** The Monday of the week before `week`'s (both YYYY-MM-DD). */
+export function previousWeek(week: string): string {
+  return weekOf(dayNoon(week) - 7 * 86_400_000).week;
+}
+
+/**
+ * Which week T walks at `now`: this week, unless it has fewer stops than a
+ * tour needs (a Monday morning, say), then the week before, as the
+ * Monday brief offers it. `planned` is the tour of a week, or null.
+ */
+export function tourWeekFor(now: number, planned: (week: string) => { stops: number } | null): string {
+  const week = weekOf(now).week;
+  const t = planned(week);
+  return t && t.stops > 0 ? week : previousWeek(week);
+}

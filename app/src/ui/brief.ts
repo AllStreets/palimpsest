@@ -73,8 +73,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     if ((sheet.root.dataset.scrolled === 'true') !== on) sheet.root.dataset.scrolled = String(on);
   }, { passive: true });
   const title = head.querySelector<HTMLElement>('.sheet-title')!;
-  const kicker = el('p', 'brief-kicker', 'Brief');
-  head.insertBefore(kicker, title);
+  // The day is the page's heading: no kicker over it. The sheet is named for the screen it is.
+  sheet.root.setAttribute('aria-label', 'Brief');
   // The lead and the colophon open the page and scroll away with it, so the ledgers have the height.
   const lead = el('p', 'brief-lead');
   const empty = el('p', 'brief-empty');

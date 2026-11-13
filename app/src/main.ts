@@ -4,7 +4,7 @@ import './ui/style.css';
 import './ui/screens.css';
 
 import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, Tour, TourStop, TowerSpec } from '../../shared/types';
-import { weekOf } from '../../shared/tour';
+import { previousWeek, weekOf } from '../../shared/tour';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
@@ -1160,7 +1160,8 @@ async function main(): Promise<void> {
     // T in the city walks through the week (Decision 5), any day.
     if ((e.key === 't' || e.key === 'T') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city') {
       e.preventDefault();
-      void startTour(weekOf(Date.now()).week);
+      // This week, or the week before when this one has too little to walk (a Monday morning): tourWeekFor's rule.
+      void startTour(weekOf(Date.now()).week, true);
     }
     // R rides the lift up the tower open in the inspector, or the selected agent's (Task 35).
     if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city' && !ride && !tourWalk) {
@@ -1256,20 +1257,21 @@ async function main(): Promise<void> {
    * resolves false.
    */
   let tourStarting = false;
-  const startTour = async (week: string): Promise<boolean> => {
+  const startTour = async (week: string, fallBack = false): Promise<boolean> => {
     // A second press while the first is still reading the week starts nothing more: one walk at a time.
     if (tourStarting) return true;
     tourStarting = true;
     try {
-      return await beginTour(week);
+      return await beginTour(week, fallBack);
     } finally {
       tourStarting = false;
     }
   };
-  const beginTour = async (week: string): Promise<boolean> => {
+  const beginTour = async (week: string, fallBack: boolean): Promise<boolean> => {
     let tour: Tour | null;
     try {
       tour = await api.tour(week);
+      if (fallBack && !(tour && tour.stops.some((x) => x.kind !== 'exchange'))) tour = await api.tour(previousWeek(week));
     } catch {
       notice.add("The engine did not answer with the week's tour.", { key: 'tour' });
       return false;

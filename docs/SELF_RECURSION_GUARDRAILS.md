@@ -35,6 +35,10 @@ first analysis of a market-on repo        engine/audit/run.ts queueAudit (Phase 
   > his click                            engine/market/jobs.ts acceptProposed
   > open > bid > ... as above
 
+his switch turns a repo's market on       engine/repos.ts patchRepo, market false to true (Phase 3 ruling 6)
+  > audit (once, never audited before)   engine/audit/run.ts shouldAutoAudit, queueAudit (trigger connect)
+  > proposed job > his click > open      as above
+
 his click on the district page or the brief
   > audit                                engine/audit/run.ts queueAudit (trigger demand or brief)
   > proposed job > his click > open      as above

@@ -251,6 +251,8 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
     const d = e.data as { milestone?: Milestone; id?: string };
     const m = d.milestone;
     if (!m?.id || !standing.has(m.id)) continue;
+    // A spire passed on is the new holder's news, not the old one's.
+    if (m.kind === 'skyline' && !m.lit) continue;
     drafts.push({
       id: `milestone:${m.id}`,
       kind: 'milestone',
@@ -314,7 +316,9 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       actions: ['resume', 'why'],
     });
   }
-  for (const r of repos.filter((x) => latestAudit(x.fullName) === null)) {
+  // Never audited, and worth saying: only where the market is on (an audit there would spend), and not once he
+  // dismissed it, until something changes (the market turned on again, the repo connected again).
+  for (const r of repos.filter((x) => x.market && latestAudit(x.fullName) === null && !auditDueDismissed(x.fullName, localDay(now)))) {
     drafts.push({
       id: `audit-due:${r.fullName}`,
       kind: 'audit-due',
@@ -349,7 +353,8 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       actions: daily ? ['cap'] : [],
     });
   }
-  if (t.paused?.reason === 'stale') {
+  // A stale reading is news only when the city has Claude work waiting on it; with every market off it waits on nothing.
+  if (t.paused?.reason === 'stale' && wantsToSpend(repos)) {
     drafts.push({
       id: 'stale',
       kind: 'stale',
@@ -459,6 +464,43 @@ function lead(items: BriefItem[], n: ReturnType<typeof numbers>, since: string, 
   return `${first} ${second}`;
 }
 
+/** Lines that stand from day to day as advice: they never open the brief before the city by themselves. */
+const STANDING: ReadonlySet<BriefItemKind> = new Set(['audit-due', 'usage']);
+
+/**
+ * Whether he dismissed the repo's "never audited" line on an earlier day,
+ * with nothing changed since: no market turned on and no connect after the
+ * dismissal. (On the day he dismisses it, the item stays, showing it.)
+ */
+function auditDueDismissed(repo: string, today: string): boolean {
+  const id = `audit-due:${repo}`;
+  const dismissed = query({ kind: 'brief.action' })
+    .filter((e) => (e.data as { itemId?: string; action?: string }).itemId === id && (e.data as { action?: string }).action === 'dismiss')
+    .map((e) => e.at)
+    .sort()
+    .at(-1);
+  if (!dismissed || localDay(Date.parse(dismissed)) >= today) return false;
+  const changed = [
+    ...query({ kind: 'repo.patched' }).filter((e) => {
+      const d = e.data as { repo?: string; patch?: { market?: boolean } };
+      return d.repo === repo && d.patch?.market === true;
+    }),
+    ...query({ kind: 'repo.connected' }).filter((e) => (e.data as { repo?: string }).repo === repo),
+  ]
+    .map((e) => e.at)
+    .sort()
+    .at(-1);
+  return !changed || changed <= dismissed;
+}
+
+/** Whether the city has Claude work waiting: a job to bid on or under way on a market-on repo, or an audit waiting or reading. */
+function wantsToSpend(repos: Repo[]): boolean {
+  const on = new Set(repos.filter((r) => r.market && !r.halted).map((r) => r.fullName));
+  const live = new Set(['open', 'bidding', 'awarded', 'running', 'inspecting', 'shipping']);
+  if (listJobs().some((j) => on.has(j.repo) && live.has(j.status))) return true;
+  return listAudits({ status: ['waiting', 'preparing', 'installing', 'reading'] }).length > 0;
+}
+
 /** The first `brief.opened` of today, or null. */
 function openedToday(day: string): LedgerEntry | null {
   return query({ kind: 'brief.opened' }).find((e) => (e.data as { day?: string }).day === day) ?? null;
@@ -489,7 +531,8 @@ export function briefData(now: number, opts: BriefOptions = {}): Brief {
     day,
     since,
     firstOpen,
-    due: firstOpen && all.length > 0,
+    // The brief opens before the city only for news or what waits on him: never for a standing recommendation alone.
+    due: firstOpen && all.some((it) => !STANDING.has(it.kind) && !it.acted),
     lead: plain(lead(all, numbers(since, day), since, day), 600),
     usage: { fiveHour: t.fiveHour, sevenDay: t.sevenDay, todayCapPct: t.todayCapPct?.pct ?? null, paused: t.paused ? { reason: t.paused.reason, detail: plain(t.paused.detail, 300) } : null },
     sections,

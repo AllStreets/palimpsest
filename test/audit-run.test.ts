@@ -31,6 +31,7 @@ import { checkCommands } from '../engine/audit/schema.js';
 import {
   auditLogPath,
   failInterruptedAudits,
+  killAudit,
   killLiveAudits,
   pickAuditModel,
   queueAudit,
@@ -421,6 +422,21 @@ test('a fake agent that writes a file in the clone fails the audit with "wrote t
   assert.ok(!existsSync(join(paths().runs, ended.id, 'repo')));
 });
 
+test('a waiting audit can be stopped: it ends killed, recorded, and a new one may be queued', () => {
+  makeRepo();
+  const q = queueAudit(getRepo(FULL) as Repo, 'connect');
+  assert.equal(q.status, 'waiting');
+  assert.equal(killAudit(q.id, 'He stopped the audit.'), true);
+  const ended = storedAudit(q.id)!;
+  assert.equal(ended.status, 'killed');
+  assert.equal(ended.endedReason, 'He stopped the audit.');
+  assert.equal(ended.waitingReason, null);
+  assert.ok(entries().some((e) => e.kind === 'audit.ended' && (e.data as { auditId?: string }).auditId === q.id));
+  assert.equal(killAudit(q.id, 'again'), false, 'an ended audit is not stopped twice');
+  assert.doesNotThrow(() => queueAudit(getRepo(FULL) as Repo, 'demand'), 'it no longer blocks a new one');
+  assert.equal(verifyReplay().ok, true);
+});
+
 test('evidence citing a file the fake agent did not commit is unverified and proposes nothing', async () => {
   useScript({
     audit: () =>
@@ -616,6 +632,30 @@ test('checksPassed vouches for a REAL finding only when the declared test check 
 });
 
 // ---------------------------------------------------------------- the kill paths
+
+test('the hard stop kills a reading audit: it ends killed with the hard stop as its reason, charged, proposing nothing', async () => {
+  const held = heldAudit({ creditsOnAbort: 3 });
+  useScript({ audit: held.audit });
+  const repo = makeRepo();
+  const before = treasury(clock).citySpent.today;
+  queueAudit(repo, 'demand');
+  const running = start();
+  await until(() => held.started.length === 1);
+  const id = held.started[0].auditId;
+  assert.equal(storedAudit(id)?.status, 'reading');
+  // A reading past the hard stop: the treasury aborts every Claude lease as it enters `hard`.
+  reading(getSettings().hardStopPct + 2);
+  treasury(clock);
+  const ended = (await running) as Audit;
+  assert.equal(ended.status, 'killed');
+  assert.match(ended.endedReason ?? '', /hard stop/);
+  assert.deepEqual(ended.findings, [], 'nothing is proposed');
+  assert.ok(treasury(clock).citySpent.today > before, 'what it spent counts');
+  assert.equal(creditRows(id)[0]?.kind, 'audit');
+  const after = getRepo(FULL) as Repo;
+  assert.equal(after.halted, null);
+  assert.equal(after.strikes, 0);
+});
 
 test('the stop file kills a reading audit within 5 s, leaves the repo unhalted with no strike and counts its spend', async () => {
   const held = heldAudit({ creditsOnAbort: 3 });

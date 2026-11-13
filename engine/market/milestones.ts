@@ -142,7 +142,12 @@ function settleSkylines(now: number, cause?: { towerId: string; floorId: string 
     const held = holder ? towers.get(holder.towerId) : undefined;
     const stays = held && hasLit(held) && earnedHeight(held) >= best.h;
     if (!stays && best.t.id !== holder?.towerId) {
-      if (holder) patch(holder.id, { lit: false });
+      if (holder) {
+        // Its words follow the pass: it held the skyline, it no longer stands tallest.
+        const was = towers.get(holder.towerId);
+        const day = new Date(now).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+        patch(holder.id, { lit: false, title: 'Held the skyline', detail: `${was ? n.tower(was) : holder.towerId} held the skyline until ${day}.` });
+      }
       const t = best.t;
       const floor = cause && cause.towerId === t.id && cause.floorId ? (t.floors.find((f) => f.id === cause.floorId) ?? null) : newestLit(t);
       const at = floor?.at ?? cause?.at ?? iso(now);

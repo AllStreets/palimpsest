@@ -6,7 +6,7 @@
  * stands, when "Propose again" may stand beside it, and why "Audit the
  * README" is held.
  */
-import type { Audit, Evidence, Job, Verdict } from '../../../shared/types.js';
+import type { Audit, AuditTrigger, Evidence, Job, Verdict } from '../../../shared/types.js';
 import { cleanText } from './board.js';
 
 export type VerdictMark = 'full' | 'half' | 'empty' | 'hatched' | 'struck';
@@ -169,4 +169,9 @@ export function whatToBuild(body: unknown): { again: boolean; text: string } | n
   const text = m[1].trim();
   if (!text) return null;
   return { again: /(?:^|\n)proposed again: the merge did not close it(?:\n|$)/.test(src.slice(0, m.index + 1)), text };
+}
+
+/** Why the audit ran, as the audit page's line under its title says it. */
+export function auditedBecause(trigger: AuditTrigger): string {
+  return trigger === 'connect' ? 'audited by itself when its market opened' : 'audited when you asked';
 }

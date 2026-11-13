@@ -149,6 +149,10 @@ test('a lit floor that gives a tower the greatest earned height moves the lit sp
   const passed = stored('skyline:acme/a#founding');
   assert.equal(passed?.lit, false, 'the old holder keeps its spire unlit');
   assert.equal(passed?.until, null);
+  // Its words no longer claim the skyline: it held it.
+  assert.equal(passed?.title, 'Held the skyline');
+  assert.match(passed?.detail ?? '', /^a held the skyline until /);
+  assert.doesNotMatch(passed?.detail ?? '', /stands tallest/);
   // The patch writes the row and emits milestone.reached again with the patched row.
   const aRows = reached('skyline:acme/a#founding');
   assert.equal(aRows.length, 2);

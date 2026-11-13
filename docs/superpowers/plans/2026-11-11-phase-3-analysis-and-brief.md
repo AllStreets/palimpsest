@@ -589,3 +589,11 @@ Round 2:
 | M: `localSize()` had two homes | `shared/market-rules.ts` only (ruling 5) |
 | M: `engineGit` throws on an altered `.git/config` | Task 2 (the throw passes, tested); Task 4 maps it to `failed` with the reason, tested |
 | M: `guardHookCommand` third parameter | Task 3: `--read-only` on the hook's argv, `guard-hook.mjs` refuses the write tools with exit 2, tested with the real script |
+
+## Parked at the Phase 3 final review
+
+- `source: 'brief'` (spec 7.1, "a daily-brief recommendation he acts on") has its type but no producer: it arrives with Phase 4's Triage-ranked recommendations, which are what a brief recommendation would post.
+- Ruling 4's scope filter to paths at `baseSha` (review Minor 4): the run-time scope guard already filters every write, so it is no safety hole; it waits for Task 20's real proposals to show which globs the agent writes.
+- A capped audit keeps nothing (Minor 6) and a declared check that writes fails the audit as the model's (Minor 7): both need a real repo's behaviour, and are recorded by Task 20 before they are changed.
+- Proposal keys follow the claim's wording (Minor 11): keying on the README source line waits for Task 20's re-audit, which shows how stable the wording is; the README says so meanwhile.
+- The hero media misses (Minor 14) fold into the Phase 5 media pass.

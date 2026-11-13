@@ -150,7 +150,7 @@ Phase 3 has the city read two things: my repos' READMEs against their code, and 
 
 <img src="docs/media/brief.webp" alt="The Brief screen over the left half of the window: the date, a sentence on everything since yesterday, then Waiting on you, with the jobs proposed from a README audit and a pull request waiting for review, each a ruled row with its actions as plain text, such as Post as a job, Change the tier, Dismiss and Ask why. The city stays visible on the right." />
 
-The first time I open the app on a day when something is waiting on me, the brief opens before the city. On a morning with nothing in it, the city opens instead with one quiet line saying so. The brief is always one click away in the running head.
+The first time I open the app on a day when something happened or is waiting on me, the brief opens before the city. Standing advice, such as a repo that has never been audited, does not open it by itself. On a morning with nothing new, the city opens instead with one quiet line saying so. The brief is always one click away in the running head.
 
 It is made from the ledger since the last day I opened it, and from what stands now: pull requests waiting on me, proposed jobs, merges and failures overnight, halts, finished audits, the usage reading and the city's milestones. Each item carries its actions in place: Post as a job, Change the tier, Dismiss, Ask why, Open the diff, Fly to the floor, Retry, Resume, Open the PR, Change today's limit, Audit it, and on a Monday, Walk through the week. Change today's limit holds only until midnight. What I do with each item is written to the ledger, and a dismissal is marked as teaching the city what I don't want.
 
@@ -168,7 +168,7 @@ An audit reads a repo's README, and the Markdown under its `docs/` folder, and c
 
 Every finding cites its evidence as a file and a line. The engine then checks each citation against the commit the audit read: the file has to be a real file at that commit, and the line has to exist in it. A finding with no citation that checks out is marked unverified and proposes nothing, and a claim the audit calls real with no test behind it is reported as partial.
 
-An audit runs in a fresh clone of the repo, in the same sandbox as a job, behind a network proxy of its own and the same guards. Its tools can only read, apart from one that asks the broker to run the repo's own checks. When it ends, the engine checks that the clone is untouched, and an audit that wrote to it fails. It never commits, pushes, or writes to GitHub. Its usage is the city's own spend, under the same caps as everything else, and an audit stops at 40 credits by default. It runs on Claude Sonnet when the caps allow, and otherwise on the largest model installed in Ollama, a coding model first. Settings can pin it to one model instead.
+An audit runs in a fresh clone of the repo, in the same sandbox as a job, behind a network proxy of its own and the same guards. Its tools can only read, apart from one that asks the broker to run the repo's own checks. When it ends, the engine checks that no tracked or unignored file in the clone changed, and an audit that wrote to one fails. It never commits, pushes, or writes to GitHub. Its usage is the city's own spend, under the same caps as everything else, and an audit stops at 40 credits by default. It runs on Claude Sonnet when the caps allow, and otherwise on the largest model installed in Ollama, a coding model first. Settings can pin it to one model instead.
 
 A repo is audited by itself once, when I turn its market on (or when it is first analysed with its market already on), if Audit on connect is on in Settings. It is on by default. Otherwise a repo is audited only when I ask, from its district page or from the brief. An audit that failed or ran out of credits is never retried by itself, and an automatic one waits while I am using Claude Code myself.
 
@@ -176,13 +176,13 @@ It is one agent's reading of a README, and it is verified only as far as the fil
 
 ### Proposals as jobs
 
-Each gap the audit verifies can become a proposed job: missing, stubbed and broken claims, and partial ones where it can name what's missing. A proposal comes with the claim, the evidence, a scope and what counts as done. It waits on the job board and in the brief until I post it as a job, change its scope or tier first, or dismiss it. Nothing bids on it and nothing reaches GitHub until I post it. A claim I dismissed is not proposed again by itself, and one whose job merged is proposed again only if the next audit still finds it missing or broken.
+Each gap the audit verifies can become a proposed job: missing, stubbed and broken claims, and partial ones where it can name what's missing. A proposal comes with the claim, the evidence, a scope and what counts as done. It waits on the job board and in the brief until I post it as a job, change its scope or tier first, or dismiss it. Nothing bids on it and nothing reaches GitHub until I post it. A claim I dismissed is not proposed again by itself, as long as the next audit words the claim the same way, and one whose job merged is proposed again only if the next audit still finds it missing or broken.
 
 ### Milestones in the city
 
 <img src="docs/media/spire.webp" alt="A guyed steel mast on the roof of the tallest tower at dusk, its stays running down to the roof, three small galleries along it and a warm lamp at its tip, a bronze sleeve round its footing, the city in haze far below." />
 
-The tower that stands tallest above its datum line, counting only floors earned in the market, carries a lit mast. When another tower passes it, the mast's lamps go out but the mast stays. The tallest tower overall wears a bronze finial on a dark mast, or, when it holds the lit mast as well, a bronze sleeve round its footing.
+The tower that stands tallest above its datum line, counting only floors earned in the market, carries a lit mast. When another tower passes it, the mast's lamps go out but the mast stays. The tallest tower overall wears a bronze sleeve round its mast's footing, and a bronze finial while its mast is dark.
 
 <img src="docs/media/revival.webp" alt="A scaffold of tubes, boards and netting round two floors of a tall tower at dusk, a string of warm bulbs sagging along each floor of it." />
 
@@ -272,7 +272,7 @@ What works now:
 - Reading live Claude plan usage through a statusline hook, and the usage Codex and Gemini report of their own, if you have them.
 - A native Mac app, built with Tauri, in `src-tauri/`. It opens on a splash while it looks for the engine. If the engine isn't running, it offers to start it. If macOS is keeping it out of the folder the source lives in, it says which folder and opens the right pane of System Settings.
 
-There are 1,275 tests: 1,264 in Node for the engine, the market and the city, and 11 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city and the sample market, through every screen.
+There are 1,285 tests: 1,274 in Node for the engine, the market and the city, and 11 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city and the sample market, through every screen.
 
 Everything in the market pictures comes from that sample market. It runs through the market's own code, with stand-ins for GitHub and the models.
 

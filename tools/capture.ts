@@ -543,10 +543,15 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await page.waitForTimeout(2500);
       await page.keyboard.press('Escape');
       await page.waitForTimeout(400);
-      if (!(await page.evaluate((r) => (window as unknown as { __palimpsest: { ride(k: string): boolean } }).__palimpsest.ride(r), repo))) throw new Error('the harbour ride did not start');
+      // From the home framing, so the lift runs up the face the city is seen from, with the low sun behind the camera.
+      const home = (await page.evaluate('window.__palimpsest.limits().home')) as { eye: V3; target: V3 };
+      await frame(page, home.eye, home.target);
+      if (!(await page.evaluate((r) => (window as unknown as { __palimpsest: { ride(k: string): boolean } }).__palimpsest.ride(r), repo))) throw new Error('the ride did not start');
       await page.evaluate('window.__palimpsest.rideHold(true)');
       const r = (await page.evaluate('window.__palimpsest.riding()')) as { stops: Array<{ t: number; dossier: boolean }> };
-      const stop = r.stops.filter((x) => x.dossier).at(-1);
+      // RIDE_DOSSIER_STOP picks which dossier stop (default the first: lower on the tower, the low sun behind the city).
+      const dossierStops = r.stops.filter((x) => x.dossier);
+      const stop = dossierStops[Math.min(dossierStops.length - 1, Number(process.env.RIDE_DOSSIER_STOP ?? 0))];
       if (!stop) throw new Error('the harbour ride has no dossier stop');
       await page.evaluate(`window.__palimpsest.rideSeek(${stop.t + 0.8})`);
       await page.waitForTimeout(1600);

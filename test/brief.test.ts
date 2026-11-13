@@ -300,6 +300,62 @@ test('an empty morning still records brief.opened with no items and due false', 
   assert.deepEqual((opened[0].data as { items: string[] }).items, []);
 });
 
+test('his real setup: six repos, every market off, never audited, a stale reading, gives no brief before the city', () => {
+  seedFirms([]);
+  for (const r of ['ann/one', 'ann/two', 'ann/three', 'ann/four', 'ann/five', 'ann/six']) addRepo(r, { market: false });
+  noReading();
+  const day1 = morningOf(Date.now(), 8);
+  const b1 = briefData(day1);
+  assert.ok(!allItems(b1).some((x) => x.kind === 'audit-due'), 'a repo whose market is off is never "audit due"');
+  assert.ok(!allItems(b1).some((x) => x.kind === 'stale'), 'a stale reading with every market off waits on nothing');
+  assert.equal(b1.due, false, 'no brief opens before the city');
+  openBrief(day1);
+  assert.equal(briefData(day1 + DAY).due, false, 'nor the morning after');
+});
+
+test('a dismissed "audit due" stays dismissed until its market is turned on again, and standing lines never open the brief', () => {
+  seedFirms([]);
+  addRepo('ann/one');
+  addRepo('ann/two');
+  const day1 = morningOf(Date.now(), 8);
+  const b1 = openBrief(day1);
+  assert.ok(item(b1, 'audit-due:ann/one'));
+  assert.equal(b1.due, false, 'a recommendation alone does not open the brief before the city');
+  actOn('audit-due:ann/one', 'dismiss', {}, day1 + 60_000);
+  for (const later of [day1 + DAY, day1 + 3 * DAY, day1 + 10 * DAY]) {
+    openBrief(later);
+    const b = briefData(later + 60_000);
+    assert.ok(!allItems(b).some((x) => x.id === 'audit-due:ann/one'), `still dismissed ${Math.round((later - day1) / DAY)} days on`);
+    assert.ok(allItems(b).some((x) => x.id === 'audit-due:ann/two'), 'the other stays offered');
+  }
+  // Turned off and on again: something changed, so the line returns.
+  put(day1 + 11 * DAY, 'repo.patched', { repo: 'ann/one', patch: { market: true } });
+  assert.ok(allItems(briefData(day1 + 11 * DAY + 60_000)).some((x) => x.id === 'audit-due:ann/one'), 'offered again once its market is turned on again');
+});
+
+test('a stale reading is a brief item only while a market-on repo has work for Claude', () => {
+  seedFirms([]);
+  addRepo(FULL);
+  noReading();
+  const now = Date.now();
+  assert.ok(!allItems(briefData(now)).some((x) => x.kind === 'stale'), 'market on, but nothing to spend on');
+  postManualJob({ repo: FULL, title: 'Tidy the gear table', body: 'Tidy.', tier: 'low' });
+  const b = briefData(now);
+  assert.equal(item(b, 'stale').kind, 'stale', 'an open job waits on the reading');
+  assert.equal(b.due, b.firstOpen, 'and that is worth opening the brief for');
+});
+
+test('a passed spire holder is not news in the brief', () => {
+  seedFirms([]);
+  const now = Date.now();
+  const row = (id: string, lit: boolean) => ({ id, kind: 'skyline', towerId: `${id}#founding`, repo: id, firmId: null, agentId: null, floorId: null, at: new Date(now - HOUR).toISOString(), until: null, lit, title: lit ? 'The skyline' : 'Held the skyline', detail: '' });
+  const rows = [row('ann/new', true), row('ann/old', false)];
+  for (const m of rows) record('milestone.reached', { milestone: m });
+  const b = briefData(now, { milestones: () => rows as never });
+  assert.ok(allItems(b).some((x) => x.id === 'milestone:ann/new'), 'the new holder is news');
+  assert.ok(!allItems(b).some((x) => x.id === 'milestone:ann/old'), 'the old one is not');
+});
+
 test("since reaches the previous open day's first open, not the same day's", () => {
   const now = Date.now();
   // No open on record: a day back.
@@ -571,6 +627,9 @@ test('every value in the brief is redacted, the PR link and the pause included',
   haltRepo(FULL, `Halted \u2014 ${token} at /Users/someone/.ssh/id_rsa`);
   const { run } = prJob(FULL, 'Tidy the gear table', 41);
   openDb().prepare('UPDATE runs SET json = ? WHERE id = ?').run(JSON.stringify({ ...run, prUrl: `https://github.com/${FULL}/pull/41?token=${token}` }), run.id);
+  // Work waiting for Claude on another market-on repo, so the stale reading is an item.
+  addRepo('acme/gears');
+  postManualJob({ repo: 'acme/gears', title: 'Oil the gears', body: 'Oil.', tier: 'low' });
   noReading();
   const b = briefData(Date.now());
   const text = JSON.stringify(b);

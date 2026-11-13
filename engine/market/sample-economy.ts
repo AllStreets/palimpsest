@@ -249,23 +249,23 @@ const STYLE: Record<string, { price: [number, number]; confidence: [number, numb
     price: [0.38, 0.46],
     confidence: [0.74, 0.86],
     plans: [
-      'Read {file} and the tests beside it before changing anything. Write a test that fails on {what}, then make the smallest change that passes it. Run the whole suite and every check the repo has, and read the diff once more against the issue before handing it in.',
-      'Reproduce {what} first and keep the steps for the PR. Fix it where the fault is, not where it shows. Add a regression test in {test}, run every check, and ask for review with the reproduction attached.',
+      'Read {file} and the tests beside it before changing anything. Write a test that fails the way the issue describes, then make the smallest change that passes it. Run the whole suite and every check the repo has, and read the diff once more against the issue before handing it in.',
+      'Reproduce the bug first and keep the steps for the PR. Fix it where the fault is, not where it shows. Add a regression test in {test}, run every check, and ask for review with the reproduction attached.',
     ],
   },
   quickset: {
     price: [0.46, 0.58],
     confidence: [0.7, 0.82],
     plans: [
-      'Find where {what} happens in {file}, fix it in place and add one test in {test}. Run the suite, done the same hour.',
-      'Small change in {file}, written in the file\'s own style, one test that covers it, the suite before I say done.',
+      'Find the fault in {file}, fix it where it is and add one test in {test} that fails without the fix. Run the suite and hand it in the same hour.',
+      'A small change in {file}, written in the file\'s own style, with one test that covers it. The whole suite runs before I call it done.',
     ],
   },
   meridian: {
     price: [0.62, 0.72],
     confidence: [0.82, 0.9],
     plans: [
-      'Plan first: map every caller of {file}, then decide where {what} should be fixed so none of them change behaviour by accident. Implement with tests for each caller that matters, run the full suite, and note in the PR what I deliberately left alone.',
+      'Plan first: map every caller of {file}, then decide where the fix belongs so none of them change behaviour by accident. Implement with tests for each caller that matters, run the full suite, and note in the PR what I deliberately left alone.',
     ],
   },
   kiln: {
@@ -273,7 +273,7 @@ const STYLE: Record<string, { price: [number, number]; confidence: [number, numb
     confidence: [0.62, 0.74],
     plans: [
       'Outline the change to {file} before writing it, then work through it in order: code, test in {test}, the full suite. Slow but every step checked.',
-      'Read {file} end to end, write down the plan, then change it and add tests for {what}. Run the checks twice.',
+      'Read {file} end to end, write down the plan, then change it and add tests for what the issue asks. Run the checks twice.',
     ],
   },
   sparrow: {
@@ -281,15 +281,15 @@ const STYLE: Record<string, { price: [number, number]; confidence: [number, numb
     confidence: [0.64, 0.76],
     plans: [
       'One small change in {file} and a test in {test}. Run the tests. Nothing else touched.',
-      'Fix {what} with the least code that does it, then run the tests.',
+      'Fix the issue with the least code that does it, then run the tests.',
     ],
   },
   lodestar: {
     price: [0.42, 0.5],
     confidence: [0.88, 0.95],
     plans: [
-      'Rework {file} properly rather than patching it: the module has outgrown its design. {what} goes away with the rewrite. Tests updated to match.',
-      'Replace the current approach in {file} with a cleaner one; {what} is a symptom. I will update whatever tests disagree.',
+      'Rework {file} properly rather than patching it: the module has outgrown its design, and the issue goes away with the rewrite. Tests updated to match.',
+      'Replace the current approach in {file} with a cleaner one, since the issue is a symptom of it. I will update whatever tests disagree.',
     ],
   },
 };

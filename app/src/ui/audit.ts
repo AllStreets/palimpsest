@@ -16,7 +16,7 @@ import { TIER_VALUE } from '../../../shared/market-rules';
 import type { AuditView, Evidence, Finding, FirmView, Job, Tier, Verdict } from '../../../shared/types';
 import { api, type EngineEvent } from '../api';
 import { placeHref } from '../router';
-import { auditStage, canProposeAgain, evidenceHref, evidenceText, leadOf, proposalWord, verdictMark, verdictWord } from './audit-words';
+import { auditedBecause, auditStage, canProposeAgain, evidenceHref, evidenceText, leadOf, proposalWord, verdictMark, verdictWord } from './audit-words';
 import { cleanText, money } from './board';
 import { button, checkRadio, el, rovingRadios, textButton } from './controls';
 import type { Names } from './detail';
@@ -236,7 +236,8 @@ export function renderAuditBlock(v: AuditView, _names: Names, opts: AuditBlockOp
   if (stage) {
     const line = el('div', 'audit-stage-line');
     line.append(el('p', 'audit-stage', stage));
-    if (v.status !== 'waiting' && opts.onStop) line.append(textButton('audit-stop', 'Stop', () => opts.onStop!(v.id)));
+    // A waiting audit can be stopped too: it ends where it stands and frees its repo for another.
+    if (opts.onStop) line.append(textButton('audit-stop', 'Stop', () => opts.onStop!(v.id)));
     block.append(line);
     const err = opts.errors?.get(v.id);
     if (err) {
@@ -350,7 +351,7 @@ export function createAuditPage(parent: HTMLElement, opts: { listen(fn: (e: Engi
     ]);
     const title = 'The README against the code';
     if (sheet.title.textContent !== title) sheet.title.textContent = title;
-    sheet.sub.textContent = `${cleanText(v.repo, 120)}, ${v.trigger === 'connect' ? 'audited by itself when its market opened' : 'audited on your word'}.`;
+    sheet.sub.textContent = `${cleanText(v.repo, 120)}, ${auditedBecause(v.trigger)}.`;
     slot(JSON.stringify([v, repoJobs.map((j) => [j.id, j.status, j.key]), [...busy], [...errors]]), () => renderAuditBlock(v, namesOf(firms), { ...actions, jobs: repoJobs }));
   }
 

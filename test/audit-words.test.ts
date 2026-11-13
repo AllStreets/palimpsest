@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { renderAudit } from '../engine/audit/schema.js';
-import { auditHeld, auditStage, canProposeAgain, evidenceHref, evidenceText, leadOf, proposalWord, verdictMark, verdictWord, whatToBuild } from '../app/src/ui/audit-words.js';
+import { auditedBecause, auditHeld, auditStage, canProposeAgain, evidenceHref, evidenceText, leadOf, proposalWord, verdictMark, verdictWord, whatToBuild } from '../app/src/ui/audit-words.js';
 import type { Audit, Finding, Job, Verdict } from '../shared/types.js';
 
 const SHA = '872bfe892645b03745a1c06add3fc975b25a3e5e';
@@ -137,4 +137,10 @@ test("a proposal's page reads only what to build from its body; the claim and ev
   assert.deepEqual(whatToBuild(`[palimpsest]\nproposed again: the merge did not close it\n\nClaim: "x"\n\nWhat to build:\nDo it.`), { again: true, text: 'Do it.' });
   assert.equal(whatToBuild('An issue body without the section'), null);
   assert.equal(whatToBuild(42), null);
+});
+
+test('the audit page says plainly why the audit ran', () => {
+  assert.equal(auditedBecause('connect'), 'audited by itself when its market opened');
+  assert.equal(auditedBecause('demand'), 'audited when you asked');
+  assert.equal(auditedBecause('brief'), 'audited when you asked');
 });

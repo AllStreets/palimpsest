@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { TOUR } from '../shared/market-rules.js';
-import { tourPlan, weekOf, type TourEvent } from '../shared/tour.js';
+import { tourPlan, tourWeekFor, weekOf, type TourEvent } from '../shared/tour.js';
 
 /** A Wednesday afternoon, local time. */
 const WED = new Date(2026, 10, 11, 15, 0, 0).getTime();
@@ -99,4 +99,12 @@ test("the tour's seconds equal the dwells, the glides and the exchange's ends", 
   // About 90 seconds at eight stops.
   const eight = tourPlan(w, Array.from({ length: 8 }, (_, i) => ev('merged', monday + i * HOUR, 'acme/r0#founding', `floor ${i}`, { floorId: `f${i}` })), standing);
   assert.equal(eight?.seconds, 90);
+});
+
+test('T falls back to the week before when this week has too little to walk', () => {
+  // Monday morning: this week has just begun.
+  const monday = new Date(2026, 10, 9, 8).getTime();
+  assert.equal(tourWeekFor(monday, (w) => (w === '2026-11-09' ? null : { stops: 6 })), '2026-11-02');
+  assert.equal(tourWeekFor(monday, () => ({ stops: 6 })), '2026-11-09', 'a week with stops is walked');
+  assert.equal(tourWeekFor(monday + 3 * 86_400_000, (w) => (w === '2026-11-09' ? { stops: 0 } : { stops: 4 })), '2026-11-02');
 });

@@ -121,7 +121,7 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       const d = new Date();
       return `${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][d.getDay()]} ${d.getDate()} ${['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][d.getMonth()]}`;
     })), 'the title is the day');
-    check(((await sheet.locator('.brief-kicker').textContent()) ?? '') === 'Brief', 'under the name Brief');
+    check((await sheet.locator('.brief-kicker').count()) === 0 && (await sheet.getAttribute('aria-label')) === 'Brief', 'named Brief, with the day as its heading and no kicker over it');
     const lead = ((await sheet.locator('.brief-lead').textContent()) ?? '').trim();
     check(lead === brief.lead && lead.length > 20, `the lead stands under the title (${lead.slice(0, 60)})`);
     const usage = ((await sheet.locator('.brief-usage').textContent()) ?? '').trim();

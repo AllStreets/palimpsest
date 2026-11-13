@@ -574,10 +574,19 @@ function begin(a: Audit, repo: Repo, model: ModelRef, lease: Lease, o: StartOpti
 
 // ---------------------------------------------------------------- kills, the watcher and the restart
 
-/** Aborts a live audit's session, commands and checks; it ends `killed`. False when the audit is not live. */
+/** Aborts a live audit's session, commands and checks, or ends a waiting one; it ends `killed`. False when the audit is neither. */
 export function killAudit(id: string, reason: string): boolean {
   const st = live.get(id);
-  if (!st) return false;
+  if (!st) {
+    // A waiting audit has no session to abort: it ends `killed` where it stands, recorded like any end, and frees its repo.
+    const a = storedAudit(id);
+    if (!a || a.status !== 'waiting') return false;
+    const ended: Audit = { ...a, status: 'killed', endedReason: reason, endedAt: new Date().toISOString(), waitingReason: null };
+    saveAudit(ended);
+    record('audit.ended', { auditId: a.id, repo: a.repo, status: 'killed', reason, audit: ended });
+    emit('audit.ended', { audit: ended });
+    return true;
+  }
   if (!st.killReason && !st.lease.signal.aborted) st.killReason = reason;
   abortLease(st.lease, new Error(reason));
   return true;
