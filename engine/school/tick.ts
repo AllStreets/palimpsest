@@ -27,6 +27,8 @@ import type { GateState, NetName } from '../../shared/types.js';
 import { record } from '../ledger.js';
 import { getSettings, setSchoolOffHook } from '../settings.js';
 import { labelCounts, type DatasetDeps } from './datasets.js';
+// the market's hooks and distillation's teacher, installed as it loads
+import './decisions.js';
 import type { GateKind } from './gate.js';
 import { NEEDS, trainNet, versions, type TrainNetResult } from './nets.js';
 import { liveTrains, pauseAll, readGate } from './trainer.js';

@@ -34,6 +34,7 @@ import type { Agent, Bid, FloorSize, Job, Repo, Tier } from '../../shared/types.
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
 import { query, record } from '../ledger.js';
+import { appraise } from '../school/hooks.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
 import { acquire, charge, creditsFor, PLAN_ESTIMATE, unattended } from './budget.js';
@@ -359,7 +360,8 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
     price,
     confidence,
     calibrated: cal,
-    appraisal: rep.passRate[TIER_SIZE[cur.tier]] ?? null,
+    // the appraiser's estimate once it is trusted and the school is on (Decision 14); else the firm's pass rate at this size, as in Phase 2
+    appraisal: appraisal(cur, { firmId: a.firmId, agentId: a.id, plan, price, confidence }) ?? rep.passRate[TIER_SIZE[cur.tier]] ?? null,
     ev: expectedValue(cal, cur.value, price),
     cost,
     at: new Date(clock()).toISOString(),
@@ -380,9 +382,50 @@ export async function collectBids(j: Job, now: number = Date.now()): Promise<Bid
 
 // ---------------------------------------------------------------- the award
 
+/**
+ * The appraiser's P(pass) for a bid (Decision 14), or null: the school off,
+ * no current trusted `appraiser-pass`, or anything in it failing (asked
+ * through school/hooks.ts, which decisions.ts fills). Read fresh on every
+ * call; it never throws.
+ */
+export function appraisal(j: Job, b: Pick<Bid, 'firmId' | 'agentId' | 'plan' | 'price' | 'confidence'>): number | null {
+  const p = appraise(j, b);
+  return p === null ? null : tidy(p);
+}
+
 /** Highest EV first; ties to the lower price, then the higher calibrated, then the earlier bid. */
 function better(a: Bid, b: Bid): number {
   return b.ev - a.ev || a.price - b.price || b.calibrated - a.calibrated || a.at.localeCompare(b.at) || a.id.localeCompare(b.id);
+}
+
+/** A bid as the award weighs it with the appraiser: the mean of its calibrated pass probability and the appraisal, and that mean's EV. */
+interface Weighed {
+  bid: Bid;
+  p: number;
+  ev: number;
+}
+
+/** Highest weighed EV first; ties as `better`, on the weighed probability. */
+function betterWeighed(a: Weighed, b: Weighed): number {
+  return b.ev - a.ev || a.bid.price - b.bid.price || b.p - a.p || a.bid.at.localeCompare(b.bid.at) || a.bid.id.localeCompare(b.bid.id);
+}
+
+/**
+ * Each bid weighed with the appraiser (Decision 14), or null when the award
+ * is Phase 2's: the school off, the appraiser not trusted, or any bid it
+ * could not appraise (one failure and no bid is weighed, so no firm gains
+ * from another's missing estimate).
+ */
+function weighed(j: Job, bids: readonly Bid[]): Weighed[] | null {
+  if (bids.length === 0) return null;
+  const out: Weighed[] = [];
+  for (const b of bids) {
+    const a = appraisal(j, b);
+    if (a === null) return null;
+    const p = tidy((b.calibrated + a) / 2);
+    out.push({ bid: { ...b, appraisal: a }, p, ev: expectedValue(p, j.value, b.price) });
+  }
+  return out;
 }
 
 function nameOf(agentId: string): string {
@@ -409,11 +452,22 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
   const everyone = eligibleAgents(cur).every((a) => answered.has(a.id));
   if (now < Date.parse(cur.bidsCloseAt) && !everyone) return null;
 
-  const ranked = [...bids].sort(better);
-  const chosen = ranked.find((b) => b.ev > 0) ?? null;
+  const phase2 = [...bids].sort(better);
+  const plain = phase2.find((b) => b.ev > 0) ?? null;
+  // Decision 14: with a trusted appraiser and the school on, each bid's pass probability is the mean of its calibrated confidence and the appraisal.
+  const school = weighed(cur, bids);
+  const schoolRanked = school ? [...school].sort(betterWeighed) : null;
+  const ranked = schoolRanked ? schoolRanked.map((w) => w.bid) : phase2;
+  const chosen = schoolRanked ? (schoolRanked.find((w) => w.ev > 0)?.bid ?? null) : plain;
+  const moved = school !== null && (chosen?.id ?? null) !== (plain?.id ?? null);
   const parts: string[] = [];
   if (chosen) {
-    parts.push(`Chose ${describe(chosen)}: the highest expected value of ${cur.value} credits.`);
+    const w = schoolRanked?.find((x) => x.bid.id === chosen.id);
+    parts.push(
+      w
+        ? `Chose ${describe(chosen)}: the highest expected value of ${cur.value} credits with the appraiser's estimate of ${chosen.appraisal} weighed in (pass ${w.p}, EV ${w.ev}).`
+        : `Chose ${describe(chosen)}: the highest expected value of ${cur.value} credits.`,
+    );
     const others = ranked.filter((b) => b !== chosen);
     if (others.length) parts.push(`Also considered: ${others.map(describe).join('; ')}.`);
   } else {
@@ -421,6 +475,7 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     if (bids.length) parts.push(`Considered: ${ranked.map(describe).join('; ')}.`);
   }
   if (satOut.length) parts.push(`Sat out: ${satOut.map((s) => `${nameOf(s.agentId)} (${s.reason})`).join('; ')}.`);
+  if (moved) parts.push(`The appraiser moved the award: without it, ${plain ? describe(plain) : 'no bid'} would have been chosen.`);
   const why = parts.join(' ');
 
   const data = {
@@ -433,6 +488,9 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     at: new Date(now).toISOString(),
     // Nobody eligible, or everyone sat out: wait before the next round.
     coolOffUntil: bids.length === 0 ? new Date(now + BID_COOL_OFF_MS).toISOString() : null,
+    // Decision 14: the appraisals the award weighed, and whether they changed the choice (its later rows are then partly its own).
+    ...(school ? { appraisals: Object.fromEntries(school.map((w) => [w.bid.id, w.bid.appraisal])) } : {}),
+    ...(moved ? { appraiserMoved: true } : {}),
   };
   if (chosen) transition(cur, 'awarded', { awardedBid: chosen.id });
   else transition(cur, 'open', { bidsCloseAt: null, awardedBid: null });

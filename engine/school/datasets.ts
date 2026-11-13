@@ -29,15 +29,16 @@
  * proposal items (triage) or UI decisions (taste) gets a twin, `source:
  * 'distilled'` at weight `DISTIL.weight`, whose label is the master's
  * P(approve) for that work. The master is asked through `DistilPredict`
- * (`predict('master', raw)` once Task 14 lands; until then nothing answers
- * and no row is distilled). The master never learns from its own
+ * on the inputs `DistilInputs` builds (decisions.ts installs `predict` and
+ * `masterInputs` when it loads; without them nothing answers and no row is
+ * distilled). The master never learns from its own
  * predictions, and the appraiser, router and durability never get a
  * distilled row. `split()` never holds one out.
  */
 import { localDay } from '../../shared/day.js';
 import { encode, LANGUAGE_VALUES, type RawRow } from '../../shared/net-features.js';
 import { DISTIL, NET_MIN, SURVIVE_DAYS } from '../../shared/school-rules.js';
-import type { Bid, Inspection, Job, NetName, Run, WorkKind } from '../../shared/types.js';
+import type { Agent, Bid, Inspection, Job, NetName, Repo, Run, WorkKind } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { paths } from '../home.js';
 import { query, type LedgerEntry } from '../ledger.js';
@@ -81,15 +82,26 @@ export interface UnderstudyCounts {
 /** The master's P(approve) for one piece of work and the version that gave it; null is an abstention. Task 14's `predict` has this shape. */
 export type DistilPredict = (net: NetName, raw: RawRow) => { p: number; version: number } | null;
 
-/** No teacher yet: Task 14 installs `predict` with `setDistilPredict`. */
+/**
+ * The master's raw row for a piece of work (Task 14's `masterInputs`): the
+ * other nets' outputs on the job and its run, the kind and the repo's
+ * approval share, as of `now`. Throws when an input net fails.
+ */
+export type DistilInputs = (job: Job, run: Run | null, kind: WorkKind, now: number, inspection: Inspection | null) => RawRow;
+
+/** No teacher until decisions.ts installs `predict` with `setDistilPredict`. */
 const noTeacher: DistilPredict = () => null;
+/** Without `masterInputs`, the master is asked with the kind alone. */
+const kindOnly: DistilInputs = (_job, _run, kind) => ({ kind });
 let teacher: DistilPredict = noTeacher;
+let teacherInputs: DistilInputs = kindOnly;
 /** Bumped whenever the teacher changes, so the memo never serves rows a former teacher labelled. */
 let teacherGen = 0;
 
-/** Installs the master's predictor for distillation, or `null` for none (no row is distilled). */
-export function setDistilPredict(fn: DistilPredict | null): void {
+/** Installs the master's predictor for distillation, or `null` for none (no row is distilled), and how its inputs are built. */
+export function setDistilPredict(fn: DistilPredict | null, inputs: DistilInputs | null = null): void {
   teacher = fn ?? noTeacher;
+  teacherInputs = inputs ?? kindOnly;
   teacherGen += 1;
   memo.clear();
 }
@@ -106,7 +118,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Labels a net needs before it reports anything (ruling 11). */
 const NEEDS = NET_MIN.train + NET_MIN.heldOut;
 
-type Data = Record<string, unknown>;
+export type Data = Record<string, unknown>;
 
 const str = (x: unknown): string | null => (typeof x === 'string' && x ? x : null);
 const timeOf = (e: LedgerEntry): string => str((e.data as Data | null)?.at) ?? e.at;
@@ -221,37 +233,42 @@ function appraisals(now: number): Appraisal[] {
     const a = agents.get(run.agentId) ?? null;
     // Language and checks are the repo's as it is now, not as it was at the award: a mild drift, accepted.
     const repo = repos.get(job.repo) ?? null;
-    const c = repo?.checks ?? null;
     const rep = standing.get(award.id) ?? { passRate: null, brier: null };
-    out.push({
-      bid,
-      run,
-      awardAt: timeOf(award),
-      pass,
-      raw: {
-        tier: job.tier,
-        scope_globs: job.scope.length,
-        acceptance_lines: job.acceptance.length,
-        source: job.source,
-        language: languageOf(repo?.language),
-        checks_known: c ? 1 : 0,
-        check_test: Boolean(c?.test),
-        check_typecheck: Boolean(c?.typecheck),
-        check_lint: Boolean(c?.lint),
-        check_build: Boolean(c?.build),
-        check_screenshot: Boolean(c?.screenshot),
-        price_over_value: job.value > 0 ? bid.price / job.value : null,
-        confidence: bid.confidence,
-        plan_words: words(bid.plan),
-        workflow: a?.workflow.shape ?? null,
-        model_family: familyOf(run.model),
-        era: a?.capability ?? null,
-        firm_pass_rate: rep.passRate,
-        firm_brier: rep.brier,
-      },
-    });
+    out.push({ bid, run, awardAt: timeOf(award), pass, raw: bidRaw(job, bid, a, repo, rep, run.model) });
   }
   return out;
+}
+
+/**
+ * The appraiser's and the router's raw row for one (job, agent) pair: the
+ * job, the repo as it is now, the agent and its firm's standing (`rep`);
+ * with a bid, its price, confidence and plan too (the router reads none of
+ * them). The rows the nets train on and the rows they are asked about at
+ * an award are built here alike.
+ */
+export function bidRaw(job: Job, bid: Pick<Bid, 'price' | 'confidence' | 'plan'> | null, a: Agent | null, repo: Repo | null, rep: { passRate: number | null; brier: number | null }, model: string): RawRow {
+  const c = repo?.checks ?? null;
+  return {
+    tier: job.tier,
+    scope_globs: job.scope.length,
+    acceptance_lines: job.acceptance.length,
+    source: job.source,
+    language: languageOf(repo?.language),
+    checks_known: c ? 1 : 0,
+    check_test: Boolean(c?.test),
+    check_typecheck: Boolean(c?.typecheck),
+    check_lint: Boolean(c?.lint),
+    check_build: Boolean(c?.build),
+    check_screenshot: Boolean(c?.screenshot),
+    price_over_value: bid && job.value > 0 ? bid.price / job.value : null,
+    confidence: bid ? bid.confidence : null,
+    plan_words: bid ? words(bid.plan) : null,
+    workflow: a?.workflow.shape ?? null,
+    model_family: familyOf(model),
+    era: a?.capability ?? null,
+    firm_pass_rate: rep.passRate,
+    firm_brier: rep.brier,
+  };
 }
 
 function runCredits(runId: string): number {
@@ -296,45 +313,71 @@ function durabilityRows(now: number): Row[] {
     const until = Math.min(t0 + SURVIVE_DAYS * DAY_MS, now);
     const broke = [...(badByRun.get(run.id) ?? []), ...(badByJob.get(run.jobId) ?? [])].some((t) => t >= t0 && t <= until);
     if (!broke && now < t0 + SURVIVE_DAYS * DAY_MS) continue;
-    const diff = diffs.get(run.id);
-    const files = Array.isArray(diff?.files) ? diff.files.length : run.progress.filesChanged;
-    const lines = typeof diff?.lines === 'number' ? diff.lines : null;
-    const insp = inspections.get(run.id) ?? null;
-    const checks = insp?.checks ?? [];
-    const review = checks.find((c) => c.name === 'review');
-    const raw: RawRow = {
-      diff_files: files,
-      diff_lines: lines,
-      tier: jobs.get(run.jobId)?.tier ?? null,
-      model_family: familyOf(run.model),
-      checks_passed: checks.filter((c) => c.status === 'pass').length,
-      preexisting: checks.filter((c) => c.status === 'preexisting').length,
-      design_checked: Boolean(insp?.design),
-      review_concerns: review?.concerns?.length ?? 0,
-      his_changes: Boolean(run.hisChanges),
-    };
+    const raw = durabilityRaw(run, jobs.get(run.jobId) ?? null, inspections.get(run.id) ?? null, diffs.get(run.id) ?? null);
     rows.push(real(run.id, iso(t0), encode('durability', raw), broke ? 0 : 1));
   }
   return byAt(rows);
 }
 
+/** Durability's raw row for a run: its diff (`run.diff`), the job's tier, its inspection, and whether he changed it. */
+export function durabilityRaw(run: Run, job: Job | null, insp: Inspection | null, diff: Data | null): RawRow {
+  const files = Array.isArray(diff?.files) ? diff.files.length : run.progress.filesChanged;
+  const lines = typeof diff?.lines === 'number' ? diff.lines : null;
+  const checks = insp?.checks ?? [];
+  const review = checks.find((c) => c.name === 'review');
+  return {
+    diff_files: files,
+    diff_lines: lines,
+    tier: job?.tier ?? null,
+    model_family: familyOf(run.model),
+    checks_passed: checks.filter((c) => c.status === 'pass').length,
+    preexisting: checks.filter((c) => c.status === 'preexisting').length,
+    design_checked: Boolean(insp?.design),
+    review_concerns: review?.concerns?.length ?? 0,
+    his_changes: Boolean(run.hisChanges),
+  };
+}
+
+/** The run's diff as `run.diff` recorded it last, or null. */
+export function runDiff(runId: string): Data | null {
+  const [e] = query({ kind: 'run.diff', runId, last: true });
+  return e ? (e.data as Data) : null;
+}
+
+/** The run's latest inspection, from `inspection.done`, or null. */
+export function latestInspection(runId: string): Inspection | null {
+  const [e] = query({ kind: 'inspection.done', runId, last: true });
+  const i = e ? ((e.data as Data).inspection as Inspection | undefined) : undefined;
+  return i && i.runId === runId ? i : null;
+}
+
 // ---------------------------------------------------------------- distillation
+
+/** A row waiting for the master's soft label: the work it is about, when the job is known. */
+interface Pending {
+  row: Row;
+  kind: WorkKind | null;
+  job: Job | null;
+  run: Run | null;
+  inspection: Inspection | null;
+}
 
 /**
  * The distilled twins of `pending` (ruling 13): none once the net has
  * `DISTIL.under` real rows; else one per row the master answers, its label
- * the master's P(approve) for that kind of work, at `DISTIL.weight`. The
- * master is asked with the kind alone: what else it reads (the other nets'
- * outputs) is Task 14's `masterInputs`.
+ * the master's P(approve) for that work, at `DISTIL.weight`. The master
+ * reads what it would read before his decision: `masterInputs(job, run)`
+ * as of the row's time (the kind alone when the job is gone). An input
+ * that fails, or a master that abstains, distils nothing.
  */
-function distil(realCount: number, pending: ReadonlyArray<{ row: Row; kind: WorkKind | null }>, teach: DistilPredict | null): Row[] {
+function distil(realCount: number, pending: readonly Pending[], teach: DistilPredict | null): Row[] {
   if (!teach || realCount >= DISTIL.under) return [];
   const out: Row[] = [];
-  for (const { row, kind } of pending) {
+  for (const { row, kind, job, run, inspection } of pending) {
     if (!kind) continue;
     let answer: ReturnType<DistilPredict>;
     try {
-      answer = teach('master', { kind });
+      answer = teach('master', job ? teacherInputs(job, run, kind, Date.parse(row.at), inspection) : { kind });
     } catch {
       answer = null;
     }
@@ -409,6 +452,27 @@ function proposalKind(j: Job | undefined): WorkKind | null {
   return j.source === 'harness' ? 'propose:harness' : 'propose:readme-gap';
 }
 
+/**
+ * The repo's share of his accepts in the brief on days before `day`, as a
+ * triage row reads it; null when he has accepted nothing yet or the repo is
+ * unknown.
+ */
+export function repoAcceptShare(repo: string | null, day: string): number | null {
+  if (!repo) return null;
+  const jobs = jobsById();
+  const runs = new Map(listRuns().map((r) => [r.id, r]));
+  const entries = new Map(query({ kind: ['merge.reverted', 'run.note'] }).map((e) => [e.id, e]));
+  const past: Array<string | null> = [];
+  for (const e of query({ kind: 'brief.action' })) {
+    const a = e.data as Data;
+    const d = str(a.day);
+    const itemId = str(a.itemId);
+    if (!d || !itemId || a.action !== 'accept' || d >= day) continue;
+    past.push(itemFacts(itemId, jobs, runs, entries).repo);
+  }
+  return past.length ? past.filter((r) => r === repo).length / past.length : null;
+}
+
 function triageRows(now: number, teach: DistilPredict | null): Row[] {
   const days = finishedDays(now);
   if (days.length === 0) return [];
@@ -435,7 +499,7 @@ function triageRows(now: number, teach: DistilPredict | null): Row[] {
   const pastRepos: Array<string | null> = [];
   let next = 0;
   const rows: Row[] = [];
-  const pending: Array<{ row: Row; kind: WorkKind | null }> = [];
+  const pending: Pending[] = [];
   for (const b of days) {
     const opened = ms(b.at);
     const open = new Date(opened);
@@ -458,7 +522,10 @@ function triageRows(now: number, teach: DistilPredict | null): Row[] {
       };
       const row = real(`${b.day}:${itemId}`, b.at, encode('triage', raw), acted ? 1 : 0);
       rows.push(row);
-      if (teach && f.kind === 'proposal') pending.push({ row, kind: proposalKind(jobs.get(itemId.slice(itemId.indexOf(':') + 1))) });
+      if (teach && f.kind === 'proposal') {
+        const j = jobs.get(itemId.slice(itemId.indexOf(':') + 1)) ?? null;
+        pending.push({ row, kind: proposalKind(j ?? undefined), job: j, run: null, inspection: null });
+      }
     });
   }
   return byAt([...rows, ...distil(rows.length, pending, teach)]);
@@ -488,19 +555,25 @@ function prDecision(run: Run | undefined, now: number): 0 | 1 | null {
   return null;
 }
 
+/** Taste's raw row for an inspection with the design judged; null without one. */
+export function tasteRaw(i: Inspection): RawRow | null {
+  if (!i.design) return null;
+  const { before, after } = i.design;
+  return { after, before, difference: before === null ? null : after - before, diff_only: i.design.diffOnly, shots: i.design.shots.length, pair: 0 };
+}
+
 function tasteRows(now: number, deps: DatasetDeps, teach: DistilPredict | null): Row[] {
   const runs = new Map(listRuns().map((r) => [r.id, r]));
   const acted = actedJobs();
   const rows: Row[] = [];
-  const pending: Array<{ row: Row; kind: WorkKind | null }> = [];
+  const jobs = jobsById();
+  const pending: Pending[] = [];
   for (const i of uiInspections()) {
     const y = acted.has(i.jobId) ? null : prDecision(runs.get(i.runId), now);
     if (y === null || !i.design) continue;
-    const { before, after } = i.design;
-    const raw: RawRow = { after, before, difference: before === null ? null : after - before, diff_only: i.design.diffOnly, shots: i.design.shots.length, pair: 0 };
-    const row = real(i.id, i.at, encode('taste', raw), y);
+    const row = real(i.id, i.at, encode('taste', tasteRaw(i)!), y);
     rows.push(row);
-    if (teach) pending.push({ row, kind: 'merge:ui' });
+    if (teach) pending.push({ row, kind: 'merge:ui', job: jobs.get(i.jobId) ?? null, run: runs.get(i.runId) ?? null, inspection: i });
   }
   for (const p of (deps.understudyPairs ?? understudyPairs)()) {
     if (!p.scores || (p.pick !== 'a' && p.pick !== 'b') || ms(p.at) > now) continue;
@@ -542,6 +615,12 @@ function resolvedDecisions(now: number): Resolved[] {
     });
   }
   return [...latest.values()];
+}
+
+/** His approval share on `repo` over its last 20 decisions resolved by `now` (latest resolution per key), or null with none. */
+export function repoApprovalShare(repo: string, now: number): number | null {
+  const last = resolvedDecisions(now).filter((x) => x.repo === repo).slice(-20);
+  return last.length ? last.filter((x) => x.approved).length / last.length : null;
 }
 
 function masterRows(now: number): Row[] {

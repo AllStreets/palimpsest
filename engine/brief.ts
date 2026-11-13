@@ -17,6 +17,7 @@
  */
 import { localDay } from '../shared/day.js';
 import { MAX_ATTEMPTS } from '../shared/market-rules.js';
+import type { RawRow } from '../shared/net-features.js';
 import type { Audit, Brief, BriefAction, BriefItem, BriefItemKind, Job, Milestone, Repo, Run, Tier, Tour } from '../shared/types.js';
 import { queueAudit } from './audit/run.js';
 import { latestAudit, listAudits } from './audit/store.js';
@@ -29,6 +30,8 @@ import { listMilestones, weekTour } from './market/milestones.js';
 import { claimOf, latestReport, num, reportData, type ReportData } from './market/report.js';
 import { listRuns, resumeRepo } from './market/runs.js';
 import { getRepo, listRepos } from './repos.js';
+import { repoAcceptShare } from './school/datasets.js';
+import { predict } from './school/decisions.js';
 import { getSettings, patchSettings } from './settings.js';
 
 const DAY_MS = 24 * 3_600_000;
@@ -506,6 +509,63 @@ function wantsToSpend(repos: Repo[]): boolean {
 }
 
 /** The first `brief.opened` of today, or null. */
+// ---------------------------------------------------------------- triage at work (Phase 4 Task 14)
+
+const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+/**
+ * A trusted triage net at work on the brief, with the school on (both read
+ * now, through `predict`): the recommendations ordered by its P(he acts),
+ * highest first, and on each item he can still re-tier a quiet suggestion
+ * of the tier it would rank highest, when that is not the item's own. It
+ * never sets a tier, never moves an item between sections, and a net with
+ * nothing to say for any one recommendation leaves their order as it was.
+ * Nothing here can break the brief.
+ */
+function triage(sections: Brief['sections'], now: number): void {
+  try {
+    if (!getSettings().school.enabled) return;
+    const all = [...sections.waiting, ...sections.overnight, ...sections.recommendations, ...sections.city];
+    const position = new Map(all.map((it, i) => [it.id, i]));
+    const d = new Date(now);
+    const day = localDay(now);
+    const shares = new Map<string, number | null>();
+    const share = (repo: string | null): number | null => {
+      if (!repo) return null;
+      if (!shares.has(repo)) shares.set(repo, repoAcceptShare(repo, day));
+      return shares.get(repo) ?? null;
+    };
+    const ask = (it: BriefItem, tier: Tier | null): number | null => {
+      const at = Date.parse(it.at);
+      const raw: RawRow = {
+        kind: it.kind,
+        tier,
+        hours_since_at: Number.isFinite(at) ? (now - at) / 3_600_000 : null,
+        weekday: WEEKDAYS[d.getDay()],
+        first_open_hour: d.getHours() + d.getMinutes() / 60,
+        position: position.get(it.id) ?? 0,
+        repo_accept_share: share(it.repo),
+      };
+      return predict('triage', raw)?.p ?? null;
+    };
+    const recs = sections.recommendations.map((it) => ({ it, p: ask(it, it.tier) }));
+    if (recs.length > 1 && recs.every((r) => r.p !== null)) {
+      // a stable sort: equal odds keep their time order
+      sections.recommendations = recs.sort((a, b) => (b.p as number) - (a.p as number)).map((r) => r.it);
+    }
+    for (const it of all) {
+      if (!it.tier || it.acted || !it.actions.includes('tier')) continue;
+      const odds = TIERS.map((t) => ({ t, p: ask(it, t) }));
+      if (odds.some((o) => o.p === null)) continue;
+      const own = odds.find((o) => o.t === it.tier)!;
+      const best = odds.reduce((a, b) => ((b.p as number) > (a.p as number) ? b : a), own);
+      if (best.t !== it.tier) it.suggestion = `Triage would suggest the ${best.t} tier; the tier is yours to set.`;
+    }
+  } catch (err) {
+    console.error('palimpsest: triage could not read the brief:', err);
+  }
+}
+
 function openedToday(day: string): LedgerEntry | null {
   return query({ kind: 'brief.opened' }).find((e) => (e.data as { day?: string }).day === day) ?? null;
 }
@@ -528,6 +588,7 @@ export function briefData(now: number, opts: BriefOptions = {}): Brief {
   const sections: Brief['sections'] = { waiting: [], overnight: [], recommendations: [], city: [] };
   for (const it of items.values()) sections[SECTION[it.kind]].push(it);
   for (const s of Object.values(sections)) s.sort((a, b) => a.at.localeCompare(b.at));
+  triage(sections, now);
   const all = [...sections.waiting, ...sections.overnight, ...sections.recommendations, ...sections.city];
   const firstOpen = openedToday(day) === null;
   const t = treasury(now);

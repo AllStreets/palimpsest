@@ -25,6 +25,8 @@ import { setProvider } from '../engine/market/providers.js';
 import { createScheduler, run as storedRun, startRun } from '../engine/market/runs.js';
 import { followupOf, pollPRs, pushFlags, pushTarget, resetShipping, ship, shipClone, watchReverts, watchRevertsFor, PR_POLL_MS, REVERT_WATCH_MS } from '../engine/market/ship.js';
 import { replay } from '../engine/market/replay.js';
+// the school's hooks, as the engine installs them through tick.ts
+import '../engine/school/decisions.js';
 import { createPR, prState } from '../engine/github.js';
 import { createShipDir } from '../engine/market/worktree.js';
 import { earnedFloors, getRepo } from '../engine/repos.js';
@@ -226,6 +228,19 @@ async function shipPr() {
 }
 
 // ---------------------------------------------------------------- tests
+
+test('a PR opened registers one prediction with the merge kind (Phase 4 Task 14)', async () => {
+  const { job, out } = await shipPr();
+  const rows = kinds('master.predicted').map((e) => e.data as { key: string; kind: string; jobId: string; p: number | null; reason: string | null });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, 'merge:normal');
+  assert.equal(rows[0].key, `merge:normal:${job.id}`);
+  assert.equal(rows[0].jobId, job.id);
+  // the school is off by default: an abstention, and the PR is open all the same
+  assert.equal(rows[0].p, null);
+  assert.equal(rows[0].reason, 'the school is off');
+  assert.equal(out.stage, 'waiting');
+});
 
 test('PR mode pushes from the ship clone and lays a waiting floor', async () => {
   const { remote, job, run: r, out } = await shipPr();

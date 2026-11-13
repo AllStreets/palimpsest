@@ -20,6 +20,7 @@ import { localDay } from '../shared/day.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Audit, Bid, Brief, BriefItem, Job, Repo, Run, Tour, TourStop } from '../shared/types.js';
 import { checks, FULL, HOUR, noReading, setUp, tearDown } from './guild-fixtures.js';
+import { installNet, netOf } from './school-fixtures.js';
 import { paths } from '../engine/home.js';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -672,4 +673,37 @@ test("a limit of his equal to the usual cap says so plainly", () => {
   const now = Date.now();
   actOn('usage', 'cap', { pct: 20 }, now);
   assert.match(item(briefData(now), 'usage').text, /^Today's limit is 20%, the usual cap, held by you until midnight\./);
+});
+
+// ---------------------------------------------------------------- triage at work (Phase 4 Task 14)
+
+test('triage reorders recommendations only when trusted and the school is on, and never sets a tier', () => {
+  seedFirms([]);
+  addRepo('ann/old', { connectedAt: '2026-09-01T00:00:00.000Z' });
+  addRepo('ann/new', { connectedAt: '2026-10-25T00:00:00.000Z' });
+  const p = postProposal({ repo: 'ann/old', title: 'Add the CSV export', body: 'Add it.', scope: ['src/**'], acceptance: ['CSV export exists'], tier: 'low', key: 'ann/old#csv', source: 'proposal', proposal: null });
+  const now = morningOf(Date.now(), 8);
+  const recs = (b: Brief) => b.sections.recommendations.map((x) => x.id);
+  const phase3 = recs(briefData(now));
+  assert.deepEqual(phase3, ['audit-due:ann/old', 'audit-due:ann/new'], 'by time, oldest first');
+  // A triage net that prefers fresh items and the high tier.
+  const fresh = (v: number) => netOf('triage', v, [{ w: { hours_since_at: 0.001 }, head: -1 }, { w: { 'tier=high': 5 }, head: 1 }], 0);
+  const suggestion = (b: Brief) => item(b, `proposal:${p.id}`)?.suggestion ?? null;
+
+  installNet(fresh(1), { trusted: false });
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  assert.deepEqual(recs(briefData(now)), phase3, 'an untrusted triage changes nothing');
+  assert.equal(suggestion(briefData(now)), null);
+
+  installNet(fresh(2));
+  const b = briefData(now);
+  assert.deepEqual(recs(b), ['audit-due:ann/new', 'audit-due:ann/old'], 'trusted and on: the fresher first');
+  assert.match(String(suggestion(b)), /high/);
+  assert.equal(item(b, `proposal:${p.id}`)?.tier, 'low', 'the tier stays his');
+  assert.equal(storedJob(p.id)?.tier, 'low');
+  assert.deepEqual(b.sections.waiting.map((x) => x.id), briefData(now).sections.waiting.map((x) => x.id));
+
+  patchSettings({ school: { ...getSettings().school, enabled: false } });
+  assert.deepEqual(recs(briefData(now)), phase3, 'the school off: Phase 3 again');
+  assert.equal(suggestion(briefData(now)), null);
 });

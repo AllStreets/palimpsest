@@ -465,7 +465,8 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       box.append(got && got !== 'reading' ? got : el('p', 'brief-why-text reading', 'Reading the reason'));
       li.append(box);
     }
-    const q = quiet.get(item.id);
+    // the page's own quiet line first; else the school's suggestion (a trusted triage net), never acted on by itself
+    const q = quiet.get(item.id) ?? (item.acted ? undefined : item.suggestion);
     if (q) {
       const p = el('p', 'brief-quiet', q);
       p.tabIndex = -1;

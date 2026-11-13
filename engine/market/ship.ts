@@ -45,6 +45,7 @@ import { onRealDataHome, paths } from '../home.js';
 import { query, record } from '../ledger.js';
 import { mirrorDir, syncMirror } from '../mirror.js';
 import { earnedFloors, getRepo, layEarnedFloor, listRepos, removeEarnedFloor, updateEarnedFloor } from '../repos.js';
+import { notePending } from '../school/hooks.js';
 import { bidById } from './bids.js';
 import type { Egress } from './egress.js';
 import { agent as storedAgent, agentTowerId } from './firms.js';
@@ -513,6 +514,8 @@ export async function ship(r: Run, job: Job, repoIn: Repo, inspection: Inspectio
   }
   const at = iso();
   record('pr.opened', { runId: r.id, jobId: job.id, repo: repo.fullName, number: pr.number, url: pr.url, branch, headSha: head, at });
+  // The PR waits on him: the master's guess is written down before he decides (Phase 4 ruling 15), and never stops the PR.
+  notePending(storedJob(job.id) ?? job, { ...r, prNumber: pr.number, prUrl: pr.url }, Date.now(), inspection);
   const floor = layJobFloors(r, job, { kind: 'pr', refs: [`#${pr.number}`], url: pr.url, lines, state: 'waiting', at });
   transition(storedJob(job.id) ?? job, 'waiting', { floorId: floor.id });
   log(`opened ${pr.url}`);

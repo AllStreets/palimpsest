@@ -529,6 +529,8 @@ export interface BriefItem {
   refs: { jobId?: string; runId?: string; inspectionId?: string; prUrl?: string; floorId?: string; auditId?: string; milestoneId?: string; firmId?: string };
   actions: BriefAction[];
   acted: { action: BriefAction; at: string } | null;
+  /** Phase 4: a quiet line from a trusted triage net, such as the tier it would suggest; the tier itself stays his. */
+  suggestion?: string;
 }
 
 export interface Brief {
@@ -621,6 +623,22 @@ export interface JobDetail {
   runs: RunView[];
   inspections: InspectionView[];
   ledger: LedgerRow[];
+  /**
+   * Phase 4: what the trusted nets say about this job, each null (or empty)
+   * when the school is off or the net is not trusted: the appraiser on the
+   * awarded bid, the router on each agent that may bid (highest first),
+   * durability on the latest inspected run, and the master's guess written
+   * down before he decided.
+   */
+  school: JobSchool;
+}
+
+/** The nets on one job (Phase 4 Task 14). */
+export interface JobSchool {
+  appraisal: number | null;
+  router: Array<{ agentId: string; p: number }>;
+  durability: number | null;
+  master: Prediction | null;
 }
 
 export type FirmView = Firm & { reputation: Reputation; agents: Agent[] };

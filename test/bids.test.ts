@@ -13,9 +13,10 @@ import { fakeDefaults, fakeProvider, type FakeScript } from '../engine/market/fa
 import { job, postManualJob, settleJobEffects } from '../engine/market/jobs.js';
 import type { PlanInput, Provider, Usage } from '../engine/market/provider.js';
 import { resetProviders, setProvider } from '../engine/market/providers.js';
-import { patchSettings } from '../engine/settings.js';
+import { getSettings, patchSettings } from '../engine/settings.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Agent, Firm, Job, ModelRef, Repo, Tier } from '../shared/types.js';
+import { broken, installNet, netOf } from './school-fixtures.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -562,4 +563,59 @@ test('a job that draws no bid cools off before it opens again', async () => {
   await collectBids(m, NOW);
   assert.equal(award(job(m.id) as Job, NOW + 1), null);
   assert.equal(openBidding(job(m.id) as Job, NOW + 2).status, 'bidding');
+});
+
+// ---------------------------------------------------------------- the appraiser in the award (Phase 4 Task 14, Decision 14)
+
+const LONG_PLAN = Array.from({ length: 30 }, (_, i) => `step${i}`).join(' ');
+/** Phase 2 picks `quick` (EV 12 against 6); an appraiser that trusts long plans would pick `slow`. */
+function appraiserFixture(): void {
+  addAgent('quick', 'qfirm', 'ollama:qwen');
+  addAgent('slow', 'sfirm', 'ollama:qwen');
+  script({ quick: { plan: 'A plan.', price: 30, confidence: 0.7 }, slow: { plan: LONG_PLAN, price: 30, confidence: 0.6 } });
+}
+/** About 0 for a two-word plan, about 1 for a thirty-word one. */
+const longPlans = (version: number) => netOf('appraiser-pass', version, [{ w: { plan_words: 1 }, head: 1 }], -10);
+const schoolOn = (on: boolean) => patchSettings({ school: { ...getSettings().school, enabled: on } });
+const lastAward = () => entries().filter((e) => e.kind === 'job.awarded').at(-1)!.data as Record<string, unknown>;
+
+async function awardOnce(): Promise<string | undefined> {
+  const j = bidding();
+  await collectBids(j, NOW);
+  return award(job(j.id) as Job, NOW + 1)?.agentId;
+}
+
+test("award without a trusted appraiser equals Phase 2's choice on the bids fixture", async () => {
+  reading();
+  appraiserFixture();
+  assert.equal(await awardOnce(), 'quick', 'no school at all');
+  assert.equal(lastAward().appraiserMoved, undefined);
+  schoolOn(true);
+  assert.equal(await awardOnce(), 'quick', 'the school on, no appraiser');
+  installNet(longPlans(1), { trusted: false });
+  assert.equal(await awardOnce(), 'quick', 'an appraiser that does not beat its baseline');
+  assert.equal(lastAward().appraiserMoved, undefined);
+});
+
+test("a trusted appraiser moves the award, and with the school off the award is Phase 2's again", async () => {
+  reading();
+  appraiserFixture();
+  schoolOn(true);
+  installNet(longPlans(1));
+  assert.equal(await awardOnce(), 'slow');
+  const moved = lastAward();
+  assert.equal(moved.appraiserMoved, true);
+  assert.match(String(moved.why), /appraiser/i);
+  const appraisals = moved.appraisals as Record<string, number>;
+  assert.equal(Object.keys(appraisals).length, 2);
+  // the bid shows the appraiser's estimate beside it
+  const slowBid = bidList((moved.jobId as string)).bids.find((b) => b.agentId === 'slow');
+  assert.ok(slowBid && slowBid.appraisal !== null && slowBid.appraisal > 0.99);
+  schoolOn(false);
+  assert.equal(await awardOnce(), 'quick');
+  assert.equal(lastAward().appraiserMoved, undefined);
+  // an appraiser whose answer is not a number never breaks the award: Phase 2 decides
+  schoolOn(true);
+  installNet(broken('appraiser-pass', 2));
+  assert.equal(await awardOnce(), 'quick');
 });

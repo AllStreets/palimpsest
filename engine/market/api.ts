@@ -51,6 +51,7 @@ import { query } from '../ledger.js';
 import { paths } from '../home.js';
 import { getRepo, isValidFullName, BAD_NAME } from '../repos.js';
 import { campusView } from '../school/campus.js';
+import { jobSchool } from '../school/decisions.js';
 import { providerUsages } from '../providers-usage.js';
 import { apiKeyStored, setApiKey, removeApiKey } from './anthropic-api.js';
 import { bidList } from './bids.js';
@@ -255,6 +256,7 @@ function jobDetail(j: Job): JobDetail {
     runs: runs.map(publicRun),
     inspections: runs.flatMap((r) => inspectionsOfRun(r.id)).map((i) => inspectionView(i, false)),
     ledger,
+    school: jobSchool(j),
   };
 }
 

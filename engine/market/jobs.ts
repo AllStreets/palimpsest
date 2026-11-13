@@ -24,6 +24,7 @@ import { getRunner, realRunner } from '../exec.js';
 import { addLabel, commentIssue, ensureLabel, type Issue, issueState, openIssues } from '../github.js';
 import { home, onRealDataHome } from '../home.js';
 import { record } from '../ledger.js';
+import { notePending } from '../school/hooks.js';
 
 /** The city signs what it writes with this; an issue whose body carries it is never a job. */
 export const CITY_MARKER = '[palimpsest]';
@@ -223,6 +224,8 @@ function post(j: Job): Job {
   const kind = j.status === 'proposed' ? 'job.proposed' : 'job.posted';
   record(kind, { job: j });
   emit(kind, { job: j });
+  // A proposal waits on his click: the master's guess is written down first (Phase 4 ruling 15), and never stops the post.
+  if (j.status === 'proposed') notePending(j, null);
   return j;
 }
 
