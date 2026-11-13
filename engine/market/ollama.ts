@@ -20,7 +20,7 @@ import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
 import { installedModels, resolveModel } from './firms.js';
 import { diffSection } from './quote.js';
 import type { AuditInput, AuditResult, CompleteInput, CompleteResult, JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
-import { judgeBar } from './provider.js';
+import { judgeBar, withSpent } from './provider.js';
 import { auditLoopTools, runLoop, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ToolSpec } from './toolloop.js';
 
 /** The vision model the design judge uses, by prefix. */
@@ -379,6 +379,9 @@ async function completeCall(i: CompleteInput): Promise<CompleteResult> {
     const text = typeof body.message?.content === 'string' ? body.message.content : '';
     const ns = num(body.total_duration);
     return { text, json: i.schema ? parseAnswer(text) : null, usage: usageOf(ns ? ns / 1e9 : (Date.now() - started) / 1000, gb) };
+  } catch (err) {
+    // The model ran until the call failed: its seconds travel with the error for the caller to charge.
+    throw withSpent(err instanceof Error ? err : new Error(String(err)), usageOf((Date.now() - started) / 1000, gb));
   } finally {
     clearTimeout(timer);
     i.signal.removeEventListener('abort', onAbort);

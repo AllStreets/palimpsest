@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { modelGBFromShow, ollamaProvider, resetOllamaCache, REVIEW_NUM_CTX } from '../engine/market/ollama.js';
-import type { AuditInput, CompleteInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
+import { spentOn, type AuditInput, type CompleteInput, type RunLogLine, type WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { patchSettings } from '../engine/settings.js';
 import { localCredits } from '../shared/credits.js';
@@ -33,6 +33,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   setRunner(realRunner);
+  server?.closeAllConnections();
   if (server) await new Promise((r) => server!.close(r));
   server = null;
   for (const k of ENV_KEYS) {
@@ -72,7 +73,7 @@ function fakeRunner(): { calls: string[][] } {
   return { calls };
 }
 
-type Reply = { stream: unknown[] } | { json: unknown };
+type Reply = { stream: unknown[] } | { json: unknown } | { hang: true };
 
 /** A fake Ollama: answers each POST /api/chat with the next scripted reply and keeps every request body. */
 async function fakeOllama(replies: Reply[]): Promise<{ bodies: Array<Record<string, unknown>> }> {
@@ -92,7 +93,8 @@ async function fakeOllama(replies: Reply[]): Promise<{ bodies: Array<Record<stri
         return;
       }
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
-      if ('json' in reply) res.end(JSON.stringify(reply.json));
+      if ('hang' in reply) res.flushHeaders();
+      else if ('json' in reply) res.end(JSON.stringify(reply.json));
       else res.end(reply.stream.map((l) => JSON.stringify(l)).join('\n') + '\n');
     });
   });
@@ -380,7 +382,7 @@ describe('ollama audit', () => {
 describe('ollama complete', () => {
   const input = (over: Partial<CompleteInput> = {}): CompleteInput => ({
     model: `ollama:${MODEL}`, system: 'You design agents.', turns: [{ role: 'user', content: 'Q1' }, { role: 'assistant', content: 'A1' }, { role: 'user', content: 'Q2' }],
-    schema: null, signal: new AbortController().signal, maxMs: 60_000, ...over,
+    schema: null, signal: new AbortController().signal, maxMs: 60_000, runId: null, ...over,
   });
 
   test('ollama complete returns the text and its seconds', async () => {
@@ -416,5 +418,32 @@ describe('ollama complete', () => {
     const ac = new AbortController();
     ac.abort();
     await assert.rejects(ollamaProvider().complete(input({ signal: ac.signal })), /abort/i);
+  });
+
+  test('ollama complete stops mid-flight on the signal and carries the seconds it ran', async () => {
+    fakeRunner();
+    const { bodies } = await fakeOllama([{ hang: true }]);
+    const ac = new AbortController();
+    const pending = ollamaProvider().complete(input({ signal: ac.signal }));
+    setTimeout(() => ac.abort(), 80);
+    const started = Date.now();
+    const err = await pending.then(() => null, (e: unknown) => e);
+    assert.match(String((err as Error)?.message), /abort/i);
+    assert.ok(Date.now() - started < 5000);
+    assert.equal(bodies.length, 1, 'the call was under way');
+    const spent = spentOn(err);
+    assert.ok(spent, 'the error carries what the call used');
+    assert.ok(spent.seconds > 0);
+    assert.equal(spent.credits, Math.round(localCredits(spent.seconds, GB_7B) * 1e6) / 1e6);
+  });
+
+  test('ollama complete stops at maxMs and carries the seconds it ran', async () => {
+    fakeRunner();
+    await fakeOllama([{ hang: true }]);
+    const started = Date.now();
+    const err = await ollamaProvider().complete(input({ maxMs: 60 })).then(() => null, (e: unknown) => e);
+    assert.match(String((err as Error)?.message), /ran out of time/);
+    assert.ok(Date.now() - started < 5000);
+    assert.ok((spentOn(err)?.seconds ?? 0) > 0);
   });
 });

@@ -44,7 +44,7 @@ import { record } from '../ledger.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
 import { AUDIT_PERSONA, AUDIT_SCHEMA, AUDIT_TOOLS, auditPrompt } from '../audit/schema.js';
 import type { AuditInput, AuditResult, CompleteInput, CompleteResult, JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
-import { judgeBar } from './provider.js';
+import { judgeBar, withSpent } from './provider.js';
 import { CLAUDE_TMP, detectToolchains, proxyUrl, realish, SYSTEM_PATH, wrap, type CliProfileInput } from './sandbox.js';
 import { controlFiles } from './worktree.js';
 import { diffSection, planSection, quoteAsData } from './quote.js';
@@ -912,10 +912,11 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
         tokensPerPct: tokensPerPct(),
         killAfterMs,
       });
-      if (out.ended === 'aborted') throw new Error(`claude ${kind} aborted`);
+      // A cut-short session still spent its tokens so far: they travel with the error for the caller to charge.
+      if (out.ended === 'aborted') throw withSpent(new Error(`claude ${kind} aborted`), out.usage);
       if (out.ended !== 'finished') {
         const why = out.reason === 'claude would bill an API key' ? out.reason : out.reason ?? out.ended;
-        throw new Error(`claude ${kind} ${out.ended}: ${why}`);
+        throw withSpent(new Error(`claude ${kind} ${out.ended}: ${why}`), out.usage);
       }
       return out;
     } finally {

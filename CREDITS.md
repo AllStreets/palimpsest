@@ -57,3 +57,7 @@ Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. 
 The wordmark, the app mark and the app icon set are own work, rendered in Blender by scripts written for Palimpsest (`docs/brand/wordmark.py`, `docs/brand/logo.py`, `docs/brand/icons.py`). They reuse the Poly Haven sandstone, brick and rust scans listed above. The icons in `src-tauri/icons/` are copies of `docs/brand/icons/`.
 
 The README's hero, stills and clips in `docs/media/` are captured from the app itself by `tools/capture.ts`, from the fictional repos that `tools/sample.ts` writes and the scripted sample market that `engine/market/sample-economy.ts` writes on them. No real repo, issue, run or usage reading appears in them.
+
+## Libraries
+
+The school's races, breeding and intervals come from [Beagle](https://github.com/AllStreets/beagle) (MIT), imported as a library by `engine/school/beagle.ts`. Until its library pull request is merged, `package.json` pins it by full commit sha to a local bare copy of that branch; the pin moves to `github:AllStreets/beagle#<merged sha>` once it is merged.

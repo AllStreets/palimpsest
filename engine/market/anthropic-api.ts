@@ -538,7 +538,7 @@ export function anthropicProvider(o: AnthropicOptions = {}): Provider {
         content: [{ type: 'text', text: n === last && i.schema ? `${t.content}\n\nAnswer only with a JSON object matching this JSON schema: ${JSON.stringify(i.schema)}` : t.content }],
       }));
       const body = { model: apiModel(i.model), max_tokens: CALL_MAX_TOKENS, stream: true, system: i.system, messages };
-      const res = await call(i.model, body, { kind: 'school', runId: i.runId ?? null, firmId: null }, ctl.signal);
+      const res = await call(i.model, body, { kind: 'school', runId: i.runId, firmId: null }, ctl.signal);
       const text = res.blocks.filter((b) => b.type === 'text').map((b) => String(b.text ?? '')).join('');
       const usage: Usage = { weightedTokens: 0, seconds: Math.round(res.seconds * 1000) / 1000, usd: res.usd, credits: apiCredits(res.usd) };
       return { text, json: i.schema ? parseAnswer(text) : null, usage };

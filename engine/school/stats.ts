@@ -5,9 +5,14 @@
  * This mirrors `bootstrap()` in Beagle's `src/stats.ts` exactly: mulberry32
  * seeded with `seed`, 10,000 resamples of the values with replacement, the
  * resample means sorted, `lo` the one at floor(0.025 * 10,000) and `hi` the
- * one at ceil(0.975 * 10,000) - 1; no values gives 0 to 0. Task 4 points
- * these at Beagle's own `bootstrap()` once Beagle loads as a library; the
- * numbers must not move when it does.
+ * one at ceil(0.975 * 10,000) - 1; no values gives 0 to 0.
+ *
+ * It stays a copy rather than a call into Beagle (Task 4): ruling 1 lets only
+ * `beagle.ts` import Beagle, and only by an asynchronous `import()`, while
+ * `ci` and `pairedCi` are synchronous and serve the nets and the decisions
+ * whether or not Beagle has loaded. The school-beagle tests hold this copy to
+ * Beagle's own `bootstrap()` on the same values and seeds, so a pin that
+ * changes Beagle's numbers fails there.
  */
 import type { Interval } from '../../shared/types.js';
 

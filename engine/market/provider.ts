@@ -100,8 +100,13 @@ export interface AuditResult {
  * One turn, no tools (Phase 4 ruling 5): the school's model calls (Beagle's
  * designer and races, graduation) go through it. `schema` shapes the answer
  * as JSON; null asks for free text. `turns` is a conversation so far, ending
- * with a user turn. `runId` is what the call is charged under by a backend
- * that charges itself (the Anthropic API): the voyage, net version or LoRA.
+ * with a user turn. `runId` is what the call is charged under (the voyage,
+ * net version or LoRA, or null for none): the Anthropic API charges itself
+ * under it, and the school's driver charges Claude and Ollama under it.
+ *
+ * A call that fails after it started spending throws an error that carries
+ * what it spent (`spentOn(err)`): Claude the session's usage so far, Ollama
+ * the seconds it ran, so the caller charges a cut-short call too.
  */
 export interface CompleteInput {
   model: ModelRef;
@@ -110,7 +115,20 @@ export interface CompleteInput {
   schema: object | null;
   signal: AbortSignal;
   maxMs: number;
-  runId?: string | null;
+  runId: string | null;
+}
+
+const SPENT = Symbol('spent');
+
+/** Marks `err` with what the failed call had spent, for the caller to charge; returns it. */
+export function withSpent<E>(err: E, usage: Usage): E {
+  if (err && typeof err === 'object') (err as { [SPENT]?: Usage })[SPENT] = usage;
+  return err;
+}
+
+/** What a failed call had spent before it failed, or null when it says nothing (it spent nothing it knows of). */
+export function spentOn(err: unknown): Usage | null {
+  return err && typeof err === 'object' ? ((err as { [SPENT]?: Usage })[SPENT] ?? null) : null;
 }
 
 /** `json` is the parsed answer when a schema was given (null when it did not parse), else null. */

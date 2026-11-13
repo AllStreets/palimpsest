@@ -49,6 +49,7 @@ afterEach(async () => {
   resetBudget();
   setRunner(realRunner);
   setSpawner(realSpawner);
+  server?.closeAllConnections();
   if (server) await new Promise((r) => server!.close(r));
   server = null;
   for (const k of ENV_KEYS) {
@@ -108,6 +109,8 @@ function fakeSecurityShell(sec: { set: (v: string | null) => void }, exitCode = 
 
 type Block = { type: 'text'; text: string } | { type: 'tool_use'; name: string; input: Record<string, unknown> };
 interface Reply {
+  /** Send the message start (its input usage) and then nothing more, until the client goes. */
+  hang?: boolean;
   blocks: Block[];
   usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
 }
@@ -150,7 +153,8 @@ async function fakeApi(replies: Reply[]): Promise<{ base: string; requests: Arra
         return;
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end(sse(reply, requests.length));
+      if (reply.hang) res.write(sse(reply, requests.length).split('event: ping')[0]);
+      else res.end(sse(reply, requests.length));
     });
   });
   await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
@@ -536,6 +540,36 @@ describe('anthropic api complete', () => {
     const shaped = await p.complete(input({ schema: { type: 'object', required: ['edits'], properties: { edits: { type: 'array' } } } }));
     assert.deepEqual(shaped.json, { edits: [] });
     assert.match(JSON.stringify(api.requests[1].body.messages), /JSON/, 'the schema is asked for in words');
+  });
+
+  test('anthropic complete aborted mid-flight charges the input it had already sent', async () => {
+    fakeSecurity();
+    const api = await fakeApi([{ hang: true, blocks: [], usage: { input_tokens: 4000, output_tokens: 0 } }]);
+    enable();
+    const ac = new AbortController();
+    const pending = anthropicProvider({ baseUrl: api.base, keychain: fakeKc }).complete(input({ signal: ac.signal }));
+    setTimeout(() => ac.abort(), 80);
+    const started = Date.now();
+    await assert.rejects(pending, /abort/i);
+    assert.ok(Date.now() - started < 5000);
+    const rows = openDb().prepare('SELECT kind, amount, usd, firm_id, run_id FROM credits').all() as Array<{ kind: string; usd: number; firm_id: string | null; run_id: string }>;
+    assert.equal(rows.length, 1, 'the cut-short call is charged');
+    assert.equal(rows[0].kind, 'school');
+    assert.equal(rows[0].firm_id, null);
+    assert.equal(rows[0].run_id, 'voyage-1');
+    assert.ok(rows[0].usd > 0);
+  });
+
+  test('anthropic complete stops at maxMs and charges what it spent', async () => {
+    fakeSecurity();
+    const api = await fakeApi([{ hang: true, blocks: [], usage: { input_tokens: 4000, output_tokens: 0 } }]);
+    enable();
+    const started = Date.now();
+    await assert.rejects(anthropicProvider({ baseUrl: api.base, keychain: fakeKc }).complete(input({ maxMs: 60 })));
+    assert.ok(Date.now() - started < 5000);
+    const rows = openDb().prepare("SELECT usd FROM credits WHERE kind = 'school'").all() as Array<{ usd: number }>;
+    assert.equal(rows.length, 1);
+    assert.ok(rows[0].usd > 0);
   });
 
   test('anthropic complete refuses while the backend is off and calls nothing', async () => {

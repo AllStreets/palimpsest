@@ -98,7 +98,7 @@ export function paths(): Paths {
  * existing ancestor (resolving symlinks and parent steps), lowercased because
  * the Mac's default volume ignores letter case.
  */
-function canonical(p: string): string {
+export function canonical(p: string): string {
   const abs = resolve(p);
   if (existsSync(abs)) return realpathSync.native(abs).toLowerCase();
   const parent = dirname(abs);

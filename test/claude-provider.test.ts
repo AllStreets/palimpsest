@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { realSpawner, setSpawner, type SpawnLine, type SpawnOpts, type Spawned } from '../engine/exec.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from '../engine/market/guard.js';
 import { BUILTIN_PLUGINS, CALL_DENY, CLAUDE_SANDBOX, HOOK_MATCHER, KILL_AFTER_MS, claudeProvider, type ClaudeOptions } from '../engine/market/claude.js';
-import type { AuditInput, CompleteInput, RunLogLine, WorkInput } from '../engine/market/provider.js';
+import { spentOn, type AuditInput, type CompleteInput, type RunLogLine, type WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { startEgress } from '../engine/market/egress.js';
 import { entries } from '../engine/ledger.js';
@@ -999,7 +999,7 @@ describe('audit', () => {
 const EDITS_SCHEMA = { type: 'object', required: ['edits'], properties: { edits: { type: 'array' } } };
 
 function completeInput(over: Partial<CompleteInput> = {}): CompleteInput {
-  return { model: 'claude:sonnet', system: 'You design agents.', turns: [{ role: 'user', content: 'Design the next generation.' }], schema: EDITS_SCHEMA, signal: new AbortController().signal, maxMs: 60_000, ...over };
+  return { model: 'claude:sonnet', system: 'You design agents.', turns: [{ role: 'user', content: 'Design the next generation.' }], schema: EDITS_SCHEMA, signal: new AbortController().signal, maxMs: 60_000, runId: null, ...over };
 }
 
 describe('complete', () => {
@@ -1055,6 +1055,29 @@ describe('complete', () => {
     await assert.rejects(pending, /aborted/);
     assert.ok(Date.now() - started < 5000);
     assert.ok(calls[0].kills.includes('SIGTERM'));
+  });
+
+  test('claude complete aborted mid-flight carries what the session had spent', async () => {
+    fake([callInit(), assistant('m1', [{ type: 'text', text: 'Thinking.' }], { input_tokens: 400, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })], { hang: true });
+    const ac = new AbortController();
+    const pending = provider().p.complete(completeInput({ signal: ac.signal }));
+    setTimeout(() => ac.abort(), 30);
+    const err = await pending.then(() => null, (e: unknown) => e);
+    assert.match(String((err as Error)?.message), /aborted/);
+    const spent = spentOn(err);
+    assert.ok(spent, 'the error carries the usage so far');
+    assert.ok(spent.weightedTokens > 0, `weighted ${spent.weightedTokens}`);
+  });
+
+  test('claude complete stops at maxMs and carries what it spent', async () => {
+    const { calls } = fake([callInit()], { hang: true });
+    const started = Date.now();
+    const err = await provider().p.complete(completeInput({ maxMs: 50 })).then(() => null, (e: unknown) => e);
+    assert.ok(err instanceof Error);
+    assert.doesNotMatch(err.message, /^claude complete aborted/, 'a time cap is not his stop');
+    assert.ok(Date.now() - started < 5000);
+    assert.ok(calls[0].kills.includes('SIGTERM'));
+    assert.ok(spentOn(err), 'the error carries the usage so far');
   });
 
   test('claude complete keeps the call guards: a session that would bill an API key is refused', async () => {

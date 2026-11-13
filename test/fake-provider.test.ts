@@ -211,7 +211,7 @@ test('the default fake audit answers one REAL and one MISSING finding and writes
 
 test('the fake complete answers by its script', async () => {
   const signal = new AbortController().signal;
-  const base = { model: 'claude:sonnet' as const, system: 'You design agents.', turns: [{ role: 'user' as const, content: 'Go.' }], signal, maxMs: 1000 };
+  const base = { model: 'claude:sonnet' as const, system: 'You design agents.', turns: [{ role: 'user' as const, content: 'Go.' }], signal, maxMs: 1000, runId: null };
   const p = fakeProvider();
   const shaped = await p.complete({ ...base, schema: { type: 'object' } });
   assert.deepEqual(shaped.json, { edits: [] });
