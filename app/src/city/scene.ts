@@ -1381,7 +1381,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       else mesh.layers.set(0);
     });
     // The skyline's ornaments stand on the towers and keep their rule: past the AO's reach (judged by the nearest
-    // ornament each draw holds) they draw in the view and the shadow map, not the AO's normal pass.
+    // ornament each draw holds) they draw in the view and the shadow map, not the AO's normal pass. Their world
+    // matrices are brought up to date first: a draw placed this frame is judged where it stands, not where it stood.
+    milestones?.group.updateMatrixWorld();
     milestones?.group.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;

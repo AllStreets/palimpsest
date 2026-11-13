@@ -67,3 +67,25 @@ test('a tower rebuilt or let go re-merges, and the merged mesh holds only the to
   assert.equal(drawCalls(batch.group), 0);
   batch.dispose();
 });
+
+test('a rebuild lets go of the merged geometry it replaces', () => {
+  const a = piece(0);
+  const b = piece(50);
+  const batch = plainBatch();
+  batch.set([a.root, b.root]);
+  const before = batch.group.children.map((m) => (m as THREE.Mesh).geometry);
+  assert.ok(before.length > 0 && before.every((g) => g.index !== null), 'the towers merged into geometries of their own');
+  let disposed = 0;
+  for (const g of before) g.addEventListener('dispose', () => disposed++);
+  // One tower rebuilt: every material it drew in re-merges, and each old merged geometry is disposed once.
+  const c = piece(50);
+  batch.set([a.root, c.root]);
+  assert.equal(disposed, before.length, `each replaced geometry disposed once (${disposed} of ${before.length})`);
+  const after = batch.group.children.map((m) => (m as THREE.Mesh).geometry);
+  assert.ok(after.every((g) => !before.includes(g)), 'and the batch draws new ones');
+  // Let go whole: the merged geometries go too.
+  let gone = 0;
+  for (const g of after) g.addEventListener('dispose', () => gone++);
+  batch.dispose();
+  assert.equal(gone, after.length, 'dispose lets go of every merged geometry');
+});
