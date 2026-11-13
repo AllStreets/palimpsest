@@ -67,6 +67,13 @@ async function main(): Promise<void> {
   };
   every('bankruptcy check', bankruptcyTick, HOUR_MS);
   every('daily treasury tick', dailyTick, DAY_MS);
+  // Phase 4 Task 17: a proposal accept the engine died in the middle of gets its result row now, from what the store
+  // shows, before anything can move (a merge's waits for the PR poll, which alone can say whether gh merged).
+  try {
+    closeOrphanedActs();
+  } catch (err) {
+    console.error('palimpsest: the cut-short acts could not be closed:', err);
+  }
   const { close, port } = await startServer();
   const stopped = existsSync(paths().stop);
   // eslint-disable-next-line no-console
@@ -104,12 +111,6 @@ async function main(): Promise<void> {
   // Phase 4 ruling 15: a proposal or an open PR that became pending while no engine ran gets the master's guess now,
   // only while it is still undecided, so every guess stays prospective.
   catchUpPredictions();
-  // Phase 4 Task 17: an act the engine died in the middle of gets its result row now, from what the store shows.
-  try {
-    closeOrphanedActs();
-  } catch (err) {
-    console.error('palimpsest: the cut-short acts could not be closed:', err);
-  }
 
   // A first signal stops the market (runs killed and reaped, leases aborted) within a 10 s grace; a second exits at once.
   // eslint-disable-next-line no-console

@@ -360,6 +360,8 @@ const hookSuspend: Suspend = (kind, repo, reason, now) => suspendPair(kind, repo
 
 /** One `autonomy.acted` row as decisions.ts reads it: the pair, and whether it is the row before an act or the result after. */
 interface ActedRow {
+  /** The row's ledger id: a before-row's act can only show in rows after it. */
+  id: number;
   kind: WorkKind;
   repo: string | null;
   /** The result row's `ok`; null on the row written before the act. */
@@ -368,8 +370,8 @@ interface ActedRow {
 
 function actedRows(jobId: string): ActedRow[] {
   const rows = openDb()
-    .prepare("SELECT json FROM ledger WHERE kind = 'autonomy.acted' AND json_extract(json, '$.jobId') = ? ORDER BY id")
-    .all(jobId) as Array<{ json: string }>;
+    .prepare("SELECT id, json FROM ledger WHERE kind = 'autonomy.acted' AND json_extract(json, '$.jobId') = ? ORDER BY id")
+    .all(jobId) as Array<{ id: number | bigint; json: string }>;
   const out: ActedRow[] = [];
   for (const row of rows) {
     let d: Record<string, unknown> = {};
@@ -383,28 +385,29 @@ function actedRows(jobId: string): ActedRow[] {
     const repo = d.repo ?? grant.repo;
     if (typeof kind !== 'string' || !(WORK_KINDS as readonly string[]).includes(kind)) continue;
     const result = d.result && typeof d.result === 'object' ? (d.result as { ok?: unknown }) : null;
-    out.push({ kind: kind as WorkKind, repo: typeof repo === 'string' ? repo : null, ok: result ? result.ok === true : null });
+    out.push({ id: Number(row.id), kind: kind as WorkKind, repo: typeof repo === 'string' ? repo : null, ok: result ? result.ok === true : null });
   }
   return out;
 }
 
 /**
  * Whether the act a `kind` pair set out to make on `jobId` shows in the
- * store: a proposal moved from `proposed` to `open` (its `job.changed`), or
- * the job's PR merged (`merge.detected`, or the job or its run merged).
- * Read for a before-row that has no result row (the engine stopped between
- * the two writes): at engine start by autonomy.ts's `closeOrphanedActs`,
- * and by `actedOn` for a merge, whose landing only the PR poll sees later.
- * For a proposal it cannot tell his accept from the city's, so `actedOn`
- * asks `acting` (hooks.ts) instead.
+ * store after its before-row (ledger id `afterId`): a proposal moved from
+ * `proposed` to `open` (its `job.changed`), or the job's PR merged
+ * (`merge.detected`, or the job or its run merged). Read for a before-row
+ * that has no result row: for a proposal at engine start by autonomy.ts's
+ * `closeOrphanedActs` (the engine stopped between the two writes), and for
+ * a merge by `actedOn`, whose landing only the PR poll sees later (its
+ * result row is written when the run ends). For a proposal it cannot tell
+ * his accept from the city's, so `actedOn` asks `acting` (hooks.ts) instead.
  */
-export function actTookEffect(kind: WorkKind, jobId: string): boolean {
+export function actTookEffect(kind: WorkKind, jobId: string, afterId = 0): boolean {
   if (kind.startsWith('propose:')) {
     return openDb()
-      .prepare("SELECT 1 AS hit FROM ledger WHERE kind = 'job.changed' AND json_extract(json, '$.id') = ? AND json_extract(json, '$.from') = 'proposed' AND json_extract(json, '$.to') = 'open' LIMIT 1")
-      .get(jobId) !== undefined;
+      .prepare("SELECT 1 AS hit FROM ledger WHERE kind = 'job.changed' AND id > ? AND json_extract(json, '$.id') = ? AND json_extract(json, '$.from') = 'proposed' AND json_extract(json, '$.to') = 'open' LIMIT 1")
+      .get(afterId, jobId) !== undefined;
   }
-  if (openDb().prepare("SELECT 1 AS hit FROM ledger WHERE kind = 'merge.detected' AND json_extract(json, '$.jobId') = ? LIMIT 1").get(jobId) !== undefined) return true;
+  if (openDb().prepare("SELECT 1 AS hit FROM ledger WHERE kind = 'merge.detected' AND id > ? AND json_extract(json, '$.jobId') = ? LIMIT 1").get(afterId, jobId) !== undefined) return true;
   const j = storedJob(jobId);
   if (j?.status === 'merged') return true;
   return listRuns({ jobId }).some((r) => r.outcome === 'merged');
@@ -417,9 +420,10 @@ export function actTookEffect(kind: WorkKind, jobId: string): boolean {
  * a before-row whose result row says `ok true`; or, with no result row yet,
  * one the city is acting on right now (`acting`: its own accept or merge is
  * heard here before the result row is written), or a merge that landed
- * (`actTookEffect`: the poll sees it after the act). A failed act, or a
- * before-row the engine died after with nothing to show for it, leaves the
- * job his (and `closeOrphanedActs` writes its result at the next start).
+ * (`actTookEffect`: the poll sees it after the act; autonomy.ts writes the
+ * result row when the run ends). A failed act, or a before-row the engine
+ * died after with nothing to show for it, leaves the job his (a proposal's
+ * is closed at the next start by `closeOrphanedActs`).
  */
 function actedOn(jobId: string): { acted: boolean; last: { kind: WorkKind; repo: string | null } | null } {
   const rows = actedRows(jobId);
@@ -428,7 +432,7 @@ function actedOn(jobId: string): { acted: boolean; last: { kind: WorkKind; repo:
     if (row.ok !== null) return;
     // the result that answers this before-row: the next result row of the same pair
     const result = rows.slice(i + 1).find((r) => r.ok !== null && r.kind === row.kind);
-    const counted = result ? result.ok === true : acting(jobId) || (row.kind.startsWith('merge:') && actTookEffect(row.kind, jobId));
+    const counted = result ? result.ok === true : acting(jobId) || (row.kind.startsWith('merge:') && actTookEffect(row.kind, jobId, row.id));
     if (counted) last = { kind: row.kind, repo: row.repo };
   });
   return { acted: last !== null, last };

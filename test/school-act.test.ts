@@ -602,38 +602,70 @@ test("an orphaned before-row where the merge did land is still the city's", asyn
   assert.equal(decisions(k.job.id)[0].agreed, false);
 });
 
-test('at engine start, every cut-short act gets its result from what the store shows', async () => {
+test('at engine start, every cut-short accept gets its result from what the store shows, and a merge waits for the poll', async () => {
   granted('merge:normal');
   granted('propose:readme-gap');
-  // a before-row with nothing to show for it, one whose merge landed, one whose accept landed, and one complete act
+  // a merge before-row with nothing to show for it yet, a proposal whose accept landed, a complete act, and a
+  // before-row written after his own accept (which is his, not the city's)
   const dead = waitingPR('dead');
   noteActed('merge:normal', FULL, dead.job.id, clock);
-  const landed = waitingPR('landed', { run: { prNumber: 41 } });
-  noteActed('merge:normal', FULL, landed.job.id, clock);
-  prStates.set(41, { state: 'MERGED', headRefOid: HEAD, mergeCommit: { oid: 'd'.repeat(40) }, mergedAt: new Date(clock).toISOString() });
-  await pollPRs(clock);
   const p = proposal('p');
   noteActed('propose:readme-gap', FULL, p.id, clock);
   acceptProposed(p.id);
   const done = proposal('done');
   assert.equal(await act(clock), 1);
   assert.equal(actedRows(done.id).length, 2);
+  const his = proposal('his');
+  acceptProposed(his.id);
+  assert.equal(decisions(his.id)[0]?.by, 'accept');
+  noteActed('propose:readme-gap', FULL, his.id, clock);
   later();
-  assert.equal(closeOrphanedActs(clock), 3);
-  const row = (id: string) => actedRows(id).at(-1)!.result as { ok: boolean; reason: string };
-  assert.deepEqual(row(dead.job.id), { ok: false, reason: 'the engine stopped before the merge was made or confirmed' });
-  assert.deepEqual(row(landed.job.id), { ok: true, reason: 'the merge went through, but the engine stopped before it could write that down' });
+  assert.equal(closeOrphanedActs(clock), 2, 'the two proposal before-rows; the merge is left open');
+  const row = (id: string) => actedRows(id).at(-1)!.result as { ok: boolean; reason: string } | undefined;
   assert.deepEqual(row(p.id), { ok: true, reason: 'the accept went through, but the engine stopped before it could write that down' });
+  assert.deepEqual(row(his.id), { ok: false, reason: 'the engine stopped before the accept was made' });
+  assert.equal(actedRows(dead.job.id).length, 1, 'a merge before-row waits for the PR poll');
   assert.equal(actedRows(done.id).length, 2, 'a complete act is left alone');
-  assert.equal(actedRows(dead.job.id).at(-1)!.at, new Date(clock).toISOString());
+  assert.equal(actedRows(p.id).at(-1)!.at, new Date(clock).toISOString());
   // closed once
   assert.equal(closeOrphanedActs(clock), 0);
-  // and the closed rows carry the verdict decisions.ts reads: his close of the dead PR is his close
+  // the dead merge: he closes the PR; the run's end writes the result, ok false, and his close is his
   prStates.set(9, { state: 'CLOSED', headRefOid: HEAD });
   later(6 * 60_000);
   await pollPRs(clock);
+  assert.deepEqual(row(dead.job.id), { ok: false, reason: 'the PR closed without the merge: the engine stopped before the merge was made, or it was not made' });
   assert.equal(decisions(dead.job.id)[0]?.by, 'close');
   assert.equal(grantOf('merge:normal', FULL)?.state, 'granted');
+  assert.deepEqual(ledger('autonomy.suspended'), []);
+});
+
+test("an orphaned merge that gh made before the engine died is the city's once the poll sees it, never his", async () => {
+  granted('merge:normal');
+  const k = waitingPR('k');
+  // gh merged, the engine died before the result row; GitHub has the merge, the poll has not seen it
+  noteActed('merge:normal', FULL, k.job.id, clock);
+  prStates.set(9, { state: 'MERGED', headRefOid: HEAD, mergeCommit: { oid: 'd'.repeat(40) }, mergedAt: new Date(clock).toISOString() });
+  // the engine restarts
+  later();
+  assert.equal(closeOrphanedActs(clock), 0);
+  assert.equal(actedRows(k.job.id).length, 1, 'still open');
+  // the poll sees the merge
+  later(6 * 60_000);
+  await pollPRs(clock);
+  assert.equal(storedJob(k.job.id)?.status, 'merged');
+  assert.deepEqual(decisions(k.job.id), [], 'the city\'s merge is not his approval');
+  const rows = actedRows(k.job.id);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[1].result, { ok: true, reason: 'the merge went through, but the engine stopped before it could write that down' });
+  assert.equal(rows[1].at, storedRun(k.run.id)!.endedAt);
+  // the window never saw it
+  const a = agreement('merge:normal');
+  assert.equal(a.agreed, a.rows);
+  // and a later revert of it is a revert of the city's merge
+  const { resolve } = await import('../engine/school/decisions.js');
+  resolve(storedJob(k.job.id)!, 'revert', clock + 60_000);
+  assert.equal(decisions(k.job.id)[0]?.by, 'revert');
+  assert.equal(decisions(k.job.id)[0]?.agreed, false);
 });
 
 // ---------------------------------------------------------------- the pin

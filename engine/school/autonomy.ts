@@ -44,7 +44,7 @@ import { existsSync } from 'node:fs';
 import { AGREE, itemKey, WORK_KINDS, workKind } from '../../shared/school-rules.js';
 import type { Grant, Job, Repo, Run, WorkKind } from '../../shared/types.js';
 import { openDb } from '../db.js';
-import { emit } from '../events.js';
+import { emit, subscribe } from '../events.js';
 import { MergeMethodError, mergePR, prState } from '../github.js';
 import { paths } from '../home.js';
 import { query, record } from '../ledger.js';
@@ -498,31 +498,69 @@ async function actOn(kind: WorkKind, repo: string, c: Candidate, now: number): P
   }
 }
 
-/**
- * At engine start: every before-row with no result row of its pair (the
- * engine stopped between `noteActed` and the result) gets its result now,
- * from what the store shows (`actTookEffect`), so the brief never says the
- * result is not on record forever and decisions.ts counts only acts that
- * happened. Returns how many were closed.
- */
-export function closeOrphanedActs(now: number = Date.now()): number {
-  const open = new Map<string, { kind: WorkKind; repo: string; jobId: string }>();
-  for (const e of query({ kind: 'autonomy.acted' })) {
+/** A before-row with no result row of its pair yet, with its ledger id. */
+interface OpenAct {
+  id: number;
+  kind: WorkKind;
+  repo: string;
+  jobId: string;
+}
+
+/** Every before-row with no result row of its pair, by key; `jobId` narrows it to one job. */
+function openActs(jobId?: string): OpenAct[] {
+  const open = new Map<string, OpenAct>();
+  for (const e of query(jobId === undefined ? { kind: 'autonomy.acted' } : { kind: 'autonomy.acted', jobId })) {
     const d = e.data as { kind?: unknown; repo?: unknown; jobId?: unknown; result?: unknown; grant?: { kind?: unknown; repo?: unknown } | null };
     const kind = d.kind ?? d.grant?.kind;
     const repo = d.repo ?? d.grant?.repo;
     if (typeof kind !== 'string' || !(WORK_KINDS as readonly string[]).includes(kind) || typeof repo !== 'string' || typeof d.jobId !== 'string') continue;
     const key = itemKey(kind as WorkKind, d.jobId);
     if (d.result && typeof d.result === 'object') open.delete(key);
-    else open.set(key, { kind: kind as WorkKind, repo, jobId: d.jobId });
+    else open.set(key, { id: e.id, kind: kind as WorkKind, repo, jobId: d.jobId });
   }
-  for (const o of open.values()) {
-    const ok = actTookEffect(o.kind, o.jobId);
-    const what = o.kind.startsWith('propose:') ? 'accept' : 'merge';
-    const reason = ok ? `the ${what} went through, but the engine stopped before it could write that down` : `the engine stopped before the ${what} was made or confirmed`;
+  return [...open.values()];
+}
+
+/**
+ * At engine start: every proposal before-row with no result row of its pair
+ * (the engine stopped between `noteActed` and the result) gets its result
+ * now, from what the store shows after it (`actTookEffect`), so the brief
+ * never says the result is not on record forever and decisions.ts counts
+ * only acts that happened. A merge before-row is left open: only the PR
+ * poll can say whether gh merged before the engine died, and its result is
+ * written when the run ends (`run.ended`, below), so a merge the city made
+ * is never closed as failed and then heard as his. Returns how many closed.
+ */
+export function closeOrphanedActs(now: number = Date.now()): number {
+  let n = 0;
+  for (const o of openActs()) {
+    if (!o.kind.startsWith('propose:')) continue;
+    const ok = actTookEffect(o.kind, o.jobId, o.id);
+    const reason = ok ? 'the accept went through, but the engine stopped before it could write that down' : 'the engine stopped before the accept was made';
     noteActResult(o.kind, o.repo, o.jobId, { ok, reason }, now);
+    n++;
   }
-  return open.size;
+  return n;
+}
+
+/**
+ * A run whose PR ended (`run.ended`): an open merge before-row on its job
+ * gets its result from the outcome, `ok true` when it merged (the city's
+ * merge, whichever engine run made it), `ok false` when it closed without
+ * one. Nothing while the act is still in flight (its own result follows),
+ * and nothing it throws escapes.
+ */
+function closeMergeActOnRunEnd(data: Record<string, unknown>): void {
+  const runId = typeof data.runId === 'string' ? data.runId : null;
+  const r = runId ? storedRun(runId) : null;
+  if (!r || r.prNumber === null || inFlight.has(r.jobId)) return;
+  if (r.outcome !== 'merged' && r.outcome !== 'closed') return;
+  for (const o of openActs(r.jobId)) {
+    if (!o.kind.startsWith('merge:')) continue;
+    const ok = r.outcome === 'merged';
+    const reason = ok ? 'the merge went through, but the engine stopped before it could write that down' : 'the PR closed without the merge: the engine stopped before the merge was made, or it was not made';
+    noteActResult(o.kind, o.repo, o.jobId, { ok, reason }, r.endedAt ? Date.parse(r.endedAt) : Date.now());
+  }
 }
 
 let acting = false;
@@ -573,3 +611,12 @@ setSuspendHook((kind, repo, reason, now) => {
 });
 setRevertHook(revokeOnRevert);
 setActingHook((jobId) => inFlight.has(jobId));
+// a run whose PR ended closes an open merge before-row on its job (installed as this module loads, like the hooks)
+subscribe((e) => {
+  if (e.type !== 'run.ended') return;
+  try {
+    closeMergeActOnRunEnd(e.data as Record<string, unknown>);
+  } catch (err) {
+    console.error(`palimpsest: the city's merge act could not be closed: ${errText(err)}`);
+  }
+});
