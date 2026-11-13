@@ -14,7 +14,8 @@ export type Runner = (
  * talking to GitHub (test safety rule 4). Real git and sh stay allowed for
  * the bare repos tests build in their temp dirs (rule 5).
  */
-const REFUSED_IN_TESTS = new Set(['gh', 'claude', 'ollama', 'security', 'caffeinate', 'osascript', 'launchctl']);
+/** `pmset` and `ioreg` are the training gate's probes (Phase 4 ruling 6): a test reads fixtures, never this Mac. */
+const REFUSED_IN_TESTS = new Set(['gh', 'claude', 'ollama', 'security', 'caffeinate', 'osascript', 'launchctl', 'pmset', 'ioreg']);
 /** Any Python (`python`, `python3`, `python3.12`): the trainer's tests are `npm run test:trainer`, never `npm test` (Phase 4 test safety rule 11). */
 const PYTHON = /^python[\d.]*$/;
 /** The trainer's own script, however it is started. */

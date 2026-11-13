@@ -1,0 +1,3 @@
+Thermal warning level set to 2.
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded

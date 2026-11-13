@@ -254,3 +254,10 @@ test('the real runner and spawner refuse any python and the trainer script under
   const r = await realRunner('/bin/echo', ['pythonic', 'school.py.bak']);
   assert.equal(r.stdout.trim(), 'pythonic school.py.bak');
 });
+
+test('the real runner refuses the training gate probes pmset and ioreg under node --test', async () => {
+  await assert.rejects(realRunner('/usr/bin/pmset', ['-g', 'batt']), /refused in tests/);
+  await assert.rejects(realRunner('pmset', ['-g']), /refused in tests/);
+  await assert.rejects(realRunner('/usr/sbin/ioreg', ['-c', 'IOHIDSystem']), /refused in tests/);
+  assert.throws(() => realSpawner('/bin/sh', ['-c', 'pmset -g therm'], {}), /refused in tests/);
+});
