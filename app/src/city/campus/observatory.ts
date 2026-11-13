@@ -21,9 +21,10 @@
  * Node.
  */
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { Kit, M, piercedWall, rng } from '../tower/kit.js';
-import { Gothic, outline, type Opening } from './gothic.js';
+import { Gothic, MAT, outline, type Opening } from './gothic.js';
 import { mergeStamped, stamp, type Kind } from './site.js';
 
 /** The route a click on the dome opens: the school screen at the master's card (Task 28). */
@@ -251,7 +252,8 @@ function leaf(side: 1 | -1, detail: boolean): THREE.BufferGeometry {
   // The skirt round the edge, down to just over the dome, and the rib.
   const out = { pos: [] as number[], nor: [] as number[], uv: [] as number[] };
   const P = (rr: number, psi: number, lam: number): THREE.Vector3 => new THREE.Vector3(rr * Math.sin(psi), rr * Math.cos(psi) * Math.sin(lam), rr * Math.cos(psi) * Math.cos(lam));
-  const low = R + 0.03;
+  // The skirt's foot and the underside ride just over the rails (R to R + 0.03).
+  const low = R + 0.05;
   const [pa, pb] = [psis[0], psis[psis.length - 1]];
   for (let j = 0; j < lams.length - 1; j++) {
     const [l0, l1] = [lams[j], lams[j + 1]];
@@ -273,39 +275,141 @@ function leaf(side: 1 | -1, detail: boolean): THREE.BufferGeometry {
     quad(out, P(r + 0.1, b, l0), P(r, b, l0), P(r, b, l1), P(r + 0.1, b, l1));
   }
   const skirt = flatGeometry(out);
-  const merged = mergeStamped([stamp(face.toNonIndexed(), 'copper', 0.96), stamp(skirt, 'copper', 0.85)]);
+  // The leaf's underside, so a view from above never sees through its skirt.
+  const under = sphereGrid(low + 0.005, psis, lams, () => false, true);
+  const merged = mergeStamped([stamp(face.toNonIndexed(), 'copper', 0.96), stamp(skirt, 'copper', 0.85), stamp(under.toNonIndexed(), 'copper', 0.55)]);
   face.dispose();
+  under.dispose();
   return merged;
 }
 
-/** The telescope: a great refractor's tube about its pivot (the origin), pointing along +z, with its brass rings, dew cap and finder. */
+/** Dark enamel: the paint kind's tone taken down to the near-black of a cast iron mount and the fittings of a great refractor. */
+const ENAMEL = new THREE.Color(0.17, 0.17, 0.2);
+
+/**
+ * The telescope about its declination axis (the origin), pointing along +z:
+ * a great refractor's tapered tube with its dew shield, cell ring, three
+ * tube rings, finder with its brackets, the eye end's tailpiece, drawtube
+ * and focuser knobs, the cradle and declination housing in dark enamel,
+ * and the counterweight bar out along -x with its two weights. Cream
+ * enamel, brass and dark enamel.
+ */
 function telescopeGeometry(detail: boolean): THREE.BufferGeometry {
-  const seg = detail ? 24 : 14;
+  const seg = detail ? 28 : 16;
   const pieces: THREE.BufferGeometry[] = [];
-  const tube = (r0: number, r1: number, z0: number, z1: number, kind: Kind, drift = 1): void => {
-    const g = new THREE.CylinderGeometry(r1, r0, z1 - z0, seg, 1, false).rotateX(Math.PI / 2).translate(0, 0, (z0 + z1) / 2);
-    pieces.push(stamp(g.toNonIndexed(), kind, drift));
+  const add = (g: THREE.BufferGeometry, kind: Kind, drift = 1, tint?: THREE.Color): void => {
+    pieces.push(stamp(g.toNonIndexed(), kind, drift, undefined, tint));
   };
-  // The tube tapers a little toward the eye end, as the great refractors' do; the dew cap at the sky end is wider.
-  tube(0.34, 0.44, -3.4, 6.2, 'paint');
-  tube(0.5, 0.5, 6.1, 7.2, 'paint', 0.97);
-  tube(0.45, 0.45, 6.15, 7.1, 'slate', 0.4);
-  // Brass: the cell ring at the sky end, the bands where the cradle holds the tube, the eye end and its focuser.
-  tube(0.47, 0.47, 6.0, 6.2, 'gilt');
-  tube(0.53, 0.53, 7.15, 7.25, 'gilt');
-  for (const z of [-0.9, 0.9]) tube(0.46, 0.46, z - 0.12, z + 0.12, 'gilt');
-  tube(0.3, 0.36, -3.9, -3.4, 'gilt');
-  tube(0.12, 0.12, -4.6, -3.9, 'slate', 0.5);
-  // The cradle: the saddle under the tube at the pivot, dark iron, and the declination axis through it.
-  pieces.push(stamp(new THREE.BoxGeometry(1.1, 0.5, 2.0).translate(0, -0.5, 0), 'slate', 0.45));
-  pieces.push(stamp(new THREE.CylinderGeometry(0.16, 0.16, 1.6, seg).rotateZ(Math.PI / 2), 'slate', 0.45));
-  // The counterweight, out along the axis, and the finder along the top of the tube.
-  pieces.push(stamp(new THREE.CylinderGeometry(0.34, 0.34, 0.5, seg).rotateZ(Math.PI / 2).translate(-1.35, 0, 0), 'slate', 0.4));
-  if (detail) {
-    pieces.push(stamp(new THREE.CylinderGeometry(0.08, 0.09, 1.6, 10).rotateX(Math.PI / 2).translate(0, 0.52, 4.6), 'paint'));
-    for (const z of [4.0, 5.2]) pieces.push(stamp(new THREE.BoxGeometry(0.06, 0.2, 0.08).translate(0, 0.42, z), 'gilt'));
+  /** A tube along z from z0 (radius r0) to z1 (radius r1). */
+  const tube = (r0: number, r1: number, z0: number, z1: number, kind: Kind, drift = 1, tint?: THREE.Color, n = seg): void => {
+    add(new THREE.CylinderGeometry(r1, r0, z1 - z0, n, 1, false).rotateX(Math.PI / 2).translate(0, 0, (z0 + z1) / 2), kind, drift, tint);
+  };
+  /** A ring (a band) round the tube at z, `w` long, `r` out. */
+  const ring = (r: number, z: number, w: number, kind: Kind, drift = 1, tint?: THREE.Color): void => tube(r, r, z - w / 2, z + w / 2, kind, drift, tint);
+
+  // The main tube, tapering from the eye end to the objective, in cream enamel; the objective cell in brass; a dew
+  // shield wider than the tube, dark inside, with a brass lip at its mouth.
+  tube(0.34, 0.44, -3.3, 5.5, 'paint');
+  ring(0.49, 5.55, 0.3, 'gilt');
+  tube(0.52, 0.53, 5.6, 7.4, 'paint', 0.97);
+  tube(0.48, 0.49, 5.9, 7.38, 'slate', 0.3);
+  add(new THREE.TorusGeometry(0.515, 0.035, 8, seg).translate(0, 0, 7.4), 'gilt');
+  add(new THREE.CircleGeometry(0.42, seg).translate(0, 0, 5.9), 'slate', 0.25);
+  // Three tube rings, brass, each with a boss where the cradle or a stay takes it.
+  for (const z of [-1.1, 1.1, 3.4]) {
+    ring(0.47, z, 0.24, 'gilt');
+    add(new THREE.BoxGeometry(0.2, 0.16, 0.3).translate(0, -0.5, z), 'paint', 1, ENAMEL);
   }
+  // The finder along the top of the tube on two brackets: its own tube, dew cap, rings and eyepiece.
+  if (detail) {
+    tube(0.075, 0.085, 2.4, 4.6, 'paint');
+    tube(0.1, 0.1, 4.55, 5.0, 'paint', 0.97);
+    for (const z of [2.9, 4.2]) {
+      ring(0.1, z, 0.08, 'gilt');
+      add(new THREE.BoxGeometry(0.06, 0.26, 0.12).translate(0, 0.46, z), 'paint', 1, ENAMEL);
+    }
+    tube(0.045, 0.045, 1.95, 2.4, 'paint', 1, ENAMEL, 10);
+  }
+  // The eye end: a brass tailpiece, the drawtube in dark enamel, the focuser's two knobs either side, the eyepiece.
+  tube(0.31, 0.34, -3.8, -3.3, 'gilt');
+  tube(0.14, 0.14, -4.4, -3.8, 'paint', 1, ENAMEL);
+  ring(0.17, -4.0, 0.12, 'gilt');
+  for (const sx of [-1, 1]) add(new THREE.CylinderGeometry(0.1, 0.1, 0.08, 12).rotateZ(Math.PI / 2).translate(sx * 0.27, -0.05, -4.0), 'gilt');
+  add(new THREE.CylinderGeometry(0.03, 0.03, 0.5, 8).rotateZ(Math.PI / 2).translate(0, -0.05, -4.0), 'paint', 1, ENAMEL);
+  tube(0.07, 0.09, -4.75, -4.4, 'paint', 1, ENAMEL, 12);
+  // The cradle: a saddle under the tube in dark enamel, bolted to the declination housing on the axis.
+  add(new THREE.BoxGeometry(0.9, 0.3, 2.6).translate(0, -0.58, 0), 'paint', 1, ENAMEL);
+  for (const z of [-1.1, 1.1]) add(new THREE.BoxGeometry(0.7, 0.5, 0.26).translate(0, -0.48, z), 'paint', 1, ENAMEL);
+  add(new THREE.CylinderGeometry(0.3, 0.3, 1.0, seg).rotateZ(Math.PI / 2).translate(0, -0.6, 0), 'paint', 1, ENAMEL);
+  add(new THREE.CylinderGeometry(0.34, 0.34, 0.12, seg).rotateZ(Math.PI / 2).translate(0.56, -0.6, 0), 'gilt');
+  // The counterweight bar out along the declination axis, two weights on it and a brass knob at its end.
+  add(new THREE.CylinderGeometry(0.06, 0.06, 2.6, 10).rotateZ(Math.PI / 2).translate(-1.8, -0.6, 0), 'paint', 1, ENAMEL);
+  for (const x of [-1.75, -2.25]) add(new THREE.CylinderGeometry(0.33, 0.33, 0.26, seg).rotateZ(Math.PI / 2).translate(x, -0.6, 0), 'paint', 1, ENAMEL);
+  add(new THREE.SphereGeometry(0.08, 8, 6).translate(-3.1, -0.6, 0), 'gilt');
   return mergeStamped(pieces);
+}
+
+/**
+ * The ribs and purlins inside the dome, and the shutter rails outside it,
+ * as chains of small boxes laid along their arcs: `S(r, az, pol)` is a
+ * point at radius r, azimuth az about the dome's axis and polar angle pol
+ * from the apex.
+ */
+function domeIronwork(detail: boolean): { ribs: THREE.BufferGeometry; rails: THREE.BufferGeometry } {
+  const R = OBSERVATORY.dome;
+  const ps = Math.asin(OBSERVATORY.slitHalf / R);
+  const S = (r: number, az: number, pol: number): THREE.Vector3 => new THREE.Vector3(r * Math.sin(pol) * Math.sin(az), r * Math.cos(pol), r * Math.sin(pol) * Math.cos(az));
+  const m = new THREE.Matrix4();
+  const n = new THREE.Vector3();
+  const t = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  /** A box of w by d laid along the arc from `from` to `to` (points on the sphere), its depth along the radius. */
+  const bar = (out: THREE.BufferGeometry[], from: THREE.Vector3, to: THREE.Vector3, w: number, d: number): void => {
+    const mid = from.clone().add(to).multiplyScalar(0.5);
+    n.copy(mid).normalize();
+    t.subVectors(to, from);
+    const len = t.length() + 0.02;
+    t.normalize();
+    b.crossVectors(n, t).normalize();
+    m.makeBasis(b, t, n).setPosition(mid);
+    out.push(new THREE.BoxGeometry(w, len, d).applyMatrix4(m));
+  };
+  const ribs: THREE.BufferGeometry[] = [];
+  // Ribs stand clear under the lining (never in its surface), their outer face a hand inside it.
+  const ri = R - SHELL - 0.2;
+  const steps = detail ? 14 : 8;
+  // Meridian ribs every thirty degrees, none through the slit (the front), the back one starting past the slit's head.
+  for (let kk = 1; kk < 12; kk++) {
+    const az = (kk * Math.PI) / 6;
+    const pol0 = kk === 6 ? 0.42 : 0.12;
+    const pol1 = Math.PI / 2 - 0.04;
+    for (let i = 0; i < steps; i++) bar(ribs, S(ri, az, pol0 + ((pol1 - pol0) * i) / steps), S(ri, az, pol0 + ((pol1 - pol0) * (i + 1)) / steps), 0.16, 0.16);
+  }
+  // Two purlin rings between the ribs, broken at the slit.
+  for (const pol of [0.62, 1.12]) {
+    const nseg = detail ? 48 : 28;
+    for (let i = 0; i < nseg; i++) {
+      const a0 = (i / nseg) * Math.PI * 2;
+      const a1 = ((i + 1) / nseg) * Math.PI * 2;
+      const mid = (a0 + a1) / 2;
+      // Across the slit the ring stops: the slit is the band |x| < slitHalf on the front.
+      if (Math.abs(R * Math.sin(pol) * Math.sin(mid)) < OBSERVATORY.slitHalf + 0.25 && Math.cos(mid) > 0) continue;
+      bar(ribs, S(ri, a0, pol), S(ri, a1, pol), 0.12, 0.1);
+    }
+  }
+  // The shutter rails: a dark iron rail either side of the slit on the copper, the leaves ride over them.
+  const rails: THREE.BufferGeometry[] = [];
+  const P = (r: number, psi: number, lam: number): THREE.Vector3 => new THREE.Vector3(r * Math.sin(psi), r * Math.cos(psi) * Math.sin(lam), r * Math.cos(psi) * Math.cos(lam));
+  const nr = detail ? 30 : 16;
+  for (const side of [-1, 1]) {
+    const psi = side * (ps + 0.5 / R);
+    for (let i = 0; i < nr; i++) {
+      const l0 = SLIT_FROM - 0.25 / R + ((SLIT_TO - SLIT_FROM + 0.6 / R) * i) / nr;
+      const l1 = SLIT_FROM - 0.25 / R + ((SLIT_TO - SLIT_FROM + 0.6 / R) * (i + 1)) / nr;
+      bar(rails, P(R + 0.005, psi, l0), P(R + 0.005, psi, l1), 0.1, 0.05);
+    }
+  }
+  return { ribs: mergeGeometries(ribs.map((g) => g.toNonIndexed()), false)!, rails: mergeGeometries(rails.map((g) => g.toNonIndexed()), false)! };
 }
 
 // ---------------------------------------------------------------- the building
@@ -366,8 +470,22 @@ export function makeObservatory(k: Kit, o: ObservatoryOptions): Observatory {
   g.add('limestone', new THREE.CylinderGeometry(corner + 0.55, corner + 0.55, 0.2, O.faces).rotateY(facing + Math.PI / O.faces).translate(0, O.drumTop + 0.6, 0));
   // The interior: a dark core so no window shows the sky through, a floor, and the pier under the telescope.
   g.add('slate', new THREE.CylinderGeometry(O.drum - 0.6, O.drum - 0.6, O.drumTop - plinthH, O.faces).translate(0, (plinthH + O.drumTop) / 2, 0), undefined, 0);
-  g.add('limestone', new THREE.CylinderGeometry(0.75, 0.95, O.centre - 1.3, 16).translate(0, (O.centre - 1.3) / 2, 0), M(0, 0, 0, facing).multiply(M(0, 0, -1.5)));
-  g.box('slate', 1.2, 1.1, 1.2, M(0, 0, 0, facing).multiply(M(0, O.centre - 1.3 + 0.55, -1.5)), 0);
+  // The pier, its cast iron head and the polar housing of a German equatorial mount, leaning back to the pole,
+  // carrying the declination axis (the telescope's pivot) at its top.
+  const pierTop = O.centre - 1.0;
+  const pivot = new THREE.Vector3(0, O.centre + 0.2, -2.2);
+  const headTop = new THREE.Vector3(0, pierTop + 0.7, -1.5);
+  g.add('limestone', new THREE.CylinderGeometry(0.75, 0.95, pierTop, 16).translate(0, pierTop / 2, 0), M(0, 0, 0, facing).multiply(M(0, 0, -1.5)));
+  g.add('limestone', new THREE.CylinderGeometry(0.95, 0.75, 0.3, 16).translate(0, pierTop - 0.15, 0), M(0, 0, 0, facing).multiply(M(0, 0, -1.5)));
+  g.box('slate', 1.4, 0.7, 1.4, M(0, 0, 0, facing).multiply(M(0, pierTop + 0.35, -1.5)), 0);
+  {
+    const axis = pivot.clone().sub(headTop);
+    const len = axis.length();
+    const tilt = Math.atan2(-axis.z, axis.y);
+    const housing = new THREE.CylinderGeometry(0.36, 0.42, len + 0.3, 20).translate(0, len / 2, 0).rotateX(-tilt).translate(headTop.x, headTop.y, headTop.z);
+    g.add('slate', housing, M(0, 0, 0, facing), 0);
+    g.add('slate', new THREE.CylinderGeometry(0.4, 0.4, 0.9, 20).rotateZ(Math.PI / 2).translate(pivot.x, pivot.y, pivot.z), M(0, 0, 0, facing), 0);
+  }
 
   // ---------------------------------------------------------------- the dome
   const dome = M(0, O.centre, 0, facing);
@@ -379,6 +497,12 @@ export function makeObservatory(k: Kit, o: ObservatoryOptions): Observatory {
   g.add('copper', shell.outer, dome);
   g.add('copper', shell.cheeks, dome, 0.1);
   g.add('glow', shell.lining, dome);
+  // The ribs and purlins inside, darker in the same lamplight (the lining's tone drives its light); the rails outside.
+  const iron = domeIronwork(detail);
+  k.tint.setScalar(0.4);
+  k.add(MAT.glow, iron.ribs, dome, false);
+  k.tint.setScalar(1);
+  g.add('slate', iron.rails, dome, 0);
   // A finial at the apex would stand in the slit's way: the dome ends in a small copper boss behind the slit's head.
   g.add('copper', new THREE.SphereGeometry(0.28, 10, 8), dome.clone().multiply(M(0, O.dome * Math.cos(0.42), -O.dome * Math.sin(0.42))), 0.1);
 
@@ -408,7 +532,7 @@ export function makeObservatory(k: Kit, o: ObservatoryOptions): Observatory {
   telescope.castShadow = telescope.receiveShadow = false;
   telescope.rotation.order = 'YXZ';
   const mount = new THREE.Group();
-  mount.applyMatrix4(k.base.clone().multiply(M(0, 0, 0, facing)).multiply(M(0, O.centre - 0.2, -1.5)));
+  mount.applyMatrix4(k.base.clone().multiply(M(0, 0, 0, facing)).multiply(M(pivot.x, pivot.y, pivot.z)));
   mount.add(telescope);
   group.add(mount);
 
@@ -452,7 +576,7 @@ export function makeObservatory(k: Kit, o: ObservatoryOptions): Observatory {
   /** Where this version looks: a different piece of sky for each version of the master. */
   const aim = (): { altitude: number; azimuth: number } => {
     const r = rng(`${o.seed ?? 'observatory'}:${state.version}`);
-    return { altitude: 0.75 + 0.45 * r(), azimuth: (r() - 0.5) * 0.3 };
+    return { altitude: 0.78 + 0.34 * r(), azimuth: (r() - 0.5) * 0.3 };
   };
   let altitude = 0.95;
   let azimuth = 0;

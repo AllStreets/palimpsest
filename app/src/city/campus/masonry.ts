@@ -141,15 +141,18 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
             s = vec4(vec3(0.38 + 0.32 * f), 1.0);
           } else if (ck == 11) {
             s = vec4(copperColour(vMapUv, copperBare(vMapUv)), 1.0);
-          } else if (ck == 12 || ck == 13 || ck == 14) {
+          } else if (ck == 12 || ck == 13) {
             s = vec4(1.0);
+          } else if (ck == 14) {
+            // The lining's paint is near black (the sun through the slit adds nothing): its tone is its lamplight.
+            s = vec4(0.06);
           } else {
             // Turf: a mown lawn, mottled by the sand scan at a coarse tile and a finer one, with the mower's stripes.
             float a = texture2D(uSandMap, vMapUv * 0.13).g;
             float b = texture2D(uSandMap, vMapUv * 0.6).g;
             float f = texture2D(uSandMap, vMapUv * 3.1).g;
-            float stripe = 0.95 + 0.05 * step(0.5, fract(vMapUv.x * 2.2));
-            s = vec4(vec3((0.62 + 0.5 * a + 0.22 * b + 0.08 * f) * stripe), 1.0);
+            float stripe = 0.91 + 0.09 * step(0.5, fract(vMapUv.x * 2.2));
+            s = vec4(vec3((0.56 + 0.5 * a + 0.32 * b + 0.1 * f) * stripe), 1.0);
           }
           diffuseColor *= s;
         }`,
@@ -224,9 +227,9 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           // adds nothing: what shows is the lamplight.
           float down = clamp(vMapUv.y / 12.0, 0.0, 1.0);
           float cloth = 0.9 + 0.2 * texture2D(uSandMap, vMapUv * 0.2).g;
-          // Linear light: an amber that shows as a deep lamplit orange once encoded, not the peach a brighter
-          // triple would make.
-          totalEmissiveRadiance += vec3(0.55, 0.19, 0.035) * (0.3 + 0.7 * down * down) * cloth * uSlitLit;
+          // The tone is the lamplight in linear light (an amber that encodes to a deep orange, not peach); the ribs
+          // carry a fraction of it and read dark against the lining.
+          totalEmissiveRadiance += vColor.rgb * (0.15 + 0.85 * down * down) * cloth * uSlitLit;
         }
         if (campusKind() == 13) totalEmissiveRadiance += vColor.rgb * (0.9 * uPlateLit);`,
       );

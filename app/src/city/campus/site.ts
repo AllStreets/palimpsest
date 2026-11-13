@@ -56,8 +56,9 @@ const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ash
  * mottle, so a columnar tree never reads pale), the observatory's copper
  * (the shader paints the patina; the tone is its drift), the cream paint of
  * its telescope, the brass of its plate (lit by a uniform while the master
- * is trusted) and the warm lamplit lining inside its dome (lit by a uniform
- * while the slit is open).
+ * is trusted) and the warm lamplit lining inside its dome (its tone is the
+ * lamplight itself, in linear light, which the shader emits by a uniform
+ * while the slit is open; its paint is near black).
  */
 export const TONE: Record<Kind, THREE.Color> = {
   brick: new THREE.Color(0.74, 0.5, 0.4),
@@ -74,7 +75,7 @@ export const TONE: Record<Kind, THREE.Color> = {
   copper: new THREE.Color(1, 1, 1),
   paint: new THREE.Color(0.74, 0.71, 0.64),
   brass: new THREE.Color(0.8, 0.6, 0.26),
-  glow: new THREE.Color(0.04, 0.03, 0.02),
+  glow: new THREE.Color(0.55, 0.19, 0.035),
 };
 
 /** A small seeded generator for the trees' and lamps' variety (lots.ts rng, kept local so this module stays pure). */
