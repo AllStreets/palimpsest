@@ -1,7 +1,7 @@
 /**
  * Arenas (Phase 4 ruling 20, Decision 8): races built from his own repos.
- * This is the build half, for planted bugs (Task 19); past changes and the
- * Beagle side (tools, grading for races) come in Tasks 20 and 21.
+ * This is the build half: planted bugs (Task 19) and past changes (Task
+ * 20); the Beagle side (tools, grading for races) comes in Task 21.
  *
  * A planted-bug arena is built only on his click, only for a connected repo
  * with the market on and a test command, and only while the heavy gate
@@ -24,6 +24,16 @@
  *    (`putArena`, `putTasks`, with `Arena.data` the arena id), split by
  *    Beagle's `splitOf()`, and records `arena.built` with Beagle's
  *    `sealedHash` of the arena.
+ *
+ * A past-change arena (`buildPast`) is built the same way, with step 3
+ * taken from his verified history (`verifiedChanges()`, ruling 23): each
+ * change that touched source and tests (a rebase-merged PR whose parent is
+ * the PR's own commit, not the branch before it, is skipped) is graded
+ * twice in fresh clones of the base, read only from the mirror's objects:
+ * at its parent with the change's test files applied (it must fail) and at
+ * the change (it must pass). At most ARENA.keepPast kept. Its task shows
+ * the change's test diff and the failure, never the fix; `arena_tasks.ref`
+ * is the PR number or the sha.
  *
  * Every command runs through `execTool()` under the tool profile. The gate
  * is read before each candidate; a gate loss, or the school turned off,
@@ -55,11 +65,13 @@ import { installDeps, type RunContext } from '../market/install.js';
 import { redact } from '../market/jobs.js';
 import type { RunLogLine } from '../market/provider.js';
 import { BASE_SCRATCH } from '../market/sandbox.js';
-import { controlFiles, createBaseDir, engineGit, ENGINE_GIT_FLAGS, removeOwned } from '../market/worktree.js';
+import { controlFiles, createBaseDir, engineGit, ENGINE_GIT_FLAGS, recordGitConfig, removeOwned } from '../market/worktree.js';
 import { getRepo, listRepos } from '../repos.js';
 import { getSettings } from '../settings.js';
 import type { BeagleApi, BeagleArena, BeagleSplit } from './beagle-api.js';
 import { loadBeagle } from './beagle.js';
+import { isSourceFile, verifiedChanges, type VerifiedChange } from './history.js';
+import { isTestFile } from '../audit/schema.js';
 import { mutable, mutate, shuffled, type Mutant } from './mutants.js';
 import { registerAbort, TURNED_OFF_REASON } from './tick.js';
 import { readGate } from './trainer.js';
@@ -75,7 +87,32 @@ export interface PlantedInput {
 
 /** What a planted task's grade knows: the bug, and the tests it broke. */
 export interface PlantedTruth extends Mutant {
+  kind: 'planted';
   failing: string[];
+}
+
+/** What a past task shows the agent: the change's test diff and how it fails at the parent, never the fix. */
+export interface PastInput {
+  kind: 'past';
+  repo: string;
+  test: string;
+  /** `git diff parent sha` of the change's test files. */
+  tests: string;
+  failing: string[];
+  output: string;
+}
+
+/** What a past task's grade knows: the change, its files, and the fix (the change's diff of its other files). */
+export interface PastTruth {
+  kind: 'past';
+  /** The verified ref: `pr:<n>`, `city:<jobId>` or `commit:<sha>`. */
+  ref: string;
+  sha: string;
+  parent: string;
+  testFiles: string[];
+  sourceFiles: string[];
+  failing: string[];
+  fix: string;
 }
 
 export interface ArenaTask {
@@ -84,8 +121,8 @@ export interface ArenaTask {
   split: BeagleSplit;
   /** The PR number or sha a past change came from (Task 20); null for a planted bug. */
   ref: string | null;
-  input: PlantedInput;
-  truth: PlantedTruth;
+  input: PlantedInput | PastInput;
+  truth: PlantedTruth | PastTruth;
 }
 
 /** `skipped`: the bug could not be planted safely (its file is a link, or resolves outside the clone). */
@@ -100,7 +137,23 @@ export interface Candidate {
   output: string;
 }
 
+/** A verified change tried as a past task. */
+export interface PastCandidate {
+  key: string;
+  change: VerifiedChange;
+  testFiles: string[];
+  sourceFiles: string[];
+  /** The diffs, read from the base's objects when the change is planted as a candidate. */
+  tests: string;
+  fix: string;
+  state: CandidateState;
+  failing: string[];
+  output: string;
+}
+
 interface BuildState {
+  /** Absent in a planted build from before Task 20. */
+  kind?: ArenaInfo['kind'];
   id: string;
   repo: string;
   sha: string | null;
@@ -109,6 +162,7 @@ interface BuildState {
   /** The head suite's wall time, which sets each mutant's cap; null before it ran (or in a build from before the cap). */
   headMs?: number | null;
   candidates: Candidate[] | null;
+  past?: PastCandidate[] | null;
   startedAt: string;
 }
 
@@ -133,6 +187,9 @@ export function mutantCapMs(headMs: number | null | undefined): number {
   const base = Math.max(MUTANT_CAP.floorMs, MUTANT_CAP.factor * (headMs ?? 0));
   return Math.min(CHECK_MS, base + MUTANT_CAP.slackMs);
 }
+
+/** A diff a past task keeps (its test diff, its fix): at most this many characters. */
+const MAX_DIFF = 24_000;
 
 /** Source files larger than this are not mutated (a generated or vendored file, most likely). */
 const MAX_SOURCE_BYTES = 200_000;
@@ -177,6 +234,30 @@ export function candidatesOf(id: string): Candidate[] {
   return readState(id)?.candidates ?? [];
 }
 
+/** What a past-change build has tried so far, change by change. */
+export function pastCandidatesOf(id: string): PastCandidate[] {
+  return readState(id)?.past ?? [];
+}
+
+/**
+ * Every ref and sha in any sealed split (ruling 25): a LoRA example from one
+ * of these changes would let the adapter see a sealed answer.
+ */
+export function sealedRefs(): Set<string> {
+  const out = new Set<string>();
+  const rows = openDb().prepare("SELECT ref, json FROM arena_tasks WHERE split = 'sealed'").all() as Array<{ ref: string | null; json: string }>;
+  for (const r of rows) {
+    if (r.ref) out.add(r.ref);
+    try {
+      const sha = (JSON.parse(r.json) as { truth?: { sha?: unknown } }).truth?.sha;
+      if (typeof sha === 'string' && sha) out.add(sha);
+    } catch {
+      // a row that does not parse names nothing more
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- reading
 
 export function arenaInfo(id: string): ArenaInfo | null {
@@ -217,11 +298,11 @@ export function refusal(repo: Repo): string | null {
   return null;
 }
 
-function refused(repo: Repo, reason: string, now: number): ArenaInfo {
+function refused(repo: Repo, reason: string, now: number, kind: ArenaInfo['kind'] = 'planted'): ArenaInfo {
   return {
     id: '',
     repo: repo.fullName,
-    kind: 'planted',
+    kind,
     sha: '',
     tasks: { breeding: 0, race: 0, sealed: 0 },
     candidates: 0,
@@ -293,7 +374,21 @@ interface Graded {
  * `mutant` planted when given. No egress runs for the grading root, so its
  * children's proxy is a closed port: grading has no network.
  */
-async function grade(id: string, repo: Repo, mutant: Mutant | null, timeoutMs: number, signal: AbortSignal, log: (l: RunLogLine) => void): Promise<Graded> {
+/** What a grade does to its fresh clone before the suite runs: null when ready, else why it was not set up (skipped). */
+type Prepare = (dir: string) => Promise<string | null>;
+
+/** Plants `mutant` in the clone, never through a link. */
+const plantIn = (mutant: Mutant): Prepare => async (dir) => {
+  const p = insideClone(dir, mutant.file);
+  if (!p) return `${mutant.file} is a link or lies outside the clone; nothing was written`;
+  const lines = readFileSync(p, 'utf8').split('\n');
+  if (lines[mutant.line - 1] !== mutant.original) return `${mutant.file}:${mutant.line} is not the line this bug was planted in`;
+  lines[mutant.line - 1] = mutant.mutated;
+  writeFileSync(p, lines.join('\n'));
+  return null;
+};
+
+async function grade(id: string, repo: Repo, prepare: Prepare | null, timeoutMs: number, signal: AbortSignal, log: (l: RunLogLine) => void): Promise<Graded> {
   const runId = gradeRunId(id);
   const runRoot = join(paths().runs, runId);
   // The root is made once per session; each grade gets a fresh clone (execTool reaps after every command).
@@ -303,15 +398,12 @@ async function grade(id: string, repo: Repo, mutant: Mutant | null, timeoutMs: n
   removeOwned(dir);
   // An APFS clone of each file where the disk can; links stay links, never pointed back at the base.
   cpSync(arenaBase(id), dir, { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true });
+  // No code has run in this clone yet: its .git/config is the base's, recorded so engine git trusts it.
+  recordGitConfig(dir);
   try {
-    if (mutant) {
-      const p = insideClone(dir, mutant.file);
-      const skip = (why: string): Graded => ({ skipped: true, failed: false, passed: false, aborted: false, ms: 0, output: why });
-      if (!p) return skip(`${mutant.file} is a link or lies outside the clone; nothing was written`);
-      const lines = readFileSync(p, 'utf8').split('\n');
-      if (lines[mutant.line - 1] !== mutant.original) return skip(`${mutant.file}:${mutant.line} is not the line this bug was planted in`);
-      lines[mutant.line - 1] = mutant.mutated;
-      writeFileSync(p, lines.join('\n'));
+    if (prepare) {
+      const why = await prepare(dir);
+      if (why) return { skipped: true, failed: false, passed: false, aborted: false, ms: 0, output: why };
     }
     const t0 = Date.now();
     const r = await execTool({ runId, runRoot, dir, command: repo.checks?.test ?? '', timeoutMs, stage: 'checks', signal, log });
@@ -441,6 +533,100 @@ async function plant(id: string, sha: string): Promise<Candidate[]> {
     }));
 }
 
+// ---------------------------------------------------------------- past changes
+
+/** git on the mirror, as the engine reads it (hardened flags, argv only). */
+async function mirrorGit(repo: Repo, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(repo.fullName), ...args], { timeoutMs: 120_000 });
+}
+
+/** A commit's parents and committer time (seconds), from the mirror. */
+async function commitOf(repo: Repo, sha: string): Promise<{ parents: string[]; ct: number } | null> {
+  if (!SHA.test(sha)) return null;
+  const r = await mirrorGit(repo, ['show', '-s', '--format=%P%x1f%ct', sha]);
+  if (r.code !== 0) return null;
+  const [parents, ct] = r.stdout.trim().split('\x1f');
+  return { parents: (parents ?? '').split(' ').filter((p) => SHA.test(p)), ct: Number(ct) };
+}
+
+/**
+ * Whether a PR's change is the last commit of a rebase merge: one parent,
+ * and that parent itself a one-parent commit written in the same second (a
+ * rebase merge writes every rebased commit at once). Its parent is then the
+ * PR's own commit, not the branch before the PR, so the task base would
+ * already hold part of the PR (ruling 20). A merge commit or a squash, whose
+ * parent is the branch, is not.
+ */
+async function rebasedPR(repo: Repo, c: VerifiedChange): Promise<boolean> {
+  if (c.kind !== 'pr') return false;
+  const me = await commitOf(repo, c.sha);
+  if (!me || me.parents.length !== 1) return false;
+  const parent = await commitOf(repo, me.parents[0]);
+  if (!parent) return true;
+  return parent.parents.length === 1 && parent.ct === me.ct;
+}
+
+/** The task ref of a verified change: a PR's number, else its sha. */
+function refOf(c: VerifiedChange): string {
+  return c.kind === 'pr' ? c.ref.slice('pr:'.length) : c.sha;
+}
+
+/**
+ * His verified changes that touched source and tests, newest first, each
+ * with its test diff and fix read from the base's objects. A rebase-merged
+ * PR, a change whose test files are links (mode 120000) or absent at the
+ * change, and one whose parent is not 40 hex are left out.
+ */
+async function plantPast(id: string, repo: Repo, now: number, signal: AbortSignal): Promise<PastCandidate[]> {
+  const base = arenaBase(id);
+  const changes = await verifiedChanges(repo, now, { check: true, signal });
+  const out: PastCandidate[] = [];
+  for (const c of [...changes].sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || a.sha.localeCompare(b.sha))) {
+    if (!SHA.test(c.sha) || !SHA.test(c.parent) || !c.touchesTests) continue;
+    const sourceFiles = c.files.filter(isSourceFile);
+    const tests = c.files.filter(isTestFile);
+    if (sourceFiles.length === 0 || tests.length === 0) continue;
+    if (await rebasedPR(repo, c)) continue;
+    // Only test files the change leaves as regular files: never a link, never one it deleted.
+    const tree = await engineGit(base, ['ls-tree', c.sha, '--', ...tests]);
+    if (tree.code !== 0) continue;
+    const modes = new Map(tree.stdout.split('\n').filter(Boolean).map((l) => [l.slice(l.indexOf('\t') + 1), l.split(' ')[0]]));
+    const testFiles = tests.filter((f) => modes.get(f) === '100644' || modes.get(f) === '100755');
+    if (testFiles.length !== tests.length) continue;
+    const testDiff = await engineGit(base, ['diff', '--no-ext-diff', '--no-textconv', c.parent, c.sha, '--', ...testFiles]);
+    const fixDiff = await engineGit(base, ['diff', '--no-ext-diff', '--no-textconv', c.parent, c.sha, '--', ...sourceFiles]);
+    if (testDiff.code !== 0 || fixDiff.code !== 0) continue;
+    out.push({
+      key: c.sha.slice(0, 12),
+      change: c,
+      testFiles,
+      sourceFiles,
+      tests: testDiff.stdout.slice(0, MAX_DIFF),
+      fix: fixDiff.stdout.slice(0, MAX_DIFF),
+      state: 'untried',
+      failing: [],
+      output: '',
+    });
+  }
+  return out;
+}
+
+/** The task base: the change's parent with the change's test files applied, all from the clone's own objects. */
+const atParentWithTests = (c: PastCandidate): Prepare => async (dir) => {
+  const co = await engineGit(dir, ['checkout', '--quiet', '--force', '--detach', c.change.parent]);
+  if (co.code !== 0) return `could not check out ${c.change.parent.slice(0, 7)}: ${co.stderr.trim()}`;
+  const tests = await engineGit(dir, ['checkout', c.change.sha, '--', ...c.testFiles]);
+  if (tests.code !== 0) return `could not apply the tests of ${c.change.sha.slice(0, 7)}: ${tests.stderr.trim()}`;
+  for (const f of c.testFiles) if (!insideClone(dir, f)) return `${f} is a link or lies outside the clone`;
+  return null;
+};
+
+/** The change itself. */
+const atChange = (c: PastCandidate): Prepare => async (dir) => {
+  const co = await engineGit(dir, ['checkout', '--quiet', '--force', '--detach', c.change.sha]);
+  return co.code === 0 ? null : `could not check out ${c.change.sha.slice(0, 7)}: ${co.stderr.trim()}`;
+};
+
 // ---------------------------------------------------------------- Beagle
 
 /** Beagle's `sealedHash` of the arena, registering a stand-in for the call if the arena is not registered yet (Task 21 registers it for races). */
@@ -456,19 +642,32 @@ function sealedHashOf(b: BeagleApi, id: string): string {
 }
 
 /** Writes the kept bugs as tasks, to `arena_tasks` and to Beagle's store; returns the counts by split and Beagle's sealed hash. */
-async function writeTasks(id: string, repo: Repo, kept: Candidate[]): Promise<{ counts: ArenaInfo['tasks']; sealedHash: string }> {
+async function writeTasks(id: string, repo: Repo, kept: Candidate[], past: PastCandidate[]): Promise<{ counts: ArenaInfo['tasks']; sealedHash: string }> {
   const b = await loadBeagle();
-  const tasks: ArenaTask[] = kept.map((c) => {
+  const test = repo.checks?.test ?? '';
+  const planted: ArenaTask[] = kept.map((c) => {
     const taskId = `${id}:${c.key}`;
     return {
       id: taskId,
       arena: id,
       split: b.arenas.splitOf(taskId),
       ref: null,
-      input: { kind: 'planted', repo: repo.fullName, test: repo.checks?.test ?? '', failing: c.failing, output: c.output },
-      truth: { ...c.mutant, failing: c.failing },
+      input: { kind: 'planted', repo: repo.fullName, test, failing: c.failing, output: c.output },
+      truth: { kind: 'planted', ...c.mutant, failing: c.failing },
     };
   });
+  const fromPast: ArenaTask[] = past.map((c) => {
+    const taskId = `${id}:${c.key}`;
+    return {
+      id: taskId,
+      arena: id,
+      split: b.arenas.splitOf(taskId),
+      ref: refOf(c.change),
+      input: { kind: 'past', repo: repo.fullName, test, tests: c.tests, failing: c.failing, output: c.output },
+      truth: { kind: 'past', ref: c.change.ref, sha: c.change.sha, parent: c.change.parent, testFiles: c.testFiles, sourceFiles: c.sourceFiles, failing: c.failing, fix: c.fix },
+    };
+  });
+  const tasks = [...planted, ...fromPast];
   const db = openDb();
   db.exec('BEGIN');
   try {
@@ -480,7 +679,7 @@ async function writeTasks(id: string, repo: Repo, kept: Candidate[]): Promise<{ 
     db.exec('ROLLBACK');
     throw err;
   }
-  b.store.putArena(id, `${repo.fullName}: planted bugs`);
+  b.store.putArena(id, `${repo.fullName}: ${past.length ? 'past changes' : 'planted bugs'}`);
   b.store.putTasks(id, tasks.map((t) => ({ id: t.id, input: t.input, truth: t.truth, split: t.split })));
   const counts = { breeding: 0, race: 0, sealed: 0 };
   for (const t of tasks) counts[t.split]++;
@@ -489,17 +688,19 @@ async function writeTasks(id: string, repo: Repo, kept: Candidate[]): Promise<{ 
 
 // ---------------------------------------------------------------- the build
 
-function newId(repo: Repo): string {
+function newId(repo: Repo, kind: ArenaInfo['kind']): string {
   const slug = repo.fullName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-  return `planted-${slug}-${randomUUID().slice(0, 6)}`;
+  return `${kind}-${slug}-${randomUUID().slice(0, 6)}`;
 }
 
+const kindOf = (s: BuildState): ArenaInfo['kind'] => s.kind ?? 'planted';
+
 function infoOf(s: BuildState, status: ArenaInfo['status'], reason: string | null, at: number, extra: Partial<ArenaInfo> = {}): ArenaInfo {
-  const c = s.candidates ?? [];
+  const c: Array<{ state: CandidateState }> = kindOf(s) === 'past' ? (s.past ?? []) : (s.candidates ?? []);
   return {
     id: s.id,
     repo: s.repo,
-    kind: 'planted',
+    kind: kindOf(s),
     sha: s.sha ?? '',
     tasks: { breeding: 0, race: 0, sealed: 0 },
     candidates: c.length,
@@ -513,10 +714,10 @@ function infoOf(s: BuildState, status: ArenaInfo['status'], reason: string | nul
   };
 }
 
-/** The paused planted arena of `repo`, if it has one. */
-function pausedOf(fullName: string): BuildState | null {
+/** The paused arena of `repo` of this kind, if it has one. */
+function pausedOf(fullName: string, kind: ArenaInfo['kind']): BuildState | null {
   for (const a of listArenas(fullName)) {
-    if (a.kind === 'planted' && a.status === 'paused') return readState(a.id);
+    if (a.kind === kind && a.status === 'paused') return readState(a.id);
   }
   return null;
 }
@@ -529,18 +730,35 @@ function pausedOf(fullName: string): BuildState | null {
  * turned off pauses it, recorded; the next call for the repo resumes the
  * paused arena with only the candidates not yet tried.
  */
-export async function buildPlanted(repo: Repo, now: number, o: { signal?: AbortSignal } = {}): Promise<ArenaInfo> {
-  const why = refusal(repo);
-  if (why) return refused(repo, why, now);
-  if (live) return refused(repo, `An arena is already being built (${live.repo})`, now);
+export function buildPlanted(repo: Repo, now: number, o: { signal?: AbortSignal } = {}): Promise<ArenaInfo> {
+  return build('planted', repo, now, o);
+}
 
-  const state: BuildState = pausedOf(repo.fullName) ?? {
-    id: newId(repo),
+/**
+ * Builds (or resumes) a past-change arena from `repo` (ruling 20): his
+ * verified changes that touched source and tests, kept when the change's
+ * tests fail at its parent and pass at the change; at most ARENA.keepPast.
+ * Everything is read from the mirror; nothing else is fetched. Refused,
+ * gated, paused and resumed as `buildPlanted` is.
+ */
+export function buildPast(repo: Repo, now: number, o: { signal?: AbortSignal } = {}): Promise<ArenaInfo> {
+  return build('past', repo, now, o);
+}
+
+async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { signal?: AbortSignal }): Promise<ArenaInfo> {
+  const why = refusal(repo);
+  if (why) return refused(repo, why, now, kind);
+  if (live) return refused(repo, `An arena is already being built (${live.repo})`, now, kind);
+
+  const state: BuildState = pausedOf(repo.fullName, kind) ?? {
+    kind,
+    id: newId(repo, kind),
     repo: repo.fullName,
     sha: null,
     installed: false,
     headPassed: false,
     candidates: null,
+    past: null,
     startedAt: new Date(now).toISOString(),
   };
   live = { id: state.id, repo: repo.fullName };
@@ -574,6 +792,42 @@ export async function buildPlanted(repo: Repo, now: number, o: { signal?: AbortS
     return putInfo(infoOf(state, 'failed', reason, at()));
   };
 
+  /** Step 3 for past changes: each change graded at its parent with its tests, then at itself. */
+  const buildPastTasks = async (): Promise<ArenaInfo> => {
+    if (!state.past) {
+      state.past = await plantPast(state.id, repo, now, signal);
+      if (signal.aborted) return await pause(stopReason());
+      writeState(state);
+    }
+    const cap = mutantCapMs(state.headMs);
+    for (const c of state.past) {
+      if (c.state !== 'untried') continue;
+      if (state.past.filter((x) => x.state === 'kept').length >= ARENA.keepPast) break;
+      if (signal.aborted) return await pause(stopReason());
+      const g0 = await readGate('heavy', at());
+      if (!g0.ok) return await pause(g0.reason ?? 'the gate closed');
+      const before = await grade(state.id, repo, atParentWithTests(c), cap, signal, log);
+      if (before.aborted) return await pause(stopReason());
+      if (before.skipped || !before.failed) {
+        c.state = before.skipped ? 'skipped' : 'dropped';
+        writeState(state);
+        continue;
+      }
+      const after = await grade(state.id, repo, atChange(c), cap, signal, log);
+      if (after.aborted) return await pause(stopReason());
+      c.state = after.skipped ? 'skipped' : after.passed ? 'kept' : 'dropped';
+      c.failing = c.state === 'kept' ? failingTests(before.output) : [];
+      c.output = c.state === 'kept' ? before.output : '';
+      writeState(state);
+    }
+    await clearRoot(gradeRunId(state.id));
+    const kept = state.past.filter((x) => x.state === 'kept');
+    if (kept.length === 0) return await fail('None of his verified changes has a test that fails before it and passes after');
+    const { counts, sealedHash } = await writeTasks(state.id, repo, [], kept);
+    writeState(state);
+    return putInfo(infoOf(state, 'ready', null, at(), { tasks: counts, sealedHash }));
+  };
+
   try {
     const first = await readGate('heavy', at());
     if (!first.ok) return await pause(first.reason ?? 'the gate closed');
@@ -592,11 +846,12 @@ export async function buildPlanted(repo: Repo, now: number, o: { signal?: AbortS
     if (!state.headPassed) {
       const g = await grade(state.id, repo, null, CHECK_MS, signal, log);
       if (g.aborted) return await pause(stopReason());
-      if (!g.passed) return await fail(`The tests do not pass at the head (${state.sha.slice(0, 7)}), so a planted bug cannot be told apart`);
+      if (!g.passed) return await fail(`The tests do not pass at the head (${state.sha.slice(0, 7)}), so a failing task cannot be told apart`);
       state.headPassed = true;
       state.headMs = g.ms;
       writeState(state);
     }
+    if (kind === 'past') return await buildPastTasks();
     if (!state.candidates) {
       state.candidates = await plant(state.id, state.sha);
       writeState(state);
@@ -608,7 +863,7 @@ export async function buildPlanted(repo: Repo, now: number, o: { signal?: AbortS
       if (signal.aborted) return await pause(stopReason());
       const g0 = await readGate('heavy', at());
       if (!g0.ok) return await pause(g0.reason ?? 'the gate closed');
-      const g = await grade(state.id, repo, c.mutant, mutantCapMs(state.headMs), signal, log);
+      const g = await grade(state.id, repo, plantIn(c.mutant), mutantCapMs(state.headMs), signal, log);
       if (g.aborted) return await pause(stopReason());
       c.state = g.skipped ? 'skipped' : g.failed ? 'kept' : 'dropped';
       c.failing = g.failed ? failingTests(g.output) : [];
@@ -619,7 +874,7 @@ export async function buildPlanted(repo: Repo, now: number, o: { signal?: AbortS
     await clearRoot(gradeRunId(state.id));
     const kept = state.candidates.filter((x) => x.state === 'kept');
     if (kept.length === 0) return await fail('None of the planted bugs made the tests fail');
-    const { counts, sealedHash } = await writeTasks(state.id, repo, kept);
+    const { counts, sealedHash } = await writeTasks(state.id, repo, kept, []);
     writeState(state);
     return putInfo(infoOf(state, 'ready', null, at(), { tasks: counts, sealedHash }));
   } catch (err) {
@@ -644,19 +899,19 @@ export async function buildPlanted(repo: Repo, now: number, o: { signal?: AbortS
 }
 
 /**
- * Resumes each paused planted arena whose repo still qualifies, one after
+ * Resumes each paused arena (planted or past) whose repo still qualifies, one after
  * another, each while the heavy gate holds (a later night's work; never a
  * new arena, which only his click builds). Returns the arenas it moved.
  */
 export async function resumeArenas(now: number): Promise<ArenaInfo[]> {
   const out: ArenaInfo[] = [];
   for (const a of listArenas()) {
-    if (a.kind !== 'planted' || a.status !== 'paused' || live) continue;
+    if (a.status !== 'paused' || live) continue;
     const repo = getRepo(a.repo);
     if (!repo || refusal(repo)) continue;
     const g = await readGate('heavy', now);
     if (!g.ok) break;
-    out.push(await buildPlanted(repo, now));
+    out.push(await build(a.kind, repo, now, {}));
   }
   return out;
 }

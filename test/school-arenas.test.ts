@@ -1,5 +1,6 @@
 /**
- * Arenas from planted bugs (Phase 4 Task 19, ruling 20). A tiny JS repo
+ * Arenas from planted bugs and from past changes (Phase 4 Tasks 19 and 20,
+ * ruling 20). A tiny JS repo
  * with a real `node --test` suite in a temp bare mirror, the sandbox off
  * (test safety rule 7), a temp data home and Beagle's store under its temp
  * school (rule 13). The gate is a fake; the spawner is the real one, wrapped
@@ -12,12 +13,18 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
-import { realSpawner, setSpawner, type Spawner } from '../engine/exec.js';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { realRunner, realSpawner, setRunner, setSpawner, type Runner, type Spawner } from '../engine/exec.js';
+import { mirrorDir } from '../engine/mirror.js';
+import { setTestCheck } from '../engine/school/history.js';
+import { resetGateCache } from '../engine/school/gate.js';
 import { paths } from '../engine/home.js';
 import { query } from '../engine/ledger.js';
 import { unattended } from '../engine/market/budget.js';
 import { getRepo } from '../engine/repos.js';
-import { arenaInfo as arenaInfoOf, arenaTasks, buildPlanted, candidatesOf, mutantCapMs, resumeArenas, setMutantCap, type Candidate } from '../engine/school/arenas.js';
+import { arenaInfo as arenaInfoOf, arenaTasks, buildPast, buildPlanted, candidatesOf, mutantCapMs, pastCandidatesOf, resumeArenas, sealedRefs, setMutantCap, type Candidate, type PastInput, type PastTruth, type PlantedTruth } from '../engine/school/arenas.js';
 import type { BeagleArena } from '../engine/school/beagle-api.js';
 import { closeBeagle, loadBeagle } from '../engine/school/beagle.js';
 import { schoolOff, TURNED_OFF_REASON } from '../engine/school/tick.js';
@@ -107,6 +114,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setRunner(realRunner);
+  setTestCheck(null);
+  resetGateCache();
   setMutantCap(null);
   setGate(null);
   closeBeagle();
@@ -126,13 +136,13 @@ test('a mutant the suite passes is dropped, one it fails is kept', async () => {
   const tasks = arenaTasks(info.id);
   assert.equal(tasks.length, info.kept);
   assert.equal(info.tasks.breeding + info.tasks.race + info.tasks.sealed, info.kept);
-  const kept = tasks.map((t) => t.truth);
+  const kept = tasks.map((t) => t.truth as PlantedTruth);
   assert.ok(kept.some((m) => m.file === 'src/math.js' && m.line === 2 && m.mutated === '  if (a <= b) return a;'), 'the flipped comparison in max is kept');
   assert.ok(!kept.some((m) => m.line === UNTESTED_LINE), 'no bug in the untested function is kept');
   for (const t of tasks) {
     assert.ok(t.id.startsWith(`${info.id}:`));
     assert.ok(t.truth.failing.length > 0, 'a kept task names the tests it breaks');
-    assert.equal(JSON.stringify(t.input).includes(t.truth.mutated), false, 'the task never shows the planted line');
+    assert.equal(JSON.stringify(t.input).includes((t.truth as PlantedTruth).mutated), false, 'the task never shows the planted line');
     assert.equal(JSON.stringify(t.input).includes(tempDir), false, 'the task never shows a path of this Mac');
   }
   const states = candidatesOf(info.id);
@@ -368,4 +378,194 @@ test('a mutant whose suite hangs is dropped at the mutant cap, not after 15 minu
   assert.equal(mutantCapMs(1_000), 70_000, 'the real floor is 60 s, plus 10 s of slack');
   assert.equal(mutantCapMs(20_000), 110_000, 'five times a slower head suite, plus slack');
   assert.equal(mutantCapMs(10 * 60_000), CHECK_MS, 'never past the full check time');
+});
+
+// ---------------------------------------------------------------- Task 20: past changes
+
+const DAY = 24 * 60 * 60 * 1000;
+const ago = (days: number) => new Date(NOW - days * DAY).toISOString();
+const FIX = join(import.meta.dirname, 'fixtures', 'pmset');
+const fx = (name: string): string => readFileSync(join(FIX, `${name}.txt`), 'utf8');
+
+/** His fix: before it, max returned the smaller; the fix and its new test come in one commit. */
+const BUGGY = 'export function max(a, b) {\n  return a < b ? a : b;\n}\n';
+const FIXED = 'export function max(a, b) {\n  return a > b ? a : b;\n}\n';
+const FIXED_LINE = 'return a > b ? a : b;';
+const OLD_TEST = "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { max } from '../src/math.js';\ntest('max of equals', () => { assert.equal(max(2, 2), 2); });\n";
+const NEW_TEST = OLD_TEST + "test('max of unequals', () => { assert.equal(max(3, 1), 3); });\n";
+
+let prs: object[] = [];
+let calls: Array<{ cmd: string; args: string[] }> = [];
+
+/** git and the gate's probes, noted; gh answers only `pr list`. Nothing else is expected. */
+const pastRunner: Runner = async (cmd, args, opts) => {
+  const base = cmd.split('/').pop() ?? cmd;
+  calls.push({ cmd: base, args: [...args] });
+  const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
+  if (base === 'gh') return args[0] === 'pr' && args[1] === 'list' ? ok(JSON.stringify(prs)) : { stdout: '', stderr: 'unexpected gh', code: 1 };
+  if (base === 'pmset' && args.join(' ') === '-g batt') return ok(fx('batt-ac'));
+  if (base === 'pmset' && args.join(' ') === '-g therm') return ok(fx('therm-none'));
+  if (base === 'pmset' && args.join(' ') === '-g') return ok(fx('g-automatic'));
+  if (base === 'ioreg') return ok(`+-o IOHIDSystem\n    | {\n    |   "HIDIdleTime" = ${3600n * 1_000_000_000n}\n    | }\n`);
+  if (base === 'df') return ok(`Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n/dev/disk3s5 971298980 636638860 ${Math.round(300e9 / 1024)} 68% 1 1 0% /System/Volumes/Data\n`);
+  if (base === 'git') return realRunner(cmd, args, opts);
+  return { stdout: '', stderr: `unexpected ${base}`, code: 1 };
+};
+
+/** git in `cwd` with the author and committer dates given. */
+function gitDated(cwd: string, author: string, committer: string, ...args: string[]): string {
+  const r = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_AUTHOR_DATE: author, GIT_COMMITTER_DATE: committer },
+  });
+  assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout.trim();
+}
+
+function commitAt(work: string, author: string, committer: string, files: Record<string, string>, message: string): string {
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(work, name)), { recursive: true });
+    writeFileSync(join(work, name), text);
+  }
+  gitDated(work, author, committer, 'add', '.');
+  gitDated(work, author, committer, 'commit', '-q', '-m', message);
+  return gitDated(work, author, committer, 'rev-parse', 'HEAD');
+}
+
+interface PastWorld {
+  repo: Repo;
+  fix: string;
+  fixParent: string;
+  tidy: string;
+  r1: string;
+  r2: string;
+}
+
+/**
+ * His history: a buggy max with a test that misses it (100 days ago); his
+ * fix with the test that catches it (60); a tidy-up whose new test already
+ * passed before it (50); and PR 9, rebase-merged as two commits written in
+ * the same second (40), whose last commit's parent is the PR's own first
+ * commit, not the branch before the PR.
+ */
+function pastWorld(): PastWorld {
+  const repo = tinyRepo();
+  const fresh = { ...repo, checks: checks({ test: 'node --test' }) };
+  openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(fresh.fullName, JSON.stringify(fresh));
+  const work = join(tempDir, 'past-work');
+  mkdirSync(work, { recursive: true });
+  gitDated(work, ago(100), ago(100), 'init', '-q', '-b', 'main');
+  const first = commitAt(work, ago(100), ago(100), { 'package.json': JSON.stringify({ name: 'widgets', type: 'module' }), 'src/math.js': BUGGY, 'test/math.test.js': OLD_TEST }, 'first');
+  const fix = commitAt(work, ago(60), ago(60), { 'src/math.js': FIXED, 'test/math.test.js': NEW_TEST }, 'Fix max for unequal numbers');
+  const tidy = commitAt(work, ago(50), ago(50), { 'src/math.js': `// the larger of two\n${FIXED}`, 'test/same.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { max } from '../src/math.js';\ntest('max of fours', () => { assert.equal(max(4, 4), 4); });\n" }, 'Say what max does');
+  const r1 = commitAt(work, ago(45), ago(40), { 'src/even.js': 'export const isEven = (n) => n % 2 === 0;\n', 'test/even.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { isEven } from '../src/even.js';\ntest('even', () => { assert.equal(isEven(4), true); });\n" }, 'Add isEven');
+  const r2 = commitAt(work, ago(44), ago(40), { 'src/even.js': 'export const isEven = (n) => n % 2 === 0;\nexport const isOdd = (n) => !isEven(n);\n', 'test/odd.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { isOdd } from '../src/even.js';\ntest('odd', () => { assert.equal(isOdd(3), true); });\n" }, 'Add isOdd');
+  // The mirror is his history alone (the planted fixture's mirror is replaced).
+  spawnSync('rm', ['-rf', mirrorDir(FULL)]);
+  const r = spawnSync('git', ['clone', '-q', '--bare', work, mirrorDir(FULL)], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+  assert.equal(r.status, 0, r.stderr);
+  prs = [{ number: 9, title: 'Even and odd', mergedAt: ago(40), mergeCommit: { oid: r2 }, url: `https://github.com/${FULL}/pull/9`, headRefName: 'even' }];
+  void first;
+  return { repo: getRepo(FULL)!, fix, fixParent: first, tidy, r1, r2 };
+}
+
+function pastSetUp(): void {
+  calls = [];
+  setRunner(pastRunner);
+  resetGateCache();
+  patchSettings({ school: { ...getSettings().school, enabled: true, commitsAsWork: true } });
+  // His commits' own tests passed at each commit (the history's test check, faked).
+  setTestCheck(async () => ({ passed: true, detail: 'passed' }));
+}
+
+test('a verified commit with a test that fails at its parent becomes a task', async () => {
+  pastSetUp();
+  const w = pastWorld();
+  const info = await buildPast(w.repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  assert.equal(info.kind, 'past');
+  const tasks = arenaTasks(info.id);
+  const t = tasks.find((x) => x.ref === w.fix);
+  assert.ok(t, `the fix is a task: ${tasks.map((x) => x.ref)}`);
+  const truth = t.truth as PastTruth;
+  assert.equal(truth.sha, w.fix);
+  assert.equal(truth.parent, w.fixParent);
+  assert.deepEqual(truth.testFiles, ['test/math.test.js']);
+  assert.deepEqual(truth.sourceFiles, ['src/math.js']);
+  assert.ok(truth.failing.some((n) => /max of unequals/.test(n)), `failing: ${truth.failing}`);
+  assert.ok(info.kept <= 40);
+});
+
+test('one whose test already passed at its parent does not', async () => {
+  pastSetUp();
+  const w = pastWorld();
+  const info = await buildPast(w.repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  assert.ok(!arenaTasks(info.id).some((x) => x.ref === w.tidy));
+  assert.equal(pastCandidatesOf(info.id).find((c) => c.change.sha === w.tidy)?.state, 'dropped');
+});
+
+test('a rebase-merged PR whose first parent is not on the base is skipped', async () => {
+  pastSetUp();
+  const w = pastWorld();
+  const info = await buildPast(w.repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  assert.ok(!arenaTasks(info.id).some((x) => x.ref === '9' || (x.truth as PastTruth).sha === w.r2), 'PR 9 is no task');
+  assert.ok(!pastCandidatesOf(info.id).some((c) => c.change.sha === w.r2), 'PR 9 is not even a candidate');
+  // Its first commit, his own on the branch, stands as a commit of his.
+  assert.ok(arenaTasks(info.id).some((x) => x.ref === w.r1));
+});
+
+test('its task shows the failing test, not the fix', async () => {
+  pastSetUp();
+  const w = pastWorld();
+  const info = await buildPast(w.repo, NOW);
+  const t = arenaTasks(info.id).find((x) => x.ref === w.fix)!;
+  const input = t.input as PastInput;
+  const shown = JSON.stringify(input);
+  assert.match(input.tests, /max of unequals/, 'the new test is shown');
+  assert.ok(!shown.includes(FIXED_LINE), 'the fix is never shown');
+  assert.ok(!shown.includes(w.fix), 'nor the sha of the fix');
+  assert.ok(!shown.includes(tempDir), 'nor a path of this Mac');
+  assert.ok((t.truth as PastTruth).fix.includes(FIXED_LINE), 'the truth keeps the fix');
+});
+
+test('sealedRefs names the sealed tasks', async () => {
+  pastSetUp();
+  const w = pastWorld();
+  const info = await buildPast(w.repo, NOW);
+  const sealed = arenaTasks(info.id, 'sealed');
+  const open = arenaTasks(info.id).filter((x) => x.split !== 'sealed');
+  // One more sealed task, of another arena, as a past build would write it.
+  openDb()
+    .prepare('INSERT INTO arena_tasks (id, arena, split, ref, json) VALUES (?, ?, ?, ?, ?)')
+    .run('other:pr12', 'other', 'sealed', '12', JSON.stringify({ id: 'other:pr12', arena: 'other', split: 'sealed', ref: '12', input: {}, truth: { kind: 'past', sha: 'a'.repeat(40) } }));
+  const refs = sealedRefs();
+  assert.ok(refs.has('12') && refs.has('a'.repeat(40)));
+  for (const t of sealed) {
+    assert.ok(refs.has(t.ref!));
+    assert.ok(refs.has((t.truth as PastTruth).sha));
+  }
+  for (const t of open) assert.ok(!refs.has((t.truth as PastTruth).sha), `${t.ref} is not sealed`);
+  assert.equal(refs.size, 2 + sealed.length * 1 + sealed.filter((t) => t.ref !== (t.truth as PastTruth).sha).length);
+});
+
+test('nothing is fetched beyond the mirror', async () => {
+  pastSetUp();
+  const w = pastWorld();
+  const info = await buildPast(w.repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  const gh = calls.filter((c) => c.cmd === 'gh');
+  assert.ok(gh.every((c) => c.args[0] === 'pr' && c.args[1] === 'list'), 'gh only lists merged PRs');
+  const fetches = calls.filter((c) => c.cmd === 'git' && c.args.some((a) => ['fetch', 'clone', 'pull', 'ls-remote', 'remote'].includes(a)));
+  assert.ok(fetches.length > 0, 'the mirror was synced');
+  for (const f of fetches) {
+    assert.ok(f.args.includes('fetch') && f.args.includes(mirrorDir(FULL)), `only the mirror fetches: ${f.args.join(' ')}`);
+  }
+  // No clone the build made ever fetched: no FETCH_HEAD, and its origin is the mirror.
+  const base = join(paths().runs, `arena-${info.id}`, 'base');
+  assert.equal(existsSync(join(base, '.git', 'FETCH_HEAD')), false);
+  // Every spawned command was the repo's own test, in a clone of the build.
+  for (const s of spawns) assert.ok(s.cwd.startsWith(paths().runs), s.cwd);
 });
