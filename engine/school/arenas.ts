@@ -1,7 +1,9 @@
 /**
  * Arenas (Phase 4 ruling 20, Decision 8): races built from his own repos.
- * This is the build half: planted bugs (Task 19) and past changes (Task
- * 20); the Beagle side (tools, grading for races) comes in Task 21.
+ * The build half: planted bugs (Task 19) and past changes (Task 20). The
+ * race half (ruling 21, Task 21): `toBeagleArena()` turns a built arena into
+ * a Beagle arena whose tools and grade run his own suite in fresh clones of
+ * the arena base, and `registerArenas()` registers every ready one.
  *
  * A planted-bug arena is built only on his click, only for a connected repo
  * with the market on and a test command, and only while the heavy gate
@@ -50,10 +52,12 @@
  * log in `<school>/arenas/<id>/log.jsonl`.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, chmodSync, constants, cpSync, existsSync, mkdirSync, readFileSync, lstatSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { appendFileSync, chmodSync, constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, lstatSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { isAbsolute, join, normalize, sep } from 'node:path';
 
 import { localCredits } from '../../shared/credits.js';
+import { poolOfModel } from '../../shared/market-rules.js';
 import { ARENA } from '../../shared/school-rules.js';
 import type { ArenaInfo, ModelRef, Repo } from '../../shared/types.js';
 import { openDb } from '../db.js';
@@ -63,7 +67,8 @@ import { record } from '../ledger.js';
 import { mirrorDir, syncMirror } from '../mirror.js';
 import { charge, unattended } from '../market/budget.js';
 import { CHECK_MS } from '../guild/checks.js';
-import { execTool, forgetRun, reapRun } from '../market/broker.js';
+import { execFileTool, execTool, forgetRun, MAX_RETURN_BYTES, reapRun, type FileOp } from '../market/broker.js';
+import { listAgents, toGenome } from '../market/firms.js';
 import { startEgress, type Egress } from '../market/egress.js';
 import { DEPENDENCY_FILES, installDeps, type RunContext } from '../market/install.js';
 import { redact } from '../market/jobs.js';
@@ -72,7 +77,7 @@ import { BASE_SCRATCH } from '../market/sandbox.js';
 import { controlFiles, createBaseDir, engineGit, ENGINE_GIT_FLAGS, recordGitConfig, removeOwned } from '../market/worktree.js';
 import { getRepo, listRepos } from '../repos.js';
 import { getSettings } from '../settings.js';
-import type { BeagleApi, BeagleArena, BeagleSplit } from './beagle-api.js';
+import type { BeagleApi, BeagleArena, BeagleGenome, BeagleSplit, BeagleToolSpec } from './beagle-api.js';
 import { loadBeagle } from './beagle.js';
 import { isSourceFile, verifiedChanges, type VerifiedChange } from './history.js';
 import { isTestFile } from '../audit/schema.js';
@@ -458,8 +463,8 @@ function insideClone(dir: string, file: string): string | null {
   }
 }
 
-/** Test output with no path of this Mac in it, cut to its tail. */
-function scrub(text: string, dirs: string[]): string {
+/** Test output with no path of this Mac in it, cut to its tail (`max` characters). */
+function scrub(text: string, dirs: string[], max = MAX_OUTPUT): string {
   let s = text;
   for (const d of dirs) {
     const forms = new Set([d, `/private${d}`]);
@@ -471,7 +476,7 @@ function scrub(text: string, dirs: string[]): string {
     for (const f of [...forms].sort((a, b) => b.length - a.length)) s = s.split(f).join('.');
   }
   s = redact(s).trim();
-  return s.length > MAX_OUTPUT ? s.slice(-MAX_OUTPUT) : s;
+  return s.length > max ? s.slice(-max) : s;
 }
 
 // ---------------------------------------------------------------- the base
@@ -684,16 +689,14 @@ const atChange = (c: PastCandidate): Prepare => async (dir) => {
 
 // ---------------------------------------------------------------- Beagle
 
-/** Beagle's `sealedHash` of the arena, registering a stand-in for the call if the arena is not registered yet (Task 21 registers it for races). */
-function sealedHashOf(b: BeagleApi, id: string): string {
-  if (b.arenas.arenaIds().includes(id)) return b.race.sealedHash(id);
-  const stub = { id, data: id, name: id, describe: '', answer: {}, grade: () => 0, tools: [], show: () => '' } as BeagleArena;
-  b.arenas.registerArena(stub);
-  try {
-    return b.race.sealedHash(id);
-  } finally {
-    b.arenas.unregisterArena(id);
-  }
+/**
+ * Beagle's `sealedHash` of the arena, with the real arena registered
+ * (`toBeagleArena`): Beagle reads the sealed split through `Arena.data`,
+ * which is the arena id.
+ */
+function sealedHashOf(b: BeagleApi, info: Pick<ArenaInfo, 'id' | 'repo' | 'kind'>): string {
+  registerOne(b, info);
+  return b.race.sealedHash(info.id);
 }
 
 /** Writes the kept bugs as tasks, to `arena_tasks` and to Beagle's store; returns the counts by split and Beagle's sealed hash. */
@@ -738,7 +741,7 @@ async function writeTasks(id: string, repo: Repo, kept: Candidate[], past: PastC
   b.store.putTasks(id, tasks.map((t) => ({ id: t.id, input: t.input, truth: t.truth, split: t.split })));
   const counts = { breeding: 0, race: 0, sealed: 0 };
   for (const t of tasks) counts[t.split]++;
-  return { counts, sealedHash: sealedHashOf(b, id) };
+  return { counts, sealedHash: sealedHashOf(b, { id, repo: repo.fullName, kind: past.length ? 'past' : 'planted' }) };
 }
 
 // ---------------------------------------------------------------- the build
@@ -981,4 +984,578 @@ export async function resumeArenas(now: number): Promise<ArenaInfo[]> {
 /** The repos an arena could be built from now (connected, market on, with a test command). */
 export function arenaRepos(): Repo[] {
   return listRepos().filter((r) => refusal(r) === null);
+}
+
+// ---------------------------------------------------------------- racing (ruling 21)
+
+/** The turns a racing agent gets on an arena task (ruling 21). */
+export const ARENA_MAX_TURNS = 24;
+/** The most any one tool call returns to a racer (the broker's own per-stream cap, 64 KB); past it, the tail is kept. */
+export const ARENA_TOOL_OUTPUT = MAX_RETURN_BYTES;
+/** The arena's tools, by Beagle's names. */
+export const ARENA_TOOLS = ['read_file', 'list_files', 'search', 'run_tests'] as const;
+/** A Palimpsest agent's tool as the arena's: edit and write have none here, since the answer is the edit. */
+const TOOL_OF: Record<string, (typeof ARENA_TOOLS)[number]> = { read: 'read_file', glob: 'list_files', grep: 'search', run: 'run_tests' };
+/** The most lines read_file returns in one call. */
+const READ_LINES = 400;
+/** At most this many edits in one answer. */
+const MAX_EDITS = 50;
+/**
+ * The grade's suite is cut this long before Beagle's grader timeout
+ * (`graderTimeoutMs`, CHECK_MS), so a hanging suite is killed and scored 0
+ * by the grade itself, with its clone removed, rather than left running
+ * after Beagle gives up on the grade.
+ */
+const GRADE_MARGIN_MS = 30_000;
+
+export interface ArenaEdit {
+  file: string;
+  find: string;
+  replace: string;
+}
+
+/** The arenas this process registered with Beagle. */
+const registered = new Set<string>();
+
+/** The task trees the read tools look at, one per task, kept for a race's later turns. */
+const views = new Map<string, Promise<Scratch | { error: string }>>();
+/** Every scratch run root this process has open (views, run_tests, grades). */
+const liveScratch = new Set<string>();
+let exitHook = false;
+
+interface Scratch {
+  runId: string;
+  runRoot: string;
+  dir: string;
+}
+
+const noLog = (_l: RunLogLine) => {};
+
+/** An arena task by its id. */
+function taskById(id: string): ArenaTask | null {
+  const row = openDb().prepare('SELECT json FROM arena_tasks WHERE id = ?').get(id) as { json: string } | undefined;
+  return row ? (JSON.parse(row.json) as ArenaTask) : null;
+}
+
+/**
+ * A fresh scratch clone of the arena base, under its own run root, made into
+ * the task's tree: a planted bug planted (never through a link), or a past
+ * change's parent with its tests applied (`pastTaskTree`). The clone's
+ * `.git` is removed in both, so no tool can reach the head or the fix.
+ */
+async function scratchFor(arenaId: string, truth: PlantedTruth | PastTruth, purpose: 'view' | 'try' | 'grade'): Promise<Scratch | { error: string }> {
+  const base = arenaBase(arenaId);
+  if (!existsSync(base)) return { error: 'This arena has no base any more; it must be built again' };
+  const runId = `arena-${arenaId}-${purpose}-${randomUUID().slice(0, 8)}`;
+  const runRoot = join(paths().runs, runId);
+  liveScratch.add(runId);
+  try {
+    for (const d of ['tmp', 'ctmp', 'home', 'cache', 'ctl']) mkdirSync(join(runRoot, d), { recursive: true });
+    controlFilesFor(runId);
+    const dir = join(runRoot, 'repo');
+    cpSync(base, dir, { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true });
+    // No code has run in this clone yet: its .git/config is the base's.
+    recordGitConfig(dir);
+    const why = truth.kind === 'past' ? await pastTaskTree(dir, truth) : await plantedTaskTree(dir, truth);
+    if (why) {
+      await dropScratch(runId);
+      return { error: noLocalPaths(why) };
+    }
+    return { runId, runRoot, dir };
+  } catch (err) {
+    await dropScratch(runId);
+    return { error: noLocalPaths(`the task's copy could not be made: ${(err as Error).message}`) };
+  }
+}
+
+/** The planted bug's tree: the bug written in (only into a regular file inside the clone), then the history removed. */
+async function plantedTaskTree(dir: string, truth: Mutant): Promise<string | null> {
+  const why = await plantIn(truth)(dir);
+  if (why) return why;
+  removeOwned(join(dir, '.git'));
+  return existsSync(join(dir, '.git')) ? 'the clone history could not be removed' : null;
+}
+
+async function dropScratch(runId: string): Promise<void> {
+  await clearRoot(runId);
+  liveScratch.delete(runId);
+}
+
+/**
+ * A path a racer named, as a clean path relative to the clone, or null when
+ * it is absolute, climbs out (`..`), or names `.git`.
+ */
+function relPath(path: unknown): string | null {
+  if (path === undefined || path === null || path === '') return '.';
+  if (typeof path !== 'string' || path.includes('\0') || isAbsolute(path)) return null;
+  const n = normalize(path).replace(/\/+$/, '');
+  if (n === '.' || n === '') return '.';
+  if (n === '..' || n.startsWith(`..${sep}`)) return null;
+  if (n.split('/').some((p) => p.toLowerCase() === '.git')) return null;
+  return n;
+}
+
+/**
+ * Whether `rel` lies under the clone with no link anywhere on the way: each
+ * component is lstat-ed (a symlink refuses), and the realpath must be the
+ * clone's realpath joined with `rel`. `want` names what it must be.
+ */
+function underClone(dir: string, rel: string, want: 'file' | 'dir' | 'any'): boolean {
+  try {
+    const root = realpathSync(dir);
+    if (rel === '.') return want !== 'file';
+    let at = dir;
+    for (const part of rel.split('/')) {
+      at = join(at, part);
+      if (lstatSync(at).isSymbolicLink()) return false;
+    }
+    const st = lstatSync(at);
+    if (want === 'file' && !st.isFile()) return false;
+    if (want === 'dir' && !st.isDirectory()) return false;
+    if (want === 'any' && !st.isFile() && !st.isDirectory()) return false;
+    return realpathSync(at) === join(root, rel);
+  } catch {
+    return false;
+  }
+}
+
+const OUTSIDE = "The path is a link, lies outside the task's copy, or is not there; file tools never follow a link.";
+
+/**
+ * Applies an answer's edits to a scratch clone (ruling 21): source files
+ * only, never a test file, never through a link or outside the clone, and
+ * each `find` exactly once in its file. Null when all applied, else why not
+ * (and the clone is thrown away by the caller).
+ */
+export function applyEdits(dir: string, edits: unknown): string | null {
+  if (!Array.isArray(edits)) return 'edits must be a list';
+  if (edits.length > MAX_EDITS) return `at most ${MAX_EDITS} edits`;
+  for (const e of edits as Array<Partial<ArenaEdit> | null>) {
+    if (!e || typeof e !== 'object' || typeof e.file !== 'string' || typeof e.find !== 'string' || typeof e.replace !== 'string') return 'each edit needs a file, a find and a replace';
+    const file = relPath(e.file);
+    if (!file || file === '.') return `${e.file} is not a file of the repository`;
+    if (isTestFile(file)) return 'the tests may not be changed';
+    if (!isSourceFile(file)) return `${file} is not a source file; only source files may be edited`;
+    if (!underClone(dir, file, 'file')) return `there is no ${file}, or it is a link`;
+    const p = insideClone(dir, file);
+    if (!p) return `there is no ${file}, or it is a link`;
+    if (e.find === '') return `the find text for ${file} is empty`;
+    const text = readFileSync(p, 'utf8');
+    const n = text.split(e.find).length - 1;
+    if (n !== 1) return `the find text appears ${n} times in ${file}; it must appear exactly once`;
+    writeFileSync(p, text.replace(e.find, () => e.replace!));
+  }
+  return null;
+}
+
+/** The names of the tests that passed: TAP `ok`, node's and Jest's spec marks, pytest `PASSED`, Go `--- PASS`. */
+export function passingTests(output: string): string[] {
+  const out = new Set<string>();
+  for (const raw of output.split('\n')) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, '');
+    const tap = /^\s*ok \d+ - (.+?)(\s+#\s*(\S+).*)?$/.exec(line);
+    if (tap && /^(skip|todo)$/i.test(tap[3] ?? '')) continue;
+    const m =
+      tap ??
+      /^\s*[✔✓]\s+(.+?)(?:\s+\(\d[\d.]*\s*m?s\))?$/.exec(line) ??
+      /^(\S+::\S+)\s+PASSED/.exec(line) ??
+      /^PASSED\s+(\S+)/.exec(line) ??
+      /^--- PASS: (\S+)/.exec(line);
+    const name = m?.[1]?.trim();
+    if (name) out.add(name);
+  }
+  return [...out];
+}
+
+interface SuiteRun {
+  code: number | null;
+  refused: string | null;
+  timedOut: boolean;
+  aborted: boolean;
+  raw: string;
+}
+
+/**
+ * His test command in a scratch clone, through `execTool` under the tool
+ * profile. No egress runs for a scratch root, so its children's proxy is the
+ * closed port 9: the tests have no network, as in the build's grading.
+ */
+async function runSuite(s: Scratch, command: string, timeoutMs: number, signal: AbortSignal): Promise<SuiteRun> {
+  const t0 = Date.now();
+  const r = await execTool({ runId: s.runId, runRoot: s.runRoot, dir: s.dir, command, timeoutMs, stage: 'checks', signal, log: noLog });
+  const timedOut = Date.now() - t0 >= timeoutMs || r.stderr.includes('[palimpsest] timed out after');
+  return { code: r.code, refused: r.refused, timedOut, aborted: signal.aborted, raw: `${r.stdout}\n${r.stderr}` };
+}
+
+/**
+ * Ruling 21's grade, from one run of his suite on the task's tree with the
+ * answer's edits applied:
+ *
+ * - 1 when the suite passes (exit 0): the target tests pass and nothing
+ *   that passed at the task base fails;
+ * - 0.5 when the suite fails, but every target test is named among those
+ *   that passed and none among those that failed: the targets pass and
+ *   another test fails;
+ * - 0 otherwise: a target still fails, or the suite ran out of time, was
+ *   refused or stopped, or the targets cannot be told passing.
+ *
+ * The targets are the failing test names parsed when the task was built
+ * (`truth.failing`). At the task base only they failed (a planted bug: the
+ * head passed in full; a past change: its parent failed on exactly the
+ * parsed tests), so "nothing that passed at base fails" is "nothing fails
+ * but the targets".
+ *
+ * Fallback, when no failing test names were parsed (a runner that prints
+ * none of the forms `failingTests` reads): grading falls back to "the suite
+ * passes". The targets count as passed only when the whole suite passes, so
+ * such a task scores 1 on exit 0 and 0 otherwise, never 0.5.
+ */
+export function scoreOf(r: Pick<SuiteRun, 'code' | 'refused' | 'timedOut' | 'aborted' | 'raw'>, targets: string[]): number {
+  if (r.refused !== null || r.timedOut || r.aborted || r.code === null) return 0;
+  if (r.code === 0) return 1;
+  // The fallback: with no parsed names, only a passing suite counts.
+  if (targets.length === 0) return 0;
+  const failed = new Set(failingTests(r.raw));
+  const passed = new Set(passingTests(r.raw));
+  if (targets.some((t) => failed.has(t))) return 0;
+  return targets.every((t) => passed.has(t)) ? 0.5 : 0;
+}
+
+/** The repo's test command now, or null. */
+function testCommand(info: Pick<ArenaInfo, 'repo'>): string | null {
+  return getRepo(info.repo)?.checks?.test ?? null;
+}
+
+/** An answer's grade (ruling 21): its edits applied to a fresh task clone, the suite run, and `scoreOf`. Never throws. */
+async function gradeAnswer(info: Pick<ArenaInfo, 'id' | 'repo'>, answer: unknown, truth: PlantedTruth | PastTruth): Promise<number> {
+  const edits = answer && typeof answer === 'object' ? (answer as { edits?: unknown }).edits : undefined;
+  if (!Array.isArray(edits) || !truth || typeof truth !== 'object') return 0;
+  const command = testCommand(info);
+  if (!command) return 0;
+  const ctl = new AbortController();
+  const unregister = registerAbort(() => ctl.abort(TURNED_OFF_REASON));
+  let s: Scratch | { error: string } | null = null;
+  try {
+    s = await scratchFor(info.id, truth, 'grade');
+    if ('error' in s) return 0;
+    if (applyEdits(s.dir, edits)) return 0;
+    const r = await runSuite(s, command, CHECK_MS - GRADE_MARGIN_MS, ctl.signal);
+    // Where no failing test names were parsed, this falls back to "the suite passes" (see scoreOf).
+    return scoreOf(r, Array.isArray(truth.failing) ? truth.failing : []);
+  } catch {
+    return 0;
+  } finally {
+    unregister();
+    if (s && !('error' in s)) await dropScratch(s.runId);
+  }
+}
+
+/** The arena task a tool call is for, from `ctx.task` (the only thing Beagle passes a tool). */
+function taskOf(info: Pick<ArenaInfo, 'id'>, ctx: { task: { id: string; input: unknown } } | undefined): ArenaTask | { error: string } {
+  const id = ctx?.task?.id;
+  if (typeof id !== 'string' || !id.startsWith(`${info.id}:`)) return { error: 'no task of this arena' };
+  return taskById(id) ?? { error: 'no task of this arena' };
+}
+
+/** The task's tree the read tools look at, made once per task and kept for the race's later turns. */
+async function viewOf(info: Pick<ArenaInfo, 'id'>, task: ArenaTask): Promise<Scratch | { error: string }> {
+  const held = views.get(task.id);
+  if (held) {
+    const got = await held;
+    if (!('error' in got) && existsSync(got.dir)) return got;
+    views.delete(task.id);
+  }
+  if (!exitHook) {
+    exitHook = true;
+    // A view outlives its turn; whatever is left goes when the engine exits.
+    process.once('exit', () => {
+      for (const runId of liveScratch) {
+        try {
+          removeOwned(join(paths().runs, runId));
+        } catch {
+          // best effort
+        }
+      }
+    });
+  }
+  const made = scratchFor(info.id, task.truth, 'view');
+  views.set(task.id, made);
+  const got = await made;
+  if ('error' in got) views.delete(task.id);
+  return got;
+}
+
+/** Removes every task tree the read tools made (of one arena, or all). */
+export async function releaseArenaViews(arenaId?: string): Promise<void> {
+  for (const [taskId, v] of [...views]) {
+    if (arenaId !== undefined && !taskId.startsWith(`${arenaId}:`)) continue;
+    views.delete(taskId);
+    const got = await v;
+    if (!('error' in got)) await dropScratch(got.runId);
+  }
+}
+
+/** One file tool call (ruling 29) in the view, under the tool profile. */
+async function fileTool(v: Scratch, op: FileOp, args: Record<string, unknown>): Promise<{ refused: string } | { error: string } | { result: Record<string, unknown> }> {
+  const r = await execFileTool({ runId: v.runId, runRoot: v.runRoot, dir: v.dir, op, args, signal: new AbortController().signal, log: noLog, stage: 'working' });
+  if (r.refused) return { refused: noLocalPaths(r.refused) };
+  const result = r.result as Record<string, unknown> | null;
+  if (!result || result.ok !== true) return { error: noLocalPaths(typeof result?.error === 'string' ? result.error : 'the file tool failed') };
+  return { result };
+}
+
+/** A tool's result as a racer gets it: at most ARENA_TOOL_OUTPUT bytes of JSON, the tail kept when longer. */
+function capped(v: unknown): unknown {
+  const text = JSON.stringify(v) ?? 'null';
+  const buf = Buffer.from(text);
+  if (buf.length <= ARENA_TOOL_OUTPUT) return v;
+  return { truncated: true, note: `The result was ${buf.length} bytes; the last ${ARENA_TOOL_OUTPUT} follow.`, tail: buf.subarray(buf.length - ARENA_TOOL_OUTPUT).toString('utf8') };
+}
+
+const hasGit = (p: string) => p.split('/').some((x) => x.toLowerCase() === '.git');
+
+/** Wraps a tool so it never throws a message with a path of this Mac in it, and never returns more than the cap. */
+function guarded(spec: Omit<BeagleToolSpec, 'run'> & { run(args: Record<string, unknown>, ctx?: { task: { id: string; input: unknown } }): Promise<unknown> }): BeagleToolSpec {
+  return {
+    ...spec,
+    run: async (args, ctx) => {
+      try {
+        return capped(await spec.run(args && typeof args === 'object' ? (args as Record<string, unknown>) : {}, ctx));
+      } catch (err) {
+        return { error: noLocalPaths((err as Error).message ?? String(err)) };
+      }
+    },
+  };
+}
+
+function toolsOf(info: Pick<ArenaInfo, 'id' | 'repo'>): BeagleToolSpec[] {
+  const inView = async (ctx: { task: { id: string; input: unknown } } | undefined): Promise<Scratch | { error: string }> => {
+    const t = taskOf(info, ctx);
+    return 'error' in t ? t : viewOf(info, t);
+  };
+  return [
+    guarded({
+      name: 'read_file',
+      describe: `Read a file of the repository, with line numbers; give from and to to read part of it (at most ${READ_LINES} lines at once).`,
+      args: { type: 'object', required: ['file'], properties: { file: { type: 'string' }, from: { type: 'integer' }, to: { type: 'integer' } } },
+      run: async (a, ctx) => {
+        const v = await inView(ctx);
+        if ('error' in v) return v;
+        const file = relPath(a.file);
+        if (!file || file === '.' || !underClone(v.dir, file, 'file')) return { refused: OUTSIDE };
+        const r = await fileTool(v, 'read', { path: file });
+        if (!('result' in r)) return r;
+        const lines = String(r.result.content ?? '').split('\n');
+        const from = Math.max(1, Math.floor(Number(a.from) || 1));
+        const to = Math.min(lines.length, Math.floor(Number(a.to) || from + READ_LINES - 1), from + READ_LINES - 1);
+        return { file, of: lines.length, lines: lines.slice(from - 1, to).map((l, i) => `${from + i}: ${l}`).join('\n'), ...(r.result.truncated ? { truncated: true } : {}) };
+      },
+    }),
+    guarded({
+      name: 'list_files',
+      describe: 'List the files of the repository (or of one folder of it), without .git or installed dependencies.',
+      args: { type: 'object', properties: { path: { type: 'string' } } },
+      run: async (a, ctx) => {
+        const v = await inView(ctx);
+        if ('error' in v) return v;
+        const path = relPath(a.path);
+        if (!path || !underClone(v.dir, path, 'dir')) return { refused: OUTSIDE };
+        const r = await fileTool(v, 'list', { path, recursive: true, skipDeps: true });
+        if (!('result' in r)) return r;
+        const entries = (Array.isArray(r.result.entries) ? r.result.entries : []) as Array<{ path: string; type: string }>;
+        return {
+          files: entries.filter((e) => !hasGit(e.path) && e.type !== 'dir').map((e) => (e.type === 'file' ? e.path : `${e.path} (${e.type})`)),
+          ...(r.result.truncated ? { truncated: true } : {}),
+        };
+      },
+    }),
+    guarded({
+      name: 'search',
+      describe: 'Search the repository (or one folder or file of it) for a regular expression; returns file:line: text for each match (at most 200). It never looks in .git or installed dependencies, and never follows a link.',
+      args: { type: 'object', required: ['pattern'], properties: { pattern: { type: 'string' }, path: { type: 'string' }, glob: { type: 'string' } } },
+      run: async (a, ctx) => {
+        const v = await inView(ctx);
+        if ('error' in v) return v;
+        if (typeof a.pattern !== 'string' || !a.pattern) return { error: 'pattern must be a regular expression' };
+        const path = relPath(a.path);
+        if (!path || !underClone(v.dir, path, 'any')) return { refused: OUTSIDE };
+        const args: Record<string, unknown> = { pattern: a.pattern, path };
+        if (typeof a.glob === 'string' && a.glob) args.glob = a.glob;
+        const r = await fileTool(v, 'search', args);
+        if (!('result' in r)) return r;
+        const matches = (Array.isArray(r.result.matches) ? r.result.matches : []) as Array<{ path: string; line: number; text: string }>;
+        return { matches: matches.filter((m) => !hasGit(m.path)).map((m) => `${m.path}:${m.line}: ${m.text}`), ...(r.result.truncated ? { truncated: true } : {}) };
+      },
+    }),
+    guarded({
+      name: 'run_tests',
+      describe: "Run the repository's test suite with your proposed edits applied to a fresh copy (the same edits you would answer with). Returns whether it passed, the tests that fail, and the end of the output.",
+      args: { type: 'object', properties: { edits: { type: 'array', items: { type: 'object', properties: { file: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' } } } } } },
+      run: async (a, ctx) => {
+        const t = taskOf(info, ctx);
+        if ('error' in t) return t;
+        const command = testCommand(info);
+        if (!command) return { error: 'the repository has no test command' };
+        // A fresh scratch clone per call: racing genomes share only ctx.task, never a working copy.
+        const s = await scratchFor(info.id, t.truth, 'try');
+        if ('error' in s) return s;
+        const ctl = new AbortController();
+        const unregister = registerAbort(() => ctl.abort(TURNED_OFF_REASON));
+        try {
+          const bad = applyEdits(s.dir, a.edits ?? []);
+          if (bad) return { error: bad };
+          const r = await runSuite(s, command, mutantCapMs(readState(info.id)?.headMs), ctl.signal);
+          if (r.refused) return { error: noLocalPaths(`the tests could not run: ${r.refused}`) };
+          if (r.aborted) return { error: 'stopped: the school was turned off' };
+          return {
+            passed: r.code === 0 && !r.timedOut,
+            ...(r.timedOut ? { timedOut: true } : {}),
+            failing: failingTests(r.raw).slice(0, 50),
+            output: noLocalPaths(scrub(r.raw, [s.dir, s.runRoot], ARENA_TOOL_OUTPUT - 4096)),
+          };
+        } finally {
+          unregister();
+          await dropScratch(s.runId);
+        }
+      },
+    }),
+  ];
+}
+
+/** Text with no path of this Mac in it: the data home, the runs folder, the temp folder and his home, in every form. */
+function noLocalPaths(text: string): string {
+  const forms = new Set<string>();
+  const add = (d: string | null) => {
+    if (!d || d === '/' || d.length < 4) return;
+    const t = d.replace(/\/+$/, '');
+    forms.add(t);
+    forms.add(`/private${t}`);
+    try {
+      forms.add(realpathSync(t));
+    } catch {
+      // not there
+    }
+  };
+  try {
+    add(paths().runs);
+    add(paths().school);
+  } catch {
+    // no data home: nothing of it to hide
+  }
+  add(tmpdir());
+  add(homedir());
+  let s = text;
+  for (const f of [...forms].sort((a, b) => b.length - a.length)) s = s.split(f).join('.');
+  return s;
+}
+
+const DESCRIBE =
+  "A repository's test suite has started to fail. Find the cause in its source and fix it with as small a change as you can. " +
+  'You may not change the tests. Answer with find-and-replace edits to the repository\'s source files: each find must be text that appears exactly once in its file, and is replaced whole. ' +
+  'Your fix scores 1 when the whole suite passes, 0.5 when the failing tests pass but another test now fails, and 0 otherwise.';
+
+/** What a task shows a racer: the failing tests and how they fail (and for a past change, the tests it added), never the fix or a path of this Mac. */
+export function showTask(input: unknown): string {
+  const i = (input ?? {}) as Partial<PlantedInput> & Partial<PastInput>;
+  const failing = Array.isArray(i.failing) && i.failing.length ? i.failing.map((n) => `- ${n}`).join('\n') : '(the test runner named none: the suite as a whole fails)';
+  const parts =
+    i.kind === 'past'
+      ? [`A change to ${i.repo} added or changed these tests, and they fail on the code before it. Change the source so they pass.`, '', 'The tests it added or changed:', String(i.tests ?? '')]
+      : [`The test suite of ${i.repo} has started to fail: one line of its source has been broken.`];
+  parts.push('', `The test command: ${i.test ?? ''}`, '', 'These tests fail:', failing, '', 'The output:', String(i.output ?? ''));
+  return noLocalPaths(parts.join('\n'));
+}
+
+/**
+ * A built arena as a Beagle arena (ruling 21): `id` and `data` the arena id
+ * (Beagle reads its tasks from its store through `data`), kind `fixtest`,
+ * the four tools, the grade above, `graderTimeoutMs` CHECK_MS (15 minutes)
+ * and `maxTurns` 24. Its starters are the seeded local agents.
+ */
+export function toBeagleArena(info: Pick<ArenaInfo, 'id' | 'repo' | 'kind'>): BeagleArena {
+  return {
+    id: info.id,
+    data: info.id,
+    name: `${info.repo}: ${info.kind === 'past' ? 'past changes' : 'planted bugs'}`,
+    describe: DESCRIBE,
+    kind: 'fixtest',
+    answer: {
+      type: 'object',
+      required: ['edits'],
+      properties: { edits: { type: 'array', items: { type: 'object', required: ['file', 'find', 'replace'], properties: { file: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' } } } } },
+    },
+    grade: (answer, truth) => gradeAnswer(info, answer, truth as PlantedTruth | PastTruth),
+    graderTimeoutMs: CHECK_MS,
+    maxTurns: ARENA_MAX_TURNS,
+    tools: toolsOf(info),
+    show: showTask,
+    brief: (input) => {
+      const f = (input as { failing?: unknown })?.failing;
+      return Array.isArray(f) && f.length ? f.join('; ') : 'the suite fails';
+    },
+    valid: (a) => !!a && typeof a === 'object' && Array.isArray((a as { edits?: unknown }).edits),
+    example: (truth) => {
+      const t = truth as PlantedTruth | PastTruth;
+      if (t.kind === 'past') return `The fix was this change to ${t.sourceFiles.join(', ')}:\n${t.fix}`;
+      return JSON.stringify({ edits: [{ file: t.file, find: t.mutated.trim(), replace: t.original.trim() }] });
+    },
+    miss: (answer, truth) => {
+      const t = truth as PlantedTruth | PastTruth;
+      const e = ((answer as { edits?: ArenaEdit[] } | null)?.edits ?? []) as ArenaEdit[];
+      const did = e.length ? `it edited ${e.map((x) => `${x.file} ("${String(x.find).slice(0, 60)}")`).join(', ')}` : 'it edited nothing';
+      if (t.kind === 'past') return `the fix changed ${t.sourceFiles.join(', ')}; ${did}`;
+      return `the bug was in ${t.file} line ${t.line}: "${t.mutated.trim()}" should be "${t.original.trim()}"; ${did}`;
+    },
+    selfCheck: (answer) => {
+      const e = ((answer as { edits?: ArenaEdit[] } | null)?.edits ?? []) as ArenaEdit[];
+      return `You answered with ${e.length} edit(s)${e.length ? ` to ${[...new Set(e.map((x) => x.file))].join(', ')}` : ''}. If you have not run the tests with exactly these edits, run them with run_tests. Then reply with your final answer.`;
+    },
+    starters: () => starters(),
+  };
+}
+
+/** Generation one: the seeded agents on local models, as genomes with the arena's tools for their own. */
+function starters(): BeagleGenome[] {
+  return listAgents()
+    .filter((a) => a.lineage?.origin === 'seeded' && !a.retired && poolOfModel(a.model) === 'local')
+    .map((a) => {
+      const g = toGenome(a);
+      const tools = [...new Set(a.tools.map((t) => TOOL_OF[t]).filter((t): t is (typeof ARENA_TOOLS)[number] => !!t))];
+      return { id: g.id, name: g.name, model: g.model, instructions: g.instructions, tools, workflow: g.workflow, memory: { examples: Math.min(8, Math.max(0, g.memory.examples)) } };
+    });
+}
+
+function registerOne(b: BeagleApi, info: Pick<ArenaInfo, 'id' | 'repo' | 'kind'>): void {
+  b.arenas.registerArena(toBeagleArena(info));
+  registered.add(info.id);
+}
+
+/** A scratch root another process left (`arena-<id>-view|try|grade-<8 hex>`). */
+const SCRATCH_ROOT = /^arena-.+-(view|try|grade)-[0-9a-f]{8}$/;
+
+/**
+ * Registers every ready (or spent) arena with Beagle as `toBeagleArena`,
+ * replacing whatever was registered under its id, and unregisters any this
+ * process registered that is no longer ready. Scratch roots an earlier
+ * engine left are removed. Returns the registered ids.
+ */
+export async function registerArenas(): Promise<string[]> {
+  const b = await loadBeagle();
+  const ready = listArenas().filter((a) => a.status === 'ready' || a.status === 'spent');
+  const want = new Set(ready.map((a) => a.id));
+  for (const id of [...registered]) {
+    if (want.has(id)) continue;
+    b.arenas.unregisterArena(id);
+    registered.delete(id);
+    await releaseArenaViews(id);
+  }
+  for (const a of ready) registerOne(b, a);
+  let left: string[] = [];
+  try {
+    left = readdirSync(paths().runs);
+  } catch {
+    left = [];
+  }
+  for (const name of left) if (SCRATCH_ROOT.test(name) && !liveScratch.has(name)) await clearRoot(name);
+  return ready.map((a) => a.id);
 }

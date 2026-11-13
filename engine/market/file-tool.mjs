@@ -24,6 +24,8 @@ const MAX_LIST = 2000;
 const MAX_MATCHES = 200;
 const MAX_SEARCH_FILE = 1024 * 1024;
 const MAX_SEARCH_FILES = 20_000;
+/** Folders of installed dependencies that `list` with `skipDeps` leaves out. */
+const DEP_DIRS = new Set(['node_modules', '.venv', 'venv', '__pycache__', '.tox']);
 
 const { O_RDONLY, O_RDWR, O_WRONLY, O_CREAT, O_NOFOLLOW, O_NONBLOCK } = constants;
 
@@ -177,6 +179,7 @@ function opList(dir, args) {
   const path = str(args, 'path', false) ?? '.';
   const { rel: base } = walkTo('Glob', path, dir, { into: true });
   const recursive = args.recursive === true;
+  const skipDeps = args.skipDeps === true;
   const entries = [];
   let truncated = false;
   const walk = (at) => {
@@ -187,6 +190,8 @@ function opList(dir, args) {
       }
       const full = join(at, d.name);
       if (d.name.toLowerCase() === '.git') continue;
+      // An arena's list_files leaves out installed dependencies, which would fill the listing.
+      if (skipDeps && d.isDirectory() && DEP_DIRS.has(d.name)) continue;
       const type = typeOf(d);
       entries.push({ path: join(base, full), type: type === 'symlink' ? 'symlink (not followed)' : type });
       if (recursive && type === 'dir') walk(full);
