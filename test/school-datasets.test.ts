@@ -12,9 +12,11 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { openDb } from '../engine/db.js';
 import { query, record } from '../engine/ledger.js';
 import { REPUTATION_KINDS, reputation } from '../engine/market/reputation.js';
-import { labelCounts, rowsFor, standingsBefore, thinCause } from '../engine/school/datasets.js';
+import { labelCounts, rowsFor, setDistilPredict, standingsBefore, thinCause, type DistilPredict } from '../engine/school/datasets.js';
+import { split } from '../engine/school/nets.js';
+import { getSettings, patchSettings } from '../engine/settings.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import { FEATURES } from '../shared/net-features.js';
+import { FEATURES, type RawRow } from '../shared/net-features.js';
 import type { Agent, Bid, Inspection, Job, NetName, Repo, Run } from '../shared/types.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -405,4 +407,131 @@ test('two thousand runs build their appraiser rows in under a second', () => {
   assert.ok(again < took / 2, `the second read took ${Math.round(again)} ms of ${Math.round(took)}`);
   assert.equal(labelCounts(NOW)['appraiser-pass'], 2000);
   assert.equal(thinCause('router', NOW), '2000 of 40 awarded runs ended');
+});
+
+// ---------------------------------------------------------------- distillation (Task 13, ruling 13)
+
+/** A master that answers every question it is asked, keeping what it was asked. */
+function answering(p: number, asked: Array<{ net: NetName; raw: RawRow }> = []): DistilPredict {
+  return (net, raw) => {
+    asked.push({ net, raw });
+    return { p, version: 3 };
+  };
+}
+
+/** One finished brief day with a proposal, `others` halt items and nothing acted on but the proposal. */
+function briefWith(others: number): void {
+  putRepo({ market: true });
+  putJob('job-p', { source: 'proposal', status: 'open', tier: 'low', postedAt: '2026-11-09T20:00:00.000Z' });
+  putJob('job-h', { source: 'harness', status: 'open', tier: 'low', postedAt: '2026-11-09T21:00:00.000Z' });
+  const day = '2026-11-10';
+  const items = ['proposal:job-p', 'proposal:job-h', ...Array.from({ length: others }, (_, i) => `halt:acme/r${i}`)];
+  record('brief.opened', { day, since: '2026-11-09T06:40:00.000Z', items, at: '2026-11-10T06:40:00.000Z' });
+  record('brief.action', { day, itemId: 'proposal:job-p', kind: 'proposal', action: 'accept', taught: true, at: '2026-11-10T06:41:00.000Z', patch: {} });
+}
+
+test('triage under 100 rows gets distilled rows for proposal items only, weight 0.3, none held out', () => {
+  briefWith(40);
+  const asked: Array<{ net: NetName; raw: RawRow }> = [];
+  const rows = rowsFor('triage', NOW, { predict: answering(0.8, asked) });
+  const reals = rows.filter((r) => r.source === 'real');
+  const soft = rows.filter((r) => r.source === 'distilled');
+  assert.equal(reals.length, 42);
+  assert.deepEqual(soft.map((r) => r.id).sort(), ['distilled:2026-11-10:proposal:job-h', 'distilled:2026-11-10:proposal:job-p']);
+  for (const s of soft) {
+    assert.equal(s.weight, 0.3);
+    assert.equal(s.y, 0.8);
+    const twin = reals.find((r) => `distilled:${r.id}` === s.id)!;
+    assert.deepEqual(s.x, twin.x, 'the same item, the master as its teacher');
+    assert.equal(s.at, twin.at);
+  }
+  assert.deepEqual(asked.map((a) => a.net), ['master', 'master']);
+  assert.deepEqual(asked.map((a) => a.raw.kind).sort(), ['propose:harness', 'propose:readme-gap']);
+  // held-out rows are always real
+  const { heldOut, train } = split(rows);
+  assert.ok(heldOut.length >= 10);
+  assert.ok(heldOut.every((r) => r.source === 'real'));
+  assert.equal(train.filter((r) => r.source === 'distilled').length, 2);
+  // the label count is his own rows alone
+  assert.equal(labelCounts(NOW, { predict: answering(0.8) }).triage, 42);
+  // a master that abstains teaches nothing; by default nothing is asked at all
+  assert.equal(rowsFor('triage', NOW, { predict: () => null }).filter((r) => r.source === 'distilled').length, 0);
+  assert.equal(rowsFor('triage', NOW).filter((r) => r.source === 'distilled').length, 0);
+});
+
+test('triage at 100 of its own rows gets no distilled rows', () => {
+  briefWith(98);
+  const rows = rowsFor('triage', NOW, { predict: answering(0.8) });
+  assert.equal(rows.length, 100);
+  assert.ok(rows.every((r) => r.source === 'real'));
+});
+
+test('taste distils its UI decisions from the master, never an Understudy pair', () => {
+  putRepo({ market: true });
+  putAgent('ines', 'ashlar');
+  putJob('job-ui', { status: 'merged' });
+  const b = makeBid('bid-ui', 'job-ui', 'ashlar', 'ines');
+  putRun('run-ui', 'job-ui', b, { outcome: 'merged', inspectionId: 'insp-ui' });
+  const inspection: Inspection = {
+    id: 'insp-ui',
+    runId: 'run-ui',
+    jobId: 'job-ui',
+    repo: FULL,
+    reviewerAgentId: null,
+    reviewerFirmId: null,
+    checks: [],
+    passed: true,
+    pushable: true,
+    design: { before: 6, after: 7.5, diffOnly: false, shots: [{ route: '/', before: null, after: null }] },
+    cost: 0,
+    at: '2026-11-02T01:50:00.000Z',
+  };
+  record('inspection.done', { inspectionId: inspection.id, runId: 'run-ui', jobId: 'job-ui', repo: FULL, passed: true, pushable: true, inspection });
+  const asked: Array<{ net: NetName; raw: RawRow }> = [];
+  const pairs = () => [{ id: 'pair-1', at: '2026-11-03T00:00:00.000Z', pick: 'a' as const, scores: { a: 8, b: 5 } }];
+  const rows = rowsFor('taste', NOW, { predict: answering(0.6, asked), understudyPairs: pairs });
+  assert.deepEqual(rows.filter((r) => r.source === 'distilled').map((r) => [r.id, r.y, r.weight]), [['distilled:insp-ui', 0.6, 0.3]]);
+  assert.deepEqual(asked.map((a) => a.raw.kind), ['merge:ui']);
+});
+
+test('the memo is rebuilt when the teacher changes, the school is switched or the master is promoted', () => {
+  briefWith(10);
+  let p = 0.8;
+  setDistilPredict(() => ({ p, version: 1 }));
+  try {
+    patchSettings({ school: { ...getSettings().school, enabled: true } });
+    assert.equal(rowsFor('triage', NOW).find((r) => r.source === 'distilled')?.y, 0.8);
+    p = 0.4;
+    // a new promotion is a new ledger row: the rows are built again
+    record('net.promoted', { net: 'master', version: 2, from: 1, trusted: true, at: iso(NOW) });
+    assert.equal(rowsFor('triage', NOW).find((r) => r.source === 'distilled')?.y, 0.4);
+    p = 0.2;
+    // the switch lives in settings, not the ledger, and still rebuilds them
+    openDb().prepare("INSERT OR REPLACE INTO settings (key, json) VALUES ('school', ?)").run(JSON.stringify({ ...getSettings().school, enabled: false }));
+    assert.equal(rowsFor('triage', NOW).find((r) => r.source === 'distilled')?.y, 0.2);
+    // a new teacher rebuilds them too
+    setDistilPredict(() => null);
+    assert.equal(rowsFor('triage', NOW).filter((r) => r.source === 'distilled').length, 0);
+  } finally {
+    setDistilPredict(null);
+  }
+});
+
+test('pin: durability, router and appraiser never get distilled rows', () => {
+  putRepo({ market: true });
+  putAgent('ines', 'ashlar');
+  const t0 = Date.parse('2026-10-01T12:00:00.000Z');
+  putJob('job-1');
+  const b = makeBid('bid-1', 'job-1', 'ashlar', 'ines');
+  record('job.awarded', { jobId: 'job-1', tier: 'normal', considered: [b], satOut: [], chosen: b, why: '' });
+  putRun('run-1', 'job-1', b, { endedAt: iso(t0) });
+  record('merge.detected', { jobId: 'job-1', runId: 'run-1', repo: FULL, mergedAt: iso(t0), at: iso(t0) });
+  record('decision.resolved', { key: 'merge:low:job-1', kind: 'merge:low', repo: FULL, jobId: 'job-1', approved: true, by: 'merge', predictionId: 1, agreed: true, at: iso(t0) });
+  const asked: Array<{ net: NetName; raw: RawRow }> = [];
+  for (const net of ['appraiser-pass', 'appraiser-cost', 'router', 'durability', 'master'] as const) {
+    const rows = rowsFor(net, NOW, { predict: answering(0.9, asked) });
+    assert.ok(rows.length > 0, `${net} has its real rows`);
+    assert.ok(rows.every((r) => r.source === 'real' && r.weight === 1), `${net} has only real rows`);
+  }
+  assert.deepEqual(asked, [], 'the master is never asked for them');
 });

@@ -9,7 +9,7 @@
  * then SIGKILL `GATE.killGraceMs` later, and the train is paused with the
  * reason and the steps the pause lost (those done since the last save).
  * `pauseAll` does the same for every live train at once (the stop file, the
- * school turned off). The ledger carries `train.started`, then one of
+ * school turned off: `schoolOff` in tick.ts). The ledger carries `train.started`, then one of
  * `train.paused` or `train.ended`, each with the whole TrainState.
  *
  * The child's stdout is JSON lines: an object with numeric `step` and `of`
@@ -67,6 +67,11 @@ let gateFn: Gate = gateNow;
 /** Installs a gate for tests, or `null` to read the real one again. */
 export function setGate(fn: Gate | null): void {
   gateFn = fn ?? gateNow;
+}
+
+/** The gate as the trainer reads it (the one `setGate` installed, else the real one), for the school tick. */
+export function readGate(kind: GateKind, now: number): Promise<GateState> {
+  return gateFn(kind, now);
 }
 
 type Kill = (pgid: number, signal: 'SIGTERM' | 'SIGKILL') => boolean;
@@ -154,11 +159,6 @@ function pause(l: Live, reason: string): void {
 /** Pauses every live train with `reason` (the stop file, the school switched off, the engine shutting down). */
 export async function pauseAll(reason: string): Promise<void> {
   for (const l of live.values()) pause(l, reason);
-}
-
-/** The school was turned off: every live train pauses now rather than at the next poll. */
-export function schoolOff(): void {
-  void pauseAll(SCHOOL_OFF_REASON);
 }
 
 async function pollOnce(l: Live): Promise<void> {

@@ -252,11 +252,13 @@ test('a failing gate sends SIGTERM within 30 s and SIGKILL 10 s later and pauses
   assert.ok(lines.includes('stderr:a warning'));
 });
 
-test('turning the school off pauses a live train', async (t) => {
+test('the school switched off where patchSettings never saw it pauses a live train at the next poll', async (t) => {
   clock(t);
   const p = startTrain(input());
   await flush();
-  school({ enabled: false });
+  // written straight to the store: patchSettings would pause it at once (school-tick.test.ts); the poll is the backstop
+  openDb().prepare("INSERT OR REPLACE INTO settings (key, json) VALUES ('school', ?)").run(JSON.stringify({ ...getSettings().school, enabled: false }));
+  assert.deepEqual(spawned[0].kills, []);
   t.mock.timers.tick(GATE.pollMs);
   await flush();
   assert.deepEqual(spawned[0].kills, ['SIGTERM']);

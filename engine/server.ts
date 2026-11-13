@@ -21,6 +21,8 @@ import { paths } from './home.js';
 import { record } from './ledger.js';
 import { analyze, BAD_NAME, city, connect, disconnect, getRepo, isValidFullName, LABEL, listRepos, patchRepo, type RepoPatch } from './repos.js';
 import { getSettings, patchSettings } from './settings.js';
+// Loaded for its effect: the settings route turning the school off runs schoolOff at once (tick.ts installs the hook).
+import './school/tick.js';
 import { realRunner, getRunner, setRunner, getSpawner, realSpawner, setSpawner } from './exec.js';
 import { isSampleHome, sampleGh, sampleSpawner, useSampleFolders } from './sample.js';
 import { claudeSettingsTarget, installHook, isStale, latestReading, NO_CLAUDE_SETTINGS, uninstallHook } from './usage.js';

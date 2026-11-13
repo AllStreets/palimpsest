@@ -22,11 +22,21 @@
  *
  * Ledger kinds later tasks add (`merge.followup`, `decision.resolved`) are
  * read by name, so they are simply empty until those tasks record them.
- * Every row is `source: 'real'` at weight 1; distilled rows are Task 13's.
+ * Every real row is `source: 'real'` at weight 1.
+ *
+ * Distillation (Task 13, ruling 13), only where the targets mean the same:
+ * while triage or taste has fewer than `DISTIL.under` real rows, each of its
+ * proposal items (triage) or UI decisions (taste) gets a twin, `source:
+ * 'distilled'` at weight `DISTIL.weight`, whose label is the master's
+ * P(approve) for that work. The master is asked through `DistilPredict`
+ * (`predict('master', raw)` once Task 14 lands; until then nothing answers
+ * and no row is distilled). The master never learns from its own
+ * predictions, and the appraiser, router and durability never get a
+ * distilled row. `split()` never holds one out.
  */
 import { localDay } from '../../shared/day.js';
 import { encode, LANGUAGE_VALUES, type RawRow } from '../../shared/net-features.js';
-import { NET_MIN, SURVIVE_DAYS } from '../../shared/school-rules.js';
+import { DISTIL, NET_MIN, SURVIVE_DAYS } from '../../shared/school-rules.js';
 import type { Bid, Inspection, Job, NetName, Run, WorkKind } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { paths } from '../home.js';
@@ -38,6 +48,7 @@ import { reputationLog, resolvedBids } from '../market/reputation.js';
 import { listRuns } from '../market/runs.js';
 import { PR_CLOSED_REASON } from '../market/ship.js';
 import { getRepo, listRepos } from '../repos.js';
+import { getSettings } from '../settings.js';
 import { understudyCounts, understudyPairs } from './understudy.js';
 
 /** One labelled row as the trainer reads it. */
@@ -67,10 +78,27 @@ export interface UnderstudyCounts {
   unreadable: string | null;
 }
 
-/** What other modules provide, injectable; by default the live Understudy reader (empty while its switch is off). */
+/** The master's P(approve) for one piece of work and the version that gave it; null is an abstention. Task 14's `predict` has this shape. */
+export type DistilPredict = (net: NetName, raw: RawRow) => { p: number; version: number } | null;
+
+/** No teacher yet: Task 14 installs `predict` with `setDistilPredict`. */
+const noTeacher: DistilPredict = () => null;
+let teacher: DistilPredict = noTeacher;
+/** Bumped whenever the teacher changes, so the memo never serves rows a former teacher labelled. */
+let teacherGen = 0;
+
+/** Installs the master's predictor for distillation, or `null` for none (no row is distilled). */
+export function setDistilPredict(fn: DistilPredict | null): void {
+  teacher = fn ?? noTeacher;
+  teacherGen += 1;
+  memo.clear();
+}
+
+/** What other modules provide, injectable; by default the live Understudy reader (empty while its switch is off) and the installed teacher. */
 export interface DatasetDeps {
   understudyPairs?: () => UnderstudyPair[];
   understudyCounts?: () => UnderstudyCounts | null;
+  predict?: DistilPredict;
 }
 
 const NETS: readonly NetName[] = ['appraiser-pass', 'appraiser-cost', 'router', 'durability', 'triage', 'taste', 'master'];
@@ -290,6 +318,32 @@ function durabilityRows(now: number): Row[] {
   return byAt(rows);
 }
 
+// ---------------------------------------------------------------- distillation
+
+/**
+ * The distilled twins of `pending` (ruling 13): none once the net has
+ * `DISTIL.under` real rows; else one per row the master answers, its label
+ * the master's P(approve) for that kind of work, at `DISTIL.weight`. The
+ * master is asked with the kind alone: what else it reads (the other nets'
+ * outputs) is Task 14's `masterInputs`.
+ */
+function distil(realCount: number, pending: ReadonlyArray<{ row: Row; kind: WorkKind | null }>, teach: DistilPredict | null): Row[] {
+  if (!teach || realCount >= DISTIL.under) return [];
+  const out: Row[] = [];
+  for (const { row, kind } of pending) {
+    if (!kind) continue;
+    let answer: ReturnType<DistilPredict>;
+    try {
+      answer = teach('master', { kind });
+    } catch {
+      answer = null;
+    }
+    if (!answer || typeof answer.p !== 'number' || !Number.isFinite(answer.p) || answer.p < 0 || answer.p > 1) continue;
+    out.push({ id: `distilled:${row.id}`, at: row.at, x: [...row.x], y: answer.p, weight: DISTIL.weight, source: 'distilled' });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- triage
 
 /** The brief item's kind, tier, time and repo, from its id and what it refers to; unknowns null. */
@@ -349,7 +403,13 @@ function finishedDays(now: number) {
   return briefDays().filter((b) => b.day < today && ms(b.at) <= now);
 }
 
-function triageRows(now: number): Row[] {
+/** The work kind a proposal job is decided as (ruling 14's `workKind`). */
+function proposalKind(j: Job | undefined): WorkKind | null {
+  if (!j) return null;
+  return j.source === 'harness' ? 'propose:harness' : 'propose:readme-gap';
+}
+
+function triageRows(now: number, teach: DistilPredict | null): Row[] {
   const days = finishedDays(now);
   if (days.length === 0) return [];
   const jobs = jobsById();
@@ -375,6 +435,7 @@ function triageRows(now: number): Row[] {
   const pastRepos: Array<string | null> = [];
   let next = 0;
   const rows: Row[] = [];
+  const pending: Array<{ row: Row; kind: WorkKind | null }> = [];
   for (const b of days) {
     const opened = ms(b.at);
     const open = new Date(opened);
@@ -395,10 +456,12 @@ function triageRows(now: number): Row[] {
         position,
         repo_accept_share: f.repo && pastRepos.length > 0 ? pastRepos.filter((r) => r === f.repo).length / pastRepos.length : null,
       };
-      rows.push(real(`${b.day}:${itemId}`, b.at, encode('triage', raw), acted ? 1 : 0));
+      const row = real(`${b.day}:${itemId}`, b.at, encode('triage', raw), acted ? 1 : 0);
+      rows.push(row);
+      if (teach && f.kind === 'proposal') pending.push({ row, kind: proposalKind(jobs.get(itemId.slice(itemId.indexOf(':') + 1))) });
     });
   }
-  return byAt(rows);
+  return byAt([...rows, ...distil(rows.length, pending, teach)]);
 }
 
 // ---------------------------------------------------------------- taste
@@ -425,23 +488,26 @@ function prDecision(run: Run | undefined, now: number): 0 | 1 | null {
   return null;
 }
 
-function tasteRows(now: number, deps: DatasetDeps): Row[] {
+function tasteRows(now: number, deps: DatasetDeps, teach: DistilPredict | null): Row[] {
   const runs = new Map(listRuns().map((r) => [r.id, r]));
   const acted = actedJobs();
   const rows: Row[] = [];
+  const pending: Array<{ row: Row; kind: WorkKind | null }> = [];
   for (const i of uiInspections()) {
     const y = acted.has(i.jobId) ? null : prDecision(runs.get(i.runId), now);
     if (y === null || !i.design) continue;
     const { before, after } = i.design;
     const raw: RawRow = { after, before, difference: before === null ? null : after - before, diff_only: i.design.diffOnly, shots: i.design.shots.length, pair: 0 };
-    rows.push(real(i.id, i.at, encode('taste', raw), y));
+    const row = real(i.id, i.at, encode('taste', raw), y);
+    rows.push(row);
+    if (teach) pending.push({ row, kind: 'merge:ui' });
   }
   for (const p of (deps.understudyPairs ?? understudyPairs)()) {
     if (!p.scores || (p.pick !== 'a' && p.pick !== 'b') || ms(p.at) > now) continue;
     const raw: RawRow = { after: p.scores.a, before: p.scores.b, difference: p.scores.a - p.scores.b, diff_only: 0, shots: 1, pair: 1 };
     rows.push(real(`pair:${p.id}`, p.at, encode('taste', raw), p.pick === 'a' ? 1 : 0));
   }
-  return byAt(rows);
+  return byAt([...rows, ...distil(rows.length, pending, teach)]);
 }
 
 // ---------------------------------------------------------------- master
@@ -503,7 +569,9 @@ function masterRows(now: number): Row[] {
 /**
  * Built rows by home, net, `now`, newest ledger id and newest credits id
  * (and, for taste, Understudy's answered pairs as read now, which change
- * outside the ledger); only calls with no injected deps are kept.
+ * outside the ledger; for the nets that distil, the school's switch and the
+ * teacher, since a promotion is a ledger row but the switch is a setting);
+ * only calls with no injected deps are kept.
  */
 const memo = new Map<string, Row[]>();
 const MEMO_MAX = 64;
@@ -524,7 +592,8 @@ export function rowsFor(net: NetName, now: number, deps: DatasetDeps = {}): Row[
   if (Object.keys(deps).length > 0) return buildRows(net, now, deps);
   // Understudy is read once per call: its pairs key the memo and build the rows.
   const pairs = net === 'taste' ? understudyPairs() : [];
-  const key = memoKey(net, now, net === 'taste' ? JSON.stringify(pairs) : '');
+  const distils = DISTILS.has(net) ? `${teacherGen}\n${getSettings().school.enabled}\n` : '';
+  const key = memoKey(net, now, distils + (net === 'taste' ? JSON.stringify(pairs) : ''));
   const hit = memo.get(key);
   if (hit) return hit.map((r) => ({ ...r, x: [...r.x] }));
   const rows = buildRows(net, now, net === 'taste' ? { understudyPairs: () => pairs } : deps);
@@ -533,7 +602,11 @@ export function rowsFor(net: NetName, now: number, deps: DatasetDeps = {}): Row[
   return rows.map((r) => ({ ...r, x: [...r.x] }));
 }
 
+/** The only nets whose targets mean what the master's do (ruling 13). */
+const DISTILS: ReadonlySet<NetName> = new Set(['triage', 'taste']);
+
 function buildRows(net: NetName, now: number, deps: DatasetDeps): Row[] {
+  const teach = DISTILS.has(net) ? (deps.predict ?? teacher) : null;
   switch (net) {
     case 'appraiser-pass':
     case 'appraiser-cost':
@@ -548,19 +621,21 @@ function buildRows(net: NetName, now: number, deps: DatasetDeps): Row[] {
     case 'durability':
       return durabilityRows(now);
     case 'triage':
-      return triageRows(now);
+      return triageRows(now, teach);
     case 'taste':
-      return tasteRows(now, deps);
+      return tasteRows(now, deps, teach);
     case 'master':
       return masterRows(now);
   }
 }
 
-/** Every net's label count as of `now`. */
+const realCount = (rows: readonly Row[]): number => rows.filter((r) => r.source === 'real').length;
+
+/** Every net's label count as of `now`: his own rows alone, never a distilled one. */
 export function labelCounts(now: number, deps: DatasetDeps = {}): Record<NetName, number> {
-  const pass = rowsFor('appraiser-pass', now, deps).length;
+  const pass = realCount(rowsFor('appraiser-pass', now, deps));
   const out = { 'appraiser-pass': pass, 'appraiser-cost': pass, router: pass } as Record<NetName, number>;
-  for (const net of NETS) if (out[net] === undefined) out[net] = rowsFor(net, now, deps).length;
+  for (const net of NETS) if (out[net] === undefined) out[net] = realCount(rowsFor(net, now, deps));
   return out;
 }
 
@@ -570,7 +645,7 @@ function plural(n: number, one: string, many = `${one}s`): string {
 
 /** Why the net has too few labels, in his words, from live counts (ruling 29). */
 export function thinCause(net: NetName, now: number, deps: DatasetDeps = {}): string {
-  const n = rowsFor(net, now, deps).length;
+  const n = realCount(rowsFor(net, now, deps));
   switch (net) {
     case 'appraiser-pass':
     case 'appraiser-cost':

@@ -1,5 +1,19 @@
 import type { Settings } from '../shared/types.js';
 import { openDb } from './db.js';
+import { record } from './ledger.js';
+
+/**
+ * What turning the school off runs: `schoolOff` from school/tick.ts, which
+ * installs itself when it loads (main.ts and server.ts import it). Settings
+ * cannot import it directly: it sits under nearly every module, and the
+ * school's imports reach back into the market, an import cycle.
+ */
+let onSchoolOff: ((now: number) => void) | null = null;
+
+/** Installs what turning `school.enabled` off runs (tick.ts does, once), or `null` for nothing. */
+export function setSchoolOffHook(fn: ((now: number) => void) | null): void {
+  onSchoolOff = fn;
+}
 
 const DEFAULTS: Settings = {
   quality: 'high',
@@ -59,14 +73,23 @@ export function getSettings(): Settings {
   return merged;
 }
 
-/** Merges `p` into the stored settings (one row per key) and returns the result. */
+/**
+ * Merges `p` into the stored settings (one row per key) and returns the
+ * result. Turning `school.enabled` off calls `schoolOff()` through its hook (every live train
+ * paused, every voyage or arena build aborted, at once); turning it on is
+ * recorded as `school.enabled { on: true }`.
+ */
 export function patchSettings(p: Partial<Settings>): Settings {
   const db = openDb();
+  const was = p.school ? getSettings().school.enabled : null;
   const stmt = db.prepare(
     'INSERT INTO settings (key, json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET json = excluded.json',
   );
   for (const [key, value] of Object.entries(p)) {
     stmt.run(key, JSON.stringify(value));
   }
-  return getSettings();
+  const next = getSettings();
+  if (was === true && !next.school.enabled) onSchoolOff?.(Date.now());
+  else if (was === false && next.school.enabled) record('school.enabled', { on: true, at: new Date().toISOString() });
+  return next;
 }

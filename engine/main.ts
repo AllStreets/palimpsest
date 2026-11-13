@@ -14,6 +14,7 @@ import { backfillReports, ensureDailyReport, latestReportDay } from './market/re
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { ensureCampus } from './school/campus.js';
+import { startSchool } from './school/tick.js';
 import { ENGINE_STOPPED_REASON, failInterruptedTrains, pauseAll } from './school/trainer.js';
 import { isSampleHome } from './sample.js';
 import { bootSampleEngine } from './sample-boot.js';
@@ -93,11 +94,15 @@ async function main(): Promise<void> {
     },
   });
   scheduler.start();
+  // Phase 4 ruling 12: the nightly retrain. Each tick does nothing while the school is off or the light gate says no;
+  // never started on a sample home (sampleMain) or by a test (tests call startSchool themselves, with fakes).
+  const school = startSchool();
 
   // A first signal stops the market (runs killed and reaped, leases aborted) within a 10 s grace; a second exits at once.
   // eslint-disable-next-line no-console
   // Phase 4 ruling 7: every live train gets SIGTERM as the engine stops; a restart reaps what outlives it.
   const closeAll = async () => {
+    school.stop();
     await pauseAll(ENGINE_STOPPED_REASON);
     await close();
   };
