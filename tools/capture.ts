@@ -391,6 +391,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await still(page, 'campus-home', home.home.eye, home.home.target);
       await still(page, 'campus-quad', at(-30, 30, 10), at(60, 10, -4));
       await still(page, 'campus-hall', at(92, 8, 36), at(66, 11, 54));
+      await still(page, 'campus-terrace', at(-44, 5, -34), at(-10, 7, -2));
       const extra = JSON.parse(process.env.CAMPUS_VIEWS ?? '[]') as [V3, V3][];
       for (const [i, [e, t]] of extra.entries()) await still(page, `campus-${i}`, at(e[0], e[1], e[2]), at(t[0], t[1], t[2]));
     },

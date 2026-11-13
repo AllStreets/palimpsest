@@ -935,6 +935,10 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   await setView(page, at(92, 8, 36), at(66, 11, 54));
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(SHOTS, 'campus-hall.png') });
+  // The terrace from the street: the wall, the stair cut into it and the piers, the halls' gables above.
+  await setView(page, at(-44, 5, -34), at(-10, 7, -2));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-terrace.png') });
   await setView(page, home.eye, home.target);
   await page.waitForTimeout(800);
 }

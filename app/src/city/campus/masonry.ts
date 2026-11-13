@@ -2,8 +2,8 @@
  * The campus's one opaque material (site.ts explains the kinds): a
  * MeshStandardMaterial whose fragment picks a scan by `vKind`. The brick
  * scan is its own map; the limestone, ashlar and gravel scans come in as
- * uniforms (gravel is the sand scan at a fine tile); slate and turf are flat tones with a little relief borrowed from
- * the brick and sand normals. App only: it loads textures.
+ * uniforms (gravel is the sand scan at a fine tile); slate is coursed in the
+ * shader, turf is mottled and striped, and the lamp kind emits its tone. App only: it loads textures.
  */
 import * as THREE from 'three';
 
@@ -27,9 +27,6 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
     uAshMap: { value: texture('ashlar_diff.jpg', true) },
     uAshNor: { value: texture('ashlar_nor.jpg') },
     uAshArm: { value: texture('ashlar_arm.jpg') },
-    uPaveMap: { value: texture('pave_diff.jpg', true) },
-    uPaveNor: { value: texture('pave_nor.jpg') },
-    uPaveArm: { value: texture('pave_arm.jpg') },
   };
   m.customProgramCacheKey = () => 'palimpsest-campus-masonry';
   m.onBeforeCompile = (sh) => {
@@ -44,7 +41,6 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
         varying float vKind;
         uniform sampler2D uSandMap; uniform sampler2D uSandNor; uniform sampler2D uSandArm;
         uniform sampler2D uAshMap; uniform sampler2D uAshNor; uniform sampler2D uAshArm;
-        uniform sampler2D uPaveMap; uniform sampler2D uPaveNor; uniform sampler2D uPaveArm;
         int campusKind() { return int(vKind + 0.5); }`,
       )
       .replace(
@@ -55,16 +51,30 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           if (ck == 0) s = texture2D(map, vMapUv);
           else if (ck == 1) s = texture2D(uSandMap, vMapUv);
           else if (ck == 3) s = texture2D(uAshMap, vMapUv);
-          else if (ck == 5) s = texture2D(uSandMap, vMapUv);
+          else if (ck == 5) {
+            // Gravel: the sand scan is a mid-grey meant to be tinted pale; lifted, it reads as crushed limestone.
+            vec3 gr = texture2D(uSandMap, vMapUv).rgb;
+            s = vec4(min(vec3(1.0), gr * 1.75 + 0.08), 1.0);
+          }
           else if (ck == 2) {
-            // Slate: courses from the brick scan's shading, a worn sheen on the ridge of each slate.
+            // Slate: courses of slates half a metre deep and a third wide, each course offset by half a slate, their
+            // edges a shade darker, and the brick scan's shading as the stone's own variation.
             float c = texture2D(map, vMapUv).g;
-            s = vec4(vec3(0.8 + 0.4 * c), 1.0);
+            float course = floor(vMapUv.y * 4.0);
+            float sx = fract(vMapUv.x * 6.0 + 0.5 * mod(course, 2.0));
+            float sy = fract(vMapUv.y * 4.0);
+            float edge = smoothstep(0.0, 0.1, sy) * smoothstep(0.0, 0.07, sx) * (1.0 - 0.5 * smoothstep(0.9, 1.0, sy));
+            float tone = 0.9 + 0.2 * fract(sin(course * 12.9898 + floor(vMapUv.x * 6.0 + 0.5 * mod(course, 2.0)) * 78.233) * 43758.5453);
+            s = vec4(vec3((0.82 + 0.3 * c) * (0.7 + 0.3 * edge) * tone), 1.0);
+          } else if (ck == 6) {
+            s = vec4(1.0);
           } else {
-            // Turf: a mown lawn, mottled by the sand scan at a coarse tile, never flat.
-            float a = texture2D(uSandMap, vMapUv * 0.37).g;
-            float b = texture2D(uSandMap, vMapUv * 2.9).g;
-            s = vec4(vec3(0.78 + 0.3 * a + 0.1 * b), 1.0);
+            // Turf: a mown lawn, mottled by the sand scan at a coarse tile and a finer one, with the mower's stripes.
+            float a = texture2D(uSandMap, vMapUv * 0.13).g;
+            float b = texture2D(uSandMap, vMapUv * 0.6).g;
+            float f = texture2D(uSandMap, vMapUv * 3.1).g;
+            float stripe = 0.95 + 0.05 * step(0.5, fract(vMapUv.x * 2.2));
+            s = vec4(vec3((0.62 + 0.5 * a + 0.22 * b + 0.08 * f) * stripe), 1.0);
           }
           diffuseColor *= s;
         }`,
@@ -79,7 +89,8 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           else if (ck == 1) r = texture2D(uSandArm, vRoughnessMapUv).g;
           else if (ck == 3) r = texture2D(uAshArm, vRoughnessMapUv).g;
           else if (ck == 5) r = 0.9 + 0.1 * texture2D(uSandArm, vRoughnessMapUv).g;
-          else if (ck == 2) r = 0.72 + 0.2 * texture2D(roughnessMap, vRoughnessMapUv).g;
+          else if (ck == 2) r = 0.52 + 0.22 * texture2D(roughnessMap, vRoughnessMapUv).g;
+          else if (ck == 6) r = 0.5;
           else r = 0.96;
           roughnessFactor *= r;
         }`,
@@ -94,15 +105,18 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           if (ck == 0) mapN = texture2D(normalMap, vNormalMapUv).xyz;
           else if (ck == 1) { mapN = texture2D(uSandNor, vNormalMapUv).xyz; k = 0.8; }
           else if (ck == 3) { mapN = texture2D(uAshNor, vNormalMapUv).xyz; k = 1.1; }
-          else if (ck == 5) { mapN = texture2D(uSandNor, vNormalMapUv).xyz; k = 0.9; }
+          else if (ck == 5) { mapN = texture2D(uSandNor, vNormalMapUv).xyz; k = 0.25; }
           else if (ck == 2) { mapN = texture2D(normalMap, vNormalMapUv).xyz; k = 0.35; }
+          else if (ck == 6) { mapN = vec3(0.5, 0.5, 1.0); }
           else { mapN = texture2D(uSandNor, vNormalMapUv * 2.9).xyz; k = 0.3; }
           mapN = mapN * 2.0 - 1.0;
           mapN.xy *= normalScale * k;
           normal = normalize( tbn * mapN );
         }
         #endif`,
-      );
+      )
+      // The lamp heads emit their own tone: warm, at a level the street lamps' lenses share, so bloom catches them at dusk.
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\nif (campusKind() == 6) totalEmissiveRadiance += vColor.rgb * 3.2;');
   };
   return m;
 }

@@ -66,9 +66,11 @@ test('the campus stands on its slot’s origin, inside its block', () => {
     assert.ok(Math.abs(p.y - TERRACE) < 1e-6, `${name} stands on the terrace`);
   }
   // Moved, it goes whole, anchors and all.
-  const other = districtOrigin(9);
+  const other = districtOrigin(4);
   campus.set(other);
-  assert.ok(Math.abs(campus.anchors().gate.x - anchors.gate.x - (other.x - origin.x)) < 1e-6 || Math.abs(campus.anchors().gate.z - anchors.gate.z - (other.z - origin.z)) < 1e-6, 'the gate moves with the campus');
+  // Slot 4 stands on the same side of the city as slot 5, so the campus keeps its yaw and the gate moves by exactly the shift.
+  const moved = campus.anchors().gate;
+  assert.ok(Math.abs(moved.x - anchors.gate.x - (other.x - origin.x)) < 1e-6 && Math.abs(moved.z - anchors.gate.z - (other.z - origin.z)) < 1e-6, `the gate moves with the campus (${moved.x.toFixed(1)}, ${moved.z.toFixed(1)})`);
   campus.dispose();
 });
 
@@ -136,4 +138,21 @@ test('the whole campus draws in at most 3 calls a pass, at high and at medium', 
     assert.ok(drawnTriangles(campus.group) < 300_000, `${quality}: ${drawnTriangles(campus.group).toFixed(0)} triangles a pass`);
     campus.dispose();
   }
+});
+
+test('a disposed campus lets go of every geometry it made', () => {
+  const campus = createCampus({ quality: 'high', materials: plainMaterials(), masonry: plain() });
+  campus.set(districtOrigin(3));
+  const geometries = new Set<THREE.BufferGeometry>();
+  campus.group.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh) geometries.add(m.geometry);
+  });
+  assert.ok(geometries.size >= 3, `the site, the halls and the panes (${geometries.size} geometries)`);
+  let disposed = 0;
+  for (const g of geometries) g.addEventListener('dispose', () => disposed++);
+  campus.dispose();
+  assert.equal(disposed, geometries.size, 'each geometry disposed once');
+  // The lamps are in the site's draw: lit heads that cost no call of their own.
+  assert.equal(drawnMeshes(campus.group), 3, 'and the group still names only its three meshes');
 });

@@ -22,7 +22,7 @@ import { mergeStamped, stamp, type Kind } from './site.js';
 export const HALL = { length: 56, width: 16, eaves: 9.4, ridge: 18.3, wall: 0.5 } as const;
 
 /** The Kit material each kind is built in; the stamped geometry carries the kind, not the material. */
-const MAT: Record<Kind, MatKey> = { brick: 'brickWall', limestone: 'limestone', slate: 'roofTile', ashlar: 'granite', turf: 'sand', gravel: 'slab' };
+const MAT: Record<Kind, MatKey> = { brick: 'brickWall', limestone: 'limestone', slate: 'roofTile', ashlar: 'granite', turf: 'sand', gravel: 'slab', lamp: 'lightLine' };
 const KIND_OF: Partial<Record<string, Kind>> = Object.fromEntries(Object.entries(MAT).map(([k, m]) => [`tower:${m}`, k as Kind]));
 
 export interface HallOptions {
@@ -142,17 +142,25 @@ export function buildHall(o: HallOptions): Hall {
   for (const side of [1, 3]) box('limestone', W + 0.24, 0.24, 0.24, hallFace(side).multiply(M(0, stringY, 0.0)));
 
   // ---------------------------------------------------------------- buttresses
-  /** A buttress on a face frame at u: two brick stages, each under a limestone weathering, the lower one deeper. */
+  /**
+   * A buttress on a face frame at u: a limestone base block, then three
+   * brick stages each set back and narrower than the one below, each under
+   * a steep limestone weathering with a drip standing proud of the stage.
+   */
   const buttress = (F: THREE.Matrix4, u: number): void => {
-    const stages: Array<[number, number, number]> = [
-      [plinthH, 5.4, 0.95],
-      [5.4, 8.6, 0.6],
+    const stages: Array<[number, number, number, number]> = [
+      [plinthH, 3.3, 1.15, 1.36],
+      [3.3, 6.3, 0.82, 1.2],
+      [6.3, 8.75, 0.5, 1.04],
     ];
-    for (const [y0, y1, d] of stages) {
-      const h = y1 - y0;
-      add('brick', wedge(1.1, h, d, Math.min(0.55, d * 0.6)), F.clone().multiply(M(u, y0 + h / 2, d / 2)), 0.04);
-      // The weathering: a sloped limestone slab over the stage's top.
-      add('limestone', wedge(1.2, 0.22, d + 0.08, Math.min(0.55, d * 0.6)), F.clone().multiply(M(u, y1 - 0.11 + 0.0, d / 2 + 0.04)));
+    add('limestone', new THREE.BoxGeometry(1.5, plinthH, 1.3), F.clone().multiply(M(u, plinthH / 2, 0.65)));
+    for (const [y0, y1, d, w] of stages) {
+      const drop = Math.min(0.7, d * 0.75);
+      const h = y1 - y0 - drop;
+      add('brick', wedge(w, h + drop, d, drop), F.clone().multiply(M(u, y0 + (h + drop) / 2, d / 2)), 0.04);
+      // The weathering: a steep limestone slab with a drip, overhanging the stage by a hand.
+      add('limestone', wedge(w + 0.12, drop + 0.14, d + 0.1, drop), F.clone().multiply(M(u, y1 - (drop + 0.14) / 2 + 0.1, d / 2 + 0.05)));
+      add('limestone', new THREE.BoxGeometry(w + 0.12, 0.1, 0.14), F.clone().multiply(M(u, y1 - drop + 0.02, d + 0.08)));
     }
   };
   for (const side of [0, 2]) for (const u of [-19.6, -8.4, 8.4, 19.6]) buttress(hallFace(side), u);
