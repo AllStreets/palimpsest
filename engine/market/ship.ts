@@ -45,7 +45,7 @@ import { onRealDataHome, paths } from '../home.js';
 import { query, record } from '../ledger.js';
 import { mirrorDir, syncMirror } from '../mirror.js';
 import { earnedFloors, getRepo, layEarnedFloor, listRepos, removeEarnedFloor, updateEarnedFloor } from '../repos.js';
-import { notePending } from '../school/hooks.js';
+import { notePending, noteRevert } from '../school/hooks.js';
 import { bidById } from './bids.js';
 import type { Egress } from './egress.js';
 import { agent as storedAgent, agentTowerId } from './firms.js';
@@ -946,6 +946,9 @@ export async function watchRevertsFor(repo: Repo, now: number = Date.now(), o: {
       }
       const data = { jobId: e.jobId, runId: e.runId, repo: repo.fullName, floorId: f.id, mergeSha, revertSha: hit.sha, at: iso(now) };
       record('merge.reverted', data);
+      // Ruling 19: the pair that merged this job on its own is revoked here, before the bus hears it and
+      // before the repo halts below (hooks.ts; autonomy.ts installs it, and a second call revokes nothing twice).
+      noteRevert(data);
       emit('merge.reverted', data);
       hits.push(f.title);
     } catch (err) {

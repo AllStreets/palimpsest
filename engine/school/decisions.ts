@@ -308,7 +308,8 @@ export function jobSchool(job: Job): JobSchool {
 }
 
 /** Whether `key` has a `decision.resolved` row: once he has decided, no guess on it is prospective. */
-function decided(key: string): boolean {
+/** Whether he has decided `key` (any `decision.resolved` on it): no guess on it is prospective any more, and the city never acts on it (mayAct). */
+export function decided(key: string): boolean {
   const row = openDb().prepare("SELECT 1 AS hit FROM ledger WHERE kind = 'decision.resolved' AND json_extract(json, '$.key') = ? LIMIT 1").get(key);
   return row !== undefined;
 }

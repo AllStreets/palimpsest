@@ -18,11 +18,19 @@
  * - `autonomy.suspended { kind, repo, reason, grant, at }`: the school's
  *   own stop (he undid an act, the window fell, the repo test failed, the
  *   repo allows only squash merges); asked again when eligible, no silence.
- * - `autonomy.acted` (Task 17 writes these through `noteActed` and
- *   `noteActResult`): before an act, `{ kind, repo, jobId, key, grant, at }`
- *   with the grant's `acted` count moved; after it, `{ kind, repo, jobId,
- *   key, result: { ok, reason }, at }` with no grant. `kind` and `repo` sit
- *   at the top of both, which is where decisions.ts reads them (by `jobId`).
+ * - `autonomy.acted` (`act()` writes these through `noteActed` and
+ *   `noteActResult`, Task 17): before an act, `{ kind, repo, jobId, key,
+ *   grant, at }` with the grant's `acted` count moved; after it, `{ kind,
+ *   repo, jobId, key, result: { ok, reason }, at }` with no grant. `kind`
+ *   and `repo` sit at the top of both, which is where decisions.ts reads
+ *   them (by `jobId`), so the city's accept or merge is never heard as his.
+ *
+ * `act(now)` (ruling 18) is the tick's: for every granted pair, every
+ * proposal or waiting PR of that kind on that repo the city has not acted
+ * on and he has not decided, `mayAct` immediately before, the row before,
+ * `acceptProposed()` or `mergePR()` (with the head `mayAct` checked), the
+ * result after. The switch and the stop file are read again between acts.
+ * A key he has decided is refused, whatever the store says the job is.
  *
  * `AllStreets/beagle` is never asked about, never granted and never acted
  * on while Palimpsest imports Beagle (ruling 1), whatever the tables say.
@@ -37,16 +45,16 @@ import { AGREE, itemKey, WORK_KINDS, workKind } from '../../shared/school-rules.
 import type { Grant, Job, Repo, Run, WorkKind } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
-import { prState } from '../github.js';
+import { MergeMethodError, mergePR, prState } from '../github.js';
 import { paths } from '../home.js';
 import { query, record } from '../ledger.js';
-import { job as storedJob } from '../market/jobs.js';
+import { acceptProposed, job as storedJob, listJobs } from '../market/jobs.js';
 import { listRuns, run as storedRun, STOP_REASON } from '../market/runs.js';
 import { watchRevertsFor } from '../market/ship.js';
 import { getRepo, listRepos } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { latestInspection } from './datasets.js';
-import { agreement, masterState, registered } from './decisions.js';
+import { agreement, decided, masterState, registered } from './decisions.js';
 import { setRevertHook, setSuspendHook } from './hooks.js';
 import { versions } from './nets.js';
 
@@ -364,6 +372,8 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
   }
 
   const key = itemKey(kind, jobId);
+  // A key he has decided is his: the city never acts on it, whatever the store says the job is.
+  if (decided(key)) return no(`You have already decided ${key}.`);
   const pred = registered(key);
   if (!pred) return no(`The master made no guess on ${key}.`);
   if (pred.p === null) return no(`The master abstained on ${key}: ${sentence(pred.reason ?? 'no reason was written down')}`);
@@ -402,6 +412,122 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
   const last = standing(kind, repo, now);
   if (last.refused) return no(last.refused);
   return { ok: true, reason: null };
+}
+
+// ---------------------------------------------------------------- the acts (ruling 18)
+
+/** Something the city may act on under a pair: a proposal waiting, or a PR waiting with the run that carries it. */
+interface Candidate {
+  job: Job;
+  run: Run | null;
+}
+
+/** Whether any `autonomy.acted` row names `jobId`: a job is acted on once, whatever came of it. */
+function actedBefore(jobId: string): boolean {
+  return query({ kind: 'autonomy.acted', jobId }).length > 0;
+}
+
+/** What `kind` on `repo` could act on now, the oldest first; a job the city already acted on, or a key he has decided, is never a candidate. */
+function candidates(kind: WorkKind, repo: string): Candidate[] {
+  const out: Candidate[] = [];
+  if (kind.startsWith('propose:')) {
+    for (const job of listJobs({ status: 'proposed' })) {
+      if (job.repo !== repo || workKind(job, null) !== kind || actedBefore(job.id) || decided(itemKey(kind, job.id))) continue;
+      out.push({ job, run: null });
+    }
+    return out.sort((a, b) => a.job.postedAt.localeCompare(b.job.postedAt));
+  }
+  const seen = new Set<string>();
+  for (const run of listRuns().sort((a, b) => a.startedAt.localeCompare(b.startedAt))) {
+    if (run.repo !== repo || run.stage !== 'waiting' || run.outcome !== null || run.prNumber === null || !run.headSha || seen.has(run.jobId)) continue;
+    const job = storedJob(run.jobId);
+    if (!job || job.status !== 'waiting' || job.repo !== repo) continue;
+    if (prRun(job)?.id !== run.id) continue;
+    if (workKind(job, latestInspection(run.id) ?? {}) !== kind || actedBefore(job.id) || decided(itemKey(kind, job.id))) continue;
+    seen.add(job.id);
+    out.push({ job, run });
+  }
+  return out;
+}
+
+/** The switch and the stop file, read between acts in one tick: either stops the tick's acts where they are. */
+function stopped(): boolean {
+  return !getSettings().school.enabled || existsSync(paths().stop);
+}
+
+/**
+ * One act, after `mayAct` said yes a moment ago: `autonomy.acted` first (so
+ * decisions.ts never hears the act as his), then `acceptProposed()` or
+ * `mergePR()` with the head `mayAct` checked, then the result row. A merge
+ * refused because the repo allows only squash or rebase merges suspends the
+ * pair with that reason. Returns whether the act went through.
+ */
+async function actOn(kind: WorkKind, repo: string, c: Candidate, now: number): Promise<boolean> {
+  const jobId = c.job.id;
+  // read once more, with no wait since mayAct: the head the merge must match
+  const run = c.run ? storedRun(c.run.id) : null;
+  if (kind.startsWith('merge:') && (!run || run.prNumber === null || !run.headSha || run.stage !== 'waiting' || run.outcome !== null)) return false;
+  try {
+    noteActed(kind, repo, jobId, now);
+  } catch (err) {
+    console.error(`palimpsest: the city could not record its act on ${jobId}, so it did not act: ${errText(err)}`);
+    return false;
+  }
+  let result: { ok: boolean; reason: string | null };
+  try {
+    if (run) await mergePR(repo, run.prNumber as number, run.headSha as string);
+    else acceptProposed(jobId);
+    result = { ok: true, reason: null };
+  } catch (err) {
+    result = { ok: false, reason: errText(err) };
+    if (err instanceof MergeMethodError) suspend(kind, repo, err.message, now);
+  }
+  try {
+    noteActResult(kind, repo, jobId, result, now);
+  } catch (err) {
+    console.error(`palimpsest: the result of the city's act on ${jobId} could not be recorded: ${errText(err)}`);
+  }
+  return result.ok;
+}
+
+let acting = false;
+
+/**
+ * The tick's acts (ruling 18; Decision 13): for every granted pair, in the
+ * kinds' order, every proposal or waiting PR of that kind on that repo that
+ * the city has not acted on before. `mayAct` is asked immediately before
+ * each act and nothing else's answer counts; the switch and the stop file
+ * are read again between acts, and either ends the tick's acts at once. A
+ * refusal is no act and leaves no row (a suspension or revocation inside
+ * `mayAct` writes its own). Returns how many acts went through. Nothing with
+ * the school off, and nothing while another call is still acting.
+ */
+export async function act(now: number = Date.now()): Promise<number> {
+  if (acting) return 0;
+  acting = true;
+  try {
+    return await actAll(now);
+  } finally {
+    acting = false;
+  }
+}
+
+async function actAll(now: number): Promise<number> {
+  let n = 0;
+  if (stopped()) return n;
+  for (const g of grants()) {
+    if (g.state !== 'granted' || isBeagle(g.repo)) continue;
+    for (const c of candidates(g.kind, g.repo)) {
+      if (stopped()) return n;
+      const may = await mayAct(g.kind, g.repo, c.job.id, now);
+      if (!may.ok) {
+        if (may.reason?.startsWith('could not check')) console.warn(`palimpsest: the city did not act on ${c.job.id}: ${may.reason}`);
+        continue;
+      }
+      if (await actOn(g.kind, g.repo, c, now)) n++;
+    }
+  }
+  return n;
 }
 
 // decisions.ts suspends and revokes through hooks.ts; installed as this module loads

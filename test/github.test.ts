@@ -10,9 +10,11 @@ import {
   GhError,
   issueState,
   mergedPRs,
+  mergePR,
   openIssues,
   removeLabel,
 } from '../engine/github.js';
+import { setUp, tearDown } from './guild-fixtures.js';
 
 afterEach(() => {
   setRunner(realRunner);
@@ -301,4 +303,29 @@ test('a malformed repo name never reaches gh', async () => {
 
 test('the real runner refuses gh inside a test run', async () => {
   await assert.rejects(realRunner('gh', ['auth', 'status']), /refused in tests/);
+});
+
+test('with the real runner on a temp home mergePR is refused before any gh call (Phase 4 Task 17)', async () => {
+  setUp('github-merge');
+  try {
+    setRunner(realRunner);
+    // the Task 5 guard answers first; the test runner's own refusal of gh would say "refused in tests"
+    await assert.rejects(mergePR('acme/widgets', 9, 'b'.repeat(40)), /not the real data home/);
+    // and with a fake runner, bad arguments never reach gh
+    const calls: string[][] = [];
+    setRunner(async (_cmd, args) => {
+      calls.push(args);
+      return { stdout: '', stderr: '', code: 0 };
+    });
+    await assert.rejects(mergePR('--repo=evil/x', 9, 'b'.repeat(40)), /repo name/);
+    await assert.rejects(mergePR('acme/widgets', 0, 'b'.repeat(40)), /issue number/);
+    await assert.rejects(mergePR('acme/widgets', 9, '--force'), /head sha/);
+    await assert.rejects(mergePR('acme/widgets', 9, 'b'.repeat(39)), /head sha/);
+    assert.equal(calls.length, 0);
+    // the one call it makes
+    await mergePR('acme/widgets', 9, 'b'.repeat(40));
+    assert.deepEqual(calls, [['pr', 'merge', '9', '--repo', 'acme/widgets', '--merge', '--match-head-commit', 'b'.repeat(40)]]);
+  } finally {
+    await tearDown();
+  }
 });

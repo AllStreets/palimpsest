@@ -42,6 +42,20 @@ his switch turns a repo's market on       engine/repos.ts patchRepo, market fals
 his click on the district page or the brief
   > audit                                engine/audit/run.ts queueAudit (trigger demand or brief)
   > proposed job > his click > open      as above
+
+his grant of a (kind, repo) pair, from an ask     engine/school/autonomy.ts grant (Phase 4 rulings 17 and 18)
+  proposed job of a granted kind
+  > mayAct (every check read fresh, a forced revert read included)   engine/school/autonomy.ts mayAct, act
+  > autonomy.acted, then accept          engine/market/jobs.ts acceptProposed
+  > open > bid > ... as above
+  waiting PR of a granted kind
+  > mayAct (fresh revert read)           engine/school/autonomy.ts mayAct, act
+  > autonomy.acted, then gh pr merge     engine/github.ts mergePR (--merge --match-head-commit <the inspected head>)
+  > GitHub
+
+revert watch sees a city merge reverted   engine/market/ship.ts watchRevertsFor
+  > the pair that merged it is revoked   engine/school/autonomy.ts revokeOnRevert (before the halt)
+  > the repo halts until he clears it
 ```
 
 ## Why there is no cycle
@@ -54,6 +68,17 @@ The only writes the city makes to GitHub are branches named `palimpsest/*`, pull
 - The harness job is proposed, never posted: it does not bid until he accepts it (`proposeHarnessJob`, `acceptProposed`, `LEGAL_MOVES` in `shared/market-rules.ts`).
 - The audit's proposals are proposed, never posted (Phase 3 ruling 4). An audit runs once after a market-on repo's first analysis or on his click, never on a schedule, never on re-analysis and never after a city merge, so a merge the city made cannot start the audit that would propose the next job. Each verified gap becomes one `proposed` job (`engine/audit/proposals.ts`, `proposeFromAudit`; `engine/market/jobs.ts`, `postProposal`) whose body opens with `CITY_MARKER`; it does not bid until he accepts it (`acceptProposed`), and nothing of it ever becomes a GitHub issue. Every proposal carries a key (`proposalKey()` on the claim, `HARNESS_KEY()` for the harness; `shared/market-rules.ts`): a key with a job in any status, his dismissal included, is not proposed again by itself (`keyTaken`), and a merged key only while the next audit still finds the claim missing or broken. The scheduler's tick reads `open` jobs only (`test/runs.test.ts`, "proposed jobs never bid").
 - The audit's tools cannot write. Under claude they are `Read`, `Glob` and `Grep` plus the run tool, which runs only the repo's declared checks (`engine/audit/schema.ts`, `AUDIT_TOOLS`, `checkCommands`); the loops get `read_file`, `list_files`, `search` and `run` (`AUDIT_LOOP_TOOLS`). The clone is checked clean after the session (`cloneClean`; anything written ends the audit `failed`), every evidence path is verified against the base commit through `git ls-tree` and `git show`, never the working tree (`verifyEvidence`), a finding with no verified evidence loses its proposal, and a proposal's scope goes through `DENY_SCOPE` at parse time and again when it is posted or edited (`scopeRefused`, `allowedScope`, `setScope`).
+
+## Acting under a grant (Phase 4)
+
+With his grant of one kind of work on one repo (`engine/school/autonomy.ts`, `grant`, only from an ask the school earned by agreeing with him 50 times at 95% or from Settings for a pair he revoked), the school tick (`engine/school/tick.ts`, `act`) accepts proposals of that kind and merges PRs of that kind on that repo without his click. Neither act creates a job:
+
+- An accept moves a job that already exists from `proposed` to `open` (`acceptProposed`); the proposal came from the audit or the harness check, which the city's own acts never start (above). The accept is recorded as the city's (`autonomy.acted`, written strictly before the move), so `decisions.ts` never counts it as his, and his later withdrawal of that job or close of its PR suspends the pair.
+- A merge is `gh pr merge <n> --repo <full> --merge --match-head-commit <sha>` (`engine/github.ts`, `mergePR`) on a PR the city already opened, with the sha the inspection passed; a head that moved is refused by `mayAct` and again by GitHub. The merge lays a floor and pays the firm as his merge would, and it is excluded from founding history and from the job sources exactly as his merge is. `githubWriteRefused()` refuses it before any gh call outside the real data home.
+
+`mayAct` is asked immediately before every act and nothing else's answer counts: the school switch, the pair's state, the stop file, the repo's row, the master and his agreement are read fresh, and read again after every wait; a key he has already decided is refused; for a merge the PR must be open at the inspected head; and every act is preceded by a forced revert read of the repo (`watchRevertsFor(repo, now, { force: true })`), so a revert he pushed a minute before is found by the act's own check. A revert of a merge the city made revokes that pair (`revokeOnRevert`, called by the watch before the repo halts and again by the decisions handler, which revokes nothing twice) and silences it for 30 days; a `gh pr merge --merge` refused because the repo allows only squash or rebase merges suspends the pair with that reason. The switch and the stop file are read again between acts in one tick, and either ends the tick's acts where they are.
+
+**The Beagle pin rule (ruling 1).** Palimpsest imports `AllStreets/beagle` as a library pinned by full sha, and the pin moves only in a commit he approves. So while it imports Beagle, that repo is never asked about, never granted and never acted on, by any spelling (`isBeagle`: trimmed, lower-cased), whatever the tables say: `askDue` skips it, `grant` throws on it, `mayAct` refuses it before it reads the grant, and `noteActed` throws on it. No city-written code reaches the engine except through a pin he approves.
 
 ## Three layers that stop an agent pushing
 
@@ -103,4 +128,5 @@ The control scripts the sandboxed processes run (the hook, the MCP server, the f
 | Spawned process groups capped by wall clock and killed as a group | `engine/exec.ts` `realSpawner` (`maxMs`, `kill`) |
 | Turn and minute caps of a run | Task 9 and Task 13 (`WorkInput.caps`) |
 | Self-halt after three failed inspections in a row or any revert of a city merge | Tasks 15 and 16 (`repo.halted`) |
+| Autonomy: no act without his grant and `mayAct`'s yes at that moment; a revert revokes the pair, his undo or a squash-only refusal suspends it; the school switch and the stop file end a tick's acts | `engine/school/autonomy.ts` `mayAct`, `act`, `revokeOnRevert`, `suspend` (Phase 4 rulings 17 to 19) |
 | Jobs retry once; a failing firm may not bid again | `engine/market/jobs.ts` `transition`; `shared/market-rules.ts` `MAX_ATTEMPTS` |

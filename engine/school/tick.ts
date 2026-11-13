@@ -4,7 +4,9 @@
  *
  * - `startSchool()` ticks every `TICK_MS`. With the school on, a tick first
  *   asks his permission for every (kind, repo) pair that has earned it
- *   (`askDue`, ruling 17; the asks wait on no gate and no train). Then it
+ *   (`askDue`, ruling 17; the asks wait on no gate and no train), then acts
+ *   where he granted it (`act`, ruling 18: every act behind `mayAct`, the
+ *   switch and the stop file read again between acts). Then it
  *   does nothing more unless no train is live and the light gate holds (AC
  *   power, the window, the stop file; gate.ts). Then it trains, one at a time and in
  *   `TRAIN_ORDER` (appraiser, router, durability, triage, taste, master
@@ -28,8 +30,8 @@ import { localDay } from '../../shared/day.js';
 import type { GateState, Grant, NetName } from '../../shared/types.js';
 import { record } from '../ledger.js';
 import { getSettings, setSchoolOffHook } from '../settings.js';
-// the asks (ruling 17); loading it installs the suspend and revert hooks into decisions.ts
-import { askDue } from './autonomy.js';
+// the asks (ruling 17) and the acts (ruling 18); loading it installs the suspend and revert hooks into decisions.ts
+import { act as actDue, askDue } from './autonomy.js';
 import { labelCounts, type DatasetDeps } from './datasets.js';
 // the market's hooks and distillation's teacher, installed as it loads
 import './decisions.js';
@@ -102,6 +104,8 @@ export interface SchoolOptions {
   labels?: (now: number, deps: DatasetDeps) => Record<NetName, number>;
   /** The asks for autonomy; defaults to `askDue`. */
   ask?: (now: number) => Grant[];
+  /** The acts under his grants, answering how many went through; defaults to `act`. */
+  act?: (now: number) => Promise<number>;
   deps?: DatasetDeps;
 }
 
@@ -111,6 +115,8 @@ export interface TickResult {
   night: string | null;
   /** The pairs asked this tick (with the school on, before the gate). */
   asked: Grant[];
+  /** How many acts under his grants went through this tick (after the asks, before the gate). */
+  acted: number;
   /** The nets that recorded a new version, in order. */
   trained: NetName[];
   /** Every net tried this tick, in order, with what came of it. */
@@ -141,13 +147,14 @@ export function startSchool(o: SchoolOptions = {}): School {
   const train = o.train ?? trainNet;
   const labels = o.labels ?? labelCounts;
   const ask = o.ask ?? askDue;
+  const act = o.act ?? actDue;
   const deps = o.deps ?? {};
   /** Nets tried tonight that came back thin or failed: not tried again until the next night. */
   const tried = new Set<string>();
   let busy = false;
   let stopped = false;
 
-  const skip = (reason: string, asked: Grant[] = [], night: string | null = null): TickResult => ({ reason, night, asked, trained: [], results: [] });
+  const skip = (reason: string, asked: Grant[] = [], acted = 0, night: string | null = null): TickResult => ({ reason, night, asked, acted, trained: [], results: [] });
 
   async function tick(now: number = Date.now()): Promise<TickResult> {
     if (stopped) return skip('the school tick is stopped');
@@ -159,11 +166,18 @@ export function startSchool(o: SchoolOptions = {}): School {
     } catch (err) {
       console.error('palimpsest: the school could not ask for autonomy:', err);
     }
-    if (busy || liveTrains().length > 0) return skip('a train is already running', asked);
+    // Then the acts: each behind mayAct, read fresh; an act that throws never stops the retrain.
+    let acted = 0;
+    try {
+      acted = await act(now);
+    } catch (err) {
+      console.error('palimpsest: the city could not act under his grants:', err);
+    }
+    if (busy || liveTrains().length > 0) return skip('a train is already running', asked, acted);
     busy = true;
     try {
       const g = await gate('light', now);
-      if (!g.ok) return skip(g.reason ?? 'the gate closed', asked);
+      if (!g.ok) return skip(g.reason ?? 'the gate closed', asked, acted);
       const night = nightOf(now);
       for (const key of tried) if (!key.startsWith(`${night}\n`)) tried.delete(key);
       const counts = labels(now, deps);
@@ -171,7 +185,7 @@ export function startSchool(o: SchoolOptions = {}): School {
         const n = counts[net] ?? 0;
         return n >= NEEDS && n > lastLabels(net) && !tried.has(`${night}\n${net}`) && !trainedTonight(net, night);
       });
-      const out: TickResult = { reason: null, night, asked, trained: [], results: [] };
+      const out: TickResult = { reason: null, night, asked, acted, trained: [], results: [] };
       for (const net of due) {
         if (stopped || !getSettings().school.enabled) break;
         const r = await train(net, now, deps);

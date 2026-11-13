@@ -362,6 +362,45 @@ export async function createPR(
   return { number: Number(m[3]), url };
 }
 
+/** What GitHub says when a repo allows no merge commits (squash or rebase only), as gh prints it. */
+const MERGE_METHOD_REFUSED = /merge commits are not allowed|merge method|not allowed on this repository|not enabled on this repository/i;
+
+/** `gh pr merge --merge` refused because the repo allows only squash or rebase merges: the pair is suspended with this message (ruling 18). */
+export class MergeMethodError extends GhError {
+  constructor(fullName: string, detail: string) {
+    super('other', `${fullName} allows only squash or rebase merges, not the merge commit the city makes: ${detail}`);
+    this.name = 'MergeMethodError';
+  }
+}
+
+/**
+ * Merges a pull request the city opened, under a grant (Phase 4 Task 17):
+ * exactly `gh pr merge <n> --repo <full> --merge --match-head-commit <sha>`,
+ * so GitHub merges only the head `mayAct` just checked, and only with a
+ * merge commit. Refused before any gh call outside the real data home
+ * (`githubWriteRefused`), on a bad name, number or sha. A repo that allows
+ * no merge commits throws `MergeMethodError`; any other failure a classified
+ * `GhError`.
+ */
+export async function mergePR(fullName: string, number: number, headSha: string): Promise<void> {
+  checkName(fullName);
+  checkIssue(number);
+  if (typeof headSha !== 'string' || !/^[0-9a-f]{40}$/.test(headSha)) throw new GhError('other', `Bad head sha ${JSON.stringify(headSha)}: expected 40 hex characters`);
+  const refused = githubWriteRefused();
+  if (refused) throw new GhError('other', refused);
+  const args = ['pr', 'merge', String(number), '--repo', fullName, '--merge', '--match-head-commit', headSha];
+  let result: { stdout: string; stderr: string; code: number };
+  try {
+    result = await getRunner()('gh', args, { timeoutMs: TIMEOUT_MS });
+  } catch (err) {
+    throw classifySpawnError(err);
+  }
+  if (result.code === 0) return;
+  const detail = `${result.stderr}\n${result.stdout}`.trim();
+  if (MERGE_METHOD_REFUSED.test(detail)) throw new MergeMethodError(fullName, detail.split('\n')[0].trim());
+  throw await classifyGhFailure(result, `gh pr merge ${number}`);
+}
+
 export interface PRState {
   state: 'OPEN' | 'MERGED' | 'CLOSED';
   mergedAt: string | null;

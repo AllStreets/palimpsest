@@ -30,6 +30,8 @@ import '../engine/school/decisions.js';
 import { createPR, prState } from '../engine/github.js';
 import { createShipDir } from '../engine/market/worktree.js';
 import { earnedFloors, getRepo } from '../engine/repos.js';
+// loading autonomy.ts installs the revert hook the watch calls (ruling 19)
+import { grantOf } from '../engine/school/autonomy.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Bid, CheckResult, Inspection, Job, Repo, RepoChecks, Run } from '../shared/types.js';
 import { addAgent, checks, FULL, git, makeRun, postJob, setUp, tearDown, tempDir } from './guild-fixtures.js';
@@ -898,4 +900,31 @@ test('a follow-up neither halts the repo nor scars', async () => {
   assert.equal(earnedFloors(agentTowerId('w1'))[0].earned?.reverted, false);
   assert.equal(kinds('merge.reverted').length, 0);
   assert.equal(kinds('floor.scarred').length, 0);
+});
+
+test('the revert handler revokes before it halts (Phase 4 Task 17, ruling 19)', async () => {
+  const { job, w, mergeSha } = await mergedPr();
+  // the city merged this PR under a grant: the pair's row and the acted row, written as autonomy.ts writes them
+  const at = new Date().toISOString();
+  openDb()
+    .prepare('INSERT INTO grants (kind, repo, state, at, json) VALUES (?, ?, ?, ?, ?)')
+    .run('merge:normal', FULL, 'granted', at, JSON.stringify({ kind: 'merge:normal', repo: FULL, state: 'granted', at, by: 'him', rate: null, reason: null, acted: 1, quietUntil: null }));
+  record('autonomy.acted', { kind: 'merge:normal', repo: FULL, jobId: job.id, key: `merge:normal:${job.id}`, at });
+  git(w, 'revert', '--no-edit', '-m', '1', mergeSha);
+  git(w, 'push', '-q', 'origin', 'HEAD:main');
+  events = [];
+  const out = await watchRevertsFor(getRepo(FULL)!, Date.now(), { force: true });
+  assert.deepEqual(out.reverted, [job.title]);
+  // no decisions handler is installed here: the watch itself revokes, through the hook, before the halt
+  const order = events.map((e) => e.type);
+  assert.ok(order.includes('autonomy.revoked'), 'the pair is revoked');
+  assert.ok(order.includes('repo.halted'), 'the repo halts');
+  assert.ok(order.indexOf('autonomy.revoked') < order.indexOf('repo.halted'), `revoked before halted: ${order.join(', ')}`);
+  const g = grantOf('merge:normal', FULL)!;
+  assert.equal(g.state, 'revoked');
+  assert.equal(g.by, 'revert');
+  const revoked = kinds('autonomy.revoked');
+  assert.equal(revoked.length, 1, 'revoked once');
+  assert.equal(revoked[0].data.jobId, job.id);
+  assert.ok(getRepo(FULL)?.halted);
 });
