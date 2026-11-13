@@ -13,7 +13,7 @@
  *    so nothing after it has a proxy to reach;
  * 2. runs the repo's test command at the head in a fresh APFS clone of the
  *    base (the grading root, `<runs>/arena-<id>-grade`), with no proxy:
- *    it must pass;
+ *    it must pass (planted bugs only);
  * 3. plants up to ARENA.mutants one-line bugs in source files that are not
  *    tests (`mutate()`), and grades each in a fresh clone the same way: a
  *    bug the suite catches (a non-zero exit) is kept, one it passes (or one
@@ -31,7 +31,11 @@
  * the PR's own commit, not the branch before it, is skipped) is graded
  * twice in fresh clones of the base, read only from the mirror's objects:
  * at its parent with the change's test files applied (it must fail) and at
- * the change (it must pass). At most ARENA.keepPast kept. Its task shows
+ * the change (it must pass). At most ARENA.keepPast kept. The head need
+ * not pass: the grading cap comes from the first candidate run that passed
+ * in full. A change whose parent or self has other dependency manifests or
+ * lockfiles than the head is skipped with that reason, since the base
+ * carries the head's install. Its task shows
  * the change's test diff and the failure, never the fix; `arena_tasks.ref`
  * is the PR number or the sha.
  *
@@ -61,7 +65,7 @@ import { charge, unattended } from '../market/budget.js';
 import { CHECK_MS } from '../guild/checks.js';
 import { execTool, forgetRun, reapRun } from '../market/broker.js';
 import { startEgress, type Egress } from '../market/egress.js';
-import { installDeps, type RunContext } from '../market/install.js';
+import { DEPENDENCY_FILES, installDeps, type RunContext } from '../market/install.js';
 import { redact } from '../market/jobs.js';
 import type { RunLogLine } from '../market/provider.js';
 import { BASE_SCRATCH } from '../market/sandbox.js';
@@ -147,6 +151,8 @@ export interface PastCandidate {
   tests: string;
   fix: string;
   state: CandidateState;
+  /** Why a candidate was skipped without grading (its dependencies moved), or null. */
+  reason?: string | null;
   failing: string[];
   output: string;
 }
@@ -159,7 +165,11 @@ interface BuildState {
   sha: string | null;
   installed: boolean;
   headPassed: boolean;
-  /** The head suite's wall time, which sets each mutant's cap; null before it ran (or in a build from before the cap). */
+  /**
+   * The wall time of a full passing suite run, which sets each grade's cap:
+   * the head's for planted bugs; for past changes, the first candidate run
+   * that passed (the head is never required to pass). Null before one ran.
+   */
   headMs?: number | null;
   candidates: Candidate[] | null;
   past?: PastCandidate[] | null;
@@ -577,7 +587,7 @@ function refOf(c: VerifiedChange): string {
  * PR, a change whose test files are links (mode 120000) or absent at the
  * change, and one whose parent is not 40 hex are left out.
  */
-async function plantPast(id: string, repo: Repo, now: number, signal: AbortSignal): Promise<PastCandidate[]> {
+async function plantPast(id: string, repo: Repo, head: string, now: number, signal: AbortSignal): Promise<PastCandidate[]> {
   const base = arenaBase(id);
   const changes = await verifiedChanges(repo, now, { check: true, signal });
   const out: PastCandidate[] = [];
@@ -596,6 +606,8 @@ async function plantPast(id: string, repo: Repo, now: number, signal: AbortSigna
     const testDiff = await engineGit(base, ['diff', '--no-ext-diff', '--no-textconv', c.parent, c.sha, '--', ...testFiles]);
     const fixDiff = await engineGit(base, ['diff', '--no-ext-diff', '--no-textconv', c.parent, c.sha, '--', ...sourceFiles]);
     if (testDiff.code !== 0 || fixDiff.code !== 0) continue;
+    // The base carries the head's install: a change whose parent or self has other manifests or lockfiles is not graded on it.
+    const moved = await movedDeps(base, head, [c.parent, c.sha]);
     out.push({
       key: c.sha.slice(0, 12),
       change: c,
@@ -603,12 +615,25 @@ async function plantPast(id: string, repo: Repo, now: number, signal: AbortSigna
       sourceFiles,
       tests: testDiff.stdout.slice(0, MAX_DIFF),
       fix: fixDiff.stdout.slice(0, MAX_DIFF),
-      state: 'untried',
+      state: moved.length ? 'skipped' : 'untried',
+      reason: moved.length ? `Its dependencies differ from the head's (${moved.join(', ')}), whose install the arena grades on` : null,
       failing: [],
       output: '',
     });
   }
   return out;
+}
+
+/** The dependency manifests and lockfiles that differ between `head` and any of `shas`, from the base's objects. */
+async function movedDeps(base: string, head: string, shas: string[]): Promise<string[]> {
+  const out = new Set<string>();
+  for (const sha of shas) {
+    if (sha === head) continue;
+    const d = await engineGit(base, ['diff', '--no-ext-diff', '--name-only', '-z', sha, head]);
+    if (d.code !== 0) return ['the diff could not be read'];
+    for (const f of d.stdout.split('\0').filter(Boolean)) if (DEPENDENCY_FILES.has(f.split('/').pop() ?? f)) out.add(f);
+  }
+  return [...out].sort();
 }
 
 /** The task base: the change's parent with the change's test files applied, all from the clone's own objects. */
@@ -795,26 +820,32 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
   /** Step 3 for past changes: each change graded at its parent with its tests, then at itself. */
   const buildPastTasks = async (): Promise<ArenaInfo> => {
     if (!state.past) {
-      state.past = await plantPast(state.id, repo, now, signal);
+      state.past = await plantPast(state.id, repo, state.sha ?? '', now, signal);
       if (signal.aborted) return await pause(stopReason());
       writeState(state);
     }
-    const cap = mutantCapMs(state.headMs);
+    // Until one candidate's suite has passed in full, a grade has the whole check time; after, the cap.
+    const cap = () => (state.headMs == null ? CHECK_MS : mutantCapMs(state.headMs));
+    const measure = (g: { passed: boolean; ms: number }) => {
+      if (g.passed && state.headMs == null) state.headMs = g.ms;
+    };
     for (const c of state.past) {
       if (c.state !== 'untried') continue;
       if (state.past.filter((x) => x.state === 'kept').length >= ARENA.keepPast) break;
       if (signal.aborted) return await pause(stopReason());
       const g0 = await readGate('heavy', at());
       if (!g0.ok) return await pause(g0.reason ?? 'the gate closed');
-      const before = await grade(state.id, repo, atParentWithTests(c), cap, signal, log);
+      const before = await grade(state.id, repo, atParentWithTests(c), cap(), signal, log);
       if (before.aborted) return await pause(stopReason());
+      measure(before);
       if (before.skipped || !before.failed) {
         c.state = before.skipped ? 'skipped' : 'dropped';
         writeState(state);
         continue;
       }
-      const after = await grade(state.id, repo, atChange(c), cap, signal, log);
+      const after = await grade(state.id, repo, atChange(c), cap(), signal, log);
       if (after.aborted) return await pause(stopReason());
+      measure(after);
       c.state = after.skipped ? 'skipped' : after.passed ? 'kept' : 'dropped';
       c.failing = c.state === 'kept' ? failingTests(before.output) : [];
       c.output = c.state === 'kept' ? before.output : '';
@@ -843,6 +874,8 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
       state.installed = true;
       writeState(state);
     }
+    // Past changes grade at their own parents: the head need not pass (the cap comes from a candidate run).
+    if (kind === 'past') return await buildPastTasks();
     if (!state.headPassed) {
       const g = await grade(state.id, repo, null, CHECK_MS, signal, log);
       if (g.aborted) return await pause(stopReason());
@@ -851,7 +884,6 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
       state.headMs = g.ms;
       writeState(state);
     }
-    if (kind === 'past') return await buildPastTasks();
     if (!state.candidates) {
       state.candidates = await plant(state.id, state.sha);
       writeState(state);

@@ -449,7 +449,7 @@ interface PastWorld {
  * the same second (40), whose last commit's parent is the PR's own first
  * commit, not the branch before the PR.
  */
-function pastWorld(): PastWorld {
+function pastWorld(o: { redHead?: boolean; movedDeps?: boolean } = {}): PastWorld {
   const repo = tinyRepo();
   const fresh = { ...repo, checks: checks({ test: 'node --test' }) };
   openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(fresh.fullName, JSON.stringify(fresh));
@@ -458,9 +458,13 @@ function pastWorld(): PastWorld {
   gitDated(work, ago(100), ago(100), 'init', '-q', '-b', 'main');
   const first = commitAt(work, ago(100), ago(100), { 'package.json': JSON.stringify({ name: 'widgets', type: 'module' }), 'src/math.js': BUGGY, 'test/math.test.js': OLD_TEST }, 'first');
   const fix = commitAt(work, ago(60), ago(60), { 'src/math.js': FIXED, 'test/math.test.js': NEW_TEST }, 'Fix max for unequal numbers');
+  // Between the fix and the tidy-up, his manifest moved: the fix's parent no longer has the head's dependencies.
+  if (o.movedDeps) commitAt(work, ago(55), ago(55), { 'package.json': JSON.stringify({ name: 'widgets', type: 'module', version: '1.1.0' }) }, 'Bump the version');
   const tidy = commitAt(work, ago(50), ago(50), { 'src/math.js': `// the larger of two\n${FIXED}`, 'test/same.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { max } from '../src/math.js';\ntest('max of fours', () => { assert.equal(max(4, 4), 4); });\n" }, 'Say what max does');
   const r1 = commitAt(work, ago(45), ago(40), { 'src/even.js': 'export const isEven = (n) => n % 2 === 0;\n', 'test/even.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { isEven } from '../src/even.js';\ntest('even', () => { assert.equal(isEven(4), true); });\n" }, 'Add isEven');
   const r2 = commitAt(work, ago(44), ago(40), { 'src/even.js': 'export const isEven = (n) => n % 2 === 0;\nexport const isOdd = (n) => !isEven(n);\n', 'test/odd.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { isOdd } from '../src/even.js';\ntest('odd', () => { assert.equal(isOdd(3), true); });\n" }, 'Add isOdd');
+  // A test that fails at the head (too new to be verified, and no source touched).
+  if (o.redHead) commitAt(work, ago(10), ago(10), { 'test/red.test.js': "import { test } from 'node:test';\ntest('red', () => { throw new Error('red'); });\n" }, 'A red test');
   // The mirror is his history alone (the planted fixture's mirror is replaced).
   spawnSync('rm', ['-rf', mirrorDir(FULL)]);
   const r = spawnSync('git', ['clone', '-q', '--bare', work, mirrorDir(FULL)], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
@@ -568,4 +572,37 @@ test('nothing is fetched beyond the mirror', async () => {
   assert.equal(existsSync(join(base, '.git', 'FETCH_HEAD')), false);
   // Every spawned command was the repo's own test, in a clone of the build.
   for (const s of spawns) assert.ok(s.cwd.startsWith(paths().runs), s.cwd);
+});
+
+// ---------------------------------------------------------------- Task 20 fix round 1
+
+test('a red head still builds a past arena, its cap measured from a candidate run', async () => {
+  pastSetUp();
+  const w = pastWorld({ redHead: true });
+  const info = await buildPast(w.repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  assert.ok(arenaTasks(info.id).some((x) => x.ref === w.fix), 'the fix is a task though the head is red');
+  const grading = gradingSpawns(info.id);
+  assert.equal(grading[0].maxMs, CHECK_MS, 'before any candidate passed, a grade has the whole check time');
+  const capped = grading.filter((g) => (g.maxMs ?? 0) < CHECK_MS);
+  assert.ok(capped.length > 0, 'once a candidate passed, the rest are capped');
+  for (const g of capped) assert.ok((g.maxMs ?? 0) >= 60_000, `cap ${g.maxMs}`);
+  // The planted arena keeps its rule: a red head fails it.
+  const planted = await buildPlanted(w.repo, NOW);
+  assert.equal(planted.status, 'failed');
+  assert.match(planted.reason ?? '', /do not pass at the head/);
+});
+
+test('a change whose dependencies differ from the head is skipped with the reason', async () => {
+  pastSetUp();
+  const w = pastWorld({ movedDeps: true });
+  const info = await buildPast(w.repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  const fix = pastCandidatesOf(info.id).find((c) => c.change.sha === w.fix);
+  assert.equal(fix?.state, 'skipped');
+  assert.match(fix?.reason ?? '', /dependencies differ from the head's \(package\.json\)/);
+  assert.ok(!arenaTasks(info.id).some((x) => x.ref === w.fix), 'it is graded on nothing');
+  assert.equal(gradingSpawns(info.id).filter((g) => g.cwd.includes(w.fix)).length, 0);
+  // A change whose parent has the head's dependencies is still graded and kept.
+  assert.ok(arenaTasks(info.id).some((x) => x.ref === w.r1));
 });
