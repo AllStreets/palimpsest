@@ -508,7 +508,6 @@ function wantsToSpend(repos: Repo[]): boolean {
   return listAudits({ status: ['waiting', 'preparing', 'installing', 'reading'] }).length > 0;
 }
 
-/** The first `brief.opened` of today, or null. */
 // ---------------------------------------------------------------- triage at work (Phase 4 Task 14)
 
 const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -566,6 +565,7 @@ function triage(sections: Brief['sections'], now: number): void {
   }
 }
 
+/** The first `brief.opened` of today, or null. */
 function openedToday(day: string): LedgerEntry | null {
   return query({ kind: 'brief.opened' }).find((e) => (e.data as { day?: string }).day === day) ?? null;
 }

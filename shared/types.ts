@@ -259,6 +259,12 @@ export interface Bid {
   confidence: number;
   calibrated: number;
   appraisal: number | null;
+  /**
+   * Whose estimate `appraisal` is (Phase 4, Decision 14): `appraiser` is the
+   * school's trusted appraiser's P(pass); `firm` (or absent, on bids placed
+   * before Phase 4) is the firm's pass rate at the job's size, as in Phase 2.
+   */
+  appraisalSource?: 'firm' | 'appraiser';
   ev: number;
   cost: number;
   at: string;

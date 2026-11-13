@@ -14,6 +14,7 @@ import { backfillReports, ensureDailyReport, latestReportDay } from './market/re
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { ensureCampus } from './school/campus.js';
+import { catchUpPredictions } from './school/decisions.js';
 import { startSchool } from './school/tick.js';
 import { ENGINE_STOPPED_REASON, failInterruptedTrains, pauseAll } from './school/trainer.js';
 import { isSampleHome } from './sample.js';
@@ -97,6 +98,9 @@ async function main(): Promise<void> {
   // Phase 4 ruling 12: the nightly retrain. Each tick does nothing while the school is off or the light gate says no;
   // never started on a sample home (sampleMain) or by a test (tests call startSchool themselves, with fakes).
   const school = startSchool();
+  // Phase 4 ruling 15: a proposal or an open PR that became pending while no engine ran gets the master's guess now,
+  // only while it is still undecided, so every guess stays prospective.
+  catchUpPredictions();
 
   // A first signal stops the market (runs killed and reaped, leases aborted) within a 10 s grace; a second exits at once.
   // eslint-disable-next-line no-console

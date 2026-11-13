@@ -44,6 +44,7 @@ import { emit } from '../events.js';
 import { record } from '../ledger.js';
 import { agent, listAgents } from '../market/firms.js';
 import { reputation } from '../market/reputation.js';
+import { listJobs } from '../market/jobs.js';
 import { listRuns } from '../market/runs.js';
 import { getRepo } from '../repos.js';
 import { getSettings } from '../settings.js';
@@ -291,6 +292,47 @@ export function jobSchool(job: Job): JobSchool {
     if (r) out.durability = predict('durability', durabilityRaw(r, job, latestInspection(r.id), runDiff(r.id)))?.p ?? null;
   } catch (err) {
     console.error(`palimpsest: the nets could not read ${job.id}: ${errText(err)}`);
+  }
+  return out;
+}
+
+/** Whether `key` has a `decision.resolved` row: once he has decided, no guess on it is prospective. */
+function decided(key: string): boolean {
+  const row = openDb().prepare("SELECT 1 AS hit FROM ledger WHERE kind = 'decision.resolved' AND json_extract(json, '$.key') = ? LIMIT 1").get(key);
+  return row !== undefined;
+}
+
+/**
+ * At engine start: a decision that became pending while no engine was
+ * running, or whose guess failed to be written, gets its guess now, as long
+ * as it is still undecided: every job still `proposed`, and every city PR
+ * still open and waiting on him (its run `waiting` with a PR and no
+ * outcome, its job `waiting`). A key that already has a guess, or that he
+ * has decided, is left alone, so every guess stays prospective. Returns
+ * the guesses written; one that fails is logged and the rest go on.
+ */
+export function catchUpPredictions(now: number = Date.now()): Prediction[] {
+  const out: Prediction[] = [];
+  const tryOne = (job: Job, r: Run | null): void => {
+    try {
+      const insp = r ? latestInspection(r.id) : null;
+      const key = itemKey(workKind(job, r ? (insp ?? {}) : null), job.id);
+      if (registered(key) || decided(key)) return;
+      out.push(registerPrediction(job, r, now, insp));
+    } catch (err) {
+      console.error(`palimpsest: the master's guess on ${job.id} could not be caught up: ${errText(err)}`);
+    }
+  };
+  try {
+    const jobs = new Map(listJobs().map((j) => [j.id, j]));
+    for (const j of jobs.values()) if (j.status === 'proposed') tryOne(j, null);
+    for (const r of listRuns()) {
+      const j = jobs.get(r.jobId);
+      if (!j || j.status !== 'waiting' || r.stage !== 'waiting' || r.prNumber === null || r.outcome !== null || r.endedAt) continue;
+      tryOne(j, r);
+    }
+  } catch (err) {
+    console.error(`palimpsest: the master's missed guesses could not be read: ${errText(err)}`);
   }
   return out;
 }

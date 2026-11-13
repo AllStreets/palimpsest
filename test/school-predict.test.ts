@@ -10,10 +10,10 @@ import { openDb } from '../engine/db.js';
 import { query, record } from '../engine/ledger.js';
 import { job as storedJob, postProposal, proposeHarnessJob } from '../engine/market/jobs.js';
 import { rowsFor } from '../engine/school/datasets.js';
-import { jobSchool, masterInputs, predict, registerPrediction } from '../engine/school/decisions.js';
+import { catchUpPredictions, jobSchool, masterInputs, predict, registerPrediction } from '../engine/school/decisions.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { Job, Repo } from '../shared/types.js';
+import type { Job, Repo, Run } from '../shared/types.js';
 import { addAgent, FULL, setUp, tearDown } from './guild-fixtures.js';
 import { broken, constant, installNet, netOf } from './school-fixtures.js';
 
@@ -225,4 +225,99 @@ test("a job's page shows the trusted nets and the master's guess, and only the g
   const off = jobSchool(storedJob(j.id)!);
   assert.deepEqual(off.router, []);
   assert.equal(off.master?.id, s.master?.id);
+});
+
+// ---------------------------------------------------------------- catching up at engine start
+
+/** A job written straight to the store, as one posted while no engine ran would stand: no guess on it. */
+function storeJob(id: string, over: Partial<Job>): Job {
+  const j: Job = {
+    id,
+    repo: FULL,
+    source: 'proposal',
+    issue: null,
+    url: null,
+    title: `Job ${id}`,
+    body: '',
+    scope: ['**'],
+    acceptance: ['it works'],
+    tier: 'normal',
+    value: 60,
+    status: 'proposed',
+    attempts: 0,
+    postedAt: '2026-11-12T01:00:00.000Z',
+    bidsCloseAt: null,
+    awardedBid: null,
+    runId: null,
+    floorId: null,
+    closedAt: null,
+    excludedFirms: [],
+    haltedFrom: null,
+    ...over,
+  };
+  openDb().prepare('INSERT OR REPLACE INTO jobs (id, repo, status, json, key) VALUES (?, ?, ?, ?, ?)').run(j.id, j.repo, j.status, JSON.stringify(j), null);
+  return j;
+}
+
+function storeRun(id: string, jobId: string, over: Partial<Run> = {}): Run {
+  const r: Run = {
+    id,
+    jobId,
+    bidId: `bid-${jobId}`,
+    agentId: 'w1',
+    firmId: 'quickset',
+    repo: FULL,
+    model: 'claude:sonnet',
+    branch: `palimpsest/${jobId}`,
+    dir: null,
+    baseSha: null,
+    headSha: 'b'.repeat(40),
+    stage: 'waiting',
+    outcome: null,
+    endedReason: null,
+    progress: { toolCalls: 0, filesChanged: 1, testsRun: 0, turns: 1, weightedTokens: 0, credits: 0, refusals: 0 },
+    startedAt: '2026-11-12T01:00:00.000Z',
+    endedAt: null,
+    prNumber: 9,
+    prUrl: `https://github.com/${FULL}/pull/9`,
+    mergeSha: null,
+    inspectionId: null,
+    scar: false,
+    unattended: false,
+    ...over,
+  };
+  openDb().prepare('INSERT OR REPLACE INTO runs (id, job_id, repo, stage, json) VALUES (?, ?, ?, ?, ?)').run(r.id, r.jobId, r.repo, r.stage, JSON.stringify(r));
+  return r;
+}
+
+test('at engine start a proposal and an open PR that have no guess get one, once', () => {
+  installNet(constant('master', 2, 0.9));
+  const p = storeJob('job-p', { status: 'proposed' });
+  const w = storeJob('job-w', { source: 'issue', status: 'waiting', tier: 'low' });
+  storeRun('run-w', w.id);
+  const got = catchUpPredictions(Date.now());
+  assert.deepEqual(got.map((x) => x.key).sort(), [`merge:low:${w.id}`, `propose:readme-gap:${p.id}`]);
+  assert.ok(got.every((x) => x.p !== null && Math.abs(x.p - 0.9) < 1e-9));
+  assert.equal(predicted(p.id).length, 1);
+  assert.equal(predicted(w.id).length, 1);
+  // a second start writes nothing more
+  assert.deepEqual(catchUpPredictions(Date.now()), []);
+  assert.equal(tableRows().length, 2);
+});
+
+test('at engine start nothing already decided gets a guess, so every guess stays prospective', () => {
+  installNet(constant('master', 2, 0.9));
+  // a proposal he already answered: accepted (open) or dismissed (withdrawn)
+  storeJob('job-a', { status: 'open' });
+  storeJob('job-d', { status: 'withdrawn', withdrawnBy: 'him' } as Partial<Job>);
+  // a proposal still marked proposed whose decision is already resolved
+  storeJob('job-r', { status: 'proposed' });
+  record('decision.resolved', { key: 'propose:readme-gap:job-r', kind: 'propose:readme-gap', repo: FULL, jobId: 'job-r', approved: true, by: 'accept', predictionId: null, agreed: null, at: new Date().toISOString() });
+  // PRs he merged or closed
+  const m = storeJob('job-m', { source: 'issue', status: 'merged' });
+  storeRun('run-m', m.id, { stage: 'done', outcome: 'merged', endedAt: new Date().toISOString() });
+  const c = storeJob('job-c', { source: 'issue', status: 'waiting' });
+  storeRun('run-c', c.id, { stage: 'done', outcome: 'closed', endedAt: new Date().toISOString() });
+  assert.deepEqual(catchUpPredictions(Date.now()), []);
+  assert.equal(predicted().length, 0);
 });

@@ -535,6 +535,7 @@ class Pipeline {
       confidence,
       calibrated: cal,
       appraisal: rep.passRate[TIER_SIZE[j.tier]] ?? null,
+      appraisalSource: 'firm',
       ev: expectedValue(cal, j.value, price),
       cost: charged,
       at: iso(),

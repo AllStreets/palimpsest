@@ -7,7 +7,7 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { openDb } from '../engine/db.js';
 import { paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
-import { award, BID_COOL_OFF_MS, bidList, collectBid, collectBids, eligibleAgents, firmExamples, openBidding } from '../engine/market/bids.js';
+import { award, better, BID_COOL_OFF_MS, bidList, collectBid, collectBids, eligibleAgents, firmExamples, openBidding } from '../engine/market/bids.js';
 import { acquire, noteSseClients, PLAN_ESTIMATE, resetBudget, treasury, type Lease } from '../engine/market/budget.js';
 import { fakeDefaults, fakeProvider, type FakeScript } from '../engine/market/fake-provider.js';
 import { job, postManualJob, settleJobEffects } from '../engine/market/jobs.js';
@@ -580,21 +580,33 @@ const schoolOn = (on: boolean) => patchSettings({ school: { ...getSettings().sch
 const lastAward = () => entries().filter((e) => e.kind === 'job.awarded').at(-1)!.data as Record<string, unknown>;
 
 async function awardOnce(): Promise<string | undefined> {
+  return (await awardRound()).chosen;
+}
+
+/** One round: the award's pick, and Phase 2's pick from the same bids by Phase 2's own order. */
+async function awardRound(): Promise<{ chosen: string | undefined; phase2: string | undefined; jobId: string }> {
   const j = bidding();
   await collectBids(j, NOW);
-  return award(job(j.id) as Job, NOW + 1)?.agentId;
+  const chosen = award(job(j.id) as Job, NOW + 1)?.agentId;
+  const phase2 = [...bidList(j.id).bids].sort(better).find((b) => b.ev > 0)?.agentId;
+  return { chosen, phase2, jobId: j.id };
 }
 
 test("award without a trusted appraiser equals Phase 2's choice on the bids fixture", async () => {
   reading();
   appraiserFixture();
-  assert.equal(await awardOnce(), 'quick', 'no school at all');
-  assert.equal(lastAward().appraiserMoved, undefined);
+  const same = async (why: string) => {
+    const r = await awardRound();
+    assert.ok(r.phase2, 'the fixture has a bid above zero');
+    assert.equal(r.chosen, r.phase2, why);
+    assert.equal(lastAward().appraiserMoved, undefined, why);
+    assert.ok(bidList(r.jobId).bids.every((b) => b.appraisalSource === 'firm'), `${why}: every estimate is the firm's`);
+  };
+  await same('no school at all');
   schoolOn(true);
-  assert.equal(await awardOnce(), 'quick', 'the school on, no appraiser');
+  await same('the school on, no appraiser');
   installNet(longPlans(1), { trusted: false });
-  assert.equal(await awardOnce(), 'quick', 'an appraiser that does not beat its baseline');
-  assert.equal(lastAward().appraiserMoved, undefined);
+  await same('an appraiser that does not beat its baseline');
 });
 
 test("a trusted appraiser moves the award, and with the school off the award is Phase 2's again", async () => {
@@ -611,6 +623,8 @@ test("a trusted appraiser moves the award, and with the school off the award is 
   // the bid shows the appraiser's estimate beside it
   const slowBid = bidList((moved.jobId as string)).bids.find((b) => b.agentId === 'slow');
   assert.ok(slowBid && slowBid.appraisal !== null && slowBid.appraisal > 0.99);
+  assert.ok(bidList(moved.jobId as string).bids.every((b) => b.appraisalSource === 'appraiser'), 'the estimate says it is the appraiser\'s');
+  assert.equal((moved.chosen as { appraisalSource?: string }).appraisalSource, 'appraiser');
   schoolOn(false);
   assert.equal(await awardOnce(), 'quick');
   assert.equal(lastAward().appraiserMoved, undefined);

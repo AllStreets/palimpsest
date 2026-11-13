@@ -361,7 +361,7 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
     confidence,
     calibrated: cal,
     // the appraiser's estimate once it is trusted and the school is on (Decision 14); else the firm's pass rate at this size, as in Phase 2
-    appraisal: appraisal(cur, { firmId: a.firmId, agentId: a.id, plan, price, confidence }) ?? rep.passRate[TIER_SIZE[cur.tier]] ?? null,
+    ...estimateOf(cur, { firmId: a.firmId, agentId: a.id, plan, price, confidence }, rep.passRate[TIER_SIZE[cur.tier]] ?? null),
     ev: expectedValue(cal, cur.value, price),
     cost,
     at: new Date(clock()).toISOString(),
@@ -393,8 +393,14 @@ export function appraisal(j: Job, b: Pick<Bid, 'firmId' | 'agentId' | 'plan' | '
   return p === null ? null : tidy(p);
 }
 
-/** Highest EV first; ties to the lower price, then the higher calibrated, then the earlier bid. */
-function better(a: Bid, b: Bid): number {
+/** A new bid's estimate and whose it is: the appraiser's when it answers, else the firm's pass rate (`firmRate`). */
+function estimateOf(j: Job, b: Pick<Bid, 'firmId' | 'agentId' | 'plan' | 'price' | 'confidence'>, firmRate: number | null): Pick<Bid, 'appraisal' | 'appraisalSource'> {
+  const a = appraisal(j, b);
+  return a === null ? { appraisal: firmRate, appraisalSource: 'firm' } : { appraisal: a, appraisalSource: 'appraiser' };
+}
+
+/** Highest EV first; ties to the lower price, then the higher calibrated, then the earlier bid: Phase 2's order. */
+export function better(a: Bid, b: Bid): number {
   return b.ev - a.ev || a.price - b.price || b.calibrated - a.calibrated || a.at.localeCompare(b.at) || a.id.localeCompare(b.id);
 }
 
@@ -423,7 +429,7 @@ function weighed(j: Job, bids: readonly Bid[]): Weighed[] | null {
     const a = appraisal(j, b);
     if (a === null) return null;
     const p = tidy((b.calibrated + a) / 2);
-    out.push({ bid: { ...b, appraisal: a }, p, ev: expectedValue(p, j.value, b.price) });
+    out.push({ bid: { ...b, appraisal: a, appraisalSource: 'appraiser' }, p, ev: expectedValue(p, j.value, b.price) });
   }
   return out;
 }

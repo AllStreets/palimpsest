@@ -1,4 +1,5 @@
 import type { AuditView, Bid, FirmView, Job, JobDetail, Repo, RunView, Tier } from '../../../shared/types';
+import { estimateCellTip, estimateHeaderTip, estimateSource } from './bid-words';
 import { TIER_VALUE } from '../../../shared/market-rules';
 import { api, ApiError, type EngineEvent } from '../api';
 import { placeHref } from '../router';
@@ -426,6 +427,14 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
     return line;
   }
 
+  /** The estimate cell, saying whose estimate it is (the firm's pass rate, or the school's appraiser). */
+  function estimateCell(b: Bid): HTMLElement {
+    const appraiser = estimateSource(b) === 'appraiser';
+    const td = el('td', b.appraisal === null ? 'c-num none' : `c-num quiet${appraiser ? ' by-appraiser' : ''}`, pct(b.appraisal));
+    td.title = estimateCellTip(b);
+    return td;
+  }
+
   function bidTable(j: Job, d: Detail): HTMLElement {
     const t = el('table', 'bids');
     const cap = el('caption', 'bids-cap', `Bids on ${cleanText(j.title, 80)}`);
@@ -437,7 +446,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
       ['Agent', 'c-agent', ''],
       ['Price', 'c-num', 'What the firm asks, in credits'],
       ['Confidence', 'c-num', 'How sure the firm says it is that the work will pass'],
-      ["City's estimate", 'c-num', "How often this firm's work of this size has passed"],
+      ["City's estimate", 'c-num', estimateHeaderTip(d.bids)],
       ['EV', 'c-num', 'Expected value: the job’s worth times the calibrated chance of passing, less the price'],
     ] as Array<[string, string, string]>) {
       const th = el('th', cls, text);
@@ -462,7 +471,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
         el('td', 'c-agent', agentName(b.agentId)),
         el('td', 'c-num', money(b.price)),
         el('td', 'c-num', pct(b.confidence)),
-        el('td', b.appraisal === null ? 'c-num none' : 'c-num quiet', pct(b.appraisal)),
+        estimateCell(b),
         el('td', `c-num${b.ev > 0 ? '' : ' neg'}`, money(b.ev)),
       );
       tbody.append(tr);

@@ -198,7 +198,8 @@ test('job detail carries bids, award, sat-out agents and ledger', async () => {
     price: 20,
     confidence: 0.8,
     calibrated: 0.7,
-    appraisal: null,
+    appraisal: 0.62,
+    appraisalSource: 'appraiser',
     ev: 20,
     cost: 3,
     at: new Date().toISOString(),
@@ -211,6 +212,9 @@ test('job detail carries bids, award, sat-out agents and ledger', async () => {
   assert.equal(d.status, 200);
   assert.equal(d.json.job.id, posted.id);
   assert.deepEqual(d.json.bids.map((b: Bid) => b.id), ['bid-a1']);
+  // Phase 4: the bid says whose estimate it shows
+  assert.equal(d.json.bids[0].appraisalSource, 'appraiser');
+  assert.equal(d.json.bids[0].appraisal, 0.62);
   assert.equal(d.json.award.chosen.id, 'bid-a1');
   assert.match(d.json.award.why, /Chose it/);
   assert.deepEqual(d.json.award.satOut, [{ agentId: 'l1', reason: 'no slot before the window closed' }]);
