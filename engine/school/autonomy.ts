@@ -25,7 +25,7 @@
  *   and `repo` sit at the top of both, which is where decisions.ts reads
  *   them (by `jobId`), so the city's accept or merge is never heard as his.
  *
- * `act(now)` (ruling 18) is the tick's: for every granted pair, every
+ * `act(now)` (ruling 18; `now` a clock read afresh per act) is the tick's: for every granted pair, every
  * proposal or waiting PR of that kind on that repo the city has not acted
  * on and he has not decided, `mayAct` immediately before, the row before,
  * `acceptProposed()` or `mergePR()` (with the head `mayAct` checked), the
@@ -54,8 +54,8 @@ import { watchRevertsFor } from '../market/ship.js';
 import { getRepo, listRepos } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { latestInspection } from './datasets.js';
-import { agreement, decided, masterState, registered } from './decisions.js';
-import { setRevertHook, setSuspendHook } from './hooks.js';
+import { actTookEffect, agreement, decided, masterState, registered } from './decisions.js';
+import { setActingHook, setRevertHook, setSuspendHook } from './hooks.js';
 import { versions } from './nets.js';
 
 /** The repo the engine imports as a library: never asked about, granted or acted on (ruling 1). */
@@ -462,32 +462,67 @@ function stopped(): boolean {
  * refused because the repo allows only squash or rebase merges suspends the
  * pair with that reason. Returns whether the act went through.
  */
+/** The jobs an act is in flight on: between the row before and the row after, decisions.ts hears the act as the city's through `acting` (hooks.ts). */
+const inFlight = new Set<string>();
+
 async function actOn(kind: WorkKind, repo: string, c: Candidate, now: number): Promise<boolean> {
   const jobId = c.job.id;
   // read once more, with no wait since mayAct: the head the merge must match
   const run = c.run ? storedRun(c.run.id) : null;
   if (kind.startsWith('merge:') && (!run || run.prNumber === null || !run.headSha || run.stage !== 'waiting' || run.outcome !== null)) return false;
+  inFlight.add(jobId);
   try {
-    noteActed(kind, repo, jobId, now);
-  } catch (err) {
-    console.error(`palimpsest: the city could not record its act on ${jobId}, so it did not act: ${errText(err)}`);
-    return false;
+    try {
+      noteActed(kind, repo, jobId, now);
+    } catch (err) {
+      console.error(`palimpsest: the city could not record its act on ${jobId}, so it did not act: ${errText(err)}`);
+      return false;
+    }
+    let result: { ok: boolean; reason: string | null };
+    try {
+      if (run) await mergePR(repo, run.prNumber as number, run.headSha as string);
+      else acceptProposed(jobId);
+      result = { ok: true, reason: null };
+    } catch (err) {
+      result = { ok: false, reason: errText(err) };
+      if (err instanceof MergeMethodError) suspend(kind, repo, err.message, now);
+    }
+    try {
+      noteActResult(kind, repo, jobId, result, now);
+    } catch (err) {
+      console.error(`palimpsest: the result of the city's act on ${jobId} could not be recorded: ${errText(err)}`);
+    }
+    return result.ok;
+  } finally {
+    inFlight.delete(jobId);
   }
-  let result: { ok: boolean; reason: string | null };
-  try {
-    if (run) await mergePR(repo, run.prNumber as number, run.headSha as string);
-    else acceptProposed(jobId);
-    result = { ok: true, reason: null };
-  } catch (err) {
-    result = { ok: false, reason: errText(err) };
-    if (err instanceof MergeMethodError) suspend(kind, repo, err.message, now);
+}
+
+/**
+ * At engine start: every before-row with no result row of its pair (the
+ * engine stopped between `noteActed` and the result) gets its result now,
+ * from what the store shows (`actTookEffect`), so the brief never says the
+ * result is not on record forever and decisions.ts counts only acts that
+ * happened. Returns how many were closed.
+ */
+export function closeOrphanedActs(now: number = Date.now()): number {
+  const open = new Map<string, { kind: WorkKind; repo: string; jobId: string }>();
+  for (const e of query({ kind: 'autonomy.acted' })) {
+    const d = e.data as { kind?: unknown; repo?: unknown; jobId?: unknown; result?: unknown; grant?: { kind?: unknown; repo?: unknown } | null };
+    const kind = d.kind ?? d.grant?.kind;
+    const repo = d.repo ?? d.grant?.repo;
+    if (typeof kind !== 'string' || !(WORK_KINDS as readonly string[]).includes(kind) || typeof repo !== 'string' || typeof d.jobId !== 'string') continue;
+    const key = itemKey(kind as WorkKind, d.jobId);
+    if (d.result && typeof d.result === 'object') open.delete(key);
+    else open.set(key, { kind: kind as WorkKind, repo, jobId: d.jobId });
   }
-  try {
-    noteActResult(kind, repo, jobId, result, now);
-  } catch (err) {
-    console.error(`palimpsest: the result of the city's act on ${jobId} could not be recorded: ${errText(err)}`);
+  for (const o of open.values()) {
+    const ok = actTookEffect(o.kind, o.jobId);
+    const what = o.kind.startsWith('propose:') ? 'accept' : 'merge';
+    const reason = ok ? `the ${what} went through, but the engine stopped before it could write that down` : `the engine stopped before the ${what} was made or confirmed`;
+    noteActResult(o.kind, o.repo, o.jobId, { ok, reason }, now);
   }
-  return result.ok;
+  return open.size;
 }
 
 let acting = false;
@@ -502,29 +537,31 @@ let acting = false;
  * `mayAct` writes its own). Returns how many acts went through. Nothing with
  * the school off, and nothing while another call is still acting.
  */
-export async function act(now: number = Date.now()): Promise<number> {
+export async function act(now: number | (() => number) = Date.now): Promise<number> {
   if (acting) return 0;
   acting = true;
   try {
-    return await actAll(now);
+    return await actAll(typeof now === 'function' ? now : () => now);
   } finally {
     acting = false;
   }
 }
 
-async function actAll(now: number): Promise<number> {
+/** `clock` is read afresh for each act, so a merge that waited on gh is checked and recorded at its own time, not the tick's. */
+async function actAll(clock: () => number): Promise<number> {
   let n = 0;
   if (stopped()) return n;
   for (const g of grants()) {
     if (g.state !== 'granted' || isBeagle(g.repo)) continue;
     for (const c of candidates(g.kind, g.repo)) {
       if (stopped()) return n;
+      const now = clock();
       const may = await mayAct(g.kind, g.repo, c.job.id, now);
       if (!may.ok) {
         if (may.reason?.startsWith('could not check')) console.warn(`palimpsest: the city did not act on ${c.job.id}: ${may.reason}`);
         continue;
       }
-      if (await actOn(g.kind, g.repo, c, now)) n++;
+      if (await actOn(g.kind, g.repo, c, clock())) n++;
     }
   }
   return n;
@@ -535,3 +572,4 @@ setSuspendHook((kind, repo, reason, now) => {
   suspend(kind, repo, reason, now);
 });
 setRevertHook(revokeOnRevert);
+setActingHook((jobId) => inFlight.has(jobId));

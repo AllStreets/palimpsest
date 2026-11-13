@@ -16,12 +16,12 @@ import { subscribe, type Event } from '../engine/events.js';
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { query, record } from '../engine/ledger.js';
-import { job as storedJob, transition } from '../engine/market/jobs.js';
+import { acceptProposed, job as storedJob, transition } from '../engine/market/jobs.js';
 import { run as storedRun } from '../engine/market/runs.js';
-import { pollPRs, repoTowerId, watchRevertsFor } from '../engine/market/ship.js';
+import { pollPRs, repoTowerId, resetShipping, watchRevertsFor } from '../engine/market/ship.js';
 import { mirrorDir } from '../engine/mirror.js';
 import { getRepo, layEarnedFloor } from '../engine/repos.js';
-import { act, askDue, grant, grantOf, mayAct, noteActed } from '../engine/school/autonomy.js';
+import { act, askDue, closeOrphanedActs, grant, grantOf, mayAct, noteActed } from '../engine/school/autonomy.js';
 import { agreement, installDecisions, registerPrediction } from '../engine/school/decisions.js';
 import { startSchool } from '../engine/school/tick.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
@@ -64,6 +64,7 @@ const fakeGh: Runner = async (cmd, args, opts) => {
 
 beforeEach(() => {
   setUp('school-act');
+  resetShipping();
   clock = T0;
   ghCalls = [];
   prStates = new Map();
@@ -523,6 +524,116 @@ test('an autonomous merge records no decision.resolved, and a revert of it enter
   const order = kindsOf(events);
   assert.ok(order.indexOf('autonomy.revoked') < order.indexOf('repo.halted'), 'revoked before the halt');
   assert.ok(getRepo(FULL)?.halted);
+});
+
+// ---------------------------------------------------------------- only acts that happened count (fix round 1)
+
+test('a failed merge then his close records a close, not an undo, and suspends nothing', async () => {
+  granted('merge:normal');
+  const a = waitingPR('a');
+  mergeAnswer = () => ({ stdout: '', stderr: 'X Pull request #9 is not mergeable: the head branch was modified.', code: 1 });
+  assert.equal(await act(clock), 0);
+  const [, result] = actedRows(a.job.id);
+  assert.equal((result.result as { ok: boolean }).ok, false);
+  assert.equal(grantOf('merge:normal', FULL)?.state, 'granted', 'a failed merge suspends nothing');
+  // he closes the PR himself
+  later(6 * 60_000);
+  prStates.set(9, { state: 'CLOSED', headRefOid: HEAD });
+  await pollPRs(clock);
+  assert.equal(storedRun(a.run.id)?.outcome, 'closed');
+  const all = decisions(a.job.id);
+  assert.equal(all.length, 1);
+  assert.equal(all[0].by, 'close', 'his close, not an undo of an act that never happened');
+  assert.equal(all[0].approved, false);
+  assert.equal(all[0].agreed, false, 'the master said approve; he closed');
+  assert.equal(grantOf('merge:normal', FULL)?.state, 'granted');
+  assert.deepEqual(ledger('autonomy.suspended'), []);
+  // and had he merged it instead, that would have been his merge
+  const b = waitingPR('b');
+  assert.equal(await act(clock), 0);
+  later(6 * 60_000);
+  prStates.set(9, { state: 'MERGED', headRefOid: HEAD, mergeCommit: { oid: 'd'.repeat(40) }, mergedAt: new Date(clock).toISOString() });
+  await pollPRs(clock);
+  assert.equal(storedJob(b.job.id)?.status, 'merged');
+  assert.equal(decisions(b.job.id)[0]?.by, 'merge');
+  assert.equal(decisions(b.job.id)[0]?.approved, true);
+});
+
+test('an orphaned before-row then his accept records his accept', async () => {
+  granted('propose:readme-gap');
+  const p = proposal('p');
+  // the engine died between noteActed and acceptProposed: the before-row alone
+  noteActed('propose:readme-gap', FULL, p.id, clock);
+  assert.equal(actedRows(p.id).length, 1);
+  assert.equal(storedJob(p.id)?.status, 'proposed');
+  later();
+  acceptProposed(p.id);
+  const all = decisions(p.id);
+  assert.equal(all.length, 1);
+  assert.equal(all[0].by, 'accept');
+  assert.equal(all[0].approved, true);
+  assert.equal(all[0].agreed, true);
+  // and his dismissal of such a job is a dismissal, not an undo
+  const q = proposal('q');
+  noteActed('propose:readme-gap', FULL, q.id, clock);
+  later();
+  transition(storedJob(q.id)!, 'withdrawn', {}, { by: 'him' });
+  assert.equal(decisions(q.id)[0]?.by, 'dismiss');
+  assert.equal(grantOf('propose:readme-gap', FULL)?.state, 'granted', 'nothing to undo, nothing suspended');
+  assert.deepEqual(ledger('autonomy.suspended'), []);
+});
+
+test("an orphaned before-row where the merge did land is still the city's", async () => {
+  granted('merge:normal');
+  const k = waitingPR('k');
+  // the engine died after gh merged and before the result row
+  noteActed('merge:normal', FULL, k.job.id, clock);
+  later(6 * 60_000);
+  prStates.set(9, { state: 'MERGED', headRefOid: HEAD, mergeCommit: { oid: 'd'.repeat(40) }, mergedAt: new Date(clock).toISOString() });
+  await pollPRs(clock);
+  assert.equal(storedJob(k.job.id)?.status, 'merged');
+  assert.deepEqual(decisions(k.job.id), [], 'the merge is the city\'s, not his');
+  // and his later revert of it is still a revert of the city's merge: in the window against it, under the merge key
+  const { resolve } = await import('../engine/school/decisions.js');
+  resolve(storedJob(k.job.id)!, 'revert', clock + 60_000);
+  assert.equal(decisions(k.job.id).length, 1);
+  assert.equal(decisions(k.job.id)[0].by, 'revert');
+  assert.equal(decisions(k.job.id)[0].key, `merge:normal:${k.job.id}`);
+  assert.equal(decisions(k.job.id)[0].agreed, false);
+});
+
+test('at engine start, every cut-short act gets its result from what the store shows', async () => {
+  granted('merge:normal');
+  granted('propose:readme-gap');
+  // a before-row with nothing to show for it, one whose merge landed, one whose accept landed, and one complete act
+  const dead = waitingPR('dead');
+  noteActed('merge:normal', FULL, dead.job.id, clock);
+  const landed = waitingPR('landed', { run: { prNumber: 41 } });
+  noteActed('merge:normal', FULL, landed.job.id, clock);
+  prStates.set(41, { state: 'MERGED', headRefOid: HEAD, mergeCommit: { oid: 'd'.repeat(40) }, mergedAt: new Date(clock).toISOString() });
+  await pollPRs(clock);
+  const p = proposal('p');
+  noteActed('propose:readme-gap', FULL, p.id, clock);
+  acceptProposed(p.id);
+  const done = proposal('done');
+  assert.equal(await act(clock), 1);
+  assert.equal(actedRows(done.id).length, 2);
+  later();
+  assert.equal(closeOrphanedActs(clock), 3);
+  const row = (id: string) => actedRows(id).at(-1)!.result as { ok: boolean; reason: string };
+  assert.deepEqual(row(dead.job.id), { ok: false, reason: 'the engine stopped before the merge was made or confirmed' });
+  assert.deepEqual(row(landed.job.id), { ok: true, reason: 'the merge went through, but the engine stopped before it could write that down' });
+  assert.deepEqual(row(p.id), { ok: true, reason: 'the accept went through, but the engine stopped before it could write that down' });
+  assert.equal(actedRows(done.id).length, 2, 'a complete act is left alone');
+  assert.equal(actedRows(dead.job.id).at(-1)!.at, new Date(clock).toISOString());
+  // closed once
+  assert.equal(closeOrphanedActs(clock), 0);
+  // and the closed rows carry the verdict decisions.ts reads: his close of the dead PR is his close
+  prStates.set(9, { state: 'CLOSED', headRefOid: HEAD });
+  later(6 * 60_000);
+  await pollPRs(clock);
+  assert.equal(decisions(dead.job.id)[0]?.by, 'close');
+  assert.equal(grantOf('merge:normal', FULL)?.state, 'granted');
 });
 
 // ---------------------------------------------------------------- the pin

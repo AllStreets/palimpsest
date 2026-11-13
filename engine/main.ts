@@ -14,6 +14,7 @@ import { backfillReports, ensureDailyReport, latestReportDay } from './market/re
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { ensureCampus } from './school/campus.js';
+import { closeOrphanedActs } from './school/autonomy.js';
 import { catchUpPredictions, installDecisions } from './school/decisions.js';
 import { startSchool } from './school/tick.js';
 import { ENGINE_STOPPED_REASON, failInterruptedTrains, pauseAll } from './school/trainer.js';
@@ -103,6 +104,12 @@ async function main(): Promise<void> {
   // Phase 4 ruling 15: a proposal or an open PR that became pending while no engine ran gets the master's guess now,
   // only while it is still undecided, so every guess stays prospective.
   catchUpPredictions();
+  // Phase 4 Task 17: an act the engine died in the middle of gets its result row now, from what the store shows.
+  try {
+    closeOrphanedActs();
+  } catch (err) {
+    console.error('palimpsest: the cut-short acts could not be closed:', err);
+  }
 
   // A first signal stops the market (runs killed and reaped, leases aborted) within a 10 s grace; a second exits at once.
   // eslint-disable-next-line no-console

@@ -160,9 +160,10 @@ const later = () => {
   clock += 60_000;
 };
 
-/** The city acted on this job under a grant (Task 17's row, by jobId). */
-function acted(jobId: string, kind: WorkKind, repo = FULL): void {
+/** The city acted on this job under a grant (Task 17's two rows, by jobId: the row before the act and the result after, ok). */
+function acted(jobId: string, kind: WorkKind, repo = FULL, ok = true): void {
   record('autonomy.acted', { kind, repo, jobId, key: `${kind}:${jobId}`, at: new Date(clock).toISOString() });
+  record('autonomy.acted', { kind, repo, jobId, key: `${kind}:${jobId}`, result: { ok, reason: ok ? null : 'gh fell over' }, at: new Date(clock).toISOString() });
 }
 
 // ---------------------------------------------------------------- proposals

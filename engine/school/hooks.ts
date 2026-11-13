@@ -27,7 +27,11 @@ export type SuspendHook = (kind: WorkKind, repo: string, reason: string, now: nu
 /** A `merge.reverted` as it is emitted: revokes the pair that acted on its job (autonomy.ts's `revokeOnRevert`). */
 export type RevertHook = (data: Record<string, unknown>) => void;
 
+/** Whether the city is acting on this job right now (autonomy.ts's in-flight set): a before-row with no result row yet is the city's act, not his. */
+export type ActingHook = (jobId: string) => boolean;
+
 let pending: PendingHook | null = null;
+let actingNow: ActingHook | null = null;
 let appraiser: AppraiserHook | null = null;
 let suspending: SuspendHook | null = null;
 let reverted: RevertHook | null = null;
@@ -45,6 +49,21 @@ export function setAppraiserHook(fn: AppraiserHook | null): void {
 /** Installs what suspends a pair (autonomy.ts does, once; decisions.ts cannot import it without a cycle), or `null` for nothing. */
 export function setSuspendHook(fn: SuspendHook | null): void {
   suspending = fn;
+}
+
+/** Installs what says whether the city is acting on a job now (autonomy.ts does, once), or `null` for never. */
+export function setActingHook(fn: ActingHook | null): void {
+  actingNow = fn;
+}
+
+/** Whether the city is acting on `jobId` at this moment; false with nothing installed or on a throw. */
+export function acting(jobId: string): boolean {
+  if (!actingNow) return false;
+  try {
+    return actingNow(jobId);
+  } catch {
+    return false;
+  }
 }
 
 /** Installs what a revert runs before anything else (autonomy.ts does, once), or `null` for nothing. */

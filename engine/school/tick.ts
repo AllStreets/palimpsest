@@ -105,7 +105,7 @@ export interface SchoolOptions {
   /** The asks for autonomy; defaults to `askDue`. */
   ask?: (now: number) => Grant[];
   /** The acts under his grants, answering how many went through; defaults to `act`. */
-  act?: (now: number) => Promise<number>;
+  act?: (now: number | (() => number)) => Promise<number>;
   deps?: DatasetDeps;
 }
 
@@ -156,7 +156,8 @@ export function startSchool(o: SchoolOptions = {}): School {
 
   const skip = (reason: string, asked: Grant[] = [], acted = 0, night: string | null = null): TickResult => ({ reason, night, asked, acted, trained: [], results: [] });
 
-  async function tick(now: number = Date.now()): Promise<TickResult> {
+  async function tick(nowIn?: number): Promise<TickResult> {
+    const now = nowIn ?? Date.now();
     if (stopped) return skip('the school tick is stopped');
     if (!getSettings().school.enabled) return skip('the school is off');
     // The asks come first: they wait on no train and no gate, and an ask that fails never stops the retrain.
@@ -169,7 +170,8 @@ export function startSchool(o: SchoolOptions = {}): School {
     // Then the acts: each behind mayAct, read fresh; an act that throws never stops the retrain.
     let acted = 0;
     try {
-      acted = await act(now);
+      // a live tick gives the acts a clock read afresh per act; a test's fixed `now` is kept as it is
+      acted = await act(nowIn === undefined ? Date.now : now);
     } catch (err) {
       console.error('palimpsest: the city could not act under his grants:', err);
     }

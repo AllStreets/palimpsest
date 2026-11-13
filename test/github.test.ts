@@ -11,6 +11,7 @@ import {
   issueState,
   mergedPRs,
   mergePR,
+  MergeMethodError,
   openIssues,
   removeLabel,
 } from '../engine/github.js';
@@ -327,5 +328,26 @@ test('with the real runner on a temp home mergePR is refused before any gh call 
     assert.deepEqual(calls, [['pr', 'merge', '9', '--repo', 'acme/widgets', '--merge', '--match-head-commit', 'b'.repeat(40)]]);
   } finally {
     await tearDown();
+  }
+});
+
+test('only a merge-method refusal is a MergeMethodError; any other failed merge is a plain GhError', async () => {
+  const answer = (stderr: string) => setRunner(async (_cmd, args) => (args[0] === 'auth' ? { stdout: '', stderr: '', code: 0 } : { stdout: '', stderr, code: 1 }));
+  for (const text of [
+    'GraphQL: Merge commits are not allowed on this repository. (mergePullRequest)',
+    'X merge method "merge" is not allowed on this repository',
+    "X 'merge' is not a valid merge method for this repository",
+  ]) {
+    answer(text);
+    await assert.rejects(mergePR('acme/widgets', 9, 'b'.repeat(40)), (err: unknown) => err instanceof MergeMethodError && /allows only squash or rebase merges/.test((err as Error).message) && (err as Error).message.includes(text));
+  }
+  for (const text of [
+    'X Pull request #9 is not mergeable: the head branch was modified.',
+    'X Pull request #9 is not mergeable: the merge commit cannot be cleanly created.',
+    'HTTP 405: Base branch was modified. Review and try the merge again.',
+    'GraphQL: Pull request is not mergeable (mergePullRequest)',
+  ]) {
+    answer(text);
+    await assert.rejects(mergePR('acme/widgets', 9, 'b'.repeat(40)), (err: unknown) => err instanceof GhError && !(err instanceof MergeMethodError) && (err as Error).message.includes(text));
   }
 });

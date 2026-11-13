@@ -362,8 +362,15 @@ export async function createPR(
   return { number: Number(m[3]), url };
 }
 
-/** What GitHub says when a repo allows no merge commits (squash or rebase only), as gh prints it. */
-const MERGE_METHOD_REFUSED = /merge commits are not allowed|merge method|not allowed on this repository|not enabled on this repository/i;
+/**
+ * What GitHub says when a repo allows no merge commits (squash or rebase
+ * only): the API's `Merge commits are not allowed on this repository`
+ * (printed by gh as a GraphQL error), or gh's own check of the repo's merge
+ * settings (`merge method ... is not allowed|enabled|available`, `not a
+ * valid|supported merge method`). Nothing broader: any other refusal is an
+ * ordinary failed act, never a suspension.
+ */
+const MERGE_METHOD_REFUSED = /Merge commits are not allowed on this repository|merge method\b[^\n]{0,40}\bnot (?:allowed|enabled|available)|not an? (?:valid|supported|allowed) merge method/i;
 
 /** `gh pr merge --merge` refused because the repo allows only squash or rebase merges: the pair is suspended with this message (ruling 18). */
 export class MergeMethodError extends GhError {

@@ -57,7 +57,7 @@ import { PR_CLOSED_REASON } from '../market/ship.js';
 import { getRepo } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { bidRaw, durabilityRaw, latestInspection, repoAcceptShare, repoApprovalShare, runDiff, setDistilPredict, tasteRaw } from './datasets.js';
-import { noteRevert, setAppraiserHook, setPendingHook, suspendPair } from './hooks.js';
+import { acting, noteRevert, setAppraiserHook, setPendingHook, suspendPair } from './hooks.js';
 import { loadCurrent, skewedKinds } from './nets.js';
 import { ci } from './stats.js';
 
@@ -358,16 +358,19 @@ export const UNDO_REASON = 'he undid it';
 
 const hookSuspend: Suspend = (kind, repo, reason, now) => suspendPair(kind, repo, reason, now);
 
-/**
- * What the city did on its own to a job (Task 17's `autonomy.acted` rows,
- * matched by `jobId`, never by key): whether it acted at all, and the pair
- * of the latest act whose kind it can read. Empty until Task 17 lands.
- */
-function actedOn(jobId: string): { acted: boolean; last: { kind: WorkKind; repo: string | null } | null } {
+/** One `autonomy.acted` row as decisions.ts reads it: the pair, and whether it is the row before an act or the result after. */
+interface ActedRow {
+  kind: WorkKind;
+  repo: string | null;
+  /** The result row's `ok`; null on the row written before the act. */
+  ok: boolean | null;
+}
+
+function actedRows(jobId: string): ActedRow[] {
   const rows = openDb()
     .prepare("SELECT json FROM ledger WHERE kind = 'autonomy.acted' AND json_extract(json, '$.jobId') = ? ORDER BY id")
     .all(jobId) as Array<{ json: string }>;
-  let last: { kind: WorkKind; repo: string | null } | null = null;
+  const out: ActedRow[] = [];
   for (const row of rows) {
     let d: Record<string, unknown> = {};
     try {
@@ -378,9 +381,57 @@ function actedOn(jobId: string): { acted: boolean; last: { kind: WorkKind; repo:
     const grant = d.grant && typeof d.grant === 'object' ? (d.grant as Record<string, unknown>) : {};
     const kind = d.kind ?? grant.kind;
     const repo = d.repo ?? grant.repo;
-    if (typeof kind === 'string' && (WORK_KINDS as readonly string[]).includes(kind)) last = { kind: kind as WorkKind, repo: typeof repo === 'string' ? repo : null };
+    if (typeof kind !== 'string' || !(WORK_KINDS as readonly string[]).includes(kind)) continue;
+    const result = d.result && typeof d.result === 'object' ? (d.result as { ok?: unknown }) : null;
+    out.push({ kind: kind as WorkKind, repo: typeof repo === 'string' ? repo : null, ok: result ? result.ok === true : null });
   }
-  return { acted: rows.length > 0, last };
+  return out;
+}
+
+/**
+ * Whether the act a `kind` pair set out to make on `jobId` shows in the
+ * store: a proposal moved from `proposed` to `open` (its `job.changed`), or
+ * the job's PR merged (`merge.detected`, or the job or its run merged).
+ * Read for a before-row that has no result row (the engine stopped between
+ * the two writes): at engine start by autonomy.ts's `closeOrphanedActs`,
+ * and by `actedOn` for a merge, whose landing only the PR poll sees later.
+ * For a proposal it cannot tell his accept from the city's, so `actedOn`
+ * asks `acting` (hooks.ts) instead.
+ */
+export function actTookEffect(kind: WorkKind, jobId: string): boolean {
+  if (kind.startsWith('propose:')) {
+    return openDb()
+      .prepare("SELECT 1 AS hit FROM ledger WHERE kind = 'job.changed' AND json_extract(json, '$.id') = ? AND json_extract(json, '$.from') = 'proposed' AND json_extract(json, '$.to') = 'open' LIMIT 1")
+      .get(jobId) !== undefined;
+  }
+  if (openDb().prepare("SELECT 1 AS hit FROM ledger WHERE kind = 'merge.detected' AND json_extract(json, '$.jobId') = ? LIMIT 1").get(jobId) !== undefined) return true;
+  const j = storedJob(jobId);
+  if (j?.status === 'merged') return true;
+  return listRuns({ jobId }).some((r) => r.outcome === 'merged');
+}
+
+/**
+ * What the city did on its own to a job (Task 17's `autonomy.acted` rows,
+ * matched by `jobId`, never by key): whether it acted at all, and the pair
+ * of the latest act whose kind it can read. Only acts that happened count:
+ * a before-row whose result row says `ok true`; or, with no result row yet,
+ * one the city is acting on right now (`acting`: its own accept or merge is
+ * heard here before the result row is written), or a merge that landed
+ * (`actTookEffect`: the poll sees it after the act). A failed act, or a
+ * before-row the engine died after with nothing to show for it, leaves the
+ * job his (and `closeOrphanedActs` writes its result at the next start).
+ */
+function actedOn(jobId: string): { acted: boolean; last: { kind: WorkKind; repo: string | null } | null } {
+  const rows = actedRows(jobId);
+  let last: { kind: WorkKind; repo: string | null } | null = null;
+  rows.forEach((row, i) => {
+    if (row.ok !== null) return;
+    // the result that answers this before-row: the next result row of the same pair
+    const result = rows.slice(i + 1).find((r) => r.ok !== null && r.kind === row.kind);
+    const counted = result ? result.ok === true : acting(jobId) || (row.kind.startsWith('merge:') && actTookEffect(row.kind, jobId));
+    if (counted) last = { kind: row.kind, repo: row.repo };
+  });
+  return { acted: last !== null, last };
 }
 
 /** Every resolution of `key`, oldest first. */
