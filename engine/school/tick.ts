@@ -19,6 +19,8 @@
  *   thin or failed, is not tried again until the next. A train the gate or
  *   the switch stopped records nothing and is tried again at a later tick
  *   the same night.
+ * - After the nets, a tick resumes any arena build a gate loss paused
+ *   (`resumeArenas`, each behind the heavy gate); it never starts one.
  * - `schoolOff(now)` is the switch going off, from `patchSettings` or
  *   anywhere else: it records `school.enabled { on: false }`, pauses every
  *   live train at once (no poll waited for) and calls every abort registered
@@ -106,6 +108,8 @@ export interface SchoolOptions {
   ask?: (now: number) => Grant[];
   /** The acts under his grants, answering how many went through; defaults to `act`. */
   act?: (now: number | (() => number)) => Promise<number>;
+  /** Resumes arena builds a gate loss paused (each behind the heavy gate); defaults to `resumeArenas`. */
+  resume?: (now: number) => Promise<unknown>;
   deps?: DatasetDeps;
 }
 
@@ -149,6 +153,8 @@ export function startSchool(o: SchoolOptions = {}): School {
   const ask = o.ask ?? askDue;
   const act = o.act ?? actDue;
   const deps = o.deps ?? {};
+  // loaded when first used: arenas.ts registers its builds' aborts here
+  const resume = o.resume ?? (async (now: number) => (await import('./arenas.js')).resumeArenas(now));
   /** Nets tried tonight that came back thin or failed: not tried again until the next night. */
   const tried = new Set<string>();
   let busy = false;
@@ -196,6 +202,14 @@ export function startSchool(o: SchoolOptions = {}): School {
         if (r.status === 'waiting' || r.status === 'stopped') break;
         tried.add(`${night}\n${net}`);
         if (r.status === 'trained') out.trained.push(net);
+      }
+      // A paused arena build (never a new one: only his click starts those) goes on with its untried candidates.
+      if (!stopped && getSettings().school.enabled) {
+        try {
+          await resume(now);
+        } catch (err) {
+          console.error('palimpsest: the school could not resume an arena build:', err);
+        }
       }
       return out;
     } finally {
