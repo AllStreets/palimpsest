@@ -52,6 +52,8 @@ import { versions } from './nets.js';
 
 /** The repo the engine imports as a library: never asked about, granted or acted on (ruling 1). */
 export const BEAGLE_REPO = 'AllStreets/beagle';
+/** Whether `name` is Beagle by any spelling: GitHub names ignore case, so the pin must too. */
+export const isBeagle = (name: string): boolean => name.trim().toLowerCase() === BEAGLE_REPO.toLowerCase();
 
 const DAY_MS = 24 * 60 * 60_000;
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -110,7 +112,7 @@ function write(move: Move, g: Grant, extra: Record<string, unknown> = {}, at: st
 
 /** Why `repo` cannot be acted on or asked about now, as a sentence, or null when it can. */
 function repoRefusal(repo: Repo | null, name: string): string | null {
-  if (name === BEAGLE_REPO) return `${BEAGLE_REPO} is never acted on while Palimpsest imports it.`;
+  if (isBeagle(name)) return `${BEAGLE_REPO} is never acted on while Palimpsest imports it.`;
   if (!repo || !repo.connected) return `${name} is not connected.`;
   if (!repo.market) return `The market on ${name} is off.`;
   if (repo.halted) return `${name} is halted: ${sentence(repo.halted.reason)}`;
@@ -159,7 +161,7 @@ export function askDue(now: number = Date.now()): Grant[] {
  */
 export function grant(kind: WorkKind, repo: string, now: number = Date.now(), o: { fromSettings?: boolean } = {}): Grant {
   checkKind(kind);
-  if (repo === BEAGLE_REPO) throw new Error(`${BEAGLE_REPO} is never granted while Palimpsest imports it.`);
+  if (isBeagle(repo)) throw new Error(`${BEAGLE_REPO} is never granted while Palimpsest imports it.`);
   const had = grantOf(kind, repo);
   if (!had) throw new Error(o.fromSettings ? `${kind} on ${repo} has never been asked.` : `${kind} on ${repo} was not asked.`);
   if (had.state === 'granted') throw new Error(`${kind} on ${repo} is already granted.`);
@@ -204,6 +206,7 @@ export function suspend(kind: WorkKind, repo: string, reason: string, now: numbe
 /** Before an act under a grant: the `autonomy.acted` row, with the grant's count moved. Throws when the pair is not granted. */
 export function noteActed(kind: WorkKind, repo: string, jobId: string, now: number = Date.now()): Grant {
   checkKind(kind);
+  if (isBeagle(repo)) throw new Error(`${BEAGLE_REPO} is never acted on while Palimpsest imports it.`);
   const had = grantOf(kind, repo);
   if (!had || had.state !== 'granted') throw new Error(`There is no grant for ${kind} on ${repo} to act under.`);
   return write('autonomy.acted', { ...had, acted: had.acted + 1 }, { jobId, key: itemKey(kind, jobId) }, iso(now));
@@ -211,6 +214,7 @@ export function noteActed(kind: WorkKind, repo: string, jobId: string, now: numb
 
 /** After an act: what came of it. Carries no grant, so it moves no pair. */
 export function noteActResult(kind: WorkKind, repo: string, jobId: string, result: { ok: boolean; reason: string | null }, now: number = Date.now()): void {
+  checkKind(kind);
   const data = { kind, repo, jobId, key: itemKey(kind, jobId), result, at: iso(now) };
   record('autonomy.acted', data);
   emit('autonomy.acted', data);
@@ -231,8 +235,9 @@ function actedPair(jobId: string): { kind: WorkKind; repo: string } | null {
 /**
  * Ruling 19: a `merge.reverted` whose job has an `autonomy.acted` row
  * revokes that pair, `by 'revert'` with the job, before the window and
- * before the repo halts. A revert of a job the city did not act on revokes
- * nothing.
+ * before the repo halts: a granted or suspended pair, and an open ask on
+ * it (closed, with the same 30 days of quiet). A revert of a job the city
+ * did not act on revokes nothing.
  */
 export function revokeOnRevert(data: Record<string, unknown>): void {
   const jobId = typeof data.jobId === 'string' ? data.jobId : null;
@@ -240,7 +245,7 @@ export function revokeOnRevert(data: Record<string, unknown>): void {
   const pair = actedPair(jobId);
   if (!pair) return;
   const had = grantOf(pair.kind, pair.repo);
-  if (!had || (had.state !== 'granted' && had.state !== 'suspended')) return;
+  if (!had || (had.state !== 'granted' && had.state !== 'suspended' && had.state !== 'asked')) return;
   const at = typeof data.at === 'string' ? Date.parse(data.at) : NaN;
   revoke(pair.kind, pair.repo, 'revert', jobId, Number.isFinite(at) ? at : Date.now());
 }
@@ -276,10 +281,12 @@ function prRun(job: Job): Run | null {
  * eligible and the repo still passing its test (else the pair is suspended
  * with the reason, to be asked afresh); the master current and trusted; a
  * guess on the key at `AGREE.actP` or more from the current master or one
- * no older than `AGREE.staleDays`; and for a merge the inspection passed
- * and pushable, the PR open at the inspected head, and a forced revert
- * read of the repo (a failed read refuses; a revert found revokes first).
- * Anything thrown answers `could not check: ...`. Never throws.
+ * no older than `AGREE.staleDays`; for a merge the inspection passed and
+ * pushable and the PR open at the inspected head; then, for every kind, a
+ * forced revert read of the repo (a failed read refuses; a revert found
+ * revokes first). After each await the checks that need no network run
+ * again, so nothing he did meanwhile is missed. Anything thrown answers
+ * `could not check: ...`. Never throws.
  */
 export async function mayAct(kind: WorkKind, repo: string, jobId: string, now: number = Date.now()): Promise<MayAct> {
   try {
@@ -289,23 +296,40 @@ export async function mayAct(kind: WorkKind, repo: string, jobId: string, now: n
   }
 }
 
-async function check(kind: WorkKind, repo: string, jobId: string, now: number): Promise<MayAct> {
-  checkKind(kind);
-  if (!getSettings().school.enabled) return no('The school is off.');
-  if (repo === BEAGLE_REPO) return no(`${BEAGLE_REPO} is never acted on while Palimpsest imports it.`);
+/**
+ * The checks that read nothing over the network: the switch, the grant, the
+ * stop file, the repo row and the master. They run first and again after
+ * every await, since the world moves while gh and git answer (he may flip
+ * the switch, write the stop file or revoke the pair meanwhile).
+ */
+function standing(kind: WorkKind, repo: string, now: number): { refused: string | null; repoRow: Repo | null; master: ReturnType<typeof masterState>['master'] } {
+  const none = { repoRow: null, master: null };
+  if (!getSettings().school.enabled) return { ...none, refused: 'The school is off.' };
+  if (isBeagle(repo)) return { ...none, refused: `${BEAGLE_REPO} is never acted on while Palimpsest imports it.` };
 
   const g = grantOf(kind, repo);
-  if (!g) return no(`There is no grant for ${kind} on ${repo}.`);
-  if (g.state === 'asked') return no(`You have not granted ${kind} on ${repo} yet.`);
-  if (g.state === 'declined') return no(`You declined ${kind} on ${repo}.`);
-  if (g.state === 'revoked') return no(`The grant for ${kind} on ${repo} was revoked ${g.by === 'revert' ? 'after a revert' : 'by you'}.`);
-  if (g.state === 'suspended') return no(`The grant for ${kind} on ${repo} is suspended: ${sentence(g.reason ?? 'no reason was written down')}`);
-  if (g.state !== 'granted') return no(`The grant for ${kind} on ${repo} is in a state this engine does not know: ${String(g.state)}.`);
+  if (!g) return { ...none, refused: `There is no grant for ${kind} on ${repo}.` };
+  if (g.state === 'asked') return { ...none, refused: `You have not granted ${kind} on ${repo} yet.` };
+  if (g.state === 'declined') return { ...none, refused: `You declined ${kind} on ${repo}.` };
+  if (g.state === 'revoked') return { ...none, refused: `The grant for ${kind} on ${repo} was revoked ${g.by === 'revert' ? 'after a revert' : 'by you'}.` };
+  if (g.state === 'suspended') return { ...none, refused: `The grant for ${kind} on ${repo} is suspended: ${sentence(g.reason ?? 'no reason was written down')}` };
+  if (g.state !== 'granted') return { ...none, refused: `The grant for ${kind} on ${repo} is in a state this engine does not know: ${String(g.state)}.` };
 
-  if (existsSync(paths().stop)) return no(STOP_REASON);
+  if (existsSync(paths().stop)) return { ...none, refused: STOP_REASON };
   const repoRow = getRepo(repo);
   const refused = repoRefusal(repoRow, repo);
-  if (refused || !repoRow) return no(refused ?? `${repo} is not connected.`);
+  if (refused || !repoRow) return { ...none, refused: refused ?? `${repo} is not connected.` };
+
+  const master = masterState(now);
+  if (master.reason !== null || !master.master) return { ...none, refused: sentence(capital(master.reason ?? 'there is no master yet')) };
+  return { refused: null, repoRow, master: master.master };
+}
+
+async function check(kind: WorkKind, repo: string, jobId: string, now: number): Promise<MayAct> {
+  checkKind(kind);
+  const first = standing(kind, repo, now);
+  if (first.refused || !first.repoRow || !first.master) return no(first.refused ?? `There is no grant for ${kind} on ${repo}.`);
+  const repoRow = first.repoRow;
 
   // The job the kind names, before any net is asked about it.
   const job = storedJob(jobId);
@@ -338,15 +362,12 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
     return no(reason);
   }
 
-  const master = masterState(now);
-  if (master.reason !== null || !master.master) return no(sentence(capital(master.reason ?? 'there is no master yet')));
-
   const key = itemKey(kind, jobId);
   const pred = registered(key);
   if (!pred) return no(`The master made no guess on ${key}.`);
   if (pred.p === null) return no(`The master abstained on ${key}: ${sentence(pred.reason ?? 'no reason was written down')}`);
   if (pred.p < AGREE.actP) return no(`The master's guess on ${key} is ${num(pred.p)}, under ${AGREE.actP}.`);
-  if (pred.version !== master.master.version.version) {
+  if (pred.version !== first.master.version.version) {
     const v = pred.version === null ? undefined : versions('master').find((x) => x.version === pred.version);
     if (!v) return no(`The master's guess on ${key} came from v${pred.version ?? '?'}, which is no longer on record.`);
     const age = now - Date.parse(v.at);
@@ -362,16 +383,23 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
     const pr = await prState(repo, run.prNumber as number);
     if (pr.state !== 'OPEN') return no(`PR #${run.prNumber} on ${repo} is ${pr.state.toLowerCase()}.`);
     if (!run.headSha || pr.headRefOid !== run.headSha) return no(`The head of PR #${run.prNumber} on ${repo} moved: it is ${short(pr.headRefOid)}, not the inspected ${short(run.headSha)}.`);
-    // The fresh revert read, always forced past the throttle: a throttled read would answer ok with nothing read.
-    const read = await watchRevertsFor(repoRow, now, { force: true });
-    if (!read.ok) return no(`The revert read of ${repo} failed: ${sentence(read.reason ?? 'no reason was given')}`);
-    if (read.reverted.length) {
-      // The handler revoked the acting pair on the bus already; if not (nothing installed), this pair is revoked here first.
-      const still = grantOf(kind, repo);
-      if (still && still.state !== 'revoked') revoke(kind, repo, 'revert', null, now);
-      return no(`A city merge on ${repo} was reverted: ${read.reverted.join('; ')}.`);
-    }
+    const again = standing(kind, repo, now);
+    if (again.refused) return no(again.refused);
   }
+
+  // The fresh revert read before any autonomous action on the repo, a proposal's accept included; always forced
+  // past the throttle, since a throttled read would answer ok with nothing read.
+  const read = await watchRevertsFor(repoRow, now, { force: true });
+  if (!read.ok) return no(`The revert read of ${repo} failed: ${sentence(read.reason ?? 'no reason was given')}`);
+  if (read.reverted.length) {
+    // The handler revoked the acting pair on the bus already; if not (nothing installed), this pair is revoked here first.
+    const still = grantOf(kind, repo);
+    if (still && still.state !== 'revoked') revoke(kind, repo, 'revert', null, now);
+    return no(`A city merge on ${repo} was reverted: ${read.reverted.join('; ')}.`);
+  }
+  // The world moved while git answered: everything read without the network is read once more.
+  const last = standing(kind, repo, now);
+  if (last.refused) return no(last.refused);
   return { ok: true, reason: null };
 }
 

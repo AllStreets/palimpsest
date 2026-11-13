@@ -359,7 +359,9 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
     const did = a.kind.startsWith('merge:') ? `merged ${r?.prNumber ? `PR #${r.prNumber} of ` : ''}"${title}"` : `accepted the proposal "${title}"`;
     const result = results.get(`${a.kind}:${a.jobId}`);
     const outcome = !result ? ' Its result is not on record yet.' : result.ok ? '' : ` It did not go through: ${sentence(result.reason ?? 'no reason was written down')}`;
-    const live = pairs.find((g) => g.kind === a.kind && g.repo === a.repo)?.state === 'granted';
+    // Revoke stands while the pair could act again without a new grant: granted, or suspended by the school.
+    const state = pairs.find((g) => g.kind === a.kind && g.repo === a.repo)?.state;
+    const live = state === 'granted' || state === 'suspended';
     drafts.push({
       id: `acted:${a.e.id}`,
       kind: 'acted',

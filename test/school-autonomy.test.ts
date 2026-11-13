@@ -19,7 +19,7 @@ import { grantKey, replay, verifyReplay } from '../engine/market/replay.js';
 import { repoTowerId } from '../engine/market/ship.js';
 import { mirrorDir } from '../engine/mirror.js';
 import { getRepo, layEarnedFloor } from '../engine/repos.js';
-import { askDue, BEAGLE_REPO, decline, grant, grantOf, grants, mayAct, noteActed, noteActResult, revoke, revokeOnRevert, suspend } from '../engine/school/autonomy.js';
+import { askDue, BEAGLE_REPO, decline, grant, grantOf, grants, isBeagle, mayAct, noteActed, noteActResult, revoke, revokeOnRevert, suspend } from '../engine/school/autonomy.js';
 import { installDecisions, registerPrediction } from '../engine/school/decisions.js';
 import { startSchool } from '../engine/school/tick.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
@@ -39,10 +39,13 @@ let clock = T0;
 let stop: (() => void) | null = null;
 /** What the fake gh answers to `pr view <n>`. */
 let prStates: Map<number, { state: string; headRefOid: string | null }>;
+/** What happens in the world while gh answers `pr view` (the recheck tests). */
+let whileGh: (() => void) | null = null;
 
 const fakeGh: Runner = async (cmd, args, opts) => {
   if (cmd === 'gh') {
     if (args[0] === 'pr' && args[1] === 'view') {
+      whileGh?.();
       const s = prStates.get(Number(args[2])) ?? { state: 'OPEN', headRefOid: HEAD };
       return { stdout: JSON.stringify({ ...s, mergedAt: null, mergeCommit: null, closedAt: null, baseRefName: 'main' }), stderr: '', code: 0 };
     }
@@ -55,6 +58,7 @@ beforeEach(() => {
   setUp('school-autonomy');
   clock = T0;
   prStates = new Map();
+  whileGh = null;
   setRunner(fakeGh);
   putRepo(FULL);
   school(true);
@@ -300,6 +304,9 @@ test('a pair he revoked is silent 30 days and he can re-grant it from Settings',
   assert.equal(second.fromSettings, true);
   // a pair never asked cannot be granted from Settings either
   assert.throws(() => grant('merge:low', FULL, clock, { fromSettings: true }), /never been asked/);
+  // a kind outside the six is refused everywhere
+  assert.throws(() => noteActResult('merge:none' as WorkKind, FULL, 'job-x', { ok: true, reason: null }, clock), /not a kind of work/);
+  assert.throws(() => noteActed('merge:none' as WorkKind, FULL, 'job-x', clock), /not a kind of work/);
 });
 
 test('a repo without a build command and AllStreets/beagle are never asked', () => {
@@ -322,6 +329,22 @@ test('a repo without a build command and AllStreets/beagle are never asked', () 
   assert.equal(askDue(clock).length, 1, 'with everything back, it is asked');
   // the pooled window is eligible, but FULL has no rows of its own there
   assert.ok(!askDue(clock).some((g) => g.repo === FULL));
+});
+
+test('Beagle by any spelling is never asked, granted or acted on', async () => {
+  const lower = 'allstreets/beagle';
+  assert.ok(isBeagle(lower) && isBeagle('ALLSTREETS/BEAGLE') && !isBeagle('allstreets/beagle2'));
+  putRepo(lower);
+  eligible('propose:readme-gap', lower);
+  assert.deepEqual(askDue(clock), []);
+  assert.throws(() => grant('propose:readme-gap', lower, clock, { fromSettings: true }), /never granted/);
+  const at = new Date(clock).toISOString();
+  openDb()
+    .prepare('INSERT INTO grants (kind, repo, state, at, json) VALUES (?, ?, ?, ?, ?)')
+    .run('propose:readme-gap', lower, 'granted', at, JSON.stringify({ kind: 'propose:readme-gap', repo: lower, state: 'granted', at, by: 'him', rate: null, reason: null, acted: 0, quietUntil: null }));
+  const j = proposal('p', lower);
+  await refused('propose:readme-gap', lower, j.id, 'AllStreets/beagle is never acted on while Palimpsest imports it.');
+  assert.throws(() => noteActed('propose:readme-gap', lower, j.id, clock), /never/);
 });
 
 test('only grant moves an ask to granted', () => {
@@ -518,6 +541,62 @@ test('mayAct refuses a merge not passed, not pushable, a closed PR, a moved head
   await refused('merge:normal', FULL, low.job.id, 'job-low is merge:low work, not merge:normal.');
 });
 
+test('mayAct reads the switch, the stop file and the grant again after the last wait', async () => {
+  granted('merge:normal');
+  const a = waitingPR('a');
+  assert.deepEqual(await mayAct('merge:normal', FULL, a.job.id, clock), { ok: true, reason: null });
+  whileGh = () => writeFileSync(paths().stop, '');
+  await refused('merge:normal', FULL, a.job.id, 'The stop file is set.');
+  const { rmSync } = await import('node:fs');
+  rmSync(paths().stop);
+  whileGh = () => {
+    revoke('merge:normal', FULL, 'him', undefined, clock);
+  };
+  await refused('merge:normal', FULL, a.job.id, 'The grant for merge:normal on acme/widgets was revoked by you.');
+  grant('merge:normal', FULL, clock, { fromSettings: true });
+  whileGh = () => school(false);
+  await refused('merge:normal', FULL, a.job.id, 'The school is off.');
+  school(true);
+  whileGh = () => patchRepo(FULL, { market: false });
+  await refused('merge:normal', FULL, a.job.id, 'The market on acme/widgets is off.');
+  patchRepo(FULL, { market: true });
+  whileGh = () => patchRepo(FULL, { halted: { at: new Date(clock).toISOString(), reason: 'A revert' } });
+  await refused('merge:normal', FULL, a.job.id, 'acme/widgets is halted: A revert.');
+  patchRepo(FULL, { halted: null });
+  whileGh = null;
+  assert.deepEqual(await mayAct('merge:normal', FULL, a.job.id, clock), { ok: true, reason: null });
+});
+
+test('a proposal is refused when a revert of a city merge on its repo is found by the read', async () => {
+  const { w } = remoteRepo();
+  granted('propose:readme-gap');
+  const mergeSha = commitOn(w, 'widgets.md', 'Add the m widget');
+  litFloor('m', mergeSha);
+  const p = proposal('p');
+  assert.deepEqual(await mayAct('propose:readme-gap', FULL, p.id, clock), { ok: true, reason: null });
+  git(w, 'revert', '--no-edit', mergeSha);
+  git(w, 'push', '-q', 'origin', 'HEAD:main');
+  later();
+  await refused('propose:readme-gap', FULL, p.id, 'A city merge on acme/widgets was reverted: Add the m widget.');
+  assert.equal(query({ kind: 'merge.reverted' }).length, 1);
+  // no pair acted on the reverted job, so the read revokes the pair that asked
+  const g = grantOf('propose:readme-gap', FULL)!;
+  assert.equal(g.state, 'revoked');
+  assert.equal(g.by, 'revert');
+  assert.equal(ledger('autonomy.revoked')[0].jobId, null);
+  await refused('propose:readme-gap', FULL, p.id, 'The grant for propose:readme-gap on acme/widgets was revoked after a revert.');
+});
+
+test('mayAct refuses a job on another repo', async () => {
+  granted('propose:readme-gap');
+  granted('merge:normal');
+  putRepo(OTHER);
+  const p = proposal('p', OTHER);
+  await refused('propose:readme-gap', FULL, p.id, 'job-p is on acme/gadgets, not acme/widgets.');
+  const a = waitingPR('a', { repo: OTHER });
+  await refused('merge:normal', FULL, a.job.id, 'job-a is on acme/gadgets, not acme/widgets.');
+});
+
 test('a revert pushed a minute before is found by mayAct\'s own read, which revokes and refuses', async () => {
   const { w } = remoteRepo();
   granted('merge:normal');
@@ -600,6 +679,29 @@ test('revokeOnRevert revokes an autonomous job\'s grant', () => {
   assert.equal(grantOf('merge:low', FULL)?.state, 'revoked');
 });
 
+test('revokeOnRevert closes an open ask on the pair that acted, with the quiet', () => {
+  granted('merge:normal');
+  const m = litFloor('m', 'd'.repeat(40));
+  noteActed('merge:normal', FULL, m.job.id, clock);
+  suspend('merge:normal', FULL, 'he undid it', clock);
+  eligible('merge:normal');
+  assert.equal(askDue(clock).length, 1);
+  assert.equal(grantOf('merge:normal', FULL)?.state, 'asked');
+  revokeOnRevert({ jobId: m.job.id, repo: FULL, at: new Date(clock).toISOString() });
+  const g = grantOf('merge:normal', FULL)!;
+  assert.equal(g.state, 'revoked');
+  assert.equal(g.by, 'revert');
+  assert.equal(g.quietUntil, new Date(clock + AGREE.quietDays * DAY).toISOString());
+  assert.deepEqual(askDue(clock + DAY), []);
+  // a declined pair is left as he left it
+  eligible('propose:harness');
+  askDue(clock);
+  decline('propose:harness', FULL, clock);
+  record('autonomy.acted', { kind: 'propose:harness', repo: FULL, jobId: 'job-d', key: 'propose:harness:job-d', at: new Date(clock).toISOString() });
+  revokeOnRevert({ jobId: 'job-d', repo: FULL });
+  assert.equal(grantOf('propose:harness', FULL)?.state, 'declined');
+});
+
 test('a revert of a job the city did not act on revokes nothing', () => {
   granted('merge:normal');
   const m = litFloor('m', 'd'.repeat(40));
@@ -659,6 +761,17 @@ test('the brief carries the ask and an acted item with revoke', () => {
   // once revoked the line offers no revoke, and a declined ask is taught
   b = briefData(clock + 180_000);
   assert.deepEqual(b.sections.overnight.find((i) => i.kind === 'acted')?.actions, ['why']);
+  // a suspended pair still offers revoke on a fresh act: it could act again without a new grant
+  grant('merge:low', FULL, clock + 180_000, { fromSettings: true });
+  const again = waitingPR('again', { tier: 'low' });
+  noteActed('merge:low', FULL, again.job.id, clock + 180_000);
+  suspend('merge:low', FULL, 'he undid it', clock + 180_000);
+  b = briefData(clock + 240_000);
+  const fresh = b.sections.overnight.find((i) => i.kind === 'acted' && i.refs.jobId === again.job.id)!;
+  assert.deepEqual(fresh.actions, ['revoke', 'why']);
+  assert.match(fresh.text, /Its result is not on record yet\./);
+  actOn(fresh.id, 'revoke', {}, clock + 240_000);
+  assert.equal(grantOf('merge:low', FULL)?.state, 'revoked');
   eligible('propose:readme-gap');
   askDue(clock + 180_000);
   const d = actOn(`autonomy:propose:readme-gap:${FULL}`, 'decline', {}, clock + 180_000);
