@@ -17,7 +17,9 @@
  * 3. plants up to ARENA.mutants one-line bugs in source files that are not
  *    tests (`mutate()`), and grades each in a fresh clone the same way: a
  *    bug the suite catches (a non-zero exit) is kept, one it passes (or one
- *    whose suite never ends) is dropped; at most ARENA.keepPlanted kept;
+ *    whose suite outlasts the mutant cap, `mutantCapMs`) is dropped; a bug
+ *    whose file is a link or resolves outside the clone is never written
+ *    (skipped); at most ARENA.keepPlanted kept;
  * 4. writes the kept bugs as tasks to `arena_tasks` and to Beagle's store
  *    (`putArena`, `putTasks`, with `Arena.data` the arena id), split by
  *    Beagle's `splitOf()`, and records `arena.built` with Beagle's
@@ -34,8 +36,8 @@
  * log in `<school>/arenas/<id>/log.jsonl`.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, chmodSync, constants, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, chmodSync, constants, cpSync, existsSync, mkdirSync, readFileSync, lstatSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { join, sep } from 'node:path';
 
 import { localCredits } from '../../shared/credits.js';
 import { ARENA } from '../../shared/school-rules.js';
@@ -86,7 +88,8 @@ export interface ArenaTask {
   truth: PlantedTruth;
 }
 
-export type CandidateState = 'untried' | 'kept' | 'dropped';
+/** `skipped`: the bug could not be planted safely (its file is a link, or resolves outside the clone). */
+export type CandidateState = 'untried' | 'kept' | 'dropped' | 'skipped';
 
 export interface Candidate {
   /** Stable within the arena: a hash of the file, line and planted text. */
@@ -103,12 +106,33 @@ interface BuildState {
   sha: string | null;
   installed: boolean;
   headPassed: boolean;
+  /** The head suite's wall time, which sets each mutant's cap; null before it ran (or in a build from before the cap). */
+  headMs?: number | null;
   candidates: Candidate[] | null;
   startedAt: string;
 }
 
 /** The model a build's wall time is charged under: local, sized 0 GB (no model runs). */
 export const ARENA_BUILD_MODEL: ModelRef = 'mlx:arena-build';
+
+/**
+ * Each mutant's grade is cut at max(floor, factor x the head suite's wall
+ * time) plus slack, never past CHECK_MS: a planted bug that makes the suite
+ * hang is dropped quickly. Races grade at the full CHECK_MS (ruling 21).
+ */
+const MUTANT_CAP = { floorMs: 60_000, factor: 5, slackMs: 10_000 };
+const MUTANT_CAP_DEFAULT = { ...MUTANT_CAP };
+
+/** Replaces the mutant cap's floor and slack (tests); null restores them. */
+export function setMutantCap(o: { floorMs: number; slackMs: number } | null): void {
+  Object.assign(MUTANT_CAP, o ?? MUTANT_CAP_DEFAULT);
+}
+
+/** How long one mutant's grade may run, from the head suite's wall time. */
+export function mutantCapMs(headMs: number | null | undefined): number {
+  const base = Math.max(MUTANT_CAP.floorMs, MUTANT_CAP.factor * (headMs ?? 0));
+  return Math.min(CHECK_MS, base + MUTANT_CAP.slackMs);
+}
 
 /** Source files larger than this are not mutated (a generated or vendored file, most likely). */
 const MAX_SOURCE_BYTES = 200_000;
@@ -252,6 +276,10 @@ export function failingTests(output: string): string[] {
 }
 
 interface Graded {
+  /** The bug was not planted: its file is a link or resolves outside the clone. */
+  skipped: boolean;
+  /** The command's wall time. */
+  ms: number;
   /** The suite exited non-zero: it caught the bug. */
   failed: boolean;
   /** It passed (exit 0). */
@@ -265,7 +293,7 @@ interface Graded {
  * `mutant` planted when given. No egress runs for the grading root, so its
  * children's proxy is a closed port: grading has no network.
  */
-async function grade(id: string, repo: Repo, mutant: Mutant | null, signal: AbortSignal, log: (l: RunLogLine) => void): Promise<Graded> {
+async function grade(id: string, repo: Repo, mutant: Mutant | null, timeoutMs: number, signal: AbortSignal, log: (l: RunLogLine) => void): Promise<Graded> {
   const runId = gradeRunId(id);
   const runRoot = join(paths().runs, runId);
   // The root is made once per session; each grade gets a fresh clone (execTool reaps after every command).
@@ -277,18 +305,42 @@ async function grade(id: string, repo: Repo, mutant: Mutant | null, signal: Abor
   cpSync(arenaBase(id), dir, { recursive: true, mode: constants.COPYFILE_FICLONE, verbatimSymlinks: true });
   try {
     if (mutant) {
-      const p = join(dir, mutant.file);
+      const p = insideClone(dir, mutant.file);
+      const skip = (why: string): Graded => ({ skipped: true, failed: false, passed: false, aborted: false, ms: 0, output: why });
+      if (!p) return skip(`${mutant.file} is a link or lies outside the clone; nothing was written`);
       const lines = readFileSync(p, 'utf8').split('\n');
-      if (lines[mutant.line - 1] !== mutant.original) return { failed: false, passed: false, aborted: false, output: `${mutant.file}:${mutant.line} is not the line this bug was planted in` };
+      if (lines[mutant.line - 1] !== mutant.original) return skip(`${mutant.file}:${mutant.line} is not the line this bug was planted in`);
       lines[mutant.line - 1] = mutant.mutated;
       writeFileSync(p, lines.join('\n'));
     }
-    const r = await execTool({ runId, runRoot, dir, command: repo.checks?.test ?? '', timeoutMs: CHECK_MS, stage: 'checks', signal, log });
+    const t0 = Date.now();
+    const r = await execTool({ runId, runRoot, dir, command: repo.checks?.test ?? '', timeoutMs, stage: 'checks', signal, log });
+    const ms = Date.now() - t0;
     const aborted = signal.aborted;
+    // A suite cut at its cap may exit non-zero on the SIGTERM: that is a hang, never a catch.
+    if (ms >= timeoutMs || r.stderr.includes('[palimpsest] timed out after')) {
+      return { skipped: false, ms, failed: false, passed: false, aborted, output: `the suite ran past ${Math.round(timeoutMs / 1000)} s` };
+    }
     const output = scrub(`${r.stdout}\n${r.stderr}`, [dir, runRoot]);
-    return { failed: !aborted && r.refused === null && r.code !== null && r.code !== 0, passed: !aborted && r.refused === null && r.code === 0, aborted, output };
+    return { skipped: false, ms, failed: !aborted && r.refused === null && r.code !== null && r.code !== 0, passed: !aborted && r.refused === null && r.code === 0, aborted, output };
   } finally {
     removeOwned(dir);
+  }
+}
+
+/**
+ * The path of `file` in `dir` when it is a regular file (not a link) that
+ * resolves inside `dir`, link-free all the way; else null.
+ */
+function insideClone(dir: string, file: string): string | null {
+  const p = join(dir, file);
+  try {
+    if (!lstatSync(p).isFile()) return null;
+    const root = realpathSync(dir);
+    const real = realpathSync(p);
+    return real.startsWith(root + sep) && real === join(root, file) ? p : null;
+  } catch {
+    return null;
   }
 }
 
@@ -368,8 +420,9 @@ async function plant(id: string, sha: string): Promise<Candidate[]> {
     const p = join(base, file);
     let text: string;
     try {
-      const st = statSync(p);
-      if (!st.isFile() || st.size > MAX_SOURCE_BYTES) continue;
+      // Never a link: a bug is planted only in a regular file that stays inside the clone.
+      const st = lstatSync(p);
+      if (!st.isFile() || st.size > MAX_SOURCE_BYTES || !insideClone(base, file)) continue;
       text = readFileSync(p, 'utf8');
     } catch {
       continue;
@@ -537,10 +590,11 @@ export async function buildPlanted(repo: Repo, now: number, o: { signal?: AbortS
       writeState(state);
     }
     if (!state.headPassed) {
-      const g = await grade(state.id, repo, null, signal, log);
+      const g = await grade(state.id, repo, null, CHECK_MS, signal, log);
       if (g.aborted) return await pause(stopReason());
       if (!g.passed) return await fail(`The tests do not pass at the head (${state.sha.slice(0, 7)}), so a planted bug cannot be told apart`);
       state.headPassed = true;
+      state.headMs = g.ms;
       writeState(state);
     }
     if (!state.candidates) {
@@ -554,9 +608,9 @@ export async function buildPlanted(repo: Repo, now: number, o: { signal?: AbortS
       if (signal.aborted) return await pause(stopReason());
       const g0 = await readGate('heavy', at());
       if (!g0.ok) return await pause(g0.reason ?? 'the gate closed');
-      const g = await grade(state.id, repo, c.mutant, signal, log);
+      const g = await grade(state.id, repo, c.mutant, mutantCapMs(state.headMs), signal, log);
       if (g.aborted) return await pause(stopReason());
-      c.state = g.failed ? 'kept' : 'dropped';
+      c.state = g.skipped ? 'skipped' : g.failed ? 'kept' : 'dropped';
       c.failing = g.failed ? failingTests(g.output) : [];
       c.output = g.failed ? g.output : '';
       writeState(state);

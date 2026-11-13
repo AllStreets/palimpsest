@@ -7,7 +7,7 @@
  * the network or Beagle's real home.
  */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
@@ -17,7 +17,7 @@ import { paths } from '../engine/home.js';
 import { query } from '../engine/ledger.js';
 import { unattended } from '../engine/market/budget.js';
 import { getRepo } from '../engine/repos.js';
-import { arenaInfo as arenaInfoOf, arenaTasks, buildPlanted, candidatesOf, resumeArenas } from '../engine/school/arenas.js';
+import { arenaInfo as arenaInfoOf, arenaTasks, buildPlanted, candidatesOf, mutantCapMs, resumeArenas, setMutantCap, type Candidate } from '../engine/school/arenas.js';
 import type { BeagleArena } from '../engine/school/beagle-api.js';
 import { closeBeagle, loadBeagle } from '../engine/school/beagle.js';
 import { schoolOff, TURNED_OFF_REASON } from '../engine/school/tick.js';
@@ -25,7 +25,8 @@ import { setGate } from '../engine/school/trainer.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localCredits } from '../shared/credits.js';
 import type { ArenaInfo, GateState, Repo } from '../shared/types.js';
-import { checks, FULL, makeRepo, setUp, tearDown, tempDir } from './guild-fixtures.js';
+import { CHECK_MS } from '../engine/guild/checks.js';
+import { checks, FULL, git, makeRepo, setUp, tearDown, tempDir } from './guild-fixtures.js';
 
 /** 03:00 local on 12 November 2026: inside the default window, unattended. */
 const NOW = new Date(2026, 10, 12, 3, 0).getTime();
@@ -65,12 +66,13 @@ interface Spawn {
   env: Record<string, string>;
   /** Whether the clone it ran in carried the base's install at that moment. */
   installed: boolean;
+  maxMs: number | undefined;
 }
 let spawns: Spawn[] = [];
 let onSpawn: ((s: Spawn) => void) | null = null;
 
 const recording: Spawner = (cmd, args, opts) => {
-  const s = { cmd, args, cwd: opts.cwd ?? '', env: { ...(opts.env ?? {}) }, installed: existsSync(join(opts.cwd ?? '', 'installed.txt')) };
+  const s = { cmd, args, cwd: opts.cwd ?? '', env: { ...(opts.env ?? {}) }, installed: existsSync(join(opts.cwd ?? '', 'installed.txt')), maxMs: opts.maxMs };
   spawns.push(s);
   onSpawn?.(s);
   return realSpawner(cmd, args, opts);
@@ -105,6 +107,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setMutantCap(null);
   setGate(null);
   closeBeagle();
   delete process.env.BEAGLE_HOME;
@@ -279,4 +282,90 @@ test('the arena base keeps its planted bugs out of it', async () => {
   const base = join(paths().runs, `arena-${info.id}`, 'base');
   assert.equal(readFileSync(join(base, 'src', 'math.js'), 'utf8'), MATH, 'the base stays at the head');
   assert.ok(existsSync(join(base, 'installed.txt')), 'the base keeps its install for grading');
+});
+
+// ---------------------------------------------------------------- fix round 1
+
+/** The tiny repo with two tracked links in src: one to an absolute path, one up and out by ../. */
+function linkedRepo(): { repo: Repo; abs: string; up: string } {
+  const repo = tinyRepo();
+  const abs = join(tempDir, 'victim-abs.js');
+  const up = join(tempDir, 'home', 'victim-up.js');
+  writeFileSync(abs, MATH);
+  writeFileSync(up, MATH);
+  const work = join(tempDir, 'work', FULL.replace('/', '__'));
+  symlinkSync(abs, join(work, 'src', 'abs.js'));
+  // From src/ in any clone under <home>/runs/<root>/<clone>, four levels up is the temp home.
+  symlinkSync('../../../../victim-up.js', join(work, 'src', 'up.js'));
+  git(work, 'add', '.');
+  git(work, 'commit', '-q', '-m', 'links');
+  return { repo, abs, up };
+}
+
+const linkBug = (file: string): Candidate => ({
+  key: `link-${file.replace(/\W/g, '')}`,
+  mutant: { file, line: 2, original: '  if (a > b) return a;', mutated: '  if (a <= b) return a;', op: 'comparison' },
+  state: 'untried',
+  failing: [],
+  output: '',
+});
+
+test('a tracked link is never planted in, and nothing outside the clone changes', async () => {
+  const { repo, abs, up } = linkedRepo();
+  const info = await buildPlanted(repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  const files = new Set(candidatesOf(info.id).map((c) => c.mutant.file));
+  assert.ok(!files.has('src/abs.js') && !files.has('src/up.js'), `a link was a candidate: ${[...files]}`);
+  assert.equal(readFileSync(abs, 'utf8'), MATH);
+  assert.equal(readFileSync(up, 'utf8'), MATH);
+});
+
+test('a planted bug whose file is a link is skipped, and nothing is written through it', async () => {
+  const { repo, abs, up } = linkedRepo();
+  let calls = 0;
+  setGate(async () => (++calls <= 1 ? gateState(true) : gateState(false, 'on battery')));
+  const paused = await buildPlanted(repo, NOW);
+  assert.equal(paused.status, 'paused');
+  // Bugs aimed at the links, as a candidate list from before the links were refused would hold them.
+  const file = join(paths().school, 'arenas', paused.id, 'state.json');
+  const state = JSON.parse(readFileSync(file, 'utf8')) as { candidates: Candidate[] };
+  state.candidates = [linkBug('src/abs.js'), linkBug('src/up.js'), ...state.candidates];
+  writeFileSync(file, JSON.stringify(state));
+
+  setGate(async () => gateState(true));
+  const [done] = await resumeArenas(NOW);
+  assert.equal(done.status, 'ready', done.reason ?? '');
+  const states = candidatesOf(done.id);
+  for (const key of ['link-srcabsjs', 'link-srcupjs']) assert.equal(states.find((c) => c.key === key)?.state, 'skipped', key);
+  assert.equal(readFileSync(abs, 'utf8'), MATH, 'the absolute link target is untouched');
+  assert.equal(readFileSync(up, 'utf8'), MATH, 'the ../ link target is untouched');
+});
+
+test('a mutant whose suite hangs is dropped at the mutant cap, not after 15 minutes', async () => {
+  makeRepo(checks({ test: 'node --test test/count.test.js' }), {
+    'package.json': JSON.stringify({ name: 'widgets', type: 'module' }),
+    'src/count.js': ['export function countdown(n) {', '  let k = 0;', '  while (n !== 0) {', '    n -= 1;', '    k += 1;', '  }', '  return k;', '}', ''].join('\n'),
+    'test/count.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { countdown } from '../src/count.js';\ntest('countdown', () => { assert.equal(countdown(3), 3); });\n",
+  });
+  setMutantCap({ floorMs: 2_000, slackMs: 1_000 });
+  const t0 = Date.now();
+  const info = await buildPlanted(getRepo(FULL)!, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  assert.ok(Date.now() - t0 < 120_000, 'the build did not wait out a hang');
+
+  const hang = candidatesOf(info.id).find((c) => c.mutant.mutated === '    n -= 2;');
+  assert.ok(hang, 'the hanging bug was a candidate');
+  assert.equal(hang.state, 'dropped', 'a suite that never ends does not keep its bug');
+
+  const grading = gradingSpawns(info.id);
+  assert.equal(grading[0].maxMs, CHECK_MS, 'the head suite has the full check time');
+  const caps = new Set(grading.slice(1).map((g) => g.maxMs));
+  assert.equal(caps.size, 1);
+  const cap = [...caps][0] ?? 0;
+  assert.ok(cap >= 3_000 && cap < 60_000, `cap ${cap}`);
+  assert.equal(mutantCapMs(null), 3_000);
+  setMutantCap(null);
+  assert.equal(mutantCapMs(1_000), 70_000, 'the real floor is 60 s, plus 10 s of slack');
+  assert.equal(mutantCapMs(20_000), 110_000, 'five times a slower head suite, plus slack');
+  assert.equal(mutantCapMs(10 * 60_000), CHECK_MS, 'never past the full check time');
 });
