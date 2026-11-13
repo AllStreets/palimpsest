@@ -440,6 +440,9 @@ interface PastWorld {
   tidy: string;
   r1: string;
   r2: string;
+  /** PR 11, merged with a merge commit, and the one commit on its branch. */
+  merge: string;
+  side: string;
 }
 
 /**
@@ -463,15 +466,23 @@ function pastWorld(o: { redHead?: boolean; movedDeps?: boolean } = {}): PastWorl
   const tidy = commitAt(work, ago(50), ago(50), { 'src/math.js': `// the larger of two\n${FIXED}`, 'test/same.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { max } from '../src/math.js';\ntest('max of fours', () => { assert.equal(max(4, 4), 4); });\n" }, 'Say what max does');
   const r1 = commitAt(work, ago(45), ago(40), { 'src/even.js': 'export const isEven = (n) => n % 2 === 0;\n', 'test/even.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { isEven } from '../src/even.js';\ntest('even', () => { assert.equal(isEven(4), true); });\n" }, 'Add isEven');
   const r2 = commitAt(work, ago(44), ago(40), { 'src/even.js': 'export const isEven = (n) => n % 2 === 0;\nexport const isOdd = (n) => !isEven(n);\n', 'test/odd.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { isOdd } from '../src/even.js';\ntest('odd', () => { assert.equal(isOdd(3), true); });\n" }, 'Add isOdd');
+  // PR 11: a branch with one commit adding half() and its test, merged with --no-ff.
+  gitDated(work, ago(36), ago(36), 'checkout', '-q', '-b', 'feat');
+  const side = commitAt(work, ago(36), ago(36), { 'src/half.js': 'export const half = (n) => n / 2;\n', 'test/half.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { half } from '../src/half.js';\ntest('half', () => { assert.equal(half(8), 4); });\n" }, 'Add half');
+  gitDated(work, ago(35), ago(35), 'checkout', '-q', 'main');
+  gitDated(work, ago(35), ago(35), 'merge', '-q', '--no-ff', '-m', 'Merge pull request #11 from acme/feat', 'feat');
+  const merge = gitDated(work, ago(35), ago(35), 'rev-parse', 'HEAD');
   // A test that fails at the head (too new to be verified, and no source touched).
   if (o.redHead) commitAt(work, ago(10), ago(10), { 'test/red.test.js': "import { test } from 'node:test';\ntest('red', () => { throw new Error('red'); });\n" }, 'A red test');
   // The mirror is his history alone (the planted fixture's mirror is replaced).
   spawnSync('rm', ['-rf', mirrorDir(FULL)]);
   const r = spawnSync('git', ['clone', '-q', '--bare', work, mirrorDir(FULL)], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
   assert.equal(r.status, 0, r.stderr);
-  prs = [{ number: 9, title: 'Even and odd', mergedAt: ago(40), mergeCommit: { oid: r2 }, url: `https://github.com/${FULL}/pull/9`, headRefName: 'even' }];
-  void first;
-  return { repo: getRepo(FULL)!, fix, fixParent: first, tidy, r1, r2 };
+  prs = [
+    { number: 11, title: 'Add half', mergedAt: ago(35), mergeCommit: { oid: merge }, url: `https://github.com/${FULL}/pull/11`, headRefName: 'feat' },
+    { number: 9, title: 'Even and odd', mergedAt: ago(40), mergeCommit: { oid: r2 }, url: `https://github.com/${FULL}/pull/9`, headRefName: 'even' },
+  ];
+  return { repo: getRepo(FULL)!, fix, fixParent: first, tidy, r1, r2, merge, side };
 }
 
 function pastSetUp(): void {
@@ -533,6 +544,7 @@ test('its task shows the failing test, not the fix', async () => {
   assert.ok(!shown.includes(w.fix), 'nor the sha of the fix');
   assert.ok(!shown.includes(tempDir), 'nor a path of this Mac');
   assert.ok((t.truth as PastTruth).fix.includes(FIXED_LINE), 'the truth keeps the fix');
+  for (const x of arenaTasks(info.id)) assert.ok(x.input.output.length <= 4_000, 'the output kept is its tail, at most 4,000 characters');
 });
 
 test('sealedRefs names the sealed tasks', async () => {
@@ -547,12 +559,58 @@ test('sealedRefs names the sealed tasks', async () => {
     .run('other:pr12', 'other', 'sealed', '12', JSON.stringify({ id: 'other:pr12', arena: 'other', split: 'sealed', ref: '12', input: {}, truth: { kind: 'past', sha: 'a'.repeat(40) } }));
   const refs = sealedRefs();
   assert.ok(refs.has('12') && refs.has('a'.repeat(40)));
+  const want = new Set<string>(['12', 'a'.repeat(40)]);
   for (const t of sealed) {
-    assert.ok(refs.has(t.ref!));
-    assert.ok(refs.has((t.truth as PastTruth).sha));
+    const truth = t.truth as PastTruth;
+    for (const v of [t.ref!, truth.ref, truth.sha, ...truth.commits]) {
+      assert.ok(refs.has(v), `${v} of a sealed task is named`);
+      want.add(v);
+    }
   }
   for (const t of open) assert.ok(!refs.has((t.truth as PastTruth).sha), `${t.ref} is not sealed`);
-  assert.equal(refs.size, 2 + sealed.length * 1 + sealed.filter((t) => t.ref !== (t.truth as PastTruth).sha).length);
+  assert.deepEqual([...refs].sort(), [...want].sort(), 'nothing else is named');
+});
+
+test("a sealed merge-commit PR seals its inner commits and history's ref", async () => {
+  pastSetUp();
+  const w = pastWorld();
+  const info = await buildPast(w.repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  const t = arenaTasks(info.id).find((x) => x.ref === '11');
+  assert.ok(t, 'PR 11 is a task');
+  const truth = t.truth as PastTruth;
+  assert.equal(truth.ref, 'pr:11');
+  assert.deepEqual([...truth.commits].sort(), [w.merge, w.side].sort(), 'the merge and the commit on its branch');
+  // Sealed (whatever split it drew), it seals every commit it brought in.
+  openDb().prepare("UPDATE arena_tasks SET split = 'sealed' WHERE id = ?").run(t.id);
+  const refs = sealedRefs();
+  for (const v of ['11', 'pr:11', w.merge, w.side]) assert.ok(refs.has(v), `${v} is sealed`);
+});
+
+test('a past task directory holds no object of the fix', async () => {
+  pastSetUp();
+  const w = pastWorld();
+  const seen: Array<{ git: boolean; fixObject: boolean }> = [];
+  onSpawn = (sp) => {
+    if (!sp.cwd.includes('-grade')) return;
+    let math = '';
+    let test = '';
+    try {
+      math = readFileSync(join(sp.cwd, 'src', 'math.js'), 'utf8');
+      test = readFileSync(join(sp.cwd, 'test', 'math.test.js'), 'utf8');
+    } catch {
+      return;
+    }
+    if (math !== BUGGY || test !== NEW_TEST) return;
+    // The fix's task directory, as its suite runs: git may look nowhere above it.
+    const r = spawnSync('git', ['-C', sp.cwd, 'cat-file', '-e', `${w.fix}^{commit}`], { env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CEILING_DIRECTORIES: dirname(sp.cwd) } });
+    seen.push({ git: existsSync(join(sp.cwd, '.git')), fixObject: r.status === 0 });
+  };
+  const info = await buildPast(w.repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  assert.ok(arenaTasks(info.id).some((x) => x.ref === w.fix));
+  assert.equal(seen.length, 1, 'the fix was graded at its task base once');
+  assert.deepEqual(seen[0], { git: false, fixObject: false });
 });
 
 test('nothing is fetched beyond the mirror', async () => {

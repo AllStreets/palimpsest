@@ -117,6 +117,8 @@ export interface PastTruth {
   sourceFiles: string[];
   failing: string[];
   fix: string;
+  /** Every commit the change brought in (`git rev-list parent..sha`): a merge's inner commits with it. */
+  commits: string[];
 }
 
 export interface ArenaTask {
@@ -150,6 +152,8 @@ export interface PastCandidate {
   /** The diffs, read from the base's objects when the change is planted as a candidate. */
   tests: string;
   fix: string;
+  /** `git rev-list parent..sha`, 40 hex only. */
+  commits?: string[];
   state: CandidateState;
   /** Why a candidate was skipped without grading (its dependencies moved), or null. */
   reason?: string | null;
@@ -251,16 +255,24 @@ export function pastCandidatesOf(id: string): PastCandidate[] {
 
 /**
  * Every ref and sha in any sealed split (ruling 25): a LoRA example from one
- * of these changes would let the adapter see a sealed answer.
+ * of these changes would let the adapter see a sealed answer. For each
+ * sealed past task: the task's ref (the PR number or sha), history's ref
+ * (`pr:<n>`, `commit:<sha>`, `city:<jobId>`), the change's sha, and every
+ * commit it brought in (a merge's inner commits too).
  */
 export function sealedRefs(): Set<string> {
   const out = new Set<string>();
   const rows = openDb().prepare("SELECT ref, json FROM arena_tasks WHERE split = 'sealed'").all() as Array<{ ref: string | null; json: string }>;
+  const add = (v: unknown) => {
+    if (typeof v === 'string' && v) out.add(v);
+  };
   for (const r of rows) {
-    if (r.ref) out.add(r.ref);
+    add(r.ref);
     try {
-      const sha = (JSON.parse(r.json) as { truth?: { sha?: unknown } }).truth?.sha;
-      if (typeof sha === 'string' && sha) out.add(sha);
+      const truth = (JSON.parse(r.json) as { truth?: { ref?: unknown; sha?: unknown; commits?: unknown } }).truth;
+      add(truth?.ref);
+      add(truth?.sha);
+      if (Array.isArray(truth?.commits)) for (const c of truth.commits) add(c);
     } catch {
       // a row that does not parse names nothing more
     }
@@ -608,6 +620,10 @@ async function plantPast(id: string, repo: Repo, head: string, now: number, sign
     if (testDiff.code !== 0 || fixDiff.code !== 0) continue;
     // The base carries the head's install: a change whose parent or self has other manifests or lockfiles is not graded on it.
     const moved = await movedDeps(base, head, [c.parent, c.sha]);
+    const revs = await engineGit(base, ['rev-list', `${c.parent}..${c.sha}`]);
+    if (revs.code !== 0) continue;
+    const commits = revs.stdout.split('\n').map((l) => l.trim()).filter((l) => SHA.test(l));
+    if (!commits.includes(c.sha)) continue;
     out.push({
       key: c.sha.slice(0, 12),
       change: c,
@@ -615,6 +631,7 @@ async function plantPast(id: string, repo: Repo, head: string, now: number, sign
       sourceFiles,
       tests: testDiff.stdout.slice(0, MAX_DIFF),
       fix: fixDiff.stdout.slice(0, MAX_DIFF),
+      commits,
       state: moved.length ? 'skipped' : 'untried',
       reason: moved.length ? `Its dependencies differ from the head's (${moved.join(', ')}), whose install the arena grades on` : null,
       failing: [],
@@ -637,14 +654,27 @@ async function movedDeps(base: string, head: string, shas: string[]): Promise<st
 }
 
 /** The task base: the change's parent with the change's test files applied, all from the clone's own objects. */
-const atParentWithTests = (c: PastCandidate): Prepare => async (dir) => {
-  const co = await engineGit(dir, ['checkout', '--quiet', '--force', '--detach', c.change.parent]);
-  if (co.code !== 0) return `could not check out ${c.change.parent.slice(0, 7)}: ${co.stderr.trim()}`;
-  const tests = await engineGit(dir, ['checkout', c.change.sha, '--', ...c.testFiles]);
-  if (tests.code !== 0) return `could not apply the tests of ${c.change.sha.slice(0, 7)}: ${tests.stderr.trim()}`;
-  for (const f of c.testFiles) if (!insideClone(dir, f)) return `${f} is a link or lies outside the clone`;
+const atParentWithTests = (c: PastCandidate): Prepare => (dir) => pastTaskTree(dir, { parent: c.change.parent, sha: c.change.sha, testFiles: c.testFiles });
+
+/**
+ * Turns a fresh clone of the arena base into a past task's working tree:
+ * the change's parent with the change's test files applied, then the
+ * clone's `.git` removed, so no object of the fix (nor any later commit)
+ * can be reached from the task's directory by any tool. Task 21 makes each
+ * task directory the same way. Null when ready, else why not.
+ */
+export async function pastTaskTree(dir: string, t: Pick<PastTruth, 'parent' | 'sha' | 'testFiles'>): Promise<string | null> {
+  if (!SHA.test(t.parent) || !SHA.test(t.sha)) return 'the change names no commit';
+  const co = await engineGit(dir, ['checkout', '--quiet', '--force', '--detach', t.parent]);
+  if (co.code !== 0) return `could not check out ${t.parent.slice(0, 7)}: ${co.stderr.trim()}`;
+  const tests = await engineGit(dir, ['checkout', t.sha, '--', ...t.testFiles]);
+  if (tests.code !== 0) return `could not apply the tests of ${t.sha.slice(0, 7)}: ${tests.stderr.trim()}`;
+  for (const f of t.testFiles) if (!insideClone(dir, f)) return `${f} is a link or lies outside the clone`;
+  // The history goes: the tree is the parent's state and the tests, with nothing behind it.
+  removeOwned(join(dir, '.git'));
+  if (existsSync(join(dir, '.git'))) return 'the clone history could not be removed';
   return null;
-};
+}
 
 /** The change itself. */
 const atChange = (c: PastCandidate): Prepare => async (dir) => {
@@ -689,7 +719,7 @@ async function writeTasks(id: string, repo: Repo, kept: Candidate[], past: PastC
       split: b.arenas.splitOf(taskId),
       ref: refOf(c.change),
       input: { kind: 'past', repo: repo.fullName, test, tests: c.tests, failing: c.failing, output: c.output },
-      truth: { kind: 'past', ref: c.change.ref, sha: c.change.sha, parent: c.change.parent, testFiles: c.testFiles, sourceFiles: c.sourceFiles, failing: c.failing, fix: c.fix },
+      truth: { kind: 'past', ref: c.change.ref, sha: c.change.sha, parent: c.change.parent, testFiles: c.testFiles, sourceFiles: c.sourceFiles, failing: c.failing, fix: c.fix, commits: c.commits ?? [c.change.sha] },
     };
   });
   const tasks = [...planted, ...fromPast];
