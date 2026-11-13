@@ -26,7 +26,9 @@
  * back to a PR. Nothing is ever force-pushed; the only branches ever
  * deleted are the city's own `palimpsest/<jobId>`.
  *
- * The revert watch halts a repo whose city merge was reverted (self-halt).
+ * The revert watch halts a repo whose city merge was reverted (self-halt),
+ * and notes (never halting, never scarring) a fix of his that followed a
+ * city merge into the files it touched (`merge.followup`, ruling 9).
  */
 import { appendFileSync, existsSync, mkdirSync, realpathSync, renameSync, rmSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
@@ -38,8 +40,9 @@ import { getRunner } from '../exec.js';
 import { createPR, openPRsFrom, prCommits, prState, prTitle, recentCommits, viewerLogin, type PRState } from '../github.js';
 import { runCheck } from '../guild/checks.js';
 import { canOpenPR, canPush, inspectionSummary, wipeScratch } from '../guild/inspect.js';
+import { CITY_BRANCH, JOB_TRAILER } from '../history.js';
 import { onRealDataHome, paths } from '../home.js';
-import { record } from '../ledger.js';
+import { query, record } from '../ledger.js';
 import { mirrorDir, syncMirror } from '../mirror.js';
 import { earnedFloors, getRepo, layEarnedFloor, listRepos, removeEarnedFloor, updateEarnedFloor } from '../repos.js';
 import { bidById } from './bids.js';
@@ -728,9 +731,12 @@ async function merged(r0: Run, s: PRState): Promise<void> {
   settleWaitingJob(r.jobId, 'merged', {}, { prUrl: r.prUrl ?? undefined, summary: r.summary ?? undefined });
 }
 
+/** What a run whose PR he closed without merging ends with. */
+export const PR_CLOSED_REASON = 'The PR was closed without a merge.';
+
 function closed(r: Run): void {
   removeFloors(r, r.jobId);
-  finishWaitingRun(r.id, 'closed', 'The PR was closed without a merge.');
+  finishWaitingRun(r.id, 'closed', PR_CLOSED_REASON);
   settleWaitingJob(r.jobId, 'closed', { floorId: null }, {});
 }
 
@@ -757,6 +763,110 @@ export async function pollPRs(now: number = Date.now()): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------- follow-up fixes (ruling 9)
+
+/** How long after a city merge a fix of his into the same files counts as a follow-up. */
+export const FOLLOWUP_DAYS = 14;
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** A subject that says it fixes something: fix, fixes, fixed, as a word. */
+const FIX_SUBJECT = /\bfix(es|ed)?\b/i;
+/** The subject git or GitHub gives a merge of one of the city's `palimpsest/*` branches. */
+const CITY_MERGE_SUBJECT = new RegExp(
+  `^Merge (?:pull request #\\d+ from [^\\s/]+/${CITY_BRANCH}|branch '(?:origin/)?${CITY_BRANCH}|remote-tracking branch '[^'/]+/${CITY_BRANCH})`,
+);
+
+type LogCommit = Awaited<ReturnType<typeof recentCommits>>[number];
+
+/**
+ * The commits a merge of a city branch brought in beside the main line:
+ * everything reachable from such a merge's second (and later) parents and
+ * not from the branch's first-parent line, as far as `commits` reaches.
+ */
+function cityBranchSide(commits: LogCommit[]): Set<string> {
+  const bySha = new Map(commits.map((c) => [c.sha, c]));
+  const named = new Set(commits.flatMap((c) => c.parents));
+  const tip = commits.find((c) => !named.has(c.sha));
+  const mainLine = new Set<string>();
+  for (let c = tip; c && !mainLine.has(c.sha); c = bySha.get(c.parents[0] ?? '')) mainLine.add(c.sha);
+  const side = new Set<string>();
+  for (const m of commits) {
+    if (m.parents.length < 2 || !CITY_MERGE_SUBJECT.test(m.subject)) continue;
+    const stack = m.parents.slice(1);
+    while (stack.length) {
+      const sha = stack.pop() as string;
+      const c = bySha.get(sha);
+      if (!c || mainLine.has(sha) || side.has(sha)) continue;
+      side.add(sha);
+      stack.push(...c.parents);
+    }
+  }
+  return side;
+}
+
+/**
+ * The first fix of his that followed a city merge (ruling 9): among
+ * `commits` (the default branch after `mergeSha`, by ancestry), the oldest
+ * that is not the city's (no `Palimpsest-Job:` trailer, not a merge of a
+ * `palimpsest/*` branch nor brought in by one), was made within
+ * FOLLOWUP_DAYS of `mergedAt` (and not after `now`), says it fixes
+ * something, and touches a file in `files`. Answers that commit and the
+ * merged files it touched, or null.
+ */
+export async function followupOf(
+  commits: LogCommit[],
+  filesOf: (sha: string) => Promise<string[]>,
+  mergeSha: string,
+  files: string[],
+  mergedAt: string,
+  now: number,
+): Promise<{ sha: string; files: string[] } | null> {
+  const t0 = Date.parse(mergedAt);
+  if (!Number.isFinite(t0) || files.length === 0) return null;
+  const until = Math.min(t0 + FOLLOWUP_DAYS * DAY_MS, now);
+  const merged = new Set(files);
+  const side = cityBranchSide(commits);
+  // git log lists the newest first; the follow-up is the first fix after the merge.
+  for (const c of [...commits].reverse()) {
+    if (c.sha === mergeSha || side.has(c.sha)) continue;
+    if (JOB_TRAILER.test(c.body) || CITY_MERGE_SUBJECT.test(c.subject)) continue;
+    if (!FIX_SUBJECT.test(c.subject)) continue;
+    const at = Date.parse(c.at);
+    if (!Number.isFinite(at) || at > until) continue;
+    const touched = (await filesOf(c.sha)).filter((f) => merged.has(f));
+    if (touched.length) return { sha: c.sha, files: [...new Set(touched)].sort() };
+  }
+  return null;
+}
+
+/**
+ * The files a commit touched, read from the mirror with hooks and fsmonitor
+ * off (`recentCommits()` carries none). A merge commit is read against its
+ * first parent, so a merge names what it brought into the branch.
+ */
+async function mirrorFiles(fullName: string, sha: string): Promise<string[]> {
+  if (!SHA.test(sha)) throw new Error(`not a commit sha: ${sha}`);
+  const r = await getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(fullName), 'show', '--name-only', '--format=', '--diff-merges=first-parent', sha, '--'], { timeoutMs: 60_000 });
+  if (r.code !== 0) throw new Error(`git show failed for ${sha.slice(0, 7)}: ${r.stderr.trim()}`);
+  return r.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+/** The files the run's change touched: its recorded diff, else the merge commit as the mirror has it. */
+async function mergedFiles(r: Run, mergeSha: string): Promise<string[]> {
+  const diff = query({ kind: 'run.diff', runId: r.id, last: true })[0]?.data as { files?: unknown } | undefined;
+  if (Array.isArray(diff?.files) && diff.files.length && diff.files.every((f) => typeof f === 'string')) return diff.files as string[];
+  return mirrorFiles(r.repo, mergeSha);
+}
+
+/** When the run's change merged: its `merge.detected`, else when the run ended. */
+function mergedAtOf(r: Run): string | null {
+  const d = query({ kind: 'merge.detected', runId: r.id, last: true })[0]?.data as { mergedAt?: unknown } | undefined;
+  return typeof d?.mergedAt === 'string' ? d.mergedAt : r.endedAt;
+}
+
+function hasFollowup(jobId: string, floorId: string): boolean {
+  return query({ kind: 'merge.followup', jobId }).some((e) => (e.data as { floorId?: unknown }).floorId === floorId);
+}
+
 // ---------------------------------------------------------------- the revert watch
 
 /** The subjects a revert of a floor's PR or merge can carry, against the exact title the city sent. */
@@ -766,59 +876,86 @@ function revertSubject(subject: string, title: string, pr: number | null): boole
   return subject === plain || subject.startsWith(`${plain} (#`) || (pr !== null && (subject === `Revert "${t} (#${pr})"` || subject.startsWith(`Revert "${t} (#${pr})" (#`)));
 }
 
+export interface RevertRead {
+  /** False when the mirror or a merge's history could not be read. */
+  ok: boolean;
+  /** The titles of the floors found reverted by this read. */
+  reverted: string[];
+  /** Why the read failed; null when it did not. */
+  reason: string | null;
+}
+
 /**
- * Reads, every thirty minutes per repo with lit floors, the default branch
- * after each city merge (by ancestry, `<mergeSha>..<branch>`, never by
- * date) for a revert of it: a commit whose body says `This reverts commit
- * <mergeSha>`, or whose subject is `Revert "<title>"` or GitHub's squash
- * form `Revert "<title> (#n)"`, against the exact title sent to GitHub. A
- * merge gh named no commit for is found in the history first. A hit marks
- * the floor (and the agent's) reverted, records `merge.reverted` and halts
- * the repo until he clears it.
+ * Reads one repo with lit floors, at most every thirty minutes unless
+ * `force`: syncs the mirror, then the default branch after each city merge
+ * (by ancestry, `<mergeSha>..<branch>`, never by date) for a revert of it:
+ * a commit whose body says `This reverts commit <mergeSha>`, or whose
+ * subject is `Revert "<title>"` or GitHub's squash form
+ * `Revert "<title> (#n)"`, against the exact title sent to GitHub. A merge
+ * gh named no commit for is found in the history first. A hit marks the
+ * floor (and the agent's) reverted, records `merge.reverted` and halts the
+ * repo until he clears it. A merge not reverted is read for a follow-up
+ * fix (ruling 9), recorded once per floor as `merge.followup`; that never
+ * halts and never scars. A throttled read answers ok with nothing read.
  */
-export async function watchReverts(now: number = Date.now()): Promise<void> {
-  for (const repo of listRepos()) {
-    const lit = earnedFloors(repoTowerId(repo.fullName)).filter((f) => f.earned?.state === 'lit' && !f.earned.reverted);
-    if (!lit.length) continue;
-    if (now - (lastWatch.get(repo.fullName) ?? -Infinity) < REVERT_WATCH_MS) continue;
-    lastWatch.set(repo.fullName, now);
-    try {
-      await syncMirror(repo.fullName);
-    } catch (err) {
-      console.warn(`palimpsest: could not read ${repo.fullName} for reverts: ${errText(err)}`);
-      continue;
-    }
-    const hits: string[] = [];
-    for (const f of lit) {
-      const e = f.earned!;
-      const r = storedRun(e.runId);
-      if (!r) continue;
-      let mergeSha = r.mergeSha && SHA.test(r.mergeSha) ? r.mergeSha : null;
-      try {
-        if (!mergeSha) {
-          mergeSha = await findMergeSha(r, repo, { sync: false });
-          if (mergeSha && updateRun(r.id, { mergeSha })) {
-            // Bookkeeping for replay (Task 18), not a note for his brief.
-            record('run.note', { runId: r.id, jobId: r.jobId, repo: r.repo, note: `merge ${mergeSha} found in the history`, mergeSha, internal: true, at: iso(now) });
-          }
-        }
-        if (!mergeSha) continue;
-        const after = await recentCommits(repo.fullName, repo.defaultBranch, mergeSha, { sync: false });
-        const byBody = new RegExp(`This reverts commit ${mergeSha}\\b`);
-        const hit = after.find((c) => byBody.test(c.body) || revertSubject(c.subject, f.title, r.prNumber));
-        if (!hit) continue;
-        for (const [towerId, id] of [[repoTowerId(repo.fullName), f.id], [agentTowerId(e.agentId), agentFloorId(e.agentId, e.jobId)]]) {
-          const cur = earnedFloors(towerId).find((x) => x.id === id);
-          if (cur?.earned) updateEarnedFloor(id, { earned: { ...cur.earned, reverted: true } });
-        }
-        const data = { jobId: e.jobId, runId: e.runId, repo: repo.fullName, floorId: f.id, mergeSha, revertSha: hit.sha, at: iso(now) };
-        record('merge.reverted', data);
-        emit('merge.reverted', data);
-        hits.push(f.title);
-      } catch (err) {
-        console.warn(`palimpsest: could not read ${repo.fullName} after ${mergeSha?.slice(0, 7) ?? 'its merge'}: ${errText(err)}`);
-      }
-    }
-    if (hits.length) haltRepo(repo.fullName, `A city merge was reverted: ${hits.join('; ').slice(0, 300)}`, iso(now));
+export async function watchRevertsFor(repo: Repo, now: number = Date.now(), o: { force?: boolean } = {}): Promise<RevertRead> {
+  const lit = earnedFloors(repoTowerId(repo.fullName)).filter((f) => f.earned?.state === 'lit' && !f.earned.reverted);
+  if (!lit.length) return { ok: true, reverted: [], reason: null };
+  if (!o.force && now - (lastWatch.get(repo.fullName) ?? -Infinity) < REVERT_WATCH_MS) return { ok: true, reverted: [], reason: null };
+  lastWatch.set(repo.fullName, now);
+  try {
+    await syncMirror(repo.fullName);
+  } catch (err) {
+    const reason = `could not read ${repo.fullName} for reverts: ${errText(err)}`;
+    console.warn(`palimpsest: ${reason}`);
+    return { ok: false, reverted: [], reason };
   }
+  const hits: string[] = [];
+  const failures: string[] = [];
+  for (const f of lit) {
+    const e = f.earned!;
+    const r = storedRun(e.runId);
+    if (!r) continue;
+    let mergeSha = r.mergeSha && SHA.test(r.mergeSha) ? r.mergeSha : null;
+    try {
+      if (!mergeSha) {
+        mergeSha = await findMergeSha(r, repo, { sync: false });
+        if (mergeSha && updateRun(r.id, { mergeSha })) {
+          // Bookkeeping for replay (Task 18), not a note for his brief.
+          record('run.note', { runId: r.id, jobId: r.jobId, repo: r.repo, note: `merge ${mergeSha} found in the history`, mergeSha, internal: true, at: iso(now) });
+        }
+      }
+      if (!mergeSha) continue;
+      const after = await recentCommits(repo.fullName, repo.defaultBranch, mergeSha, { sync: false });
+      const byBody = new RegExp(`This reverts commit ${mergeSha}\\b`);
+      const hit = after.find((c) => byBody.test(c.body) || revertSubject(c.subject, f.title, r.prNumber));
+      if (!hit) {
+        const mergedAt = mergedAtOf(r);
+        if (!mergedAt || hasFollowup(e.jobId, f.id)) continue;
+        const sha = mergeSha;
+        const fix = await followupOf(after, (s) => mirrorFiles(repo.fullName, s), sha, await mergedFiles(r, sha), mergedAt, now);
+        if (fix) record('merge.followup', { jobId: e.jobId, runId: e.runId, repo: repo.fullName, floorId: f.id, mergeSha, fixSha: fix.sha, files: fix.files, at: iso(now) });
+        continue;
+      }
+      for (const [towerId, id] of [[repoTowerId(repo.fullName), f.id], [agentTowerId(e.agentId), agentFloorId(e.agentId, e.jobId)]]) {
+        const cur = earnedFloors(towerId).find((x) => x.id === id);
+        if (cur?.earned) updateEarnedFloor(id, { earned: { ...cur.earned, reverted: true } });
+      }
+      const data = { jobId: e.jobId, runId: e.runId, repo: repo.fullName, floorId: f.id, mergeSha, revertSha: hit.sha, at: iso(now) };
+      record('merge.reverted', data);
+      emit('merge.reverted', data);
+      hits.push(f.title);
+    } catch (err) {
+      const reason = `could not read ${repo.fullName} after ${mergeSha?.slice(0, 7) ?? 'its merge'}: ${errText(err)}`;
+      console.warn(`palimpsest: ${reason}`);
+      failures.push(reason);
+    }
+  }
+  if (hits.length) haltRepo(repo.fullName, `A city merge was reverted: ${hits.join('; ').slice(0, 300)}`, iso(now));
+  return { ok: failures.length === 0, reverted: hits, reason: failures.length ? failures.join('; ').slice(0, 500) : null };
+}
+
+/** Every connected repo's revert read, each at most every thirty minutes (`watchRevertsFor`). */
+export async function watchReverts(now: number = Date.now()): Promise<void> {
+  for (const repo of listRepos()) await watchRevertsFor(repo, now);
 }

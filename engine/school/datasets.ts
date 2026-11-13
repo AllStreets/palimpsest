@@ -36,6 +36,7 @@ import { agent } from '../market/firms.js';
 import { listJobs } from '../market/jobs.js';
 import { reputationLog, resolvedBids } from '../market/reputation.js';
 import { listRuns } from '../market/runs.js';
+import { PR_CLOSED_REASON } from '../market/ship.js';
 import { getRepo, listRepos } from '../repos.js';
 
 /** One labelled row as the trainer reads it. */
@@ -71,8 +72,6 @@ export interface DatasetDeps {
 
 const NETS: readonly NetName[] = ['appraiser-pass', 'appraiser-cost', 'router', 'durability', 'triage', 'taste', 'master'];
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** What a PR closed without a merge ends its run with (ship.ts `closed()`; Task 9 exports it as `PR_CLOSED_REASON`). */
-const PR_CLOSED = 'The PR was closed without a merge.';
 /** Labels a net needs before it reports anything (ruling 11). */
 const NEEDS = NET_MIN.train + NET_MIN.heldOut;
 
@@ -419,7 +418,7 @@ function uiInspections(): Inspection[] {
 function prDecision(run: Run | undefined, now: number): 0 | 1 | null {
   if (!run || run.prNumber === null || !run.endedAt || ms(run.endedAt) > now) return null;
   if (run.outcome === 'merged') return 1;
-  if (run.outcome === 'closed' && run.endedReason === PR_CLOSED) return 0;
+  if (run.outcome === 'closed' && run.endedReason === PR_CLOSED_REASON) return 0;
   return null;
 }
 

@@ -23,7 +23,8 @@ import { job as storedJob, transition } from '../engine/market/jobs.js';
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import { setProvider } from '../engine/market/providers.js';
 import { createScheduler, run as storedRun, startRun } from '../engine/market/runs.js';
-import { pollPRs, pushFlags, pushTarget, resetShipping, ship, shipClone, watchReverts, PR_POLL_MS, REVERT_WATCH_MS } from '../engine/market/ship.js';
+import { followupOf, pollPRs, pushFlags, pushTarget, resetShipping, ship, shipClone, watchReverts, watchRevertsFor, PR_POLL_MS, REVERT_WATCH_MS } from '../engine/market/ship.js';
+import { replay } from '../engine/market/replay.js';
 import { createPR, prState } from '../engine/github.js';
 import { createShipDir } from '../engine/market/worktree.js';
 import { earnedFloors, getRepo } from '../engine/repos.js';
@@ -727,4 +728,159 @@ test('the file protocol is allowed only for a local stand-in, and the real home 
   assert.ok(pushFlags('/tmp/x/remote.git').includes('protocol.file.allow=always'));
   assert.ok(!pushFlags(`https://github.com/${FULL}.git`).includes('protocol.file.allow=always'));
   assert.ok(pushFlags(`https://github.com/${FULL}.git`).includes('core.hooksPath=/dev/null'));
+});
+
+// ---------------------------------------------------------------- follow-up fixes (ruling 9)
+
+/** He merges the city's PR with a merge commit; the city sees the merge. */
+async function mergedPr() {
+  const shipped = await shipPr();
+  const { remote, job, run: r } = shipped;
+  const w = join(tempDir, 'his-clone');
+  git(tempDir, 'clone', '-q', remote, w);
+  git(w, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #12', `origin/palimpsest/${job.id}`);
+  const mergeSha = git(w, 'rev-parse', 'HEAD');
+  git(w, 'push', '-q', 'origin', 'HEAD:main');
+  prStates.set(12, { state: 'MERGED', mergedAt: new Date().toISOString(), mergeCommit: null, closedAt: new Date().toISOString(), headRefOid: r.headSha, baseRefName: 'main' });
+  await pollPRs(Date.now());
+  return { ...shipped, w, mergeSha };
+}
+
+/** A commit in his clone that writes `file`, pushed to main. */
+function commitOn(w: string, file: string, message: string): string {
+  writeFileSync(join(w, file), `${message}\n${Math.random()}\n`);
+  git(w, 'add', '.');
+  git(w, 'commit', '-q', '-m', message);
+  git(w, 'push', '-q', 'origin', 'HEAD:main');
+  return git(w, 'rev-parse', 'HEAD');
+}
+
+test('a non-city fix touching a merged file within 14 days records merge.followup once, with files read by show --name-only', async () => {
+  const { job, run: r, w, mergeSha } = await mergedPr();
+  const fixSha = commitOn(w, 'widgets.md', 'Fix the widgets heading');
+  const t0 = Date.now();
+  gitCalls = [];
+  await watchReverts(t0);
+
+  const rows = kinds('merge.followup');
+  assert.equal(rows.length, 1);
+  const d = rows[0].data;
+  assert.equal(d.jobId, job.id);
+  assert.equal(d.runId, r.id);
+  assert.equal(d.repo, FULL);
+  assert.equal(d.floorId, earnedFloors(TOWER)[0].id);
+  assert.equal(d.mergeSha, mergeSha);
+  assert.equal(d.fixSha, fixSha);
+  assert.deepEqual(d.files, ['widgets.md']);
+  assert.equal(typeof d.at, 'string');
+  assert.ok(gitCalls.some((a) => a.includes('show') && a.includes('--name-only') && a.includes(fixSha) && a.includes('-C') && a.includes(mirrorDir(FULL))), 'the fix\'s files come from the mirror');
+  assert.ok(gitCalls.filter((a) => a.includes('show')).every((a) => a.includes('core.hooksPath=/dev/null') && a.includes('core.fsmonitor=false')), 'hardened git');
+
+  // Another fix later: still one row for the floor.
+  commitOn(w, 'widgets.md', 'Fixed the widgets heading again');
+  await watchReverts(t0 + REVERT_WATCH_MS);
+  assert.equal(kinds('merge.followup').length, 1, 'once per floor');
+});
+
+test('a city commit, a late commit, other files and a subject without fix are ignored', async () => {
+  const merged = '2026-11-01T00:00:00.000Z';
+  const day = 24 * 60 * 60 * 1000;
+  const at = (days: number) => new Date(Date.parse(merged) + days * day).toISOString();
+  const M = 'm'.repeat(40);
+  const c = (sha: string, parents: string[], days: number, subject: string, body = '') => ({ sha: sha.repeat(40).slice(0, 40), parents, at: at(days), author: 'him', subject, body, lines: 0 });
+  const id = (s: string) => s.repeat(40).slice(0, 40);
+  const files: Record<string, string[]> = {
+    [id('1')]: ['src/a.ts'],
+    [id('2')]: ['src/a.ts'],
+    [id('3')]: ['src/b.ts'],
+    [id('4')]: ['src/a.ts'],
+    [id('5')]: ['src/a.ts'],
+    [id('6')]: ['src/a.ts'],
+    [id('7')]: ['src/a.ts'],
+  };
+  const read: string[] = [];
+  const filesOf = async (sha: string) => {
+    read.push(sha);
+    return files[sha] ?? [];
+  };
+  // Newest first, as git log lists them: the main line is 1 <- 2 <- 3 <- 4 <- 6 (a merge of the city's branch 5) <- 7.
+  const commits = [
+    c('7', [id('6')], 15, 'Fix the parser for real'),
+    c('6', [id('4'), id('5')], 3, "Merge branch 'palimpsest/job-9'"),
+    c('5', [id('4')], 3, 'Fix the parser on the city branch'),
+    c('4', [id('3')], 2, 'Tidy the parser'),
+    c('3', [id('2')], 2, 'Fix the docs'),
+    c('2', [id('1')], 1, 'Fix the parser', 'Palimpsest-Job: job-8'),
+    c('1', [M], 1, 'Merge pull request #4 from acme/palimpsest/job-7 to fix the parser'),
+  ];
+  const none = await followupOf(commits, filesOf, M, ['src/a.ts'], merged, Date.parse(at(20)));
+  assert.equal(none, null, 'a city commit, a late one, other files and a subject without fix are not follow-ups');
+
+  // A plain fix on the main line within 14 days is one.
+  const fix = c('8', [id('7')], 10, 'fixes: the parser drops a token');
+  files[id('8')] = ['src/a.ts', 'src/c.ts'];
+  const hit = await followupOf([fix, ...commits], filesOf, M, ['src/a.ts'], merged, Date.parse(at(20)));
+  assert.deepEqual(hit, { sha: id('8'), files: ['src/a.ts'] });
+  // "prefix" and "fixture" are not fixes.
+  const near = c('9', [id('7')], 10, 'Prefix the fixture names');
+  files[id('9')] = ['src/a.ts'];
+  assert.equal(await followupOf([near, ...commits], filesOf, M, ['src/a.ts'], merged, Date.parse(at(20))), null);
+});
+
+test('watchRevertsFor with force reads a repo inside the 30-minute throttle', async () => {
+  const { repo, job, w, mergeSha } = await mergedPr();
+  const t0 = Date.now();
+  await watchReverts(t0);
+  assert.equal(kinds('merge.reverted').length, 0);
+  git(w, 'revert', '--no-edit', '-m', '1', mergeSha);
+  git(w, 'push', '-q', 'origin', 'HEAD:main');
+
+  const quiet = await watchRevertsFor(getRepo(repo.fullName)!, t0 + 1);
+  assert.deepEqual(quiet, { ok: true, reverted: [], reason: null }, 'without force the throttle holds');
+  assert.equal(kinds('merge.reverted').length, 0);
+
+  gitCalls = [];
+  const forced = await watchRevertsFor(getRepo(repo.fullName)!, t0 + 2, { force: true });
+  assert.equal(forced.ok, true);
+  assert.equal(forced.reason, null);
+  assert.deepEqual(forced.reverted, [job.title]);
+  assert.ok(gitCalls.some((a) => a.includes('fetch')), 'force syncs the mirror');
+  assert.equal(kinds('merge.reverted').length, 1);
+  assert.ok(getRepo(FULL)?.halted);
+});
+
+test('a failed mirror read answers ok false', async () => {
+  const { repo } = await mergedPr();
+  setRunner(async (cmd, args, opts) => (cmd === 'git' && args.includes('fetch') ? { stdout: '', stderr: 'fatal: unable to access the remote', code: 128 } : fakeGh(cmd, args, opts)));
+  const out = await watchRevertsFor(getRepo(repo.fullName)!, Date.now(), { force: true });
+  assert.equal(out.ok, false);
+  assert.deepEqual(out.reverted, []);
+  assert.ok(out.reason && out.reason.length > 0, 'it says why');
+  assert.equal(getRepo(FULL)?.halted, null);
+});
+
+test('replay keeps follow-ups', async () => {
+  const { job, w } = await mergedPr();
+  commitOn(w, 'widgets.md', 'Fix the widgets heading');
+  await watchReverts(Date.now());
+  assert.equal(kinds('merge.followup').length, 1);
+  const s = replay(entries());
+  assert.deepEqual(s.unknown, []);
+  const floor = s.floors[TOWER]?.find((f) => f.earned?.jobId === job.id);
+  assert.equal(floor?.earned?.state, 'lit');
+  assert.equal(floor?.earned?.reverted, false);
+  assert.ok(!s.halts[FULL], 'no halt replays from a follow-up');
+  assert.equal(entries().filter((e) => e.kind === 'merge.followup').length, 1, 'the follow-up stays in the ledger');
+});
+
+test('a follow-up neither halts the repo nor scars', async () => {
+  const { w } = await mergedPr();
+  commitOn(w, 'widgets.md', 'Fix the widgets heading');
+  await watchReverts(Date.now());
+  assert.equal(getRepo(FULL)?.halted, null);
+  assert.equal(earnedFloors(TOWER)[0].earned?.state, 'lit');
+  assert.equal(earnedFloors(TOWER)[0].earned?.reverted, false);
+  assert.equal(earnedFloors(agentTowerId('w1'))[0].earned?.reverted, false);
+  assert.equal(kinds('merge.reverted').length, 0);
+  assert.equal(kinds('floor.scarred').length, 0);
 });

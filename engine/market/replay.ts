@@ -43,7 +43,10 @@
  *   `credits.moved`); `train.started | .paused | .ended { train }`;
  *   `graduate.made { graduate }`. A `voyage.ended` or `graduate.made` that
  *   spends sealed uses carries the arena (`arena`, or `arenas`) whole.
- *   `school.enabled` and `merge.followup` carry no table.
+ *   `school.enabled` carries no table, nor does `merge.followup { jobId,
+ *   runId, repo, floorId, mergeSha, fixSha, files, at }` (ruling 9): a fix
+ *   of his after a city merge leaves the floor lit, unreverted and the repo
+ *   running, and stays in the ledger for the durability net.
  */
 import type {
   Agent,
@@ -555,7 +558,8 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     // ------------------------------------------------------------ Phase 4: the school
     case 'school.enabled':
     case 'merge.followup':
-      // A setting and a fact for the durability net's rows; no table holds them.
+      // A setting and a fact for the durability net's rows; no table holds them. A follow-up
+      // never halts and never scars, so it touches neither floors nor halts here.
       return s;
     case 'net.trained': {
       const v = obj(d.netVersion) as NetVersion | null;

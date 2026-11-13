@@ -10,9 +10,9 @@ export const ERA_CUTS = [0.2, 0.45, 0.7, 0.9];
 const HOUR_MS = 60 * 60 * 1000;
 const CLAUDE_TRAILER = /Co-Authored-By:\s*Claude/i;
 /** The trailer the city writes on every commit it makes for a job. */
-const JOB_TRAILER = /^Palimpsest-Job:\s*\S/im;
+export const JOB_TRAILER = /^Palimpsest-Job:\s*\S/im;
 /** The head branch prefix of every PR the city opens. */
-const CITY_BRANCH = 'palimpsest/';
+export const CITY_BRANCH = 'palimpsest/';
 
 function sizeFor(lines: number): FloorSize {
   if (lines < 50) return 'small';
