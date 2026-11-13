@@ -567,6 +567,38 @@ test('mayAct reads the switch, the stop file and the grant again after the last 
   assert.deepEqual(await mayAct('merge:normal', FULL, a.job.id, clock), { ok: true, reason: null });
 });
 
+test('mayAct reads his agreement again after the last wait', async () => {
+  granted('merge:normal');
+  const a = waitingPR('a');
+  putRepo(OTHER);
+  const { resolve } = await import('../engine/school/decisions.js');
+  // three of his dismissals land while gh answers: the window falls to 47 of 50, and the pair is suspended
+  whileGh = () => {
+    for (let i = 0; i < 3; i++) {
+      const k = storeJobRow(`late-${i}`, { repo: OTHER, tier: 'normal', status: 'waiting', runId: `run-late-${i}` });
+      const r = storeRunRow(`run-late-${i}`, k.id, OTHER);
+      registerPrediction(k, r, clock);
+      later();
+      resolve(k, 'close', clock, { run: r });
+      later();
+    }
+  };
+  await refused('merge:normal', FULL, a.job.id, 'The master agreed with you on 47 of the last 50 merge:normal decisions; autonomy needs 50 at 95%.');
+  assert.equal(grantOf('merge:normal', FULL)?.state, 'suspended');
+  assert.equal(ledger('autonomy.suspended').length, 1);
+  // a master promoted meanwhile that marks the kind skewed
+  eligible('merge:normal');
+  askDue(clock);
+  grant('merge:normal', FULL, clock);
+  const b = waitingPR('b');
+  whileGh = () => {
+    installNet(constant('master', 3, 0.95), { at: new Date(clock).toISOString() });
+    openDb().prepare("UPDATE ledger SET json = json_set(json, '$.skewed', json('[\"merge:normal\"]')) WHERE kind = 'net.trained' AND json_extract(json, '$.version.version') = 3").run();
+  };
+  await refused('merge:normal', FULL, b.job.id, 'The master is skewed on merge:normal.');
+  assert.equal(grantOf('merge:normal', FULL)?.state, 'granted', 'a skew refuses without a suspension');
+});
+
 test('a proposal is refused when a revert of a city merge on its repo is found by the read', async () => {
   const { w } = remoteRepo();
   granted('propose:readme-gap');

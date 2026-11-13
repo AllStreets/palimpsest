@@ -298,8 +298,8 @@ export async function mayAct(kind: WorkKind, repo: string, jobId: string, now: n
 
 /**
  * The checks that read nothing over the network: the switch, the grant, the
- * stop file, the repo row and the master. They run first and again after
- * every await, since the world moves while gh and git answer (he may flip
+ * stop file, the repo row, the master and his agreement (the window, the
+ * repo test, the skew mark). They run first and again after every await, since the world moves while gh and git answer (he may flip
  * the switch, write the stop file or revoke the pair meanwhile).
  */
 function standing(kind: WorkKind, repo: string, now: number): { refused: string | null; repoRow: Repo | null; master: ReturnType<typeof masterState>['master'] } {
@@ -322,6 +322,20 @@ function standing(kind: WorkKind, repo: string, now: number): { refused: string 
 
   const master = masterState(now);
   if (master.reason !== null || !master.master) return { ...none, refused: sentence(capital(master.reason ?? 'there is no master yet')) };
+
+  // His agreement, read now: a decision of his that lands while gh or git answers counts.
+  const a = agreement(kind, repo);
+  if (a.skewed) return { ...none, refused: `The master is skewed on ${kind}.` };
+  if (!a.eligible) {
+    const refusedFor = `The master agreed with you on ${a.agreed} of the last ${a.rows} ${kind} decisions; autonomy needs ${AGREE.window} at ${Math.round(AGREE.rate * 100)}%.`;
+    suspend(kind, repo, refusedFor, now);
+    return { ...none, refused: refusedFor };
+  }
+  if (!a.repoOk) {
+    const refusedFor = `${repo} no longer passes its own test on ${kind}: the master must have agreed with you on its last ${AGREE.repoLast} decisions there, with at least ${AGREE.repoMin} on record.`;
+    suspend(kind, repo, refusedFor, now);
+    return { ...none, refused: refusedFor };
+  }
   return { refused: null, repoRow, master: master.master };
 }
 
@@ -347,19 +361,6 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
     inspection = latestInspection(run.id);
     const k = workKind(job, inspection ?? {});
     if (k !== kind) return no(`${jobId} is ${k} work, not ${kind}.`);
-  }
-
-  const a = agreement(kind, repo);
-  if (a.skewed) return no(`The master is skewed on ${kind}.`);
-  if (!a.eligible) {
-    const reason = `The master agreed with you on ${a.agreed} of the last ${a.rows} ${kind} decisions; autonomy needs ${AGREE.window} at ${Math.round(AGREE.rate * 100)}%.`;
-    suspend(kind, repo, reason, now);
-    return no(reason);
-  }
-  if (!a.repoOk) {
-    const reason = `${repo} no longer passes its own test on ${kind}: the master must have agreed with you on its last ${AGREE.repoLast} decisions there, with at least ${AGREE.repoMin} on record.`;
-    suspend(kind, repo, reason, now);
-    return no(reason);
   }
 
   const key = itemKey(kind, jobId);
