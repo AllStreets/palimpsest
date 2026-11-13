@@ -10,9 +10,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
-import { record } from '../engine/ledger.js';
-import { reputation } from '../engine/market/reputation.js';
-import { labelCounts, rowsFor, thinCause } from '../engine/school/datasets.js';
+import { query, record } from '../engine/ledger.js';
+import { REPUTATION_KINDS, reputation } from '../engine/market/reputation.js';
+import { labelCounts, rowsFor, standingsBefore, thinCause } from '../engine/school/datasets.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import { FEATURES } from '../shared/net-features.js';
 import type { Agent, Bid, Inspection, Job, NetName, Repo, Run } from '../shared/types.js';
@@ -342,4 +342,66 @@ test('on an empty ledger with every market off thinCause for the appraiser says 
   putRepo({ market: true });
   assert.equal(thinCause('appraiser-pass', NOW), '0 of 40 awarded runs ended');
   for (const n of Object.values(labelCounts(NOW))) assert.equal(n, 0);
+});
+
+test("the incremental firm standing equals reputation() on the ledger before each award, on a mixed ledger", () => {
+  const firms = ['ashlar', 'quickset', 'meridian'];
+  const awards: Array<{ id: number; firmId: string }> = [];
+  let n = 0;
+  for (let i = 0; i < 60; i++) {
+    const firmId = firms[i % 3];
+    const jobId = `job-${i % 25}`;
+    const b: Bid = { id: `bid-${n++}`, jobId, firmId, agentId: 'a', plan: '', price: 10, confidence: ((i * 7) % 10) / 10, calibrated: 0.5, appraisal: null, ev: 1, cost: 1, at: '2026-11-02T00:00:00.000Z' };
+    awards.push({ id: record('job.awarded', { jobId, chosen: b }), firmId });
+    switch (i % 5) {
+      case 0:
+        record('merge.detected', { jobId, runId: `run-${i}` });
+        break;
+      case 1:
+        record('floor.scarred', { jobId, runId: `run-${i}` });
+        break;
+      case 2:
+        record('run.ended', { runId: `run-${i}`, jobId, outcome: i % 2 ? 'failed' : 'merged', run: { jobId, outcome: i % 2 ? 'failed' : 'merged' } });
+        break;
+      case 3:
+        record('merge.reverted', { jobId, runId: `run-${i}` });
+        break;
+      default:
+        break;
+    }
+  }
+  const all = query({ kind: REPUTATION_KINDS });
+  const got = standingsBefore(awards, all);
+  for (const a of awards) {
+    const want = reputation(a.firmId, all.filter((e) => e.id < a.id));
+    assert.deepEqual(got.get(a.id), { passRate: want.passRateAll, brier: want.brier }, `award ${a.id}`);
+  }
+});
+
+test('two thousand runs build their appraiser rows in under a second', () => {
+  putRepo({ market: true });
+  putAgent('ines', 'ashlar');
+  const db = openDb();
+  db.exec('BEGIN');
+  for (let i = 0; i < 2000; i++) {
+    const jobId = `job-${i}`;
+    putJob(jobId);
+    const b = makeBid(`bid-${i}`, jobId, 'ashlar', 'ines', { confidence: 0.6 });
+    record('job.awarded', { jobId, tier: 'normal', chosen: b });
+    putRun(`run-${i}`, jobId, b, { outcome: i % 3 ? 'merged' : 'failed' });
+    record(i % 3 ? 'merge.detected' : 'floor.scarred', { jobId, runId: `run-${i}` });
+  }
+  db.exec('COMMIT');
+  const t = performance.now();
+  const rows = rowsFor('appraiser-pass', NOW);
+  const took = performance.now() - t;
+  assert.equal(rows.length, 2000);
+  assert.ok(took < 1000, `took ${Math.round(took)} ms`);
+  // Built once: a second read at the same moment, and labelCounts and thinCause, reuse the rows.
+  const t2 = performance.now();
+  assert.equal(rowsFor('appraiser-pass', NOW).length, 2000);
+  const again = performance.now() - t2;
+  assert.ok(again < took / 2, `the second read took ${Math.round(again)} ms of ${Math.round(took)}`);
+  assert.equal(labelCounts(NOW)['appraiser-pass'], 2000);
+  assert.equal(thinCause('router', NOW), '2000 of 40 awarded runs ended');
 });

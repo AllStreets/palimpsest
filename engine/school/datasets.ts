@@ -28,12 +28,13 @@ import { localDay } from '../../shared/day.js';
 import { encode, LANGUAGE_VALUES, type RawRow } from '../../shared/net-features.js';
 import { NET_MIN, SURVIVE_DAYS } from '../../shared/school-rules.js';
 import type { Bid, Inspection, Job, NetName, Run, WorkKind } from '../../shared/types.js';
+import { openDb } from '../db.js';
+import { paths } from '../home.js';
 import { query, type LedgerEntry } from '../ledger.js';
-import { bidById } from '../market/bids.js';
 import { creditEntries } from '../market/budget.js';
 import { agent } from '../market/firms.js';
 import { listJobs } from '../market/jobs.js';
-import { reputation, reputationLog } from '../market/reputation.js';
+import { reputationLog, resolvedBids } from '../market/reputation.js';
 import { listRuns } from '../market/runs.js';
 import { getRepo, listRepos } from '../repos.js';
 
@@ -130,6 +131,37 @@ function passOf(r: Run): 0 | 1 | null {
   return null;
 }
 
+/** Rounded as reputation() rounds, so the incremental values equal its own. */
+function tidy(x: number): number {
+  return Math.round(x * 1e9) / 1e9;
+}
+
+/**
+ * Each award's firm pass rate and Brier as reputation() gives them on the
+ * ledger before that award, in one pass: the awards in ledger order, the
+ * resolved bids folded in per firm as the awards pass them. Keyed by the
+ * award's ledger id.
+ */
+export function standingsBefore(awards: ReadonlyArray<{ id: number; firmId: string }>, log: LedgerEntry[] = reputationLog()): Map<number, { passRate: number | null; brier: number | null }> {
+  const resolved = resolvedBids(log);
+  const sums = new Map<string, { n: number; passed: number; sq: number }>();
+  const out = new Map<number, { passRate: number | null; brier: number | null }>();
+  let i = 0;
+  for (const a of [...awards].sort((x, y) => x.id - y.id)) {
+    for (; i < resolved.length && resolved[i].seq < a.id; i++) {
+      const r = resolved[i];
+      const s = sums.get(r.firmId) ?? { n: 0, passed: 0, sq: 0 };
+      s.n += 1;
+      if (r.passed) s.passed += 1;
+      s.sq += (r.confidence - (r.passed ? 1 : 0)) ** 2;
+      sums.set(r.firmId, s);
+    }
+    const s = sums.get(a.firmId);
+    out.set(a.id, s && s.n > 0 ? { passRate: tidy(s.passed / s.n), brier: tidy(s.sq / s.n) } : { passRate: null, brier: null });
+  }
+  return out;
+}
+
 function appraisals(now: number): Appraisal[] {
   const awards = new Map<string, LedgerEntry>();
   for (const e of query({ kind: 'job.awarded' })) {
@@ -137,21 +169,30 @@ function appraisals(now: number): Appraisal[] {
     if (chosen && typeof chosen.id === 'string') awards.set(chosen.id, e);
   }
   if (awards.size === 0) return [];
-  const log = reputationLog();
   const jobs = jobsById();
-  const out: Appraisal[] = [];
+  const picked: Array<{ run: Run; pass: 0 | 1; award: LedgerEntry; bid: Bid; job: Job }> = [];
   for (const run of listRuns()) {
     if (!run.endedAt || ms(run.endedAt) > now) continue;
     const pass = passOf(run);
     const award = awards.get(run.bidId);
     if (pass === null || !award) continue;
-    const bid = bidById(run.bidId) ?? ((award.data as Data).chosen as Bid);
+    // The bid as the award chose it: the ledger keeps it whole, so no per-row read of the bids table.
+    const bid = (award.data as Data).chosen as Bid;
     const job = jobs.get(run.jobId);
-    if (!job) continue;
-    const a = agent(run.agentId);
-    const repo = getRepo(job.repo);
+    if (job) picked.push({ run, pass, award, bid, job });
+  }
+  const standing = standingsBefore(picked.map((p) => ({ id: p.award.id, firmId: p.bid.firmId })));
+  const agents = new Map<string, ReturnType<typeof agent>>();
+  const repos = new Map<string, ReturnType<typeof getRepo>>();
+  const out: Appraisal[] = [];
+  for (const { run, pass, award, bid, job } of picked) {
+    if (!agents.has(run.agentId)) agents.set(run.agentId, agent(run.agentId));
+    if (!repos.has(job.repo)) repos.set(job.repo, getRepo(job.repo));
+    const a = agents.get(run.agentId) ?? null;
+    // Language and checks are the repo's as it is now, not as it was at the award: a mild drift, accepted.
+    const repo = repos.get(job.repo) ?? null;
     const c = repo?.checks ?? null;
-    const rep = reputation(bid.firmId, log.filter((e) => e.id < award.id));
+    const rep = standing.get(award.id) ?? { passRate: null, brier: null };
     out.push({
       bid,
       run,
@@ -175,7 +216,7 @@ function appraisals(now: number): Appraisal[] {
         workflow: a?.workflow.shape ?? null,
         model_family: familyOf(run.model),
         era: a?.capability ?? null,
-        firm_pass_rate: rep.passRateAll,
+        firm_pass_rate: rep.passRate,
         firm_brier: rep.brier,
       },
     });
@@ -196,7 +237,19 @@ function durabilityRows(now: number): Row[] {
     const runId = str(d.runId);
     if (runId && !merges.has(runId)) merges.set(runId, str(d.mergedAt) ?? timeOf(e));
   }
-  const bad = query({ kind: ['merge.reverted', 'merge.followup'] });
+  // A revert or follow-up is about its run; only one that names no run falls back to its job.
+  const badByRun = new Map<string, number[]>();
+  const badByJob = new Map<string, number[]>();
+  for (const e of query({ kind: ['merge.reverted', 'merge.followup'] })) {
+    const d = e.data as Data;
+    const runId = str(d.runId);
+    const jobId = str(d.jobId);
+    const [map, id] = runId ? [badByRun, runId] : [badByJob, jobId];
+    if (!id) continue;
+    const list = map.get(id) ?? [];
+    list.push(ms(timeOf(e)));
+    map.set(id, list);
+  }
   const diffs = new Map<string, Data>();
   for (const e of query({ kind: 'run.diff' })) {
     const runId = str((e.data as Data).runId);
@@ -211,12 +264,7 @@ function durabilityRows(now: number): Row[] {
     const t0 = ms(mergedAt);
     if (!mergedAt || !Number.isFinite(t0) || t0 > now) continue;
     const until = Math.min(t0 + SURVIVE_DAYS * DAY_MS, now);
-    const broke = bad.some((e) => {
-      const d = e.data as Data;
-      const mine = str(d.runId) ? d.runId === run.id : d.jobId === run.jobId;
-      const t = ms(timeOf(e));
-      return mine && t >= t0 && t <= until;
-    });
+    const broke = [...(badByRun.get(run.id) ?? []), ...(badByJob.get(run.jobId) ?? [])].some((t) => t >= t0 && t <= until);
     if (!broke && now < t0 + SURVIVE_DAYS * DAY_MS) continue;
     const diff = diffs.get(run.id);
     const files = Array.isArray(diff?.files) ? diff.files.length : run.progress.filesChanged;
@@ -307,15 +355,34 @@ function triageRows(now: number): Row[] {
   const entries = new Map(query({ kind: ['merge.reverted', 'run.note'] }).map((e) => [e.id, e]));
   const actions = query({ kind: 'brief.action' }).map((e) => e.data as Data);
   const facts = (id: string) => itemFacts(id, jobs, runs, entries);
+  // His actions by day and item, and his accepts by day, each read once.
+  const actedOn = new Set<string>();
+  const acceptsByDay = new Map<string, string[]>();
+  for (const a of actions) {
+    const day = str(a.day);
+    const itemId = str(a.itemId);
+    if (!day || !itemId) continue;
+    if (a.action !== 'dismiss') actedOn.add(`${day}\n${itemId}`);
+    if (a.action === 'accept') {
+      const list = acceptsByDay.get(day) ?? [];
+      list.push(itemId);
+      acceptsByDay.set(day, list);
+    }
+  }
+  const acceptDays = [...acceptsByDay.keys()].sort();
+  const pastRepos: Array<string | null> = [];
+  let next = 0;
   const rows: Row[] = [];
   for (const b of days) {
     const opened = ms(b.at);
     const open = new Date(opened);
-    const past = actions.filter((a) => a.action === 'accept' && typeof a.day === 'string' && a.day < b.day);
-    const pastRepos = past.map((a) => facts(str(a.itemId) ?? '').repo);
+    // Accepts on days before this one, accumulated as the days pass.
+    for (; next < acceptDays.length && acceptDays[next] < b.day; next++) {
+      for (const itemId of acceptsByDay.get(acceptDays[next]) ?? []) pastRepos.push(facts(itemId).repo);
+    }
     b.items.forEach((itemId, position) => {
       const f = facts(itemId);
-      const acted = actions.some((a) => a.day === b.day && a.itemId === itemId && a.action !== 'dismiss');
+      const acted = actedOn.has(`${b.day}\n${itemId}`);
       const at = ms(f.at);
       const raw: RawRow = {
         kind: f.kind,
@@ -431,8 +498,34 @@ function masterRows(now: number): Row[] {
 
 // ---------------------------------------------------------------- the API
 
-/** The net's labelled rows as of `now`, oldest first (ruling 8). */
+/** Built rows by home, net, `now`, newest ledger id and newest credits id; only calls with no injected deps are kept. */
+const memo = new Map<string, Row[]>();
+const MEMO_MAX = 64;
+
+function memoKey(net: NetName, now: number): string {
+  const db = openDb();
+  const ledger = (db.prepare('SELECT MAX(id) AS id FROM ledger').get() as { id: number | null }).id ?? 0;
+  const credits = (db.prepare('SELECT MAX(id) AS id FROM credits').get() as { id: number | null }).id ?? 0;
+  return `${paths().db}\n${net}\n${now}\n${ledger}\n${credits}`;
+}
+
+/**
+ * The net's labelled rows as of `now`, oldest first (ruling 8). Built once
+ * per state of the ledger and the credits, so labelCounts and thinCause
+ * reuse them; a call with injected deps is always built afresh.
+ */
 export function rowsFor(net: NetName, now: number, deps: DatasetDeps = {}): Row[] {
+  if (Object.keys(deps).length > 0) return buildRows(net, now, deps);
+  const key = memoKey(net, now);
+  const hit = memo.get(key);
+  if (hit) return hit.map((r) => ({ ...r, x: [...r.x] }));
+  const rows = buildRows(net, now, deps);
+  if (memo.size >= MEMO_MAX) memo.clear();
+  memo.set(key, rows);
+  return rows.map((r) => ({ ...r, x: [...r.x] }));
+}
+
+function buildRows(net: NetName, now: number, deps: DatasetDeps): Row[] {
   switch (net) {
     case 'appraiser-pass':
     case 'appraiser-cost':
