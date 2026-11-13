@@ -210,6 +210,8 @@ export function registerPrediction(job: Job, r: Run | null, now: number = Date.n
   const key = itemKey(kind, job.id);
   const had = registered(key);
   if (had) return had;
+  // Once he has decided, no guess on the key can be prospective: nothing is written, and the answer is an abstention with id 0.
+  if (decided(key)) return { id: 0, key, kind, repo: job.repo, jobId: job.id, p: null, version: null, reason: 'he has already decided', at: new Date(now).toISOString() };
 
   let p: number | null = null;
   let version: number | null = null;
@@ -412,6 +414,12 @@ function kindFor(job: Job, by: Decision['by'], r: Run | null): WorkKind {
   return workKind(job, latestInspection(pr.id) ?? {});
 }
 
+/** The prediction with this id (its `master.predicted` ledger id), or null. */
+function predictionById(id: number): Prediction | null {
+  const row = openDb().prepare('SELECT id, json FROM predictions WHERE id = ?').get(id) as { id: number | bigint; json: string } | undefined;
+  return row ? { ...(JSON.parse(row.json) as Prediction), id: Number(row.id) } : null;
+}
+
 /** The inputs the master read for a prediction, from its `master.predicted` row. */
 function inputsOf(predictionId: number): Record<string, unknown> | null {
   const row = openDb().prepare("SELECT json FROM ledger WHERE id = ? AND kind = 'master.predicted'").get(predictionId) as { json: string } | undefined;
@@ -441,6 +449,7 @@ export function resolve(job: Job, by: Decision['by'], at: number = Date.now(), o
   let kind: WorkKind;
   let forced = false;
   let pair: { kind: WorkKind; repo: string } | null = null;
+  let superseded: Decision | null = null;
   if (city.acted) {
     if (by === 'accept' || by === 'merge') return null;
     if (by !== 'revert') by = 'undo';
@@ -453,6 +462,7 @@ export function resolve(job: Job, by: Decision['by'], at: number = Date.now(), o
     const prior = latestMergeOf(job.id);
     if (!prior || !prior.approved) return null;
     kind = prior.kind;
+    superseded = prior;
   } else {
     kind = kindFor(job, by, o.run ?? null);
   }
@@ -464,7 +474,8 @@ export function resolve(job: Job, by: Decision['by'], at: number = Date.now(), o
   if (by === 'revert' ? latest !== undefined && !latest.approved : latest !== undefined) return null;
 
   const approved = by === 'accept' || by === 'merge';
-  const pred = registered(key);
+  // A revert is judged against the guess the approve it supersedes was judged against (null if it had none), never a later one.
+  const pred = superseded ? (superseded.predictionId !== null ? predictionById(superseded.predictionId) : null) : registered(key);
   const before = pred !== null && Date.parse(pred.at) < at;
   const agreed = forced ? false : before ? pred.p !== null && pred.p >= 0.5 === approved : null;
   const predictionId = before ? pred.id : null;

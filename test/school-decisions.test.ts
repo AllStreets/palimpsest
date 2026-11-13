@@ -500,3 +500,39 @@ test('the repo test needs 10 rows and none of the last 10 against', () => {
   assert.equal(agreement('propose:readme-gap', FULL).repoOk, false);
   assert.equal(agreement('propose:readme-gap').rows, 33);
 });
+
+// ---------------------------------------------------------------- fix round 1
+
+test('a revert is judged against the guess its approve was, never a later one', () => {
+  installNet(constant('master', 2, 0.3));
+  // the approve had no guess before it: the revert has none either
+  const a = waitingPR('a', { predict: false });
+  finishWaitingRun(a.run.id, 'merged', null);
+  transition(storedJob(a.job.id)!, 'merged');
+  assert.equal(resolved(a.job.id)[0].agreed, null);
+  // a guess squeezed in on the key directly in the table after his approve is ignored by the revert
+  const key = resolved(a.job.id)[0].key;
+  openDb()
+    .prepare('INSERT INTO predictions (id, key, kind, repo, at, json) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(999_999, key, 'merge:normal', FULL, new Date(clock - 1).toISOString(), JSON.stringify({ id: 999_999, key, kind: 'merge:normal', repo: FULL, jobId: a.job.id, p: 0.1, version: 2, reason: null, at: new Date(clock - 1).toISOString() }));
+  later();
+  emit('merge.reverted', { jobId: a.job.id, runId: a.run.id, repo: FULL, floorId: 'f', mergeSha: 'd'.repeat(40), revertSha: 'e'.repeat(40), at: new Date(clock).toISOString() });
+  const [, rev] = resolved(a.job.id);
+  assert.equal(rev.by, 'revert');
+  assert.equal(rev.predictionId, null);
+  assert.equal(rev.agreed, null);
+  assert.equal(agreement('merge:normal').rows, 0);
+});
+
+test('no guess is written on a key he has already decided', () => {
+  installNet(constant('master', 2, 0.9));
+  const j = storeJob('job-late', { source: 'proposal', status: 'proposed' });
+  acceptProposed(j.id);
+  const got = registerPrediction(storedJob(j.id)!, null, clock + 60_000);
+  assert.equal(got.p, null);
+  assert.equal(got.id, 0);
+  assert.equal(query({ kind: 'master.predicted', jobId: j.id }).length, 0);
+  assert.equal((openDb().prepare('SELECT COUNT(*) AS n FROM predictions').get() as { n: number }).n, 0);
+  // so a revert can never meet a guess written after his decision
+  assert.equal(resolved(j.id)[0].agreed, null);
+});
