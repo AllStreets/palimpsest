@@ -13,7 +13,9 @@
     "dev": "concurrently -k \"tsx watch engine/main.ts\" \"vite\"",
     "build": "vite build",
     "ui-test": "node --no-warnings --import tsx tools/ui-test.ts",
-    "app": "vite build && tauri build"
+    "app": "vite build && tauri build",
+    "trainer:setup": "uv venv --python cpython-3.12-macos-aarch64-none trainer/.venv && uv pip install --python trainer/.venv/bin/python -r trainer/requirements.txt && trainer/.venv/bin/python -c \"import platform, sys; sys.exit(0 if platform.machine() == 'arm64' else 'the trainer is not arm64')\"",
+    "test:trainer": "node --no-warnings --import tsx tools/test-trainer.ts"
   },
   "dependencies": {
     "three": "^0.187.0",

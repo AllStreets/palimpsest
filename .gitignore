@@ -7,3 +7,5 @@ target/
 .env
 *.log
 shots/
+trainer/.venv/
+__pycache__/
