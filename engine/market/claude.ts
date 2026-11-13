@@ -44,6 +44,7 @@ import { record } from '../ledger.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
 import { AUDIT_PERSONA, AUDIT_SCHEMA, AUDIT_TOOLS, auditPrompt } from '../audit/schema.js';
 import type { AuditInput, AuditResult, CompleteInput, CompleteResult, JudgeInput, PlanInput, Provider, ReviewInput, RunLogLine, Usage, WorkInput } from './provider.js';
+import { judgeBar } from './provider.js';
 import { CLAUDE_TMP, detectToolchains, proxyUrl, realish, SYSTEM_PATH, wrap, type CliProfileInput } from './sandbox.js';
 import { controlFiles } from './worktree.js';
 import { diffSection, planSection, quoteAsData } from './quote.js';
@@ -597,7 +598,7 @@ export function reviewPrompt(i: ReviewInput): string {
 function judgePrompt(i: JudgeInput): string {
   return [
     diffSection(i.diff, MAX_DIFF_CHARS),
-    `The design bar:\n${i.bar.trim()}`,
+    judgeBar(i),
     'You see only the change as text, no screenshots. Score how well the result meets the bar from 0 to 10 and say why.',
   ].join('\n\n') + '\n';
 }

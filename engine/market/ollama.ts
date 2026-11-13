@@ -20,6 +20,7 @@ import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
 import { installedModels, resolveModel } from './firms.js';
 import { diffSection } from './quote.js';
 import type { AuditInput, AuditResult, CompleteInput, CompleteResult, JudgeInput, PlanInput, Provider, ReviewInput, Usage } from './provider.js';
+import { judgeBar } from './provider.js';
 import { auditLoopTools, runLoop, runToolLoop, type ChatChunk, type ChatMessage, type ChatTransport, type ToolSpec } from './toolloop.js';
 
 /** The vision model the design judge uses, by prefix. */
@@ -330,14 +331,14 @@ export function judgeText(i: JudgeInput, before: number, after: number): string 
   if (before + after === 0) {
     return [
       diff,
-      `The design bar:\n${i.bar.trim()}`,
+      judgeBar(i),
       'There are no screenshots: you see only the change as text. Score how well the result meets the bar from 0 to 10.',
       'Answer only with a JSON object: {"after": number, "notes": string}.',
     ].join('\n\n');
   }
   return [
     diff,
-    `The design bar:\n${i.bar.trim()}`,
+    judgeBar(i),
     `You get ${before + after} screenshots: the first ${before} show the interface before the change, the last ${after} after it.`,
     `Score each side from 0 to 10 against the bar.${before ? '' : ' There is no before screenshot: set before to null.'}`,
     'Answer only with a JSON object: {"before": number | null, "after": number, "notes": string}.',

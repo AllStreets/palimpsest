@@ -17,7 +17,7 @@
  *   `acted` is 1 when he took any action but dismiss on it that day.
  * - Taste: one row per inspection with the design whose PR he merged or
  *   closed (not one the city merged under a grant), plus one per answered
- *   Understudy pair (injected until Task 10 lands).
+ *   Understudy pair (read by `understudy.ts`; injectable for tests).
  * - Master: one row per resolved decision, the latest resolution of its key.
  *
  * Ledger kinds later tasks add (`merge.followup`, `decision.resolved`) are
@@ -38,6 +38,7 @@ import { reputationLog, resolvedBids } from '../market/reputation.js';
 import { listRuns } from '../market/runs.js';
 import { PR_CLOSED_REASON } from '../market/ship.js';
 import { getRepo, listRepos } from '../repos.js';
+import { understudyCounts, understudyPairs } from './understudy.js';
 
 /** One labelled row as the trainer reads it. */
 export interface Row {
@@ -64,7 +65,7 @@ export interface UnderstudyCounts {
   answered: number;
 }
 
-/** What later tasks provide, injected; each is empty by default. */
+/** What other modules provide, injectable; by default the live Understudy reader (empty while its switch is off). */
 export interface DatasetDeps {
   understudyPairs?: () => UnderstudyPair[];
   understudyCounts?: () => UnderstudyCounts | null;
@@ -433,7 +434,7 @@ function tasteRows(now: number, deps: DatasetDeps): Row[] {
     const raw: RawRow = { after, before, difference: before === null ? null : after - before, diff_only: i.design.diffOnly, shots: i.design.shots.length, pair: 0 };
     rows.push(real(i.id, i.at, encode('taste', raw), y));
   }
-  for (const p of (deps.understudyPairs ?? (() => []))()) {
+  for (const p of (deps.understudyPairs ?? understudyPairs)()) {
     if (!p.scores || (p.pick !== 'a' && p.pick !== 'b') || ms(p.at) > now) continue;
     const raw: RawRow = { after: p.scores.a, before: p.scores.b, difference: p.scores.a - p.scores.b, diff_only: 0, shots: 1, pair: 1 };
     rows.push(real(`pair:${p.id}`, p.at, encode('taste', raw), p.pick === 'a' ? 1 : 0));
@@ -497,15 +498,19 @@ function masterRows(now: number): Row[] {
 
 // ---------------------------------------------------------------- the API
 
-/** Built rows by home, net, `now`, newest ledger id and newest credits id; only calls with no injected deps are kept. */
+/**
+ * Built rows by home, net, `now`, newest ledger id and newest credits id
+ * (and, for taste, Understudy's answered pairs as read now, which change
+ * outside the ledger); only calls with no injected deps are kept.
+ */
 const memo = new Map<string, Row[]>();
 const MEMO_MAX = 64;
 
-function memoKey(net: NetName, now: number): string {
+function memoKey(net: NetName, now: number, extra = ''): string {
   const db = openDb();
   const ledger = (db.prepare('SELECT MAX(id) AS id FROM ledger').get() as { id: number | null }).id ?? 0;
   const credits = (db.prepare('SELECT MAX(id) AS id FROM credits').get() as { id: number | null }).id ?? 0;
-  return `${paths().db}\n${net}\n${now}\n${ledger}\n${credits}`;
+  return `${paths().db}\n${net}\n${now}\n${ledger}\n${credits}\n${extra}`;
 }
 
 /**
@@ -515,10 +520,12 @@ function memoKey(net: NetName, now: number): string {
  */
 export function rowsFor(net: NetName, now: number, deps: DatasetDeps = {}): Row[] {
   if (Object.keys(deps).length > 0) return buildRows(net, now, deps);
-  const key = memoKey(net, now);
+  // Understudy is read once per call: its pairs key the memo and build the rows.
+  const pairs = net === 'taste' ? understudyPairs() : [];
+  const key = memoKey(net, now, net === 'taste' ? JSON.stringify(pairs) : '');
   const hit = memo.get(key);
   if (hit) return hit.map((r) => ({ ...r, x: [...r.x] }));
-  const rows = buildRows(net, now, deps);
+  const rows = buildRows(net, now, net === 'taste' ? { understudyPairs: () => pairs } : deps);
   if (memo.size >= MEMO_MAX) memo.clear();
   memo.set(key, rows);
   return rows.map((r) => ({ ...r, x: [...r.x] }));
@@ -575,7 +582,7 @@ export function thinCause(net: NetName, now: number, deps: DatasetDeps = {}): st
     case 'triage':
       return `${plural(finishedDays(now).length, 'finished brief day')} so far`;
     case 'taste': {
-      const u = (deps.understudyCounts ?? (() => null))();
+      const u = (deps.understudyCounts ?? understudyCounts)();
       const understudy = u ? `; Understudy has ${plural(u.statements, 'statement')} and ${plural(u.answered, 'answered pair')}` : '';
       const inspected = uiInspections().length;
       if (inspected === 0) return `No UI change has been inspected yet${understudy}`;

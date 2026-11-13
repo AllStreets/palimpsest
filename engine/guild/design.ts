@@ -35,10 +35,12 @@ import { enginePort, execTool } from '../market/broker.js';
 import { charge, JUDGE_ESTIMATE, type Lease } from '../market/budget.js';
 import type { Egress } from '../market/egress.js';
 import { installDeps as defaultInstallDeps, type InstallDeps, type RunContext } from '../market/install.js';
-import type { RunLogLine, Usage } from '../market/provider.js';
+import type { JudgeInput, RunLogLine, Usage } from '../market/provider.js';
 import { providerFor } from '../market/providers.js';
 import { BASE_SCRATCH } from '../market/sandbox.js';
 import { createBaseDir, engineGit, removeOwned } from '../market/worktree.js';
+import { understudyStatements } from '../school/understudy.js';
+import { getSettings } from '../settings.js';
 import { CHECK_MS } from './checks.js';
 import { isTooLarge, TOO_LARGE } from './review.js';
 
@@ -480,7 +482,15 @@ export async function judgeDesign(
       const png = readShot(s.path);
       return png ? [png.toString('base64')] : [];
     });
-  const input = { bar: designBar(), before: images(before), after: images(after), diff };
+  const input: JudgeInput = { bar: designBar(), before: images(before), after: images(after), diff };
+  // With the switch on, his Understudy statements join the bar for every UI inspection (ruling 10, Decision 9).
+  if (getSettings().school.understudy) {
+    try {
+      input.bible = understudyStatements();
+    } catch (err) {
+      ctx.log({ at: nowIso(), kind: 'engine', text: `design: Understudy's statements could not be read: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
   const models = o.models ?? (diffOnly ? [VISION_JUDGE, TEXT_JUDGE] : [VISION_JUDGE]);
   const problems: string[] = [];
   let credits = 0;

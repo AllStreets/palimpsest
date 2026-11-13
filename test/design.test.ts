@@ -24,6 +24,9 @@ import { fakeProvider } from '../engine/market/fake-provider.js';
 import type { JudgeInput } from '../engine/market/provider.js';
 import { setProvider } from '../engine/market/providers.js';
 import type { RunLogLine } from '../engine/market/provider.js';
+import { judgeText } from '../engine/market/ollama.js';
+import { getSettings, patchSettings } from '../engine/settings.js';
+import { makeUnderstudy } from './understudy-fixtures.js';
 import { addAgent, checks, makeRepo, makeRun, PNG, postJob, setUp, tearDown, workLease, write } from './guild-fixtures.js';
 
 let judged: JudgeInput[] = [];
@@ -217,6 +220,41 @@ test("a judge call takes a sub-lease of the run's slot and is charged to the cit
     await assert.rejects(p);
     assert.equal((seen as AbortSignal).aborted, true);
   } finally {
+    run.release();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the judge input carries the bible only with the switch on', { timeout: 60_000 }, async () => {
+  const run = await workLease();
+  const dir = mkdtempSync(join(tmpdir(), 'palimpsest-design-bible-'));
+  const after = join(dir, 'after.png');
+  writeFileSync(after, PNG);
+  const savedDb = process.env.PALIMPSEST_UNDERSTUDY_DB;
+  process.env.PALIMPSEST_UNDERSTUDY_DB = makeUnderstudy(join(dir, 'understudy'), {
+    statements: [
+      { id: 's1', text: 'Quiet surfaces, one accent.', weight: 2 },
+      { id: 's2', text: 'Rounded pills everywhere.', removed: true },
+    ],
+  });
+  const ctx = { runId: 'run-bible', runRoot: join(paths().runs, 'run-bible'), dir, log: () => {}, signal: run.signal };
+  try {
+    await judgeDesign(ctx, [], [{ route: '/', path: after }], 'diff', run);
+    assert.equal(judged.at(-1)!.bible, undefined, 'off: no bible');
+    patchSettings({ school: { ...getSettings().school, understudy: true } });
+    await judgeDesign(ctx, [], [{ route: '/', path: after }], 'diff', run);
+    const input = judged.at(-1)!;
+    assert.deepEqual(input.bible, ['Quiet surfaces, one accent.']);
+    assert.match(input.bar, /./, 'his design bar is still there');
+    // Every judge's prompt shows the statements beside the bar.
+    assert.match(judgeText(input, 0, 1), /Quiet surfaces, one accent\./);
+    assert.doesNotMatch(judgeText({ ...input, bible: undefined }, 0, 1), /Quiet surfaces/);
+    patchSettings({ school: { ...getSettings().school, understudy: false } });
+    await judgeDesign(ctx, [], [{ route: '/', path: after }], 'diff', run);
+    assert.equal(judged.at(-1)!.bible, undefined, 'off again: no bible');
+  } finally {
+    if (savedDb === undefined) delete process.env.PALIMPSEST_UNDERSTUDY_DB;
+    else process.env.PALIMPSEST_UNDERSTUDY_DB = savedDb;
     run.release();
     rmSync(dir, { recursive: true, force: true });
   }

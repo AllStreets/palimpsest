@@ -47,9 +47,18 @@ export interface ReviewInput {
 /** Base64 PNGs per route, before and after. */
 export interface JudgeInput {
   bar: string;
+  /** His taste statements from Understudy, present only while `school.understudy` is on (Phase 4 ruling 10). */
+  bible?: string[];
   before: string[];
   after: string[];
   diff: string | null;
+}
+
+/** The bar a judge holds the change to: his design bar, then his Understudy statements when the input carries them. */
+export function judgeBar(i: Pick<JudgeInput, 'bar' | 'bible'>): string {
+  const bar = `The design bar:\n${i.bar.trim()}`;
+  const bible = (i.bible ?? []).map((s) => s.trim()).filter(Boolean);
+  return bible.length ? `${bar}\n\nHis own statements of his taste, which are part of the bar:\n${bible.map((s) => `- ${s}`).join('\n')}` : bar;
 }
 
 /**
