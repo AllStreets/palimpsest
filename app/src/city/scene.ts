@@ -4,6 +4,7 @@ import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.
 import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
+import { plainBatch } from './plain-batch.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
 import { createCameraRig, type ScriptPose } from './camera';
 import { createCampus, type Campus, type CampusAnchors } from './campus/index.js';
@@ -490,6 +491,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let quarterPieces: Array<{ firmId: string; key: string; piece: Centerpiece; q: Quarter }> = [];
   /** Bumped whenever what stands in the districts changes, so the distance pass (districtLod) judges it afresh. */
   let lodRevision = 0;
+  /** The district towers' plain meshes, one draw per material across every district (plain-batch.ts). */
+  const towerPlains = plainBatch();
+  districtGroup.add(towerPlains.group);
   /** Every pickable part in the city: towers' floors and roots, quarters' towers and plinths. */
   const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : [])];
   let scaffolds = new Map<string, Scaffold>();
@@ -514,6 +518,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (!milestones) return;
     const next = milestones.set(milestoneRows, towerPiece, Date.now(), { fallen });
     sun.shadow.needsUpdate = true;
+    // The ornaments' draws may be new meshes: the distance pass judges their AO afresh.
+    lodRevision++;
     // A milestone with an end (a revival's lights, a ribbon) goes dark at it, with no event to say so: placed again then.
     if (milestoneTimer) clearTimeout(milestoneTimer);
     milestoneTimer = next === null ? null : setTimeout(placeMilestones, Math.min(Math.max(0, next - Date.now()) + 50, 2 ** 31 - 1));
@@ -623,7 +629,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
-    if (built > 0 || old.size > 0) lodRevision++;
+    if (built > 0 || old.size > 0) {
+      const picks = new Set(centerpieces.flatMap(({ piece }) => [...piece.pickables.keys()]));
+      towerPlains.set(
+        centerpieces.map(({ piece }) => piece.object),
+        (o) => picks.has(o),
+      );
+      lodRevision++;
+    }
     if (highlighted) applyHighlight();
     return built;
   }
@@ -1342,6 +1355,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const lodEye = new THREE.Vector3(Infinity, 0, 0);
   let lodSeen = -1;
   const lodSphere = new THREE.Sphere();
+  const lodMatrix = new THREE.Matrix4();
+  const lodPoint = new THREE.Vector3();
   function districtLod(): boolean {
     if (lodSeen === lodRevision && camera.position.distanceToSquared(lodEye) < 25) return false;
     lodSeen = lodRevision;
@@ -1358,10 +1373,37 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
       const own = inst.isInstancedMesh ? inst.boundingSphere : mesh.geometry.boundingSphere;
       if (!own) return;
-      lodSphere.copy(own).applyMatrix4(mesh.matrixWorld);
-      const d = Math.max(0, lodSphere.distanceToPoint(camera.position));
+      // A batch across the city is judged by its nearest part, not by its whole span (plain-batch.ts).
+      const parts = mesh.userData.lodParts as THREE.Sphere[] | undefined;
+      let d = Infinity;
+      for (const s of parts ?? [own]) d = Math.min(d, Math.max(0, lodSphere.copy(s).applyMatrix4(mesh.matrixWorld).distanceToPoint(camera.position)));
       if (d > AO_NEAR) setLayers(mesh, LAYER.view, LAYER.shadow);
       else mesh.layers.set(0);
+    });
+    // The skyline's ornaments stand on the towers and keep their rule: past the AO's reach (judged by the nearest
+    // ornament each draw holds) they draw in the view and the shadow map, not the AO's normal pass.
+    milestones?.group.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      // Its own layers as built, kept to put back when it comes near again.
+      const own = (mesh.userData.ownLayers ??= mesh.layers.mask) as number;
+      const im = mesh as THREE.InstancedMesh;
+      if (im.isInstancedMesh && im.count === 0) return;
+      if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+      const r = mesh.geometry.boundingSphere!.radius;
+      let d = Infinity;
+      if (im.isInstancedMesh) {
+        for (let i = 0; i < im.count; i++) {
+          im.getMatrixAt(i, lodMatrix);
+          lodMatrix.premultiply(im.matrixWorld);
+          lodPoint.setFromMatrixPosition(lodMatrix);
+          d = Math.min(d, Math.max(0, lodPoint.distanceTo(camera.position) - r * lodMatrix.getMaxScaleOnAxis()));
+        }
+      } else {
+        d = Math.max(0, lodSphere.copy(mesh.geometry.boundingSphere!).applyMatrix4(mesh.matrixWorld).distanceToPoint(camera.position));
+      }
+      if (d > AO_NEAR) setLayers(mesh, LAYER.view, LAYER.shadow);
+      else mesh.layers.mask = own;
     });
     // Thin parts, judged whether shown or hidden now.
     for (const { piece } of centerpieces) {
@@ -1396,6 +1438,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ['quarters', quarterBatch?.group ?? new THREE.Object3D()],
     ['quarters', life.group],
     ...(exchange ? [['exchange', exchange.object] as [string, THREE.Object3D]] : []),
+    ['towers', towerPlains.group],
     ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
     ...(milestones ? [['milestones', milestones.group] as [string, THREE.Object3D]] : []),
     ['campus', campusRoot],
@@ -1699,6 +1742,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       quarterBatch?.dispose();
+      towerPlains.dispose();
       exchange?.dispose();
       for (const { piece } of [...centerpieces, ...quarterPieces]) piece.dispose?.();
       centerpieces = [];

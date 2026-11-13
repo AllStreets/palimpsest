@@ -894,6 +894,11 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   const c = await debug(page, (d) => d.campus());
   check(c !== null, `the university stands on its plot (${tier})`);
   if (!c) return;
+  // The campus plot is its own: no district (a sample repo, the site fixture, a connect) stands on its slot or origin.
+  const { campusSlot } = await import('../engine/school/campus.js');
+  const slot = campusSlot();
+  const sharing = (await cityOf(page)).filter((d) => d.index === slot || Math.hypot(d.origin.x - c.origin.x, d.origin.z - c.origin.z) < 1);
+  check(slot !== null && sharing.length === 0, `no district shares the campus plot (slot ${slot}${sharing.length ? `: ${sharing.map((d) => d.repo).join(', ')}` : ''})`);
   const b = await homeBreakdown(page);
   const sum = (p: Record<string, Tally> | undefined): Tally => Object.values(p ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
   const own = sum(b.campus);
@@ -904,6 +909,12 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
     .join(', ');
   console.log(`info  the campus stands at (${c.origin.x}, ${c.origin.z}), its gate at (${c.anchors.gate.map((v) => v.toFixed(0)).join(', ')})`);
   console.log(`info  on ${tier} the campus from home: ${own.calls} calls, ${(own.triangles / 1000).toFixed(0)}k triangles (${passes}); the city ${total} calls, ${(triangles / 1e6).toFixed(2)}M`);
+  const roots = Object.entries(b)
+    .map(([k, v]) => [k, sum(v).calls] as const)
+    .sort((x, y) => y[1] - x[1])
+    .map(([k, n]) => `${k} ${n}`)
+    .join(', ');
+  console.log(`info  on ${tier} the city's calls from home by root: ${roots}`);
   check(own.calls > 0 && own.calls <= CAMPUS_HOME_CALLS && own.triangles <= CAMPUS_HOME_TRIANGLES, `on ${tier} breakdown().campus is within ${CAMPUS_HOME_CALLS} calls and ${CAMPUS_HOME_TRIANGLES / 1000}k triangles from home with shadows (${own.calls}, ${(own.triangles / 1000).toFixed(0)}k)`);
   check(total < HOME_CALLS && triangles <= HOME_TRIANGLES, `on ${tier} the whole city still draws under ${HOME_CALLS} calls and within ${HOME_TRIANGLES / 1e6}M with the campus (${total}, ${(triangles / 1e6).toFixed(2)}M)`);
   // The ambient city keeps off the block: no building stands within the terrace's square.
@@ -1790,11 +1801,9 @@ async function siteChecks(page: Page): Promise<void> {
   const { districtOrigin } = await import('../shared/district-layout.js');
   const db = openDb();
   const fullName = 'wren/new-site';
-  // NOTE: this is the slot ensureCampus() takes after the six sample repos, so in a full run this tower stands on the
-  // campus plot. Giving it the next free slot (nextSlot('repo', fullName)) costs the home view about a hundred more
-  // calls (a seventh plot and the spiral's growth) and breaks the 850 guard, so the collision stands until the budget
-  // is ruled on; the campus's own stills come from UI_ONLY=campus, which adds no fixture.
-  const slot = SAMPLE.length;
+  // Its own free plot, as a connect would take it: never the campus's (ensureCampus() took the slot after the sample's).
+  const { nextSlot } = await import('../engine/repos.js');
+  const slot = nextSlot('repo', fullName);
   const now = new Date().toISOString();
   const repo: Repo = {
     fullName,
@@ -1860,6 +1869,42 @@ async function siteChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'site-built.png') });
 }
 
+
+/**
+ * The full run's site fixture (siteChecks) stood straight up as a finished district on its own free plot, for the
+ * partial budget runs: the home view is measured with the seventh plot the full run has.
+ */
+async function standFixture(page: Page): Promise<void> {
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const { foundingFloors } = await import('../engine/history.js');
+  const { nextSlot } = await import('../engine/repos.js');
+  const db = openDb();
+  const fullName = 'wren/new-site';
+  const slot = nextSlot('repo', fullName);
+  const now = new Date().toISOString();
+  const repo: Repo = { fullName, private: false, defaultBranch: 'main', language: 'TypeScript', description: 'fixture', connected: true, pushMode: false, root: 'chicago', slot, status: 'ready', error: null, connectedAt: now, analyzedAt: now, ...repoMarketDefaults() };
+  const commits = Array.from({ length: 22 }, (_, i) => ({
+    sha: `${slot}${i.toString(16).padStart(6, '0')}`.padEnd(40, 'a'),
+    at: new Date(Date.parse('2025-06-01T09:00:00Z') + i * 30 * 3600_000).toISOString(),
+    author: 'Ada',
+    subject: `Site change ${i + 1}`,
+    body: '',
+    lines: 40 + i * 11,
+  }));
+  const floors = foundingFloors(fullName, commits, []);
+  const tower: TowerSpec = { id: `${fullName}#founding`, repo: fullName, kind: 'founding', root: 'chicago', floors, datumIndex: floors.length };
+  db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(fullName, JSON.stringify(repo));
+  db.prepare('INSERT INTO towers (repo, json) VALUES (?, ?)').run(fullName, JSON.stringify(tower));
+  emit('repo.analyzed', { repo });
+  const n = SAMPLE.length + 1;
+  const stood = await page
+    .waitForFunction((k) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === k, n, { timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  check(stood, `the site fixture stands as a seventh district on slot ${slot}`);
+  await page.waitForTimeout(1500);
+}
 
 // ---------------------------------------------------------------- a fake GitHub
 
@@ -2960,10 +3005,17 @@ async function main(): Promise<void> {
         await page.waitForTimeout(2500);
         await campusChecks(page, 'medium');
       } else if (process.env.UI_ONLY === 'budget') {
+        await standFixture(page);
+        await campusChecks(page, 'high');
         const high = await homeBreakdown(page, process.env.UI_BUDGET === 'detail');
+        console.log(`info  budget high: ${JSON.stringify(high)}`);
+        await page.screenshot({ path: join(SHOTS, 'home-high.png') });
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(2500);
+        await campusChecks(page, 'medium');
         await tierBudgetChecks(page, high);
+        console.log(`info  budget medium: ${JSON.stringify(await homeBreakdown(page, process.env.UI_BUDGET === 'detail'))}`);
+        await page.screenshot({ path: join(SHOTS, 'home-medium.png') });
       } else {
         await spireChecks(page);
         await revivalChecks(page);
