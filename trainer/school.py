@@ -1,8 +1,8 @@
 """The school's trainer (Phase 4): one warm process the engine talks to in JSON lines.
 
 Each request on stdin is one line, {"id": ..., "cmd": ..., ...}; each answer on stdout is one
-line with the same id and "ok". Later tasks add train_net, predict_net, lora_train and
-download_base. `school.py ping` answers once and exits, for the engine's setup check.
+line with the same id and "ok". train_net and predict_net run the small nets (nets.py); later
+tasks add lora_train and download_base. `school.py ping` answers once and exits, for the engine's setup check.
 
 It runs under the trainer's sandbox profile with HF_HUB_OFFLINE=1; nothing here reaches the
 network, and versions are read from package metadata, so a ping never starts the GPU.
@@ -72,7 +72,22 @@ def sleep(request):
     return {"step": step, "of": steps, "stopped": stopping()}
 
 
-COMMANDS = {"ping": ping, "sleep": sleep}
+def train_net(request):
+    """Train one small net (trainer/nets.py, ruling 8); a {"saved": epoch} line at each checkpoint."""
+    import nets  # MLX loads only when a net is trained or run, never for a ping
+
+    rid = request.get("id")
+    return nets.train_net(request, stopping=stopping, progress=lambda step, of: progress(rid, step, of), saved=lambda step: saved(rid, step))
+
+
+def predict_net(request):
+    """A trained net's outputs on raw feature rows: the trainer's half of the parity check."""
+    import nets
+
+    return nets.predict_net(request)
+
+
+COMMANDS = {"ping": ping, "sleep": sleep, "train_net": train_net, "predict_net": predict_net}
 
 
 def answer(line):
