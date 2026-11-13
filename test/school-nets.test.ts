@@ -4,7 +4,7 @@
  * a test chooses; no Python ever runs.
  */
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
@@ -344,6 +344,24 @@ test('a corrupt weights file makes current null and the card names it', async ()
   assert.equal(trained().length, 1);
 });
 
+test('a weights file linked to outside the school is refused, read through the link', async () => {
+  decide(50, (i) => i % 2 === 0);
+  await trainNet('master', NOW);
+  const file = join(paths().school, 'nets', 'master', 'v1.json');
+  const outside = join(tempDir, 'elsewhere.json');
+  writeFileSync(outside, readFileSync(file));
+  rmSync(file);
+  symlinkSync(outside, file);
+  assert.equal(current('master'), null);
+  assert.match(netCard('master', NOW).reason ?? '', /outside the school/);
+  // a link that stays inside the school is followed
+  const inside = join(paths().school, 'nets', 'master', 'kept.json');
+  writeFileSync(inside, readFileSync(outside));
+  rmSync(file);
+  symlinkSync(inside, file);
+  assert.ok(current('master'));
+});
+
 test('a stopped train records no version and promotes nothing', async () => {
   decide(50, (i) => i % 2 === 0);
   stopped = true;
@@ -421,6 +439,32 @@ test('the cost head is scored by mean absolute error', () => {
   assert.equal(e.metric, 'mae');
   assert.equal(e.score.value, (1 + 0 + 2) / 3);
   assert.equal(e.baseline.value, (2 + 1 + 1) / 3);
+});
+
+test('the cost baseline is the median of the training labels, so a head that only beats the mean is not trusted', () => {
+  const d = FEATURES['appraiser-cost'].length;
+  const at = new Date(NOW).toISOString();
+  const row = (i: number, y: number, source: Row['source'] = 'real'): Row => ({ id: `c${i}`, at, x: new Array<number>(d).fill(0), y, weight: source === 'real' ? 1 : 0.3, source });
+  // 30 cheap runs and 10 dear ones: the median is 1, the mean 3; a distilled row never moves it
+  const train = [...Array.from({ length: 30 }, (_, i) => row(i, 1)), ...Array.from({ length: 10 }, (_, i) => row(30 + i, 9)), row(99, 50, 'distilled')];
+  const heldOut = [1, 1, 1, 1, 1, 1, 1, 1, 1.5, 0.5].map((y, i) => row(100 + i, y));
+  assert.deepEqual(baselineFor('appraiser-cost', train, heldOut), new Array(10).fill(1));
+  assert.deepEqual(baselineFor('appraiser-cost', [row(0, 1), row(1, 2), row(2, 4), row(3, 10)], [row(4, 0)]), [3], 'an even count takes the mean of the middle two');
+  const two: NetWeights = {
+    net: 'appraiser-cost',
+    version: 1,
+    features: [...FEATURES['appraiser-cost']],
+    norm: { mean: new Array<number>(d).fill(0), std: new Array<number>(d).fill(1) },
+    layers: [
+      { W: [new Array<number>(d).fill(0)], b: [0] },
+      { W: [[0]], b: [2] },
+    ],
+    out: 'linear',
+  };
+  // against the mean (3) this head is better on every row; against the median it is not
+  assert.equal(evaluate('appraiser-cost', two, heldOut, new Array(10).fill(3)).trusted, true);
+  const e = evaluate('appraiser-cost', two, heldOut, baselineFor('appraiser-cost', train, heldOut));
+  assert.equal(e.trusted, false);
 });
 
 test('the appraiser is self-selected once it has moved an award', () => {

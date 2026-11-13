@@ -10,7 +10,7 @@
  * - The score: Brier for every sigmoid head, the master included; mean
  *   absolute error for the cost head; each a mean over the held-out rows
  *   with its 95% interval (stats.ts, seed 1). The baseline is the training
- *   rows' base rate (their mean, for cost); for `appraiser-pass` it is the
+ *   rows' base rate (their median, for cost, since MAE is least there); for `appraiser-pass` it is the
  *   firm's pass rate as of the award, where the firm had one. `vsBaseline`
  *   is the paired interval of the per-row differences, and a head is
  *   trusted only when its `hi` is below zero.
@@ -23,7 +23,7 @@
  *   trusted or the current one is not. A train the gate stopped, or whose
  *   weights the engine refuses, records nothing.
  */
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
 import { FEATURES } from '../../shared/net-features.js';
@@ -47,6 +47,12 @@ const NET_GB = 0;
 
 const real = (r: Row): boolean => r.source === 'real';
 const mean = (xs: readonly number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+const median = (xs: readonly number[]): number => {
+  if (!xs.length) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
 const byAt = (a: Row, b: Row): number => a.at.localeCompare(b.at) || a.id.localeCompare(b.id);
 
 // ---------------------------------------------------------------- the split
@@ -71,11 +77,15 @@ export function split(rows: readonly Row[]): { train: Row[]; heldOut: Row[] } {
  * rate (the mean of their real labels), or for `appraiser-pass` the firm's
  * pass rate as of the award where the row has one (ruling 11, Decision 14:
  * the appraiser later picks its own rows, so it is held to what the market
- * already knew).
+ * already knew). The cost head is held to the median of the training
+ * labels, the constant with the least absolute error.
  */
 export function baselineFor(net: NetName, train: readonly Row[], heldOut: readonly Row[]): number[] {
   const reals = train.filter(real);
-  const rate = mean((reals.length ? reals : train).map((r) => r.y));
+  const ys = (reals.length ? reals : train).map((r) => r.y);
+  // MAE is minimised by the median, so the cost head is held to it: beating the mean alone is no skill
+  if (net === 'appraiser-cost') return heldOut.map(() => median(ys));
+  const rate = mean(ys);
   if (net !== 'appraiser-pass') return heldOut.map(() => rate);
   const at = FEATURES[net].indexOf('firm_pass_rate');
   const has = FEATURES[net].indexOf('has_firm_pass_rate');
@@ -177,10 +187,26 @@ export function versions(net: NetName): NetVersion[] {
   return trainedOf(net).map((t) => ({ ...t.version, current: t.version.version === cur }));
 }
 
-/** The weights path stored in a version, resolved under `paths().school/nets`; null when it points anywhere else. */
-function weightsPath(v: NetVersion): string | null {
-  const nets = resolve(paths().school, 'nets');
-  const p = resolve(paths().school, v.path);
+/**
+ * The weights path stored in a version, resolved under `paths().school/nets`
+ * with every link followed; null when it points anywhere else, or when it or
+ * the nets folder cannot be resolved (a missing file is then missing).
+ */
+function weightsPath(v: NetVersion): string | null | 'missing' {
+  let nets: string;
+  try {
+    nets = realpathSync(resolve(paths().school, 'nets'));
+  } catch {
+    return 'missing';
+  }
+  const lexical = resolve(paths().school, v.path);
+  if (!lexical.startsWith(resolve(paths().school, 'nets') + sep)) return null;
+  let p: string;
+  try {
+    p = realpathSync(lexical);
+  } catch {
+    return 'missing';
+  }
   return p.startsWith(nets + sep) ? p : null;
 }
 
@@ -196,6 +222,7 @@ export function loadCurrent(net: NetName): { current: Current | null; reason: st
   const version = versions(net).find((v) => v.version === n);
   if (!version) return { current: null, reason: `v${n} is promoted but was never recorded` };
   const file = weightsPath(version);
+  if (file === 'missing') return { current: null, reason: `v${n}'s weights are missing` };
   if (!file) return { current: null, reason: `v${n}'s weights could not be read: its path is outside the school` };
   let size: number;
   try {
@@ -341,6 +368,7 @@ export async function trainNet(net: NetName, now: number, deps: DatasetDeps = {}
   }
 
   const was = loadCurrent(net).current;
+  // a current whose weights cannot be read serves nothing, so it is no better than an untrusted one and the new version replaces it
   const promote = e.trusted || !was?.version.trusted;
   const v: NetVersion = {
     net,
