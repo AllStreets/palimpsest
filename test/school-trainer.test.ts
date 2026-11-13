@@ -12,12 +12,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test, type TestContext } from 'node:test';
 
 import { openDb } from '../engine/db.js';
-import { realSpawner, setSpawner, type SpawnDone, type Spawned, type SpawnLine, type SpawnOpts, type Spawner } from '../engine/exec.js';
+import { realRunner, realSpawner, setRunner, setSpawner, type Runner, type SpawnDone, type Spawned, type SpawnLine, type SpawnOpts, type Spawner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
 import { trainerProfile } from '../engine/market/sandbox.js';
 import { TRAINER_DIR } from '../engine/school/trainer-env.js';
-import { failInterruptedTrains, liveTrains, pauseAll, setGate, startTrain, type StartTrain } from '../engine/school/trainer.js';
+import { ENGINE_STOPPED_REASON, failInterruptedTrains, liveTrains, pauseAll, setGate, setKill, startTrain, type StartTrain } from '../engine/school/trainer.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localCredits } from '../shared/credits.js';
 import { GATE } from '../shared/school-rules.js';
@@ -102,10 +102,10 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
 }
 
-function trainRows(): Array<{ kind: string; data: { train: TrainState; reason?: string; lost?: number } }> {
+function trainRows(): Array<{ kind: string; data: { train: TrainState; reason?: string; lost?: number; pid?: number } }> {
   return entries()
     .filter((e) => e.kind.startsWith('train.'))
-    .map((e) => ({ kind: e.kind, data: e.data as { train: TrainState; reason?: string; lost?: number } }));
+    .map((e) => ({ kind: e.kind, data: e.data as { train: TrainState; reason?: string; lost?: number; pid?: number } }));
 }
 
 function credits(): Array<{ kind: string; amount: number; firm_id: string | null; run_id: string | null; json: string }> {
@@ -140,6 +140,8 @@ afterEach(async () => {
   for (const f of spawned) f.end(null, 'SIGKILL');
   await flush();
   setGate(null);
+  setKill(null);
+  setRunner(realRunner);
   setSpawner(realSpawner);
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
@@ -172,6 +174,7 @@ test('a train starts only when the gate holds', async (t) => {
   assert.equal(started[0].kind, 'train.started');
   assert.equal(started[0].data.train.id, live[0].id);
   assert.equal(started[0].data.train.status, 'running');
+  assert.equal(started[0].data.pid, 4242, 'train.started names the child, so a restart can reap it');
 
   t.mock.timers.tick(5_000);
   spawned[0].end(0);
@@ -340,14 +343,34 @@ test('the argv is wrapped in the trainer profile with HF_HUB_OFFLINE=1 and no AP
   await p;
 });
 
+/** A `ps -o command= -p <pid>` that answers `byPid`; anything else is refused. */
+function fakePs(byPid: Record<number, string | null>): string[] {
+  const calls: string[] = [];
+  const runner: Runner = async (cmd, args) => {
+    calls.push(`${cmd.split('/').pop()} ${args.join(' ')}`);
+    assert.equal(cmd, '/bin/ps');
+    const pid = Number(args.at(-1));
+    const line = byPid[pid];
+    return line === null || line === undefined ? { stdout: '', stderr: '', code: 1 } : { stdout: line + '\n', stderr: '', code: 0 };
+  };
+  setRunner(runner);
+  return calls;
+}
+
 test('a running train at engine start is paused', async (t) => {
   clock(t);
+  const kills: Array<[number, string]> = [];
+  setKill((pid, sig) => {
+    kills.push([pid, sig]);
+    return true;
+  });
+  const ps = fakePs({});
   const stale: TrainState = { id: 'train-stale', kind: 'lora', status: 'running', reason: null, startedAt: new Date(NIGHT - 3_600_000).toISOString(), endedAt: null, seconds: 0, steps: { done: 120, of: 600, lost: 0, optimizerReset: false }, credits: 0 };
   const finished: TrainState = { ...stale, id: 'train-done', status: 'done', endedAt: new Date(NIGHT - 1_800_000).toISOString(), seconds: 1800 };
   record('train.started', { train: stale });
-  record('train.started', { train: { ...finished, status: 'running', endedAt: null, seconds: 0 } });
+  record('train.started', { train: { ...finished, status: 'running', endedAt: null, seconds: 0 }, pid: 777 });
   record('train.ended', { train: finished });
-  failInterruptedTrains();
+  await failInterruptedTrains();
   const rows = trainRows();
   assert.deepEqual(
     rows.map((r) => r.kind),
@@ -356,11 +379,100 @@ test('a running train at engine start is paused', async (t) => {
   const paused = rows[3].data;
   assert.equal(paused.train.id, 'train-stale');
   assert.equal(paused.train.status, 'paused');
-  assert.equal(paused.train.reason, 'the engine stopped');
-  assert.equal(paused.reason, 'the engine stopped');
+  assert.equal(paused.train.reason, ENGINE_STOPPED_REASON);
+  assert.equal(paused.reason, ENGINE_STOPPED_REASON);
   assert.equal(paused.train.endedAt, new Date(NIGHT).toISOString());
   assert.equal(paused.train.steps?.optimizerReset, true);
+  // no pid was recorded for the stale train and the finished one is not running: nothing is looked up or killed
+  assert.deepEqual(ps, []);
+  assert.deepEqual(kills, []);
   // idempotent: a second start finds nothing running
-  failInterruptedTrains();
+  await failInterruptedTrains();
   assert.equal(trainRows().length, 4);
+});
+
+test('a stray school.py from the last engine is killed at start, a reused pid is not', async (t) => {
+  clock(t);
+  const kills: Array<[number, string]> = [];
+  setKill((pid, sig) => {
+    kills.push([pid, sig]);
+    return true;
+  });
+  const ps = fakePs({ 501: `/Users/x/.venv/bin/python ${join(TRAINER_DIR, 'school.py')}`, 502: '/usr/bin/vim notes.txt', 503: null });
+  const base: TrainState = { id: 'train-a', kind: 'lora', status: 'running', reason: null, startedAt: new Date(NIGHT - 60_000).toISOString(), endedAt: null, seconds: 0, steps: null, credits: 0 };
+  record('train.started', { train: base, pid: 501 });
+  record('train.started', { train: { ...base, id: 'train-b' }, pid: 502 });
+  record('train.started', { train: { ...base, id: 'train-c' }, pid: 503 });
+  await failInterruptedTrains();
+  assert.deepEqual(ps, ['ps -o command= -p 501', 'ps -o command= -p 502', 'ps -o command= -p 503']);
+  assert.deepEqual(kills, [[501, 'SIGTERM']], 'only the pid still running our school.py is signalled');
+  t.mock.timers.tick(GATE.killGraceMs);
+  assert.deepEqual(kills, [
+    [501, 'SIGTERM'],
+    [501, 'SIGKILL'],
+  ]);
+  const paused = trainRows().filter((r) => r.kind === 'train.paused');
+  assert.deepEqual(paused.map((r) => r.data.train.id).sort(), ['train-a', 'train-b', 'train-c']);
+  for (const r of paused) assert.equal(r.data.reason, ENGINE_STOPPED_REASON);
+});
+
+test('a poll that resolves after the train ended neither pauses it nor arms SIGKILL', async (t) => {
+  clock(t);
+  let release!: (g: GateState) => void;
+  let calls = 0;
+  setGate((kind) => {
+    calls += 1;
+    if (calls === 1) return Promise.resolve({ ...ok(), kind });
+    return new Promise<GateState>((r) => {
+      release = r;
+    });
+  });
+  const p = startTrain(input());
+  await flush();
+  t.mock.timers.tick(GATE.pollMs);
+  await flush();
+  assert.equal(calls, 2, 'the poll is waiting on the gate');
+  spawned[0].end(0);
+  const done = await p;
+  assert.equal(done.status, 'done');
+  release({ ...ok(), ok: false, reason: 'on battery' });
+  await flush();
+  t.mock.timers.tick(GATE.killGraceMs);
+  await flush();
+  assert.deepEqual(spawned[0].kills, []);
+  assert.deepEqual(liveTrains(), []);
+  assert.deepEqual(
+    trainRows().map((r) => r.kind),
+    ['train.started', 'train.ended'],
+  );
+  assert.equal(trainRows()[1].data.train.status, 'done');
+});
+
+test('the env override never carries a key or a token', async (t) => {
+  clock(t);
+  const p = startTrain(input({ env: { HF_HOME: '/school/models', ANTHROPIC_API_KEY: 'secret-value', OPENAI_API_KEY: 'secret-value', GEMINI_API_KEY: 'secret-value', MY_API_KEY: 'secret-value', HF_TOKEN: 'secret-value', SOME_SECRET: 'secret-value', ANTHROPIC_BASE_URL: 'http://x' } }));
+  await flush();
+  const env = spawned[0].opts.env ?? {};
+  assert.equal(env.HF_HOME, '/school/models');
+  for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'MY_API_KEY', 'HF_TOKEN', 'SOME_SECRET', 'ANTHROPIC_BASE_URL']) assert.ok(!(k in env), k);
+  for (const v of Object.values(env)) assert.ok(!v.includes('secret-value'));
+  spawned[0].end(0);
+  await p;
+});
+
+test('seconds are counted from the start after the gate check, not from the caller\'s now', async (t) => {
+  clock(t);
+  setGate((kind) => new Promise<GateState>((r) => setTimeout(() => r({ ...ok(), kind }), 5_000)));
+  const p = startTrain(input({ now: NIGHT }));
+  await flush();
+  assert.equal(spawned.length, 0, 'nothing starts before the gate answers');
+  t.mock.timers.tick(5_000);
+  await flush();
+  assert.equal(spawned.length, 1);
+  assert.equal(liveTrains()[0].startedAt, new Date(NIGHT + 5_000).toISOString());
+  t.mock.timers.tick(3_000);
+  spawned[0].end(0);
+  const r = await p;
+  assert.equal(r.seconds, 3);
+  assert.equal(r.credits, localCredits(3, 4.3));
 });

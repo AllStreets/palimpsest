@@ -14,7 +14,7 @@ import { backfillReports, ensureDailyReport, latestReportDay } from './market/re
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { ensureCampus } from './school/campus.js';
-import { failInterruptedTrains } from './school/trainer.js';
+import { ENGINE_STOPPED_REASON, failInterruptedTrains, pauseAll } from './school/trainer.js';
 import { isSampleHome } from './sample.js';
 import { bootSampleEngine } from './sample-boot.js';
 import { startServer } from './server.js';
@@ -27,8 +27,8 @@ async function main(): Promise<void> {
   failInterruptedAnalyses();
   // Likewise a run the last engine had live: its strays are reaped, it ends crashed and its job returns to the board once (ruling 16).
   await failInterruptedRuns();
-  // Phase 4 ruling 7: a train the last engine had running is paused in the ledger; it never reports again.
-  failInterruptedTrains();
+  // Phase 4 ruling 7: a train the last engine had running is reaped if it still runs and paused in the ledger.
+  await failInterruptedTrains();
   // The five firms are seeded here and only here (never inside startServer, so tests never run ollama list).
   // An agent whose Ollama model is not installed seeds retired; seeding is idempotent per firm.
   const installed = await installedModels();
@@ -96,7 +96,12 @@ async function main(): Promise<void> {
 
   // A first signal stops the market (runs killed and reaped, leases aborted) within a 10 s grace; a second exits at once.
   // eslint-disable-next-line no-console
-  const shutdown = shutdownHandler(scheduler, { close, exit: (code) => process.exit(code), log: (l) => console.log(l) });
+  // Phase 4 ruling 7: every live train gets SIGTERM as the engine stops; a restart reaps what outlives it.
+  const closeAll = async () => {
+    await pauseAll(ENGINE_STOPPED_REASON);
+    await close();
+  };
+  const shutdown = shutdownHandler(scheduler, { close: closeAll, exit: (code) => process.exit(code), log: (l) => console.log(l) });
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

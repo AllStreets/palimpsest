@@ -504,8 +504,10 @@ function loopbackPort(name: string, port: number): number {
  * `bindPort` and outbound to loopback `proxyPort`, each only when given;
  * every write denied, then the school, its tmp and the device files allowed,
  * then the school's `ctl` (where this profile is written) denied again; and
- * last, after every allow, his credentials denied by name for reading and
- * writing. Seatbelt applies the last matching rule, so a profile with
+ * last, after every allow, his credentials and his claude config denied by
+ * name for reading and writing. The binaries the tool profile denies
+ * (`security`, `gh`, `claude`, `osascript`, `sudo`, `launchctl`, `open`) and
+ * the keychain's mach services are denied too. Seatbelt applies the last matching rule, so a profile with
  * neither port has no `allow network` line at all.
  */
 export function trainerProfile(o: TrainerProfileInput): string {
@@ -514,10 +516,17 @@ export function trainerProfile(o: TrainerProfileInput): string {
   const home = realish(o.home ?? homedir());
   const bindPort = o.bindPort === undefined ? null : loopbackPort('bindPort', o.bindPort);
   const proxyPort = o.proxyPort === undefined ? null : loopbackPort('proxyPort', o.proxyPort);
+  // a control character in a path could end the comment, or a quoted string, and start a rule of its own
+  for (const path of [school, tmp, home]) if (/[\x00-\x1f\x7f]/.test(path)) throw new Error('a trainer profile path holds a control character');
   const lines = [
     '(version 1)',
     `; Palimpsest trainer profile for ${school}`,
     '(allow default)',
+    '',
+    '; exec: never the binaries that reach his accounts, his login or his machine',
+    `(deny process-exec ${TOOL_EXEC_DENIED.map(lit).join(' ')} ${rx('/gh$')} ${rx('/claude$')})`,
+    '; mach: never the keychain',
+    `(deny mach-lookup ${KEYCHAIN_MACH.map((n) => `(global-name ${q(n)})`).join(' ')})`,
     '',
     '; network: none, then the two named exceptions (the later rule wins)',
     '(deny network*)',
@@ -539,7 +548,7 @@ export function trainerProfile(o: TrainerProfileInput): string {
   lines.push('; the profile itself is written to the school ctl: no trainer rewrites it for the next launch');
   lines.push(`(deny file-write* ${sub(join(school, 'ctl'))})`);
   lines.push('');
-  lines.push(...secretDenies({ runRoot: school, home, dataHome: home, toolchains: [] }, SECRET_PATHS));
+  lines.push(...secretDenies({ runRoot: school, home, dataHome: home, toolchains: [] }, [...SECRET_PATHS, ...CLAUDE_SECRET_PATHS]));
   return lines.join('\n');
 }
 

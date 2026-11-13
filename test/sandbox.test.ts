@@ -273,6 +273,28 @@ describe('trainer profile text (Phase 4 ruling 7)', () => {
     assert.throws(() => trainerProfile({ ...base, proxyPort: 70000 }), /port/);
   });
 
+  test('the trainer may not exec the binaries that reach his accounts, nor look up the keychain', () => {
+    const p = trainerProfile(base);
+    const deny = lineAt(p, '(deny process-exec');
+    for (const bin of ['/usr/bin/security', '/usr/bin/osascript', '/usr/bin/sudo', '/bin/launchctl', '/usr/bin/open']) assert.ok(p.split('\n')[deny].includes(`(literal "${bin}")`), bin);
+    assert.ok(p.split('\n')[deny].includes('/gh$') && p.split('\n')[deny].includes('/claude$'));
+    const mach = lineAt(p, '(deny mach-lookup');
+    for (const n of ['com.apple.SecurityServer', 'com.apple.securityd', 'com.apple.securityd.xpc']) assert.ok(p.split('\n')[mach].includes(`(global-name "${n}")`), n);
+    assert.ok(!/\(allow process-exec|\(allow mach-lookup/.test(p));
+  });
+
+  test("the trainer may neither read nor write his claude config (~/.claude, ~/.claude.json)", () => {
+    const p = trainerProfile(base);
+    const lastAllow = Math.max(...p.split('\n').map((l, i) => (l.startsWith('(allow ') ? i : -1)));
+    for (const name of ['.claude', '.claude.json']) assert.ok(lineAt(p, '(deny file-read* file-write*', `(subpath "${HOME}/${name}")`) > lastAllow, name);
+  });
+
+  test('a control character in a path is refused rather than written into the profile', () => {
+    assert.throws(() => trainerProfile({ ...base, school: `${DATA}/school\n(allow network*)` }), /control character/);
+    assert.throws(() => trainerProfile({ ...base, tmp: `${TMP}\x01` }), /control character/);
+    assert.throws(() => trainerProfile({ ...base, home: `${HOME}\r` }), /control character/);
+  });
+
   test('wrap writes the trainer profile to the school ctl and runs it through sandbox-exec', { skip: process.platform !== 'darwin' }, () => {
     const dir = mkdtempSync(join(tmpdir(), 'palimpsest-sandbox-test-'));
     try {
@@ -727,6 +749,14 @@ describe('the trainer profile under sandbox-exec', { skip: !hasSandbox && 'sandb
     const open = await trainer(`${get(proxy)}; ${get(other)}`, { proxyPort: proxy });
     assert.ok(open.stdout.includes(`reached ${proxy}`), open.stdout + open.stderr);
     assert.ok(open.stdout.includes(`denied ${other}`), open.stdout + open.stderr);
+  });
+
+  test('/usr/bin/security cannot run under the trainer profile', async () => {
+    const r = await trainer(`/usr/bin/security help; echo "code $?"; /bin/echo still-runs`);
+    assert.match(r.stdout, /code (1|126)/, r.stdout + r.stderr);
+    assert.ok(!r.stdout.includes('Usage: security'), 'security ran');
+    assert.match(r.stderr, /Operation not permitted|Permission denied/);
+    assert.match(r.stdout, /still-runs/);
   });
 
   test('a bind port lets a loopback server listen on that port alone', async () => {

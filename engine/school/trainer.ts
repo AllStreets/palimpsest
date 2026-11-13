@@ -24,7 +24,7 @@ import { localCredits } from '../../shared/credits.js';
 import { GATE } from '../../shared/school-rules.js';
 import type { GateState, ModelRef, TrainKind, TrainState } from '../../shared/types.js';
 import { emit } from '../events.js';
-import { getSpawner, type SpawnLine, type Spawned } from '../exec.js';
+import { getRunner, getSpawner, NEVER_INHERITED, signalGroup, type SpawnLine, type Spawned } from '../exec.js';
 import { paths } from '../home.js';
 import { record, query } from '../ledger.js';
 import { charge, unattended } from '../market/budget.js';
@@ -51,7 +51,7 @@ export interface StartTrain {
   bindPort?: number;
   /** The one loopback port of the download proxy, for `download_base` alone (ruling 25). */
   proxyPort?: number;
-  /** Extra variables the caller names explicitly (HF_HOME for a download); never a key. */
+  /** Extra variables the caller names explicitly (HF_HOME for a download); any key or token among them is dropped (`safeEnv`). */
   env?: Record<string, string>;
 }
 
@@ -67,6 +67,28 @@ let gateFn: Gate = gateNow;
 /** Installs a gate for tests, or `null` to read the real one again. */
 export function setGate(fn: Gate | null): void {
   gateFn = fn ?? gateNow;
+}
+
+type Kill = (pgid: number, signal: 'SIGTERM' | 'SIGKILL') => boolean;
+let killFn: Kill = signalGroup;
+
+/** Installs the group kill `failInterruptedTrains` uses, for tests, or `null` for the real one. */
+export function setKill(fn: Kill | null): void {
+  killFn = fn ?? signalGroup;
+}
+
+/** Variables a caller's `env` may never add to the child: the keys the engine strips from every child, and anything named like one. */
+const STRIPPED_ENV = new Set<string>([...NEVER_INHERITED, 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'HF_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN']);
+const STRIPPED_SUFFIX = /(_API_KEY|_TOKEN|_SECRET)$/;
+
+/** `env` without any key or token, whatever the caller meant. */
+export function safeEnv(env: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (STRIPPED_ENV.has(k) || STRIPPED_SUFFIX.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 interface Live {
@@ -117,9 +139,9 @@ function noteLine(l: Live, line: SpawnLine): void {
   if (saved !== null) l.savedStep = Math.max(l.savedStep, saved);
 }
 
-/** Sends SIGTERM now and SIGKILL `GATE.killGraceMs` later; marks the train paused with `reason`. A second call changes nothing. */
+/** Sends SIGTERM now and SIGKILL `GATE.killGraceMs` later; marks the train paused with `reason`. A second call, or one on a train that has ended, changes nothing. */
 function pause(l: Live, reason: string): void {
-  if (l.state.status !== 'running') return;
+  if (live.get(l.state.id) !== l || l.state.status !== 'running') return;
   l.state.status = 'paused';
   l.state.reason = reason;
   if (l.poll) clearInterval(l.poll);
@@ -151,7 +173,8 @@ async function pollOnce(l: Live): Promise<void> {
       reason = `the gate could not be read: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
-  if (reason) pause(l, reason);
+  // the train may have ended while the gate was read: nothing is paused or armed then
+  if (reason && live.get(l.state.id) === l) pause(l, reason);
 }
 
 /**
@@ -161,15 +184,17 @@ async function pollOnce(l: Live): Promise<void> {
  * case is anything spawned or recorded.
  */
 export async function startTrain(o: StartTrain): Promise<TrainState> {
-  const startedAt = o.now ?? Date.now();
+  const asked = o.now ?? Date.now();
   const id = `train-${randomUUID().slice(0, 8)}`;
-  const state = trainState(id, o.kind, startedAt);
   const python = trainerPython();
-  if (!python) return { ...state, status: 'failed', reason: NOT_SET_UP };
-  if (!getSettings().school.enabled) return { ...state, reason: SCHOOL_OFF_REASON };
-  const g = await gateFn(o.gate, startedAt);
-  if (!g.ok) return { ...state, reason: g.reason ?? 'the gate closed' };
+  if (!python) return { ...trainState(id, o.kind, asked), status: 'failed', reason: NOT_SET_UP };
+  if (!getSettings().school.enabled) return { ...trainState(id, o.kind, asked), reason: SCHOOL_OFF_REASON };
+  const g = await gateFn(o.gate, asked);
+  if (!g.ok) return { ...trainState(id, o.kind, asked), reason: g.reason ?? 'the gate closed' };
 
+  // the seconds charged run from here, after the gate answered, not from when the caller asked
+  const startedAt = Date.now();
+  const state = trainState(id, o.kind, startedAt);
   const school = paths().school;
   const tmp = join(school, 'tmp');
   mkdirSync(tmp, { recursive: true });
@@ -178,7 +203,7 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
   const argv = wrap([python, join(TRAINER_DIR, 'school.py')], 'trainer', { school, tmp, bindPort: o.bindPort, proxyPort: o.proxyPort }, (line) =>
     o.onLine({ stream: 'stderr', line: `[palimpsest] ${line}` }),
   );
-  const env: Record<string, string> = { ...trainerEnv(), HOME: tmp, TMPDIR: tmp, ...(o.env ?? {}) };
+  const env: Record<string, string> = { ...trainerEnv(), HOME: tmp, TMPDIR: tmp, ...safeEnv(o.env) };
   const child = getSpawner()(argv[0], argv.slice(1), {
     cwd: tmp,
     env,
@@ -190,7 +215,8 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
   state.status = 'running';
   const l: Live = { state, gate: o.gate, child, savedStep: 0, poll: null, killTimer: null };
   live.set(id, l);
-  record('train.started', { train: { ...state } });
+  // the pid is the process group too (the spawner starts children detached): a restart reaps it by this
+  record('train.started', { train: { ...state }, pid: child.pid });
   emit('train.started', { train: { ...state } });
 
   l.poll = setInterval(() => void pollOnce(l), GATE.pollMs);
@@ -247,19 +273,40 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
   return { ...state };
 }
 
+/** Whether `pid` is still a process running our `school.py` (its command line names it), so a reused pid is never signalled. */
+async function isOurTrainer(pid: number): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try {
+    const r = await getRunner()('/bin/ps', ['-o', 'command=', '-p', String(pid)], { timeoutMs: 5_000 });
+    return r.code === 0 && r.stdout.includes(join(TRAINER_DIR, 'school.py'));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * At engine start: a train the last engine had running can never report
- * again, so it is paused in the ledger with `ENGINE_STOPPED_REASON`. Its
- * seconds past the last entry are unknown and go uncharged.
+ * again. If its process group is still alive and still our `school.py`, it
+ * gets SIGTERM now and SIGKILL `GATE.killGraceMs` later; then the train is
+ * paused in the ledger with `ENGINE_STOPPED_REASON`. Its seconds past the
+ * last entry are unknown and go uncharged.
  */
-export function failInterruptedTrains(now: number = Date.now()): void {
-  const last = new Map<string, TrainState>();
+export async function failInterruptedTrains(now: number = Date.now()): Promise<void> {
+  const last = new Map<string, { train: TrainState; pid: number | null }>();
   for (const e of query({ kind: ['train.started', 'train.paused', 'train.ended'] })) {
-    const t = (e.data as { train?: TrainState } | null)?.train;
-    if (t && typeof t.id === 'string') last.set(t.id, t);
+    const d = e.data as { train?: TrainState; pid?: unknown } | null;
+    const t = d?.train;
+    if (!t || typeof t.id !== 'string') continue;
+    const pid = typeof d?.pid === 'number' ? d.pid : (last.get(t.id)?.pid ?? null);
+    last.set(t.id, { train: t, pid });
   }
-  for (const t of last.values()) {
+  for (const { train: t, pid } of last.values()) {
     if (t.status !== 'running' && t.status !== 'waiting') continue;
+    if (pid !== null && (await isOurTrainer(pid))) {
+      killFn(pid, 'SIGTERM');
+      const later = setTimeout(() => killFn(pid, 'SIGKILL'), GATE.killGraceMs);
+      unref(later);
+    }
     const train: TrainState = {
       ...t,
       status: 'paused',
