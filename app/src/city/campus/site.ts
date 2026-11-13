@@ -56,7 +56,7 @@ export const TONE: Record<Kind, THREE.Color> = {
   brick: new THREE.Color(0.74, 0.5, 0.4),
   limestone: new THREE.Color(0.94, 0.91, 0.84),
   slate: new THREE.Color(0.2, 0.23, 0.28),
-  ashlar: new THREE.Color(0.86, 0.81, 0.72),
+  ashlar: new THREE.Color(0.77, 0.78, 0.75),
   turf: new THREE.Color(0.3, 0.42, 0.16),
   gravel: new THREE.Color(0.93, 0.9, 0.82),
   lamp: new THREE.Color(1.0, 0.74, 0.44),
@@ -311,14 +311,13 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     walk(q.x0 - 4, q.x1 + 4, -z1, -QUAD_HALF);
     walk(q.x0 - 4, q.x0, -z1, z1);
     walk(q.x1, q.x1 + 4, -z1, z1);
-    // The diagonals, corner to corner, meeting at the middle of the lawn.
+    // A classic college quad: the perimeter walk, the axis through it, and one cross walk from hall door to hall
+    // door; no diagonals, the lawn kept whole in four panels.
     const cx = (q.x0 + q.x1) / 2;
     const dx = q.x1 - q.x0;
-    const len = Math.hypot(dx, 2 * QUAD_HALF);
-    for (const s of [-1, 1]) strip(cx, 0, len, 2.4, s * Math.atan2(2 * QUAD_HALF, dx));
-    // From the axis to each hall's door.
-    walk(cx - 1.6, cx + 1.6, -QUAD_HALF, QUAD_HALF);
-    // Mature trees in two rows down each lawn, between the diagonals and the halls' walks, no two alike.
+    walk(cx - 1.8, cx + 1.8, -QUAD_HALF, QUAD_HALF);
+    // Mature trees in two rows down each lawn, standing in from the halls' walks, no two alike; a columnar
+    // tree at each corner of the lawn, a darker species, for the quad to read as planted, not scattered.
     for (const sz of [-1, 1]) {
       for (let i = 0; i < 4; i++) {
         const tx = q.x0 + 7 + i * ((dx - 14) / 3);
@@ -326,23 +325,25 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
         const seed = Math.round(tx * 7 + sz * 131 + q.x0);
         tree(tx + (i % 2 ? 1.5 : -1.5), sz * (QUAD_HALF - 9), 0.85 + 0.3 * ((i * 7 + (sz + 1)) % 3) / 2, seed);
       }
+      for (const sx of [-1, 1]) column(cx + sx * (dx / 2 - 3), sz * (QUAD_HALF - 3), 1.0, Math.round(cx * 3 + sx * 17 + sz * 29));
     }
-    // Lamps at the quad's corners and along its long walks.
-    for (const sz of [-1, 1]) for (const lx of [q.x0 - 1.5, cx, q.x1 + 1.5]) lamp(lx, sz * (QUAD_HALF + 5.2));
+    // Lamps at the quad's corners only.
+    for (const sz of [-1, 1]) for (const lx of [q.x0 - 1.5, q.x1 + 1.5]) lamp(lx, sz * (QUAD_HALF + 5.2));
   }
-  // Trees in the forecourt corners and before the library's pad.
+  // Trees in the forecourt corners, a pair of columnar trees flanking the library's front.
   for (const sz of [-1, 1]) {
     tree(FRONT_QUAD.x1 + 14, sz * 22, 1.0, 11 + sz);
-    tree(-104, sz * 24, 0.9, 17 + sz);
+    column(-79, sz * 36, 1.1, 17 + sz);
   }
-  // Lamps down the axis, across the cross walk, along the parapet walk and at the stair head.
-  for (let x = -92; x <= 84; x += 16) for (const sz of [-1, 1]) lamp(x, sz * 6.2);
-  for (let z = -36; z <= 36; z += 18) if (Math.abs(z) > 8) for (const sx of [-1, 1]) lamp(crossX + sx * 5.2, z);
+  // Lamps down the axis every second bay, two across the cross walk, every other post along the parapet walk,
+  // and a pair at the stair head: half the posts of a first draft, which lit the lawns like a car park.
+  for (let x = -76; x <= 84; x += 32) for (const sz of [-1, 1]) lamp(x, sz * 6.2);
+  for (const z of [-30, 30]) for (const sx of [-1, 1]) lamp(crossX + sx * 5.4, z);
   const ring = inner - pw - 1.4;
-  for (let u = -ring; u <= ring + 1e-6; u += ring / 4) {
+  for (let u = -ring; u <= ring + 1e-6; u += ring / 2) {
     lamp(u, ring);
     lamp(u, -ring);
-    lamp(-ring, u);
+    if (Math.abs(u) > 1) lamp(-ring, u);
     if (Math.abs(u) > wellOut + 4) lamp(ring, u);
   }
   for (const sz of [-1, 1]) lamp(xTop + 1.2, sz * 6.4);
@@ -419,6 +420,53 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     let at = 0;
     // Leaves are a cooler, deeper green than a mown lawn.
     add('turf', crown.applyMatrix4(place), 0.8, () => perVertex[at++], new THREE.Color(0.72, 1.0, 0.78));
+  }
+
+  /**
+   * The second species, a columnar tree (a fastigiate oak or a hornbeam
+   * clipped tall): a straight trunk under a tight crown of lobes stacked up a
+   * vertical axis, nearly three times taller than wide, in a deeper, bluer
+   * green than the spreading trees. Built the same way, in the same draw.
+   */
+  function column(x: number, z: number, size: number, seed: number): void {
+    const r = seeded(seed);
+    const k = size * (0.9 + 0.2 * r());
+    const place = new THREE.Matrix4().makeTranslation(x, T, z).multiply(new THREE.Matrix4().makeRotationY(r() * Math.PI * 2));
+    const trunk = new THREE.CylinderGeometry(0.14 * k, 0.3 * k, 2.6 * k, 8).translate(0, 1.3 * k, 0);
+    add('slate', trunk.toNonIndexed().applyMatrix4(place), 0.85);
+    const lobes: THREE.BufferGeometry[] = [];
+    const n = 5;
+    const h0 = 2.2 * k;
+    const h1 = 11.5 * k;
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      const cy = h0 + (h1 - h0) * t + 0.6 * k * (r() - 0.5);
+      // Widest a third of the way up, closing to a point at the top.
+      const rad = (0.9 + 1.4 * Math.sin(Math.PI * Math.min(1, 0.3 + 0.7 * (1 - t))) * (1 - 0.55 * t)) * k;
+      const g = mergeVertices(new THREE.IcosahedronGeometry(rad, 2));
+      const pos = g.attributes.position as THREE.BufferAttribute;
+      const salt = r() * 100;
+      for (let v = 0; v < pos.count; v++) {
+        const px = pos.getX(v);
+        const py = pos.getY(v);
+        const pz = pos.getZ(v);
+        const len = Math.hypot(px, py, pz) || 1;
+        const d = 1 + (hash3(px * 1.3 + salt, py * 1.3, pz * 1.3) - 0.5) * 0.4;
+        pos.setXYZ(v, (px / len) * rad * d, (py / len) * rad * d * 1.5, (pz / len) * rad * d);
+      }
+      g.translate((r() - 0.5) * 0.4 * k, cy, (r() - 0.5) * 0.4 * k);
+      g.computeVertexNormals();
+      lobes.push(g);
+    }
+    const crown = mergeGeometries(lobes, false)!;
+    const pp = crown.attributes.position as THREE.BufferAttribute;
+    const perVertex = new Float32Array(pp.count);
+    for (let vi = 0; vi < pp.count; vi++) {
+      const t = Math.min(1, Math.max(0, (pp.getY(vi) - h0) / (h1 - h0)));
+      perVertex[vi] = (0.5 + 0.5 * t) * (0.9 + 0.2 * hash3(pp.getX(vi) * 2.7, pp.getY(vi) * 2.7, pp.getZ(vi) * 2.7));
+    }
+    let at = 0;
+    add('turf', crown.applyMatrix4(place), 0.5, () => perVertex[at++], new THREE.Color(0.42, 0.8, 0.74));
   }
 
   /** A lamp: a dark post with a warm lit head under a small cap, in the site's own draw (the head's kind emits). */

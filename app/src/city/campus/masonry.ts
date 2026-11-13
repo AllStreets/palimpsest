@@ -50,7 +50,22 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           vec4 s;
           if (ck == 0) s = texture2D(map, vMapUv);
           else if (ck == 1) s = texture2D(uSandMap, vMapUv);
-          else if (ck == 3) s = texture2D(uAshMap, vMapUv);
+          else if (ck == 3) {
+            // Ashlar: the scan, cooled toward limestone, and its repeat broken block by block: each course (0.6 m, four
+            // a tile) and each block in it (a hash of the course and the block's place, offset every other course) a
+            // shade lighter or darker, a slow drift tile to tile, and a hair's shadow under each course's bed joint.
+            vec3 a = texture2D(uAshMap, vMapUv).rgb;
+            float lum = dot(a, vec3(0.3, 0.59, 0.11));
+            a = mix(a, vec3(lum), 0.55) * vec3(0.98, 1.0, 1.03);
+            float course = floor(vMapUv.y * 4.0);
+            float blk = floor(vMapUv.x * 3.0 + 0.5 * mod(course, 2.0));
+            float hb = fract(sin(course * 12.9898 + blk * 78.233) * 43758.5453);
+            float hc = fract(sin(course * 39.425) * 24631.3);
+            float ht = fract(sin(floor(vMapUv.x) * 21.17 + floor(vMapUv.y) * 51.9) * 9173.7);
+            float tone = 0.9 + 0.14 * hb + 0.08 * (hc - 0.5) + 0.06 * (ht - 0.5);
+            float bed = 1.0 - 0.18 * (1.0 - smoothstep(0.0, 0.035, fract(vMapUv.y * 4.0)));
+            s = vec4(a * tone * bed, 1.0);
+          }
           else if (ck == 5) {
             // Gravel: the sand scan is a mid-grey meant to be tinted pale; lifted, it reads as crushed limestone.
             vec3 gr = texture2D(uSandMap, vMapUv).rgb;
