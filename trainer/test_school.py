@@ -2,6 +2,7 @@
 offline (HF_HUB_OFFLINE=1), on synthetic data under a temp dir, writing no bytecode."""
 import importlib.metadata
 import json
+import math
 import os
 import platform
 import random
@@ -248,6 +249,79 @@ class Nets(unittest.TestCase):
         self.assertEqual(saves, [5])
         with open(out_path) as f:
             self.assertEqual(len(json.load(f)["layers"]), 2)
+
+    def test_a_zero_weight_row_has_no_effect(self):
+        rows = synthetic_rows(120, seed=6)
+        a, _ = self.train(rows, "a")
+        # a row in the middle, labelled against the rule, weighing nothing; 121 rows still hold out the newest 18
+        odd = {**rows[50], "id": "odd", "x": [-3.0, 4.0, -5.0], "y": 1, "weight": 0}
+        b, _ = self.train(rows[:51] + [odd] + rows[51:], "b")
+        with open(a) as fa, open(b) as fb:
+            wa, wb = json.load(fa), json.load(fb)
+        flat = lambda w: w["norm"]["mean"] + w["norm"]["std"] + [v for l in w["layers"] for row in l["W"] for v in row] + [v for l in w["layers"] for v in l["b"]]
+        for p, q in zip(flat(wa), flat(wb)):
+            self.assertAlmostEqual(p, q, delta=1e-5)
+
+    def test_the_held_out_slice_is_the_newest_round_15_percent_of_rows(self):
+        import nets
+
+        for n in (10, 50, 120, 400):
+            rows = synthetic_rows(n, seed=n)
+            shuffled = list(rows)
+            random.Random(1).shuffle(shuffled)
+            fit, val = nets.split(shuffled)
+            k = max(1, round(0.15 * n))
+            self.assertEqual([r["id"] for r in val], [r["id"] for r in rows[n - k:]])
+            self.assertEqual([r["id"] for r in fit], [r["id"] for r in rows[: n - k]])
+        rows_path = os.path.join(self.tmp.name, "rows.jsonl")
+        write_rows(rows_path, synthetic_rows(120, seed=2))
+        reply = nets.train_net({"net": "taste", "rows_path": rows_path, "out_path": os.path.join(self.tmp.name, "w.json"), "seed": 1})
+        self.assertEqual(reply["rows"], {"fit": 102, "val": 18})
+
+    def test_best_epoch_is_within_the_run_and_the_written_weights_are_the_best(self):
+        import nets
+
+        rows = synthetic_rows(200, seed=9)
+        for r in rows[::3]:
+            r["y"] = 1 - r["y"]  # noisy labels, so the held-out loss turns and training stops early
+        out_path, lines = self.train(rows, "best")
+        reply = lines[-1]
+        self.assertGreaterEqual(reply["best_epoch"], 1)
+        self.assertLessEqual(reply["best_epoch"], reply["epochs"])
+        if reply["epochs"] < 300:
+            self.assertEqual(reply["epochs"] - reply["best_epoch"], nets.PATIENCE)
+        _, val = nets.split([{**r, "x": [float(v) for v in r["x"]]} for r in rows])
+        ys = self.run_school({"id": 2, "cmd": "predict_net", "weights_path": out_path, "x": [r["x"] for r in val]})[-1]["y"]
+        bce = -sum(r["y"] * math.log(p) + (1 - r["y"]) * math.log(1 - p) for p, r in zip(ys, val)) / len(val)
+        self.assertAlmostEqual(bce, reply["val_loss"], delta=1e-5)
+
+    def test_a_checkpoint_on_the_last_epoch_is_saved_once(self):
+        import nets
+
+        rows_path = os.path.join(self.tmp.name, "rows.jsonl")
+        write_rows(rows_path, synthetic_rows(60, seed=8))
+        saves = []
+        calls = [0]
+
+        def stop_after_50():
+            calls[0] += 1
+            return calls[0] > 50
+
+        reply = nets.train_net({"net": "taste", "rows_path": rows_path, "out_path": os.path.join(self.tmp.name, "w.json"), "seed": 1}, stopping=stop_after_50, saved=saves.append)
+        if reply["epochs"] == 50:
+            self.assertEqual(saves, [50])
+        self.assertEqual(len(saves), len(set(saves)))
+
+    def test_training_that_goes_non_finite_raises_and_writes_no_weights(self):
+        rows = [{**r, "y": 1e30 * (1 + r["x"][0])} for r in synthetic_rows(60, seed=1)]
+        rows_path = os.path.join(self.tmp.name, "huge.jsonl")
+        out_path = os.path.join(self.tmp.name, "huge.json")
+        write_rows(rows_path, rows)
+        reply = self.run_school({"id": 1, "cmd": "train_net", "net": "appraiser-cost", "rows_path": rows_path, "out_path": out_path, "seed": 1})[-1]
+        self.assertFalse(reply["ok"])
+        self.assertIn("non-finite", reply["error"])
+        self.assertFalse(os.path.exists(out_path))
+        self.assertFalse(os.path.exists(out_path + ".part"))
 
     def test_predict_net_reproduces_net_parity_json(self):
         with open(PARITY) as f:

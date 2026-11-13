@@ -3,7 +3,8 @@
 Each net is one hidden layer of 16 units with exact GELU (`nn.gelu`, the erf form; never
 `nn.gelu_approx`), trained with AdamW (lr 1e-2, weight decay 1e-2) for at most 300 full-batch
 epochs, stopping early on the training rows' newest 15%, seeded. Features are standardised by
-the training rows' mean and population std (a constant column's std is 1).
+the fitted rows' (not the early-stop slice's) weighted mean and population std, so a row of weight
+0 changes nothing; a constant column's std is 1.
 
 Rows arrive as JSON lines, one per line, as the engine's `Row` from engine/school/datasets.ts:
 {"id", "at", "x": [numbers], "y": number, "weight": number, "source": "real" | "distilled"}.
@@ -70,19 +71,29 @@ def read_rows(path):
                 raise ValueError(f"row {n}: y and weight are finite numbers, weight not negative")
             if not isinstance(r.get("at"), str):
                 raise ValueError(f"row {n}: at is a string")
-            rows.append({"at": r["at"], "x": [float(v) for v in x], "y": float(y), "weight": float(w)})
+            rows.append({"id": r.get("id"), "at": r["at"], "x": [float(v) for v in x], "y": float(y), "weight": float(w)})
     return rows
 
 
-def standardiser(xs):
+def standardiser(xs, ws):
+    """Each column's weighted mean and population std; unweighted when every weight is 0."""
+    if sum(ws) <= 0:
+        ws = [1.0] * len(xs)
+    total = sum(ws)
     d = len(xs[0])
-    n = len(xs)
-    mean = [sum(x[j] for x in xs) / n for j in range(d)]
+    mean = [sum(w * x[j] for x, w in zip(xs, ws)) / total for j in range(d)]
     std = []
     for j in range(d):
-        s = math.sqrt(sum((x[j] - mean[j]) ** 2 for x in xs) / n)
+        s = math.sqrt(sum(w * (x[j] - mean[j]) ** 2 for x, w in zip(xs, ws)) / total)
         std.append(s if s > 1e-12 else 1.0)
     return mean, std
+
+
+def split(rows):
+    """(fit, val): the rows by `at`, the newest round(15%) (at least one) held back to stop on."""
+    rows = sorted(rows, key=lambda r: r["at"])
+    n_val = max(1, round(len(rows) * VAL_SHARE))
+    return rows[:-n_val], rows[-n_val:]
 
 
 def standardise(xs, mean, std):
@@ -150,11 +161,8 @@ def _train_net(request, stopping, progress, saved):
     if not linear and any(r["y"] < 0 or r["y"] > 1 for r in rows):
         raise ValueError("a sigmoid head's labels are between 0 and 1")
 
-    # the newest 15% (at least one row) is where training stops; the rest is what it fits
-    rows.sort(key=lambda r: r["at"])
-    n_val = max(1, round(len(rows) * VAL_SHARE))
-    fit, val = rows[:-n_val], rows[-n_val:]
-    mean, std = standardiser([r["x"] for r in rows])
+    fit, val = split(rows)
+    mean, std = standardiser([r["x"] for r in fit], [r["weight"] for r in fit])
     zf, zv = standardise([r["x"] for r in fit], mean, std), standardise([r["x"] for r in val], mean, std)
     yf, yv = mx.array([r["y"] for r in fit]), mx.array([r["y"] for r in val])
     wf, wv = mx.array([r["weight"] for r in fit]), mx.array([r["weight"] for r in val])
@@ -172,13 +180,25 @@ def _train_net(request, stopping, progress, saved):
     step = nn.value_and_grad(model, loss)
     best = (math.inf, 0, None)
 
+    last_saved = [None]
+
     def checkpoint(epoch):
+        if last_saved[0] == epoch:
+            return
         params = best[2] if best[2] is not None else model.parameters()
         keep = model.parameters()
         model.update(params)
         write_json(out_path, weights_json(net, version, features, mean, std, model))
         model.update(keep)
+        last_saved[0] = epoch
         saved(epoch)
+
+    def give_up(epoch):
+        # weights that went to inf or NaN are no net: nothing this run wrote is left behind
+        for path in (out_path, out_path + ".part"):
+            if last_saved[0] is not None and os.path.exists(path):
+                os.remove(path)
+        raise ValueError(f"training went non-finite at epoch {epoch}; no weights written")
 
     epoch = 0
     stopped = False
@@ -186,12 +206,14 @@ def _train_net(request, stopping, progress, saved):
         if stopping():
             stopped = True
             break
-        _, grads = step(model, zf, yf, wf)
+        t, grads = step(model, zf, yf, wf)
         optimizer.update(model, grads)
         epoch += 1
         v = loss(model, zv, yv, wv)
-        mx.eval(model.parameters(), optimizer.state, v)
+        mx.eval(model.parameters(), optimizer.state, t, v)
         v = v.item()
+        if not (math.isfinite(t.item()) and math.isfinite(v)):
+            give_up(epoch)
         if v < best[0]:
             # a copy of the arrays: MLX arrays are immutable, so the tree of references is enough
             best = (v, epoch, nn.utils.tree_map(lambda a: a, model.parameters()))

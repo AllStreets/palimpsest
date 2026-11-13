@@ -130,3 +130,20 @@ test('forward refuses a row of the wrong length', () => {
   const net = parseNet(JSON.stringify(valid()))!;
   assert.throws(() => forward(net, [1, 2]), /taste takes 8 features, not 2/);
 });
+
+test('parseNet refuses a hidden layer over 256 units and a file over 1 MB', () => {
+  const wide = (h: number) => {
+    const v = valid();
+    const d = FEATURES.taste.length;
+    v.layers = [
+      { W: Array.from({ length: h }, () => Array(d).fill(0.01)), b: Array(h).fill(0) },
+      { W: [Array(h).fill(0.01)], b: [0] },
+    ];
+    return JSON.stringify(v);
+  };
+  assert.ok(parseNet(wide(256)));
+  assert.equal(parseNet(wide(257)), null);
+  assert.equal(parseNet(JSON.stringify({ ...valid(), pad: 'x'.repeat(1_000_001) })), null);
+  // three bytes a character: under a million characters, over a million bytes
+  assert.equal(parseNet(JSON.stringify({ ...valid(), pad: '☃'.repeat(400_000) })), null);
+});

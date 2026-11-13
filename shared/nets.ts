@@ -30,6 +30,9 @@ export interface NetWeights {
 }
 
 const NETS = Object.keys(FEATURES) as NetName[];
+/** The widest hidden layer and the largest weights file read: ours are 16 units and a few kilobytes. */
+export const MAX_HIDDEN = 256;
+export const MAX_NET_BYTES = 1_000_000;
 
 /** The head each net has: the cost head is a number of credits (log1p), every other a probability. */
 export const outFor = (net: NetName): NetWeights['out'] => (net === 'appraiser-cost' ? 'linear' : 'sigmoid');
@@ -42,9 +45,13 @@ const isMat = (v: unknown, rows: number, cols: number): v is number[][] => Array
  * A weights file read and checked, or null: the net is one of ours, its
  * columns are exactly that net's current `FEATURES` in order (weights trained
  * on other columns are never run), every number is finite, every std is
- * positive, and the layers' shapes chain d to h to 1.
+ * positive, the layers' shapes chain d to h to 1 with h at most 256, and
+ * the text is at most 1 MB (checked before it is parsed).
  */
 export function parseNet(text: string): NetWeights | null {
+  // a character is 1 to 3 UTF-8 bytes: the length alone settles most texts, and only a long one is encoded
+  if (text.length > MAX_NET_BYTES) return null;
+  if (text.length * 3 > MAX_NET_BYTES && new TextEncoder().encode(text).length > MAX_NET_BYTES) return null;
   let v: unknown;
   try {
     v = JSON.parse(text);
@@ -66,6 +73,7 @@ export function parseNet(text: string): NetWeights | null {
   const [hidden, head] = o.layers as Array<{ W?: unknown; b?: unknown } | null>;
   if (!hidden || !head || !Array.isArray(hidden.b) || hidden.b.length < 1) return null;
   const h = hidden.b.length;
+  if (h > MAX_HIDDEN) return null;
   if (!isMat(hidden.W, h, d) || !isVec(hidden.b, h) || !isMat(head.W, 1, h) || !isVec(head.b, 1)) return null;
   return {
     net,
