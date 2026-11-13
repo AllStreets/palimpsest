@@ -1,16 +1,18 @@
 /**
  * The university campus (Phase 4 Tasks 34 and 35): the terrace, its quads,
- * the four halls, the library closing the axis and the clock tower between
- * the ranges, stood on the plot the engine took (engine/school/campus.ts)
- * and turned so its gate faces the centre of the city. Later tasks stand
- * the observatory on its anchor and bring the campus's life.
+ * the four halls, the library closing the axis, the clock tower between
+ * the ranges and the observatory at the back corner (Task 36), stood on the
+ * plot the engine took (engine/school/campus.ts) and turned so its gate
+ * faces the centre of the city. Later tasks bring the campus's life.
  *
  * What it costs: one masonry draw for the site (the terrace, the walks, the
- * trees, the library and the tower merged), one instanced masonry draw for
- * the four halls, one draw of panes (every building's), one of the clock's
- * hands, in the view; the two merged masonry draws again in the shadow map,
- * and again in the AO's normal pass while the eye is within AO_NEAR. Eight
- * calls at most on high, six from home on either tier.
+ * trees, the library, the tower and the observatory's drum and dome merged),
+ * one instanced masonry draw for the four halls, one draw of panes (every
+ * building's), one of the clock's hands, one of the dome's shutters and one
+ * of the telescope, in the view; the two merged masonry draws and the
+ * shutters again in the shadow map, and the two merged draws again in the
+ * AO's normal pass while the eye is within AO_NEAR. Eleven calls at most on
+ * high, nine from home on either tier.
  */
 import * as THREE from 'three';
 
@@ -20,6 +22,7 @@ import { makeClockTower } from './clock.js';
 import { stampBuilt } from './gothic.js';
 import { buildHall, instanceHalls, type Hall } from './halls.js';
 import { makeLibrary } from './library.js';
+import { makeObservatory, type ObservatoryState, type ObservatoryView } from './observatory.js';
 import { buildSite, FRONT_QUAD, HALL_Z, INNER_QUAD, mergeStamped, siteAnchors, TERRACE } from './site.js';
 
 export interface CampusOptions {
@@ -49,6 +52,12 @@ export interface Campus {
   set(origin: { x: number; z: number }): void;
   origin(): { x: number; z: number } | null;
   anchors(): CampusAnchors;
+  /** The school's state as the ledger tells it: the observatory opens while the nets train and lights its plate while the master is trusted. */
+  setSchool(s: ObservatoryState): void;
+  /** The observatory as it shows now (tests and captures). */
+  observatory(): ObservatoryView;
+  /** The campus's pickable parts, each mapped to the route it opens: the dome, to the school screen at the master. */
+  pickables: Map<THREE.Object3D, string>;
   /** Per frame: `clock` is the city's seconds, `eye` the camera, which decides whether the AO still sees the campus. */
   update(dt: number, clock: number, eye: THREE.Vector3): void;
   dispose(): void;
@@ -94,6 +103,9 @@ export function createCampus(opts: CampusOptions): Campus {
   makeLibrary(kit, { quality: opts.quality, seed: opts.seed });
   kit.base = new THREE.Matrix4().makeTranslation(local.clock.x, TERRACE, local.clock.z);
   const tower = makeClockTower(kit, now, { masonry, quality: opts.quality, seed: opts.seed, evening: opts.evening });
+  // The observatory at the back corner, its door and slit facing the gate along the back lawn (the campus's +x).
+  kit.base = new THREE.Matrix4().makeTranslation(local.dome.x, TERRACE, local.dome.z);
+  const observatory = makeObservatory(kit, { masonry, quality: opts.quality, seed: opts.seed, facing: Math.PI / 2 });
   const built = stampBuilt(kit.build(), opts.materials.window);
   const siteGeo = mergeStamped([buildSite(detail), built.masonry]);
   const site = new THREE.Mesh(siteGeo, masonry);
@@ -110,6 +122,9 @@ export function createCampus(opts: CampusOptions): Campus {
   setLayers(tower.hands, LAYER.view);
   group.add(tower.group);
   tower.update();
+  // The telescope stands inside the dome: the view alone draws it. The shutters are part of the dome's silhouette.
+  setLayers(observatory.telescope, LAYER.view);
+  group.add(observatory.group);
 
   let origin: { x: number; z: number } | null = null;
   const sphere = new THREE.Sphere();
@@ -125,14 +140,18 @@ export function createCampus(opts: CampusOptions): Campus {
       aoSeen = null;
     },
     origin: () => origin,
+    setSchool: (s) => observatory.setState(s),
+    observatory: () => observatory.view(),
+    pickables: observatory.pickables,
     anchors() {
       group.updateWorldMatrix(true, false);
       const w = (v: THREE.Vector3): THREE.Vector3 => v.clone().applyMatrix4(group.matrixWorld);
       return { library: w(local.library), clock: w(local.clock), dome: w(local.dome), gate: w(local.gate) };
     },
-    update(_dt, _clock, eye) {
+    update(dt, _clock, eye) {
       if (!origin) return;
       tower.update();
+      observatory.update(dt);
       // Past AO_NEAR the AO cannot see it (lod.ts): the view and the shadow map draw it alone.
       sphere.copy(siteGeo.boundingSphere!).applyMatrix4(group.matrixWorld);
       const near = sphere.distanceToPoint(eye) <= AO_NEAR;
@@ -142,11 +161,14 @@ export function createCampus(opts: CampusOptions): Campus {
         if (near) m.layers.set(0);
         else setLayers(m, LAYER.view, LAYER.shadow);
       }
+      // The shutters cast and are seen, never drawn for the AO: a thin band on a sphere the merged dome already fills.
+      setLayers(observatory.shutter, LAYER.view, LAYER.shadow);
     },
     dispose() {
       halls.dispose();
       hall.dispose();
       tower.dispose();
+      observatory.dispose();
       siteGeo.dispose();
     },
   };

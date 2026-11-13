@@ -398,6 +398,14 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await still(page, 'campus-clock', at(28, 10, 2), at(97, 27, -56));
       await page.evaluate('window.__palimpsest.campusClock(null)');
       await still(page, 'campus-above', at(40, 110, 30), at(62, 6, -6));
+      // The observatory shut (a thin master), then open with the nets training and the master trusted (Task 36).
+      await page.evaluate('window.__palimpsest.school({ training: false, masterTrusted: false, version: 0 })');
+      await still(page, 'observatory-shut', at(131, 11, 84), at(183, 14, 90));
+      await page.evaluate('window.__palimpsest.school({ training: true, masterTrusted: true, version: 1 })');
+      await page.waitForTimeout(7500);
+      await still(page, 'observatory-open', at(131, 11, 84), at(183, 14, 90));
+      await still(page, 'observatory-quad', at(70, 13, 93), at(183, 13, 90));
+      await page.evaluate('window.__palimpsest.school(null)');
       const extra = JSON.parse(process.env.CAMPUS_VIEWS ?? '[]') as [V3, V3][];
       for (const [i, [e, t]] of extra.entries()) await still(page, `campus-${i}`, at(e[0], e[1], e[2]), at(t[0], t[1], t[2]));
     },

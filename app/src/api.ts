@@ -119,6 +119,12 @@ const EVENT_TYPES = [
   'audit.ended',
   'brief.action',
   'milestone.reached',
+  // Phase 4: the school's training and its nets (the observatory opens while the nets train, Task 36).
+  'train.started',
+  'train.paused',
+  'train.ended',
+  'net.trained',
+  'net.promoted',
 ];
 
 /** What the settings page may change (the engine checks every value again). */

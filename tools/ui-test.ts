@@ -156,6 +156,10 @@ interface Debug {
   /** The university as it stands (campus/index.ts), or null before the engine took the plot. */
   campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
   campusClock(ms: number | null): void;
+  /** The school's state in place of the ledger's (the observatory opens while the nets train); null gives the ledger's back. */
+  school(s: { training: boolean; masterTrusted: boolean; version: number } | null): void;
+  /** The observatory as it shows now: how far open, whether the plate is lit, where the telescope points. */
+  observatory(): { open: number; training: boolean; lit: boolean; version: number; altitude: number; azimuth: number } | null;
   dropQuality(): void;
 }
 
@@ -966,8 +970,54 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   await setView(page, at(40, 110, 30), at(62, 6, -6));
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(SHOTS, 'campus-above.png') });
+  await observatoryChecks(page, at);
   await setView(page, home.eye, home.target);
   await page.waitForTimeout(800);
+}
+
+/**
+ * The observatory (Task 36), from the lawn before its door: shut and dark
+ * with a thin master; then, the nets training and the master trusted, its
+ * shutters parted over a lit slit, the plate lit and the telescope turning.
+ * Open, the campus still draws within its budget from home. The dome stands
+ * at the back corner, at(183, 6, 90) in the campus's frame, its door and
+ * slit facing the gate along the back lawn (the frame's -x).
+ */
+async function observatoryChecks(page: Page, at: (x: number, y: number, z: number) => number[]): Promise<void> {
+  // (The debug reader is serialised: no closure over the state.)
+  await debug(page, (d) => d.school({ training: false, masterTrusted: false, version: 0 }));
+  await page.waitForTimeout(400);
+  const shut = await debug(page, (d) => d.observatory());
+  check(shut !== null && shut.open === 0 && !shut.lit, `a thin master leaves the observatory shut and dark (${JSON.stringify(shut)})`);
+  await setView(page, at(131, 11, 84), at(183, 14, 90));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'observatory-shut.png') });
+  // The nets train and the master is trusted: the shutters take six seconds to part.
+  await debug(page, (d) => d.school({ training: true, masterTrusted: true, version: 1 }));
+  await page.waitForTimeout(7500);
+  const open = await debug(page, (d) => d.observatory());
+  check(open !== null && open.open === 1 && open.lit && open.training, `training, the slit is open and the plate lit (${JSON.stringify(open)})`);
+  await page.waitForTimeout(1200);
+  const later = await debug(page, (d) => d.observatory());
+  check(later !== null && open !== null && later.altitude !== open.altitude, 'the telescope turns while the nets train');
+  await page.screenshot({ path: join(SHOTS, 'observatory-open.png') });
+  // Close on the open slit: the leaves, the lit lining and the telescope's tube in it.
+  await setView(page, at(159, 21, 82), at(183, 19, 90));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'observatory-slit.png') });
+  // And down the back lawn at dusk from the front quad's corner, the halls' gables on one hand and the wall on the other.
+  await setView(page, at(70, 13, 93), at(183, 13, 90));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'observatory-quad.png') });
+  // Open, the campus keeps its budget from home (the same meshes draw shut or open).
+  const b = await homeBreakdown(page);
+  const own = Object.values(b.campus ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  check(own.calls <= CAMPUS_HOME_CALLS && own.triangles <= CAMPUS_HOME_TRIANGLES, `with the observatory open the campus draws within ${CAMPUS_HOME_CALLS} calls and ${CAMPUS_HOME_TRIANGLES / 1000}k triangles from home (${own.calls}, ${(own.triangles / 1000).toFixed(0)}k)`);
+  // The ledger's state back (shut on this branch): the leaves start to close and the telescope stands.
+  await debug(page, (d) => d.school(null));
+  await page.waitForTimeout(1500);
+  const closing = await debug(page, (d) => d.observatory());
+  check(closing !== null && closing.open < 1 && !closing.training, `the train over, the shutters close (${closing?.open.toFixed(2)})`);
 }
 
 // ---------------------------------------------------------------- silhouettes (Task 23)

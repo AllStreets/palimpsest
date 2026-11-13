@@ -10,6 +10,7 @@ import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
 import { dropText } from './city/governor';
 import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
+import { foldSchoolEvent, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
@@ -96,6 +97,10 @@ interface DebugHandle {
   campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
   /** Holds the campus clock tower at a moment (ms since the epoch), for the clock still; null frees it. */
   campusClock(ms: number | null): void;
+  /** Tells the city the school's state (the observatory opens while the nets train, its plate lit while the master is trusted), as the ledger would; null gives the ledger's back. */
+  school(s: ObservatoryState | null): void;
+  /** The observatory as it shows now, or null before the campus stands. */
+  observatory(): ObservatoryView | null;
   /** Stands these milestones in place of the engine's for a capture (the finial on a tower of its own), or the engine's again with null. */
   stageMilestones(ms: Milestone[] | null): void;
   precompile(): Promise<void>;
@@ -512,6 +517,11 @@ async function main(): Promise<void> {
       return { origin: c.origin, anchors: { library: a.library.toArray(), clock: a.clock.toArray(), dome: a.dome.toArray(), gate: a.gate.toArray() } };
     },
     campusClock: (ms) => city.setCampusClock(ms),
+    school(s) {
+      heldSchool = s ? { ...s } : null;
+      city.setSchool(heldSchool ?? school);
+    },
+    observatory: () => city.observatory(),
     stageMilestones: (ms) => (ms ? city.setMilestones(ms) : showMilestones()),
     follow: (id) => followAgent(id),
     following: () => city.following(),
@@ -847,6 +857,14 @@ async function main(): Promise<void> {
     debug.opened = JOBS_ROUTE;
     location.hash = JOBS_ROUTE;
   }
+  /**
+   * The observatory's dome opens the school screen at the master's card: the same navigation every other click in
+   * the city makes, the address changing (screens-track Task 28 draws the screen and routes `#/school/<section>`).
+   */
+  function openSchool(route: string): void {
+    debug.opened = route;
+    location.hash = route;
+  }
 
   city.onPick((hit) => {
     debug.lastPick = hit;
@@ -858,8 +876,25 @@ async function main(): Promise<void> {
       debug.opened = `#/agents/${encodeURIComponent(hit.agentId)}`;
       location.hash = debug.opened;
     } else if (hit.kind === 'exchange') openJobs();
+    else if (hit.kind === 'observatory') openSchool(hit.route);
     else openFirm(hit.firmId);
   });
+
+  // ---------------------------------------------------------------- the school (Phase 4 Task 36)
+  /**
+   * The school as the ledger's stream tells it: a nets train starting opens the observatory and its end shuts it;
+   * the master's promoted version, if trusted, lights the plate by its door. Read whole from api.school() on load
+   * and reconnect once Task 28 lands; until then the state starts shut and dark and follows the events.
+   */
+  let school: ObservatoryState = { training: false, masterTrusted: false, version: 0 };
+  /** A capture's or a test's state in place of the ledger's, or null. */
+  let heldSchool: ObservatoryState | null = null;
+  const foldSchool = (e: EngineEvent): void => {
+    const next = foldSchoolEvent(school, e);
+    if (next === school) return;
+    school = next;
+    if (!heldSchool) city.setSchool(school);
+  };
 
   // ---------------------------------------------------------------- the exchange's tote board
   /** The open and bidding jobs, in the order they were posted, as the board last read them. */
@@ -1157,6 +1192,7 @@ async function main(): Promise<void> {
       if (sold?.from && darkened.delete(sold.from)) place();
     }
     if (LIVE_ON.has(e.type)) readLive();
+    foldSchool(e);
     if (REFRESH_ON.has(e.type)) refresh();
     if (NAMES_ON.has(e.type)) readNames();
     for (const fn of listeners) fn(e);

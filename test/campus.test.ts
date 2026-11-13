@@ -15,6 +15,7 @@ import { drawnMeshes } from '../app/src/city/batch.js';
 import { createCampus, type CampusAnchors } from '../app/src/city/campus/index.js';
 import { afterSunset, handAngles, makeClockTower, TOWER } from '../app/src/city/campus/clock.js';
 import { buildHall, instanceHalls } from '../app/src/city/campus/halls.js';
+import { foldSchoolEvent, makeObservatory, OBSERVATORY, SCHOOL_MASTER_ROUTE, type ObservatoryState } from '../app/src/city/campus/observatory.js';
 import { Kit } from '../app/src/city/tower/kit.js';
 import { CAMPUS_HALF, campusPlaza, TERRACE } from '../app/src/city/campus/site.js';
 import { PITCH, standingLots } from '../app/src/city/lots.js';
@@ -132,12 +133,13 @@ test('four halls cost the calls of one', () => {
   one.dispose();
 });
 
-test('the whole campus draws in at most 4 calls a pass, at high and at medium', () => {
+test('the whole campus draws in at most 6 calls a pass, at high and at medium', () => {
   for (const quality of ['high', 'medium'] as const) {
     const campus = createCampus({ quality, materials: plainMaterials(), masonry: plain() });
     campus.set(districtOrigin(2));
-    // The site with the library and the tower's masonry, the halls, the panes, and the clock's hands.
-    assert.ok(drawnMeshes(campus.group) <= 4, `${quality}: the campus draws in ${drawnMeshes(campus.group)} meshes`);
+    // The site with the library's, the tower's and the observatory's masonry, the halls, the panes, the clock's
+    // hands, the dome's shutter and its telescope.
+    assert.ok(drawnMeshes(campus.group) <= 6, `${quality}: the campus draws in ${drawnMeshes(campus.group)} meshes`);
     assert.ok(drawnTriangles(campus.group) < 300_000, `${quality}: ${drawnTriangles(campus.group).toFixed(0)} triangles a pass`);
     campus.dispose();
   }
@@ -157,7 +159,7 @@ test('a disposed campus lets go of every geometry it made', () => {
   campus.dispose();
   assert.equal(disposed, geometries.size, 'each geometry disposed once');
   // The lamps are in the site's draw: lit heads that cost no call of their own.
-  assert.equal(drawnMeshes(campus.group), 4, 'and the group still names only its four meshes');
+  assert.equal(drawnMeshes(campus.group), 6, 'and the group still names only its six meshes');
 });
 
 /** A clock tower built in Node: a Kit of plain materials, a plain masonry whose userData carries the dial's emission as the app's does. */
@@ -237,4 +239,104 @@ test('the faces emit only after sunset', () => {
   night.dispose();
   t.dispose();
   t2.dispose();
+});
+
+// ---------------------------------------------------------------- the observatory (Task 36)
+
+/** An observatory built in Node: a Kit of plain materials, a plain masonry whose userData carries the uniforms the app's does. */
+function observatory(): ReturnType<typeof makeObservatory> & { masonry: THREE.Material } {
+  const masonry = plain();
+  masonry.userData.slitLit = { value: 0 };
+  masonry.userData.plateLit = { value: 0 };
+  const k = new Kit(plainMaterials());
+  const ob = makeObservatory(k, { masonry, quality: 'high' });
+  return Object.assign(ob, { masonry });
+}
+
+const shut: ObservatoryState = { training: false, masterTrusted: false, version: 0 };
+
+test('the slit opens on train.started for nets and closes on train.ended', () => {
+  // The ledger's events fold into the observatory's state: a nets train running opens it, its end closes it;
+  // a LoRA or an arena run is not the nets learning. The master's trained and promoted versions set the plate.
+  const started = (id: string, kind: string): { type: string; data: unknown } => ({ type: 'train.started', data: { train: { id, kind, status: 'running' } } });
+  const ended = (id: string, kind: string): { type: string; data: unknown } => ({ type: 'train.ended', data: { train: { id, kind, status: 'done' } } });
+  let s = foldSchoolEvent(shut, started('t1', 'nets'));
+  assert.equal(s.training, true, 'train.started for nets opens');
+  s = foldSchoolEvent(s, started('t2', 'lora'));
+  s = foldSchoolEvent(s, ended('t1', 'nets'));
+  assert.equal(s.training, false, 'train.ended for the nets closes, whatever else runs');
+  assert.equal(foldSchoolEvent(shut, started('t3', 'arena')).training, false, 'an arena race is not the nets learning');
+  s = foldSchoolEvent(shut, { type: 'net.trained', data: { netVersion: { net: 'master', version: 3, trusted: true } } });
+  assert.deepEqual([s.version, s.masterTrusted], [3, false], 'a trained master looks at new sky but is not yet the one current');
+  s = foldSchoolEvent(s, { type: 'net.promoted', data: { net: 'master', version: 3 } });
+  assert.deepEqual([s.version, s.masterTrusted], [3, true], 'promoted, the trusted version is the master');
+  s = foldSchoolEvent(s, { type: 'net.trained', data: { netVersion: { net: 'durability', version: 9, trusted: true } } });
+  assert.deepEqual([s.version, s.masterTrusted], [3, true], 'another net is not the master');
+  assert.equal(foldSchoolEvent(s, { type: 'job.posted', data: {} }), s, 'anything else leaves the state as it was');
+
+  // The dome itself: shut, then told the nets train, it opens over a few seconds; the telescope turns meanwhile.
+  const ob = observatory();
+  ob.setState({ ...shut, training: true });
+  assert.equal(ob.view().open, 0, 'shut when built');
+  ob.update(1);
+  const partly = ob.view().open;
+  assert.ok(partly > 0 && partly < 1, `opening after a second (${partly.toFixed(2)})`);
+  const a0 = ob.view().altitude;
+  for (let i = 0; i < 40; i++) ob.update(0.5);
+  assert.equal(ob.view().open, 1, 'open');
+  assert.ok((ob.masonry.userData.slitLit as { value: number }).value > 0.9, 'the warm light inside is up');
+  assert.notEqual(ob.view().altitude, a0, 'the telescope has turned');
+  // The leaves have parted: the shutter stands clear of the slit at the top of the dome.
+  const box = new THREE.Box3().setFromObject(ob.shutter);
+  assert.ok(box.max.y < OBSERVATORY.centre + OBSERVATORY.dome * 0.98, `the leaves have swung aside (y to ${box.max.y.toFixed(2)} of ${OBSERVATORY.apex})`);
+  // The train ends: the leaves close and the telescope stands still.
+  ob.setState({ ...shut });
+  for (let i = 0; i < 40; i++) ob.update(0.5);
+  assert.equal(ob.view().open, 0, 'shut again');
+  assert.equal((ob.masonry.userData.slitLit as { value: number }).value, 0, 'and dark inside');
+  const a1 = ob.view().altitude;
+  ob.update(2);
+  assert.equal(ob.view().altitude, a1, 'the telescope turns only while training');
+  const closed = new THREE.Box3().setFromObject(ob.shutter);
+  assert.ok(closed.max.y > OBSERVATORY.apex, 'the leaves meet over the apex again');
+  // Its own objects: the shutter and the telescope, two meshes; the masonry went into the Kit.
+  assert.equal(drawnMeshes(ob.group), 2, `the observatory's own draws (${drawnMeshes(ob.group)})`);
+  ob.dispose();
+});
+
+test('a thin master leaves it shut and dark', () => {
+  const ob = observatory();
+  ob.setState(shut);
+  for (let i = 0; i < 10; i++) ob.update(0.5);
+  const v = ob.view();
+  assert.deepEqual([v.open, v.training, v.lit], [0, false, false]);
+  assert.equal((ob.masonry.userData.plateLit as { value: number }).value, 0, 'the brass plate by the door is dark');
+  assert.equal((ob.masonry.userData.slitLit as { value: number }).value, 0, 'nothing shows through the slit');
+  // Trusted, the plate lights, with the dome still shut.
+  ob.setState({ ...shut, masterTrusted: true, version: 2 });
+  ob.update(0.5);
+  assert.equal(ob.view().lit, true);
+  assert.equal((ob.masonry.userData.plateLit as { value: number }).value, 1, 'the plate is lit while the master is trusted');
+  assert.equal(ob.view().open, 0, 'and the dome stays shut');
+  ob.dispose();
+});
+
+test('clicking the dome opens the school screen at the master', () => {
+  const campus = createCampus({ quality: 'medium', materials: plainMaterials(), masonry: plain() });
+  const origin = districtOrigin(2);
+  campus.set(origin);
+  campus.group.updateMatrixWorld(true);
+  const dome = campus.anchors().dome;
+  // A ray from above the campus down onto the dome's apex, tested against what the campus lets be picked.
+  const ray = new THREE.Raycaster(new THREE.Vector3(dome.x, dome.y + 60, dome.z), new THREE.Vector3(0, -1, 0));
+  ray.layers.enableAll();
+  const hits = ray.intersectObjects([...campus.pickables.keys()], false);
+  assert.ok(hits.length > 0, 'the dome is picked');
+  assert.equal(campus.pickables.get(hits[0].object), SCHOOL_MASTER_ROUTE, 'and names the school screen at the master');
+  assert.equal(SCHOOL_MASTER_ROUTE, '#/school/master');
+  // The state reaches the dome through the campus.
+  campus.setSchool({ training: true, masterTrusted: true, version: 1 });
+  for (let i = 0; i < 40; i++) campus.update(0.5, 0, new THREE.Vector3(origin.x, 50, origin.z));
+  assert.equal(campus.observatory().open, 1, 'the campus opens its observatory');
+  campus.dispose();
 });

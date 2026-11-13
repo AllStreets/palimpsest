@@ -8,6 +8,7 @@ import { plainBatch } from './plain-batch.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
 import { createCameraRig, type ScriptPose } from './camera';
 import { createCampus, type Campus, type CampusAnchors } from './campus/index.js';
+import type { ObservatoryState, ObservatoryView } from './campus/observatory.js';
 import { masonryMaterial } from './campus/masonry.js';
 import { campusPlaza, TERRACE } from './campus/site.js';
 import type { CollarPlaza } from './collar.js';
@@ -48,6 +49,8 @@ export type PickHit =
   | { kind: 'agent'; agentId: string; firmId: string; floorId: string | null }
   | { kind: 'firm'; firmId: string }
   | { kind: 'exchange'; route: string }
+  /** The observatory's dome (campus/observatory.ts): the school screen at the master. */
+  | { kind: 'observatory'; route: string }
   /** A persona's plate (people.ts). */
   | { kind: 'person'; agentId: string };
 
@@ -241,6 +244,10 @@ export interface City {
   campus(): { origin: { x: number; z: number }; anchors: CampusAnchors } | null;
   /** Holds the campus's clock at a moment (ms since the epoch) for a still or a test; null lets it follow his wall clock. */
   setCampusClock(ms: number | null): void;
+  /** The school as the ledger tells it (Task 36): the observatory opens while the nets train, its plate lit while the master is trusted. */
+  setSchool(s: ObservatoryState): void;
+  /** The observatory as it shows now, or null before the campus stands (tests and captures). */
+  observatory(): ObservatoryView | null;
 }
 
 /** The frame rate and triangles the city drew when it stepped down, and whether that was the home view. */
@@ -495,7 +502,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const towerPlains = plainBatch();
   districtGroup.add(towerPlains.group);
   /** Every pickable part in the city: towers' floors and roots, quarters' towers and plinths. */
-  const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : [])];
+  const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : []), ...(campus ? campus.pickables.keys() : [])];
   let scaffolds = new Map<string, Scaffold>();
   let framed = false;
 
@@ -535,6 +542,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let campusMasonry: THREE.Material | null = null;
   /** The campus clock held at a moment, or null for his wall clock. */
   let campusClockAt: number | null = null;
+  /** The school's state as last told, kept across the campus's rebuilds. */
+  let school: ObservatoryState = { training: false, masterTrusted: false, version: 0 };
   /** Builds (or rebuilds at the quality now) and stands the campus where the engine put it. */
   function placeCampus(): void {
     if (campus) {
@@ -546,6 +555,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     campusMasonry ??= masonryMaterial();
     campus = createCampus({ quality, materials: opts.campusMaterials, masonry: campusMasonry, now: () => (campusClockAt === null ? new Date() : new Date(campusClockAt)), evening: campusEvening });
     campus.set(campusOrigin);
+    campus.setSchool(school);
     campusRoot.add(campus.group);
     sun.shadow.needsUpdate = true;
   }
@@ -1275,6 +1285,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       }
       const route = exchange?.pickables.get(h.object);
       if (route) return send({ kind: 'exchange', route });
+      const dome = campus?.pickables.get(h.object);
+      if (dome) return send({ kind: 'observatory', route: dome });
     }
   };
   renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -1725,6 +1737,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     setCampusClock(ms) {
       campusClockAt = ms;
     },
+    setSchool(s) {
+      school = { ...s };
+      campus?.setSchool(school);
+    },
+    observatory: () => campus?.observatory() ?? null,
     setCampus(origin) {
       const same = (origin === null) === (campusOrigin === null) && (!origin || !campusOrigin || (origin.x === campusOrigin.x && origin.z === campusOrigin.z));
       if (same) return;
