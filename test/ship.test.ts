@@ -853,12 +853,13 @@ test('watchRevertsFor with force reads a repo inside the 30-minute throttle', as
   git(w, 'push', '-q', 'origin', 'HEAD:main');
 
   const quiet = await watchRevertsFor(getRepo(repo.fullName)!, t0 + 1);
-  assert.deepEqual(quiet, { ok: true, reverted: [], reason: null }, 'without force the throttle holds');
+  assert.deepEqual(quiet, { ok: true, reverted: [], reason: null, skipped: true }, 'without force the throttle holds, and says it read nothing');
   assert.equal(kinds('merge.reverted').length, 0);
 
   gitCalls = [];
   const forced = await watchRevertsFor(getRepo(repo.fullName)!, t0 + 2, { force: true });
   assert.equal(forced.ok, true);
+  assert.equal(forced.skipped, false, 'a forced read is a real read');
   assert.equal(forced.reason, null);
   assert.deepEqual(forced.reverted, [job.title]);
   assert.ok(gitCalls.some((a) => a.includes('fetch')), 'force syncs the mirror');
@@ -866,11 +867,40 @@ test('watchRevertsFor with force reads a repo inside the 30-minute throttle', as
   assert.ok(getRepo(FULL)?.halted);
 });
 
+test('a floor read after its follow-up window closed is not read for a follow-up again', async () => {
+  const { w } = await mergedPr();
+  const day = 24 * 60 * 60 * 1000;
+  const late = Date.now() + 15 * day;
+  const first = await watchRevertsFor(getRepo(FULL)!, late, { force: true });
+  assert.equal(first.ok, true);
+  assert.equal(first.skipped, false);
+  assert.equal(kinds('merge.followup').length, 0);
+  // A fix dated inside the window arrives only now: the window was read closed, so it is settled.
+  const fixSha = commitOn(w, 'widgets.md', 'Fix the widgets heading');
+  gitCalls = [];
+  const again = await watchRevertsFor(getRepo(FULL)!, late + day, { force: true });
+  assert.equal(again.ok, true);
+  assert.equal(kinds('merge.followup').length, 0, 'a settled floor is not reread');
+  assert.ok(!gitCalls.some((a) => a.includes('show') && a.includes(fixSha)), 'no file read for the settled floor');
+  assert.ok(gitCalls.some((a) => a.includes('fetch')), 'the revert read itself still happens');
+});
+
+test('a floor read inside its follow-up window is read again', async () => {
+  const { w } = await mergedPr();
+  const t0 = Date.now();
+  await watchRevertsFor(getRepo(FULL)!, t0, { force: true });
+  assert.equal(kinds('merge.followup').length, 0);
+  commitOn(w, 'widgets.md', 'Fix the widgets heading');
+  await watchRevertsFor(getRepo(FULL)!, t0 + 1, { force: true });
+  assert.equal(kinds('merge.followup').length, 1);
+});
+
 test('a failed mirror read answers ok false', async () => {
   const { repo } = await mergedPr();
   setRunner(async (cmd, args, opts) => (cmd === 'git' && args.includes('fetch') ? { stdout: '', stderr: 'fatal: unable to access the remote', code: 128 } : fakeGh(cmd, args, opts)));
   const out = await watchRevertsFor(getRepo(repo.fullName)!, Date.now(), { force: true });
   assert.equal(out.ok, false);
+  assert.equal(out.skipped, false);
   assert.deepEqual(out.reverted, []);
   assert.ok(out.reason && out.reason.length > 0, 'it says why');
   assert.equal(getRepo(FULL)?.halted, null);

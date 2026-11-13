@@ -633,11 +633,18 @@ async function recheck(ctx: RunContext, name: Extract<CheckName, 'test' | 'build
 
 const lastPoll = new Map<string, number>();
 const lastWatch = new Map<string, number>();
+/**
+ * Floors whose follow-up window was already read closed (a read at or after
+ * mergedAt + FOLLOWUP_DAYS found no fix): the answer cannot change, so they
+ * are not read for a follow-up again. Kept in memory; a restart rereads once.
+ */
+const settledFollowups = new Set<string>();
 
 /** Forgets the poll and watch pacing (tests). */
 export function resetShipping(): void {
   lastPoll.clear();
   lastWatch.clear();
+  settledFollowups.clear();
 }
 
 /** Moves a job left waiting (or halted while waiting, ruling 30) to `to`. */
@@ -886,6 +893,11 @@ export interface RevertRead {
   reverted: string[];
   /** Why the read failed; null when it did not. */
   reason: string | null;
+  /**
+   * True when the thirty-minute throttle held the read back and nothing was
+   * read: never a fresh clean read. A caller that needs one passes `force`.
+   */
+  skipped: boolean;
 }
 
 /**
@@ -899,19 +911,23 @@ export interface RevertRead {
  * floor (and the agent's) reverted, records `merge.reverted` and halts the
  * repo until he clears it. A merge not reverted is read for a follow-up
  * fix (ruling 9), recorded once per floor as `merge.followup`; that never
- * halts and never scars. A throttled read answers ok with nothing read.
+ * halts and never scars. A floor whose follow-up window was already read
+ * closed is not read for a follow-up again (it is still read for reverts).
+ * A throttled read answers ok with nothing read and `skipped: true`. A
+ * failed read (the mirror, or any floor's history or follow-up files)
+ * answers ok false, which fails the autonomy gate closed (`mayAct`).
  */
 export async function watchRevertsFor(repo: Repo, now: number = Date.now(), o: { force?: boolean } = {}): Promise<RevertRead> {
   const lit = earnedFloors(repoTowerId(repo.fullName)).filter((f) => f.earned?.state === 'lit' && !f.earned.reverted);
-  if (!lit.length) return { ok: true, reverted: [], reason: null };
-  if (!o.force && now - (lastWatch.get(repo.fullName) ?? -Infinity) < REVERT_WATCH_MS) return { ok: true, reverted: [], reason: null };
+  if (!lit.length) return { ok: true, reverted: [], reason: null, skipped: false };
+  if (!o.force && now - (lastWatch.get(repo.fullName) ?? -Infinity) < REVERT_WATCH_MS) return { ok: true, reverted: [], reason: null, skipped: true };
   lastWatch.set(repo.fullName, now);
   try {
     await syncMirror(repo.fullName);
   } catch (err) {
     const reason = `could not read ${repo.fullName} for reverts: ${errText(err)}`;
     console.warn(`palimpsest: ${reason}`);
-    return { ok: false, reverted: [], reason };
+    return { ok: false, reverted: [], reason, skipped: false };
   }
   const hits: string[] = [];
   const failures: string[] = [];
@@ -934,10 +950,12 @@ export async function watchRevertsFor(repo: Repo, now: number = Date.now(), o: {
       const hit = after.find((c) => byBody.test(c.body) || revertSubject(c.subject, f.title, r.prNumber));
       if (!hit) {
         const mergedAt = mergedAtOf(r);
-        if (!mergedAt || hasFollowup(e.jobId, f.id)) continue;
+        if (!mergedAt || settledFollowups.has(f.id) || hasFollowup(e.jobId, f.id)) continue;
         const sha = mergeSha;
+        // A failure in here (a file read) lands in `failures` below and answers ok false: the gate fails closed.
         const fix = await followupOf(after, (s) => mirrorFiles(repo.fullName, s), sha, await mergedFiles(r, sha), mergedAt, now);
         if (fix) record('merge.followup', { jobId: e.jobId, runId: e.runId, repo: repo.fullName, floorId: f.id, mergeSha, fixSha: fix.sha, files: fix.files, at: iso(now) });
+        else if (now >= Date.parse(mergedAt) + FOLLOWUP_DAYS * DAY_MS) settledFollowups.add(f.id);
         continue;
       }
       for (const [towerId, id] of [[repoTowerId(repo.fullName), f.id], [agentTowerId(e.agentId), agentFloorId(e.agentId, e.jobId)]]) {
@@ -958,7 +976,7 @@ export async function watchRevertsFor(repo: Repo, now: number = Date.now(), o: {
     }
   }
   if (hits.length) haltRepo(repo.fullName, `A city merge was reverted: ${hits.join('; ').slice(0, 300)}`, iso(now));
-  return { ok: failures.length === 0, reverted: hits, reason: failures.length ? failures.join('; ').slice(0, 500) : null };
+  return { ok: failures.length === 0, reverted: hits, reason: failures.length ? failures.join('; ').slice(0, 500) : null, skipped: false };
 }
 
 /** Every connected repo's revert read, each at most every thirty minutes (`watchRevertsFor`). */

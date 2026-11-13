@@ -402,6 +402,7 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
   // past the throttle, since a throttled read would answer ok with nothing read.
   const read = await watchRevertsFor(repoRow, now, { force: true });
   if (!read.ok) return no(`The revert read of ${repo} failed: ${sentence(read.reason ?? 'no reason was given')}`);
+  if (read.skipped) return no(`The revert read of ${repo} was held back, so nothing was read.`);
   if (read.reverted.length) {
     // The handler revoked the acting pair on the bus already; if not (nothing installed), this pair is revoked here first.
     const still = grantOf(kind, repo);
