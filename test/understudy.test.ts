@@ -88,7 +88,7 @@ test('pairs without a pick or with neither are skipped', () => {
     ],
   );
   assert.equal(pairs[0].at, '2026-11-10T10:00:00.000Z');
-  assert.deepEqual(understudyCounts(), { statements: 2, pairs: 4, answered: 2 });
+  assert.deepEqual(understudyCounts(), { statements: 2, pairs: 4, answered: 2, unreadable: null });
 });
 
 test('a WAL database opens through immutable when readOnly fails', () => {
@@ -105,7 +105,7 @@ test('a WAL database opens through immutable when readOnly fails', () => {
 
   switchOn();
   assert.deepEqual(understudyStatements(), ['Quiet surfaces, one accent.', 'Type sets the hierarchy, not boxes.']);
-  assert.deepEqual(understudyCounts(), { statements: 2, pairs: 4, answered: 2 });
+  assert.deepEqual(understudyCounts(), { statements: 2, pairs: 4, answered: 2, unreadable: null });
   assert.deepEqual(readdirSync(dir), ['understudy.db'], 'nothing was created beside it');
 });
 
@@ -172,13 +172,104 @@ test('under a test the default path throws', () => {
   assert.throws(() => understudyPath(), /refused/);
 });
 
-test('a missing database reads as empty', () => {
+test('a missing database reads as empty and says it could not be read', () => {
   process.env.PALIMPSEST_UNDERSTUDY_DB = join(tempDir, 'absent', 'understudy.db');
   switchOn();
   assert.deepEqual(understudyStatements(), []);
   assert.deepEqual(understudyPairs(), []);
-  assert.equal(understudyCounts(), null);
+  assert.deepEqual(understudyCounts(), { statements: 0, pairs: 0, answered: 0, unreadable: 'no Understudy database was found' });
   assert.equal(existsSync(join(tempDir, 'absent')), false, 'nothing was created');
+  assert.equal(thinCause('taste', Date.parse('2026-11-12T00:00:00.000Z')), 'No UI change has been inspected yet; Understudy could not be read: no Understudy database was found');
+});
+
+test('a database without the tables, or one that is not a database, is unreadable with the reason, not empty', () => {
+  const dir = join(tempDir, 'odd');
+  mkdirSync(dir);
+  const path = join(dir, 'understudy.db');
+  const db = new DatabaseSync(path);
+  db.exec('create table other (x)');
+  db.close();
+  process.env.PALIMPSEST_UNDERSTUDY_DB = path;
+  switchOn();
+  const c = understudyCounts();
+  assert.ok(c);
+  assert.match(c.unreadable ?? '', /no such table/);
+  assert.deepEqual([c.statements, c.pairs, c.answered], [0, 0, 0]);
+  assert.match(thinCause('taste', Date.parse('2026-11-12T00:00:00.000Z')), /^No UI change has been inspected yet; Understudy could not be read: .*no such table/);
+
+  const junk = join(dir, 'junk.db');
+  writeFileSync(junk, 'this is not a database, it is a sentence long enough to fill a header');
+  process.env.PALIMPSEST_UNDERSTUDY_DB = junk;
+  assert.match(understudyCounts()?.unreadable ?? '', /not a database|file is not a database/i);
+  assert.deepEqual(understudyStatements(), []);
+});
+
+test('statements are capped at 40, highest weight first, 300 characters each', () => {
+  const statements = Array.from({ length: 50 }, (_, i) => ({ id: `s${String(i).padStart(2, '0')}`, text: `${i} ${'x'.repeat(400)}`, weight: i }));
+  process.env.PALIMPSEST_UNDERSTUDY_DB = makeUnderstudy(join(tempDir, 'many'), { statements });
+  switchOn();
+  const got = understudyStatements();
+  assert.equal(got.length, 40);
+  assert.ok(got[0].startsWith('49 '), 'the heaviest first');
+  assert.ok(got[39].startsWith('10 '), 'the lightest ten are left out');
+  assert.ok(got.every((t) => t.length <= 300));
+});
+
+/** Every file in `dir` with its bytes, for before and after comparisons. */
+function snapshot(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of readdirSync(dir).sort()) out[f] = readFileSync(join(dir, f)).toString('base64');
+  return out;
+}
+
+test('reading a WAL database in a writable folder with no -shm leaves no file behind', () => {
+  const path = fixture({ wal: true });
+  const dir = join(tempDir, 'understudy');
+  const before = snapshot(dir);
+  assert.deepEqual(Object.keys(before), ['understudy.db']);
+  switchOn();
+  assert.equal(understudyStatements().length, 2);
+  assert.equal(understudyPairs().length, 2);
+  assert.equal(understudyCounts()?.answered, 2);
+  const db = understudyDb();
+  assert.ok(db);
+  assert.equal((db.prepare('select count(*) n from statements').get() as { n: number }).n, 3);
+  assert.deepEqual(readdirSync(dir), ['understudy.db'], 'nothing beside it while open');
+  db.close();
+  assert.deepEqual(snapshot(dir), before, 'the folder is as it was, byte for byte');
+  assert.ok(existsSync(path));
+});
+
+test('reading a WAL database while Understudy holds it open reads its live data and leaves its files as they were', () => {
+  const path = fixture({ wal: true });
+  const dir = join(tempDir, 'understudy');
+  // Understudy running: its own connection holds the -wal and -shm, with a statement not yet checkpointed.
+  const live = new DatabaseSync(path);
+  live.exec("pragma wal_autocheckpoint = 0; insert into statements (id, text, aspect, evidence) values ('s9', 'Fresh from the live app.', 'look', '[]')");
+  try {
+    const files = readdirSync(dir).sort();
+    assert.deepEqual(files, ['understudy.db', 'understudy.db-shm', 'understudy.db-wal']);
+    const dbBytes = readFileSync(path);
+    const walBytes = readFileSync(`${path}-wal`);
+    switchOn();
+    assert.ok(understudyStatements().includes('Fresh from the live app.'), 'the frames still in the WAL are read');
+    assert.equal(understudyCounts()?.statements, 3);
+    assert.deepEqual(readdirSync(dir).sort(), files, 'no file added or removed');
+    assert.deepEqual(readFileSync(path), dbBytes, 'the database file is byte for byte as it was');
+    assert.deepEqual(readFileSync(`${path}-wal`), walBytes, 'the WAL is byte for byte as it was');
+  } finally {
+    live.close();
+  }
+});
+
+test('reading a rollback-journal database leaves no file behind', () => {
+  fixture();
+  const dir = join(tempDir, 'understudy');
+  const before = snapshot(dir);
+  switchOn();
+  assert.equal(understudyStatements().length, 2);
+  assert.equal(understudyCounts()?.pairs, 4);
+  assert.deepEqual(snapshot(dir), before);
 });
 
 test('a pair is scored once by the local vision judge under a school lease, cached and fed to the taste net', async () => {

@@ -337,7 +337,8 @@ test('on an empty ledger with every market off thinCause for the appraiser says 
   assert.equal(thinCause('router', NOW), 'No bid has been run: the market is off on every repo');
   assert.equal(thinCause('durability', NOW), 'No city merge has had 30 days yet');
   assert.equal(thinCause('triage', NOW), '0 finished brief days so far');
-  assert.equal(thinCause('taste', NOW, { understudyCounts: () => ({ statements: 37, pairs: 4, answered: 0 }) }), 'No UI change has been inspected yet; Understudy has 37 statements and 0 answered pairs');
+  assert.equal(thinCause('taste', NOW, { understudyCounts: () => ({ statements: 37, pairs: 4, answered: 0, unreadable: null }) }), 'No UI change has been inspected yet; Understudy has 37 statements and 0 answered pairs');
+  assert.equal(thinCause('taste', NOW, { understudyCounts: () => ({ statements: 0, pairs: 0, answered: 0, unreadable: 'no such table: statements' }) }), 'No UI change has been inspected yet; Understudy could not be read: no such table: statements');
   assert.equal(thinCause('master', NOW), 'None of your decisions has had a prediction yet');
   putRepo({ market: true });
   assert.equal(thinCause('appraiser-pass', NOW), '0 of 40 awarded runs ended');

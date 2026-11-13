@@ -63,6 +63,8 @@ export interface UnderstudyCounts {
   statements: number;
   pairs: number;
   answered: number;
+  /** Why Understudy could not be read (no database, a failed open, a missing table); null when it was read. */
+  unreadable: string | null;
 }
 
 /** What other modules provide, injectable; by default the live Understudy reader (empty while its switch is off). */
@@ -583,7 +585,11 @@ export function thinCause(net: NetName, now: number, deps: DatasetDeps = {}): st
       return `${plural(finishedDays(now).length, 'finished brief day')} so far`;
     case 'taste': {
       const u = (deps.understudyCounts ?? understudyCounts)();
-      const understudy = u ? `; Understudy has ${plural(u.statements, 'statement')} and ${plural(u.answered, 'answered pair')}` : '';
+      const understudy = !u
+        ? ''
+        : u.unreadable
+          ? `; Understudy could not be read: ${u.unreadable}`
+          : `; Understudy has ${plural(u.statements, 'statement')} and ${plural(u.answered, 'answered pair')}`;
       const inspected = uiInspections().length;
       if (inspected === 0) return `No UI change has been inspected yet${understudy}`;
       return `${n} of ${NEEDS} labels: ${plural(inspected, 'UI change')} inspected${understudy}`;

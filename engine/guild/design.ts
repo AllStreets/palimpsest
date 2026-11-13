@@ -39,12 +39,15 @@ import type { JudgeInput, RunLogLine, Usage } from '../market/provider.js';
 import { providerFor } from '../market/providers.js';
 import { BASE_SCRATCH } from '../market/sandbox.js';
 import { createBaseDir, engineGit, removeOwned } from '../market/worktree.js';
+import { designBar, VISION_JUDGE } from './design-bar.js';
 import { understudyStatements } from '../school/understudy.js';
 import { getSettings } from '../settings.js';
 import { CHECK_MS } from './checks.js';
 import { isTooLarge, TOO_LARGE } from './review.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+export { designBar, VISION_JUDGE };
 
 /** A diff touching any of these is a UI change and gets the design check. */
 export const UI_FILES = /\.(css|scss|html|tsx|jsx|vue|svelte|swift|astro)$/;
@@ -53,8 +56,6 @@ export const VIEWPORT = { width: 1440, height: 900 } as const;
 export const DEVICE_SCALE = 2;
 /** The lowest after score that passes. */
 export const DESIGN_PASS = 6;
-/** The vision judge (Task 10's Ollama path); it sees the screenshots. */
-export const VISION_JUDGE: ModelRef = 'ollama:qwen2.5vl:7b*';
 /** A text judge for the diff-only case when no vision model can take the call. */
 export const TEXT_JUDGE: ModelRef = 'claude:sonnet';
 
@@ -72,11 +73,6 @@ const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 export interface Shot {
   route: string;
   path: string;
-}
-
-/** His design bar, in prose, for the judge. */
-export function designBar(): string {
-  return readFileSync(join(HERE, 'design-bar.md'), 'utf8');
 }
 
 /** True when `before` and `after` pass: after at least DESIGN_PASS and no more than one point below before. */

@@ -5,10 +5,13 @@
  *
  * - Nothing is read unless `school.understudy` is on: every function checks
  *   the switch before it even resolves the path.
- * - The database is opened read only (`node:sqlite` `readOnly: true`). When
- *   the first read fails on a WAL database (its `-shm` cannot be created
- *   beside it), it is opened again as `file:<path>?immutable=1`, still read
- *   only. Any write through either handle throws.
+ * - The database is opened read only and never leaves a file beside it: a
+ *   WAL database whose `-shm` is not already there (Understudy is not
+ *   running) opens as `file:<path>?immutable=1`; one whose `-shm` and `-wal`
+ *   are there opens with `readonly_shm=1`, falling back to immutable. Any
+ *   write through any handle throws.
+ * - Statements are capped at 40, heaviest first, 300 characters each.
+ * - Counts say when Understudy could not be read, and why.
  * - Under a test only `PALIMPSEST_UNDERSTUDY_DB` is opened; an unset value or
  *   one inside Understudy's real folder, however it is spelled, throws the
  *   way `home()` does (test safety rule 12).
@@ -25,7 +28,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
-import { designBar, VISION_JUDGE } from '../guild/design.js';
+import { designBar, VISION_JUDGE } from '../guild/design-bar.js';
 import { paths } from '../home.js';
 import { acquire, charge, JUDGE_ESTIMATE, unattended } from '../market/budget.js';
 import { providerFor } from '../market/providers.js';
@@ -103,7 +106,19 @@ function isWal(path: string): boolean {
   }
 }
 
-/** Opens `path` read only and proves it can be read; a WAL file that cannot be read that way opens immutable. */
+const uri = (path: string, param: string) => `${pathToFileURL(path).href}?${param}`;
+
+/**
+ * Opens `path` read only and proves it can be read, without ever creating a
+ * file beside it (a plain read-only open of a WAL database makes its `-shm`
+ * and `-wal` when they are not there):
+ * - a rollback-journal database opens `readOnly`;
+ * - a WAL database whose `-shm` and `-wal` both exist (Understudy is running
+ *   or left them) opens with `readonly_shm=1`, so its shared memory is read
+ *   and never written, and its WAL frames are seen;
+ * - any other WAL database, or one that `readonly_shm` cannot open, opens
+ *   `immutable=1`, which touches no other file.
+ */
 function openReadOnly(path: string): DatabaseSync {
   const probe = (db: DatabaseSync) => {
     try {
@@ -114,12 +129,15 @@ function openReadOnly(path: string): DatabaseSync {
       throw err;
     }
   };
-  try {
-    return probe(new DatabaseSync(path, { readOnly: true }));
-  } catch (err) {
-    if (!isWal(path)) throw err;
-    return probe(new DatabaseSync(`${pathToFileURL(path).href}?immutable=1`, { readOnly: true }));
+  if (!isWal(path)) return probe(new DatabaseSync(path, { readOnly: true }));
+  if (existsSync(`${path}-shm`) && existsSync(`${path}-wal`)) {
+    try {
+      return probe(new DatabaseSync(uri(path, 'readonly_shm=1'), { readOnly: true }));
+    } catch {
+      // Fall through to immutable, which never touches the -shm or -wal.
+    }
   }
+  return probe(new DatabaseSync(uri(path, 'immutable=1'), { readOnly: true }));
 }
 
 /**
@@ -133,54 +151,84 @@ export function understudyDb(): DatabaseSync | null {
   return openReadOnly(path);
 }
 
-/** Runs `read` on a fresh handle and closes it; `empty` while off, missing or unreadable. A refused path still throws. */
-function reading<T>(empty: T, read: (db: DatabaseSync) => T): T {
-  if (!switchedOn()) return empty;
+/** Why Understudy could not be read, in a short line. */
+const MISSING = 'no Understudy database was found';
+const why = (err: unknown) => (err instanceof Error ? err.message : String(err)).split('\n')[0].slice(0, 200);
+
+/**
+ * Runs `read` on a fresh handle and closes it. Null while the switch is off;
+ * `{ error }` when there is no database or it cannot be opened or read. A
+ * refused path still throws.
+ */
+function reading<T>(read: (db: DatabaseSync) => T): { value: T } | { error: string } | null {
+  if (!switchedOn()) return null;
   const path = understudyPath();
-  if (!existsSync(path)) return empty;
+  if (!existsSync(path)) return { error: MISSING };
   let db: DatabaseSync | null = null;
   try {
     db = openReadOnly(path);
-    return read(db);
-  } catch {
-    return empty;
+    return { value: read(db) };
+  } catch (err) {
+    return { error: why(err) };
   } finally {
     db?.close();
   }
 }
 
-function statementsFrom(db: DatabaseSync): string[] {
-  const rows = db.prepare('select text from statements where removed = 0 order by weight desc, id').all() as Array<{ text: unknown }>;
-  return rows.flatMap((r) => (typeof r.text === 'string' && r.text.trim() ? [r.text.trim()] : []));
+function valueOr<T>(r: { value: T } | { error: string } | null, empty: T): T {
+  return r && 'value' in r ? r.value : empty;
 }
 
-/** His taste statements, strongest first, without the ones he removed; empty while the switch is off. */
+/** At most this many statements are read, the heaviest first, each cut at STATEMENT_CHARS. */
+export const STATEMENT_MAX = 40;
+export const STATEMENT_CHARS = 300;
+
+function statementsFrom(db: DatabaseSync): string[] {
+  const rows = db
+    .prepare("select text from statements where removed = 0 and trim(text) != '' order by weight desc, id limit ?")
+    .all(STATEMENT_MAX) as Array<{ text: unknown }>;
+  return rows.flatMap((r) => (typeof r.text === 'string' && r.text.trim() ? [r.text.trim().slice(0, STATEMENT_CHARS)] : []));
+}
+
+/** His taste statements, at most 40, strongest first, each at most 300 characters, without the ones he removed; empty while the switch is off. */
 export function understudyStatements(): string[] {
-  return reading([], statementsFrom);
+  return valueOr(reading(statementsFrom), []);
 }
 
 /** The pairs he answered with `a` or `b`, oldest first, with their cached scores; empty while the switch is off. */
 export function understudyPairs(): UnderstudyPair[] {
-  return reading([] as UnderstudyPair[], (db) => {
-    const cache = readCache();
-    const rows = db.prepare("select id, at, pick from pairs where pick in ('a', 'b') order by at, id").all() as Array<{ id: string; at: string; pick: 'a' | 'b' }>;
-    return rows.map((r) => {
-      const s = cache[r.id];
-      return { id: r.id, at: r.at, pick: r.pick, scores: s ? { a: s.a, b: s.b } : null };
-    });
-  });
+  return valueOr(
+    reading((db) => {
+      const cache = readCache();
+      const rows = db.prepare("select id, at, pick from pairs where pick in ('a', 'b') order by at, id").all() as Array<{ id: string; at: string; pick: 'a' | 'b' }>;
+      return rows.map((r) => {
+        const s = cache[r.id];
+        return { id: r.id, at: r.at, pick: r.pick, scores: s ? { a: s.a, b: s.b } : null };
+      });
+    }),
+    [],
+  );
 }
 
-/** Live statements, all pairs, and answered pairs; null while the switch is off or there is no database. */
+/**
+ * Live statements, all pairs and answered pairs; null while the switch is
+ * off. When there is no database, or it cannot be opened or a table read,
+ * the counts are 0 and `unreadable` says why, so an empty Understudy and an
+ * unreadable one are never confused.
+ */
 export function understudyCounts(): UnderstudyCounts | null {
-  return reading<UnderstudyCounts | null>(null, (db) => {
+  const r = reading((db) => {
     const n = (sql: string) => Number((db.prepare(sql).get() as { n: number }).n);
     return {
       statements: n('select count(*) n from statements where removed = 0'),
       pairs: n('select count(*) n from pairs'),
       answered: n("select count(*) n from pairs where pick in ('a', 'b')"),
+      unreadable: null,
     };
   });
+  if (!r) return null;
+  if ('error' in r) return { statements: 0, pairs: 0, answered: 0, unreadable: r.error };
+  return r.value;
 }
 
 // ---------------------------------------------------------------- scoring a pair
@@ -269,12 +317,15 @@ export async function scorePair(pair: Pick<UnderstudyPair, 'id'>, o: { now?: num
   if (cached) return { a: cached.a, b: cached.b };
 
   const path = understudyPath();
-  const found = reading<{ row: PairRow; bible: string[] } | null>(null, (db) => {
-    const row = db
-      .prepare("select dimension, question, a_label, b_label, a_shot, b_shot from pairs where id = ? and pick in ('a', 'b')")
-      .get(pair.id) as PairRow | undefined;
-    return row ? { row, bible: statementsFrom(db) } : null;
-  });
+  const found = valueOr(
+    reading((db) => {
+      const row = db
+        .prepare("select dimension, question, a_label, b_label, a_shot, b_shot from pairs where id = ? and pick in ('a', 'b')")
+        .get(pair.id) as PairRow | undefined;
+      return row ? { row, bible: statementsFrom(db) } : null;
+    }),
+    null,
+  );
   if (!found) return null;
   const folder = dirname(path);
   const a = readShotIn(found.row.a_shot, folder);
