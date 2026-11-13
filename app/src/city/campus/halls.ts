@@ -15,15 +15,12 @@
  */
 import * as THREE from 'three';
 
-import { Kit, M, ME, PANE_FULL, PANE_SASH, paneData, paneGeometry, piercedWall, pointedArch, rng, wedge, type MatKey, type TowerMaterials } from '../tower/kit.js';
-import { mergeStamped, stamp, type Kind } from './site.js';
+import { Kit, M, ME, PANE_FULL, PANE_SASH, paneData, piercedWall, pointedArch, rng, wedge, type TowerMaterials } from '../tower/kit.js';
+import { MAT, stampBuilt, type Panes } from './gothic.js';
+import type { Kind } from './site.js';
 
 /** A hall's plan: its length along x and its width across z, centred on its own origin, at terrace level. */
 export const HALL = { length: 56, width: 16, eaves: 9.4, ridge: 18.3, wall: 0.5 } as const;
-
-/** The Kit material each kind is built in; the stamped geometry carries the kind, not the material. */
-const MAT: Record<Kind, MatKey> = { brick: 'brickWall', limestone: 'limestone', slate: 'roofTile', ashlar: 'granite', turf: 'sand', gravel: 'slab', lamp: 'lightLine' };
-const KIND_OF: Partial<Record<string, Kind>> = Object.fromEntries(Object.entries(MAT).map(([k, m]) => [`tower:${m}`, k as Kind]));
 
 export interface HallOptions {
   quality: 'high' | 'medium';
@@ -37,7 +34,7 @@ export interface HallOptions {
 export interface Hall {
   masonry: THREE.BufferGeometry;
   masonryMaterial: THREE.Material;
-  panes: { geometry: THREE.BufferGeometry; matrices: THREE.Matrix4[]; colours: THREE.Color[]; material: THREE.Material };
+  panes: Panes;
   dispose(): void;
 }
 
@@ -280,53 +277,25 @@ export function buildHall(o: HallOptions): Hall {
   }
 
   // ---------------------------------------------------------------- stamp and merge
-  const built = k.build();
-  const pieces: THREE.BufferGeometry[] = [];
-  let panes: Hall['panes'] | null = null;
-  for (const child of built.children) {
-    const mesh = child as THREE.Mesh;
-    if (!mesh.isMesh) continue;
-    const kind = KIND_OF[mesh.name];
-    if (kind) {
-      // The Kit tinted every vertex by its drift; the kind's tone multiplies in.
-      const g = mesh.geometry;
-      const drift = g.attributes.color as THREE.BufferAttribute;
-      const tints = Float32Array.from(drift.array as Float32Array);
-      stamp(g, kind);
-      const col = g.attributes.color as THREE.BufferAttribute;
-      for (let i = 0; i < col.count; i++) col.setXYZ(i, col.getX(i) * tints[i * 3], col.getY(i) * tints[i * 3 + 1], col.getZ(i) * tints[i * 3 + 2]);
-      pieces.push(g);
-    } else if (mesh.name === 'tower:pane') {
-      const im = mesh as THREE.InstancedMesh;
-      const matrices: THREE.Matrix4[] = [];
-      const colours: THREE.Color[] = [];
-      for (let i = 0; i < im.count; i++) {
-        const m = new THREE.Matrix4();
-        im.getMatrixAt(i, m);
-        matrices.push(m);
-        const c = new THREE.Color();
-        im.getColorAt(i, c);
-        colours.push(c);
-      }
-      panes = { geometry: im.geometry, matrices, colours, material: im.material as THREE.Material };
-      im.dispose();
-    }
-  }
-  if (!panes) panes = { geometry: paneGeometry(), matrices: [], colours: [], material: o.materials.window };
-  const masonry = mergeStamped(pieces);
+  const { masonry, panes } = stampBuilt(k.build(), o.materials.window);
   return {
     masonry,
     masonryMaterial: o.masonry,
     panes,
     dispose() {
       masonry.dispose();
-      panes!.geometry.dispose();
+      panes.geometry.dispose();
     },
   };
 }
 
-/** The halls stood at `placements` (each a hall's own origin on the terrace): one draw of masonry, one of panes, whatever their number. */
-export function instanceHalls(hall: Hall, placements: THREE.Matrix4[], tints?: THREE.Color[]): { group: THREE.Group; masonry: THREE.InstancedMesh; panes: THREE.InstancedMesh; dispose(): void } {
+/**
+ * The halls stood at `placements` (each a hall's own origin on the terrace):
+ * one draw of masonry, one of panes, whatever their number. `extra` panes
+ * (the library's and the tower's, already in the campus frame) ride in the
+ * same pane draw.
+ */
+export function instanceHalls(hall: Hall, placements: THREE.Matrix4[], tints?: THREE.Color[], extra?: Pick<Panes, 'matrices' | 'colours'>): { group: THREE.Group; masonry: THREE.InstancedMesh; panes: THREE.InstancedMesh; dispose(): void } {
   const group = new THREE.Group();
   group.name = 'halls';
   const masonry = new THREE.InstancedMesh(hall.masonry, hall.masonryMaterial, placements.length);
@@ -341,7 +310,9 @@ export function instanceHalls(hall: Hall, placements: THREE.Matrix4[], tints?: T
   masonry.computeBoundingBox();
   masonry.computeBoundingSphere();
   const n = hall.panes.matrices.length;
-  const panes = new THREE.InstancedMesh(hall.panes.geometry, hall.panes.material, Math.max(1, n * placements.length));
+  const extraN = extra?.matrices.length ?? 0;
+  const total = n * placements.length + extraN;
+  const panes = new THREE.InstancedMesh(hall.panes.geometry, hall.panes.material, Math.max(1, total));
   const m = new THREE.Matrix4();
   placements.forEach((p, i) => {
     hall.panes.matrices.forEach((local, j) => {
@@ -349,7 +320,11 @@ export function instanceHalls(hall: Hall, placements: THREE.Matrix4[], tints?: T
       panes.setColorAt(i * n + j, hall.panes.colours[j]);
     });
   });
-  if (n === 0) panes.count = 0;
+  extra?.matrices.forEach((mat, j) => {
+    panes.setMatrixAt(n * placements.length + j, mat);
+    panes.setColorAt(n * placements.length + j, extra.colours[j]);
+  });
+  if (total === 0) panes.count = 0;
   panes.instanceMatrix.needsUpdate = true;
   if (panes.instanceColor) panes.instanceColor.needsUpdate = true;
   panes.castShadow = false;

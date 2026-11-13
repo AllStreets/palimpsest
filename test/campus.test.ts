@@ -13,7 +13,9 @@ import * as THREE from 'three';
 
 import { drawnMeshes } from '../app/src/city/batch.js';
 import { createCampus, type CampusAnchors } from '../app/src/city/campus/index.js';
+import { afterSunset, handAngles, makeClockTower, TOWER } from '../app/src/city/campus/clock.js';
 import { buildHall, instanceHalls } from '../app/src/city/campus/halls.js';
+import { Kit } from '../app/src/city/tower/kit.js';
 import { CAMPUS_HALF, campusPlaza, TERRACE } from '../app/src/city/campus/site.js';
 import { PITCH, standingLots } from '../app/src/city/lots.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
@@ -130,11 +132,12 @@ test('four halls cost the calls of one', () => {
   one.dispose();
 });
 
-test('the whole campus draws in at most 3 calls a pass, at high and at medium', () => {
+test('the whole campus draws in at most 4 calls a pass, at high and at medium', () => {
   for (const quality of ['high', 'medium'] as const) {
     const campus = createCampus({ quality, materials: plainMaterials(), masonry: plain() });
     campus.set(districtOrigin(2));
-    assert.ok(drawnMeshes(campus.group) <= 3, `${quality}: the campus draws in ${drawnMeshes(campus.group)} meshes`);
+    // The site with the library and the tower's masonry, the halls, the panes, and the clock's hands.
+    assert.ok(drawnMeshes(campus.group) <= 4, `${quality}: the campus draws in ${drawnMeshes(campus.group)} meshes`);
     assert.ok(drawnTriangles(campus.group) < 300_000, `${quality}: ${drawnTriangles(campus.group).toFixed(0)} triangles a pass`);
     campus.dispose();
   }
@@ -154,5 +157,84 @@ test('a disposed campus lets go of every geometry it made', () => {
   campus.dispose();
   assert.equal(disposed, geometries.size, 'each geometry disposed once');
   // The lamps are in the site's draw: lit heads that cost no call of their own.
-  assert.equal(drawnMeshes(campus.group), 3, 'and the group still names only its three meshes');
+  assert.equal(drawnMeshes(campus.group), 4, 'and the group still names only its four meshes');
+});
+
+/** A clock tower built in Node: a Kit of plain materials, a plain masonry whose userData carries the dial's emission as the app's does. */
+function tower(at: Date): ReturnType<typeof makeClockTower> & { masonry: THREE.Material } {
+  const masonry = plain();
+  masonry.userData.dialLit = { value: 0 };
+  const k = new Kit(plainMaterials());
+  const t = makeClockTower(k, () => at, { masonry, quality: 'high' });
+  return Object.assign(t, { masonry });
+}
+
+test('the hands point at 10:10 for 10:10', () => {
+  const at = new Date(2026, 10, 12, 10, 10);
+  // Clockwise from twelve: the minute hand at two, the hour hand a sixth of the way from ten to eleven.
+  const a = handAngles(at);
+  assert.ok(Math.abs(a.minute - Math.PI / 3) < 1e-9, `the minute hand at two (${a.minute})`);
+  assert.ok(Math.abs(a.hour - ((10 + 10 / 60) / 12) * Math.PI * 2) < 1e-9, `the hour hand past ten (${a.hour})`);
+  const t = tower(at);
+  t.update();
+  // Four faces, two hands each, in one instanced draw; each hand's up, taken back into its dial's frame, points its way.
+  assert.equal(t.hands.count, 8, 'eight hands');
+  assert.equal(t.faces.length, 4, 'four dials');
+  const m = new THREE.Matrix4();
+  const up = new THREE.Vector3();
+  const origin = new THREE.Vector3();
+  for (let f = 0; f < 4; f++) {
+    const inv = t.faces[f].clone().invert();
+    for (const [i, want] of [[0, a.hour], [1, a.minute]] as Array<[number, number]>) {
+      t.hands.getMatrixAt(f * 2 + i, m);
+      // The hand's own +y, as a direction in the dial's frame (x right, y up, z out of the face).
+      up.set(0, 1, 0).applyMatrix4(m).sub(origin.set(0, 0, 0).applyMatrix4(m)).applyMatrix4(new THREE.Matrix4().extractRotation(inv));
+      const got = Math.atan2(up.x, up.y);
+      const diff = Math.abs(Math.atan2(Math.sin(got - want), Math.cos(got - want)));
+      assert.ok(diff < 1e-6, `face ${f} ${i === 0 ? 'hour' : 'minute'} hand points at ${((got / Math.PI) * 180).toFixed(1)} deg, wanted ${((want / Math.PI) * 180).toFixed(1)}`);
+    }
+  }
+  // The hands turn with the time: an hour later the hour hand has moved a twelfth of the way round.
+  const later = tower(new Date(2026, 10, 12, 11, 10));
+  later.update();
+  later.hands.getMatrixAt(0, m);
+  const h2 = new THREE.Matrix4();
+  t.hands.getMatrixAt(0, h2);
+  assert.ok(!m.equals(h2), 'the hour hand has moved');
+  t.dispose();
+  later.dispose();
+});
+
+test('the faces emit only after sunset', () => {
+  // Sunset by the season, in his local time: a December evening is dark by half past five, a June one not at five.
+  assert.equal(afterSunset(new Date(2026, 11, 21, 17, 30)), true, 'December, half past five');
+  assert.equal(afterSunset(new Date(2026, 11, 21, 10, 10)), false, 'December, ten past ten');
+  assert.equal(afterSunset(new Date(2026, 5, 21, 17, 0)), false, 'June, five');
+  assert.equal(afterSunset(new Date(2026, 5, 21, 22, 30)), true, 'June, half past ten');
+  assert.equal(afterSunset(new Date(2026, 5, 21, 3, 0)), true, 'June, three in the morning');
+  // The tower's dials: dark at ten past ten in the morning, lit at night, the emission a real one under the bloom threshold.
+  const day = tower(new Date(2026, 10, 12, 10, 10));
+  day.update();
+  assert.equal(day.lit(), false, 'dark by day');
+  assert.equal((day.masonry.userData.dialLit as { value: number }).value, 0, 'the dial kind emits nothing by day');
+  const night = tower(new Date(2026, 10, 12, 22, 10));
+  night.update();
+  assert.equal(night.lit(), true, 'lit at night');
+  assert.equal((night.masonry.userData.dialLit as { value: number }).value, 1, 'the dial kind emits at night');
+  // A tower whose clock crosses sunset switches on without being rebuilt.
+  let at = new Date(2026, 10, 12, 16, 0);
+  const t = tower(at);
+  t.update();
+  assert.equal(t.lit(), false);
+  at = new Date(2026, 10, 12, 19, 0);
+  const t2 = makeClockTower(new Kit(plainMaterials()), () => at, { masonry: t.masonry, quality: 'medium' });
+  t2.update();
+  assert.equal(t2.lit(), true);
+  // Four stages, 48 m: the tallest piece of masonry on the campus.
+  assert.equal(TOWER.height, 48);
+  assert.equal(TOWER.stages, 4);
+  day.dispose();
+  night.dispose();
+  t.dispose();
+  t2.dispose();
 });

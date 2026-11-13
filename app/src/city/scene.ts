@@ -238,6 +238,8 @@ export interface City {
   setCampus(origin: { x: number; z: number } | null): void;
   /** The campus as it stands: its origin and the anchors the later buildings take, or null before the engine took the plot. */
   campus(): { origin: { x: number; z: number }; anchors: CampusAnchors } | null;
+  /** Holds the campus's clock at a moment (ms since the epoch) for a still or a test; null lets it follow his wall clock. */
+  setCampusClock(ms: number | null): void;
 }
 
 /** The frame rate and triangles the city drew when it stepped down, and whether that was the home view. */
@@ -517,6 +519,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let campusOrigin: { x: number; z: number } | null = null;
   /** The campus's one opaque material, made once and kept across rebuilds. */
   let campusMasonry: THREE.Material | null = null;
+  /** The campus clock held at a moment, or null for his wall clock. */
+  let campusClockAt: number | null = null;
   /** Builds (or rebuilds at the quality now) and stands the campus where the engine put it. */
   function placeCampus(): void {
     if (campus) {
@@ -526,7 +530,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
     if (!campusOrigin || !opts.campusMaterials) return;
     campusMasonry ??= masonryMaterial();
-    campus = createCampus({ quality, materials: opts.campusMaterials, masonry: campusMasonry });
+    campus = createCampus({ quality, materials: opts.campusMaterials, masonry: campusMasonry, now: () => (campusClockAt === null ? new Date() : new Date(campusClockAt)) });
     campus.set(campusOrigin);
     campusRoot.add(campus.group);
     sun.shadow.needsUpdate = true;
@@ -1665,6 +1669,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       placeMilestones();
     },
     milestoneShows: () => milestones?.shows() ?? new Map(),
+    setCampusClock(ms) {
+      campusClockAt = ms;
+    },
     setCampus(origin) {
       const same = (origin === null) === (campusOrigin === null) && (!origin || !campusOrigin || (origin.x === campusOrigin.x && origin.z === campusOrigin.z));
       if (same) return;

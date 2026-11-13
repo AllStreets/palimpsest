@@ -42,15 +42,16 @@ export const QUAD_HALF = 44;
 /** A hall's centre line from the axis: its front stands at QUAD_HALF + a path. */
 export const HALL_Z = 56.5;
 
-export type Kind = 'brick' | 'limestone' | 'slate' | 'ashlar' | 'turf' | 'gravel' | 'lamp';
-export const KIND: Record<Kind, number> = { brick: 0, limestone: 1, slate: 2, ashlar: 3, turf: 4, gravel: 5, lamp: 6 };
-/** Metres per tile of each kind's scan (the Kit's TILE for brick and limestone). */
-const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ashlar: 2.4, turf: 9, gravel: 1.6, lamp: 1 };
+export type Kind = 'brick' | 'limestone' | 'slate' | 'ashlar' | 'turf' | 'gravel' | 'lamp' | 'dial';
+export const KIND: Record<Kind, number> = { brick: 0, limestone: 1, slate: 2, ashlar: 3, turf: 4, gravel: 5, lamp: 6, dial: 7 };
+/** Metres per tile of each kind's scan (the Kit's TILE for brick and limestone); 0 keeps the piece's own UVs (a clock dial's painted face). */
+const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ashlar: 2.4, turf: 9, gravel: 1.6, lamp: 1, dial: 0 };
 /**
  * Each kind's tone, a vertex colour over its scan: red-brown brick, a pale
  * warm limestone, a cool blue-grey slate, the terrace's pale buff ashlar, a
- * mown turf, a pale gravel, and the lamps' warm light (the shader emits the
- * lamp kind's colour).
+ * mown turf, a pale gravel, the lamps' warm light (the shader emits the
+ * lamp kind's colour), and a clock dial's face (its paint is the shader's
+ * dial texture, lit from behind after sunset).
  */
 export const TONE: Record<Kind, THREE.Color> = {
   brick: new THREE.Color(0.74, 0.5, 0.4),
@@ -60,6 +61,7 @@ export const TONE: Record<Kind, THREE.Color> = {
   turf: new THREE.Color(0.3, 0.42, 0.16),
   gravel: new THREE.Color(0.93, 0.9, 0.82),
   lamp: new THREE.Color(1.0, 0.74, 0.44),
+  dial: new THREE.Color(1, 1, 1),
 };
 
 /** A small seeded generator for the trees' and lamps' variety (lots.ts rng, kept local so this module stays pure). */
@@ -121,7 +123,7 @@ export function stamp(g: THREE.BufferGeometry, kind: Kind, drift = 1, shade?: (p
   if (!g.attributes.normal) g.computeVertexNormals();
   const n = g.attributes.position.count;
   if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2));
-  projectUv(g, TILE[kind]);
+  if (TILE[kind] > 0) projectUv(g, TILE[kind]);
   const tone = TONE[kind];
   const col = new Float32Array(n * 3);
   const kinds = new Float32Array(n).fill(KIND[kind]);
@@ -195,7 +197,7 @@ export interface SiteAnchors {
 export function siteAnchors(): SiteAnchors {
   return {
     gate: new THREE.Vector3(WALL_FOOT - WELL_DEPTH - 2, TERRACE, 0),
-    library: new THREE.Vector3(-88, TERRACE, 0),
+    library: new THREE.Vector3(-92, TERRACE, 0),
     clock: new THREE.Vector3((FRONT_QUAD.x0 + INNER_QUAD.x1) / 2, TERRACE, HALL_Z),
     dome: new THREE.Vector3(-90, TERRACE, -90),
   };
@@ -477,8 +479,8 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     add('lamp', new THREE.BoxGeometry(0.42, 0.5, 0.42).translate(x, T + h + 0.25, z));
     add('slate', new THREE.BoxGeometry(0.54, 0.08, 0.54).translate(x, T + h + 0.54, z), 0.8);
   }
-  // The pad before the library's steps and the forecourt inside the gate.
-  walk(-100, -80, -14, 14);
+  // The forecourt before the library's steps (widening the inner quad's walk) and the one inside the gate.
+  walk(-82.5, -76, -22, 22);
   walk(FRONT_QUAD.x1 + 3.5, xTop + 0.5, -9, 9);
 
   return mergeStamped(pieces);

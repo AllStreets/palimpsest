@@ -155,6 +155,7 @@ interface Debug {
   lastPick: { kind: string; agentId?: string; firmId?: string; repo?: string } | null;
   /** The university as it stands (campus/index.ts), or null before the engine took the plot. */
   campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
+  campusClock(ms: number | null): void;
   dropQuality(): void;
 }
 
@@ -919,7 +920,7 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   const sy = ((1 - px[1]) / 2) * VIEWPORT.height;
   console.log(`info  from home the campus lands at (${sx.toFixed(0)}, ${sy.toFixed(0)}) on the screen`);
   await page.screenshot({ path: join(SHOTS, 'campus-home-crop.png'), clip: { x: Math.max(0, Math.min(VIEWPORT.width - 480, sx - 240)), y: Math.max(0, Math.min(VIEWPORT.height - 320, sy - 160)), width: 480, height: 320 } });
-  // The campus's own frame: x from the gate toward the library (its axis), z across it.
+  // The campus's own frame: x from the gate toward the library (its axis), z across it (the campus's own -z).
   const g = c.anchors.gate;
   const l = c.anchors.library;
   const ax = [l[0] - g[0], l[2] - g[2]];
@@ -939,6 +940,17 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   await setView(page, at(-44, 5, -34), at(-10, 7, -2));
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(SHOTS, 'campus-terrace.png') });
+  // The library across the inner quad: the frontispiece, its turrets and the lantern over the ridge.
+  await setView(page, at(98, 17, 10), at(181, 14, -1));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-library.png') });
+  // The clock tower from the front quad's lawn, its dials lit: the campus clock held at ten past ten at night.
+  await debug(page, (d) => d.campusClock(new Date(2026, 10, 12, 22, 10).getTime()));
+  await page.waitForTimeout(400);
+  await setView(page, at(28, 10, 2), at(97, 27, -56));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-clock.png') });
+  await debug(page, (d) => d.campusClock(null));
   await setView(page, home.eye, home.target);
   await page.waitForTimeout(800);
 }

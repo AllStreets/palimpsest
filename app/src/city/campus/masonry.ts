@@ -3,10 +3,14 @@
  * MeshStandardMaterial whose fragment picks a scan by `vKind`. The brick
  * scan is its own map; the limestone, ashlar and gravel scans come in as
  * uniforms (gravel is the sand scan at a fine tile); slate is coursed in the
- * shader, turf is mottled and striped, and the lamp kind emits its tone. App only: it loads textures.
+ * shader, turf is mottled and striped, the lamp kind emits its tone, and the
+ * dial kind is the exchange's painted clock dial, lit from behind after
+ * sunset (the `uDialLit` uniform, which the material's userData exposes to
+ * the clock tower). App only: it loads textures.
  */
 import * as THREE from 'three';
 
+import { clockDial } from '../exchange.js';
 import { texture } from '../materials.js';
 
 export function masonryMaterial(): THREE.MeshStandardMaterial {
@@ -27,7 +31,10 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
     uAshMap: { value: texture('ashlar_diff.jpg', true) },
     uAshNor: { value: texture('ashlar_nor.jpg') },
     uAshArm: { value: texture('ashlar_arm.jpg') },
+    uDial: { value: clockDial() ?? texture('sand_diff.jpg', true) },
+    uDialLit: { value: 0 },
   };
+  m.userData.dialLit = u.uDialLit;
   m.customProgramCacheKey = () => 'palimpsest-campus-masonry';
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, u);
@@ -41,6 +48,7 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
         varying float vKind;
         uniform sampler2D uSandMap; uniform sampler2D uSandNor; uniform sampler2D uSandArm;
         uniform sampler2D uAshMap; uniform sampler2D uAshNor; uniform sampler2D uAshArm;
+        uniform sampler2D uDial; uniform float uDialLit;
         int campusKind() { return int(vKind + 0.5); }`,
       )
       .replace(
@@ -83,6 +91,9 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
             s = vec4(vec3((0.82 + 0.3 * c) * (0.7 + 0.3 * edge) * tone), 1.0);
           } else if (ck == 6) {
             s = vec4(1.0);
+          } else if (ck == 7) {
+            // A clock dial: the painted face (cream, a chapter ring, roman numerals), the piece's own UVs.
+            s = texture2D(uDial, vMapUv);
           } else {
             // Turf: a mown lawn, mottled by the sand scan at a coarse tile and a finer one, with the mower's stripes.
             float a = texture2D(uSandMap, vMapUv * 0.13).g;
@@ -106,6 +117,7 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           else if (ck == 5) r = 0.9 + 0.1 * texture2D(uSandArm, vRoughnessMapUv).g;
           else if (ck == 2) r = 0.52 + 0.22 * texture2D(roughnessMap, vRoughnessMapUv).g;
           else if (ck == 6) r = 0.5;
+          else if (ck == 7) r = 0.42;
           else r = 0.96;
           roughnessFactor *= r;
         }`,
@@ -122,7 +134,7 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           else if (ck == 3) { mapN = texture2D(uAshNor, vNormalMapUv).xyz; k = 1.1; }
           else if (ck == 5) { mapN = texture2D(uSandNor, vNormalMapUv).xyz; k = 0.25; }
           else if (ck == 2) { mapN = texture2D(normalMap, vNormalMapUv).xyz; k = 0.35; }
-          else if (ck == 6) { mapN = vec3(0.5, 0.5, 1.0); }
+          else if (ck == 6 || ck == 7) { mapN = vec3(0.5, 0.5, 1.0); }
           else { mapN = texture2D(uSandNor, vNormalMapUv * 2.9).xyz; k = 0.3; }
           mapN = mapN * 2.0 - 1.0;
           mapN.xy *= normalScale * k;
@@ -131,7 +143,13 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
         #endif`,
       )
       // The lamp heads emit their own tone: warm, at a level the street lamps' lenses share, so bloom catches them at dusk.
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\nif (campusKind() == 6) totalEmissiveRadiance += vColor.rgb * 3.2;');
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        if (campusKind() == 6) totalEmissiveRadiance += vColor.rgb * 3.2;
+        // The dials after sunset: opal glass lit from behind, warm, at the exchange's level, under the bloom threshold.
+        if (campusKind() == 7) totalEmissiveRadiance += texture2D(uDial, vMapUv).rgb * vec3(1.0, 0.86, 0.62) * (0.62 * uDialLit);`,
+      );
   };
   return m;
 }

@@ -94,6 +94,8 @@ interface DebugHandle {
   milestones(): Array<MilestoneShow & { id: string }>;
   /** The university as it stands (campus/index.ts): its origin and the later buildings' anchors, or null before the engine took the plot. */
   campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
+  /** Holds the campus clock tower at a moment (ms since the epoch), for the clock still; null frees it. */
+  campusClock(ms: number | null): void;
   /** Stands these milestones in place of the engine's for a capture (the finial on a tower of its own), or the engine's again with null. */
   stageMilestones(ms: Milestone[] | null): void;
   precompile(): Promise<void>;
@@ -509,6 +511,7 @@ async function main(): Promise<void> {
       const a = c.anchors;
       return { origin: c.origin, anchors: { library: a.library.toArray(), clock: a.clock.toArray(), dome: a.dome.toArray(), gate: a.gate.toArray() } };
     },
+    campusClock: (ms) => city.setCampusClock(ms),
     stageMilestones: (ms) => (ms ? city.setMilestones(ms) : showMilestones()),
     follow: (id) => followAgent(id),
     following: () => city.following(),

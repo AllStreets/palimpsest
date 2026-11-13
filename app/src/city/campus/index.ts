@@ -1,21 +1,26 @@
 /**
- * The university campus (Phase 4 Task 34): the terrace, its quads and the
- * four halls, stood on the plot the engine took (engine/school/campus.ts)
- * and turned so its gate faces the centre of the city. Later tasks stand the
- * library, the clock tower and the observatory on its anchors and bring its
- * life; this is the ground they stand on.
+ * The university campus (Phase 4 Tasks 34 and 35): the terrace, its quads,
+ * the four halls, the library closing the axis and the clock tower between
+ * the ranges, stood on the plot the engine took (engine/school/campus.ts)
+ * and turned so its gate faces the centre of the city. Later tasks stand
+ * the observatory on its anchor and bring the campus's life.
  *
- * What it costs: one masonry draw for the site, one instanced masonry draw
- * for the four halls, one draw of panes, in the view; the two masonry draws
- * again in the shadow map, and again in the AO's normal pass while the eye
- * is within AO_NEAR. Seven calls at most on high, five on medium.
+ * What it costs: one masonry draw for the site (the terrace, the walks, the
+ * trees, the library and the tower merged), one instanced masonry draw for
+ * the four halls, one draw of panes (every building's), one of the clock's
+ * hands, in the view; the two merged masonry draws again in the shadow map,
+ * and again in the AO's normal pass while the eye is within AO_NEAR. Eight
+ * calls at most on high, six from home on either tier.
  */
 import * as THREE from 'three';
 
 import { AO_NEAR, LAYER, setLayers } from '../lod.js';
-import type { TowerMaterials } from '../tower/kit.js';
+import { Kit, type TowerMaterials } from '../tower/kit.js';
+import { makeClockTower } from './clock.js';
+import { stampBuilt } from './gothic.js';
 import { buildHall, instanceHalls, type Hall } from './halls.js';
-import { buildSite, FRONT_QUAD, HALL_Z, INNER_QUAD, siteAnchors, TERRACE } from './site.js';
+import { makeLibrary } from './library.js';
+import { buildSite, FRONT_QUAD, HALL_Z, INNER_QUAD, mergeStamped, siteAnchors, TERRACE } from './site.js';
 
 export interface CampusOptions {
   quality: 'high' | 'medium';
@@ -24,6 +29,8 @@ export interface CampusOptions {
   /** The masonry material (campus/masonry.ts in the app; a plain one in tests). The campus does not own it. */
   masonry: THREE.Material;
   seed?: string;
+  /** His clock, for the tower's hands and its dials' light (a test's or a still's fixed time); the wall clock by default. */
+  now?: () => Date;
 }
 
 /** Where the later buildings stand, in the world: the library at the axis's end, the clock between the ranges, the dome at the back corner, the gate at the stair head. */
@@ -75,19 +82,33 @@ export function createCampus(opts: CampusOptions): Campus {
   const group = new THREE.Group();
   group.name = 'campus';
 
-  const siteGeo = buildSite(detail);
+  const local = siteAnchors();
+  const now = opts.now ?? (() => new Date());
+
+  // The library and the clock tower, built in one Kit on their anchors and stamped into the site's draw.
+  const kit = new Kit(opts.materials);
+  kit.detail = detail;
+  kit.base = new THREE.Matrix4().makeTranslation(local.library.x, TERRACE, local.library.z);
+  makeLibrary(kit, { quality: opts.quality, seed: opts.seed });
+  kit.base = new THREE.Matrix4().makeTranslation(local.clock.x, TERRACE, local.clock.z);
+  const tower = makeClockTower(kit, now, { masonry, quality: opts.quality, seed: opts.seed });
+  const built = stampBuilt(kit.build(), opts.materials.window);
+  const siteGeo = mergeStamped([buildSite(detail), built.masonry]);
   const site = new THREE.Mesh(siteGeo, masonry);
   site.name = 'campus:site';
   site.castShadow = site.receiveShadow = true;
   group.add(site);
 
   const hall: Hall = buildHall({ quality: opts.quality, materials: opts.materials, masonry, seed: opts.seed ?? 'university' });
-  const halls = instanceHalls(hall, hallPlacements(), HALL_TINTS);
+  const halls = instanceHalls(hall, hallPlacements(), HALL_TINTS, built.panes);
+  built.panes.geometry.dispose();
   group.add(halls.group);
-  // The panes never cast and are too thin for the AO: the view alone draws them.
+  // The panes never cast and are too thin for the AO: the view alone draws them. The hands likewise.
   setLayers(halls.panes, LAYER.view);
+  setLayers(tower.hands, LAYER.view);
+  group.add(tower.group);
+  tower.update();
 
-  const local = siteAnchors();
   let origin: { x: number; z: number } | null = null;
   const sphere = new THREE.Sphere();
   let aoSeen: boolean | null = null;
@@ -109,6 +130,7 @@ export function createCampus(opts: CampusOptions): Campus {
     },
     update(_dt, _clock, eye) {
       if (!origin) return;
+      tower.update();
       // Past AO_NEAR the AO cannot see it (lod.ts): the view and the shadow map draw it alone.
       sphere.copy(siteGeo.boundingSphere!).applyMatrix4(group.matrixWorld);
       const near = sphere.distanceToPoint(eye) <= AO_NEAR;
@@ -122,6 +144,7 @@ export function createCampus(opts: CampusOptions): Campus {
     dispose() {
       halls.dispose();
       hall.dispose();
+      tower.dispose();
       siteGeo.dispose();
     },
   };
