@@ -6,6 +6,11 @@ import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '..
 import { batchPieces, type Batched } from './batch.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
 import { createCameraRig, type ScriptPose } from './camera';
+import { createCampus, type Campus, type CampusAnchors } from './campus/index.js';
+import { masonryMaterial } from './campus/masonry.js';
+import { campusPlaza, TERRACE } from './campus/site.js';
+import type { CollarPlaza } from './collar.js';
+import { HALL } from './campus/halls.js';
 import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
@@ -83,6 +88,8 @@ export interface CityOptions {
   coatOf?: (agent: Agent) => [number, number, number];
   /** The steel and bronze the skyline's mast and finial are built in (milestones.ts); without them no milestone shows. */
   milestoneMaterials?: TowerMaterials;
+  /** The university's materials (Phase 4): the halls' windows draw in its `window`; without it no campus is built. */
+  campusMaterials?: TowerMaterials;
   /** A firm's mark colour (eras.ts firmMarkColor with the city's slots): its ribbon's satin. */
   firmColour?: (firmId: string) => THREE.Color;
 }
@@ -223,6 +230,14 @@ export interface City {
   setMilestones(ms: ReadonlyArray<Milestone>): void;
   /** Each milestone as it shows now, by id (tests and captures). */
   milestoneShows(): Map<string, MilestoneShow>;
+  /**
+   * Stands the university on its plot (GET /api/school/campus, Phase 4
+   * Task 34): the terrace, its quads and the four halls, with the ambient
+   * city cleared off the block; null takes it down.
+   */
+  setCampus(origin: { x: number; z: number } | null): void;
+  /** The campus as it stands: its origin and the anchors the later buildings take, or null before the engine took the plot. */
+  campus(): { origin: { x: number; z: number }; anchors: CampusAnchors } | null;
 }
 
 /** The frame rate and triangles the city drew when it stepped down, and whether that was the home view. */
@@ -494,6 +509,29 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     milestoneTimer = next === null ? null : setTimeout(placeMilestones, Math.min(Math.max(0, next - Date.now()) + 50, 2 ** 31 - 1));
   }
 
+  // ---------------------------------------------------------------- the university (campus/index.ts)
+  const campusRoot = new THREE.Group();
+  campusRoot.name = 'campus';
+  scene.add(campusRoot);
+  let campus: Campus | null = null;
+  let campusOrigin: { x: number; z: number } | null = null;
+  /** The campus's one opaque material, made once and kept across rebuilds. */
+  let campusMasonry: THREE.Material | null = null;
+  /** Builds (or rebuilds at the quality now) and stands the campus where the engine put it. */
+  function placeCampus(): void {
+    if (campus) {
+      campusRoot.remove(campus.group);
+      campus.dispose();
+      campus = null;
+    }
+    if (!campusOrigin || !opts.campusMaterials) return;
+    campusMasonry ??= masonryMaterial();
+    campus = createCampus({ quality, materials: opts.campusMaterials, masonry: campusMasonry });
+    campus.set(campusOrigin);
+    campusRoot.add(campus.group);
+    sun.shadow.needsUpdate = true;
+  }
+
   // ---------------------------------------------------------------- the view grows with the city
   // The limits follow the districts standing: the home framing changes at once (it is only used when asked
   // for), while how far the camera may go, the haze and the far plane ease over a second or two. The camera
@@ -531,10 +569,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let occNow: Occupancy = lastOcc;
   function updatePlazas(occ: Occupancy): void {
     lastOcc = occ;
-    // Only occupied plots are paved and cleared: a district, or a site under scaffold (and the board's spots).
-    const plazas = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z }))];
+    // Only occupied plots are paved and cleared: a district, or a site under scaffold (and the board's spots). The
+    // campus's block is cleared like a quarter's court but never paved: its terrace is its own ground.
+    const plazas: CollarPlaza[] = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z })), ...(campusOrigin ? [campusPlaza(campusOrigin)] : [])];
     grid.setPlazas(plazas);
-    ground.setPlazas(plazas);
+    ground.setPlazas(plazas.filter((p) => !p.terrace));
     // The ambient traffic keeps off every plaza, court and site; the crowd walks the districts' and the civic plaza's.
     ambientPlazas = [
       { x: 0, z: 0, kind: 'civic' },
@@ -542,6 +581,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       ...occ.sites.map((st) => ({ ...st.origin, kind: 'site' as const })),
       ...occ.quarters.map((q) => ({ x: q.origin.x, z: q.origin.z, kind: 'court' as const, court: QUARTER_COURT })),
       ...boardSpots.map((b) => ({ x: b.x, z: b.z, kind: 'site' as const })),
+      ...(campusOrigin ? [{ x: campusOrigin.x, z: campusOrigin.z, kind: 'court' as const, court: campusPlaza(campusOrigin).court }] : []),
     ];
     ambient?.setPlazas(ambientPlazas);
     searchLitTree(grid.group);
@@ -678,7 +718,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         return { origin: { x: q.origin.x + at.x, z: q.origin.z + at.z }, tower: t };
       }),
     );
-    extent = cityExtent([...occ.districts, ...agents]);
+    extent = cityExtent([...occ.districts, ...agents], campusOrigin ? [{ x: campusOrigin.x, z: campusOrigin.z, height: TERRACE + HALL.ridge + 4 }] : []);
     // The city opens on its home framing, with its limits in force at once, at the first placement that has
     // anything standing (an empty first answer leaves the camera unframed); after that the limits ease.
     const open = opensHome(framed, occ.districts.length + occ.quarters.length);
@@ -972,7 +1012,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     reframe(occ);
     placeSites(occ.sites);
     // The network grows with the city: its loops enclose every district, quarter and site, a rank at each plaza.
-    const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin)];
+    // The campus too: the loop's street must run outside its terrace, never across it.
+    const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin), ...(campusOrigin ? [campusOrigin] : [])];
     if (standing.length && transit.set({ blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) })) {
       sun.shadow.needsUpdate = true;
       layVehicles();
@@ -985,7 +1026,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     lightsOutTree(districtGroup);
     // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
     placeMilestones();
-    const key = JSON.stringify(plazasOf(occ));
+    const key = JSON.stringify(plazasOf(occ)) + (campusOrigin ? `|campus:${campusOrigin.x},${campusOrigin.z}` : '');
     if (key !== lastPlazas) {
       lastPlazas = key;
       updatePlazas(occ);
@@ -1345,6 +1386,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ...(exchange ? [['exchange', exchange.object] as [string, THREE.Object3D]] : []),
     ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
     ...(milestones ? [['milestones', milestones.group] as [string, THREE.Object3D]] : []),
+    ['campus', campusRoot],
     ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
   ];
   const clock = new THREE.Clock();
@@ -1387,6 +1429,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       scene.add(milestones.group);
       placeMilestones();
     }
+    placeCampus();
     for (const fn of dropListeners) fn(saw);
   }
   renderer.setAnimationLoop(() => {
@@ -1461,6 +1504,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
     if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
     if (districtLod()) sun.shadow.needsUpdate = true;
+    campus?.update(dt, clock.elapsedTime, camera.position);
     renderer.info.reset();
     if (breakdownWanted.length) {
       sun.shadow.needsUpdate = true;
@@ -1621,6 +1665,16 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       placeMilestones();
     },
     milestoneShows: () => milestones?.shows() ?? new Map(),
+    setCampus(origin) {
+      const same = (origin === null) === (campusOrigin === null) && (!origin || !campusOrigin || (origin.x === campusOrigin.x && origin.z === campusOrigin.z));
+      if (same) return;
+      campusOrigin = origin ? { x: origin.x, z: origin.z } : null;
+      placeCampus();
+      // The block is cleared, the network's loop runs outside it and the home framing holds it.
+      lastPlazas = '';
+      setPlots(occNow);
+    },
+    campus: () => (campus && campusOrigin ? { origin: { ...campusOrigin }, anchors: campus.anchors() } : null),
     onQualityDrop(fn) {
       dropListeners.push(fn);
     },
@@ -1655,6 +1709,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       vehicles?.dispose();
       if (milestoneTimer) clearTimeout(milestoneTimer);
       milestones?.dispose();
+      campus?.dispose();
+      campusMasonry?.dispose();
       ambient?.dispose();
       ground.dispose();
       sky.dispose();

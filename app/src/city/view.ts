@@ -90,19 +90,24 @@ function normalize(a: V3): V3 {
 }
 
 /** Where the districts stand and how tall the tallest of them is. */
-export function cityExtent(districts: ReadonlyArray<{ origin: { x: number; z: number }; tower: TowerSpec }>): CityExtent {
+export function cityExtent(
+  districts: ReadonlyArray<{ origin: { x: number; z: number }; tower: TowerSpec }>,
+  /** Other grounds the view must hold (the campus): each with the height of what stands on it. */
+  landmarks: ReadonlyArray<{ x: number; z: number; height: number }> = [],
+): CityExtent {
   if (districts.length === 0) return { cx: 0, cz: 0, radius: 0, height: 0, count: 0 };
+  const places = [...districts.map((d) => ({ x: d.origin.x, z: d.origin.z })), ...landmarks];
   let cx = 0;
   let cz = 0;
-  for (const d of districts) {
-    cx += d.origin.x;
-    cz += d.origin.z;
+  for (const p of places) {
+    cx += p.x;
+    cz += p.z;
   }
-  cx /= districts.length;
-  cz /= districts.length;
+  cx /= places.length;
+  cz /= places.length;
   let radius = 0;
-  const peaks = districts.map((d) => ({ x: d.origin.x, z: d.origin.z, height: layoutTower(d.tower).top + CROWN_ALLOWANCE }));
-  for (const d of districts) radius = Math.max(radius, Math.hypot(d.origin.x - cx, d.origin.z - cz));
+  const peaks = [...districts.map((d) => ({ x: d.origin.x, z: d.origin.z, height: layoutTower(d.tower).top + CROWN_ALLOWANCE })), ...landmarks];
+  for (const p of places) radius = Math.max(radius, Math.hypot(p.x - cx, p.z - cz));
   const height = Math.max(...peaks.map((p) => p.height));
   return { cx, cz, radius, height, count: districts.length, peaks };
 }

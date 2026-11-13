@@ -92,6 +92,8 @@ interface DebugHandle {
   project(p: number[]): number[];
   /** Each milestone as the city shows it now (milestones.ts), by id. */
   milestones(): Array<MilestoneShow & { id: string }>;
+  /** The university as it stands (campus/index.ts): its origin and the later buildings' anchors, or null before the engine took the plot. */
+  campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
   /** Stands these milestones in place of the engine's for a capture (the finial on a tower of its own), or the engine's again with null. */
   stageMilestones(ms: Milestone[] | null): void;
   precompile(): Promise<void>;
@@ -341,6 +343,8 @@ async function main(): Promise<void> {
     makeExchange: (q) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')) }),
     // The skyline's mast and finial in the city's galvanised steel and polished bronze.
     milestoneMaterials: towerMaterials(lookFor('civic:exchange')),
+    // The university's halls light their windows in the same glass as every tower.
+    campusMaterials: towerMaterials(lookFor('civic:exchange')),
     // A firm's ribbon in its own mark colour, as its floors' marks are.
     firmColour: (firmId) => firmMarkColor(firmId, firmSlots),
     describeTrip: (trip, agent) => describeTrip(trip, agent),
@@ -499,6 +503,12 @@ async function main(): Promise<void> {
     },
     peopleLantern: (on) => city.people()?.lantern(on),
     milestones: () => [...city.milestoneShows()].map(([id, m]) => ({ id, ...m })),
+    campus() {
+      const c = city.campus();
+      if (!c) return null;
+      const a = c.anchors;
+      return { origin: c.origin, anchors: { library: a.library.toArray(), clock: a.clock.toArray(), dome: a.dome.toArray(), gate: a.gate.toArray() } };
+    },
     stageMilestones: (ms) => (ms ? city.setMilestones(ms) : showMilestones()),
     follow: (id) => followAgent(id),
     following: () => city.following(),
@@ -747,6 +757,15 @@ async function main(): Promise<void> {
         for (const m of ms) milestoneRows.set(m.id, m);
         showMilestones();
       },
+      () => {},
+    ),
+  );
+
+  // ---------------------------------------------------------------- the university's plot (Phase 4)
+  /** The engine takes the campus's plot once at its start (engine/school/campus.ts): read on load and on reconnect. */
+  const readCampus = coalesced(() =>
+    api.campus().then(
+      (c) => city.setCampus(c.origin),
       () => {},
     ),
   );
@@ -1060,6 +1079,7 @@ async function main(): Promise<void> {
     readBoard();
     readLive();
     readMilestones();
+    readCampus();
   } catch (err) {
     console.warn('could not load the city from the engine', err);
     show([]);
@@ -1085,6 +1105,7 @@ async function main(): Promise<void> {
     }
     if (e.type === 'engine.reconnected') {
       readMilestones();
+      readCampus();
       // Events sent while the stream was down are lost: read the repos, the city and the kill switch afresh.
       void api.repos().then((list) => {
         takeRepos(list);

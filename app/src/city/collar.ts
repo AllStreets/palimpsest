@@ -54,6 +54,12 @@ export interface CollarPlaza {
   towers?: number;
   /** A bankrupt firm's quarter: its court's floodlights are off. */
   dark?: boolean;
+  /**
+   * The university's terrace (campus/site.ts): a square court for the lots
+   * and the street lamps, which keep off it, but raised ground the ground
+   * never paves and no court lantern stands on.
+   */
+  terrace?: boolean;
 }
 
 /**

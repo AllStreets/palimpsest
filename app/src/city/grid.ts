@@ -783,7 +783,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     all.forEach((p: Plaza, idx) => {
       const r = rng(blockSeed(Math.round(p.x), Math.round(p.z)) + 7);
       if (p.court !== undefined) {
-        for (const l of courtLanterns(p.court)) lamp(p.x + l.x, p.z + l.z, 'none', r);
+        // A terrace carries its own light; a quarter's court is lined with lanterns.
+        if (!p.terrace) for (const l of courtLanterns(p.court)) lamp(p.x + l.x, p.z + l.z, 'none', r);
         return;
       }
       for (let k = 0; k < PLAZA_LAMPS; k++) {

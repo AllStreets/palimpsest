@@ -374,6 +374,27 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       for (const [i, [eye, target]] of views.entries()) await still(page, `probe-${i}`, eye, target);
     },
 
+    async campus(page) {
+      // The university (Phase 4 Task 34): from home, across the front quad from over the gate at dusk, and close on a
+      // hall's porch. CAMPUS_VIEWS='[[[x,y,z],[x,y,z]], ...]' in the campus's own frame (x from the gate toward the
+      // library, y over the street, z across) adds stills for the rounds.
+      await chrome(page, false);
+      type C = { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', V3> } | null;
+      const c = (await page.evaluate('window.__palimpsest.campus()')) as C;
+      if (!c) throw new Error('capture: no campus stands (the engine has not taken the plot)');
+      const g = c.anchors.gate;
+      const l = c.anchors.library;
+      const n = Math.hypot(l[0] - g[0], l[2] - g[2]);
+      const ax = [(l[0] - g[0]) / n, (l[2] - g[2]) / n];
+      const at = (x: number, y: number, z: number): V3 => [g[0] + ax[0] * x - ax[1] * z, y, g[2] + ax[1] * x + ax[0] * z];
+      const home = await callDebug<{ home: { eye: V3; target: V3 } }>(page, 'd.limits()');
+      await still(page, 'campus-home', home.home.eye, home.home.target);
+      await still(page, 'campus-quad', at(-30, 30, 10), at(60, 10, -4));
+      await still(page, 'campus-hall', at(92, 8, 36), at(66, 11, 54));
+      const extra = JSON.parse(process.env.CAMPUS_VIEWS ?? '[]') as [V3, V3][];
+      for (const [i, [e, t]] of extra.entries()) await still(page, `campus-${i}`, at(e[0], e[1], e[2]), at(t[0], t[1], t[2]));
+    },
+
     async ride(page) {
       // The ride up the outside of a tower (Task 35): the harbour tower from its datum to the roof, the car on its rail
       // and the captions at the lower left. Stills at street level, at the datum and over the roof (RIDE_ONLY='street,mid,top,clip').
@@ -1806,6 +1827,8 @@ async function main(): Promise<void> {
   setRunner(sampleGh());
   const { startServer } = await import('../engine/server.js');
   const server = await startServer({ port: PORT, claudeSettingsPath });
+  // The engine's own start takes the university's plot (Phase 4 Task 1); startServer alone does not, so it is taken here.
+  (await import('../engine/school/campus.js')).ensureCampus();
   // CAPTURE_ECONOMY=live: the economy's job sites and trips in the live view, and its clock at speed 20, ticked by the shots.
   if (process.env.CAPTURE_ECONOMY === 'live') {
     const { setMarketExtras } = await import('../engine/market/api.js');

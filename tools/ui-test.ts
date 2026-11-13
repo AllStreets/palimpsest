@@ -153,6 +153,9 @@ interface Debug {
   quarters: number;
   opened: string;
   lastPick: { kind: string; agentId?: string; firmId?: string; repo?: string } | null;
+  /** The university as it stands (campus/index.ts), or null before the engine took the plot. */
+  campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
+  dropQuality(): void;
 }
 
 /** Holds the ambient traffic and crowd at full density (once the network is laid), so every budget sees its worst. */
@@ -871,6 +874,69 @@ async function spireAfterDropChecks(page: Page, before: SpireShow[]): Promise<vo
   const own = Object.values(b.milestones ?? {}).reduce((acc, t) => acc + t.calls, 0);
   console.log(`info  at medium from home: ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles, the skyline ${own} calls`);
   check(own > 0 && own <= MILESTONE_CALLS.medium && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `at medium the milestones draw in at most ${MILESTONE_CALLS.medium} calls and the city stays within its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+}
+
+// ---------------------------------------------------------------- the university (Phase 4 Task 34)
+
+/** The campus's own budget from home, shadows and its life included, on each tier (Decision 17). */
+const CAMPUS_HOME_CALLS = 15;
+const CAMPUS_HOME_TRIANGLES = 900_000;
+
+/**
+ * The campus stands on the plot the engine took, with the ambient city off
+ * its block, and draws from home within its own budget on the tier the city
+ * is at now, while the whole city keeps its guard. On high it is shot from
+ * home, across the front quad from the gate, and close on a hall's porch.
+ */
+async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
+  check((await debug(page, (d) => d.quality())) === tier, `the city stands at ${tier} for the campus checks`);
+  const c = await debug(page, (d) => d.campus());
+  check(c !== null, `the university stands on its plot (${tier})`);
+  if (!c) return;
+  const b = await homeBreakdown(page);
+  const sum = (p: Record<string, Tally> | undefined): Tally => Object.values(p ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  const own = sum(b.campus);
+  const total = callsOf(b);
+  const triangles = Object.values(b).reduce((n, v) => n + sum(v).triangles, 0);
+  const passes = Object.entries(b.campus ?? {})
+    .map(([pass, t]) => `${pass} ${t.calls}/${(t.triangles / 1000).toFixed(0)}k`)
+    .join(', ');
+  console.log(`info  the campus stands at (${c.origin.x}, ${c.origin.z}), its gate at (${c.anchors.gate.map((v) => v.toFixed(0)).join(', ')})`);
+  console.log(`info  on ${tier} the campus from home: ${own.calls} calls, ${(own.triangles / 1000).toFixed(0)}k triangles (${passes}); the city ${total} calls, ${(triangles / 1e6).toFixed(2)}M`);
+  check(own.calls > 0 && own.calls <= CAMPUS_HOME_CALLS && own.triangles <= CAMPUS_HOME_TRIANGLES, `on ${tier} breakdown().campus is within ${CAMPUS_HOME_CALLS} calls and ${CAMPUS_HOME_TRIANGLES / 1000}k triangles from home with shadows (${own.calls}, ${(own.triangles / 1000).toFixed(0)}k)`);
+  check(total < HOME_CALLS && triangles <= HOME_TRIANGLES, `on ${tier} the whole city still draws under ${HOME_CALLS} calls and within ${HOME_TRIANGLES / 1e6}M with the campus (${total}, ${(triangles / 1e6).toFixed(2)}M)`);
+  // The ambient city keeps off the block: no building stands within the terrace's square.
+  const plots = await debug(page, (d) => d.plots());
+  check(plots.buildings > 0, `the ambient city still stands round it (${plots.buildings} buildings)`);
+  if (tier !== 'high') return;
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: join(SHOTS, 'campus-home.png') });
+  // And a crop round it, where it lands on the screen from home.
+  const px = (await page.evaluate(`window.__palimpsest.project(${JSON.stringify([c.origin.x, 6, c.origin.z])})`)) as number[];
+  const sx = ((px[0] + 1) / 2) * VIEWPORT.width;
+  const sy = ((1 - px[1]) / 2) * VIEWPORT.height;
+  console.log(`info  from home the campus lands at (${sx.toFixed(0)}, ${sy.toFixed(0)}) on the screen`);
+  await page.screenshot({ path: join(SHOTS, 'campus-home-crop.png'), clip: { x: Math.max(0, Math.min(VIEWPORT.width - 480, sx - 240)), y: Math.max(0, Math.min(VIEWPORT.height - 320, sy - 160)), width: 480, height: 320 } });
+  // The campus's own frame: x from the gate toward the library (its axis), z across it.
+  const g = c.anchors.gate;
+  const l = c.anchors.library;
+  const ax = [l[0] - g[0], l[2] - g[2]];
+  const n = Math.hypot(ax[0], ax[1]);
+  ax[0] /= n;
+  ax[1] /= n;
+  const at = (x: number, y: number, z: number): number[] => [g[0] + ax[0] * x - ax[1] * z, y, g[2] + ax[1] * x + ax[0] * z];
+  // Across the front quad from over the gate, the two halls either side and the inner quad beyond.
+  await setView(page, at(-30, 30, 10), at(60, 10, -4));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-quad.png') });
+  // Close on the south hall's porch from the lawn.
+  await setView(page, at(92, 8, 36), at(66, 11, 54));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-hall.png') });
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(800);
 }
 
 // ---------------------------------------------------------------- silhouettes (Task 23)
@@ -2805,6 +2871,8 @@ async function main(): Promise<void> {
   writeFileSync(keychain, '');
   const { startServer } = await import('../engine/server.js');
   let server = await startServer({ port: PORT, claudeSettingsPath, keychain });
+  // The engine's own start takes the university's plot (Phase 4 Task 1); startServer alone does not, so it is taken here.
+  (await import('../engine/school/campus.js')).ensureCampus();
   // Today's brief is opened first, as his first window would, so every check before the brief's own finds the
   // city; briefChecks takes today's open out again to see the day's first open (tools/ui-test-brief.ts).
   await fetch(`http://127.0.0.1:${PORT}/api/brief/open`, { method: 'POST', headers: { 'x-palimpsest': '1' } });
@@ -2857,11 +2925,17 @@ async function main(): Promise<void> {
     // name what it saw. A quick run for the notice rounds; the full run takes the same checks in their places.
     const forceDrop = process.env.UI_FORCE_DROP === '1';
     // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=campus: the university's checks and shots on high, then on medium after the step down (Task 34's rounds).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
-      if (process.env.UI_ONLY === 'budget') {
+      if (process.env.UI_ONLY === 'campus') {
+        await campusChecks(page, 'high');
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await campusChecks(page, 'medium');
+      } else if (process.env.UI_ONLY === 'budget') {
         const high = await homeBreakdown(page, process.env.UI_BUDGET === 'detail');
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(2500);
@@ -2994,11 +3068,13 @@ async function main(): Promise<void> {
         await vehicleChecks(page);
         await peopleChecks(page);
         await ambientChecks(page);
+        await campusChecks(page, 'high');
         await everyScreenChecks(page, consoleErrors);
         const spiresBefore = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
         const highHome = await homeBreakdown(page);
         await qualityDropChecks(page, consoleErrors);
         await spireAfterDropChecks(page, spiresBefore);
+        await campusChecks(page, 'medium');
         await tierBudgetChecks(page, highHome);
       }
     }
