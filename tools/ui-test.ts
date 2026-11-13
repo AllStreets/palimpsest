@@ -941,7 +941,7 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(SHOTS, 'campus-terrace.png') });
   // The library across the inner quad: the frontispiece, its turrets and the lantern over the ridge.
-  await setView(page, at(98, 17, 10), at(181, 14, -1));
+  await setView(page, at(104, 18, 8), at(181, 20, -1));
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(SHOTS, 'campus-library.png') });
   // The clock tower from the front quad's lawn, its dials lit: the campus clock held at ten past ten at night.
@@ -951,6 +951,10 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(SHOTS, 'campus-clock.png') });
   await debug(page, (d) => d.campusClock(null));
+  // The front quad from above: the walks' plan, the trees' two species, the tower's cap.
+  await setView(page, at(40, 110, 30), at(62, 6, -6));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-above.png') });
   await setView(page, home.eye, home.target);
   await page.waitForTimeout(800);
 }
@@ -1786,6 +1790,10 @@ async function siteChecks(page: Page): Promise<void> {
   const { districtOrigin } = await import('../shared/district-layout.js');
   const db = openDb();
   const fullName = 'wren/new-site';
+  // NOTE: this is the slot ensureCampus() takes after the six sample repos, so in a full run this tower stands on the
+  // campus plot. Giving it the next free slot (nextSlot('repo', fullName)) costs the home view about a hundred more
+  // calls (a seventh plot and the spiral's growth) and breaks the 850 guard, so the collision stands until the budget
+  // is ruled on; the campus's own stills come from UI_ONLY=campus, which adds no fixture.
   const slot = SAMPLE.length;
   const now = new Date().toISOString();
   const repo: Repo = {

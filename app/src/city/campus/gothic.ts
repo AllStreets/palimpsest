@@ -15,7 +15,7 @@ import { Kit, M, PANE_SASH, paneData, paneGeometry, piercedWall, pointedArch, we
 import { mergeStamped, stamp, type Kind } from './site.js';
 
 /** The Kit material each kind is built in; the stamped geometry carries the kind, not the material. */
-export const MAT: Record<Kind, MatKey> = { brick: 'brickWall', limestone: 'limestone', slate: 'roofTile', ashlar: 'granite', turf: 'sand', gravel: 'slab', lamp: 'lightLine', dial: 'datum' };
+export const MAT: Record<Kind, MatKey> = { brick: 'brickWall', limestone: 'limestone', slate: 'roofTile', ashlar: 'granite', turf: 'sand', gravel: 'slab', lamp: 'lightLine', dial: 'datum', louvre: 'timber', gilt: 'accent', yew: 'travertine' };
 const KIND_OF: Partial<Record<string, Kind>> = Object.fromEntries(Object.entries(MAT).map(([k, m]) => [`tower:${m}`, k as Kind]));
 
 /** The outline of a flat-headed opening. */

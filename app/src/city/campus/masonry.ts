@@ -94,6 +94,19 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           } else if (ck == 7) {
             // A clock dial: the painted face (cream, a chapter ring, roman numerals), the piece's own UVs.
             s = texture2D(uDial, vMapUv);
+          } else if (ck == 8) {
+            // Louvres: horizontal slats of weathered timber, 18 cm to the course (the UVs are metres), each dark in
+            // its shadow with a lit edge along its lower lip, the sand scan stretched along the grain.
+            float slat = fract(vMapUv.y / 0.18);
+            float lip = smoothstep(0.8, 0.9, slat) * (1.0 - smoothstep(0.95, 1.0, slat));
+            float grain = texture2D(uSandMap, vMapUv * vec2(0.5, 4.0)).g;
+            s = vec4(vec3((0.5 + 0.5 * grain) * (0.22 + 0.7 * lip)), 1.0);
+          } else if (ck == 9) {
+            s = vec4(1.0);
+          } else if (ck == 10) {
+            // Yew: the tone is the vertex colour's, a fine dark-light break from the sand scan, no lawn mottle.
+            float f = texture2D(uSandMap, vMapUv * 2.3).g;
+            s = vec4(vec3(0.38 + 0.32 * f), 1.0);
           } else {
             // Turf: a mown lawn, mottled by the sand scan at a coarse tile and a finer one, with the mower's stripes.
             float a = texture2D(uSandMap, vMapUv * 0.13).g;
@@ -118,6 +131,9 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           else if (ck == 2) r = 0.52 + 0.22 * texture2D(roughnessMap, vRoughnessMapUv).g;
           else if (ck == 6) r = 0.5;
           else if (ck == 7) r = 0.42;
+          else if (ck == 8) r = 0.88;
+          else if (ck == 9) r = 0.34;
+          else if (ck == 10) r = 0.95;
           else r = 0.96;
           roughnessFactor *= r;
         }`,
@@ -134,7 +150,7 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           else if (ck == 3) { mapN = texture2D(uAshNor, vNormalMapUv).xyz; k = 1.1; }
           else if (ck == 5) { mapN = texture2D(uSandNor, vNormalMapUv).xyz; k = 0.25; }
           else if (ck == 2) { mapN = texture2D(normalMap, vNormalMapUv).xyz; k = 0.35; }
-          else if (ck == 6 || ck == 7) { mapN = vec3(0.5, 0.5, 1.0); }
+          else if (ck == 6 || ck == 7 || ck == 8 || ck == 9) { mapN = vec3(0.5, 0.5, 1.0); }
           else { mapN = texture2D(uSandNor, vNormalMapUv * 2.9).xyz; k = 0.3; }
           mapN = mapN * 2.0 - 1.0;
           mapN.xy *= normalScale * k;

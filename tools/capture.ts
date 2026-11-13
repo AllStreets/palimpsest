@@ -392,11 +392,12 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await still(page, 'campus-quad', at(-30, 30, 10), at(60, 10, -4));
       await still(page, 'campus-hall', at(92, 8, 36), at(66, 11, 54));
       await still(page, 'campus-terrace', at(-44, 5, -34), at(-10, 7, -2));
-      await still(page, 'campus-library', at(98, 17, 10), at(181, 14, -1));
+      await still(page, 'campus-library', at(104, 18, 8), at(181, 20, -1));
       // The clock tower with its dials lit: the campus clock held at ten past ten at night, then freed.
       await page.evaluate(`window.__palimpsest.campusClock(${new Date(2026, 10, 12, 22, 10).getTime()})`);
       await still(page, 'campus-clock', at(28, 10, 2), at(97, 27, -56));
       await page.evaluate('window.__palimpsest.campusClock(null)');
+      await still(page, 'campus-above', at(40, 110, 30), at(62, 6, -6));
       const extra = JSON.parse(process.env.CAMPUS_VIEWS ?? '[]') as [V3, V3][];
       for (const [i, [e, t]] of extra.entries()) await still(page, `campus-${i}`, at(e[0], e[1], e[2]), at(t[0], t[1], t[2]));
     },

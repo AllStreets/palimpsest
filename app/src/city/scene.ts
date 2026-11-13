@@ -454,6 +454,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const now = new Date();
     return ambientDensity(now.getHours() + now.getMinutes() / 60);
   };
+  /** The streets' density at and below which the city counts as evening (the curve's level from eleven at night). */
+  const EVENING_DENSITY = 0.5;
+  /**
+   * The city's own word on evening for the campus clock's dials: when the ambient density is held (a test or a
+   * still saying what hour it is) the dials follow it, so they change with the streets; otherwise null, and the
+   * tower reads sunset from the season and his clock.
+   */
+  const campusEvening = (): boolean | null => (campusClockAt !== null ? null : forcedDensity !== null ? forcedDensity <= EVENING_DENSITY : null);
 
   // ---------------------------------------------------------------- the civic exchange
   // Built once on the plaza at the origin, and again at medium if the city steps down; it keeps the board and the switch.
@@ -530,7 +538,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
     if (!campusOrigin || !opts.campusMaterials) return;
     campusMasonry ??= masonryMaterial();
-    campus = createCampus({ quality, materials: opts.campusMaterials, masonry: campusMasonry, now: () => (campusClockAt === null ? new Date() : new Date(campusClockAt)) });
+    campus = createCampus({ quality, materials: opts.campusMaterials, masonry: campusMasonry, now: () => (campusClockAt === null ? new Date() : new Date(campusClockAt)), evening: campusEvening });
     campus.set(campusOrigin);
     campusRoot.add(campus.group);
     sun.shadow.needsUpdate = true;

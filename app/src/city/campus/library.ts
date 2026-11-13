@@ -142,6 +142,8 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
   const FW = 14;
   const FD = 3.6;
   const FH = E + 8.5;
+  /** The frontispiece gable's rise: its apex at the turrets' parapet. */
+  const rise = 7.2;
   const FP = libraryFace(0, W / 2 + FD);
   {
     const door: Opening = { u: 0, w: 3.2, y0: P, y1: P + 3.4, pointed: true, lights: 1 };
@@ -150,14 +152,13 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
     g.add('brick', piercedWall(FW, FH - plinthH, D, holes), FP.clone().multiply(M(0, plinthH, -D)), 0.03);
     g.doorway(FP, door, D, plinthH);
     g.dress(FP, great, D);
-    // Its flanks and the podium under it, and the floor behind the door.
-    for (const s of [-1, 1]) g.box('brick', FD - D, FH - plinthH, D, M(W / 2 + (FD - D) / 2, plinthH + (FH - plinthH) / 2, s * (FW / 2 - D / 2)), 0.03);
+    // Its flanks run back through the main roof to the ridge, so the bay is a transept whose roof stands on its own
+    // walls, and the podium under it.
+    for (const s of [-1, 1]) g.box('brick', W / 2 + FD - D, FH - plinthH, D, M((W / 2 + FD - D) / 2, plinthH + (FH - plinthH) / 2, s * (FW / 2 - D / 2)), 0.03);
     g.box('limestone', FD + 0.6, P, FW + 1.0, M(W / 2 + FD / 2 + 0.1, P / 2, 0));
     g.box('limestone', FD + 0.2, 0.5, FW + 0.4, M(W / 2 + FD / 2, P + 0.25, 0));
-    g.box('slate', FD - D, 0.3, FW - 2 * D, M(W / 2 + FD / 2, FH - 0.6, 0), 0);
     // A string over the door, and the gable above with its coping and finial.
     g.box('limestone', FW + 0.3, 0.22, 0.24, FP.clone().multiply(M(0, P + 6.6, 0.0)));
-    const rise = 5.2;
     const shape = new THREE.Shape([new THREE.Vector2(-FW / 2, 0), new THREE.Vector2(FW / 2, 0), new THREE.Vector2(0, rise)]);
     const quat: Opening = { u: 0, w: 1.2, y0: FH + 0.8, y1: FH + 2.4, pointed: true, lights: 1, lit: 0.5 };
     shape.holes.push(new THREE.Path(pointedArch(0, quat.w, quat.y0 - FH, quat.y1 - FH)));
@@ -169,10 +170,15 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
       g.add('limestone', new THREE.BoxGeometry(rake, 0.3, 0.8).rotateZ(-s * ang).translate((s * (FW / 2 + 0.3)) / 2, FH + (rise + 0.3) / 2 + 0.1, 0), FP.clone().multiply(M(0, 0, -D / 2)));
     }
     g.finial(FP.clone().multiply(M(0, FH + rise + 0.1, -D / 2)), 0.5);
-    // Its roof: two slated slopes from the gable back into the main roof.
-    const gl = Math.hypot(FW / 2, rise);
+    // Its roof: two slated slopes on the flank walls from the gable back past the main ridge, closed by a coped gablet
+    // standing behind the ridge (the main slope there is a hand under its foot), so no slab ends in the slate.
+    const gl = Math.hypot(FW / 2, rise) + 0.3;
     const ga = Math.atan2(rise, FW / 2);
-    for (const s of [-1, 1]) g.add('slate', new THREE.BoxGeometry(FD + 2.4, 0.2, gl).rotateX(s * ga).translate(0, FH + rise / 2 - 0.1, (s * FW) / 4), M(W / 2 + FD / 2 - 1.2, 0, 0), 0);
+    const backX = -0.6;
+    const span = W / 2 + FD + 0.4 - backX;
+    for (const s of [-1, 1]) g.add('slate', new THREE.BoxGeometry(span, 0.2, gl).rotateX(s * ga).translate(0, FH + rise / 2 - 0.1, (s * FW) / 4), M(backX + span / 2, 0, 0), 0);
+    g.box('slate', span, 0.3, 0.5, M(backX + span / 2, FH + rise + 0.02, 0), 0);
+    g.gable(libraryFace(2, -backX), FW, FH, rise, D, []);
     // The steps: a flight across the door down to the forecourt, between low cheek walls.
     const flightW = 9.0;
     const rise1 = P / 6;
@@ -188,7 +194,7 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
     const tr = 1.35;
     const tx = W / 2 + FD - 0.6;
     const tz = s * (FW / 2 + 0.3);
-    const th = FH + 7.2;
+    const th = FH + rise;
     const T = M(tx, 0, tz, Math.PI / 8);
     g.add('limestone', new THREE.CylinderGeometry(tr + 0.25, tr + 0.4, plinthH, 8).translate(0, plinthH / 2, 0), T);
     g.add('brick', new THREE.CylinderGeometry(tr, tr, th - plinthH, 8).translate(0, plinthH + (th - plinthH) / 2, 0), T, 0.04);

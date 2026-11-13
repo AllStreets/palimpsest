@@ -31,6 +31,8 @@ export interface CampusOptions {
   seed?: string;
   /** His clock, for the tower's hands and its dials' light (a test's or a still's fixed time); the wall clock by default. */
   now?: () => Date;
+  /** The city's own word on evening (scene.ts, from its ambient life's density); null or absent reads sunset from the season. */
+  evening?: () => boolean | null;
 }
 
 /** Where the later buildings stand, in the world: the library at the axis's end, the clock between the ranges, the dome at the back corner, the gate at the stair head. */
@@ -91,7 +93,7 @@ export function createCampus(opts: CampusOptions): Campus {
   kit.base = new THREE.Matrix4().makeTranslation(local.library.x, TERRACE, local.library.z);
   makeLibrary(kit, { quality: opts.quality, seed: opts.seed });
   kit.base = new THREE.Matrix4().makeTranslation(local.clock.x, TERRACE, local.clock.z);
-  const tower = makeClockTower(kit, now, { masonry, quality: opts.quality, seed: opts.seed });
+  const tower = makeClockTower(kit, now, { masonry, quality: opts.quality, seed: opts.seed, evening: opts.evening });
   const built = stampBuilt(kit.build(), opts.materials.window);
   const siteGeo = mergeStamped([buildSite(detail), built.masonry]);
   const site = new THREE.Mesh(siteGeo, masonry);

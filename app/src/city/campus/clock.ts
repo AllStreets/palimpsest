@@ -67,6 +67,8 @@ export interface ClockTowerOptions {
   masonry: THREE.Material;
   quality: 'high' | 'medium';
   seed?: string;
+  /** The city's own word on evening (its ambient life's density), or null to read sunset from the season. */
+  evening?: () => boolean | null;
 }
 
 export interface ClockTower {
@@ -81,16 +83,25 @@ export interface ClockTower {
   dispose(): void;
 }
 
-/** A hand: a tapered pointer a metre long from the boss to the tip, with a short counterweight tail, 6 cm thick. */
+/**
+ * A hand: a gilt pointer a metre long from the boss to the tip, a shaft
+ * narrowing to a spade near the tip, a broad counterweight tail, 6 cm thick.
+ */
 function handGeometry(): THREE.BufferGeometry {
   const s = new THREE.Shape([
-    new THREE.Vector2(-0.07, -0.22),
-    new THREE.Vector2(0.07, -0.22),
-    new THREE.Vector2(0.075, 0),
-    new THREE.Vector2(0.03, 0.78),
+    new THREE.Vector2(-0.1, -0.26),
+    new THREE.Vector2(0.1, -0.26),
+    new THREE.Vector2(0.14, -0.14),
+    new THREE.Vector2(0.085, 0),
+    new THREE.Vector2(0.04, 0.6),
+    new THREE.Vector2(0.11, 0.74),
+    new THREE.Vector2(0.075, 0.86),
     new THREE.Vector2(0, 1),
-    new THREE.Vector2(-0.03, 0.78),
-    new THREE.Vector2(-0.075, 0),
+    new THREE.Vector2(-0.075, 0.86),
+    new THREE.Vector2(-0.11, 0.74),
+    new THREE.Vector2(-0.04, 0.6),
+    new THREE.Vector2(-0.085, 0),
+    new THREE.Vector2(-0.14, -0.14),
   ]);
   const g = new THREE.ExtrudeGeometry(s, { depth: 0.06, bevelEnabled: false });
   // The boss over the arbor.
@@ -103,7 +114,7 @@ function handGeometry(): THREE.BufferGeometry {
   out.computeVertexNormals();
   g.dispose();
   boss.dispose();
-  return stamp(out, 'slate', 0.55);
+  return stamp(out, 'gilt', 1);
 }
 
 export function makeClockTower(k: Kit, clock: () => Date, o: ClockTowerOptions): ClockTower {
@@ -205,9 +216,9 @@ export function makeClockTower(k: Kit, clock: () => Date, o: ClockTowerOptions):
     const holes = bells.map((op) => pointedArch(op.u, op.w, op.y0 - STAGE[3], op.y1 - STAGE[3]));
     g.add('brick', piercedWall(2 * H4, STAGE[4] - STAGE[3], D, holes), F.clone().multiply(M(0, STAGE[3], -D)), 0.05);
     for (const op of bells) {
-      // Louvres: slate slats raking down and out, in the depth of the opening, and a limestone sill and hood.
-      for (let y = op.y0 + 0.35; y < op.y1 + 1.2; y += 0.55) g.add('slate', new THREE.BoxGeometry(op.w - 0.1, 0.08, 0.5).rotateX(-0.6), F.clone().multiply(M(op.u, y, -D / 2)), 0.1);
-      g.box('slate', op.w - 0.1, op.y1 + 1.7 - op.y0, 0.08, F.clone().multiply(M(op.u, (op.y0 + op.y1 + 1.7) / 2, -D - 0.1)), 0);
+      // Louvres: a board of weathered timber slats in the depth of the opening (the masonry shader's louvre kind
+      // draws the slats), and a limestone sill and hood.
+      g.box('louvre', op.w - 0.1, op.y1 + 1.7 - op.y0, 0.12, F.clone().multiply(M(op.u, (op.y0 + op.y1 + 1.7) / 2, -D / 2)), 0.06);
       g.box('limestone', op.w + 0.36, 0.16, 0.34, F.clone().multiply(M(op.u, op.y0 - 0.08, -0.02)));
       if (detail) {
         const band = new THREE.Shape(pointedArch(0, op.w + 0.5, op.y1 - 0.6, op.y1));
@@ -252,22 +263,20 @@ export function makeClockTower(k: Kit, clock: () => Date, o: ClockTowerOptions):
   const group = new THREE.Group();
   group.name = 'campus:clock';
   group.add(hands);
-  const HOUR = M(0, 0, 0, 0, 1.0, 1.35, 1);
-  const MINUTE = M(0, 0, 0.08, 0, 0.8, 2.0, 1);
+  const HOUR = M(0, 0, 0, 0, 1.15, 1.4, 1);
+  const MINUTE = M(0, 0, 0.08, 0, 1.0, 2.3, 1);
   const turn = new THREE.Matrix4();
   let shownMinute = -1;
   let lit = false;
   const update = (): void => {
     const now = clock();
     const minute = now.getHours() * 60 + now.getMinutes();
-    const dark = afterSunset(now);
-    if (dark !== lit || shownMinute < 0) {
-      lit = dark;
-      const u = (o.masonry.userData as { dialLit?: { value: number } }).dialLit;
-      if (u) u.value = lit ? 1 : 0;
-    }
     if (minute === shownMinute) return;
     shownMinute = minute;
+    // Once a minute: the city's own evening when it has one, else the season's sunset.
+    lit = o.evening?.() ?? afterSunset(now);
+    const u = (o.masonry.userData as { dialLit?: { value: number } }).dialLit;
+    if (u) u.value = lit ? 1 : 0;
     const a = handAngles(now);
     faces.forEach((F, i) => {
       // Clockwise seen from before the dial is a negative turn about its outward z.

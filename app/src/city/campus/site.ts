@@ -42,16 +42,18 @@ export const QUAD_HALF = 44;
 /** A hall's centre line from the axis: its front stands at QUAD_HALF + a path. */
 export const HALL_Z = 56.5;
 
-export type Kind = 'brick' | 'limestone' | 'slate' | 'ashlar' | 'turf' | 'gravel' | 'lamp' | 'dial';
-export const KIND: Record<Kind, number> = { brick: 0, limestone: 1, slate: 2, ashlar: 3, turf: 4, gravel: 5, lamp: 6, dial: 7 };
+export type Kind = 'brick' | 'limestone' | 'slate' | 'ashlar' | 'turf' | 'gravel' | 'lamp' | 'dial' | 'louvre' | 'gilt' | 'yew';
+export const KIND: Record<Kind, number> = { brick: 0, limestone: 1, slate: 2, ashlar: 3, turf: 4, gravel: 5, lamp: 6, dial: 7, louvre: 8, gilt: 9, yew: 10 };
 /** Metres per tile of each kind's scan (the Kit's TILE for brick and limestone); 0 keeps the piece's own UVs (a clock dial's painted face). */
-const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ashlar: 2.4, turf: 9, gravel: 1.6, lamp: 1, dial: 0 };
+const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ashlar: 2.4, turf: 9, gravel: 1.6, lamp: 1, dial: 0, louvre: 1, gilt: 1, yew: 1 };
 /**
  * Each kind's tone, a vertex colour over its scan: red-brown brick, a pale
  * warm limestone, a cool blue-grey slate, the terrace's pale buff ashlar, a
  * mown turf, a pale gravel, the lamps' warm light (the shader emits the
- * lamp kind's colour), and a clock dial's face (its paint is the shader's
- * dial texture, lit from behind after sunset).
+ * lamp kind's colour), a clock dial's face (its paint is the shader's dial
+ * texture, lit from behind after sunset), weathered timber louvres, the
+ * gilt of the clock's hands, and the yews' deep blue-green (flat, no lawn
+ * mottle, so a columnar tree never reads pale).
  */
 export const TONE: Record<Kind, THREE.Color> = {
   brick: new THREE.Color(0.74, 0.5, 0.4),
@@ -62,6 +64,9 @@ export const TONE: Record<Kind, THREE.Color> = {
   gravel: new THREE.Color(0.93, 0.9, 0.82),
   lamp: new THREE.Color(1.0, 0.74, 0.44),
   dial: new THREE.Color(1, 1, 1),
+  louvre: new THREE.Color(0.5, 0.42, 0.33),
+  gilt: new THREE.Color(0.92, 0.72, 0.3),
+  yew: new THREE.Color(0.14, 0.3, 0.25),
 };
 
 /** A small seeded generator for the trees' and lamps' variety (lots.ts rng, kept local so this module stays pure). */
@@ -465,10 +470,10 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     const perVertex = new Float32Array(pp.count);
     for (let vi = 0; vi < pp.count; vi++) {
       const t = Math.min(1, Math.max(0, (pp.getY(vi) - h0) / (h1 - h0)));
-      perVertex[vi] = (0.5 + 0.5 * t) * (0.9 + 0.2 * hash3(pp.getX(vi) * 2.7, pp.getY(vi) * 2.7, pp.getZ(vi) * 2.7));
+      perVertex[vi] = (0.55 + 0.45 * t) * (0.88 + 0.24 * hash3(pp.getX(vi) * 2.7, pp.getY(vi) * 2.7, pp.getZ(vi) * 2.7));
     }
     let at = 0;
-    add('turf', crown.applyMatrix4(place), 0.5, () => perVertex[at++], new THREE.Color(0.42, 0.8, 0.74));
+    add('yew', crown.applyMatrix4(place), 1, () => perVertex[at++]);
   }
 
   /** A lamp: a dark post with a warm lit head under a small cap, in the site's own draw (the head's kind emits). */
