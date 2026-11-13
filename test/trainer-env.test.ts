@@ -4,13 +4,13 @@
  * paths are temp files.
  */
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
-import { TRAINER_DIR, trainerPython, trainerStatus } from '../engine/school/trainer-env.js';
+import { PINS, TRAINER_DIR, trainerOverride, trainerPython, trainerStatus, venvPython } from '../engine/school/trainer-env.js';
 
 let tempDir: string;
 let previous: string | undefined;
@@ -63,7 +63,7 @@ test('trainerPython is PALIMPSEST_PYTHON when it exists, else the trainer venv w
 test('trainerStatus is not ready without a python and says so', async () => {
   const { calls } = pingAs({ pong: true });
   const s = await trainerStatus(null);
-  assert.deepEqual(s, { ready: false, reason: 'The trainer is not set up on this Mac', python: null, arch: null, mlx: null, mlxLm: null });
+  assert.deepEqual(s, { ready: false, reason: 'The trainer is not set up on this Mac', python: null, arch: null, mlx: null, mlxLm: null, pinned: false });
   assert.equal(calls.length, 0, 'nothing is run');
 });
 
@@ -80,7 +80,7 @@ test('it is ready for arm64 with mlx 0.32.4 and mlx_lm 0.32.2', async () => {
   const python = fakePython();
   const { calls } = pingAs({ pong: true, python: '3.12.7', arch: 'arm64', mlx: '0.32.4', mlx_lm: '0.32.2' });
   const s = await trainerStatus(python);
-  assert.deepEqual(s, { ready: true, reason: null, python, arch: 'arm64', mlx: '0.32.4', mlxLm: '0.32.2' });
+  assert.deepEqual(s, { ready: true, reason: null, python, arch: 'arm64', mlx: '0.32.4', mlxLm: '0.32.2', pinned: true });
   // the ping runs the trainer's own script, offline and writing no bytecode, with no key in its environment
   assert.equal(calls.length, 1);
   assert.equal(calls[0].cmd, python);
@@ -112,4 +112,44 @@ test('a ping that fails or answers nonsense is not ready, with the reason', asyn
     throw new Error('spawn ENOENT');
   });
   assert.match((await trainerStatus(python)).reason ?? '', /did not answer/);
+});
+
+test('PALIMPSEST_PYTHON must be an absolute path to an executable file, and a bad one is named as such', async () => {
+  const venvDir = join(tempDir, 'trainer');
+  const own = fakePython(join(venvDir, '.venv', 'bin', 'python'));
+  assert.equal(venvPython(venvDir), own);
+  assert.equal(trainerOverride(), null, 'no override set');
+  const plain = join(tempDir, 'not-executable');
+  writeFileSync(plain, 'x');
+  chmodSync(plain, 0o644);
+  for (const bad of ['python3', 'bin/python', tempDir, plain, join(tempDir, 'missing')]) {
+    process.env.PALIMPSEST_PYTHON = bad;
+    assert.deepEqual(trainerOverride(), { given: bad, ok: false }, bad);
+    assert.equal(trainerPython(venvDir), null, `${bad} is refused, never replaced by the venv`);
+    const { calls } = pingAs({ pong: true });
+    const s = await trainerStatus();
+    assert.equal(s.ready, false);
+    assert.equal(s.reason, 'PALIMPSEST_PYTHON does not point at a Python', bad);
+    assert.equal(calls.length, 0, 'nothing is run');
+  }
+  const good = fakePython();
+  process.env.PALIMPSEST_PYTHON = good;
+  assert.deepEqual(trainerOverride(), { given: good, ok: true });
+  assert.equal(trainerPython(venvDir), good);
+  // unset, the not set up reason stands
+  delete process.env.PALIMPSEST_PYTHON;
+  pingAs({ pong: true });
+  assert.equal((await trainerStatus(null)).reason, 'The trainer is not set up on this Mac');
+});
+
+test('pinned says whether the versions are the pinned ones, and never decides ready', async () => {
+  const python = fakePython();
+  pingAs({ pong: true, python: '3.12.7', arch: 'arm64', mlx: '0.33.0', mlx_lm: '0.32.2' });
+  const s = await trainerStatus(python);
+  assert.equal(s.ready, true);
+  assert.equal(s.pinned, false);
+  // the pins are requirements.txt's
+  const req = readFileSync(join(TRAINER_DIR, 'requirements.txt'), 'utf8');
+  assert.match(req, new RegExp(`^mlx==${PINS.mlx.replace(/\./g, '\\.')}$`, 'm'));
+  assert.match(req, new RegExp(`^mlx-lm==${PINS.mlxLm.replace(/\./g, '\\.')}$`, 'm'));
 });

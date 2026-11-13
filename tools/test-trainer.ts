@@ -9,8 +9,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { TRAINER_DIR, trainerEnv, trainerPython } from '../engine/school/trainer-env.js';
+import { TRAINER_DIR, trainerEnv, trainerOverride, trainerPython } from '../engine/school/trainer-env.js';
 
+// a PALIMPSEST_PYTHON that names no Python is a mistake to fix, not a reason to skip
+if (trainerOverride()?.ok === false) {
+  console.error('PALIMPSEST_PYTHON does not point at a Python');
+  process.exit(1);
+}
 const python = trainerPython();
 if (!python) {
   console.log('Skipped: no trainer Python');

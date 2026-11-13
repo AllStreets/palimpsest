@@ -28,16 +28,20 @@ COMMANDS = {"ping": ping}
 
 
 def answer(line):
+    # a line that is not JSON, nests too deep to read, or is not an object is answered, never fatal
     try:
         request = json.loads(line)
         if not isinstance(request, dict):
             raise ValueError("a request is a JSON object")
-    except ValueError as e:
-        return {"id": None, "ok": False, "error": f"not a request: {e}"}
+    except (ValueError, RecursionError) as e:
+        return {"id": None, "ok": False, "error": f"not a request: {type(e).__name__}"}
     rid = request.get("id")
-    command = COMMANDS.get(request.get("cmd"))
+    cmd = request.get("cmd")
+    if not isinstance(cmd, str):
+        return {"id": rid, "ok": False, "error": "a request's cmd is a string"}
+    command = COMMANDS.get(cmd)
     if command is None:
-        return {"id": rid, "ok": False, "error": f"unknown command: {request.get('cmd')}"}
+        return {"id": rid, "ok": False, "error": f"unknown command: {cmd}"}
     try:
         return {"id": rid, "ok": True, **command(request)}
     except Exception as e:  # one failed request never ends the process
@@ -51,7 +55,9 @@ def main(argv):
     if argv[1:]:
         print("usage: school.py [ping]", file=sys.stderr)
         return 2
-    for line in sys.stdin:
+    # bytes, decoded line by line, so a line that is not UTF-8 is answered rather than ending the loop
+    for raw in sys.stdin.buffer:
+        line = raw.decode("utf-8", errors="replace")
         if line.strip():
             print(json.dumps(answer(line)), flush=True)
     return 0

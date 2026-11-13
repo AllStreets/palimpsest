@@ -15,6 +15,15 @@ export type Runner = (
  * the bare repos tests build in their temp dirs (rule 5).
  */
 const REFUSED_IN_TESTS = new Set(['gh', 'claude', 'ollama', 'security', 'caffeinate', 'osascript', 'launchctl']);
+/** Any Python (`python`, `python3`, `python3.12`): the trainer's tests are `npm run test:trainer`, never `npm test` (Phase 4 test safety rule 11). */
+const PYTHON = /^python[\d.]*$/;
+/** The trainer's own script, however it is started. */
+const TRAINER_SCRIPT = 'school.py';
+
+/** Whether a command's basename is one a test may never run. */
+function refusedName(base: string): boolean {
+  return REFUSED_IN_TESTS.has(base) || PYTHON.test(base) || base === TRAINER_SCRIPT;
+}
 
 /**
  * A command line for an error message. A `security` call shows only its
@@ -34,7 +43,7 @@ function inTestRun(): boolean {
 /** The default Runner: actually spawns the process. */
 export const realRunner: Runner = (cmd, args, opts) =>
   new Promise((resolve, reject) => {
-    if (inTestRun() && REFUSED_IN_TESTS.has(cmd.split('/').pop() ?? cmd)) {
+    if (inTestRun() && [cmd, ...args].some((w, i) => (i === 0 ? refusedName(w.split('/').pop() ?? w) : (w.split('/').pop() ?? w) === TRAINER_SCRIPT))) {
       reject(new Error(`${describeCommand(cmd, args)} refused in tests: install a fake runner`));
       return;
     }
@@ -151,7 +160,7 @@ function refusedInTests(cmd: string, args: string[]): string | null {
   for (const word of [cmd, ...args]) {
     for (const token of word.split(/[\s;&|()<>'"`$={}]+/)) {
       const base = token.split('/').pop() ?? token;
-      if (REFUSED_IN_TESTS.has(base)) return base;
+      if (refusedName(base)) return base;
     }
   }
   return null;

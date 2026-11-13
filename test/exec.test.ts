@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
-import { getSpawner, KILL_GRACE_MS, realSpawner, setSpawner, signalGroup, type Spawner } from '../engine/exec.js';
+import { getSpawner, KILL_GRACE_MS, realRunner, realSpawner, setSpawner, signalGroup, type Spawner } from '../engine/exec.js';
 
 afterEach(() => {
   setSpawner(realSpawner);
@@ -240,4 +240,17 @@ test('setSpawner installs a fake and getSpawner returns it', () => {
   assert.equal(getSpawner(), fake);
   setSpawner(realSpawner);
   assert.equal(getSpawner(), realSpawner);
+});
+
+test('the real runner and spawner refuse any python and the trainer script under node --test', async () => {
+  for (const cmd of ['python', 'python3', '/usr/bin/python3', 'python3.12', '/Users/x/.venv/bin/python3.12.7']) {
+    await assert.rejects(realRunner(cmd, ['-c', '1']), /refused in tests/, cmd);
+    assert.throws(() => realSpawner(cmd, ['-c', '1'], {}), /refused in tests/, cmd);
+  }
+  await assert.rejects(realRunner('/bin/sh', ['/repo/trainer/school.py', 'ping']), /refused in tests/);
+  assert.throws(() => realSpawner('/usr/bin/sandbox-exec', ['-f', 'p.sb', '/opt/py/bin/python', '/repo/trainer/school.py'], {}), /refused in tests/);
+  assert.throws(() => realSpawner('/usr/bin/env', ['python3', 'x.py'], {}), /refused in tests/);
+  // a word that only mentions python is not a python
+  const r = await realRunner('/bin/echo', ['pythonic', 'school.py.bak']);
+  assert.equal(r.stdout.trim(), 'pythonic school.py.bak');
 });
