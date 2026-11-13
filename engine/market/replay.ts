@@ -37,8 +37,11 @@
  *   version, reason, at }` is one prediction, whose id is this entry's id.
  *   `decision.resolved { key, kind, repo, jobId, approved, by, predictionId,
  *   agreed, at }` appends one resolution. Every `autonomy.*` entry that moves
- *   a pair carries `grant` (an `autonomy.acted` that only reports a result
- *   carries none). `arena.built { arena }`; `voyage.started | .generation |
+ *   a pair carries `grant` (Task 16, autonomy.ts): the ask, his grant,
+ *   decline or revocation, the school's suspension, and the `autonomy.acted`
+ *   written before an act, whose grant carries the moved `acted` count; the
+ *   `autonomy.acted` written after it only reports `result` and carries
+ *   none. `arena.built { arena }`; `voyage.started | .generation |
  *   .ended { voyage }` (the fee of `voyage.commissioned` is a
  *   `credits.moved`); `train.started | .paused | .ended { train }`;
  *   `graduate.made { graduate }`. A `voyage.ended` or `graduate.made` that

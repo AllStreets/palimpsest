@@ -18,7 +18,8 @@
 import { localDay } from '../shared/day.js';
 import { MAX_ATTEMPTS } from '../shared/market-rules.js';
 import type { RawRow } from '../shared/net-features.js';
-import type { Audit, Brief, BriefAction, BriefItem, BriefItemKind, Job, Milestone, Repo, Run, Tier, Tour } from '../shared/types.js';
+import { AGREE, WORK_KINDS } from '../shared/school-rules.js';
+import type { Audit, Brief, BriefAction, BriefItem, BriefItemKind, Grant, Job, Milestone, Repo, Run, Tier, Tour, WorkKind } from '../shared/types.js';
 import { queueAudit } from './audit/run.js';
 import { latestAudit, listAudits } from './audit/store.js';
 import { emit } from './events.js';
@@ -30,6 +31,7 @@ import { listMilestones, weekTour } from './market/milestones.js';
 import { claimOf, latestReport, num, reportData, type ReportData } from './market/report.js';
 import { listRuns, resumeRepo } from './market/runs.js';
 import { getRepo, listRepos } from './repos.js';
+import { decline, grant, grants, kindWords, revoke } from './school/autonomy.js';
 import { repoAcceptShare } from './school/datasets.js';
 import { predict } from './school/decisions.js';
 import { getSettings, patchSettings } from './settings.js';
@@ -38,10 +40,10 @@ const DAY_MS = 24 * 3_600_000;
 const TIERS: readonly Tier[] = ['low', 'normal', 'high'];
 /** A window within this many points of the cap puts the usage line in the brief. */
 const USAGE_MARGIN = 10;
-/** The actions that teach Triage something about what he wants (ruling 9). */
-const TAUGHT: readonly BriefAction[] = ['dismiss', 'accept', 'tier', 'retry', 'cap'];
+/** The actions that teach Triage something about what he wants (ruling 9), and (Phase 4) his answers on autonomy. */
+const TAUGHT: readonly BriefAction[] = ['dismiss', 'accept', 'tier', 'retry', 'cap', 'grant', 'decline', 'revoke'];
 /** The actions that finish an item: once taken, the item shows it and offers nothing else. A cap can be changed again. */
-const FINISHING: readonly BriefAction[] = ['accept', 'dismiss', 'retry', 'resume', 'audit'];
+const FINISHING: readonly BriefAction[] = ['accept', 'dismiss', 'retry', 'resume', 'audit', 'grant', 'decline', 'revoke'];
 /** Looking, not acting: recorded, but never covering what he did with the item (he may ask why after posting it). */
 const LOOKS: readonly BriefAction[] = ['why', 'diff', 'fly', 'open-pr'];
 /** Whether `next` should stand as the item's action over `was`. */
@@ -148,6 +150,27 @@ function proposalText(j: Job): string {
   if (claim) return `The README says "${claim}", and the code does not do it yet.`;
   const body = j.body.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('['));
   return body[0] ?? j.title;
+}
+
+/** The brief item of an ask: `autonomy:<kind>:<repo>` (ruling 17). */
+const autonomyItemId = (kind: WorkKind, repo: string): string => `autonomy:${kind}:${repo}`;
+
+/** The pair an `autonomy:` item names, or null. */
+function pairOf(itemId: string): { kind: WorkKind; repo: string } | null {
+  for (const kind of WORK_KINDS) {
+    const head = `autonomy:${kind}:`;
+    if (itemId.startsWith(head) && itemId.length > head.length) return { kind, repo: itemId.slice(head.length) };
+  }
+  return null;
+}
+
+/** The pair and job an `acted:<ledger id>` item names, from its `autonomy.acted` row, or null. */
+function actOf(itemId: string): { kind: WorkKind; repo: string; jobId: string } | null {
+  const id = Number(itemId.slice('acted:'.length));
+  const e = query({ kind: 'autonomy.acted' }).find((x) => x.id === id);
+  const d = e?.data as { kind?: unknown; repo?: unknown; jobId?: unknown } | undefined;
+  if (!d || typeof d.kind !== 'string' || !(WORK_KINDS as readonly string[]).includes(d.kind) || typeof d.repo !== 'string' || typeof d.jobId !== 'string') return null;
+  return { kind: d.kind as WorkKind, repo: d.repo, jobId: d.jobId };
 }
 
 /** The tour's stops he will see, not counting the exchange it starts and ends at. */
@@ -283,15 +306,10 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
     });
   }
   // Proposals waiting now, and the ones he already answered in this window (they keep their line, with his answer on it).
-  const answered = new Set(
-    query({ kind: 'brief.action', from: since })
-      .map((e) => (e.data as { itemId?: string }).itemId ?? '')
-      .filter((id) => id.startsWith('proposal:'))
-      .map((id) => id.slice('proposal:'.length)),
-  );
+  const answered = new Set(query({ kind: 'brief.action', from: since }).map((e) => (e.data as { itemId?: string }).itemId ?? ''));
   const proposals = listJobs({ status: 'proposed' });
-  for (const id of answered) if (!proposals.some((j) => j.id === id)) {
-    const j = storedJob(id);
+  for (const id of answered) if (id.startsWith('proposal:') && !proposals.some((j) => j.id === id.slice('proposal:'.length))) {
+    const j = storedJob(id.slice('proposal:'.length));
     if (j) proposals.push(j);
   }
   for (const j of proposals.sort((a, b) => a.postedAt.localeCompare(b.postedAt))) {
@@ -305,6 +323,52 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
       tier: j.tier,
       refs: { jobId: j.id, ...(j.proposal ? { auditId: j.proposal.auditId } : {}) },
       actions: j.status === 'proposed' ? ['accept', 'tier', 'dismiss', 'why'] : ['why'],
+    });
+  }
+  // Phase 4 (ruling 17): the asks for autonomy waiting on him, and the ones he answered in this window.
+  const pairs = grants();
+  for (const g of pairs) {
+    const id = autonomyItemId(g.kind, g.repo);
+    if (g.state !== 'asked' && !answered.has(id)) continue;
+    const words = kindWords(g.kind);
+    const n = g.rate?.n ?? 0;
+    const agreed = g.rate ? Math.round(g.rate.value * n) : 0;
+    drafts.push({
+      id,
+      kind: 'autonomy',
+      repo: g.repo,
+      title: `May the city ${words.verb} on ${g.repo} on its own?`,
+      text: `The master has agreed with you on ${agreed} of the last ${n} ${g.kind} decisions, and on its last ${AGREE.repoLast} on ${g.repo}. If you grant it, the city acts there without you when every check holds; each act appears here, and you can revoke it at any time. Declining keeps it quiet for ${AGREE.quietDays} days.`,
+      at: g.at,
+      actions: g.state === 'asked' ? ['grant', 'decline', 'why'] : ['why'],
+    });
+  }
+  // Ruling 18: what the city did on its own, one line per act, with its result when that is on record.
+  const results = new Map<string, { ok: boolean; reason: string | null }>();
+  const acts: Array<{ e: LedgerEntry; kind: WorkKind; repo: string; jobId: string }> = [];
+  for (const e of query({ kind: 'autonomy.acted', from: since })) {
+    const d = e.data as { kind?: unknown; repo?: unknown; jobId?: unknown; key?: unknown; grant?: unknown; result?: { ok?: unknown; reason?: unknown } };
+    if (typeof d.kind !== 'string' || !(WORK_KINDS as readonly string[]).includes(d.kind) || typeof d.repo !== 'string' || typeof d.jobId !== 'string') continue;
+    if (d.result && typeof d.result === 'object') results.set(`${d.kind}:${d.jobId}`, { ok: d.result.ok === true, reason: typeof d.result.reason === 'string' ? d.result.reason : null });
+    else if (d.grant) acts.push({ e, kind: d.kind as WorkKind, repo: d.repo, jobId: d.jobId });
+  }
+  for (const a of acts) {
+    const j = storedJob(a.jobId);
+    const r = j?.runId ? listRuns({ jobId: j.id }).find((x) => x.id === j.runId) ?? null : null;
+    const title = j?.title ?? a.jobId;
+    const did = a.kind.startsWith('merge:') ? `merged ${r?.prNumber ? `PR #${r.prNumber} of ` : ''}"${title}"` : `accepted the proposal "${title}"`;
+    const result = results.get(`${a.kind}:${a.jobId}`);
+    const outcome = !result ? ' Its result is not on record yet.' : result.ok ? '' : ` It did not go through: ${sentence(result.reason ?? 'no reason was written down')}`;
+    const live = pairs.find((g) => g.kind === a.kind && g.repo === a.repo)?.state === 'granted';
+    drafts.push({
+      id: `acted:${a.e.id}`,
+      kind: 'acted',
+      repo: a.repo,
+      title,
+      text: `The city ${did} on ${a.repo} on its own, under its ${a.kind} grant.${outcome}`,
+      at: (a.e.data as { at?: string }).at ?? a.e.at,
+      refs: { jobId: a.jobId, ...(r ? { runId: r.id, ...(r.prUrl ? { prUrl: redact(r.prUrl) } : {}) } : {}) },
+      actions: live ? ['revoke', 'why'] : ['why'],
     });
   }
   const repos = listRepos().filter((r: Repo) => r.connected);
@@ -678,6 +742,20 @@ export function actOn(itemId: string, action: BriefAction, body: { tier?: Tier; 
       const repo = item.repo ? getRepo(item.repo) : null;
       if (!repo) throw new Error(`no repo ${item.repo}`);
       result = queueAudit(repo, 'brief', now);
+      break;
+    }
+    case 'grant':
+    case 'decline': {
+      // Only his action grants (ruling 17): from the open ask this line is.
+      const pair = pairOf(itemId);
+      if (!pair) throw new Error(`${itemId} names no pair`);
+      result = action === 'grant' ? grant(pair.kind, pair.repo, now) : decline(pair.kind, pair.repo, now);
+      break;
+    }
+    case 'revoke': {
+      const act = actOf(itemId);
+      if (!act) throw new Error(`${itemId} names no act`);
+      result = revoke(act.kind, act.repo, 'him', act.jobId, now);
       break;
     }
     default:

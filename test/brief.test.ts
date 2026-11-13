@@ -15,12 +15,13 @@ import { seedFirms } from '../engine/market/firms.js';
 import { job as storedJob, postManualJob, postProposal, repost, transition } from '../engine/market/jobs.js';
 import { haltRepo } from '../engine/market/runs.js';
 import { installTreasury } from '../engine/market/treasury.js';
+import { askDue, grantOf, noteActed, noteActResult } from '../engine/school/autonomy.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localDay } from '../shared/day.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Audit, Bid, Brief, BriefItem, Job, Repo, Run, Tour, TourStop } from '../shared/types.js';
 import { checks, FULL, HOUR, noReading, setUp, tearDown } from './guild-fixtures.js';
-import { installNet, netOf } from './school-fixtures.js';
+import { agreedDecisions, constant, installNet, netOf } from './school-fixtures.js';
 import { paths } from '../engine/home.js';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -706,4 +707,54 @@ test('triage reorders recommendations only when trusted and the school is on, an
   patchSettings({ school: { ...getSettings().school, enabled: false } });
   assert.deepEqual(recs(briefData(now)), phase3, 'the school off: Phase 3 again');
   assert.equal(suggestion(briefData(now)), null);
+});
+
+test('an ask for autonomy waits on him, an act is news with revoke, and grant, decline and revoke are taught', () => {
+  seedFirms([]);
+  const repo = addRepo(FULL, { checks: checks({ test: 'npm test', build: 'npm run build' }) });
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  const now = Date.now();
+  installNet(constant('master', 1, 0.95), { at: new Date(now - HOUR).toISOString() });
+  // 50 of his accepted README proposals, each guessed approve: the kind is eligible and the repo passes its test
+  agreedDecisions('propose:readme-gap', repo.fullName, 50, now - 50 * HOUR);
+  assert.equal(askDue(now).length, 1);
+  let b = briefData(now);
+  const ask = item(b, `autonomy:propose:readme-gap:${FULL}`)!;
+  assert.ok(ask, 'the ask is a waiting line');
+  assert.ok(b.sections.waiting.includes(ask));
+  assert.deepEqual(ask.actions, ['grant', 'decline', 'why']);
+  assert.equal(ask.repo, FULL);
+  assert.ok(b.due);
+  const taught = () => (entries().filter((e) => e.kind === 'brief.action').at(-1)!.data as { action: string; taught: boolean });
+  // decline is taught and silences; the line stays with his answer on it
+  actOn(ask.id, 'decline', {}, now);
+  assert.deepEqual(taught(), { ...taught(), action: 'decline', taught: true });
+  assert.equal(grantOf('propose:readme-gap', FULL)?.state, 'declined');
+  b = briefData(now + 60_000);
+  assert.equal(item(b, ask.id)?.acted?.action, 'decline');
+  assert.deepEqual(item(b, ask.id)?.actions, ['why']);
+  // another kind asked and granted, then the city acts under it: an overnight line with revoke
+  agreedDecisions('propose:harness', repo.fullName, 50, now - 50 * HOUR);
+  askDue(now + 60_000);
+  const r = actOn(`autonomy:propose:harness:${FULL}`, 'grant', {}, now + 60_000);
+  assert.deepEqual(taught(), { ...taught(), action: 'grant', taught: true });
+  assert.deepEqual(r.item.actions, ['why']);
+  assert.equal(grantOf('propose:harness', FULL)?.state, 'granted');
+  const job = postManualJob({ repo: FULL, title: 'Add a baseline test and build harness', body: 'Add it.', tier: 'low' });
+  noteActed('propose:harness', FULL, job.id, now + 120_000);
+  noteActResult('propose:harness', FULL, job.id, { ok: true, reason: null }, now + 121_000);
+  b = briefData(now + 180_000);
+  const acted = b.sections.overnight.find((i) => i.kind === 'acted')!;
+  assert.ok(acted, 'the act is news from the night');
+  assert.equal(acted.refs.jobId, job.id);
+  assert.match(acted.text, /accepted the proposal "Add a baseline test and build harness" on acme\/widgets on its own, under its propose:harness grant\./);
+  assert.deepEqual(acted.actions, ['revoke', 'why']);
+  const revoked = actOn(acted.id, 'revoke', {}, now + 180_000);
+  assert.deepEqual(taught(), { ...taught(), action: 'revoke', taught: true });
+  assert.deepEqual(revoked.item.actions, ['why']);
+  assert.equal(grantOf('propose:harness', FULL)?.state, 'revoked');
+  assert.equal(grantOf('propose:harness', FULL)?.by, 'him');
+  // an action the ask does not offer once answered is refused, and the pair stays as he left it
+  assert.throws(() => actOn(ask.id, 'grant', {}, now + 240_000), /does not offer grant/);
+  assert.equal(grantOf('propose:readme-gap', FULL)?.state, 'declined');
 });

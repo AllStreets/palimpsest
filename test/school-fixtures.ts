@@ -6,13 +6,14 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { openDb } from '../engine/db.js';
 import { paths } from '../engine/home.js';
 import { record } from '../engine/ledger.js';
 // installs the school's hooks into the market, as the engine does through tick.ts
-import '../engine/school/decisions.js';
+import { registerPrediction, resolve } from '../engine/school/decisions.js';
 import { FEATURES } from '../shared/net-features.js';
 import { outFor, type NetWeights } from '../shared/nets.js';
-import type { NetName, NetVersion } from '../shared/types.js';
+import type { Job, NetName, NetVersion, Run, WorkKind } from '../shared/types.js';
 
 /** One hidden unit: `gelu(sum of w * column + b)`, weighted by `head` into the output. */
 export interface Unit {
@@ -83,4 +84,98 @@ export function installNet(weights: NetWeights, o: { trusted?: boolean; at?: str
   record('net.trained', { version, skewed: [], trainId: `train-${weights.net}-${weights.version}` });
   record('net.promoted', { net: weights.net, version: weights.version, from: null, trusted, at: version.at });
   return version;
+}
+
+// ---------------------------------------------------------------- an agreement window (Tasks 15 and 16)
+
+let seq = 0;
+
+/** A job written straight to the store, for a decision the tests resolve themselves. */
+export function storeJobRow(id: string, over: Partial<Job>): Job {
+  const j: Job = {
+    id,
+    repo: 'acme/widgets',
+    source: 'manual',
+    issue: null,
+    url: null,
+    title: `Job ${id}`,
+    body: '',
+    scope: ['**'],
+    acceptance: ['it works'],
+    tier: 'normal',
+    value: 60,
+    status: 'waiting',
+    attempts: 0,
+    postedAt: '2026-11-12T01:00:00.000Z',
+    bidsCloseAt: null,
+    awardedBid: null,
+    runId: null,
+    floorId: null,
+    closedAt: null,
+    excludedFirms: [],
+    haltedFrom: null,
+    ...over,
+  };
+  openDb().prepare('INSERT OR REPLACE INTO jobs (id, repo, status, json, key) VALUES (?, ?, ?, ?, ?)').run(j.id, j.repo, j.status, JSON.stringify(j), null);
+  return j;
+}
+
+/** A run written straight to the store: a PR waiting on him unless `over` says otherwise. */
+export function storeRunRow(id: string, jobId: string, repo: string, over: Partial<Run> = {}): Run {
+  const r: Run = {
+    id,
+    jobId,
+    bidId: `bid-${jobId}`,
+    agentId: 'w1',
+    firmId: 'quickset',
+    repo,
+    model: 'claude:sonnet',
+    branch: `palimpsest/${jobId}`,
+    dir: null,
+    baseSha: null,
+    headSha: 'b'.repeat(40),
+    stage: 'waiting',
+    outcome: null,
+    endedReason: null,
+    progress: { toolCalls: 0, filesChanged: 1, testsRun: 0, turns: 1, weightedTokens: 0, credits: 0, refusals: 0 },
+    startedAt: '2026-11-12T01:00:00.000Z',
+    endedAt: null,
+    prNumber: 9,
+    prUrl: `https://github.com/${repo}/pull/9`,
+    mergeSha: null,
+    inspectionId: null,
+    scar: false,
+    unattended: false,
+    ...over,
+  };
+  openDb().prepare('INSERT OR REPLACE INTO runs (id, job_id, repo, stage, json) VALUES (?, ?, ?, ?, ?)').run(r.id, r.jobId, r.repo, r.stage, JSON.stringify(r));
+  return r;
+}
+
+/**
+ * `count` of his decisions of `kind` on `repo`, each agreeing with the
+ * installed master (which must guess approve, 0.5 or more), one minute
+ * apart from `from`. Proposal kinds are accepted proposals; merge kinds are
+ * merged PRs of the tier. Returns the clock after the last one.
+ */
+export function agreedDecisions(kind: WorkKind, repo: string, count: number, from: number): number {
+  let clock = from;
+  for (let i = 0; i < count; i++) {
+    const id = `agree-${repo.replace('/', '-')}-${kind.replace(':', '-')}-${seq++}`;
+    if (kind.startsWith('propose:')) {
+      const j = storeJobRow(id, { repo, source: kind === 'propose:harness' ? 'harness' : 'proposal', status: 'proposed', tier: 'low' });
+      registerPrediction(j, null, clock);
+      clock += 60_000;
+      resolve(j, 'accept', clock);
+    } else {
+      const tier = kind === 'merge:ui' ? 'normal' : (kind.slice('merge:'.length) as Job['tier']);
+      const j = storeJobRow(id, { repo, tier, status: 'waiting', runId: `run-${id}` });
+      const r = storeRunRow(`run-${id}`, j.id, repo);
+      registerPrediction(j, r, clock);
+      clock += 60_000;
+      resolve(j, 'merge', clock, { run: r });
+    }
+    clock += 60_000;
+  }
+  return clock;
 }

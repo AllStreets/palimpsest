@@ -27,7 +27,8 @@
  * - `resolve(job, by, at)` records one of his decisions (`decision.resolved`
  *   and the `decisions` table), with the guess's inputs copied on for the
  *   master's rows; never the city's own acts (`autonomy.acted` by jobId),
- *   whose undoing by him is an `undo` that suspends the pair.
+ *   whose undoing by him is an `undo` that suspends the pair (autonomy.ts,
+ *   through hooks.ts).
  *   `installDecisions()` hears them on the bus (main.ts installs it).
  * - `agreement(kind, repo?)` and `agreements()`: the window autonomy reads.
  *
@@ -56,7 +57,7 @@ import { PR_CLOSED_REASON } from '../market/ship.js';
 import { getRepo } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { bidRaw, durabilityRaw, latestInspection, repoAcceptShare, repoApprovalShare, runDiff, setDistilPredict, tasteRaw } from './datasets.js';
-import { setAppraiserHook, setPendingHook } from './hooks.js';
+import { noteRevert, setAppraiserHook, setPendingHook, suspendPair } from './hooks.js';
 import { loadCurrent, skewedKinds } from './nets.js';
 import { ci } from './stats.js';
 
@@ -179,14 +180,14 @@ export function masterInputs(job: Job, r: Run | null, now: number = Date.now(), 
 }
 
 /** The prediction already registered for `key`, or null. */
-function registered(key: string): Prediction | null {
+export function registered(key: string): Prediction | null {
   const row = openDb().prepare('SELECT id, json FROM predictions WHERE key = ?').get(key) as { id: number | bigint; json: string } | undefined;
   if (!row) return null;
   return { ...(JSON.parse(row.json) as Prediction), id: Number(row.id) };
 }
 
-/** Why the master cannot answer now, or null when it can; with the master when there is one. */
-function masterState(now: number): { reason: string | null; master: ReturnType<typeof loadCurrent>['current'] } {
+/** Why the master cannot answer now, or null when it can; with the master when there is one. mayAct reads it too. */
+export function masterState(now: number): { reason: string | null; master: ReturnType<typeof loadCurrent>['current'] } {
   const { current: m, reason: refused } = loadCurrent('master');
   if (!m) return { reason: refused ? `the master cannot be used: ${refused}` : 'there is no master yet', master: null };
   const n = m.version.version;
@@ -349,12 +350,12 @@ export function catchUpPredictions(now: number = Date.now()): Prediction[] {
 
 // ---------------------------------------------------------------- his decisions (ruling 14)
 
-/** What Task 16's `suspend()` does with a pair the city acted for and he undid; injected until it lands. */
+/** What suspends a pair the city acted for and he undid: autonomy.ts's `suspend`, through hooks.ts unless a test injects its own. */
 export type Suspend = (kind: WorkKind, repo: string, reason: string, now: number) => void;
 /** Why a pair is suspended when he undoes what it did. */
 export const UNDO_REASON = 'he undid it';
 
-const noSuspend: Suspend = () => {};
+const hookSuspend: Suspend = (kind, repo, reason, now) => suspendPair(kind, repo, reason, now);
 
 /**
  * What the city did on its own to a job (Task 17's `autonomy.acted` rows,
@@ -486,7 +487,7 @@ export function resolve(job: Job, by: Decision['by'], at: number = Date.now(), o
   emit('decision.resolved', { decision });
   if (pair) {
     try {
-      (o.suspend ?? noSuspend)(pair.kind, pair.repo, UNDO_REASON, at);
+      (o.suspend ?? hookSuspend)(pair.kind, pair.repo, UNDO_REASON, at);
     } catch (err) {
       console.error(`palimpsest: the ${pair.kind} pair on ${pair.repo} could not be suspended: ${errText(err)}`);
     }
@@ -521,6 +522,8 @@ function hear(type: string, data: unknown, at: number, suspend: Suspend): void {
     return;
   }
   if (type === 'merge.reverted') {
+    // Ruling 19: the pair that acted on the job is revoked first, before the window and before the repo halts.
+    noteRevert(d);
     const j = typeof d.jobId === 'string' ? storedJob(d.jobId) : null;
     if (j) resolve(j, 'revert', at, { suspend });
   }
@@ -529,12 +532,13 @@ function hear(type: string, data: unknown, at: number, suspend: Suspend): void {
 /**
  * Hears his decisions on the bus (ruling 14): `job.changed` (an accept, a
  * dismissal, a withdrawal, a PR-mode merge), `run.ended` (a PR merged with
- * changes, or closed by him) and `merge.reverted`. `suspend` is Task 16's,
- * injected until it lands. main.ts installs it; returns the unsubscribe.
+ * changes, or closed by him) and `merge.reverted` (which first revokes the
+ * pair that acted on the job, through hooks.ts). `suspend` is autonomy.ts's
+ * through hooks.ts unless given. main.ts installs it; returns the unsubscribe.
  */
 export function installDecisions(o: { now?: () => number; suspend?: Suspend } = {}): () => void {
   const now = o.now ?? (() => Date.now());
-  const suspend = o.suspend ?? noSuspend;
+  const suspend = o.suspend ?? hookSuspend;
   return subscribe((e) => {
     if (e.type !== 'job.changed' && e.type !== 'run.ended' && e.type !== 'merge.reverted') return;
     try {
