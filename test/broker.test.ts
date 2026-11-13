@@ -413,6 +413,40 @@ function orphanIn(cwd: string, argv: string[] = ['/bin/sleep', '30']): number {
   return pid;
 }
 
+/** Polls `check` every 50 ms until it holds or `ms` pass; whether it held. */
+async function until(check: () => boolean, ms = 30_000): Promise<boolean> {
+  const end = Date.now() + ms;
+  for (;;) {
+    if (check()) return true;
+    if (Date.now() >= end) return false;
+    await new Promise((res) => setTimeout(res, 50));
+  }
+}
+
+/** What `ps` says `pid` runs now, or null when it is gone or a zombie. */
+function psOf(pid: number): string | null {
+  try {
+    const out = execFileSync('/bin/ps', ['-o', 'stat=,command=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
+    const m = /^(\S+)\s+(.*)$/.exec(out);
+    return m && !m[1].startsWith('Z') ? m[2] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Waits (generously) until `pid` has exec-ed `exe`: a sandbox-exec wrapper has applied its profile by then. */
+async function execed(pid: number, exe: string): Promise<void> {
+  assert.ok(await until(() => (psOf(pid) ?? '').startsWith(exe)), `${pid} never became ${exe}: ${psOf(pid)}`);
+}
+
+/** Waits (generously) until `pid` is gone, and says whether it went. */
+function gone(pid: number): Promise<boolean> {
+  return until(() => psOf(pid) === null);
+}
+
+/** Shell that waits until `file` is written (up to two minutes), so a command ends only once its daemon has said who it is. */
+const awaitFile = (file: string) => `i=0; while [ ! -s ${file} ] && [ $i -lt 1200 ]; do sleep 0.1; i=$((i+1)); done`;
+
 /** argv run under `run`'s own tool profile. */
 function underProfile(run: { runRoot: string }, argv: string[]): string[] {
   return wrap(argv, 'tool', { runRoot: run.runRoot, home: join(tempDir, 'home'), dataHome: join(tempDir, 'data'), enginePort: 9, proxyPort: 9, toolchains: [], otherPorts: [] });
@@ -431,17 +465,25 @@ afterEach(() => {
 const noSandbox = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || !existsSync('/usr/bin/cc') ? 'sandbox-exec or cc is missing' : false;
 
 describe('the reaper', () => {
-  const daemon = (name: string, clearEnv = false) =>
-    `${clearEnv ? 'env -i ' : ''}perl -e 'use POSIX; exit if fork; POSIX::setsid(); exit if fork; sleep 3; open(F, ">>", "${name}"); print F "alive\\n"; close F'; echo started`;
+  // The daemon writes its pid, then waits for the test's `go` file before it
+  // writes: the reap may take as long as the machine makes it, and the test
+  // decides when a surviving daemon would write, so nothing races a clock.
+  const daemon = (dir: string, name: string, clearEnv = false) =>
+    `${clearEnv ? 'env -i ' : ''}perl -e 'use POSIX; exit if fork; POSIX::setsid(); exit if fork; open(P, ">", "${name}.pid"); print P $$; close P; for (1..1200) { last if -e "${join(dir, 'go')}"; select(undef, undef, undef, 0.1) } open(F, ">>", "${name}"); print F "alive\\n"; close F'; ${awaitFile(`${name}.pid`)}; echo started`;
 
   test('a fork and setsid daemon is gone after execTool returns and never writes', { skip: noSandbox }, async () => {
     process.env.PALIMPSEST_SANDBOX = 'on';
     const run = makeRun('run-daemon');
-    const r = await execTool({ ...base(run, []), command: daemon('escaped.txt'), timeoutMs: 10_000 });
+    const r = await execTool({ ...base(run, []), command: daemon(run.dir, 'escaped.txt'), timeoutMs: 120_000 });
     assert.equal(r.code, 0, r.stderr);
-    const r2 = await execTool({ ...base(run, []), command: daemon('escaped-noenv.txt', true), timeoutMs: 10_000 });
+    const r2 = await execTool({ ...base(run, []), command: daemon(run.dir, 'escaped-noenv.txt', true), timeoutMs: 120_000 });
     assert.equal(r2.code, 0, r2.stderr);
-    await new Promise((res) => setTimeout(res, 4000));
+    for (const name of ['escaped.txt', 'escaped-noenv.txt']) {
+      const pid = Number(readFileSync(join(run.dir, `${name}.pid`), 'utf8'));
+      assert.ok(pid > 1, `${name}: the daemon never said its pid`);
+      assert.ok(await gone(pid), `${name}: the daemon outlived its command`);
+    }
+    writeFileSync(join(run.dir, 'go'), '');
     assert.ok(!existsSync(join(run.dir, 'escaped.txt')), 'the daemon outlived its command');
     assert.ok(!existsSync(join(run.dir, 'escaped-noenv.txt')), 'the env-cleared daemon outlived its command');
     assert.deepEqual(await reapRun(run.runRoot), []);
@@ -459,7 +501,7 @@ describe('the reaper', () => {
     // Not sandboxed, working in the run root, no terminal, no parent here: the old cwd rule would have killed it.
     const nonMember = orphanIn(run.dir);
     const inside = orphanIn('/', underProfile(run, ['/bin/sleep', '30']));
-    await new Promise((res) => setTimeout(res, 300));
+    for (const pid of [kept.pid as number, nonMember, inside]) await execed(pid, '/bin/sleep');
     const killed = await reapRun(run.runRoot);
     assert.ok(killed.includes(inside), `the member was not reaped: ${killed}`);
     for (const pid of [outside.pid as number, kept.pid as number, nonMember, process.pid]) {
@@ -473,10 +515,9 @@ describe('the reaper', () => {
     process.env.PALIMPSEST_SANDBOX = 'on';
     const run = makeRun('run-quiet');
     const inside = orphanIn('/', underProfile(run, ['/bin/sleep', '30']));
-    await new Promise((res) => setTimeout(res, 300));
+    await execed(inside, '/bin/sleep');
     await runQuiet(run.runRoot);
-    await new Promise((res) => setTimeout(res, 100));
-    assert.throws(() => process.kill(inside, 0));
+    assert.ok(await gone(inside), 'the member outlived runQuiet');
   });
 
   test('the broker refuses a fifth concurrent call on one run', async () => {
@@ -493,27 +534,38 @@ describe('the reaper', () => {
 describe('the reaper by sandbox membership', () => {
   const skip = process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') || !existsSync('/usr/bin/cc') ? 'sandbox-exec or cc is missing' : false;
 
+  // As above: each daemon writes its pid, then waits for the test's `go` file before it writes.
+  const escaper = (dir: string, target: string) => {
+    const inner = `use POSIX; exit if fork; POSIX::setsid(); exit if fork; chdir("/"); open(P, ">", "${target}.pid"); print P $$; close P; exec("/bin/sh", "-c", "i=0; while [ ! -e ${join(dir, 'go')} ] && [ \\$i -lt 1200 ]; do sleep 0.1; i=\\$((i+1)); done; echo alive >> ${target}")`;
+    return `env -i /usr/bin/perl -e '${inner}'; ${awaitFile(`${target}.pid`)}`;
+  };
+
+  /** The daemon behind `target` is gone, and once told to go it writes nothing. */
+  async function neverWrites(dir: string, target: string): Promise<void> {
+    const pid = Number(readFileSync(`${target}.pid`, 'utf8'));
+    assert.ok(pid > 1, 'the daemon never said its pid');
+    assert.ok(await gone(pid), 'the daemon outlived its command');
+    writeFileSync(join(dir, 'go'), '');
+    assert.ok(!existsSync(target), 'the daemon outlived its command');
+  }
+
   test('an env-cleared daemon that leaves for / and execs /bin/sh is killed and never writes', { skip }, async () => {
     process.env.PALIMPSEST_SANDBOX = 'on';
     const run = makeRun('run-esc2');
     const target = join(run.dir, 'esc2.txt');
-    const inner = `use POSIX; exit if fork; POSIX::setsid(); exit if fork; chdir("/"); exec("/bin/sh", "-c", "sleep 3; echo alive >> ${target}")`;
-    const r = await execTool({ ...base(run, []), command: `env -i /usr/bin/perl -e '${inner}'; echo started`, timeoutMs: 20_000 });
+    const r = await execTool({ ...base(run, []), command: `${escaper(run.dir, target)}; echo started`, timeoutMs: 120_000 });
     assert.equal(r.code, 0, r.stderr);
-    await new Promise((res) => setTimeout(res, 4500));
-    assert.ok(!existsSync(target), 'the daemon outlived its command');
+    await neverWrites(run.dir, target);
   });
 
   test('a daemon that first swaps the run tmp for a symlink is still killed', { skip }, async () => {
     process.env.PALIMPSEST_SANDBOX = 'on';
     const run = makeRun('run-esc4');
     const target = join(run.dir, 'esc4.txt');
-    const inner = `use POSIX; exit if fork; POSIX::setsid(); exit if fork; chdir("/"); exec("/bin/sh", "-c", "sleep 3; echo alive >> ${target}")`;
-    const r = await execTool({ ...base(run, []), command: `/bin/mv ../tmp ./oldtmp && /bin/ln -s /usr ../tmp && env -i /usr/bin/perl -e '${inner}'; echo started`, timeoutMs: 20_000 });
+    const r = await execTool({ ...base(run, []), command: `/bin/mv ../tmp ./oldtmp && /bin/ln -s /usr ../tmp && ${escaper(run.dir, target)}; echo started`, timeoutMs: 120_000 });
     assert.equal(r.refused, null);
     assert.equal(r.code, 0, r.stderr);
-    await new Promise((res) => setTimeout(res, 4500));
-    assert.ok(!existsSync(target), 'the daemon outlived its command');
+    await neverWrites(run.dir, target);
   });
 
   test("a sandboxed process of a different run root is never killed, and its own run's reap finds it", { skip }, async () => {
@@ -524,7 +576,7 @@ describe('the reaper by sandbox membership', () => {
     // No markers, cwd outside both run roots: only its sandbox ties it to run b.
     const child = spawn('/usr/bin/env', ['-i', ...argv], { cwd: '/', stdio: 'ignore', detached: true }) as unknown as ChildProcessWithoutNullStreams;
     children.push(child);
-    await new Promise((res) => setTimeout(res, 300));
+    await execed(child.pid as number, '/bin/sleep');
     const killedA = await reapRun(a.runRoot);
     assert.ok(!killedA.includes(child.pid as number));
     assert.doesNotThrow(() => process.kill(child.pid as number, 0));
