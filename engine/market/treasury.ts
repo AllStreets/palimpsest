@@ -30,6 +30,7 @@ import { endTripsOf } from './trips.js';
 import { canHire, HIRE_FEE, isBankrupt, REVIEWER_SHARE, salePrice, START_BALANCE } from '../../shared/market-rules.js';
 import type { Bid, Inspection, Job } from '../../shared/types.js';
 import { openDb } from '../db.js';
+import { SPEND_KINDS } from './budget.js';
 import { emit, subscribe, type Event } from '../events.js';
 import { query, record, type LedgerEntry } from '../ledger.js';
 
@@ -502,8 +503,8 @@ function hireSpecialists(t: number): void {
 export interface CityDay {
   from: string;
   to: string;
-  /** What the city's plan spent on model calls, by kind (bids and runs are charged to the firms). */
-  spent: { bid: number; run: number; review: number; judge: number; total: number };
+  /** What the city spent on model calls, by kind (bids and runs are charged to the firms; audits, the school and training are the city's own). */
+  spent: { bid: number; run: number; review: number; judge: number; audit: number; school: number; train: number; total: number };
   /** What the city paid out to firms. */
   paid: { pay: number; reviewPay: number; total: number };
   /** What firms paid the city. */
@@ -526,13 +527,22 @@ export function cityLedger(dayStart: string | number | Date, dayEnd: string | nu
     if (r.firm_id && r.kind in FIRM_SIGN) firms[r.firm_id] = (firms[r.firm_id] ?? 0) + FIRM_SIGN[r.kind as MoneyKind] * toMicro(r.amount);
   }
   const s = (k: string) => sum[k] ?? 0;
-  const spentTotal = s('bid') + s('run') + s('review') + s('judge');
+  const spentTotal = SPEND_KINDS.reduce((t, k) => t + s(k), 0);
   const paidTotal = s('pay') + s('review-pay');
   const receivedTotal = s('hire') + s('sale');
   return {
     from,
     to,
-    spent: { bid: fromMicro(s('bid')), run: fromMicro(s('run')), review: fromMicro(s('review')), judge: fromMicro(s('judge')), total: fromMicro(spentTotal) },
+    spent: {
+      bid: fromMicro(s('bid')),
+      run: fromMicro(s('run')),
+      review: fromMicro(s('review')),
+      judge: fromMicro(s('judge')),
+      audit: fromMicro(s('audit')),
+      school: fromMicro(s('school')),
+      train: fromMicro(s('train')),
+      total: fromMicro(spentTotal),
+    },
     paid: { pay: fromMicro(s('pay')), reviewPay: fromMicro(s('review-pay')), total: fromMicro(paidTotal) },
     received: { hire: fromMicro(s('hire')), sale: fromMicro(s('sale')), total: fromMicro(receivedTotal) },
     net: fromMicro(receivedTotal - paidTotal),

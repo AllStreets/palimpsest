@@ -13,9 +13,9 @@ import { bankruptcyTick, dailyTick, DAY_MS, HOUR_MS, installTreasury } from './m
 import { backfillReports, ensureDailyReport, latestReportDay } from './market/report.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
-import { setRunner } from './exec.js';
 import { ensureCampus } from './school/campus.js';
-import { isSampleHome, sampleGh, useSampleFolders } from './sample.js';
+import { isSampleHome } from './sample.js';
+import { bootSampleEngine } from './sample-boot.js';
 import { startServer } from './server.js';
 
 async function main(): Promise<void> {
@@ -106,20 +106,7 @@ async function main(): Promise<void> {
  * startServer) is all that moves the market, on the fake provider.
  */
 async function sampleMain(): Promise<void> {
-  setRunner(sampleGh());
-  useSampleFolders();
-  failInterruptedAnalyses();
-  const installed = await installedModels();
-  seedFirms(installed);
-  reviveAgents(installed);
-  installTreasury();
-  installProposals();
-  installMilestones();
-  try {
-    backfillMilestones(Date.now());
-  } catch (err) {
-    console.error('palimpsest: the milestone backfill failed:', err);
-  }
+  await bootSampleEngine();
   const { close, port } = await startServer();
   // eslint-disable-next-line no-console
   console.log(`Palimpsest sample engine listening on 127.0.0.1:${port} (economy ${process.env.PALIMPSEST_SAMPLE_ECONOMY === 'live' ? 'live' : 'still'})`);

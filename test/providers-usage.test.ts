@@ -305,6 +305,19 @@ describe('provider usage', () => {
     assert.equal(u.detail, 'arrives with the school');
   });
 
+  test("an audit's, the school's and training's local rows count toward Ollama's local credits", async () => {
+    const { charge } = await import('../engine/market/budget.js');
+    const row = (kind: 'run' | 'audit' | 'school' | 'train', credits: number, firmId: string | null) =>
+      charge({ runId: `${kind}-1`, firmId, model: 'ollama:qwen3:30b', kind, usage: { weightedTokens: 0, seconds: 1, usd: 0, credits }, unattended: false, at: Date.now() - 60_000 });
+    row('run', 1, 'quickset');
+    row('audit', 2, null);
+    row('school', 4, null);
+    row('train', 8, null);
+    setRunner(ollamaList(['qwen3:30b']));
+    const u = await ollamaUsage();
+    assert.match(u.detail, /local credits 15 today, 15 this week/);
+  });
+
   test('ollama is read through `ollama list` at his host: unreachable, then reachable with its models', async () => {
     patchSettings({ ollamaHost: '127.0.0.1:11500' });
     const calls: Array<{ cmd: string; args: string[]; env?: Record<string, string> }> = [];

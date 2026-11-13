@@ -508,3 +508,17 @@ test('a firm below zero has been so since the charge that took it there, however
   assert.equal(negativeSinceOf('kiln'), new Date(at(4)).toISOString(), 'the same answer on every read');
   assert.equal(negativeSinceOf('quickset'), null, 'a firm at or above zero is not below it');
 });
+
+test("the city's books count the audit's, the school's and training's spend as the city's own", () => {
+  const city = (kind: 'audit' | 'school' | 'train', credits: number, runId: string) =>
+    charge({ runId, firmId: null, model: LOCAL, kind, usage: { weightedTokens: 0, seconds: 1, usd: 0, credits }, unattended: false, at: clock });
+  spend('quickset', 'run', 2, 'run-1');
+  city('audit', 1.5, 'audit-1');
+  city('school', 3, 'voyage-1');
+  city('train', 4.25, 'lora-1');
+  const day = cityLedger(new Date(clock - HOUR).toISOString(), new Date(clock + HOUR).toISOString());
+  assert.equal(day.spent.audit, 1.5);
+  assert.equal(day.spent.school, 3);
+  assert.equal(day.spent.train, 4.25);
+  assert.equal(day.spent.total, 10.75);
+});

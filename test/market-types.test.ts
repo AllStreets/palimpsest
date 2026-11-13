@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import * as home from '../engine/home.js';
-import { poolOfModel } from '../shared/market-rules.js';
+import { poolOfModel, repoMarketDefaults } from '../shared/market-rules.js';
 import type { Repo } from '../shared/types.js';
 
 let tempDir: string;
@@ -120,4 +120,43 @@ test('the db has audits and milestones tables and jobs.key', async () => {
 test("poolOfModel('mlx:grad-x') is local", () => {
   assert.equal(poolOfModel('mlx:grad-x'), 'local');
   assert.equal(poolOfModel('mlx:grad-qwen25-coder-7b-1'), 'local');
+});
+
+/** Pin: the school's tables join a Phase 3 database without touching what it holds, however often it migrates. */
+test('a Phase 3 database with data migrates twice and keeps every row', async () => {
+  const raw = new DatabaseSync(home.paths().db);
+  raw.exec(`
+    CREATE TABLE repos (full_name TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE TABLE ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, kind TEXT NOT NULL, json TEXT NOT NULL, job_id TEXT, run_id TEXT);
+    CREATE TABLE settings (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE TABLE jobs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, status TEXT NOT NULL, json TEXT NOT NULL, key TEXT);
+    CREATE TABLE slots (kind TEXT NOT NULL, owner TEXT NOT NULL, slot INTEGER NOT NULL, PRIMARY KEY (kind, owner));
+    CREATE TABLE credits (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, firm_id TEXT, run_id TEXT, kind TEXT NOT NULL, amount REAL NOT NULL, usd REAL, json TEXT NOT NULL);
+    CREATE TABLE audits (id TEXT PRIMARY KEY, repo TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, json TEXT NOT NULL);
+    CREATE TABLE milestones (id TEXT PRIMARY KEY, kind TEXT NOT NULL, tower_id TEXT NOT NULL, at TEXT NOT NULL, until TEXT, json TEXT NOT NULL);
+  `);
+  const repo = { fullName: 'acme/widgets', connected: true, slot: 0, analyzedAt: '2026-11-01T00:00:00.000Z', ...repoMarketDefaults(), joinedAt: '2026-11-01T00:00:00.000Z' };
+  raw.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(repo.fullName, JSON.stringify(repo));
+  raw.prepare('INSERT INTO ledger (at, kind, json) VALUES (?, ?, ?)').run('2026-11-11T08:00:00.000Z', 'brief.opened', '{"day":"2026-11-11","items":[]}');
+  raw.prepare('INSERT INTO settings (key, json) VALUES (?, ?)').run('dayCapPct', '35');
+  raw.prepare('INSERT INTO jobs (id, repo, status, json, key) VALUES (?, ?, ?, ?, ?)').run('job-1', 'acme/widgets', 'open', '{"id":"job-1","source":"issue"}', null);
+  raw.prepare("INSERT INTO slots (kind, owner, slot) VALUES ('repo', 'acme/widgets', 0)").run();
+  raw.prepare('INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, ?, ?, ?, ?, ?, ?)').run('2026-11-11T09:00:00.000Z', null, 'audit-1', 'audit', 4, null, '{"model":"claude:sonnet"}');
+  raw.prepare('INSERT INTO audits (id, repo, status, started_at, json) VALUES (?, ?, ?, ?, ?)').run('audit-1', 'acme/widgets', 'done', '2026-11-11T08:30:00.000Z', '{"id":"audit-1"}');
+  raw.prepare('INSERT INTO milestones (id, kind, tower_id, at, until, json) VALUES (?, ?, ?, ?, ?, ?)').run('skyline:1', 'skyline', 'acme/widgets#founding', '2026-11-11T08:00:00.000Z', null, '{"id":"skyline:1"}');
+  const snapshot = (db: DatabaseSync) =>
+    Object.fromEntries(['repos', 'ledger', 'settings', 'jobs', 'slots', 'credits', 'audits', 'milestones'].map((t) => [t, db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all().map((r) => ({ ...r }))]));
+  const before = snapshot(raw);
+  raw.close();
+
+  const { migrate, openDb } = await import('../engine/db.js');
+  const db = openDb();
+  migrate(db);
+  migrate(db);
+  assert.deepEqual(snapshot(db), before);
+  const names = tables(home.paths().db);
+  for (const t of ['nets', 'predictions', 'decisions', 'grants', 'arenas', 'arena_tasks', 'voyages', 'trains', 'graduates', 'verified']) {
+    assert.ok(names.includes(t), t);
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n, 0, `${t} starts empty`);
+  }
 });
