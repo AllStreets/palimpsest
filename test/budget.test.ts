@@ -8,21 +8,24 @@ import { paths } from '../engine/home.js';
 import {
   acquire,
   charge,
+  creditEntries,
   JUDGE_ESTIMATE,
   lastSseAt,
+  liveWork,
   noteSseClients,
   onHardStop,
   PLAN_ESTIMATE,
   registerKeepAwake,
   resetBudget,
   REVIEW_ESTIMATE,
+  schoolClaudeSpent,
   sseClientCount,
   treasury,
   unattended,
 } from '../engine/market/budget.js';
 import type { Lease } from '../engine/market/budget.js';
 import { localDay } from '../engine/market/report.js';
-import { patchSettings } from '../engine/settings.js';
+import { getSettings, patchSettings } from '../engine/settings.js';
 import { openDb } from '../engine/db.js';
 import type { ModelRef } from '../shared/types.js';
 
@@ -552,4 +555,197 @@ test("the treasury honours today's cap", async () => {
   assert.equal(expired.fiveHour.capPct, 15);
   assert.equal(expired.paused?.reason, 'cap');
   assert.match(expired.paused?.detail ?? '', /the cap is 15%/);
+});
+
+// ---------------------------------------------------------------- Phase 4: the school's spend and its lease (rulings 3 and 4)
+
+/** A school or train charge as the school writes one: the city's own, never a firm's. */
+function schoolCharge(o: { kind: 'school' | 'train'; model: ModelRef; weighted?: number; credits?: number; at: number; unattended: boolean; runId?: string }): number {
+  return charge({
+    runId: o.runId ?? 'voyage-1',
+    firmId: null,
+    model: o.model,
+    kind: o.kind,
+    usage: { weightedTokens: o.weighted ?? 0, seconds: 0, usd: 0, credits: o.credits ?? 0 },
+    unattended: o.unattended,
+    at: o.at,
+  });
+}
+
+/** Marks his Claude Code as in use a minute ago (a transcript just written). */
+function hisClaudeActive(): void {
+  const dir = join(tempDir, 'projects', '-Users-someone-code');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'session.jsonl');
+  writeFileSync(file, '{}\n');
+  utimesSync(file, new Date(NOW - MIN), new Date(NOW - MIN));
+}
+
+test('a school charge made unattended counts in the night cap, the five-hour window and citySpent', () => {
+  reading({ five: 10, seven: 30 });
+  const before = treasury(NOW);
+  assert.equal(schoolCharge({ kind: 'school', model: 'claude:sonnet', weighted: 60_000, at: NOW - MIN, unattended: true }), 10);
+  const after = treasury(NOW);
+  near(after.fiveHour.cityPct - before.fiveHour.cityPct, 1);
+  near(after.night.usedPct - before.night.usedPct, 0.25);
+  near(after.citySpent.today - before.citySpent.today, 10);
+  near(after.citySpent.week - before.citySpent.week, 10);
+  const row = openDb().prepare("SELECT firm_id, run_id, kind, json FROM credits WHERE kind = 'school'").get() as { firm_id: string | null; run_id: string; kind: string; json: string };
+  assert.equal(row.firm_id, null);
+  assert.equal(row.run_id, 'voyage-1');
+  assert.equal(JSON.parse(row.json).unattended, true);
+});
+
+test('a train charge on an mlx model never enters the Claude window', () => {
+  reading({ five: 10, seven: 30 });
+  const before = treasury(NOW);
+  assert.equal(schoolCharge({ kind: 'train', model: 'mlx:grad-qwen-1', credits: 7.5, at: NOW - MIN, unattended: true, runId: 'lora-1' }), 7.5);
+  const after = treasury(NOW);
+  near(after.fiveHour.cityPct, before.fiveHour.cityPct);
+  near(after.fiveHour.estimatedPct, before.fiveHour.estimatedPct);
+  near(after.sevenDay.estimatedPct, before.sevenDay.estimatedPct);
+  near(after.night.usedPct, before.night.usedPct);
+  // It is still the city's own spend.
+  near(after.citySpent.today - before.citySpent.today, 7.5);
+  const json = JSON.parse((openDb().prepare("SELECT json FROM credits WHERE kind = 'train'").get() as { json: string }).json);
+  assert.equal(json.pool, 'local');
+  assert.equal(json.weightedTokens, 0);
+});
+
+test('a school or train charge naming a firm is refused: the fee is the firm\'s whole cost', () => {
+  reading({ five: 10 });
+  for (const kind of ['school', 'train'] as const) {
+    assert.throws(
+      () => charge({ runId: 'voyage-1', firmId: 'quickset', model: 'ollama:qwen3:30b', kind, usage: { weightedTokens: 0, seconds: 0, usd: 0, credits: 1 }, unattended: false, at: NOW }),
+      /city/,
+    );
+  }
+  assert.equal((openDb().prepare('SELECT COUNT(*) AS n FROM credits').get() as { n: number }).n, 0);
+});
+
+test('acquire school on claude takes a Claude work slot, so a second market Claude run is busy at claudeConcurrency 2', async () => {
+  reading({ five: 10 });
+  const school = await acquire('claude:sonnet', 'school', 3, { now: NOW });
+  assert.equal(school.ok, true);
+  assert.equal(treasury(NOW).concurrency.claude, 1);
+  const first = await acquire('claude:opus', 'work', 10, { now: NOW });
+  assert.equal(first.ok, true);
+  const second = await acquire('claude:opus', 'work', 10, { now: NOW });
+  assert.equal(second.ok, false);
+  if (!second.ok) assert.equal((second.reason as { reason: string }).reason, 'busy');
+  assert.equal(treasury(NOW).concurrency.claude, 2);
+  // liveWork counts the market's own runs, never the school's lease.
+  assert.equal(liveWork('claude'), 1);
+  if (school.ok) school.lease.release();
+  assert.equal(treasury(NOW).concurrency.claude, 1);
+});
+
+test('acquire school on claude is refused while his interactive use is active', async () => {
+  reading({ five: 10 });
+  hisClaudeActive();
+  const r = await acquire('claude:sonnet', 'school', 3, { now: NOW, waitUntil: NOW + 1000 });
+  assert.equal(r.ok, false);
+  if (!r.ok) {
+    assert.equal((r.reason as { reason: string }).reason, 'busy');
+    assert.match((r.reason as { detail: string }).detail, /using Claude/);
+  }
+  // The one Claude slot stays his market's.
+  const market = await acquire('claude:opus', 'work', 10, { now: NOW });
+  assert.equal(market.ok, true);
+  // A local school lease is not his Claude.
+  const local = await acquire('ollama:qwen3:30b', 'school', 3, { now: NOW });
+  assert.equal(local.ok, true);
+});
+
+test('acquire school on claude refuses past claudeCreditsPerDay', async () => {
+  reading({ five: 10 });
+  assert.equal(getSettings().school.claudeCreditsPerDay, 30);
+  // 27 credits of school Claude today, 50 of local school spend, and yesterday's 30 do not count.
+  schoolCharge({ kind: 'school', model: 'claude:sonnet', weighted: 162_000, at: NOW - HOUR, unattended: false });
+  schoolCharge({ kind: 'school', model: 'ollama:qwen3:30b', credits: 50, at: NOW - HOUR, unattended: false });
+  schoolCharge({ kind: 'school', model: 'claude:sonnet', weighted: 180_000, at: NOW - 24 * HOUR, unattended: false });
+  // A market run is not the school's.
+  spend({ weighted: 60_000, at: NOW - HOUR });
+  near(schoolClaudeSpent(localDay(NOW)), 27);
+
+  const over = await acquire('claude:sonnet', 'school', 4, { now: NOW });
+  assert.equal(over.ok, false);
+  if (!over.ok) {
+    assert.equal((over.reason as { reason: string }).reason, 'cap');
+    assert.match((over.reason as { detail: string }).detail, /30 credits a day/);
+  }
+  const fits = await acquire('claude:sonnet', 'school', 3, { now: NOW });
+  assert.equal(fits.ok, true);
+  // The daily allowance is his to set.
+  patchSettings({ school: { ...getSettings().school, claudeCreditsPerDay: 0 } });
+  const none = await acquire('claude:haiku', 'school', 1, { now: NOW });
+  assert.equal(none.ok, false);
+});
+
+test('acquire school on local is refused while a local run holds a work lease', async () => {
+  reading({ five: 10 });
+  const run = await lease('ollama:qwen3:30b', 'work');
+  assert.equal(liveWork('local'), 1);
+  const refused = await acquire('ollama:qwen3:30b', 'school', 3, { now: NOW });
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.equal((refused.reason as { reason: string }).reason, 'busy');
+
+  // Waiting, it takes the slot once the run lets it go.
+  let settled = false;
+  const waiting = acquire('ollama:qwen3:30b', 'school', 3, { now: NOW, waitUntil: NOW + 2000 }).then((r) => {
+    settled = true;
+    return r;
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(settled, false);
+  run.release();
+  const got = await waiting;
+  assert.equal(got.ok, true);
+  assert.equal(treasury(NOW).concurrency.local, 1);
+  assert.equal(liveWork('local'), 0);
+  // While the school holds it, the local slot is taken.
+  const market = await acquire('ollama:qwen3:30b', 'work', 10, { now: NOW });
+  assert.equal(market.ok, false);
+});
+
+test('school leases queue FIFO behind a full Claude pool and a stale wait is refused', async () => {
+  reading({ five: 10 });
+  const a = await lease('claude:opus', 'work');
+  await lease('claude:opus', 'work');
+  const order: string[] = [];
+  const first = acquire('claude:sonnet', 'school', 3, { now: NOW, waitUntil: NOW + 2000 }).then((r) => {
+    order.push('first');
+    return r;
+  });
+  const late = await acquire('claude:sonnet', 'school', 3, { now: NOW, waitUntil: NOW + 30 });
+  assert.equal(late.ok, false);
+  if (!late.ok) assert.match((late.reason as { detail: string }).detail, /school/);
+  a.release();
+  const got = await first;
+  assert.equal(got.ok, true);
+  assert.deepEqual(order, ['first']);
+});
+
+test('the school lease obeys the hard stop and the stop switch like any Claude call', async () => {
+  reading({ five: 95 });
+  const hard = await acquire('claude:sonnet', 'school', 3, { now: NOW });
+  assert.equal(hard.ok, false);
+  if (!hard.ok) assert.equal((hard.reason as { reason: string }).reason, 'hard');
+  reading({ five: 10 });
+  writeFileSync(paths().stop, '');
+  const stopped = await acquire('ollama:qwen3:30b', 'school', 3, { now: NOW });
+  assert.equal(stopped.ok, false);
+  if (!stopped.ok) assert.equal((stopped.reason as { reason: string }).reason, 'stopped');
+});
+
+test('creditEntries(runId) lists one run\'s credits rows, oldest first', () => {
+  reading({ five: 10 });
+  spend({ weighted: 60_000, at: NOW - 2 * MIN });
+  spend({ credits: 2, model: 'ollama:qwen3:30b', at: NOW - MIN });
+  schoolCharge({ kind: 'school', model: 'ollama:qwen3:30b', credits: 1, at: NOW, unattended: false, runId: 'voyage-9' });
+  const rows = creditEntries('run-x');
+  assert.deepEqual(rows.map((r) => [r.kind, r.model, r.credits]), [['run', 'claude:opus', 10], ['run', 'ollama:qwen3:30b', 2]]);
+  assert.equal(rows[0].firmId, 'quickset');
+  assert.equal(creditEntries('voyage-9')[0].kind, 'school');
+  assert.deepEqual(creditEntries('nothing'), []);
 });

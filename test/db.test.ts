@@ -114,3 +114,28 @@ test('migrate adds agent_id and its index to an older trips table, twice', async
   assert.equal((db.prepare('SELECT agent_id FROM trips WHERE id = ?').get('t1') as { agent_id: string }).agent_id, 'a1');
   db.close();
 });
+
+test('allowLowPower defaults to false', () => {
+  const s = getSettings().school;
+  // Fail closed until he answers Decision 3: nothing trains in Low Power on AC.
+  assert.equal(s.allowLowPower, false);
+  assert.deepEqual(s, {
+    enabled: false,
+    window: { from: '01:00', to: '06:00' },
+    idleMinutes: 15,
+    allowLowPower: false,
+    trainNowUntil: null,
+    claudeCreditsPerDay: 30,
+    designer: 'claude:sonnet',
+    understudy: false,
+    commitsAsWork: true,
+    baseModel: 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit',
+    baseModelReady: false,
+  });
+  // A partial stored value keeps every other default, the window's halves included.
+  patchSettings({ school: { enabled: true, window: { from: '02:00' } } as never });
+  const merged = getSettings().school;
+  assert.equal(merged.enabled, true);
+  assert.equal(merged.allowLowPower, false);
+  assert.deepEqual(merged.window, { from: '02:00', to: '06:00' });
+});

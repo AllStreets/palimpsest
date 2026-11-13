@@ -380,3 +380,21 @@ test("the daily report lists the audit's spend under the city's own calls and na
   assert.doesNotMatch(plainMd, /Today's limit/);
   assert.match(plainMd, /The cap is 20%/);
 });
+
+test("the daily report counts the school's calls and its training under the city's own calls", () => {
+  seedFirms([]);
+  charge({ runId: 'voyage-1', firmId: null, model: 'claude:sonnet', kind: 'school', usage: { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 }, unattended: false, minCredits: 3 });
+  charge({ runId: 'lora-1', firmId: null, model: 'mlx:grad-qwen-1', kind: 'train', usage: { weightedTokens: 0, seconds: 600, usd: 0, credits: 5 }, unattended: true });
+  const day = localDay();
+  const md = writeDailyReport(day);
+  const credits = md.slice(md.indexOf('## Credits'), md.indexOf('## Halts'));
+  assert.match(credits, /Model calls cost 8 credits/);
+  assert.match(credits, /3 on the school's model calls/);
+  assert.match(credits, /5 on training/);
+  assert.match(credits, /\| mlx:grad-qwen-1 \| 5 \| local \|/);
+  const data = latestReport()!.data;
+  assert.equal(data.spend.total.school, 3);
+  assert.equal(data.spend.total.train, 5);
+  assert.equal(data.spend.total.all, 8);
+  assert.deepEqual(data.spend.firms, []);
+});

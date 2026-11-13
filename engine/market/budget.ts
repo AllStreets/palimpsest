@@ -12,6 +12,15 @@
  * by dollars, and a plan pool (two Claude, one local) for bid-time plan
  * calls, which queue FIFO until their bid window closes. Review and judge
  * calls are sub-leases of their run's work lease.
+ *
+ * The school (Phase 4 rulings 3 and 4): its model calls are charged `school`
+ * and its MLX passes `train`, always to the city (no firm), so they count in
+ * every cap the market's own calls do. A school lease is a work lease that
+ * yields: on Claude it takes one of `claudeConcurrency`'s slots, is refused
+ * while he is using Claude and past `school.claudeCreditsPerDay`; on a local
+ * model it starts only when no market run holds the local pool. A school
+ * lease that cannot start yet waits FIFO on its pool's school queue until
+ * its `waitUntil`.
  */
 import { existsSync } from 'node:fs';
 
@@ -51,8 +60,19 @@ const UNATTENDED_MS = 30 * MIN_MS;
 export const MAX_RESUME_MS = 5 * HOUR_MS;
 /** How much the city's unmeasured spend is inflated per hour the reading is stale. */
 const STALE_MARGIN_PER_HOUR = 0.1;
-/** The credits row kinds this module writes: the city's spend on model calls (an audit is the city's own, Phase 3). */
-const SPEND_KINDS = ['bid', 'run', 'review', 'judge', 'audit'] as const;
+/**
+ * The credits row kinds that are model spend: the market's calls, the city's
+ * own audits (Phase 3), and the school's model calls and MLX passes (Phase 4
+ * ruling 3). Every cap, `citySpent`, the spend tables and the report read this list.
+ */
+export const SPEND_KINDS = ['bid', 'run', 'review', 'judge', 'audit', 'school', 'train'] as const;
+export type SpendKind = (typeof SPEND_KINDS)[number];
+const SPEND_KIND_SET: ReadonlySet<string> = new Set(SPEND_KINDS);
+export function isSpendKind(kind: string): kind is SpendKind {
+  return SPEND_KIND_SET.has(kind);
+}
+/** The kinds the city always pays for itself: a row of these never names a firm (ruling 3, ruling 22). */
+const CITY_ONLY: ReadonlySet<SpendKind> = new Set(['school', 'train']);
 
 type Pool = 'claude' | 'local' | 'api';
 type Paused = NonNullable<TreasuryState['paused']>;
@@ -172,7 +192,7 @@ export function charge(o: {
   runId: string | null;
   firmId: string | null;
   model: ModelRef;
-  kind: 'bid' | 'run' | 'review' | 'judge' | 'audit';
+  kind: SpendKind;
   usage: Usage;
   unattended: boolean;
   at?: number;
@@ -181,6 +201,9 @@ export function charge(o: {
   /** A floor on the credits written, for calls whose real usage is unknown or under-reported (bid plan calls). */
   minCredits?: number;
 }): number {
+  if (CITY_ONLY.has(o.kind) && o.firmId !== null) {
+    throw new Error(`a ${o.kind} charge is the city's own and names no firm (got ${o.firmId})`);
+  }
   const at = o.at ?? Date.now();
   const leased = o.lease ? recOf.get(o.lease) : undefined;
   if (leased) leased.reserved = 0;
@@ -358,7 +381,7 @@ function gate(pool: Pool, estimate: number, c: Core): Paused | null {
 
 interface LeaseRec {
   pool: Pool;
-  kind: 'plan' | 'work' | 'review' | 'judge';
+  kind: 'plan' | 'work' | 'school' | 'review' | 'judge';
   /** Whether this lease holds a work slot in its pool (a work lease, or a sub-lease in another pool than its run). */
   holdsWork: boolean;
   controller: AbortController;
@@ -392,6 +415,8 @@ function reservedCredits(pool: Pool): number {
   return n;
 }
 const queues: Record<Pool, Waiter[]> = { claude: [], local: [], api: [] };
+/** School leases waiting for a work slot, FIFO per pool (ruling 4). */
+const schoolQueues: Record<Pool, Waiter[]> = { claude: [], local: [], api: [] };
 
 function clockOf(x: { now0: number; real0: number }): number {
   return x.now0 + (Date.now() - x.real0);
@@ -400,6 +425,24 @@ function clockOf(x: { now0: number; real0: number }): number {
 function workCount(pool: Pool): number {
   let n = 0;
   for (const r of live) if (r.pool === pool && r.holdsWork) n++;
+  return n;
+}
+
+/** The root lease a lease belongs to (itself for a run, plan or school lease). */
+function rootOf(rec: LeaseRec): LeaseRec {
+  let r = rec;
+  while (r.parent) r = r.parent;
+  return r;
+}
+
+/**
+ * Work slots on `pool` held now by the market's own runs (and their reviews
+ * and design checks), never by the school's leases: the real work the
+ * training gate yields to (ruling 6) and a local school lease waits behind.
+ */
+export function liveWork(pool: Pool): number {
+  let n = 0;
+  for (const r of live) if (r.pool === pool && r.holdsWork && rootOf(r).kind !== 'school') n++;
   return n;
 }
 
@@ -427,6 +470,8 @@ function release(rec: LeaseRec): void {
   for (const child of rec.children) release(child);
   rec.parent?.children.delete(rec);
   if (rec.kind === 'plan') drain(rec.pool);
+  // A freed work slot (a run's, a sub-lease's in another pool, or the school's own) may let a school lease start.
+  if (rec.holdsWork) drainSchool(rec.pool);
 }
 
 function grant(rec: LeaseRec): Lease {
@@ -523,7 +568,7 @@ function noteHard(c: Core): void {
       : { reason: 'hard', detail: `A window reached the ${c.settings.hardStopPct}% hard stop.` };
   for (const pool of Object.keys(queues) as Pool[]) {
     if (!affected(pool)) continue;
-    for (const w of queues[pool].splice(0)) {
+    for (const w of [...queues[pool].splice(0), ...schoolQueues[pool].splice(0)]) {
       clearTimeout(w.timer);
       w.resolve({ ok: false, reason });
     }
@@ -546,7 +591,7 @@ function noteHard(c: Core): void {
  */
 export function acquire(
   model: ModelRef,
-  kind: 'plan' | 'work',
+  kind: 'plan' | 'work' | 'school',
   estimate: number,
   opts: { now?: number; waitUntil?: number } = {},
 ): Promise<{ ok: true; lease: Lease } | Refusal> {
@@ -556,6 +601,8 @@ export function acquire(
   const pool = poolOf(model);
   const paused = gate(pool, estimate, c);
   if (paused) return Promise.resolve({ ok: false, reason: paused });
+
+  if (kind === 'school') return acquireSchool(pool, estimate, now, c, opts.waitUntil);
 
   if (kind === 'work') {
     if (workCount(pool) >= workMax(pool, c, now)) {
@@ -589,6 +636,129 @@ export function acquire(
   });
 }
 
+// ---------------------------------------------------------------- the school's lease (ruling 4)
+
+/** Why a school lease on `pool` may never start now, whatever frees up: his own Claude use, or the school's daily Claude allowance. */
+function schoolRefused(pool: Pool, estimate: number, c: Core, now: number): Refusal | null {
+  if (pool !== 'claude') return null;
+  if (interactiveActive(now)) {
+    return { ok: false, reason: { reason: 'busy', detail: 'You are using Claude, so the school waits and the one Claude slot stays the market\'s.' } };
+  }
+  const allowance = c.settings.school.claudeCreditsPerDay;
+  const spent = schoolClaudeSpent(localDay(now), now) + reservedSchool('claude');
+  if (spent + estimate > allowance + 1e-9) {
+    return {
+      ok: false,
+      reason: { reason: 'cap', detail: `The school has spent ${round(spent)} of its ${allowance} credits a day on Claude.` },
+    };
+  }
+  return null;
+}
+
+/** Credits reserved by live school leases on `pool`, not yet charged. */
+function reservedSchool(pool: Pool): number {
+  let n = 0;
+  for (const r of live) if (r.pool === pool && r.kind === 'school') n += r.reserved;
+  return n;
+}
+
+/** Whether a school lease on `pool` may take a work slot now: a free Claude slot, or a local pool no one holds. */
+function schoolSlotFree(pool: Pool, c: Core, now: number): boolean {
+  if (pool === 'local') return workCount('local') === 0;
+  return workCount(pool) < workMax(pool, c, now);
+}
+
+function acquireSchool(pool: Pool, estimate: number, now: number, c: Core, waitUntil: number | undefined): Promise<{ ok: true; lease: Lease } | Refusal> {
+  const refused = schoolRefused(pool, estimate, c, now);
+  if (refused) return Promise.resolve(refused);
+  if (schoolQueues[pool].length === 0 && schoolSlotFree(pool, c, now)) {
+    return Promise.resolve({ ok: true, lease: grant(newRec(pool, 'school', true, now, null, estimate)) });
+  }
+  const busy: Refusal = {
+    ok: false,
+    reason: { reason: 'busy', detail: pool === 'local' ? 'A market run holds the local model, so the school waits.' : `No ${pool} slot was free for the school.` },
+  };
+  if (waitUntil === undefined || waitUntil <= now) return Promise.resolve(busy);
+  return new Promise((resolve) => {
+    const w: Waiter = {
+      pool,
+      estimate,
+      waitUntil,
+      now0: now,
+      real0: Date.now(),
+      resolve,
+      timer: setTimeout(() => {
+        const i = schoolQueues[pool].indexOf(w);
+        if (i >= 0) schoolQueues[pool].splice(i, 1);
+        resolve({ ok: false, reason: { reason: 'busy', detail: `No ${pool} slot came free for the school before it stopped waiting.` } });
+      }, waitUntil - now),
+    };
+    schoolQueues[pool].push(w);
+  });
+}
+
+/** Grants queued school leases in FIFO order while their pool has a slot the school may take, rechecking every cap at grant. */
+function drainSchool(pool: Pool): void {
+  const q = schoolQueues[pool];
+  while (q.length > 0) {
+    const w = q[0];
+    const now = clockOf(w);
+    const c = core(now);
+    noteHard(c);
+    if (q[0] !== w) continue;
+    const paused = gate(pool, w.estimate, c);
+    const refused = paused ? ({ ok: false, reason: paused } as Refusal) : schoolRefused(pool, w.estimate, c, now);
+    if (refused) {
+      q.shift();
+      clearTimeout(w.timer);
+      w.resolve(refused);
+      continue;
+    }
+    if (!schoolSlotFree(pool, c, now)) return;
+    q.shift();
+    clearTimeout(w.timer);
+    w.resolve({ ok: true, lease: grant(newRec(pool, 'school', true, now, null, w.estimate)) });
+  }
+}
+
+/** Credits the school spent on Claude in the local day `day` (YYYY-MM-DD), up to `now`: what `school.claudeCreditsPerDay` caps. */
+export function schoolClaudeSpent(day: string, now: number = Date.now()): number {
+  const [y, m, d] = day.split('-').map(Number);
+  const from = new Date(y, m - 1, d).getTime();
+  const to = Math.min(new Date(y, m - 1, d + 1).getTime() - 1, now);
+  const row = openDb()
+    .prepare(
+      `SELECT COALESCE(SUM(amount), 0) AS c FROM credits
+       WHERE kind = 'school' AND at >= ? AND at <= ? AND json_extract(json, '$.model') LIKE 'claude:%'`,
+    )
+    .get(iso(from), iso(to)) as { c: number };
+  return round(row.c);
+}
+
+/** One credits row as `creditEntries(runId)` reads it. */
+export interface RunCredit {
+  id: number;
+  at: string;
+  kind: string;
+  firmId: string | null;
+  model: string;
+  credits: number;
+  usd: number | null;
+  unattended: boolean;
+}
+
+/** Every credits row charged under `runId` (a run, a voyage, a net version or a LoRA), oldest first: what a run cost (Task 8's cost label). */
+export function creditEntries(runId: string): RunCredit[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT id, at, kind, firm_id AS firmId, COALESCE(json_extract(json, '$.model'), '') AS model, amount AS credits, usd,
+         json_extract(json, '$.unattended') AS unattended
+       FROM credits WHERE run_id = ? AND kind IN (${KIND_LIST}) ORDER BY at, id`,
+    )
+    .all(runId) as Array<Omit<RunCredit, 'unattended' | 'id'> & { id: number | bigint; unattended: number | null }>;
+  return rows.map((r) => ({ ...r, id: Number(r.id), model: r.model || 'unknown', unattended: r.unattended === 1 }));
+}
+
 /**
  * Why a call on `model` costing `estimate` credits may not start now, or
  * null: the same gate acquire() and Lease.sub() apply, without taking a
@@ -616,7 +786,7 @@ export function abortLease(lease: Lease, reason: Error): void {
 export function abortAllLeases(reason: Error): void {
   for (const rec of live) if (!rec.controller.signal.aborted) rec.controller.abort(reason);
   for (const pool of Object.keys(queues) as Pool[]) {
-    for (const w of queues[pool].splice(0)) {
+    for (const w of [...queues[pool].splice(0), ...schoolQueues[pool].splice(0)]) {
       clearTimeout(w.timer);
       w.resolve({ ok: false, reason: { reason: 'stopped', detail: reason.message } });
     }
@@ -667,7 +837,7 @@ export function treasury(now: number = Date.now()): TreasuryState {
 /** Clears every lease, queue, listener and counter. For tests. */
 export function resetBudget(): void {
   for (const pool of Object.keys(queues) as Pool[]) {
-    for (const w of queues[pool].splice(0)) clearTimeout(w.timer);
+    for (const w of [...queues[pool].splice(0), ...schoolQueues[pool].splice(0)]) clearTimeout(w.timer);
   }
   live.clear();
   hardStopListeners.length = 0;

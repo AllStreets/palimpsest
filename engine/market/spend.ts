@@ -2,16 +2,18 @@
  * What the city's model calls cost (Task 39), as the treasury screen shows
  * it: today and this week by firm and by model, and the credits entries
  * behind each row. Bids and runs are the firms' own cost; reviews and design
- * checks are the city's, whichever firm's agent made them. Summed in integer
+ * checks are the city's, whichever firm's agent made them, and so are the
+ * audits and the school's model calls and training (Phase 4). Summed in integer
  * micro-credits, so a row adds up exactly to its entries.
  */
 import { CREDIT_PCT } from '../../shared/credits.js';
 import type { CreditEntry, SpendPeriod } from '../../shared/types.js';
 import { openDb } from '../db.js';
+import { SPEND_KINDS } from './budget.js';
 
-/** The credits row kinds that are a model call (an audit is one of the city's own, Phase 3). */
-const CALL_KINDS = "('bid', 'run', 'review', 'judge', 'audit')";
-/** The firm a call is charged to, or '' for the city's own (reviews, design checks and audits). */
+/** The credits row kinds that are a model call: the budget's own list (an audit, a school call and a training pass are the city's own). */
+const CALL_KINDS = `(${SPEND_KINDS.map((k) => `'${k}'`).join(', ')})`;
+/** The firm a call is charged to, or '' for the city's own (reviews, design checks, audits, the school and training). */
 const PAYER = "CASE WHEN c.kind IN ('bid', 'run') AND c.firm_id IS NOT NULL THEN c.firm_id ELSE '' END";
 const MODEL = "COALESCE(json_extract(c.json, '$.model'), '')";
 /** The key the city's own calls are asked for by: a firm id never starts with '~', so no firm can take it. */

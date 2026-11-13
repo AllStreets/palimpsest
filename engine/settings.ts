@@ -19,7 +19,24 @@ const DEFAULTS: Settings = {
   auditModel: 'auto',
   auditMaxCredits: 40,
   todayCapPct: null,
+  // Phase 4: the school is off, trains only between 01:00 and 06:00 after 15 idle minutes, and never in Low Power
+  // until he answers Decision 3 (fail closed). Its designer runs on Claude at most 30 credits a day (Decision 10).
+  school: {
+    enabled: false,
+    window: { from: '01:00', to: '06:00' },
+    idleMinutes: 15,
+    allowLowPower: false,
+    trainNowUntil: null,
+    claudeCreditsPerDay: 30,
+    designer: 'claude:sonnet',
+    understudy: false,
+    commitsAsWork: true,
+    baseModel: 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit',
+    baseModelReady: false,
+  },
 };
+
+const isObject = (x: unknown): x is Record<string, unknown> => Boolean(x) && typeof x === 'object' && !Array.isArray(x);
 
 /** Current settings, defaults filled in for any key not yet stored. */
 export function getSettings(): Settings {
@@ -32,7 +49,13 @@ export function getSettings(): Settings {
   const merged = { ...DEFAULTS, ...stored } as Settings;
   // Nested settings take their defaults key by key, so an older or partial stored value never drops one.
   const api = stored.anthropicApi;
-  merged.anthropicApi = { ...DEFAULTS.anthropicApi, ...(api && typeof api === 'object' && !Array.isArray(api) ? api : {}) };
+  merged.anthropicApi = { ...DEFAULTS.anthropicApi, ...(isObject(api) ? api : {}) };
+  const school = isObject(stored.school) ? stored.school : {};
+  merged.school = {
+    ...DEFAULTS.school,
+    ...school,
+    window: { ...DEFAULTS.school.window, ...(isObject(school.window) ? school.window : {}) },
+  } as Settings['school'];
   return merged;
 }
 

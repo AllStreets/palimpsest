@@ -131,6 +131,30 @@ export interface Settings {
   auditMaxCredits: number;
   /** Today's limit, set from the brief, in place of `dayCapPct` while `day` is today (Phase 3 ruling 10). */
   todayCapPct: { day: string; pct: number } | null;
+  /** The school (Phase 4): off until he turns it on. */
+  school: SchoolSettings;
+}
+
+/**
+ * The school's settings (Phase 4). `window` is local HH:MM to HH:MM (it may
+ * cross midnight); `allowLowPower` lets training run in Low Power on AC
+ * (Decision 3, false until he answers); `trainNowUntil` is an ISO time while
+ * "Train now" holds; `claudeCreditsPerDay` caps the school's Claude spend
+ * (Decision 10); `commitsAsWork` counts his own surviving commits as verified
+ * work (Decision 7); `baseModelReady` is set once the LoRA base is downloaded.
+ */
+export interface SchoolSettings {
+  enabled: boolean;
+  window: { from: string; to: string };
+  idleMinutes: number;
+  allowLowPower: boolean;
+  trainNowUntil: string | null;
+  claudeCreditsPerDay: number;
+  designer: ModelRef;
+  understudy: boolean;
+  commitsAsWork: boolean;
+  baseModel: string;
+  baseModelReady: boolean;
 }
 
 // ---------------------------------------------------------------- the market

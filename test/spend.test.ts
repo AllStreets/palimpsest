@@ -83,3 +83,18 @@ test("the spend tables show an audit charge under the city's own calls", () => {
   const q = creditEntries({ fromMs: dayStart(NOW), toMs: NOW, firm: 'quickset' });
   assert.deepEqual(q.rows.map((r) => r.kind), ['run']);
 });
+
+test("a train charge appears under the city's own calls in the spend tables and the report", () => {
+  charge({ runId: 'lora-1', firmId: null, model: 'mlx:grad-qwen-1', kind: 'train', usage: { weightedTokens: 0, seconds: 600, usd: 0, credits: 4 }, unattended: true, at: NOW - MIN });
+  charge({ runId: 'voyage-1', firmId: null, model: 'claude:sonnet', kind: 'school', usage: usage(60_000), unattended: true, at: NOW - 2 * MIN });
+
+  const p = spendBetween(dayStart(NOW), NOW);
+  assert.equal(p.total, 14);
+  assert.deepEqual(p.firms, [{ firmId: null, credits: 14, usd: 0, entries: 2 }]);
+  const mlx = p.models.find((m) => m.model === 'mlx:grad-qwen-1');
+  assert.deepEqual(mlx, { model: 'mlx:grad-qwen-1', credits: 4, usd: 0, entries: 1, windowPct: null });
+
+  const e = creditEntries({ fromMs: dayStart(NOW), toMs: NOW, firm: CITY_KEY });
+  assert.deepEqual(e.rows.map((r) => [r.kind, r.runId, r.firmId]), [['train', 'lora-1', null], ['school', 'voyage-1', null]]);
+  assert.equal(e.rows[0].unattended, true);
+});

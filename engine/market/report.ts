@@ -21,6 +21,7 @@ import { query, record, type LedgerEntry } from '../ledger.js';
 import { listRepos } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
+import { isSpendKind } from './budget.js';
 import { listAgents, listFirms } from './firms.js';
 import { job as storedJob, listJobs, plain, publicSummary } from './jobs.js';
 import { listRuns, run as storedRun } from './runs.js';
@@ -53,7 +54,7 @@ export interface ReportData {
     firms: Array<{ firmId: string; name: string; bids: number; runs: number; paid: number; balance: number }>;
     /** Every model call the city paid for, by model, in credits; Claude calls also as a share of a five-hour window. */
     models: Array<{ model: string; credits: number; windowPct: number | null; usd: number }>;
-    total: { bid: number; run: number; review: number; judge: number; audit: number; all: number };
+    total: { bid: number; run: number; review: number; judge: number; audit: number; school: number; train: number; all: number };
     paid: { pay: number; reviewPay: number };
     received: { hire: number; sale: number };
     /** `todayCapPct` is the limit he set from the brief for this day, when he did (ruling 10). */
@@ -203,7 +204,7 @@ export function reportData(day: string): ReportData {
 
   // Credits: every row of the day.
   const rows = openDb().prepare('SELECT firm_id, kind, amount, usd, json FROM credits WHERE at >= ? AND at < ?').all(from, to) as Array<{ firm_id: string | null; kind: string; amount: number; usd: number | null; json: string }>;
-  const total = { bid: 0, run: 0, review: 0, judge: 0, audit: 0, all: 0 };
+  const total = { bid: 0, run: 0, review: 0, judge: 0, audit: 0, school: 0, train: 0, all: 0 };
   const paid = { pay: 0, reviewPay: 0 };
   const received = { hire: 0, sale: 0 };
   const byFirm = new Map<string, { bids: number; runs: number; paid: number }>();
@@ -218,7 +219,7 @@ export function reportData(day: string): ReportData {
         return {};
       }
     })();
-    if (r.kind === 'bid' || r.kind === 'run' || r.kind === 'review' || r.kind === 'judge' || r.kind === 'audit') {
+    if (isSpendKind(r.kind)) {
       total[r.kind] += r.amount;
       total.all += r.amount;
       const model = meta.model ?? 'unknown';
@@ -314,7 +315,7 @@ export function reportData(day: string): ReportData {
       models: [...byModel.entries()]
         .map(([model, m]) => ({ model, credits: round2(m.credits), windowPct: m.claude ? round2(m.credits * CREDIT_PCT) : null, usd: round2(m.usd) }))
         .sort((a, b) => b.credits - a.credits || a.model.localeCompare(b.model)),
-      total: { bid: round2(total.bid), run: round2(total.run), review: round2(total.review), judge: round2(total.judge), audit: round2(total.audit), all: round2(total.all) },
+      total: { bid: round2(total.bid), run: round2(total.run), review: round2(total.review), judge: round2(total.judge), audit: round2(total.audit), school: round2(total.school), train: round2(total.train), all: round2(total.all) },
       paid: { pay: round2(paid.pay), reviewPay: round2(paid.reviewPay) },
       received: { hire: round2(received.hire), sale: round2(received.sale) },
       caps: { dayCapPct: settings.dayCapPct, dayCapCredits: round2(settings.dayCapPct / CREDIT_PCT), nightCapPct: settings.nightCapPct, todayCapPct: settings.todayCapPct?.day === day ? todayCap(settings, day) : null },
@@ -432,6 +433,9 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
     // Reports written before the audit existed have no audit total.
     const auditSpend = spend.total.audit ?? 0;
     if (auditSpend > 0) parts.push(`${num(auditSpend)} on README audits`);
+    // Reports written before the school existed have no school or training totals.
+    if ((spend.total.school ?? 0) > 0) parts.push(`${num(spend.total.school)} on the school's model calls`);
+    if ((spend.total.train ?? 0) > 0) parts.push(`${num(spend.total.train)} on training`);
     const pay = [spend.paid.pay > 0 ? `${num(spend.paid.pay)} for merges` : '', spend.paid.reviewPay > 0 ? `${num(spend.paid.reviewPay)} for reviews` : ''].filter(Boolean);
     out.push(`Model calls cost ${num(spend.total.all)} credits: ${listOf(parts)}.${pay.length ? ` The city paid firms ${listOf(pay)}.` : ''}`, '');
   } else {

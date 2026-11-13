@@ -238,7 +238,7 @@ function creditsSince(fromMs: number, pattern: string, column: 'amount' | 'usd')
   const row = openDb()
     .prepare(
       `SELECT COALESCE(SUM(${column}), 0) AS c FROM credits
-       WHERE kind IN ('bid', 'run', 'review', 'judge') AND at >= ? AND json_extract(json, '$.model') LIKE ?`,
+       WHERE kind IN ('bid', 'run', 'review', 'judge', 'audit', 'school', 'train') AND at >= ? AND json_extract(json, '$.model') LIKE ?`,
     )
     .get(new Date(fromMs).toISOString(), pattern) as { c: number };
   return row.c;
