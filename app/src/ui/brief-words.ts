@@ -29,6 +29,10 @@ const LABELS: Record<BriefAction, string> = {
   cap: "Change today's limit",
   audit: 'Audit it',
   tour: 'Walk through the week',
+  // Phase 4: an ask for autonomy, and an act under a grant.
+  grant: 'Grant',
+  decline: 'Decline',
+  revoke: 'Revoke',
 };
 
 /** The label of an action's text button. */

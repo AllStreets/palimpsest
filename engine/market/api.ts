@@ -50,6 +50,7 @@ import { HttpError, readObjectBody, sendJson, sendText } from '../http.js';
 import { query } from '../ledger.js';
 import { paths } from '../home.js';
 import { getRepo, isValidFullName, BAD_NAME } from '../repos.js';
+import { campusView } from '../school/campus.js';
 import { providerUsages } from '../providers-usage.js';
 import { apiKeyStored, setApiKey, removeApiKey } from './anthropic-api.js';
 import { bidList } from './bids.js';
@@ -749,6 +750,8 @@ export async function handleMarketApi(
   if (pathname === '/api/quarters' && method === 'GET') return send(200, quarters());
   // The trips under way now; one whose time is up ends as arrived on this look.
   if (pathname === '/api/live' && method === 'GET') return send(200, { sites: [...sites(), ...(extras.sites?.() ?? [])], trips: activeTrips() } satisfies LiveView);
+  // Phase 4: the university's plot, where the city draws the campus.
+  if (pathname === '/api/school/campus' && method === 'GET') return send(200, campusView());
 
   return false;
 }

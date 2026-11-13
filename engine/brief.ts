@@ -400,6 +400,10 @@ const SECTION: Record<BriefItemKind, keyof Brief['sections']> = {
   'audit-due': 'recommendations',
   milestone: 'city',
   tour: 'city',
+  // Phase 4: an ask for autonomy waits on him; an act under a grant is news from the night; a graduate is the city's.
+  autonomy: 'waiting',
+  acted: 'overnight',
+  graduate: 'city',
 };
 
 /** The stored report data of each day, newest written last. */

@@ -183,6 +183,8 @@ const STONE: Record<RootStyle, MatKey> = {
   gothic: 'gothic',
   pagoda: 'granite',
   chicago: 'limestone',
+  // The school's root borrows gothic until Task 38.
+  collegiate: 'gothic',
 };
 
 /**
@@ -425,6 +427,10 @@ const WALKS: Record<RootStyle, WalkBuilder> = {
     k.box('steel', length + 1.5, 0.36, 0.1, M(0, height + 0.75, WALK_WIDTH / 2 + 0.72));
     k.box('steel', length + 1.5, 0.36, 0.1, M(0, height + 0.75, -WALK_WIDTH / 2 - 0.72));
     floorAndLamps(k, 'limestone', length, height, n, pitch);
+  },
+  // The school's root walks as gothic until Task 38.
+  collegiate(k, length, height) {
+    WALKS.gothic(k, length, height);
   },
 };
 

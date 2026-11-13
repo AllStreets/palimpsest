@@ -14,6 +14,7 @@ import { backfillReports, ensureDailyReport, latestReportDay } from './market/re
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { setRunner } from './exec.js';
+import { ensureCampus } from './school/campus.js';
 import { isSampleHome, sampleGh, useSampleFolders } from './sample.js';
 import { startServer } from './server.js';
 
@@ -31,6 +32,8 @@ async function main(): Promise<void> {
   seedFirms(installed);
   // An agent that seeded retired for a missing model comes back once that model is installed.
   reviveAgents(installed);
+  // Phase 4 ruling 27: the university takes the next free plot the first time this engine starts, and keeps it.
+  ensureCampus();
   // Task 17: the treasury books every payment and cost from the event bus. Every hour it checks
   // for bankruptcy (72 hours below zero); once a day it sells dark towers and hires (ruling 6).
   installTreasury();

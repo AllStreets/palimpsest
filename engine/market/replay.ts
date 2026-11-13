@@ -30,8 +30,43 @@
  *   the job id onto that finding's proposal, as proposeFromAudit does after
  *   the end. Milestones: `milestone.reached { milestone }`, idempotent by
  *   id. `brief.opened` and `brief.action` carry no table.
+ * - the school (Phase 4): an entry that changes a school row carries that
+ *   row whole, as `job.changed` carries its job. `net.trained { netVersion }`
+ *   adds a version; `net.promoted { net, version }` makes it the one current
+ *   version of its net. `master.predicted { key, kind, repo, jobId, p,
+ *   version, reason, at }` is one prediction, whose id is this entry's id.
+ *   `decision.resolved { key, kind, repo, jobId, approved, by, predictionId,
+ *   agreed, at }` appends one resolution. Every `autonomy.*` entry that moves
+ *   a pair carries `grant` (an `autonomy.acted` that only reports a result
+ *   carries none). `arena.built { arena }`; `voyage.started | .generation |
+ *   .ended { voyage }` (the fee of `voyage.commissioned` is a
+ *   `credits.moved`); `train.started | .paused | .ended { train }`;
+ *   `graduate.made { graduate }`. A `voyage.ended` or `graduate.made` that
+ *   spends sealed uses carries the arena (`arena`, or `arenas`) whole.
+ *   `school.enabled` and `merge.followup` carry no table.
  */
-import type { Agent, Audit, AuditStatus, Bid, Firm, Floor, Inspection, Job, JobStatus, Milestone, Run, RunStage } from '../../shared/types.js';
+import type {
+  Agent,
+  ArenaInfo,
+  Audit,
+  AuditStatus,
+  Bid,
+  Decision,
+  Firm,
+  Floor,
+  Grant,
+  Graduate,
+  Inspection,
+  Job,
+  JobStatus,
+  Milestone,
+  NetVersion,
+  Prediction,
+  Run,
+  RunStage,
+  TrainState,
+  VoyageView,
+} from '../../shared/types.js';
 import { isLedgerKind, type LedgerKind } from '../../shared/ledger-kinds.js';
 import { START_BALANCE } from '../../shared/market-rules.js';
 import { openDb } from '../db.js';
@@ -91,6 +126,18 @@ export interface MarketState {
   audits: Record<string, Audit>;
   /** Every milestone reached, by id (Phase 3). */
   milestones: Record<string, Milestone>;
+  /** Every net version, by `<net> v<version>` (Phase 4). */
+  nets: Record<string, NetVersion>;
+  /** Every master prediction, by its key. */
+  predictions: Record<string, Prediction>;
+  /** Every resolution of his decisions, in ledger order. */
+  decisions: Decision[];
+  /** Every (kind, repo) pair's autonomy, by `<kind> <repo>`. */
+  grants: Record<string, Grant>;
+  arenas: Record<string, ArenaInfo>;
+  voyages: Record<string, VoyageView>;
+  trains: Record<string, TrainState>;
+  graduates: Record<string, Graduate>;
   /** Entries whose kind is outside LEDGER_KINDS (never written by record(); kept for the check). */
   unknown: number[];
   lastId: number;
@@ -133,6 +180,14 @@ export function emptyState(): MarketState {
     tripsEnded: [],
     audits: {},
     milestones: {},
+    nets: {},
+    predictions: {},
+    decisions: [],
+    grants: {},
+    arenas: {},
+    voyages: {},
+    trains: {},
+    graduates: {},
     unknown: [],
     lastId: 0,
   };
@@ -169,6 +224,21 @@ function findFloor(s: MarketState, towerId: string, id: string): Floor | undefin
 function setRunStage(s: MarketState, runId: string | null, stage: RunStage): void {
   const r = runId ? s.runs[runId] : undefined;
   if (r) r.stage = stage;
+}
+
+/** The key a net version is held under: `<net> v<version>`. */
+export const netKey = (net: string, version: number): string => `${net} v${version}`;
+/** The key a grant is held under: `<kind> <repo>`. */
+export const grantKey = (kind: string, repo: string): string => `${kind} ${repo}`;
+
+const obj = (x: unknown): Data | null => (x && typeof x === 'object' && !Array.isArray(x) ? (x as Data) : null);
+
+/** Puts a whole arena carried by a school entry (`arena`, or each of `arenas`). */
+function putArenas(s: MarketState, d: Data): void {
+  for (const a of [d.arena, ...(Array.isArray(d.arenas) ? d.arenas : [])]) {
+    const arena = obj(a) as ArenaInfo | null;
+    if (arena && str(arena.id)) s.arenas[arena.id] = clone(arena);
+  }
 }
 
 /** Applies one entry to the state. Exhaustive over LedgerKind. */
@@ -481,6 +551,94 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
       if (m?.id) s.milestones[m.id] = clone(m);
       return s;
     }
+
+    // ------------------------------------------------------------ Phase 4: the school
+    case 'school.enabled':
+    case 'merge.followup':
+      // A setting and a fact for the durability net's rows; no table holds them.
+      return s;
+    case 'net.trained': {
+      const v = obj(d.netVersion) as NetVersion | null;
+      if (v && str(v.net) && typeof v.version === 'number') s.nets[netKey(v.net, v.version)] = clone(v);
+      return s;
+    }
+    case 'net.promoted': {
+      const net = str(d.net);
+      if (!net || typeof d.version !== 'number' || !s.nets[netKey(net, d.version)]) return s;
+      // One current version per net.
+      for (const v of Object.values(s.nets)) if (v.net === net) v.current = v.version === d.version;
+      return s;
+    }
+    case 'master.predicted': {
+      const key = str(d.key);
+      // Registered once per key (the table's key is unique): a second entry for a key changes nothing.
+      if (!key || s.predictions[key]) return s;
+      s.predictions[key] = {
+        id: e.id,
+        key,
+        kind: d.kind as Prediction['kind'],
+        repo: str(d.repo) ?? '',
+        jobId: str(d.jobId) ?? '',
+        p: typeof d.p === 'number' ? d.p : null,
+        version: typeof d.version === 'number' ? d.version : null,
+        reason: str(d.reason),
+        at: str(d.at) ?? e.at,
+      };
+      return s;
+    }
+    case 'decision.resolved': {
+      const key = str(d.key);
+      if (!key) return s;
+      s.decisions.push({
+        key,
+        kind: d.kind as Decision['kind'],
+        repo: str(d.repo) ?? '',
+        jobId: str(d.jobId) ?? '',
+        approved: d.approved === true,
+        by: d.by as Decision['by'],
+        predictionId: typeof d.predictionId === 'number' ? d.predictionId : null,
+        agreed: typeof d.agreed === 'boolean' ? d.agreed : null,
+        at: str(d.at) ?? e.at,
+      });
+      return s;
+    }
+    case 'autonomy.asked':
+    case 'autonomy.granted':
+    case 'autonomy.declined':
+    case 'autonomy.suspended':
+    case 'autonomy.revoked':
+    case 'autonomy.acted': {
+      const g = obj(d.grant) as Grant | null;
+      if (g && str(g.kind) && str(g.repo)) s.grants[grantKey(g.kind, g.repo)] = clone(g);
+      return s;
+    }
+    case 'arena.built':
+      putArenas(s, d);
+      return s;
+    case 'voyage.started':
+    case 'voyage.generation':
+    case 'voyage.ended': {
+      const v = obj(d.voyage) as VoyageView | null;
+      if (v && str(v.id)) s.voyages[v.id] = clone(v);
+      putArenas(s, d);
+      return s;
+    }
+    case 'voyage.commissioned':
+      // The fee moves as its own credits.moved; the voyage carries commissionedBy when it starts.
+      return s;
+    case 'train.started':
+    case 'train.paused':
+    case 'train.ended': {
+      const t = obj(d.train) as TrainState | null;
+      if (t && str(t.id)) s.trains[t.id] = clone(t);
+      return s;
+    }
+    case 'graduate.made': {
+      const g = obj(d.graduate) as Graduate | null;
+      if (g && str(g.id)) s.graduates[g.id] = clone(g);
+      putArenas(s, d);
+      return s;
+    }
     default: {
       const missing: never = kind;
       throw new Error(`replay has no case for ${String(missing)}`);
@@ -527,9 +685,61 @@ const AUDIT_STATUSES: ReadonlySet<AuditStatus> = new Set<AuditStatus>(['waiting'
 const ENDED_AUDIT: ReadonlySet<AuditStatus> = new Set<AuditStatus>(['done', 'failed', 'capped', 'killed', 'crashed']);
 
 /**
+ * The school's tables against the ledger (Phase 4). A column the queries
+ * filter on (a net's `current`, a grant's `state` and `at`, a train's `kind`
+ * and `status`, a prediction's `id`) is part of the row compared, so a column
+ * that drifted from its json is caught as well as a json that drifted.
+ */
+function compareSchool(s: MarketState, diffs: string[]): void {
+  const db = openDb();
+  const parse = (json: string): Data => (JSON.parse(json) as Data) ?? {};
+  const nets = Object.fromEntries(
+    (db.prepare('SELECT net, version, current, json FROM nets').all() as Array<{ net: string; version: number; current: number; json: string }>).map((r) => [
+      netKey(r.net, Number(r.version)),
+      { ...parse(r.json), current: Number(r.current) === 1 },
+    ]),
+  );
+  compare('net', nets, s.nets, diffs);
+  const predictions = Object.fromEntries(
+    (db.prepare('SELECT id, key, json FROM predictions').all() as Array<{ id: number | bigint; key: string; json: string }>).map((r) => [r.key, { ...parse(r.json), id: Number(r.id), key: r.key }]),
+  );
+  compare('prediction', predictions, s.predictions, diffs);
+  // Decisions: every resolution of a key, in order, as `<key> #<n>`.
+  const numbered = (list: Array<{ key: string }>): Record<string, unknown> => {
+    const seen = new Map<string, number>();
+    return Object.fromEntries(
+      list.map((x) => {
+        const n = (seen.get(x.key) ?? 0) + 1;
+        seen.set(x.key, n);
+        return [`${x.key} #${n}`, x];
+      }),
+    );
+  };
+  const decisions = (db.prepare('SELECT key, json FROM decisions ORDER BY rowid').all() as Array<{ key: string; json: string }>).map((r) => ({ ...parse(r.json), key: r.key }));
+  compare('decision', numbered(decisions), numbered(s.decisions), diffs);
+  const grants = Object.fromEntries(
+    (db.prepare('SELECT kind, repo, state, at, json FROM grants').all() as Array<{ kind: string; repo: string; state: string; at: string; json: string }>).map((r) => [
+      grantKey(r.kind, r.repo),
+      { ...parse(r.json), kind: r.kind, repo: r.repo, state: r.state, at: r.at },
+    ]),
+  );
+  compare('grant', grants, s.grants, diffs);
+  const byId = (sql: string) => Object.fromEntries(rows(sql).map((r) => [r.id, parse(r.json)]));
+  compare('arena', byId('SELECT id, json FROM arenas'), s.arenas, diffs);
+  compare('voyage', byId('SELECT id, json FROM voyages'), s.voyages, diffs);
+  const trains = Object.fromEntries(
+    (db.prepare('SELECT id, kind, status, json FROM trains').all() as Array<{ id: string; kind: string; status: string; json: string }>).map((r) => [r.id, { ...parse(r.json), id: r.id, kind: r.kind, status: r.status }]),
+  );
+  compare('train', trains, s.trains, diffs);
+  compare('graduate', byId('SELECT id, json FROM graduates'), s.graduates, diffs);
+}
+
+/**
  * Replays the whole ledger and compares it with the tables: firms (with
  * their books), agents, jobs, bids, runs, inspections, earned floors, each
- * repo's halt and strikes, and (Phase 3) the audits and the milestones.
+ * repo's halt and strikes, (Phase 3) the audits and the milestones, and
+ * (Phase 4) the school's nets, predictions, decisions, grants, arenas,
+ * voyages, trains and graduates.
  * `diffs` names every disagreement.
  */
 export function verifyReplay(): { ok: boolean; diffs: string[] } {
@@ -565,6 +775,7 @@ export function verifyReplay(): { ok: boolean; diffs: string[] } {
     return a;
   });
   compare('milestone', table('SELECT id, json FROM milestones'), s.milestones, diffs);
+  compareSchool(s, diffs);
 
   const towers: Record<string, unknown> = {};
   for (const r of openDb().prepare('SELECT tower_id, json FROM earned_floors ORDER BY tower_id, seq').all() as Array<{ tower_id: string; json: string }>) {

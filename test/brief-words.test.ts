@@ -44,6 +44,9 @@ test('every action has its label', () => {
     cap: "Change today's limit",
     audit: 'Audit it',
     tour: 'Walk through the week',
+    grant: 'Grant',
+    decline: 'Decline',
+    revoke: 'Revoke',
   };
   for (const [a, label] of Object.entries(want)) assert.equal(actionLabel(a as BriefAction), label, a);
 });

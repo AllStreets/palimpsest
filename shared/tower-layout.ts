@@ -6,6 +6,8 @@ export const ROOT_HEIGHT: Record<RootStyle, number> = {
   gothic: 34,
   pagoda: 28,
   chicago: 26,
+  // The school's root stands at gothic's height until Task 38 builds its own.
+  collegiate: 34,
 };
 
 export const FLOOR_HEIGHT: Record<FloorSize, number> = {

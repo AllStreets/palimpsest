@@ -7,6 +7,7 @@ export const ROOT_NAMES: Record<RootStyle, string> = {
   gothic: 'Gothic',
   pagoda: 'Pagoda',
   chicago: 'Chicago school',
+  collegiate: 'Collegiate',
 };
 
 export const ERA_NAMES: Record<Era, string> = {

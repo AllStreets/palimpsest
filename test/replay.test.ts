@@ -27,7 +27,7 @@ import { balances, installTreasury, settle } from '../engine/market/treasury.js'
 import { replay, verifyReplay } from '../engine/market/replay.js';
 import { earnedFloors } from '../engine/repos.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { Audit, CheckResult, Milestone, Repo } from '../shared/types.js';
+import type { ArenaInfo, Audit, CheckResult, Decision, Grant, Graduate, Milestone, NetVersion, Prediction, Repo, TrainState, VoyageView } from '../shared/types.js';
 import { checks, FULL, git, setUp, tearDown, tempDir } from './guild-fixtures.js';
 
 let prStates = new Map<number, object>();
@@ -349,4 +349,108 @@ test('replay applies an audit stage only for a known status, and takes the model
   assert.equal(a.unattended, true);
   openDb().prepare('INSERT INTO audits (id, repo, status, started_at, json) VALUES (?, ?, ?, ?, ?)').run(a.id, a.repo, a.status, a.startedAt, JSON.stringify(a));
   assert.deepEqual(verifyReplay().diffs, []);
+});
+
+// ---------------------------------------------------------------- Phase 4: the school's tables
+
+test('replay rebuilds each school table and verifyReplay flags a corrupted grant row', () => {
+  const iv = (value: number, n = 20) => ({ value, lo: value - 0.05, hi: value + 0.05, n });
+  const net = (version: number, trusted: boolean): NetVersion => ({
+    net: 'master',
+    version,
+    at: `2026-11-1${version}T02:00:00.000Z`,
+    rows: { train: 40, heldOut: 10, distilled: 0 },
+    metric: 'brier',
+    score: iv(0.1),
+    baseline: iv(0.2),
+    vsBaseline: { diff: -0.1, lo: -0.15, hi: trusted ? -0.02 : 0.03 },
+    agreement: iv(0.9, 10),
+    trusted,
+    current: version === 1,
+    seconds: 3,
+    path: join(paths().school, 'nets', 'master', `v${version}.json`),
+  });
+  record('school.enabled', { enabled: true, at: '2026-11-10T00:00:00.000Z' });
+  record('net.trained', { netVersion: net(1, false) });
+  record('net.trained', { netVersion: net(2, true) });
+  record('net.promoted', { net: 'master', version: 2, at: '2026-11-12T02:01:00.000Z' });
+
+  const predicted = { key: 'merge:low:job-1', kind: 'merge:low', repo: FULL, jobId: 'job-1', p: 0.93, version: 2, reason: null, at: '2026-11-12T03:00:00.000Z' } as const;
+  const predictionId = record('master.predicted', predicted);
+  const prediction: Prediction = { id: predictionId, ...predicted };
+  const approve: Decision = { key: 'merge:low:job-1', kind: 'merge:low', repo: FULL, jobId: 'job-1', approved: true, by: 'merge', predictionId, agreed: true, at: '2026-11-12T09:00:00.000Z' };
+  const revert: Decision = { ...approve, approved: false, by: 'revert', agreed: false, at: '2026-11-13T09:00:00.000Z' };
+  record('decision.resolved', approve);
+  record('decision.resolved', revert);
+
+  const asked: Grant = { kind: 'merge:low', repo: FULL, state: 'asked', at: '2026-11-12T04:00:00.000Z', by: 'school', rate: iv(0.96, 50), reason: null, acted: 0, quietUntil: null };
+  const granted: Grant = { ...asked, state: 'granted', at: '2026-11-12T08:00:00.000Z', by: 'him' };
+  const acted: Grant = { ...granted, acted: 1 };
+  record('autonomy.asked', { grant: asked });
+  record('autonomy.granted', { grant: granted });
+  record('autonomy.acted', { kind: 'merge:low', repo: FULL, jobId: 'job-2', key: 'merge:low:job-2', phase: 'before', grant: acted });
+  record('autonomy.acted', { kind: 'merge:low', repo: FULL, jobId: 'job-2', key: 'merge:low:job-2', phase: 'after', ok: true });
+
+  const building: ArenaInfo = { id: 'arena-1', repo: FULL, kind: 'planted', sha: 'a'.repeat(40), tasks: { breeding: 0, race: 0, sealed: 0 }, candidates: 0, kept: 0, sealedUses: 0, sealedHash: null, builtAt: '2026-11-12T01:00:00.000Z', status: 'building', reason: null };
+  const ready: ArenaInfo = { ...building, tasks: { breeding: 30, race: 12, sealed: 8 }, candidates: 120, kept: 50, sealedHash: 'f'.repeat(64), status: 'ready' };
+  record('arena.built', { arena: building });
+  record('arena.built', { arena: ready });
+
+  const sailing: VoyageView = { id: 'voyage-1', arena: 'arena-1', status: 'sailing', generation: 0, of: 4, runs: { done: 0, of: 500 }, commissionedBy: 'quickset', scores: [], promoted: [], sealed: null, credits: 0, startedAt: '2026-11-12T01:10:00.000Z', endedAt: null };
+  const done: VoyageView = { ...sailing, status: 'done', generation: 4, runs: { done: 500, of: 500 }, sealed: iv(0.7, 8), credits: 42, endedAt: '2026-11-14T05:00:00.000Z' };
+  record('voyage.commissioned', { voyageId: 'voyage-1', firmId: 'quickset', fee: 120 });
+  record('voyage.started', { voyage: sailing });
+  record('voyage.generation', { voyage: { ...sailing, generation: 1, runs: { done: 125, of: 500 } } });
+  // A champion's sealed race spends one use of the arena's sealed split.
+  record('voyage.ended', { voyage: done, arena: { ...ready, sealedUses: 1 } });
+
+  const running: TrainState = { id: 'train-1', kind: 'lora', status: 'running', reason: null, startedAt: '2026-11-12T01:20:00.000Z', endedAt: null, seconds: 0, steps: { done: 0, of: 600, lost: 0, optimizerReset: false }, credits: 0 };
+  const paused: TrainState = { ...running, status: 'paused', reason: 'on battery', seconds: 900, steps: { done: 120, of: 600, lost: 20, optimizerReset: false }, credits: 3 };
+  record('train.started', { train: running });
+  record('train.paused', { train: paused });
+
+  const graduate: Graduate = { id: 'grad-1', model: 'mlx:grad-qwen25-coder-7b-1', base: 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit', loraId: 'lora-1', sealed: iv(0.6, 8), baseSealed: iv(0.4, 8), vsBase: { diff: 0.2, lo: 0.05, hi: 0.35 }, examples: 120, arenas: ['arena-1'], at: '2026-11-15T05:00:00.000Z', agentId: null };
+  record('graduate.made', { graduate, arenas: [{ ...ready, sealedUses: 2 }] });
+  record('merge.followup', { jobId: 'job-1', runId: 'run-1', repo: FULL, floorId: 'f1', mergeSha: 'b'.repeat(40), fixSha: 'c'.repeat(40), files: ['src/a.ts'], at: '2026-11-13T00:00:00.000Z' });
+
+  const state = replay(entries());
+  assert.deepEqual(state.nets['master v1'], { ...net(1, false), current: false });
+  assert.deepEqual(state.nets['master v2'], { ...net(2, true), current: true });
+  assert.deepEqual(state.predictions[prediction.key], prediction);
+  assert.deepEqual(state.decisions, [approve, revert]);
+  assert.deepEqual(state.grants[`merge:low ${FULL}`], acted);
+  assert.deepEqual(state.arenas['arena-1'], { ...ready, sealedUses: 2 });
+  assert.deepEqual(state.voyages['voyage-1'], done);
+  assert.deepEqual(state.trains['train-1'], paused);
+  assert.deepEqual(state.graduates['grad-1'], graduate);
+
+  // The tables as the school's writers keep them.
+  const db = openDb();
+  const putNet = db.prepare('INSERT INTO nets (net, version, at, current, json) VALUES (?, ?, ?, ?, ?)');
+  for (const v of [{ ...net(1, false), current: false }, { ...net(2, true), current: true }]) putNet.run(v.net, v.version, v.at, v.current ? 1 : 0, JSON.stringify(v));
+  db.prepare('INSERT INTO predictions (id, key, kind, repo, at, json) VALUES (?, ?, ?, ?, ?, ?)').run(prediction.id, prediction.key, prediction.kind, prediction.repo, prediction.at, JSON.stringify(prediction));
+  const putDecision = db.prepare('INSERT INTO decisions (key, at, kind, repo, json) VALUES (?, ?, ?, ?, ?)');
+  for (const d of [approve, revert]) putDecision.run(d.key, d.at, d.kind, d.repo, JSON.stringify(d));
+  db.prepare('INSERT INTO grants (kind, repo, state, at, json) VALUES (?, ?, ?, ?, ?)').run(acted.kind, acted.repo, acted.state, acted.at, JSON.stringify(acted));
+  db.prepare('INSERT INTO arenas (id, repo, json) VALUES (?, ?, ?)').run('arena-1', FULL, JSON.stringify({ ...ready, sealedUses: 2 }));
+  db.prepare('INSERT INTO voyages (id, json) VALUES (?, ?)').run(done.id, JSON.stringify(done));
+  db.prepare('INSERT INTO trains (id, kind, status, json) VALUES (?, ?, ?, ?)').run(paused.id, paused.kind, paused.status, JSON.stringify(paused));
+  db.prepare('INSERT INTO graduates (id, json) VALUES (?, ?)').run(graduate.id, JSON.stringify(graduate));
+  const ok = verifyReplay();
+  assert.deepEqual(ok.diffs, []);
+  assert.equal(ok.ok, true);
+
+  // A grant row whose state column says granted while the ledger says he revoked it.
+  db.prepare("UPDATE grants SET state = 'revoked' WHERE kind = ? AND repo = ?").run('merge:low', FULL);
+  const corrupt = verifyReplay();
+  assert.equal(corrupt.ok, false);
+  assert.ok(corrupt.diffs.some((x) => x.startsWith(`grant merge:low ${FULL}: the tables hold`)), corrupt.diffs.join('\n'));
+  // A grant row the ledger never made, and a net whose current flag moved without a promotion.
+  db.prepare('INSERT INTO grants (kind, repo, state, at, json) VALUES (?, ?, ?, ?, ?)').run('merge:high', FULL, 'granted', acted.at, JSON.stringify({ ...acted, kind: 'merge:high' }));
+  db.prepare("UPDATE nets SET current = 1 WHERE net = 'master' AND version = 1").run();
+  db.prepare('DELETE FROM decisions WHERE at = ?').run(revert.at);
+  const worse = verifyReplay();
+  assert.ok(worse.diffs.some((x) => x.startsWith(`grant merge:high ${FULL}: in the tables but not in the ledger`)), worse.diffs.join('\n'));
+  assert.ok(worse.diffs.some((x) => x.startsWith('net master v1: the tables hold')), worse.diffs.join('\n'));
+  assert.ok(worse.diffs.some((x) => x.startsWith('decision merge:low:job-1 #2: in the ledger but not in the tables')), worse.diffs.join('\n'));
 });

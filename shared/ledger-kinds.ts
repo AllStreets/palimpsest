@@ -56,6 +56,28 @@ export const LEDGER_KINDS = [
   'brief.opened',
   'brief.action',
   'milestone.reached',
+  // Phase 4: the school, its arenas, voyages and training, the nets, his decisions and earned autonomy
+  'school.enabled',
+  'arena.built',
+  'voyage.started',
+  'voyage.commissioned',
+  'voyage.generation',
+  'voyage.ended',
+  'train.started',
+  'train.paused',
+  'train.ended',
+  'net.trained',
+  'net.promoted',
+  'master.predicted',
+  'decision.resolved',
+  'autonomy.asked',
+  'autonomy.granted',
+  'autonomy.declined',
+  'autonomy.suspended',
+  'autonomy.revoked',
+  'autonomy.acted',
+  'graduate.made',
+  'merge.followup',
 ] as const;
 
 export type LedgerKind = (typeof LEDGER_KINDS)[number];

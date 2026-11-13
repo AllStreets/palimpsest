@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import * as home from '../engine/home.js';
+import { poolOfModel } from '../shared/market-rules.js';
 import type { Repo } from '../shared/types.js';
 
 let tempDir: string;
@@ -113,4 +114,10 @@ test('the db has audits and milestones tables and jobs.key', async () => {
   db.prepare('INSERT INTO milestones (id, kind, tower_id, at, until, json) VALUES (?, ?, ?, ?, ?, ?)').run('skyline:1', 'skyline', 'acme/widgets#founding', '2026-11-11T08:00:00.000Z', null, '{}');
   db.prepare('UPDATE jobs SET key = ? WHERE id = ?').run('acme/widgets#abcdef012345', 'job-1');
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM jobs WHERE key = ?').get('acme/widgets#abcdef012345') as { n: number }).n, 1);
+});
+
+/** Pin (ruling 26): a graduate's mlx model already counts in the local pool, so it shares the local slot and never the Claude window. */
+test("poolOfModel('mlx:grad-x') is local", () => {
+  assert.equal(poolOfModel('mlx:grad-x'), 'local');
+  assert.equal(poolOfModel('mlx:grad-qwen25-coder-7b-1'), 'local');
 });

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { homedir } from 'node:os';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
@@ -52,4 +53,20 @@ test('onRealDataHome answers without throwing, so the real-home refusals still r
 test('a set PALIMPSEST_HOME is used as given', () => {
   process.env.PALIMPSEST_HOME = '/tmp/palimpsest-somewhere';
   assert.equal(home(), '/tmp/palimpsest-somewhere');
+});
+
+test('paths().school creates its subdirectories under the temp home', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'palimpsest-home-school-'));
+  try {
+    process.env.PALIMPSEST_HOME = dir;
+    const p = paths();
+    assert.equal(p.school, join(dir, 'school'));
+    for (const sub of ['beagle', 'arenas', 'nets', 'lora', 'graduates', 'understudy', 'logs']) {
+      assert.ok(existsSync(join(p.school, sub)) && statSync(join(p.school, sub)).isDirectory(), sub);
+    }
+    // A second call finds them in place.
+    assert.equal(paths().school, p.school);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

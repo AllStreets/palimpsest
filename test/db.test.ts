@@ -139,3 +139,41 @@ test('allowLowPower defaults to false', () => {
   assert.equal(merged.allowLowPower, false);
   assert.deepEqual(merged.window, { from: '02:00', to: '06:00' });
 });
+
+test('the db has the ten school tables', () => {
+  const db = new DatabaseSync(paths().db);
+  try {
+    // openDb() migrates; a raw connection then reads what it made.
+    getSettings();
+    const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string; pk: number }>).map((c) => [c.name, c.pk]);
+    assert.deepEqual(cols('nets'), [['net', 1], ['version', 2], ['at', 0], ['current', 0], ['json', 0]]);
+    assert.deepEqual(cols('predictions'), [['id', 1], ['key', 0], ['kind', 0], ['repo', 0], ['at', 0], ['json', 0]]);
+    assert.deepEqual(cols('decisions'), [['key', 0], ['at', 0], ['kind', 0], ['repo', 0], ['json', 0]]);
+    assert.deepEqual(cols('grants'), [['kind', 1], ['repo', 2], ['state', 0], ['at', 0], ['json', 0]]);
+    assert.deepEqual(cols('arenas'), [['id', 1], ['repo', 0], ['json', 0]]);
+    assert.deepEqual(cols('arena_tasks'), [['id', 1], ['arena', 0], ['split', 0], ['ref', 0], ['json', 0]]);
+    assert.deepEqual(cols('voyages'), [['id', 1], ['json', 0]]);
+    assert.deepEqual(cols('trains'), [['id', 1], ['kind', 0], ['status', 0], ['json', 0]]);
+    assert.deepEqual(cols('graduates'), [['id', 1], ['json', 0]]);
+    assert.deepEqual(cols('verified'), [['repo', 1], ['sha', 2], ['json', 0]]);
+    const indexes = (db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL").all() as Array<{ name: string; sql: string }>);
+    assert.ok(indexes.some((i) => i.name === 'decisions_kind' && /\(kind, at\)/.test(i.sql)), 'decisions are indexed by kind and time');
+    // A prediction is registered once per key.
+    db.prepare('INSERT INTO predictions (key, kind, repo, at, json) VALUES (?, ?, ?, ?, ?)').run('merge:low:job-1', 'merge:low', 'acme/widgets', '2026-11-12T01:00:00.000Z', '{}');
+    assert.throws(() => db.prepare('INSERT INTO predictions (key, kind, repo, at, json) VALUES (?, ?, ?, ?, ?)').run('merge:low:job-1', 'merge:low', 'acme/widgets', '2026-11-12T02:00:00.000Z', '{}'), /UNIQUE/);
+  } finally {
+    db.close();
+  }
+});
+
+test('the ledger takes every school kind', () => {
+  const kinds = [
+    'school.enabled', 'arena.built', 'voyage.started', 'voyage.commissioned', 'voyage.generation', 'voyage.ended',
+    'train.started', 'train.paused', 'train.ended', 'net.trained', 'net.promoted', 'master.predicted', 'decision.resolved',
+    'autonomy.asked', 'autonomy.granted', 'autonomy.declined', 'autonomy.suspended', 'autonomy.revoked', 'autonomy.acted',
+    'graduate.made', 'merge.followup',
+  ] as const;
+  for (const k of kinds) assert.ok(isLedgerKind(k), k);
+  const id = record('school.enabled', { enabled: false, at: '2026-11-12T00:00:00.000Z' });
+  assert.equal(entries(id - 1)[0]?.kind, 'school.enabled');
+});

@@ -129,6 +129,81 @@ const PHASE3_SCHEMA = `
 `;
 
 /**
+ * Phase 4: the school. Each row keeps its full record in `json`; the other
+ * columns are what queries filter on. A prediction's `id` is the ledger id
+ * of its `master.predicted` entry; `decisions` keeps every resolution of a
+ * key in order (a revert supersedes an approve). `arena_tasks` and
+ * `verified` are derived from his repos and are not replayed.
+ */
+const SCHOOL_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS nets (
+    net TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    at TEXT NOT NULL,
+    current INTEGER NOT NULL DEFAULT 0,
+    json TEXT NOT NULL,
+    PRIMARY KEY (net, version)
+  );
+  CREATE TABLE IF NOT EXISTS predictions (
+    id INTEGER PRIMARY KEY,
+    key TEXT UNIQUE NOT NULL,
+    kind TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    at TEXT NOT NULL,
+    json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS decisions (
+    key TEXT NOT NULL,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    json TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS decisions_kind ON decisions (kind, at);
+  CREATE TABLE IF NOT EXISTS grants (
+    kind TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    state TEXT NOT NULL,
+    at TEXT NOT NULL,
+    json TEXT NOT NULL,
+    PRIMARY KEY (kind, repo)
+  );
+  CREATE TABLE IF NOT EXISTS arenas (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS arena_tasks (
+    id TEXT PRIMARY KEY,
+    arena TEXT NOT NULL,
+    split TEXT NOT NULL,
+    ref TEXT,
+    json TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS arena_tasks_arena ON arena_tasks (arena, split);
+  CREATE TABLE IF NOT EXISTS voyages (
+    id TEXT PRIMARY KEY,
+    json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS trains (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS graduates (
+    id TEXT PRIMARY KEY,
+    json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS verified (
+    repo TEXT NOT NULL,
+    sha TEXT NOT NULL,
+    json TEXT NOT NULL,
+    PRIMARY KEY (repo, sha)
+  );
+`;
+
+/**
  * Brings a database up to the current schema. Idempotent: every table and
  * index is created only when missing, and a repo row is rewritten only when
  * it lacks a market field. A repo connected before Phase 2 gets the market
@@ -142,6 +217,7 @@ export function migrate(db: DatabaseSync): void {
   migrateTripsAgent(db);
   migrateJobKey(db);
   db.exec(PHASE3_SCHEMA);
+  db.exec(SCHOOL_SCHEMA);
 
   const rows = db.prepare('SELECT full_name, json FROM repos').all() as Array<{ full_name: string; json: string }>;
   const update = db.prepare('UPDATE repos SET json = ? WHERE full_name = ?');

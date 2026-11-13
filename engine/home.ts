@@ -14,7 +14,12 @@ export interface Paths {
   runs: string;
   /** The daily reports. */
   reports: string;
+  /** Everything the school writes (Phase 4): `beagle/`, `arenas/`, `nets/`, `lora/`, `graduates/`, `understudy/`, `logs/`. */
+  school: string;
 }
+
+/** The school's subdirectories, created under `paths().school`. */
+export const SCHOOL_DIRS = ['beagle', 'arenas', 'nets', 'lora', 'graduates', 'understudy', 'logs'] as const;
 
 /** Where the data lives when PALIMPSEST_HOME is not set: ~/Library/Application Support/Palimpsest. */
 export function defaultHome(): string {
@@ -58,7 +63,8 @@ export function onRealDataHome(env: NodeJS.ProcessEnv = process.env): boolean {
 
 /**
  * Resolves every data path under the home, creating the directories that
- * hold files (mirrors, usage, logs, runs, reports). `db` and `stop` are file paths whose
+ * hold files (mirrors, usage, logs, runs, reports, and the school with its
+ * subdirectories). `db` and `stop` are file paths whose
  * parent (the home itself) is created, but the files are not. `dist` is
  * the built UI's output directory, resolved from this module's own location
  * (not the data home), overridable with PALIMPSEST_DIST.
@@ -72,8 +78,9 @@ export function paths(): Paths {
   const stop = join(base, 'STOP');
   const runs = join(base, 'runs');
   const reports = join(base, 'reports');
+  const school = join(base, 'school');
 
-  for (const dir of [base, mirrors, usage, logs, runs, reports]) {
+  for (const dir of [base, mirrors, usage, logs, runs, reports, school, ...SCHOOL_DIRS.map((d) => join(school, d))]) {
     mkdirSync(dir, { recursive: true });
   }
   // Spotlight never indexes a run, so it never holds a sandbox extension for a run's files.
@@ -83,7 +90,7 @@ export function paths(): Paths {
   const engineDir = dirname(fileURLToPath(import.meta.url));
   const dist = process.env.PALIMPSEST_DIST ?? join(engineDir, '..', 'dist');
 
-  return { db, mirrors, usage, logs, stop, dist, runs, reports };
+  return { db, mirrors, usage, logs, stop, dist, runs, reports, school };
 }
 
 /**

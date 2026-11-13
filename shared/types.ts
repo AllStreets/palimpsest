@@ -1,5 +1,6 @@
 export type Era = 'stone' | 'brick' | 'glass' | 'titanium' | 'scifi';
-export type RootStyle = 'beauxarts' | 'roman' | 'gothic' | 'pagoda' | 'chicago';
+/** `collegiate` is the school's own root (Phase 4), for its graduates' towers. */
+export type RootStyle = 'beauxarts' | 'roman' | 'gothic' | 'pagoda' | 'chicago' | 'collegiate';
 export type FloorSize = 'small' | 'medium' | 'large';
 
 export interface Repo {
@@ -421,7 +422,8 @@ export interface SiteState {
 }
 
 export type TripMode = 'walk' | 'tram' | 'rail' | 'pod' | 'ferry' | 'cab';
-export type TripReason = 'bid' | 'job' | 'inspect' | 'home';
+/** `school`: a parent genome's agent commuting to the campus while its voyage sails (Phase 4 ruling 28). */
+export type TripReason = 'bid' | 'job' | 'inspect' | 'home' | 'school';
 
 export interface Trip {
   id: string;
@@ -513,8 +515,8 @@ export interface Audit {
 /** An audit as the API sends it: the page inline, its proposals as jobs, no path of this Mac. */
 export type AuditView = Omit<Audit, 'markdownPath'> & { markdown: string | null; proposals: Job[] };
 
-export type BriefItemKind = 'merged' | 'failed' | 'pr' | 'proposal' | 'halt' | 'revert' | 'note' | 'audit' | 'audit-due' | 'usage' | 'stale' | 'milestone' | 'tour';
-export type BriefAction = 'accept' | 'tier' | 'dismiss' | 'why' | 'diff' | 'fly' | 'retry' | 'resume' | 'open-pr' | 'cap' | 'audit' | 'tour';
+export type BriefItemKind = 'merged' | 'failed' | 'pr' | 'proposal' | 'halt' | 'revert' | 'note' | 'audit' | 'audit-due' | 'usage' | 'stale' | 'milestone' | 'tour' | 'autonomy' | 'graduate' | 'acted';
+export type BriefAction = 'accept' | 'tier' | 'dismiss' | 'why' | 'diff' | 'fly' | 'retry' | 'resume' | 'open-pr' | 'cap' | 'audit' | 'tour' | 'grant' | 'decline' | 'revoke';
 
 export interface BriefItem {
   id: string;
@@ -797,3 +799,166 @@ export type ManualJobBody = {
   scope?: string[];
   acceptance?: string[];
 };
+
+// ---------------------------------------------------------------- the school (Phase 4)
+
+/** The five nets' heads and the master (spec 9.3, ruling 8). */
+export type NetName = 'appraiser-pass' | 'appraiser-cost' | 'router' | 'durability' | 'triage' | 'taste' | 'master';
+/** `thin`: too few labels to train; `untrained`: enough, not yet trained; `trusted`: beats its baseline on held-out rows. */
+export type NetStatus = 'thin' | 'untrained' | 'trained' | 'trusted';
+/** A value with its seeded 95% interval and the rows behind it. */
+export interface Interval {
+  value: number;
+  lo: number;
+  hi: number;
+  n: number;
+}
+/** One trained version of a net, as `nets.json` stores it; `path` is its weights under `paths().school/nets`. */
+export interface NetVersion {
+  net: NetName;
+  version: number;
+  at: string;
+  rows: { train: number; heldOut: number; distilled: number };
+  metric: 'brier' | 'mae';
+  score: Interval;
+  baseline: Interval;
+  vsBaseline: { diff: number; lo: number; hi: number };
+  agreement: Interval | null;
+  trusted: boolean;
+  current: boolean;
+  seconds: number;
+  path: string;
+}
+/** A net as the school screen shows it: never a path. */
+export interface NetCard {
+  net: NetName;
+  status: NetStatus;
+  reason: string | null;
+  cause: string | null;
+  current: Omit<NetVersion, 'path'> | null;
+  history: Array<Pick<NetVersion, 'version' | 'at' | 'score' | 'trusted'>>;
+  labels: number;
+  needs: number;
+  selfSelected: boolean;
+}
+/** The six kinds of his decisions autonomy may be granted for (Decision 11). */
+export type WorkKind = 'propose:harness' | 'propose:readme-gap' | 'merge:low' | 'merge:normal' | 'merge:high' | 'merge:ui';
+/** A master prediction registered before he decided; `p` null is an abstention, with its reason. */
+export interface Prediction {
+  id: number;
+  key: string;
+  kind: WorkKind;
+  repo: string;
+  jobId: string;
+  p: number | null;
+  version: number | null;
+  reason: string | null;
+  at: string;
+}
+/** One of his decisions (ruling 14); `agreed` null when no prediction came strictly before it. */
+export interface Decision {
+  key: string;
+  kind: WorkKind;
+  repo: string;
+  jobId: string;
+  approved: boolean;
+  by: 'accept' | 'dismiss' | 'merge' | 'close' | 'revert' | 'undo';
+  predictionId: number | null;
+  agreed: boolean | null;
+  at: string;
+}
+/** The master's agreement with him over a kind's window (ruling 16), and for one repo when asked. */
+export interface Agreement {
+  kind: WorkKind;
+  repo: string | null;
+  rows: number;
+  agreed: number;
+  rate: Interval | null;
+  eligible: boolean;
+  repoOk: boolean | null;
+  skewed: boolean;
+}
+export type GrantState = 'asked' | 'granted' | 'declined' | 'suspended' | 'revoked';
+/** One (kind, repo) pair's autonomy; `quietUntil` silences asks after he declines or revokes. */
+export interface Grant {
+  kind: WorkKind;
+  repo: string;
+  state: GrantState;
+  at: string;
+  by: 'him' | 'revert' | 'school';
+  rate: Interval | null;
+  reason: string | null;
+  acted: number;
+  quietUntil: string | null;
+}
+/** The training gate's reading of this Mac (ruling 6). */
+export interface GateState {
+  kind: 'light' | 'heavy';
+  ok: boolean;
+  reason: string | null;
+  power: 'ac' | 'battery' | 'unknown';
+  powerMode: 0 | 1 | 2 | null;
+  idleMin: number | null;
+  inWindow: boolean;
+  trainNowUntil: string | null;
+  freeGB: number | null;
+  thermal: 'nominal' | 'limited' | 'unknown';
+}
+export type TrainKind = 'nets' | 'lora' | 'arena' | 'voyage' | 'eval';
+/** One stretch of training or racing; `steps` for a LoRA, with what a pause lost. */
+export interface TrainState {
+  id: string;
+  kind: TrainKind;
+  status: 'waiting' | 'running' | 'paused' | 'done' | 'failed';
+  reason: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  seconds: number;
+  steps: { done: number; of: number; lost: number; optimizerReset: boolean } | null;
+  credits: number;
+}
+/** An arena built from one repo (ruling 20). */
+export interface ArenaInfo {
+  id: string;
+  repo: string;
+  kind: 'planted' | 'past';
+  sha: string;
+  tasks: { breeding: number; race: number; sealed: number };
+  candidates: number;
+  kept: number;
+  sealedUses: number;
+  sealedHash: string | null;
+  builtAt: string;
+  status: 'building' | 'paused' | 'ready' | 'failed' | 'spent';
+  reason: string | null;
+}
+/** A voyage as the school screen shows it (ruling 22). */
+export interface VoyageView {
+  id: string;
+  arena: string;
+  status: 'sailing' | 'paused' | 'done' | 'capped' | 'failed';
+  generation: number;
+  of: number;
+  runs: { done: number; of: number };
+  commissionedBy: string | null;
+  scores: Array<{ genome: string; name: string; generation: number; mean: number; lo: number; hi: number; parents: string[] }>;
+  promoted: Array<{ child: string; parent: string; diff: number; lo: number; hi: number }>;
+  sealed: Interval | null;
+  credits: number;
+  startedAt: string;
+  endedAt: string | null;
+}
+/** A LoRA adapter that beat its base on a sealed set (ruling 25). */
+export interface Graduate {
+  id: string;
+  model: ModelRef;
+  base: string;
+  loraId: string;
+  sealed: Interval;
+  baseSealed: Interval;
+  vsBase: { diff: number; lo: number; hi: number };
+  examples: number;
+  arenas: string[];
+  at: string;
+  agentId: string | null;
+}

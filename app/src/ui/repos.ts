@@ -34,6 +34,9 @@ const ROOT_ICONS: Record<RootStyle, string> = {
     '<path d="M11.5 2h1v2.6h-1z"/><path d="M7.5 7.2C9.5 6.6 10.6 5.4 12 4.6c1.4.8 2.5 2 4.5 2.6z"/><path d="M9.6 7.6h4.8v2.2H9.6z"/><path d="M5.8 12C8.4 11.3 10 10.6 12 9.8c2 .8 3.6 1.5 6.2 2.2z"/><path d="M8.6 12.4h6.8v2.4H8.6z"/><path d="M3.8 17.2c3-.8 5.6-1.6 8.2-2.4 2.6.8 5.2 1.6 8.2 2.4z"/><path d="M7.4 17.6h9.2V21H7.4z"/>',
   chicago:
     '<path d="M6.2 3h11.6v1.6H6.2z"/><path d="M7 5h10v16H7zm1.6 1.6v1.6h1.8V6.6zm2.5 0v1.6h1.8V6.6zm2.5 0v1.6h1.8V6.6zM8.6 9.6v1.6h1.8V9.6zm2.5 0v1.6h1.8V9.6zm2.5 0v1.6h1.8V9.6zm-5 3v1.6h1.8v-1.6zm2.5 0v1.6h1.8v-1.6zm2.5 0v1.6h1.8v-1.6zm-5 3v1.6h1.8v-1.6zm2.5 0v1.6h1.8v-1.6zm2.5 0v1.6h1.8v-1.6z"/>',
+  // The school's root is drawn as gothic until Task 38; it is never offered in the picker.
+  collegiate:
+    '<path d="M12 1.8 14.4 9h-4.8z"/><path d="M9.8 9.6h4.4V21H9.8z"/><path d="M6.8 7.2 8 11H5.6zM17.2 7.2 18.4 11H16z"/><path d="M5.8 11.4h2.2V21H5.8zM16 11.4h2.2V21H16z"/><path d="M8 15.5h1.8V21H8zM14.2 15.5H16V21h-1.8z"/>',
 };
 
 const icon = (root: RootStyle): string =>

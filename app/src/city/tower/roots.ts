@@ -34,6 +34,8 @@ export const ROOT_TOP_HALF: Record<RootStyle, number> = {
   gothic: 13.8,
   pagoda: 13.6,
   chicago: 17.55,
+  // The school's root borrows gothic until Task 38 builds its own.
+  collegiate: 13.8,
 };
 
 // ---------------------------------------------------------------- shared
@@ -817,4 +819,5 @@ const chicago: RootBuilder = (k, detail, rand) => {
   k.add('limestone', squareSweep(a - 0.45, [[-0.5, H - 0.25], [0.12, H - 0.25], [0.12, H], [-0.5, H]]));
 };
 
-export const ROOT_BUILDERS: Record<RootStyle, RootBuilder> = { beauxarts, roman, gothic, pagoda, chicago };
+/** `collegiate` is the school's root, drawn as gothic until Task 38 builds its own; no tower has it before a graduate exists. */
+export const ROOT_BUILDERS: Record<RootStyle, RootBuilder> = { beauxarts, roman, gothic, pagoda, chicago, collegiate: gothic };

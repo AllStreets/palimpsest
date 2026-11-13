@@ -213,13 +213,13 @@ function migrateRepoSlots(): void {
 }
 
 /**
- * The plot on the district spiral held by `owner` (a repo's full name or a
- * firm's id). Repos and firms share one numbering: an owner that already
+ * The plot on the district spiral held by `owner` (a repo's full name, a
+ * firm's id, or the school's campus, Phase 4). They share one numbering: an owner that already
  * holds a slot keeps it, and a new owner takes one past the highest slot ever
  * assigned to anyone, so no plot is reused and nothing already standing ever
  * moves. Existing repo slots are migrated into the table first, unchanged.
  */
-export function nextSlot(kind: 'repo' | 'firm', owner: string): number {
+export function nextSlot(kind: 'repo' | 'firm' | 'campus', owner: string): number {
   migrateRepoSlots();
   const db = openDb();
   const held = db.prepare('SELECT slot FROM slots WHERE kind = ? AND owner = ?').get(kind, owner) as
