@@ -14,6 +14,7 @@ import { backfillReports, ensureDailyReport, latestReportDay } from './market/re
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
 import { ensureCampus } from './school/campus.js';
+import { failInterruptedTrains } from './school/trainer.js';
 import { isSampleHome } from './sample.js';
 import { bootSampleEngine } from './sample-boot.js';
 import { startServer } from './server.js';
@@ -26,6 +27,8 @@ async function main(): Promise<void> {
   failInterruptedAnalyses();
   // Likewise a run the last engine had live: its strays are reaped, it ends crashed and its job returns to the board once (ruling 16).
   await failInterruptedRuns();
+  // Phase 4 ruling 7: a train the last engine had running is paused in the ledger; it never reports again.
+  failInterruptedTrains();
   // The five firms are seeded here and only here (never inside startServer, so tests never run ollama list).
   // An agent whose Ollama model is not installed seeds retired; seeding is idempotent per firm.
   const installed = await installedModels();

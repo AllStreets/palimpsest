@@ -14,6 +14,7 @@ import {
   selectedShell,
   registerRunPorts,
   toolProfile,
+  trainerProfile,
   unregisterRunPorts,
   wrap,
   type CliProfileInput,
@@ -221,6 +222,71 @@ describe('profile text', () => {
     assert.ok(readDeny > lineAt(p, '(allow file-read*'));
     assert.ok(lineAt(p, '(deny file-write*', `(subpath "${ROOT}/repo/.git")`) > allow);
     assert.ok(lineAt(p, '(deny file-read*', `(subpath "${HOME}/.config/gh")`) > lineAt(p, '(allow file-read*'));
+  });
+});
+
+describe('trainer profile text (Phase 4 ruling 7)', () => {
+  const SCHOOL = `${DATA}/school`;
+  const TMP = `${SCHOOL}/tmp`;
+  const base = { school: SCHOOL, tmp: TMP, home: HOME };
+
+  test('the profile denies network and writes outside the school and reads of ~/.ssh', () => {
+    const p = trainerProfile(base);
+    assert.ok(p.startsWith('(version 1)'));
+    assert.ok(at(p, '(allow default)') < at(p, '(deny network*)'));
+    const denyWrite = lineAt(p, '(deny file-write*)');
+    assert.ok(lineAt(p, '(allow file-write*', `(subpath "${SCHOOL}")`, `(subpath "${TMP}")`) > denyWrite);
+    assert.ok(lineAt(p, '(allow file-write-data', '(literal "/dev/null")') > denyWrite);
+    // the profile itself lives in the school's ctl, which no trainer may rewrite for the next launch
+    assert.ok(lineAt(p, '(deny file-write*', `(subpath "${SCHOOL}/ctl")`) > lineAt(p, '(allow file-write*', `(subpath "${SCHOOL}")`));
+    const lastAllow = Math.max(...p.split('\n').map((l, i) => (l.startsWith('(allow ') ? i : -1)));
+    for (const name of ['.ssh', '.aws', '.gnupg', '.config/gh', '.netrc', '.npmrc', '.docker', '.gitconfig', '.git-credentials', '.config/git', 'Library/Keychains']) {
+      assert.ok(lineAt(p, '(deny file-read* file-write*', `(subpath "${HOME}/${name}")`) > lastAllow, `${name} deny must follow every allow`);
+    }
+    // nothing widens the network beyond the two named exceptions
+    assert.ok(!/\(allow network/.test(p));
+  });
+
+  test('with proxyPort the profile allows outbound only to that loopback port, and without it has no outbound allow', () => {
+    const without = trainerProfile(base);
+    assert.ok(!/network-outbound/.test(without.split('(deny network*)')[1] ?? ''), 'no outbound allow without a proxy');
+    const withProxy = trainerProfile({ ...base, proxyPort: 50123 });
+    const deny = lineAt(withProxy, '(deny network*)');
+    const allow = lineAt(withProxy, '(allow network-outbound', '(remote ip "localhost:50123")');
+    assert.ok(allow > deny, 'the outbound allow comes after the network deny');
+    const outbound = withProxy.split('\n').filter((l) => l.includes('(allow network-outbound'));
+    assert.equal(outbound.length, 1);
+    assert.ok(!/localhost:\*/.test(withProxy));
+    assert.ok(!/network-bind|network-inbound/.test(withProxy.split('(deny network*)')[1] ?? ''), 'a proxy opens no bind or inbound');
+  });
+
+  test('with bindPort it allows loopback bind and inbound on that port only', () => {
+    const p = trainerProfile({ ...base, bindPort: 50200 });
+    const deny = lineAt(p, '(deny network*)');
+    assert.ok(lineAt(p, '(allow network-bind', '(local ip "localhost:50200")') > deny);
+    assert.ok(lineAt(p, '(allow network-inbound', '(local ip "localhost:50200")') > deny);
+    assert.ok(!/network-outbound/.test(p.split('(deny network*)')[1] ?? ''), 'a bind port opens no outbound');
+    assert.ok(!/localhost:\*/.test(p));
+    assert.equal(p.split('\n').filter((l) => l.startsWith('(allow network')).length, 2);
+    // a bind port is never 0 or outside the port range: the profile refuses rather than writing a wildcard
+    assert.throws(() => trainerProfile({ ...base, bindPort: 0 }), /port/);
+    assert.throws(() => trainerProfile({ ...base, proxyPort: 70000 }), /port/);
+  });
+
+  test('wrap writes the trainer profile to the school ctl and runs it through sandbox-exec', { skip: process.platform !== 'darwin' }, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'palimpsest-sandbox-test-'));
+    try {
+      process.env.PALIMPSEST_HOME = dir;
+      delete process.env.PALIMPSEST_SANDBOX;
+      const school = join(dir, 'school');
+      const argv = wrap(['/usr/bin/true'], 'trainer', { school, tmp: join(school, 'tmp'), home: dir });
+      assert.deepEqual(argv, ['/usr/bin/sandbox-exec', '-f', join(school, 'ctl', 'trainer.sb'), '/usr/bin/true']);
+      const text = readFileSync(join(school, 'ctl', 'trainer.sb'), 'utf8');
+      assert.match(text, /^\(version 1\)/);
+      assert.equal(text, trainerProfile({ school, tmp: join(school, 'tmp'), home: dir }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -593,5 +659,83 @@ describe('execution under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is
       assert.ok(r.stdout.includes(`reached ${broker}`), r.stdout + r.stderr);
       assert.ok(r.stdout.includes(`denied ${other}`), r.stdout + r.stderr);
     });
+  });
+});
+
+describe('the trainer profile under sandbox-exec', { skip: !hasSandbox && 'sandbox-exec is not available' }, () => {
+  let t: string;
+  let home: string;
+  let school: string;
+  let tmp: string;
+  const servers: Server[] = [];
+
+  async function listen(): Promise<number> {
+    const s = createServer((_q, r) => r.end('reached'));
+    servers.push(s);
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+    return (s.address() as { port: number }).port;
+  }
+
+  beforeEach(() => {
+    t = realpathSync(mkdtempSync(join(tmpdir(), 'palimpsest-trainer-sbx-')));
+    home = join(t, 'home');
+    const data = join(home, 'Library', 'Application Support', 'Palimpsest');
+    school = join(data, 'school');
+    tmp = join(school, 'tmp');
+    for (const d of [tmp, join(school, 'lora'), join(home, '.ssh')]) mkdirSync(d, { recursive: true });
+    writeFileSync(join(home, '.ssh', 'id_ed25519'), 'stand-in key\n');
+    writeFileSync(join(home, 'outside.txt'), 'outside\n');
+    process.env.PALIMPSEST_HOME = data;
+    delete process.env.PALIMPSEST_SANDBOX;
+  });
+
+  afterEach(async () => {
+    for (const s of servers.splice(0)) await new Promise<void>((r) => s.close(() => r()));
+    rmSync(t, { recursive: true, force: true });
+  });
+
+  function trainer(cmd: string, over: { bindPort?: number; proxyPort?: number } = {}) {
+    const argv = wrap(['/bin/sh', '-c', cmd], 'trainer', { school, tmp, home, ...over });
+    return run(argv, { cwd: tmp, env: { PATH: '/usr/bin:/bin', HOME: tmp, TMPDIR: tmp } });
+  }
+
+  test('writes land only in the school and its tmp; the profile and his home stay as they were', async () => {
+    const r = await trainer(`echo x > '${home}/new.txt'; echo x > '${t}/new.txt'; echo x > '${home}/.ssh/planted'; echo widened > '${school}/ctl/trainer.sb'; echo a > '${school}/lora/a' && echo b > '${tmp}/b'`);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stderr, /Operation not permitted/);
+    for (const p of [join(home, 'new.txt'), join(t, 'new.txt'), join(home, '.ssh', 'planted')]) assert.ok(!existsSync(p), p);
+    assert.match(readFileSync(join(school, 'ctl', 'trainer.sb'), 'utf8'), /^\(version 1\)/);
+    assert.equal(readFileSync(join(school, 'lora', 'a'), 'utf8'), 'a\n');
+    assert.equal(readFileSync(join(tmp, 'b'), 'utf8'), 'b\n');
+  });
+
+  test('a read of ~/.ssh fails while the rest of the disk stays readable', async () => {
+    const denied = await trainer(`/bin/cat '${home}/.ssh/id_ed25519'`);
+    assert.notEqual(denied.code, 0);
+    assert.equal(denied.stdout, '');
+    const ok = await trainer(`/bin/cat '${home}/outside.txt' && /bin/cat /etc/hosts > /dev/null && echo fine`);
+    assert.equal(ok.code, 0, ok.stderr);
+    assert.match(ok.stdout, /outside\nfine/);
+  });
+
+  test('no loopback port is reachable without a proxy port, and only the proxy port with one', async () => {
+    const proxy = await listen();
+    const other = await listen();
+    const get = (p: number) => `(/usr/bin/curl -s -m 3 http://127.0.0.1:${p}/ && echo " reached ${p}") || echo "denied ${p}"`;
+    const closed = await trainer(`${get(proxy)}; ${get(other)}`);
+    assert.ok(closed.stdout.includes(`denied ${proxy}`) && closed.stdout.includes(`denied ${other}`), closed.stdout + closed.stderr);
+    const open = await trainer(`${get(proxy)}; ${get(other)}`, { proxyPort: proxy });
+    assert.ok(open.stdout.includes(`reached ${proxy}`), open.stdout + open.stderr);
+    assert.ok(open.stdout.includes(`denied ${other}`), open.stdout + open.stderr);
+  });
+
+  test('a bind port lets a loopback server listen on that port alone', async () => {
+    const port = 50000 + Math.floor(Math.random() * 10000);
+    const script =
+      `const net=require('net');const bind=(p)=>new Promise(r=>{const s=net.createServer();s.once('error',e=>r('denied '+p+' '+e.code));s.listen(p,'127.0.0.1',()=>{s.close();r('bound '+p)})});` +
+      `(async()=>{console.log(await bind(${port}));console.log(await bind(${port + 1}))})()`;
+    const r = await trainer(`'${process.execPath}' -e '${script.replace(/'/g, "'\\''")}'`, { bindPort: port });
+    assert.ok(r.stdout.includes(`bound ${port}`), r.stdout + r.stderr);
+    assert.ok(r.stdout.includes(`denied ${port + 1}`), r.stdout + r.stderr);
   });
 });

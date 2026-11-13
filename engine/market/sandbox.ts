@@ -1,12 +1,15 @@
 /**
- * The two sandbox-exec profiles every agent child runs under (ruling 9).
+ * The sandbox-exec profiles every child runs under (ruling 9; Phase 4 ruling 7).
  *
  * - The tool profile bounds every command an agent runs, the install stage,
  *   every check and the push-mode recheck.
  * - The CLI profile bounds the claude process alone, which has no shell
  *   tool (ruling 19) and reaches the broker through an MCP tool.
+ * - The trainer profile bounds the school's Python (`school.py`): allow by
+ *   default so MLX reaches Metal, with no network, no writes outside the
+ *   school and no reads of his credentials.
  *
- * Both are deny by default. Seatbelt applies the last matching rule, so the
+ * The first two are deny by default. Seatbelt applies the last matching rule, so the
  * order of every block below matters and is tested by execution:
  * the home deny comes before the run root allows, the named secret denies
  * come after every allow, and the port denies come after the loopback allow.
@@ -57,6 +60,21 @@ export interface CliProfileInput extends ProfileInput {
    * `<runRoot>/work` (Task 9).
    */
   workDir?: string;
+}
+
+/**
+ * The trainer profile's input (Phase 4 ruling 7). `school` is `paths().school`,
+ * `tmp` its temp dir; `bindPort` is the `mlx_lm.server` loopback port (ruling
+ * 26) and `proxyPort` the one loopback port of the per-download egress proxy,
+ * given for `download_base` alone. `home` is his home (the credential denies
+ * hang under it); it defaults to the real one.
+ */
+export interface TrainerProfileInput {
+  school: string;
+  tmp: string;
+  bindPort?: number;
+  proxyPort?: number;
+  home?: string;
 }
 
 /** The Ollama port: only the engine talks to it. */
@@ -473,6 +491,58 @@ export function cliProfile(o: CliProfileInput): string {
   return lines.join('\n');
 }
 
+/** A loopback port a trainer profile may name: an integer in the port range, never 0 (which would mean any port on some rules). */
+function loopbackPort(name: string, port: number): number {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`${name} must be a port between 1 and 65535 (got ${port})`);
+  return port;
+}
+
+/**
+ * The trainer profile (Phase 4 ruling 7). Allow by default (MLX needs Metal
+ * and its mach services), then, in this order: every network operation
+ * denied, with exactly two exceptions after it, loopback bind and inbound on
+ * `bindPort` and outbound to loopback `proxyPort`, each only when given;
+ * every write denied, then the school, its tmp and the device files allowed,
+ * then the school's `ctl` (where this profile is written) denied again; and
+ * last, after every allow, his credentials denied by name for reading and
+ * writing. Seatbelt applies the last matching rule, so a profile with
+ * neither port has no `allow network` line at all.
+ */
+export function trainerProfile(o: TrainerProfileInput): string {
+  const school = realish(o.school);
+  const tmp = realish(o.tmp);
+  const home = realish(o.home ?? homedir());
+  const bindPort = o.bindPort === undefined ? null : loopbackPort('bindPort', o.bindPort);
+  const proxyPort = o.proxyPort === undefined ? null : loopbackPort('proxyPort', o.proxyPort);
+  const lines = [
+    '(version 1)',
+    `; Palimpsest trainer profile for ${school}`,
+    '(allow default)',
+    '',
+    '; network: none, then the two named exceptions (the later rule wins)',
+    '(deny network*)',
+  ];
+  if (bindPort !== null) {
+    lines.push(`; the mlx_lm.server port (ruling 26)`);
+    lines.push(`(allow network-bind (local ip "localhost:${bindPort}"))`);
+    lines.push(`(allow network-inbound (local ip "localhost:${bindPort}"))`);
+  }
+  if (proxyPort !== null) {
+    lines.push(`; the download proxy, for download_base alone (ruling 25)`);
+    lines.push(`(allow network-outbound (remote ip "localhost:${proxyPort}"))`);
+  }
+  lines.push('');
+  lines.push('; writes: the school and its tmp alone');
+  lines.push('(deny file-write*)');
+  lines.push(`(allow file-write* ${sub(school)} ${sub(tmp)})`);
+  lines.push(...devWrites());
+  lines.push('; the profile itself is written to the school ctl: no trainer rewrites it for the next launch');
+  lines.push(`(deny file-write* ${sub(join(school, 'ctl'))})`);
+  lines.push('');
+  lines.push(...secretDenies({ runRoot: school, home, dataHome: home, toolchains: [] }, SECRET_PATHS));
+  return lines.join('\n');
+}
+
 /* ------------------------------------------------------------------ */
 /* wrap                                                                */
 /* ------------------------------------------------------------------ */
@@ -485,22 +555,36 @@ export function sandboxOff(): boolean {
 }
 
 /**
- * Writes the profile for `kind` to `<runRoot>/ctl/<kind>.sb` and returns
+ * Writes the profile for `kind` to `<runRoot>/ctl/<kind>.sb` (the trainer's
+ * to `<school>/ctl/trainer.sb`) and returns
  * the argv that runs `argv` under it. When the sandbox is off it returns
  * `argv` unchanged and logs `sandbox off`, but never on the real data home.
  */
 export function wrap(argv: string[], kind: 'tool', o: ProfileInput, log?: (line: string) => void): string[];
 export function wrap(argv: string[], kind: 'cli', o: CliProfileInput, log?: (line: string) => void): string[];
-export function wrap(argv: string[], kind: 'tool' | 'cli', o: ProfileInput | CliProfileInput, log?: (line: string) => void): string[] {
+export function wrap(argv: string[], kind: 'trainer', o: TrainerProfileInput, log?: (line: string) => void): string[];
+export function wrap(argv: string[], kind: 'tool' | 'cli' | 'trainer', o: ProfileInput | CliProfileInput | TrainerProfileInput, log?: (line: string) => void): string[] {
   if (sandboxOff()) {
     if (onRealDataHome()) throw new Error('sandbox cannot be off on the real data home');
     (log ?? ((l: string) => console.warn(l)))('sandbox off');
     return argv;
   }
-  const text = kind === 'tool' ? toolProfile(o) : cliProfile(o as CliProfileInput);
-  const ctl = join(o.runRoot, 'ctl');
+  let text: string;
+  let ctl: string;
+  let name: string;
+  if (kind === 'trainer') {
+    const t = o as TrainerProfileInput;
+    text = trainerProfile(t);
+    ctl = join(t.school, 'ctl');
+    name = 'trainer.sb';
+  } else {
+    const m = o as ProfileInput | CliProfileInput;
+    text = kind === 'tool' ? toolProfile(m) : cliProfile(m as CliProfileInput);
+    ctl = join(m.runRoot, 'ctl');
+    name = kind === 'tool' && m.side === 'base' ? 'tool-base.sb' : `${kind}.sb`;
+  }
   mkdirSync(ctl, { recursive: true });
-  const path = join(ctl, kind === 'tool' && (o as ProfileInput).side === 'base' ? 'tool-base.sb' : `${kind}.sb`);
+  const path = join(ctl, name);
   try {
     unlinkSync(path);
   } catch {

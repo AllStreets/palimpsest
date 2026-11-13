@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import tempfile
@@ -76,6 +77,55 @@ class Ping(unittest.TestCase):
         self.assertEqual(replies[1]["id"], 2)
         self.assertEqual(replies[3]["id"], 3)
         self.assertEqual(replies[5], {"id": 4, "ok": True, **self.expected()})
+
+
+class Sleep(unittest.TestCase):
+    """The `sleep` test command: steps it reports as it goes, and what it does when the engine's gate closes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_sleep_reports_each_step_and_saves_the_last(self):
+        out_path = os.path.join(self.tmp.name, "last.json")
+        req = json.dumps({"id": 5, "cmd": "sleep", "seconds": 0.2, "steps": 2, "out": out_path}) + "\n"
+        out = subprocess.run([sys.executable, SCHOOL], input=req, capture_output=True, text=True, cwd=self.tmp.name, env=env(), timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        lines = [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
+        self.assertEqual(lines[0], {"id": 5, "step": 1, "of": 2})
+        self.assertEqual(lines[1], {"id": 5, "step": 2, "of": 2})
+        self.assertEqual(lines[2], {"id": 5, "saved": 2})
+        self.assertEqual(lines[3], {"id": 5, "ok": True, "step": 2, "of": 2, "stopped": False})
+        with open(out_path) as f:
+            self.assertEqual(json.load(f), {"step": 2, "of": 2})
+
+    def test_school_py_on_sigterm_writes_its_last_step_and_exits_0(self):
+        out_path = os.path.join(self.tmp.name, "last.json")
+        req = json.dumps({"id": 9, "cmd": "sleep", "seconds": 60, "steps": 600, "out": out_path}) + "\n"
+        p = subprocess.Popen([sys.executable, SCHOOL], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=self.tmp.name, env=env())
+        try:
+            p.stdin.write(req)
+            p.stdin.flush()
+            first = json.loads(p.stdout.readline())
+            self.assertEqual(first, {"id": 9, "step": 1, "of": 600})
+            p.send_signal(signal.SIGTERM)
+            stdout, stderr = p.communicate(timeout=20)
+        finally:
+            if p.poll() is None:
+                p.kill()
+        self.assertEqual(p.returncode, 0, stderr)
+        lines = [json.loads(l) for l in stdout.splitlines() if l.strip()]
+        reply = lines[-1]
+        self.assertEqual(reply["id"], 9)
+        self.assertTrue(reply["ok"])
+        self.assertTrue(reply["stopped"])
+        self.assertGreaterEqual(reply["step"], 1)
+        self.assertLess(reply["step"], 600)
+        self.assertEqual(lines[-2], {"id": 9, "saved": reply["step"]})
+        with open(out_path) as f:
+            self.assertEqual(json.load(f), {"step": reply["step"], "of": 600})
 
 
 if __name__ == "__main__":
