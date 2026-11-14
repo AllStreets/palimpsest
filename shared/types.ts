@@ -1000,6 +1000,8 @@ export interface VoyageView {
   notCompared?: string;
   /** Sealed uses of the arena this voyage has spent: one per sealed race started, one cut short by a pause included. */
   sealedUsesSpent?: number;
+  /** Set by the school's routes (Task 28): a commission not yet sailed (`voyageQueued`), shown as queued, not paused. */
+  queued?: boolean;
 }
 /** A LoRA adapter that beat its base on a sealed set (ruling 25). */
 export interface Graduate {

@@ -94,13 +94,15 @@ export interface Observatory {
 
 /**
  * Folds one of the school's ledger events into the observatory's state
- * (main.ts feeds it the stream): a nets train starting or ending opens or
- * shuts it; the master's trained versions are remembered and the promoted
- * one, if trusted, lights the plate; a version trained but not yet promoted
- * only turns the telescope to a new piece of sky. Anything else returns the
- * same state.
+ * (main.ts feeds it the stream): a nets train starting opens it, and its
+ * pause or end shuts it (the engine resumes a paused train with a new
+ * `train.started`, Task 7, so a resume opens it again with nothing more);
+ * the master's trained versions are remembered (`net.trained { net,
+ * version, trusted }` as nets.ts emits it), and only `net.promoted` moves
+ * the telescope's aim and lights the plate when that version is trusted
+ * (Task 28 ruling). Anything else returns the same state.
  */
-export function foldSchoolEvent(s: ObservatoryState, e: { type: string; data: unknown }, memory: { running: Set<string>; trusted: Map<number, boolean> } = schoolMemory): ObservatoryState {
+export function foldSchoolEvent(s: ObservatoryState, e: { type: string; data: unknown }, memory: SchoolMemory = schoolMemory): ObservatoryState {
   const d = (e.data ?? {}) as Record<string, unknown>;
   switch (e.type) {
     case 'train.started':
@@ -114,23 +116,50 @@ export function foldSchoolEvent(s: ObservatoryState, e: { type: string; data: un
       return training === s.training ? s : { ...s, training };
     }
     case 'net.trained': {
-      const v = d.netVersion as { net?: string; version?: number; trusted?: boolean } | undefined;
-      if (!v || v.net !== 'master' || typeof v.version !== 'number') return s;
+      // The engine's shape is flat; a version whole under `netVersion` (an older capture) reads the same.
+      const v = (d.netVersion ?? d) as { net?: string; version?: number; trusted?: boolean };
+      if (v.net !== 'master' || typeof v.version !== 'number') return s;
       memory.trusted.set(v.version, v.trusted === true);
-      // A new version looks at a new part of the sky; the plate waits for it to be promoted.
-      return v.version === s.version ? s : { ...s, version: v.version };
+      return s;
     }
     case 'net.promoted': {
       if (d.net !== 'master' || typeof d.version !== 'number') return s;
-      const masterTrusted = memory.trusted.get(d.version) ?? false;
-      return { ...s, version: d.version, masterTrusted };
+      const masterTrusted = typeof d.trusted === 'boolean' ? d.trusted : (memory.trusted.get(d.version) ?? false);
+      return d.version === s.version && masterTrusted === s.masterTrusted ? s : { ...s, version: d.version, masterTrusted };
     }
     default:
       return s;
   }
 }
+
 /** What the fold remembers between events: the nets trains running, and each master version's trust. */
-const schoolMemory = { running: new Set<string>(), trusted: new Map<number, boolean>() };
+export interface SchoolMemory {
+  running: Set<string>;
+  trusted: Map<number, boolean>;
+}
+const schoolMemory: SchoolMemory = { running: new Set<string>(), trusted: new Map<number, boolean>() };
+
+/** What `schoolFromView` reads of `GET /api/school` (app/src/api.ts SchoolView). */
+export interface SchoolSeed {
+  nets: Array<{ net: string; current: { version: number; trusted: boolean } | null; history: Array<{ version: number; trusted: boolean }> }>;
+  trains: Array<{ id: string; kind: string; status: string }>;
+}
+
+/**
+ * The observatory's state read whole from the school view (on load and on
+ * `engine.reconnected`, so a train already running and the master already
+ * promoted show on open), and the fold's memory set to match: the nets
+ * trains running now, and every master version's trust.
+ */
+export function schoolFromView(view: SchoolSeed, memory: SchoolMemory = schoolMemory): ObservatoryState {
+  memory.running.clear();
+  for (const t of view.trains) if (t.kind === 'nets' && t.status === 'running') memory.running.add(t.id);
+  memory.trusted.clear();
+  const master = view.nets.find((n) => n.net === 'master');
+  for (const h of master?.history ?? []) memory.trusted.set(h.version, h.trusted === true);
+  const cur = master?.current ?? null;
+  return { training: memory.running.size > 0, masterTrusted: cur?.trusted === true, version: cur?.version ?? 0 };
+}
 
 // ---------------------------------------------------------------- the dome's surfaces
 

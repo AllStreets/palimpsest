@@ -207,3 +207,67 @@ test('the client names the Phase 3 routes and listens for the Phase 3 events', a
   close();
   assert.deepEqual(got, ['audit.started', 'audit.stage', 'audit.ended', 'brief.action', 'milestone.reached']);
 });
+
+test('the client names the school routes and listens for its events', async () => {
+  const seen: Array<{ method: string; url: string; header: string | null; body: unknown }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    seen.push({ method: init?.method ?? 'GET', url, header: headers['x-palimpsest'] ?? null, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response('null', { status: 200 });
+  }) as typeof fetch;
+  try {
+    await api.school();
+    await api.net('appraiser-pass');
+    await api.voyage('voy-1');
+    await api.graduate('grad-qwen25c7-1');
+    await api.campus();
+    await api.trainNow();
+    await api.stopTrainNow();
+    await api.downloadBase();
+    await api.buildArena('tidewater/harbor-ledger', 'planted');
+    await api.grant('merge:low', 'hoshi/kumo');
+    await api.grant('merge:low', 'hoshi/kumo', { fromSettings: true });
+    await api.decline('propose:readme-gap', 'tidewater/harbor-ledger');
+    await api.revoke('merge:low', 'hoshi/kumo');
+    await api.patchSettings({ school: { idleMinutes: 20 } });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(
+    seen.map((s) => `${s.method} ${s.url}${s.header ? ' +h' : ''}`),
+    [
+      'GET /api/school',
+      'GET /api/school/nets/appraiser-pass',
+      'GET /api/school/voyages/voy-1',
+      'GET /api/school/graduates/grad-qwen25c7-1',
+      'GET /api/school/campus',
+      'POST /api/school/train-now +h',
+      'DELETE /api/school/train-now +h',
+      'POST /api/school/download-base +h',
+      'POST /api/school/arenas/tidewater/harbor-ledger +h',
+      'POST /api/autonomy/merge%3Alow/hoshi/kumo/grant +h',
+      'POST /api/autonomy/merge%3Alow/hoshi/kumo/grant +h',
+      'POST /api/autonomy/propose%3Areadme-gap/tidewater/harbor-ledger/decline +h',
+      'POST /api/autonomy/merge%3Alow/hoshi/kumo/revoke +h',
+      'PATCH /api/settings +h',
+    ],
+  );
+  assert.deepEqual(seen[8].body, { kind: 'planted' });
+  assert.equal(seen[9].body, undefined);
+  assert.deepEqual(seen[10].body, { fromSettings: true });
+  assert.deepEqual(seen[13].body, { school: { idleMinutes: 20 } });
+
+  (globalThis as { EventSource?: unknown }).EventSource = FakeEventSource;
+  const events: EngineEvent[] = [];
+  const close = api.events((e) => events.push(e));
+  const source = FakeEventSource.last!;
+  const SCHOOL_EVENTS = [
+    'train.started', 'train.paused', 'train.ended', 'net.trained', 'net.promoted',
+    'voyage.started', 'voyage.commissioned', 'voyage.generation', 'voyage.ended', 'graduate.made',
+    'autonomy.asked', 'autonomy.granted', 'autonomy.declined', 'autonomy.suspended', 'autonomy.revoked', 'autonomy.acted',
+  ];
+  for (const type of SCHOOL_EVENTS) source.send(type, { type });
+  assert.deepEqual(events.map((e) => e.type), SCHOOL_EVENTS);
+  close();
+});

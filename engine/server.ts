@@ -23,6 +23,7 @@ import { analyze, BAD_NAME, city, connect, disconnect, getRepo, isValidFullName,
 import { getSettings, patchSettings } from './settings.js';
 // Loaded for its effect: the settings route turning the school off runs schoolOff at once (tick.ts installs the hook).
 import './school/tick.js';
+import { schoolPatch } from './school/api.js';
 import { realRunner, getRunner, setRunner, getSpawner, realSpawner, setSpawner } from './exec.js';
 import { isSampleHome, sampleGh, sampleSpawner, useSampleFolders } from './sample.js';
 import { claudeSettingsTarget, installHook, isStale, latestReading, NO_CLAUDE_SETTINGS, uninstallHook } from './usage.js';
@@ -129,7 +130,7 @@ function validateSettingsPatch(body: unknown, current: Settings): Partial<Settin
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
   const b = body as Record<string, unknown>;
   const patch: Partial<Settings> = {};
-  const allowed = new Set(['quality', 'dayCapPct', 'nightCapPct', 'claudeConcurrency', 'localConcurrency', 'bidWindowSec', 'hardStopPct', 'keepAwake', 'ollamaHost', 'anthropicApi', 'auditOnConnect', 'auditModel', 'auditMaxCredits', 'todayCapPct']);
+  const allowed = new Set(['quality', 'dayCapPct', 'nightCapPct', 'claudeConcurrency', 'localConcurrency', 'bidWindowSec', 'hardStopPct', 'keepAwake', 'ollamaHost', 'anthropicApi', 'auditOnConnect', 'auditModel', 'auditMaxCredits', 'todayCapPct', 'school']);
   if (Object.keys(b).some((k) => !allowed.has(k))) return null;
 
   if ('quality' in b) {
@@ -186,6 +187,12 @@ function validateSettingsPatch(body: unknown, current: Settings): Partial<Settin
     // Only cleared here; it is set through the brief's cap action, which clamps it.
     if (b.todayCapPct !== null) return null;
     patch.todayCapPct = null;
+  }
+  if ('school' in b) {
+    // Phase 4 (Task 28): his school settings, merged onto the current ones; the designer by shape only.
+    const school = schoolPatch(b.school, current.school);
+    if (school === null) return null;
+    patch.school = school;
   }
   if ('anthropicApi' in b) {
     const a = b.anthropicApi;

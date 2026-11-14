@@ -10,8 +10,8 @@ import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
 import { dropText } from './city/governor';
 import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
-import { EMPTY_LIFE, foldLifeEvent, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
-import { foldSchoolEvent, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
+import { EMPTY_LIFE, foldLifeEvent, lifeFromSchool, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
+import { foldSchoolEvent, schoolFromView, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
@@ -878,12 +878,15 @@ async function main(): Promise<void> {
     location.hash = JOBS_ROUTE;
   }
   /**
-   * The observatory's dome opens the school screen at the master's card: the same navigation every other click in
-   * the city makes, the address changing (screens-track Task 28 draws the screen and routes `#/school/<section>`).
+   * The observatory's dome opens the school at the master's card: the same navigation every other click in the city
+   * makes, the address changing to `#/school/master` (router.ts parses the school's four routes). Until the school's
+   * own screen is drawn (screens-track Task 30), the school's routes open the nearest screen there is, the inspector on
+   * the university, over the city (applyRoute); a click on the address already shown opens it again.
    */
   function openSchool(route: string): void {
     debug.opened = route;
-    location.hash = route;
+    if (location.hash === route) inspectCampus();
+    else location.hash = route;
   }
 
   city.onPick((hit) => {
@@ -905,7 +908,7 @@ async function main(): Promise<void> {
   /**
    * The school as the ledger's stream tells it: a nets train starting opens the observatory and its end shuts it;
    * the master's promoted version, if trusted, lights the plate by its door. Read whole from api.school() on load
-   * and reconnect once Task 28 lands; until then the state starts shut and dark and follows the events.
+   * and on reconnect (readSchool, below), then followed by the events.
    */
   let school: ObservatoryState = { training: false, masterTrusted: false, version: 0 };
   /** A capture's or a test's state in place of the ledger's, or null. */
@@ -919,7 +922,8 @@ async function main(): Promise<void> {
   /**
    * The campus's life as the ledger's stream tells it (campus/life.ts): a voyage sailing lights the library's
    * reading room, a bay per genome racing; the nets trained and the graduates made are listed by the inspector on
-   * the university. Read from api.campus() on load (the voyage only, until Task 28 serves the school whole).
+   * the university. The voyage is read from api.campus() and the nets and graduates from api.school(), on load
+   * and on reconnect, then followed by the events.
    */
   let life: LifeState = EMPTY_LIFE;
   /** A capture's or a test's life in place of the ledger's. */
@@ -931,6 +935,22 @@ async function main(): Promise<void> {
     showCampusInspector();
   };
   const foldLife = (e: EngineEvent): void => setLife(foldLifeEvent(life, e));
+  /**
+   * The school read whole (Task 28), on load and when the stream comes back: a nets train already running opens
+   * the dome and the master already promoted aims the telescope and lights the plate; the nets trained and the
+   * graduates made before the page opened are listed by the inspector. The folds' memory is set to match, so the
+   * events after it fold on from the engine's state.
+   */
+  const readSchool = coalesced(() =>
+    api.school().then(
+      (v) => {
+        school = schoolFromView(v);
+        if (!heldSchool) city.setSchool(school);
+        setLife(lifeFromSchool(life, v));
+      },
+      () => {},
+    ),
+  );
   /** The inspector's view of the university, from the life shown (held or the ledger's). */
   const campusInspectorView = (): CampusInspectorView => {
     const shown = heldLife ?? life;
@@ -1168,6 +1188,7 @@ async function main(): Promise<void> {
     readLive();
     readMilestones();
     readCampus();
+    readSchool();
   } catch (err) {
     console.warn('could not load the city from the engine', err);
     show([]);
@@ -1194,6 +1215,7 @@ async function main(): Promise<void> {
     if (e.type === 'engine.reconnected') {
       readMilestones();
       readCampus();
+      readSchool();
       // Events sent while the stream was down are lost: read the repos, the city and the kill switch afresh.
       void api.repos().then((list) => {
         takeRepos(list);
@@ -1449,6 +1471,8 @@ async function main(): Promise<void> {
   // agent's page and the treasury draw over the city, which keeps running beside them. A place with no
   // screen yet (a district) leaves the city showing.
   const SCREENS = new Set(['repos', 'repo', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent', 'treasury', 'audit', 'brief']);
+  /** The school, a net, a voyage and a graduate: no screen of their own yet, so the city shows with the university inspected. */
+  const SCHOOL_ROUTES = new Set<Route>(['school', 'net', 'voyage', 'graduate']);
   let lastRoute = 'city';
   const applyRoute = (to: Route, place: Place): void => {
     const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent', 'repo', 'audit'].includes(to)) ? to : 'city';
@@ -1488,6 +1512,8 @@ async function main(): Promise<void> {
     else auditPage.hide();
     if (route === 'brief') brief.show();
     else brief.hide();
+    // The school's routes (Task 28) open the inspector on the university until the school's screen is drawn (Task 30).
+    if (SCHOOL_ROUTES.has(to)) inspectCampus();
     // Back in the city, focus returns to it rather than to a sheet that has gone.
     if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
     lastRoute = route;
@@ -1509,6 +1535,8 @@ async function main(): Promise<void> {
 
   await city.ready;
   debug.ready = true;
+  // Opened at a school address, the university is inspected once it stands.
+  if (SCHOOL_ROUTES.has(currentRoute())) inspectCampus();
   veil?.classList.add('gone');
   setTimeout(() => veil?.remove(), 1400);
 }

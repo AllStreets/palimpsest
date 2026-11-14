@@ -1043,7 +1043,8 @@ async function lifeChecks(page: Page, at: (x: number, y: number, z: number) => n
   await page.waitForSelector('.inspector.open.insp-campus', { timeout: 5000 });
   const panel = (await page.locator('.inspector').textContent()) ?? '';
   check(/A voyage on harbor-ledger/.test(panel) && /8 genomes racing, 8 of \d+ reading-room bays lit/.test(panel), `the inspector lists the live voyage (${panel.replace(/\s+/g, ' ').slice(0, 160)})`);
-  check(/No net has trained yet/.test(panel) && /No graduate yet/.test(panel), 'and says plainly that no net has trained and no graduate is made');
+  // The nets and graduates are read whole from the school on load (Task 28): the sample's graduate, made in history, is listed by the agent it became.
+  check(/No net has trained yet/.test(panel) && /(Ada Quarry|grad-qwen25c7-1)[\s\S]*Beat its base by 0\.19/.test(panel), `and says plainly that no net has trained, and lists the graduate made before the page opened (${panel.replace(/\s+/g, ' ').slice(-200)})`);
   await page.waitForTimeout(600);
   await page.screenshot({ path: join(SHOTS, 'campus-inspector.png') });
   await page.keyboard.press('Escape');

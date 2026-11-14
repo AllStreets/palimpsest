@@ -3,7 +3,7 @@
  * granted for, the numbers the plan's rulings pin, and the training window.
  * Pure: no engine import, so the app and the engine read the same values.
  */
-import type { Job, Tier, WorkKind } from './types.js';
+import type { Job, Tier, VoyageView, WorkKind } from './types.js';
 
 /** The six kinds of work, in the order the screens list them (Decision 11). */
 export const WORK_KINDS: readonly WorkKind[] = ['propose:harness', 'propose:readme-gap', 'merge:low', 'merge:normal', 'merge:high', 'merge:ui'];
@@ -51,6 +51,15 @@ export const LORA = { min: 100, iters: 600, saveEvery: 50, layers: 16, batch: 2,
 export const ARENA = { mutants: 120, keepPlanted: 60, keepPast: 40, maxTurns: 24 } as const;
 /** Voyages (ruling 22). */
 export const VOYAGE = { population: 8, generations: 4, concurrency: 1 } as const;
+
+/**
+ * A commissioned voyage not yet sailed (Task 23): stored at commissioning as
+ * `paused` at generation 0 with no scores. It is queued, not paused, in every
+ * view, and never the campus's live voyage.
+ */
+export function voyageQueued(v: Pick<VoyageView, 'status' | 'generation' | 'scores'>): boolean {
+  return v.status === 'paused' && v.generation === 0 && (v.scores?.length ?? 0) === 0;
+}
 /** Sealed races an arena's sealed split allows before it is spent (ruling 25). */
 export const SEALED_USES = 10;
 /** A firm's commission of a voyage (ruling 22, Decision 15). */

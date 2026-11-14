@@ -15,8 +15,8 @@ import { drawnMeshes } from '../app/src/city/batch.js';
 import { createCampus, type CampusAnchors } from '../app/src/city/campus/index.js';
 import { afterSunset, handAngles, makeClockTower, TOWER } from '../app/src/city/campus/clock.js';
 import { buildHall, instanceHalls } from '../app/src/city/campus/halls.js';
-import { campusLife, EMPTY_LIFE, FLICKER, foldLifeEvent, racingGenomes } from '../app/src/city/campus/life.js';
-import { foldSchoolEvent, makeObservatory, OBSERVATORY, SCHOOL_MASTER_ROUTE, type ObservatoryState } from '../app/src/city/campus/observatory.js';
+import { campusLife, EMPTY_LIFE, FLICKER, foldLifeEvent, lifeFromSchool, racingGenomes } from '../app/src/city/campus/life.js';
+import { foldSchoolEvent, makeObservatory, OBSERVATORY, SCHOOL_MASTER_ROUTE, schoolFromView, type ObservatoryState } from '../app/src/city/campus/observatory.js';
 import type { People } from '../app/src/city/people.js';
 import { Kit, PANE_READING } from '../app/src/city/tower/kit.js';
 import { CAMPUS_HALF, campusPlaza, TERRACE } from '../app/src/city/campus/site.js';
@@ -271,7 +271,7 @@ test('the slit opens on train.started for nets and closes on train.ended', () =>
   assert.equal(s.training, false, 'train.ended for the nets closes, whatever else runs');
   assert.equal(foldSchoolEvent(shut, started('t3', 'arena')).training, false, 'an arena race is not the nets learning');
   s = foldSchoolEvent(shut, { type: 'net.trained', data: { netVersion: { net: 'master', version: 3, trusted: true } } });
-  assert.deepEqual([s.version, s.masterTrusted], [3, false], 'a trained master looks at new sky but is not yet the one current');
+  assert.deepEqual([s.version, s.masterTrusted], [0, false], 'a trained master is remembered; only its promotion moves the aim (Task 28 ruling)');
   s = foldSchoolEvent(s, { type: 'net.promoted', data: { net: 'master', version: 3 } });
   assert.deepEqual([s.version, s.masterTrusted], [3, true], 'promoted, the trusted version is the master');
   s = foldSchoolEvent(s, { type: 'net.trained', data: { netVersion: { net: 'durability', version: 9, trusted: true } } });
@@ -583,4 +583,65 @@ test('the lamplight breathes within five percent, and no student lingers at the 
   assert.ok(gathered >= 2 && gathered <= 3, `two or three gather at a corner (${gathered})`);
   life.dispose();
   campus.dispose();
+});
+
+test("the observatory follows the engine: net.trained remembers, net.promoted aims, a pause shuts and a resume's train.started reopens", () => {
+  const memory = { running: new Set<string>(), trusted: new Map<number, boolean>() };
+  // net.trained as nets.ts emits it: { net, version, trusted }.
+  let s = foldSchoolEvent(shut, { type: 'net.trained', data: { net: 'master', version: 4, trusted: true } }, memory);
+  assert.equal(s, shut, 'a trained version moves nothing');
+  assert.equal(memory.trusted.get(4), true, 'its trust is remembered');
+  s = foldSchoolEvent(s, { type: 'net.promoted', data: { net: 'master', version: 4, from: null, trusted: true, at: '2026-11-12T03:00:00Z' } }, memory);
+  assert.deepEqual([s.version, s.masterTrusted], [4, true], 'promoted, the telescope aims at it and the plate lights');
+  s = foldSchoolEvent(s, { type: 'net.promoted', data: { net: 'master', version: 5, from: 4, trusted: false } }, memory);
+  assert.deepEqual([s.version, s.masterTrusted], [5, false], "a promotion's own trust is read when it carries it");
+  // A pause closes the dome; the engine resumes with a fresh train.started (a new id), which opens it again.
+  s = foldSchoolEvent(s, { type: 'train.started', data: { train: { id: 'train-a', kind: 'nets', status: 'running' } } }, memory);
+  assert.equal(s.training, true);
+  s = foldSchoolEvent(s, { type: 'train.paused', data: { train: { id: 'train-a', kind: 'nets', status: 'paused' }, reason: 'on battery', lost: 0 } }, memory);
+  assert.equal(s.training, false, 'train.paused closes the dome');
+  s = foldSchoolEvent(s, { type: 'train.started', data: { train: { id: 'train-b', kind: 'nets', status: 'running' } } }, memory);
+  assert.equal(s.training, true, 'the resume opens it');
+});
+
+test('the observatory and the campus life are seeded from the school view on load', () => {
+  const card = (net: string, history: Array<{ version: number; trusted: boolean; at: string }>, current: { version: number; trusted: boolean } | null) => ({
+    net,
+    status: current ? (current.trusted ? 'trusted' : 'trained') : 'thin',
+    reason: null,
+    cause: null,
+    current: current ? { net, version: current.version, at: '2026-11-12T03:00:00Z', trusted: current.trusted } : null,
+    history: history.map((h) => ({ ...h, score: { value: 0.1, lo: 0.05, hi: 0.15, n: 50 } })),
+    labels: 50,
+    needs: 40,
+    selfSelected: false,
+  });
+  const view = {
+    nets: [
+      card('appraiser-pass', [{ version: 5, trusted: false, at: '2026-11-10T03:00:00Z' }, { version: 6, trusted: true, at: '2026-11-11T03:00:00Z' }], { version: 6, trusted: true }),
+      card('router', [], null),
+      card('master', [{ version: 4, trusted: true, at: '2026-11-10T03:00:00Z' }, { version: 5, trusted: false, at: '2026-11-11T03:00:00Z' }], { version: 4, trusted: true }),
+    ],
+    trains: [
+      { id: 'train-n', kind: 'nets', status: 'running' },
+      { id: 'train-old', kind: 'nets', status: 'done' },
+      { id: 'train-l', kind: 'lora', status: 'running' },
+    ],
+    graduates: [{ id: 'grad-qwen25c7-1', model: 'mlx:grad-qwen25c7-1', base: 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit', agentId: 'grad-qwen25c7-1', at: '2026-11-12T05:00:00Z', vsBase: { diff: 0.19, lo: 0.05, hi: 0.33 }, examples: 112 }],
+  };
+  const memory = { running: new Set<string>(['train-gone']), trusted: new Map<number, boolean>() };
+  const s = schoolFromView(view as never, memory);
+  assert.deepEqual(s, { training: true, masterTrusted: true, version: 4 }, 'a nets train running opens it; the current master aims it and lights the plate');
+  assert.deepEqual([...memory.running], ['train-n'], 'the running nets trains, and only those, are remembered');
+  assert.deepEqual([...memory.trusted], [[4, true], [5, false]], "each master version's trust is remembered for its promotion");
+  // The next event folds on from the seeded memory: the running train's end shuts it.
+  assert.equal(foldSchoolEvent(s, { type: 'train.ended', data: { train: { id: 'train-n', kind: 'nets', status: 'done' } } }, memory).training, false);
+  assert.deepEqual(schoolFromView({ nets: [], trains: [], graduates: [] } as never, memory), shut, 'an empty school is shut and dark');
+
+  // The campus life: each net's newest version, and the graduates, kept beside the live voyage.
+  const voyage = { id: 'voy-1', arena: 'a', repo: null, status: 'sailing' as const, generation: 1, of: 4, runs: { done: 1, of: 2 }, racing: 8, commissionedBy: null, startedAt: '2026-11-12T01:00:00Z' };
+  const life = lifeFromSchool({ ...EMPTY_LIFE, voyage }, view as never);
+  assert.equal(life.voyage, voyage, 'the voyage is the campus read');
+  assert.deepEqual(life.nets.map((n) => [n.net, n.version, n.trusted, n.at]), [['appraiser-pass', 6, true, '2026-11-11T03:00:00Z'], ['master', 5, false, '2026-11-11T03:00:00Z']]);
+  assert.deepEqual(life.graduates.map((g) => [g.id, g.agentId]), [['grad-qwen25c7-1', 'grad-qwen25c7-1']]);
 });

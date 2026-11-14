@@ -29,6 +29,17 @@ import type {
   TreasuryView,
   UsageReading,
   VoyageView,
+  Agreement,
+  ArenaInfo,
+  GateState,
+  Graduate,
+  Grant,
+  NetCard,
+  NetName,
+  NetVersion,
+  SchoolSettings,
+  TrainState,
+  WorkKind,
 } from '../../shared/types.js';
 import { weekOf } from '../../shared/tour.js';
 
@@ -41,6 +52,44 @@ export interface CampusView {
   voyage: VoyageView | null;
   voyageRepo: string | null;
 }
+
+/** Whether the trainer can run on this Mac, and if not why (engine/school/trainer-env.ts), never naming its Python. */
+export interface TrainerView {
+  ready: boolean;
+  reason: string | null;
+  arch: string | null;
+  mlx: string | null;
+  mlxLm: string | null;
+  pinned: boolean;
+}
+
+/**
+ * What `GET /api/school` answers (engine/school/api.ts): the school whole, every field scrubbed. A voyage's
+ * `queued` is true for a commission not yet sailed (paused at generation 0 with no scores), shown as queued.
+ */
+export interface SchoolView {
+  settings: SchoolSettings;
+  gate: { light: GateState; heavy: GateState };
+  trainer: TrainerView;
+  nets: NetCard[];
+  agreements: Agreement[];
+  grants: Grant[];
+  arenas: ArenaInfo[];
+  voyages: VoyageView[];
+  graduates: Graduate[];
+  trains: TrainState[];
+  lora: {
+    examples: number;
+    needs: number;
+    counts: Record<string, { city: number; pr: number; commit: number }>;
+    baseReady: boolean;
+    /** His last click on the download: running, or how it ended; null before any since the engine started. */
+    download: { running: boolean; status: 'ready' | 'failed' | null; reason: string | null } | null;
+  };
+}
+
+/** A net's page: its card and every version it has trained, without weights paths. */
+export type NetDetail = NetCard & { versions: Array<Omit<NetVersion, 'path'>> };
 
 /** A failed engine call: the HTTP status plus the engine's readable message. */
 export class ApiError extends Error {
@@ -135,12 +184,22 @@ const EVENT_TYPES = [
   'voyage.generation',
   'voyage.ended',
   'graduate.made',
+  // Phase 4 (Task 28): his autonomy, asked, granted, declined, suspended, revoked and acted on.
+  'autonomy.asked',
+  'autonomy.granted',
+  'autonomy.declined',
+  'autonomy.suspended',
+  'autonomy.revoked',
+  'autonomy.acted',
 ];
 
 /** What the settings page may change (the engine checks every value again). */
 export type SettingsPatch = Partial<
   Pick<Settings, 'quality' | 'dayCapPct' | 'nightCapPct' | 'claudeConcurrency' | 'localConcurrency' | 'bidWindowSec' | 'hardStopPct' | 'keepAwake' | 'ollamaHost' | 'auditOnConnect' | 'auditModel' | 'auditMaxCredits'>
-> & { todayCapPct?: null } & { anthropicApi?: Partial<Settings['anthropicApi']> };
+> & { todayCapPct?: null } & { anthropicApi?: Partial<Settings['anthropicApi']> } & {
+  /** The school's settings he may change (Phase 4); `trainNowUntil` and the base model's are the engine's own. */
+  school?: Partial<Pick<SchoolSettings, 'enabled' | 'window' | 'idleMinutes' | 'allowLowPower' | 'claudeCreditsPerDay' | 'designer' | 'understudy' | 'commitsAsWork'>>;
+};
 
 /** What a repo patch may carry (the engine checks every value again). */
 export type RepoPatchBody = Partial<Pick<Repo, 'pushMode' | 'root' | 'market' | 'label'>> & { checks?: Partial<RepoChecks> };
@@ -180,6 +239,11 @@ function repoPath(fullName: string, action?: string): string {
   const [owner, name] = fullName.split('/');
   const base = `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
   return action ? `${base}/${action}` : base;
+}
+
+function autonomyPath(kind: WorkKind, fullName: string, move: 'grant' | 'decline' | 'revoke'): string {
+  const [owner, name] = fullName.split('/');
+  return `/api/autonomy/${enc(kind)}/${enc(owner)}/${enc(name ?? '')}/${move}`;
 }
 
 /** Client for the engine's routes. Every write sends `x-palimpsest: 1`. */
@@ -232,6 +296,23 @@ export const api = {
   milestones: (active = false) => request<Milestone[]>('GET', `/api/milestones${active ? '?active=1' : ''}`),
   /** The university's plot (Phase 4): its origin and slot, null until the engine has taken it, and what is under way there. */
   campus: () => request<CampusView>('GET', '/api/school/campus'),
+  // ------------------------------------------------------------ the school (Phase 4 Task 28)
+  /** The school whole: settings, the gate, the trainer, the nets, agreements, grants, arenas, voyages, graduates, trains and the LoRA's count. */
+  school: () => request<SchoolView>('GET', '/api/school'),
+  net: (net: NetName) => request<NetDetail>('GET', `/api/school/nets/${enc(net)}`),
+  voyage: (id: string) => request<VoyageView>('GET', `/api/school/voyages/${enc(id)}`),
+  graduate: (id: string) => request<Graduate>('GET', `/api/school/graduates/${enc(id)}`),
+  /** "Train now": opens the window for three hours; 409 with the reason on battery. */
+  trainNow: () => request<{ until: string }>('POST', '/api/school/train-now'),
+  stopTrainNow: () => request<{ until: null }>('DELETE', '/api/school/train-now'),
+  /** His click, the only way the base model is downloaded: 202 while it comes down. */
+  downloadBase: () => request<{ status: 'ready' | 'downloading' }>('POST', '/api/school/download-base'),
+  /** Builds an arena from a market-on repo with a test command; 409 with the reason otherwise. */
+  buildArena: (fullName: string, kind: 'planted' | 'past') => request<{ repo: string; kind: string; status: 'building' }>('POST', `/api/school/arenas/${fullName.split('/').map(enc).join('/')}`, { kind }),
+  /** His grant from the open ask, or with `fromSettings` for a pair revoked or suspended; 409 with the reason otherwise. */
+  grant: (kind: WorkKind, fullName: string, o: { fromSettings?: boolean } = {}) => request<Grant>('POST', autonomyPath(kind, fullName, 'grant'), o.fromSettings ? { fromSettings: true } : undefined),
+  decline: (kind: WorkKind, fullName: string) => request<Grant>('POST', autonomyPath(kind, fullName, 'decline')),
+  revoke: (kind: WorkKind, fullName: string) => request<Grant>('POST', autonomyPath(kind, fullName, 'revoke')),
   /** The tour of a week (a Monday, YYYY-MM-DD); without one, the week that holds today, named by its Monday here. */
   tour: (week: string = weekOf(Date.now()).week) => request<Tour | null>('GET', `/api/tour${queryOf({ week })}`),
   firms: () => request<FirmView[]>('GET', '/api/firms'),

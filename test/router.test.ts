@@ -58,3 +58,26 @@ test('router parses #/brief and #/audits/:id', () => {
   assert.equal(placeHref('audit', 'audit-abc123'), '#/audits/audit-abc123');
   assert.deepEqual(parseHash(placeHref('audit', 'audit-abc123')), { route: 'audit', id: 'audit-abc123' });
 });
+
+test('the router parses the four routes', () => {
+  // The school, opened at a section (the observatory's dome opens it at the master's card).
+  assert.deepEqual(parseHash('#/school'), { route: 'school', id: null });
+  assert.deepEqual(parseHash('#/school/master'), { route: 'school', id: 'master' });
+  assert.deepEqual(parseHash('#/school/voyages'), { route: 'school', id: 'voyages' });
+  assert.deepEqual(parseHash('#/school/nets'), { route: 'school', id: 'nets' });
+  assert.deepEqual(parseHash('#/school/nets/appraiser-pass'), { route: 'net', id: 'appraiser-pass' });
+  assert.deepEqual(parseHash('#/school/voyages/voy-1'), { route: 'voyage', id: 'voy-1' });
+  assert.deepEqual(parseHash('#/school/graduates/grad-qwen25c7-1'), { route: 'graduate', id: 'grad-qwen25c7-1' });
+  for (const h of ['#/school/nowhere', '#/school/nets/a/b', '#/school/master/x', '#/school/nets/..', '#/school/graduates/a%2Fb'])  {
+    assert.deepEqual(parseHash(h), { route: 'city', id: null }, h);
+  }
+  assert.deepEqual(parseHash('#/school/voyages/'), { route: 'school', id: 'voyages' }, 'a trailing slash is the section');
+  assert.equal(placeHref('school'), '#/school');
+  assert.equal(placeHref('school', 'master'), '#/school/master');
+  assert.equal(placeHref('net', 'master'), '#/school/nets/master');
+  assert.equal(placeHref('voyage', 'voy-1'), '#/school/voyages/voy-1');
+  assert.equal(placeHref('graduate', 'grad-1'), '#/school/graduates/grad-1');
+  for (const p of [{ route: 'school', id: null }, { route: 'school', id: 'graduates' }, { route: 'net', id: 'router' }, { route: 'voyage', id: 'voy 2' }, { route: 'graduate', id: 'grad-1' }] as const) {
+    assert.deepEqual(parseHash(placeHref(p.route, p.id)), p);
+  }
+});

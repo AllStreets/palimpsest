@@ -28,7 +28,7 @@
  *   voyage.ended      { voyageId, voyage: VoyageView }  (status done, capped or failed)
  *   voyage.commissioned { voyageId, firmId, fee }
  *   train.started | train.paused | train.ended { train: TrainState } with train.kind 'voyage'
- *   net.trained       { netVersion: { net, version, trusted, at? } }
+ *   net.trained       { net, version, trusted } (nets.ts), or { netVersion: { net, version, trusted, at? } }
  *   graduate.made     { graduate: Graduate }
  * `voyage.racing(v)` is the number of distinct genomes scored in the
  * voyage's current generation, or the population before the first run.
@@ -162,8 +162,9 @@ export function foldLifeEvent(s: LifeState, e: { type: string; data: unknown }):
       return i < 0 ? s : { ...s, graduates: s.graduates.map((g, j) => (j === i ? { ...g, agentId: id } : g)) };
     }
     case 'net.trained': {
-      const v = d.netVersion as { net?: string; version?: number; trusted?: boolean; at?: string } | undefined;
-      if (!v || typeof v.net !== 'string' || typeof v.version !== 'number') return s;
+      // nets.ts emits it flat ({ net, version, trusted }); a version whole under `netVersion` reads the same.
+      const v = (d.netVersion ?? d) as { net?: string; version?: number; trusted?: boolean; at?: string };
+      if (typeof v.net !== 'string' || typeof v.version !== 'number') return s;
       const row: LifeNet = { net: v.net, version: v.version, trusted: v.trusted === true, at: typeof v.at === 'string' ? v.at : null };
       const i = s.nets.findIndex((n) => n.net === v.net);
       const nets = i < 0 ? [...s.nets, row] : s.nets.map((n, j) => (j === i ? row : n));
@@ -179,6 +180,29 @@ export function foldLifeEvent(s: LifeState, e: { type: string; data: unknown }):
     default:
       return s;
   }
+}
+
+/** What `lifeFromSchool` reads of `GET /api/school` (app/src/api.ts SchoolView). */
+export interface LifeSeed {
+  nets: Array<{ net: string; history: Array<{ version: number; trusted: boolean; at: string }> }>;
+  graduates: Graduate[] | LifeGraduate[];
+}
+
+/**
+ * The campus's nets and graduates read whole from the school view (on load
+ * and on `engine.reconnected`, Task 28), so graduates made and nets trained
+ * before the page opened are listed by the inspector; the live voyage is the
+ * campus read's and is kept. Each net's newest trained version, in the order
+ * the school lists the nets.
+ */
+export function lifeFromSchool(s: LifeState, view: LifeSeed): LifeState {
+  const nets: LifeNet[] = [];
+  for (const n of view.nets) {
+    const v = n.history.at(-1);
+    if (v) nets.push({ net: n.net, version: v.version, trusted: v.trusted === true, at: typeof v.at === 'string' ? v.at : null });
+  }
+  const graduates: LifeGraduate[] = view.graduates.map((g) => ({ id: g.id, model: String(g.model), base: g.base, agentId: g.agentId ?? null, at: g.at, vsBase: g.vsBase, examples: g.examples }));
+  return { ...s, nets, graduates };
 }
 
 /** Which bays a state lights, one level each: the first `racing` of them while the voyage sails, none otherwise. */

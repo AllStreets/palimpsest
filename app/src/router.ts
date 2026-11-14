@@ -1,9 +1,9 @@
 /**
  * The app's screens. The city is always rendered; other routes draw over it.
- * A route with an id (a job, a firm, an agent, a run, an inspection, a repo)
+ * A route with an id (a job, a firm, an agent, a run, an inspection, a repo, a net, a voyage, a graduate)
  * carries it in the address: `#/jobs/<id>`, `#/repos/<owner>/<name>`.
  */
-export type Route = 'city' | 'repos' | 'settings' | 'jobs' | 'job' | 'firms' | 'firm' | 'agent' | 'run' | 'inspection' | 'treasury' | 'repo' | 'brief' | 'audit';
+export type Route = 'city' | 'repos' | 'settings' | 'jobs' | 'job' | 'firms' | 'firm' | 'agent' | 'run' | 'inspection' | 'treasury' | 'repo' | 'brief' | 'audit' | 'school' | 'net' | 'voyage' | 'graduate';
 
 /** Where the app is: a route, and the id it opens on (null for a list or the city). */
 export interface Place {
@@ -46,7 +46,21 @@ const PATH_OF: Record<Route, string> = {
   repo: 'repos',
   brief: 'brief',
   audit: 'audits',
+  school: 'school',
+  net: 'school/nets',
+  voyage: 'school/voyages',
+  graduate: 'school/graduates',
 };
+
+/**
+ * The school's sections (Phase 4 Task 28): `#/school/<section>` opens the school at one
+ * (the observatory's dome opens it at the master's card); `#/school/nets/<net>`,
+ * `#/school/voyages/<id>` and `#/school/graduates/<id>` open a net, a voyage or a graduate.
+ */
+export const SCHOOL_SECTIONS = ['nets', 'master', 'arenas', 'voyages', 'graduates', 'training'] as const;
+
+/** The school's pages with an id, by their section. */
+const SCHOOL_ONE: Record<string, Route> = { nets: 'net', voyages: 'voyage', graduates: 'graduate' };
 
 const CITY: Place = { route: 'city', id: null };
 
@@ -69,6 +83,13 @@ export function parseHash(hash: string): Place {
   const parts = hash.slice(2).split('/');
   if (parts.length > 1 && parts.at(-1) === '') parts.pop();
   const [head, ...rest] = parts;
+  if (head === 'school') {
+    if (rest.length === 0) return { route: 'school', id: null };
+    if (rest.length === 1) return (SCHOOL_SECTIONS as readonly string[]).includes(rest[0]) ? { route: 'school', id: rest[0] } : CITY;
+    if (rest.length !== 2 || !SCHOOL_ONE[rest[0]]) return CITY;
+    const id = segment(rest[1]);
+    return id ? { route: SCHOOL_ONE[rest[0]], id } : CITY;
+  }
   if (rest.length === 0) return LISTS[head] ? { route: LISTS[head], id: null } : CITY;
   if (head === 'repos') {
     if (rest.length !== 2) return CITY;
