@@ -419,7 +419,7 @@ That means the school will spend its first months saying it has nothing to show,
 
 That is the school on a fresh home: every net thin with its cause, no arena, no voyage and no graduate, and no chart anywhere.
 
-Two more things wait on me. The school needs a few library fixes in Beagle, which are ready as a branch for a pull request on Beagle that I haven't opened or merged yet. Until I do, the dependency points at a local copy of that branch, so a fresh clone of Palimpsest won't install. And the base model for the coder, about 4.3 GB, downloads only when I click Download in Settings.
+Two more things wait on me. The school needs a few library fixes in Beagle, which are ready as a branch for a pull request on Beagle that I haven't opened or merged yet. Until I do, the dependency points at a bare copy of that branch at `.superpowers/beagle-local/beagle.git` in my own Palimpsest checkout, by its full commit sha, so a fresh clone of Palimpsest anywhere else won't install. And the base model for the coder, about 4.3 GB, downloads only when I click Download in Settings.
 
 Designed, and not built yet:
 

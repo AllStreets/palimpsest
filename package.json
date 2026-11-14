@@ -18,7 +18,7 @@
     "test:trainer": "node --no-warnings --import tsx tools/test-trainer.ts"
   },
   "dependencies": {
-    "beagle": "git+file:///Users/connorevans/Downloads/palimpsest/.claude/worktrees/agent-a83d5a94629b92b13/.superpowers/beagle-local/beagle.git#76c2cbe2415711c0e46c64cdd4e445668c564949",
+    "beagle": "git+file:///Users/connorevans/Downloads/palimpsest/.superpowers/beagle-local/beagle.git#76c2cbe2415711c0e46c64cdd4e445668c564949",
     "three": "^0.187.0",
     "tsx": "^4.23.15"
   },
