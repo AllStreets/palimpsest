@@ -965,12 +965,30 @@ export interface VoyageView {
   of: number;
   runs: { done: number; of: number };
   commissionedBy: string | null;
-  scores: Array<{ genome: string; name: string; generation: number; mean: number; lo: number; hi: number; parents: string[] }>;
+  /** `scored` false: a genome of the generation racing now, its numbers zero until the race ends. */
+  scores: Array<{ genome: string; name: string; generation: number; mean: number; lo: number; hi: number; parents: string[]; scored?: boolean }>;
   promoted: Array<{ child: string; parent: string; diff: number; lo: number; hi: number }>;
   sealed: Interval | null;
   credits: number;
   startedAt: string;
   endedAt: string | null;
+  /**
+   * The rest is written by the engine's voyages (Task 22) and optional only
+   * so a view made before them still reads. `repo`: the arena's repo.
+   * `reason`: why it paused or ended, or why it makes no champion claim.
+   * `pausedAt`: when it last paused.
+   */
+  repo?: string;
+  reason?: string | null;
+  pausedAt?: string | null;
+  /** The best kept genome of the last generation (a starter or a promoted child), or null. */
+  champion?: { genome: string; name: string; model: string; generation: number; parents: string[] } | null;
+  /** The champion against each seeded local agent on the sealed tasks: per-task differences, champion minus agent. */
+  vsLocal?: Array<{ agent: string; name: string; diff: number; lo: number; hi: number }>;
+  /** Whether the champion beat every seeded local agent on an unspent, unchanged sealed split (each `lo > 0`). */
+  claim?: boolean;
+  /** What the champion was not compared with: Claude agents never are, since voyages race local models only. */
+  notCompared?: string;
 }
 /** A LoRA adapter that beat its base on a sealed set (ruling 25). */
 export interface Graduate {

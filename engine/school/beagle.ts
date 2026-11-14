@@ -37,6 +37,8 @@ export const SCHOOL_CALL_MAX_MS = 5 * 60_000;
 
 let loaded: BeagleApi | null = null;
 let loading: Promise<BeagleApi> | null = null;
+/** The driver of the voyage sailing now (`useDriver`), which a later `loadBeagle()` keeps in place. */
+let voyageDriver: BeagleDriver | null = null;
 
 /** Beagle's own default home, which the school never uses. */
 function beaglesRealHome(): string {
@@ -96,8 +98,20 @@ export async function loadBeagle(): Promise<BeagleApi> {
     loaded = await loading;
   }
   refuseHome(await beaglesHomeNow(), school);
-  loaded.models.setDriver(cityDriver);
+  loaded.models.setDriver(voyageDriver ?? cityDriver);
   return loaded;
+}
+
+/**
+ * Installs a voyage's own driver (its voyage, its signal) until it is
+ * called again with null, which puts the city's driver back. Unlike
+ * `setDriver`, it holds across `loadBeagle()`: an arena build loading
+ * Beagle while a voyage sails never takes the voyage's calls off its
+ * voyage or its stop.
+ */
+export function useDriver(d: BeagleDriver | null): void {
+  voyageDriver = d;
+  loaded?.models.setDriver(d ?? cityDriver);
 }
 
 /** Closes Beagle's store (its home may change before the next load). The city's driver stays installed. */

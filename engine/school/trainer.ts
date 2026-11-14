@@ -8,7 +8,8 @@
  * own switch with it); the moment either fails the process gets SIGTERM,
  * then SIGKILL `GATE.killGraceMs` later, and the train is paused with the
  * reason and the steps the pause lost (those done since the last save).
- * `pauseAll` does the same for every live train at once (the stop file, the
+ * `pauseAll` does the same for every live train at once (and stops the
+ * trains held with `holdTrain`, a voyage's) (the stop file, the
  * school turned off: `schoolOff` in tick.ts). The ledger carries `train.started`, then one of
  * `train.paused` or `train.ended`, each with the whole TrainState.
  *
@@ -112,9 +113,29 @@ function unref(t: { unref?: () => unknown }): void {
   if (typeof t.unref === 'function') t.unref();
 }
 
+/**
+ * Trains with no process of their own (a voyage races in the engine
+ * through Beagle): held here so the school runs one train at a time, and
+ * stopped by `pauseAll` like any other.
+ */
+const held = new Map<string, { state: TrainState; stop: (reason: string) => void }>();
+
+/**
+ * Holds `state` as a live train until the returned function is called;
+ * `stop(reason)` is how `pauseAll` stops it. The caller keeps `state`
+ * current (its status, its credits).
+ */
+export function holdTrain(state: TrainState, stop: (reason: string) => void): () => void {
+  const entry = { state, stop };
+  held.set(state.id, entry);
+  return () => {
+    if (held.get(state.id) === entry) held.delete(state.id);
+  };
+}
+
 /** Every train that has started and not yet ended, as it stands now (a paused one stays here until its process is gone). */
 export function liveTrains(): TrainState[] {
-  return [...live.values()].map((l) => ({ ...l.state, steps: l.state.steps ? { ...l.state.steps } : null }));
+  return [...[...live.values()].map((l) => l.state), ...[...held.values()].map((h) => h.state)].map((t) => ({ ...t, steps: t.steps ? { ...t.steps } : null }));
 }
 
 function trainState(id: string, kind: TrainKind, startedAt: number): TrainState {
@@ -159,6 +180,13 @@ function pause(l: Live, reason: string): void {
 /** Pauses every live train with `reason` (the stop file, the school switched off, the engine shutting down). */
 export async function pauseAll(reason: string): Promise<void> {
   for (const l of live.values()) pause(l, reason);
+  for (const h of [...held.values()]) {
+    try {
+      h.stop(reason);
+    } catch (err) {
+      console.error('palimpsest: stopping a train failed:', err);
+    }
+  }
 }
 
 async function pollOnce(l: Live): Promise<void> {

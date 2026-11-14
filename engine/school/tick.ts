@@ -21,6 +21,9 @@
  *   the same night.
  * - After the nets, a tick resumes any arena build a gate loss paused
  *   (`resumeArenas`, each behind the heavy gate); it never starts one.
+ *   Then it sails a voyage (`sailDue`, voyages.ts): the unfinished one
+ *   first, behind the heavy gate. A sailing voyage holds a train, so the
+ *   nets and the voyage never run at once.
  * - `schoolOff(now)` is the switch going off, from `patchSettings` or
  *   anywhere else: it records `school.enabled { on: false }`, pauses every
  *   live train at once (no poll waited for) and calls every abort registered
@@ -110,6 +113,8 @@ export interface SchoolOptions {
   act?: (now: number | (() => number)) => Promise<number>;
   /** Resumes arena builds a gate loss paused (each behind the heavy gate); defaults to `resumeArenas`. */
   resume?: (now: number) => Promise<unknown>;
+  /** Sails tonight's voyage (behind the heavy gate, one at a time, resumed per run); defaults to `sailDue`. */
+  sail?: (now: number) => Promise<unknown>;
   deps?: DatasetDeps;
 }
 
@@ -155,6 +160,8 @@ export function startSchool(o: SchoolOptions = {}): School {
   const deps = o.deps ?? {};
   // loaded when first used: arenas.ts registers its builds' aborts here
   const resume = o.resume ?? (async (now: number) => (await import('./arenas.js')).resumeArenas(now));
+  // loaded when first used, like the arenas: voyages.ts registers its voyage's abort here
+  const sail = o.sail ?? (async (now: number) => (await import('./voyages.js')).sailDue(now));
   /** Nets tried tonight that came back thin or failed: not tried again until the next night. */
   const tried = new Set<string>();
   let busy = false;
@@ -209,6 +216,15 @@ export function startSchool(o: SchoolOptions = {}): School {
           await resume(now);
         } catch (err) {
           console.error('palimpsest: the school could not resume an arena build:', err);
+        }
+      }
+      // Then a voyage (ruling 22): the unfinished one first, resumed where it stopped. It holds a
+      // train while it sails, so later ticks find a train running and train no net meanwhile.
+      if (!stopped && getSettings().school.enabled) {
+        try {
+          await sail(now);
+        } catch (err) {
+          console.error('palimpsest: the school could not sail a voyage:', err);
         }
       }
       return out;

@@ -340,3 +340,39 @@ test('a stopped school ticks no more', async () => {
   assert.equal(r.reason, 'the school tick is stopped');
   assert.equal(children.length, 0);
 });
+
+test('after the nets the tick sails a voyage, and not while a train runs or the gate is closed', async () => {
+  const order: string[] = [];
+  const school = startSchool({
+    train: async (net) => {
+      order.push(net);
+      return { net, status: 'trained', reason: null, version: null, promoted: false, train: null };
+    },
+    labels: () => ({ ...all(0), master: 50 }),
+    resume: async () => {
+      order.push('resume');
+    },
+    sail: async () => {
+      order.push('sail');
+    },
+  });
+  try {
+    await school.tick(NOW);
+    assert.deepEqual(order, ['master', 'resume', 'sail'], 'the voyage comes after the nets and the arena builds');
+    gate = { ...ok(), ok: false, reason: 'on battery' };
+    await school.tick(NOW + MIN);
+    assert.deepEqual(order, ['master', 'resume', 'sail'], 'no voyage behind a closed gate');
+  } finally {
+    school.stop();
+  }
+  // with no arena there is nothing to sail, and Beagle is never loaded for it
+  gate = ok();
+  const real = startSchool({ train: async (net) => ({ net, status: 'thin', reason: null, version: null, promoted: false, train: null }), labels: () => all(0) });
+  try {
+    const r = await real.tick(NOW + 2 * MIN);
+    assert.equal(r.reason, null);
+    assert.equal(query({ kind: 'voyage.started' }).length, 0);
+  } finally {
+    real.stop();
+  }
+});

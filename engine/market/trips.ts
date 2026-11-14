@@ -11,7 +11,9 @@
  * live trips are asked for, and that look also prunes the table: ended
  * trips older than an hour go, except each agent's latest, which says
  * where the agent stands. A bankrupt firm's trips end at once (the
- * treasury). Every trip is stored, recorded (`trip.started`,
+ * treasury). A voyage's parents go to school (reason `school`, to the
+ * campus at `campusOrigin()`) and home from it when the voyage ends or
+ * pauses for the night (Phase 4 ruling 28). Every trip is stored, recorded (`trip.started`,
  * `trip.ended`) and emitted; the ledger keeps the history the table drops.
  */
 import { randomUUID } from 'node:crypto';
@@ -23,6 +25,7 @@ import { emit } from '../events.js';
 import { districtOrigin, quarterOrigin } from '../layout.js';
 import { record } from '../ledger.js';
 import { getRepo, listRepos } from '../repos.js';
+import { campusOrigin } from '../school/campus.js';
 import { agent as storedAgent, firm, listFirms } from './firms.js';
 import { redact } from './jobs.js';
 
@@ -72,7 +75,8 @@ let netKey = '';
 function currentNetwork(): Network {
   const districts = listRepos().map((r) => districtOrigin(r.slot));
   const quarters = listFirms().map((f) => quarterOrigin(f.slot));
-  const standing = [...districts, ...quarters];
+  const campus = campusOrigin();
+  const standing = [...districts, ...quarters, ...(campus ? [campus] : [])];
   const extent = { blocks: extentBlocks(standing.length ? standing : [EXCHANGE]), districts };
   const key = JSON.stringify(extent);
   if (!net || key !== netKey) {
@@ -184,4 +188,32 @@ export function sendHome(r: Pick<Run, 'agentId' | 'repo' | 'jobId'>, now: number
   const a = storedAgent(r.agentId);
   if (!a || a.retired) return null;
   return startTrip(a, 'home', r.jobId, siteOf(r.repo), homeOf(a), now);
+}
+
+/** Agents with a run in a live stage: at work, so never sent to school. */
+function atWork(): Set<string> {
+  const rows = openDb().prepare("SELECT json FROM runs WHERE stage != 'done'").all() as Array<{ json: string }>;
+  return new Set(rows.map((r) => (JSON.parse(r.json) as { agentId?: string }).agentId).filter((id): id is string => typeof id === 'string'));
+}
+
+/**
+ * A voyage's parent goes to school (ruling 28): from where it stands to the
+ * campus, reason `school`. Null before the campus has its plot, and for an
+ * agent that is retired or at work on a run (its job comes first).
+ */
+export function toSchool(a: Agent, now: number = Date.now()): Trip | null {
+  const campus = campusOrigin();
+  if (!campus || a.retired || atWork().has(a.id)) return null;
+  return startTrip(a, 'school', null, whereIs(a), campus, now);
+}
+
+/**
+ * A parent goes home from the campus when its voyage ends or pauses for the
+ * night. Only an agent whose latest trip took it to school; null otherwise.
+ */
+export function homeFromSchool(a: Agent, now: number = Date.now()): Trip | null {
+  const campus = campusOrigin();
+  const latest = tripsOf(a.id).at(-1);
+  if (!campus || !latest || latest.reason !== 'school' || a.retired) return null;
+  return startTrip(a, 'home', null, campus, homeOf(a), now);
 }

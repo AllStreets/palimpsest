@@ -15,11 +15,12 @@ import { charge } from '../engine/market/budget.js';
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import { review } from '../engine/guild/review.js';
 import { setProvider } from '../engine/market/providers.js';
-import { agent as storedAgent, firm, seedFirms } from '../engine/market/firms.js';
+import { agent as storedAgent, firm, listAgents, seedFirms } from '../engine/market/firms.js';
 import { job as storedJob, transition } from '../engine/market/jobs.js';
 import { finishWaitingRun } from '../engine/market/runs.js';
 import { bankruptcyTick, installTreasury } from '../engine/market/treasury.js';
-import { activeTrips, EXCHANGE, homeOf, siteOf, startTrip, whereIs } from '../engine/market/trips.js';
+import { activeTrips, EXCHANGE, homeFromSchool, homeOf, siteOf, startTrip, toSchool, whereIs } from '../engine/market/trips.js';
+import { campusOrigin, ensureCampus } from '../engine/school/campus.js';
 import type { Agent, Bid, Job, ModelRef, Run, Trip } from '../shared/types.js';
 import { addAgent, checks, FULL, HOUR, makeRepo, makeRun, MIN, postJob, setUp, tearDown, workLease, write } from './guild-fixtures.js';
 
@@ -265,4 +266,35 @@ test('the exchange point stands on the forecourt, off the fountain and the hall'
   // hall with its steps reaches to z 21: a bidder stands between them, clear of both.
   assert.ok(Math.hypot(EXCHANGE.x - 0, EXCHANGE.z - 42) > 12, `outside the fountain (${JSON.stringify(EXCHANGE)})`);
   assert.ok(EXCHANGE.z > 23, 'off the hall steps');
+});
+
+test('parents travel to the campus and home', () => {
+  const a = worker();
+  // before the campus has its plot there is nowhere to go
+  assert.equal(toSchool(a, T0), null);
+  ensureCampus();
+  const campus = campusOrigin();
+  assert.ok(campus);
+  const there = toSchool(a, T0);
+  assert.ok(there);
+  assert.equal(there.reason, 'school');
+  assert.equal(there.jobId, null);
+  assert.deepEqual(there.from, homeOf(a));
+  assert.deepEqual(there.to, campus);
+  assert.ok(there.legs.length >= 1);
+  assert.ok(events.some((e) => e.type === 'trip.started' && (e.data as { trip: Trip }).trip.reason === 'school'));
+
+  const home = homeFromSchool(a, T0 + HOUR);
+  assert.ok(home);
+  assert.equal(home.reason, 'home');
+  assert.deepEqual(home.from, campus);
+  assert.deepEqual(home.to, homeOf(a));
+  // an agent who never went to school is not sent home from it
+  assert.equal(homeFromSchool(a, T0 + 2 * HOUR), null);
+
+  // an agent at work on a run stays at its job
+  const busy = listAgents().find((x) => x.id !== a.id && !x.retired);
+  assert.ok(busy);
+  openDb().prepare('INSERT INTO runs (id, job_id, repo, stage, json) VALUES (?, ?, ?, ?, ?)').run('run-busy', 'job-busy', FULL, 'running', JSON.stringify({ id: 'run-busy', jobId: 'job-busy', agentId: busy.id, stage: 'running' }));
+  assert.equal(toSchool(busy, T0), null);
 });
