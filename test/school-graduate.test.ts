@@ -11,7 +11,7 @@
  * is checked against the fake server of the mlx fixtures.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
@@ -34,13 +34,14 @@ import type { BeagleArena } from '../engine/school/beagle-api.js';
 import { closeBeagle, loadBeagle } from '../engine/school/beagle.js';
 import { campusOrigin, ensureCampus } from '../engine/school/campus.js';
 import { resetGateCache } from '../engine/school/gate.js';
-import { evaluateAdapter, graduate, graduates, loraBaseDir, loraRuns, type LoraRun } from '../engine/school/lora.js';
+import { askEvaluation, concurrencyMarker, evaluateAdapter, graduate, graduateDue, graduates, loraBaseDir, loraRuns, oneRunAtATime, restoreBeagleConcurrency, type LoraRun } from '../engine/school/lora.js';
+import { buildPlanted } from '../engine/school/arenas.js';
 import { installRoster } from '../engine/school/roster.js';
 import { pairedCi } from '../engine/school/stats.js';
 import { startSchool, TRAIN_ORDER } from '../engine/school/tick.js';
 import { holdTrain, liveTrains, setGate } from '../engine/school/trainer.js';
 import { SEALED_USES } from '../shared/school-rules.js';
-import type { ArenaInfo, GateState, Graduate, NetName, Trip } from '../shared/types.js';
+import type { ArenaInfo, GateState, Graduate, NetName, Repo, Trip } from '../shared/types.js';
 import { FULL, HOUR, setUp, tearDown } from './guild-fixtures.js';
 import { installMlx, safetensors, uninstallMlx, baseReady as downloadedBase } from './mlx-fixtures.js';
 import { firmWith } from './roster-fixtures.js';
@@ -387,9 +388,13 @@ test('Beagle\'s store holds the evaluation\'s runs, and the hash it used is the 
   assert.ok(rows.every((r) => r.firm_id === null && r.kind === 'train'));
   assert.equal(liveLeaseCount(), 0);
   // held as one train of kind eval while it raced, and gone after
-  const started = query({ kind: ['train.started'] }).map((e) => e.data as { train: { kind: string }; arenas: ArenaInfo[] });
-  assert.deepEqual(started.map((d) => d.train.kind), ['eval']);
-  assert.equal(started[0].arenas[0].sealedUses, 1);
+  // the start, then the arena's use as its first call was made, carrying the arena whole
+  const started = query({ kind: ['train.started'] }).map((e) => e.data as { train: { id: string; kind: string }; arenas: ArenaInfo[]; sealedUse?: string });
+  assert.deepEqual(started.map((d) => d.train.kind), ['eval', 'eval']);
+  assert.equal(started[0].train.id, started[1].train.id);
+  assert.deepEqual(started[0].arenas, []);
+  assert.equal(started[1].sealedUse, 'arena-a');
+  assert.equal(started[1].arenas[0].sealedUses, 1);
   const ended = query({ kind: ['train.ended'] }).map((e) => e.data as { train: { kind: string; status: string } });
   assert.deepEqual(ended.map((d) => [d.train.kind, d.train.status]), [['eval', 'done']]);
   assert.equal(liveTrains().length, 0);
@@ -544,4 +549,105 @@ test('the tick scores an adapter after the LoRA, once a night, and not while a t
   } finally {
     school.stop();
   }
+});
+
+// ---------------------------------------------------------------- fix round 1
+
+test('a sealed use is spent only by a race that began: a stop before the second arena leaves it untouched, and replay equals the table', async () => {
+  const a = await fakeArena('arena-a');
+  const c = await fakeArena('arena-c');
+  trainedLora(LORA, { 'arena-a': a.sealedHash!, 'arena-c': c.sealedHash! });
+  right = (model) => model === ADAPTER;
+  // the stop file is set during arena-a's last call: its race finishes, and arena-c's never begins
+  before = async (_i, n) => {
+    if (n === 2 * SEALED.length) writeFileSync(paths().stop, '');
+  };
+  const ev = await evaluateAdapter(LORA, NOW);
+  rmSync(paths().stop, { force: true });
+  assert.equal(ev.status, 'stopped');
+  assert.match(ev.reason ?? '', /stop file/);
+  assert.match(ev.reason ?? '', /arena-a: 1 of 10 sealed uses/);
+  assert.doesNotMatch(ev.reason ?? '', /arena-c/);
+  assert.equal(arenaInfo('arena-a')!.sealedUses, 1);
+  assert.equal(arenaInfo('arena-c')!.sealedUses, 0);
+  assert.deepEqual((await sealedVoyages()).map((v) => v.arena), ['arena-a']);
+  // the use and its entry were written together
+  const uses = query({ kind: ['train.started'] }).map((e) => e.data as { sealedUse?: string; arenas: ArenaInfo[] }).filter((d) => d.sealedUse);
+  assert.deepEqual(uses.map((d) => [d.sealedUse, d.arenas[0].sealedUses]), [['arena-a', 1]]);
+  assert.deepEqual(schoolDiffs(), []);
+});
+
+test('an abort before any call spends nothing', async () => {
+  const a = await fakeArena('arena-a');
+  trainedLora(LORA, { 'arena-a': a.sealedHash! });
+  writeFileSync(paths().stop, '');
+  try {
+    const ev = await evaluateAdapter(LORA, NOW);
+    assert.equal(ev.status, 'stopped');
+    assert.match(ev.reason ?? '', /no sealed use was spent/);
+  } finally {
+    rmSync(paths().stop, { force: true });
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(arenaInfo('arena-a')!.sealedUses, 0);
+  assert.deepEqual(await sealedVoyages(), []);
+  assert.deepEqual(schoolDiffs(), []);
+});
+
+test('after two stopped races the tick stops retrying until he asks', async () => {
+  const a = await fakeArena('arena-a');
+  trainedLora(LORA, { 'arena-a': a.sealedHash! });
+  right = (model) => model === ADAPTER;
+  writeFileSync(paths().stop, '');
+  assert.equal(await graduateDue(NOW), null);
+  assert.equal(await graduateDue(NOW + 1), null);
+  assert.equal(runOf(LORA).evaluations!.length, 2);
+  rmSync(paths().stop, { force: true });
+  // the third night: not raced, and the record says why in plain words
+  assert.equal(await graduateDue(NOW + 2), null);
+  assert.equal(runOf(LORA).evaluations!.length, 2);
+  assert.match(runOf(LORA).evaluationHeld ?? '', /stopped 2 times before it finished.*until he asks/);
+  assert.equal(await graduateDue(NOW + 3), null);
+  assert.equal(calls.length, 0);
+  // he asks: it is raced again, and graduates
+  askEvaluation(LORA, NOW + 4);
+  assert.equal(runOf(LORA).evaluationHeld, null);
+  const g = await graduateDue(NOW + 5);
+  assert.equal(g?.model, 'mlx:grad-qwen25c7-1');
+});
+
+test('an arena build click is refused while a graduation race runs', async () => {
+  const a = await fakeArena('arena-a');
+  trainedLora(LORA, { 'arena-a': a.sealedHash! });
+  right = (model) => model === ADAPTER;
+  let clicked: ArenaInfo | null = null;
+  before = async (_i, n) => {
+    if (n === 1) clicked = await buildPlanted({ fullName: FULL } as Repo, NOW);
+  };
+  const ev = await evaluateAdapter(LORA, NOW);
+  assert.equal(ev.status, 'passed');
+  const got = clicked as ArenaInfo | null;
+  assert.equal(got?.status, 'failed');
+  assert.equal(got?.reason, 'A graduation race is running; build the arena once it ends');
+  assert.equal(query({ kind: ['arena.built'] }).length, 1, 'only the fixture\'s arena was recorded');
+});
+
+test('Beagle\'s concurrency a race set aside is put back after it, and at engine start after a crash', async () => {
+  const a = await fakeArena('arena-a');
+  trainedLora(LORA, { 'arena-a': a.sealedHash! });
+  const b = await loadBeagle();
+  const setting = () => (b.store.open().prepare("SELECT value FROM settings WHERE key = 'concurrency'").get() as { value: string } | undefined)?.value ?? null;
+  b.store.open().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('concurrency', '3')").run();
+  await evaluateAdapter(LORA, NOW);
+  assert.equal(setting(), '3');
+  assert.equal(existsSync(concurrencyMarker()), false);
+
+  // an engine that stopped mid-race never ran its restore
+  oneRunAtATime(b);
+  assert.equal(setting(), '1');
+  assert.equal(existsSync(concurrencyMarker()), true);
+  assert.equal(await restoreBeagleConcurrency(), true);
+  assert.equal(setting(), '3');
+  assert.equal(existsSync(concurrencyMarker()), false);
+  assert.equal(await restoreBeagleConcurrency(), false);
 });

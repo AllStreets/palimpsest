@@ -83,7 +83,7 @@ import { isSourceFile, verifiedChanges, type VerifiedChange } from './history.js
 import { isTestFile } from '../audit/schema.js';
 import { mutable, mutate, shuffled, type Mutant } from './mutants.js';
 import { registerAbort, TURNED_OFF_REASON } from './tick.js';
-import { readGate, takeMachine } from './trainer.js';
+import { liveTrains, readGate, takeMachine } from './trainer.js';
 
 /** What a planted task shows the agent: which tests fail and how, never where the bug is. */
 export interface PlantedInput {
@@ -841,6 +841,8 @@ export function buildPast(repo: Repo, now: number, o: { signal?: AbortSignal } =
 }
 
 async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { signal?: AbortSignal }): Promise<ArenaInfo> {
+  // a graduation's sealed race holds the graduates' server: a build would take the machine from under it
+  if (liveTrains().some((t) => t.kind === 'eval')) return refused(repo, 'A graduation race is running; build the arena once it ends', now, kind);
   const why = refusal(repo);
   if (why) return refused(repo, why, now, kind);
   if (live) return refused(repo, `An arena is already being built (${live.repo})`, now, kind);

@@ -689,6 +689,10 @@ export interface LoraRun {
   sealedArenas?: Record<string, string>;
   /** Every sealed race it was scored in against its base, oldest first (Task 27). */
   evaluations?: LoraEvaluation[];
+  /** Why the tick no longer races it on its own (two races stopped before they finished), until he asks; null otherwise. */
+  evaluationHeld?: string | null;
+  /** When he last asked for it to be raced again: only stops after this count towards the hold. */
+  evaluationAskedAt?: string | null;
 }
 
 function writeRun(run: LoraRun): void {
@@ -1054,6 +1058,8 @@ export const BASE_GENOME = 'base';
 /** Instructions a graduate is given, and both sides of its sealed race: its training is in its adapter, so they are plain. */
 export const GRADUATE_INSTRUCTIONS =
   'You work on his repositories. Read the task and the files it names, find the smallest change that does what it asks, make it, and run the checks before you answer. Say plainly what you changed and why.\n';
+/** Sealed races of one LoRA that may stop before the tick holds it until he asks again. */
+export const EVAL_RETRIES = 2;
 /** How often a sealed race reads the stop file and the switch; the gate is read every `GATE.pollMs`. */
 const EVAL_POLL_MS = 2_000;
 
@@ -1131,18 +1137,58 @@ function scoringArenas(run: LoraRun): ArenaInfo[] {
   return usable;
 }
 
-/** Sets Beagle's concurrency to one run at a time for a sealed race, so the one server swaps between adapter and base per run, not per turn; returns the restore. */
-function oneRunAtATime(b: BeagleApi): () => void {
+/** Where the concurrency a sealed race set aside is kept until it is put back: `<school>/ctl/beagle-concurrency.json`. */
+export function concurrencyMarker(): string {
+  return join(paths().school, 'ctl', 'beagle-concurrency.json');
+}
+
+function putConcurrencyBack(b: BeagleApi, previous: string | null): void {
+  if (previous !== null) b.store.open().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('concurrency', ?)").run(previous);
+  else b.store.open().prepare("DELETE FROM settings WHERE key = 'concurrency'").run();
+  rmSync(concurrencyMarker(), { force: true });
+}
+
+function markedConcurrency(): { previous: string | null } | null {
+  try {
+    const d = JSON.parse(readFileSync(concurrencyMarker(), 'utf8')) as { previous?: unknown };
+    return { previous: typeof d.previous === 'string' ? d.previous : null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sets Beagle's concurrency to one run at a time for a sealed race, so the
+ * one server swaps between adapter and base per run, not per turn; returns
+ * the restore. What it set aside is written under ctl first, so an engine
+ * that stops mid-race has it put back at the next start
+ * (`restoreBeagleConcurrency`).
+ */
+export function oneRunAtATime(b: BeagleApi): () => void {
   const row = b.store.open().prepare("SELECT value FROM settings WHERE key = 'concurrency'").get() as { value: string } | undefined;
+  // a marker an earlier crash left holds the value from before that race: it stays the one to put back
+  const previous = markedConcurrency()?.previous ?? row?.value ?? null;
+  mkdirSync(join(concurrencyMarker(), '..'), { recursive: true });
+  writeAtomic(concurrencyMarker(), JSON.stringify({ previous }) + '\n');
   b.store.open().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('concurrency', ?)").run(JSON.stringify(VOYAGE.concurrency));
   return () => {
     try {
-      if (row) b.store.open().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('concurrency', ?)").run(row.value);
-      else b.store.open().prepare("DELETE FROM settings WHERE key = 'concurrency'").run();
+      putConcurrencyBack(b, previous);
     } catch (err) {
       console.error("palimpsest: Beagle's concurrency could not be put back:", err);
     }
   };
+}
+
+/** At engine start: puts back the Beagle concurrency a sealed race set aside when the engine stopped mid-race. Answers whether there was one. */
+export async function restoreBeagleConcurrency(): Promise<boolean> {
+  const mark = markedConcurrency();
+  if (!mark) {
+    rmSync(concurrencyMarker(), { force: true });
+    return false;
+  }
+  putConcurrencyBack(await loadBeagle(), mark.previous);
+  return true;
 }
 
 function genomeOf(id: string, model: string, tools: string[]): BeagleGenome {
@@ -1167,8 +1213,9 @@ let evaluating = false;
  * per arena whose sealed split its data was built without (unchanged since,
  * and not spent), the adapter genome against the base genome with the same
  * single-shape instructions. Each race spends one sealed use of its arena,
- * counted before any race starts; the tenth spends the split, and an arena
- * with none left refuses with "sealed set spent".
+ * as its first model call is made (the row and its ledger entry in one
+ * write); a race stopped before that spends nothing. The tenth use spends
+ * the split, and an arena with none left refuses with "sealed set spent".
  *
  * It holds the graduates' server, not the machine: the adapter and the base
  * alone (`mlx:base`, ruling 26's fence) are served in turn behind the heavy
@@ -1217,20 +1264,38 @@ async function evaluate(loraId: string, now: number): Promise<LoraEvaluation> {
   if (raced.length === 0) throw new EvaluationRefused("No arena it may be scored on holds the same sealed split in Beagle's store");
   canStart();
 
-  // each use is counted before its race starts: once the race runs, the sealed tasks may have been shown
-  const counted = raced.map((a) => {
-    const fresh = arenaInfo(a.id) ?? a;
-    const uses = fresh.sealedUses + 1;
-    const next: ArenaInfo = { ...fresh, sealedUses: uses, status: uses >= SEALED_USES ? 'spent' : fresh.status };
-    putArena(next);
-    return next;
-  });
-
   const t0 = Date.now();
   const clock = () => now + (Date.now() - t0);
   const ctl = new AbortController();
   const train: TrainState = { id: `train-eval-${randomUUID().slice(0, 8)}`, kind: 'eval', status: 'running', reason: null, startedAt: iso(now), endedAt: null, seconds: 0, steps: null, credits: 0 };
-  const extra = { lora: { id: loraId }, arenas: counted.map((a) => structuredClone(a)) };
+  const lora = { id: loraId };
+  /** The arenas whose use this evaluation spent, as the table holds them after it. */
+  const spent: ArenaInfo[] = [];
+  /** The arena whose race is under way and has not yet spent its use: its first model call spends it. */
+  let unspent: ArenaInfo | null = null;
+  /**
+   * Spends one sealed use of `a` (ruling 25), the row and its ledger entry in
+   * one write, so the table and the replay always agree. Called as the race's
+   * first model call is made: from then on the sealed tasks may have been shown.
+   */
+  const spendUse = (a: ArenaInfo): void => {
+    const db = openDb();
+    db.exec('SAVEPOINT sealed_use');
+    try {
+      const fresh = arenaInfo(a.id) ?? a;
+      const uses = fresh.sealedUses + 1;
+      const next: ArenaInfo = { ...fresh, sealedUses: uses, status: uses >= SEALED_USES ? 'spent' : fresh.status };
+      putArena(next);
+      // the train as it runs, carrying the arena whole: replay folds it as it folds every school entry's arenas
+      record('train.started', { train: structuredClone(train), lora, arenas: [structuredClone(next)], sealedUse: next.id });
+      db.exec('RELEASE sealed_use');
+      spent.push(next);
+    } catch (err) {
+      db.exec('ROLLBACK TO sealed_use');
+      db.exec('RELEASE sealed_use');
+      throw err;
+    }
+  };
   const unhold = holdTrain(train, (reason) => ctl.abort(reason));
   const unregister = registerAbort(() => ctl.abort(TURNED_OFF_REASON));
   const releaseBase = mlx.serveBase();
@@ -1238,6 +1303,13 @@ async function evaluate(loraId: string, now: number): Promise<LoraEvaluation> {
   const creditsBefore = trainCredits(loraId);
   const inner = schoolDriver({ voyageId: loraId, designer: getSettings().school.designer, signal: ctl.signal, now: clock, kind: 'train' });
   const driver: BeagleDriver = async (provider, name, turns, call) => {
+    // a race stopped before its first call spends nothing
+    if (ctl.signal.aborted) throw new Error(reasonOf(ctl.signal));
+    if (unspent) {
+      const a = unspent;
+      unspent = null;
+      spendUse(a);
+    }
     try {
       return await inner(provider, name, turns, call);
     } catch (err) {
@@ -1247,13 +1319,18 @@ async function evaluate(loraId: string, now: number): Promise<LoraEvaluation> {
     }
   };
   useDriver(driver);
-  let lastGate = Date.now();
-  const timer = setInterval(() => {
-    if (ctl.signal.aborted) return;
+  /** The stop file, the switch and a heavy train, read without waiting: any of them stops the evaluation. */
+  const checkNow = (): boolean => {
+    if (ctl.signal.aborted) return true;
     if (existsSync(paths().stop)) ctl.abort('The stop file is set.');
     else if (!getSettings().school.enabled) ctl.abort(TURNED_OFF_REASON);
     else if (mlx.heavyRunning()) ctl.abort(`${mlx.heavyRunning()} took the machine`);
-    else if (Date.now() - lastGate >= GATE.pollMs) {
+    return ctl.signal.aborted;
+  };
+  let lastGate = Date.now();
+  const timer = setInterval(() => {
+    if (checkNow()) return;
+    if (Date.now() - lastGate >= GATE.pollMs) {
       lastGate = Date.now();
       void readGate('heavy', clock()).then(
         (gs) => {
@@ -1272,30 +1349,40 @@ async function evaluate(loraId: string, now: number): Promise<LoraEvaluation> {
   const theirs: number[] = [];
   const changed: string[] = [];
   let stop: string | null = null;
+  const usesOf = (id: string) => spent.find((x) => x.id === id)?.sealedUses ?? arenaInfo(id)?.sealedUses ?? 0;
   try {
-    putTrain('train.started', train, extra);
-    for (const a of counted) {
-      if (ctl.signal.aborted) {
+    putTrain('train.started', train, { lora, arenas: [] });
+    for (const a of raced) {
+      // read between races too: a stop that comes before an arena's race leaves its uses untouched
+      if (checkNow()) {
         stop = reasonOf(ctl.signal);
         break;
       }
+      const fresh = arenaInfo(a.id) ?? a;
+      if (fresh.status === 'spent' || fresh.sealedUses >= SEALED_USES) continue;
       const tools = b.arenas.getArena(a.id).tools.map((t) => t.name);
-      const r = await b.race.sealedRace(a.id, [genomeOf(loraId, `mlx:${loraId}`, tools), genomeOf(BASE_GENOME, mlx.MLX_BASE, tools)], { signal: ctl.signal, seed: 1 });
+      unspent = fresh;
+      let r: Awaited<ReturnType<typeof b.race.sealedRace>>;
+      try {
+        r = await b.race.sealedRace(a.id, [genomeOf(loraId, `mlx:${loraId}`, tools), genomeOf(BASE_GENOME, mlx.MLX_BASE, tools)], { signal: ctl.signal, seed: 1 });
+      } finally {
+        unspent = null;
+      }
       const ours = r.perTask[loraId] ?? {};
       const base = r.perTask[BASE_GENOME] ?? {};
       const tasks = Object.keys(ours).filter((t) => t in base).sort();
       if (!r.complete) {
-        arenas.push({ id: a.id, hash: r.hash, uses: a.sealedUses, tasks: 0 });
+        arenas.push({ id: a.id, hash: r.hash, uses: usesOf(a.id), tasks: 0 });
         stop = ctl.signal.aborted ? reasonOf(ctl.signal) : (r.reason ?? 'the sealed race stopped');
         break;
       }
       // a split that changed since the data was built without it is not the one held out: it scores nothing
       if (r.hash !== held[a.id] || r.hash !== a.sealedHash) {
         changed.push(a.id);
-        arenas.push({ id: a.id, hash: r.hash, uses: a.sealedUses, tasks: 0 });
+        arenas.push({ id: a.id, hash: r.hash, uses: usesOf(a.id), tasks: 0 });
         continue;
       }
-      arenas.push({ id: a.id, hash: r.hash, uses: a.sealedUses, tasks: tasks.length });
+      arenas.push({ id: a.id, hash: r.hash, uses: usesOf(a.id), tasks: tasks.length });
       for (const t of tasks) {
         mine.push(ours[t]);
         theirs.push(base[t]);
@@ -1310,11 +1397,14 @@ async function evaluate(loraId: string, now: number): Promise<LoraEvaluation> {
     releaseBase();
     restore();
   }
+  const extra = { lora, arenas: spent.map((a) => structuredClone(arenaInfo(a.id) ?? a)) };
 
   const end = clock();
   const ev: LoraEvaluation = { at: iso(now), status: 'stopped', reason: null, train: train.id, arenas, sealed: null, baseSealed: null, vsBase: null, credits: 0, graduate: null };
   if (stop !== null) {
-    ev.reason = `${stop}. The sealed race stopped before it finished, and its uses are spent (${usesLine(counted)}); it is not scored`;
+    ev.reason = spent.length
+      ? `${stop}. The sealed race stopped before it finished, and the uses its races began are spent (${usesLine(spent)}); it is not scored`
+      : `${stop}. The sealed race stopped before its first call, so no sealed use was spent; it is not scored`;
   } else if (mine.length === 0) {
     ev.status = 'failed';
     ev.reason = changed.length ? `The sealed tasks of ${changed.join(', ')} changed since its data was built, so nothing was scored` : 'No sealed task was finished by both the adapter and its base';
@@ -1428,7 +1518,16 @@ export async function graduate(loraId: string, now: number = Date.now()): Promis
 export async function graduateDue(now: number = Date.now()): Promise<Graduate | null> {
   const t = trainedAdapter();
   if (!t || graduates().some((g) => g.loraId === t.id)) return null;
-  if ((runById(t.id)?.evaluations ?? []).some((e) => e.status !== 'stopped')) return null;
+  const run = runById(t.id);
+  if (!run || (run.evaluations ?? []).some((e) => e.status !== 'stopped')) return null;
+  if (run.evaluationHeld) return null;
+  const asked = run.evaluationAskedAt ?? '';
+  const stops = (run.evaluations ?? []).filter((e) => e.status === 'stopped' && e.at > asked).length;
+  if (stops >= EVAL_RETRIES) {
+    run.evaluationHeld = `Its sealed race stopped ${stops} times before it finished, so the school does not race it again on its own until he asks`;
+    writeRun(run);
+    return null;
+  }
   try {
     return await graduate(t.id, now);
   } catch (err) {
@@ -1436,4 +1535,14 @@ export async function graduateDue(now: number = Date.now()): Promise<Graduate | 
     console.error(`palimpsest: ${t.id} was not scored: ${err.message}`);
     return null;
   }
+}
+
+/** He asks for a held LoRA to be raced again (the school screen's route): the hold is lifted and the stops so far no longer count. */
+export function askEvaluation(loraId: string, now: number = Date.now()): LoraRun | null {
+  const run = runById(loraId);
+  if (!run) return null;
+  run.evaluationHeld = null;
+  run.evaluationAskedAt = iso(now);
+  writeRun(run);
+  return run;
 }

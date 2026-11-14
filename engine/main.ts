@@ -17,7 +17,7 @@ import { registerArenas } from './school/arenas.js';
 import { ensureCampus } from './school/campus.js';
 import { closeOrphanedActs } from './school/autonomy.js';
 import { catchUpPredictions, installDecisions } from './school/decisions.js';
-import { stopDownload } from './school/lora.js';
+import { restoreBeagleConcurrency, stopDownload } from './school/lora.js';
 import { reapStrayServer, stopServer } from './market/mlx.js';
 import { installRoster } from './school/roster.js';
 import { startSchool } from './school/tick.js';
@@ -38,6 +38,8 @@ async function main(): Promise<void> {
   await failInterruptedTrains();
   // a graduates' server the last engine left running (ruling 26), only while it is still ours
   await reapStrayServer().catch((err) => console.error('palimpsest: a stray mlx server could not be reaped:', err));
+  // Beagle's concurrency a graduation race set aside when the last engine stopped mid-race
+  await restoreBeagleConcurrency().catch((err) => console.error("palimpsest: Beagle's concurrency could not be put back:", err));
   // The five firms are seeded here and only here (never inside startServer, so tests never run ollama list).
   // An agent whose Ollama model is not installed seeds retired; seeding is idempotent per firm.
   const installed = await installedModels();
