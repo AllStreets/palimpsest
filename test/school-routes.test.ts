@@ -622,6 +622,10 @@ test("SSE scrubs the school's events: a voyage's champion body and any path neve
           const v = voyageOf({ champion: { genome: 'g1', name: 'Bruno', model: 'ollama:qwen', generation: 1, parents: [], body: { id: 'g1', instructions: 'SECRET-GENOME-INSTRUCTIONS' } as never } });
           emit('voyage.generation', { voyageId: v.id, voyage: v, repo: 'acme/widgets' });
           emit('arena.refused', { repo: 'acme/widgets', kind: 'past', reason: `rows at ${paths().school}/arenas/a/rows.jsonl`, at: 'x' });
+          // the master's guess, his decision and the switch are the school's too: a body or a file key never goes
+          emit('master.predicted', { key: 'merge:normal:job-1', p: 0.9, body: 'SECRET-PREDICTED-BODY' });
+          emit('decision.resolved', { key: 'merge:normal:job-1', by: 'merge', file: 'SECRET-DECIDED-FILE' });
+          emit('school.enabled', { on: false, path: 'SECRET-SWITCH-PATH' });
           emit('train.paused', { train: { id: 't', kind: 'lora' }, reason: `${homedir()}/Library/Application Support/Palimpsest/school/lora/train.jsonl`, lost: 0 });
         }
         if (t.includes('event: train.paused')) {
@@ -641,5 +645,6 @@ test("SSE scrubs the school's events: a voyage's champion body and any path neve
   });
   assert.ok(text.includes('event: voyage.generation\n'));
   assert.ok(text.includes('"champion":{"genome":"g1"'), 'the champion itself still goes');
-  for (const bad of ['SECRET-GENOME', '"body"', 'rows.jsonl', 'train.jsonl', homedir(), paths().school]) assert.ok(!text.includes(bad), `the stream carries ${bad}`);
+  for (const type of ['master.predicted', 'decision.resolved', 'school.enabled']) assert.ok(text.includes(`event: ${type}\n`), `${type} went out`);
+  for (const bad of ['SECRET-GENOME', '"body"', 'rows.jsonl', 'train.jsonl', homedir(), paths().school, 'SECRET-PREDICTED-BODY', 'SECRET-DECIDED-FILE', 'SECRET-SWITCH-PATH']) assert.ok(!text.includes(bad), `the stream carries ${bad}`);
 });

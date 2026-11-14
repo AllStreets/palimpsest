@@ -328,8 +328,8 @@ function setStopped(on: boolean): boolean {
   return on;
 }
 
-/** The school's event families (Task 28): scrubbed as the school's views are, so no genome body, file or path of this Mac leaves. */
-const SCHOOL_EVENT = /^(voyage|train|net|graduate|arena|autonomy)\./;
+/** The school's event families (Task 28), with the master's guess, his decision and the switch: scrubbed as the school's views are, so no genome body, file or path of this Mac leaves. */
+const SCHOOL_EVENT = /^(voyage|train|net|graduate|arena|autonomy)\.|^(master\.predicted|decision\.resolved|school\.enabled)$/;
 
 /** Sends one SSE event frame. */
 function writeSseEvent(res: ServerResponse, e: Event): void {
