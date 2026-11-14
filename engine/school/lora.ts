@@ -52,7 +52,7 @@
  * this Mac.
  */
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { GATE, LORA } from '../../shared/school-rules.js';
@@ -575,6 +575,71 @@ function runsDir(): string {
 
 /** The checkpoint mlx-lm rewrites at each save and at the end, and that a resume loads. */
 const ADAPTER_FILE = 'adapters.safetensors';
+
+/** Bytes per element of each safetensors dtype. */
+const DTYPE_BYTES: Record<string, number> = { BOOL: 1, U8: 1, I8: 1, F8_E4M3: 1, F8_E5M2: 1, I16: 2, U16: 2, F16: 2, BF16: 2, I32: 4, U32: 4, F32: 4, I64: 8, U64: 8, F64: 8 };
+/** A header bigger than this is not one mlx-lm wrote. */
+const MAX_HEADER = 100 * 1024 * 1024;
+
+/**
+ * Whether `path` is a whole safetensors file: an 8-byte little-endian
+ * header length, a JSON header whose every tensor's size (dtype times
+ * shape) is its byte range, the ranges packed from 0 with no gap or
+ * overlap, and the file exactly as long as header and data. A write cut
+ * short (mlx-lm writes the checkpoint in place) fails it.
+ */
+export function adapterIntact(path: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, 'r');
+  } catch {
+    return false;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    if (size < 8) return false;
+    const lenBuf = Buffer.alloc(8);
+    if (readSync(fd, lenBuf, 0, 8, 0) !== 8) return false;
+    const n = lenBuf.readBigUInt64LE(0);
+    if (n === 0n || n > BigInt(MAX_HEADER) || 8n + n > BigInt(size)) return false;
+    const head = Buffer.alloc(Number(n));
+    if (readSync(fd, head, 0, head.length, 8) !== head.length) return false;
+    let header: unknown;
+    try {
+      header = JSON.parse(head.toString('utf8'));
+    } catch {
+      return false;
+    }
+    if (!header || typeof header !== 'object' || Array.isArray(header)) return false;
+    const ranges: Array<[number, number]> = [];
+    for (const [name, t] of Object.entries(header as Record<string, unknown>)) {
+      if (name === '__metadata__') continue;
+      const d = t as { dtype?: unknown; shape?: unknown; data_offsets?: unknown };
+      const bytes = typeof d?.dtype === 'string' ? DTYPE_BYTES[d.dtype] : undefined;
+      if (!bytes || !Array.isArray(d.shape) || !Array.isArray(d.data_offsets) || d.data_offsets.length !== 2) return false;
+      if (!d.shape.every((x) => Number.isSafeInteger(x) && x >= 0)) return false;
+      const [a, b] = d.data_offsets as unknown[];
+      if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || (a as number) < 0 || (b as number) < (a as number)) return false;
+      const want = (d.shape as number[]).reduce((p, x) => p * x, 1) * bytes;
+      if ((b as number) - (a as number) !== want) return false;
+      ranges.push([a as number, b as number]);
+    }
+    ranges.sort((x, y) => x[0] - y[0]);
+    let end = 0;
+    for (const [a, b] of ranges) {
+      if (a !== end) return false;
+      end = b;
+    }
+    return 8 + Number(n) + end === size;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The engine's copy of a LoRA's last whole checkpoint, under ctl where the trainer cannot write. */
+function goodCopy(id: string): string {
+  return join(runsDir(), `${id}.good.safetensors`);
+}
 const LORA_ID = /^lora-[0-9a-f]{8}$/;
 
 /**
@@ -601,6 +666,10 @@ export interface LoraRun {
   /** Every resume: weights only, so the optimiser state and the batch order restarted. */
   resumes: Array<{ at: string; from: number; iters: number; optimizerReset: true }>;
   pauses: Array<{ at: string; train: string; reason: string | null; done: number; saved: number; lost: number }>;
+  /** The step of the engine's copy of the last whole checkpoint (`goodCopy`), or 0 when there is none. */
+  good: number;
+  /** Each resume that found `adapters.safetensors` torn and went back to the last whole copy, with the steps that cost. */
+  torn: Array<{ at: string; saved: number; from: number; lost: number }>;
   /** True once any resume happened: the result is not the same as an uninterrupted run, and the card says so. */
   optimizerReset: boolean;
 }
@@ -641,7 +710,7 @@ export function trainedAdapter(): { id: string; path: string; file: string } | n
   if (!run) return null;
   const path = adapterDir(run.id);
   const file = join(path, ADAPTER_FILE);
-  return existsSync(file) ? { id: run.id, path, file } : null;
+  return adapterIntact(file) ? { id: run.id, path, file } : null;
 }
 
 /** The base is ready when the setting says so and its files are there. */
@@ -732,6 +801,8 @@ export async function trainLora(now: number = Date.now()): Promise<LoraTrainResu
         trains: [],
         resumes: [],
         pauses: [],
+        good: 0,
+        torn: [],
         optimizerReset: false,
       };
       const dir = adapterDir(run.id);
@@ -741,8 +812,18 @@ export async function trainLora(now: number = Date.now()): Promise<LoraTrainResu
       writeRun(run);
     }
     const dir = adapterDir(run.id);
-    // A checkpoint is only resumed from when it is on disk; without it the saved steps are gone and it starts again.
-    if (run.saved > 0 && !existsSync(join(dir, ADAPTER_FILE))) run.saved = 0;
+    // Records from before the last-good copy existed
+    run.good ??= 0;
+    run.torn ??= [];
+    // A checkpoint is resumed from only when it is whole. A torn one goes back to the engine's last whole
+    // copy and its step, the difference counted as lost; with no whole copy it starts again from 0.
+    if (run.saved > 0 && !adapterIntact(join(dir, ADAPTER_FILE))) {
+      const back = run.good > 0 && run.good <= run.saved && adapterIntact(goodCopy(run.id)) ? run.good : 0;
+      if (back > 0) copyFileSync(goodCopy(run.id), join(dir, ADAPTER_FILE));
+      run.torn.push({ at: new Date(now).toISOString(), saved: run.saved, from: back, lost: run.saved - back });
+      run.saved = back;
+      writeRun(run);
+    }
     const from = Math.min(run.saved, run.iters);
     const iters = run.iters - from;
     const resumed = from > 0;
@@ -769,6 +850,20 @@ export async function trainLora(now: number = Date.now()): Promise<LoraTrainResu
       if (!d || typeof d !== 'object') return;
       if (typeof d.saved === 'number' && Number.isInteger(d.saved) && d.saved > current.saved) {
         current.saved = Math.min(d.saved, current.iters);
+        // the checkpoint was written before its saved line: a whole one becomes the last good copy
+        const file = join(dir, ADAPTER_FILE);
+        if (adapterIntact(file)) {
+          try {
+            mkdirSync(runsDir(), { recursive: true });
+            copyFileSync(file, `${goodCopy(current.id)}.tmp`);
+            if (adapterIntact(`${goodCopy(current.id)}.tmp`)) {
+              renameSync(`${goodCopy(current.id)}.tmp`, goodCopy(current.id));
+              current.good = current.saved;
+            }
+          } catch (err) {
+            console.error('palimpsest: the LoRA checkpoint could not be copied:', err);
+          }
+        }
         writeRun(current);
       }
       if (typeof d.ok === 'boolean') reply = { ok: d.ok, error: typeof d.error === 'string' ? d.error : undefined };
@@ -812,8 +907,11 @@ export async function trainLora(now: number = Date.now()): Promise<LoraTrainResu
 
 // ---------------------------------------------------------------- the base model download (Decision 6)
 
-/** The hosts the download's proxy allows, and no others (the xet transfer is off). */
-export const HF_HOSTS: readonly string[] = ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co'];
+/**
+ * The hosts the download's proxy allows, and no others, each exact. With the xet transfer off the Hub
+ * still serves a xet-stored file by redirecting to its own bridge, `cas-bridge.xethub.hf.co`.
+ */
+export const HF_HOSTS: readonly string[] = ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co', 'cas-bridge.xethub.hf.co'];
 const HF_REPO = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 type EgressStarter = (runId: string, log: (line: RunLogLine) => void) => Promise<Egress>;

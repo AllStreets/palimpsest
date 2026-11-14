@@ -495,3 +495,65 @@ class DownloadBase(unittest.TestCase):
         self.assertEqual([r["ok"] for r in replies], [False, False, False])
         self.assertIn("HF_HUB_OFFLINE", replies[0]["error"])
         self.assertFalse(os.path.exists(dest))
+
+    def test_download_base_fills_dir_dot_part_and_moves_it_into_place_only_when_complete(self):
+        """In process, with snapshot_download replaced by a stand-in, so nothing is downloaded."""
+        import huggingface_hub
+
+        sys.path.insert(0, HERE)
+        try:
+            import school
+        finally:
+            sys.path.remove(HERE)
+        dest = os.path.join(self.tmp.name, "lora", "base")
+        calls = []
+
+        def fake(repo_id, local_dir, token):
+            calls.append((repo_id, local_dir, token))
+            self.assertFalse(os.path.exists(os.path.join(dest, "config.json")), "nothing is in place while it downloads")
+            os.makedirs(os.path.join(local_dir, ".cache", "huggingface"), exist_ok=True)
+            for name in ("config.json", "model.safetensors", "tokenizer.json"):
+                with open(os.path.join(local_dir, name), "w") as f:
+                    f.write("{}")
+            return local_dir
+
+        real = huggingface_hub.snapshot_download
+        offline = os.environ.pop("HF_HUB_OFFLINE", None)
+        huggingface_hub.snapshot_download = fake
+        try:
+            out = school.download_base({"repo": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", "dir": dest})
+        finally:
+            huggingface_hub.snapshot_download = real
+            if offline is not None:
+                os.environ["HF_HUB_OFFLINE"] = offline
+        self.assertEqual(calls, [("mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", os.path.join(dest, ".part"), False)])
+        self.assertEqual(out, {"dir": dest})
+        self.assertEqual(sorted(os.listdir(dest)), ["config.json", "model.safetensors", "tokenizer.json"])
+
+    def test_a_download_without_config_json_is_never_moved_into_place(self):
+        import huggingface_hub
+
+        sys.path.insert(0, HERE)
+        try:
+            import school
+        finally:
+            sys.path.remove(HERE)
+        dest = os.path.join(self.tmp.name, "lora", "base")
+
+        def fake(repo_id, local_dir, token):
+            os.makedirs(local_dir, exist_ok=True)
+            with open(os.path.join(local_dir, "model.safetensors"), "w") as f:
+                f.write("{}")
+            return local_dir
+
+        real = huggingface_hub.snapshot_download
+        offline = os.environ.pop("HF_HUB_OFFLINE", None)
+        huggingface_hub.snapshot_download = fake
+        try:
+            with self.assertRaises(RuntimeError):
+                school.download_base({"repo": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", "dir": dest})
+        finally:
+            huggingface_hub.snapshot_download = real
+            if offline is not None:
+                os.environ["HF_HUB_OFFLINE"] = offline
+        self.assertEqual(os.listdir(dest), [".part"], "the partial files stay in .part for the next click")

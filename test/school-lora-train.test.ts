@@ -15,6 +15,7 @@ import { entries } from '../engine/ledger.js';
 import { hostAllowed, type Egress } from '../engine/market/egress.js';
 import type { LoraData, LoraExample } from '../engine/school/lora.js';
 import {
+  adapterIntact,
   downloadBase,
   HF_HOSTS,
   loraBaseDir,
@@ -107,6 +108,16 @@ function fakePython(): string {
   writeFileSync(p, '#!/bin/sh\nexit 99\n');
   chmodSync(p, 0o755);
   return p;
+}
+
+/** A whole safetensors file as mlx-lm writes one: two F32 tensors of `n` values, filled with `fill`. */
+function safetensors(n: number, fill = 1): Buffer {
+  const header = JSON.stringify({ __metadata__: { format: 'mlx' }, 'a.lora_a': { dtype: 'F32', shape: [n], data_offsets: [0, 4 * n] }, 'a.lora_b': { dtype: 'F32', shape: [n, 1], data_offsets: [4 * n, 8 * n] } });
+  const len = Buffer.alloc(8);
+  len.writeBigUInt64LE(BigInt(Buffer.byteLength(header)));
+  const data = Buffer.alloc(8 * n);
+  for (let i = 0; i < 2 * n; i++) data.writeFloatLE(fill, 4 * i);
+  return Buffer.concat([len, Buffer.from(header), data]);
 }
 
 async function flush(): Promise<void> {
@@ -287,7 +298,7 @@ test('the argv carries --max-seq-length 4096, the ruling\'s flags, the trainer p
   assert.equal(f.opts.clearEnv, true);
   for (const k of [...KEYS, 'HTTPS_PROXY', 'HF_HUB_DISABLE_XET']) assert.equal(f.opts.env?.[k], undefined, k);
 
-  writeFileSync(join(dir, 'adapters.safetensors'), 'weights');
+  writeFileSync(join(dir, 'adapters.safetensors'), safetensors(16));
   finish(f, 600, 600);
   const r = await p;
   assert.equal(r.status, 'trained');
@@ -308,7 +319,7 @@ test('a pause at step 230 resumes with --resume-adapter-file adapters.safetensor
   const run = loraRuns()[0];
   const dir = join(paths().school, 'lora', 'adapters', run.id);
   // what school.py leaves on disk at a save
-  writeFileSync(join(dir, 'adapters.safetensors'), 'weights');
+  writeFileSync(join(dir, 'adapters.safetensors'), safetensors(16));
   f.push(JSON.stringify({ id: 1, step: 200, of: 600 }));
   f.push(JSON.stringify({ id: 1, saved: 200 }));
   f.push(JSON.stringify({ id: 1, step: 230, of: 600 }));
@@ -356,7 +367,7 @@ test('a paused adapter is never evaluated', async () => {
   await flush();
   const run = loraRuns()[0];
   const dir = join(paths().school, 'lora', 'adapters', run.id);
-  writeFileSync(join(dir, 'adapters.safetensors'), 'half-trained weights');
+  writeFileSync(join(dir, 'adapters.safetensors'), safetensors(16));
   spawned[0].push(JSON.stringify({ id: 1, step: 200, of: 600 }));
   spawned[0].push(JSON.stringify({ id: 1, saved: 200 }));
   spawned[0].push(JSON.stringify({ id: 1, step: 230, of: 600 }));
@@ -382,6 +393,60 @@ test('a paused adapter is never evaluated', async () => {
   assert.equal(trainedAdapter(), null);
 });
 
+test('adapterIntact reads the header and checks every tensor against the file length', () => {
+  const p = join(tempDir, 'a.safetensors');
+  const whole = safetensors(16);
+  writeFileSync(p, whole);
+  assert.equal(adapterIntact(p), true);
+  for (const cut of [whole.length - 1, whole.length - 64, 40, 7, 0]) {
+    writeFileSync(p, whole.subarray(0, cut));
+    assert.equal(adapterIntact(p), false, `cut at ${cut}`);
+  }
+  writeFileSync(p, Buffer.concat([whole, Buffer.from([0])]));
+  assert.equal(adapterIntact(p), false, 'a byte too many');
+  // a header whose sizes do not match its shapes
+  const bad = Buffer.from(whole);
+  bad.write('[17]', bad.indexOf('[16]'));
+  writeFileSync(p, bad);
+  assert.equal(adapterIntact(p), false, 'a shape that does not fit its range');
+  assert.equal(adapterIntact(join(tempDir, 'missing.safetensors')), false);
+});
+
+test('a torn adapter resumes from the last whole copy and its step, counting the difference as lost', async () => {
+  baseReady();
+  const first = trainLora(NIGHT);
+  await flush();
+  const run = loraRuns()[0];
+  const dir = join(paths().school, 'lora', 'adapters', run.id);
+  const good = safetensors(16, 2);
+  writeFileSync(join(dir, 'adapters.safetensors'), good);
+  spawned[0].push(JSON.stringify({ id: 1, step: 200, of: 600 }));
+  spawned[0].push(JSON.stringify({ id: 1, saved: 200 }));
+  await flush();
+  assert.equal(loraRuns()[0].good, 200, 'the whole checkpoint at 200 is copied');
+  await pauseAll('on battery');
+  // the save at 250 was cut short by the SIGKILL: the file is torn though its saved line came
+  writeFileSync(join(dir, 'adapters.safetensors'), safetensors(16, 3).subarray(0, 100));
+  spawned[0].push(JSON.stringify({ id: 1, step: 250, of: 600 }));
+  spawned[0].push(JSON.stringify({ id: 1, saved: 250 }));
+  spawned[0].end(null, 'SIGKILL');
+  const paused = await first;
+  assert.equal(paused.lora?.saved, 250);
+  assert.equal(paused.lora?.good, 200, 'a torn checkpoint never becomes the good copy');
+
+  const second = trainLora(NIGHT + 86_400_000);
+  await flush();
+  const c = command(spawned[1]);
+  assert.equal(c.start, 200);
+  assert.equal(flag(c.args, '--iters'), '400');
+  assert.equal(flag(c.args, '--resume-adapter-file'), join(dir, 'adapters.safetensors'));
+  assert.deepEqual(readFileSync(join(dir, 'adapters.safetensors')), good, 'the last whole copy is put back before the resume');
+  assert.deepEqual(loraRuns()[0].torn, [{ at: new Date(NIGHT + 86_400_000).toISOString(), saved: 250, from: 200, lost: 50 }]);
+  assert.equal(loraRuns()[0].saved, 200);
+  finish(spawned[1], 600, 600);
+  assert.equal((await second).status, 'trained');
+});
+
 test('the download env has HF_HUB_DISABLE_XET=1 and an empty HF_TOKEN and its proxy allows only the Hugging Face hosts', async () => {
   const p = downloadBase();
   await flush();
@@ -401,10 +466,10 @@ test('the download env has HF_HUB_DISABLE_XET=1 and an empty HF_TOKEN and its pr
   for (const k of KEYS.filter((k) => k !== 'HF_TOKEN')) assert.equal(env[k], undefined, k);
   assert.ok(env.HF_HOME?.startsWith(paths().school), 'the hub cache is the school, not his');
 
-  assert.deepEqual(HF_HOSTS, ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co']);
+  assert.deepEqual(HF_HOSTS, ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co', 'cas-bridge.xethub.hf.co']);
   assert.deepEqual(stages, [{ stage: 'install', hosts: HF_HOSTS }]);
   for (const host of HF_HOSTS) assert.ok(hostAllowed(host, stages[0].hosts), host);
-  for (const host of ['pypi.org', 'api.anthropic.com', 'huggingface.co.evil.example', 'cas-bridge.xethub.hf.co', 'hf.co']) assert.ok(!hostAllowed(host, stages[0].hosts), host);
+  for (const host of ['pypi.org', 'api.anthropic.com', 'huggingface.co.evil.example', 'hf.co', 'xethub.hf.co', 'evil.cas-bridge.xethub.hf.co', 'cas-bridge.xethub.hf.co.evil.example']) assert.ok(!hostAllowed(host, stages[0].hosts), host);
 
   // a second click while it runs starts nothing new
   const twice = downloadBase();

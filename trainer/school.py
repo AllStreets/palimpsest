@@ -200,8 +200,9 @@ HF_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def download_base(request):
-    """The base model, on his click only (Decision 6): snapshot_download into `dir`, by way of
-    `dir`.part so a half download is never taken for the model. Never with his login (token=False,
+    """The base model, on his click only (Decision 6): snapshot_download into `dir`/.part, moved
+    into `dir` only once it is complete, so a half download is never taken for the model and the
+    next click resumes it from the files already there. Never with his login (token=False,
     and the engine sets HF_TOKEN empty), never over xet (HF_HUB_DISABLE_XET=1), and only through
     the engine's proxy (HTTPS_PROXY), which allows the Hugging Face hosts alone."""
     repo = request.get("repo")
@@ -214,14 +215,21 @@ def download_base(request):
         raise RuntimeError("HF_HUB_OFFLINE is set: only the engine's download command may reach the network")
     from huggingface_hub import snapshot_download
 
-    part = dest + ".part"
+    part = os.path.join(dest, ".part")
+    os.makedirs(part, exist_ok=True)
     with contextlib.redirect_stdout(sys.stderr):
         snapshot_download(repo_id=repo, local_dir=part, token=False)
     if not os.path.exists(os.path.join(part, "config.json")):
         raise RuntimeError("the download has no config.json")
-    if os.path.exists(dest):
-        shutil.rmtree(dest)
-    os.replace(part, dest)
+    # the hub's bookkeeping for resuming stays behind; config.json goes in last, as it is what says ready
+    shutil.rmtree(os.path.join(part, ".cache"), ignore_errors=True)
+    names = sorted(os.listdir(part), key=lambda n: n == "config.json")
+    for name in names:
+        target = os.path.join(dest, name)
+        if os.path.isdir(target) and not os.path.islink(target):
+            shutil.rmtree(target)
+        os.replace(os.path.join(part, name), target)
+    os.rmdir(part)
     return {"dir": dest}
 
 
