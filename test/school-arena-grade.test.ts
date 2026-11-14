@@ -8,14 +8,16 @@
  * network or Beagle's real home.
  */
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { openDb } from '../engine/db.js';
 import { realRunner, realSpawner, setRunner, setSpawner, type Spawner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { execFileTool } from '../engine/market/broker.js';
+import { toolProfile } from '../engine/market/sandbox.js';
 import type { RunLogLine } from '../engine/market/provider.js';
 import * as arenas from '../engine/school/arenas.js';
 import type { ArenaTask, PlantedTruth } from '../engine/school/arenas.js';
@@ -66,9 +68,12 @@ interface Spawn {
   env: Record<string, string>;
 }
 let spawns: Spawn[] = [];
+let onSpawn: ((s: Spawn) => void) | null = null;
 
 const recording: Spawner = (cmd, args, opts) => {
-  spawns.push({ cmd, args, cwd: opts.cwd ?? '', env: { ...(opts.env ?? {}) } });
+  const s = { cmd, args, cwd: opts.cwd ?? '', env: { ...(opts.env ?? {}) } };
+  spawns.push(s);
+  onSpawn?.(s);
   return realSpawner(cmd, args, opts);
 };
 
@@ -90,6 +95,7 @@ beforeEach(() => {
   setUp('school-arena-grade');
   process.env.BEAGLE_BACKOFF_MS = '0';
   spawns = [];
+  onSpawn = null;
   setSpawner(recording);
   setGate(async () => gateState(true));
   patchSettings({ school: { ...getSettings().school, enabled: true } });
@@ -332,4 +338,102 @@ test("the arena's file tools refuse a path outside the task's clone or through a
   const all = JSON.stringify(await tool(arena, 'search').run({ pattern: 'secret' }, ctxOf(t)));
   assert.doesNotMatch(all, /his secret/, 'a search of the whole tree never follows a link');
   assert.equal(readFileSync(secret, 'utf8'), 'his secret\n');
+});
+
+// ---------------------------------------------------------------- fix round 1
+
+/** A loose tree for applyEdits alone: no arena, no suite. */
+function looseTree(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tempDir, 'loose-'));
+  for (const [f, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, f)), { recursive: true });
+    writeFileSync(join(dir, f), text);
+  }
+  return dir;
+}
+
+const edit = (file: string) => [{ file, find: 'x', replace: 'y' }];
+
+test('a test file in any spelling is refused, and a source file only in its own spelling', () => {
+  const dir = looseTree({ 'src/math.js': 'x\n', 'test/math.test.js': 'x\n', 'Tests/helper.js': 'x\n', '__Tests__/helper.js': 'x\n', 'Spec/util.js': 'x\n' });
+  const command = 'node --test test/math.test.js';
+  for (const f of ['Test/math.test.js', 'TEST/MATH.TEST.JS', 'test/Math.Test.js', 'Tests/helper.js', 'TESTS/helper.js', 'tests/helper.js', '__Tests__/helper.js', '__TESTS__/helper.js', 'Spec/util.js']) {
+    assert.equal(arenas.applyEdits(dir, edit(f), command), 'the tests may not be changed', f);
+  }
+  assert.match(arenas.applyEdits(dir, edit('src/Math.js'), command) ?? '', /in that spelling/, 'a source file asked for in another case');
+  assert.match(arenas.applyEdits(dir, edit('SRC/math.js'), command) ?? '', /in that spelling/);
+  for (const f of ['test/math.test.js', 'Tests/helper.js', '__Tests__/helper.js', 'Spec/util.js', 'src/math.js']) assert.equal(readFileSync(join(dir, f), 'utf8'), 'x\n', `${f} is unchanged`);
+  assert.equal(arenas.applyEdits(dir, edit('src/math.js'), command), null);
+  assert.equal(readFileSync(join(dir, 'src/math.js'), 'utf8'), 'y\n');
+});
+
+test('test configuration, runner files and whatever the test command names are refused', () => {
+  const files = [
+    'conftest.py', 'pkg/conftest.py', 'jest.config.js', 'vite.config.ts', 'Vitest.Config.mts', '.mocharc.js', '.eslintrc.cjs', 'setupTests.js', 'setup.py', 'vitest.setup.ts',
+    'karma.conf.js', 'jest.setup.js', 'run.sh', 'scripts/ci.sh', 'package.json', 'e2e/flow.js', 'src/__mocks__/fs.js', 'fixtures/data.js', 'src/fixtures/data.ts', 'scripts/check.js', 'tools/runner/main.js',
+  ];
+  const dir = looseTree(Object.fromEntries([...files, 'src/math.js'].map((f) => [f, 'x\n'])));
+  const command = 'node scripts/check.js && node --test --import=./tools/runner test/';
+  for (const f of files) assert.match(arenas.applyEdits(dir, edit(f), command) ?? '', /may not be changed/, f);
+  for (const f of files) assert.equal(readFileSync(join(dir, f), 'utf8'), 'x\n', `${f} is unchanged`);
+  assert.equal(arenas.applyEdits(dir, edit('src/math.js'), command), null, 'a plain source file may be edited');
+});
+
+test('a source edit that exits 0 before the tests run does not score 1', async () => {
+  const { arena, tasks } = await readyArena();
+  const { truth } = oneTarget(tasks);
+  const fix = { file: truth.file, find: truth.mutated, replace: truth.original };
+  const exitEarly = { file: 'src/math.js', find: 'export function isEven', replace: 'process.exit(0);\nexport function isEven' };
+  assert.equal(await arena.grade({ edits: [exitEarly] }, truth), 0, 'the suite exits 0 but no target is seen passing');
+  assert.equal(await arena.grade({ edits: [fix, exitEarly] }, truth), 0, 'even with the fix, the targets never ran');
+  assert.equal(await arena.grade({ edits: [fix] }, truth), 1);
+});
+
+test('a source file that writes a test file at import fails the grade', async () => {
+  const { arena, tasks } = await readyArena();
+  const { task, truth } = oneTarget(tasks);
+  const fix = { file: truth.file, find: truth.mutated, replace: truth.original };
+  const tamper = {
+    file: 'src/math.js',
+    find: 'export function isEven',
+    replace: "import { writeFileSync as __w } from 'node:fs';\n__w(new URL('../test/math.test.js', import.meta.url), '// nothing to test\\n');\nexport function isEven",
+  };
+  assert.equal(await arena.grade({ edits: [fix, tamper] }, truth), 0);
+  const r = (await tool(arena, 'run_tests').run({ edits: [fix, tamper] }, ctxOf(task))) as { passed: boolean; error?: string; output?: string };
+  assert.equal(r.passed, false);
+  // With the sandbox off the write lands and is caught after the run; under it the profile refuses the write itself.
+  assert.ok(/test\/math\.test\.js/.test(r.error ?? '') || /EPERM|not permitted/.test(r.output ?? ''), JSON.stringify(r).slice(0, 600));
+  // Under the sandbox the profile denies the write itself.
+  const runRoot = join(paths().runs, 'profile-check');
+  mkdirSync(runRoot, { recursive: true });
+  const text = toolProfile({ runRoot, home: tempDir, dataHome: join(tempDir, 'home'), enginePort: 4770, proxyPort: 9, toolchains: [], otherPorts: [], readOnly: ['/x/repo/test/math.test.js', '/x/repo/package.json'] });
+  assert.match(text, /\(deny file-write\* \(literal "\/x\/repo\/test\/math\.test\.js"\) \(literal "\/x\/repo\/package\.json"\)\)/);
+  assert.ok(text.lastIndexOf('(deny file-write* (literal "/x/repo/test/math.test.js")') > text.indexOf('(allow file-write*'), 'the deny comes after the allows');
+});
+
+test('each task copy is one fresh commit of the task, and the head is out of reach', async () => {
+  const { info, arena, tasks } = await readyArena();
+  const { task, truth } = oneTarget(tasks);
+  const seen: Array<{ commits: string; head: boolean; buggy: boolean; clean: boolean }> = [];
+  const env = { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
+  onSpawn = (sp) => {
+    if (!sp.cwd.includes(`arena-${info.id}-try-`) && !sp.cwd.includes(`arena-${info.id}-grade-`)) return;
+    const g = (...args: string[]) => spawnSync('git', ['-C', sp.cwd, ...args], { env: { ...env, GIT_CEILING_DIRECTORIES: dirname(sp.cwd) }, encoding: 'utf8' });
+    seen.push({
+      commits: g('rev-list', '--count', 'HEAD').stdout.trim(),
+      head: g('cat-file', '-e', `${info.sha}^{commit}`).status === 0,
+      buggy: g('show', `HEAD:${truth.file}`).stdout.includes(truth.mutated),
+      clean: g('status', '--porcelain', '--untracked-files=no').stdout.trim() === '',
+    });
+  };
+  await tool(arena, 'run_tests').run({}, ctxOf(task));
+  await arena.grade({ edits: [{ file: truth.file, find: truth.mutated, replace: truth.original }] }, truth);
+  assert.equal(seen.length, 2);
+  for (const x of seen) {
+    assert.equal(x.commits, '1', 'one commit');
+    assert.equal(x.head, false, 'the head (the bug-free code) is unreachable');
+    assert.equal(x.buggy, true, 'the commit is the task state, bug and all');
+  }
+  assert.equal(seen[0].clean, true, 'run_tests with no edits runs the commit as it is');
+  assert.equal(seen[1].clean, false, 'the grade runs the racer\'s edits on top of it');
 });

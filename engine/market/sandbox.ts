@@ -47,6 +47,12 @@ export interface ProfileInput {
    * can write the other's, so the head's code never reaches the before shot.
    */
   side?: 'head' | 'base';
+  /**
+   * Files no command of this run may write, create, rename or remove, after
+   * every allow (an arena's test files and test configuration, ruling 21).
+   * Real paths.
+   */
+  readOnly?: string[];
 }
 
 export interface CliProfileInput extends ProfileInput {
@@ -396,6 +402,10 @@ export function toolProfile(o: ProfileInput): string {
   lines.push(`(deny file-write* ${sub(join(r.runRoot, 'ctl'))})`);
   lines.push(`; claude's own temp dir is the CLI profile's alone`);
   lines.push(`(deny file-read* file-write* ${sub(join(r.runRoot, CLAUDE_TMP))})`);
+  if (o.readOnly?.length) {
+    lines.push('; the tests and their configuration are read-only to the code under test');
+    lines.push(`(deny file-write* ${o.readOnly.map(lit).join(' ')})`);
+  }
   lines.push('');
 
   lines.push(...secretDenies(r, [...SECRET_PATHS, ...CLAUDE_SECRET_PATHS]));

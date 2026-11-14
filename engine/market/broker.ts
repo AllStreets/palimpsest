@@ -72,6 +72,8 @@ export interface ExecToolInput {
    * else is refused before `forbidden()` is even asked.
    */
   allowedCommands?: readonly string[];
+  /** Real paths the command may not write (the tool profile denies them after every allow). */
+  readOnly?: string[];
 }
 
 export type FileOp = 'read' | 'write' | 'edit' | 'list' | 'search';
@@ -194,9 +196,10 @@ function egressPort(runRoot: string): number {
 }
 
 /** The tool profile's input for a run, from the run context alone. */
-function profileFor(runRoot: string, side: 'head' | 'base' = 'head'): ProfileInput {
+function profileFor(runRoot: string, side: 'head' | 'base' = 'head', readOnly?: string[]): ProfileInput {
   return {
     side,
+    ...(readOnly?.length ? { readOnly } : {}),
     runRoot,
     home: homedir(),
     dataHome: dataHomeDir(),
@@ -300,7 +303,7 @@ class Spooler {
 
 /** Runs argv under the tool profile with the child environment and collects its output. */
 async function runSandboxed(
-  o: { runId: string; runRoot: string; dir: string; signal: AbortSignal; log: (l: RunLogLine) => void; side?: 'head' | 'base' },
+  o: { runId: string; runRoot: string; dir: string; signal: AbortSignal; log: (l: RunLogLine) => void; side?: 'head' | 'base'; readOnly?: string[] },
   argv: string[],
   maxMs: number,
   stdin: string | undefined,
@@ -309,7 +312,7 @@ async function runSandboxed(
 ): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean; aborted: boolean }> {
   // The design check's base checkout is its own side, with its own home, cache and tmp (Task 15).
   const side = o.side ?? 'head';
-  const wrapped = wrap(argv, 'tool', profileFor(o.runRoot, side), (l) => o.log({ at: now(), kind: 'engine', text: l }));
+  const wrapped = wrap(argv, 'tool', profileFor(o.runRoot, side, o.readOnly), (l) => o.log({ at: now(), kind: 'engine', text: l }));
   if (o.signal.aborted) return { code: null, stdout: '', stderr: 'aborted before the command ran\n', timedOut: false, aborted: true };
   const child: Spawned = getSpawner()(wrapped[0], wrapped.slice(1), {
     cwd: o.dir,

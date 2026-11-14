@@ -590,7 +590,7 @@ test("a sealed merge-commit PR seals its inner commits and history's ref", async
 test('a past task directory holds no object of the fix', async () => {
   pastSetUp();
   const w = pastWorld();
-  const seen: Array<{ git: boolean; fixObject: boolean }> = [];
+  const seen: Array<{ git: boolean; commits: string; fixObject: boolean }> = [];
   onSpawn = (sp) => {
     if (!sp.cwd.includes('-grade')) return;
     let math = '';
@@ -604,13 +604,15 @@ test('a past task directory holds no object of the fix', async () => {
     if (math !== BUGGY || test !== NEW_TEST) return;
     // The fix's task directory, as its suite runs: git may look nowhere above it.
     const r = spawnSync('git', ['-C', sp.cwd, 'cat-file', '-e', `${w.fix}^{commit}`], { env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CEILING_DIRECTORIES: dirname(sp.cwd) } });
-    seen.push({ git: existsSync(join(sp.cwd, '.git')), fixObject: r.status === 0 });
+    const count = spawnSync('git', ['-C', sp.cwd, 'rev-list', '--count', 'HEAD'], { env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CEILING_DIRECTORIES: dirname(sp.cwd) }, encoding: 'utf8' });
+    seen.push({ git: existsSync(join(sp.cwd, '.git')), commits: String(count.stdout).trim(), fixObject: r.status === 0 });
   };
   const info = await buildPast(w.repo, NOW);
   assert.equal(info.status, 'ready', info.reason ?? '');
   assert.ok(arenaTasks(info.id).some((x) => x.ref === w.fix));
   assert.equal(seen.length, 1, 'the fix was graded at its task base once');
-  assert.deepEqual(seen[0], { git: false, fixObject: false });
+  // A fresh one-commit history of the task state: git works there, and the fix is still out of reach.
+  assert.deepEqual(seen[0], { git: true, commits: '1', fixObject: false });
 });
 
 test('nothing is fetched beyond the mirror', async () => {

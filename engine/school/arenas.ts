@@ -455,8 +455,9 @@ function insideClone(dir: string, file: string): string | null {
   const p = join(dir, file);
   try {
     if (!lstatSync(p).isFile()) return null;
-    const root = realpathSync(dir);
-    const real = realpathSync(p);
+    // The on-disk spelling: APFS ignores case, so `Test/x.js` would open `test/x.js`.
+    const root = realpathSync.native(dir);
+    const real = realpathSync.native(p);
     return real.startsWith(root + sep) && real === join(root, file) ? p : null;
   } catch {
     return null;
@@ -528,14 +529,15 @@ async function prepareBase(id: string, repo: Repo, sha: string, signal: AbortSig
 }
 
 /** Every planted-bug candidate at the base, at most ARENA.mutants, in an order seeded by the head. */
-async function plant(id: string, sha: string): Promise<Candidate[]> {
+async function plant(id: string, sha: string, command: string): Promise<Candidate[]> {
   const base = arenaBase(id);
   const ls = await engineGit(base, ['ls-files', '-z']);
   if (ls.code !== 0) throw new Error(`could not list the files at ${sha.slice(0, 7)}: ${ls.stderr.trim()}`);
   const seed = parseInt(sha.slice(0, 8), 16) >>> 0;
   const all: Mutant[] = [];
   for (const file of ls.stdout.split('\0').filter(Boolean).sort()) {
-    if (!mutable(file)) continue;
+    // A racer may not edit test files or their configuration, so no bug is planted there.
+    if (!mutable(file) || protectedReason(file, command)) continue;
     const p = join(base, file);
     let text: string;
     try {
@@ -613,6 +615,8 @@ async function plantPast(id: string, repo: Repo, head: string, now: number, sign
     const sourceFiles = c.files.filter(isSourceFile);
     const tests = c.files.filter(isTestFile);
     if (sourceFiles.length === 0 || tests.length === 0) continue;
+    // A fix a racer could not make (it touches test configuration or a runner file) is no task.
+    if (sourceFiles.some((f) => protectedReason(f, repo.checks?.test ?? ''))) continue;
     if (await rebasedPR(repo, c)) continue;
     // Only test files the change leaves as regular files: never a link, never one it deleted.
     const tree = await engineGit(base, ['ls-tree', c.sha, '--', ...tests]);
@@ -675,10 +679,43 @@ export async function pastTaskTree(dir: string, t: Pick<PastTruth, 'parent' | 's
   const tests = await engineGit(dir, ['checkout', t.sha, '--', ...t.testFiles]);
   if (tests.code !== 0) return `could not apply the tests of ${t.sha.slice(0, 7)}: ${tests.stderr.trim()}`;
   for (const f of t.testFiles) if (!insideClone(dir, f)) return `${f} is a link or lies outside the clone`;
-  // The history goes: the tree is the parent's state and the tests, with nothing behind it.
+  // The history goes: the tree is the parent's state and the tests, in one fresh commit with nothing behind it.
+  return freshHistory(dir);
+}
+
+/** The committer of a task copy's one commit. */
+const TASK_IDENTITY = ['-c', 'user.name=Palimpsest', '-c', 'user.email=arena@palimpsest.invalid'];
+
+/**
+ * Replaces the clone's history with one fresh commit of its tracked files
+ * as they stand now (the task's state): the old `.git` is removed whole, so
+ * no object of the head, the fix or any later commit is left, and a repo
+ * whose tests need git still has one. Null when done, else why not.
+ */
+async function freshHistory(dir: string): Promise<string | null> {
+  const ls = await engineGit(dir, ['ls-files', '-z']);
+  if (ls.code !== 0) return `could not list the task's files: ${ls.stderr.trim()}`;
+  const files = ls.stdout.split('\0').filter(Boolean);
   removeOwned(join(dir, '.git'));
   if (existsSync(join(dir, '.git'))) return 'the clone history could not be removed';
+  const init = await getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', dir, 'init', '--quiet'], { timeoutMs: 60_000 });
+  if (init.code !== 0) return `could not start the task's history: ${init.stderr.trim()}`;
+  recordGitConfig(dir);
+  for (let i = 0; i < files.length; i += 500) {
+    const add = await engineGit(dir, ['--literal-pathspecs', 'add', '--force', '--', ...files.slice(i, i + 500).filter((f) => existsSync(join(dir, f)) || isLink(join(dir, f)))]);
+    if (add.code !== 0) return `could not record the task's files: ${add.stderr.trim()}`;
+  }
+  const commit = await engineGit(dir, [...TASK_IDENTITY, 'commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '-m', 'The task']);
+  if (commit.code !== 0) return `could not commit the task's files: ${commit.stderr.trim()}`;
   return null;
+}
+
+function isLink(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /** The change itself. */
@@ -918,7 +955,7 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
       writeState(state);
     }
     if (!state.candidates) {
-      state.candidates = await plant(state.id, state.sha);
+      state.candidates = await plant(state.id, state.sha, repo.checks?.test ?? '');
       writeState(state);
     }
 
@@ -1040,8 +1077,9 @@ function taskById(id: string): ArenaTask | null {
 /**
  * A fresh scratch clone of the arena base, under its own run root, made into
  * the task's tree: a planted bug planted (never through a link), or a past
- * change's parent with its tests applied (`pastTaskTree`). The clone's
- * `.git` is removed in both, so no tool can reach the head or the fix.
+ * change's parent with its tests applied (`pastTaskTree`). In both the
+ * clone's history is replaced by one fresh commit of the task's state
+ * (`freshHistory`), so nothing can reach the head or the fix.
  */
 async function scratchFor(arenaId: string, truth: PlantedTruth | PastTruth, purpose: 'view' | 'try' | 'grade'): Promise<Scratch | { error: string }> {
   const base = arenaBase(arenaId);
@@ -1068,12 +1106,11 @@ async function scratchFor(arenaId: string, truth: PlantedTruth | PastTruth, purp
   }
 }
 
-/** The planted bug's tree: the bug written in (only into a regular file inside the clone), then the history removed. */
+/** The planted bug's tree: the bug written in (only into a regular file inside the clone), then one fresh commit of it as its whole history. */
 async function plantedTaskTree(dir: string, truth: Mutant): Promise<string | null> {
   const why = await plantIn(truth)(dir);
   if (why) return why;
-  removeOwned(join(dir, '.git'));
-  return existsSync(join(dir, '.git')) ? 'the clone history could not be removed' : null;
+  return freshHistory(dir);
 }
 
 async function dropScratch(runId: string): Promise<void> {
@@ -1102,7 +1139,8 @@ function relPath(path: unknown): string | null {
  */
 function underClone(dir: string, rel: string, want: 'file' | 'dir' | 'any'): boolean {
   try {
-    const root = realpathSync(dir);
+    // The on-disk spelling, so a path in another case (APFS ignores case) is refused.
+    const root = realpathSync.native(dir);
     if (rel === '.') return want !== 'file';
     let at = dir;
     for (const part of rel.split('/')) {
@@ -1113,7 +1151,7 @@ function underClone(dir: string, rel: string, want: 'file' | 'dir' | 'any'): boo
     if (want === 'file' && !st.isFile()) return false;
     if (want === 'dir' && !st.isDirectory()) return false;
     if (want === 'any' && !st.isFile() && !st.isDirectory()) return false;
-    return realpathSync(at) === join(root, rel);
+    return realpathSync.native(at) === join(root, rel);
   } catch {
     return false;
   }
@@ -1121,24 +1159,74 @@ function underClone(dir: string, rel: string, want: 'file' | 'dir' | 'any'): boo
 
 const OUTSIDE = "The path is a link, lies outside the task's copy, or is not there; file tools never follow a link.";
 
+/** Folders whose files are tests or test support, at any depth, compared lower-cased (APFS ignores case). */
+const ARENA_TEST_FOLDERS = new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'e2e', '__mocks__', 'fixtures']);
+/** Test configuration and runner files, by lower-cased name. */
+const TEST_CONFIG = [
+  /^conftest\.py$/,
+  /\.config\.[^.]+$/,
+  /^\.[^/]*rc(\.[^.]+)?$/,
+  /^setup/,
+  /^(jest|vitest|karma)\./,
+  /\.sh$/,
+  /^package\.json$/,
+  /^(pytest|tox)\.ini$/,
+  /^makefile$/,
+];
+const TESTS_REFUSED = 'the tests may not be changed';
+const CONFIG_REFUSED = 'test configuration and runner files may not be changed';
+
+/** The repo paths a test command names (`node --test test/a.js`, `sh scripts/check.sh`), relative and lower-cased. */
+function commandPaths(command: string): string[] {
+  const out: string[] = [];
+  for (const raw of command.split(/[\s;&|()]+/)) {
+    let tok = raw.replace(/^['"]|['"]$/g, '');
+    if (!tok || tok.startsWith('-') && !tok.includes('=')) continue;
+    if (tok.includes('=')) tok = tok.slice(tok.indexOf('=') + 1);
+    const rel = relPath(tok);
+    if (rel && rel !== '.' && /[/.]/.test(rel)) out.push(rel.toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * Why a racer may not edit `rel` (ruling 21), or null: a test file or a
+ * file in a test folder, test configuration or a runner file, or any file
+ * the declared test command names (or one under a folder it names). Every
+ * comparison is on the path lower-cased, since APFS ignores case.
+ */
+export function protectedReason(rel: string, command: string): string | null {
+  const lower = rel.toLowerCase();
+  const parts = lower.split('/');
+  const name = parts[parts.length - 1];
+  if (isTestFile(rel) || isTestFile(lower) || parts.slice(0, -1).some((p) => ARENA_TEST_FOLDERS.has(p))) return TESTS_REFUSED;
+  if (TEST_CONFIG.some((re) => re.test(name))) return CONFIG_REFUSED;
+  for (const c of commandPaths(command)) if (lower === c || lower.startsWith(`${c}/`)) return CONFIG_REFUSED;
+  return null;
+}
+
 /**
  * Applies an answer's edits to a scratch clone (ruling 21): source files
- * only, never a test file, never through a link or outside the clone, and
- * each `find` exactly once in its file. Null when all applied, else why not
- * (and the clone is thrown away by the caller).
+ * only, never a test file, test configuration or a file the test command
+ * names (`protectedReason`), never through a link, outside the clone or in
+ * another case than the file's own, and each `find` exactly once in its
+ * file. Null when all applied, else why not (and the clone is thrown away
+ * by the caller).
  */
-export function applyEdits(dir: string, edits: unknown): string | null {
+export function applyEdits(dir: string, edits: unknown, command: string): string | null {
   if (!Array.isArray(edits)) return 'edits must be a list';
   if (edits.length > MAX_EDITS) return `at most ${MAX_EDITS} edits`;
   for (const e of edits as Array<Partial<ArenaEdit> | null>) {
     if (!e || typeof e !== 'object' || typeof e.file !== 'string' || typeof e.find !== 'string' || typeof e.replace !== 'string') return 'each edit needs a file, a find and a replace';
     const file = relPath(e.file);
     if (!file || file === '.') return `${e.file} is not a file of the repository`;
-    if (isTestFile(file)) return 'the tests may not be changed';
+    const asked = protectedReason(file, command);
+    if (asked) return asked;
     if (!isSourceFile(file)) return `${file} is not a source file; only source files may be edited`;
-    if (!underClone(dir, file, 'file')) return `there is no ${file}, or it is a link`;
+    // The file as it is spelled on disk must be the file asked for, case and all.
+    if (!underClone(dir, file, 'file')) return `there is no ${file} (in that spelling), or it is a link`;
     const p = insideClone(dir, file);
-    if (!p) return `there is no ${file}, or it is a link`;
+    if (!p) return `there is no ${file} (in that spelling), or it is a link`;
     if (e.find === '') return `the find text for ${file} is empty`;
     const text = readFileSync(p, 'utf8');
     const n = text.split(e.find).length - 1;
@@ -1146,6 +1234,43 @@ export function applyEdits(dir: string, edits: unknown): string | null {
     writeFileSync(p, text.replace(e.find, () => e.replace!));
   }
   return null;
+}
+
+/** Folders a walk for protected files never enters: history and installed dependencies. */
+const WALK_SKIP = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.tox']);
+
+/** Every regular file in the clone a racer may not edit (`protectedReason`), relative. */
+function protectedFiles(dir: string, command: string): string[] {
+  const out: string[] = [];
+  const walk = (rel: string) => {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = readdirSync(join(dir, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const d of entries) {
+      const r = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) {
+        if (!WALK_SKIP.has(d.name)) walk(r);
+      } else if (d.isFile() && protectedReason(r, command)) out.push(r);
+    }
+  };
+  walk('');
+  return out.sort();
+}
+
+/** Each protected file's content hash, to tell whether a run changed one. */
+function fingerprint(dir: string, files: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const f of files) {
+    try {
+      out.set(f, lstatSync(join(dir, f)).isFile() ? createHash('sha256').update(readFileSync(join(dir, f))).digest('hex') : 'not a file');
+    } catch {
+      out.set(f, 'gone');
+    }
+  }
+  return out;
 }
 
 /** The names of the tests that passed: TAP `ok`, node's and Jest's spec marks, pytest `PASSED`, Go `--- PASS`. */
@@ -1173,6 +1298,8 @@ interface SuiteRun {
   timedOut: boolean;
   aborted: boolean;
   raw: string;
+  /** The protected files (tests, their configuration) the run changed, created away or removed: any scores 0. */
+  tampered: string[];
 }
 
 /**
@@ -1181,23 +1308,34 @@ interface SuiteRun {
  * closed port 9: the tests have no network, as in the build's grading.
  */
 async function runSuite(s: Scratch, command: string, timeoutMs: number, signal: AbortSignal): Promise<SuiteRun> {
+  // The tests and their configuration are read-only to the code under test: the tool profile denies
+  // writing them, and their content is compared after the run whatever the profile did.
+  const guarded = protectedFiles(s.dir, command);
+  const before = fingerprint(s.dir, guarded);
+  const root = realpathSync.native(s.dir);
   const t0 = Date.now();
-  const r = await execTool({ runId: s.runId, runRoot: s.runRoot, dir: s.dir, command, timeoutMs, stage: 'checks', signal, log: noLog });
+  const r = await execTool({ runId: s.runId, runRoot: s.runRoot, dir: s.dir, command, timeoutMs, stage: 'checks', signal, log: noLog, readOnly: guarded.map((f) => join(root, f)) });
   const timedOut = Date.now() - t0 >= timeoutMs || r.stderr.includes('[palimpsest] timed out after');
-  return { code: r.code, refused: r.refused, timedOut, aborted: signal.aborted, raw: `${r.stdout}\n${r.stderr}` };
+  const after = fingerprint(s.dir, guarded);
+  const tampered = guarded.filter((f) => before.get(f) !== after.get(f));
+  return { code: r.code, refused: r.refused, timedOut, aborted: signal.aborted, raw: `${r.stdout}\n${r.stderr}`, tampered };
 }
 
 /**
- * Ruling 21's grade, from one run of his suite on the task's tree with the
- * answer's edits applied:
+ * Ruling 21's grade, from one run of his suite on a pristine task tree with
+ * only the answer's edits to allowed source files applied:
  *
- * - 1 when the suite passes (exit 0): the target tests pass and nothing
- *   that passed at the task base fails;
- * - 0.5 when the suite fails, but every target test is named among those
- *   that passed and none among those that failed: the targets pass and
- *   another test fails;
- * - 0 otherwise: a target still fails, or the suite ran out of time, was
- *   refused or stopped, or the targets cannot be told passing.
+ * - 1 when the suite passes (exit 0) and every target test is named among
+ *   those that passed: the targets pass and nothing that passed at the
+ *   task base fails;
+ * - 0.5 when every target is named among those that passed and none among
+ *   those that failed, but the suite fails: another test fails. Also 0.5,
+ *   at most, when the suite exits 0 but no test name at all was parsed
+ *   from its output: it passed, but the targets cannot be seen passing;
+ * - 0 otherwise: a target still fails or never ran (a source file that
+ *   exits 0 before the tests run shows no target passing), the run changed
+ *   a test file or its configuration, or the suite ran out of time, was
+ *   refused or stopped.
  *
  * The targets are the failing test names parsed when the task was built
  * (`truth.failing`). At the task base only they failed (a planted bug: the
@@ -1205,20 +1343,22 @@ async function runSuite(s: Scratch, command: string, timeoutMs: number, signal: 
  * parsed tests), so "nothing that passed at base fails" is "nothing fails
  * but the targets".
  *
- * Fallback, when no failing test names were parsed (a runner that prints
- * none of the forms `failingTests` reads): grading falls back to "the suite
- * passes". The targets count as passed only when the whole suite passes, so
- * such a task scores 1 on exit 0 and 0 otherwise, never 0.5.
+ * Fallback, when no failing test names were parsed at the build (a runner
+ * that prints none of the forms `failingTests` reads): grading falls back
+ * to "the suite passes". Such a task scores 1 on exit 0 and 0 otherwise.
  */
-export function scoreOf(r: Pick<SuiteRun, 'code' | 'refused' | 'timedOut' | 'aborted' | 'raw'>, targets: string[]): number {
-  if (r.refused !== null || r.timedOut || r.aborted || r.code === null) return 0;
-  if (r.code === 0) return 1;
-  // The fallback: with no parsed names, only a passing suite counts.
-  if (targets.length === 0) return 0;
+export function scoreOf(r: Pick<SuiteRun, 'code' | 'refused' | 'timedOut' | 'aborted' | 'raw' | 'tampered'>, targets: string[]): number {
+  if (r.refused !== null || r.timedOut || r.aborted || r.code === null || r.tampered.length) return 0;
+  // The fallback: with no parsed targets, only a passing suite counts.
+  if (targets.length === 0) return r.code === 0 ? 1 : 0;
   const failed = new Set(failingTests(r.raw));
   const passed = new Set(passingTests(r.raw));
-  if (targets.some((t) => failed.has(t))) return 0;
-  return targets.every((t) => passed.has(t)) ? 0.5 : 0;
+  const targetsPass = targets.every((t) => passed.has(t)) && !targets.some((t) => failed.has(t));
+  if (r.code === 0) {
+    if (targetsPass) return 1;
+    return failed.size === 0 && passed.size === 0 ? 0.5 : 0;
+  }
+  return targetsPass ? 0.5 : 0;
 }
 
 /** The repo's test command now, or null. */
@@ -1238,7 +1378,7 @@ async function gradeAnswer(info: Pick<ArenaInfo, 'id' | 'repo'>, answer: unknown
   try {
     s = await scratchFor(info.id, truth, 'grade');
     if ('error' in s) return 0;
-    if (applyEdits(s.dir, edits)) return 0;
+    if (applyEdits(s.dir, edits, command)) return 0;
     const r = await runSuite(s, command, CHECK_MS - GRADE_MARGIN_MS, ctl.signal);
     // Where no failing test names were parsed, this falls back to "the suite passes" (see scoreOf).
     return scoreOf(r, Array.isArray(truth.failing) ? truth.failing : []);
@@ -1402,11 +1542,12 @@ function toolsOf(info: Pick<ArenaInfo, 'id' | 'repo'>): BeagleToolSpec[] {
         const ctl = new AbortController();
         const unregister = registerAbort(() => ctl.abort(TURNED_OFF_REASON));
         try {
-          const bad = applyEdits(s.dir, a.edits ?? []);
+          const bad = applyEdits(s.dir, a.edits ?? [], command);
           if (bad) return { error: bad };
           const r = await runSuite(s, command, mutantCapMs(readState(info.id)?.headMs), ctl.signal);
           if (r.refused) return { error: noLocalPaths(`the tests could not run: ${r.refused}`) };
           if (r.aborted) return { error: 'stopped: the school was turned off' };
+          if (r.tampered.length) return { passed: false, error: `the run changed ${r.tampered.join(', ')}, which the code under test may not write; such an answer scores 0` };
           return {
             passed: r.code === 0 && !r.timedOut,
             ...(r.timedOut ? { timedOut: true } : {}),
