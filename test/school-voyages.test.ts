@@ -658,6 +658,28 @@ test('a paused commissioned voyage refunds nothing', async () => {
   assertSchoolReplays();
 });
 
+test('a commissioned voyage whose engine stopped between Beagle\'s start and its first record sails on the next start, not wedged', async () => {
+  seedLocals();
+  quillMayCommission(500);
+  backends();
+  await fakeArena();
+  const queued = commission('quill', ARENA, NOW);
+  // the last engine started it in Beagle under the commissioned id, then stopped before it stored or recorded anything
+  const b = await loadBeagle();
+  const bv = b.race.startVoyage(ARENA, { concurrency: VOYAGE.concurrency, population: VOYAGE.population, generations: VOYAGE.generations, raceTasks: TASKS.race.length, localAgents: true, localOnly: false, seed: 1 });
+  b.store.open().prepare('UPDATE voyages SET id = ? WHERE id = ?').run(queued.id, bv.id);
+  assert.deepEqual(voyages().find((v) => v.id === queued.id)?.scores, [], 'the stored voyage is still queued');
+
+  const view = await sailVoyage(ARENA, NOW + 1000);
+  assert.equal(view.id, queued.id);
+  assert.equal(view.status, 'done', view.reason ?? '');
+  assert.equal((b.store.open().prepare('SELECT COUNT(*) AS n FROM voyages WHERE id = ?').get(queued.id) as { n: number }).n, 1);
+  assert.equal(ledgerOf('voyage.started').length, 1);
+  assert.equal(ledgerOf('voyage.commissioned').length, 1);
+  assert.equal(balances().quill, 500 - COMMISSION.fee);
+  assertSchoolReplays();
+});
+
 test('parents travel to the campus and home', async () => {
   const seeds = seedLocals();
   backends();

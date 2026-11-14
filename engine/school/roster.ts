@@ -69,6 +69,8 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(
 const byCard = (now: number): boolean => netCard('router', now).status === 'trusted';
 let trust: (now: number) => boolean = byCard;
 let graduatesOf: () => Graduate[] = () => [];
+/** The nets' answer (decisions.ts `predict`); tests may stub the router's. */
+let ask: typeof predict = predict;
 
 /** Whether hiring may prefer the school's agents: the school on and the router trusted. Never throws. */
 export function routerTrusted(now: number): boolean {
@@ -207,7 +209,7 @@ function routerScore(seed: RosterSeed, firmId: string, jobs: Job[]): number | nu
   const ps: number[] = [];
   for (const j of jobs) {
     if (!seed.bidsOn.includes(j.tier)) continue;
-    const got = predict('router', bidRaw(j, null, as, getRepo(j.repo), rep, seed.model));
+    const got = ask('router', bidRaw(j, null, as, getRepo(j.repo), rep, seed.model));
     if (got && Number.isFinite(got.p)) ps.push(got.p);
   }
   return ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : null;
@@ -348,16 +350,19 @@ export function commissionDue(now: number): VoyageView | null {
 /**
  * Puts the school's roster behind the market's hooks (main.ts calls it once)
  * and returns the uninstall. Tests may say whether the router is trusted
- * (`trusted`, else its card) and what the graduates are (`graduates`, else
- * none: Task 27's `graduates()` is wired here when it lands).
+ * (`trusted`, else its card), what the graduates are (`graduates`, else
+ * none: Task 27's `graduates()` is wired here when it lands) and what the
+ * nets answer (`predict`, else decisions.ts's).
  */
-export function installRoster(o: { trusted?: (now: number) => boolean; graduates?: () => Graduate[] } = {}): () => void {
+export function installRoster(o: { trusted?: (now: number) => boolean; graduates?: () => Graduate[]; predict?: typeof predict } = {}): () => void {
   trust = o.trusted ?? byCard;
   graduatesOf = o.graduates ?? (() => []);
+  ask = o.predict ?? predict;
   setRosterHook({ seeds: schoolRoster, candidates, commissionDue: (now) => void commissionDue(now) });
   return () => {
     setRosterHook(null);
     trust = byCard;
     graduatesOf = () => [];
+    ask = predict;
   };
 }

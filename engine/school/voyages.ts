@@ -417,6 +417,41 @@ export async function sailVoyage(arenaId: string, now: number): Promise<VoyageVi
   }
 }
 
+/** Whether Beagle's store already holds voyage `id`. */
+function beagleHas(b: BeagleApi, id: string): boolean {
+  return b.store.open().prepare('SELECT 1 AS hit FROM voyages WHERE id = ?').get(id) !== undefined;
+}
+
+/**
+ * Starts the voyage in Beagle and returns its id: under `named` when the
+ * fee already named it (a commission), else Beagle's own. Beagle names its
+ * voyages itself, so its fresh row (nothing refers to it yet) takes the
+ * commissioned name. An engine that stopped after that and before the
+ * voyage's first record left Beagle holding the name: that row is adopted
+ * and the fresh one dropped, so the next start is never wedged on the name.
+ */
+function startInBeagle(b: BeagleApi, arenaId: string, raceTasks: number, named: string | null): string {
+  // localAgents: every agent on this Mac; the designer may still be Claude within its daily allowance (Decision 10), which Beagle's localOnly would refuse
+  const bv = b.race.startVoyage(arenaId, {
+    concurrency: VOYAGE.concurrency,
+    population: VOYAGE.population,
+    generations: VOYAGE.generations,
+    raceTasks,
+    localAgents: true,
+    localOnly: false,
+    seed: 1,
+  });
+  if (!named) return bv.id;
+  const db = b.store.open();
+  try {
+    db.prepare('UPDATE voyages SET id = ? WHERE id = ?').run(named, bv.id);
+  } catch (err) {
+    if (!/UNIQUE constraint failed/.test(err instanceof Error ? err.message : String(err))) throw err;
+    db.prepare('DELETE FROM voyages WHERE id = ?').run(bv.id);
+  }
+  return named;
+}
+
 /** A commissioned voyage stored at commissioning that has not sailed yet: it has no generation to show. */
 const isQueued = (v: VoyageView) => v.scores.length === 0 && v.runs.done === 0;
 
@@ -441,22 +476,7 @@ async function sail(info: ArenaInfo, now: number): Promise<VoyageView> {
     view = { ...existing, status: 'sailing', reason: null };
   } else {
     const raceTasks = Math.max(1, tasksOf(b, info.id, 'race').length);
-    // localAgents: every agent on this Mac; the designer may still be Claude within its daily allowance (Decision 10), which Beagle's localOnly would refuse
-    const bv = b.race.startVoyage(info.id, {
-      concurrency: VOYAGE.concurrency,
-      population: VOYAGE.population,
-      generations: VOYAGE.generations,
-      raceTasks,
-      localAgents: true,
-      localOnly: false,
-      seed: 1,
-    });
-    let id = bv.id;
-    if (queued) {
-      // Beagle names its voyages itself; the fee already named this one, so Beagle's fresh row (nothing refers to it yet) takes that name
-      b.store.open().prepare('UPDATE voyages SET id = ? WHERE id = ?').run(queued.id, bv.id);
-      id = queued.id;
-    }
+    const id = queued && beagleHas(b, queued.id) ? queued.id : startInBeagle(b, info.id, raceTasks, queued?.id ?? null);
     view = {
       id,
       arena: info.id,

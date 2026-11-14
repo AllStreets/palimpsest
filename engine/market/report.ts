@@ -56,7 +56,8 @@ export interface ReportData {
     models: Array<{ model: string; credits: number; windowPct: number | null; usd: number }>;
     total: { bid: number; run: number; review: number; judge: number; audit: number; school: number; train: number; all: number };
     paid: { pay: number; reviewPay: number };
-    received: { hire: number; sale: number };
+    /** What firms paid the city: hiring fees, dark tower sales and the school's commissions (Phase 4 ruling 22), and their sum. Reports written before Task 23 have no commission or total. */
+    received: { hire: number; sale: number; commission?: number; total?: number };
     /** `todayCapPct` is the limit he set from the brief for this day, when he did (ruling 10). */
     caps: { dayCapPct: number; dayCapCredits: number; nightCapPct: number; todayCapPct: number | null };
     claudeCredits: number;
@@ -206,7 +207,7 @@ export function reportData(day: string): ReportData {
   const rows = openDb().prepare('SELECT firm_id, kind, amount, usd, json FROM credits WHERE at >= ? AND at < ?').all(from, to) as Array<{ firm_id: string | null; kind: string; amount: number; usd: number | null; json: string }>;
   const total = { bid: 0, run: 0, review: 0, judge: 0, audit: 0, school: 0, train: 0, all: 0 };
   const paid = { pay: 0, reviewPay: 0 };
-  const received = { hire: 0, sale: 0 };
+  const received = { hire: 0, sale: 0, commission: 0 };
   const byFirm = new Map<string, { bids: number; runs: number; paid: number }>();
   const byModel = new Map<string, { credits: number; claude: boolean; usd: number }>();
   let apiUsd = 0;
@@ -239,6 +240,7 @@ export function reportData(day: string): ReportData {
       if (r.firm_id) firmRow(r.firm_id).paid += r.amount;
     } else if (r.kind === 'hire') received.hire += r.amount;
     else if (r.kind === 'sale') received.sale += r.amount;
+    else if (r.kind === 'commission') received.commission += r.amount;
   }
   const settings = getSettings();
   const claudeCredits = [...byModel.values()].filter((m) => m.claude).reduce((s, m) => s + m.credits, 0);
@@ -317,7 +319,12 @@ export function reportData(day: string): ReportData {
         .sort((a, b) => b.credits - a.credits || a.model.localeCompare(b.model)),
       total: { bid: round2(total.bid), run: round2(total.run), review: round2(total.review), judge: round2(total.judge), audit: round2(total.audit), school: round2(total.school), train: round2(total.train), all: round2(total.all) },
       paid: { pay: round2(paid.pay), reviewPay: round2(paid.reviewPay) },
-      received: { hire: round2(received.hire), sale: round2(received.sale) },
+      received: {
+        hire: round2(received.hire),
+        sale: round2(received.sale),
+        commission: round2(received.commission),
+        total: round2(received.hire + received.sale + received.commission),
+      },
       caps: { dayCapPct: settings.dayCapPct, dayCapCredits: round2(settings.dayCapPct / CREDIT_PCT), nightCapPct: settings.nightCapPct, todayCapPct: settings.todayCapPct?.day === day ? todayCap(settings, day) : null },
       claudeCredits: round2(claudeCredits),
     },
@@ -440,6 +447,13 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
     out.push(`Model calls cost ${num(spend.total.all)} credits: ${listOf(parts)}.${pay.length ? ` The city paid firms ${listOf(pay)}.` : ''}`, '');
   } else {
     out.push('No model calls were charged today.', '');
+  }
+  const rec = spend.received;
+  const commissions = rec.commission ?? 0;
+  const receivedTotal = rec.total ?? rec.hire + rec.sale + commissions;
+  if (receivedTotal > 0) {
+    const parts = [rec.hire > 0 ? `${num(rec.hire)} in hiring fees` : '', rec.sale > 0 ? `${num(rec.sale)} for dark towers` : '', commissions > 0 ? `${num(commissions)} for commissioned voyages` : ''].filter(Boolean);
+    out.push(`Firms paid the city ${num(receivedTotal)} credits: ${listOf(parts)}.`, '');
   }
   if (spend.firms.length) {
     out.push(...table(['Firm', 'Bids', 'Runs', 'Paid', 'Balance now'], spend.firms.map((f) => [f.name, num(f.bids), num(f.runs), num(f.paid), num(f.balance)])), '');

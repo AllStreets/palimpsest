@@ -15,11 +15,13 @@ import { hire, ROSTER, rosterSeeds } from '../engine/market/firms.js';
 import { verifyReplay } from '../engine/market/replay.js';
 import { balances, replayBalances } from '../engine/market/treasury.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
-import { commission, CommissionRefused, firstRefusal, installRoster, schoolRoster } from '../engine/school/roster.js';
+import { candidates, commission, CommissionRefused, firstRefusal, installRoster, schoolRoster } from '../engine/school/roster.js';
 import { dueArenas, voyages } from '../engine/school/voyages.js';
 import { COMMISSION } from '../shared/school-rules.js';
 import { addAgent, HOUR, setUp, tearDown } from './guild-fixtures.js';
 import { bredVoyage, championBody, firmWith, floorOn, graduate, LOCAL, readyArena } from './roster-fixtures.js';
+import { storeJobRow } from './school-fixtures.js';
+import type { Genome } from '../shared/types.js';
 
 const NOW = Date.parse('2026-11-12T09:00:00.000Z');
 const DAY = 24 * HOUR;
@@ -249,4 +251,40 @@ test('first refusal names the commissioning firm for 7 days after its voyage end
   assert.equal(firstRefusal('bred-g-free', NOW), null, 'nobody commissioned it');
   assert.equal(firstRefusal('dagny-hollis', NOW), null, 'a hand-written specialist');
   assert.equal(firstRefusal('nobody', NOW), null);
+});
+
+test('the router ranks the school agents a firm is offered, unrated ones last and oldest first', () => {
+  const asked: string[] = [];
+  // the router's stubbed answer, by the seed's workflow: two rated, two it has nothing to say about
+  const rate: Record<string, number | null> = { 'plan-then-answer': 0.9, 'self-check': 0.4, single: null, vote: null };
+  uninstall = installRoster({
+    trusted: () => true,
+    predict: (net, raw) => {
+      asked.push(net);
+      const p = rate[String((raw as Record<string, unknown>).workflow)];
+      return p === null || p === undefined ? null : { p, version: 1 };
+    },
+  });
+  firmWith('quill', 300);
+  addAgent('seed-1', 'quill', LOCAL);
+  readyArena('arena-1', REPO);
+  const bred = (genome: string, workflow: Genome['workflow'], daysAgo: number) =>
+    bredVoyage({ id: `v-${genome}`, arena: 'arena-1', repo: REPO, starter: 'seed-1', genome, endedAt: new Date(NOW - daysAgo * DAY).toISOString(), body: championBody(genome, { workflow }) });
+  bred('g-old-unrated', { shape: 'single' }, 9);
+  bred('g-low', { shape: 'self-check' }, 8);
+  bred('g-high', { shape: 'plan-then-answer' }, 7);
+  bred('g-new-unrated', { shape: 'vote', n: 3 }, 6);
+  storeJobRow('job-1', { status: 'open', tier: 'normal' });
+  storeJobRow('job-2', { status: 'bidding', tier: 'low' });
+  storeJobRow('job-3', { status: 'merged', tier: 'normal' });
+
+  assert.deepEqual(
+    candidates('quill', NOW).map((x) => x.id),
+    ['bred-g-high', 'bred-g-low', 'bred-g-old-unrated', 'bred-g-new-unrated'],
+  );
+  // each seed rated on the two open jobs only, by the router
+  assert.equal(asked.length, 8);
+  assert.ok(asked.every((n) => n === 'router'));
+  assert.equal(hire('quill', new Date(NOW))?.id, 'bred-g-high');
+  assert.equal(hire('quill', new Date(NOW))?.id, 'bred-g-low');
 });

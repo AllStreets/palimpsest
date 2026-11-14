@@ -17,11 +17,12 @@ import { hire, seedFirms } from '../engine/market/firms.js';
 import { postManualJob, postProposal, proposeHarnessJob, transition } from '../engine/market/jobs.js';
 import { backfillReports, ensureDailyReport, latestReport, latestReportDay, writeDailyReport } from '../engine/market/report.js';
 import { createScheduler, haltRepo } from '../engine/market/runs.js';
-import { installTreasury } from '../engine/market/treasury.js';
+import { installTreasury, payCommission } from '../engine/market/treasury.js';
 import { patchSettings } from '../engine/settings.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Bid, Job, Repo, Run } from '../shared/types.js';
 import { checks, FULL, setUp, tearDown } from './guild-fixtures.js';
+import { firmWith } from './roster-fixtures.js';
 
 let off: () => void = () => {};
 beforeEach(() => {
@@ -397,4 +398,19 @@ test("the daily report counts the school's calls and its training under the city
   assert.equal(data.spend.total.train, 5);
   assert.equal(data.spend.total.all, 8);
   assert.deepEqual(data.spend.firms, []);
+});
+
+test("the daily report counts the school's commissions among what firms paid the city", () => {
+  seedFirms([]);
+  firmWith('quill', 500);
+  const now = Date.now();
+  payCommission('quill', 'v-2026-11-12-abcdef', now, () => []);
+  openDb()
+    .prepare("INSERT INTO credits (at, firm_id, run_id, kind, amount, usd, json) VALUES (?, 'quill', NULL, 'hire', 80, NULL, '{}')")
+    .run(new Date(now).toISOString());
+  const day = localDay();
+  const md = writeDailyReport(day);
+  const credits = md.slice(md.indexOf('## Credits'), md.indexOf('## Halts'));
+  assert.match(credits, /Firms paid the city 200 credits: 80 in hiring fees and 120 for commissioned voyages\./);
+  assert.deepEqual(latestReport()!.data.spend.received, { hire: 80, sale: 0, commission: 120, total: 200 });
 });
