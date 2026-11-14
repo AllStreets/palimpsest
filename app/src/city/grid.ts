@@ -1,29 +1,21 @@
 import * as THREE from 'three';
 
-import { reserves, type CollarPlaza } from './collar';
-import { onExchange } from './exchange';
-import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade';
-import { kitShared } from './kits';
+import { reserves, type CollarPlaza } from './collar.js';
+import { onExchange } from './exchange.js';
+import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade.js';
+import { kitShared } from './kits.js';
 import { lightsOutEmitter } from './lightsout.js';
 import { AMBIENT_LOD, AO_NEAR, boxDistance, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
 import { lodDepthMaterial, lodMaterial, LOD_EYE } from './lod-shader.js';
-import { ARCHETYPES, BLOCK, blockLots, blockSeed, farLot, farLotStands, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots';
+import { ARCHETYPES, BLOCK, blockLots, blockSeed, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, farLot, farLotStands, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots.js';
 import { inChannel } from '../../../shared/commute.js';
-import { materials } from './materials';
+import { materials } from './materials.js';
 import { AWNING, STRIPED } from './shopfronts.js';
 
-export { BLOCK, LAMP_EDGE, LAMP_OFFSETS, PITCH, STREET } from './lots';
+export { BLOCK, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, LAMP_EDGE, LAMP_OFFSETS, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, STREET } from './lots.js';
 
 /** Blocks within this many of the centre (Chebyshev) carry bays and rooftop units; past it they would be sub-pixel. */
 export const DETAIL_RADIUS = 10;
-/** Inside this radius the street grid gives way to an open paved plaza with no street lamps. */
-export const PLAZA_RADIUS = 72;
-/** Lanterns ring each plaza at this radius. */
-export const PLAZA_LAMP_RING = 66;
-export const PLAZA_LAMPS = 24;
-/** Lit bollards ring each district's plinth at this radius. */
-export const BOLLARD_RING = 36;
-export const BOLLARDS = 20;
 
 /** A plaza: a district (with its root's height, so the blocks round it stay under the root), a site, or the civic plaza. */
 export type Plaza = CollarPlaza;
@@ -57,17 +49,6 @@ export interface ShadowBox {
   near: number;
   far: number;
 }
-
-/**
- * Lanterns line a quarter's court this far in from its edge, every
- * COURT_LANTERN_STEP metres out to COURT_LANTERN_REACH either side of the
- * centre line (past it the towers stand).
- */
-export const COURT_LANTERN_INSET = 5;
-export const COURT_LANTERN_STEP = 16;
-export const COURT_LANTERN_REACH = 32;
-/** No lantern stands within this of the court's centre line on its south edge, where the firm's name plinth is. */
-export const COURT_PLINTH_CLEAR = 20;
 
 /** True on a plaza's paving: within PLAZA_RADIUS of a round plaza's centre, or on a quarter's court. */
 function paved(x: number, z: number, plazas: Plaza[]): boolean {
@@ -303,6 +284,8 @@ function awningGeometry(): THREE.BufferGeometry {
 
 type PartBatches = Record<Exclude<PartKind, `wall:${string}`>, Batch>;
 
+/** The lamp posts' own two levels: the kit post this near the eye, the square post and box arm beyond (a shorter band than the roof kit's, as a post is slimmer). */
+export const LAMP_LOD = { near: 200, far: 260 } as const;
 /** The roof kit parts drawn at two levels (lod.ts AMBIENT_LOD): the kit near the eye, a box of its bulk farther off. */
 const HEAVY = ['bulkhead', 'penthouse', 'screen', 'unit', 'car', 'tank', 'tankCap', 'stand'] as const;
 type Heavy = (typeof HEAVY)[number];
@@ -432,8 +415,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   };
   const proxyGeos: THREE.BufferGeometry[] = [];
   const lodMats: THREE.Material[] = [];
-  const lod = <T extends THREE.Material>(m: T, level: 'near' | 'far'): T => {
-    const l = lodMaterial(m, level);
+  const lod = <T extends THREE.Material>(m: T, level: 'near' | 'far', band: { near: number; far: number } = AMBIENT_LOD): T => {
+    const l = lodMaterial(m, level, band);
     lodMats.push(l);
     return l;
   };
@@ -471,15 +454,18 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     parts[k] = new Batch(proxyOf(k), lod(KIT[k].mat, 'far'), kitPools[k].mesh.instanceMatrix.count, KIT[k].shadow);
   }
 
-  // Street lamp: a slim pole, an arm reaching over the road, a housing and a sodium lens underneath.
+  // Street lamp: a post from the kit (kits.py lamp_post: a cast base, a tapered shaft, a bracket arm and the lantern's
+  // housing; lantern_post for the plazas' lanterns, a cage on top), and a sodium lens under the housing.
   const lampCap = blocks * LAMP_OFFSETS.length * 2 + 64 * PLAZA_LAMPS;
-  const poleGeo = new THREE.CylinderGeometry(0.09, 0.14, 1, 8);
-  // A pole's round shaft draws near the eye (lod.ts); farther off a square post of its size stands in for it, which
-  // still reads as the street's line of lamp posts from home.
+  const poleGeo = kitShared('lamp_post');
+  const lanternGeo = kitShared('lantern_post');
+  // The kit post draws near the eye (lod.ts); farther off a square post of its size and a box for its arm stand in, which
+  // still read as the street's line of lamp posts from home.
   const poles = new Batch(poleGeo, M.darkMetal, lampCap);
+  const lanterns = new Batch(lanternGeo, M.darkMetal, lampCap);
   const poleFarGeo = new THREE.BoxGeometry(0.23, 1, 0.23);
-  const polesFar = new Batch(poleFarGeo, lod(M.darkMetal, 'far'), lampCap, false);
-  const arms = new Batch(box, M.darkMetal, lampCap, false);
+  const polesFar = new Batch(poleFarGeo, lod(M.darkMetal, 'far', LAMP_LOD), lampCap, false);
+  const arms = new Batch(box, lod(M.darkMetal, 'far', LAMP_LOD), lampCap, false);
   // A bankrupt firm's court lanterns go out with its towers (lightsout.ts).
   const lensMat = lightsOutEmitter(new THREE.MeshBasicMaterial({ color: 0xffffff }));
   const lenses = new Batch(box, lensMat, lampCap, false);
@@ -488,7 +474,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const bollardLights = new Batch(bollardGeo, lensMat, 64 * BOLLARDS, false);
 
   /** Everything filled by a build (the near kit's sources among them). */
-  const batches = [...Object.values(walls), ...Object.values(cuts), ...Object.values(parts), ...Object.values(kitPools), poles, polesFar, arms, lenses, bollards, bollardLights];
+  const batches = [...Object.values(walls), ...Object.values(cuts), ...Object.values(parts), ...Object.values(kitPools), poles, lanterns, polesFar, arms, lenses, bollards, bollardLights];
   /** What the view draws city-wide: everything but the near kit's sources. */
   const drawn = [...Object.values(walls), ...Object.values(cuts), ...Object.values(parts), polesFar, arms, lenses, bollards, bollardLights];
   for (const [k, b] of Object.entries(walls)) b.mesh.name = `wall:${k}`;
@@ -645,10 +631,15 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   // The near level: the roof kit and the lamp poles and arms, in every pass, for the blocks near the eye.
   const nearCopies = [
     ...HEAVY.map((k) => new Copy(KIT[k].geo, lod(KIT[k].mat, 'near'), [kitPools[k]], 0, { shadow: KIT[k].shadow, colour: true, name: k })),
-    new Copy(poleGeo, lod(M.darkMetal, 'near'), [poles], 0, { shadow: true, name: 'lamp-pole' }),
+  ];
+  // The lamp posts' near level, for the blocks within their own shorter band.
+  const lampCopies = [
+    new Copy(poleGeo, lod(M.darkMetal, 'near', LAMP_LOD), [poles], 0, { shadow: true, name: 'lamp-pole' }),
+    new Copy(lanternGeo, lod(M.darkMetal, 'near', LAMP_LOD), [lanterns], 0, { shadow: true, name: 'lantern-pole' }),
   ];
 
   const near = new Uint8Array(boxes.length);
+  const nearLamps = new Uint8Array(boxes.length);
   const ao = new Uint8Array(boxes.length);
   const shadow = new Uint8Array(boxes.length);
   const nearEye = new THREE.Vector3(Infinity, 0, 0);
@@ -679,6 +670,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       nearEye.copy(eye);
       if (select(near, (b) => boxDistance(eye, b) < AMBIENT_LOD.far + NEAR_STEP) || force) {
         for (const c of nearCopies) c.fill(near);
+        shadowChanged = true;
+      }
+      if (select(nearLamps, (b) => boxDistance(eye, b) < LAMP_LOD.far + NEAR_STEP) || force) {
+        for (const c of lampCopies) c.fill(nearLamps);
         shadowChanged = true;
       }
     }
@@ -733,7 +728,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       const blk = blockOf(x, z);
       used[blk] = 1;
       boxes[blk].maxY = Math.max(boxes[blk].maxY, h + 0.5);
-      poles.add(x, h / 2, z, 1, h, 1, undefined, 0, blk);
+      // The kit's arm reaches along +x: turned to the street it lights.
+      if (dir === 'none') lanterns.add(x, h / 2, z, 1, h, 1, undefined, 0, blk);
+      else poles.add(x, h / 2, z, 1, h, 1, undefined, dir === 'z' ? -Math.PI / 2 : 0, blk);
       polesFar.add(x, h / 2, z, 1, h, 1, undefined, 0, blk);
       const reach = dir === 'none' ? 0 : 1.3;
       const ax = dir === 'x' ? reach : 0;
@@ -821,7 +818,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     setPlazas: build,
     update: (eye, target) => update(eye, target),
     lod: () => ({
-      near: nearCopies.reduce((n, c) => n + c.count, 0),
+      near: [...nearCopies, ...lampCopies].reduce((n, c) => n + c.count, 0),
       shadow: shadowCopies.reduce((n, c) => n + c.count, 0),
       ao: aoCopies.reduce((n, c) => n + c.count, 0),
     }),
@@ -849,11 +846,11 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       };
     },
     dispose() {
-      for (const g of [box, stackGeo, prismGeo, treeGeo, poleGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
+      for (const g of [box, stackGeo, prismGeo, treeGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
       for (const b of [...Object.values(walls), ...Object.values(cuts)]) b.mesh.geometry.dispose();
       for (const m of [...Object.values(facadeMats), trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, treeMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
       for (const b of batches) b.mesh.dispose();
-      for (const c of [...shadowCopies, ...aoCopies, ...nearCopies]) c.dispose();
+      for (const c of [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies]) c.dispose();
     },
   };
 }

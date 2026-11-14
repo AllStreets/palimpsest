@@ -622,6 +622,38 @@ def car():
     return p
 
 
+def lamp_post():
+    """A street lamp post, unit height (y -0.5..0.5, grid.ts scales it to 8 m), its plan in metres: a cast base with a
+    collar, a tapered shaft, a bracket arm reaching 1.3 m along +x and the lantern's housing over the lens at its end."""
+    p = Piece()
+    H = 8.0
+    u = lambda m: -0.5 + m / H
+    # The base: a square plinth, then a round cast foot swelling into a collar, and the shaft rising from it.
+    # Kept lean (kits.glb has a size cap): six-sided turnings, one arm box, one housing box.
+    p.merge(lathe([(0.2, u(0.0)), (0.2, u(0.6)), (0.165, u(0.86)), (0.125, u(0.95))], 6))
+    p.merge(lathe([(0.125, u(0.95)), (0.095, u(3.5)), (0.07, u(7.6)), (0.078, u(7.74)), (0.0, u(7.9))], 6))
+    # The bracket: an arm leaving the shaft just under its top, rising a little to the housing.
+    p.merge(box(0.0, 1.3, u(7.8), u(7.92), -0.055, 0.055))
+    # The housing: a shallow cowl over the lens (grid.ts lays the lens itself, emissive, just under it).
+    p.merge(box(0.86, 1.76, u(7.86), u(8.04), -0.22, 0.22))
+    return p
+
+
+def lantern_post():
+    """A plaza lantern post, unit height like lamp_post: the same base and a shorter taper, and on top a four-sided lantern
+    cage with a pyramidal cap and a finial, round the lens grid.ts lays inside it."""
+    p = Piece()
+    H = 8.0
+    u = lambda m: -0.5 + m / H
+    p.merge(lathe([(0.2, u(0.0)), (0.2, u(0.6)), (0.165, u(0.86)), (0.125, u(0.95))], 6))
+    p.merge(lathe([(0.125, u(0.95)), (0.09, u(3.5)), (0.08, u(7.4)), (0.11, u(7.5)), (0.11, u(7.62))], 6))
+    # The cage: two crossed slim frames (four uprights seen from any side) and a pyramidal cap to a point.
+    p.merge(box(-0.28, 0.28, u(7.62), u(8.28), -0.02, 0.02))
+    p.merge(box(-0.02, 0.02, u(7.62), u(8.28), -0.28, 0.28))
+    p.merge(frustum(0.34, 0.0, u(8.28), u(8.7), top=False, n=4, rot=0.0))
+    return p
+
+
 def bay():
     """One storey of a three-sided oriel bay, a unit box: angled cheeks, a flat front, a sill course at its foot."""
     p = Piece()
@@ -918,6 +950,8 @@ def build():
     add('rooftop_unit', rooftop_unit(), True)
     add('car', car(), True)
     add('bay', bay(), True)
+    add('lamp_post', lamp_post())
+    add('lantern_post', lantern_post())
     add('bay_glass', bay_glass())
     add('chamfer_box', chamfer_box(0.12))
     add('round_box', round_box(0.16))

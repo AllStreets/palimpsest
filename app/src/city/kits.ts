@@ -140,6 +140,8 @@ export function registerFallbackKits(): void {
     }
   }
   for (const b of BOXES) if (!pieces.has(b)) pieces.set(b, white(new THREE.BoxGeometry(1, 1, 1)));
+  // The lamp posts: a plain tapered shaft stands in (grid.ts scales it to the lamp's height).
+  for (const l of ['lamp_post', 'lantern_post']) if (!pieces.has(l)) pieces.set(l, white(new THREE.CylinderGeometry(0.09, 0.14, 1, 8)));
 }
 
 /** True when the city is standing on the plain stand-ins (registerFallbackKits) rather than the Blender kits. */

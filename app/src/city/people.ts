@@ -133,6 +133,8 @@ export interface PeopleDeps {
   onRelease?(): void;
   /** The university as it stands (campus/index.ts): trips to and from it go by the gate; null before the engine took the plot. */
   campus?(): CampusWay | null;
+  /** The street floor under a point (ambient.ts floorAt): the pavements stand a kerb up. */
+  floorAt?(x: number, z: number): number;
 }
 
 /** The campus as a trip meets it: its origin, half the square it keeps, and the way from the street up the stair to the gate. */
@@ -295,8 +297,10 @@ function along(path: ReadonlyArray<V3>, s: number, out: { p: V3; h: number }): v
   }
 }
 
-/** Where a walker stands at a point on the ground: the road bridges' decks are a little proud of the streets (vehicles.ts roadY). */
-const groundY = (x: number): number => (inChannel(x, 2) ? 0.08 : 0);
+/** The street floor under a point (ambient.ts floorAt, from createPeople's deps): the pavements' step up on the kerbs. */
+let floorOf: (x: number, z: number) => number = () => 0;
+/** Where a walker stands at a point on the ground: the road bridges' decks are a little proud of the streets (vehicles.ts roadY), the pavements a kerb up. */
+const groundY = (x: number, z: number): number => Math.max(inChannel(x, 2) ? 0.08 : 0, floorOf(x, z));
 
 /** How far right of a street's centre line a walker keeps: the middle of the pavement (ambient.ts PAVE). */
 const PAVEMENT = 6.0;
@@ -325,7 +329,7 @@ function standPoint(p: V3): V3 {
  * height is read under it.
  */
 function pavementPath(path: ReadonlyArray<V3>): V3[] {
-  if (path.length < 2) return path.map((p) => [p[0], Math.max(p[1], groundY(p[0])), p[2]] as V3);
+  if (path.length < 2) return path.map((p) => [p[0], Math.max(p[1], groundY(p[0], p[2])), p[2]] as V3);
   return path.map((p0, i) => {
     const p = i === 0 || i === path.length - 1 ? standPoint(p0) : p0;
     const a = path[Math.max(0, i - 1)];
@@ -341,7 +345,7 @@ function pavementPath(path: ReadonlyArray<V3>): V3[] {
     const k = i > 0 && i < path.length - 1 ? clamp(1 / Math.max(Math.abs(dx), Math.abs(dz), 1e-3), 1, 1.5) : 1;
     const x = p[0] - dz * PAVEMENT * k;
     const z = p[2] + dx * PAVEMENT * k;
-    return [x, Math.max(p[1], groundY(x)), z] as V3;
+    return [x, Math.max(p[1], groundY(x, z)), z] as V3;
   });
 }
 
@@ -357,7 +361,8 @@ function kerbSpot(start: V3, net: Network | null): { spot: V3; heading: number }
   const out = Math.abs(Math.abs(dx) - 6.4) < Math.abs(Math.abs(dz) - 6.4) ? { x: Math.sign(dx) || 1, z: 0 } : { x: 0, z: Math.sign(dz) || 1 };
   // Clear of the cab's body however it comes in to the kerb point: 2.3 m onto the pavement and 1.5 m along the
   // street, so it stands beside the cab's doors rather than at its nose or tail.
-  const spot: V3 = [k.x + out.x * 2.3 + out.z * 1.5, groundY(k.x), k.z + out.z * 2.3 + out.x * 1.5];
+  const spot: V3 = [k.x + out.x * 2.3 + out.z * 1.5, 0, k.z + out.z * 2.3 + out.x * 1.5];
+  spot[1] = groundY(spot[0], spot[2]);
   // Facing the road.
   return { spot, heading: Math.atan2(-out.z, -out.x) };
 }
@@ -670,6 +675,7 @@ export function campusTrip(trip: Trip, c: CampusWay | null): Trip {
 }
 
 export function createPeople(deps: PeopleDeps): People {
+  floorOf = (x, z) => deps.floorAt?.(x, z) ?? 0;
   const now = deps.now ?? (() => Date.now());
   const hour = deps.hour ?? (() => new Date().getHours() + new Date().getMinutes() / 60);
   const group = new THREE.Group();
@@ -845,7 +851,7 @@ export function createPeople(deps: PeopleDeps): People {
       return;
     }
     [f.x, , f.z] = standPoint([t.to.x, 0, t.to.z]);
-    f.y = groundY(f.x);
+    f.y = groundY(f.x, f.z);
   }
 
   /** Sets a figure up for the leg it is on: walking, or waiting where its vehicle will call. */
@@ -863,6 +869,7 @@ export function createPeople(deps: PeopleDeps): People {
       const at = { p: [0, 0, 0] as V3, h: f.heading };
       along(f.path, f.s, at);
       [f.x, f.y, f.z] = at.p;
+      if (!leg.exact) f.y = Math.max(f.y, groundY(f.x, f.z));
       f.heading = at.h;
       return;
     }
@@ -925,6 +932,8 @@ export function createPeople(deps: PeopleDeps): People {
       const at = { p: [f.x, f.y, f.z] as V3, h: f.heading };
       along(f.path, f.s, at);
       [f.x, f.y, f.z] = at.p;
+      // Under foot, step by step: up the kerb on the pavement, down through the dropped kerb and across the road.
+      if (leg.mode === 'walk' && !(leg as Leg).exact) f.y = groundY(f.x, f.z);
       f.heading = turnTo(f.heading, at.h, Math.min(1, dt * 8));
       f.walking = Math.min(1, f.walking + dt * 3);
       f.phase += strideRate(speed, STRIDE, k) * dt;

@@ -25,9 +25,9 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { BANKS, BRIDGE_DECK, BRIDGES, PIER_HALF, PIERS, QUAY, RIVER, type Pier } from '../../../shared/commute.js';
 import { LAYER, setLayers } from './lod.js';
-import { materials, texture } from './materials';
+import { materials, texture } from './materials.js';
 import { chunkAt, chunkLod, chunks, waterSettings, type Chunk } from './river-lod.js';
-import { SKY_GLSL, SUN_DIRECTION } from './sky';
+import { SKY_GLSL, SUN_DIRECTION } from './sky.js';
 
 /** The water's surface, metres below the quays. */
 export const WATER_Y = -6.2;
@@ -41,14 +41,9 @@ const LENGTH = 16000;
 const PARAPET_H = 0.95;
 const PARAPET_W = 0.55;
 /** The granite coping along each quay's edge, from the wall's face inland: the ground stops where it starts. */
-export const COPING = 2.4;
-/** Quay lamps stand this far back from the wall's face, one every QUAY_LAMP_STEP metres. */
-export const QUAY_LAMP_IN = 3.2;
-export const QUAY_LAMP_STEP = 30;
-/** Quay lamps run this far up and down the river: the length of the detailed city. */
-export const QUAY_LAMP_REACH = 1800;
-/** No quay lamp stands within this of a bridge's centre line or a pier's stair. */
-export const QUAY_LAMP_CLEAR = 18;
+// The coping's width and the quay lamps' spacing are the river's layout (shared/commute.ts), read by the street floor too.
+export { COPING, QUAY_LAMP_CLEAR, QUAY_LAMP_IN, QUAY_LAMP_REACH, QUAY_LAMP_STEP } from '../../../shared/commute.js';
+import { COPING, QUAY_LAMP_CLEAR, QUAY_LAMP_IN, QUAY_LAMP_REACH, QUAY_LAMP_STEP } from '../../../shared/commute.js';
 /** The deck's top: a hair above the street, so the road runs on without a step. */
 const DECK_TOP = 0.08;
 /** Lamp light, as HDR colour: warm metal halide on the quays and bridges, a little whiter than the sodium streets. */

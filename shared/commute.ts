@@ -34,6 +34,15 @@ export const BRIDGE_DECK = 20;
  * are given to the quay (no buildings stand there).
  */
 export const QUAY = 12;
+/** The quay wall's granite coping, this wide inland from the wall's face (river.ts). */
+export const COPING = 2.4;
+/** Quay lamps stand this far back from the wall's face, one every QUAY_LAMP_STEP metres. */
+export const QUAY_LAMP_IN = 3.2;
+export const QUAY_LAMP_STEP = 30;
+/** Quay lamps run this far up and down the river: the length of the detailed city. */
+export const QUAY_LAMP_REACH = 1800;
+/** No quay lamp stands within this of a bridge's centre line or a pier's stair. */
+export const QUAY_LAMP_CLEAR = 18;
 
 /**
  * Each bridge carries its road this far inland past the quay on both sides,

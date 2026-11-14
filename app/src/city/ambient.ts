@@ -7,6 +7,7 @@ import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
 import { LAMP_EDGE, LAMP_OFFSETS, PITCH } from './lots.js';
 import { HEADLAMP } from './post.js';
+import { streetFloor } from './street.js';
 
 /**
  * The city's ambient life (Task 32): unlabelled traffic on the street grid
@@ -2334,6 +2335,8 @@ export interface Ambient {
   people(): AmbientPerson[];
   /** The street lamp that lights a point most (direction to it and strength), as the crowd is lit; people.ts lights the personas by it. */
   lampLight(x: number, y: number, z: number, out: [number, number, number, number]): void;
+  /** The street floor's height under a point (street.ts): the kerb's on a pavement, 0 on a road or a plaza; people.ts stands the personas on it. */
+  floorAt(x: number, z: number): number;
   view(camera: THREE.Camera): AmbientView;
   /** Holds the clock (captures). */
   hold(on: boolean): void;
@@ -2384,6 +2387,17 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   let walk: Walkway;
   let cars: Car[] = [];
   let people: Person[] = [];
+  /** The street floor under a point: the pavement's step up, sinking to the plane over a plaza or a court as the kerb tiles do (street.ts floorStands). */
+  function floorAt(x: number, z: number): number {
+    let stands = 1;
+    for (const q of plazas) {
+      const r = q.court ?? PLAZA_R;
+      const d = q.court !== undefined ? Math.max(Math.abs(x - q.x), Math.abs(z - q.z)) : Math.hypot(x - q.x, z - q.z);
+      const t = clamp((d - (r - 1)) / 4, 0, 1);
+      stands = Math.min(stands, t * t * (3 - 2 * t));
+    }
+    return stands > 0 ? streetFloor(x, z) * stands : 0;
+  }
   /** Plaza walkers' lanterns and lamp posts, which they walk round. */
   let posts: V2[] = [];
   /** The street lamps, by block, as they stand now. */
@@ -3663,6 +3677,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       const walking = p.state === 'walking' || p.state === 'crossing';
       const wv = walking ? clamp(p.v / Math.max(0.3, p.pace * 0.5), 0, 1) : 0;
       const k = p.height / 1.75;
+      // On the ground (not a platform) a walker stands on the street floor: up the kerb on the pavements, down at the crossings.
+      if (p.y < 0.2) p.y = floorAt(p.x, p.z);
       pos.set(p.x, p.y, p.z);
       q.setFromAxisAngle(up, -p.yaw);
       m4.compose(pos, q, scl.set(k * (0.94 + 0.06 * p.build), k, k * p.build));
@@ -3778,6 +3794,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     parked: () => parked.map((c) => ({ x: c.x, z: c.z, yaw: c.yaw, model: c.model, paint: [...c.paint] as [number, number, number], kerb: c.kerb })),
     people: () => people.map((p) => ({ id: p.id, state: p.state, x: p.x, z: p.z, yaw: p.yaw, speed: p.v, phase: p.phase % (Math.PI * 2), cadence: p.cadence, height: p.height, build: p.build, coat: [...p.coat] as [number, number, number], group: p.group })),
     lampLight: (x, y, z, out) => lampLight(lamps, x, y, z, out),
+    floorAt,
     view(camera) {
       void camera;
       let meshes = 0;

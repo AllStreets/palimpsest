@@ -32,6 +32,24 @@ export const PITCH = BLOCK + STREET;
 export const LAMP_EDGE = BLOCK / 2 + 2;
 /** Lamp positions along a block edge, from the block centre. */
 export const LAMP_OFFSETS = [-24, -8, 8, 24];
+/** Inside this radius the street grid gives way to an open paved plaza with no street lamps (grid.ts lays it; the floor paints it). */
+export const PLAZA_RADIUS = 72;
+/** Lanterns ring each plaza at this radius. */
+export const PLAZA_LAMP_RING = 66;
+export const PLAZA_LAMPS = 24;
+/** Lit bollards ring each district's plinth at this radius. */
+export const BOLLARD_RING = 36;
+export const BOLLARDS = 20;
+/**
+ * Lanterns line a quarter's court this far in from its edge, every
+ * COURT_LANTERN_STEP metres out to COURT_LANTERN_REACH either side of the
+ * centre line (past it the towers stand).
+ */
+export const COURT_LANTERN_INSET = 5;
+export const COURT_LANTERN_STEP = 16;
+export const COURT_LANTERN_REACH = 32;
+/** No lantern stands within this of the court's centre line on its south edge, where the firm's name plinth is. */
+export const COURT_PLINTH_CLEAR = 20;
 
 /** A small deterministic generator, seeded per block so adding a district never reshuffles the rest of the city. */
 export function rng(seed: number): () => number {

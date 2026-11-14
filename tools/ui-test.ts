@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inflateSync } from 'node:zlib';
 
 import { chromium } from 'playwright';
+import * as THREE from 'three';
 import type { Browser, Page } from 'playwright';
 
 import { repoMarketDefaults } from '../shared/market-rules.js';
@@ -2413,6 +2414,46 @@ async function reconnectChecks(page: Page, restart: (whileDown: () => Promise<vo
 /** The most river triangles the main pass may draw from the home framing. */
 const RIVER_HOME_TRIANGLES = 120_000;
 
+// ---------------------------------------------------------------- the street floor (Phase 5 Task 1)
+
+/** The kerb's top must read this much lighter than the gutter beside it in the street-kerb view (0 to 255). */
+const KERB_EDGE_CONTRAST = 24;
+/** tools/perf.ts street-kerb: an eye at 1.6 m on the kerb of the README street looking up it. */
+const STREET_KERB_VIEW: [[number, number, number], [number, number, number]] = [[196.3, 1.6, -150], [197.5, 0.9, -74]];
+
+/** Where a world point lands on the screen in the city's camera (camera.ts: 36 degree fov) at `eye` looking at `target`. */
+function screenPoint(eye: number[], target: number[], p: [number, number, number]): [number, number] {
+  const cam = new THREE.PerspectiveCamera(36, VIEWPORT.width / VIEWPORT.height, 0.5, 20000);
+  cam.position.set(eye[0], eye[1], eye[2]);
+  cam.lookAt(target[0], target[1], target[2]);
+  cam.updateMatrixWorld();
+  const v = new THREE.Vector3(p[0], p[1], p[2]).project(cam);
+  return [Math.round(((v.x + 1) / 2) * VIEWPORT.width), Math.round(((1 - v.y) / 2) * VIEWPORT.height)];
+}
+
+/**
+ * The street floor: the kerb stands as a lit edge in the street-kerb view
+ * (its top, granite under the lamps, lighter than the wet gutter beside it),
+ * and the kerb tiles draw in one call per pass.
+ */
+async function streetChecks(page: Page): Promise<void> {
+  const [eye, target] = STREET_KERB_VIEW;
+  await setView(page, eye, target);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(1500);
+  const lum = (c: [number, number, number]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  // Six metres ahead along the kerb at x = 196: a point on the kerb stone's top and one in the gutter beside it.
+  const top = screenPoint(eye, target, [196.0 - 0.12, 0.15, -144]);
+  const gutter = screenPoint(eye, target, [196.0 + 0.22, 0.0, -144]);
+  const topL = lum(await pixel(page, top[0], top[1]));
+  const gutterL = lum(await pixel(page, gutter[0], gutter[1]));
+  check(topL - gutterL >= KERB_EDGE_CONTRAST, `the kerb shows a lit edge in street-kerb (its top ${topL.toFixed(0)} against the gutter ${gutterL.toFixed(0)}, at least ${KERB_EDGE_CONTRAST} apart)`);
+  const b = (await debug(page, (d) => (d as unknown as { breakdown(detail: boolean): Promise<Record<string, Partial<Record<string, { calls: number; triangles: number }>>>> }).breakdown(true))) as Record<string, Partial<Record<string, { calls: number; triangles: number }>>>;
+  const kerbs = b['ground:kerbs'];
+  const perPass = kerbs ? Object.values(kerbs).map((t) => t!.calls) : [];
+  check(perPass.length > 0 && perPass.every((n) => n === 1), `the kerb tiles draw in one instanced call per pass from the street (${JSON.stringify(kerbs ?? null)})`);
+}
+
 async function riverChecks(page: Page): Promise<void> {
   type RV = { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   type R = { river(): RV };
@@ -2894,7 +2935,8 @@ async function main(): Promise<void> {
     // UI_ONLY=autonomy: his autonomy in the brief, Settings, the district page and a job page (Task 31's rounds).
     // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
     // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=street: the street floor's checks alone (Phase 5 Task 1's rounds).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -2924,6 +2966,8 @@ async function main(): Promise<void> {
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(2500);
         await schoolTowerChecks(page, 'medium');
+      } else if (process.env.UI_ONLY === 'street') {
+        await streetChecks(page);
       } else if (process.env.UI_ONLY === 'budget') {
         await standFixture(page);
         await campusChecks(page, 'high');
@@ -2937,6 +2981,7 @@ async function main(): Promise<void> {
         console.log(`info  budget medium: ${JSON.stringify(await homeBreakdown(page, process.env.UI_BUDGET === 'detail'))}`);
         await page.screenshot({ path: join(SHOTS, 'home-medium.png') });
       } else {
+        await streetChecks(page);
         await spireChecks(page);
         await revivalChecks(page);
         await ribbonChecks(page);

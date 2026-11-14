@@ -156,9 +156,19 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     ['quarter-close', [quick.origin.x + 60, 18, quick.origin.z + 70], [quick.origin.x, 14, quick.origin.z]],
     ['exchange', [30, 12, 82], [0, 24, -6]],
     ['river', [-353, 2.6, 11.5], [-368, -3, 320]],
-    ['street', [118, 2.2, 52], [118, 14, -260]],
+    // The README's street still (tools/capture.ts, the life views): an eye on the pavement looking up the street.
+    ['street', [195.4, 1.62, -145], [207, 1.45, -30]],
     ['skyline-mid', [560, 140, 620], [80, 40, 40]],
     ['horizon', [-120, 60, 520], [-600, 40, -600]],
+    // The hero (tools/capture.ts HERO on the sample): low and looking up at the skyline at dusk (ruling 7).
+    ['hero', [700, 70, 700], [0, 170, 80]],
+    // The street floor (Task 1) on the README street (along z at x = 200, its kerbs at 196 and 204) between the junctions
+    // at z = -200 and -120, clear of every plaza, the elevated line and its station: an eye at 1.6 m on the kerb looking up the
+    // street, 0.9 m over the gutter, a crossing from its corner, and 60 m over the junction.
+    ['street-kerb', [196.3, 1.6, -150], [197.5, 0.9, -74]],
+    ['street-gutter-close', [197.3, 0.9, -140], [196.1, 0, -137.2]],
+    ['street-junction', [193.5, 1.8, -127], [204, 0.2, -116]],
+    ['street-above', [230, 60, -90], [200, 0, -120]],
   ];
 }
 
@@ -240,7 +250,8 @@ async function main(): Promise<void> {
     const open = async (q: string): Promise<void> => {
       await page.goto(`http://127.0.0.1:${PORT}/?${q}`);
       await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 60_000 });
-      await page.addStyleTag({ content: '.runhead, .plates { display: none !important; }' });
+      // The stills are of the city: no running head, no plates, and not the morning's brief sheet over the left half.
+      await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief { display: none !important; }' });
       await page.waitForTimeout(2500);
     };
     for (const tier of tiers) {

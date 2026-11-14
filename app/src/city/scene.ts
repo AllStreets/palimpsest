@@ -2,12 +2,12 @@ import * as THREE from 'three';
 
 import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
-import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types';
+import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types.js';
 import { batchPieces, type Batched } from './batch.js';
 import { plainBatch } from './plain-batch.js';
 import { schoolBatch, type SchoolBatch } from './school-towers.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
-import { createCameraRig, type ScriptPose } from './camera';
+import { createCameraRig, type ScriptPose } from './camera.js';
 import { CAMPUS_INSPECT, createCampus, type Campus, type CampusAnchors } from './campus/index.js';
 import { campusLife, EMPTY_LIFE, type CampusLife, type CampusLifeView, type LifeState } from './campus/life.js';
 import type { ObservatoryState, ObservatoryView } from './campus/observatory.js';
@@ -19,31 +19,31 @@ import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
 import type { BoardJob, Exchange } from './exchange.js';
-import { createGrid } from './grid';
-import { createGround, makePlinth } from './ground';
-import { createPlates, type Plate } from './labels';
-import type { Lot } from './lots';
-import { configureMaterials, texturesSettled } from './materials';
+import { createGrid } from './grid.js';
+import { createGround, makePlinth } from './ground.js';
+import { createPlates, type Plate } from './labels.js';
+import type { Lot } from './lots.js';
+import { configureMaterials, texturesSettled } from './materials.js';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
-import { qualityGovernor, type DropReading } from './governor';
-import { setFacadeRooms } from './facade';
+import { qualityGovernor, type DropReading } from './governor.js';
+import { setFacadeRooms } from './facade.js';
 import { lightsOutTree } from './lightsout.js';
 import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
 import { quarterBuildKey, type QuarterShow } from './quarters.js';
-import { createPost, EXPOSURE, FLICKER } from './post';
+import { createPost, EXPOSURE, FLICKER } from './post.js';
 import { createRiver } from './river.js';
 import { createTransit, type TransitView } from './transit.js';
 import { createVehicles, type Vehicles } from './vehicles.js';
 import { createPeople, type People } from './people.js';
-import type { Agent, Trip } from '../../../shared/types';
+import type { Agent, Trip } from '../../../shared/types.js';
 import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza, type CabPose } from './ambient.js';
 import { extentBlocks, type Network } from '../../../shared/commute.js';
-import { makeScaffold, type Scaffold } from './scaffold';
+import { makeScaffold, type Scaffold } from './scaffold.js';
 import { createMilestones, findTowerPiece, type MilestoneShow, type Milestones, type TowerPiece } from './milestones.js';
 import type { TowerMaterials } from './tower/kit.js';
-import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky';
-import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view';
+import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky.js';
+import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view.js';
 
 /** What a click in the city landed on: a district's tower (a floor, or its root), an agent's tower in a quarter, or a firm's plinth. */
 export type PickHit =
@@ -397,8 +397,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const sunNeedsUpdate = (): void => {
     sun.shadow.needsUpdate = true;
   };
-  const ground = createGround();
-  scene.add(ground.mesh);
+  const ground = createGround(quality);
+  scene.add(ground.group);
   const grid = createGrid(quality, { sun: SUN_DIRECTION, half: SHADOW_HALF, offset: SUN_OFFSET, near: 10, far: 1600 });
   scene.add(grid.group);
   // The river, its quays, bridges and piers (river.ts); its water is drawn by a pass straight after the scene.
@@ -436,6 +436,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         vehicles: () => vehicles,
         net: () => transit.network(),
         lampLight: (x, y, z, out) => ambient?.lampLight(x, y, z, out),
+        floorAt: (x, z) => ambient?.floorAt(x, z) ?? 0,
         describe: opts.describeTrip,
         coatOf: opts.coatOf,
         onActivate: (agentId) => {
@@ -618,7 +619,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     // campus's block is cleared like a quarter's court but never paved: its terrace is its own ground.
     const plazas: CollarPlaza[] = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z })), ...(campusOrigin ? [campusPlaza(campusOrigin)] : [])];
     grid.setPlazas(plazas);
-    ground.setPlazas(plazas.filter((p) => !p.terrace));
+    // The terrace goes in too: the kerb tiles sink to the plane under it, though the ground is not paved there (street.ts).
+    ground.setPlazas(plazas);
     // The ambient traffic keeps off every plaza, court and site; the crowd walks the districts' and the civic plaza's.
     ambientPlazas = [
       { x: 0, z: 0, kind: 'civic' },
@@ -1096,6 +1098,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin), ...(campusOrigin ? [campusOrigin] : [])];
     if (standing.length && transit.set({ blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) })) {
       sun.shadow.needsUpdate = true;
+      // The asphalt darkens with oil under the cab ranks' bays (transit.ts cabRank: three bays of 6.5 m).
+      ground.setRanks((transit.network()?.ranks ?? []).map((r) => ({ x: r.x, z: r.z, dir: r.dir, length: 19.5 })));
       layVehicles();
     }
     // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
@@ -1495,7 +1499,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ['vehicles', vehicleRoot],
     ['traffic', ambientRoot],
     ['people', peopleRoot],
-    ['ground', ground.mesh],
+    ['ground', ground.group],
     ['sky', sky.dome],
     ['construction', field.group],
     ['quarters', quarterBatch?.group ?? new THREE.Object3D()],
@@ -1622,6 +1626,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     followShadow();
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
     if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
+    ground.update(camera.position);
     if (districtLod()) sun.shadow.needsUpdate = true;
     campus?.update(dt, clock.elapsedTime, camera.position);
     campusLiving?.update(dt, clock.elapsedTime);
