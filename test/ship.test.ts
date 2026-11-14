@@ -891,7 +891,11 @@ test('a floor read inside its follow-up window is read again', async () => {
   await watchRevertsFor(getRepo(FULL)!, t0, { force: true });
   assert.equal(kinds('merge.followup').length, 0);
   commitOn(w, 'widgets.md', 'Fix the widgets heading');
-  await watchRevertsFor(getRepo(FULL)!, t0 + 1, { force: true });
+  // The second read happens after the fix exists, as it would for real: a read dated before the
+  // fix's own commit time (git dates to the second) rightly ignores it as not yet made.
+  const t1 = Date.now();
+  assert.ok(t1 < t0 + 14 * 24 * 60 * 60 * 1000, 'still inside the window');
+  await watchRevertsFor(getRepo(FULL)!, t1, { force: true });
   assert.equal(kinds('merge.followup').length, 1);
 });
 
