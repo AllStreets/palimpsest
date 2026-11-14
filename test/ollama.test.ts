@@ -425,7 +425,14 @@ describe('ollama complete', () => {
     const { bodies } = await fakeOllama([{ hang: true }]);
     const ac = new AbortController();
     const pending = ollamaProvider().complete(input({ signal: ac.signal }));
-    setTimeout(() => ac.abort(), 80);
+    // Stop it only once the call is under way, however slow the machine is.
+    const waitStart = Date.now();
+    while (bodies.length === 0) {
+      if (Date.now() - waitStart > 30_000) throw new Error('the call never reached the fake Ollama');
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
     const started = Date.now();
     const err = await pending.then(() => null, (e: unknown) => e);
     assert.match(String((err as Error)?.message), /abort/i);

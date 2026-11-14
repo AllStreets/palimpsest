@@ -111,6 +111,30 @@ interface OllamaLine {
 
 const num = (x: unknown): number => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? x : 0);
 
+/**
+ * `p`, or the signal's reason the moment it aborts. fetch can miss an abort
+ * that lands just as the response's headers arrive: the body read then waits
+ * on a socket that never sends, so a stopped call would hang for good.
+ */
+function orAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+/** A whole unstreamed body, ended by the signal however far the read got; an abandoned body is cancelled. */
+async function bodyText(res: Response, signal: AbortSignal): Promise<string> {
+  try {
+    return await orAbort(res.text(), signal);
+  } catch (err) {
+    if (signal.aborted) res.body?.cancel().catch(() => {});
+    throw err;
+  }
+}
+
 async function post(body: unknown, signal: AbortSignal): Promise<Response> {
   const res = await fetch(`${ollamaBase()}/api/chat`, {
     method: 'POST',
@@ -247,8 +271,8 @@ async function jsonCall(
   if (signal.aborted) ctl.abort();
   const timer = setTimeout(() => ctl.abort(), CALL_MAX_MS);
   try {
-    const res = await post({ model, messages: toOllamaMessages(messages), stream: false, format: 'json', ...(numCtx ? { options: { num_ctx: numCtx } } : {}) }, ctl.signal);
-    const text = await res.text();
+    const res = await orAbort(post({ model, messages: toOllamaMessages(messages), stream: false, format: 'json', ...(numCtx ? { options: { num_ctx: numCtx } } : {}) }, ctl.signal), ctl.signal);
+    const text = await bodyText(res, ctl.signal);
     if (text.length > MAX_LINE_BYTES) throw new Error('ollama answered with too much');
     const body = JSON.parse(text) as OllamaLine;
     if (body.error !== undefined) throw new Error(`ollama: ${String(body.error).slice(0, 500)}`);
@@ -371,8 +395,8 @@ async function completeCall(i: CompleteInput): Promise<CompleteResult> {
   const timer = setTimeout(() => ctl.abort(new Error('ollama complete ran out of time')), Math.max(1, Math.min(i.maxMs, CALL_MAX_MS)));
   try {
     const messages = [{ role: 'system', content: i.system }, ...i.turns.map((t) => ({ role: t.role, content: t.content }))];
-    const res = await post({ model, messages, stream: false, ...(i.schema ? { format: i.schema } : {}) }, ctl.signal);
-    const raw = await res.text();
+    const res = await orAbort(post({ model, messages, stream: false, ...(i.schema ? { format: i.schema } : {}) }, ctl.signal), ctl.signal);
+    const raw = await bodyText(res, ctl.signal);
     if (raw.length > MAX_LINE_BYTES) throw new Error('ollama answered with too much');
     const body = JSON.parse(raw) as OllamaLine;
     if (body.error !== undefined) throw new Error(`ollama: ${String(body.error).slice(0, 500)}`);

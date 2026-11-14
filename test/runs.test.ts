@@ -1065,16 +1065,28 @@ test('a stage that hangs past the run wall deadline is ended by the watcher', as
   useScript({});
   makeRepo();
   const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  let inspecting = false;
   const s = createScheduler(
     deps({
-      runWallMs: 300,
+      runWallMs: 60_000,
       watchMs: 20,
       // An inspection that ignores its signal and never returns.
-      inspect: () => new Promise<Inspection>(() => {}),
+      inspect: () => {
+        inspecting = true;
+        return new Promise<Inspection>(() => {});
+      },
     }).deps,
   );
   await s.tick();
-  await until(() => runsOf(j.id)[0]?.outcome != null, 3000);
+  // The agent finishes however slow the machine is; only then does the clock pass the deadline.
+  await until(() => inspecting, 30_000);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 120_000;
+  try {
+    await until(() => runsOf(j.id)[0]?.outcome != null, 30_000);
+  } finally {
+    Date.now = realNow;
+  }
   await s.idle();
   const [r] = runsOf(j.id);
   assert.equal(r.outcome, 'capped');
