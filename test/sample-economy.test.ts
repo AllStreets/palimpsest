@@ -362,6 +362,49 @@ test('the board clock opens accepted and posted jobs, takes bids one at a time a
   }
 });
 
+test('the sample round never shows closing while bids still climb', async () => {
+  await seed();
+  const off = installTreasury();
+  const late: string[] = [];
+  let t = NOW + 10 * 60_000;
+  const unsubscribe = subscribe((e) => {
+    const d = e.data as { bid?: { jobId: string }; satOut?: { jobId: string } };
+    const id = e.type === 'bid.placed' ? d.bid?.jobId : e.type === 'bid.satOut' ? d.satOut?.jobId : undefined;
+    if (!id) return;
+    const j = listJobs().find((x) => x.id === id);
+    if (!j?.bidsCloseAt || t >= Date.parse(j.bidsCloseAt)) late.push(`${e.type} on ${j?.title ?? id} at ${new Date(t).toISOString()}, closing ${j?.bidsCloseAt}`);
+  });
+  try {
+    // The seeded rounds closed minutes before this clock started: the first tick awards them and adds no answer.
+    const seeded = listJobs({ status: 'bidding' });
+    assert.ok(seeded.length >= 1);
+    for (const j of seeded) assert.ok(Date.parse(j.bidsCloseAt!) <= t, `${j.title} is past its close`);
+    const answers = (id: string) => bidList(id).bids.length + bidList(id).satOut.length;
+    const before = new Map(seeded.map((j) => [j.id, answers(j.id)]));
+    const clock = economyClock({ now: () => t, speed: 20, board: true });
+    const tick = async () => {
+      t += 1000;
+      clock.tick(1000);
+      await clock.idle();
+    };
+    await tick();
+    for (const j of seeded) {
+      const now = listJobs().find((x) => x.id === j.id)!;
+      assert.notEqual(now.status, 'bidding', `${j.title} is awarded once its close has passed (${now.status})`);
+      assert.equal(query({ kind: 'job.awarded', jobId: j.id }).length >= 1, true);
+    }
+    assert.ok(seeded.every((j) => before.get(j.id) === (query({ kind: 'job.awarded', jobId: j.id }).at(-1)?.data as { considered: unknown[]; satOut: unknown[] }).considered.length + (query({ kind: 'job.awarded', jobId: j.id }).at(-1)?.data as { satOut: unknown[] }).satOut.length), 'and the award weighs only the answers that came in before the close');
+    // A round this clock opens takes its answers inside its window, and is awarded at its close at the latest.
+    acceptProposed(listJobs({ status: 'proposed' })[0].id);
+    for (let i = 0; i < 12; i++) await tick();
+    clock.stop();
+    assert.deepEqual(late, [], 'no answer lands on a round at or past its close');
+  } finally {
+    unsubscribe();
+    off();
+  }
+});
+
 test('without the board the clock places no bids, and without the audit it leaves the reading audit reading', async () => {
   await seed();
   let t = NOW;

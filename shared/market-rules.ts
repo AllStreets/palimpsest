@@ -153,6 +153,18 @@ export function legalMove(from: JobStatus, to: JobStatus): boolean {
   return LEGAL_MOVES[from]?.includes(to) ?? false;
 }
 
+/**
+ * Whether a job's round takes an answer at `at`: the job is bidding and its
+ * window has not closed. A bid outside it (after the close, on a job awarded
+ * or reopened) is refused, so a round never reads as closing while its bids
+ * still climb.
+ */
+export function roundOpen(j: Pick<Job, 'status' | 'bidsCloseAt'> | null | undefined, at: number): boolean {
+  if (!j || j.status !== 'bidding' || !j.bidsCloseAt) return false;
+  const close = Date.parse(j.bidsCloseAt);
+  return Number.isFinite(close) && at < close;
+}
+
 // ---------------------------------------------------------------- Phase 3: the audit, the brief, milestones and the tour
 
 /** Credits an audit is assumed to cost when it takes its lease (Phase 3 ruling 5). */

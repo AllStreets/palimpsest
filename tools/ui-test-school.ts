@@ -91,6 +91,9 @@ export async function schoolChecks(page: Page, check: Check, shots: string): Pro
       check(!!n.cause && line.includes(n.cause) && line.endsWith('.'), `the thin ${n.net} names its cause (${line})`);
     }
     check((await sheet.locator('.net-row[data-net="appraiser-pass"] .net-self').count()) === (view.nets.find((n) => n.net === 'appraiser-pass')?.selfSelected ? 1 : 0), 'the appraiser says when its rows are partly self-selected');
+    // The cost head's rows leave out the runs that hit their credit cap, and it says so (Phase 5 Task 17).
+    const bias = (await sheet.locator('.net-row[data-net="appraiser-cost"] .net-bias').textContent().catch(() => null)) ?? '';
+    check(/credit cap/.test(bias) && /reads costs low/.test(bias) && (await sheet.locator('.net-bias').count()) === 1, `the cost head discloses its bias from the capped runs it leaves out (${bias.slice(0, 60)})`);
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(shots, 'school.png') });
 

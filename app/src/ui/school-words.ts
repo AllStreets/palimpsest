@@ -60,6 +60,17 @@ export const NET_LEARNS: Record<NetName, string> = {
   master: 'what you will decide',
 };
 
+/**
+ * What a net's rows leave out that tilts what it learns, said beside it. The
+ * cost head's rows are runs that ended merged, failed or closed (datasets.ts):
+ * a run that hit its credit cap is left out, and those are the dearest runs,
+ * so it learns from the cheaper ones and reads costs low.
+ */
+export const NET_BIAS: Partial<Record<NetName, string>> = {
+  'appraiser-cost':
+    'It leaves out runs that hit their credit cap, the dearest ones, so it reads costs low.',
+};
+
 /** The ledger's shorter line for a net that has a version: its standing and when, the numbers standing in their own cells. */
 export function netRowLine(card: NetCard): string {
   const v = card.current;

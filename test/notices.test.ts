@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { dropText, qualityGovernor } from '../app/src/city/governor.js';
-import { NOTICES_KEPT, noticeStack } from '../app/src/ui/notices.js';
+import { NOTICE_LINES, NOTICE_PLATE, NOTICE_WORDS, NOTICES_KEPT, noticeStack } from '../app/src/ui/notices.js';
 
 test('each notice dismisses alone', () => {
   const s = noticeStack();
@@ -68,4 +68,28 @@ test('the governor reads the recent frames for a drop it did not make', () => {
   assert.ok(r);
   assert.equal(Math.round(r.fps), 50);
   assert.equal(Math.round(r.triangles / 1e6), 9);
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 17: the notices' parked lines
+
+/** WCAG relative luminance of an sRGB colour, 0 to 255 a channel. */
+function luminance([r, g, b]: readonly number[]): number {
+  const lin = (c: number): number => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+test('notices keep contrast over a lit tower: an ink plate at 0.82 opacity', () => {
+  assert.equal(NOTICE_PLATE.alpha, 0.82);
+  // The worst a lit tower can put behind a line is pure white; the plate over it, under the dimmest words, still reads 4.5:1.
+  const over = NOTICE_PLATE.rgb.map((c) => c * NOTICE_PLATE.alpha + 255 * (1 - NOTICE_PLATE.alpha));
+  const ratio = (luminance(NOTICE_WORDS) + 0.05) / (luminance(over) + 0.05);
+  assert.ok(ratio >= 4.5, `${ratio.toFixed(2)}:1`);
+  assert.match(NOTICE_PLATE.css, /^rgba\(18, 16, 24, 0\.82\)$/);
+});
+
+test('a long notice wraps to two lines, then ellipsises', () => {
+  assert.equal(NOTICE_LINES, 2);
 });

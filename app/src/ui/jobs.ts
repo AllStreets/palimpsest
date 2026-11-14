@@ -4,6 +4,7 @@ import { TIER_VALUE } from '../../../shared/market-rules';
 import { api, ApiError, type EngineEvent } from '../api';
 import { placeHref } from '../router';
 import {
+  BOARD_SOURCES,
   bidOrder,
   boardSections,
   cleanText,
@@ -16,6 +17,7 @@ import {
   pct,
   progressWords,
   type Section,
+  sectionCount,
   sectionOf,
   stageOf,
 } from './board';
@@ -862,9 +864,9 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
     const live = new Set<string>();
     for (const s of sections) {
       const x = sectionEl(s);
-      const n = s.jobs.length + s.repos.length;
-      x.count.textContent = s.key === 'halted' && s.repos.length ? `${plural(s.repos.length, 'repo')}${s.jobs.length ? `, ${plural(s.jobs.length, 'job')}` : ''}` : plural(n, 'job');
       const items = [...s.repos.map((r) => haltedRepoRow(r)), ...(s.key === 'proposed' ? proposedRows(s.jobs, live) : s.jobs.map((j) => jobRow(s.key, j)))];
+      // The count says the rows it stands over: grouped proposals are counted as the rows they make.
+      x.count.textContent = sectionCount(s, items.length);
       for (const j of s.jobs) live.add(j.id);
       items.forEach((item, i) => {
         if (x.list.children[i] !== item) x.list.insertBefore(item, x.list.children[i] ?? null);
@@ -986,7 +988,9 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
   const postFoot = el('div', 'post-foot');
   postFoot.append(postBtn, postSaid);
   form.append(formHead, repoRow, field('Title', titleIn), field('Details', bodyIn, 'Optional.'), tierRow, postFoot);
-  sheet.body.append(form);
+  // Where the jobs come from, once, at the board's foot above the form that posts one.
+  const sources = el('p', 'jobs-sources', BOARD_SOURCES);
+  sheet.body.append(sources, form);
 
   function renderForm(): void {
     const open = repos.filter((r) => r.connected).sort((a, b) => shortName(a.fullName).localeCompare(shortName(b.fullName)));

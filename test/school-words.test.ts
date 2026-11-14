@@ -25,6 +25,7 @@ import {
   loraLine,
   lowPowerNote,
   masterGuessLine,
+  NET_BIAS,
   netsOnJob,
   netLine,
   netRowLine,
@@ -263,4 +264,16 @@ test("a school agent's page says where it came from", () => {
   assert.equal(graduatedLine({ examples: 112, arenas: ['arena-harbor-ledger-1'] }, [arena]), 'Taught on 112 verified changes, and raced sealed on the planted bugs arena on tidewater/harbor-ledger.');
   assert.equal(graduatedLine({ examples: 1, arenas: ['gone'] }, []), 'Taught on 1 verified change, and raced sealed on arena gone.');
   for (const s of [bredLine({ generation: 2, commissionedBy: null }, arena, (id) => id), graduatedLine({ examples: 3, arenas: [] }, [])]) noDashes(s);
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 17
+
+test("the school screen discloses the cost head's bias from excluded capped runs", () => {
+  const bias = NET_BIAS['appraiser-cost'] ?? '';
+  // Its rows leave out runs that hit their credit cap (datasets.ts), so it learns from the cheaper runs and reads costs low.
+  assert.match(bias, /credit cap/);
+  assert.match(bias, /low/);
+  assert.ok(!/[—–]|--/.test(bias), 'no dashes');
+  // Only the cost head carries this note; the pass head counts a capped run as nothing, which says nothing either way.
+  assert.deepEqual(Object.keys(NET_BIAS), ['appraiser-cost']);
 });

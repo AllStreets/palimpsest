@@ -31,6 +31,7 @@ import {
   proposalKey,
   QUIET_DAYS,
   reputationScore,
+  roundOpen,
   REVIEWER_SHARE,
   RIBBON_DAYS,
   salePrice,
@@ -276,4 +277,16 @@ test('runs under way are the runs with no end, counted by the pool their model d
   ];
   assert.deepEqual(runsUnderWay(runs, jobs), { total: 4, claude: 2, local: 1, api: 1 });
   assert.deepEqual(runsUnderWay([], []), { total: 0, claude: 0, local: 0, api: 0 });
+});
+
+test('bid.placed outside the current round is refused: a round is open only while bidding and before its close', () => {
+  const close = '2026-11-10T12:02:00.000Z';
+  const at = Date.parse(close);
+  assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: close }, at - 1), true);
+  assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: close }, at), false, 'at the close the round is over');
+  assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: close }, at + 60_000), false);
+  assert.equal(roundOpen({ status: 'awarded', bidsCloseAt: close }, at - 1), false, 'an awarded job takes no bid');
+  assert.equal(roundOpen({ status: 'open', bidsCloseAt: null }, at), false);
+  assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: 'not a time' }, at), false);
+  assert.equal(roundOpen(null, at), false);
 });

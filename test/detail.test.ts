@@ -11,7 +11,9 @@ import { cleanText } from '../app/src/ui/board.js';
 import {
   awardRounds,
   blockRanges,
+  blockText,
   cleanLog,
+  creditsNote,
   dayHeading,
   issueBlocks,
   ledgerTrail,
@@ -310,4 +312,24 @@ test('the verdict line says passed and pushable, or which checks failed', () => 
   assert.equal(verdict(i({ checks: [c('test', 'fail'), c('scope', 'fail'), c('lint', 'pass')] })).text, 'Failed: test, scope');
   assert.equal(verdict(i({ inconclusive: 'the diff is too large for any reviewer' })).text, 'Inconclusive: the diff is too large for any reviewer');
   assert.equal(verdict(i({ checks: [c('test', 'pass')] })).text, 'Failed');
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 17: the screens' parked lines
+
+test('find-in-page reaches emptied diff rows: an emptied block keeps its lines as text', () => {
+  const big = parseDiff(['diff --git a/big.ts b/big.ts', '--- a/big.ts', '+++ b/big.ts', '@@ -0,0 +1,450 @@', ...Array.from({ length: 450 }, (_, i) => `+line ${i} of the custody export`)].join('\n'));
+  const lines = big[0].lines;
+  const [from, to] = blockRanges(lines.length, 200)[1];
+  const text = blockText(lines, from, to);
+  // One line of text per row, in order, so a search in the page finds a row drawn or not.
+  assert.equal(text.split('\n').length, to - from);
+  assert.ok(text.includes(lines[from].text) && text.includes(lines[to - 1].text));
+  assert.ok(!text.includes(lines[from - 1].text) && !text.includes(lines[to]?.text ?? '\u0000'));
+  assert.equal(blockText(lines, 0, 0), '');
+});
+
+test('the credits explanation stands in the page, not in a tooltip only', () => {
+  assert.equal(creditsNote(12.4, 60), 'What the work has cost so far. The firm is paid its price only if the change merges.');
+  assert.equal(creditsNote(61, 60), 'Over its bid: the firm pays the difference from its own books.');
+  assert.equal(creditsNote(3, null), 'What the work has cost so far.');
 });

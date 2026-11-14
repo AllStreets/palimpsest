@@ -27,6 +27,7 @@ import {
   intervalText,
   kindLabel,
   loraLine,
+  NET_BIAS,
   NET_LABEL,
   NET_LEARNS,
   netLine,
@@ -355,6 +356,8 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
     line.append(a, el('span', `net-status s-${n.status}`, STATUS_WORD[n.status]));
     name.append(line, el('p', 'net-learns', `Learns ${NET_LEARNS[n.net] ?? ''}.`), el('p', 'net-line', netRowLine(n)));
     if (n.selfSelected) name.append(el('p', 'net-self', 'Partly self-selected: since the appraiser began moving awards, its rows are the bids it chose.'));
+    const bias = NET_BIAS[n.net];
+    if (bias) name.append(el('p', 'net-self net-bias', bias));
     r.append(name);
     const cur = n.current;
     if (cur) {
@@ -850,7 +853,7 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
       ]);
       title.textContent = label;
       const c = d ?? card;
-      sub.textContent = c ? `${netLine(c)} It learns ${NET_LEARNS[c.net]}.${c.selfSelected ? ' Its rows are partly self-selected: since the appraiser began moving awards, they are the bids it chose.' : ''}` : '';
+      sub.textContent = c ? `${netLine(c)} It learns ${NET_LEARNS[c.net]}.${c.selfSelected ? ' Its rows are partly self-selected: since the appraiser began moving awards, they are the bids it chose.' : ''}${NET_BIAS[c.net] ? ` ${NET_BIAS[c.net]}` : ''}` : '';
       if (d) slots.page(JSON.stringify(d), () => netPage(d));
       else if (card && !trouble.hidden) slots.page('', () => null);
       else if (card) slots.page(JSON.stringify(['card', card]), () => netPage({ ...card, versions: [] }));

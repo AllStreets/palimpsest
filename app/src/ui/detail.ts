@@ -305,6 +305,24 @@ export function blockRanges(total: number, size: number): Array<[number, number]
   return out;
 }
 
+/**
+ * The text of rows `from` to `to`, a line per row, as an emptied block keeps
+ * it: hidden until found, so a search in the page reaches a row that is not
+ * drawn, and the block is drawn when the search lands on it.
+ */
+export function blockText(lines: DiffFile['lines'], from: number, to: number): string {
+  return lines
+    .slice(from, to)
+    .map((l) => l.text)
+    .join('\n');
+}
+
+/** What the credits figure means, said on the run page under the figures: so far, against the bid when there is one. */
+export function creditsNote(spent: number, price: number | null): string {
+  if (price === null) return 'What the work has cost so far.';
+  return spent > price ? 'Over its bid: the firm pays the difference from its own books.' : 'What the work has cost so far. The firm is paid its price only if the change merges.';
+}
+
 // ---------------------------------------------------------------- the issue as markdown
 
 export type InlineKind = 'text' | 'em' | 'strong' | 'code' | 'link';

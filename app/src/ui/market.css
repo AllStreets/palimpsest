@@ -55,6 +55,14 @@
   line-height: 1.5;
   color: var(--ink-3);
 }
+/* Where the jobs come from: one quiet line at the board's foot, above Post a job. */
+.jobs-sources {
+  margin: 40px 0 4px;
+  max-width: 66ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
 .jobs-empty {
   margin-top: 26px;
   font-family: var(--serif);
@@ -1486,6 +1494,13 @@ body[data-route='inspection'] {
   padding-right: 16px;
   white-space: pre;
 }
+/* A block not drawn keeps its lines as text, hidden until a search finds them; found, they stand where the
+   rows will, a line a row, until the block draws. */
+.diff-find {
+  padding-left: 96px;
+  color: var(--ink-2);
+  white-space: pre;
+}
 .diff-line.add {
   background: rgba(157, 180, 120, 0.09);
 }
@@ -1893,6 +1908,14 @@ a.job-issue-link:hover {
 .run-gauge .run-figures {
   grid-template-columns: repeat(5, minmax(0, 1fr)) minmax(0, 1.7fr);
   margin-top: 14px;
+}
+/* What the credits mean, in the page: one quiet line under the figures. */
+.run-credits-note {
+  margin-top: 8px;
+  max-width: 72ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
 }
 .run-fig-of {
   font-size: 13px;
