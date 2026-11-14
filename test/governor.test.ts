@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { qualityGovernor, TRIANGLE_BUDGET } from '../app/src/city/governor.js';
+import { frameStats, qualityGovernor, TRIANGLE_BUDGET } from '../app/src/city/governor.js';
 
 /** Feeds `seconds` of frames at `ms` each, with `triangles` drawn per frame; returns the first verdict. */
 function run(g: ReturnType<typeof qualityGovernor>, seconds: number, ms: number, triangles = 1e6): 'medium' | null {
@@ -91,4 +91,18 @@ test('a slow city under a persistent load does drop, even with the odd quick fra
     out ??= run(g, 0.1, 16.7);
   }
   assert.equal(out, 'medium');
+});
+
+test('frameStats counts frames over 33 ms and the 99th percentile', () => {
+  // 200 frames: 196 at 16.7 ms, one at 33 ms (not over), two at 40 ms and one at 120 ms.
+  const ms = [...Array<number>(196).fill(16.7), 33, 40, 40, 120];
+  const s = frameStats(ms);
+  assert.equal(s.max, 120);
+  assert.equal(s.over33, 3, 'a frame of exactly 33 ms is not over 33 ms');
+  // The 99th percentile by nearest rank: the 198th of 200 in order.
+  assert.equal(s.p99, 40);
+  assert.deepEqual(frameStats([16.7]), { max: 16.7, p99: 16.7, over33: 0 });
+  assert.deepEqual(frameStats([]), { max: 0, p99: 0, over33: 0 });
+  // The order the frames came in does not matter.
+  assert.deepEqual(frameStats([...ms].reverse()), s);
 });

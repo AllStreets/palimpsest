@@ -20,8 +20,13 @@
  * (UI_BUDGET=detail names each drawn mesh). Both partial modes end "PARTIAL run (...): not a full pass" and
  * exit 3 when every check they ran held (tools/ui-verdict.ts), never as a full pass. UI_PORT=4811 runs it on another port, so two worktrees can each
  * run one at once.
+ *
+ * The splash, Repos, freed plot, Settings and every-screen checks live in
+ * tools/ui-test-screens.ts (the screens track's), called from main() here.
+ * homeBudget(page, tier) is exported for tools/perf.ts; main() runs only
+ * when this file is the script.
  */
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -45,8 +50,9 @@ import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
 import { dropNoticeChecks, noticeChecks } from './ui-test-notices.js';
+import { everyScreenChecks, freedPlotChecks, reposChecks, screensHarness, settingsChecks, splashChecks } from './ui-test-screens.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
-import { SAMPLE, SAMPLE_OTHERS, SAMPLE_UNREADABLE, sampleGh, seedSample } from './sample.js';
+import { SAMPLE, sampleGh, seedSample } from './sample.js';
 import { decodePng } from './png.js';
 import { uiPort } from './ui-port.js';
 import { partialMode, verdict } from './ui-verdict.js';
@@ -475,7 +481,7 @@ async function spireChecks(page: Page): Promise<void> {
   }
 
   // From home: the lit tip reads as a warm point against what stands behind it.
-  const budget = await homeBudget(page);
+  const budget = await homeBudgetNow(page);
   await page.waitForTimeout(1500);
   const shot = await page.screenshot({ path: join(SHOTS, 'spire-home.png') });
   const ndc = (await page.evaluate((p) => (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest.project(p), s.tip)) as number[];
@@ -554,7 +560,7 @@ async function revivalChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'revival-crop.png'), clip: { x: VIEWPORT.width / 2 - 300, y: VIEWPORT.height / 2 - 260, width: 600, height: 520 } });
   const fps = await pageFps(page);
   check(fps >= overviewFps - 5, `the revival's close view holds the frame rate (${fps.toFixed(0)} against ${overviewFps.toFixed(0)})`);
-  const budget = await homeBudget(page);
+  const budget = await homeBudgetNow(page);
   await page.waitForTimeout(1200);
   await page.screenshot({ path: join(SHOTS, 'revival-home.png') });
   type T = { calls: number; triangles: number };
@@ -601,7 +607,7 @@ async function ribbonChecks(page: Page): Promise<void> {
   await page.waitForTimeout(2000);
   await page.screenshot({ path: join(SHOTS, 'ribbon.png') });
   await page.screenshot({ path: join(SHOTS, 'ribbon-crop.png'), clip: { x: VIEWPORT.width / 2 - 300, y: VIEWPORT.height / 2 - 260, width: 600, height: 520 } });
-  const budget = await homeBudget(page);
+  const budget = await homeBudgetNow(page);
   await page.waitForTimeout(1200);
   await page.screenshot({ path: join(SHOTS, 'ribbon-home.png') });
   console.log(`info  the city from home with the ribbons: ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles`);
@@ -729,7 +735,7 @@ async function tourChecks(page: Page): Promise<void> {
   await page.keyboard.press('Escape');
   await page.waitForTimeout(600);
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  const budget = await homeBudget(page);
+  const budget = await homeBudgetNow(page);
   console.log(`info  the city from home after the tour: ${budget.calls} calls`);
 }
 
@@ -891,7 +897,7 @@ async function spireAfterDropChecks(page: Page, before: SpireShow[]): Promise<vo
   const after = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
   const key = (ms: SpireShow[]): string => ms.map((m) => `${m.id}:${m.lit}:${m.y.toFixed(2)}`).sort().join('|');
   check(after.length > 0 && key(after) === key(before), `the spires stand as they stood after the step down (${after.length} of ${before.length})`);
-  const budget = await homeBudget(page);
+  const budget = await homeBudgetNow(page);
   type T = { calls: number; triangles: number };
   const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
   const own = Object.values(b.milestones ?? {}).reduce((acc, t) => acc + t.calls, 0);
@@ -1490,22 +1496,70 @@ async function darkTowerChecks(page: Page): Promise<void> {
 const HOME_TRIANGLES = 12_000_000;
 const HOME_CALLS = 850;
 
-/** A frame from the home framing with the shadow map redrawn: its draw calls and triangles, and the biggest subsystems. */
-async function homeBudget(page: Page): Promise<{ calls: number; triangles: number; parts: string }> {
+type HomeBudget = { calls: number; triangles: number; parts: Record<string, { calls: number; triangles: number }> };
+
+/**
+ * The city from home on a tier, flown home and the shadow map redrawn, as
+ * homeBudget answers it, with the shadow pass's own calls besides (the proof
+ * that the map was redrawn in the frame counted).
+ */
+async function measureHome(page: Page, tier: 'high' | 'medium'): Promise<{ budget: HomeBudget; shadowCalls: number }> {
+  let stands = await debug(page, (d) => d.quality());
+  if (stands !== tier && tier === 'medium') {
+    // The city steps down as the governor would; it never steps back up by itself, so high cannot be asked for after.
+    await page.evaluate('window.__palimpsest.dropQuality()');
+    await page.waitForTimeout(2500);
+    stands = await debug(page, (d) => d.quality());
+  }
+  if (stands !== tier) throw new Error(`homeBudget: the city stands at ${stands}, not ${tier}`);
   const home = await debug(page, (d) => d.limits().home);
   await setView(page, home.eye, home.target);
   await page.waitForTimeout(1200);
   type T = { calls: number; triangles: number };
   const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, T>>;
   const sum = (p: Record<string, T>): T => Object.values(p).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
-  const total = sum(Object.fromEntries(Object.entries(b).map(([k, v]) => [k, sum(v)])));
-  const parts = Object.entries(b)
-    .map(([k, v]) => [k, sum(v)] as const)
+  const parts = Object.fromEntries(Object.entries(b).map(([k, v]) => [k, sum(v)]));
+  const shadowCalls = Object.values(b).reduce((n, v) => n + (v.shadow?.calls ?? 0), 0);
+  return { budget: { ...sum(parts), parts }, shadowCalls };
+}
+
+/**
+ * A frame from the home framing on a tier with the shadow map redrawn (Phase
+ * 5 ruling 3): its draw calls and triangles, and each subsystem's. Asked for
+ * medium while the city stands at high, it steps the city down first; asked
+ * for high at medium, it refuses.
+ */
+export async function homeBudget(page: Page, tier: 'high' | 'medium'): Promise<HomeBudget> {
+  return (await measureHome(page, tier)).budget;
+}
+
+/** homeBudget at whatever tier the city stands now: the checks that read the budget alongside their own (each says its tier). */
+async function homeBudgetNow(page: Page): Promise<HomeBudget> {
+  return homeBudget(page, await debug(page, (d) => d.quality()));
+}
+
+/** The four heaviest subsystems of a home budget, for an info line. */
+const heaviest = (b: HomeBudget): string =>
+  Object.entries(b.parts)
     .sort((x, y) => y[1].triangles - x[1].triangles)
     .slice(0, 4)
     .map(([k, t]) => `${k} ${(t.triangles / 1e6).toFixed(2)}M/${t.calls}`)
     .join(', ');
-  return { ...total, parts };
+
+/**
+ * The home guard on a tier, through homeBudget itself (Phase 5 Task 0): it
+ * answers at the tier asked with the shadow map redrawn, its subsystems add up
+ * to its totals, and the city stays under the guard.
+ */
+async function homeBudgetChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
+  const { budget, shadowCalls } = await measureHome(page, tier);
+  const parts = Object.values(budget.parts).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  const stands = await debug(page, (d) => d.quality());
+  console.log(`info  homeBudget ${tier}: ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M triangles, ${shadowCalls} of them in the shadow map (${heaviest(budget)})`);
+  check(
+    stands === tier && shadowCalls > 0 && parts.calls === budget.calls && parts.triangles === budget.triangles && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES,
+    `homeBudget answers for ${tier} with the shadow map redrawn, under ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M triangles (${budget.calls} calls, ${shadowCalls} in the shadow map, ${(budget.triangles / 1e6).toFixed(2)}M)`,
+  );
 }
 
 async function constructionChecks(page: Page): Promise<void> {
@@ -1609,17 +1663,17 @@ async function constructionChecks(page: Page): Promise<void> {
     // Both sides are measured the same way (homeBudget: the shadow map redrawn, every pass counted), so a shadow
     // redraw or a level-of-detail step in one single frame and not the other can never read as the sites' cost.
     const nSites = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length)) as number;
-    const withSites = await homeBudget(page);
+    const withSites = await homeBudgetNow(page);
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(false));
     await page.waitForTimeout(800);
-    const bare = await homeBudget(page);
+    const bare = await homeBudgetNow(page);
     await page.evaluate(() => (window as unknown as { __palimpsest: { showSites(on: boolean): void } }).__palimpsest.showSites(true));
     const added = withSites.calls - bare.calls;
     console.log(`info  the ${nSites} live sites add ${added} draw calls from home`);
     check(nSites >= 3 && added < 60, `${nSites} live sites add fewer than 60 draw calls from home (${added})`);
     // The city's budget from home (task PERF): a frame with the shadow map redrawn, every pass counted.
-    let full = await homeBudget(page);
-    console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
+    let full = await homeBudgetNow(page);
+    console.log(`info  city from home with live sites, shadow map redrawn: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${heaviest(full)})`);
     // The governor judges frame time as well as triangles: on a GPU another test or capture shares, it can step
     // down on a slow stretch the city did not cause. Once, the page is opened afresh and the budget measured again.
     if ((await debug(page, (x) => x.quality())) !== 'high') {
@@ -1629,8 +1683,8 @@ async function constructionChecks(page: Page): Promise<void> {
       await fullDensity(page);
       await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length >= 3, null, { timeout: 10_000 }).catch(() => {});
       await page.waitForTimeout(6000);
-      full = await homeBudget(page);
-      console.log(`info  again: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${full.parts})`);
+      full = await homeBudgetNow(page);
+      console.log(`info  again: ${full.calls} draw calls, ${(full.triangles / 1e6).toFixed(2)}M triangles (${heaviest(full)})`);
     }
     check(full.triangles <= HOME_TRIANGLES, `the city from home draws at most ${HOME_TRIANGLES / 1e6}M triangles with live sites and the shadow map redrawn (${(full.triangles / 1e6).toFixed(2)}M)`);
     check(full.calls < HOME_CALLS, `the city from home draws in under ${HOME_CALLS} calls with live sites and the shadow map redrawn (${full.calls})`);
@@ -2189,170 +2243,6 @@ async function standFixture(page: Page): Promise<void> {
   await page.waitForTimeout(1500);
 }
 
-// ---------------------------------------------------------------- a fake GitHub
-
-/** Repos the fake gh can see: the sample districts plus a few that are not in the city yet. All fictional. */
-const AVAILABLE = [...SAMPLE.map((s) => ({ fullName: s.fullName })), ...SAMPLE_OTHERS];
-const UNREADABLE = SAMPLE_UNREADABLE;
-
-// ---------------------------------------------------------------- repos
-
-const rowSel = (fullName: string): string => `.repo-row[data-repo="${fullName}"]`;
-
-async function waitStatus(page: Page, fullName: string, want: string, seen: Set<string>, timeoutMs = 15_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const st = await page.locator(rowSel(fullName)).getAttribute('data-status').catch(() => null);
-    if (st) seen.add(st);
-    if (st === want) return true;
-    await page.waitForTimeout(60);
-  }
-  return false;
-}
-
-async function reposChecks(page: Page): Promise<void> {
-  await page.locator('.runhead a[data-route="repos"]').click();
-  const shown = await page
-    .waitForSelector(`${rowSel('marlow/tidepool-notes')}`, { timeout: 8000 })
-    .then(() => true)
-    .catch(() => false);
-  check(shown, 'the Repos screen lists every repo gh can see');
-  if (!shown) return;
-  let listed = 0;
-  for (const a of AVAILABLE) listed += await page.locator(rowSel(a.fullName)).count();
-  check(listed === AVAILABLE.length, `every available repo has one row (${listed} of ${AVAILABLE.length})`);
-  // A connected repo gh no longer lists (the site from the scaffold check) still stands under "In the city".
-  check((await page.locator(rowSel('wren/new-site')).count()) === 1, 'a connected repo outside the gh list is still listed');
-  check(
-    (await page.locator(`${rowSel('orrery/brass-gears')} .repo-private`).textContent())?.trim() === 'private',
-    'a private repo carries the word private',
-  );
-  check((await page.locator(`${rowSel('quill/marginalia')} .repo-private`).count()) === 0, 'a public repo carries no private marker');
-  check(
-    (await page.locator(`${rowSel('quill/marginalia')} [role="switch"].connect`).getAttribute('aria-checked')) === 'false',
-    'an unconnected repo is off by default',
-  );
-  await page.waitForTimeout(400);
-  await page.screenshot({ path: join(SHOTS, 'repos.png') });
-
-  // Search: "/" focuses the field, typing narrows the list.
-  await page.keyboard.press('/');
-  check(await page.locator('.repos-search').evaluate((e) => e === document.activeElement), '"/" focuses the search');
-  await page.keyboard.type('orrery');
-  await page.waitForTimeout(150);
-  const visible = await page.locator('.repo-row:visible').count();
-  check(visible === 2, `search narrows the list (${visible} rows for "orrery")`);
-  await page.screenshot({ path: join(SHOTS, 'repos-search.png') });
-  await page.keyboard.press('Escape');
-  check((await page.locator('.repos-search').inputValue()) === '', 'Escape clears the search first');
-  check((await page.locator('.sheet.repos').isVisible()), 'and leaves the screen open');
-
-  // Connect: off to analyzing to ready, by SSE.
-  const before = await debug(page, (d) => d.districts);
-  const seen = new Set<string>();
-  await page.locator(`${rowSel('marlow/tidepool-notes')} [role="switch"].connect`).click();
-  const analyzing = await waitStatus(page, 'marlow/tidepool-notes', 'analyzing', seen, 4000);
-  check(analyzing, 'connecting shows the analysis under way');
-  await page.waitForTimeout(500);
-  const step = (await page.locator(`${rowSel('marlow/tidepool-notes')} .repo-status`).textContent()) ?? '';
-  check(/Cloning|Reading|Laying|Surveying/.test(step), `the analyzing row names its step (${step.trim()})`);
-  await page.screenshot({ path: join(SHOTS, 'repos-analyzing.png') });
-  const ready = await waitStatus(page, 'marlow/tidepool-notes', 'ready', seen);
-  check(ready && seen.has('analyzing'), `the status passes through analyzing to ready (${[...seen].join(' > ')})`);
-  const readyText = (await page.locator(`${rowSel('marlow/tidepool-notes')} .repo-status`).textContent()) ?? '';
-  check(/18 floors/.test(readyText), `ready shows the floor count (${readyText.trim()})`);
-  const grew = await page
-    .waitForFunction((n) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === n, before + 1, { timeout: 8000 })
-    .then(() => true)
-    .catch(() => false);
-  check(grew, 'the new district stands in the city');
-
-  // An unreadable repo: a readable error and a Retry.
-  const errSeen = new Set<string>();
-  await page.locator(`${rowSel(UNREADABLE)} [role="switch"].connect`).click();
-  const failed = await waitStatus(page, UNREADABLE, 'error', errSeen);
-  check(failed, 'an unreadable repo ends in an error, not a hang');
-  const msg = (await page.locator(`${rowSel(UNREADABLE)} .repo-error`).textContent()) ?? '';
-  check(/could not find this repo/i.test(msg), `the error reads plainly (${msg.trim().slice(0, 60)})`);
-  check(await page.locator(`${rowSel(UNREADABLE)} .repo-retry`).isVisible(), 'the error offers Retry');
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: join(SHOTS, 'repos-states.png') });
-
-  // Rapid on, off, on while the first connect is in flight: the last choice wins.
-  const quick = 'quill/marginalia';
-  const sw = page.locator(`${rowSel(quick)} [role="switch"].connect`);
-  await sw.click();
-  await sw.click();
-  await sw.click();
-  const quickSeen = new Set<string>();
-  const quickReady = await waitStatus(page, quick, 'ready', quickSeen);
-  const quickRepo = ((await page.evaluate(() => fetch('/api/repos').then((r) => r.json()))) as Repo[]).find((r) => r.fullName === quick);
-  check(quickReady && quickRepo?.connected === true, `a rapid on, off, on ends connected and ready (${[...quickSeen].join(' > ')})`);
-  check((await sw.getAttribute('aria-checked')) === 'true', 'and the switch shows on');
-
-  // The running head and the facts line count the same thing.
-  const head = (await page.locator('.runhead-count').textContent())?.trim();
-  const facts = (await page.locator('.sheet.repos .sheet-facts').textContent()) ?? '';
-  check(facts.startsWith(`${head} of`), `the running head count matches the facts line (${head}; ${facts.split('.')[0]})`);
-
-  // Push mode by keyboard: focus the switch, Space flips it, and it persists.
-  const push = page.locator(`${rowSel('marlow/tidepool-notes')} [role="switch"].push`);
-  await push.focus();
-  await page.keyboard.press('Space');
-  await page.waitForTimeout(400);
-  const repos = (await page.evaluate(() => fetch('/api/repos').then((r) => r.json()))) as Repo[];
-  check(repos.find((r) => r.fullName === 'marlow/tidepool-notes')?.pushMode === true, 'Space on the push mode switch stores push mode');
-  await page.screenshot({ path: join(SHOTS, 'repos-focus.png') });
-
-  // Push mode on a repo without a test and a build command (ruling 23): refused quietly beside the switch, which stays off.
-  const refusedPush = page.locator(`${rowSel('kestrel/fieldnotes')} [role="switch"].push`);
-  await refusedPush.focus();
-  await page.keyboard.press('Space');
-  await page.waitForTimeout(400);
-  const why = ((await page.locator(`${rowSel('kestrel/fieldnotes')} .repo-push-why`).textContent()) ?? '').trim();
-  const afterRefusal = (await page.evaluate(() => fetch('/api/repos').then((r) => r.json()))) as Repo[];
-  check(
-    (await refusedPush.getAttribute('aria-checked')) === 'false' && afterRefusal.find((r) => r.fullName === 'kestrel/fieldnotes')?.pushMode === false && /test command and a build command/.test(why),
-    `push mode without a test and a build stays off and says why (${why.slice(0, 60)})`,
-  );
-
-  // Root style: pick another root, the tower is restyled.
-  const target = SAMPLE[0].fullName;
-  await page.locator(`${rowSel(target)} [role="radio"][data-root="pagoda"]`).click();
-  const restyled = await page
-    .waitForFunction(
-      (t) => fetch('/api/city').then((r) => r.json()).then((ds: Array<{ repo: string; tower: { root: string } }>) => ds.find((d) => d.repo === t)?.tower.root === 'pagoda'),
-      target,
-      { timeout: 4000 },
-    )
-    .then(() => true)
-    .catch(() => false);
-  check(restyled, 'picking a root restyles the tower');
-  await page.locator(`${rowSel(target)} [role="radio"][data-root="beauxarts"]`).click();
-
-  // Disconnect from the screen: the district leaves the city.
-  const n = await debug(page, (d) => d.districts);
-  await page.locator(`${rowSel('marlow/tidepool-notes')} .repo-disconnect`).click();
-  const left = await page
-    .waitForFunction((k) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === k, n - 1, { timeout: 5000 })
-    .then(() => true)
-    .catch(() => false);
-  check(left, 'disconnecting removes the district from the city');
-  check(
-    (await page.locator(`${rowSel('marlow/tidepool-notes')} [role="switch"].connect`).getAttribute('aria-checked')) === 'false',
-    'the disconnected repo shows as off',
-  );
-
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.waitForTimeout(500);
-  await page.screenshot({ path: join(SHOTS, 'repos-1280.png') });
-  await page.setViewportSize(VIEWPORT);
-
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
-  check(!(await page.locator('.sheet.repos').isVisible()), 'Escape returns to the city');
-}
-
 /** Disconnecting a repo while the inspector is open on it closes the inspector and removes the district. */
 async function disconnectWhileInspecting(page: Page): Promise<void> {
   const target = SAMPLE[2].fullName;
@@ -2372,257 +2262,6 @@ async function disconnectWhileInspecting(page: Page): Promise<void> {
   await page.waitForTimeout(300);
   check(!(await page.locator('.inspector').isVisible()), 'and closes the inspector open on it');
   await page.evaluate((t) => fetch(`/api/repos/${t}/connect`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), target);
-}
-
-// ---------------------------------------------------------------- plots given back to the city
-
-const post = (page: Page, path: string): Promise<unknown> =>
-  page.evaluate((p) => fetch(p, { method: 'POST', headers: { 'x-palimpsest': '1' } }).then((r) => r.json()), path);
-
-const plotsNow = (page: Page): Promise<{ plazas: number; buildings: number; sites: number; districts: number }> =>
-  debug(page, (d) => ({ ...d.plots(), sites: d.sites, districts: d.districts }));
-
-/** Waits until the page's plots match `want`, or gives up after `timeoutMs`. */
-async function waitPlots(page: Page, want: (p: { plazas: number; buildings: number; sites: number; districts: number }) => boolean, timeoutMs = 8000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (want(await plotsNow(page))) return true;
-    await page.waitForTimeout(50);
-  }
-  return false;
-}
-
-/** A high oblique view of a slot's plot and the blocks round it. */
-async function plotView(page: Page, slot: number): Promise<void> {
-  const { districtOrigin } = await import('../shared/district-layout.js');
-  const o = districtOrigin(slot);
-  await setView(page, [o.x + BEARING.x * 300, 150, o.z + BEARING.z * 300], [o.x, 0, o.z]);
-}
-
-const repoRow = async (page: Page, fullName: string): Promise<Repo | undefined> =>
-  ((await page.evaluate(() => fetch('/api/repos').then((r) => r.json()))) as Repo[]).find((r) => r.fullName === fullName);
-
-/**
- * A repo that is not connected leaves no plaza: a connect stopped before any
- * tower, and a district disconnected, both give the plot back to the same
- * ambient blocks, live; reconnecting clears the plot again.
- */
-async function freedPlotChecks(page: Page): Promise<void> {
-  const base = await plotsNow(page);
-
-  // A connect stopped while it analyzes: the scaffold comes down and stays down while the analysis runs on.
-  const stopped = 'orrery/star-catalogue';
-  const { slot } = (await post(page, `/api/repos/${stopped}/connect`)) as Repo;
-  const raised = await waitPlots(page, (p) => p.sites === base.sites + 1 && p.plazas === base.plazas + 1, 5000);
-  check(raised, 'connecting raises a scaffold on a paved plot');
-  await plotView(page, slot);
-  await page.screenshot({ path: join(SHOTS, 'plot-stopped-before.png') });
-  await post(page, `/api/repos/${stopped}/disconnect`);
-  const cleared = await waitPlots(page, (p) => p.sites === base.sites && p.plazas === base.plazas, 3000);
-  let worst = await plotsNow(page);
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline && (await repoRow(page, stopped))?.status === 'analyzing') {
-    const now = await plotsNow(page);
-    if (now.sites > worst.sites || now.plazas > worst.plazas) worst = now;
-    await page.waitForTimeout(40);
-  }
-  await page.waitForTimeout(800);
-  const after = await plotsNow(page);
-  if (after.sites > worst.sites || after.plazas > worst.plazas) worst = after;
-  const row = await repoRow(page, stopped);
-  check(row?.connected === false && row.status !== 'analyzing', `the stopped connect finished its analysis and stays off (${row?.connected}, ${row?.status})`);
-  check(
-    cleared && worst.sites === base.sites && worst.plazas === base.plazas,
-    `a stopped connect leaves no scaffold or plaza while its analysis runs on (sites ${worst.sites} of ${base.sites}, plazas ${worst.plazas} of ${base.plazas})`,
-  );
-  check(after.buildings === base.buildings, `and its plot holds the same ambient blocks as before (${after.buildings} of ${base.buildings})`);
-  await plotView(page, slot);
-  await page.screenshot({ path: join(SHOTS, 'plot-stopped-after.png') });
-
-  // A standing district disconnected: its plaza goes and the blocks that stood there before return, without a reload.
-  const target = SAMPLE[1].fullName;
-  const d = (await cityOf(page)).find((x) => x.repo === target);
-  if (!d) {
-    check(false, `${target} stands before the disconnect check`);
-    return;
-  }
-  const withIt = await plotsNow(page);
-  await plotView(page, d.index);
-  await page.screenshot({ path: join(SHOTS, 'plot-district-before.png') });
-  await post(page, `/api/repos/${target}/disconnect`);
-  const freed = await waitPlots(page, (p) => p.plazas === withIt.plazas - 1 && p.districts === withIt.districts - 1);
-  const without = await plotsNow(page);
-  check(freed, `disconnecting a district removes its plaza (${withIt.plazas} then ${without.plazas})`);
-  check(without.buildings > withIt.buildings, `and fills its plot with ambient blocks (${withIt.buildings} then ${without.buildings} buildings)`);
-  await plotView(page, d.index);
-  await page.screenshot({ path: join(SHOTS, 'plot-district-after.png') });
-
-  // Reconnecting clears the plot again: the tower it kept returns to the same place.
-  await post(page, `/api/repos/${target}/connect`);
-  const back = await waitPlots(page, (p) => p.plazas === withIt.plazas && p.districts === withIt.districts && p.buildings === withIt.buildings, 15_000);
-  check(back, 'reconnecting clears the plot for the district again, with the same blocks round it');
-  const returned = (await cityOf(page)).find((x) => x.repo === target);
-  check(returned?.index === d.index, `and the district returns to its slot (${returned?.index} of ${d.index})`);
-  for (let i = 0; i < 300 && (await repoRow(page, target))?.status === 'analyzing'; i++) await page.waitForTimeout(50);
-}
-
-// ---------------------------------------------------------------- settings
-
-function reading(atMs: number, five: number, week: number): string {
-  const s = Math.floor(atMs / 1000);
-  return `${JSON.stringify({ at: s, rate_limits: { five_hour: { used_percentage: five, resets_at: s + 2 * 3600 + 600 }, seven_day: { used_percentage: week, resets_at: s + 4 * 86400 } } })}\n`;
-}
-
-async function settingsChecks(page: Page, claudeSettingsPath: string): Promise<void> {
-  const { paths } = await import('../engine/home.js');
-  const readings = join(paths().usage, 'readings.jsonl');
-  writeFileSync(readings, reading(Date.now() - 7 * 3600_000, 62, 18));
-
-  await page.locator('.runhead a[data-route="settings"]').click();
-  const shown = await page.waitForSelector('.sheet.settings .usage-five', { timeout: 5000 }).then(() => true).catch(() => false);
-  check(shown, 'the Settings screen opens from the running head');
-  if (!shown) return;
-  await page.waitForTimeout(400);
-  const five = (await page.locator('.usage-five .usage-pct').textContent())?.trim();
-  const week = (await page.locator('.usage-week .usage-pct').textContent())?.trim();
-  check(five === '62%' && week === '18%', `usage shows the seeded percentages (${five}, ${week})`);
-  check(await page.locator('.usage-stale').isVisible(), 'an old reading carries the stale warning');
-  check(/reset/i.test((await page.locator('.usage-five').textContent()) ?? ''), 'each window shows when it resets');
-  check(/window reset/.test((await page.locator('.usage-five .usage-reset').textContent()) ?? ''), 'a reset already past reads as past');
-  await page.screenshot({ path: join(SHOTS, 'settings.png') });
-  await page.screenshot({ path: join(SHOTS, 'settings-full.png'), fullPage: false });
-
-  // The usage hook, against the temp claude settings file only.
-  const original = readFileSync(claudeSettingsPath, 'utf8');
-  check(/not installed/i.test((await page.locator('.hook-state').textContent()) ?? ''), 'the hook reads as not installed');
-  await page.locator('.hook-install').click();
-  await page.waitForFunction(() => /installed/i.test(document.querySelector('.hook-state')?.textContent ?? '') && !/not/i.test(document.querySelector('.hook-state')?.textContent ?? ''), null, { timeout: 4000 }).catch(() => {});
-  const installed = readFileSync(claudeSettingsPath, 'utf8');
-  check(/statusLine/.test(installed), 'Install writes the hook into the (temp) claude settings');
-  check(!/not/i.test((await page.locator('.hook-state').textContent()) ?? ''), 'the hook then reads as installed');
-  await page.screenshot({ path: join(SHOTS, 'settings-hook.png') });
-  await page.locator('.hook-remove').click();
-  await page.waitForFunction(() => /not installed/i.test(document.querySelector('.hook-state')?.textContent ?? ''), null, { timeout: 4000 }).catch(() => {});
-  check(readFileSync(claudeSettingsPath, 'utf8') === original, 'Remove restores the claude settings byte for byte');
-
-  // Caps: typed, stored.
-  const day = page.locator('input.cap-day');
-  let capPatches = 0;
-  const countPatch = (r: { method(): string; url(): string }) => {
-    if (r.method() === 'PATCH' && r.url().endsWith('/api/settings')) capPatches++;
-  };
-  page.on('request', countPatch);
-  await day.fill('40');
-  await day.press('Enter');
-  await day.blur();
-  await page.waitForTimeout(400);
-  page.off('request', countPatch);
-  check(capPatches === 1, `Enter then leaving the field sends one PATCH (${capPatches})`);
-  let st = (await page.evaluate(() => fetch('/api/settings').then((r) => r.json()))) as { dayCapPct: number; quality: string };
-  check(st.dayCapPct === 40, `the day cap is stored (${st.dayCapPct})`);
-  await day.focus();
-  await page.keyboard.press('ArrowUp');
-  await page.waitForTimeout(400);
-  st = (await page.evaluate(() => fetch('/api/settings').then((r) => r.json()))) as { dayCapPct: number; quality: string };
-  check(st.dayCapPct === 45, `ArrowUp steps the cap by 5 (${st.dayCapPct})`);
-  await day.fill('50');
-  await day.press('Enter');
-
-  // Quality.
-  await page.locator('[role="radio"][data-quality="medium"]').click();
-  await page.waitForTimeout(400);
-  st = (await page.evaluate(() => fetch('/api/settings').then((r) => r.json()))) as { dayCapPct: number; quality: string };
-  check(st.quality === 'medium', 'quality is stored');
-  await page.locator('[role="radio"][data-quality="high"]').click();
-
-  // The kill switch.
-  await page.locator('[role="switch"].kill').click();
-  await page.waitForTimeout(500);
-  check(existsSync(paths().stop), 'the kill switch writes the stop file');
-  check(/stopped/i.test((await page.locator('.runhead').textContent()) ?? ''), 'the running head says the city is stopped');
-  await page.locator('[role="switch"].kill').scrollIntoViewIfNeeded();
-  await page.screenshot({ path: join(SHOTS, 'settings-stopped.png') });
-  await page.locator('[role="switch"].kill').click();
-  await page.waitForTimeout(500);
-  check(!existsSync(paths().stop), 'turning it off removes the stop file');
-  await page.locator('.settings-privacy').scrollIntoViewIfNeeded();
-  await page.waitForTimeout(200);
-  await page.screenshot({ path: join(SHOTS, 'settings-privacy.png') });
-
-  // A fresh reading: no warning.
-  appendFileSync(readings, reading(Date.now() - 10 * 60_000, 23, 19));
-  await page.locator('.runhead a[data-route="city"]').click();
-  await page.locator('.runhead a[data-route="settings"]').click();
-  await page.waitForTimeout(600);
-  check((await page.locator('.usage-five .usage-pct').textContent())?.trim() === '23%', 'a new reading shows on reopening');
-  check(!(await page.locator('.usage-stale').isVisible()), 'a fresh reading carries no stale warning');
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.waitForTimeout(400);
-  await page.screenshot({ path: join(SHOTS, 'settings-1280.png') });
-  await page.setViewportSize(VIEWPORT);
-
-  // The engine not answering: no empty fields, no buttons, a plain sentence.
-  await page.locator('.runhead a[data-route="city"]').click();
-  abortingRequests = true;
-  await page.route('**/api/settings', (r) => r.abort());
-  await page.locator('.runhead a[data-route="settings"]').click();
-  await page.waitForTimeout(600);
-  check(/did not answer/.test((await page.locator('.hook-state').textContent()) ?? ''), 'settings that fail to load say the engine did not answer');
-  check(!(await page.locator('.hook-install').isVisible()) && !(await page.locator('.hook-remove').isVisible()), 'and show neither hook button');
-  check(!(await page.locator('input.cap-day').isVisible()), 'and no empty cap fields');
-  await page.screenshot({ path: join(SHOTS, 'settings-down.png') });
-  await page.unroute('**/api/settings');
-  abortingRequests = false;
-  await page.locator('#settings-title').focus();
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
-  check(!(await page.locator('.sheet.settings').isVisible()), 'Escape leaves Settings for the city');
-}
-
-// ---------------------------------------------------------------- the splash
-
-/**
- * The Mac app's splash, opened from its files with Tauri's invoke stood in.
- * When the engine answers but the window cannot be swapped for the city, the
- * splash must not freeze on its hairline: it shows the engine-down state with
- * the reason and a working Start button, both at launch and after Start.
- */
-async function splashChecks(browser: Browser): Promise<void> {
-  const splash = pathToFileURL(join(ROOT, 'src-tauri', 'splash', 'index.html')).href;
-  for (const [when, healthyAtLaunch] of [['at launch', true], ['after Start', false]] as const) {
-    const page = await browser.newPage({ viewport: { width: 900, height: 640 } });
-    const errors: string[] = [];
-    page.on('pageerror', (e) => errors.push(String(e)));
-    // A string, not a function: tsx would wrap a function in helpers the page does not have.
-    await page.addInitScript(`
-      let installed = false;
-      window.__TAURI__ = {
-        core: {
-          invoke: async (cmd) => {
-            if (cmd === 'engine_healthy') return ${healthyAtLaunch} || installed;
-            if (cmd === 'engine_command') return 'node ~/palimpsest/bin/palimpsest.mjs engine install';
-            if (cmd === 'install_engine') { installed = true; return null; }
-            if (cmd === 'open_city') throw 'the window is gone';
-            throw new Error('unexpected ' + cmd);
-          },
-        },
-      };
-    `);
-    await page.goto(splash);
-    if (!healthyAtLaunch) {
-      await page.waitForFunction(() => document.body.dataset.state === 'down', null, { timeout: 8000 });
-      await page.locator('#start').click();
-    }
-    const shown = await page
-      .waitForFunction(() => document.body.dataset.state === 'down' && !document.getElementById('error')!.hidden, null, { timeout: 8000 })
-      .then(() => true)
-      .catch(() => false);
-    const text = (await page.locator('#error').textContent()) ?? '';
-    check(shown && /could not open the city/i.test(text) && /window is gone/.test(text), `splash ${when}: a failed open shows the engine-down state with the reason (${text || 'nothing shown'})`);
-    check(!(await page.locator('#start').isDisabled()), `splash ${when}: Start the engine works again`);
-    check(errors.length === 0, `splash ${when}: no unhandled errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
-    await page.close();
-  }
 }
 
 // ---------------------------------------------------------------- the view grows with the city
@@ -3141,49 +2780,6 @@ async function qualityDropChecks(page: Page, errors: string[]): Promise<void> {
   check(fresh.length === 0, `stepping down to medium leaves no errors${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
 }
 
-/**
- * Every screen once more, by its address, after the whole run has moved the economy on (Task 42): each opens on its
- * sheet and adds no console error of its own. The ids are read from the engine, so each page opens on a real record.
- */
-async function everyScreenChecks(page: Page, errors: string[]): Promise<void> {
-  const api = <T>(path: string): Promise<T> => page.evaluate((p) => fetch(p).then((r) => r.json()), path) as Promise<T>;
-  const jobs = await api<Array<{ id: string; runId: string | null }>>('/api/jobs');
-  const firms = await api<FirmView[]>('/api/firms');
-  const withRun = jobs.find((j) => j.runId);
-  const detail = withRun ? await api<{ inspections: Array<{ id: string }> }>(`/api/jobs/${withRun.id}`) : null;
-  const screens: Array<[string, string, string]> = [
-    ['city', '#/', '.runhead'],
-    ['job board', '#/jobs', '.sheet.jobs, .sheet .sec-bidding, .sheet-title'],
-    ...(jobs[0] ? ([['job', `#/jobs/${jobs[0].id}`, '.sheet.jobpage .sheet-title']] as Array<[string, string, string]>) : []),
-    ...(withRun?.runId ? ([['run', `#/runs/${withRun.runId}`, '.runpage .sheet-title']] as Array<[string, string, string]>) : []),
-    ...(detail?.inspections[0] ? ([['inspection', `#/inspections/${detail.inspections[0].id}`, '.insppage .sheet-title']] as Array<[string, string, string]>) : []),
-    ['firms', '#/firms', '.sheet.firms .firm-row'],
-    ...(firms[0] ? ([['firm', `#/firms/${firms[0].id}`, '.sheet.firmpage .sheet-title']] as Array<[string, string, string]>) : []),
-    ...(firms[0]?.agents[0] ? ([['agent', `#/agents/${firms[0].agents[0].id}`, '.sheet.agentpage .sheet-title']] as Array<[string, string, string]>) : []),
-    ['treasury', '#/treasury', '.sheet.treasury .sheet-title'],
-    ['school', '#/school', '.sheet.school .net-row'],
-    ['repos', '#/repos', '.sheet.repos .sheet-title'],
-    ['district', `#/repos/${SAMPLE[0].fullName}`, '.sheet.district .sheet-title'],
-    ['settings', '#/settings', '.sheet.settings .sheet-title'],
-  ];
-  for (const [name, hash, ready] of screens) {
-    const before = errors.length;
-    await page.evaluate((h) => {
-      location.hash = h;
-    }, hash);
-    const shown = await page
-      .waitForSelector(ready, { state: 'attached', timeout: 8000 })
-      .then(() => true)
-      .catch(() => false);
-    await page.waitForTimeout(600);
-    const fresh = errors.slice(before);
-    check(shown && fresh.length === 0, `the ${name} screen opens at ${hash} with no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
-  }
-  await page.evaluate(() => {
-    location.hash = '#/';
-  });
-}
-
 async function main(): Promise<void> {
   if (!existsSync(join(DIST, 'index.html'))) {
     throw new Error('dist/index.html missing: run npm run build first');
@@ -3195,6 +2791,15 @@ async function main(): Promise<void> {
   if (newest(join(ROOT, 'app', 'src')) > built || newest(join(ROOT, 'shared')) > built) {
     throw new Error('dist is older than app/src or shared: run npm run build first');
   }
+  // The screens' checks (tools/ui-test-screens.ts) report through this run's check and shots.
+  screensHarness({
+    check,
+    shots: SHOTS,
+    viewport: VIEWPORT,
+    aborting: (on) => {
+      abortingRequests = on;
+    },
+  });
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-ui-test-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
   process.env.PALIMPSEST_DIST = DIST;
@@ -3479,11 +3084,13 @@ async function main(): Promise<void> {
         await schoolTowerChecks(page, 'high');
         await everyScreenChecks(page, consoleErrors);
         const spiresBefore = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
+        await homeBudgetChecks(page, 'high');
         const highHome = await homeBreakdown(page);
         await qualityDropChecks(page, consoleErrors);
         await spireAfterDropChecks(page, spiresBefore);
         await campusChecks(page, 'medium');
         await schoolTowerChecks(page, 'medium');
+        await homeBudgetChecks(page, 'medium');
         await tierBudgetChecks(page, highHome);
       }
     }
@@ -3513,7 +3120,10 @@ async function main(): Promise<void> {
   process.exit(v.code);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Run as a script only: tools/perf.ts imports homeBudget without starting a run.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

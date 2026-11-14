@@ -4,37 +4,77 @@
  * frame rate, and a still of each view for comparing looks before and after
  * a performance change (SSIM, with ffmpeg).
  *
- * Starts its own engine in-process on port 4791 with a temp data home (never
- * the real engine on 4770, never the real data home), seeds the sample city
- * and the sample economy at a fixed date so two runs build the same city,
- * and opens the built UI in Chromium on the GPU.
+ * Starts its own engine in-process on PERF_PORT (4791 by default; the real
+ * engine's 4770 and the dev server's 4771 are refused) with a temp data home
+ * (never the real data home), seeds the sample city and the sample economy
+ * at a fixed date so two runs build the same city, and opens the built UI in
+ * Chromium on the GPU at PERF_VIEWPORT, his main display's visible frame.
  *
  *   npm run build
- *   node --no-warnings --import tsx tools/perf.ts <out dir>
+ *   PERF_TIERS=high,medium npm run perf <out dir>
  *
- * Phase one shoots and measures each named view on the settled economy. Phase
- * two turns the economy's job sites live (four sites) and measures the city
- * from home and the overview with them, with the quality governor running.
- * Writes <out>/<view>.png, <out>/perf.json and prints a table.
+ * Phase one, on each tier PERF_TIERS names (high alone by default), measures
+ * the city from home (homeBudget, tools/ui-test.ts) and shoots and measures
+ * each named view on the settled economy: its frame rate (viewFps) and its
+ * calls and triangles with the shadow map redrawn. PERF_ONLY=home,street
+ * keeps to those views. Phase two (unless PERF_STATIC) turns the economy's
+ * job sites live (four sites) on high and measures the city from home, the
+ * overview and the quarters with them, with the quality governor running.
+ * Writes <out>/<view>.png (high) and <out>/<view>-medium.png, <out>/perf.json
+ * ({ viewport, tiers: { high: { home, views }, medium } }), <out>/live.json
+ * for phase two, and prints a table.
  */
 import './seeded-uuid.js';
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { chromium } from 'playwright';
 import type { Page } from 'playwright';
 
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District, Quarter } from '../shared/types.js';
+import { frameStats } from '../app/src/city/governor.js';
 import { seedSample, sampleGh } from './sample.js';
+import { homeBudget } from './ui-test.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
-const PORT = 4791;
-const VIEWPORT = { width: 1600, height: 940 };
+
+/** The perf tool's port when PERF_PORT is unset: the city track's. */
+export const PERF_PORT_DEFAULT = 4791;
+const RESERVED = new Set([4770, 4771]);
+
+/** PERF_PORT when set (the screens track's own perf run takes another), 4791 otherwise; never 4770 or 4771. */
+export function perfPort(raw: string | undefined): number {
+  const text = (raw ?? '').trim();
+  if (text === '') return PERF_PORT_DEFAULT;
+  if (!/^\d+$/.test(text)) throw new Error(`PERF_PORT must be a port number, not ${JSON.stringify(raw)}`);
+  const port = Number(text);
+  if (port < 1024 || port > 65535) throw new Error(`PERF_PORT must be between 1024 and 65535, not ${port}`);
+  if (RESERVED.has(port)) throw new Error(`PERF_PORT ${port} is the real engine's or the dev server's port; pick another`);
+  return port;
+}
+
+export type Tier = 'high' | 'medium';
+
+/** The tiers PERF_TIERS names, high before medium, each once; high alone when unset. */
+export function perfTiers(raw: string | undefined): Tier[] {
+  const names = (raw ?? '').split(',').map((t) => t.trim()).filter((t) => t !== '');
+  if (names.length === 0) return ['high'];
+  for (const n of names) if (n !== 'high' && n !== 'medium') throw new Error(`PERF_TIERS names high and medium, not ${JSON.stringify(n)}`);
+  return (['high', 'medium'] as const).filter((t) => names.includes(t));
+}
+
+/**
+ * The window every view is measured at (Phase 5 ruling 4): his main display's
+ * visible frame below the menu bar and above the Dock, as a maximized window
+ * fills it, read once with NSScreen.mainScreen.visibleFrame (1512 by 890 on
+ * the 1512 by 982 built-in display, "UI looks like"), at its backing scale 2.
+ */
+export const PERF_VIEWPORT = { width: 1512, height: 890, dpr: 2 } as const;
 /** The sample's fixed date: every run seeds the same history, so the same windows are lit. */
 const SEED_AT = Date.parse('2026-11-10T17:30:00Z');
 const BEARING = { x: 0.63, z: 0.78 };
@@ -51,22 +91,47 @@ interface Dbg {
   limits(): { home: { eye: number[]; target: number[] } };
   liveSites(): unknown[];
   quality(): string;
+  frameLog?: { start(): void; stop(): number[] };
 }
 const dbg = <T>(page: Page, fn: string): Promise<T> => page.evaluate(`(${fn})(window.__palimpsest)`) as Promise<T>;
 /** The breakdown, or an empty one on a build that has none (a baseline built from an older commit). */
 const breakdownOf = (page: Page, detail: boolean): Promise<Breakdown> => dbg<Breakdown>(page, `(d) => d.breakdown ? d.breakdown(${detail}) : {}`);
 
-function fps(page: Page): Promise<number> {
+/** Frame times in ms over `ms`, through the debug handle's frameLog (or the page's own frames on a build without it). */
+async function frameTimes(page: Page, ms: number): Promise<number[]> {
+  const logged = await dbg<boolean>(page, '(d) => { if (!d.frameLog) return false; d.frameLog.start(); return true; }');
+  if (logged) {
+    await page.waitForTimeout(ms);
+    return dbg<number[]>(page, '(d) => d.frameLog.stop()');
+  }
   return page.evaluate(`new Promise((resolve) => {
-    let frames = 0;
-    const t0 = performance.now();
-    function tick() {
-      frames++;
-      if (performance.now() - t0 < 3000) requestAnimationFrame(tick);
-      else resolve((frames * 1000) / (performance.now() - t0));
+    const t = [];
+    let last = -1;
+    let t0 = -1;
+    function tick(now) {
+      if (last >= 0) t.push(now - last);
+      else t0 = now;
+      last = now;
+      if (now - t0 < ${ms}) requestAnimationFrame(tick);
+      else resolve(t);
     }
     requestAnimationFrame(tick);
-  })`) as Promise<number>;
+  })`) as Promise<number[]>;
+}
+
+const median = (xs: number[]): number => {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length === 0 ? 0 : s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+/**
+ * The view's frame rate (Phase 5 ruling 3): the median of the frame rates of
+ * every frame over 3 s, after a 1 s settle, with the city clock running.
+ */
+export async function viewFps(page: Page): Promise<number> {
+  await page.waitForTimeout(1000);
+  return median((await frameTimes(page, 3000)).filter((t) => t > 0).map((t) => 1000 / t));
 }
 
 async function views(page: Page): Promise<Array<[string, V3, V3]>> {
@@ -125,7 +190,12 @@ async function settle(page: Page, eye: V3, target: V3): Promise<void> {
   await page.waitForTimeout(1800);
 }
 
+type Budget = Awaited<ReturnType<typeof homeBudget>>;
+type ViewRow = { fps: number; calls: number; triangles: number };
+
 async function main(): Promise<void> {
+  const PORT = perfPort(process.env.PERF_PORT);
+  const tiers = perfTiers(process.env.PERF_TIERS);
   const out = resolve(process.argv[2] ?? join(ROOT, 'shots', 'perf'));
   mkdirSync(out, { recursive: true });
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-perf-'));
@@ -134,6 +204,17 @@ async function main(): Promise<void> {
   const claudeSettingsPath = join(tmp, 'claude-settings.json');
   writeFileSync(claudeSettingsPath, '{}\n');
   await seedSample(SEED_AT);
+  // The treasury and the brief read a transcripts folder. As in the UI test and the capture tool, the run says it is a
+  // test so the guard lets it read the sample's own empty folder, pinned inside the temp home before anything reads
+  // it, so ~/.claude/projects is never read.
+  process.env.PALIMPSEST_TEST_PROJECTS = '1';
+  const { useSampleFolders } = await import('../engine/sample.js');
+  useSampleFolders();
+  const projects = process.env.PALIMPSEST_CLAUDE_PROJECTS;
+  const inside = projects ? relative(resolve(tmp), resolve(projects)) : '..';
+  if (!projects || inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+    throw new Error(`perf: the transcripts folder ${projects ?? '(unset)'} is not inside the temp home ${tmp}; refusing to run`);
+  }
   const { seedEconomy } = await import('../engine/market/sample-economy.js');
   await seedEconomy(SEED_AT);
   const { setRunner } = await import('../engine/exec.js');
@@ -141,10 +222,18 @@ async function main(): Promise<void> {
   const { startServer } = await import('../engine/server.js');
   const server = await startServer({ port: PORT, claudeSettingsPath });
   const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
-  const result: Record<string, { stats: Tally; breakdown: Breakdown; fps: number }> = {};
+  const result: { viewport: typeof PERF_VIEWPORT; tiers: Partial<Record<Tier, { home: Budget; views: Record<string, ViewRow> }>> } = { viewport: PERF_VIEWPORT, tiers: {} };
+  const live: Record<string, { stats: Tally; breakdown: Breakdown; fps: number }> = {};
   const only = process.env.PERF_ONLY?.split(',');
+  const setQuality = (quality: Tier): Promise<Response> =>
+    fetch(`http://127.0.0.1:${PORT}/api/settings`, {
+      method: 'PATCH',
+      headers: { 'x-palimpsest': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ quality }),
+    });
   try {
-    const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });
+    const page = await browser.newPage({ viewport: { width: PERF_VIEWPORT.width, height: PERF_VIEWPORT.height }, deviceScaleFactor: PERF_VIEWPORT.dpr });
+    console.log(`viewport ${PERF_VIEWPORT.width}x${PERF_VIEWPORT.height} at DPR ${PERF_VIEWPORT.dpr}, port ${PORT}, tiers ${tiers.join(', ')}`);
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
@@ -154,20 +243,32 @@ async function main(): Promise<void> {
       await page.addStyleTag({ content: '.runhead, .plates { display: none !important; }' });
       await page.waitForTimeout(2500);
     };
-    // PERF_GOVERNOR=1 leaves the quality governor running in phase one too.
-    await open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug');
-    for (const [name, eye, target] of await views(page)) {
-      if (only && !only.includes(name)) continue;
-      await settle(page, eye, target);
-      await page.screenshot({ path: join(out, `${name}.png`) });
-      const breakdown = await breakdownOf(page, !!process.env.PERF_DETAIL);
-      const f = await fps(page);
-      const stats = await dbg<Tally>(page, '(d) => d.stats()');
-      result[name] = { stats, breakdown, fps: f };
-      console.log(`${name}: ${f.toFixed(0)} fps, steady ${stats.calls} calls ${(stats.triangles / 1e6).toFixed(2)}M; with the shadow redrawn ${sum(breakdown).calls} calls ${(sum(breakdown).triangles / 1e6).toFixed(2)}M`);
-      console.log(table(name, breakdown));
+    for (const tier of tiers) {
+      // The tier is Settings' quality, read as the page opens; the governor held still (PERF_GOVERNOR=1 leaves it running).
+      await setQuality(tier);
+      await open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug');
+      const stands = await dbg<string>(page, '(d) => d.quality()');
+      if (stands !== tier) throw new Error(`perf: the city opened at ${stands}, not ${tier}`);
+      const home = await homeBudget(page, tier);
+      const top = Object.entries(home.parts).sort((x, y) => y[1].triangles - x[1].triangles).slice(0, 4);
+      console.log(`${tier} home budget, the shadow map redrawn: ${home.calls} calls, ${(home.triangles / 1e6).toFixed(2)}M triangles (${top.map(([k, t]) => `${k} ${(t.triangles / 1e6).toFixed(2)}M/${t.calls}`).join(', ')})`);
+      const rows: Record<string, ViewRow> = {};
+      for (const [name, eye, target] of await views(page)) {
+        if (only && !only.includes(name)) continue;
+        await settle(page, eye, target);
+        await page.screenshot({ path: join(out, tier === 'high' ? `${name}.png` : `${name}-${tier}.png`) });
+        const breakdown = await breakdownOf(page, !!process.env.PERF_DETAIL);
+        const f = await viewFps(page);
+        const stats = await dbg<Tally>(page, '(d) => d.stats()');
+        const drawn = sum(breakdown);
+        rows[name] = { fps: f, calls: drawn.calls, triangles: drawn.triangles };
+        console.log(`${tier} ${name}: ${f.toFixed(1)} fps, steady ${stats.calls} calls ${(stats.triangles / 1e6).toFixed(2)}M; with the shadow redrawn ${drawn.calls} calls ${(drawn.triangles / 1e6).toFixed(2)}M`);
+        console.log(table(`${tier} ${name}`, breakdown));
+      }
+      result.tiers[tier] = { home, views: rows };
     }
     if (!process.env.PERF_STATIC) {
+      await setQuality('high');
       // Phase two: four live job sites, the governor running.
       const { setMarketExtras } = await import('../engine/market/api.js');
       const { economySites } = await import('../engine/market/sample-economy.js');
@@ -180,31 +281,22 @@ async function main(): Promise<void> {
         await settle(page, eye, target);
         await page.screenshot({ path: join(out, `live-${name}.png`) });
         const breakdown = await breakdownOf(page, false);
-        const f = await fps(page);
+        const f = await viewFps(page);
         const stats = await dbg<Tally>(page, '(d) => d.stats()');
-        result[`live-${name}`] = { stats, breakdown, fps: f };
+        live[`live-${name}`] = { stats, breakdown, fps: f };
         console.log(`live ${name} (${nSites} sites): ${f.toFixed(0)} fps, steady ${stats.calls} calls ${(stats.triangles / 1e6).toFixed(2)}M; with the shadow redrawn ${sum(breakdown).calls} calls ${(sum(breakdown).triangles / 1e6).toFixed(2)}M`);
         console.log(table(`live ${name}`, breakdown));
       }
       console.log(`quality after the live views: ${await dbg<string>(page, '(d) => d.quality()')}`);
       // How the frames ran over the live views: the slowest and the mean over a further ten seconds at home.
       await settle(page, vs[0][1], vs[0][2]);
-      const frames = (await page.evaluate(`new Promise((resolve) => {
-        const t = [];
-        let last = performance.now();
-        const t0 = last;
-        function tick(now) {
-          t.push(now - last);
-          last = now;
-          if (now - t0 < 10000) requestAnimationFrame(tick);
-          else resolve(t);
-        }
-        requestAnimationFrame(tick);
-      })`)) as number[];
+      const frames = await frameTimes(page, 10_000);
       const mean = frames.reduce((a, b) => a + b, 0) / frames.length;
       const slow = frames.filter((f) => f > 1000 / 48).length;
-      console.log(`live home frames over 10 s: mean ${mean.toFixed(2)} ms, slowest ${Math.max(...frames).toFixed(1)} ms, ${slow} of ${frames.length} over 20.8 ms`);
+      const hitches = frameStats(frames);
+      console.log(`live home frames over 10 s: mean ${mean.toFixed(2)} ms, slowest ${hitches.max.toFixed(1)} ms, p99 ${hitches.p99.toFixed(1)} ms, ${slow} of ${frames.length} over 20.8 ms, ${hitches.over33} over 33 ms`);
       setMarketExtras({});
+      writeFileSync(join(out, 'live.json'), JSON.stringify(live, null, 1));
     }
     writeFileSync(join(out, 'perf.json'), JSON.stringify(result, null, 1));
     if (errors.length) console.log(`console errors: ${errors.join(' | ')}`);
@@ -216,7 +308,10 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Run as a script only: the tests import the port, the tiers and the viewport without starting a run.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

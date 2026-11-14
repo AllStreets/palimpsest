@@ -115,6 +115,8 @@ interface DebugHandle {
   stats(): { calls: number; triangles: number };
   /** The next frame's draw calls and triangles by subsystem and pass, the shadow map redrawn in it. */
   breakdown(detail?: boolean): ReturnType<ReturnType<typeof createCity>['breakdown']>;
+  /** Frame times as the page draws them: start() begins a log, stop() ends it and returns each frame's time in ms (perf, frameStats). */
+  frameLog: { start(): void; stop(): number[] };
   /** The river's lanterns, its static draw calls and whether its water drew since last asked. */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** The transit network: what of it draws from this camera, and how many stops, stations, poles, bents, pylons and ranks stand. */
@@ -370,6 +372,39 @@ async function main(): Promise<void> {
     },
   });
 
+  /**
+   * A log of frame times, one requestAnimationFrame callback to the next, for
+   * the perf tool's frame rate and hitch counts. Nothing runs until start().
+   */
+  function frameLog(): { start(): void; stop(): number[] } {
+    let times: number[] | null = null;
+    let last = 0;
+    let id = 0;
+    const tick = (now: number): void => {
+      if (!times) return;
+      times.push(now - last);
+      last = now;
+      id = requestAnimationFrame(tick);
+    };
+    return {
+      start() {
+        cancelAnimationFrame(id);
+        times = [];
+        // The first callback only sets the clock: the time before it is not a frame.
+        id = requestAnimationFrame((now) => {
+          last = now;
+          id = requestAnimationFrame(tick);
+        });
+      },
+      stop() {
+        cancelAnimationFrame(id);
+        const out = times ?? [];
+        times = null;
+        return out;
+      },
+    };
+  }
+
   /** The agent board standing now (captures and the UI test), and how to take it down. */
   let agentBoardDown: (() => void) | null = null;
   function clearAgentBoard(): void {
@@ -437,6 +472,7 @@ async function main(): Promise<void> {
     precompile: () => city.precompile(),
     stats: () => city.stats(),
     breakdown: (detail) => city.breakdown(detail),
+    frameLog: frameLog(),
     river: () => city.river(),
     transit: () => city.transit(),
     vehicles: () => city.vehicles()?.view(city.camera) ?? null,
