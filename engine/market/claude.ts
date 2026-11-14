@@ -66,11 +66,13 @@ export const HOOK_MATCHER = 'Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep|mc
 export const CALL_DENY = ['Bash', 'Read', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'Task', 'Agent'];
 /**
  * Claude Code's built-in plugins (claude 2.1.319). Every settings file of a
- * city call switches each off (`enabledPlugins: { "<name>@builtin": false }`),
- * so init lists no plugins; a built-in this list misses shows up in init and
- * ends the call (`unexpected plugins`), which is the closed way to fail.
- * The Task 11 smoke run found three enabled by default: agents-md, privacy
- * and plugin-authoring.
+ * city call switches each off (`enabledPlugins: { "<name>@builtin": false }`).
+ * A real plan call still listed agents-md, telemetry, privacy and
+ * plugin-authoring in init, each with path `builtin` and source
+ * `<name>@builtin`, and no CLI flag switches them off (`--bare` drops his
+ * login, `--safe-mode` keeps built-in plugins). So init may list a plugin
+ * only when it is built in (`isBuiltinPlugin`); any other plugin ends the
+ * call (`unexpected plugins`).
  */
 export const BUILTIN_PLUGINS: readonly string[] = [
   'cc-plugin-agents-md',
@@ -89,6 +91,14 @@ export const BUILTIN_PLUGINS: readonly string[] = [
   'cc-plugin-you-should-know',
 ];
 const PLUGINS_OFF: Record<string, false> = Object.fromEntries(BUILTIN_PLUGINS.map((n) => [`${n}@builtin`, false]));
+/** The tool claude adds for `--json-schema`: a schema call may list it, no other call may. */
+export const STRUCTURED_OUTPUT_TOOL = 'StructuredOutput';
+/** A plugin init may list: one built into the CLI (path exactly `builtin`, source `<name>@builtin`). */
+export function isBuiltinPlugin(p: unknown): boolean {
+  if (!p || typeof p !== 'object') return false;
+  const { path, source } = p as { path?: unknown; source?: unknown };
+  return path === 'builtin' && typeof source === 'string' && source.endsWith('@builtin');
+}
 /**
  * Claude Code's own sandbox, a fourth layer in every work run (ruling 19).
  * claude 2.1.319 starts and finishes a work run with it inside the CLI
@@ -263,6 +273,8 @@ interface SessionSpec {
   tools: readonly string[];
   /** MCP servers init may list. */
   mcpServers: readonly string[];
+  /** The call passed `--json-schema`, so init may also list `StructuredOutput`. */
+  schema: boolean;
   caps: { maxTurns: number; maxMs: number; maxCredits: number };
   signal: AbortSignal;
   log: (line: RunLogLine) => void;
@@ -378,8 +390,10 @@ async function session(s: SessionSpec): Promise<SessionOut> {
       if (e.apiKeySource !== 'none') return stop('crashed', 'claude would bill an API key');
       // An init that does not list its tools and MCP servers cannot be checked, so it fails.
       if (!Array.isArray(e.tools) || !Array.isArray(e.mcp_servers)) return stop('crashed', 'unexpected tools');
-      if (tools.some((t) => !s.tools.includes(t)) || servers.some((m) => !s.mcpServers.includes(m))) return stop('crashed', 'unexpected tools');
-      if (plugins.length) return stop('crashed', 'unexpected plugins');
+      const allowedTools = s.schema ? [...s.tools, STRUCTURED_OUTPUT_TOOL] : s.tools;
+      if (tools.some((t) => !allowedTools.includes(t)) || servers.some((m) => !s.mcpServers.includes(m))) return stop('crashed', 'unexpected tools');
+      if (e.plugins !== undefined && !Array.isArray(e.plugins)) return stop('crashed', 'unexpected plugins');
+      if (Array.isArray(e.plugins) && !e.plugins.every(isBuiltinPlugin)) return stop('crashed', 'unexpected plugins');
     };
 
     const onAssistant = (e: Record<string, unknown>) => {
@@ -773,6 +787,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
       model: d.model,
       tools: [...d.tools, ...d.allowed],
       mcpServers: [MCP_SERVER],
+      schema: d.schema !== null,
       caps: { maxTurns: d.caps.maxTurns, maxMs: d.caps.maxMinutes * 60_000, maxCredits: d.caps.maxCredits },
       signal: d.signal,
       log: d.log,
@@ -894,6 +909,7 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
         model,
         tools: [],
         mcpServers: [],
+        schema: true,
         caps: { maxTurns: CALL_MAX_TURNS, maxMs: CALL_MAX_MS, maxCredits: Number.POSITIVE_INFINITY },
         signal,
         log,
