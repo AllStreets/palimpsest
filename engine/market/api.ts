@@ -358,7 +358,8 @@ function startAudit(ownerRaw: string, nameRaw: string): Omit<Audit, 'markdownPat
 // ------------------------------------------------------------------ the brief
 
 /** What actOn and the moves behind it say when they refuse: the item or action is not offered, a job is not where the action needs it, a repo is gone or already audited. */
-const REFUSED = /^no brief item |^\S+ does not offer |^tier needs |^cap needs |^no repo |^no job |^illegal move|^job \S+ is |^job \S+ cannot |^scope refused: |already has an audit|is halted|not halted/;
+// Phase 4: autonomy.ts's refusals of his grant, decline and revoke (Beagle, a pair not asked or already granted, a quiet decline, nothing to revoke).
+const REFUSED = /^no brief item |^\S+ does not offer |^tier needs |^cap needs |^no repo |^no job |^illegal move|^job \S+ is |^job \S+ cannot |^scope refused: |already has an audit|is halted|not halted|is never granted while|was not asked|has never been asked|is already granted|is not asked: it is |was declined; it is asked again|^There is no grant for |names no (pair|act)$|is not a kind of work/;
 
 async function briefAction(req: IncomingMessage, itemRaw: string, actionRaw: string): Promise<{ item: unknown; result: unknown }> {
   let itemId: string;

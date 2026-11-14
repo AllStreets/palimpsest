@@ -30,7 +30,7 @@ import { redact } from '../market/jobs.js';
 import { buildPast, buildPlanted, listArenas, refusal } from './arenas.js';
 import { decline, grant, grants, revoke } from './autonomy.js';
 import { campusView } from './campus.js';
-import { agreements } from './decisions.js';
+import { agreement, agreements } from './decisions.js';
 import { gateNow, startTrainNow, stopTrainNow } from './gate.js';
 import { verifiedCounts } from './history.js';
 import { baseReady, downloadBase, graduates } from './lora.js';
@@ -166,6 +166,8 @@ export interface SchoolView {
   nets: ReturnType<typeof netCards>;
   agreements: ReturnType<typeof agreements>;
   grants: ReturnType<typeof grants>;
+  /** The master's agreement on each granted or asked pair's own repo (ruling 16): agreement(kind, repo), one per grant. */
+  grantAgreements: ReturnType<typeof agreement>[];
   arenas: ArenaInfo[];
   /** Builds he asked for that the engine refused as they started, newest first, with the reason. */
   arenaRefusals: ArenaRefusal[];
@@ -188,13 +190,15 @@ export async function schoolView(now: number = Date.now()): Promise<SchoolView> 
   const heavy = await gateNow('heavy', now);
   const counts = verifiedCounts();
   const examples = Object.values(counts).reduce((n, c) => n + c.city + c.pr + c.commit, 0);
+  const pairs = grants();
   return {
     settings: getSettings().school,
     gate: { light, heavy },
     trainer: await trainerView(),
     nets: netCards(now),
     agreements: agreements(),
-    grants: grants(),
+    grants: pairs,
+    grantAgreements: pairs.map((g) => agreement(g.kind, g.repo)),
     arenas: listArenas(),
     arenaRefusals: arenaRefusals(),
     voyages: voyages().map(voyageOut),

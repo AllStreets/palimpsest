@@ -631,9 +631,12 @@ export function agreement(kind: WorkKind, repo?: string | null): Agreement {
   const rate = last.length ? ci(last.map((d) => (d.agreed ? 1 : 0))) : null;
   const eligible = last.length >= AGREE.window && rate !== null && rate.value >= AGREE.rate;
   let repoOk: boolean | null = null;
+  let own: { repoRows: number; repoAgreed: number } | null = null;
   if (repo) {
     const mine = all.filter((d) => d.repo === repo);
     repoOk = mine.length >= AGREE.repoMin && mine.slice(-AGREE.repoLast).every((d) => d.agreed === true);
+    const lastHere = mine.slice(-AGREE.repoLast);
+    own = { repoRows: lastHere.length, repoAgreed: lastHere.filter((d) => d.agreed === true).length };
   }
   let skewed = false;
   try {
@@ -641,7 +644,7 @@ export function agreement(kind: WorkKind, repo?: string | null): Agreement {
   } catch {
     skewed = false;
   }
-  return { kind, repo: repo ?? null, rows: last.length, agreed, rate, eligible, repoOk, skewed };
+  return { kind, repo: repo ?? null, rows: last.length, agreed, rate, eligible, repoOk, skewed, ...(own ?? {}) };
 }
 
 /** The agreement on each of the six kinds, pooled across repos. */

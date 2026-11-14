@@ -158,6 +158,7 @@ test('on an empty home the school view has seven thin cards each with a cause, n
   assert.deepEqual(v.voyages, []);
   assert.deepEqual(v.graduates, []);
   assert.deepEqual(v.grants, []);
+  assert.deepEqual(v.grantAgreements, [], 'no pair, no repo agreement');
   assert.deepEqual(v.trains, []);
   assert.equal(v.lora.examples, 0);
   assert.equal(v.lora.needs, 100);
@@ -265,6 +266,21 @@ test('grant without an ask is 409, and from Settings on a revoked pair is 200', 
   assert.equal(declined.json.state, 'declined');
   assert.equal((await call('POST', `/api/autonomy/merge:huge/acme/widgets/grant`)).status, 400, 'an unknown kind');
   assert.equal((await call('POST', path('grant'), { fromSettings: 'yes' })).status, 400);
+});
+
+test("the view carries each grant's own repo agreement", async () => {
+  putRepo({});
+  putGrant({ kind: 'merge:low', repo: 'acme/widgets', state: 'granted' });
+  putGrant({ kind: 'propose:harness', repo: 'acme/widgets', state: 'asked', by: 'school' });
+  const v = (await call('GET', '/api/school')).json as { grants: Grant[]; grantAgreements: Array<{ kind: string; repo: string | null; repoRows?: number; repoAgreed?: number }> };
+  assert.equal(v.grantAgreements.length, v.grants.length, 'one per grant');
+  for (const [i, g] of v.grants.entries()) {
+    const a = v.grantAgreements[i];
+    assert.equal(a.kind, g.kind);
+    assert.equal(a.repo, g.repo, 'for the pair’s own repo, not pooled');
+    assert.equal(a.repoRows, 0);
+    assert.equal(a.repoAgreed, 0);
+  }
 });
 
 test('train-now on battery is 409', async () => {

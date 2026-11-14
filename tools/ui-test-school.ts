@@ -408,6 +408,14 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     check((await srow.getAttribute('data-state')) === 'granted', 'the harbour’s pair reads granted in Settings');
     check((await srow.locator('.grant-entry-repo').getAttribute('href')) === '#/repos/tidewater/harbor-ledger', 'its repo links to the district page');
     check(/^\d\.\d\d$/.test(((await srow.locator('.grant-entry-rate').textContent()) ?? '').trim()) && /^\d+ of \d+$/.test(((await srow.locator('.grant-entry-of').textContent()) ?? '').trim()), `with the master's agreement on the kind (${((await srow.locator('.grant-entry-fig').textContent()) ?? '').trim()})`);
+    check(((await srow.locator('.grant-entry-where').textContent()) ?? '').trim() === 'on all repos', 'Settings labels it the kind’s, on all repos');
+    {
+      const fig = second.locator(`${pairSel('.sheet.district')} .grant-entry-fig`);
+      const where = ((await fig.locator('.grant-entry-where').textContent().catch(() => '')) ?? '').trim();
+      const of = ((await fig.locator('.grant-entry-of').textContent().catch(() => '')) ?? '').trim();
+      const own = (await api<SchoolView>(page, '/api/school')).grantAgreements.find((a) => a.kind === kind && a.repo === harbour);
+      check(where === 'on this repo' && !!own && of === `${own.repoAgreed} of ${own.repoRows}`, `the district page shows the repo's own agreement, labelled (${of} ${where}; engine ${own?.repoAgreed} of ${own?.repoRows})`);
+    }
     const kumo = now.grants.find((g) => g.state === 'suspended');
     if (kumo) {
       const k = page.locator(`.sheet.settings .grant-entry[data-kind="${kumo.kind}"][data-repo="${kumo.repo}"] .grant-entry-state`);

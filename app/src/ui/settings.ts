@@ -718,7 +718,7 @@ export function createSettings(
   const grants = grantsBlock({ where: 'settings', changed: () => readSchool() });
   autonomy.append(
     grants.el,
-    el('p', 'set-foot', 'The school asks for one kind of work on one repo at a time, once the master has agreed with you on 50 of that kind at 95%, its last ten there too; beside each pair stands that agreement, with its count. A grant lets the city act only where the master is at least 90% sure; it is suspended when the agreement falls short and revoked by your revert. Taking one back keeps it quiet for 30 days; you can grant it again here.'),
+    el('p', 'set-foot', 'The school asks for one kind of work on one repo at a time, once the master has agreed with you on 50 of that kind at 95%, its last ten there too; beside each pair stands the agreement on that kind across all repos, with its count. A grant lets the city act only where the master is at least 90% sure; it is suspended when the agreement falls short and revoked by your revert. Taking one back keeps it quiet for 30 days; you can grant it again here.'),
   );
   const readSchool = coalesce(async () => {
     try {

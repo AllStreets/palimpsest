@@ -20,7 +20,7 @@ import { repoTowerId } from '../engine/market/ship.js';
 import { mirrorDir } from '../engine/mirror.js';
 import { getRepo, layEarnedFloor } from '../engine/repos.js';
 import { askDue, BEAGLE_REPO, decline, grant, grantOf, grants, isBeagle, mayAct, noteActed, noteActResult, revoke, revokeOnRevert, suspend } from '../engine/school/autonomy.js';
-import { installDecisions, registerPrediction } from '../engine/school/decisions.js';
+import { agreement, installDecisions, registerPrediction } from '../engine/school/decisions.js';
 import { startSchool } from '../engine/school/tick.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
@@ -242,6 +242,21 @@ test('an eligible kind with a trusted master asks once', () => {
   openDb().exec("DELETE FROM ledger WHERE kind = 'autonomy.asked'");
   installNet(constant('master', 3, 0.95), { trusted: false });
   assert.deepEqual(askDue(clock), []);
+});
+
+test("a repo's agreement carries its own last ten beside the kind's window", () => {
+  eligible('merge:low');
+  clock = agreedDecisions('merge:low', 'acme/other', 3, clock);
+  const here = agreement('merge:low', FULL);
+  assert.equal(here.repoRows, AGREE.repoLast);
+  assert.equal(here.repoAgreed, AGREE.repoLast);
+  assert.equal(here.repoOk, true);
+  const there = agreement('merge:low', 'acme/other');
+  assert.equal(there.repoRows, 3, 'only its own decisions');
+  assert.equal(there.repoAgreed, 3);
+  assert.equal(there.repoOk, false, 'fewer than ten of its own');
+  assert.equal(there.rows, here.rows, 'the window is the kind’s, shared');
+  assert.ok(!('repoRows' in agreement('merge:low')), 'the pooled agreement carries no repo count');
 });
 
 test('the school tick asks, and not when the school is off', async () => {

@@ -1075,6 +1075,43 @@ test('a brief item whose id carries its repo (an ask for autonomy) is answered o
   assert.equal((openDb().prepare('SELECT state FROM grants WHERE kind = ? AND repo = ?').get(g.kind, FULL) as { state: string }).state, 'granted');
 });
 
+test("the brief's autonomy moves refuse what the engine refuses: Beagle, a declined pair, a revoke of nothing granted", async () => {
+  repoOf();
+  const put = (kind: string, repo: string, state: string, over: Record<string, unknown> = {}) => {
+    const g = { kind, repo, state, at: new Date().toISOString(), by: 'school', rate: null, reason: null, acted: 0, quietUntil: null, ...over };
+    openDb().prepare('INSERT OR REPLACE INTO grants (kind, repo, state, at, json) VALUES (?, ?, ?, ?, ?)').run(kind, repo, state, g.at, JSON.stringify(g));
+  };
+  const state = (kind: string, repo: string) => (openDb().prepare('SELECT state FROM grants WHERE kind = ? AND repo = ?').get(kind, repo) as { state: string } | undefined)?.state;
+  const post = (id: string, action: string) => call('POST', `/api/brief/items/${encodeURIComponent(id)}/${action}`, {});
+
+  // Beagle: an ask on it (hand-written; the engine never asks) is never granted, whatever its spelling.
+  for (const beagle of ['AllStreets/beagle', 'allstreets/Beagle']) {
+    put('propose:readme-gap', beagle, 'asked');
+    const r = await post(`autonomy:propose:readme-gap:${beagle}`, 'grant');
+    assert.equal(r.status, 409, `a Beagle grant is refused (${beagle})`);
+    assert.match(r.json.error, /AllStreets\/beagle is never granted/);
+    assert.equal(state('propose:readme-gap', beagle), 'asked', 'and nothing moved');
+  }
+
+  // A declined pair inside its quiet: the line offers no grant, so the brief refuses it and nothing moves.
+  put('merge:low', FULL, 'declined', { by: 'him', quietUntil: new Date(Date.now() + 20 * 86_400_000).toISOString() });
+  const declined = await post(`autonomy:merge:low:${FULL}`, 'grant');
+  assert.equal(declined.status, 409, 'a declined pair is not granted from the brief');
+  assert.equal(state('merge:low', FULL), 'declined');
+
+  // Revoke through the brief: only on the line of an act whose pair is granted or suspended.
+  const job = postManualJob({ repo: FULL, title: 'acted', body: 'b' });
+  const acted = (kind: string) => record('autonomy.acted', { kind, repo: FULL, jobId: job.id, key: `${kind}:${job.id}`, grant: { kind, repo: FULL }, at: new Date().toISOString() });
+  for (const [s, ok] of [['granted', true], ['suspended', true], ['revoked', false], ['asked', false]] as const) {
+    const kind = { granted: 'merge:normal', suspended: 'merge:high', revoked: 'merge:ui', asked: 'propose:harness' }[s];
+    put(kind, FULL, s, { by: s === 'suspended' ? 'school' : 'him' });
+    const id = acted(kind);
+    const r = await post(`acted:${id}`, 'revoke');
+    assert.equal(r.status, ok ? 200 : 409, `revoke from the brief on a ${s} pair`);
+    assert.equal(state(kind, FULL), ok ? 'revoked' : s, `the ${s} pair ${ok ? 'is revoked' : 'is left as it was'}`);
+  }
+});
+
 test('a refused brief action is 409 with its reason', async () => {
   repoOf();
   const r = await call('POST', '/api/brief/items/nothing/accept', {});

@@ -33,16 +33,26 @@ export interface GrantsOptions {
   now?: number;
 }
 
-/** The kind's agreement over its window, as a figure and its count, or nothing to show. */
-function agreementOf(g: Grant, agreements: Agreement[]): { rate: string; of: string } | null {
-  const a = agreements.find((x) => x.kind === g.kind && x.repo === null) ?? agreements.find((x) => x.kind === g.kind);
+/**
+ * The master's agreement beside a pair. On a district page, that repo's own
+ * (its last ten decisions of the kind there, agreement(kind, repo)); in
+ * Settings, the kind's window on all repos. Each says which it is.
+ */
+function agreementOf(g: Grant, agreements: Agreement[], own: boolean): { rate: string; of: string; where: string } | null {
+  if (own) {
+    const a = agreements.find((x) => x.kind === g.kind && x.repo === g.repo);
+    if (!a || a.skewed || !a.repoRows) return null;
+    return { rate: fixed((a.repoAgreed ?? 0) / a.repoRows), of: `${a.repoAgreed ?? 0} of ${a.repoRows}`, where: 'this repo' };
+  }
+  const a = agreements.find((x) => x.kind === g.kind && x.repo === null);
   if (!a || a.skewed || a.rows === 0 || !a.rate) return null;
-  return { rate: fixed(a.rate.value), of: `${a.agreed} of ${a.rows}` };
+  return { rate: fixed(a.rate.value), of: `${a.agreed} of ${a.rows}`, where: 'all repos' };
 }
 
 /**
  * The pairs as a ledger: kind (and repo, in Settings), the state ("granted
- * 3 November, 6 merges since"), the master's agreement on the kind, and the
+ * 3 November, 6 merges since"), the master's agreement (this repo's own on a
+ * district page, the kind's on all repos in Settings), and the
  * move. Null when there is no pair to list.
  */
 export function renderGrants(grants: Grant[], agreements: Agreement[], opts: GrantsOptions): HTMLElement | null {
@@ -73,10 +83,10 @@ export function renderGrants(grants: Grant[], agreements: Agreement[], opts: Gra
     const state = el('p', `grant-entry-state g-${g.state}`, grantState(g, now));
     state.tabIndex = -1;
     const figure = el('div', 'grant-entry-fig');
-    const agree = g.state === 'declined' ? null : agreementOf(g, agreements);
+    const agree = g.state === 'declined' ? null : agreementOf(g, agreements, !!opts.repo);
     if (agree) {
-      figure.append(el('span', 'grant-entry-rate', agree.rate), el('span', 'grant-entry-of', agree.of));
-      figure.setAttribute('aria-label', `The master agreed with you on ${agree.of} ${kindLabel(g.kind).toLowerCase()}: ${agree.rate}`);
+      figure.append(el('span', 'grant-entry-rate', agree.rate), el('span', 'grant-entry-of', agree.of), el('span', 'grant-entry-where', `on ${agree.where}`));
+      figure.setAttribute('aria-label', `The master agreed with you on ${agree.of} ${kindLabel(g.kind).toLowerCase()} on ${agree.where}: ${agree.rate}`);
     }
 
     const acts = el('div', 'grant-entry-acts');

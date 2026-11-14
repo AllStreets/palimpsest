@@ -5584,7 +5584,7 @@ a.brief-act {
 }
 .grant-entry {
   display: grid;
-  grid-template-columns: 168px minmax(0, 1fr) 72px minmax(0, max-content);
+  grid-template-columns: 168px minmax(0, 1fr) 84px minmax(0, max-content);
   column-gap: 24px;
   align-items: baseline;
   padding: 14px 0 15px;
@@ -5685,10 +5685,14 @@ a.brief-act {
   font-size: 13px;
   color: var(--ink-2);
 }
-.grant-entry-of {
+.grant-entry-of,
+.grant-entry-where {
   font-size: 11px;
   color: var(--ink-3);
   white-space: nowrap;
+}
+.grant-entry-where {
+  font-family: var(--sans);
 }
 .grant-entry-acts {
   display: flex;

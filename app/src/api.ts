@@ -74,6 +74,8 @@ export interface SchoolView {
   nets: NetCard[];
   agreements: Agreement[];
   grants: Grant[];
+  /** The master's agreement on each grant's own repo, agreement(kind, repo), one per grant. */
+  grantAgreements: Agreement[];
   arenas: ArenaInfo[];
   /** Arena builds he asked for that the engine refused as they started, newest first, with the reason. */
   arenaRefusals: Array<{ repo: string; kind: 'planted' | 'past'; reason: string; at: string }>;

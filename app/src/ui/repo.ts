@@ -807,7 +807,7 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     if (!school) return;
     const mine = school.grants.filter((g) => g.repo === r.fullName);
     autonomyAside.textContent = mine.length ? grantsAside(mine) : '';
-    grants.set({ grants: mine, agreements: school.agreements, repo: r.fullName }, noAsk(r, school));
+    grants.set({ grants: mine, agreements: school.grantAgreements ?? [], repo: r.fullName }, noAsk(r, school));
   }
 
   type ArenaKind = 'planted' | 'past';

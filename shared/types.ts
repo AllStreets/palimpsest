@@ -903,6 +903,9 @@ export interface Agreement {
   eligible: boolean;
   repoOk: boolean | null;
   skewed: boolean;
+  /** Asked for one repo: its own last `AGREE.repoLast` decisions of the kind, and how many the master agreed on. */
+  repoRows?: number;
+  repoAgreed?: number;
 }
 export type GrantState = 'asked' | 'granted' | 'declined' | 'suspended' | 'revoked';
 /** One (kind, repo) pair's autonomy; `quietUntil` silences asks after he declines or revokes. */
