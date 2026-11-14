@@ -27,7 +27,9 @@
  *   sealed use of the arena; the tenth spends it). The champion claims a win
  *   only with `lo > 0` against each, on a sealed split that is unspent and
  *   unchanged since the arena was built. Claude agents are never compared,
- *   and the view says so.
+ *   and the view says so. The use is counted as the sealed race starts; a
+ *   pause during it says so in `reason`, and `sealedUsesSpent` counts every
+ *   use the voyage spent.
  * - Recorded and emitted: `voyage.started`, `voyage.generation` (each
  *   generation raced, a resume, a pause), `voyage.ended`, each with
  *   `{ voyageId, voyage, repo }`; `voyage.commissioned { voyageId, firmId }`;
@@ -203,6 +205,8 @@ interface Sail {
   lastWait: string | null;
   /** The arena, when this night spent one of its sealed uses. */
   arena: ArenaInfo | null;
+  /** True from the moment the champion's sealed race starts until it runs to the end. */
+  inSealedRace: boolean;
 }
 
 const reasonOf = (s: AbortSignal): string => (s.reason instanceof Error ? s.reason.message : String(s.reason ?? 'stopped'));
@@ -335,12 +339,16 @@ async function sealedClaim(s: Sail): Promise<Stop | null> {
     view.reason = locals.length === 0 ? 'No seeded agent runs on a local model to compare the champion with' : 'The champion is missing from Beagle\'s store';
     return null;
   }
-  const r = await b.race.sealedRace(s.info.id, [body, ...locals], { signal: ctl.signal, seed: 1 });
-  // a sealed race that ran at all spends a use: the sealed tasks were shown
+  if (checkNow(s)) return { status: 'paused', reason: reasonOf(ctl.signal) };
+  // the use is counted before the race starts: once it runs, the sealed tasks may have been shown, whatever stops it
   const uses = fresh.sealedUses + 1;
   s.arena = { ...fresh, sealedUses: uses, status: uses >= SEALED_USES ? 'spent' : fresh.status };
   putArena(s.arena);
+  view.sealedUsesSpent = (view.sealedUsesSpent ?? 0) + 1;
+  s.inSealedRace = true;
+  const r = await b.race.sealedRace(s.info.id, [body, ...locals], { signal: ctl.signal, seed: 1 });
   if (!r.complete) return stopOf(s, r.reason);
+  s.inSealedRace = false;
   const mine = r.perTask[champ.genome] ?? {};
   const tasks = Object.keys(mine).sort();
   view.sealed = ci(tasks.map((t) => mine[t]), 1);
@@ -449,7 +457,7 @@ async function sail(info: ArenaInfo, now: number, o: { firmId?: string }): Promi
     };
     scoreGeneration(view, 0, starters.slice(0, VOYAGE.population).map((genome) => ({ genome, parents: [] })), null);
   }
-  const s: Sail = { b, info, view, ctl, clock, starters, lastWait: null, arena: null };
+  const s: Sail = { b, info, view, ctl, clock, starters, lastWait: null, arena: null, inSealedRace: false };
 
   const train: TrainState = { id: `train-voyage-${randomUUID().slice(0, 8)}`, kind: 'voyage', status: 'running', reason: null, startedAt: iso(now), endedAt: null, seconds: 0, steps: null, credits: 0 };
   const unhold = holdTrain(train, (reason) => ctl.abort(reason));
@@ -492,6 +500,10 @@ async function sail(info: ArenaInfo, now: number, o: { firmId?: string }): Promi
   const end = clock();
   view.runs.done = runsDone(b, view.id);
   view.credits = creditsOf(view.id);
+  if (stop && s.inSealedRace && s.arena) {
+    // say plainly what the cut-short sealed race cost: the use is spent, and a resume races the sealed tasks afresh
+    stop.reason = `${stop.reason}. This stopped the champion's sealed race, which had already spent one sealed use of the arena (${s.arena.sealedUses} of ${SEALED_USES}); a resumed voyage races the sealed tasks afresh and spends another`;
+  }
   if (stop?.status === 'paused') {
     view.status = 'paused';
     view.reason = stop.reason;

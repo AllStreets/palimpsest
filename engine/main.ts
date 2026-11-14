@@ -13,6 +13,7 @@ import { bankruptcyTick, dailyTick, DAY_MS, HOUR_MS, installTreasury } from './m
 import { backfillReports, ensureDailyReport, latestReportDay } from './market/report.js';
 import { createScheduler, failInterruptedRuns, shutdownHandler } from './market/runs.js';
 import { failInterruptedAnalyses } from './repos.js';
+import { registerArenas } from './school/arenas.js';
 import { ensureCampus } from './school/campus.js';
 import { closeOrphanedActs } from './school/autonomy.js';
 import { catchUpPredictions, installDecisions } from './school/decisions.js';
@@ -108,6 +109,9 @@ async function main(): Promise<void> {
   // Phase 4 ruling 12: the nightly retrain. Each tick does nothing while the school is off or the light gate says no;
   // never started on a sample home (sampleMain) or by a test (tests call startSchool themselves, with fakes).
   const school = startSchool();
+  // Phase 4 ruling 21: every ready (or spent) arena is known to Beagle before anything races on it, and scratch
+  // clones an earlier engine left are removed. Only here, never on a sample home or under a test.
+  registerArenas().catch((err) => console.error('palimpsest: the arenas could not be registered with Beagle:', err));
   // Phase 4 ruling 15: a proposal or an open PR that became pending while no engine ran gets the master's guess now,
   // only while it is still undecided, so every guess stays prospective.
   catchUpPredictions();

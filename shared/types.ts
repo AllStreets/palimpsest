@@ -989,6 +989,8 @@ export interface VoyageView {
   claim?: boolean;
   /** What the champion was not compared with: Claude agents never are, since voyages race local models only. */
   notCompared?: string;
+  /** Sealed uses of the arena this voyage has spent: one per sealed race started, one cut short by a pause included. */
+  sealedUsesSpent?: number;
 }
 /** A LoRA adapter that beat its base on a sealed set (ruling 25). */
 export interface Graduate {

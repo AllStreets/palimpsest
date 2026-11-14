@@ -15,6 +15,7 @@ import { openDb } from '../engine/db.js';
 import { realRunner, realSpawner, setRunner, setSpawner, type Runner, type SpawnDone, type Spawned, type SpawnLine, type SpawnOpts, type Spawner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { entries, record } from '../engine/ledger.js';
+import { verifyReplay } from '../engine/market/replay.js';
 import { trainerProfile } from '../engine/market/sandbox.js';
 import { TRAINER_DIR } from '../engine/school/trainer-env.js';
 import { ENGINE_STOPPED_REASON, failInterruptedTrains, liveTrains, pauseAll, setGate, setKill, startTrain, type StartTrain } from '../engine/school/trainer.js';
@@ -477,4 +478,25 @@ test('seconds are counted from the start after the gate check, not from the call
   const r = await p;
   assert.equal(r.seconds, 3);
   assert.equal(r.credits, localCredits(3, 4.3));
+});
+
+test('a train a crash left running replays as paused, a process train and a voyage train alike', async (t) => {
+  clock(t);
+  setKill(() => true);
+  fakePs({});
+  const at = new Date(NIGHT - 60_000).toISOString();
+  const lora: TrainState = { id: 'train-crash-lora', kind: 'lora', status: 'running', reason: null, startedAt: at, endedAt: null, seconds: 0, steps: { done: 40, of: 600, lost: 0, optimizerReset: false }, credits: 0 };
+  const voyage: TrainState = { ...lora, id: 'train-voyage-crash', kind: 'voyage', steps: null };
+  // as the engine wrote them before it died: the row and train.started, nothing after
+  for (const train of [lora, voyage]) {
+    openDb().prepare('INSERT OR REPLACE INTO trains (id, kind, status, json) VALUES (?, ?, ?, ?)').run(train.id, train.kind, train.status, JSON.stringify(train));
+    record('train.started', { train });
+  }
+  await failInterruptedTrains();
+  const rows = openDb().prepare('SELECT id, status FROM trains ORDER BY id').all() as Array<{ id: string; status: string }>;
+  assert.deepEqual(rows.map((r) => ({ ...r })), [
+    { id: 'train-crash-lora', status: 'paused' },
+    { id: 'train-voyage-crash', status: 'paused' },
+  ]);
+  assert.deepEqual(verifyReplay().diffs.filter((d) => /^train\b/.test(d)), []);
 });

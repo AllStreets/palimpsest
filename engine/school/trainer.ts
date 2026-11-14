@@ -26,6 +26,7 @@ import { GATE } from '../../shared/school-rules.js';
 import type { GateState, ModelRef, TrainKind, TrainState } from '../../shared/types.js';
 import { emit } from '../events.js';
 import { getRunner, getSpawner, NEVER_INHERITED, signalGroup, type SpawnLine, type Spawned } from '../exec.js';
+import { openDb } from '../db.js';
 import { paths } from '../home.js';
 import { record, query } from '../ledger.js';
 import { charge, unattended } from '../market/budget.js';
@@ -244,6 +245,7 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
   const l: Live = { state, gate: o.gate, child, savedStep: 0, poll: null, killTimer: null };
   live.set(id, l);
   // the pid is the process group too (the spawner starts children detached): a restart reaps it by this
+  putTrainRow(state);
   record('train.started', { train: { ...state }, pid: child.pid });
   emit('train.started', { train: { ...state } });
 
@@ -296,9 +298,15 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
     at: endedAt,
   });
   const entry = paused ? { train: { ...state }, reason: state.reason, lost: state.steps?.lost ?? 0 } : { train: { ...state } };
+  putTrainRow(state);
   record(paused ? 'train.paused' : 'train.ended', entry);
   emit(paused ? 'train.paused' : 'train.ended', entry);
   return { ...state };
+}
+
+/** Writes a train's row as its ledger entry carries it, so `verifyReplay` finds the table and the ledger agree. */
+function putTrainRow(t: TrainState): void {
+  openDb().prepare('INSERT OR REPLACE INTO trains (id, kind, status, json) VALUES (?, ?, ?, ?)').run(t.id, t.kind, t.status, JSON.stringify(t));
 }
 
 /** Whether `pid` is still a process running our `school.py` (its command line names it), so a reused pid is never signalled. */
@@ -342,6 +350,8 @@ export async function failInterruptedTrains(now: number = Date.now()): Promise<v
       endedAt: new Date(now).toISOString(),
       steps: t.steps ? { ...t.steps, optimizerReset: true } : null,
     };
+    // the row replay compares with the ledger: whatever kind of train it was (a process's or a voyage's)
+    putTrainRow(train);
     record('train.paused', { train, reason: ENGINE_STOPPED_REASON, lost: train.steps?.lost ?? 0 });
   }
 }

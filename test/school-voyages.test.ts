@@ -27,7 +27,7 @@ import { closeBeagle, loadBeagle } from '../engine/school/beagle.js';
 import { campusOrigin, ensureCampus } from '../engine/school/campus.js';
 import { resetGateCache } from '../engine/school/gate.js';
 import { schoolOff, startSchool, TURNED_OFF_REASON } from '../engine/school/tick.js';
-import { liveTrains, setGate } from '../engine/school/trainer.js';
+import { failInterruptedTrains, liveTrains, setGate } from '../engine/school/trainer.js';
 import { sailVoyage, setVoyagePoll, voyages } from '../engine/school/voyages.js';
 import { localDay } from '../shared/day.js';
 import { SEALED_USES, VOYAGE } from '../shared/school-rules.js';
@@ -610,4 +610,57 @@ test('parents travel to the campus and home', async () => {
   }
   const started = events.filter((e) => e.type === 'trip.started').map((e) => (e.data as { trip: Trip }).trip);
   assert.ok(started.some((t) => t.reason === 'school'));
+});
+
+test('a pause during the sealed race says the sealed use was spent, and a resume spends another', async () => {
+  seedLocals();
+  // the first sealed task the champion's race reaches turns the school off
+  let stopped = false;
+  backends({
+    hold: (i) => {
+      if (!stopped && i.turns.some((t) => /Task s\d/.test(t.content))) {
+        stopped = true;
+        schoolOff(NOW);
+      }
+      return null;
+    },
+  });
+  await fakeArena();
+  const paused = await sailVoyage(ARENA, NOW, {});
+  assert.ok(stopped, 'the sealed race was reached');
+  assert.equal(paused.status, 'paused');
+  assert.match(paused.reason ?? '', new RegExp(`^${TURNED_OFF_REASON}`));
+  assert.match(paused.reason ?? '', /stopped the champion's sealed race, which had already spent one sealed use of the arena \(1 of 10\)/);
+  assert.equal(paused.sealedUsesSpent, 1);
+  assert.equal(paused.claim, false);
+  assert.equal(arenaInfo(ARENA)?.sealedUses, 1);
+  // the pause carries the arena whole, so the ledger holds the spent use
+  const pauseEntry = ledgerOf('voyage.generation').at(-1)!;
+  assert.equal((pauseEntry.voyage as VoyageView).status, 'paused');
+  assert.equal((pauseEntry.arena as ArenaInfo).sealedUses, 1);
+  assertSchoolReplays();
+
+  // the next night: no generation is raced again, the sealed race runs afresh and spends a second use
+  calls = [];
+  const night2At = NOW + 2 * HOUR;
+  readingAt(night2At);
+  const done = await sailVoyage(ARENA, night2At, {});
+  assert.equal(done.status, 'done', done.reason ?? '');
+  assert.equal(done.claim, true);
+  assert.equal(done.sealedUsesSpent, 2);
+  assert.equal(arenaInfo(ARENA)?.sealedUses, 2);
+  assert.ok(calls.every((c) => /Task s\d/.test(c.user)), 'only the sealed race ran');
+  assertSchoolReplays();
+});
+
+test('a voyage the engine stopped mid-sail replays clean once the next engine pauses its train', async () => {
+  seedLocals();
+  backends();
+  await fakeArena();
+  // the voyage's train as the voyage writes it, never ended: the engine died
+  const train = { id: 'train-voyage-dead', kind: 'voyage' as const, status: 'running' as const, reason: null, startedAt: new Date(NOW).toISOString(), endedAt: null, seconds: 0, steps: null, credits: 0 };
+  openDb().prepare('INSERT OR REPLACE INTO trains (id, kind, status, json) VALUES (?, ?, ?, ?)').run(train.id, train.kind, train.status, JSON.stringify(train));
+  (await import('../engine/ledger.js')).record('train.started', { train, voyageId: 'v-dead' });
+  await failInterruptedTrains();
+  assertSchoolReplays();
 });
