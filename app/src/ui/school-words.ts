@@ -4,8 +4,8 @@
  * n; every empty state says why, in the engine's own words where it has
  * them (a thin net's cause, a gate's reason, a grant's sentence).
  */
-import { AGREE, NET_MIN, SEALED_USES } from '../../../shared/school-rules.js';
-import type { Agreement, GateState, Grant, Interval, NetCard, NetName, TrainKind, TrainState, VoyageView, WorkKind } from '../../../shared/types.js';
+import { AGREE, NET_MIN, SEALED_USES, SURVIVE_DAYS } from '../../../shared/school-rules.js';
+import type { Agreement, GateState, Grant, Interval, JobSchool, NetCard, NetName, Prediction, TrainKind, TrainState, VoyageView, WorkKind } from '../../../shared/types.js';
 import { ago, plural } from './controls.js';
 import { shortDate } from './story.js';
 
@@ -238,4 +238,37 @@ export function downloadLine(l: { baseReady: boolean; download: { running: boole
 export function trainerLine(t: { ready: boolean; reason: string | null; arch: string | null; mlx: string | null; mlxLm: string | null; pinned: boolean }): string {
   if (!t.ready) return stop(t.reason ?? 'The trainer is not set up on this Mac');
   return `The trainer is ready: ${t.arch ?? 'arch unread'}, mlx ${t.mlx ?? '?'}, mlx-lm ${t.mlxLm ?? '?'}, ${t.pinned ? 'the pinned versions' : 'not the pinned versions'}.`;
+}
+
+// ---------------------------------------------------------------- a job (Task 31)
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+/** "12 November at 18:30", in local time. */
+const writtenAt = (iso: string): string => {
+  const d = new Date(iso);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} at ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+/**
+ * The master's guess on a job, written down before he decided: which way it
+ * leaned, the probability that he approves, the version and when; or its
+ * abstention, in the engine's own reason.
+ */
+export function masterGuessLine(p: Prediction): string {
+  if (p.p === null) return p.reason ? `The master made no guess: ${lower(stop(p.reason.trim()))}` : 'The master made no guess.';
+  const verb = p.kind.startsWith('propose:') ? 'accept' : 'merge';
+  const from = `${p.version !== null ? `, from v${p.version}` : ''}, written down ${writtenAt(p.at)}.`;
+  if (p.p >= 0.5) return `The master guessed you would ${verb} it: ${fixed(p.p)}${from}`;
+  return `The master guessed you would not ${verb} it: ${fixed(p.p)} that you would${from}`;
+}
+
+/** The other nets on a job, one sentence each, only those that spoke (the school on and the net trusted). */
+export function netsOnJob(s: JobSchool, agent: (id: string) => string): string[] {
+  const out: string[] = [];
+  if (s.appraisal !== null) out.push(`The appraiser gives the awarded bid ${fixed(s.appraisal)} to merge.`);
+  const top = s.router.slice(0, 3).map((r) => `${agent(r.agentId)} (${fixed(r.p)})`);
+  if (top.length === 1) out.push(`The router would send it to ${top[0]}.`);
+  else if (top.length > 1) out.push(`The router would send it first to ${top[0]}, then ${top.length === 2 ? top[1] : `${top[1]} and ${top[2]}`}.`);
+  if (s.durability !== null) out.push(`Durability gives the latest inspected run ${fixed(s.durability)} to survive ${SURVIVE_DAYS} days.`);
+  return out;
 }

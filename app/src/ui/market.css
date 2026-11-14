@@ -5569,3 +5569,313 @@ a.brief-act {
   max-width: 66ch;
   font-size: 13.5px;
 }
+
+/* ================================================================ autonomy where he decides (Phase 4 Task 31) */
+/* One ruled row per pair: the kind (and its repo, in Settings), its state in a few words, the master's agreement, its move. */
+
+.grants-block,
+.district-arena,
+.job-school {
+  --rust: #d07a62;
+}
+.grant-book {
+  list-style: none;
+  margin-top: 2px;
+}
+.grant-entry {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) 72px minmax(0, max-content);
+  column-gap: 24px;
+  align-items: baseline;
+  padding: 14px 0 15px;
+  border-bottom: 1px solid var(--rule);
+}
+.grant-entry[aria-busy='true'] {
+  opacity: 0.72;
+}
+.grant-entry-name {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.grant-entry-kind {
+  font-family: var(--serif);
+  font-size: 16px;
+  line-height: 1.25;
+  color: var(--ink);
+}
+.grant-entry-repo {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  text-decoration: none;
+}
+.grant-entry-repo:hover {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.grant-entry-repo:focus-visible,
+.grant-entry-to:focus-visible,
+.grant-entry-state:focus-visible,
+.darena-name:focus-visible,
+.job-school-link:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+/* The state as a ledger writes it, after a small slab: bronze granted, hollow asked, rust suspended, struck when taken back. */
+.grant-entry-state {
+  position: relative;
+  padding-left: 17px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  outline: none;
+}
+.grant-entry-state::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 8px;
+  height: 5px;
+  box-sizing: border-box;
+  border: 1px solid var(--ink-3);
+}
+.grant-entry-state.g-asked {
+  color: var(--ink);
+}
+.grant-entry-state.g-asked::before {
+  border-color: var(--ink);
+}
+.grant-entry-state.g-granted {
+  color: var(--ink);
+}
+.grant-entry-state.g-granted::before {
+  border-color: var(--bronze);
+  background: var(--bronze);
+}
+.grant-entry-state.g-suspended {
+  color: var(--rust);
+}
+.grant-entry-state.g-suspended::before {
+  border-color: var(--rust);
+  background: var(--rust);
+}
+.grant-entry-state.g-revoked::before,
+.grant-entry-state.g-declined::before {
+  background: linear-gradient(to bottom right, transparent 42%, var(--ink-3) 42% 58%, transparent 58%);
+}
+.grant-entry-fig {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.grant-entry-rate {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.grant-entry-of {
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.grant-entry-acts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  column-gap: 16px;
+  row-gap: 2px;
+  white-space: nowrap;
+}
+.grant-move:disabled {
+  color: var(--ink-3);
+  cursor: default;
+}
+.grant-entry[data-state='asked'] .grant-move[data-move='grant'] {
+  color: var(--ink);
+}
+.grant-entry-to {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.2);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.grant-entry-to:hover {
+  color: var(--ink-2);
+}
+.grant-entry-error {
+  grid-column: 2 / -1;
+  margin-top: 6px;
+  max-width: 64ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--err);
+}
+.grants-empty {
+  margin-top: 14px;
+  max-width: 64ch;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+/* Settings sets the block under its section's rule; the count rides the title's right. */
+.set-sec.autonomy .set-sec-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.set-sec-aside {
+  font-family: var(--sans);
+  font-style: normal;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.set-sec.autonomy .set-foot {
+  max-width: 78ch;
+  margin-top: 12px;
+}
+
+/* ---------------------------------------------------------------- the district's arenas */
+
+.darena-list {
+  list-style: none;
+}
+.darena-list[hidden] {
+  display: none;
+}
+.darena {
+  padding: 12px 0 13px;
+  border-bottom: 1px solid var(--rule);
+}
+.darena-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.darena-name {
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.darena-name:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+  text-underline-offset: 4px;
+}
+.darena-state {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.darena-state.g-ready {
+  color: var(--bronze);
+}
+.darena-state.g-failed,
+.darena-state.g-spent {
+  color: var(--rust);
+}
+.darena-line {
+  margin-top: 3px;
+  max-width: 64ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.district-row.darena-build {
+  grid-template-columns: 168px minmax(0, 1fr) auto;
+}
+.darena-build .district-row-name {
+  cursor: default;
+}
+.darena-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 22px;
+  margin-bottom: 6px;
+}
+.darena-kinds .quality-name {
+  min-width: 0;
+}
+.darena-what {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.darena-go {
+  justify-self: end;
+}
+.darena-go[aria-disabled='true'] {
+  color: var(--ink-3);
+  border-color: rgba(236, 230, 218, 0.14);
+  background: none;
+  cursor: default;
+}
+.darena-go:focus-visible,
+.darena-kind:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.darena-build[aria-busy='true'] .darena-go {
+  opacity: 0.72;
+}
+
+/* ---------------------------------------------------------------- what the school thinks, on a job */
+
+.job-school-link {
+  font-size: 12px;
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.2);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.job-school-link:hover {
+  color: var(--ink-2);
+}
+.job-school-master {
+  margin-top: 14px;
+  max-width: 64ch;
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.45;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+.job-school-master.abstained {
+  font-style: italic;
+  color: var(--ink-2);
+}
+.job-school-nets {
+  list-style: none;
+  margin-top: 10px;
+}
+.job-school-net {
+  padding: 7px 0;
+  border-top: 1px solid var(--rule);
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.job-school-key {
+  margin-top: 10px;
+  max-width: 72ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}

@@ -651,6 +651,13 @@ function sentence(row: LedgerRow, names: Names): string {
       return 'A trip ended.';
     case 'run.note':
       return t(d.text ?? d.note, 240) || 'A note.';
+    // Phase 4: the master's guess, written down before he decided, and his decision against it; the city's own act.
+    case 'master.predicted':
+      return typeof d.p === 'number' ? `The master wrote down its guess: ${d.p.toFixed(2)} that you approve.` : `The master made no guess${d.reason ? `: ${t(d.reason, 160).replace(/^./, (c) => c.toLowerCase()).replace(/\.?$/, '.')}` : '.'}`;
+    case 'decision.resolved':
+      return d.agreed === true ? 'You decided as the master guessed.' : d.agreed === false ? 'You decided against the master’s guess.' : 'You decided; the master had no guess before.';
+    case 'autonomy.acted':
+      return d.result ? (d.result.ok ? 'The city’s own act went through.' : `The city’s own act did not go through${d.result.reason ? `: ${t(d.result.reason, 160).replace(/\.?$/, '.')}` : '.'}`) : 'The city acted on its own, under your grant.';
     default:
       return t(row.kind, 60);
   }

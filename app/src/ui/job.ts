@@ -9,6 +9,7 @@ import { blockNodes, coalesce, detailSheet, keyedSlot, namesOf, outLink, pageLin
 import { evidenceRef, verdictOf } from './audit';
 import { VERDICT_MEANING, whatToBuild } from './audit-words';
 import { longDate } from './story';
+import { masterGuessLine, netsOnJob } from './school-words';
 import './market.css';
 
 export interface JobPage {
@@ -99,6 +100,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     terms: keyedSlot(body),
     bids: keyedSlot(body),
     work: keyedSlot(body),
+    school: keyedSlot(body),
     floor: keyedSlot(body),
     ledger: keyedSlot(body),
   };
@@ -144,7 +146,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     if (e.type === 'engine.reconnected') return read();
     const d = (e.data ?? {}) as Record<string, any>;
     const runIds = new Set(detail?.runs.map((r) => r.id) ?? []);
-    const jobId = d.job?.id ?? d.jobId ?? d.bid?.jobId ?? d.satOut?.jobId ?? d.run?.jobId ?? d.inspection?.jobId ?? d.site?.jobId ?? null;
+    const jobId = d.job?.id ?? d.jobId ?? d.bid?.jobId ?? d.satOut?.jobId ?? d.run?.jobId ?? d.inspection?.jobId ?? d.site?.jobId ?? d.prediction?.jobId ?? d.decision?.jobId ?? null;
     const runId = d.runId ?? d.run?.id ?? d.inspection?.runId ?? null;
     if (e.type === 'run.log') return;
     if (e.type === 'run.progress' && runIds.has(runId) && detail) {
@@ -658,6 +660,34 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     return sec;
   }
 
+  // ---------------------------------------------------------------- what the school thinks (Phase 4 Task 31)
+
+  /**
+   * The master's guess on the decision this job put to him, written down
+   * before he decided, or why it made none; and what the other trusted nets
+   * say. Nothing when the school has nothing on record here.
+   */
+  function schoolSection(d: JobDetail): HTMLElement | null {
+    const s = d.school;
+    const others = netsOnJob(s, (agentId) => names.agent(agentId));
+    if (!s.master && !others.length) return null;
+    const sec = el('section', 'detail-sec job-school');
+    const toMaster = el('a', 'job-school-link', 'The master');
+    toMaster.href = placeHref('school', 'master');
+    sec.append(secHead('What the school thinks', toMaster));
+    if (s.master) {
+      const p = el('p', `job-school-master${s.master.p === null ? ' abstained' : ''}`, masterGuessLine(s.master));
+      sec.append(p);
+    }
+    if (others.length) {
+      const ul = el('ul', 'job-school-nets');
+      for (const line of others) ul.append(el('li', 'job-school-net', line));
+      sec.append(ul);
+    }
+    sec.append(el('p', 'job-school-key', 'A guess is written down before you decide and never changes after; the city acts on its own only where you granted it, and only at 0.90 or more.'));
+    return sec;
+  }
+
   // ---------------------------------------------------------------- the floor
 
   interface FloorFact {
@@ -759,6 +789,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     const clockEl = body.querySelector<HTMLElement>('.job-clock');
     if (clockEl) clockEl.textContent = closesIn(j.bidsCloseAt, Date.now());
     slots.work(JSON.stringify([d.runs, d.inspections.map((i) => i.id), firms.length, minute]), () => workSection(d));
+    slots.school(JSON.stringify([d.school, firms.length]), () => schoolSection(d));
     slots.floor(JSON.stringify([d.ledger.filter((r) => r.kind.startsWith('floor.')).map((r) => r.id), j.floorId]), () => floorSection(j, d));
     slots.ledger(JSON.stringify([d.ledger.length, d.ledger.at(-1)?.id, firms.length, new Date().getDate()]), () => ledgerSection(d));
   }

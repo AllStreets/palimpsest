@@ -20,7 +20,9 @@ import { placeHref, routeHref } from '../router';
 import { evidenceRef, tierPicker, verdictOf } from './audit';
 import { leadOf, VERDICT_MEANING } from './audit-words';
 import { cleanText } from './board';
-import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, itemSentence, sinceLine, usageLine } from './brief-words';
+import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantState, itemSentence, kindWords, sinceLine, usageLine } from './brief-words';
+import { agreementLine } from './school-words';
+import { WORK_KINDS } from '../../../shared/school-rules';
 import { createSheet, el, textButton } from './controls';
 import { awardRounds, type Names } from './detail';
 import { coalesce, namesOf, refusal, secHead } from './pages';
@@ -51,7 +53,7 @@ const SECTIONS: Array<[keyof Brief['sections'], string]> = [
   ['city', 'In the city'],
 ];
 /** The engine events after which the brief is read again: anything that moves an item or adds one. */
-const READ_ON = /^(brief\.action|job\.(changed|proposed|posted)|audit\.(ended|started)|milestone\.reached|repo\.(halted|resumed|connected|disconnected)|run\.ended|merge\.(detected|reverted)|report\.written)$/;
+const READ_ON = /^(brief\.action|job\.(changed|proposed|posted)|audit\.(ended|started)|milestone\.reached|repo\.(halted|resumed|connected|disconnected)|run\.ended|merge\.(detected|reverted)|report\.written|autonomy\.(asked|granted|declined|suspended|revoked|acted))$/;
 /** The words for a week with fewer than two things to walk through. */
 export const NO_TOUR = 'Not enough happened this week for a walk through it.';
 
@@ -297,6 +299,24 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     }
     if (item.kind === 'halt' && item.repo) {
       box.append(el('p', 'brief-why-text', cleanText(item.text, 600)), link('The district page', placeHref('repo', item.repo)));
+      return box;
+    }
+    if ((item.kind === 'autonomy' || item.kind === 'acted') && item.repo) {
+      // The pair: from the ask's id (autonomy:<kind>:<repo>), or the kind the act's line names.
+      const kind = WORK_KINDS.find((k) => item.id.startsWith(`autonomy:${k}:`)) ?? WORK_KINDS.find((k) => item.text.includes(` ${k} `));
+      const v = await api.school();
+      const a = kind ? v.agreements.find((x) => x.kind === kind && x.repo === null) : undefined;
+      const g = kind ? v.grants.find((x) => x.kind === kind && x.repo === item.repo) : undefined;
+      if (a && kind) box.append(el('p', 'brief-why-text', a.skewed ? agreementLine(a) : `On ${kindWords(kind)}, the master ${agreementLine(a).replace(/^./, (c) => c.toLowerCase())}`));
+      if (g) box.append(el('p', 'brief-why-text', `On this repo: ${grantState(g)}.`));
+      box.append(el('p', 'brief-why-text', 'The city acts under a grant only when the master is at least 0.90 sure and every check holds; a revert of anything it did takes the grant back.'));
+      const more = el('p', 'brief-why-more');
+      const toSettings = el('a', 'brief-why-link', 'Every grant, in Settings');
+      toSettings.href = routeHref('settings');
+      const toRepo = el('a', 'brief-why-link', 'the district page');
+      toRepo.href = placeHref('repo', item.repo);
+      more.append(toSettings, '; this one also on ', toRepo, '.');
+      box.append(more);
       return box;
     }
     if (item.kind === 'stale') {

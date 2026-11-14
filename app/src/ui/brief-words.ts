@@ -9,7 +9,8 @@
  * and from model output, so they are only ever cleaned and set as text.
  */
 import { TIER_VALUE } from '../../../shared/market-rules.js';
-import type { Brief, BriefAction, BriefItem, BudgetWindow } from '../../../shared/types.js';
+import { AGREE, isBeagle, WORK_KINDS } from '../../../shared/school-rules.js';
+import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant, WorkKind } from '../../../shared/types.js';
 import { cleanText } from './board.js';
 import type { Names } from './detail.js';
 
@@ -110,6 +111,10 @@ const wholePcts = (s: string): string => s.replace(/(\d+\.\d+)%/g, (_, n: string
 export function itemSentence(item: BriefItem, names: Names): string {
   void names;
   let text = cleanText(item.text, 600);
+  if (item.kind === 'autonomy' || item.kind === 'acted') {
+    text = sayKinds(text);
+    if (item.repo) text = text.split(`on its last ${AGREE.repoLast} on ${cleanText(item.repo, 120)}`).join(`on its last ${AGREE.repoLast} here`);
+  }
   if (item.repo) {
     const repo = cleanText(item.repo, 120);
     text = text.split(` on ${repo}`).join('');
@@ -140,6 +145,9 @@ const DONE: Partial<Record<BriefAction, string>> = {
   resume: 'Resumed',
   audit: 'Audit queued',
   tour: 'Walked through the week',
+  grant: 'Granted',
+  decline: `Not yet; quiet for ${AGREE.quietDays} days`,
+  revoke: 'Taken back',
 };
 
 /**
@@ -183,4 +191,119 @@ export function sinceLine(since: string, today: string, first: boolean): string 
   const at = Date.parse(since);
   const when = Number.isFinite(at) ? `Since ${dayWords(at, today) || 'this morning '}at ${clock(at)}.` : '';
   return first ? when : `${when} You have opened it once already today.`.trim();
+}
+
+// ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
+
+const KIND_WORDS: Record<WorkKind, string> = {
+  'propose:harness': 'harness proposals',
+  'propose:readme-gap': 'README gap proposals',
+  'merge:low': 'low-tier merges',
+  'merge:normal': 'normal-tier merges',
+  'merge:high': 'high-tier merges',
+  'merge:ui': 'UI merges',
+};
+
+/** A kind of his work in words: "README gap proposals", "low-tier merges". */
+export function kindWords(kind: WorkKind): string {
+  return KIND_WORDS[kind] ?? kind;
+}
+
+const CODES = new RegExp(`\\b(${WORK_KINDS.map((k) => k.replace(/[-:]/g, (c) => `\\${c}`)).join('|')})\\b`, 'g');
+
+/**
+ * The engine names a kind by its code ("50 merge:low decisions", "its
+ * merge:low grant"); he reads it in words ("50 low-tier merges", "its grant
+ * for low-tier merges").
+ */
+function sayKinds(text: string): string {
+  return text
+    .replace(new RegExp(`(\\d+) ${CODES.source} decisions`, 'g'), (_, n: string, k: WorkKind) => `${n} ${kindWords(k)}`)
+    .replace(new RegExp(`its ${CODES.source} grant`, 'g'), (_, k: WorkKind) => `its grant for ${kindWords(k)}`)
+    .replace(CODES, (k) => kindWords(k as WorkKind));
+}
+
+/** "3 November", in local time. */
+const dayMonth = (ms: number): string => {
+  const d = new Date(ms);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+};
+
+/** When an ask came, as he would say it: today, yesterday, on Tuesday, on 1 November. */
+function askedWhen(ms: number, now: number): string {
+  const w = dayWords(ms, localDay(now)).trim();
+  if (!w) return 'today';
+  if (w === 'yesterday') return w;
+  return `on ${w}`;
+}
+
+/** What the city has done under a grant: "6 merges", "2 proposals accepted", "none". */
+function actedSince(g: Grant): string {
+  if (g.acted <= 0) return 'none';
+  if (g.kind.startsWith('merge:')) return `${g.acted} merge${g.acted === 1 ? '' : 's'}`;
+  return `${g.acted} proposal${g.acted === 1 ? '' : 's'} accepted`;
+}
+
+/** His undo, as decisions.ts writes the suspension's reason. */
+const UNDO_REASON = 'he undid it';
+
+const lowerFirst = (s: string): string => s.charAt(0).toLowerCase() + s.slice(1);
+
+/**
+ * A pair's state in a few words, as a ledger sets them: "asked on Tuesday",
+ * "granted 3 November, 6 merges since", "revoked by a revert on 8
+ * November", "you took it back; quiet until 2 December", "suspended: you
+ * undid an accepted proposal". A suspension the school made for its own
+ * reason keeps the engine's sentence whole, its kinds said in words.
+ */
+export function grantState(g: Grant, now: number = Date.now()): string {
+  const at = Date.parse(g.at);
+  const quiet = g.quietUntil && Date.parse(g.quietUntil) > now ? dayMonth(Date.parse(g.quietUntil)) : null;
+  switch (g.state) {
+    case 'asked':
+      return `asked ${askedWhen(at, now)}`;
+    case 'granted':
+      return `granted ${dayMonth(at)}, ${actedSince(g)} since`;
+    case 'suspended': {
+      if (!g.reason) return 'suspended by the school';
+      if (g.reason.trim() === UNDO_REASON) return `suspended: ${g.kind.startsWith('propose:') ? 'you undid an accepted proposal' : 'you undid a merge it made'}`;
+      return `suspended: ${lowerFirst(sayKinds(cleanText(g.reason, 400)).replace(/\.$/, ''))}`;
+    }
+    case 'revoked':
+      if (g.by === 'revert') return `revoked by a revert on ${dayMonth(at)}`;
+      return quiet ? `you took it back; quiet until ${quiet}` : `you took it back on ${dayMonth(at)}`;
+    case 'declined':
+      return quiet ? `you said not yet; quiet until ${quiet}` : `you said not yet on ${dayMonth(at)}`;
+  }
+}
+
+export type GrantMove = 'grant' | 'decline' | 'revoke' | 'regrant';
+
+/** Each move's label, the brief's own words for the first three. */
+export const MOVE_LABEL: Record<GrantMove, string> = {
+  grant: LABELS.grant,
+  decline: LABELS.decline,
+  revoke: LABELS.revoke,
+  regrant: 'Grant it again',
+};
+
+/**
+ * What a pair offers, and only what the engine accepts (Task 16): an open
+ * ask is granted or declined; a granted or suspended pair is taken back; a
+ * revoked pair is granted again from Settings alone; a decline waits out
+ * its quiet. Beagle is never offered a grant.
+ */
+export function grantMoves(g: Grant, where: 'settings' | 'district'): GrantMove[] {
+  const beagle = isBeagle(g.repo);
+  switch (g.state) {
+    case 'asked':
+      return beagle ? ['decline'] : ['grant', 'decline'];
+    case 'granted':
+    case 'suspended':
+      return ['revoke'];
+    case 'revoked':
+      return where === 'settings' && !beagle ? ['regrant'] : [];
+    case 'declined':
+      return [];
+  }
 }

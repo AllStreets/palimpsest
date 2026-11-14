@@ -17,7 +17,7 @@ import { join } from 'node:path';
 
 import type { Browser, Page } from 'playwright';
 
-import type { Graduate, NetCard, VoyageView } from '../shared/types.js';
+import type { Graduate, Grant, NetCard, VoyageView } from '../shared/types.js';
 import type { SchoolView } from '../app/src/api.js';
 
 type Check = (ok: boolean, what: string) => void;
@@ -304,5 +304,240 @@ export async function schoolEmptyChecks(browser: Browser, origin: string, check:
     check(errors.length === 0, `the empty school has no console errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   } finally {
     await page.close();
+  }
+}
+
+// ---------------------------------------------------------------- autonomy where he decides (Phase 4 Task 31)
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const dayMonth = (ms: number): string => `${new Date(ms).getDate()} ${MONTHS[new Date(ms).getMonth()]}`;
+
+/** Gives `sel` keyboard focus (Shift+Tab then Tab back onto it), so :focus-visible applies as it would for him. */
+async function keyFocus(page: Page, sel: string): Promise<boolean> {
+  const el = page.locator(sel).first();
+  await el.focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  return el.evaluate((e) => document.activeElement === e && e.matches(':focus-visible') && getComputedStyle(e).outlineStyle !== 'none');
+}
+
+/** Every action in `scope` is a button or a link in the tab order (none taken out of it). */
+async function tabbable(page: Page, scope: string): Promise<{ all: boolean; n: number }> {
+  return page.locator(scope).evaluate((root) => {
+    const acts = [...root.querySelectorAll<HTMLElement>('button, a[href]')];
+    return { all: acts.every((a) => a.tabIndex >= 0 && !a.closest('[hidden]') && !a.hasAttribute('inert')), n: acts.length };
+  });
+}
+
+/**
+ * Autonomy in the four places he already looks, on the economy: the
+ * harbour's open ask granted from the brief shows granted in Settings and
+ * on the district page live (a second window holds the district page); Take
+ * it back in Settings revokes it with its quiet date; Settings grants it
+ * again; a suspension for his undo names it; the district's "Build an
+ * arena" is held with the engine's reason on a market-off repo and while a
+ * graduation race runs; a job page shows the master's guess and another its
+ * abstention. Every move by the keyboard, with the focus visible.
+ *
+ * Saves brief-autonomy.png, autonomy-settings.png, district-autonomy.png
+ * and job-school.png at 1600 x 1000. Answers the number of refusals it
+ * provoked on purpose (each a 409 in the console), for the caller to excuse.
+ */
+export async function autonomyChecks(page: Page, check: Check, shots: string): Promise<number> {
+  const before = page.viewportSize();
+  await page.setViewportSize(SIZE);
+  const { openDb } = await import('../engine/db.js');
+  const { record } = await import('../engine/ledger.js');
+  const { emit } = await import('../engine/events.js');
+  const { suspend } = await import('../engine/school/autonomy.js');
+  const { holdTrain } = await import('../engine/school/trainer.js');
+  const { arenaRefusal, RACE_REFUSAL } = await import('../shared/school-rules.js');
+  const harbour = 'tidewater/harbor-ledger';
+  const kind = 'propose:readme-gap';
+  const pairSel = (root: string) => `${root} .grant-entry[data-kind="${kind}"][data-repo="${harbour}"]`;
+  const second = await page.context().browser()!.newPage({ viewport: SIZE });
+  const errors2: string[] = [];
+  second.on('console', (m) => {
+    if (m.type() === 'error') errors2.push(m.text());
+  });
+  second.on('pageerror', (e) => errors2.push(String(e)));
+  try {
+    const view = await api<SchoolView>(page, '/api/school');
+    const ask = view.grants.find((g) => g.kind === kind && g.repo === harbour);
+    check(ask?.state === 'asked', `the economy holds the harbour's open ask for README gap proposals (${ask?.state ?? 'none'})`);
+    check(view.settings.enabled, 'the school is on in the economy');
+
+    // ------------------------------------------------------------ a second window on the harbour's district page
+    await second.goto(`${new URL(page.url()).origin}/#/repos/tidewater/harbor-ledger`);
+    const district2 = second.locator('.sheet.district');
+    check(await within(second, 15_000, async () => (await second.locator(pairSel('.sheet.district')).count()) === 1), 'the harbour’s district page lists its ask');
+    check((await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'asked' && /^asked (today|yesterday)$/.test(((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()), `as asked (${((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()})`);
+    check((await district2.locator('.district-note').count()) === 0, 'the Phase 3 note is gone');
+
+    // ------------------------------------------------------------ the brief: the ask, granted by the keyboard
+    await go(page, '#/brief');
+    const brief = page.locator('.sheet.brief');
+    const itemId = `autonomy:${kind}:${harbour}`;
+    const row = brief.locator(`.brief-item[data-item="${itemId}"]`);
+    check(await within(page, 8000, async () => (await row.count()) === 1), 'the brief holds the ask, waiting on him');
+    const sentence = ((await row.locator('.brief-sentence').textContent()) ?? '').trim();
+    check(/README gap proposals/.test(sentence) && !/propose:readme-gap/.test(sentence), `its sentence names the kind in words (${sentence.slice(0, 120)})`);
+    const labels = await row.locator('.brief-act').allTextContents();
+    check(labels.includes('Let the city do this on its own here') && labels.includes('Not yet'), `it offers the grant and Not yet (${labels.join(', ')})`);
+    await row.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(350);
+    await page.screenshot({ path: join(shots, 'brief-autonomy.png') });
+    // Ask why: the kind's agreement and where every grant is kept.
+    await row.locator('.brief-act[data-action="why"]').click();
+    check(await within(page, 6000, async () => /the master agreed with you on \d+ of the last \d+ decisions/.test((await row.locator('.brief-why').textContent()) ?? '')), `Ask why gives the kind's agreement (${((await row.locator('.brief-why').textContent()) ?? '').trim().slice(0, 140)})`);
+    check((await row.locator('.brief-why a[href="#/settings"]').count()) === 1, 'and points to Settings');
+    check(await keyFocus(page, `.brief-item[data-item="${itemId}"] .brief-act[data-action="grant"]`), 'the grant takes the keyboard’s focus, visibly');
+    await page.keyboard.press('Enter');
+    const said = async (sel: string) => ((await row.locator(sel).textContent({ timeout: 500 }).catch(() => '')) ?? '').trim();
+    check(await within(page, 8000, async () => /^Granted, \d+:\d\d$/.test(await said('.brief-acted'))), `the row says it was granted (${(await said('.brief-acted')) || (await said('.brief-error')) || `focus on ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120))}`})`);
+    check((await row.locator('.brief-act[data-action="grant"]').count()) === 0, 'and offers the grant no longer');
+    check(await within(second, 8000, async () => (await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'granted'), 'the district page in the other window shows it granted, live');
+    check(/^granted \d+ [A-Z][a-z]+, none since$/.test(((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()), `in a ledger's words (${((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()})`);
+
+    // ------------------------------------------------------------ Settings: every pair, Take it back, grant it again
+    await go(page, '#/settings');
+    const settings = page.locator('.sheet.settings .set-sec.autonomy');
+    const now = await api<SchoolView>(page, '/api/school');
+    check(await within(page, 8000, async () => (await settings.locator('.grant-entry').count()) === now.grants.length), `Settings lists every pair (${await settings.locator('.grant-entry').count()} of ${now.grants.length})`);
+    const srow = page.locator(pairSel('.sheet.settings'));
+    check((await srow.getAttribute('data-state')) === 'granted', 'the harbour’s pair reads granted in Settings');
+    check((await srow.locator('.grant-entry-repo').getAttribute('href')) === '#/repos/tidewater/harbor-ledger', 'its repo links to the district page');
+    check(/^\d\.\d\d$/.test(((await srow.locator('.grant-entry-rate').textContent()) ?? '').trim()) && /^\d+ of \d+$/.test(((await srow.locator('.grant-entry-of').textContent()) ?? '').trim()), `with the master's agreement on the kind (${((await srow.locator('.grant-entry-fig').textContent()) ?? '').trim()})`);
+    const kumo = now.grants.find((g) => g.state === 'suspended');
+    if (kumo) {
+      const k = page.locator(`.sheet.settings .grant-entry[data-kind="${kumo.kind}"][data-repo="${kumo.repo}"] .grant-entry-state`);
+      check(/^suspended: the master agreed with you on 44 of the last 50 low-tier merges; autonomy needs 50 at 95%$/.test(((await k.textContent()) ?? '').trim()), `the window's suspension keeps the engine's sentence, its kind in words (${((await k.textContent()) ?? '').trim()})`);
+    }
+    const reverted = now.grants.find((g) => g.state === 'revoked' && g.by === 'revert');
+    if (reverted) check(/^revoked by a revert on \d+ [A-Z][a-z]+$/.test(((await page.locator(`.sheet.settings .grant-entry[data-kind="${reverted.kind}"][data-repo="${reverted.repo}"] .grant-entry-state`).textContent()) ?? '').trim()), 'a revert’s revocation says so');
+    check((await page.locator('.sheet.settings .grant-entry[data-repo="AllStreets/beagle" i] [data-move="grant"], .sheet.settings .grant-entry[data-repo="AllStreets/beagle" i] [data-move="regrant"]').count()) === 0, 'Beagle is never offered a grant');
+    const tab = await tabbable(page, '.sheet.settings .set-sec.autonomy');
+    check(tab.all && tab.n > 0, `every move in Settings is in the tab order (${tab.n})`);
+    check(await keyFocus(page, `${pairSel('.sheet.settings')} [data-move="revoke"]`), 'Take it back takes the keyboard’s focus, visibly');
+    await page.keyboard.press('Enter');
+    const quiet = dayMonth(Date.now() + 30 * 86_400_000);
+    check(await within(page, 8000, async () => ((await srow.locator('.grant-entry-state').textContent()) ?? '').trim() === `you took it back; quiet until ${quiet}`), `Take it back revokes it and shows the quiet date (${((await srow.locator('.grant-entry-state').textContent()) ?? '').trim()})`);
+    check((await page.evaluate(() => document.activeElement?.closest('[data-pair]')?.getAttribute('data-pair') ?? '')) === `${kind} ${harbour}`, 'focus stays on the pair after the move');
+    check(await within(second, 8000, async () => (await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'revoked'), 'the district page shows it taken back, live');
+    check((await second.locator(`${pairSel('.sheet.district')} [data-move]`).count()) === 0 && (await second.locator(`${pairSel('.sheet.district')} .grant-entry-to`).getAttribute('href')) === '#/settings', 'and there sends him to Settings to grant it again');
+    check(await keyFocus(page, `${pairSel('.sheet.settings')} [data-move="regrant"]`), 'Grant it again takes the keyboard’s focus, visibly');
+    await page.keyboard.press('Enter');
+    check(await within(page, 8000, async () => (await srow.getAttribute('data-state')) === 'granted'), 'Settings grants it again');
+    check(await within(second, 8000, async () => (await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'granted'), 'and the district page follows, live');
+
+    // His undo of an accepted proposal suspends the pair (decisions.ts's hook, UNDO_REASON): the row names it.
+    suspend(kind, harbour, 'he undid it', Date.now());
+    check(await within(page, 8000, async () => ((await srow.locator('.grant-entry-state').textContent()) ?? '').trim() === 'suspended: you undid an accepted proposal'), `the suspended row names his undo (${((await srow.locator('.grant-entry-state').textContent()) ?? '').trim()})`);
+    check((await srow.locator('[data-move]').allTextContents()).join() === 'Take it back', 'and offers to take it back');
+    await page.locator('.sheet.settings .sheet-body').evaluate((b) => {
+      const sec = b.querySelector('.set-sec.autonomy') as HTMLElement;
+      b.scrollTop += sec.getBoundingClientRect().top - b.getBoundingClientRect().top - 24;
+    });
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(shots, 'autonomy-settings.png') });
+
+    // A move the engine refuses keeps its sentence under the row. He takes the suspended pair back; meanwhile it is
+    // granted again where this window cannot hear (the row and its ledger entry written, no event), so his Grant it
+    // again meets the engine's refusal.
+    await srow.locator('[data-move="revoke"]').click();
+    check(await within(page, 8000, async () => (await srow.getAttribute('data-state')) === 'revoked'), 'Take it back on the suspended pair revokes it');
+    {
+      const row = openDb().prepare('SELECT json FROM grants WHERE kind = ? AND repo = ?').get(kind, harbour) as { json: string };
+      const g = { ...(JSON.parse(row.json) as Grant), state: 'granted' as const, at: new Date().toISOString(), by: 'him' as const, reason: null, quietUntil: null };
+      openDb().prepare('UPDATE grants SET state = ?, at = ?, json = ? WHERE kind = ? AND repo = ?').run(g.state, g.at, JSON.stringify(g), kind, harbour);
+      record('autonomy.granted', { kind, repo: harbour, fromSettings: true, grant: g, at: g.at });
+    }
+    await srow.locator('[data-move="regrant"]').click();
+    const refused = srow.locator('.grant-entry-error');
+    check(await within(page, 8000, async () => ((await refused.textContent().catch(() => '')) ?? '').trim() === `Grant it again refused: ${kind} on ${harbour} is already granted.`), `the engine's refusal stands under the row in its own words (${((await refused.textContent().catch(() => '')) ?? '').trim()})`);
+    check((await refused.getAttribute('role')) === 'alert', 'and is announced');
+    check(await within(page, 8000, async () => (await srow.getAttribute('data-state')) === 'granted'), 'and the row reads the pair as the engine has it');
+
+    // ------------------------------------------------------------ the district page: the arena held with its reason
+    await second.close();
+    const repos = await api<Array<{ fullName: string; connected: boolean; market: boolean; checks: { test: string | null } | null }>>(page, '/api/repos');
+    const onRepo = repos.find((r) => r.connected && arenaRefusal(r, true) === null && r.fullName === 'hoshi/kumo') ?? repos.find((r) => r.connected && arenaRefusal(r, true) === null);
+    if (onRepo) {
+      await go(page, `#/repos/${onRepo.fullName}`);
+      const sec = page.locator('.sheet.district .district-arena');
+      const btn = sec.locator('.darena-go');
+      check(await within(page, 8000, async () => (await btn.count()) === 1 && (await btn.textContent()) === 'Build an arena'), `${onRepo.fullName}'s district page offers Build an arena`);
+      check(await within(page, 4000, async () => (await btn.getAttribute('aria-disabled')) === null), `enabled on a market-on repo with a test command (${((await sec.locator('.darena-why').textContent()) ?? '').trim() || 'no reason'})`);
+      check((await sec.locator('.darena-kind[role="radio"]').count()) === 2, 'with its two kinds, planted bugs and past changes');
+      check((await page.locator('.sheet.district .district-autonomy .grant-entry').count()) === now.grants.filter((g) => g.repo === onRepo.fullName).length, 'its pairs are listed on its page');
+      await page.locator('.sheet.district .district-autonomy').evaluate((s) => {
+        const body = s.closest('.sheet-body') as HTMLElement;
+        body.scrollTop += s.getBoundingClientRect().top - body.getBoundingClientRect().top - 24;
+      });
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: join(shots, 'district-autonomy.png') });
+      // A graduation race holds the graduates' server: the build is refused with the engine's reason (Task 27).
+      const release = holdTrain({ id: 'ui-eval', kind: 'eval', status: 'running', reason: null, startedAt: new Date().toISOString(), endedAt: null, seconds: 0, steps: null, credits: 0 }, () => {});
+      try {
+        await go(page, '#/repos');
+        await page.waitForTimeout(300);
+        await go(page, `#/repos/${onRepo.fullName}`);
+        check(await within(page, 8000, async () => (await btn.getAttribute('aria-disabled')) === 'true' && ((await sec.locator('.darena-why').textContent()) ?? '').trim() === `${RACE_REFUSAL}.`), `while a graduation race runs it is held with the engine's reason (${((await sec.locator('.darena-why').textContent()) ?? '').trim()})`);
+        check(await keyFocus(page, '.sheet.district .darena-go'), 'the held button still takes focus, so its reason is heard');
+        const asked = await api<SchoolView>(page, '/api/school');
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(600);
+        const after = await api<SchoolView>(page, '/api/school');
+        check(after.arenas.length === asked.arenas.length && after.arenaRefusals.length === asked.arenaRefusals.length, 'and Enter on it asks the engine nothing');
+      } finally {
+        release();
+      }
+    } else check(false, 'the economy holds a market-on repo with a test command');
+    const off = repos.find((r) => r.connected && !r.market);
+    const offName = off?.fullName ?? 'kestrel/fieldnotes';
+    if (!off) await page.evaluate((n) => fetch(`/api/repos/${n}`, { method: 'PATCH', headers: { 'x-palimpsest': '1', 'content-type': 'application/json' }, body: JSON.stringify({ market: false }) }), offName);
+    try {
+      await go(page, `#/repos/${offName}`);
+      const sec = page.locator('.sheet.district .district-arena');
+      const reason = `The market is off on ${offName}; an arena is built only from a market-on repo.`;
+      check(await within(page, 8000, async () => (await sec.locator('.darena-go').getAttribute('aria-disabled')) === 'true' && ((await sec.locator('.darena-why').textContent()) ?? '').trim() === reason), `on the market-off ${offName} Build an arena is held with the engine's reason (${((await sec.locator('.darena-why').textContent()) ?? '').trim()})`);
+      check(((await page.locator('.sheet.district .district-autonomy .grants-empty, .sheet.district .district-autonomy .grant-entry').first().textContent()) ?? '').length > 0, 'and its autonomy says where it stands');
+    } finally {
+      if (!off) await page.evaluate((n) => fetch(`/api/repos/${n}`, { method: 'PATCH', headers: { 'x-palimpsest': '1', 'content-type': 'application/json' }, body: JSON.stringify({ market: true }) }), offName);
+    }
+
+    // ------------------------------------------------------------ a job page: the master's guess, and an abstention
+    const jobs = await api<Array<{ id: string; repo: string; status: string; title: string }>>(page, '/api/jobs');
+    const [guessed, abstained] = jobs.filter((j) => j.status === 'proposed' || j.status === 'merged');
+    const write = (jobId: string, repo: string, p: number | null, reason: string | null) => {
+      const data = { key: `${kind}:${jobId}`, kind, repo, jobId, p, version: p === null ? null : 5, reason, at: new Date(Date.now() - 40 * 60_000).toISOString() };
+      const id = record('master.predicted', { ...data, inputs: {} });
+      openDb().prepare('INSERT OR IGNORE INTO predictions (id, key, kind, repo, at, json) VALUES (?, ?, ?, ?, ?, ?)').run(id, data.key, kind, repo, data.at, JSON.stringify({ id, ...data }));
+      emit('master.predicted', { prediction: { id, ...data } });
+    };
+    if (guessed && abstained) {
+      write(guessed.id, guessed.repo, 0.88, null);
+      write(abstained.id, abstained.repo, null, 'The master v5 is 9 days old.');
+      await go(page, `#/jobs/${guessed.id}`);
+      const sec = page.locator('.sheet.jobpage .job-school');
+      check(await within(page, 8000, async () => /^The master guessed you would accept it: 0\.88, from v5, written down \d+ [A-Z][a-z]+ at \d{1,2}:\d\d\.$/.test(((await sec.locator('.job-school-master').textContent()) ?? '').trim())), `a job page shows the master's guess (${((await sec.locator('.job-school-master').textContent().catch(() => '')) ?? '').trim()})`);
+      check(((await sec.locator('.repos-sec-name').textContent()) ?? '') === 'What the school thinks', 'under What the school thinks');
+      check((await sec.locator('a.job-school-link').getAttribute('href')) === '#/school/master', 'with a way to the master');
+      await sec.evaluate((s) => {
+        const body = s.closest('.sheet-body') as HTMLElement;
+        body.scrollTop += s.getBoundingClientRect().top - body.getBoundingClientRect().top - 24;
+      });
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: join(shots, 'job-school.png') });
+      await go(page, `#/jobs/${abstained.id}`);
+      check(await within(page, 8000, async () => ((await page.locator('.sheet.jobpage .job-school-master').textContent().catch(() => '')) ?? '').trim() === 'The master made no guess: the master v5 is 9 days old.'), `another shows the abstention's reason (${((await page.locator('.sheet.jobpage .job-school-master').textContent().catch(() => '')) ?? '').trim()})`);
+    } else check(false, 'the economy holds two jobs to guess on');
+    check(errors2.length === 0, `the second window has no console errors${errors2.length ? `: ${errors2.join(' | ')}` : ''}`);
+    await go(page, '#/');
+    await within(page, 4000, async () => (await page.evaluate(() => document.body.dataset.route)) === 'city');
+    return 1;
+  } finally {
+    if (!second.isClosed()) await second.close();
+    if (before) await page.setViewportSize(before);
   }
 }

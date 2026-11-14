@@ -1,6 +1,7 @@
 import { pushModeRefusal, REGISTRY_HOSTS, TIER_LABELS } from '../../../shared/market-rules';
+import { arenaRefusal, isBeagle, RACE_REFUSAL } from '../../../shared/school-rules';
 import type { Audit, AuditView, District, FirmView, Floor, Job, JobStatus, Repo, RepoChecks, Tier } from '../../../shared/types';
-import { api, ApiError, type EngineEvent, type RepoPatchBody } from '../api';
+import { api, ApiError, type EngineEvent, type RepoPatchBody, type SchoolView } from '../api';
 import { placeHref } from '../router';
 import { cleanText, money } from './board';
 import { ago, button, checkRadio, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton, type Switch } from './controls';
@@ -11,6 +12,8 @@ import { renderAuditBlock, touchesAudit, type AuditBlockOptions } from './audit'
 import { auditHeld, canProposeAgain, OPEN_STATUSES } from './audit-words';
 import { marketNote, PUSH_NOTE } from './repos';
 import { longDate, shortDate } from './story';
+import { grantsAside, grantsBlock } from './autonomy';
+import { sealedLine } from './school-words';
 import './market.css';
 
 export interface DistrictPage {
@@ -92,8 +95,10 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     jobs: keyedSlot(body),
     floors: keyedSlot(body),
   };
-  const note = el('p', 'district-note', 'Autonomy grants arrive with Phase 4.');
-  body.append(note);
+  // The school here (Phase 4 Task 31): his autonomy on this repo, and the arena he may have built from it.
+  const autonomySec = el('section', 'detail-sec district-sec district-autonomy');
+  const arenaSec = el('section', 'detail-sec district-sec district-arena');
+  body.append(autonomySec, arenaSec);
 
   let fullName: string | null = null;
   let repo: Repo | null = null;
@@ -105,6 +110,7 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
   let shownAudit: AuditView | null = null;
   /** An audit waiting or under way, shown above the last one that ended. */
   let liveAudit: AuditView | null = null;
+  let school: SchoolView | null = null;
   let unlisten: (() => void) | null = null;
   /** Proposals and audits with a request in flight here, and the engine's refusal of one, shown in place. */
   const auditBusy = new Set<string>();
@@ -116,6 +122,7 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     const want = fullName;
     if (!want) return;
     try {
+      readSchool();
       const [repos, js, ds, fs, as] = await Promise.all([api.repos(), api.jobs({ repo: want }), api.city().catch(() => [] as District[]), api.firms().catch(() => firms), api.audits(want).catch(() => audits)]);
       if (want !== fullName) return;
       const ended = as.find((a) => !OPEN_STATUSES.has(a.status));
@@ -142,12 +149,23 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     render();
   });
 
+  /** The school's word on this repo, read beside the page's own so its slower answer never holds the page back. */
+  const readSchool = coalesce(async () => {
+    const want = fullName;
+    const v = await api.school().catch(() => null);
+    if (want !== fullName) return;
+    school = v;
+    render();
+  });
+
   function onEvent(e: EngineEvent): void {
     if (!fullName) return;
     if (e.type === 'engine.reconnected') return read();
     const d = (e.data ?? {}) as Record<string, any>;
     const repoName = d.repo?.fullName ?? (typeof d.repo === 'string' ? d.repo : null) ?? d.job?.repo ?? d.run?.repo ?? null;
     if (repoName === fullName || e.type.startsWith('floor.') || e.type === 'merge.detected') return read();
+    // The school's word on this repo: a grant moved anywhere, an arena built or refused, a race begun or ended, the switch.
+    if (/^(autonomy\.|arena\.|brief\.action$|settings\.|train\.(started|ended|paused)$|graduate\.)/.test(e.type)) return readSchool();
     if (e.type.startsWith('audit.') && audits.some((a) => touchesAudit(e, a.id, new Set()))) read();
   }
 
@@ -765,6 +783,157 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     return sec;
   }
 
+  // ---------------------------------------------------------------- autonomy and the arena (Phase 4 Task 31)
+
+  const autonomyHead = secHead('Autonomy', '');
+  const autonomyAside = autonomyHead.querySelector<HTMLElement>('.repos-sec-count')!;
+  const grants = grantsBlock({ where: 'district', changed: () => read() });
+  autonomySec.append(autonomyHead, grants.el);
+  autonomySec.hidden = true;
+
+  /** Why the school has asked nothing here, in the engine's terms (ruling 17). */
+  function noAsk(r: Repo, v: SchoolView): string {
+    if (isBeagle(r.fullName)) return `${r.fullName} is never asked about: Palimpsest imports it as a library.`;
+    if (!v.settings.enabled) return 'The school is off, so it asks for no autonomy here.';
+    if (!r.market) return 'Nothing asked. The school asks for autonomy only on a market-on repo, and the market here is off.';
+    const missing = [r.checks?.test ? null : 'test', r.checks?.build ? null : 'build'].filter(Boolean);
+    if (missing.length) return `Nothing asked. The school asks for autonomy only on a repo with a test and a build command, and this one has no ${missing.join(' or ')} command.`;
+    if (r.halted) return 'Nothing asked while the repo is halted.';
+    return 'Nothing asked yet. The school asks once the master has agreed with you on 50 decisions of a kind at 95%, and on its last ten here.';
+  }
+
+  function fillAutonomy(r: Repo): void {
+    autonomySec.hidden = !r.connected || !school;
+    if (!school) return;
+    const mine = school.grants.filter((g) => g.repo === r.fullName);
+    autonomyAside.textContent = mine.length ? grantsAside(mine) : '';
+    grants.set({ grants: mine, agreements: school.agreements, repo: r.fullName }, noAsk(r, school));
+  }
+
+  type ArenaKind = 'planted' | 'past';
+  const ARENA_KINDS: Array<[ArenaKind, string, string]> = [
+    ['planted', 'Planted bugs', 'small faults set in its code, each one its own tests must catch'],
+    ['past', 'Its past changes', 'your verified changes here, each one its tests failed before and passed after'],
+  ];
+  let arenaKind: ArenaKind = 'planted';
+  let arenaAsked: { kind: ArenaKind; at: number } | null = null;
+  let arenaBusy = false;
+  let arenaError = '';
+
+  const arenaHead = secHead('Arenas', '');
+  const arenaAside = arenaHead.querySelector<HTMLElement>('.repos-sec-count')!;
+  const arenaList = el('ol', 'darena-list');
+  const buildRow = el('div', 'district-row darena-build');
+  const buildName = el('span', 'district-row-name', 'Build an arena');
+  const kindGroup = el('div', 'darena-kinds');
+  kindGroup.setAttribute('role', 'radiogroup');
+  kindGroup.setAttribute('aria-label', 'What the arena is built from');
+  for (const [k, name] of ARENA_KINDS) {
+    const b = el('button', 'quality-choice darena-kind');
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.dataset.kind = k;
+    b.append(el('span', 'quality-mark'), el('span', 'quality-name darena-kind-name', name));
+    b.addEventListener('click', () => pickArenaKind(b));
+    kindGroup.append(b);
+  }
+  rovingRadios(kindGroup, (b) => pickArenaKind(b));
+  const kindWhat = el('p', 'district-what darena-what');
+  const buildWhy = el('p', 'district-why darena-why');
+  buildWhy.id = 'district-why-arena';
+  buildWhy.setAttribute('aria-live', 'polite');
+  const buildMain = el('div', 'district-row-main');
+  buildMain.append(kindGroup, kindWhat, buildWhy);
+  const buildBtn = button('darena-go', 'Build an arena', () => void buildArena());
+  buildBtn.setAttribute('aria-describedby', buildWhy.id);
+  buildRow.append(buildName, buildMain, buildBtn);
+  arenaSec.append(arenaHead, arenaList, buildRow);
+  arenaSec.hidden = true;
+
+  function pickArenaKind(b: HTMLElement): void {
+    arenaKind = (b.dataset.kind as ArenaKind) ?? 'planted';
+    arenaError = '';
+    render();
+  }
+
+  /** Why an arena cannot be built now, in the engine's words and its order (arenas.ts build()), or null. */
+  function arenaHeld(r: Repo, v: SchoolView): string | null {
+    if (v.trains.some((t) => t.kind === 'eval' && (t.status === 'running' || t.status === 'waiting'))) return RACE_REFUSAL;
+    const why = arenaRefusal(r, v.settings.enabled);
+    if (why) return why;
+    const building = v.arenas.find((a) => a.status === 'building');
+    if (building) return `An arena is already being built (${building.repo})`;
+    return null;
+  }
+
+  async function buildArena(): Promise<void> {
+    const r = repo;
+    if (!r || !school || arenaBusy || arenaHeld(r, school)) return;
+    arenaBusy = true;
+    arenaError = '';
+    render();
+    try {
+      await api.buildArena(r.fullName, arenaKind);
+      arenaAsked = { kind: arenaKind, at: Date.now() };
+    } catch (err) {
+      arenaError = refusal('Building an arena', err);
+    } finally {
+      arenaBusy = false;
+      render();
+      read();
+    }
+  }
+
+  const ARENA_WORD: Record<ArenaKind, string> = { planted: 'of planted bugs', past: 'of its past changes' };
+  const ARENA_STATUS: Record<string, string> = { building: 'building', paused: 'paused', ready: 'ready', failed: 'failed', spent: 'spent' };
+
+  function fillArena(r: Repo): void {
+    const v = school;
+    arenaSec.hidden = !r.connected || !v;
+    if (!v) return;
+    const mine = v.arenas.filter((a) => a.repo === r.fullName);
+    arenaAside.textContent = mine.length ? plural(mine.length, 'arena') : '';
+    const want = JSON.stringify(mine);
+    if (arenaList.dataset.drawn !== want) {
+      arenaList.dataset.drawn = want;
+      arenaList.replaceChildren(
+        ...mine.map((a) => {
+          const li = el('li', `darena status-${a.status}`);
+          li.dataset.arena = a.id;
+          const t = a.tasks;
+          const head = el('p', 'darena-head');
+          const link = el('a', 'darena-name', `An arena ${ARENA_WORD[a.kind]}`);
+          link.href = placeHref('school', 'arenas');
+          head.append(link, el('span', `darena-state g-${a.status}`, ARENA_STATUS[a.status] ?? a.status));
+          const facts = a.status === 'failed' || a.status === 'paused' ? (a.reason ? cleanText(a.reason, 300).replace(/\.?$/, '.') : '') : `${t.breeding} breeding, ${t.race} race and ${t.sealed} sealed tasks; ${sealedLine(a)}.`;
+          li.append(head, el('p', 'darena-line', `Built ${shortDate(a.builtAt)}${facts ? `. ${facts}` : '.'}`));
+          return li;
+        }),
+      );
+    }
+    arenaList.hidden = mine.length === 0;
+    for (const b of kindGroup.querySelectorAll<HTMLElement>('[role="radio"]')) {
+      const on = b.dataset.kind === arenaKind;
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1;
+    }
+    kindWhat.textContent = `${ARENA_KINDS.find(([k]) => k === arenaKind)?.[2] ?? ''}. The school races its graduates and voyages on it; its sealed tasks are held out of every training set.`.replace(/^./, (c) => c.toUpperCase());
+    const held = arenaHeld(r, v);
+    // A build he asked for that the engine turned away as it started (a race begun meanwhile), newer than his ask.
+    const refused = v.arenaRefusals.find((x) => x.repo === r.fullName && (!arenaAsked || Date.parse(x.at) >= arenaAsked.at - 2000));
+    const pending = arenaAsked && !refused && !mine.some((a) => Date.parse(a.builtAt) >= arenaAsked!.at - 2000);
+    if (held) {
+      buildBtn.setAttribute('aria-disabled', 'true');
+      buildWhy.textContent = `${held.replace(/\.?$/, '.')}`;
+    } else {
+      buildBtn.removeAttribute('aria-disabled');
+      buildWhy.textContent = arenaError || (pending ? `Asked ${ago(arenaAsked!.at)}: an arena ${ARENA_WORD[arenaAsked!.kind]} is being built. The school's page follows it.` : refused ? `Refused ${ago(Date.parse(refused.at))}: ${cleanText(refused.reason, 300).replace(/\.?$/, '.')}` : '');
+    }
+    buildRow.classList.toggle('held', held !== null);
+    buildBtn.disabled = arenaBusy;
+    buildRow.setAttribute('aria-busy', String(arenaBusy));
+  }
+
   // ---------------------------------------------------------------- render
 
   function render(): void {
@@ -779,12 +948,12 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     market.hidden = !r;
     if (!r) {
       checksSec.hidden = true;
-      note.hidden = true;
+      autonomySec.hidden = true;
+      arenaSec.hidden = true;
       sheet.sub.textContent = '';
       for (const s of Object.values(slots)) s('none', () => null);
       return;
     }
-    note.hidden = !r.connected;
     sheet.sub.textContent = r.description ? cleanText(r.description, 200).replace(/\.?$/, '.') : '';
     const facts = [owner, r.language, `${ROOT_NAMES[r.root]} root`, r.private ? 'private' : ''].filter(Boolean) as string[];
     slots.actions(JSON.stringify([fullName, facts]), () => {
@@ -797,6 +966,8 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     });
     fillSwitches(r);
     fillChecks(r);
+    fillAutonomy(r);
+    fillArena(r);
     slots.network(r.connected ? JSON.stringify(r.checks?.ecosystems ?? []) : 'off', () => (r.connected ? networkSection(r) : null));
     slots.halt(r.connected ? JSON.stringify([r.halted, r.strikes, Math.floor(Date.now() / 60_000)]) : 'off', () => (r.connected ? haltSection(r) : null));
     slots.audit(r.connected ? JSON.stringify([audits.map((a) => [a.id, a.status, a.waitingReason]), shownAudit, liveAudit, jobs.map((j) => [j.id, j.status, j.key]), [...auditBusy], [...auditErrors], firms.length]) : 'off', () => (r.connected ? auditSection() : null));
@@ -822,6 +993,12 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
         for (const s of Object.values(slots)) s('', () => null);
         market.hidden = true;
         checksSec.hidden = true;
+        school = null;
+        arenaAsked = null;
+        arenaError = '';
+        arenaKind = 'planted';
+        autonomySec.hidden = true;
+        arenaSec.hidden = true;
       }
       sheet.show();
       unlisten ??= opts.listen(onEvent);

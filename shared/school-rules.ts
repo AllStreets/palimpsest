@@ -3,7 +3,7 @@
  * granted for, the numbers the plan's rulings pin, and the training window.
  * Pure: no engine import, so the app and the engine read the same values.
  */
-import type { Job, Tier, VoyageView, WorkKind } from './types.js';
+import type { Job, Repo, Tier, VoyageView, WorkKind } from './types.js';
 
 /** The six kinds of work, in the order the screens list them (Decision 11). */
 export const WORK_KINDS: readonly WorkKind[] = ['propose:harness', 'propose:readme-gap', 'merge:low', 'merge:normal', 'merge:high', 'merge:ui'];
@@ -49,6 +49,28 @@ export const GATE = { pollMs: 30_000, minFreeGB: 20, trainNowHours: 3, killGrace
 export const LORA = { min: 100, iters: 600, saveEvery: 50, layers: 16, batch: 2, lr: 1e-5, maxSeq: 4096, maxFileBytes: 24_000, gb: 4.3 } as const;
 /** Arenas (rulings 20 and 21). */
 export const ARENA = { mutants: 120, keepPlanted: 60, keepPast: 40, maxTurns: 24 } as const;
+/** The repo the engine imports as a library: never asked about, granted or acted on (ruling 1). */
+export const BEAGLE_REPO = 'AllStreets/beagle';
+/** Whether `name` is Beagle by any spelling: GitHub names ignore case, so the pin must too. */
+export const isBeagle = (name: string): boolean => name.trim().toLowerCase() === BEAGLE_REPO.toLowerCase();
+
+/** Why an arena build is refused while a graduation's sealed race holds the graduates' server (Task 27). */
+export const RACE_REFUSAL = 'A graduation race is running; build the arena once it ends';
+
+/**
+ * Why an arena cannot be built from `repo` (ruling 20), or null: the school
+ * off, the repo not connected, its market off, or no test command to judge a
+ * planted bug. The engine refuses with these words and the district page
+ * disables its "Build an arena" with them, so the two never disagree.
+ */
+export function arenaRefusal(repo: Pick<Repo, 'fullName' | 'connected' | 'market'> & { checks: { test: string | null } | null }, schoolOn: boolean): string | null {
+  if (!schoolOn) return 'The school is off';
+  if (!repo.connected) return `${repo.fullName} is not connected`;
+  if (!repo.market) return `The market is off on ${repo.fullName}; an arena is built only from a market-on repo`;
+  if (!repo.checks?.test) return `${repo.fullName} has no test command, so its tests cannot judge a planted bug`;
+  return null;
+}
+
 /** Voyages (ruling 22). */
 export const VOYAGE = { population: 8, generations: 4, concurrency: 1 } as const;
 

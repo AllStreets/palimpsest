@@ -7,8 +7,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, itemSentence, sinceLine, usageLine } from '../app/src/ui/brief-words.js';
-import type { Brief, BriefAction, BriefItem, BudgetWindow } from '../shared/types.js';
+import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantMoves, grantState, itemSentence, kindWords, MOVE_LABEL, sinceLine, usageLine } from '../app/src/ui/brief-words.js';
+import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant } from '../shared/types.js';
 
 const names = { agent: (id: string) => id, firm: (id: string) => ({ quickset: 'Quickset' })[id] ?? id };
 
@@ -125,4 +125,71 @@ test('the line under the title says the window, and whether this is the day\'s f
   assert.equal(sinceLine(since, '2026-11-12', true), 'Since yesterday at 6:40.');
   assert.equal(sinceLine(since, '2026-11-12', false), 'Since yesterday at 6:40. You have opened it once already today.');
   assert.equal(sinceLine(new Date(2026, 10, 9, 6, 40).toISOString(), '2026-11-12', true), 'Since Monday at 6:40.');
+});
+
+// ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
+
+const NOW = new Date(2026, 10, 12, 9, 30).getTime();
+const day = (d: number, h = 18, m = 30): string => new Date(2026, 10, d, h, m).toISOString();
+function pair(over: Partial<Grant>): Grant {
+  return { kind: 'merge:low', repo: 'hoshi/kumo', state: 'granted', at: day(3), by: 'him', rate: null, reason: null, acted: 0, quietUntil: null, ...over };
+}
+
+test('a pair says its state in a few words, as a ledger sets them', () => {
+  assert.equal(grantState(pair({ state: 'asked', by: 'school', at: day(10) }), NOW), 'asked on Tuesday');
+  assert.equal(grantState(pair({ state: 'asked', by: 'school', at: day(11) }), NOW), 'asked yesterday');
+  assert.equal(grantState(pair({ state: 'asked', by: 'school', at: day(12, 2, 10) }), NOW), 'asked today');
+  assert.equal(grantState(pair({ state: 'asked', by: 'school', at: day(1) }), NOW), 'asked on 1 November');
+  assert.equal(grantState(pair({ acted: 6 }), NOW), 'granted 3 November, 6 merges since');
+  assert.equal(grantState(pair({ acted: 1 }), NOW), 'granted 3 November, 1 merge since');
+  assert.equal(grantState(pair({ acted: 0 }), NOW), 'granted 3 November, none since');
+  assert.equal(grantState(pair({ kind: 'propose:readme-gap', acted: 2 }), NOW), 'granted 3 November, 2 proposals accepted since');
+  assert.equal(grantState(pair({ state: 'revoked', by: 'revert', at: day(8), quietUntil: day(38) }), NOW), 'revoked by a revert on 8 November');
+  assert.equal(grantState(pair({ state: 'revoked', by: 'him', at: day(2), quietUntil: new Date(2026, 11, 2, 9).toISOString() }), NOW), 'you took it back; quiet until 2 December');
+  assert.equal(grantState(pair({ state: 'revoked', by: 'him', at: day(2), quietUntil: day(11) }), NOW), 'you took it back on 2 November');
+  assert.equal(grantState(pair({ state: 'declined', by: 'him', at: day(9), quietUntil: new Date(2026, 11, 9, 9).toISOString() }), NOW), 'you said not yet; quiet until 9 December');
+  assert.equal(grantState(pair({ state: 'declined', by: 'him', at: day(9), quietUntil: day(10) }), NOW), 'you said not yet on 9 November');
+});
+
+test("a suspended pair names his undo, or keeps the engine's sentence whole", () => {
+  assert.equal(grantState(pair({ kind: 'propose:readme-gap', state: 'suspended', by: 'school', reason: 'he undid it' }), NOW), 'suspended: you undid an accepted proposal');
+  assert.equal(grantState(pair({ kind: 'merge:normal', state: 'suspended', by: 'school', reason: 'he undid it' }), NOW), 'suspended: you undid a merge it made');
+  const window = 'The master agreed with you on 44 of the last 50 merge:low decisions; autonomy needs 50 at 95%.';
+  assert.equal(grantState(pair({ state: 'suspended', by: 'school', reason: window }), NOW), 'suspended: the master agreed with you on 44 of the last 50 low-tier merges; autonomy needs 50 at 95%');
+  assert.equal(grantState(pair({ state: 'suspended', by: 'school', reason: null }), NOW), 'suspended by the school');
+});
+
+test('each state offers only what the engine accepts, and Beagle is never offered a grant', () => {
+  assert.deepEqual(grantMoves(pair({ state: 'asked' }), 'settings'), ['grant', 'decline']);
+  assert.deepEqual(grantMoves(pair({ state: 'granted' }), 'district'), ['revoke']);
+  assert.deepEqual(grantMoves(pair({ state: 'suspended' }), 'settings'), ['revoke']);
+  // A revoked pair is granted again only from Settings (ruling 17); a decline waits out its quiet.
+  assert.deepEqual(grantMoves(pair({ state: 'revoked' }), 'settings'), ['regrant']);
+  assert.deepEqual(grantMoves(pair({ state: 'revoked' }), 'district'), []);
+  assert.deepEqual(grantMoves(pair({ state: 'declined' }), 'settings'), []);
+  for (const repo of ['AllStreets/beagle', 'allstreets/Beagle ']) {
+    assert.deepEqual(grantMoves(pair({ repo, state: 'asked' }), 'settings'), ['decline'], repo);
+    assert.deepEqual(grantMoves(pair({ repo, state: 'revoked' }), 'settings'), [], repo);
+  }
+  assert.equal(MOVE_LABEL.grant, 'Let the city do this on its own here');
+  assert.equal(MOVE_LABEL.decline, 'Not yet');
+  assert.equal(MOVE_LABEL.revoke, 'Take it back');
+  assert.equal(MOVE_LABEL.regrant, 'Grant it again');
+});
+
+test('a kind of work is said in words, never as its code', () => {
+  assert.equal(kindWords('propose:readme-gap'), 'README gap proposals');
+  assert.equal(kindWords('merge:low'), 'low-tier merges');
+  assert.equal(kindWords('merge:ui'), 'UI merges');
+  const ask = item({ kind: 'autonomy', repo: 'tidewater/harbor-ledger', text: 'The master has agreed with you on 48 of the last 50 propose:readme-gap decisions, and on its last 10 on tidewater/harbor-ledger. If you grant it, the city acts there without you when every check holds.' });
+  assert.equal(itemSentence(ask, names), 'The master has agreed with you on 48 of the last 50 README gap proposals, and on its last 10 here. If you grant it, the city acts there without you when every check holds.');
+  const acted = item({ kind: 'acted', repo: 'hoshi/kumo', text: 'The city merged PR #12 of "Fix" on hoshi/kumo on its own, under its merge:low grant.' });
+  assert.equal(itemSentence(acted, names), 'The city merged PR #12 of "Fix" on its own, under its grant for low-tier merges.');
+});
+
+test('his answer to an ask, and his taking back, in quiet words', () => {
+  const at = new Date(2026, 10, 12, 9, 14).toISOString();
+  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'grant', at } })), 'Granted, 9:14');
+  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'decline', at } })), 'Not yet; quiet for 30 days, 9:14');
+  assert.equal(actedLine(item({ kind: 'acted', acted: { action: 'revoke', at } })), 'Taken back, 9:14');
 });

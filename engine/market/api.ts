@@ -94,7 +94,7 @@ const JOB_STATUSES = Object.keys(LEGAL_MOVES) as JobStatus[];
 const TIERS: Tier[] = ['low', 'normal', 'high'];
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const BRIEF_ACTIONS: BriefAction[] = ['accept', 'tier', 'dismiss', 'why', 'diff', 'fly', 'retry', 'resume', 'open-pr', 'cap', 'audit', 'tour'];
+const BRIEF_ACTIONS: BriefAction[] = ['accept', 'tier', 'dismiss', 'why', 'diff', 'fly', 'retry', 'resume', 'open-pr', 'cap', 'audit', 'tour', 'grant', 'decline', 'revoke'];
 /** The most of an audit's page the API carries. */
 const AUDIT_PAGE_CAP = 512 * 1024;
 /** The most of a check log the API carries. */
@@ -630,7 +630,9 @@ export async function handleMarketApi(
   // the brief, milestones and the tour
   if (pathname === '/api/brief' && method === 'GET') return send(200, briefData(Date.now()));
   if (pathname === '/api/brief/open' && method === 'POST') return send(200, openBrief(Date.now()));
-  if ((m = pathname.match(/^\/api\/brief\/items\/([^/]+)\/([^/]+)$/)) && method === 'POST') return send(200, await briefAction(req, m[1], m[2]));
+  // The item's id may carry a repo (autonomy:<kind>:<owner>/<name>, halt:<owner>/<name>), whose slash the server has
+  // already decoded: everything before the last segment is the id; briefAction answers 409 for an id not in the brief.
+  if ((m = pathname.match(/^\/api\/brief\/items\/(.+)\/([^/]+)$/)) && method === 'POST') return send(200, await briefAction(req, m[1], m[2]));
   if (pathname === '/api/milestones' && method === 'GET') return send(200, listMilestones(Date.now(), { active: search.get('active') === '1' }));
   if (pathname === '/api/tour' && method === 'GET') {
     const week = search.get('week');

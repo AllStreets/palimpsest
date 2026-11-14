@@ -40,7 +40,7 @@ import { detailChecks } from './ui-test-detail.js';
 import { firmChecks } from './ui-test-firms.js';
 import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
-import { schoolChecks, schoolEmptyChecks } from './ui-test-school.js';
+import { autonomyChecks, schoolChecks, schoolEmptyChecks } from './ui-test-school.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
@@ -2745,7 +2745,12 @@ async function reconnectChecks(page: Page, restart: (whileDown: () => Promise<vo
     .catch(() => false);
   abortingRequests = false;
   check(caughtUp, 'after the engine restarts, the city drops a repo disconnected while it was down');
-  const countAfter = await head();
+  // The city and the repos are read afresh side by side on reconnect: the count follows its own read, within moments.
+  let countAfter = await head();
+  for (let i = 0; i < 40 && Number(countAfter) !== Number(countBefore) - 1; i++) {
+    await page.waitForTimeout(100);
+    countAfter = await head();
+  }
   check(countBefore !== '' && Number(countAfter) === Number(countBefore) - 1, `and the running head counts it out (${countBefore} then ${countAfter})`);
   await page.evaluate((t) => fetch(`/api/repos/${t}/connect`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), target);
 }
@@ -3275,12 +3280,19 @@ async function main(): Promise<void> {
     // UI_ONLY=campus: the university's checks and shots on high, then on medium after the step down (Task 34's rounds).
     // UI_ONLY=school: the school towers' checks and shots on high, then on medium (Task 38's rounds).
     // UI_ONLY=schoolscreen: the school screen's checks and shots on the economy, then on the empty home (Task 30's rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=autonomy: his autonomy in the brief, Settings, the district page and a job page (Task 31's rounds).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
       if (process.env.UI_ONLY === 'schoolscreen') {
         await schoolChecks(page, check, SHOTS);
+      } else if (process.env.UI_ONLY === 'autonomy') {
+        const grantRefusals = await autonomyChecks(page, check, SHOTS);
+        for (let i = 0; i < grantRefusals; i++) {
+          const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
+          if (k >= 0) consoleErrors.splice(k, 1);
+        }
       } else if (process.env.UI_ONLY === 'campus') {
         await campusChecks(page, 'high');
         await page.evaluate('window.__palimpsest.dropQuality()');
@@ -3425,6 +3437,12 @@ async function main(): Promise<void> {
         }
         // The morning brief: the day's first open, every action in place, a second window (Phase 3 Task 11).
         await briefChecks(page, check, SHOTS);
+        // His autonomy in the brief, Settings, the district page and a job page (Phase 4 Task 31).
+        const grantRefusals = await autonomyChecks(page, check, SHOTS);
+        for (let i = 0; i < grantRefusals; i++) {
+          const k = consoleErrors.findIndex((t) => /status of 409/.test(t));
+          if (k >= 0) consoleErrors.splice(k, 1);
+        }
         await constructionChecks(page);
         await lifecycleChecks(page);
         await silhouetteChecks(page);

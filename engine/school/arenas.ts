@@ -58,7 +58,7 @@ import { isAbsolute, join, normalize, sep } from 'node:path';
 
 import { localCredits } from '../../shared/credits.js';
 import { poolOfModel } from '../../shared/market-rules.js';
-import { ARENA } from '../../shared/school-rules.js';
+import { ARENA, arenaRefusal, RACE_REFUSAL } from '../../shared/school-rules.js';
 import type { ArenaInfo, ModelRef, Repo } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { getRunner } from '../exec.js';
@@ -318,11 +318,7 @@ function putInfo(info: ArenaInfo): ArenaInfo {
 
 /** Why `repo` cannot have an arena built now, or null. */
 export function refusal(repo: Repo): string | null {
-  if (!getSettings().school.enabled) return 'The school is off';
-  if (!repo.connected) return `${repo.fullName} is not connected`;
-  if (!repo.market) return `The market is off on ${repo.fullName}; an arena is built only from a market-on repo`;
-  if (!repo.checks?.test) return `${repo.fullName} has no test command, so its tests cannot judge a planted bug`;
-  return null;
+  return arenaRefusal(repo, getSettings().school.enabled);
 }
 
 function refused(repo: Repo, reason: string, now: number, kind: ArenaInfo['kind'] = 'planted'): ArenaInfo {
@@ -842,7 +838,7 @@ export function buildPast(repo: Repo, now: number, o: { signal?: AbortSignal } =
 
 async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { signal?: AbortSignal }): Promise<ArenaInfo> {
   // a graduation's sealed race holds the graduates' server: a build would take the machine from under it
-  if (liveTrains().some((t) => t.kind === 'eval')) return refused(repo, 'A graduation race is running; build the arena once it ends', now, kind);
+  if (liveTrains().some((t) => t.kind === 'eval')) return refused(repo, RACE_REFUSAL, now, kind);
   const why = refusal(repo);
   if (why) return refused(repo, why, now, kind);
   if (live) return refused(repo, `An arena is already being built (${live.repo})`, now, kind);

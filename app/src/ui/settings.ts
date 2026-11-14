@@ -4,6 +4,8 @@ import { api, type EngineEvent, type UsageState } from '../api';
 import { cleanText } from './board';
 import { AUDIT_CREDITS_RANGE, AUDIT_MODEL_SHAPE } from '../../../shared/market-rules';
 import { ago, button, checkRadio, createSheet, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton } from './controls';
+import { grantsAside, grantsBlock } from './autonomy';
+import { coalesce } from './pages';
 
 export interface SettingsScreen {
   show(): void;
@@ -708,6 +710,32 @@ export function createSettings(
   creditsField.hidden = true;
   analysis.append(el('p', 'set-foot', 'What the README audit may use. Its spend counts in the caps above, and the treasury shows it.'));
 
+  // ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
+
+  const autonomy = section('Autonomy', 'autonomy');
+  const autonomyCount = el('span', 'set-sec-aside');
+  autonomy.querySelector('.set-sec-title')?.append(autonomyCount);
+  const grants = grantsBlock({ where: 'settings', changed: () => readSchool() });
+  autonomy.append(
+    grants.el,
+    el('p', 'set-foot', 'The school asks for one kind of work on one repo at a time, once the master has agreed with you on 50 of that kind at 95%, its last ten there too; beside each pair stands that agreement, with its count. A grant lets the city act only where the master is at least 90% sure; it is suspended when the agreement falls short and revoked by your revert. Taking one back keeps it quiet for 30 days; you can grant it again here.'),
+  );
+  const readSchool = coalesce(async () => {
+    try {
+      const v = await api.school();
+      autonomyCount.textContent = grantsAside(v.grants);
+      grants.set(
+        { grants: v.grants, agreements: v.agreements },
+        v.settings.enabled
+          ? 'No autonomy has been asked for yet. The school asks only once the master is trusted and has agreed with you on 50 decisions of a kind at 95%.'
+          : 'No autonomy has been asked for. The school is off, so it asks for none.',
+      );
+    } catch {
+      autonomyCount.textContent = '';
+      grants.set(null, 'The engine did not answer.');
+    }
+  });
+
   // ---------------------------------------------------------------- quality
 
   const quality = section('Quality', 'quality');
@@ -882,6 +910,8 @@ export function createSettings(
 
   function onEvent(e: EngineEvent): void {
     if (e.type === 'engine.stopped' || e.type === 'engine.resumed') fillStop(e.type === 'engine.stopped');
+    // A grant moved from the brief or a district page, an ask, a suspension or a revert: the pairs read again.
+    if (/^(autonomy\.|brief\.action|decision\.resolved|settings\.|engine\.reconnected)/.test(e.type)) readSchool();
   }
 
   return {
@@ -890,6 +920,7 @@ export function createSettings(
       sheet.show();
       unlisten = opts.listen(onEvent);
       void load();
+      readSchool();
     },
     hide() {
       sheet.hide();

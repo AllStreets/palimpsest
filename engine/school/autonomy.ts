@@ -41,7 +41,7 @@
  */
 import { existsSync } from 'node:fs';
 
-import { AGREE, itemKey, WORK_KINDS, workKind } from '../../shared/school-rules.js';
+import { AGREE, BEAGLE_REPO, isBeagle, itemKey, WORK_KINDS, workKind } from '../../shared/school-rules.js';
 import type { Grant, Job, Repo, Run, WorkKind } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit, subscribe } from '../events.js';
@@ -58,10 +58,8 @@ import { actTookEffect, agreement, decided, masterState, registered } from './de
 import { setActingHook, setRevertHook, setSuspendHook } from './hooks.js';
 import { versions } from './nets.js';
 
-/** The repo the engine imports as a library: never asked about, granted or acted on (ruling 1). */
-export const BEAGLE_REPO = 'AllStreets/beagle';
-/** Whether `name` is Beagle by any spelling: GitHub names ignore case, so the pin must too. */
-export const isBeagle = (name: string): boolean => name.trim().toLowerCase() === BEAGLE_REPO.toLowerCase();
+// The Beagle pin lives in shared/school-rules.ts, so the screens never offer what the engine refuses.
+export { BEAGLE_REPO, isBeagle };
 
 const DAY_MS = 24 * 60 * 60_000;
 const iso = (ms: number) => new Date(ms).toISOString();

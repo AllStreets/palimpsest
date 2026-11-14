@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { Agreement, GateState, Grant, Interval, NetCard, TrainState, VoyageView } from '../shared/types.js';
+import type { Agreement, GateState, Grant, Interval, NetCard, Prediction, TrainState, VoyageView } from '../shared/types.js';
 import {
   agreementLine,
   diffText,
@@ -18,6 +18,8 @@ import {
   intervalText,
   kindLabel,
   loraLine,
+  masterGuessLine,
+  netsOnJob,
   netLine,
   netRowLine,
   sealedLine,
@@ -185,4 +187,28 @@ test('no line carries a dash as punctuation', () => {
     downloadLine({ baseReady: false, download: null }, 'Qwen2.5-Coder-7B'),
   ])
     noDashes(s);
+});
+
+// ---------------------------------------------------------------- the job page (Task 31)
+
+const guess = (over: Partial<Prediction>): Prediction => ({ id: 1, key: 'propose:readme-gap:j', kind: 'propose:readme-gap', repo: 'tidewater/harbor-ledger', jobId: 'j', p: 0.88, version: 5, reason: null, at: new Date(2026, 10, 12, 18, 30).toISOString(), ...over });
+
+test("a job page says the master's guess with its version and when, or why it made none", () => {
+  assert.equal(masterGuessLine(guess({})), 'The master guessed you would accept it: 0.88, from v5, written down 12 November at 18:30.');
+  assert.equal(masterGuessLine(guess({ kind: 'merge:low', p: 0.22 })), 'The master guessed you would not merge it: 0.22 that you would, from v5, written down 12 November at 18:30.');
+  assert.equal(masterGuessLine(guess({ p: null, version: null, reason: 'the school is off' })), 'The master made no guess: the school is off.');
+  assert.equal(masterGuessLine(guess({ p: null, version: null, reason: 'The master v3 is 9 days old.' })), 'The master made no guess: the master v3 is 9 days old.');
+  assert.equal(masterGuessLine(guess({ p: null, version: null, reason: null })), 'The master made no guess.');
+  noDashes(masterGuessLine(guess({ kind: 'merge:ui', p: 0.5 })));
+});
+
+test('the other nets on a job, each only when it spoke', () => {
+  const agent = (id: string) => ({ a1: 'Mack Quickset', a2: 'Priya Rao', a3: 'Ada Quarry', a4: 'Tamsin Reed' })[id] ?? id;
+  assert.deepEqual(netsOnJob({ appraisal: null, router: [], durability: null, master: null }, agent), []);
+  assert.deepEqual(netsOnJob({ appraisal: 0.81, router: [{ agentId: 'a1', p: 0.74 }, { agentId: 'a2', p: 0.61 }, { agentId: 'a3', p: 0.4 }, { agentId: 'a4', p: 0.2 }], durability: 0.92, master: null }, agent), [
+    'The appraiser gives the awarded bid 0.81 to merge.',
+    'The router would send it first to Mack Quickset (0.74), then Priya Rao (0.61) and Ada Quarry (0.40).',
+    'Durability gives the latest inspected run 0.92 to survive 30 days.',
+  ]);
+  assert.deepEqual(netsOnJob({ appraisal: null, router: [{ agentId: 'a2', p: 0.61 }], durability: null, master: null }, agent), ['The router would send it to Priya Rao (0.61).']);
 });

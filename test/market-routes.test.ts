@@ -1057,6 +1057,24 @@ test('the brief opens once a day over the API and an action answers the item', a
   assert.equal(query({ kind: 'brief.action' }).length, 1);
 });
 
+test('a brief item whose id carries its repo (an ask for autonomy) is answered over the API', async () => {
+  repoOf();
+  // The ask as autonomy.ts askDue writes it: the row, which the brief lists as autonomy:<kind>:<repo>.
+  const g = { kind: 'propose:readme-gap', repo: FULL, state: 'asked', at: new Date().toISOString(), by: 'school', rate: { value: 0.96, lo: 0.9, hi: 1, n: 50 }, reason: null, acted: 0, quietUntil: null };
+  openDb().prepare('INSERT INTO grants (kind, repo, state, at, json) VALUES (?, ?, ?, ?, ?)').run(g.kind, g.repo, g.state, g.at, JSON.stringify(g));
+  const id = `autonomy:propose:readme-gap:${FULL}`;
+  const r = await call('POST', `/api/brief/items/${encodeURIComponent(id)}/grant`, {});
+  assert.equal(r.status, 200, `the slash in its repo does not break the route (${r.text})`);
+  assert.equal(r.json.item.acted.action, 'grant');
+  const row = openDb().prepare('SELECT state FROM grants WHERE kind = ? AND repo = ?').get(g.kind, FULL) as { state: string };
+  assert.equal(row.state, 'granted');
+  assert.equal(query({ kind: 'brief.action' }).length, 1);
+  // Answered, the line offers it no more: a second grant is refused with the brief's reason, and nothing moves.
+  const again = await call('POST', `/api/brief/items/${encodeURIComponent(id)}/decline`, {});
+  assert.equal(again.status, 409);
+  assert.equal((openDb().prepare('SELECT state FROM grants WHERE kind = ? AND repo = ?').get(g.kind, FULL) as { state: string }).state, 'granted');
+});
+
 test('a refused brief action is 409 with its reason', async () => {
   repoOf();
   const r = await call('POST', '/api/brief/items/nothing/accept', {});

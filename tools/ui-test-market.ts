@@ -229,7 +229,7 @@ async function districtChecks(page: Page, check: Check, shots: string): Promise<
   check((await sheet.locator('.district-strikes .strike').count()) === 3, 'three strike marks, as three halt the repo');
   check((await sheet.locator('.district-jobs .djob').count()) > 0, `the jobs on this repo are listed (${await sheet.locator('.district-jobs .djob').count()})`);
   check((await sheet.locator('.district-floors').count()) === 1, 'floors earned are shown');
-  check(((await sheet.locator('.district-note').textContent()) ?? '').includes('Autonomy grants arrive with Phase 4.'), 'and the note on autonomy grants');
+  check((await sheet.locator('.district-note').count()) === 0 && (await sheet.locator('.district-autonomy').count()) === 1, 'and its autonomy in place of the old note');
   await sheet.locator('.sheet-body').evaluate((b) => {
     b.scrollTop = 0;
   });
