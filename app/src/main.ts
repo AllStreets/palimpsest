@@ -12,7 +12,7 @@ import { dropText } from './city/governor';
 import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
 import { EMPTY_LIFE, foldLifeEvent, lifeAfter, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
 import { foldSchoolEvent, schoolAfter, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
-import { occupancy, type RepoState } from './city/occupancy.js';
+import { type KnownRepo, occupancy, takeRepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
 import type { LotSummary } from './city/grid';
@@ -673,7 +673,9 @@ async function main(): Promise<void> {
    * analysis step it reached. `done` holds a finished first analysis's
    * scaffold up until the refresh that brings its tower.
    */
-  const known = new Map<string, RepoState & { step: string; done?: boolean }>();
+  const known = new Map<string, KnownRepo>();
+  /** The last tower the engine served for each repo: a repo turned off and on again stands it until the refresh lists it again. */
+  const kept = new Map<string, District>();
   const byRepo = (repo: string): District | undefined => districts.find((d) => d.repo === repo);
   /** The step a repo's analysis last reported. */
   const analyzingStep = (repo: string): string => known.get(repo)?.step ?? '';
@@ -1136,7 +1138,7 @@ async function main(): Promise<void> {
     const quarters = servedQuarters.map((q) =>
       darkened.has(q.firmId) ? { ...q, dark: true, towers: q.towers.map((t) => ({ ...t, dark: true, firmId: q.firmId, root: q.root })) } : q,
     );
-    const occ = occupancy(known.values(), restyledServed, quarters);
+    const occ = occupancy(known.values(), restyledServed, quarters, kept);
     const sites = new Map<string, number>();
     for (const d of served) sites.set(d.repo, d.index);
     for (const r of known.values()) sites.set(r.fullName, r.slot);
@@ -1195,6 +1197,10 @@ async function main(): Promise<void> {
   const show = (next: District[], quarters: Quarter[] = servedQuarters): void => {
     served = next;
     servedQuarters = quarters;
+    // The engine's fresh word on each tower: kept for its repo's next toggle, and dropped for a connected repo it no longer lists.
+    const listed = new Set(next.map((d) => d.repo));
+    for (const d of next) kept.set(d.repo, d);
+    for (const r of known.values()) if (r.connected && !listed.has(r.fullName)) kept.delete(r.fullName);
     // A finished first analysis stops holding its scaffold once the refresh after it lands, tower or not.
     for (const r of known.values()) {
       if (r.done) {
@@ -1209,23 +1215,16 @@ async function main(): Promise<void> {
 
   const countConnected = (): void => runhead.setConnected([...known.values()].filter((r) => r.connected).length);
 
-  /** Takes a repo as stored now, keeping the step its analysis reached. */
+  /** Takes a repo as stored now, keeping the step its analysis reached and the done-hold until the refresh (occupancy.ts). */
   const takeRepo = (r: Repo, step?: string): void => {
-    const was = known.get(r.fullName);
-    known.set(r.fullName, {
-      fullName: r.fullName,
-      slot: r.slot,
-      connected: r.connected,
-      status: r.status,
-      step: step ?? (r.status === 'analyzing' ? (was?.step ?? '') : ''),
-    });
+    known.set(r.fullName, takeRepoState(known.get(r.fullName), r, step));
   };
 
   /** Takes the stored repos as they are now: which are connected, and which are analyzing. */
   const takeRepos = (list: Repo[]): void => {
-    const steps = new Map([...known].map(([repo, k]) => [repo, k.step]));
+    const prior = new Map(known);
     known.clear();
-    for (const r of list) takeRepo(r, r.status === 'analyzing' ? steps.get(r.fullName) : undefined);
+    for (const r of list) known.set(r.fullName, takeRepoState(prior.get(r.fullName), r));
     countConnected();
   };
 
