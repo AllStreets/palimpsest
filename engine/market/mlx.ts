@@ -369,10 +369,53 @@ async function start(model: ModelRef, adapter: { id: string; path: string }): Pr
   return l;
 }
 
+/** Thrown when a graduate is asked for while a heavy train holds the machine: the model is unavailable, not broken. */
+export class GraduatesDown extends Error {
+  readonly unavailable = true;
+  constructor(what: string) {
+    super(`The school's graduates are not served while ${what} runs`);
+    this.name = 'GraduatesDown';
+  }
+}
+
+/** The heavy trains holding the machine now, oldest first. */
+const heavy: string[] = [];
+
+/** What heavy train keeps the graduates down now, or null. */
+export function heavyRunning(): string | null {
+  return heavy[0] ?? null;
+}
+
+/**
+ * A heavy train takes the machine (an arena build, a voyage, a LoRA): from
+ * now no server starts, the running one lets its calls in flight finish
+ * and stops, and a call for a graduate is refused (`GraduatesDown`) until
+ * the returned function is called, once, as the train ends.
+ */
+export async function beginHeavy(what: string): Promise<() => void> {
+  const entry = what;
+  heavy.push(entry);
+  let given = false;
+  const giveBack = () => {
+    if (given) return;
+    given = true;
+    const i = heavy.indexOf(entry);
+    if (i >= 0) heavy.splice(i, 1);
+  };
+  try {
+    await stopServer({ drain: true });
+  } catch (err) {
+    giveBack();
+    throw err;
+  }
+  return giveBack;
+}
+
 /** The server for `model`, running and counted as in use: the caller must `release` it. */
 function acquire(model: ModelRef, signal?: AbortSignal): Promise<Live> {
   return serialized(async () => {
     signal?.throwIfAborted();
+    if (heavy.length) throw new GraduatesDown(heavy[0]);
     const adapter = await adapterFor(model);
     let l = current && !current.exited ? current : null;
     if (l && (l.model !== model || l.adapterId !== adapter.id)) {
@@ -612,11 +655,33 @@ export function mlxProvider(): Provider {
         i.log({ at: new Date().toISOString(), kind: 'engine', text: `mlx run crashed: ${reason}` });
         return { summary: '', usage: usageOf(0), ended: 'crashed', reason };
       }
-      return runToolLoop(mlxTransport(model), i, {
+      // a heavy train holds the machine: the model is unavailable, so the job goes back to the board unspent
+      const down = heavyRunning();
+      if (down) {
+        const reason = new GraduatesDown(down).message;
+        i.log({ at: new Date().toISOString(), kind: 'engine', text: reason });
+        return { summary: '', usage: usageOf(0), ended: 'crashed', reason, spendsAttempt: false };
+      }
+      let refused: string | null = null;
+      const inner = mlxTransport(model);
+      const transport: ChatTransport = {
+        async *chat(messages, tools, signal) {
+          try {
+            yield* inner.chat(messages, tools, signal);
+          } catch (err) {
+            if (err instanceof GraduatesDown) refused = err.message;
+            throw err;
+          }
+        },
+      };
+      const r = await runToolLoop(transport, i, {
         maxTurns: i.caps.maxTurns,
         maxMs: i.caps.maxMinutes * 60_000,
         creditsFor: (u) => localCredits(u.seconds, MLX_GB),
       });
+      // a train took the machine between turns: unavailable, not the agent's failure
+      if (refused !== null && r.ended === 'crashed') return { ...r, reason: refused, spendsAttempt: false as const };
+      return r;
     },
 
     /** The README audit on a graduate: the local audit's tools, caps and result size, as on Ollama. */

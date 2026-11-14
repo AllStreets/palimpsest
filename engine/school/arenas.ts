@@ -83,7 +83,7 @@ import { isSourceFile, verifiedChanges, type VerifiedChange } from './history.js
 import { isTestFile } from '../audit/schema.js';
 import { mutable, mutate, shuffled, type Mutant } from './mutants.js';
 import { registerAbort, TURNED_OFF_REASON } from './tick.js';
-import { readGate } from './trainer.js';
+import { readGate, takeMachine } from './trainer.js';
 
 /** What a planted task shows the agent: which tests fail and how, never where the bug is. */
 export interface PlantedInput {
@@ -874,6 +874,7 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
     }
   };
   let worked = false;
+  let giveBack: () => void = () => {};
   const stopReason = () => (typeof signal.reason === 'string' ? signal.reason : TURNED_OFF_REASON);
   const pause = async (reason: string) => {
     writeState(state);
@@ -932,6 +933,8 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
   try {
     const first = await readGate('heavy', at());
     if (!first.ok) return await pause(first.reason ?? 'the gate closed');
+    // the build is a heavy train: the graduates' server (ruling 26) ends its calls, stops, and stays down until it ends
+    giveBack = await takeMachine('an arena build');
     worked = true;
     // A grading root an earlier session left (the engine stopped mid-grade) goes first.
     await clearRoot(gradeRunId(state.id));
@@ -994,6 +997,7 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
         at: at(),
       });
     }
+    giveBack();
     o.signal?.removeEventListener('abort', onOuter);
     unregister();
     live = null;

@@ -19,7 +19,7 @@ import { acquire, creditsFor, liveLeaseCount, schoolClaudeSpent, type Lease } fr
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import type { CompleteInput, CompleteResult, Usage } from '../engine/market/provider.js';
 import { providerFor, setProvider } from '../engine/market/providers.js';
-import { serverState } from '../engine/market/mlx.js';
+import { heavyRunning, serverState } from '../engine/market/mlx.js';
 import { verifyReplay } from '../engine/market/replay.js';
 import { balances, replayBalances } from '../engine/market/treasury.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
@@ -763,9 +763,13 @@ test("a voyage waits for the graduates' calls in flight and stops their server b
   try {
     seedLocals();
     let serverAtFirstCall: ReturnType<typeof serverState> | undefined;
+    let downAtFirstCall: string | null = null;
     backends({
       hold: () => {
-        if (serverAtFirstCall === undefined) serverAtFirstCall = serverState();
+        if (serverAtFirstCall === undefined) {
+          serverAtFirstCall = serverState();
+          downAtFirstCall = heavyRunning();
+        }
         return null;
       },
     });
@@ -786,6 +790,8 @@ test("a voyage waits for the graduates' calls in flight and stops their server b
     assert.deepEqual(order, ['done before the voyage', 'sailed']);
     assert.deepEqual(mlx.spawned[0].kills, ['SIGTERM']);
     assert.equal(serverAtFirstCall, null, 'no graduate server runs while the voyage races');
+    assert.equal(downAtFirstCall, 'a voyage', 'and none may start');
+    assert.equal(heavyRunning(), null, 'given back when the voyage ends');
   } finally {
     await uninstallMlx();
   }

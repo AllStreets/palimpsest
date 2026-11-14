@@ -55,7 +55,32 @@ let state: Mlx | null = null;
 let server: Server | null = null;
 const saved: Record<string, string | undefined> = {};
 
+let trainerHook: (() => Spawned) | null = null;
+
+/** The next `school.py` spawn is a fake trainer child: `onSpawn` runs as it is spawned, `end()` ends it with exit 0. */
+export function fakeTrainer(onSpawn: () => void): { started: boolean; end(): void } {
+  let resolveDone!: (d: SpawnDone) => void;
+  const done = new Promise<SpawnDone>((r) => {
+    resolveDone = r;
+  });
+  const t = {
+    started: false,
+    end() {
+      resolveDone({ code: 0, signal: null });
+    },
+  };
+  trainerHook = () => {
+    trainerHook = null;
+    onSpawn();
+    t.started = true;
+    const lines: AsyncIterable<SpawnLine> = { [Symbol.asyncIterator]: () => ({ next: () => done.then(() => ({ value: undefined, done: true as const })) }) };
+    return { pid: 6161, lines, kill: () => t.end(), done };
+  };
+  return t;
+}
+
 const fakeSpawner: Spawner = (cmd, args, opts): Spawned => {
+  if (trainerHook && args.some((a) => a.endsWith('school.py'))) return trainerHook();
   if (![cmd, ...args].includes('mlx_lm.server')) {
     assert.ok(!/python/.test([cmd, ...args].join(' ')), 'no Python under npm test');
     return realSpawner(cmd, args, opts);
@@ -230,6 +255,7 @@ export async function uninstallMlx(): Promise<void> {
   if (server) await new Promise((r) => server!.close(r));
   server = null;
   state = null;
+  trainerHook = null;
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;

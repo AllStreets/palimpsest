@@ -99,9 +99,10 @@ export function schoolOff(now: number = Date.now()): void {
 }
 
 /**
- * Stops the graduates' mlx server (ruling 26): drained first before a heavy
- * train takes the machine, at once when the school is turned off. Loaded on
- * use (the market backend reaches back into the school). Never throws.
+ * Stops the graduates' mlx server (ruling 26): at once when the school is
+ * turned off, or drained first. A heavy train takes the machine with
+ * `takeMachine` (trainer.ts) instead. Loaded on use (the market backend
+ * reaches back into the school). Never throws.
  */
 export async function stopGraduates(drain: boolean): Promise<void> {
   try {
@@ -235,8 +236,6 @@ export function startSchool(o: SchoolOptions = {}): School {
       // A paused arena build (never a new one: only his click starts those) goes on with its untried candidates.
       if (!stopped && getSettings().school.enabled) {
         try {
-          // an arena build is a heavy train: the graduates' server gives the machine back first
-          await stopGraduates(true);
           await resume(now);
         } catch (err) {
           console.error('palimpsest: the school could not resume an arena build:', err);
@@ -256,7 +255,6 @@ export function startSchool(o: SchoolOptions = {}): School {
       const loraKey = `${night}\nlora`;
       if (!stopped && getSettings().school.enabled && getSettings().school.baseModelReady && liveTrains().length === 0 && !tried.has(loraKey)) {
         try {
-          await stopGraduates(true);
           const r = await lora(now);
           if (r.status !== 'waiting' && r.status !== 'paused') tried.add(loraKey);
         } catch (err) {

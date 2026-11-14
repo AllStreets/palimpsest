@@ -231,6 +231,17 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
   const g = await gateFn(o.gate, asked);
   if (!g.ok) return { ...trainState(id, o.kind, asked), reason: g.reason ?? 'the gate closed' };
 
+  // A heavy train takes the machine (ruling 26): the graduates' server ends its calls, stops, and stays down until the train ends.
+  const giveBack = o.gate === 'heavy' ? await takeMachine(`a ${o.kind} train`) : () => {};
+  try {
+    return await run(o, id, python);
+  } finally {
+    giveBack();
+  }
+}
+
+/** The train itself, once the gate held: spawned, watched, charged and recorded. */
+async function run(o: StartTrain, id: string, python: string): Promise<TrainState> {
   // the seconds charged run from here, after the gate answered, not from when the caller asked
   const startedAt = Date.now();
   const state = trainState(id, o.kind, startedAt);
@@ -316,6 +327,22 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
   record(paused ? 'train.paused' : 'train.ended', entry);
   emit(paused ? 'train.paused' : 'train.ended', entry);
   return { ...state };
+}
+
+/**
+ * Takes the machine for a heavy train (an arena build, a voyage, a LoRA):
+ * the graduates' mlx server (ruling 26) lets its calls in flight finish,
+ * stops, and refuses to start again until the returned function is called.
+ * Loaded on use (the market backend reaches back into the school); a
+ * failure to load never stops the train.
+ */
+export async function takeMachine(what: string): Promise<() => void> {
+  try {
+    return await (await import('../market/mlx.js')).beginHeavy(what);
+  } catch (err) {
+    console.error('palimpsest: the graduates\' server could not be stopped for a train:', err);
+    return () => {};
+  }
 }
 
 /** Writes a train's row as its ledger entry carries it, so `verifyReplay` finds the table and the ledger agree. */

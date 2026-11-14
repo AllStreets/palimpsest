@@ -11,18 +11,18 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { paths } from '../engine/home.js';
-import { ensureServer, MLX_GB, MLX_IDLE_MS, mlxProvider, reapStrayServer, serverPidFile, serverState, STRAY_KILL_GRACE_MS } from '../engine/market/mlx.js';
+import { beginHeavy, ensureServer, GraduatesDown, heavyRunning, MLX_GB, MLX_IDLE_MS, mlxProvider, reapStrayServer, serverPidFile, serverState, STRAY_KILL_GRACE_MS } from '../engine/market/mlx.js';
 import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { loraBaseDir } from '../engine/school/lora.js';
 import { schoolOff, startSchool } from '../engine/school/tick.js';
-import { setGate } from '../engine/school/trainer.js';
+import { setGate, startTrain } from '../engine/school/trainer.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localCredits } from '../shared/credits.js';
 import { poolOfModel } from '../shared/market-rules.js';
 import type { Agent, GateState, Job, ModelRef, RunProgress } from '../shared/types.js';
 import { setUp, tearDown } from './guild-fixtures.js';
-import { adapterDir, completion, GRAD_1, GRAD_2, graduate, installMlx, KEYS, lora, LORA_1, LORA_2, safetensors, SERVER_PID, uninstallMlx, until, type Mlx } from './mlx-fixtures.js';
+import { adapterDir, completion, fakeTrainer, GRAD_1, GRAD_2, graduate, installMlx, KEYS, lora, LORA_1, LORA_2, safetensors, SERVER_PID, uninstallMlx, until, type Mlx } from './mlx-fixtures.js';
 
 let m: Mlx;
 let spawned: Mlx['spawned'];
@@ -68,70 +68,131 @@ test('turning the school off stops the server, a call in flight ending with an e
   assert.equal(serverState(), null);
 });
 
-test('a heavy train waits for the calls in flight, then the server stops before it starts', async () => {
-  patchSettings({ school: { ...getSettings().school, enabled: true } });
-  m.replies = [{ json: completion({ content: 'finished first' }), delayMs: 300 }];
-  const order: string[] = [];
-  const call = complete(GRAD_1).then((r) => {
-    order.push(`call ${r.text}`);
-    return r;
-  });
-  await until(() => bodies.length === 1);
-  const seen: Array<{ step: string; server: ReturnType<typeof serverState> }> = [];
+function workInput(runId: string): WorkInput {
+  const runRoot = join(paths().runs, runId);
+  const dir = join(runRoot, 'repo');
+  for (const d of ['repo/.git', 'repo/src', 'tmp', 'home', 'cache', 'ctl']) mkdirSync(join(runRoot, d), { recursive: true });
+  writeFileSync(join(dir, 'src', 'a.ts'), 'export const a = 1;\n');
+  const job = { id: 'job-1', repo: 'acme/widgets', source: 'issue', issue: 7, url: null, title: 'Add a changelog', body: 'Please add docs/CHANGELOG.md.', scope: ['docs/**'], acceptance: ['docs/CHANGELOG.md exists'], tier: 'normal', value: 60, status: 'running', attempts: 0, postedAt: '2026-11-01T00:00:00.000Z', bidsCloseAt: null, awardedBid: null, runId, floorId: null, closedAt: null, excludedFirms: [], haltedFrom: null } as unknown as Job;
+  const agent = { id: 'grad-1', firmId: 'firm-1', name: 'Ada Quarry', model: GRAD_1, instructions: 'Keep changes small.', maxTurns: 25 } as unknown as Agent;
+  return {
+    job, agent, persona: 'Ada is careful.', runId, dir, branch: 'palimpsest/job-1', plan: null, examples: [],
+    log: () => {}, onProgress: (_p: Partial<RunProgress>) => {}, signal: new AbortController().signal,
+    caps: { maxTurns: 25, maxMinutes: 10, maxCredits: 1000 },
+  };
+}
+
+test('a tick that starts no train leaves a serving graduate alone', async () => {
+  patchSettings({ school: { ...getSettings().school, enabled: true, baseModelReady: true } });
+  await ensureServer(GRAD_1);
   const school = startSchool({
     intervalMs: 3_600_000,
     gate: async (kind) => okGate(kind as 'light'),
     labels: () => ({}) as never,
     ask: () => [],
     act: async () => 0,
-    resume: async () => {
-      order.push('resume');
-      seen.push({ step: 'resume', server: serverState() });
-    },
-    sail: async () => {
-      seen.push({ step: 'sail', server: serverState() });
-    },
-    lora: async () => {
-      seen.push({ step: 'lora', server: serverState() });
-      return { status: 'refused' };
-    },
+    // nothing paused to resume, no voyage due, the LoRA refused: no train starts
+    resume: async () => [],
+    sail: async () => null,
+    lora: async () => ({ status: 'refused' }),
   });
   try {
-    await school.tick(Date.now());
+    const r = await school.tick(Date.now());
+    assert.equal(r.reason, null);
   } finally {
     school.stop();
   }
-  assert.equal((await call).text, 'finished first', 'the call in flight was not cut');
-  assert.deepEqual(order, ['call finished first', 'resume'], 'the train waited for the call');
-  assert.deepEqual(spawned[0].kills, ['SIGTERM']);
-  for (const s of seen) assert.equal(s.server, null, `${s.step} started with no server running`);
+  assert.deepEqual(spawned[0].kills, [], 'the server kept running');
+  assert.equal(serverState()?.model, GRAD_1);
+  assert.equal(heavyRunning(), null);
+});
 
-  // and the LoRA too, when a graduate was serving between the voyage and it
-  const school2 = startSchool({
-    intervalMs: 3_600_000,
-    gate: async (kind) => okGate(kind as 'light'),
-    labels: () => ({}) as never,
-    ask: () => [],
-    act: async () => 0,
-    resume: async () => {},
-    sail: async () => {
-      m.replies.push({ json: completion({ content: 'between' }) });
-      await complete(GRAD_1);
-    },
-    lora: async () => {
-      seen.push({ step: 'lora after a call', server: serverState() });
-      return { status: 'refused' };
-    },
+test('a heavy train waits for the calls in flight, stops the server and keeps it down while it runs', async () => {
+  m.replies = [{ json: completion({ content: 'finished first' }), delayMs: 300 }, { json: completion({ content: 'after the train' }) }];
+  const order: string[] = [];
+  const call = complete(GRAD_1).then((r) => {
+    order.push(`call ${r.text}`);
+    return r;
   });
+  await until(() => bodies.length === 1);
+  const giveBack = await beginHeavy('a lora train');
+  order.push('train');
+  assert.equal((await call).text, 'finished first', 'the call in flight was not cut');
+  assert.deepEqual(order, ['call finished first', 'train']);
+  assert.deepEqual(spawned[0].kills, ['SIGTERM']);
+  assert.equal(serverState(), null);
+
+  // while it runs: refused in plain words, nothing started
+  assert.equal(heavyRunning(), 'a lora train');
+  await assert.rejects(ensureServer(GRAD_1), (err: Error) => err instanceof GraduatesDown && err.message === "The school's graduates are not served while a lora train runs");
+  await assert.rejects(complete(GRAD_1), /not served while a lora train runs/);
+  // a market run on a graduate: the model is unavailable, the job goes back to the board unspent
+  const w = await mlxProvider().work(workInput('run-down'));
+  assert.equal(w.ended, 'crashed');
+  assert.equal(w.spendsAttempt, false);
+  assert.match(w.reason ?? '', /not served while a lora train runs/);
+  assert.equal(spawned.length, 1);
+
+  giveBack();
+  giveBack();
+  assert.equal(heavyRunning(), null);
+  assert.equal((await complete(GRAD_1)).text, 'after the train');
+  assert.equal(spawned.length, 2);
+});
+
+test('a run whose next turn finds a train holding the machine goes back to the board unspent', async () => {
+  m.replies = [{ json: completion({ tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"src/a.ts"}' } }] }, 'tool_calls'), delayMs: 300 }];
+  const run = mlxProvider().work(workInput('run-between'));
+  await until(() => bodies.length === 1);
+  const giveBack = await beginHeavy('a voyage');
   try {
-    patchSettings({ school: { ...getSettings().school, baseModelReady: true } });
-    await school2.tick(Date.now() + 1);
+    const r = await run;
+    assert.equal(r.ended, 'crashed');
+    assert.equal(r.spendsAttempt, false);
+    assert.equal(r.reason, "The school's graduates are not served while a voyage runs");
+    assert.equal(bodies.length, 1, 'the first turn finished; the second never reached a server');
   } finally {
-    school2.stop();
+    giveBack();
   }
-  assert.equal(seen.at(-1)?.step, 'lora after a call');
-  assert.equal(seen.at(-1)?.server, null);
-  assert.deepEqual(spawned[1].kills, ['SIGTERM']);
+});
+
+test('a heavy startTrain takes the machine only once its gate holds, and gives it back when the train ends', async () => {
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  await ensureServer(GRAD_1);
+  // a closed gate starts nothing: the server is left alone
+  setGate(async (kind) => ({ ...okGate(kind as 'heavy'), ok: false, reason: 'on battery' }));
+  const waiting = await startTrain({ kind: 'lora', gate: 'heavy', command: { cmd: 'sleep' }, gb: 4.3, onLine: () => {} });
+  assert.equal(waiting.status, 'waiting');
+  assert.deepEqual(spawned[0].kills, []);
+  assert.equal(serverState()?.model, GRAD_1);
+
+  // an open gate: the server stops before the trainer spawns, and stays down until it ends
+  setGate(async (kind) => okGate(kind as 'heavy'));
+  let serverAtSpawn: ReturnType<typeof serverState> | undefined;
+  let downAtSpawn: string | null = null;
+  const trainer = fakeTrainer(() => {
+    serverAtSpawn = serverState();
+    downAtSpawn = heavyRunning();
+  });
+  const train = startTrain({ kind: 'lora', gate: 'heavy', command: { cmd: 'sleep' }, gb: 4.3, onLine: () => {} });
+  await until(() => trainer.started);
+  assert.equal(serverAtSpawn, null);
+  assert.equal(downAtSpawn, 'a lora train');
+  assert.deepEqual(spawned[0].kills, ['SIGTERM']);
+  await assert.rejects(ensureServer(GRAD_1), GraduatesDown);
+  trainer.end();
+  assert.equal((await train).status, 'done');
+  assert.equal(heavyRunning(), null);
+
+  // a light train (the nets) never touches the server
+  await ensureServer(GRAD_1);
+  const light = fakeTrainer(() => {});
+  const nets = startTrain({ kind: 'nets', gate: 'light', command: { cmd: 'sleep' }, gb: 0.01, onLine: () => {} });
+  await until(() => light.started);
+  assert.equal(serverState()?.model, GRAD_1);
+  assert.equal(heavyRunning(), null);
+  light.end();
+  await nets;
 });
 
 test("the server's pid is kept under ctl while it runs and gone when it stops", async () => {
