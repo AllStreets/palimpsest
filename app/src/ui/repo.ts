@@ -1,5 +1,5 @@
 import { pushModeRefusal, REGISTRY_HOSTS, TIER_LABELS } from '../../../shared/market-rules';
-import { arenaRefusal, BUSY_REFUSAL, isBeagle, RACE_REFUSAL } from '../../../shared/school-rules';
+import { arenaRefusal, isBeagle, RACE_REFUSAL } from '../../../shared/school-rules';
 import type { Audit, AuditView, District, FirmView, Floor, Job, JobStatus, Repo, RepoChecks, Tier } from '../../../shared/types';
 import { api, ApiError, type EngineEvent, type RepoPatchBody, type SchoolView } from '../api';
 import { placeHref } from '../router';
@@ -863,7 +863,6 @@ export function createDistrictPage(parent: HTMLElement, opts: { listen(fn: (e: E
     if (why) return why;
     const building = v.arenas.find((a) => a.status === 'building');
     if (building) return `An arena is already being built (${building.repo})`;
-    if (v.trains.some((t) => t.status === 'running' || t.status === 'waiting')) return BUSY_REFUSAL;
     return null;
   }
 
