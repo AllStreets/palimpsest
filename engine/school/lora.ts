@@ -32,7 +32,11 @@
  *   or needs more edits than an answer may hold;
  * - `not-unique`: its hunks cannot be written as find-and-replace edits
  *   (a source file created or removed, or a find that stays repeated);
- * - `no-edit`: it changed no source file a racer may edit.
+ * - `no-edit`: it changed no source file a racer may edit;
+ * - `secret`: it touches a file that holds credentials by its name
+ *   (`secretPath`), or anything in the example is something `redact()`
+ *   would change (a token, a key, a path of this Mac). The whole example
+ *   is dropped rather than redacted, so its edits stay exact.
  *
  * Every git read is on the bare mirror through getRunner() with
  * ENGINE_GIT_FLAGS, argv only, and every sha and blob id is checked as 40
@@ -55,12 +59,14 @@ import type { Repo } from '../../shared/types.js';
 import { getRunner } from '../exec.js';
 import { paths } from '../home.js';
 import { mirrorDir } from '../mirror.js';
+import { redact } from '../market/jobs.js';
+import { SECRET_PATHS } from '../market/sandbox.js';
 import { ENGINE_GIT_FLAGS } from '../market/worktree.js';
 import { listRepos } from '../repos.js';
 import { protectedReason, sealedRefs, toBeagleArena, type ArenaEdit } from './arenas.js';
 import { isSourceFile, verifiedChanges, type VerifiedChange } from './history.js';
 
-export type LoraSkip = 'sealed' | 'too-large' | 'too-long' | 'not-unique' | 'no-edit';
+export type LoraSkip = 'sealed' | 'secret' | 'too-large' | 'too-long' | 'not-unique' | 'no-edit';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -256,6 +262,30 @@ export function hunksToEdits(before: string, patch: string): Array<{ find: strin
   return text === after ? edits : null;
 }
 
+// ---------------------------------------------------------------- secrets
+
+/** File names that hold credentials, wherever they sit in a repo. */
+const SECRET_NAMES = [/^\.env/i, /\.pem$/i, /\.key$/i, /^id_rsa/i, /^credentials/i, /^secrets/i, /\.p12$/i];
+
+/**
+ * Whether a repo path names a credentials file: one of SECRET_NAMES, or any
+ * of the sandbox's SECRET_PATHS (`.ssh`, `.aws`, `.gnupg`, `.config/gh`,
+ * `.npmrc`, `.netrc`, `.git-credentials` and the rest) as its own run of
+ * path segments anywhere in it. Case is ignored, as APFS ignores it.
+ */
+export function secretPath(path: string): boolean {
+  const segs = path.toLowerCase().split('/');
+  const name = segs[segs.length - 1] ?? '';
+  if (SECRET_NAMES.some((re) => re.test(name))) return true;
+  for (const p of SECRET_PATHS) {
+    const want = p.toLowerCase().split('/');
+    for (let i = 0; i + want.length <= segs.length; i++) {
+      if (want.every((w, j) => segs[i + j] === w)) return true;
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------- tokens
 
 /**
@@ -381,9 +411,12 @@ async function exampleOf(repo: Repo, c: VerifiedChange, sealed: Set<string>, sys
   const commits = await commitsOf(repo, c);
   if (!commits) return { error: `the commits of ${c.ref} could not be read` };
   if (commits.some((x) => sealed.has(x))) return { skip: 'sealed' };
+  // A change that touches a credentials file is never read.
+  if (c.files.some(secretPath)) return { skip: 'secret' };
 
   const raw = await rawDiff(repo, c.parent, c.sha);
   if (!raw) return { error: `the diff of ${c.ref} could not be read` };
+  if (raw.some((f) => secretPath(f.path))) return { skip: 'secret' };
   // Links and submodules on either side are skipped, never read.
   const files = raw.filter((f) => (f.oldMode === '000000' || REGULAR.has(f.oldMode)) && (f.newMode === '000000' || REGULAR.has(f.newMode)));
   for (const f of files) {
@@ -438,6 +471,8 @@ async function exampleOf(repo: Repo, c: VerifiedChange, sealed: Set<string>, sys
     ...reads,
     { role: 'assistant', content: JSON.stringify({ action: 'answer', answer: { edits } }) },
   ];
+  // Anything redact() would touch keeps the whole example out; redacting it would break the edits.
+  if (messages.some((m) => redact(m.content) !== m.content)) return { skip: 'secret' };
   const tokens = estimateTokens(messages);
   if (tokens > LORA.maxSeq) return { skip: 'too-long' };
   return { example: { repo: repo.fullName, ref: c.ref, sha: c.sha, at: c.at, tokens, messages } };
@@ -478,7 +513,7 @@ function writeAtomic(path: string, text: string): void {
  * `failed` and adds nothing.
  */
 export async function buildLoraData(now: number, o: { check?: boolean; signal?: AbortSignal } = {}): Promise<LoraData> {
-  const skipped: Record<LoraSkip, number> = { sealed: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 };
+  const skipped: Record<LoraSkip, number> = { sealed: 0, secret: 0, 'too-large': 0, 'too-long': 0, 'not-unique': 0, 'no-edit': 0 };
   const failed: Record<string, string> = {};
   const examples: LoraExample[] = [];
   const sealed = sealedRefs();

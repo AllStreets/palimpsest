@@ -16,7 +16,7 @@ import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { mirrorDir } from '../engine/mirror.js';
 import { getRepo } from '../engine/repos.js';
-import { buildLoraData, estimateTokens, hunksToEdits, type LoraExample } from '../engine/school/lora.js';
+import { buildLoraData, estimateTokens, hunksToEdits, secretPath, type LoraExample } from '../engine/school/lora.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import { LORA } from '../shared/school-rules.js';
@@ -82,7 +82,7 @@ interface World {
   small: string[];
 }
 
-function world(): World {
+function world(extra?: (work: string) => void): World {
   const repo: Repo = {
     fullName: FULL,
     private: false,
@@ -122,6 +122,7 @@ function world(): World {
   const link = commit(work, 105, { 'src/s.ts': 'export const s = 2;\n' }, 'Make s two and alias util');
   const small: string[] = [];
   for (let i = 0; i < 10; i++) small.push(commit(work, 100 - i, { [`src/n${i}.ts`]: `export const n${i} = 2;\n` }, `Make n${i} two`));
+  extra?.(work);
   const remote = join(tempDir, 'github', 'acme__widgets.git');
   mkdirSync(dirname(remote), { recursive: true });
   gitAt(tempDir, ago(0), 'clone', '-q', '--bare', work, remote);
@@ -276,4 +277,34 @@ test('the data stays under paths().school', async () => {
   assert.equal(dirname(got.path), dirname(got.validPath));
   assert.deepEqual(readdirSync(dirname(got.path)).sort(), ['train.jsonl', 'valid.jsonl']);
   assert.ok(school.startsWith(realpathSync(tempDir)), 'the school is the temp home');
+});
+
+test('a token in a test diff or a commit message, or a .env change, is skipped as secret', async () => {
+  const token = `ghp_${'aB3'.repeat(12)}`;
+  let inTest = '';
+  let inMessage = '';
+  let env = '';
+  let plain = '';
+  const w = world((work) => {
+    inTest = commit(work, 60, { 'src/n0.ts': 'export const n0 = 3;\n', 'test/n0.test.ts': `const t = '${token}';\n` }, 'Make n0 three');
+    inMessage = commit(work, 58, { 'src/n1.ts': 'export const n1 = 3;\n' }, `Make n1 three\n\nUsed ${token} to check.`);
+    env = commit(work, 56, { 'src/n2.ts': 'export const n2 = 3;\n', 'config/.env.local': 'A=1\n' }, 'Make n2 three');
+    plain = commit(work, 54, { 'src/n3.ts': 'export const n3 = 3;\n' }, 'Make n3 three');
+  });
+  gitCalls = [];
+  const got = await buildLoraData(NOW);
+  const shas = got.examples.map(shaOf);
+  for (const s of [inTest, inMessage, env]) assert.ok(!shas.includes(s), 'a change with a secret is no example');
+  assert.equal(got.skipped.secret, 3);
+  assert.ok(shas.includes(plain), 'an ordinary change still becomes an example');
+  assert.ok(shas.includes(w.small[0]));
+  const text = [readFileSync(got.path, 'utf8'), readFileSync(got.validPath, 'utf8')].join('');
+  assert.ok(!text.includes(token), 'the token is nowhere in the data');
+  assert.ok(!text.includes('.env'), 'the .env change is nowhere in the data');
+  assert.ok(!gitCalls.some((a) => a.join(' ').includes('.env')), 'the .env file is never read');
+
+  for (const p of ['.env', 'a/.env.production', 'certs/server.pem', 'k/tls.KEY', 'id_rsa.pub', 'credentials.json', 'secrets.yaml', 'home/.ssh/config', 'x/.aws/credentials', '.npmrc', '.netrc', '.git-credentials', 'cert.p12', 'dot/.config/gh/hosts.yml', '.docker/config.json', '.gnupg/k']) {
+    assert.ok(secretPath(p), `${p} is secret`);
+  }
+  for (const p of ['src/env.ts', 'src/keyboard.ts', 'src/config/gh.ts', 'src/secret_sauce.ts', 'environment.md']) assert.ok(!secretPath(p), `${p} is not secret`);
 });
