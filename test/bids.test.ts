@@ -271,8 +271,9 @@ test('no positive EV moves the job back to open', async () => {
   const awarded = entries().filter((e) => e.kind === 'job.awarded' && (e.data as { jobId: string }).jobId === j.id);
   assert.equal(awarded.length, 1);
   assert.equal((awarded[0].data as { chosen: unknown }).chosen, null);
-  // The next round starts clean.
-  const again = openBidding(after, NOW + 5 * MIN);
+  // The next round starts clean, after the cool-off.
+  assert.equal(openBidding(after, NOW + 5 * MIN).status, 'open');
+  const again = openBidding(after, NOW + 2 + BID_COOL_OFF_MS);
   assert.equal(again.status, 'bidding');
   assert.deepEqual(bidList(j.id).bids, []);
 });
@@ -555,11 +556,13 @@ test('a job that draws no bid cools off before it opens again', async () => {
   assert.equal(award(job(k.id) as Job, NOW + 1), null);
   assert.equal(openBidding(job(k.id) as Job, NOW + MIN).status, 'open');
 
-  // A round with bids but no positive EV reopens at once.
+  // A round with bids but no positive EV cools off too: the same firms would only bid the same again,
+  // and each Claude bid is a plan call on his plan.
   addAgent('dear', 'gamma', 'ollama:qwen');
   script({ dear: { price: 60, confidence: 0.5 } });
   const m = bidding('normal');
   await collectBids(m, NOW);
   assert.equal(award(job(m.id) as Job, NOW + 1), null);
-  assert.equal(openBidding(job(m.id) as Job, NOW + 2).status, 'bidding');
+  assert.equal(openBidding(job(m.id) as Job, NOW + 2).status, 'open');
+  assert.equal(openBidding(job(m.id) as Job, NOW + 2 + BID_COOL_OFF_MS).status, 'bidding');
 });
