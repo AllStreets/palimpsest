@@ -1,11 +1,12 @@
 """
 Mask the raw logo render to the macOS rounded square and write the icon set Tauri wants.
 
-  python3 docs/brand/icons.py RAW.png
+  python3 docs/brand/icons.py RAW.png [--out LOGO.png] [--icons DIR] [--no-icns]
 
 Writes docs/brand/logo.png (1024, on the macOS icon grid: an 824 px body with
 its soft shadow) and docs/brand/icons/: 32x32.png, 128x128.png,
-128x128@2x.png, icon.png (512) and icon.icns (via iconutil).
+128x128@2x.png, icon.png (512) and icon.icns (via iconutil). `--out` and
+`--icons` send them elsewhere (a candidate mark, not the shipped one).
 """
 import os
 import shutil
@@ -16,6 +17,10 @@ import tempfile
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[2:]
+OUT = args[args.index('--out') + 1] if '--out' in args else os.path.join(HERE, 'logo.png')
+ICONS = args[args.index('--icons') + 1] if '--icons' in args else os.path.join(HERE, 'icons')
+ICNS = '--no-icns' not in args
 raw = Image.open(sys.argv[1]).convert('RGB')
 
 CANVAS = 1024
@@ -58,9 +63,9 @@ sh_mask.paste(mask, (off, off + 10))
 shadow.putalpha(sh_mask.filter(ImageFilter.GaussianBlur(14)).point(lambda v: int(v * 0.5)))
 canvas = Image.alpha_composite(canvas, shadow)
 canvas.alpha_composite(body_rgba, (off, off))
-canvas.save(os.path.join(HERE, 'logo.png'), optimize=True)
+canvas.save(OUT, optimize=True)
 
-icons = os.path.join(HERE, 'icons')
+icons = ICONS
 os.makedirs(icons, exist_ok=True)
 
 
@@ -73,12 +78,14 @@ at(128).save(os.path.join(icons, '128x128.png'))
 at(256).save(os.path.join(icons, '128x128@2x.png'))
 at(512).save(os.path.join(icons, 'icon.png'))
 
-tmp = tempfile.mkdtemp()
-iconset = os.path.join(tmp, 'icon.iconset')
-os.makedirs(iconset)
-for size in (16, 32, 128, 256, 512):
-    at(size).save(os.path.join(iconset, f'icon_{size}x{size}.png'))
-    at(size * 2).save(os.path.join(iconset, f'icon_{size}x{size}@2x.png'))
-subprocess.run(['iconutil', '-c', 'icns', iconset, '-o', os.path.join(icons, 'icon.icns')], check=True)
-shutil.rmtree(tmp)
-print('wrote logo.png and icons/')
+at(16).save(os.path.join(icons, '16x16.png'))
+if ICNS:
+    tmp = tempfile.mkdtemp()
+    iconset = os.path.join(tmp, 'icon.iconset')
+    os.makedirs(iconset)
+    for size in (16, 32, 128, 256, 512):
+        at(size).save(os.path.join(iconset, f'icon_{size}x{size}.png'))
+        at(size * 2).save(os.path.join(iconset, f'icon_{size}x{size}@2x.png'))
+    subprocess.run(['iconutil', '-c', 'icns', iconset, '-o', os.path.join(icons, 'icon.icns')], check=True)
+    shutil.rmtree(tmp)
+print('wrote', OUT, 'and', icons)
