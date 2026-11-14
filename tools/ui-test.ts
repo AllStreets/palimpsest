@@ -641,6 +641,7 @@ async function tourChecks(page: Page): Promise<void> {
   let t = 0;
   const captions: string[] = [];
   let moved = 0;
+  const steps: number[] = [];
   let last = await debug(page, (d) => d.camera());
   const mid = Math.floor(planned.stops.length / 2);
   for (let i = 0; i < planned.stops.length; i++) {
@@ -653,7 +654,11 @@ async function tourChecks(page: Page): Promise<void> {
     const st = (await tourOf())!;
     captions.push(st.caption ?? '');
     const cam = await debug(page, (d) => d.camera());
-    if (Math.hypot(cam[0] - last[0], cam[1] - last[1], cam[2] - last[2]) > 5) moved++;
+    const step = Math.hypot(cam[0] - last[0], cam[1] - last[1], cam[2] - last[2]);
+    steps.push(step);
+    // Two stops one floor apart on the same tower stand one floor height apart (3.6 m on the harbour), which the
+    // week puts back to back on some days; a camera that did not go to the stop stays where it was (0 m).
+    if (step > 1) moved++;
     last = cam;
     if (i === mid) {
       await page.waitForTimeout(1200);
@@ -663,6 +668,7 @@ async function tourChecks(page: Page): Promise<void> {
   }
   const inner = captions.slice(1, -1);
   check(inner.length === planned.stops.length - 2 && inner.every((c, i) => c === planned.stops[i + 1].title), `the caption changes at each of the ${planned.stops.length - 2} stops (${inner.join(' | ').slice(0, 160)})`);
+  console.log(`info  the tour's camera moved ${steps.map((m) => m.toFixed(1)).join(', ')} m from stop to stop`);
   check(moved >= planned.stops.length - 2, `and the camera moves from stop to stop (${moved})`);
   // Space: on to the next stop.
   await page.evaluate('window.__palimpsest.tourSeek(1)');

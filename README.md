@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img alt="phase 3" src="https://img.shields.io/badge/phase_3-the_reading-b98a5e?style=flat-square&labelColor=17130f" />
+  <img alt="phase 4" src="https://img.shields.io/badge/phase_4-the_school-b98a5e?style=flat-square&labelColor=17130f" />
   <img alt="three.js" src="https://img.shields.io/badge/three.js-r187-6e6457?style=flat-square&labelColor=17130f" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-6e6457?style=flat-square&labelColor=17130f" />
   <img alt="engine" src="https://img.shields.io/badge/engine-Node_22_%C2%B7_SQLite-6e6457?style=flat-square&labelColor=17130f" />
@@ -42,7 +42,7 @@ Palimpsest turns that history into a city. Each repo you connect becomes a distr
 
 A palimpsest is a manuscript that was scraped and written over for centuries, with every layer still readable. I wanted each tower to work the same way.
 
-Everything in these pictures is the real app, rendered by its own engine. The repos, firms and jobs in them are a sample city and a scripted sample market I made up for the purpose.
+Everything in these pictures is the real app, rendered by its own engine. The repos, firms and jobs in them are a sample city, a scripted sample market and a sample school I made up for the purpose.
 
 ## Reading a tower
 
@@ -210,6 +210,133 @@ T in the city, or Walk through the week in Monday's brief, walks the camera from
 
 The ride also stops at a few of the floors earned in the market: the newest, the scars, and any floor a proposal built. Under the caption it shows what is inside the floor: how many files and lines the change touched, the inspection's verdict, the agent's plan, and for a proposal's floor, the README claim it came from.
 
+## The school
+
+<img src="docs/media/campus-quad.webp" alt="The university's front quad at dusk from above the gate: four lawns cut by lit walks with students crossing them, collegiate gothic halls of red brick under slate roofs on either side, the clock tower with its lit dial on the left, and the library's lit gable and pointed windows at the far end, with the city's towers behind." />
+
+Phase 4 opens a university. It teaches the city from what actually happened in it: it breeds agents on arenas built from my own repos, teaches a small local coder on work that passed and survived, trains five small nets and a master net on the ledger, and asks my permission, one kind of work and one repo at a time, before the city does anything on its own.
+
+The school is off until I switch it on in Settings. While it is off nothing is built, nothing sails, nothing trains, no net touches an award or the brief, and the city never acts by itself. Turning it off stops a train that is running.
+
+Everything it trains is shown with a held-out score, a 95% interval and how many rows it was scored on. A net with too little to learn from says so, and says why, instead of showing a number.
+
+### The university
+
+<img src="docs/media/campus-home.webp" alt="The sample city from the app's home view in a violet dusk haze, its towers rising from lit plazas. At the lower left, on its own block, the university: red brick halls with slate roofs round green lawns and the small clock tower between them." />
+
+The university stands on its own plot in the district spiral, on a terrace six metres above the street. It took the next free plot the first time the Phase 4 engine started, so nothing that was already standing moved. Behind the gate are two quads of collegiate gothic halls, a library and a clock tower, and an observatory dome at the back corner, where the master net lives.
+
+<img src="docs/media/campus-clock.webp" alt="The university's red brick clock tower at dusk, with pinnacles at its corners, a limestone parapet and two white clock faces, one of them lit from within. Slate-roofed halls with dormers stand at its foot beside the lawn and its lamps." />
+
+The clock tower keeps the city's time, and its dials light after sunset. Students in gowns cross the quads, and an agent whose design is a parent in a voyage walks up the stair and in through the gate, and goes home when the voyage pauses for the night.
+
+### Arenas from my repos
+
+An arena is a set of coding tasks cut from one of my repos and graded by that repo's own tests. It is built only when I click Build an arena on a repo's page, only while the school is on, and only for a repo whose market is on and that has a test command. Nothing from a repo reaches a model before I have opened its market, and the school never builds one by itself.
+
+There are two kinds:
+
+- **Planted bugs**: up to 120 one-line mutants on the repo's source (a comparison flipped, an off by one, `&&` and `||` swapped, a `!` dropped), each kept only if the suite passes without it and fails with it. At most 60 are kept.
+- **Past changes**: verified changes from the repo's history (what counts is below) that touched code and tests, set up at their parent with the change's tests applied, and kept only if those tests fail there and pass at the change. At most 40.
+
+Each arena is split into breeding, race and sealed tasks, 60, 25 and 15 in a hundred. An answer is graded in a fresh clone under the same sandbox as a job, with no network: 1 when the target tests pass and nothing that passed before fails, half when the targets pass but something else breaks, and 0 otherwise. The sealed tasks are kept out of everything that learns. A sealed set can be raced on ten times, and after that the arena has to be rebuilt before it can back another claim.
+
+### Breeding agents
+
+<p align="center">
+  <a href="docs/media/voyage.mp4"><img src="docs/media/voyage-poster.webp" alt="The university library at dusk across the inner quad's lawn: a red brick hall under a steep slate roof with two pinnacled turrets at its gable, its great pointed window and the tall pointed bays of its reading room lit warm from within, lamps along the walk and a student crossing in a gown." width="100%" /></a>
+</p>
+
+<p align="center"><sub>The library's reading room lighting for a voyage on the sample school, a bay for each design racing. Click for the video.</sub></p>
+
+Breeding runs on [Beagle](https://github.com/AllStreets/beagle), my agent breeding engine, imported as a library. Every model call it makes goes through the city's own caps, slots and credits, so it can't spend outside them.
+
+A voyage is one breeding run on one arena: eight agent designs, four generations, local models only. A designer proposes the children from what their parents did on the breeding tasks, and a child is kept only when it beats its parents on the race tasks by a margin whose interval stays above zero. A voyage is about 500 runs that each use tools, so it spans several nights, and it picks up where it stopped. The champion is then raced on the sealed tasks against every local agent the firms already have. If it beats each of them, it joins the roster for firms to hire. Claude agents are not in that comparison, and the screen says so.
+
+The designer runs on Claude Sonnet by default, at most 30 credits a day, and Settings can put it on a local model instead. A firm with at least 400 credits can pay the school 120 to sail a voyage on an arena of a repo it has worked, and gets the first offer of its champion for a week. The fee is all it pays. The voyage's own spend is the city's, under the same caps as everything else.
+
+### Coders taught on verified work
+
+<img src="docs/media/agent-graduate.webp" alt="Ada Quarry's agent page, the sample school's graduate: taught, not bred, with no parents. Its score on the sealed race, 0.61, stands beside its base model's 0.47 on the same tasks, each with its interval, and a line says it beat its base by 0.14, 95% interval 0.06 to 0.22, so it graduated. Below are its base model, its adapter, the 112 examples it was taught on and the name it is served as." />
+
+The school also fine-tunes a small local coder, Qwen2.5 Coder 7B, with a LoRA on MLX, on changes that are known to be good. What counts as verified work:
+
+- the city's merges that passed inspection and stood for 30 days without a revert or a fix of mine after them;
+- my own merged pull requests that were never reverted;
+- and, while Count my own commits as verified work is on in Settings, my own commits on a default branch that touch code, are at least 30 days old, were never reverted or followed by a fix within two weeks, and pass their tests at that commit when the school checks.
+
+That last rule is mine. My repos have very few merged pull requests, so without my own commits there wouldn't be enough to learn from. Anything in a sealed set, any file over 24 KB, and any change that looks like it carries a secret is left out. Training needs 100 examples.
+
+A trained coder graduates only if it beats its own base model on a sealed race, by a difference whose 95% interval stays above zero. A graduate is served by `mlx_lm.server` on loopback as an `mlx:` model, joins the roster, and a firm can hire it like anyone else.
+
+<img src="docs/media/graduate-tower.webp" alt="A graduate's tower on its collegiate root at dusk: a two-storey block of red brick with limestone quoins and string courses, pointed windows and a lit pointed doorway up a short stair, under a low slate roof, standing on a paved court with a lamp beside it and the Gothic tower of a district behind." />
+
+A graduate's tower stands in its firm's quarter on a root of the university's own brick and limestone, with a slated roof and a lit doorway.
+
+### The nets and the master
+
+<img src="docs/media/school.webp" alt="The School screen over the left half of the window: the nets in a ruled ledger, each with what it learns, its held-out Brier score with its 95% interval and row count, a small plate of its interval against its baseline, and its labels. The appraiser, triage and master are trusted, the router is trained but not trusted, the cost head is not trained yet, and durability and taste are thin and say why. The city stays visible on the right." />
+
+The school trains five small nets, each with one job it can be scored on:
+
+| Net | Learns | From |
+|---|---|---|
+| Appraiser | a job's chance of passing, and its cost | every bid, run and inspection |
+| Router | which agent suits which job | the same runs, without the bids' own claims |
+| Durability | which merges survive | reverts and fixes after the city's merges |
+| Triage | which brief items I act on | what I do with the brief each day |
+| Taste | my design bar | the UI changes I merged or closed, and Understudy if I switch it on |
+
+The master net takes their outputs and predicts one thing: would I approve this? Where a small net has little data of its own it also learns from the master, but the master never learns from its own predictions, and every held-out row is a real one.
+
+The nets retrain at night from the ledger, and a net with no new labels is left alone. Each is scored on the newest fifth of its rows, which it never trained on, with a Brier score and a 95% interval, against a baseline: the base rate, or for the appraiser, the firm's own pass rate. A net is trusted only when it beats its baseline by an interval that stays clear of zero. Until a net has 30 rows to train on and 10 to test on, it shows how many labels it has and what it is waiting for.
+
+<img src="docs/media/school-net.webp" alt="The appraiser's page: its trusted line with the Brier score, interval, rows and baseline, then a plot of six versions, each a point with its interval as a whisker, the line through them in bronze and the baseline dashed, and below it every version with its score, its difference from the baseline and how long it took to train." />
+
+A net's page plots every version with its interval against the baseline. A net with one version gets a sentence instead of a chart.
+
+<p align="center">
+  <a href="docs/media/observatory.mp4"><img src="docs/media/observatory-poster.webp" alt="The observatory at the back of the university at dusk: a round red brick drum under a green copper dome whose two shutters stand parted over a slit lit amber inside, the white tube of the telescope tilted up in it, a pointed door with a lamp at the foot of the walk, and the city's blocks behind." width="100%" /></a>
+</p>
+
+<p align="center"><sub>The observatory opening while the sample school's nets train. Click for the video.</sub></p>
+
+The observatory is shut and dark while the master has nothing to show. Once it is trusted, the dome's shutters part while the nets train, the plate inside lights, and the telescope turns.
+
+### Earned autonomy
+
+<img src="docs/media/brief-autonomy.webp" alt="The brief for Saturday 14 November with the city's ask at the top: may the city accept its own README proposals on tidewater/harbor-ledger on its own? The master has agreed with me on 48 of the last 50 README gap proposals, and on its last 10 there, with Let the city do this on its own here, Not yet and Ask why. Below it, the overnight items, one of them a merge the city made by itself under its grant for normal-tier merges." />
+
+The master's guess on each decision is written down before I make it: when a job is proposed, or when a pull request opens. Only my own decisions count. A proposal I post or dismiss and a pull request I merge or close are decisions, and a revert counts as a no. The city's own acts never count, and a guess the master didn't make counts against it.
+
+There are six kinds of work: harness proposals, README gap proposals, and low, normal, high tier and UI merges. When the master has agreed with me on at least 95% of my last 50 decisions of a kind, across all repos, and a repo has 10 decisions of that kind with none of its last 10 against, the city asks in the brief whether it may do that kind of work on its own there. Only my answer grants it. A kind I approve nearly every time may never be offered, because a master that can't do better than always saying yes isn't trusted.
+
+Under a grant, the city acts only when every check holds at that moment: the school is on, the grant stands, the master is current and trusted and predicts I'd approve at 0.9 or more, and the agreement still holds. Before a merge it reads the repo again for a revert. A merge is `gh pr merge --merge` on the pull request's exact head, never with `--admin`, `--auto` or `--delete-branch`. Anything it can't check is a no.
+
+<img src="docs/media/autonomy-settings.webp" alt="The Autonomy section of Settings: four pairs of a kind of work and a repo. README gap proposals on harbor-ledger asked yesterday, low-tier merges on kumo suspended because the master agreed on only 44 of the last 50, normal-tier merges on quarry taken back and quiet until 14 December, and normal-tier merges on fieldnotes revoked by a revert. Each shows the master's agreement on that kind and the moves it allows." />
+
+Taking it back:
+
+- A revert of a merge the city made under a grant revokes that grant before anything else happens on that repo.
+- If I undo something it did, by withdrawing a job it accepted or closing a pull request it opened, the grant is suspended.
+- I can take any grant back from Settings or the repo's page. A grant I take back isn't asked about again for 30 days, though I can grant it again from Settings whenever I like. An ask I answer with Not yet stays quiet for 30 days.
+
+Beagle is never asked about or granted anything while Palimpsest imports it, so no code the city writes reaches the school's own engine except through a pin I approve.
+
+### When the Mac trains, and what it costs
+
+Training runs only when all of this holds:
+
+- the Mac is on power, never on battery;
+- it isn't in Low Power mode, unless I turn on Train in Low Power mode on power in Settings (off by default);
+- it is inside the training window, 1:00 to 6:00 by default;
+- for a LoRA, a voyage or an arena build, it has been idle for 15 minutes, no thermal or performance warning is recorded, and 20 GB of disk is free;
+- and no local job of the market's is running or waiting. Real work always comes first.
+
+Train now in Settings skips the window and the idle wait for three hours, but never the power, the thermals or the disk. The gate is read every 30 seconds while anything trains. When it fails, the trainer is stopped within 30 seconds and resumes from its last checkpoint the next time the gate holds. A resumed LoRA restarts its optimiser, and its card says so.
+
+Local training and racing are charged as local credits by the minute and the model's size, and never touch my Claude windows. The school's only Claude use is the voyage designer: at most 30 credits a day, 3% of a window, in one of the city's Claude slots, waiting while I'm using Claude myself, and counted in the night cap.
+
 ## Using it
 
 <img src="docs/media/overview.webp" alt="The app as it opens: the sample city at dusk with a name plate under each district and each firm's quarter, such as harbor-ledger, tidewater, 115 floors, and The exchange. The running head at the top left reads Palimpsest, City, Jobs, Firms, Treasury, Repos 6, Settings." />
@@ -226,7 +353,7 @@ Repos lists what your GitHub CLI can see. Nothing is connected until you turn it
 
 <img src="docs/media/settings.webp" alt="The Settings screen's providers: Claude through Claude Code, with the five-hour window at 34% and the week at 21% and the usage hook installed; the Anthropic API off, with no key stored and a five dollar daily cap; Ollama reachable on loopback with its installed models; and OpenAI usage from the Codex CLI's own logs." />
 
-Settings shows your Claude plan usage from the statusline hook, the caps the city keeps to, the providers the firms can use and a switch that stops the city. It also has a quality setting for older Macs.
+Settings shows your Claude plan usage from the statusline hook, the caps the city keeps to, the providers the firms can use and a switch that stops the city. It also has the school's switch, its training window and its Claude allowance, every autonomy grant, and a quality setting for older Macs.
 
 ## Turning the market on safely
 
@@ -256,7 +383,7 @@ Every agent's instructions carry the never list: never, without asking, delete a
 
 ## Where it stands
 
-I'm building it in five phases. Phase 1, the standing city, is done. Phase 2, the market, and Phase 3, the reading, are built and tested against the sample city and the sample market. Their first runs on my own repos come next, and the first real audit has not run yet.
+I'm building it in five phases. Phase 1, the standing city, is done. Phase 2, the market, Phase 3, the reading, and Phase 4, the school, are built and tested against the sample city, the sample market and the sample school. Their first runs on my own repos come next. The first real audit has not run yet, and neither has anything in the school.
 
 What works now:
 
@@ -267,18 +394,34 @@ What works now:
 - Live construction from real runs: the crane, the frame and the sparks, the searchlights, the cure, the scar.
 - README audits with five verdicts and evidence checked against the commit, proposals as jobs that wait for me, and the morning brief.
 - The mast, the finial, the scaffolding lights, the ribbon, the week tour and the floor dossier on the ride.
+- The school: arenas from planted bugs and past changes, voyages through Beagle, the LoRA and graduation on a sealed race, the five nets and the master with held-out scores and intervals, the training gate, and earned autonomy with its asks, grants, suspensions and revocations.
+- The university on its terrace, with its halls, library, clock tower and observatory, the students, and the collegiate root under a graduate's tower.
 - The city in three.js, with its river and bridges, trams, elevated rail, maglev pods, ferries and cabs, ambient traffic and crowds, and the agents as people you can follow.
-- The inspector and the brief, job, run, inspection, audit, firms, firm, agent, treasury, repos, district and settings screens.
+- The inspector and the brief, job, run, inspection, audit, firms, firm, agent, school, net, voyage, graduate, treasury, repos, district and settings screens.
 - Reading live Claude plan usage through a statusline hook, and the usage Codex and Gemini report of their own, if you have them.
 - A native Mac app, built with Tauri, in `src-tauri/`. It opens on a splash while it looks for the engine. If the engine isn't running, it offers to start it. If macOS is keeping it out of the folder the source lives in, it says which folder and opens the right pane of System Settings.
 
-There are 1,285 tests: 1,274 in Node for the engine, the market and the city, and 11 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city and the sample market, through every screen.
+There are 1,767 tests: 1,734 in Node for the engine, the market, the school and the city, 22 in Python for the trainer (`npm run test:trainer`), and 11 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city, the sample market and the sample school, through every screen.
 
-Everything in the market pictures comes from that sample market. It runs through the market's own code, with stand-ins for GitHub and the models.
+Everything in the market and school pictures comes from that sample. It runs through the market's and the school's own code, with stand-ins for GitHub, the models and the trainer. Every score in the school pictures, such as the appraiser's Brier of 0.14 or the graduate beating its base by 0.14, is the sample's, made up to show what the screens do with real numbers.
+
+### The school, honestly
+
+The school is built and tested on the sample, and none of it has run on my own work yet. The first real night (the trainer on this Mac, the gate, the nets trained on my own ledger) and the first real arena, voyage and coder on one of my repos are waiting for my go-ahead. Their numbers will go here once they have run, whatever they turn out to be.
+
+What I already know is that there is very little to learn from. When I last looked, on 12 November, my ledger had no bid, no inspection, no brief action and no merge in it, because the market is still off on every repo. So every net would read 0 of 40 labels, the master would make no guess, and nothing would be asked or granted. My repos have about 11 merged pull requests between them against the 100 examples a coder needs, which is why my own surviving commits count as verified work. Understudy has 37 taste statements and no answered pairs yet, so Taste has nothing from it either.
+
+That means the school will spend its first months saying it has nothing to show, and the screens are built to say exactly that, with the reason, rather than look busy. The arenas and voyages on a repo whose market is on are what can run first. The nets come as the market and the brief build up a ledger, and autonomy, if it ever comes, comes after that.
+
+<img src="docs/media/school-empty.webp" alt="The School screen on a fresh home with no repos: the school is off and none of the nets is trusted. Each net reads no score: thin, 0 labels, and a sentence saying why, such as 0 of 40 labels, no bid has been run: the market is off on every repo, or no city merge has had 30 days yet. No chart is drawn anywhere. The empty city stands on the right." />
+
+That is the school on a fresh home: every net thin with its cause, no arena, no voyage and no graduate, and no chart anywhere.
+
+Two more things wait on me. The school needs a few library fixes in Beagle, which are ready as a branch for a pull request on Beagle that I haven't opened or merged yet. Until I do, the dependency points at a local copy of that branch, so a fresh clone of Palimpsest won't install. And the base model for the coder, about 4.3 GB, downloads only when I click Download in Settings.
 
 Designed, and not built yet:
 
-- Phase 4, the school: breeding agents on arenas built from my own repos, fine-tuning small local models on work that passed, the nets trained nightly on what actually happened, and earned autonomy for each kind of work. Until then, the firms are the five seeded ones and the specialists on the roster, and every bid's chance of passing comes from the firm's own record.
+- Phase 5, polish and launch: a performance pass, and the README's diagrams.
 
 The full design is in [`docs/superpowers/specs/2026-11-08-palimpsest-design.md`](docs/superpowers/specs/2026-11-08-palimpsest-design.md).
 
@@ -308,6 +451,14 @@ node bin/palimpsest.mjs usage install
 
 The market needs that hook: Claude jobs pause while the newest usage reading is more than five hours old.
 
+The school trains in a Python environment of its own, with MLX, on Apple silicon. Setting it up downloads Python and the MLX packages from PyPI into `trainer/.venv`, so it runs only when you run it:
+
+```sh
+npm run trainer:setup
+```
+
+Until then the school says the trainer is not set up on this Mac, and nothing trains.
+
 Your data lives in `~/Library/Application Support/Palimpsest`. Set `PALIMPSEST_HOME` to put it somewhere else. An engine on another folder leaves your Claude settings alone, unless you also set `PALIMPSEST_CLAUDE_SETTINGS` to the settings file the usage hook should use.
 
 To look around without connecting anything of yours, write the sample city into a folder of its own. Then run a second engine on that folder, on its own port, beside the one you installed:
@@ -330,15 +481,17 @@ It never reads your Claude, Codex or Gemini logins and never offers a Claude log
 
 An audit reads the repo's README and code on this Mac. What leaves is the same as for a job: the calls your own `claude` CLI makes on your login, or nothing at all for a local model. A repo whose market is off is audited only when you ask.
 
+The school is off by default, and it never builds an arena from a repo whose market is off. Training runs on this Mac, in a sandbox with no network at all except a loopback port for serving a graduate. The nets' rows, the arenas' tasks and the coder's examples stay on this Mac, and the engine never serves them, even to the app. The one exception is the voyage designer, which may run on Claude through your own `claude` CLI as a job does, and then sees what the agents did on an arena's breeding tasks, never its sealed ones. The voyages themselves race local models only. The base model downloads from Hugging Face only when you click Download, without your Hugging Face login, and every other trainer process runs offline. Understudy's database is read, read only, only if you switch it on, and its taste statements then join the design check for every UI inspection.
+
 An Anthropic API key is a separate provider, off by default. If you add one in Settings, it is stored in your login keychain, goes only into the request header, and is spent only up to the daily dollar cap you set.
 
 Plan usage comes from a statusline hook you install yourself. Claude Code already passes your five-hour and seven-day usage to statusline scripts, and the hook writes those two numbers to Palimpsest's data folder. If you already had a statusline script, the hook keeps a backup of your settings and runs your script as before. Removing the hook puts your settings back exactly as they were. If your settings changed while the hook was in, removing it only puts your old statusline back and keeps the other changes.
 
 ## How the pictures were made
 
-Every image and clip in this README was captured from the app by [`tools/capture.ts`](tools/capture.ts). It starts a separate engine on its own port with a temporary data folder, and fills it with the sample city from [`tools/sample.ts`](tools/sample.ts) and the sample market from [`engine/market/sample-economy.ts`](engine/market/sample-economy.ts). That is six made-up repos with histories from nine years down to none, and eight days of made-up market history on them: six firms, their jobs, bids, runs, inspections and books, README audits and the jobs proposed from them, the city's milestones and a morning brief. GitHub and the models are answered by stand-ins, so nothing real is read or run. The UI tests use the same sample.
+Every image and clip in this README was captured from the app by [`tools/capture.ts`](tools/capture.ts). It starts a separate engine on its own port with a temporary data folder, and fills it with the sample city from [`tools/sample.ts`](tools/sample.ts) and the sample market from [`engine/market/sample-economy.ts`](engine/market/sample-economy.ts). That is six made-up repos with histories from nine years down to none, and eight days of made-up market history on them: six firms, their jobs, bids, runs, inspections and books, README audits and the jobs proposed from them, the city's milestones and a morning brief. On top of that is a sample school: its arenas, a voyage sailing and one finished, nets with versions, scores and intervals, my decisions and the master's guesses, a grant, a suspension, a revocation and an open ask, and one graduate. GitHub, the models and the trainer are answered by stand-ins, so nothing real is read, run or trained. The empty school is shot on a second, fresh data folder with nothing in it. The UI tests use the same sample.
 
-The capture opens the built UI in Chromium on the GPU, at twice the window's density. It sets the camera itself for every frame and waits for that frame to render before taking it. For the clips it also holds the city's clock still between frames and moves it on by exactly one frame each time, so the traffic, the people and the sparks move at their real pace however long a frame takes to save. Nothing is screen-recorded, so no frame is dropped or repeated. ffmpeg turns the frames into MP4s and animated AVIFs.
+The capture opens the built UI in Chromium on the GPU, at twice the window's density. It sets the camera itself for every frame and waits for that frame to render before taking it. For the clips it also holds the city's clock still between frames and moves it on by exactly one frame each time, so the traffic, the people, the sparks, the library's lights and the observatory's shutters move at their real pace however long a frame takes to save. Nothing is screen-recorded, so no frame is dropped or repeated. ffmpeg turns the frames into MP4s and animated AVIFs.
 
 ```sh
 npm run build

@@ -6,10 +6,10 @@ Scanned PBR textures from [Poly Haven](https://polyhaven.com), all CC0 (public d
 
 | Files | Texture | Author | License | Used for |
 |---|---|---|---|---|
-| `sand_*` | [Sandstone Blocks 08](https://polyhaven.com/a/sandstone_blocks_08) | Poly Haven | CC0 | District plinths; classical tower roots; stone-era floors (sandstone and travertine recoloured from it) |
-| `brick_*` | [Red Brick 03](https://polyhaven.com/a/red_brick_03) | Poly Haven | CC0 | Brick-era floors: common red as scanned; cream city, salmon, buff and glazed white terracotta recoloured from it |
+| `sand_*` | [Sandstone Blocks 08](https://polyhaven.com/a/sandstone_blocks_08) | Poly Haven | CC0 | District plinths; classical tower roots; stone-era floors (sandstone and travertine recoloured from it); the university's limestone dressings and the clock's dials |
+| `brick_*` | [Red Brick 03](https://polyhaven.com/a/red_brick_03) | Poly Haven | CC0 | Brick-era floors: common red as scanned; cream city, salmon, buff and glazed white terracotta recoloured from it; the university's halls and the collegiate root |
 | `granite_*` | [Granite Tile](https://polyhaven.com/a/granite_tile) | Poly Haven (Charlotte Baglioni) | CC0 | Pink and dark grey granite floors, recoloured from it |
-| `ashlar_*` | [Marble 01](https://polyhaven.com/a/marble_01) | Poly Haven (Rob Tuytel) | CC0 | Limestone and white marble floors, recoloured from its cut slabs |
+| `ashlar_*` | [Marble 01](https://polyhaven.com/a/marble_01) | Poly Haven (Rob Tuytel) | CC0 | Limestone and white marble floors, recoloured from its cut slabs; the university terrace's ashlar wall |
 | `ironspot_*` | [Dark Brick Wall](https://polyhaven.com/a/dark_brick_wall) | Poly Haven (Dimitrios Savva, Dario Barresi) | CC0 | Dark ironspot brick floors |
 | `metal_*` | [Metal Plate](https://polyhaven.com/a/metal_plate) | Poly Haven | CC0 | Brushed steel |
 | `pave_*` | [Precast Stone Paving](https://polyhaven.com/a/precast_stone_paving) | Poly Haven | CC0 | Pavements, plazas and the ground |
@@ -39,6 +39,8 @@ The vehicles (`app/src/city/vehicles.ts`) are own work, modelled in code for Pal
 
 The people (`app/public/kits/figures.glb`) are own work, sculpted in Blender from code by `tools/kits/figures.py` (run headless; the script is the source): one clothed figure with its head, hands, coat, trousers and shoes, and the hair, hats and scarf a crowd wears. The personas (`app/src/city/people.ts`) and the ambient crowd are drawn from it; the ambient traffic's cars are modelled in code in `app/src/city/ambient.ts`. No third-party models, scans or motion capture are used.
 
+The university (`app/src/city/campus/`) is an original design, modelled in code and written for Palimpsest: the terrace with its battered ashlar wall, bastions and stair, the lawns, walks, trees and lamps of its two quads, the collegiate gothic halls, the library with its reading-room bays and lantern, the clock tower with its dials and hands drawn in code, the observatory with its shutters and telescope, the students in their gowns, and the collegiate root under a graduate's tower (`app/src/city/tower/`). The slate, turf and gravel are drawn by a masonry shader written for Palimpsest over the scans listed above. It follows the collegiate gothic of English and American universities in general and copies no particular college. No third-party models are used.
+
 The shopfronts on the ground storeys of the ambient city (`app/src/city/shopfronts.ts`, drawn by the facade shader), and the glass lift and the crew's hoist car of the ride up a tower (`app/src/city/ride.ts`) are own work, written for Palimpsest. No third-party models or textures are used.
 
 ## Type
@@ -56,7 +58,7 @@ Bundled in `app/public/fonts/` (Latin subsets, WOFF2) so the app works offline. 
 
 The wordmark, the app mark and the app icon set are own work, rendered in Blender by scripts written for Palimpsest (`docs/brand/wordmark.py`, `docs/brand/logo.py`, `docs/brand/icons.py`). They reuse the Poly Haven sandstone, brick and rust scans listed above. The icons in `src-tauri/icons/` are copies of `docs/brand/icons/`.
 
-The README's hero, stills and clips in `docs/media/` are captured from the app itself by `tools/capture.ts`, from the fictional repos that `tools/sample.ts` writes and the scripted sample market that `engine/market/sample-economy.ts` writes on them. No real repo, issue, run or usage reading appears in them.
+The README's hero, stills and clips in `docs/media/` are captured from the app itself by `tools/capture.ts`, from the fictional repos that `tools/sample.ts` writes and the scripted sample market and sample school that `engine/market/sample-economy.ts` writes on them. No real repo, issue, run, usage reading, score or training run appears in them.
 
 ## Libraries
 

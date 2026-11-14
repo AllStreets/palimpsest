@@ -19,7 +19,13 @@
  * seconds; CAPTURE_ECONOMY=1), market-overview, screens (jobs, job,
  * run-log, inspection, firms, agent, treasury, each also a shot of its own),
  * construction-clip (construction.mp4: forty seconds of the economy's clock,
- * crane to cure) and commute (commute.mp4: a tram rider and a cab). With no
+ * crane to cure) and commute (commute.mp4: a tram rider and a cab). The
+ * school (Phase 4): school-screens (school, school-net, autonomy-settings,
+ * brief-autonomy, agent-graduate, each also a shot of its own), campus (its
+ * stills; CAMPUS_ONLY names some), graduate-tower, the clips voyage
+ * (voyage.mp4: the library lighting for a voyage) and observatory
+ * (observatory.mp4: the dome opening while the nets train), and
+ * school-empty (the school on a fresh home, always shot last). With no
  * shots named, it writes exactly the README's media (README_SHOTS) on the
  * sample economy with its clock running (CAPTURE_ECONOMY=live). families rebuilds the tallest
  * tower's sci-fi run in each family and shoots it close, then from the street. swatches measures every material variant's
@@ -345,6 +351,27 @@ async function runningHarbour(page: Page): Promise<{ id: string; runId: string }
   return { id: j.id, runId: j.runId };
 }
 
+/** The campus's own frame, as the ui-test reads it: x from the gate toward the library, z across it. */
+async function campusFrame(page: Page): Promise<(x: number, y: number, z: number) => V3> {
+  type C = { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', V3> } | null;
+  const c = (await page.evaluate('window.__palimpsest.campus()')) as C;
+  if (!c) throw new Error('capture: no campus stands (the engine has not taken the plot)');
+  const g = c.anchors.gate;
+  const l = c.anchors.library;
+  const n = Math.hypot(l[0] - g[0], l[2] - g[2]);
+  const ax = [(l[0] - g[0]) / n, (l[2] - g[2]) / n];
+  return (x, y, z) => [g[0] + ax[0] * x - ax[1] * z, y, g[2] + ax[1] * x + ax[0] * z];
+}
+
+/** Scrolls an open sheet so `sel` stands at the top of its body, for a shot. */
+async function toSheetTop(page: Page, sel: string): Promise<void> {
+  await page.locator(sel).first().evaluate((sec) => {
+    const body = sec.closest('.sheet-body') as HTMLElement;
+    body.scrollTop += sec.getBoundingClientRect().top - body.getBoundingClientRect().top - 16;
+  });
+  await page.waitForTimeout(500);
+}
+
 function shots(city: District[]): Record<string, (page: Page) => Promise<void>> {
   const by = (repo: string): District => {
     // A city reshaped for the framing rounds (CAPTURE_CITY=small) stands in its one tower.
@@ -375,43 +402,170 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async campus(page) {
-      // The university (Phase 4 Task 34): from home, across the front quad from over the gate at dusk, and close on a
-      // hall's porch. CAMPUS_VIEWS='[[[x,y,z],[x,y,z]], ...]' in the campus's own frame (x from the gate toward the
-      // library, y over the street, z across) adds stills for the rounds.
+      // The university (Phase 4 Tasks 34 to 37): from home, across the front quad from over the gate at dusk, close on a
+      // hall's porch, the clock tower lit, and the observatory shut and open. CAMPUS_ONLY='home,quad,clock,observatory-open'
+      // (the README's, set by a bare run) keeps only those. CAMPUS_VIEWS='[[[x,y,z],[x,y,z]], ...]' in the campus's own
+      // frame (x from the gate toward the library, y over the street, z across) adds stills for the rounds. Written lean,
+      // 1600 x 1000, like Phase 3's stills.
       await chrome(page, false);
-      type C = { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', V3> } | null;
-      const c = (await page.evaluate('window.__palimpsest.campus()')) as C;
-      if (!c) throw new Error('capture: no campus stands (the engine has not taken the plot)');
-      const g = c.anchors.gate;
-      const l = c.anchors.library;
-      const n = Math.hypot(l[0] - g[0], l[2] - g[2]);
-      const ax = [(l[0] - g[0]) / n, (l[2] - g[2]) / n];
-      const at = (x: number, y: number, z: number): V3 => [g[0] + ax[0] * x - ax[1] * z, y, g[2] + ax[1] * x + ax[0] * z];
+      const only = process.env.CAMPUS_ONLY?.split(',');
+      const want = (k: string): boolean => !only || only.includes(k);
+      const at = await campusFrame(page);
+      const shot = async (name: string, eye: V3, target: V3): Promise<void> => {
+        await frame(page, eye, target);
+        await page.waitForTimeout(1500);
+        await frame(page, eye, target);
+        await lean(page, name);
+      };
       const home = await callDebug<{ home: { eye: V3; target: V3 } }>(page, 'd.limits()');
-      await still(page, 'campus-home', home.home.eye, home.home.target);
-      await still(page, 'campus-quad', at(-30, 30, 10), at(60, 10, -4));
-      await still(page, 'campus-hall', at(92, 8, 36), at(66, 11, 54));
-      await still(page, 'campus-terrace', at(-44, 5, -34), at(-10, 7, -2));
-      await still(page, 'campus-library', at(104, 18, 8), at(181, 20, -1));
+      if (want('home')) await shot('campus-home', home.home.eye, home.home.target);
+      if (want('quad')) await shot('campus-quad', at(-30, 30, 10), at(60, 10, -4));
+      if (want('hall')) await shot('campus-hall', at(92, 8, 36), at(66, 11, 54));
+      if (want('terrace')) await shot('campus-terrace', at(-44, 5, -34), at(-10, 7, -2));
+      if (want('library')) await shot('campus-library', at(104, 18, 8), at(181, 20, -1));
       // The clock tower with its dials lit: the campus clock held at ten past ten at night, then freed.
-      await page.evaluate(`window.__palimpsest.campusClock(${new Date(2026, 10, 12, 22, 10).getTime()})`);
-      await still(page, 'campus-clock', at(28, 10, 2), at(97, 27, -56));
-      await page.evaluate('window.__palimpsest.campusClock(null)');
-      await still(page, 'campus-above', at(40, 110, 30), at(62, 6, -6));
+      if (want('clock')) {
+        await page.evaluate(`window.__palimpsest.campusClock(${new Date(2026, 10, 12, 22, 10).getTime()})`);
+        await shot('campus-clock', at(28, 10, 2), at(97, 27, -56));
+        await page.evaluate('window.__palimpsest.campusClock(null)');
+      }
+      if (want('above')) await shot('campus-above', at(40, 110, 30), at(62, 6, -6));
       // The observatory shut (a thin master), then open with the nets training and the master trusted (Task 36).
-      await page.evaluate('window.__palimpsest.school({ training: false, masterTrusted: false, version: 0 })');
-      await still(page, 'observatory-shut', at(131, 11, 84), at(183, 14, 90));
-      await page.evaluate('window.__palimpsest.school({ training: true, masterTrusted: true, version: 1 })');
-      await page.waitForTimeout(7500);
-      await still(page, 'observatory-open', at(131, 11, 84), at(183, 14, 90));
-      await still(page, 'observatory-quad', at(70, 13, 93), at(183, 13, 90));
-      await page.evaluate('window.__palimpsest.school(null)');
+      if (want('observatory-shut') || want('observatory-open') || want('observatory-quad')) {
+        await page.evaluate('window.__palimpsest.school({ training: false, masterTrusted: false, version: 0 })');
+        if (want('observatory-shut')) await shot('observatory-shut', at(131, 11, 84), at(183, 14, 90));
+        await page.evaluate('window.__palimpsest.school({ training: true, masterTrusted: true, version: 1 })');
+        await page.waitForTimeout(7500);
+        if (want('observatory-open')) await shot('observatory-open', at(131, 11, 84), at(183, 14, 90));
+        if (want('observatory-quad')) await shot('observatory-quad', at(70, 13, 93), at(183, 13, 90));
+        await page.evaluate('window.__palimpsest.school(null)');
+        await page.waitForTimeout(6500);
+      }
       // The library lit for the voyage the sample economy sails (Task 37): across the inner quad, then close on the bays.
-      await page.waitForTimeout(6500);
-      await still(page, 'campus-voyage', at(100, 12, 34), at(181, 17, -4));
-      await still(page, 'campus-bays', at(147, 9.5, 19), at(178, 10, -1));
+      if (want('voyage')) await shot('campus-voyage', at(100, 12, 34), at(181, 17, -4));
+      if (want('bays')) await shot('campus-bays', at(147, 9.5, 19), at(178, 10, -1));
       const extra = JSON.parse(process.env.CAMPUS_VIEWS ?? '[]') as [V3, V3][];
-      for (const [i, [e, t]] of extra.entries()) await still(page, `campus-${i}`, at(e[0], e[1], e[2]), at(t[0], t[1], t[2]));
+      for (const [i, [e, t]] of extra.entries()) await shot(`campus-${i}`, at(e[0], e[1], e[2]), at(t[0], t[1], t[2]));
+    },
+
+    async voyage(page) {
+      // The library lighting for a voyage (Task 37), on the virtual clock: the sample economy's voyage paused for the
+      // night, so the reading room stands dark; then it sails again and its bays light one after another down the room,
+      // one for each genome racing, while the students cross the inner quad. Written as voyage.mp4 with a poster.
+      await chrome(page, false);
+      const at = await campusFrame(page);
+      const live = await callDebug<{ voyage: Record<string, unknown> | null } | null>(page, 'd.campusLife()');
+      if (!live?.voyage) throw new Error('capture: the sample economy has no voyage sailing on the campus');
+      await page.evaluate(`window.__palimpsest.life(${JSON.stringify({ voyage: { ...live.voyage, status: 'paused' }, nets: [], graduates: [] })})`);
+      await frame(page, at(96, 11, 40), at(181, 16, -4));
+      await page.waitForTimeout(8000);
+      const seconds = Number(process.env.VOYAGE_SECONDS ?? 11);
+      await film(
+        page,
+        'voyage',
+        Math.round(seconds * FPS),
+        async (i, t) => {
+          // A second of the dark room, then the ledger's state back: the voyage sails and the bays light.
+          if (i === FPS) await page.evaluate('window.__palimpsest.life(null)');
+          const k = easeSine(t);
+          return { eye: lerp3(at(96, 11, 40), at(112, 12.5, 30), k), target: lerp3(at(181, 16, -4), at(181, 17, -2), k) };
+        },
+        false,
+        Number(process.env.VOYAGE_POSTER ?? 0.9),
+      );
+      const lit = await callDebug<{ lit: number } | null>(page, 'd.campusLife()');
+      console.log(`  voyage: ${lit?.lit ?? 0} bays lit at the end`);
+    },
+
+    async observatory(page) {
+      // The observatory where the master net lives (Task 36), on the virtual clock: shut and dark with a thin master,
+      // then the nets train with the master trusted, the shutters part over a lit slit and the telescope turns. Written
+      // as observatory.mp4 with a poster.
+      await chrome(page, false);
+      const at = await campusFrame(page);
+      await page.evaluate('window.__palimpsest.school({ training: false, masterTrusted: false, version: 0 })');
+      await frame(page, at(131, 11, 84), at(183, 14, 90));
+      await page.waitForTimeout(8000);
+      const seconds = Number(process.env.OBSERVATORY_SECONDS ?? 12);
+      try {
+        await film(
+          page,
+          'observatory',
+          Math.round(seconds * FPS),
+          async (i, t) => {
+            if (i === FPS) await page.evaluate('window.__palimpsest.school({ training: true, masterTrusted: true, version: 1 })');
+            const k = easeSine(t);
+            return { eye: lerp3(at(131, 11, 84), at(143, 13, 86), k), target: lerp3(at(183, 14, 90), at(183, 17, 90), k) };
+          },
+          false,
+          Number(process.env.OBSERVATORY_POSTER ?? 0.85),
+        );
+        const o = await callDebug<{ open: number; lit: boolean } | null>(page, 'd.observatory()');
+        console.log(`  observatory: open ${o?.open.toFixed(2)}, lit ${o?.lit}`);
+      } finally {
+        await page.evaluate('window.__palimpsest.school(null)');
+      }
+    },
+
+    async 'graduate-tower'(page) {
+      // The sample's graduate's tower on the collegiate root in its firm's quarter (Task 38), from its court.
+      await openHash(page, '#/', 'body[data-route="city"]');
+      await chrome(page, false);
+      const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+      const grad = qs.flatMap((q) => q.towers.filter((t) => t.root === 'collegiate').map((t) => ({ q, t })))[0];
+      if (!grad) throw new Error('capture: no graduate stands on the collegiate root');
+      const o = QUARTER_OFFSETS_CAPTURE[grad.t.towerIndex ?? 0];
+      const ox = grad.q.origin.x + o.x;
+      const oz = grad.q.origin.z + o.z;
+      await frame(page, [ox + 26, 11, oz + 40], [ox, 7.5, oz]);
+      await page.waitForTimeout(1800);
+      await frame(page, [ox + 26, 11, oz + 40], [ox, 7.5, oz]);
+      await lean(page, 'graduate-tower');
+      await chrome(page, true);
+    },
+
+    async 'school-screens'(page) {
+      // The school's screens (Phase 4 Tasks 30 to 33) on the sample economy, each over the city as it opens.
+      const table = this as unknown as Record<string, (p: Page) => Promise<void>>;
+      for (const name of ['school', 'school-net', 'autonomy-settings', 'brief-autonomy', 'agent-graduate']) await table[name](page);
+    },
+
+    async school(page) {
+      // The school: the seven nets with their scores, intervals and n, each against its baseline, or why it has none.
+      await openHash(page, '#/school', '.sheet.school .net-row');
+      await lean(page, 'school', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'school-net'(page) {
+      // One net's page: every version as a point with its interval, the baseline ruled across.
+      await openHash(page, '#/school/nets/appraiser-pass', '.sheet.school[data-page="net"] svg.netplot');
+      await lean(page, 'school-net', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'autonomy-settings'(page) {
+      // Settings' Autonomy section: every pair asked, granted, suspended or taken back, with the master's agreement.
+      await openHash(page, '#/settings', '.sheet.settings .set-sec.autonomy .grant-entry');
+      await toSheetTop(page, '.sheet.settings .set-sec.autonomy');
+      await lean(page, 'autonomy-settings', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'brief-autonomy'(page) {
+      // The brief with the city's ask: the master agreed often enough on README gap proposals for the harbour.
+      await openHash(page, '#/brief', '.sheet.brief .brief-item[data-item^="autonomy:"]');
+      await toSheetTop(page, '.sheet.brief .brief-item[data-item^="autonomy:"]');
+      await lean(page, 'brief-autonomy', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'agent-graduate'(page) {
+      // Ada Quarry's page, the sample's graduate: where it came from, its sealed race against its base.
+      await openHash(page, '#/agents/grad-qwen25c7-1', '.sheet.agentpage .agent-school[data-school="graduate"]');
+      await toSheetTop(page, '.sheet.agentpage .agent-lineage');
+      await lean(page, 'agent-graduate', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
     },
 
     async ride(page) {
@@ -1764,7 +1918,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
 }
 
 /** What a bare `tools/capture.ts` writes: the README's media. */
-const README_SHOTS = ['hero', 'stills', 'overview', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'brief', 'audit', 'spire', 'revival', 'ribbon', 'ride-dossier', 'people', 'life', 'ride', 'week', 'flyover', 'rise', 'construction-clip', 'commute'];
+const README_SHOTS = ['hero', 'stills', 'overview', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'brief', 'audit', 'school-screens', 'campus', 'graduate-tower', 'voyage', 'observatory', 'spire', 'revival', 'ribbon', 'ride-dossier', 'people', 'life', 'ride', 'week', 'flyover', 'rise', 'construction-clip', 'commute', 'school-empty'];
 
 /** The market overview's framing and where it looks for a passing tram (MARKET_VIEW and MARKET_TRAM override). */
 const MARKET_VIEW_DEFAULT: [V3, V3] = [[620, 190, 560], [60, 60, -40]];
@@ -1812,6 +1966,7 @@ async function main(): Promise<void> {
     process.env.PEOPLE_ONLY ??= 'follow';
     process.env.LIFE_ONLY ??= 'street';
     process.env.RIDE_ONLY ??= 'clip';
+    process.env.CAMPUS_ONLY ??= 'home,quad,clock,observatory-open';
   }
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-capture-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
@@ -1845,7 +2000,7 @@ async function main(): Promise<void> {
   const { setRunner } = await import('../engine/exec.js');
   setRunner(sampleGh());
   const { startServer } = await import('../engine/server.js');
-  const server = await startServer({ port: PORT, claudeSettingsPath });
+  let server = await startServer({ port: PORT, claudeSettingsPath });
   // The engine's own start takes the university's plot (Phase 4 Task 1); startServer alone does not, so it is taken here.
   (await import('../engine/school/campus.js')).ensureCampus();
   // CAPTURE_ECONOMY=live: the economy's job sites and trips in the live view, and its clock at speed 20, ticked by the shots.
@@ -1885,8 +2040,26 @@ async function main(): Promise<void> {
     followCity(city);
     const all = shots(city);
     for (const name of wanted) {
+      // The empty school is shot last, on a fresh home of its own (below).
+      if (name === 'school-empty') continue;
       if (!all[name]) throw new Error(`unknown shot ${name}`);
       await all[name](page);
+    }
+    if (wanted.includes('school-empty')) {
+      // The school on a fresh home with no repos (the economy's is never empty), as the ui-test reads it: every net
+      // thin with its cause, no arena, no voyage, no graduate, and nothing drawn. A second engine on the same port.
+      await page.close();
+      await server.close();
+      process.env.PALIMPSEST_HOME = join(tmp, 'home-empty');
+      server = await startServer({ port: PORT, claudeSettingsPath });
+      const empty = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: DPR });
+      empty.on('pageerror', (e) => errors.push(String(e)));
+      empty.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
+      await empty.goto(`http://127.0.0.1:${PORT}/?fixed-quality&debug#/school`);
+      await empty.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 60_000 });
+      await empty.waitForSelector('.sheet.school .net-row[data-status="thin"]', { timeout: 15_000 });
+      await empty.waitForTimeout(2500);
+      await lean(empty, 'school-empty', true);
     }
     if (errors.length) console.log(`console errors: ${errors.join(' | ')}`);
   } finally {
