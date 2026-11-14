@@ -47,11 +47,12 @@ import type {
   Trip,
 } from '../../shared/types.js';
 import { openDb } from '../db.js';
+import { schoolOrigin } from '../school/roster.js';
 import { HttpError, readObjectBody, sendJson, sendText } from '../http.js';
 import { query } from '../ledger.js';
 import { paths } from '../home.js';
 import { getRepo, isValidFullName, BAD_NAME } from '../repos.js';
-import { handleSchoolApi } from '../school/api.js';
+import { handleSchoolApi, schoolScrub, voyageOut } from '../school/api.js';
 import { jobSchool } from '../school/decisions.js';
 import { providerUsages } from '../providers-usage.js';
 import { apiKeyStored, setApiKey, removeApiKey } from './anthropic-api.js';
@@ -420,7 +421,14 @@ function agentDetail(a: Agent): AgentDetail {
     lineage: { agent: a.lineage, parents, children },
     reputation: firm(a.firmId) ? reputation(a.firmId) : null,
     towerFirmId: tower?.firmId ?? null,
+    school: schoolOf(a),
   };
+}
+
+/** A school agent's voyage or graduate row, the voyage as the school's routes serve it (no genome body) and scrubbed as they are. */
+function schoolOf(a: Agent): AgentDetail['school'] {
+  const o = schoolOrigin(a);
+  return schoolScrub({ voyage: o.voyage ? voyageOut(o.voyage) : null, graduate: o.graduate, arenas: o.arenas }) as AgentDetail['school'];
 }
 
 // ------------------------------------------------------------------ runs

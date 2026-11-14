@@ -308,7 +308,11 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
   for (const w of codex?.windows ?? []) check(wins.some((t) => t.includes(`${Math.round(w.usedPct ?? -1)}%`)), `Settings shows the Codex ${w.label} window at ${w.usedPct}% (${wins.join(' | ')})`);
   check(/tokens/i.test((await openai.textContent()) ?? ''), 'and its tokens');
   check(/Gemini/.test((await sheet.locator('.prov[data-provider="gemini"]').textContent()) ?? '') && /tokens/i.test((await sheet.locator('.prov[data-provider="gemini"]').textContent()) ?? ''), 'Gemini shows its tokens');
-  check(/arrives with the school/i.test((await sheet.locator('.prov[data-provider="mlx"]').textContent()) ?? ''), 'MLX arrives with the school');
+  {
+    // MLX says where the school's graduates stand (Phase 4 Task 32), never that it arrives later.
+    const mlx = ((await sheet.locator('.prov[data-provider="mlx"]').textContent()) ?? '').trim();
+    check(/(graduates? of the school runs? on it|No graduate yet|Off while the school is off)/.test(mlx) && !/arrive/i.test(mlx), `MLX says where the school's graduates stand (${mlx.slice(0, 120)})`);
+  }
   const apiProv = sheet.locator('.prov[data-provider="anthropic-api"]');
   check(((await apiProv.locator('.prov-line').textContent()) ?? '').trim() === "Spends your API key's dollars, not your Claude plan.", 'the API key says whose dollars it spends');
   check((await apiProv.locator('[role="switch"].apikey-enable').getAttribute('aria-checked')) === 'false', 'the Anthropic API is off by default');

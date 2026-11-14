@@ -83,6 +83,8 @@ test('workflow shapes and lineage, in words', () => {
   assert.equal(lineageWords(a), 'Hired from the roster on 9 November 2026.');
   assert.equal(lineageWords({ lineage: { ...a.lineage, origin: 'seeded' } } as Agent), 'Seeded with the city on 9 November 2026.');
   assert.equal(lineageWords({ lineage: { ...a.lineage, origin: 'school', generation: 2 } } as Agent), 'Bred in the school on 9 November 2026, generation 2.');
+  // A graduate is taught, not bred: generation 0 of the school, with no parents (Phase 4 Task 33).
+  assert.equal(lineageWords({ lineage: { ...a.lineage, origin: 'school', generation: 0 } } as Agent), 'Graduated from the school on 9 November 2026: taught on his verified work, not bred.');
 });
 
 test('a sum of credits reads as the books set it', () => {

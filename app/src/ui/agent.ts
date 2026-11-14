@@ -7,7 +7,8 @@ import { issueBlocks } from './detail';
 import { gauge, measures, silhouetteGlyph } from './firms';
 import { ERA_NAMES, floorList, ROOT_NAMES, type MarketNames } from './inspector';
 import { blockNodes, coalesce, detailSheet, keyedSlot, pageLink, secHead, setTrail } from './pages';
-import { figure, lineageWords, shortDate, workflowWords } from './story';
+import { figure, lineageWords, longDate, shortDate, workflowWords } from './story';
+import { bredLine, diffText, fixed, graduatedLine, intervalText, signed } from './school-words';
 import './market.css';
 
 export interface AgentPage {
@@ -57,6 +58,8 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
     // Its design and lineage read at a glance; the persona is the long read beneath them.
     design: keyedSlot(body),
     lineage: keyedSlot(body),
+    // Where a school agent came from: the voyage that bred it, or the race it graduated by (Phase 4 Task 33).
+    school: keyedSlot(body),
     persona: keyedSlot(body),
     tower: keyedSlot(body),
     runs: keyedSlot(body),
@@ -207,11 +210,113 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
       return c;
     };
     chain.append(
-      cell('Parents', kin(d.lineage.parents, a.lineage.origin === 'roster' ? 'none: written by hand for the roster' : 'none: the first of its line')),
+      cell('Parents', kin(d.lineage.parents, a.lineage.origin === 'roster' ? 'none: written by hand for the roster' : d.school?.graduate ? 'none: taught, not bred' : 'none: the first of its line')),
       cell('This agent', el('span', 'lineage-self', cleanText(a.name, 80)), true),
       cell('Children', kin(d.lineage.children, 'none yet')),
     );
     sec.append(chain);
+    return sec;
+  }
+
+  // ---------------------------------------------------------------- the school (Phase 4 Task 33)
+
+  /** An agent's name as a link to its page, when it is an agent of the city; else its name as the voyage wrote it. */
+  function agentOrName(agentId: string, fallback: string, cls: string): Node {
+    const known = firms.flatMap((f) => f.agents).find((x) => x.id === agentId);
+    return known ? pageLink(cls, cleanText(known.name, 80), 'agent', known.id) : document.createTextNode(cleanText(fallback, 80));
+  }
+
+  /** A school figure: its name, the number large, its interval and n beneath. */
+  function schoolFigure(name: string, value: number, note: string, base = false): HTMLElement {
+    const f = el('div', `graduate-score${base ? ' base' : ''}`);
+    f.append(el('span', 'master-name', name), el('span', 'master-num', fixed(value)), el('span', 'master-note', note));
+    return f;
+  }
+
+  function schoolSection(d: AgentDetail): HTMLElement | null {
+    const { voyage: v, graduate: g, arenas } = d.school ?? { voyage: null, graduate: null, arenas: [] };
+    if (!v && !g) return null;
+    const sec = el('section', 'detail-sec agent-school');
+    if (g) {
+      sec.dataset.school = 'graduate';
+      sec.append(secHead('Graduated from the school', shortDate(g.at)));
+      const figs = el('div', 'graduate-sealed');
+      figs.append(schoolFigure('On the sealed race', g.sealed.value, intervalText(g.sealed, 'sealed')), schoolFigure('Its base, on the same tasks', g.baseSealed.value, intervalText(g.baseSealed, 'sealed'), true));
+      sec.append(figs);
+      sec.append(el('p', 'master-line agent-school-diff', `Beat its base by ${diffText(g.vsBase)} on the sealed race, so it graduated.`));
+      const dl = el('dl', 'design agent-school-design');
+      const row = (field: string, value: string, gloss: string): void => {
+        const r = el('div', 'design-row');
+        r.dataset.field = field;
+        r.append(el('dt', 'design-key', field), el('dd', 'design-val', value), el('dd', 'design-gloss', gloss));
+        dl.append(r);
+      };
+      row('base', cleanText(g.base, 80), 'The model it was taught on, on this Mac.');
+      row('adapter', cleanText(g.loraId, 40), 'Its LoRA: the weights the school trained on top of the base.');
+      row('examples', String(g.examples), graduatedLine(g, arenas));
+      row('served as', cleanText(g.model, 60), `Graduated ${longDate(g.at)}.`);
+      sec.append(dl);
+      const more = el('p', 'agent-school-more');
+      more.append(pageLink('agent-school-link', 'Its record in the school', 'graduate', g.id));
+      sec.append(more);
+      return sec;
+    }
+    const voyage = v!;
+    sec.dataset.school = 'bred';
+    const champ = voyage.champion;
+    sec.append(secHead('Bred by the school', `generation ${champ?.generation ?? voyage.generation}`));
+    const arena = arenas.find((a) => a.id === voyage.arena) ?? null;
+    const origin = el('p', 'master-line agent-school-origin', bredLine({ generation: champ?.generation ?? voyage.generation, commissionedBy: voyage.commissionedBy }, arena, firmName));
+    sec.append(origin);
+    const parents = champ?.parents ?? d.agent.lineage.parents;
+    if (parents.length) {
+      const p = el('p', 'master-line agent-school-parents');
+      p.append(document.createTextNode('Bred from '));
+      parents.forEach((id, i) => {
+        if (i) p.append(document.createTextNode(i === parents.length - 1 ? ' and ' : ', '));
+        const genome = voyage.scores.find((x) => x.genome === id);
+        const known = firms.flatMap((f) => f.agents).some((x) => x.id === id);
+        p.append(known ? agentOrName(id, genome?.name ?? id, 'agent-school-parent') : pageLink('agent-school-parent', cleanText(genome?.name ?? id, 80), 'voyage', voyage.id));
+      });
+      p.append(document.createTextNode('.'));
+      sec.append(p);
+    }
+    if (voyage.sealed) {
+      const figs = el('div', 'graduate-sealed single');
+      figs.append(schoolFigure('On the sealed tasks', voyage.sealed.value, intervalText(voyage.sealed, 'sealed')));
+      sec.append(figs);
+    }
+    if (voyage.vsLocal?.length) {
+      const t = el('div', 'school-table vslocal-ledger');
+      t.setAttribute('role', 'table');
+      t.setAttribute('aria-label', 'Against each seeded local agent, on the sealed tasks');
+      const h = el('div', 'school-head');
+      h.setAttribute('role', 'row');
+      for (const [c, text] of [['c-name', 'Against each seeded local agent'], ['c-score', 'Difference, 95% interval']]) {
+        const th = el('span', `school-th ${c}`, text);
+        th.setAttribute('role', 'columnheader');
+        h.append(th);
+      }
+      t.append(h);
+      for (const x of voyage.vsLocal) {
+        const r = el('div', 'school-row vslocal-row');
+        r.setAttribute('role', 'row');
+        r.dataset.agent = x.agent;
+        const name = el('div', 'school-cell c-name');
+        name.setAttribute('role', 'cell');
+        name.append(agentOrName(x.agent, x.name, 'agent-school-vs'));
+        const sc = el('div', 'school-cell c-score');
+        sc.setAttribute('role', 'cell');
+        sc.append(el('span', `net-score ${x.lo > 0 ? 'better' : 'unclear'}`, signed(x.diff)), el('span', 'net-ci', `${signed(x.lo)} to ${signed(x.hi)}`));
+        r.append(name, sc);
+        t.append(r);
+      }
+      sec.append(t);
+    }
+    sec.append(el('p', 'jobs-key', voyage.claim ? 'It beat every seeded local agent on an unspent sealed split, which is why the school put it on the roster. Claude agents are never raced.' : 'It makes no claim over the seeded local agents.'));
+    const more = el('p', 'agent-school-more');
+    more.append(pageLink('agent-school-link', 'Its voyage in the school', 'voyage', voyage.id));
+    sec.append(more);
     return sec;
   }
 
@@ -351,6 +456,7 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
     slots.persona(JSON.stringify([a.id, a.instructions]), () => personaSection(a));
     slots.design(JSON.stringify([d.genome, a.bidsOn, a.maxTurns, a.capability]), () => designSection(d));
     slots.lineage(JSON.stringify([a.lineage, d.lineage.parents.map((x) => x.id), d.lineage.children.map((x) => x.id)]), () => lineageSection(d));
+    slots.school(JSON.stringify([d.school, firms.map((f) => [f.id, f.name, f.agents.map((x) => [x.id, x.name])])]), () => schoolSection(d));
     slots.calibration(JSON.stringify([d.reputation, d.firm?.name, d.firm?.balance]), () => calibrationSection(d));
     slots.tower(JSON.stringify([d.tower, d.towerFirmId, firms.length, d.runs.map((r) => r.inspectionId)]), () => towerSection(d));
     slots.runs(JSON.stringify([d.runs.map((r) => [r.id, r.outcome, r.stage, r.progress.credits]), jobs.size, allRuns]), () => runsSection(d));

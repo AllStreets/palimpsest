@@ -197,6 +197,8 @@ export function lineageWords(a: Pick<Agent, 'lineage'>): string {
     case 'roster':
       return `Hired from the roster on ${when}.`;
     case 'school':
+      // A graduate is taught on his work, not bred: the school's generation 0, with no parents.
+      if (a.lineage.generation === 0 && a.lineage.parents.length === 0) return `Graduated from the school on ${when}: taught on his verified work, not bred.`;
       return `Bred in the school on ${when}, generation ${a.lineage.generation}.`;
     default:
       return `Seeded with the city on ${when}.`;

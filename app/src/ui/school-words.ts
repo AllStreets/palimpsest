@@ -321,3 +321,29 @@ export function trainedLine(seconds: number): string {
   if (seconds < 60) return 'Trained under a minute on power this week.';
   return `Trained ${hoursText(seconds)} on power this week.`;
 }
+
+// ---------------------------------------------------------------- an agent's page (Task 33)
+
+const ARENA_WORD: Record<'planted' | 'past', string> = { planted: 'planted bugs', past: 'past changes' };
+
+/** "the planted bugs arena on tidewater/harbor-ledger". */
+export function arenaWords(a: { repo: string; kind: 'planted' | 'past' }): string {
+  return `the ${ARENA_WORD[a.kind] ?? a.kind} arena on ${a.repo}`;
+}
+
+/** Where a bred specialist came from: its generation, the voyage's arena, and who commissioned it. */
+export function bredLine(v: { generation: number; commissionedBy: string | null }, arena: { repo: string; kind: 'planted' | 'past' } | null, firm: (id: string) => string): string {
+  if (!arena && !v.commissionedBy) return `Bred in generation ${v.generation} of one of the school’s own voyages.`;
+  const on = arena ? ` on ${arenaWords(arena)}` : '';
+  return `Bred in generation ${v.generation} of a voyage${on}, ${v.commissionedBy ? `commissioned by ${firm(v.commissionedBy)}` : 'the school’s own'}.`;
+}
+
+/** What a graduate was taught on, and the arenas of its sealed race. */
+export function graduatedLine(g: { examples: number; arenas: string[] }, arenas: Array<{ id: string; repo: string; kind: 'planted' | 'past' }>): string {
+  const raced = g.arenas.map((id) => {
+    const a = arenas.find((x) => x.id === id);
+    return a ? arenaWords(a) : `arena ${id}`;
+  });
+  const where = raced.length ? `, and raced sealed on ${raced.length === 1 ? raced[0] : `${raced.slice(0, -1).join(', ')} and ${raced.at(-1)}`}` : '';
+  return `Taught on ${plural(g.examples, 'verified change')}${where}.`;
+}

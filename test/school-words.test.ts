@@ -11,11 +11,14 @@ import { test } from 'node:test';
 import type { Agreement, GateState, Grant, Interval, NetCard, Prediction, TrainState, VoyageView } from '../shared/types.js';
 import {
   agreementLine,
+  arenaWords,
   baseButton,
+  bredLine,
   dailyCreditsText,
   diffText,
   downloadLine,
   gateLine,
+  graduatedLine,
   grantLine,
   intervalText,
   kindLabel,
@@ -247,4 +250,17 @@ test("the treasury says how long the school trained this week", () => {
   assert.equal(trainedLine(40), 'Trained under a minute on power this week.');
   assert.equal(trainedLine(0), 'Nothing trained this week.');
   for (const s of [trainedLine(3 * 3600 + 12 * 60), dailyCreditsText(30), untilLine(new Date().toISOString())]) noDashes(s);
+});
+
+// ---------------------------------------------------------------- an agent's page (Task 33)
+
+test("a school agent's page says where it came from", () => {
+  const arena = { id: 'arena-harbor-ledger-1', repo: 'tidewater/harbor-ledger', kind: 'planted' as const };
+  assert.equal(arenaWords(arena), 'the planted bugs arena on tidewater/harbor-ledger');
+  assert.equal(arenaWords({ ...arena, kind: 'past' }), 'the past changes arena on tidewater/harbor-ledger');
+  assert.equal(bredLine({ generation: 2, commissionedBy: 'quickset' }, arena, (id) => (id === 'quickset' ? 'Quickset' : id)), 'Bred in generation 2 of a voyage on the planted bugs arena on tidewater/harbor-ledger, commissioned by Quickset.');
+  assert.equal(bredLine({ generation: 4, commissionedBy: null }, null, (id) => id), 'Bred in generation 4 of one of the school’s own voyages.');
+  assert.equal(graduatedLine({ examples: 112, arenas: ['arena-harbor-ledger-1'] }, [arena]), 'Taught on 112 verified changes, and raced sealed on the planted bugs arena on tidewater/harbor-ledger.');
+  assert.equal(graduatedLine({ examples: 1, arenas: ['gone'] }, []), 'Taught on 1 verified change, and raced sealed on arena gone.');
+  for (const s of [bredLine({ generation: 2, commissionedBy: null }, arena, (id) => id), graduatedLine({ examples: 3, arenas: [] }, [])]) noDashes(s);
 });

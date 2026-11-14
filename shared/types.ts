@@ -744,6 +744,12 @@ export interface AgentDetail {
   reputation: Reputation | null;
   /** The firm whose root its tower stands in now: its own, or the buyer of its dark tower. */
   towerFirmId: string | null;
+  /**
+   * Where a school agent came from (Phase 4 Task 33): the voyage that bred it
+   * (its genome body left out), or its graduate row, with the arenas they
+   * raced on. Both null, and no arenas, for a seeded or hand-written agent.
+   */
+  school: { voyage: VoyageView | null; graduate: Graduate | null; arenas: ArenaInfo[] };
 }
 
 export type RunDetail = RunView & { job: Job | null; inspection: InspectionView | null };

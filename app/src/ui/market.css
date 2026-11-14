@@ -5992,3 +5992,51 @@ a.brief-act {
 .now-link:hover {
   color: var(--ink);
 }
+
+/* ================================================================ where a school agent came from (Phase 4 Task 33) */
+
+.agent-school .graduate-sealed {
+  padding: 16px 0 10px;
+}
+.agent-school .agent-school-origin,
+.agent-school .agent-school-parents {
+  margin-top: 10px;
+}
+.agent-school .agent-school-diff {
+  margin-top: 2px;
+  color: var(--ink);
+}
+.agent-school .agent-school-design {
+  margin-top: 14px;
+}
+.agent-school-parent,
+.agent-school-vs,
+.agent-school-link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.25);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.agent-school-parent:hover,
+.agent-school-vs:hover,
+.agent-school-link:hover {
+  text-decoration-color: var(--ink-2);
+}
+.agent-school-parent:focus-visible,
+.agent-school-vs:focus-visible,
+.agent-school-link:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.agent-school-more {
+  margin-top: 12px;
+  font-size: 12.5px;
+}
+.agent-school .jobs-key {
+  margin-top: 12px;
+}
+/* Its design rows hold long model names: the values take one measure, so the glosses start on one line down the page. */
+.agent-school .design-row {
+  grid-template-columns: 150px 350px minmax(0, 1fr);
+}

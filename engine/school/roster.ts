@@ -40,7 +40,7 @@ import { randomUUID } from 'node:crypto';
 
 import { START_BALANCE } from '../../shared/market-rules.js';
 import { COMMISSION, VOYAGE } from '../../shared/school-rules.js';
-import type { Agent, Graduate, Job, VoyageView } from '../../shared/types.js';
+import type { Agent, ArenaInfo, Graduate, Job, VoyageView } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { record } from '../ledger.js';
 import { agent as storedAgent, agentTowerId, firm, idleAgents, isGraduateAgent, listAgents, listFirms, type RosterSeed } from '../market/firms.js';
@@ -168,6 +168,23 @@ function graduateSeed(g: Graduate, ordinal: number): RosterSeed {
     parents: [],
     generation: 0,
   };
+}
+
+/**
+ * Where a school agent came from (Phase 4 Task 33), for its own page: the
+ * voyage that bred it (its champion hired as this agent), or its graduate
+ * row, with the arenas they raced on. Both null for any other agent, a
+ * seeded or hand-written one.
+ */
+export function schoolOrigin(a: Agent): { voyage: VoyageView | null; graduate: Graduate | null; arenas: ArenaInfo[] } {
+  const none = { voyage: null, graduate: null, arenas: [] };
+  if (a.lineage.origin !== 'school') return none;
+  const arenasOf = (ids: string[]) => ids.map((id) => arenaInfo(id)).filter((x): x is ArenaInfo => x !== null);
+  const g = graduatesOf().find((x) => graduateId(x.id) === a.id || x.agentId === a.id);
+  if (g) return { voyage: null, graduate: { ...g, agentId: a.id }, arenas: arenasOf(g.arenas) };
+  const v = voyages().find((x) => x.champion && bredId(x.champion.genome) === a.id);
+  if (v) return { voyage: v, graduate: null, arenas: arenasOf([v.arena]) };
+  return none;
 }
 
 /** Every school seed with the voyage that bred it (null for a graduate), oldest first. */

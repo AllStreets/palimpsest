@@ -40,7 +40,7 @@ import { detailChecks } from './ui-test-detail.js';
 import { firmChecks } from './ui-test-firms.js';
 import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
-import { autonomyChecks, schoolChecks, schoolEmptyChecks, schoolSettingsChecks } from './ui-test-school.js';
+import { autonomyChecks, lineageChecks, schoolChecks, schoolEmptyChecks, schoolSettingsChecks } from './ui-test-school.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
@@ -3282,12 +3282,15 @@ async function main(): Promise<void> {
     // UI_ONLY=schoolscreen: the school screen's checks and shots on the economy, then on the empty home (Task 30's rounds).
     // UI_ONLY=autonomy: his autonomy in the brief, Settings, the district page and a job page (Task 31's rounds).
     // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
       if (process.env.UI_ONLY === 'schoolscreen') {
         await schoolChecks(page, check, SHOTS);
+      } else if (process.env.UI_ONLY === 'lineage') {
+        await lineageChecks(page, check, SHOTS);
       } else if (process.env.UI_ONLY === 'schoolsettings') {
         const refused = await schoolSettingsChecks(page, check, SHOTS, DIST);
         for (let i = 0; i < refused; i++) {
@@ -3438,6 +3441,8 @@ async function main(): Promise<void> {
           const k = consoleErrors.findIndex((t) => /status of 400/.test(t));
           if (k >= 0) consoleErrors.splice(k, 1);
         }
+        // Where a school agent came from, on its own page (Phase 4 Task 33).
+        await lineageChecks(page, check, SHOTS);
         // The notice stack: one Dismiss each, keyed replacement, recall, the keyboard, and clear of an open sheet (Phase 3 Task 12).
         await noticeChecks(page, check, SHOTS);
         // The market switches on Repos, the district page and the provider settings (Task 40).

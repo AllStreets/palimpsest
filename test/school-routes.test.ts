@@ -433,6 +433,62 @@ test("the treasury counts the week's training and opens the school's and trainin
   assert.equal((await call('GET', '/api/treasury/credits?period=week&kind=nonesuch')).status, 400);
 });
 
+test('AgentDetail.school for the sample graduate carries its graduate row (Task 33)', async () => {
+  const { SAMPLE_GRADUATE } = await import('../engine/market/sample-economy.js');
+  const { hireSeed, seedFirms } = await import('../engine/market/firms.js');
+  const { schoolRoster } = await import('../engine/school/roster.js');
+  seedFirms(['qwen2.5-coder:7b', 'qwen3-coder:30b-a3b-q4_K_M', 'gpt-oss:20b', 'llama3.1:8b']);
+  const g: Graduate = { ...SAMPLE_GRADUATE, at: new Date().toISOString() };
+  openDb().prepare('INSERT OR REPLACE INTO graduates (id, json) VALUES (?, ?)').run(g.id, JSON.stringify(g));
+  openDb().prepare('INSERT OR REPLACE INTO arenas (id, repo, json) VALUES (?, ?, ?)').run(g.arenas[0], 'tidewater/harbor-ledger', JSON.stringify({ id: g.arenas[0], repo: 'tidewater/harbor-ledger', kind: 'planted', sha: 'a'.repeat(40), tasks: { breeding: 18, race: 15, sealed: 15 }, candidates: 60, kept: 48, sealedUses: 3, sealedHash: null, builtAt: new Date().toISOString(), status: 'ready', reason: null }));
+  const seed = schoolRoster().find((x) => x.id === g.id);
+  assert.ok(seed, 'the graduate is on the school roster');
+  const hired = hireSeed('ashlar-vane', seed!);
+  assert.ok(hired, 'Ashlar & Vane hires it');
+  const d = (await call('GET', `/api/agents/${g.id}`)).json;
+  assert.equal(d.school.voyage, null);
+  assert.equal(d.school.graduate.id, g.id);
+  assert.equal(d.school.graduate.base, g.base);
+  assert.equal(d.school.graduate.loraId, 'lora-7a2c91e4');
+  assert.deepEqual(d.school.graduate.vsBase, g.vsBase);
+  assert.equal(d.school.graduate.examples, 112);
+  assert.equal(d.school.graduate.agentId, g.id);
+  assert.deepEqual(d.school.arenas.map((a: { id: string; repo: string }) => [a.id, a.repo]), [[g.arenas[0], 'tidewater/harbor-ledger']]);
+  // A seeded agent's page carries no school.
+  const seeded = (await call('GET', '/api/firms')).json.flatMap((f: { agents: Array<{ id: string; lineage: { origin: string } }> }) => f.agents).find((a: { lineage: { origin: string } }) => a.lineage.origin === 'seeded');
+  const sd = (await call('GET', `/api/agents/${seeded.id}`)).json;
+  assert.deepEqual(sd.school, { voyage: null, graduate: null, arenas: [] });
+});
+
+test("AgentDetail.school for a bred specialist carries its voyage without the genome's body (Task 33)", async () => {
+  const { hireSeed, seedFirms } = await import('../engine/market/firms.js');
+  const { bredId, schoolRoster } = await import('../engine/school/roster.js');
+  seedFirms(['qwen2.5-coder:7b', 'qwen3-coder:30b-a3b-q4_K_M', 'gpt-oss:20b', 'llama3.1:8b']);
+  const locals = (await call('GET', '/api/firms')).json.flatMap((f: { agents: Array<{ id: string; model: string }> }) => f.agents).filter((a: { model: string }) => a.model.startsWith('ollama:')).slice(0, 2);
+  assert.equal(locals.length, 2);
+  const body = { id: 'g2-1', name: 'Harbour 2.1', model: 'ollama:qwen2.5-coder:7b', instructions: 'Fix the bug.\n', tools: ['read', 'edit'], workflow: { shape: 'single' }, memory: { examples: 2 } };
+  const v: VoyageView = {
+    id: 'v-bred-1', arena: 'arena-x', status: 'done', generation: 2, of: 2, runs: { done: 10, of: 10 }, commissionedBy: 'quickset',
+    scores: [
+      ...locals.map((a: { id: string }) => ({ genome: a.id, name: a.id, generation: 1, mean: 0.4, lo: 0.3, hi: 0.5, parents: [] })),
+      { genome: 'g2-1', name: 'Harbour 2.1', generation: 2, mean: 0.6, lo: 0.5, hi: 0.7, parents: locals.map((a: { id: string }) => a.id) },
+    ],
+    promoted: [], sealed: { value: 0.58, lo: 0.46, hi: 0.7, n: 15 }, credits: 3, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+    champion: { genome: 'g2-1', name: 'Harbour 2.1', model: 'ollama:qwen2.5-coder:7b', generation: 2, parents: locals.map((a: { id: string }) => a.id), body: body as never },
+    vsLocal: locals.map((a: { id: string }) => ({ agent: a.id, name: a.id, diff: 0.2, lo: 0.1, hi: 0.3 })), claim: true,
+  };
+  openDb().prepare('INSERT INTO voyages (id, json) VALUES (?, ?)').run(v.id, JSON.stringify(v));
+  const seed = schoolRoster().find((x) => x.id === bredId('g2-1'))!;
+  const a = hireSeed('kiln', seed) ?? hireSeed('sparrow', seed) ?? hireSeed('meridian', seed);
+  assert.ok(a, 'a firm hires the champion');
+  const d = (await call('GET', `/api/agents/${a!.id}`)).json;
+  assert.equal(d.school.graduate, null);
+  assert.equal(d.school.voyage.id, 'v-bred-1');
+  assert.equal(d.school.voyage.commissionedBy, 'quickset');
+  assert.equal(d.school.voyage.champion.body, undefined, 'the genome is never served');
+  assert.deepEqual(d.lineage.parents.map((p: { id: string }) => p.id).sort(), locals.map((x: { id: string }) => x.id).sort());
+});
+
 // ------------------------------------------------------------------ redaction
 
 test('no view carries a path of this Mac', async () => {

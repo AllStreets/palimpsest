@@ -601,8 +601,9 @@ export async function schoolSettingsChecks(page: Page, check: Check, shots: stri
     check(((await sec.locator('.school-trainer').textContent()) ?? '').trim().length > 0, `the trainer's line (${((await sec.locator('.school-trainer').textContent()) ?? '').trim()})`);
     const privacy = ((await page.locator('.sheet.settings .settings-privacy .set-row[data-privacy="Training"] .set-text').textContent()) ?? '').trim();
     check(privacy === 'Training happens on this Mac and nothing it learns leaves it. Arenas are built only from repos whose market you turned on, and only when you click. The one download is the base model, when you click Download.', `Privacy says where training happens (${privacy.slice(0, 60)})`);
-    const mlx = ((await page.locator('.sheet.settings .prov[data-provider="mlx"]').textContent()) ?? '').trim();
-    check(/One graduate of the school runs on it, on this Mac\./.test(mlx) && /Ada Quarry/.test(mlx) && !/arrive/i.test(mlx), `MLX says the graduate runs on it, by name (${mlx.slice(0, 120)})`);
+    const mlxText = async () => ((await page.locator('.sheet.settings .prov[data-provider="mlx"]').textContent()) ?? '').trim();
+    check(await within(page, 8000, async () => /One graduate of the school runs on it, on this Mac\./.test(await mlxText()) && /Ada Quarry/.test(await mlxText())), `MLX says the graduate runs on it, by name (${(await mlxText()).slice(0, 120)})`);
+    check(!/arrive/i.test(await mlxText()), 'and never that it arrives later');
 
     // ------------------------------------------------------------ each switch patches its own field, and back
     for (const [cls, key] of [['school-on', 'enabled'], ['school-lowpower', 'allowLowPower'], ['school-commits', 'commitsAsWork'], ['school-understudy', 'understudy']] as const) {
@@ -753,4 +754,142 @@ export async function schoolSettingsChecks(page: Page, check: Check, shots: stri
   }
   await go(page, '#/');
   return refusals;
+}
+
+// ---------------------------------------------------------------- lineage on the agent page (Phase 4 Task 33)
+
+/**
+ * A school agent's own page, on the economy. Ada Quarry, the graduate of the
+ * voyage Quickset commissioned (hired by Ashlar & Vane, since Quickset's
+ * quarter is full), shows its base model, its adapter, the examples it was
+ * taught on and the arena of its sealed race, and its sealed score against
+ * its base with the difference and interval. A bred specialist, written for
+ * the check as voyages.ts and the roster would leave one (a finished voyage
+ * whose generation 2 champion was bred from two seeded local agents, hired
+ * through `hireSeed` with no event, so no tower rises in the city) and taken
+ * out again after, links its two parents, names its voyage, generation and
+ * commissioner, and its score against each seeded local agent. A seeded
+ * agent's page is unchanged.
+ *
+ * Saves agent-graduate.png and agent-bred.png at 1600 x 1000.
+ */
+export async function lineageChecks(page: Page, check: Check, shots: string): Promise<void> {
+  const before = page.viewportSize();
+  await page.setViewportSize(SIZE);
+  const { openDb } = await import('../engine/db.js');
+  const { hireSeed } = await import('../engine/market/firms.js');
+  const { bredId, schoolRoster } = await import('../engine/school/roster.js');
+  const errors: string[] = [];
+  const onConsole = (m: { type(): string; text(): string }) => {
+    if (m.type() === 'error') errors.push(m.text());
+  };
+  const onError = (e: Error) => errors.push(String(e));
+  page.on('console', onConsole);
+  page.on('pageerror', onError);
+  const bredVoyage = 'v-ui-bred-1';
+  let bredAgent: string | null = null;
+  try {
+    // ------------------------------------------------------------ Ada Quarry, the graduate
+    const view = await api<SchoolView>(page, '/api/school');
+    const g = view.graduates.find((x) => x.id === 'grad-qwen25c7-1');
+    check(!!g && g.agentId === 'grad-qwen25c7-1', `the economy's graduate is on the roster (${g?.agentId ?? 'none'})`);
+    const firms = await api<Array<{ id: string; name: string; agents: Array<{ id: string; name: string; model: string; lineage: { origin: string } }> }>>(page, '/api/firms');
+    const holder = firms.find((f) => f.agents.some((a) => a.id === 'grad-qwen25c7-1'));
+    check(holder?.id === 'ashlar-vane', `Ashlar & Vane hired it (${holder?.name ?? 'nobody'})`);
+    const commissioned = view.voyages.find((v) => v.commissionedBy === 'quickset');
+    check(!!commissioned, 'Quickset commissioned the voyage');
+    await go(page, '#/agents/grad-qwen25c7-1');
+    const sheet = page.locator('.sheet.agentpage');
+    const sec = sheet.locator('.agent-school[data-school="graduate"]');
+    check(await within(page, 8000, async () => (await sheet.locator('.sheet-title').textContent()) === 'Ada Quarry' && (await sec.count()) === 1), 'Ada Quarry’s page has where it came from');
+    if (g) {
+      const val = async (f: string) => ((await sec.locator(`.design-row[data-field="${f}"] .design-val`).textContent()) ?? '').trim();
+      check((await val('base')) === g.base, `its base model (${await val('base')})`);
+      check((await val('adapter')) === g.loraId, `its adapter (${await val('adapter')})`);
+      check((await val('examples')) === String(g.examples), `the examples it was taught on (${await val('examples')})`);
+      const gloss = ((await sec.locator('.design-row[data-field="examples"] .design-gloss').textContent()) ?? '').trim();
+      check(gloss === 'Taught on 112 verified changes, and raced sealed on the planted bugs arena on tidewater/harbor-ledger.', `the arena of its sealed race (${gloss})`);
+      const diff = ((await sec.locator('.agent-school-diff').textContent()) ?? '').trim();
+      check(diff === 'Beat its base by +0.14, 95% interval +0.06 to +0.22 on the sealed race, so it graduated.', `its difference against its base with the interval (${diff})`);
+      const nums = (await sec.locator('.master-num').allTextContents()).map((s) => s.trim());
+      check(nums.join(' ') === '0.61 0.47', `its sealed score beside its base's (${nums.join(' ')})`);
+      check(/Score 0\.61, 95% interval 0\.52 to 0\.70, on 15 sealed tasks/.test((await sec.locator('.master-note').first().textContent()) ?? ''), 'each with its interval and n');
+      check((await sec.locator('a.agent-school-link').getAttribute('href')) === '#/school/graduates/grad-qwen25c7-1', 'and a way to its record in the school');
+    }
+    await toTop(page, '.sheet.agentpage .agent-lineage');
+    await page.screenshot({ path: join(shots, 'agent-graduate.png') });
+
+    // ------------------------------------------------------------ a seeded agent's page is unchanged
+    const seeded = firms.flatMap((f) => f.agents).find((a) => a.lineage.origin === 'seeded');
+    if (seeded) {
+      await go(page, `#/agents/${seeded.id}`);
+      check(await within(page, 8000, async () => (await sheet.locator('.sheet-title').textContent()) === seeded.name && (await sheet.locator('.agent-lineage').count()) === 1), `${seeded.name}'s page opens`);
+      check((await sheet.locator('.agent-school').count()) === 0, 'a seeded agent’s page shows no school section');
+    }
+
+    // ------------------------------------------------------------ a bred specialist, bred from two seeded local agents
+    const locals = firms.flatMap((f) => f.agents).filter((a) => a.lineage.origin === 'seeded' && a.model.startsWith('ollama:')).slice(0, 2);
+    const arena = view.arenas.find((a) => a.kind === 'planted') ?? view.arenas[0];
+    const now = Date.now();
+    const genome = 'ui-harbour-2-1';
+    const v: VoyageView = {
+      id: bredVoyage,
+      arena: arena.id,
+      repo: arena.repo,
+      status: 'done',
+      generation: 2,
+      of: 2,
+      runs: { done: 240, of: 240 },
+      commissionedBy: 'quickset',
+      scores: [
+        ...locals.map((a) => ({ genome: a.id, name: a.name, generation: 1, mean: 0.41, lo: 0.32, hi: 0.5, parents: [] as string[] })),
+        { genome, name: 'Harbour 2.1', generation: 2, mean: 0.62, lo: 0.53, hi: 0.71, parents: locals.map((a) => a.id) },
+      ],
+      promoted: [{ child: genome, parent: locals[0].id, diff: 0.21, lo: 0.12, hi: 0.3 }],
+      sealed: { value: 0.58, lo: 0.46, hi: 0.7, n: 15 },
+      credits: 14.2,
+      startedAt: new Date(now - 2 * 86_400_000).toISOString(),
+      endedAt: new Date(now - 86_400_000).toISOString(),
+      reason: null,
+      pausedAt: null,
+      champion: { genome, name: 'Harbour 2.1', model: locals[0].model, generation: 2, parents: locals.map((a) => a.id), body: { id: genome, name: 'Harbour 2.1', model: locals[0].model, instructions: 'Read the failing test first; change the least code that makes it pass.\n', tools: ['read', 'edit', 'run'], workflow: { shape: 'single' }, memory: { examples: 2 } } },
+      vsLocal: locals.map((a, i) => ({ agent: a.id, name: a.name, diff: 0.19 - 0.03 * i, lo: 0.11 - 0.03 * i, hi: 0.27 - 0.03 * i })),
+      claim: true,
+      notCompared: 'Claude agents are never raced.',
+      sealedUsesSpent: 1,
+    };
+    openDb().prepare('INSERT OR REPLACE INTO voyages (id, json) VALUES (?, ?)').run(v.id, JSON.stringify(v));
+    const seed = schoolRoster().find((s) => s.id === bredId(genome));
+    const room = firms.map((f) => f.id).find((id) => id !== 'lodestar' && seed && !!hireSeed(id, seed));
+    bredAgent = seed && room ? seed.id : null;
+    check(locals.length === 2 && !!bredAgent, `a firm with room hires the bred champion (${room ?? 'none'})`);
+    if (bredAgent) {
+      await go(page, `#/agents/${bredAgent}`);
+      const bred = sheet.locator('.agent-school[data-school="bred"]');
+      check(await within(page, 8000, async () => (await sheet.locator('.sheet-title').textContent()) === 'Harbour 2.1' && (await bred.count()) === 1), 'the bred specialist’s page has where it came from');
+      const links = bred.locator('.agent-school-parents a.agent-school-parent');
+      const hrefs = await links.evaluateAll((as) => as.map((a) => a.getAttribute('href')));
+      check(hrefs.length === 2 && locals.every((a) => hrefs.includes(`#/agents/${a.id}`)), `it links its two parents (${hrefs.join(', ')})`);
+      check(((await bred.locator('.agent-school-parents').textContent()) ?? '').trim() === `Bred from ${locals[0].name} and ${locals[1].name}.`, `in words (${((await bred.locator('.agent-school-parents').textContent()) ?? '').trim()})`);
+      const origin = ((await bred.locator('.agent-school-origin').textContent()) ?? '').trim();
+      check(origin === `Bred in generation 2 of a voyage on the planted bugs arena on ${arena.repo}, commissioned by Quickset.`, `its voyage, generation and commissioner (${origin})`);
+      check((await bred.locator('.master-num').first().textContent())?.trim() === '0.58' && /Score 0\.58, 95% interval 0\.46 to 0\.70, on 15 sealed tasks/.test((await bred.locator('.master-note').first().textContent()) ?? ''), 'its sealed score with interval and n');
+      const rows = bred.locator('.vslocal-row');
+      check((await rows.count()) === 2 && /^\+0\.19$/.test(((await rows.first().locator('.net-score').textContent()) ?? '').trim()) && ((await rows.first().locator('.net-ci').textContent()) ?? '').trim() === '+0.11 to +0.27', `against each seeded local agent, with the interval (${await rows.count()} rows)`);
+      check((await rows.first().locator('a').getAttribute('href')) === `#/agents/${locals[0].id}`, 'each local agent a link');
+      check((await bred.locator('a.agent-school-link').getAttribute('href')) === `#/school/voyages/${bredVoyage}`, 'and a way to its voyage');
+      check((await api<{ school: { voyage: VoyageView | null } }>(page, `/api/agents/${bredAgent}`)).school.voyage?.champion?.body === undefined, 'its voyage is served without the genome’s body');
+      await toTop(page, '.sheet.agentpage .agent-lineage');
+      await page.screenshot({ path: join(shots, 'agent-bred.png') });
+    }
+    check(errors.length === 0, `the agent pages have no console errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
+  } finally {
+    page.off('console', onConsole);
+    page.off('pageerror', onError);
+    // The fixture goes: the bred agent and its voyage, so nothing later sees a tower or a voyage the economy never made.
+    if (bredAgent) openDb().prepare('DELETE FROM agents WHERE id = ?').run(bredAgent);
+    openDb().prepare('DELETE FROM voyages WHERE id = ?').run(bredVoyage);
+    await go(page, '#/');
+    if (before) await page.setViewportSize(before);
+  }
 }
