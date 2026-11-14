@@ -18,6 +18,7 @@ import { ensureCampus } from './school/campus.js';
 import { closeOrphanedActs } from './school/autonomy.js';
 import { catchUpPredictions, installDecisions } from './school/decisions.js';
 import { stopDownload } from './school/lora.js';
+import { stopServer } from './market/mlx.js';
 import { installRoster } from './school/roster.js';
 import { startSchool } from './school/tick.js';
 import { ENGINE_STOPPED_REASON, failInterruptedTrains, pauseAll } from './school/trainer.js';
@@ -128,6 +129,8 @@ async function main(): Promise<void> {
     await pauseAll(ENGINE_STOPPED_REASON);
     // a base model download in progress stops too; its partial files resume at his next click
     stopDownload();
+    // the graduate server (ruling 26) goes with the engine; the spawner escalates to SIGKILL
+    await stopServer().catch((err) => console.error('palimpsest: the mlx server could not be stopped:', err));
     await close();
   };
   const shutdown = shutdownHandler(scheduler, { close: closeAll, exit: (code) => process.exit(code), log: (l) => console.log(l) });

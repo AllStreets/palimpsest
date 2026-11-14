@@ -701,12 +701,13 @@ export function loraRuns(): LoraRun[] {
 }
 
 /**
- * The newest fully trained adapter, or null. A paused, training or failed
- * LoRA is never offered, whatever its `adapters.safetensors` holds: a
- * half-trained adapter is never evaluated (Review Focus 1).
+ * The newest fully trained adapter, or null; with `id`, that LoRA alone, and
+ * only when it is trained. A paused, training or failed LoRA is never
+ * offered, whatever its `adapters.safetensors` holds: a half-trained adapter
+ * is never evaluated (Review Focus 1) nor served (ruling 26).
  */
-export function trainedAdapter(): { id: string; path: string; file: string } | null {
-  const run = loraRuns().filter((r) => r.status === 'trained').at(-1);
+export function trainedAdapter(id?: string): { id: string; path: string; file: string } | null {
+  const run = loraRuns().filter((r) => r.status === 'trained' && (id === undefined || r.id === id)).at(-1);
   if (!run) return null;
   const path = adapterDir(run.id);
   const file = join(path, ADAPTER_FILE);
@@ -714,7 +715,7 @@ export function trainedAdapter(): { id: string; path: string; file: string } | n
 }
 
 /** The base is ready when the setting says so and its files are there. */
-function baseReady(): boolean {
+export function baseReady(): boolean {
   return getSettings().school.baseModelReady === true && existsSync(join(loraBaseDir(), 'config.json'));
 }
 

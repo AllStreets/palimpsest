@@ -1,16 +1,18 @@
 /**
  * Which Provider serves a model (Task 6). The backends register themselves
- * (`claude:` by Task 9, `ollama:` and `anthropic:` by Task 10) with
+ * (`claude:` by Task 9, `ollama:` and `anthropic:` by Task 10, `mlx:` by
+ * Phase 4 Task 26) with
  * registerProvider; tests and the sample engine override with setProvider,
  * and resetProviders drops the overrides.
  */
 import type { ModelRef } from '../../shared/types.js';
 import { anthropicProvider } from './anthropic-api.js';
 import { claudeProvider } from './claude.js';
+import { mlxProvider } from './mlx.js';
 import { ollamaProvider } from './ollama.js';
 import type { Provider } from './provider.js';
 
-export type BackendKind = 'claude' | 'ollama' | 'anthropic';
+export type BackendKind = 'claude' | 'ollama' | 'anthropic' | 'mlx';
 
 const registered = new Map<BackendKind, Provider>();
 const overrides = new Map<BackendKind, Provider>();
@@ -18,10 +20,11 @@ const overrides = new Map<BackendKind, Provider>();
 registered.set('claude', claudeProvider());
 registered.set('ollama', ollamaProvider());
 registered.set('anthropic', anthropicProvider());
+registered.set('mlx', mlxProvider());
 
 function kindOf(model: ModelRef): BackendKind | null {
   const prefix = model.slice(0, model.indexOf(':'));
-  return prefix === 'claude' || prefix === 'ollama' || prefix === 'anthropic' ? prefix : null;
+  return prefix === 'claude' || prefix === 'ollama' || prefix === 'anthropic' || prefix === 'mlx' ? prefix : null;
 }
 
 export function providerFor(model: ModelRef): Provider {

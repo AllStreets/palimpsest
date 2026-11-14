@@ -84,9 +84,11 @@ export interface TrainerProfileInput {
   /**
    * The profile's file name under `<school>/ctl` (default `trainer.sb`). The
    * download writes its own, so a train starting beside it never launches
-   * on the profile that carries the proxy port, nor the reverse.
+   * on the profile that carries the proxy port, nor the reverse. The
+   * `mlx_lm.server` (ruling 26) writes `trainer-serve.sb`, the one profile
+   * that carries its bind port.
    */
-  name?: 'trainer.sb' | 'trainer-download.sb';
+  name?: 'trainer.sb' | 'trainer-download.sb' | 'trainer-serve.sb';
 }
 
 /** The Ollama port: only the engine talks to it. */

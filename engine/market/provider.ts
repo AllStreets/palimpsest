@@ -139,7 +139,7 @@ export interface CompleteResult {
 }
 
 export interface Provider {
-  kind: 'claude' | 'ollama' | 'anthropic' | 'fake';
+  kind: 'claude' | 'ollama' | 'anthropic' | 'mlx' | 'fake';
   /** One turn for the school. Claude and Ollama return the usage for the caller to charge; the Anthropic API charges itself as `school` to the city. */
   complete(i: CompleteInput): Promise<CompleteResult>;
   plan(i: PlanInput, signal: AbortSignal): Promise<{ plan: string; price: number; confidence: number; usage: Usage }>;

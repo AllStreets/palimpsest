@@ -150,7 +150,8 @@ test('providerFor routes by prefix and setProvider overrides', () => {
   assert.equal(providerFor('claude:sonnet'), claude);
   assert.equal(providerFor('ollama:qwen2.5-coder:7b'), ollama);
   assert.equal(providerFor('anthropic:claude-sonnet-4'), anthropic);
-  assert.throws(() => providerFor('mlx:anything'), /no provider/);
+  assert.equal(providerFor('mlx:anything').kind, 'mlx', 'the mlx backend is registered (Phase 4 Task 26)');
+  assert.throws(() => providerFor('gemini:anything' as never), /no provider/);
 
   const fake = fakeProvider();
   setProvider('claude', fake);
