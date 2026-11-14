@@ -82,6 +82,8 @@ function bookText(r: BookRow, count: number, names: StoryNames): string {
       return 'Work and bids under way, not yet settled';
     case 'sale':
       return r.agentId ? `Bought ${names.agent(r.agentId)}’s tower` : 'Bought a dark tower';
+    case 'commission':
+      return 'Paid the school to sail a voyage';
     default:
       return r.kind;
   }

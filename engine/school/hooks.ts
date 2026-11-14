@@ -12,10 +12,18 @@
  * a pair and revokes one on a revert through autonomy.ts, which imports
  * decisions.ts, so autonomy.ts installs those two here as it loads.
  *
+ * Task 23 adds the school's roster: firms.ts reads the school-bred
+ * specialists and graduates, and asks which of them a firm may hire first,
+ * and the treasury's daily tick asks for a commission, through what
+ * roster.ts installs (`installRoster`; main.ts calls it). Nothing installed
+ * means Phase 2's roster, hiring and daily tick exactly.
+ *
  * Every call is guarded here: a hook that throws is logged or ignored and
- * never breaks a proposal, a PR, an award, a decision or a revert.
+ * never breaks a proposal, a PR, an award, a decision, a revert, a hire or
+ * the daily tick.
  */
 import type { Bid, Inspection, Job, Run, WorkKind } from '../../shared/types.js';
+import type { RosterSeed } from '../market/firms.js';
 
 /** Writes the master's guess down on a decision that just became pending. */
 export type PendingHook = (job: Job, run: Run | null, now: number, inspection: Inspection | null) => void;
@@ -109,5 +117,55 @@ export function appraise(job: Job, bid: Parameters<AppraiserHook>[1]): number | 
     return typeof p === 'number' && Number.isFinite(p) ? Math.min(1, Math.max(0, p)) : null;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------- the school's roster (Task 23)
+
+export interface RosterHook {
+  /** Every school-bred specialist and graduate, hired or not. */
+  seeds(): RosterSeed[];
+  /** The school's seeds `firmId` may hire now, best first: empty where the router is not trusted. */
+  candidates(firmId: string, now: number): RosterSeed[];
+  /** The daily tick's commission rule: at most one firm commissions a voyage. */
+  commissionDue(now: number): void;
+}
+
+let roster: RosterHook | null = null;
+
+/** Installs the school's roster (roster.ts's `installRoster`), or `null` for Phase 2's. */
+export function setRosterHook(fn: RosterHook | null): void {
+  roster = fn;
+}
+
+/** The school's seeds, or none: nothing installed or a failure. Never throws. */
+export function schoolSeeds(): RosterSeed[] {
+  if (!roster) return [];
+  try {
+    return roster.seeds();
+  } catch (err) {
+    console.error(`palimpsest: the school's roster could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
+/** The school's seeds a firm may hire first, or none: nothing installed, the router not trusted, or a failure. Never throws. */
+export function schoolCandidates(firmId: string, now: number): RosterSeed[] {
+  if (!roster) return [];
+  try {
+    return roster.candidates(firmId, now);
+  } catch (err) {
+    console.error(`palimpsest: the school's roster could not be offered to ${firmId}: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+
+/** The daily tick's commission, if one is due; nothing it throws escapes. */
+export function commissionDue(now: number): void {
+  if (!roster) return;
+  try {
+    roster.commissionDue(now);
+  } catch (err) {
+    console.error(`palimpsest: the daily commission failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

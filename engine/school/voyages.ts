@@ -32,9 +32,16 @@
  *   use the voyage spent.
  * - Recorded and emitted: `voyage.started`, `voyage.generation` (each
  *   generation raced, a resume, a pause), `voyage.ended`, each with
- *   `{ voyageId, voyage, repo }`; `voyage.commissioned { voyageId, firmId }`;
- *   `train.started | .paused | .ended { train }`. A voyage's parents go to
- *   the campus when it sails and home when it pauses or ends.
+ *   `{ voyageId, voyage, repo }`; `train.started | .paused | .ended
+ *   { train }`. A voyage's parents go to the campus when it sails and home
+ *   when it pauses or ends.
+ * - A commissioned voyage (Task 23, roster.ts `commission()`) is stored and
+ *   its one `voyage.commissioned` recorded, with the fee, before it sails:
+ *   queued (`paused`, no scores), it is first in `dueArenas`. Its first
+ *   sail starts it in Beagle under the id the fee named and records
+ *   `voyage.started` (carrying `commissionedBy`); sailing never records a
+ *   commission. Every credits row of a voyage, commissioned or not, is the
+ *   city's (`firm_id NULL`).
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -324,7 +331,11 @@ async function sealedClaim(s: Sail): Promise<Stop | null> {
     return null;
   }
   const body = genomeBody(b, view.id, champ.genome);
-  if (body) champ.model = body.model;
+  if (body) {
+    champ.model = body.model;
+    // the genome as bred, so the roster can hire the champion (Task 23)
+    champ.body = { id: body.id, name: body.name, model: body.model, instructions: body.instructions, tools: [...body.tools], workflow: { ...body.workflow }, memory: { examples: body.memory.examples } };
+  }
   const locals = b.arenas.startersFor(s.info.id);
   if (locals.some((l) => l.id === champ.genome)) {
     view.reason = 'The best agent was a seeded agent the city already has, so the voyage makes no champion claim';
@@ -380,14 +391,15 @@ function parentsOf(view: VoyageView) {
 
 /**
  * Sails the voyage on `arenaId` for tonight: the unfinished one there is
- * resumed, else a new one starts (`o.firmId` commissioned it). Resolves
+ * resumed (a commissioned one queued there starts), else a new one starts.
+ * Only `commission()` makes a voyage commissioned. Resolves
  * when it finishes or stops for the night, with its view. Throws
  * `VoyageRefused` when it cannot sail: the school off, a voyage or another
  * train running, the arena not ready, the heavy gate closed, no seeded
  * local agent, or a breeding task that could show the designer part of a
  * sealed answer.
  */
-export async function sailVoyage(arenaId: string, now: number, o: { firmId?: string } = {}): Promise<VoyageView> {
+export async function sailVoyage(arenaId: string, now: number): Promise<VoyageView> {
   if (!getSettings().school.enabled) throw new VoyageRefused('The school is off');
   if (sailing) throw new VoyageRefused(`A voyage is already sailing (on ${sailing.arena})`);
   if (liveTrains().length > 0) throw new VoyageRefused('A train is already running');
@@ -399,20 +411,26 @@ export async function sailVoyage(arenaId: string, now: number, o: { firmId?: str
     const g = await readGate('heavy', now);
     if (!g.ok) throw new VoyageRefused(g.reason ?? 'the gate closed');
     if (!getSettings().school.enabled) throw new VoyageRefused('The school is off');
-    return await sail(info, now, o);
+    return await sail(info, now);
   } finally {
     sailing = null;
   }
 }
 
-async function sail(info: ArenaInfo, now: number, o: { firmId?: string }): Promise<VoyageView> {
+/** A commissioned voyage stored at commissioning that has not sailed yet: it has no generation to show. */
+const isQueued = (v: VoyageView) => v.scores.length === 0 && v.runs.done === 0;
+
+async function sail(info: ArenaInfo, now: number): Promise<VoyageView> {
   const b = await loadBeagle();
   if (!b.arenas.arenaIds().includes(info.id)) await registerArenas();
   if (!b.arenas.arenaIds().includes(info.id)) throw new VoyageRefused(`Beagle does not know the arena ${info.id}`);
   const leak = breedingLeak(b, info.id);
   if (leak) throw new VoyageRefused(leak);
   const starters = b.arenas.startersFor(info.id);
-  const existing = voyages().find((v) => v.arena === info.id && isUnfinished(v)) ?? null;
+  const unfinished = voyages().find((v) => v.arena === info.id && isUnfinished(v)) ?? null;
+  // a commissioned voyage queued here starts now, under the id its fee named
+  const queued = unfinished && isQueued(unfinished) ? unfinished : null;
+  const existing = queued ? null : unfinished;
   if (!existing && starters.length === 0) throw new VoyageRefused('No seeded agent runs on a local model, so there is no first generation');
 
   const t0 = Date.now();
@@ -433,14 +451,20 @@ async function sail(info: ArenaInfo, now: number, o: { firmId?: string }): Promi
       localOnly: false,
       seed: 1,
     });
+    let id = bv.id;
+    if (queued) {
+      // Beagle names its voyages itself; the fee already named this one, so Beagle's fresh row (nothing refers to it yet) takes that name
+      b.store.open().prepare('UPDATE voyages SET id = ? WHERE id = ?').run(queued.id, bv.id);
+      id = queued.id;
+    }
     view = {
-      id: bv.id,
+      id,
       arena: info.id,
       status: 'sailing',
       generation: 1,
       of: VOYAGE.generations,
       runs: { done: 0, of: VOYAGE.population * raceTasks * VOYAGE.generations },
-      commissionedBy: o.firmId ?? null,
+      commissionedBy: queued?.commissionedBy ?? null,
       scores: [],
       promoted: [],
       sealed: null,
@@ -477,15 +501,9 @@ async function sail(info: ArenaInfo, now: number, o: { firmId?: string }): Promi
   let stop: Stop | null = null;
   try {
     putTrain('train.started', train, { voyageId: view.id });
+    // a commission was recorded once, with its fee, when it was made (roster.ts): never again here
     if (existing) announce('voyage.generation', view);
-    else {
-      announce('voyage.started', view);
-      if (o.firmId) {
-        const data = { voyageId: view.id, firmId: o.firmId };
-        record('voyage.commissioned', data);
-        emit('voyage.commissioned', { ...data });
-      }
-    }
+    else announce('voyage.started', view);
     for (const a of parentsOf(view)) toSchool(a, clock());
     stop = await sailGenerations(s);
     if (!stop) stop = await sealedClaim(s);
@@ -568,7 +586,7 @@ export async function sailDue(now: number): Promise<VoyageView | null> {
   if (!g.ok) return null;
   for (const arenaId of due) {
     try {
-      return await sailVoyage(arenaId, now, {});
+      return await sailVoyage(arenaId, now);
     } catch (err) {
       if (!(err instanceof VoyageRefused)) throw err;
       console.error(`palimpsest: no voyage on ${arenaId}: ${err.message}`);

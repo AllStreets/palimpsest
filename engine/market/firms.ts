@@ -7,6 +7,13 @@
  *
  * Seeding happens only from engine/main.ts (test safety rule 9): startServer
  * never calls seedFirms, so no server test ever runs `ollama list`.
+ *
+ * Phase 4 Task 23: the roster also reads the school's bred specialists and
+ * graduates (`rosterSeeds()`), and `hire()` offers a firm the school's first
+ * where the router is trusted, a champion to the firm that commissioned it
+ * first for 7 days. Both come through engine/school/hooks.ts, which
+ * roster.ts fills; with nothing installed, or the router not trusted, the
+ * roster and hire() are Phase 2's exactly.
  */
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -22,6 +29,7 @@ import { quarterOrigin } from '../layout.js';
 import { record } from '../ledger.js';
 import { earnedFloors, nextSlot } from '../repos.js';
 import { getSettings } from '../settings.js';
+import { schoolCandidates, schoolSeeds } from '../school/hooks.js';
 import { SYSTEM_PATH } from './sandbox.js';
 
 const PERSONA_DIR = join(dirname(fileURLToPath(import.meta.url)), 'personas');
@@ -57,8 +65,15 @@ export interface FirmSeed {
 }
 
 export interface RosterSeed extends AgentSeed {
-  specialty: 'tests' | 'docs' | 'UI' | 'refactor' | 'migration' | 'performance';
+  specialty: 'tests' | 'docs' | 'UI' | 'refactor' | 'migration' | 'performance' | 'bug fixes';
   workflow: { shape: WorkflowShape; n?: number };
+  /** `school`: bred by a voyage or graduated by the school (Phase 4 Task 23); absent for the hand-written roster. */
+  origin?: 'school';
+  /** A school seed has no persona file: its list line and its instructions travel with it. */
+  persona?: { line: string; body: string };
+  /** A school seed's genome parents and generation, for its lineage. */
+  parents?: string[];
+  generation?: number;
 }
 
 const ALL_TIERS: Tier[] = ['low', 'normal', 'high'];
@@ -122,6 +137,15 @@ export const ROSTER: RosterSeed[] = [
   { id: 'marisol-vega', name: 'Marisol Vega', specialty: 'migration', model: 'claude:sonnet', capability: 'scifi', bidsOn: ['normal', 'high'], examples: 3, maxTurns: 50, workflow: { shape: 'plan-then-answer' } },
   { id: 'kenji-mori', name: 'Kenji Mori', specialty: 'performance', model: 'claude:sonnet', capability: 'scifi', bidsOn: ['normal', 'high'], examples: 3, maxTurns: 50, workflow: { shape: 'plan-then-answer' } },
 ];
+
+/**
+ * The roster a firm hires from: the hand-written specialists, then the
+ * school's bred specialists and graduates (none with nothing installed).
+ * Each is hired at most once.
+ */
+export function rosterSeeds(): RosterSeed[] {
+  return [...ROSTER, ...schoolSeeds()];
+}
 
 /** A stored agent: the Agent itself, plus who bought its tower if its firm went bankrupt and the tower was sold. */
 type StoredAgent = Agent & { soldTo?: string };
@@ -244,13 +268,14 @@ function makeAgent(
   firmId: string,
   temperament: string,
   workflow: { shape: WorkflowShape; n?: number },
-  origin: 'seeded' | 'roster',
+  origin: 'seeded' | 'roster' | 'school',
   towerIndex: number,
   model: ModelRef,
   installed: boolean,
   at: string,
+  school: { persona?: { line: string; body: string }; parents?: string[]; generation?: number } = {},
 ): Agent {
-  const persona = readPersona(seed.id);
+  const persona = school.persona ?? readPersona(seed.id);
   return {
     id: seed.id,
     firmId,
@@ -262,7 +287,7 @@ function makeAgent(
     tools: [...AGENT_TOOLS],
     workflow: { ...workflow },
     memory: { examples: seed.examples },
-    lineage: { origin, parents: [], generation: 0, at },
+    lineage: { origin, parents: [...(school.parents ?? [])], generation: school.generation ?? 0, at },
     silhouette: silhouetteFor(temperament),
     maxTurns: seed.maxTurns,
     capability: seed.capability,
@@ -397,17 +422,27 @@ export function quarters(): Quarter[] {
  * lowest free plot of its quarter, and records `agent.hired`. Null when the
  * firm is missing or bankrupt, its quarter already stands four towers, or the
  * roster is spent. The fee and canHire() are the treasury's (Task 17).
+ *
+ * Where the router is trusted (Phase 4 Task 23), the school's seeds this
+ * firm may hire come first, best first: a champion its commissioning firm
+ * holds first refusal on is offered to that firm only, for 7 days. Otherwise
+ * the hand-written roster, in its order, as in Phase 2.
  */
 export function hire(firmId: string, now: Date = new Date()): Agent | null {
   const f = firm(firmId);
   if (!f || f.status !== 'active') return null;
   const taken = new Set(storedAgents(firmId).filter(standing).map((a) => a.towerIndex));
   if (taken.size >= MAX_TOWERS) return null;
-  const seed = ROSTER.find((r) => !storedAgent(r.id));
+  const seed = schoolCandidates(firmId, now.getTime()).find((r) => !storedAgent(r.id)) ?? ROSTER.find((r) => !storedAgent(r.id));
   if (!seed) return null;
   let towerIndex = 0;
   while (taken.has(towerIndex)) towerIndex += 1;
-  const a = makeAgent(seed, firmId, `specialist in ${seed.specialty}`, seed.workflow, 'roster', towerIndex, seed.model as ModelRef, true, now.toISOString());
+  const origin = seed.origin === 'school' ? 'school' : 'roster';
+  const a = makeAgent(seed, firmId, `specialist in ${seed.specialty}`, seed.workflow, origin, towerIndex, seed.model as ModelRef, true, now.toISOString(), {
+    persona: seed.persona,
+    parents: seed.parents,
+    generation: seed.generation,
+  });
   saveAgent(a);
   record('agent.hired', { agent: a });
   return a;

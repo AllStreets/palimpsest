@@ -14,12 +14,13 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { openDb } from '../engine/db.js';
 import { subscribe, type Event } from '../engine/events.js';
 import { paths } from '../engine/home.js';
-import { query } from '../engine/ledger.js';
+import { query, record } from '../engine/ledger.js';
 import { acquire, creditsFor, liveLeaseCount, schoolClaudeSpent, type Lease } from '../engine/market/budget.js';
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import type { CompleteInput, CompleteResult, Usage } from '../engine/market/provider.js';
 import { setProvider } from '../engine/market/providers.js';
 import { verifyReplay } from '../engine/market/replay.js';
+import { balances, replayBalances } from '../engine/market/treasury.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { arenaInfo, toBeagleArena } from '../engine/school/arenas.js';
 import type { BeagleArena } from '../engine/school/beagle-api.js';
@@ -28,11 +29,13 @@ import { campusOrigin, ensureCampus } from '../engine/school/campus.js';
 import { resetGateCache } from '../engine/school/gate.js';
 import { schoolOff, startSchool, TURNED_OFF_REASON } from '../engine/school/tick.js';
 import { failInterruptedTrains, liveTrains, setGate } from '../engine/school/trainer.js';
+import { commission } from '../engine/school/roster.js';
 import { sailVoyage, setVoyagePoll, voyages } from '../engine/school/voyages.js';
 import { localDay } from '../shared/day.js';
-import { SEALED_USES, VOYAGE } from '../shared/school-rules.js';
+import { COMMISSION, SEALED_USES, VOYAGE } from '../shared/school-rules.js';
 import type { ArenaInfo, GateState, Trip, VoyageView } from '../shared/types.js';
 import { addAgent, FULL, HOUR, setUp, tearDown } from './guild-fixtures.js';
+import { floorOn } from './roster-fixtures.js';
 
 const ARENA = 'arena-fake';
 const LOCAL = 'ollama:qwen2.5-coder:7b';
@@ -241,7 +244,7 @@ test('a voyage of 8 runs 4 generations and records each', async () => {
   const seeds = seedLocals();
   backends();
   await fakeArena();
-  const view = await sailVoyage(ARENA, NOW, {});
+  const view = await sailVoyage(ARENA, NOW);
 
   assert.equal(view.status, 'done', view.reason ?? '');
   assert.equal(view.generation, VOYAGE.generations);
@@ -306,7 +309,7 @@ test('a child with lo at or below zero is not promoted', async () => {
   seedLocals();
   backends();
   await fakeArena();
-  const view = await sailVoyage(ARENA, NOW, {});
+  const view = await sailVoyage(ARENA, NOW);
   assert.equal(view.status, 'done', view.reason ?? '');
   const names = new Map(view.scores.map((s) => [s.genome, s.name]));
   assert.ok(view.promoted.length > 0, 'the SHARP children of the starters are promoted');
@@ -338,7 +341,7 @@ test('the designer sees only breeding tasks', async () => {
   seedLocals();
   backends();
   await fakeArena();
-  const view = await sailVoyage(ARENA, NOW, {});
+  const view = await sailVoyage(ARENA, NOW);
   assert.equal(view.status, 'done', view.reason ?? '');
   const design = calls.filter((c) => c.system.startsWith('You design agents'));
   assert.equal(design.length, VOYAGE.generations - 1);
@@ -358,7 +361,7 @@ test('a breeding task that shares a change with the sealed split stops the voyag
   backends();
   // b1 and s1 come from the same change: showing b1 to the designer would show it part of a sealed answer
   await fakeArena({ breedingRef: 'c'.repeat(40), sealedRef: 'c'.repeat(40) });
-  await assert.rejects(sailVoyage(ARENA, NOW, {}), /shares a change with the sealed split/);
+  await assert.rejects(sailVoyage(ARENA, NOW), /shares a change with the sealed split/);
   assert.equal(calls.length, 0, 'nothing raced and nothing was bred');
   assert.deepEqual(voyages(), []);
   assert.equal(liveTrains().length, 0);
@@ -372,7 +375,7 @@ test('a gate loss aborts unscored and the next night\'s race skips the stored ru
   await fakeArena();
   // the gate holds for the voyage's start and its first five runs (one model call each), then he unplugs the Mac
   gateOk = () => calls.length < 5;
-  const night1 = await sailVoyage(ARENA, NOW, {});
+  const night1 = await sailVoyage(ARENA, NOW);
   assert.equal(night1.status, 'paused');
   assert.equal(night1.reason, 'on battery');
   assert.equal(night1.endedAt, null);
@@ -395,7 +398,7 @@ test('a gate loss aborts unscored and the next night\'s race skips the stored ru
   calls = [];
   const night2At = NOW + 2 * HOUR;
   readingAt(night2At);
-  const night2 = await sailVoyage(ARENA, night2At, {});
+  const night2 = await sailVoyage(ARENA, night2At);
   assert.equal(night2.id, night1.id);
   assert.equal(night2.status, 'done', night2.reason ?? '');
   const firstDesign = calls.findIndex((c) => c.system.startsWith('You design agents'));
@@ -412,7 +415,7 @@ test('Beagle runs at concurrency 1', async () => {
   seedLocals();
   backends();
   await fakeArena();
-  const view = await sailVoyage(ARENA, NOW, {});
+  const view = await sailVoyage(ARENA, NOW);
   assert.equal(view.status, 'done', view.reason ?? '');
   const b = await loadBeagle();
   const v = b.race.getVoyage(view.id);
@@ -431,7 +434,7 @@ test('the champion is compared only with seeded local agents and the view says C
   addAgent('roster-local', 'quill', LOCAL, { name: 'Roster', lineage: { origin: 'roster', parents: [], generation: 0, at: '2026-11-01T00:00:00.000Z' } });
   backends();
   await fakeArena();
-  const view = await sailVoyage(ARENA, NOW, {});
+  const view = await sailVoyage(ARENA, NOW);
   assert.equal(view.status, 'done', view.reason ?? '');
   assert.ok(view.champion);
   assert.deepEqual(view.vsLocal?.map((v) => v.agent).sort(), [...seeds].sort());
@@ -455,7 +458,7 @@ test('a spent arena (10 sealed uses) makes no champion claim', async () => {
   seedLocals();
   backends();
   await fakeArena({ sealedUses: SEALED_USES, status: 'spent' });
-  const view = await sailVoyage(ARENA, NOW, {});
+  const view = await sailVoyage(ARENA, NOW);
   assert.equal(view.status, 'done', view.reason ?? '');
   assert.ok(view.champion, 'the voyage still names its best');
   assert.equal(view.claim, false);
@@ -468,7 +471,7 @@ test('a spent arena (10 sealed uses) makes no champion claim', async () => {
 
   // the tenth use spends the arena
   await fakeArena({ sealedUses: SEALED_USES - 1 });
-  const last = await sailVoyage(ARENA, NOW + HOUR, {});
+  const last = await sailVoyage(ARENA, NOW + HOUR);
   assert.equal(last.status, 'done');
   assert.equal(last.claim, true);
   assert.equal(arenaInfo(ARENA)?.sealedUses, SEALED_USES);
@@ -485,7 +488,7 @@ test('school Claude spend in a voyage stops at the day\'s 30 credits', async () 
   backends({ claudeUsage });
   patchSettings({ school: { ...getSettings().school, designer: 'claude:sonnet' } });
   await fakeArena();
-  const view = await sailVoyage(ARENA, NOW, {});
+  const view = await sailVoyage(ARENA, NOW);
   assert.equal(view.status, 'paused');
   assert.match(view.reason ?? '', /credits a day/);
   const spent = schoolClaudeSpent(localDay(NOW), NOW + HOUR);
@@ -510,13 +513,13 @@ test('school off ends the race at once, even while a call waits for its lease, a
   const got = await acquire(LOCAL, 'work', 10);
   assert.ok(got.ok);
   const work: Lease = got.lease;
-  const sailing = sailVoyage(ARENA, NOW, {});
+  const sailing = sailVoyage(ARENA, NOW);
   // wait until the voyage holds its train
   for (let i = 0; i < 200 && liveTrains().length === 0; i++) await new Promise((r) => setTimeout(r, 5));
   assert.equal(liveTrains().length, 1);
   assert.equal(liveTrains()[0].kind, 'voyage');
   // one voyage at a time, and nothing else trains while it sails
-  await assert.rejects(sailVoyage(ARENA, NOW, {}), /already sailing/);
+  await assert.rejects(sailVoyage(ARENA, NOW), /already sailing/);
   const school = startSchool({ intervalMs: 1e9, ask: () => [], act: async () => 0, labels: () => ({}) as never, resume: async () => null, sail: async () => null });
   try {
     const tick = await school.tick(NOW);
@@ -549,7 +552,7 @@ test('the stop file ends the race at once', async () => {
   setVoyagePoll(10);
   const got = await acquire(LOCAL, 'work', 10);
   assert.ok(got.ok);
-  const sailing = sailVoyage(ARENA, NOW, {});
+  const sailing = sailVoyage(ARENA, NOW);
   for (let i = 0; i < 200 && liveTrains().length === 0; i++) await new Promise((r) => setTimeout(r, 5));
   writeFileSync(paths().stop, '');
   const view = await sailing;
@@ -565,28 +568,94 @@ test('a voyage does not sail while another train runs, or with the school off', 
   backends();
   await fakeArena();
   patchSettings({ school: { ...getSettings().school, enabled: false } });
-  await assert.rejects(sailVoyage(ARENA, NOW, {}), /school is off/);
+  await assert.rejects(sailVoyage(ARENA, NOW), /school is off/);
   patchSettings({ school: { ...getSettings().school, enabled: true } });
   gateOk = () => false;
-  await assert.rejects(sailVoyage(ARENA, NOW, {}), /on battery/);
+  await assert.rejects(sailVoyage(ARENA, NOW), /on battery/);
   assert.equal(voyages().length, 0);
   assert.equal(calls.length, 0);
 });
 
 // ---------------------------------------------------------------- commissions and trips
 
-test('a commissioned voyage carries its firm and records the commission', async () => {
+/** Quill, the seeds' firm, with `balance` on its books and a floor on the arena's repo: a firm that may commission. */
+function quillMayCommission(balance: number): void {
+  const f = { id: 'quill', name: 'Quill', root: 'roman', motto: '', slot: 120, balance, status: 'active', negativeSince: null, bankruptAt: null, createdAt: '2026-11-01T00:00:00.000Z' };
+  openDb().prepare('INSERT OR REPLACE INTO firms (id, json) VALUES (?, ?)').run(f.id, JSON.stringify(f));
+  record('firm.seeded', { firm: f });
+  floorOn('seed-1', FULL);
+}
+
+const quillRows = () => (openDb().prepare("SELECT kind, amount, run_id FROM credits WHERE firm_id = 'quill' ORDER BY id").all() as Array<{ kind: string; amount: number; run_id: string | null }>).map((r) => ({ ...r }));
+
+test("a commissioned voyage's credits leave the firm only as the fee", async () => {
   seedLocals();
+  quillMayCommission(500);
+  // the designer is Claude at 3 credits a design; the agents race on the local model
+  const per = creditsFor('claude:sonnet', { weightedTokens: 1_000_000, seconds: 0, usd: 0, credits: 0 });
+  backends({ claudeUsage: { weightedTokens: Math.round((3 / per) * 1_000_000), seconds: 30, usd: 0.1, credits: 0 } });
+  patchSettings({ school: { ...getSettings().school, designer: 'claude:sonnet' } });
+  await fakeArena();
+  const queued = commission('quill', ARENA, NOW);
+  assert.equal(balances().quill, 500 - COMMISSION.fee);
+  const view = await sailVoyage(ARENA, NOW + 1000);
+
+  assert.equal(view.status, 'done', view.reason ?? '');
+  assert.equal(view.id, queued.id, 'the voyage sails under the id the fee was paid for');
+  assert.equal(view.commissionedBy, 'quill');
+  assert.ok(calls.some((c) => c.model.startsWith('claude:')) && calls.some((c) => c.model.startsWith('ollama:')), 'Claude and local calls both ran');
+  // the firm paid the fee and nothing else
+  assert.equal(balances().quill, 500 - COMMISSION.fee);
+  assert.deepEqual(quillRows(), [{ kind: 'commission', amount: COMMISSION.fee, run_id: null }]);
+  // every credits row of the voyage is the city's
+  const rows = openDb().prepare('SELECT firm_id, kind FROM credits WHERE run_id = ?').all(view.id) as Array<{ firm_id: string | null; kind: string }>;
+  assert.ok(rows.length > 0);
+  assert.ok(rows.every((r) => r.firm_id === null && r.kind === 'school'), "a commissioned voyage's spend is the city's");
+  assert.ok(view.credits > 0);
+  // one voyage.commissioned, at commissioning, with the fee; the voyage's start carries its firm
+  const c = ledgerOf('voyage.commissioned');
+  assert.equal(c.length, 1);
+  assert.equal(c[0].voyageId, view.id);
+  assert.equal(c[0].firmId, 'quill');
+  assert.equal(c[0].fee, COMMISSION.fee);
+  assert.equal(events.filter((e) => e.type === 'voyage.commissioned').length, 1);
+  const started = ledgerOf('voyage.started');
+  assert.equal(started.length, 1);
+  assert.equal((started[0].voyage as VoyageView).id, view.id);
+  assert.equal((started[0].voyage as VoyageView).commissionedBy, 'quill');
+  assert.equal((started[0].voyage as VoyageView).scores.filter((x) => x.generation === 1).length, VOYAGE.population);
+  assert.ok(Date.parse((started[0].voyage as VoyageView).startedAt) >= NOW + 1000, 'it started when it sailed');
+  assert.equal(voyages().length, 1);
+  assertSchoolReplays();
+  assert.deepEqual(replayBalances(query({})).quill, balances().quill);
+});
+
+test('a paused commissioned voyage refunds nothing', async () => {
+  seedLocals();
+  quillMayCommission(500);
   backends();
   await fakeArena();
-  const view = await sailVoyage(ARENA, NOW, { firmId: 'quill' });
-  assert.equal(view.commissionedBy, 'quill');
-  const c = ledgerOf('voyage.commissioned');
-  assert.deepEqual(c, [{ voyageId: view.id, firmId: 'quill' }]);
-  const ev = events.find((e) => e.type === 'voyage.commissioned');
-  assert.deepEqual(ev?.data, { voyageId: view.id, firmId: 'quill' });
-  const rows = openDb().prepare('SELECT firm_id FROM credits WHERE run_id = ?').all(view.id) as Array<{ firm_id: string | null }>;
-  assert.ok(rows.every((r) => r.firm_id === null), 'a commissioned voyage\'s spend is the city\'s');
+  const queued = commission('quill', ARENA, NOW);
+  gateOk = () => calls.length < 5;
+  const night1 = await sailVoyage(ARENA, NOW + 1000);
+  assert.equal(night1.id, queued.id);
+  assert.equal(night1.status, 'paused');
+  assert.equal(balances().quill, 500 - COMMISSION.fee);
+  assert.deepEqual(quillRows(), [{ kind: 'commission', amount: COMMISSION.fee, run_id: null }]);
+
+  // it resumes first on the next night and finishes: still nothing back, and never a second commission
+  gateOk = () => true;
+  const night2At = NOW + 2 * HOUR;
+  readingAt(night2At);
+  const night2 = await sailVoyage(ARENA, night2At);
+  assert.equal(night2.id, queued.id);
+  assert.equal(night2.status, 'done', night2.reason ?? '');
+  assert.equal(balances().quill, 500 - COMMISSION.fee);
+  assert.deepEqual(quillRows(), [{ kind: 'commission', amount: COMMISSION.fee, run_id: null }]);
+  assert.equal(ledgerOf('voyage.commissioned').length, 1);
+  assert.equal(ledgerOf('voyage.started').length, 1);
+  assert.ok(query({ kind: ['credits.moved'] }).every((e) => (e.data as { delta: number }).delta <= 0), 'no credits came back to any firm');
+  assertSchoolReplays();
 });
 
 test('parents travel to the campus and home', async () => {
@@ -595,7 +664,7 @@ test('parents travel to the campus and home', async () => {
   await fakeArena();
   const campus = campusOrigin();
   assert.ok(campus);
-  const view = await sailVoyage(ARENA, NOW, {});
+  const view = await sailVoyage(ARENA, NOW);
   assert.equal(view.status, 'done');
   const trips = storedTrips();
   for (const id of seeds) {
@@ -626,7 +695,7 @@ test('a pause during the sealed race says the sealed use was spent, and a resume
     },
   });
   await fakeArena();
-  const paused = await sailVoyage(ARENA, NOW, {});
+  const paused = await sailVoyage(ARENA, NOW);
   assert.ok(stopped, 'the sealed race was reached');
   assert.equal(paused.status, 'paused');
   assert.match(paused.reason ?? '', new RegExp(`^${TURNED_OFF_REASON}`));
@@ -644,7 +713,7 @@ test('a pause during the sealed race says the sealed use was spent, and a resume
   calls = [];
   const night2At = NOW + 2 * HOUR;
   readingAt(night2At);
-  const done = await sailVoyage(ARENA, night2At, {});
+  const done = await sailVoyage(ARENA, night2At);
   assert.equal(done.status, 'done', done.reason ?? '');
   assert.equal(done.claim, true);
   assert.equal(done.sealedUsesSpent, 2);

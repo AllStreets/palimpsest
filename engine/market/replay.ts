@@ -42,8 +42,8 @@
  *   written before an act, whose grant carries the moved `acted` count; the
  *   `autonomy.acted` written after it only reports `result` and carries
  *   none. `arena.built { arena }`; `voyage.started | .generation |
- *   .ended { voyage }` (the fee of `voyage.commissioned` is a
- *   `credits.moved`); `train.started | .paused | .ended { train }`;
+ *   .ended { voyage }`, and `voyage.commissioned { voyage }` for a voyage
+ *   queued at commissioning (its fee is a `credits.moved`); `train.started | .paused | .ended { train }`;
  *   `graduate.made { graduate }`. A `voyage.ended` or `graduate.made` that
  *   spends sealed uses carries the arena (`arena`, or `arenas`) whole.
  *   `school.enabled` carries no table, nor does `merge.followup { jobId,
@@ -630,9 +630,12 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
       putArenas(s, d);
       return s;
     }
-    case 'voyage.commissioned':
-      // The fee moves as its own credits.moved; the voyage carries commissionedBy when it starts.
+    case 'voyage.commissioned': {
+      // The fee moves as its own credits.moved. Since Task 23 the queued voyage is stored at commissioning and carried whole.
+      const v = obj(d.voyage) as VoyageView | null;
+      if (v && str(v.id)) s.voyages[v.id] = clone(v);
       return s;
+    }
     case 'train.started':
     case 'train.paused':
     case 'train.ended': {

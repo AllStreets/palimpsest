@@ -973,6 +973,10 @@ export interface VoyageView {
   startedAt: string;
   endedAt: string | null;
   /**
+   * A commissioned voyage (Task 23) is stored at commissioning, before it
+   * first sails: status `paused`, generation 0, no scores, its reason saying
+   * it sails first; `startedAt` is set again when it first sails.
+   *
    * The rest is written by the engine's voyages (Task 22) and optional only
    * so a view made before them still reads. `repo`: the arena's repo.
    * `reason`: why it paused or ended, or why it makes no champion claim.
@@ -981,8 +985,11 @@ export interface VoyageView {
   repo?: string;
   reason?: string | null;
   pausedAt?: string | null;
-  /** The best kept genome of the last generation (a starter or a promoted child), or null. */
-  champion?: { genome: string; name: string; model: string; generation: number; parents: string[] } | null;
+  /**
+   * The best kept genome of the last generation (a starter or a promoted child), or null.
+   * `body`: its genome as Beagle bred it, so the roster can hire it (Task 23).
+   */
+  champion?: { genome: string; name: string; model: string; generation: number; parents: string[]; body?: Genome } | null;
   /** The champion against each seeded local agent on the sealed tasks: per-task differences, champion minus agent. */
   vsLocal?: Array<{ agent: string; name: string; diff: number; lo: number; hi: number }>;
   /** Whether the champion beat every seeded local agent on an unspent, unchanged sealed split (each `lo > 0`). */

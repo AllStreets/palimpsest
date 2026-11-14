@@ -15,6 +15,10 @@ import { balances, bankruptcyTick, cityLedger, dailyTick, installTreasury, negat
 import { job as storedJob } from '../engine/market/jobs.js';
 import { layEarnedFloor } from '../engine/repos.js';
 import { HIRE_FEE, START_BALANCE } from '../shared/market-rules.js';
+import { COMMISSION } from '../shared/school-rules.js';
+import { getSettings, patchSettings } from '../engine/settings.js';
+import { installRoster } from '../engine/school/roster.js';
+import { readyArena } from './roster-fixtures.js';
 import type { Bid, Floor, Inspection, Job, ModelRef, Trip } from '../shared/types.js';
 import { HOUR, setUp, tearDown } from './guild-fixtures.js';
 
@@ -521,4 +525,65 @@ test("the city's books count the audit's, the school's and training's spend as t
   assert.equal(day.spent.school, 3);
   assert.equal(day.spent.train, 4.25);
   assert.equal(day.spent.total, 10.75);
+});
+
+// ---------------------------------------------------------------- commissions (Phase 4 Task 23, ruling 22)
+
+test('the daily tick commissions a voyage for the richest firm that may, only where the router is trusted', () => {
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  merge(awardedJob('ashlar-vane', 'ines-ashlar', 200).job); // 500
+  merge(awardedJob('quickset', 'priya-rao', 150).job); // 450
+  for (const a of ['ines-ashlar', 'priya-rao']) {
+    layEarnedFloor(agentTowerId(a), { id: `floor-${a}`, repo: 'acme/widgets', kind: 'pr', refs: ['#1'], title: 'Fix', at: new Date(T0).toISOString(), era: 'glass', size: 'small', lines: 5, claude: true, founding: false, url: null });
+  }
+  readyArena('arena-1', 'acme/widgets');
+  const commissions = () => creditRows('commission');
+  const kindsOf = () => entries().map((e) => e.kind);
+
+  // nothing installed: Phase 2's daily tick
+  const before = kindsOf().length;
+  dailyTick(T0 + HOUR);
+  assert.deepEqual(commissions(), []);
+  // the router as its card has it (no labels, so not trusted): the same daily tick, nothing more
+  let uninstall = installRoster();
+  try {
+    dailyTick(T0 + 2 * HOUR);
+  } finally {
+    uninstall();
+  }
+  assert.deepEqual(commissions(), []);
+  assert.deepEqual(kindsOf().slice(before), [], 'nothing was recorded by either tick');
+  assert.equal(balances()['ashlar-vane'], START_BALANCE + 200);
+
+  // trusted: the richest firm with an idle agent and a floor on the arena's repo commissions it, once
+  uninstall = installRoster({ trusted: () => true });
+  try {
+    clock = T0 + 3 * HOUR;
+    dailyTick(clock);
+    const rows = commissions();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].firm_id, 'ashlar-vane');
+    assert.equal(rows[0].amount, COMMISSION.fee);
+    assert.equal(balances()['ashlar-vane'], START_BALANCE + 200 - COMMISSION.fee);
+    assert.equal(balances().quickset, START_BALANCE + 150);
+    const c = entries().filter((e) => e.kind === 'voyage.commissioned');
+    assert.equal(c.length, 1);
+    assert.equal((c[0].data as { firmId: string }).firmId, 'ashlar-vane');
+    assert.ok(events.some((e) => e.type === 'voyage.commissioned'));
+    const m = moved('commission');
+    assert.equal(m.length, 1);
+    assert.equal(m[0].reason, 'commission');
+    assert.equal(m[0].voyageId, (c[0].data as { voyageId: string }).voyageId);
+
+    // one commissioned voyage is live, so the next day nobody commissions another
+    clock = T0 + 27 * HOUR;
+    dailyTick(clock);
+    assert.equal(commissions().length, 1);
+    assert.deepEqual(replayBalances(entries()), balances());
+    const day = cityLedger(new Date(T0).toISOString(), new Date(T0 + 48 * HOUR).toISOString());
+    assert.equal(day.received.commission, COMMISSION.fee);
+    assert.equal(day.firms['ashlar-vane'], 200 - COMMISSION.fee);
+  } finally {
+    uninstall();
+  }
 });

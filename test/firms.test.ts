@@ -29,10 +29,14 @@ import {
 import { readPersona } from '../engine/market/firms.js';
 import { SYSTEM_PATH } from '../engine/market/sandbox.js';
 import { layEarnedFloor } from '../engine/repos.js';
-import { patchSettings } from '../engine/settings.js';
+import { getSettings, patchSettings } from '../engine/settings.js';
+import { netCard } from '../engine/school/nets.js';
+import { firstRefusal, installRoster } from '../engine/school/roster.js';
 import { startServer } from '../engine/server.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Agent, Floor, Repo } from '../shared/types.js';
+import { bredVoyage, readyArena } from './roster-fixtures.js';
+import { constant, installNet } from './school-fixtures.js';
 
 /** What `ollama list` showed on his Mac on 2026-11-09 (plan header). */
 const INSTALLED = [
@@ -456,4 +460,69 @@ test('reviveAgents leaves an agent retired while its model is still missing or i
 
 test('roster persona lines carry a person, not a job title', () => {
   for (const r of ROSTER) assert.doesNotMatch(agentLine(r.id), /from the roster/i, r.name);
+});
+
+// ---------------------------------------------------------------- the school's roster (Phase 4 Task 23)
+
+const SCHOOL_NOW = Date.parse('2026-11-12T09:00:00.000Z');
+const DAY_MS = 24 * 3600_000;
+
+test('the commissioning firm hires the champion first for 7 days', () => {
+  seedFirms(INSTALLED);
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  const uninstall = installRoster({ trusted: () => true });
+  try {
+    readyArena('arena-1', 'connor/one');
+    const ended = SCHOOL_NOW - DAY_MS;
+    bredVoyage({ id: 'v-1', arena: 'arena-1', repo: 'connor/one', starter: 'bruno-kiln', genome: 'g-sharp', endedAt: new Date(ended).toISOString(), commissionedBy: 'quickset' });
+    assert.equal(firstRefusal('bred-g-sharp', SCHOOL_NOW), 'quickset');
+    // another firm, inside the 7 days, is offered the hand-written roster instead
+    const other = hire('meridian', new Date(SCHOOL_NOW));
+    assert.equal(other?.id, ROSTER[0].id);
+    // the commissioning firm hires its champion
+    const own = hire('quickset', new Date(SCHOOL_NOW));
+    assert.equal(own?.id, 'bred-g-sharp');
+    assert.equal(own?.lineage.origin, 'school');
+    assert.equal(firstRefusal('bred-g-sharp', SCHOOL_NOW), null, 'hired, nobody holds a refusal on it');
+
+    // a second champion the same firm commissioned: once its 7 days are over, anyone may hire it
+    bredVoyage({ id: 'v-2', arena: 'arena-1', repo: 'connor/one', starter: 'bruno-kiln', genome: 'g-keen', endedAt: new Date(ended).toISOString(), commissionedBy: 'quickset' });
+    assert.equal(hire('meridian', new Date(ended + 7 * DAY_MS - 1))?.id, ROSTER[1].id);
+    assert.equal(hire('meridian', new Date(ended + 7 * DAY_MS))?.id, 'bred-g-keen');
+  } finally {
+    uninstall();
+  }
+});
+
+test('hire prefers a school agent only where the router is trusted', () => {
+  seedFirms(INSTALLED);
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  readyArena('arena-1', 'connor/one');
+  bredVoyage({ id: 'v-1', arena: 'arena-1', repo: 'connor/one', starter: 'bruno-kiln', genome: 'g-sharp', endedAt: new Date(SCHOOL_NOW - DAY_MS).toISOString() });
+
+  // nothing installed: Phase 2's hire exactly
+  assert.equal(hire('meridian', new Date(SCHOOL_NOW))?.id, ROSTER[0].id);
+
+  // installed, the router as its card has it: a trusted version on too few labels is not trusted, so Phase 2 still
+  let uninstall = installRoster();
+  try {
+    installNet(constant('router', 1, 0.7));
+    assert.notEqual(netCard('router', SCHOOL_NOW).status, 'trusted');
+    assert.equal(hire('meridian', new Date(SCHOOL_NOW))?.id, ROSTER[1].id);
+  } finally {
+    uninstall();
+  }
+
+  uninstall = installRoster({ trusted: () => true });
+  try {
+    // trusted: the school's agent before the hand-written roster
+    assert.equal(hire('meridian', new Date(SCHOOL_NOW))?.id, 'bred-g-sharp');
+    assert.equal(hire('meridian', new Date(SCHOOL_NOW)), null, 'a fifth tower is refused');
+    // trusted with no school agent left: the hand-written roster in its own order
+    assert.equal(hire('kiln', new Date(SCHOOL_NOW))?.id, ROSTER[2].id);
+  } finally {
+    uninstall();
+  }
+  const hired = entries().filter((e) => e.kind === 'agent.hired').map((e) => (e.data as { agent: Agent }).agent.id);
+  assert.deepEqual(hired, [ROSTER[0].id, ROSTER[1].id, 'bred-g-sharp', ROSTER[2].id]);
 });

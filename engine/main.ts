@@ -17,6 +17,7 @@ import { registerArenas } from './school/arenas.js';
 import { ensureCampus } from './school/campus.js';
 import { closeOrphanedActs } from './school/autonomy.js';
 import { catchUpPredictions, installDecisions } from './school/decisions.js';
+import { installRoster } from './school/roster.js';
 import { startSchool } from './school/tick.js';
 import { ENGINE_STOPPED_REASON, failInterruptedTrains, pauseAll } from './school/trainer.js';
 import { isSampleHome } from './sample.js';
@@ -50,6 +51,8 @@ async function main(): Promise<void> {
   installMilestones();
   // Phase 4 ruling 14: his accepts, dismissals, merges, closes and reverts, against the master's earlier guess; never the city's own acts.
   installDecisions();
+  // Phase 4 Task 23: the roster reads the school's specialists, hires prefer them where the router is trusted, and the daily tick may commission a voyage.
+  installRoster();
   try {
     backfillMilestones(Date.now());
   } catch (err) {

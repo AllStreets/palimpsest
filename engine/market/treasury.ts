@@ -19,6 +19,12 @@
  * - `hire`: the hiring fee, to the city (debit).
  * - `sale`: a dark tower's price, from the buyer to the city (debit); the
  *   bankrupt seller gets nothing.
+ * - `commission`: the fee a firm pays the school to sail a voyage first
+ *   (Phase 4 ruling 22), to the city, once, at commissioning (debit). It is
+ *   the firm's whole cost: the voyage's own model calls and local minutes
+ *   are `school` rows with `firm_id NULL`, like any voyage's, and nothing
+ *   is refunded. The row carries `voyageId` in its json and no `run_id`, so
+ *   it is never counted among the voyage's own rows.
  *
  * Money is summed in integer micro-credits, so 0.1 + 0.2 is 0.3.
  */
@@ -32,12 +38,14 @@ import type { Bid, Inspection, Job } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { SPEND_KINDS } from './budget.js';
 import { emit, subscribe, type Event } from '../events.js';
+import { COMMISSION } from '../../shared/school-rules.js';
+import { commissionDue } from '../school/hooks.js';
 import { query, record, type LedgerEntry } from '../ledger.js';
 
-export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale';
+export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale' | 'commission';
 
 /** The direction of each kind for the firm named on the row. */
-export const FIRM_SIGN: Record<MoneyKind, 1 | -1> = { bid: -1, run: -1, pay: 1, 'review-pay': 1, hire: -1, sale: -1 };
+export const FIRM_SIGN: Record<MoneyKind, 1 | -1> = { bid: -1, run: -1, pay: 1, 'review-pay': 1, hire: -1, sale: -1, commission: -1 };
 const MONEY_KINDS = Object.keys(FIRM_SIGN) as MoneyKind[];
 const COST_KINDS: MoneyKind[] = ['bid', 'run'];
 /** How often the engine runs dailyTick. */
@@ -65,6 +73,9 @@ export interface CreditsMoved {
   inspectionId: string | null;
   agentId: string | null;
   at: string;
+  /** A commission's fee (ruling 22): `reason: 'commission'` and the voyage it paid for. */
+  reason?: 'commission';
+  voyageId?: string;
 }
 
 let clock: () => number = () => Date.now();
@@ -186,7 +197,10 @@ function updateBooks(now: number): void {
 }
 
 /** Writes a money row the treasury itself moves (pay, review-pay, hire, sale) and its ledger entry. */
-function transfer(o: { kind: Exclude<MoneyKind, 'bid' | 'run'>; firmId: string; micro: number; runId?: string | null; jobId?: string | null; inspectionId?: string | null; agentId?: string | null; extra?: object }, now: number): CreditsMoved | null {
+function transfer(
+  o: { kind: Exclude<MoneyKind, 'bid' | 'run'>; firmId: string; micro: number; runId?: string | null; jobId?: string | null; inspectionId?: string | null; agentId?: string | null; extra?: object; note?: { reason: 'commission'; voyageId: string } },
+  now: number,
+): CreditsMoved | null {
   if (!(o.micro > 0)) return null;
   return atomically(() => {
     // Settle first, so the cursor never passes a cost row that was not yet in the ledger.
@@ -204,7 +218,7 @@ function transfer(o: { kind: Exclude<MoneyKind, 'bid' | 'run'>; firmId: string; 
         o.kind,
         credits,
         null,
-        JSON.stringify({ kind: o.kind, from, to, credits, jobId: o.jobId ?? null, inspectionId: o.inspectionId ?? null, agentId: o.agentId ?? null, ...(o.extra ?? {}) }),
+        JSON.stringify({ kind: o.kind, from, to, credits, jobId: o.jobId ?? null, inspectionId: o.inspectionId ?? null, agentId: o.agentId ?? null, ...(o.extra ?? {}), ...(o.note ?? {}) }),
       );
     const id = Number(result.lastInsertRowid);
     const m: CreditsMoved = {
@@ -220,6 +234,7 @@ function transfer(o: { kind: Exclude<MoneyKind, 'bid' | 'run'>; firmId: string; 
       inspectionId: o.inspectionId ?? null,
       agentId: o.agentId ?? null,
       at: iso(now),
+      ...(o.note ?? {}),
     };
     move(m);
     cursor = Math.max(cursor, id);
@@ -447,13 +462,16 @@ export function bankruptcyTick(now: number | Date = clock()): void {
  * tower of a firm that went bankrupt on an earlier tick and has no run left
  * live to the richest active firm holding its price plus SALE_MARGIN
  * (re-clad in the buyer's root on its plot), then lets each active firm
- * that canHire() hire one specialist for HIRE_FEE.
+ * that canHire() hire one specialist for HIRE_FEE, then asks the school's
+ * roster for the day's commission (none with nothing installed).
  */
 export function dailyTick(now: number | Date = clock(), opts: { sales?: boolean } = {}): void {
   const t = msOf(now);
   settle(t);
   if (opts.sales !== false) sellDarkTowers(t);
   hireSpecialists(t);
+  // Phase 4 ruling 22: where the school's roster is installed and the router trusted, one firm may commission a voyage.
+  commissionDue(t);
 }
 
 /**
@@ -484,6 +502,23 @@ export function sellDarkTowers(now: number | Date = clock()): void {
   }
 }
 
+/**
+ * A commission's fee (Phase 4 ruling 22): COMMISSION.fee moves from the
+ * firm to the city, recorded as `credits.moved { from: firmId, to: 'city',
+ * amount, reason: 'commission', voyageId }`. `then` runs in the same write
+ * (the voyage is stored and its `voyage.commissioned` recorded there) and
+ * returns the events to emit once everything has landed, after the
+ * `credits.moved`. All or nothing: a throw in `then` leaves no fee.
+ */
+export function payCommission(firmId: string, voyageId: string, now: number, then: () => Array<[string, object]>): CreditsMoved {
+  return atomically(() => {
+    const m = transfer({ kind: 'commission', firmId, micro: toMicro(COMMISSION.fee), note: { reason: 'commission', voyageId } }, now);
+    if (!m) throw new Error('the commission moved nothing');
+    for (const [type, data] of then()) later(type, data);
+    return m;
+  });
+}
+
 /** The daily tick's hiring: one specialist per firm per tick. */
 function hireSpecialists(t: number): void {
   const openJobs = (openDb().prepare("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('open', 'bidding')").get() as { n: number }).n;
@@ -508,7 +543,7 @@ export interface CityDay {
   /** What the city paid out to firms. */
   paid: { pay: number; reviewPay: number; total: number };
   /** What firms paid the city. */
-  received: { hire: number; sale: number; total: number };
+  received: { hire: number; sale: number; commission: number; total: number };
   /** received minus paid, in credits. */
   net: number;
   /** Each firm's net change from its rows in the range. */
@@ -529,7 +564,7 @@ export function cityLedger(dayStart: string | number | Date, dayEnd: string | nu
   const s = (k: string) => sum[k] ?? 0;
   const spentTotal = SPEND_KINDS.reduce((t, k) => t + s(k), 0);
   const paidTotal = s('pay') + s('review-pay');
-  const receivedTotal = s('hire') + s('sale');
+  const receivedTotal = s('hire') + s('sale') + s('commission');
   return {
     from,
     to,
@@ -544,7 +579,7 @@ export function cityLedger(dayStart: string | number | Date, dayEnd: string | nu
       total: fromMicro(spentTotal),
     },
     paid: { pay: fromMicro(s('pay')), reviewPay: fromMicro(s('review-pay')), total: fromMicro(paidTotal) },
-    received: { hire: fromMicro(s('hire')), sale: fromMicro(s('sale')), total: fromMicro(receivedTotal) },
+    received: { hire: fromMicro(s('hire')), sale: fromMicro(s('sale')), commission: fromMicro(s('commission')), total: fromMicro(receivedTotal) },
     net: fromMicro(receivedTotal - paidTotal),
     firms: Object.fromEntries(Object.entries(firms).map(([k, v]) => [k, fromMicro(v)])),
   };
