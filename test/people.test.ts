@@ -446,10 +446,18 @@ test('walkers walk their path as given, carry no plate and survive a set of trip
   people.update(0.016, camera);
   assert.ok(people.plates().every((pl) => pl.key !== 'person:student:1'), 'no plate over a walker');
   assert.equal(people.figures().filter((f) => f.kind === 'walker').length, 1);
-  // A new path restarts it; an empty set takes it away.
-  people.setWalkers([{ id: 'student:1', path: [[0, 6, 0], [10, 6, 0]], speed: 1.2, key: 'b' }]);
+  // Its figure names no trip: a walker is never one of the market's trips, however it is listed.
+  assert.equal(people.figures().find((f) => f.agentId === 'student:1')!.tripId, null, 'a walker lists no trip');
+  assert.ok(people.figures().find((f) => f.agentId === 'ada')!.tripId, 'the agent does');
+  // A new path restarts it; arrived, it turns to face what it was given; an empty set takes it away.
+  people.setWalkers([{ id: 'student:1', path: [[0, 6, 0], [10, 6, 0]], speed: 1.2, key: 'b', face: Math.PI / 2 }]);
   people.update(1);
   assert.ok(people.positionOf('student:1')!.x < 3, 'on the new path from its start');
+  people.update(20);
+  const h0 = people.figures().find((f) => f.agentId === 'student:1')!.heading;
+  people.update(4);
+  const h1 = people.figures().find((f) => f.agentId === 'student:1')!.heading;
+  assert.ok(Math.abs(h1 - Math.PI / 2) < Math.abs(h0 - Math.PI / 2) || Math.abs(h1 - Math.PI / 2) < 0.05, `it turns toward what it faces (${h0.toFixed(2)} then ${h1.toFixed(2)})`);
   people.setWalkers([]);
   assert.equal(people.positionOf('student:1'), null);
   people.dispose();

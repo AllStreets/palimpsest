@@ -152,6 +152,8 @@ export interface Walker {
   coat?: [number, number, number];
   /** 0 short to 1 long; left out, from the id. */
   coatLen?: number;
+  /** The way it turns to face once it has arrived (radians, x forward is cos h), as if looking at something; left out, it keeps the way it came. */
+  face?: number;
 }
 
 export interface People {
@@ -203,8 +205,9 @@ interface Look {
 interface Figure {
   agent: Agent;
   kind: 'agent' | 'walker';
-  /** A walker's path key, so the same path is not restarted. */
+  /** A walker's path key, so the same path is not restarted, and the way it faces once arrived. */
   key: string | null;
+  face: number | null;
   look: Look;
   trip: Trip | null;
   live: boolean;
@@ -773,6 +776,7 @@ export function createPeople(deps: PeopleDeps): People {
       agent,
       kind,
       key: null,
+      face: null,
       look: lookOf(agent),
       trip: null,
       live: false,
@@ -910,6 +914,8 @@ export function createPeople(deps: PeopleDeps): People {
       f.hold = 0;
       f.lean = 0;
       f.phase += dt * 1.6;
+      // Arrived, a walker turns slowly to face what it came to look at (a friend, the lawn, the gate).
+      if (f.face !== null && f.walking === 0) f.heading = turnTo(f.heading, f.face, Math.min(1, dt * 1.6));
       return;
     }
     const leg = trip.legs[f.leg];
@@ -1214,7 +1220,8 @@ export function createPeople(deps: PeopleDeps): People {
         agentId: f.agent.id,
         kind: f.kind,
         name: f.agent.name,
-        tripId: f.trip?.id ?? null,
+        // A walker's path is its own, never one of the market's trips.
+        tripId: f.kind === 'walker' ? null : (f.trip?.id ?? null),
         live: f.live,
         leg: f.leg,
         mode: f.trip?.legs[f.leg]?.mode ?? null,
@@ -1264,6 +1271,7 @@ export function createPeople(deps: PeopleDeps): People {
           if (w.coatLen !== undefined) f.look.coatLen = w.coatLen;
           figures.set(w.id, f);
         }
+        f.face = w.face ?? null;
         if (f.key === key) continue;
         f.key = key;
         const path = w.path.map((p) => [p[0], p[1], p[2]] as V3);

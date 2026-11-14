@@ -47,7 +47,13 @@ export interface CampusView {
   voyageRepo: string | null;
 }
 
-/** The newest voyage the ledger knows, when it is still live (sailing or paused for the night), and its repo if its entry says. */
+/**
+ * The newest voyage the ledger knows, when it is still live (sailing or
+ * paused for the night), and its repo if its entry says. A voyage races as
+ * a train of kind `voyage` (one a night): a `train.paused` newer than the
+ * voyage's own entry reads as paused, a `train.started` newer as sailing,
+ * so a voyage paused only through its train is paused on load.
+ */
 export function liveVoyage(): { voyage: VoyageView; repo: string | null } | null {
   const last = query({ kind: ['voyage.started', 'voyage.generation', 'voyage.ended'], last: true })[0];
   const d = (last?.data ?? {}) as { voyage?: VoyageView; repo?: unknown; arena?: { repo?: unknown } };
@@ -55,6 +61,11 @@ export function liveVoyage(): { voyage: VoyageView; repo: string | null } | null
   if (!v || typeof v !== 'object' || !v.id) return null;
   if (v.status !== 'sailing' && v.status !== 'paused') return null;
   const repo = typeof d.repo === 'string' ? d.repo : typeof d.arena?.repo === 'string' ? d.arena.repo : null;
+  const train = query({ kind: ['train.started', 'train.paused', 'train.ended'], last: true })[0];
+  const t = (train?.data as { train?: { kind?: string } } | undefined)?.train;
+  if (train && last && train.id > last.id && t?.kind === 'voyage' && train.kind !== 'train.ended') {
+    return { voyage: { ...v, status: train.kind === 'train.paused' ? 'paused' : 'sailing' }, repo };
+  }
   return { voyage: v, repo };
 }
 

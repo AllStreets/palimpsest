@@ -45,7 +45,7 @@ export const HALL_Z = 56.5;
 export type Kind = 'brick' | 'limestone' | 'slate' | 'ashlar' | 'turf' | 'gravel' | 'lamp' | 'dial' | 'louvre' | 'gilt' | 'yew' | 'copper' | 'paint' | 'brass' | 'glow';
 export const KIND: Record<Kind, number> = { brick: 0, limestone: 1, slate: 2, ashlar: 3, turf: 4, gravel: 5, lamp: 6, dial: 7, louvre: 8, gilt: 9, yew: 10, copper: 11, paint: 12, brass: 13, glow: 14 };
 /** Metres per tile of each kind's scan (the Kit's TILE for brick and limestone); 0 keeps the piece's own UVs (a clock dial's painted face, the copper's seams). */
-const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ashlar: 2.4, turf: 9, gravel: 1.6, lamp: 1, dial: 0, louvre: 1, gilt: 1, yew: 1, copper: 0, paint: 1, brass: 1, glow: 0 };
+const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ashlar: 2.4, turf: 9, gravel: 1.6, lamp: 0, dial: 0, louvre: 1, gilt: 1, yew: 1, copper: 0, paint: 1, brass: 1, glow: 0 };
 /**
  * Each kind's tone, a vertex colour over its scan: red-brown brick, a pale
  * warm limestone, a cool blue-grey slate, the terrace's pale buff ashlar, a
@@ -487,7 +487,7 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     add('yew', crown.applyMatrix4(place), 1, () => perVertex[at++]);
   }
 
-  /** A lamp: a dark post with a warm lit head under a small cap, in the site's own draw (the head's kind emits). */
+  /** A lamp: a dark post with a warm lit head under a small cap, in the site's own draw (the head's kind emits, pooled round each face's centre on the box's own UVs). */
   function lamp(x: number, z: number): void {
     const h = 3.8;
     add('slate', new THREE.CylinderGeometry(0.06, 0.09, h, 7).translate(x, T + h / 2, z), 0.8);

@@ -216,7 +216,13 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
-        if (campusKind() == 6) totalEmissiveRadiance += vColor.rgb * 3.2;
+        // A lamp head is a globe in a square lantern, not a hot square: the light pools round the centre of each face
+        // (the head keeps the box's own 0..1 UVs) and falls off softly toward the frame, which stays a warm rim.
+        if (campusKind() == 6) {
+          float r = length(vMapUv - 0.5) * 2.0;
+          float globe = 1.0 - smoothstep(0.38, 1.0, r);
+          totalEmissiveRadiance += vColor.rgb * (0.45 + 2.9 * globe * globe);
+        }
         // The dials after sunset: opal glass lit from behind, warm, at the exchange's level, under the bloom threshold.
         if (campusKind() == 7) totalEmissiveRadiance += texture2D(uDial, vMapUv).rgb * vec3(1.0, 0.86, 0.62) * (0.62 * uDialLit);
         // The observatory: the lamplit lining inside the dome while the slit is open, and the brass plate by the door

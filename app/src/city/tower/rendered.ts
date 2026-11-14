@@ -32,6 +32,12 @@
  * Fix round 2 dims the lines and marks again and restamps the same way:
  * verified against swatches.ts, whose board towers are eight founding
  * floors (no earned lines or marks) sampled on their walls.
+ *
+ * Phase 4 Task 37 fix round 1: restamped, not re-measured. The one change
+ * to look.ts is a reading-room pane style (PANE_READING, 0.55) that only
+ * the university library's bays carry; no tower variant and no board tower
+ * uses it, so no swatch moved. A full re-measure was run and reviewed: it
+ * drifted every entry by the usual few dE and was not taken.
  */
 export const RENDERED: Record<string, { sun: [number, number, number]; shade: [number, number, number]; sunLow?: [number, number, number]; shadeLow?: [number, number, number] }> = {
   "stone:limestone": {
@@ -652,4 +658,4 @@ export const RENDERED: Record<string, { sun: [number, number, number]; shade: [n
   }
 };
 
-export const RENDERED_INPUTS = 'db4a037999dae375';
+export const RENDERED_INPUTS = 'd4c91f2c30b0da43';

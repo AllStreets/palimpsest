@@ -124,6 +124,14 @@ test('a voyage sailing in the ledger shows as live on the campus', async () => {
   record('voyage.generation', { voyageId: 'voy-1', voyage: { ...voyage, generation: 2 } });
   body = (await getCampus()).body;
   assert.equal((body as { voyage: { generation: number } }).voyage.generation, 2);
+  // Paused through its train (a voyage races as a train of kind voyage), it reads paused on load; started again, sailing.
+  record('train.paused', { train: { id: 'train-v1', kind: 'voyage', status: 'paused' } });
+  assert.equal(((await getCampus()).body as { voyage: { status: string } }).voyage.status, 'paused');
+  record('train.started', { train: { id: 'train-v2', kind: 'voyage', status: 'running' } });
+  assert.equal(((await getCampus()).body as { voyage: { status: string } }).voyage.status, 'sailing');
+  // Another kind's train says nothing about the voyage.
+  record('train.paused', { train: { id: 'train-n1', kind: 'nets', status: 'paused' } });
+  assert.equal(((await getCampus()).body as { voyage: { status: string } }).voyage.status, 'sailing');
   // Ended, there is no live voyage.
   record('voyage.ended', { voyageId: 'voy-1', voyage: { ...voyage, status: 'done', endedAt: '2026-11-13T04:00:00Z' } });
   body = (await getCampus()).body;

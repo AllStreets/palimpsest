@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 
 import { AO_NEAR, LAYER, setLayers } from '../lod.js';
-import { Kit, type TowerMaterials } from '../tower/kit.js';
+import { Kit, PANE_READING, type TowerMaterials } from '../tower/kit.js';
 import { makeClockTower } from './clock.js';
 import { stampBuilt } from './gothic.js';
 import { buildHall, instanceHalls, type Hall } from './halls.js';
@@ -108,6 +108,8 @@ export function hallPlacements(): THREE.Matrix4[] {
 
 /** The reading-room bays' light when lit, bay by bay: the window shader's amber band, no two desks alike. */
 const BAY_LIT = [0.54, 0.46, 0.6, 0.5, 0.57, 0.48, 0.62, 0.52, 0.58, 0.45, 0.55, 0.49, 0.61, 0.51];
+/** Each bay's lamplight hue, 0 the paler to 1 the deeper amber: no two neighbours alike. */
+const BAY_WARM = [0.55, 0.85, 0.3, 0.7, 0.95, 0.45, 0.65, 0.2, 0.8, 0.5, 0.35, 0.9, 0.6, 0.75];
 /** Each hall's brick fired in its own year: a little lighter or darker than the next. */
 const HALL_TINTS = [1.0, 0.95, 1.04, 0.97].map((k) => new THREE.Color(k, k, k));
 
@@ -166,6 +168,14 @@ export function createCampus(opts: CampusOptions): Campus {
     paneColour.r = lit;
     halls.panes.setColorAt(j, paneColour);
   };
+  // The bays are reading rooms in the window shader, each with its own lamplight hue (the warm channel).
+  bayPanes.forEach((j, i) => {
+    halls.panes.getColorAt(j, paneColour);
+    paneColour.g = BAY_WARM[i % BAY_WARM.length];
+    paneColour.b = PANE_READING;
+    halls.panes.setColorAt(j, paneColour);
+  });
+  if (halls.panes.instanceColor) halls.panes.instanceColor.needsUpdate = true;
   // The library's pick proxy: a box over the reading room and its frontispiece, never drawn; it opens the campus's inspector.
   const libraryPick = new THREE.Mesh(new THREE.BoxGeometry(LIBRARY.width + 10, 34, LIBRARY.length + 2), new THREE.MeshBasicMaterial({ visible: false }));
   libraryPick.name = 'campus:library-pick';

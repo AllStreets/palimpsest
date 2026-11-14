@@ -15,10 +15,10 @@ import { drawnMeshes } from '../app/src/city/batch.js';
 import { createCampus, type CampusAnchors } from '../app/src/city/campus/index.js';
 import { afterSunset, handAngles, makeClockTower, TOWER } from '../app/src/city/campus/clock.js';
 import { buildHall, instanceHalls } from '../app/src/city/campus/halls.js';
-import { campusLife, EMPTY_LIFE, foldLifeEvent, racingGenomes } from '../app/src/city/campus/life.js';
+import { campusLife, EMPTY_LIFE, FLICKER, foldLifeEvent, racingGenomes } from '../app/src/city/campus/life.js';
 import { foldSchoolEvent, makeObservatory, OBSERVATORY, SCHOOL_MASTER_ROUTE, type ObservatoryState } from '../app/src/city/campus/observatory.js';
 import type { People } from '../app/src/city/people.js';
-import { Kit } from '../app/src/city/tower/kit.js';
+import { Kit, PANE_READING } from '../app/src/city/tower/kit.js';
 import { CAMPUS_HALF, campusPlaza, TERRACE } from '../app/src/city/campus/site.js';
 import { PITCH, standingLots } from '../app/src/city/lots.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
@@ -457,6 +457,72 @@ test('the campus walks its students, unlabelled, and lets them be picked up by t
     for (const p of w.path) assert.ok(Math.abs(p[0] - origin.x) < CAMPUS_HALF && Math.abs(p[2] - origin.z) < CAMPUS_HALF, 'that stays on the campus');
   }
   assert.equal(life.view().students, given.length);
+  life.dispose();
+  campus.dispose();
+});
+
+test('the lamplight breathes within five percent, and no student lingers at the gate', () => {
+  const campus = createCampus({ quality: 'high', materials: plainMaterials(), masonry: plain() });
+  campus.set(districtOrigin(2));
+  const given = new Map<string, { path: number[][]; face?: number }>();
+  const arrived = new Set<string>();
+  const fakePeople = {
+    setWalkers(ws: ReadonlyArray<{ id: string; path: ReadonlyArray<number[]>; face?: number; speed: number }>) {
+      given.clear();
+      for (const w of ws) given.set(w.id, { path: w.path.map((p) => [...p]), face: w.face });
+    },
+    walkers: () => [...given.keys()].map((id) => ({ id, arrived: arrived.has(id) })),
+  };
+  const life = campusLife(campus, { people: () => fakePeople as unknown as People, quality: 'high' });
+  life.apply({ type: 'voyage.started', data: { voyageId: 'voy-1', voyage: voyageOf('sailing', 1) } });
+  for (let i = 0; i < 30; i++) life.update(0.5, i * 0.5);
+  // Lit, each bay's pane wanders slowly about its level, never further than FLICKER of it; the levels themselves hold.
+  let panes: THREE.InstancedMesh | null = null;
+  campus.group.traverse((o) => {
+    if (o.name === 'campus:panes') panes = o as THREE.InstancedMesh;
+  });
+  const c = new THREE.Color();
+  const read = (): number[] => campus.library.panes.slice(0, 8).map((j) => (panes!.getColorAt(j, c), c.r));
+  const a = read();
+  const seen = a.map((v) => [v, v]);
+  for (let t = 15; t < 45; t += 0.25) {
+    life.update(0.25, t);
+    read().forEach((v, i) => {
+      seen[i][0] = Math.min(seen[i][0], v);
+      seen[i][1] = Math.max(seen[i][1], v);
+    });
+  }
+  assert.ok(seen.every(([lo, hi]) => hi > lo), 'the light moves');
+  assert.ok(seen.every(([lo, hi]) => (hi - lo) / ((hi + lo) / 2) <= 2 * FLICKER + 1e-6), `and within five percent either way (${seen.map(([lo, hi]) => (((hi - lo) / (hi + lo)) * 100).toFixed(1)).join(' ')})`);
+  assert.equal(life.view().lit, 8, 'the levels under it hold');
+  // Readers in the panes: the bays carry the reading-room style and each its own lamplight hue.
+  const styles = new Set<number>();
+  const hues = new Set<number>();
+  for (const j of campus.library.panes) {
+    panes!.getColorAt(j, c);
+    styles.add(Math.round(c.b * 100) / 100);
+    hues.add(Math.round(c.g * 100) / 100);
+  }
+  assert.deepEqual([...styles], [PANE_READING], 'every bay is a reading room');
+  assert.ok(hues.size >= 8, `the bays' lamplight differs bay to bay (${hues.size} hues)`);
+  // The students: none is sent to the gate or the stair's approach, and the walk the gate starts is theirs to pass, not to stand on.
+  const gate = campus.anchors().gate;
+  const approach = campus.approach();
+  const nearGate = (p: number[]): boolean => Math.hypot(p[0] - gate.x, p[2] - gate.z) < 9 || approach.some((q) => Math.hypot(p[0] - q[0], p[2] - q[2]) < 3);
+  let faced = 0;
+  let gathered = 0;
+  for (let round = 0; round < 60; round++) {
+    for (const id of given.keys()) arrived.add(id);
+    for (let i = 0; i < 20; i++) life.update(0.5, 100 + round * 10 + i * 0.5);
+    for (const w of given.values()) {
+      const end = w.path[w.path.length - 1];
+      assert.ok(!nearGate(end), `no student stands at the gate (${end.map((v) => v.toFixed(0)).join(', ')})`);
+      if (w.face !== undefined) faced++;
+    }
+    gathered = Math.max(gathered, ...life.view().gathers);
+  }
+  assert.ok(faced > 0, 'arrived, a student turns to look at something');
+  assert.ok(gathered >= 2 && gathered <= 3, `two or three gather at a corner (${gathered})`);
   life.dispose();
   campus.dispose();
 });
