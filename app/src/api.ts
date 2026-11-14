@@ -334,7 +334,7 @@ export const api = {
   treasury: () => request<TreasuryView>('GET', '/api/treasury'),
   resumeStale: () => request<TreasuryView>('POST', '/api/treasury/resume-stale'),
   /** The credits entries behind a row of the treasury's spend tables: a firm's (or 'city') or a model's, today or this week. */
-  credits: (q: { period: 'today' | 'week'; firm?: string; model?: string }) => request<CreditEntries>('GET', `/api/treasury/credits${queryOf(q)}`),
+  credits: (q: { period: 'today' | 'week'; firm?: string; model?: string; kind?: string }) => request<CreditEntries>('GET', `/api/treasury/credits${queryOf(q)}`),
   /** A day's report, or the newest with `'latest'`. */
   report: (day: string) => request<ReportView>('GET', `/api/report/${enc(day)}`),
   providers: () => request<ProviderUsage[]>('GET', '/api/providers'),

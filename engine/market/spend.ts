@@ -9,7 +9,7 @@
 import { CREDIT_PCT } from '../../shared/credits.js';
 import type { CreditEntry, SpendPeriod } from '../../shared/types.js';
 import { openDb } from '../db.js';
-import { SPEND_KINDS } from './budget.js';
+import { SPEND_KINDS, type SpendKind } from './budget.js';
 
 /** The credits row kinds that are a model call: the budget's own list (an audit, a school call and a training pass are the city's own). */
 const CALL_KINDS = `(${SPEND_KINDS.map((k) => `'${k}'`).join(', ')})`;
@@ -42,13 +42,14 @@ export function periodBounds(period: 'today' | 'week', now: number): { from: num
 export function spendBetween(fromMs: number, toMs: number): SpendPeriod {
   const rows = openDb()
     .prepare(
-      `SELECT ${PAYER} AS payer, ${MODEL} AS model,
+      `SELECT ${PAYER} AS payer, ${MODEL} AS model, c.kind AS kind,
          SUM(CAST(ROUND(c.amount * 1000000) AS INTEGER)) AS micro, SUM(COALESCE(c.usd, 0)) AS usd, COUNT(*) AS n
        FROM credits c WHERE c.kind IN ${CALL_KINDS} AND c.at >= ? AND c.at <= ?
-       GROUP BY payer, model`,
+       GROUP BY payer, model, c.kind`,
     )
-    .all(iso(fromMs), iso(toMs)) as Array<{ payer: string; model: string; micro: number | bigint; usd: number; n: number }>;
+    .all(iso(fromMs), iso(toMs)) as Array<{ payer: string; model: string; kind: string; micro: number | bigint; usd: number; n: number }>;
   const firms = new Map<string, { micro: number; usd: number; n: number }>();
+  const city = new Map<string, { micro: number; usd: number; n: number }>();
   const models = new Map<string, { micro: number; usd: number; n: number; claude: boolean }>();
   let total = 0;
   for (const r of rows) {
@@ -59,6 +60,14 @@ export function spendBetween(fromMs: number, toMs: number): SpendPeriod {
     f.usd += r.usd;
     f.n += r.n;
     firms.set(r.payer, f);
+    // The city's own calls, by what they were for: reviews, design checks, audits, the school's calls, its training.
+    if (!r.payer) {
+      const k = city.get(r.kind) ?? { micro: 0, usd: 0, n: 0 };
+      k.micro += micro;
+      k.usd += r.usd;
+      k.n += r.n;
+      city.set(r.kind, k);
+    }
     // Only Claude calls draw on his plan's window.
     const m = models.get(r.model) ?? { micro: 0, usd: 0, n: 0, claude: r.model.startsWith('claude:') };
     m.micro += micro;
@@ -76,20 +85,29 @@ export function spendBetween(fromMs: number, toMs: number): SpendPeriod {
     models: [...models.entries()]
       .map(([model, m]) => ({ model: model || 'unknown', credits: fromMicro(m.micro), usd: round2(m.usd), entries: m.n, windowPct: m.claude ? Math.round(fromMicro(m.micro) * CREDIT_PCT * 1e6) / 1e6 : null }))
       .sort((a, b) => b.credits - a.credits || a.model.localeCompare(b.model)),
+    city: SPEND_KINDS.filter((k) => city.has(k)).map((k) => {
+      const c = city.get(k)!;
+      return { kind: k, credits: fromMicro(c.micro), usd: round2(c.usd), entries: c.n };
+    }),
   };
 }
 
 /**
  * The credits entries behind one row of the spend tables, newest first:
- * a firm's bids and runs (`firm: CITY_KEY` for the city's own reviews and
- * design checks), or one model's calls, in a period.
+ * a firm's bids and runs (`firm: CITY_KEY` for the city's own calls, and
+ * `kind` for one kind of them: its reviews, the school's calls, its
+ * training), or one model's calls, in a period.
  */
-export function creditEntries(q: { fromMs: number; toMs: number; firm?: string; model?: string; limit?: number }): { rows: CreditEntry[]; count: number; total: number } {
+export function creditEntries(q: { fromMs: number; toMs: number; firm?: string; model?: string; kind?: SpendKind; limit?: number }): { rows: CreditEntry[]; count: number; total: number } {
   const where = [`c.kind IN ${CALL_KINDS}`, 'c.at >= ?', 'c.at <= ?'];
   const args: Array<string | number> = [iso(q.fromMs), iso(q.toMs)];
   if (q.firm !== undefined) {
     where.push(`${PAYER} = ?`);
     args.push(q.firm === CITY_KEY ? '' : q.firm);
+  }
+  if (q.kind !== undefined) {
+    where.push('c.kind = ?');
+    args.push(q.kind);
   }
   if (q.model !== undefined) {
     where.push(`${MODEL} = ?`);

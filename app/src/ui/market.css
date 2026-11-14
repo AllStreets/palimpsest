@@ -5883,3 +5883,112 @@ a.brief-act {
   line-height: 1.5;
   color: var(--ink-3);
 }
+
+/* ================================================================ the school in Settings (Phase 4 Task 32) */
+
+.set-sec.school .set-sec-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+/* A field and what it is of, on one baseline; the window's two ends either side of "to". */
+.school-window {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.set-sec.school .cap-field {
+  box-sizing: border-box;
+  padding: 3px 6px;
+  border-radius: 3px 3px 0 0;
+}
+.set-sec.school .cap-field:focus-within {
+  background: color-mix(in srgb, var(--bronze) 10%, transparent);
+}
+.set-sec.school .school-cap {
+  text-align: center;
+}
+.set-sec.school .school-designer {
+  font-size: 18px;
+}
+.set-sec.school .cap-field:has(> [aria-invalid='true']) {
+  border-bottom-color: var(--err);
+}
+.school-to-word {
+  margin: 0 10px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-3);
+}
+.set-sec.school .set-error {
+  max-width: 60ch;
+}
+/* The gate as it reads now, the one live line of the section. */
+.school-gate {
+  color: var(--ink);
+}
+.school-lowpower-now {
+  color: var(--amber);
+}
+.school-now-side {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+.school-train-now[aria-disabled='true'],
+.school-download[aria-disabled='true'] {
+  color: var(--ink-3);
+  border-color: rgba(236, 230, 218, 0.14);
+  background: none;
+  cursor: default;
+}
+.school-train-now[aria-busy='true'],
+.school-download[aria-busy='true'] {
+  opacity: 0.72;
+}
+.school-until {
+  font-family: var(--serif);
+  font-size: 18px;
+  color: var(--bronze);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.school-until[hidden],
+.school-stop[hidden],
+.school-ready[hidden] {
+  display: none;
+}
+.school-stop {
+  font-size: 12.5px;
+}
+/* The base model there: a small slab, as a ledger marks a thing received. */
+.school-ready {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.school-ready::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  background: var(--bronze);
+  transform: translateY(-1px);
+}
+.set-sec.school .set-foot {
+  max-width: 78ch;
+  margin-top: 12px;
+}
+.now-link {
+  font-size: 12px;
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.2);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.now-link:hover {
+  color: var(--ink);
+}

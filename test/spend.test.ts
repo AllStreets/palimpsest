@@ -98,3 +98,25 @@ test("a train charge appears under the city's own calls in the spend tables and 
   assert.deepEqual(e.rows.map((r) => [r.kind, r.runId, r.firmId]), [['train', 'lora-1', null], ['school', 'voyage-1', null]]);
   assert.equal(e.rows[0].unattended, true);
 });
+
+test("the city's own calls are told apart by kind, so the treasury lists the school's and training's rows", () => {
+  charge({ runId: 'lora-1', firmId: null, model: 'mlx:grad-qwen-1', kind: 'train', usage: { weightedTokens: 0, seconds: 600, usd: 0, credits: 4 }, unattended: true, at: NOW - MIN });
+  charge({ runId: 'voyage-1', firmId: null, model: 'claude:sonnet', kind: 'school', usage: usage(60_000), unattended: true, at: NOW - 2 * MIN });
+  charge({ runId: 'run-1', firmId: null, model: 'claude:sonnet', kind: 'review', usage: usage(60_000), unattended: false, at: NOW - 3 * MIN });
+  charge({ runId: 'run-2', firmId: 'quickset', model: 'claude:opus', kind: 'run', usage: usage(120_000), unattended: false, at: NOW - 4 * MIN });
+
+  const p = spendBetween(dayStart(NOW), NOW);
+  // In the budget's order, only the kinds with a row, and never a firm's bids or runs.
+  assert.deepEqual(p.city, [
+    { kind: 'review', credits: 10, usd: 0, entries: 1 },
+    { kind: 'school', credits: 10, usd: 0, entries: 1 },
+    { kind: 'train', credits: 4, usd: 0, entries: 1 },
+  ]);
+  assert.equal(p.city.reduce((t, k) => t + k.credits, 0), p.firms.find((f) => f.firmId === null)?.credits);
+
+  const school = creditEntries({ fromMs: dayStart(NOW), toMs: NOW, firm: CITY_KEY, kind: 'school' });
+  assert.deepEqual(school.rows.map((r) => [r.kind, r.runId]), [['school', 'voyage-1']]);
+  assert.equal(school.total, 10);
+  const train = creditEntries({ fromMs: dayStart(NOW), toMs: NOW, firm: CITY_KEY, kind: 'train' });
+  assert.deepEqual(train.rows.map((r) => [r.kind, r.runId]), [['train', 'lora-1']]);
+});

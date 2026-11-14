@@ -1895,6 +1895,13 @@ function spendUse(id: string): ArenaInfo {
 
 /** A voyage's view written, recorded whole and announced, as voyages.ts announce() does. */
 function announceVoyage(kind: 'voyage.started' | 'voyage.generation' | 'voyage.ended', v: VoyageView, extra: { arena?: ArenaInfo } = {}): void {
+  // What the voyage's races cost since it was last written, charged to the city as beagle.ts charges them: `school` rows, no firm.
+  const was = openDb().prepare('SELECT json FROM voyages WHERE id = ?').get(v.id) as { json: string } | undefined;
+  const spent = round2(v.credits - (was ? (JSON.parse(was.json) as VoyageView).credits : 0));
+  if (spent > 0) {
+    const model: ModelRef = (storedAgent('wren-sparrow')?.model as ModelRef | undefined) ?? 'ollama:qwen2.5-coder:7b-instruct';
+    charge({ runId: v.id, firmId: null, model, kind: 'school', usage: usageOf(model, spent), unattended: unattended(Date.now()), at: Date.now(), minCredits: spent });
+  }
   openDb().prepare('INSERT OR REPLACE INTO voyages (id, json) VALUES (?, ?)').run(v.id, JSON.stringify(v));
   const data = { voyageId: v.id, voyage: clone(v), repo: v.repo ?? null, ...(extra.arena ? { arena: clone(extra.arena) } : {}) };
   record(kind, data);

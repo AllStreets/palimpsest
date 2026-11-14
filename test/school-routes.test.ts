@@ -19,7 +19,7 @@ import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { record } from '../engine/ledger.js';
 import { resetGateCache } from '../engine/school/gate.js';
-import { buildSettled, resetSchoolApi, setTrainerProbe } from '../engine/school/api.js';
+import { buildSettled, resetSchoolApi, setBaseDownloader, setTrainerProbe } from '../engine/school/api.js';
 import { holdTrain } from '../engine/school/trainer.js';
 import { entries } from '../engine/ledger.js';
 import { trainerStatus } from '../engine/school/trainer-env.js';
@@ -71,6 +71,7 @@ afterEach(async () => {
   resetGateCache();
   resetSchoolApi();
   setTrainerProbe(null);
+  setBaseDownloader(null);
   await tearDown();
 });
 
@@ -359,6 +360,77 @@ test('settings refuse idleMinutes 2 and a malformed designer without running oll
   const partial = await call('PATCH', '/api/settings', { school: { idleMinutes: 5 } });
   assert.equal(partial.json.school.designer, 'ollama:qwen2.5-coder:14b', 'a partial patch keeps the rest');
   assert.ok(!calls.some((c) => /ollama/.test(c)), 'no ollama list');
+});
+
+test('a refused school setting says why in words he can act on (Task 32)', async () => {
+  const said = async (school: unknown) => {
+    const r = await call('PATCH', '/api/settings', { school });
+    assert.equal(r.status, 400, JSON.stringify(school));
+    return r.json.error as string;
+  };
+  assert.equal(await said({ window: { from: '25:00', to: '06:00' } }), '25:00 is not a time of day: say it as hours and minutes, 00:00 to 23:59.');
+  assert.equal(await said({ window: { from: '01:00', to: '01:00' } }), 'The window starts and ends at the same time; give it some hours.');
+  assert.equal(await said({ idleMinutes: 2 }), 'The idle wait is a whole number of minutes, 5 to 120.');
+  assert.equal(await said({ claudeCreditsPerDay: 101 }), 'The school may spend a whole number of credits a day, 0 to 100.');
+  assert.equal(await said({ designer: 'gpt-4' }), 'Name a model as ollama:<name> or claude:<name>.');
+  assert.equal(await said({ enabled: 'yes' }), 'Run the school is either on or off.');
+  assert.equal(await said({ baseModelReady: true }), 'baseModelReady is set by the school itself, not from Settings.');
+  // Nothing refused was kept.
+  assert.deepEqual(getSettings().school.window, { from: '01:00', to: '06:00' });
+  assert.equal(getSettings().school.idleMinutes, 15);
+  // A refusal outside the school keeps the plain answer.
+  assert.equal((await call('PATCH', '/api/settings', { dayCapPct: 900 })).json.error, 'invalid settings patch');
+});
+
+test('the download goes through the stand-in a test installs: 202, then the view says ready', async () => {
+  let release!: () => void;
+  const done = new Promise<void>((res) => (release = res));
+  setBaseDownloader(async () => {
+    await done;
+    patchSettings({ school: { ...getSettings().school, baseModelReady: true } });
+    const base = join(paths().school, 'lora', 'base');
+    (await import('node:fs')).mkdirSync(base, { recursive: true });
+    writeFileSync(join(base, 'config.json'), '{}\n');
+    return { status: 'ready', reason: null };
+  });
+  const r = await call('POST', '/api/school/download-base');
+  assert.equal(r.status, 202);
+  assert.equal((await call('GET', '/api/school')).json.lora.download.running, true);
+  assert.equal((await call('POST', '/api/school/download-base')).status, 202, 'a second click waits on the same download');
+  release();
+  let lora: any = null;
+  for (let i = 0; i < 200; i++) {
+    lora = (await call('GET', '/api/school')).json.lora;
+    if (!lora.download.running) break;
+    await new Promise((res) => setTimeout(res, 10));
+  }
+  assert.equal(lora.baseReady, true);
+  assert.equal(lora.download.status, 'ready');
+  assert.equal((await call('POST', '/api/school/download-base')).status, 200, 'once the base is there the click answers ready');
+  assert.ok(!calls.some((c) => /python|school\.py/.test(c)), 'no Python ran');
+});
+
+test("the treasury counts the week's training and opens the school's and training's credits by kind", async () => {
+  const { charge } = await import('../engine/market/budget.js');
+  const now = Date.now();
+  const put = (t: TrainState) => openDb().prepare('INSERT OR REPLACE INTO trains (id, kind, status, json) VALUES (?, ?, ?, ?)').run(t.id, t.kind, t.status, JSON.stringify(t));
+  const iso = (ms: number) => new Date(ms).toISOString();
+  put({ id: 't-old', kind: 'nets', status: 'done', reason: null, startedAt: iso(now - 9 * 86_400_000), endedAt: iso(now - 9 * 86_400_000 + 3_600_000), seconds: 3600, steps: null, credits: 1 });
+  put({ id: 't-nets', kind: 'nets', status: 'done', reason: null, startedAt: iso(now - 86_400_000), endedAt: iso(now - 86_400_000 + 720_000), seconds: 720, steps: null, credits: 1 });
+  put({ id: 't-lora', kind: 'lora', status: 'paused', reason: 'on battery', startedAt: iso(now - 2 * 86_400_000), endedAt: iso(now - 2 * 86_400_000 + 3 * 3_600_000), seconds: 3 * 3600, steps: null, credits: 4 });
+  put({ id: 't-run', kind: 'voyage', status: 'running', reason: null, startedAt: iso(now - 600_000), endedAt: null, seconds: 0, steps: null, credits: 0 });
+  const t = (await call('GET', '/api/treasury')).json;
+  assert.equal(t.school.enabled, false);
+  // 12 minutes, 3 hours and the running 10 minutes; the train nine days ago is outside the week.
+  assert.ok(Math.abs(t.school.trainedSeconds - (720 + 3 * 3600 + 600)) <= 2, String(t.school.trainedSeconds));
+
+  charge({ runId: 'v-1', firmId: null, model: 'ollama:qwen2.5-coder:7b', kind: 'school', usage: { weightedTokens: 0, seconds: 600, usd: 0, credits: 3 }, unattended: true, at: now - 60_000 });
+  charge({ runId: 't-nets', firmId: null, model: 'mlx:nets', kind: 'train', usage: { weightedTokens: 0, seconds: 720, usd: 0, credits: 1 }, unattended: true, at: now - 120_000 });
+  const v = (await call('GET', '/api/treasury')).json;
+  assert.deepEqual(v.spend.week.city.map((k: { kind: string }) => k.kind), ['school', 'train']);
+  const school = (await call('GET', '/api/treasury/credits?period=week&firm=~city&kind=school')).json;
+  assert.deepEqual(school.rows.map((r: { runId: string }) => r.runId), ['v-1']);
+  assert.equal((await call('GET', '/api/treasury/credits?period=week&kind=nonesuch')).status, 400);
 });
 
 // ------------------------------------------------------------------ redaction

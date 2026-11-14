@@ -119,7 +119,7 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     check(num(await qs.locator('.spend-bal').textContent()) === Math.round(t.balances.quickset * 100) / 100, `a firm's balance reads as the books (${await qs.locator('.spend-bal').textContent()} against ${t.balances.quickset})`);
     check(/^#\/firms\/quickset$/.test((await qs.locator('.spend-bal').getAttribute('href')) ?? ''), 'and links to its books');
     check((await sheet.locator('.spend-models .spend-row').count()) === t.spend.week.models.length, 'every model spent on this week has a row');
-    check((await sheet.locator('.spend-firms .spend-row[data-firm="~city"]').count()) === (t.spend.week.firms.some((f) => f.firmId === null) ? 1 : 0), 'the city’s own row has a key no firm can take');
+    check((await sheet.locator('.spend-firms .spend-row[data-firm="~city"]').count()) === t.spend.week.city.length, `the city’s own rows, one per kind, have a key no firm can take (${t.spend.week.city.map((k) => k.kind).join(', ')})`);
     check((await sheet.locator('.spend-th', { hasText: 'Last 7 days' }).count()) === 2, 'the rolling week is called the last 7 days');
     check((await sheet.locator('.spend-table a[role]').count()) === 0, 'no link stands in for a cell');
     check((await sheet.locator('.spend-table > :not([role="row"])').count()) === 0, 'every child of a spend table is a row: notes stand outside it');

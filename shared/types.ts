@@ -767,6 +767,12 @@ export type TreasuryView = TreasuryState & {
    * holds for them, which the sample economy's runs never take.
    */
   underWay: { total: number; claude: number; local: number; api: number };
+  /**
+   * The school on this Mac (Phase 4 Task 32): whether it runs, and how long
+   * it trained over the last seven days, every kind of train counted (a
+   * running one up to now). Training only runs on power.
+   */
+  school: { enabled: boolean; trainedSeconds: number };
 };
 
 /** One row of the spend tables: what its calls cost, in credits, and how many entries make it up. */
@@ -784,6 +790,8 @@ export interface SpendPeriod {
   firms: Array<SpendRow & { firmId: string | null }>;
   /** By model; `windowPct` is the share of a five-hour window for a Claude model, else null. */
   models: Array<SpendRow & { model: string; windowPct: number | null }>;
+  /** The city's own calls (firmId null above) by kind, in the budget's order: `review`, `judge`, `audit`, `school`, `train`. */
+  city: Array<SpendRow & { kind: string }>;
 }
 
 /** One credits row, as a spend row opens to it. */

@@ -40,7 +40,7 @@ import { detailChecks } from './ui-test-detail.js';
 import { firmChecks } from './ui-test-firms.js';
 import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
-import { autonomyChecks, schoolChecks, schoolEmptyChecks } from './ui-test-school.js';
+import { autonomyChecks, schoolChecks, schoolEmptyChecks, schoolSettingsChecks } from './ui-test-school.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
@@ -3281,12 +3281,19 @@ async function main(): Promise<void> {
     // UI_ONLY=school: the school towers' checks and shots on high, then on medium (Task 38's rounds).
     // UI_ONLY=schoolscreen: the school screen's checks and shots on the economy, then on the empty home (Task 30's rounds).
     // UI_ONLY=autonomy: his autonomy in the brief, Settings, the district page and a job page (Task 31's rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
       if (process.env.UI_ONLY === 'schoolscreen') {
         await schoolChecks(page, check, SHOTS);
+      } else if (process.env.UI_ONLY === 'schoolsettings') {
+        const refused = await schoolSettingsChecks(page, check, SHOTS, DIST);
+        for (let i = 0; i < refused; i++) {
+          const k = consoleErrors.findIndex((t) => /status of 400/.test(t));
+          if (k >= 0) consoleErrors.splice(k, 1);
+        }
       } else if (process.env.UI_ONLY === 'autonomy') {
         const grantRefusals = await autonomyChecks(page, check, SHOTS);
         for (let i = 0; i < grantRefusals; i++) {
@@ -3425,6 +3432,12 @@ async function main(): Promise<void> {
         await treasuryChecks(page, check, SHOTS);
         // The school screen, full (Phase 4 Task 30); its empty variant runs on the empty home at the end.
         await schoolChecks(page, check, SHOTS);
+        // The school's settings and its spend in the treasury (Phase 4 Task 32): the refusals it provokes are 400s, excused.
+        const schoolRefusals = await schoolSettingsChecks(page, check, SHOTS, DIST);
+        for (let i = 0; i < schoolRefusals; i++) {
+          const k = consoleErrors.findIndex((t) => /status of 400/.test(t));
+          if (k >= 0) consoleErrors.splice(k, 1);
+        }
         // The notice stack: one Dismiss each, keyed replacement, recall, the keyboard, and clear of an open sheet (Phase 3 Task 12).
         await noticeChecks(page, check, SHOTS);
         // The market switches on Repos, the district page and the provider settings (Task 40).

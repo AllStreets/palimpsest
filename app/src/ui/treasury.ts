@@ -7,6 +7,7 @@ import { gauge, svgEl } from './firms';
 import { coalesce, keyedSlot, namesOf, outLink, refusal, secHead } from './pages';
 import { figure, shortDate } from './story';
 import { calibrationLine, pauseWords, reportBlocks, resetWords, runningWords, spendFigure, type ReportBlock, type ReportSpan } from './treasury-words';
+import { trainedLine } from './school-words';
 import './market.css';
 
 export interface TreasuryScreen {
@@ -20,7 +21,15 @@ const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** The city's own reviews and design checks, asked for by a key no firm id can take (engine/market/spend.ts). */
 const CITY = '~city';
-const KIND_WORDS: Record<string, string> = { bid: 'Bid', run: 'Run', review: 'Review', judge: 'Design check' };
+const KIND_WORDS: Record<string, string> = { bid: 'Bid', run: 'Run', review: 'Review', judge: 'Design check', audit: 'Audit', school: 'School call', train: 'Training' };
+/** The city's own calls, a row each by kind, in the budget's order (engine/market/budget.ts SPEND_KINDS). */
+const CITY_ROWS: Record<string, string> = {
+  review: 'The city’s reviews',
+  judge: 'The city’s design checks',
+  audit: 'The city’s audits',
+  school: 'The school’s model calls',
+  train: 'The school’s training',
+};
 
 /** A percentage of a window: whole when it is whole, else one decimal. */
 function pctOf(n: number): string {
@@ -197,7 +206,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
   function onEvent(e: EngineEvent): void {
     if (e.type === 'engine.reconnected' || e.type === 'report.written') reportStale = true;
     if (e.type === 'engine.reconnected') return read();
-    if (/^(credits\.moved|run\.(started|ended|stage)|bid\.placed|report\.written|settings\.|firm\.|brief\.action)/.test(e.type)) read();
+    if (/^(credits\.moved|run\.(started|ended|stage)|bid\.placed|report\.written|settings\.|firm\.|brief\.action|train\.(started|ended|paused))/.test(e.type)) read();
   }
 
   // ---------------------------------------------------------------- the pause
@@ -327,6 +336,13 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     return r;
   }
 
+  /** The way to the school's own training ledger. */
+  function schoolLink(): HTMLElement {
+    const a = el('a', 'now-link', 'Its training');
+    a.href = placeHref('school', 'training');
+    return a;
+  }
+
   function nowBlock(v: TreasuryView): HTMLElement {
     const sec = el('section', 'treasury-now');
     sec.append(secHead('Now'));
@@ -354,6 +370,12 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
         ? nowRow('api', 'Anthropic API', [document.createTextNode(`$${a.spentUsdToday.toFixed(2)} of the $${a.dailyUsd.toFixed(2)} daily limit spent today.`)], gauge(a.dailyUsd > 0 ? a.spentUsdToday / a.dailyUsd : 0, 'API dollars today', { width: 96 }))
         : nowRow('api', 'Anthropic API', [document.createTextNode('Off. Firms work only on your plan and on local models.')]),
     );
+    // The school: how long it trained this week, on power (training never runs on battery).
+    const sch = v.school;
+    if (sch) {
+      const words = sch.enabled ? trainedLine(sch.trainedSeconds) : sch.trainedSeconds > 0 ? `Off now. ${trainedLine(sch.trainedSeconds)}` : 'Off. Nothing trains until you turn it on in Settings.';
+      sec.append(nowRow('school', 'School', [document.createTextNode(words)], schoolLink()));
+    }
     const k = v.keepAwake;
     sec.append(
       nowRow('awake', 'Keep awake', [
@@ -365,7 +387,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
 
   // ---------------------------------------------------------------- spend and balances
 
-  function entryKey(kind: 'firm' | 'model', id: string): string {
+  function entryKey(kind: 'firm' | 'model' | 'kind', id: string): string {
     return `${kind}:${id}`;
   }
 
@@ -378,7 +400,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
       render();
     }
     try {
-      const r = await api.credits({ period: 'week', ...(kind === 'firm' ? { firm: id } : { model: id }) });
+      const r = await api.credits({ period: 'week', ...(kind === 'firm' ? { firm: id } : kind === 'kind' ? { firm: CITY, kind: id } : { model: id }) });
       entryCache.set(key, { at: Date.now(), ...r });
     } catch {
       entryCache.set(key, 'failed');
@@ -506,11 +528,13 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
       if (f?.status === 'bankrupt') name.append(el('span', 'spend-gone', f.bankruptAt ? ` bankrupt ${shortDate(f.bankruptAt)}` : ' bankrupt'));
       byFirm.append(...spendRow(entryKey('firm', id), name, find(v.spend.today, id)?.credits ?? 0, find(v.spend.week, id)?.credits ?? 0, find(v.spend.week, id)?.entries ?? 0, balCell, names, false, { firm: id }));
     }
-    const city = find(v.spend.week, null);
-    if (city) {
+    // The city's own calls, a row for each kind it made this week: its reviews and design checks, its audits, the
+    // school's model calls and its training. Each opens to its own credits entries.
+    for (const k of v.spend.week.city ?? []) {
       const blank = el('div', 'spend-cell c-fig');
       blank.setAttribute('role', 'cell');
-      byFirm.append(...spendRow(entryKey('firm', CITY), el('span', 'spend-name city', 'The city’s reviews and design checks'), find(v.spend.today, null)?.credits ?? 0, city.credits, city.entries, blank, names, false, { firm: CITY }));
+      const today = (v.spend.today.city ?? []).find((x) => x.kind === k.kind)?.credits ?? 0;
+      byFirm.append(...spendRow(entryKey('kind', k.kind), el('span', 'spend-name city', CITY_ROWS[k.kind] ?? `The city’s ${k.kind}`), today, k.credits, k.entries, blank, names, false, { firm: CITY, kind: k.kind }));
     }
     sec.append(byFirm);
 
@@ -528,7 +552,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     }
     sec.append(byModel);
     if (v.spend.week.models.length === 0) sec.append(el('p', 'entries-note', 'No model was called in the last 7 days.'));
-    sec.append(el('p', 'jobs-key', 'Bids and runs are charged to the firm whose agent made them; reviews and design checks are the city’s own cost. A credit is a tenth of a percent of a five-hour window. Open a row for the entries that make it up.'));
+    sec.append(el('p', 'jobs-key', 'Bids and runs are charged to the firm whose agent made them; reviews, design checks, audits and the school’s calls and training are the city’s own cost. A credit is a tenth of a percent of a five-hour window. Open a row for the entries that make it up.'));
     return sec;
   }
 
@@ -668,7 +692,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     facts.textContent = `What the city may spend of your Claude plan, and what it has spent. ${v.paused ? 'It is not starting Claude work now.' : 'It is free to start work.'}`;
     slots.pause(JSON.stringify([v.paused, v.reading, v.resumedUntil, resuming, resumeError, Math.floor(minute / 10)]), () => pauseBlock(v, now));
     slots.plan(JSON.stringify([v.fiveHour, v.sevenDay, v.night, v.hardStopPct, v.calibration, v.reading, minute]), () => planBlock(v, now));
-    slots.now(JSON.stringify([v.concurrency, v.night, v.api, v.keepAwake, v.interactiveActive]), () => nowBlock(v));
+    slots.now(JSON.stringify([v.concurrency, v.night, v.api, v.keepAwake, v.interactiveActive, v.school]), () => nowBlock(v));
     slots.spend(JSON.stringify([v.spend, v.balances, firms.map((f) => [f.id, f.name, f.status]), [...open], [...entryCache.entries()].map(([k, e]) => [k, typeof e === 'string' ? e : e.at])]), () => spendBlock(v));
     slots.report(JSON.stringify([v.reports, day, report?.day, report?.markdown.length]), () => reportBlock(v));
   }

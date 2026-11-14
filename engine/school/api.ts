@@ -85,6 +85,14 @@ export function setTrainerProbe(fn: (() => Promise<TrainerStatus>) | null): void
   trainerCache = null;
 }
 
+/** How his click downloads the base model: lora.ts's download, or a stand-in a test installs so nothing comes down. */
+let baseDownloader: () => ReturnType<typeof downloadBase> = () => downloadBase();
+
+/** Replaces how the base model is downloaded (the UI test's stand-in), or `null` for lora.ts's real download. */
+export function setBaseDownloader(fn: (() => ReturnType<typeof downloadBase>) | null): void {
+  baseDownloader = fn ?? (() => downloadBase());
+}
+
 /** The base model's download as his last click left it: running, or how it ended. */
 let lastDownload: { running: boolean; status: 'ready' | 'failed' | null; reason: string | null } | null = null;
 
@@ -115,7 +123,7 @@ function startDownload(): { status: 'ready' | 'downloading' } {
   if (lastDownload?.running) return { status: 'downloading' };
   const entry: NonNullable<typeof lastDownload> = { running: true, status: null, reason: null };
   lastDownload = entry;
-  void downloadBase().then(
+  void baseDownloader().then(
     (r) => {
       entry.running = false;
       entry.status = r.status;
@@ -247,6 +255,57 @@ const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const SCHOOL_FIELDS = new Set(['enabled', 'window', 'idleMinutes', 'allowLowPower', 'claudeCreditsPerDay', 'designer', 'understudy', 'commitsAsWork']);
 const wholeIn = (v: unknown, lo: number, hi: number): v is number => typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi;
 
+/** A school setting's name as he reads it in Settings, for the engine's refusals. */
+const FIELD_WORDS: Record<string, string> = {
+  enabled: 'Run the school',
+  allowLowPower: 'Train in Low Power mode on power',
+  understudy: 'Read your taste from Understudy',
+  commitsAsWork: 'Count my own commits as verified work',
+};
+
+/**
+ * Checks the `school` part of a `PATCH /api/settings` against the current
+ * school settings: the merged settings, or the first refusal in words he
+ * can act on (Settings shows it in place, as the engine wrote it).
+ */
+function checkSchool(v: unknown, current: Settings['school']): { next: Settings['school'] } | { refused: string } {
+  const no = (refused: string) => ({ refused });
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return no('The school settings are sent as an object.');
+  const b = v as Record<string, unknown>;
+  const stray = Object.keys(b).find((k) => !SCHOOL_FIELDS.has(k));
+  if (stray !== undefined) return no(stray === 'trainNowUntil' || stray === 'baseModel' || stray === 'baseModelReady' ? `${stray} is set by the school itself, not from Settings.` : `${stray} is not a school setting.`);
+  const next: SchoolSettings = { ...current, window: { ...current.window } };
+  for (const k of ['enabled', 'allowLowPower', 'understudy', 'commitsAsWork'] as const) {
+    if (!(k in b)) continue;
+    if (typeof b[k] !== 'boolean') return no(`${FIELD_WORDS[k]} is either on or off.`);
+    next[k] = b[k] as boolean;
+  }
+  if ('idleMinutes' in b) {
+    if (!wholeIn(b.idleMinutes, 5, 120)) return no('The idle wait is a whole number of minutes, 5 to 120.');
+    next.idleMinutes = b.idleMinutes;
+  }
+  if ('claudeCreditsPerDay' in b) {
+    if (!wholeIn(b.claudeCreditsPerDay, 0, 100)) return no('The school may spend a whole number of credits a day, 0 to 100.');
+    next.claudeCreditsPerDay = b.claudeCreditsPerDay;
+  }
+  if ('designer' in b) {
+    if (typeof b.designer !== 'string' || !AUDIT_MODEL_SHAPE.test(b.designer)) return no('Name a model as ollama:<name> or claude:<name>.');
+    next.designer = b.designer as SchoolSettings['designer'];
+  }
+  if ('window' in b) {
+    const w = b.window as Record<string, unknown> | null;
+    if (typeof w !== 'object' || w === null || Array.isArray(w) || Object.keys(w).some((k) => k !== 'from' && k !== 'to')) return no('The window is sent as { from, to }.');
+    const from = 'from' in w ? w.from : next.window.from;
+    const to = 'to' in w ? w.to : next.window.to;
+    for (const t of [from, to]) {
+      if (typeof t !== 'string' || !HHMM.test(t)) return no(`${typeof t === 'string' && t.trim() ? `${t.trim().slice(0, 12)} is not a time of day` : 'A time is missing'}: say it as hours and minutes, 00:00 to 23:59.`);
+    }
+    if (from === to) return no('The window starts and ends at the same time; give it some hours.');
+    next.window = { from: from as string, to: to as string };
+  }
+  return { next };
+}
+
 /**
  * The `school` part of a `PATCH /api/settings`, merged onto the current
  * school settings, or null when anything in it is not allowed. The designer
@@ -255,36 +314,14 @@ const wholeIn = (v: unknown, lo: number, hi: number): v is number => typeof v ==
  * the download.
  */
 export function schoolPatch(v: unknown, current: Settings['school']): Settings['school'] | null {
-  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
-  const b = v as Record<string, unknown>;
-  if (Object.keys(b).some((k) => !SCHOOL_FIELDS.has(k))) return null;
-  const next: SchoolSettings = { ...current, window: { ...current.window } };
-  for (const k of ['enabled', 'allowLowPower', 'understudy', 'commitsAsWork'] as const) {
-    if (!(k in b)) continue;
-    if (typeof b[k] !== 'boolean') return null;
-    next[k] = b[k] as boolean;
-  }
-  if ('idleMinutes' in b) {
-    if (!wholeIn(b.idleMinutes, 5, 120)) return null;
-    next.idleMinutes = b.idleMinutes;
-  }
-  if ('claudeCreditsPerDay' in b) {
-    if (!wholeIn(b.claudeCreditsPerDay, 0, 100)) return null;
-    next.claudeCreditsPerDay = b.claudeCreditsPerDay;
-  }
-  if ('designer' in b) {
-    if (typeof b.designer !== 'string' || !AUDIT_MODEL_SHAPE.test(b.designer)) return null;
-    next.designer = b.designer as SchoolSettings['designer'];
-  }
-  if ('window' in b) {
-    const w = b.window as Record<string, unknown> | null;
-    if (typeof w !== 'object' || w === null || Array.isArray(w) || Object.keys(w).some((k) => k !== 'from' && k !== 'to')) return null;
-    const from = 'from' in w ? w.from : next.window.from;
-    const to = 'to' in w ? w.to : next.window.to;
-    if (typeof from !== 'string' || typeof to !== 'string' || !HHMM.test(from) || !HHMM.test(to) || from === to) return null;
-    next.window = { from, to };
-  }
-  return next;
+  const r = checkSchool(v, current);
+  return 'next' in r ? r.next : null;
+}
+
+/** Why the `school` part of a settings patch is refused, in his words, or null when it is allowed. */
+export function schoolRefusal(v: unknown, current: Settings['school']): string | null {
+  const r = checkSchool(v, current);
+  return 'refused' in r ? r.refused : null;
 }
 
 // ---------------------------------------------------------------- routes

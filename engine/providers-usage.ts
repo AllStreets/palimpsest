@@ -321,8 +321,16 @@ export function anthropicApiUsage(now: number = Date.now()): ProviderUsage {
   };
 }
 
+/**
+ * MLX on this Mac (Phase 4): the school's graduates are served on it. Ready
+ * once one has graduated; before that, off, saying why.
+ */
 export function mlxUsage(): ProviderUsage {
-  return { provider: 'mlx', status: 'later', windows: [], tokens: null, spendUsd: null, detail: 'arrives with the school' };
+  const n = Number((openDb().prepare('SELECT COUNT(*) AS n FROM graduates').get() as { n: number | bigint }).n);
+  const base = { provider: 'mlx' as const, windows: [], tokens: null, spendUsd: null };
+  if (n > 0) return { ...base, status: 'ready', detail: `${n === 1 ? 'One graduate of the school runs' : `${n} graduates of the school run`} on it, on this Mac` };
+  if (!getSettings().school.enabled) return { ...base, status: 'off', detail: "Off while the school is off. The school's graduates run on it, on this Mac" };
+  return { ...base, status: 'off', detail: "No graduate yet. The school's graduates run on it, on this Mac" };
 }
 
 type Reader = () => ProviderUsage | Promise<ProviderUsage>;

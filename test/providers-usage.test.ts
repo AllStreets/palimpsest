@@ -13,7 +13,8 @@ import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { claudeUsage, codexHome, geminiHome, geminiUsage, mlxUsage, ollamaUsage, openaiUsage, anthropicApiUsage, parseOllamaList, providerUsages, READ_CAP, resetProviderCache } from '../engine/providers-usage.js';
 import { SYSTEM_PATH } from '../engine/market/sandbox.js';
-import { patchSettings } from '../engine/settings.js';
+import { getSettings, patchSettings } from '../engine/settings.js';
+import { openDb } from '../engine/db.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_CODEX_HOME', 'PALIMPSEST_GEMINI_HOME', 'PALIMPSEST_CLAUDE_PROJECTS', 'PALIMPSEST_TEST_PROJECTS', 'PALIMPSEST_CLAUDE_SETTINGS'];
 const FIXTURES = join(import.meta.dirname, 'fixtures');
@@ -299,10 +300,19 @@ describe('provider usage', () => {
     assert.deepEqual(u.spendUsd, { today: 0, week: 0 });
   });
 
-  test('mlx arrives later', () => {
-    const u = mlxUsage();
-    assert.equal(u.status, 'later');
-    assert.equal(u.detail, 'arrives with the school');
+  test("mlx says where the school's graduates stand, never that it arrives later", () => {
+    let u = mlxUsage();
+    assert.equal(u.status, 'off');
+    assert.equal(u.detail, "Off while the school is off. The school's graduates run on it, on this Mac");
+    patchSettings({ school: { ...getSettings().school, enabled: true } });
+    u = mlxUsage();
+    assert.equal(u.status, 'off');
+    assert.equal(u.detail, "No graduate yet. The school's graduates run on it, on this Mac");
+    openDb().prepare('INSERT INTO graduates (id, json) VALUES (?, ?)').run('grad-x', '{}');
+    u = mlxUsage();
+    assert.equal(u.status, 'ready');
+    assert.equal(u.detail, 'One graduate of the school runs on it, on this Mac');
+    assert.ok(!/arrive|later/i.test(JSON.stringify(u)));
   });
 
   test("an audit's, the school's and training's local rows count toward Ollama's local credits", async () => {

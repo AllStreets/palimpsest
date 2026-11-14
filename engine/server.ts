@@ -23,7 +23,7 @@ import { analyze, BAD_NAME, city, connect, disconnect, getRepo, isValidFullName,
 import { getSettings, patchSettings } from './settings.js';
 // Loaded for its effect: the settings route turning the school off runs schoolOff at once (tick.ts installs the hook).
 import './school/tick.js';
-import { schoolPatch, schoolScrub, setTrainerProbe } from './school/api.js';
+import { schoolPatch, schoolRefusal, schoolScrub, setTrainerProbe } from './school/api.js';
 import { realRunner, getRunner, setRunner, getSpawner, realSpawner, setSpawner } from './exec.js';
 import { isSampleHome, sampleGh, sampleSpawner, useSampleFolders } from './sample.js';
 import { claudeSettingsTarget, installHook, isStale, latestReading, NO_CLAUDE_SETTINGS, uninstallHook } from './usage.js';
@@ -444,7 +444,10 @@ async function handleApi(
       const body = await readJsonBody(req);
       const patch = validateSettingsPatch(body, getSettings());
       if (patch === null) {
-        throw new HttpError(400, { error: 'invalid settings patch' });
+        // A school field he set in Settings is refused in words he can act on, shown in place (Phase 4 Task 32).
+        const b = body as Record<string, unknown> | null;
+        const why = b && typeof b === 'object' && !Array.isArray(b) && 'school' in b ? schoolRefusal(b.school, getSettings().school) : null;
+        throw new HttpError(400, { error: why ?? 'invalid settings patch' });
       }
       const next = patchSettings(patch);
       if ('keepAwake' in patch) updateKeepAwake();

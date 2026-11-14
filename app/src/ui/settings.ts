@@ -5,6 +5,7 @@ import { cleanText } from './board';
 import { AUDIT_CREDITS_RANGE, AUDIT_MODEL_SHAPE } from '../../../shared/market-rules';
 import { ago, button, checkRadio, createSheet, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton } from './controls';
 import { grantsAside, grantsBlock } from './autonomy';
+import { schoolSettings } from './settings-school';
 import { coalesce } from './pages';
 
 export interface SettingsScreen {
@@ -24,6 +25,10 @@ const PRIVACY: Array<[string, string]> = [
   [
     'Audits',
     "An audit reads a fresh clone of your repo on this Mac inside the same sandbox as a job, and only changes nothing; what leaves is the same as a job's: your own claude CLI's calls on your login, or nothing for a local model. A repo whose market is off is audited only when you ask.",
+  ],
+  [
+    'Training',
+    'Training happens on this Mac and nothing it learns leaves it. Arenas are built only from repos whose market you turned on, and only when you click. The one download is the base model, when you click Download.',
   ],
   ['Never sent', 'No analytics, no telemetry, no account.'],
 ];
@@ -45,6 +50,7 @@ function backendOf(model: string): ProviderUsage['provider'] | null {
   if (model.startsWith('claude:')) return 'claude';
   if (model.startsWith('anthropic:')) return 'anthropic-api';
   if (model.startsWith('ollama:')) return 'ollama';
+  if (model.startsWith('mlx:')) return 'mlx';
   return null;
 }
 
@@ -96,6 +102,7 @@ export function createSettings(
   const facts = el('p', 'sheet-facts', "Where the city's work runs, what it may spend, and what leaves this Mac.");
   sheet.root.querySelector('.sheet-head')?.append(facts);
   let unlisten: (() => void) | null = null;
+  let gateTimer: ReturnType<typeof setInterval> | null = null;
 
   function section(title: string, cls: string): HTMLElement {
     const s = el('section', `set-sec ${cls}`);
@@ -345,6 +352,7 @@ export function createSettings(
   const geminiTokens = el('p', 'prov-tokens');
   gemini.main.append(geminiTokens);
   const mlx = provEntry('mlx');
+  mlx.main.append(mlx.agents);
   const entries: Record<ProviderUsage['provider'], Entry> = { claude, 'anthropic-api': apiP, ollama, openai, gemini, mlx };
 
   const tokensText = (t: { today: number; week: number } | null): string =>
@@ -411,7 +419,8 @@ export function createSettings(
     }
 
     const m = by.get('mlx');
-    if (m && m.status !== 'unknown') setState(mlx, m.status, m.status === 'later' ? 'Arrives with the school.' : cleanText(m.detail, 120));
+    if (m && m.status !== 'unknown') setState(mlx, m.status, `${cleanText(m.detail, 160)}.`);
+    fillAgents(mlx, 'mlx', firms);
   }
 
   /** A window the Codex CLI reports: its share used, ruled as a short meter, and when it resets. */
@@ -710,6 +719,13 @@ export function createSettings(
   creditsField.hidden = true;
   analysis.append(el('p', 'set-foot', 'What the README audit may use. Its spend counts in the caps above, and the treasury shows it.'));
 
+  // ---------------------------------------------------------------- the school (Phase 4 Task 32)
+
+  const schoolSec = section('School', 'school');
+  const schoolAside = el('span', 'set-sec-aside school-aside');
+  schoolSec.querySelector('.set-sec-title')?.append(schoolAside);
+  const school = schoolSettings(schoolSec, schoolAside, (label, sub) => row(schoolSec, label, sub), () => readSchool());
+
   // ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
 
   const autonomy = section('Autonomy', 'autonomy');
@@ -720,9 +736,14 @@ export function createSettings(
     grants.el,
     el('p', 'set-foot', 'The school asks for one kind of work on one repo at a time, once the master has agreed with you on 50 of that kind at 95%, its last ten there too; beside each pair stands the agreement on that kind across all repos, with its count. A grant lets the city act only where the master is at least 90% sure; it is suspended when the agreement falls short and revoked by your revert. Taking one back keeps it quiet for 30 days; you can grant it again here.'),
   );
+  /** While the base model comes down, the school is read again every two seconds, so Ready shows when it lands. */
+  let downloadPoll: ReturnType<typeof setTimeout> | null = null;
   const readSchool = coalesce(async () => {
     try {
       const v = await api.school();
+      school.fill(v);
+      if (downloadPoll) clearTimeout(downloadPoll);
+      downloadPoll = school.downloading && sheet.shown ? setTimeout(() => readSchool(), 2000) : null;
       autonomyCount.textContent = grantsAside(v.grants);
       grants.set(
         { grants: v.grants, agreements: v.agreements },
@@ -731,6 +752,7 @@ export function createSettings(
           : 'No autonomy has been asked for. The school is off, so it asks for none.',
       );
     } catch {
+      school.fill(null);
       autonomyCount.textContent = '';
       grants.set(null, 'The engine did not answer.');
     }
@@ -911,7 +933,8 @@ export function createSettings(
   function onEvent(e: EngineEvent): void {
     if (e.type === 'engine.stopped' || e.type === 'engine.resumed') fillStop(e.type === 'engine.stopped');
     // A grant moved from the brief or a district page, an ask, a suspension or a revert: the pairs read again.
-    if (/^(autonomy\.|brief\.action|decision\.resolved|settings\.|engine\.reconnected)/.test(e.type)) readSchool();
+    // ... and the school's own: a train starting or ending moves the gate, a graduate wakes MLX.
+    if (/^(autonomy\.|brief\.action|decision\.resolved|settings\.|engine\.reconnected|train\.|graduate\.)/.test(e.type)) readSchool();
   }
 
   return {
@@ -921,11 +944,17 @@ export function createSettings(
       unlisten = opts.listen(onEvent);
       void load();
       readSchool();
+      // The gate reads the Mac (power, idle, the hour): read again every half minute while Settings is open.
+      gateTimer = setInterval(() => readSchool(), 30_000);
     },
     hide() {
       sheet.hide();
       unlisten?.();
       unlisten = null;
+      if (gateTimer) clearInterval(gateTimer);
+      gateTimer = null;
+      if (downloadPoll) clearTimeout(downloadPoll);
+      downloadPoll = null;
     },
   };
 }

@@ -4,7 +4,8 @@
  * n; every empty state says why, in the engine's own words where it has
  * them (a thin net's cause, a gate's reason, a grant's sentence).
  */
-import { AGREE, NET_MIN, SEALED_USES, SURVIVE_DAYS } from '../../../shared/school-rules.js';
+import { pctFor } from '../../../shared/credits.js';
+import { AGREE, LORA, NET_MIN, SEALED_USES, SURVIVE_DAYS } from '../../../shared/school-rules.js';
 import type { Agreement, GateState, Grant, Interval, JobSchool, NetCard, NetName, Prediction, TrainKind, TrainState, VoyageView, WorkKind } from '../../../shared/types.js';
 import { ago, plural } from './controls.js';
 import { shortDate } from './story.js';
@@ -271,4 +272,52 @@ export function netsOnJob(s: JobSchool, agent: (id: string) => string): string[]
   else if (top.length > 1) out.push(`The router would send it first to ${top[0]}, then ${top.length === 2 ? top[1] : `${top[1]} and ${top[2]}`}.`);
   if (s.durability !== null) out.push(`Durability gives the latest inspected run ${fixed(s.durability)} to survive ${SURVIVE_DAYS} days.`);
   return out;
+}
+
+// ---------------------------------------------------------------- Settings and the treasury (Task 32)
+
+/** Why "Train now" is held, in the engine's words (gate.ts refuses it off AC power), or null when he may press it. */
+export function trainNowHeld(g: GateState): string | null {
+  if (g.power === 'ac') return null;
+  return g.power === 'battery' ? 'on battery' : 'could not read the power source';
+}
+
+/** "until 4:10": when "Train now" ends, in local time. */
+export function untilLine(iso: string): string {
+  const d = new Date(iso);
+  return `until ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Said beside the Low Power switch only when the Mac is in Low Power on AC, which is when it matters. */
+export function lowPowerNote(g: GateState): string | null {
+  return g.power === 'ac' && g.powerMode === 1 ? 'Your Mac is set to Low Power on power; training then runs slower and cooler.' : null;
+}
+
+/** "30 credits, 3% of a window": the school's daily Claude allowance against a five-hour window. */
+export function dailyCreditsText(n: number): string {
+  if (n === 0) return '0 credits, none of a window';
+  const pct = Math.round(pctFor(n) * 10) / 10;
+  return `${n} credits, ${pct}% of a window`;
+}
+
+/** The base model's button: its label, and whether it is downloading or there. */
+export function baseButton(l: { baseReady: boolean; download: { running: boolean; status: 'ready' | 'failed' | null; reason: string | null } | null }): { label: string; state: 'none' | 'running' | 'ready' } {
+  if (l.baseReady) return { label: 'Ready', state: 'ready' };
+  if (l.download?.running) return { label: 'Downloading', state: 'running' };
+  return { label: `Download, about ${LORA.gb} GB`, state: 'none' };
+}
+
+/** Seconds as a clerk would note hours: "3 h 12 min", "3 h", "42 min". */
+export function hoursText(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h} h ${m % 60} min` : `${h} h`;
+}
+
+/** "Trained 3 h 12 min on power this week." (training only ever runs on power). */
+export function trainedLine(seconds: number): string {
+  if (seconds <= 0) return 'Nothing trained this week.';
+  if (seconds < 60) return 'Trained under a minute on power this week.';
+  return `Trained ${hoursText(seconds)} on power this week.`;
 }

@@ -549,3 +549,208 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     if (before) await page.setViewportSize(before);
   }
 }
+
+// ---------------------------------------------------------------- the school's settings and its spend (Phase 4 Task 32)
+
+/**
+ * Settings' School section and the treasury's school rows, on the economy.
+ * Every switch is flipped and flipped back, each time checked against the
+ * engine's settings; "25:00" is refused in place in the engine's words and
+ * nothing is kept; Train now is held on battery (the gate's pmset probe is
+ * answered "Battery Power" by a runner put in front of the sample's), then
+ * on AC it opens the window "until h:mm" with Stop; the base model is made
+ * not ready and Download answers 202 and then reads Ready, through a stand-in
+ * installed at the engine (`setBaseDownloader`), so nothing is downloaded;
+ * the treasury lists the school's calls and its training from the credits
+ * rows, and how long it trained this week. No bundle carries a placeholder.
+ *
+ * Saves settings-school.png, settings-school-base.png and treasury-school.png
+ * at 1600 x 1000. Answers the number of refusals it provoked (each a 400 in
+ * the console), for the caller to excuse.
+ */
+export async function schoolSettingsChecks(page: Page, check: Check, shots: string, dist: string): Promise<number> {
+  const before = page.viewportSize();
+  await page.setViewportSize(SIZE);
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const { getSettings, patchSettings } = await import('../engine/settings.js');
+  const { getRunner, setRunner } = await import('../engine/exec.js');
+  const { resetGateCache } = await import('../engine/school/gate.js');
+  const { setBaseDownloader } = await import('../engine/school/api.js');
+  const runner = getRunner();
+  let refusals = 0;
+  const wasSchool = getSettings().school;
+  try {
+    // ------------------------------------------------------------ no placeholder in any bundle
+    const assets = join(dist, 'assets');
+    const js = readdirSync(assets).filter((f) => f.endsWith('.js'));
+    const placeholder = js.filter((f) => /arrives? with (Phase 4|the school)/i.test(readFileSync(join(assets, f), 'utf8')));
+    check(js.length > 0 && placeholder.length === 0, `no bundle says the school arrives later (${placeholder.join(', ') || `${js.length} read`})`);
+
+    await go(page, '#/settings');
+    const sec = page.locator('.sheet.settings .set-sec.school');
+    check(await within(page, 8000, async () => (await sec.locator('.slide.school-on').isVisible()) && ((await sec.locator('.school-gate').textContent()) ?? '').length > 0), 'Settings has its School section, read from the engine');
+    const labels = (await sec.locator('.set-label-name').allTextContents()).map((s) => s.trim());
+    const want = ['Run the school', 'Train between', 'Only after the Mac has been idle for', 'Train in Low Power mode on power', 'Train now', 'The school may spend on Claude each day', 'Design agents with', 'Count my own commits as verified work', 'Read your taste from Understudy', 'Base model for coders', 'Trainer'];
+    check(want.every((w, i) => labels[i] === w), `its rows in order (${labels.join(' | ')})`);
+    check(((await sec.locator('.school-on-row .set-text, .set-row.school-on .set-text').first().textContent()) ?? '').trim() === 'Off by default. While on, the city trains its nets at night, races agents on arenas you build, and trains coders on this Mac.', 'the switch says what the school does');
+    check(((await sec.locator('.school-credits-of').textContent()) ?? '').trim() === `${getSettings().school.claudeCreditsPerDay} credits, ${Math.round(getSettings().school.claudeCreditsPerDay * 0.1 * 10) / 10}% of a window`, `the daily Claude credits read against a window (${await sec.locator('.school-credits-of').textContent()})`);
+    check((await sec.locator('.set-note', { hasText: "It takes one of the city's Claude slots and waits while you are using Claude." }).count()) === 1, 'and say they take a Claude slot and wait for him');
+    check((await sec.locator('.set-text', { hasText: 'Commits that touched source, lasted 30 days with no revert or fix, and pass their tests. This goes beyond changes the guild inspected.' }).count()) === 1, 'his commits say what counts');
+    check((await sec.locator('.set-text', { hasText: 'Read only, on this Mac. Your taste statements are also added to the bar every UI change in the market is judged against.' }).count()) === 1, 'Understudy says it is read only');
+    check(/^Training (waits|may run): /.test(((await sec.locator('.school-gate').textContent()) ?? '').trim()), `the heavy gate's line (${((await sec.locator('.school-gate').textContent()) ?? '').trim()})`);
+    check(((await sec.locator('.school-trainer').textContent()) ?? '').trim().length > 0, `the trainer's line (${((await sec.locator('.school-trainer').textContent()) ?? '').trim()})`);
+    const privacy = ((await page.locator('.sheet.settings .settings-privacy .set-row[data-privacy="Training"] .set-text').textContent()) ?? '').trim();
+    check(privacy === 'Training happens on this Mac and nothing it learns leaves it. Arenas are built only from repos whose market you turned on, and only when you click. The one download is the base model, when you click Download.', `Privacy says where training happens (${privacy.slice(0, 60)})`);
+    const mlx = ((await page.locator('.sheet.settings .prov[data-provider="mlx"]').textContent()) ?? '').trim();
+    check(/One graduate of the school runs on it, on this Mac\./.test(mlx) && /Ada Quarry/.test(mlx) && !/arrive/i.test(mlx), `MLX says the graduate runs on it, by name (${mlx.slice(0, 120)})`);
+
+    // ------------------------------------------------------------ each switch patches its own field, and back
+    for (const [cls, key] of [['school-on', 'enabled'], ['school-lowpower', 'allowLowPower'], ['school-commits', 'commitsAsWork'], ['school-understudy', 'understudy']] as const) {
+      const sw = sec.locator(`.slide.${cls}`);
+      const was = getSettings().school[key];
+      await sw.click();
+      const flipped = await within(page, 6000, async () => getSettings().school[key] === !was && (await sw.getAttribute('aria-checked')) === String(!was));
+      await sw.click();
+      const back = await within(page, 6000, async () => getSettings().school[key] === was && (await sw.getAttribute('aria-checked')) === String(was));
+      check(flipped && back, `${key} patches its own field, and back (${was} to ${!was} to ${was})`);
+    }
+    // The fields: the window, the idle wait, the credits and the designer, each sent and read back.
+    const typeIn = async (sel: string, value: string) => {
+      const f = sec.locator(sel);
+      await f.fill(value);
+      await f.press('Enter');
+    };
+    await typeIn('.school-from', '0:30');
+    check(await within(page, 6000, async () => getSettings().school.window.from === '00:30'), `the window's start patches window.from (${getSettings().school.window.from})`);
+    await typeIn('.school-idle', '20');
+    check(await within(page, 6000, async () => getSettings().school.idleMinutes === 20), 'the idle wait patches idleMinutes');
+    await typeIn('.school-credits', '25');
+    check(await within(page, 6000, async () => getSettings().school.claudeCreditsPerDay === 25 && ((await sec.locator('.school-credits-of').textContent()) ?? '').trim() === '25 credits, 2.5% of a window'), `the daily credits patch claudeCreditsPerDay (${await sec.locator('.school-credits-of').textContent()})`);
+    await typeIn('.school-designer', 'ollama:qwen2.5-coder:14b');
+    check(await within(page, 6000, async () => getSettings().school.designer === 'ollama:qwen2.5-coder:14b'), 'the designer patches designer');
+
+    // ------------------------------------------------------------ 25:00 refused in place, in the engine's words
+    await typeIn('.school-to', '25:00');
+    refusals++;
+    const winWhy = sec.locator('#school-window-why');
+    check(await within(page, 6000, async () => ((await winWhy.textContent()) ?? '').trim() === '25:00 is not a time of day: say it as hours and minutes, 00:00 to 23:59.' && (await winWhy.isVisible())), `25:00 is refused under the window in the engine's words (${((await winWhy.textContent()) ?? '').trim()})`);
+    check((await sec.locator('.school-to').getAttribute('aria-invalid')) === 'true' && (await sec.locator('.school-to').getAttribute('aria-describedby')) === 'school-window-why', 'the field is marked and names the refusal');
+    check(getSettings().school.window.to === wasSchool.window.to, `nothing refused is kept (${getSettings().school.window.to})`);
+    await typeIn('.school-idle', '2');
+    refusals++;
+    check(await within(page, 6000, async () => ((await sec.locator('#school-idle-why').textContent()) ?? '').trim() === 'The idle wait is a whole number of minutes, 5 to 120.'), `an idle wait of 2 is refused in place (${((await sec.locator('#school-idle-why').textContent()) ?? '').trim()})`);
+    await typeIn('.school-designer', 'gpt-4');
+    refusals++;
+    check(await within(page, 6000, async () => ((await sec.locator('#school-designer-why').textContent()) ?? '').trim() === 'Name a model as ollama:<name> or claude:<name>.'), 'a malformed designer is refused in place');
+    await sec.locator('.school-to').scrollIntoViewIfNeeded();
+    await page.locator('.sheet.settings .sheet-body').evaluate((b) => {
+      const s = b.querySelector('.set-sec.school') as HTMLElement;
+      b.scrollTop += s.getBoundingClientRect().top - b.getBoundingClientRect().top - 24;
+    });
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(shots, 'settings-school.png') });
+    // Escape puts each back as saved, and its refusal goes.
+    for (const sel of ['.school-to', '.school-idle', '.school-designer']) {
+      await sec.locator(sel).focus();
+      await page.keyboard.press('Escape');
+    }
+    check(await within(page, 4000, async () => (await sec.locator('.set-error:visible').count()) === 0), 'Escape puts the fields back and their refusals go');
+
+    // ------------------------------------------------------------ Train now: held on battery, then open until h:mm, then Stop
+    setRunner(async (cmd, args, o) => (cmd === '/usr/bin/pmset' && args.join(' ') === '-g batt' ? { stdout: "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t80%; discharging; 4:10 remaining present: true\n", stderr: '', code: 0 } : runner(cmd, args, o)));
+    resetGateCache();
+    await go(page, '#/');
+    await page.waitForTimeout(300);
+    await go(page, '#/settings');
+    const now = sec.locator('.school-train-now');
+    check(await within(page, 8000, async () => (await now.getAttribute('aria-disabled')) === 'true' && ((await sec.locator('.school-held').textContent()) ?? '').trim() === 'Train now waits: on battery.'), `on battery Train now is held with the reason (${((await sec.locator('.school-held').textContent()) ?? '').trim()})`);
+    check((await now.getAttribute('aria-describedby')) === 'school-held', 'the held button names its reason');
+    check(await keyFocus(page, '.sheet.settings .school-train-now'), 'and still takes the keyboard’s focus, visibly');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(600);
+    check(getSettings().school.trainNowUntil === null, 'Enter on it asks the engine nothing');
+    setRunner(runner);
+    resetGateCache();
+    await go(page, '#/');
+    await page.waitForTimeout(300);
+    await go(page, '#/settings');
+    check(await within(page, 8000, async () => (await now.getAttribute('aria-disabled')) === null && (await now.isVisible())), 'on power Train now is offered');
+    await now.click();
+    const until = sec.locator('.school-until');
+    check(await within(page, 8000, async () => /^until \d{1,2}:\d\d$/.test(((await until.textContent()) ?? '').trim()) && (await until.isVisible())), `Train now opens the window, until h:mm (${((await until.textContent()) ?? '').trim()})`);
+    {
+      const u = getSettings().school.trainNowUntil;
+      const d = u ? new Date(u) : null;
+      check(!!d && ((await until.textContent()) ?? '').trim() === `until ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`, 'the time is the engine’s, three hours on');
+    }
+    {
+      const g = (await api<SchoolView>(page, '/api/school')).gate.heavy;
+      check(g.trainNowUntil === getSettings().school.trainNowUntil, `the gate reads Train now as live (${g.trainNowUntil}; the line: ${((await sec.locator('.school-gate').textContent()) ?? '').trim()})`);
+    }
+    await sec.locator('.school-stop').click();
+    check(await within(page, 8000, async () => getSettings().school.trainNowUntil === null && (await now.isVisible()) && !(await until.isVisible())), 'Stop ends it, and Train now is offered again');
+
+    // ------------------------------------------------------------ the base model: Download answers 202, then Ready
+    let landed = false;
+    setBaseDownloader(async () => {
+      await new Promise((r) => setTimeout(r, 2500));
+      patchSettings({ school: { ...getSettings().school, baseModelReady: true } });
+      landed = true;
+      return { status: 'ready', reason: null };
+    });
+    patchSettings({ school: { ...getSettings().school, baseModelReady: false } });
+    await go(page, '#/');
+    await page.waitForTimeout(300);
+    await go(page, '#/settings');
+    const dl = sec.locator('.school-download');
+    check(await within(page, 8000, async () => ((await dl.textContent()) ?? '').trim() === 'Download, about 4.3 GB' && (await dl.isVisible())), `with the base model not there, Download says its size (${((await dl.textContent()) ?? '').trim()})`);
+    check(((await sec.locator('.school-base-state').textContent()) ?? '').includes('is not downloaded') && (await sec.locator('.set-note', { hasText: 'Your Hugging Face login is not sent.' }).count()) === 1, 'it says the base is not downloaded, and that his login is not sent');
+    await sec.locator('.school-base-row').scrollIntoViewIfNeeded();
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(shots, 'settings-school-base.png') });
+    const answer = page.waitForResponse((r) => r.url().endsWith('/api/school/download-base') && r.request().method() === 'POST', { timeout: 6000 });
+    await dl.click();
+    const r = await answer.catch(() => null);
+    check(r?.status() === 202, `Download answers 202 (${r?.status() ?? 'no answer'})`);
+    check(await within(page, 4000, async () => ((await dl.textContent()) ?? '').trim() === 'Downloading' && (await dl.getAttribute('aria-disabled')) === 'true'), 'it reads Downloading while it comes down');
+    check(await within(page, 10_000, async () => landed && (await sec.locator('.school-ready').isVisible()) && !(await dl.isVisible())), 'and then Ready, without a reload');
+    check(((await sec.locator('.school-base-state').textContent()) ?? '').includes('is downloaded'), 'the line says it is downloaded');
+
+    // ------------------------------------------------------------ the treasury: the school's calls, its training, its week
+    await go(page, '#/treasury');
+    const t = await api<{ spend: { week: { city: Array<{ kind: string; credits: number; entries: number }> } }; school: { enabled: boolean; trainedSeconds: number } }>(page, '/api/treasury');
+    const tsheet = page.locator('.sheet.treasury');
+    for (const kind of ['school', 'train']) {
+      const k = t.spend.week.city.find((x) => x.kind === kind);
+      const row = tsheet.locator(`.spend-firms .spend-row[data-kind="${kind}"]`);
+      check(!!k && k.entries > 0 && (await within(page, 8000, async () => (await row.count()) === 1)), `the treasury lists the ${kind} spend from its credits rows (${k ? `${k.credits} credits, ${k.entries} entries` : 'none'})`);
+      if (k) check(((await row.locator('.c-n').textContent()) ?? '').trim() === String(k.entries), `with its entries (${await row.locator('.c-n').textContent()})`);
+    }
+    {
+      const row = tsheet.locator('.spend-firms .spend-row[data-kind="school"]');
+      await row.locator('.spend-open').click();
+      const entries = row.locator('xpath=following-sibling::*[1]').locator('.entry');
+      check(await within(page, 6000, async () => (await entries.count()) > 0 && /School call/.test((await entries.first().textContent()) ?? '')), `the school's row opens to its own entries (${await entries.count()})`);
+      await row.locator('.spend-open').click();
+    }
+    const line = ((await tsheet.locator('.now-row[data-now="school"] .now-val').textContent()) ?? '').trim();
+    const h = Math.floor(t.school.trainedSeconds / 3600);
+    const m = Math.floor((t.school.trainedSeconds % 3600) / 60);
+    check(t.school.trainedSeconds > 0 && line === `Trained ${h ? `${h} h${m ? ` ${m} min` : ''}` : `${m} min`} on power this week.`, `the treasury says how long the school trained (${line})`);
+    await tsheet.locator('.treasury-now').evaluate((s) => {
+      const body = s.closest('.sheet-body') as HTMLElement;
+      body.scrollTop += s.getBoundingClientRect().top - body.getBoundingClientRect().top - 24;
+    });
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(shots, 'treasury-school.png') });
+  } finally {
+    setRunner(runner);
+    resetGateCache();
+    setBaseDownloader(null);
+    patchSettings({ school: { ...getSettings().school, ...wasSchool, trainNowUntil: null, baseModelReady: true } });
+    // The stand-in wrote nothing to disk: the sample's base folder is as the economy left it.
+    if (before) await page.setViewportSize(before);
+  }
+  await go(page, '#/');
+  return refusals;
+}

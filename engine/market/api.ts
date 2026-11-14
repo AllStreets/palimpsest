@@ -42,6 +42,7 @@ import type {
   RunView,
   SiteState,
   Tier,
+  TrainState,
   TreasuryView,
   Trip,
 } from '../../shared/types.js';
@@ -55,7 +56,7 @@ import { jobSchool } from '../school/decisions.js';
 import { providerUsages } from '../providers-usage.js';
 import { apiKeyStored, setApiKey, removeApiKey } from './anthropic-api.js';
 import { bidList } from './bids.js';
-import { MAX_RESUME_MS, treasury } from './budget.js';
+import { MAX_RESUME_MS, SPEND_KINDS, treasury, type SpendKind } from './budget.js';
 import { agent, firm, listAgents, listFirms, quarters, toGenome } from './firms.js';
 import { job, listJobs, postManualJob, redact, repost, setScope, setTier, transition, withdrawable } from './jobs.js';
 import { listMilestones, weekTour } from './milestones.js';
@@ -514,7 +515,36 @@ function treasuryView(): TreasuryView {
     reports: [...new Set(query({ kind: 'report.written' }).map((e) => (e.data as { day?: string }).day).filter((d): d is string => typeof d === 'string' && DAY.test(d)))].sort().reverse(),
     // Counted from the runs store, as the board and the run pages count, never from the leases.
     underWay: underWayNow(),
+    school: { enabled: settings.school.enabled, trainedSeconds: trainedSince(week.from, now) },
   };
+}
+
+/**
+ * Seconds the school trained between `fromMs` and `now`, every kind of train
+ * counted (the nets, a LoRA, an arena build, a voyage's races, a sealed race):
+ * each train's stretch clipped to the period, a running one up to now.
+ */
+function trainedSince(fromMs: number, now: number): number {
+  const rows = openDb().prepare('SELECT json FROM trains').all() as Array<{ json: string }>;
+  let total = 0;
+  for (const r of rows) {
+    let t: TrainState;
+    try {
+      t = JSON.parse(r.json) as TrainState;
+    } catch {
+      continue;
+    }
+    const start = Date.parse(t.startedAt);
+    if (!Number.isFinite(start)) continue;
+    const end = t.endedAt ? Date.parse(t.endedAt) : t.status === 'running' ? now : start + t.seconds * 1000;
+    // A train's own count of seconds is what it ran; its wall time may hold a pause.
+    const ran = t.endedAt || t.status !== 'running' ? t.seconds : (now - start) / 1000;
+    if (end <= fromMs || start >= now) continue;
+    const span = Math.max(1, end - start);
+    const inside = Math.min(end, now) - Math.max(start, fromMs);
+    total += ran * Math.max(0, Math.min(1, inside / span));
+  }
+  return Math.round(total);
 }
 
 /** The credits entries behind a row of the treasury's spend tables. */
@@ -525,8 +555,10 @@ function creditsFor(params: URLSearchParams): CreditEntries {
   const model = params.get('model');
   if (firm !== null && firm !== CITY_KEY && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(firm)) throw new HttpError(400, { error: 'not a firm id' });
   if (model !== null && !/^[A-Za-z0-9][A-Za-z0-9:._@/-]{0,127}$/.test(model)) throw new HttpError(400, { error: 'not a model' });
+  const kind = params.get('kind');
+  if (kind !== null && !(SPEND_KINDS as readonly string[]).includes(kind)) throw new HttpError(400, { error: 'not a kind of spend' });
   const b = periodBounds(period, Date.now());
-  return creditEntries({ fromMs: b.from, toMs: b.to, firm: firm ?? undefined, model: model ?? undefined });
+  return creditEntries({ fromMs: b.from, toMs: b.to, firm: firm ?? undefined, model: model ?? undefined, kind: (kind as SpendKind | null) ?? undefined });
 }
 
 function reportFor(day: string): ReportView {

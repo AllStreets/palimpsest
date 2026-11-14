@@ -11,6 +11,8 @@ import { test } from 'node:test';
 import type { Agreement, GateState, Grant, Interval, NetCard, Prediction, TrainState, VoyageView } from '../shared/types.js';
 import {
   agreementLine,
+  baseButton,
+  dailyCreditsText,
   diffText,
   downloadLine,
   gateLine,
@@ -18,13 +20,17 @@ import {
   intervalText,
   kindLabel,
   loraLine,
+  lowPowerNote,
   masterGuessLine,
   netsOnJob,
   netLine,
   netRowLine,
   sealedLine,
+  trainedLine,
   trainLine,
+  trainNowHeld,
   trainerLine,
+  untilLine,
   voyageLine,
 } from '../app/src/ui/school-words.js';
 
@@ -211,4 +217,34 @@ test('the other nets on a job, each only when it spoke', () => {
     'Durability gives the latest inspected run 0.92 to survive 30 days.',
   ]);
   assert.deepEqual(netsOnJob({ appraisal: null, router: [{ agentId: 'a2', p: 0.61 }], durability: null, master: null }, agent), ['The router would send it to Priya Rao (0.61).']);
+});
+
+// ---------------------------------------------------------------- Settings and the treasury (Task 32)
+
+test('Train now, the Low Power note, the daily Claude credits and the base model, in Settings words', () => {
+  const g = (over: Partial<GateState>): GateState => ({ kind: 'heavy', ok: false, reason: 'outside the training window', power: 'ac', powerMode: 0, idleMin: 30, inWindow: false, trainNowUntil: null, freeGB: 180, thermal: 'nominal', ...over });
+  assert.equal(trainNowHeld(g({ power: 'battery' })), 'on battery');
+  assert.equal(trainNowHeld(g({ power: 'unknown' })), 'could not read the power source');
+  assert.equal(trainNowHeld(g({})), null);
+  assert.equal(untilLine(new Date(2026, 10, 14, 4, 10).toISOString()), 'until 4:10');
+  assert.equal(untilLine(new Date(2026, 10, 14, 16, 5).toISOString()), 'until 16:05');
+  assert.equal(lowPowerNote(g({ powerMode: 1 })), 'Your Mac is set to Low Power on power; training then runs slower and cooler.');
+  assert.equal(lowPowerNote(g({ powerMode: 1, power: 'battery' })), null);
+  assert.equal(lowPowerNote(g({ powerMode: 0 })), null);
+  assert.equal(dailyCreditsText(30), '30 credits, 3% of a window');
+  assert.equal(dailyCreditsText(25), '25 credits, 2.5% of a window');
+  assert.equal(dailyCreditsText(0), '0 credits, none of a window');
+  assert.deepEqual(baseButton({ baseReady: false, download: null }), { label: 'Download, about 4.3 GB', state: 'none' });
+  assert.deepEqual(baseButton({ baseReady: false, download: { running: true, status: null, reason: null } }), { label: 'Downloading', state: 'running' });
+  assert.deepEqual(baseButton({ baseReady: false, download: { running: false, status: 'failed', reason: 'The trainer is not set up on this Mac' } }), { label: 'Download, about 4.3 GB', state: 'none' });
+  assert.deepEqual(baseButton({ baseReady: true, download: null }), { label: 'Ready', state: 'ready' });
+});
+
+test("the treasury says how long the school trained this week", () => {
+  assert.equal(trainedLine(3 * 3600 + 12 * 60), 'Trained 3 h 12 min on power this week.');
+  assert.equal(trainedLine(3 * 3600 + 20), 'Trained 3 h on power this week.');
+  assert.equal(trainedLine(42 * 60), 'Trained 42 min on power this week.');
+  assert.equal(trainedLine(40), 'Trained under a minute on power this week.');
+  assert.equal(trainedLine(0), 'Nothing trained this week.');
+  for (const s of [trainedLine(3 * 3600 + 12 * 60), dailyCreditsText(30), untilLine(new Date().toISOString())]) noDashes(s);
 });
