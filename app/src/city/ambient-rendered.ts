@@ -575,5 +575,11 @@ export const AMBIENT_RENDERED: Record<string, { sun: [number, number, number]; s
   }
 };
 
-/** The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it. */
-export const AMBIENT_INPUTS = 'ab5a1119540cc262';
+/**
+ * The fingerprint of what this table was measured from (tools/measure-inputs.ts); test/measured.test.ts compares it.
+ *
+ * Phase 5 Task 2 (2026-11-14): restamped, not re-measured. facade.ts changed for the rooms behind the upper windows,
+ * the cut-corner mapping and the per-room lit pattern; the tones, sections, swatch board, materials and light are as
+ * measured. The full re-measure of this table and the towers' is Phase 5 Task 15 (Decision 6).
+ */
+export const AMBIENT_INPUTS = '8da79f8730cfc5be';

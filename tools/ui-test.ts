@@ -2454,6 +2454,77 @@ async function streetChecks(page: Page): Promise<void> {
   check(perPass.length > 0 && perPass.every((n) => n === 1), `the kerb tiles draw in one instanced call per pass from the street (${JSON.stringify(kerbs ?? null)})`);
 }
 
+// ---------------------------------------------------------------- the facades at street level (Phase 5 Task 2)
+
+/** tools/perf.ts street-windows: the walk-up on the README street's west side, from the ground to the top floor, from across the street. */
+const STREET_WINDOWS_VIEW: [[number, number, number], [number, number, number]] = [[207.0, 4.5, -108.0], [191.95, 7.2, -104.0]];
+/** The walk-up the view faces, as the sample's city stands it (the collar retypes the blocks round its plots): its centre; its front is its +x face. */
+const STREET_WINDOWS_LOT = { x: 184.2, z: -105.1 } as const;
+/** A pixel this dark (0 to 1) reads as a black void; no window may be one over more than this share of its area. */
+const WINDOW_VOID_LUMINANCE = 0.02;
+const WINDOW_VOID_SHARE = 0.02;
+
+/**
+ * The rooms behind the glass: no window of the walk-up in street-windows
+ * reads as a black void. Each window of its front (walkupWindows, the bays
+ * and floors the facade shader draws) is projected through the view's camera
+ * and its inner area read from one screenshot: the share of its pixels under
+ * the void luminance stays under 2%, lit or unlit.
+ */
+async function windowChecks(page: Page): Promise<void> {
+  const { walkupWindows } = await import('../app/src/city/rooms.js');
+  const [eye, target] = STREET_WINDOWS_VIEW;
+  await setView(page, eye, target);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(1500);
+  const L = STREET_WINDOWS_LOT;
+  type LotSummary = { x: number; z: number; w: number; d: number; h: number; archetype: string; style: number[] };
+  const lots = (await page.evaluate(([x, z]) => (window as unknown as { __palimpsest: { ambientLots(x: number, z: number, r: number): LotSummary[] } }).__palimpsest.ambientLots(x, z, 1), [L.x, L.z])) as LotSummary[];
+  const lot = lots.find((l) => Math.abs(l.x - L.x) < 0.1 && Math.abs(l.z - L.z) < 0.1);
+  check(!!lot && lot.archetype === 'walkup', `the street-windows walk-up stands where the view expects it (${lot?.archetype ?? 'no lot'} at ${L.x}, ${L.z})`);
+  if (!lot) return;
+  const img = decodePng(await page.screenshot());
+  const lum = (x: number, y: number): number => {
+    const i = (y * img.width + x) * 4;
+    return (0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2]) / 255;
+  };
+  const fx = lot.x + lot.w / 2 + 0.02;
+  const z0 = lot.z - lot.d / 2;
+  let measured = 0;
+  let worst = { share: 0, at: '' };
+  for (const w of walkupWindows(lot.d, lot.style[1], lot.h)) {
+    const corners = [
+      screenPoint(eye, target, [fx, w.y0, z0 + w.u0]),
+      screenPoint(eye, target, [fx, w.y0, z0 + w.u1]),
+      screenPoint(eye, target, [fx, w.y1, z0 + w.u0]),
+      screenPoint(eye, target, [fx, w.y1, z0 + w.u1]),
+    ];
+    const xs = corners.map((c) => c[0]);
+    const ys = corners.map((c) => c[1]);
+    // The inner 60% of the window's box on screen: off its frame, reveal and sill, whatever the angle.
+    const x0 = Math.min(...xs) + (Math.max(...xs) - Math.min(...xs)) * 0.2;
+    const x1 = Math.max(...xs) - (Math.max(...xs) - Math.min(...xs)) * 0.2;
+    const y0 = Math.min(...ys) + (Math.max(...ys) - Math.min(...ys)) * 0.2;
+    const y1 = Math.max(...ys) - (Math.max(...ys) - Math.min(...ys)) * 0.2;
+    if (x0 < 2 || y0 < 2 || x1 > img.width - 2 || y1 > img.height - 2 || x1 - x0 < 6 || y1 - y0 < 6) continue;
+    let dark = 0;
+    let all = 0;
+    for (let y = Math.ceil(y0); y < y1; y++)
+      for (let x = Math.ceil(x0); x < x1; x++) {
+        all++;
+        if (lum(x, y) < WINDOW_VOID_LUMINANCE) dark++;
+      }
+    measured++;
+    const share = dark / all;
+    if (share > worst.share) worst = { share, at: `bay at ${(z0 + w.u0).toFixed(1)} m, sill ${w.y0.toFixed(1)} m` };
+  }
+  check(measured >= 8, `street-windows frames at least eight of the walk-up's windows (${measured})`);
+  check(
+    measured > 0 && worst.share <= WINDOW_VOID_SHARE,
+    `no window in street-windows reads below luminance ${WINDOW_VOID_LUMINANCE} over more than ${WINDOW_VOID_SHARE * 100}% of its area (worst ${(worst.share * 100).toFixed(1)}%${worst.at ? `, the ${worst.at}` : ''}, ${measured} windows)`,
+  );
+}
+
 async function riverChecks(page: Page): Promise<void> {
   type RV = { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   type R = { river(): RV };
@@ -2935,7 +3006,7 @@ async function main(): Promise<void> {
     // UI_ONLY=autonomy: his autonomy in the brief, Settings, the district page and a job page (Task 31's rounds).
     // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
     // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
-    // UI_ONLY=street: the street floor's checks alone (Phase 5 Task 1's rounds).
+    // UI_ONLY=street: the street floor's and the street facades' checks alone (Phase 5 Tasks 1 and 2's rounds).
     const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
@@ -2968,6 +3039,7 @@ async function main(): Promise<void> {
         await schoolTowerChecks(page, 'medium');
       } else if (process.env.UI_ONLY === 'street') {
         await streetChecks(page);
+        await windowChecks(page);
       } else if (process.env.UI_ONLY === 'budget') {
         await standFixture(page);
         await campusChecks(page, 'high');
@@ -2982,6 +3054,7 @@ async function main(): Promise<void> {
         await page.screenshot({ path: join(SHOTS, 'home-medium.png') });
       } else {
         await streetChecks(page);
+        await windowChecks(page);
         await spireChecks(page);
         await revivalChecks(page);
         await ribbonChecks(page);

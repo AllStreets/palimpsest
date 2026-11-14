@@ -15,6 +15,7 @@ import { foldSchoolEvent, schoolAfter, type ObservatoryState, type ObservatoryVi
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
+import type { LotSummary } from './city/grid';
 import type { MilestoneShow } from './city/milestones.js';
 import type { VehicleRef, VehiclesView } from './city/vehicles.js';
 import type { AmbientView } from './city/ambient.js';
@@ -176,6 +177,8 @@ interface DebugHandle {
   say(text: string, key?: string): void;
   /** Plazas paved (the civic plaza included) and ambient buildings standing. */
   plots(): { plazas: number; buildings: number };
+  /** The ambient lots standing within `r` of a point, as built now (the perf and UI tools' framing). */
+  ambientLots(x: number, z: number, r: number): LotSummary[];
   /**
    * For captures that check a material against the datum and the Claude
    * amber: rebuilds a repo's tower with the named variants (ids from
@@ -582,6 +585,7 @@ async function main(): Promise<void> {
     notices: () => notice.texts(),
     say: (text, key) => notice.add(text, key ? { key } : undefined),
     plots: () => city.plots(),
+    ambientLots: (x, z, r) => city.ambientLots(x, z, r),
     async ambientBoard() {
       // A board is measured with the streets empty: no car or person passes in front of it. The board stands on
       // (the capture reads it after this returns), so the streets stay empty with it; if laying it fails, the

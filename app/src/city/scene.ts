@@ -19,7 +19,7 @@ import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
 import type { BoardJob, Exchange } from './exchange.js';
-import { createGrid } from './grid.js';
+import { createGrid, type LotSummary } from './grid.js';
 import { createGround, makePlinth } from './ground.js';
 import { createPlates, type Plate } from './labels.js';
 import type { Lot } from './lots.js';
@@ -173,6 +173,8 @@ export interface City {
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
   plots(): { plazas: number; buildings: number };
+  /** The ambient lots standing within `r` of a point (grid.ts lots). */
+  ambientLots(x: number, z: number, r: number): LotSummary[];
   /** The transit network (transit.ts): what of it the camera draws now, and how much of it stands (tests and captures). */
   transit(): TransitView;
   /** The trams, trains, pods, ferries and cabs running on the network (vehicles.ts), or null before it is laid. */
@@ -1697,6 +1699,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     breakdown: (detail = false) => new Promise<Breakdown>((resolve) => breakdownWanted.push({ detail, resolve })),
     river: () => ({ lamps: river.lamps.length, ...river.view(camera) }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
+    ambientLots: (x, z, r) => grid.lots(x, z, r),
     transit: () => transit.view(camera),
     vehicles: () => vehicles,
     transitNetwork: () => transit.network(),

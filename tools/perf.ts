@@ -169,6 +169,17 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     ['street-gutter-close', [197.3, 0.9, -140], [196.1, 0, -137.2]],
     ['street-junction', [193.5, 1.8, -127], [204, 0.2, -116]],
     ['street-above', [230, 60, -90], [200, 0, -120]],
+    // The facades at street level (Task 2). The sample's collar caps and retypes the blocks round its plots, so the
+    // lots are read from the standing city (the debug handle's ambientLots): the walk-up on the README street's west
+    // side at x 176.45 to 191.95, z -112 to -98.2 (its front at x = 191.95, two oriel bays up it over three storeys):
+    // its windows from the ground to the top floor from across the street, its northern oriel close, a ground bay's glass from the
+    // pavement; then the cut corners, each from about 30 m: the chamfered office at (112.05, -112.05) and the
+    // mid-century slab's quarter round at (351.95, 128).
+    ['street-windows', [207.0, 4.5, -108.0], [191.95, 7.2, -104.0]],
+    ['oriel-close', [207.5, 4.0, -92.0], [192.4, 9.3, -101.65]],
+    ['shop-close', [198.0, 1.6, -108.5], [191.95, 1.9, -110.5]],
+    ['corner-chamfer', [140.0, 8.0, -120.0], [112.05, 9.0, -112.05]],
+    ['corner-round', [366.0, 5.0, 106.0], [351.95, 8.0, 128.0]],
   ];
 }
 

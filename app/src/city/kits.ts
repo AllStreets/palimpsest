@@ -117,7 +117,7 @@ let fallback = false;
 
 /** Every plain piece the app builds from: what a stand-in must cover when the kits cannot load. */
 const COURSES = ['course_a', 'course_b', 'pier_block', 'band_course'];
-const BOXES = ['water_tank', 'tank_cap', 'tank_stand', 'bulkhead', 'penthouse', 'screen_panel', 'rooftop_unit', 'car', 'bay', 'bay_glass', 'chamfer_box', 'round_box', 'deco_fin', 'org_rib', 'arc_pod'];
+const BOXES = ['water_tank', 'tank_cap', 'tank_stand', 'bulkhead', 'penthouse', 'screen_panel', 'rooftop_unit', 'car', 'bay', 'bay_glass', 'bay_foot', 'bay_roof', 'chamfer_box', 'round_box', 'deco_fin', 'org_rib', 'arc_pod'];
 
 /**
  * Plain stand-ins for every kit piece, for when kits.glb is missing or

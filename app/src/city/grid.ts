@@ -20,6 +20,20 @@ export const DETAIL_RADIUS = 10;
 /** A plaza: a district (with its root's height, so the blocks round it stay under the root), a site, or the civic plaza. */
 export type Plaza = CollarPlaza;
 
+/** A standing lot as the tools read it: where it is, its plan and height, its type, its street fronts, its cut corner and its style. */
+export interface LotSummary {
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  h: number;
+  archetype: Archetype;
+  front: string[];
+  style: [number, number, number, number];
+  cut: boolean;
+  bays: number;
+}
+
 export interface Grid {
   group: THREE.Group;
   /** The building bodies, for line-of-sight tests (name plates hide behind them). */
@@ -28,6 +42,8 @@ export interface Grid {
   setPlazas(plazas: Plaza[]): void;
   /** Building bodies standing now, near city and far ring together (tests and debugging). */
   buildings(): number;
+  /** The standing lots whose centres lie within `r` of a point, as they are built now (the perf and UI tools' framing). */
+  lots(x: number, z: number, r: number): LotSummary[];
   /** Draws these lots on their own, outside the city (the ambient swatch board), and returns the group holding them. */
   board(lots: Lot[]): { group: THREE.Group; dispose(): void };
   /**
@@ -190,16 +206,17 @@ function bayPaneMaterial(base: THREE.MeshStandardMaterial): THREE.MeshStandardMa
         float upright = 1.0 - bayBox(fract(vPaneU / 0.5), 0.05, 0.95, 0.01);
         float rail = bayBox(vPaneP.y, -0.005, 0.025, 0.004);
         float head = step(0.27, vPaneP.y);
-        float sill = step(vPaneP.y, -0.25);
+        float sill = step(vPaneP.y, -0.21);
         float frame = clamp(upright + rail + head + sill, 0.0, 1.0);
         float drop = vPaneH < 0.3 ? 0.25 + 0.4 * fract(vPaneH * 7.0) : 0.0;
-        float blind = step(0.32 - drop * 0.62, vPaneP.y) * (1.0 - head);
+        float blind = step(0.32 - drop * 0.58, vPaneP.y) * (1.0 - head);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.4, 0.36), frame);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.5, 0.46, 0.4), blind * (1.0 - frame));
         vBayFrame = frame;
         vBayBlind = blind;`,
       )
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= (1.0 - vBayFrame) * mix(1.0, 0.3, vBayBlind) * (0.55 + 0.7 * fract(vPaneH * 3.0));')
+      // The room behind the panes: its ceiling light falls toward the sill, so a bay's glass is never a flat slab, lit or not.
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= (1.0 - vBayFrame) * mix(1.0, 0.3, vBayBlind) * (0.55 + 0.7 * fract(vPaneH * 3.0)) * (0.55 + 0.75 * smoothstep(-0.26, 0.32, vPaneP.y));')
       .replace('void main() {', 'float vBayFrame = 0.0;\nfloat vBayBlind = 0.0;\nvoid main() {');
   };
   return m;
@@ -335,9 +352,13 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const kitCar = kitShared('car');
   const kitBay = kitShared('bay');
   const kitBayGlass = kitShared('bay_glass');
+  const kitBayFoot = kitShared('bay_foot');
+  const kitBayRoof = kitShared('bay_roof');
   const kitChamfer = kitShared('chamfer_box');
   const kitRound = kitShared('round_box');
   const facadeMats = Object.fromEntries(ARCHETYPES.map((a) => [a, facadeMaterial(a)])) as Record<Archetype, THREE.MeshStandardMaterial>;
+  // The cut-corner walls take the same program with CUT set (facade.ts): their windows map by arc length round the cut.
+  const cutMats = Object.fromEntries(ARCHETYPES.map((a) => [a, facadeMaterial(a, a === 'midcentury' ? 'round' : 'chamfer')])) as Record<Archetype, THREE.MeshStandardMaterial>;
   const trimMat = trimMaterial();
   const roofboxMat = roofboxMaterial();
   // Weathered cedar staves: grey-brown, not new timber.
@@ -347,13 +368,15 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const kitMetal = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.45, vertexColors: true });
   const kitPaint = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.32, metalness: 0.5, vertexColors: true, envMapIntensity: 1.4 });
   const kitBayMat = bayBodyMaterial();
+  // The bay's lead roof: weathered grey lead, a little sheen.
+  const leadMat = new THREE.MeshStandardMaterial({ color: 0x4a4d52, roughness: 0.5, metalness: 0.35, vertexColors: true });
   const sawMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55, metalness: 0.35 });
   // Clerestory and sawtooth glass: lit ones glow warm (HDR, so bloom finds them), dark ones mirror the sky.
   // Lit glass over a warm room, glossy enough to hold a little of the sky, rather than a flat orange panel.
   const glazeLitMat = new THREE.MeshStandardMaterial({ color: 0x0a0806, roughness: 0.1, metalness: 0, envMapIntensity: 1.2, emissive: new THREE.Color(1.0, 0.64, 0.36), emissiveIntensity: 0.5 });
   // Unlit glass still holds a little of the room behind it: without the faint warmth, a stack of dark oriel bays read
   // as flat black slabs down a street front (AUD-C).
-  const glazeDarkMat = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.12, metalness: 0.25, envMapIntensity: 1.5, emissive: new THREE.Color(0.25, 0.19, 0.13), emissiveIntensity: 0.16 });
+  const glazeDarkMat = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.12, metalness: 0.25, envMapIntensity: 1.5, emissive: new THREE.Color(0.3, 0.28, 0.26), emissiveIntensity: 0.26 });
   const bayLitMat = bayPaneMaterial(glazeLitMat);
   const bayDarkMat = bayPaneMaterial(glazeDarkMat);
   const planterMat = new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.95 });
@@ -366,7 +389,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   type Batches = { walls: Record<Archetype, Batch>; cuts: Record<Archetype, Batch>; parts: PartBatches };
   function batchesFor(capOf: (k: PartKind) => number, shadows: boolean, cutOf: (a: Archetype) => number): Batches {
     const walls = Object.fromEntries(ARCHETYPES.map((a) => [a, new Batch(box, facadeMats[a], capOf(`wall:${a}`), shadows, true)])) as Record<Archetype, Batch>;
-    const cuts = Object.fromEntries(ARCHETYPES.map((a) => [a, new Batch(a === 'midcentury' ? kitRound : kitChamfer, facadeMats[a], cutOf(a), shadows, true)])) as Record<Archetype, Batch>;
+    const cuts = Object.fromEntries(ARCHETYPES.map((a) => [a, new Batch(a === 'midcentury' ? kitRound : kitChamfer, cutMats[a], cutOf(a), shadows, true)])) as Record<Archetype, Batch>;
     const parts: PartBatches = {
       trim: new Batch(box, trimMat, capOf('trim'), shadows),
       roofbox: new Batch(box, roofboxMat, capOf('roofbox'), shadows),
@@ -378,6 +401,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       bay: new Batch(kitBay, kitBayMat, capOf('bay'), shadows),
       bayGlass: new Batch(kitBayGlass, bayDarkMat, capOf('bayGlass'), false),
       bayLit: new Batch(kitBayGlass, bayLitMat, capOf('bayLit'), false),
+      bayFoot: new Batch(kitBayFoot, kitBayMat, capOf('bayFoot'), shadows),
+      bayRoof: new Batch(kitBayRoof, leadMat, capOf('bayRoof'), shadows),
       tank: new Batch(kitTank, tankMat, capOf('tank'), shadows),
       tankCap: new Batch(kitCap, M.darkMetal, capOf('tankCap'), shadows),
       stand: new Batch(kitStand, M.darkMetal, capOf('stand'), shadows),
@@ -695,7 +720,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     const blk = blockOf(lot.x, lot.z);
     for (const p of lotParts(lot)) {
       // Bays and rooftop units are street- and roof-scale detail: drawn only in the nearer city.
-      if (!near && (p.kind === 'bay' || p.kind === 'bayGlass' || p.kind === 'bayLit' || p.kind === 'unit' || p.kind === 'awning')) continue;
+      if (!near && (p.kind === 'bay' || p.kind === 'bayGlass' || p.kind === 'bayLit' || p.kind === 'bayFoot' || p.kind === 'bayRoof' || p.kind === 'unit' || p.kind === 'awning')) continue;
       if (p.kind.startsWith('wall:')) {
         const b = (p.chamfer ? into.cuts : into.walls)[lot.archetype];
         b.add(p.x, p.y, p.z, p.sx, p.sy, p.sz, p.colour, 0, blk);
@@ -715,8 +740,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
 
   const lampColor = new THREE.Color();
 
+  let plazasNow: Array<{ x: number; z: number }> = [{ x: 0, z: 0 }];
   function build(plazas: Plaza[]): void {
     const all = [{ x: 0, z: 0 }, ...plazas];
+    plazasNow = all;
     for (const b of batches) b.reset();
     used.fill(0);
     for (const b of boxes) b.maxY = 0;
@@ -823,6 +850,22 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       ao: aoCopies.reduce((n, c) => n + c.count, 0),
     }),
     buildings: () => [...Object.values(walls), ...Object.values(cuts)].reduce((n, b) => n + b.n, 0),
+    lots(x, z, r) {
+      const out: LotSummary[] = [];
+      const bi = Math.round(x / PITCH);
+      const bj = Math.round(z / PITCH);
+      const reach = Math.ceil(r / PITCH) + 1;
+      for (let i = bi - reach; i <= bi + reach; i++)
+        for (let j = bj - reach; j <= bj + reach; j++) {
+          if (Math.max(Math.abs(i), Math.abs(j)) > radius) continue;
+          for (const lot of standingLots(i, j, plazasNow)) {
+            if (Math.hypot(lot.x - x, lot.z - z) > r) continue;
+            const parts = lotParts(lot);
+            out.push({ x: lot.x, z: lot.z, w: lot.w, d: lot.d, h: lot.h, archetype: lot.archetype, front: [...lot.front], style: [...lot.style], cut: parts.some((p) => p.chamfer), bays: parts.filter((p) => p.kind === 'bay').length });
+          }
+        }
+      return out;
+    },
     board(lots) {
       const n = new Map<PartKind, number>();
       for (const lot of lots) for (const p of lotParts(lot)) n.set(p.kind, (n.get(p.kind) ?? 0) + 1);
@@ -848,7 +891,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     dispose() {
       for (const g of [box, stackGeo, prismGeo, treeGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
       for (const b of [...Object.values(walls), ...Object.values(cuts)]) b.mesh.geometry.dispose();
-      for (const m of [...Object.values(facadeMats), trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, treeMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
+      for (const m of [...Object.values(facadeMats), ...Object.values(cutMats), leadMat, trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, treeMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
       for (const b of batches) b.mesh.dispose();
       for (const c of [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies]) c.dispose();
     },

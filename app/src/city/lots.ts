@@ -20,7 +20,7 @@ import { ambientCap, cappedHeight, RESERVE_RADIUS, reserves, type CollarPlaza } 
 import { RENDERED } from './tower/rendered.js';
 import { onRiverGround } from '../../../shared/commute.js';
 import type { Look } from './tower/variants.js';
-import { AWNING, packShopfront, PALETTES, SHOP_SLOTS, shopBays, shopfrontPlan, STRIPED, unpackShopfront } from './shopfronts.js';
+import { AWNING, cutOf, frontWidth, packShopfront, PALETTES, SHOP_SLOTS, shopBays, shopfrontPlan, STRIPED, unpackShopfront } from './shopfronts.js';
 
 /** One city block's buildable square, in metres. */
 export const BLOCK = 64;
@@ -417,7 +417,7 @@ export function makeBlock(i: number, j: number): Lot[] {
       index: lots.length,
       shop: [0, 0, 0, 0],
     };
-    lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w, d, front, seed: r() }));
+    lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w, d, front, seed: r(), cut: cutOf(a, front, lot.style[3]) }));
     lots.push(lot);
     return lot;
   };
@@ -601,7 +601,7 @@ function assignTones(i: number, j: number, lots: Lot[], plazas: CollarPlaza[]): 
           lot.h = sectionHeight(a, Math.max(1, Math.round((lot.h - SECTIONS[a].ground) / SECTIONS[a].floor)));
           lot.roof = a === 'industrial' ? 'flat' : roofFor(a, lot.h, lot.w, lot.d, () => lot.style[3]);
           // A new type is a new frontage: the same seed, replanned as the type it now is.
-          lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood: lot.hood, w: lot.w, d: lot.d, front: lot.front, seed: lot.style[1] }));
+          lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood: lot.hood, w: lot.w, d: lot.d, front: lot.front, seed: lot.style[1], cut: cutOf(a, lot.front, lot.style[3] % 1) }));
           break;
         }
       }
@@ -679,6 +679,8 @@ export type PartKind =
   | 'bay'
   | 'bayGlass'
   | 'bayLit'
+  | 'bayFoot'
+  | 'bayRoof'
   | 'awning';
 
 /** One box (or cylinder, prism, canopy) of a building: centre, size, a turn about y, and its colour. */
@@ -717,6 +719,10 @@ const ROOFBOX: Record<Archetype, number> = {
 };
 
 const unit = (s: number): number => s - Math.floor(s);
+
+/** The oriel bay's corbelled foot under its lowest storey and its lead roof over the top one: their heights in metres. */
+export const BAY_FOOT = 0.4;
+export const BAY_ROOF = 0.45;
 
 /**
  * The parts of a standing lot: its walls (stepped back when tall), its
@@ -765,8 +771,8 @@ export function lotParts(lot: Lot): Part[] {
     }
   }
   // Corner lots of offices and slabs cut their street corners where two street fronts meet: a chamfer on offices
-  // and glass, a streamline curve on mid-century slabs.
-  const cut = (a === 'commercial' || a === 'midcentury' || a === 'glass') && lot.front.length > 1 && v > 0.45;
+  // and glass, a streamline curve on mid-century slabs (shopfronts.ts cutOf; the shader maps the cut by the same rule).
+  const cut = cutOf(a, lot.front, v);
   for (const t of tiers) {
     const top = t === tiers[tiers.length - 1];
     const hh = t.y1 - t.y0 - (top ? 0.35 : 0);
@@ -788,15 +794,16 @@ export function lotParts(lot: Lot): Part[] {
     // Awnings over the shopfronts' glass on the street fronts, one per awning bay of the plan (shopfronts.ts): a
     // canvas hung at the head of the glass, under the fascia, in the front's own cloth.
     if (t === tiers[0] && a !== 'parking' && a !== 'industrial') {
-      const nx = Math.min(SHOP_SLOTS, shopBays(t.d, (lot.shop[3] % 1000) / 100));
-      const nz = Math.min(SHOP_SLOTS, shopBays(t.w, (lot.shop[3] % 1000) / 100));
+      const nx = Math.min(SHOP_SLOTS, shopBays(frontWidth(t.d, cut), (lot.shop[3] % 1000) / 100));
+      const nz = Math.min(SHOP_SLOTS, shopBays(frontWidth(t.w, cut), (lot.shop[3] % 1000) / 100));
       const plan = unpackShopfront(lot.shop, nx, nz);
       const scheme = PALETTES[plan.palette];
       const cloth = colour(0xffffff).setRGB(scheme.cloth[0] + (scheme.striped ? STRIPED : 0), scheme.cloth[1], scheme.cloth[2]);
       const y = s.ground - 1.05 + 0.02 - AWNING.drop / 2;
       for (const f of lot.front) {
         const onX = f === 'px' || f === 'nx';
-        const along = onX ? t.d : t.w;
+        // On a cut lot the shopping front is the straight run between the cuts, as the shader lays its bays.
+        const along = frontWidth(onX ? t.d : t.w, cut);
         const n = shopBays(along, plan.bay);
         const cw = along / n;
         const awnings = onX ? plan.awningsX : plan.awningsZ;
@@ -825,20 +832,25 @@ export function lotParts(lot: Lot): Part[] {
           const o = n === 1 ? (v - 0.35) * along * 0.3 : (b - 0.5) * along * 0.5;
           const bw = 3.0;
           const bd = 0.85;
+          // A piece of the bay's stack, turned to the face: its storeys, then the corbels and soffit under the
+          // lowest and the lead roof over the top (kits.py bay, bay_glass, bay_foot, bay_roof).
+          const at = (kind: PartKind, y: number, sy: number, c: THREE.Color | undefined, grow = 1, deep = 1): void => {
+            const put = (dx: number, dz: number, rot: number): void => p(kind, t.x + dx, y, t.z + dz, bw * grow, sy, bd * deep, c, rot);
+            if (f === 'pz') put(o, t.d / 2 + bd / 2, 0);
+            else if (f === 'nz') put(-o, -t.d / 2 - bd / 2, Math.PI);
+            else if (f === 'px') put(t.w / 2 + bd / 2, -o, Math.PI / 2);
+            else put(-t.w / 2 - bd / 2, o, -Math.PI / 2);
+          };
           for (let k = 0; k < storeys; k++) {
             const y = s.ground + k * s.floor + s.floor / 2;
             const lit = hash(Math.round(lot.x * 3 + b), Math.round(lot.z), k + 7) < 0.5;
-            const at = (dx: number, dz: number, rot: number, glass: boolean): void => {
-              // The panes stand a few centimetres proud of the bay's faces, clear of its own surface.
-              if (glass) p(lit ? 'bayLit' : 'bayGlass', t.x + dx, y, t.z + dz, bw * 1.03, s.floor, bd * 1.06, lit ? colour(0xffffff) : undefined, rot);
-              else p('bay', t.x + dx, y, t.z + dz, bw, s.floor, bd, bayPaint, rot);
-            };
-            for (const glass of [false, true]) {
-              if (f === 'pz') at(o, t.d / 2 + bd / 2, 0, glass);
-              else if (f === 'nz') at(-o, -t.d / 2 - bd / 2, Math.PI, glass);
-              else if (f === 'px') at(t.w / 2 + bd / 2, -o, Math.PI / 2, glass);
-              else at(-t.w / 2 - bd / 2, o, -Math.PI / 2, glass);
-            }
+            at('bay', y, s.floor, bayPaint);
+            // The panes stand a few centimetres proud of the bay's faces, clear of its own surface.
+            at(lit ? 'bayLit' : 'bayGlass', y, s.floor, lit ? colour(0xffffff) : undefined, 1.03, 1.06);
+          }
+          if (storeys > 0) {
+            at('bayFoot', s.ground - BAY_FOOT / 2, BAY_FOOT, bayPaint);
+            at('bayRoof', s.ground + storeys * s.floor + BAY_ROOF / 2, BAY_ROOF, undefined, 1.04, 1.06);
           }
         }
       }
