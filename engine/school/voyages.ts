@@ -62,7 +62,7 @@ import type { BeagleApi, BeagleGenome, BeagleRaceEvent } from './beagle-api.js';
 import { loadBeagle, schoolDriver, useDriver } from './beagle.js';
 import { ci, pairedCi } from './stats.js';
 import { registerAbort, TURNED_OFF_REASON } from './tick.js';
-import { holdTrain, liveTrains, readGate, takeMachine } from './trainer.js';
+import { ENGINE_STOPPED_REASON, holdTrain, liveTrains, readGate, takeMachine } from './trainer.js';
 import { voyage, voyages } from './voyage-table.js';
 
 /** The agents of a generation the designer keeps unchanged. */
@@ -414,6 +414,24 @@ export async function sailVoyage(arenaId: string, now: number): Promise<VoyageVi
   } finally {
     sailing = null;
   }
+}
+
+/**
+ * At engine start: a voyage the last engine had sailing when it stopped can
+ * never report again. It reads `paused` with `ENGINE_STOPPED_REASON`
+ * (recorded as a `voyage.generation`), as its train does, until the tick
+ * resumes it where it stopped. Returns the voyages it moved.
+ */
+export function pauseStrandedVoyages(now: number = Date.now()): VoyageView[] {
+  if (sailing) return [];
+  const out: VoyageView[] = [];
+  for (const v of voyages()) {
+    if (v.status !== 'sailing') continue;
+    const view: VoyageView = { ...v, status: 'paused', reason: ENGINE_STOPPED_REASON, pausedAt: iso(now) };
+    announce('voyage.generation', view);
+    out.push(view);
+  }
+  return out;
 }
 
 /** Whether Beagle's store already holds voyage `id`. */

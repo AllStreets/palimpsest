@@ -56,6 +56,8 @@ export const isBeagle = (name: string): boolean => name.trim().toLowerCase() ===
 
 /** Why an arena build is refused while a graduation's sealed race holds the graduates' server (Task 27). */
 export const RACE_REFUSAL = 'A graduation race is running; build the arena once it ends';
+/** Why an arena build is refused while another train (the nets, a LoRA, a voyage) holds the machine: one train at a time. */
+export const BUSY_REFUSAL = 'A train is already running; build the arena once it ends';
 
 /**
  * Why an arena cannot be built from `repo` (ruling 20), or null: the school

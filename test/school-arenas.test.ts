@@ -21,17 +21,19 @@ import { mirrorDir } from '../engine/mirror.js';
 import { setTestCheck } from '../engine/school/history.js';
 import { resetGateCache } from '../engine/school/gate.js';
 import { paths } from '../engine/home.js';
-import { query } from '../engine/ledger.js';
+import { query, record } from '../engine/ledger.js';
 import { unattended } from '../engine/market/budget.js';
 import { getRepo } from '../engine/repos.js';
-import { arenaInfo as arenaInfoOf, arenaTasks, buildPast, buildPlanted, candidatesOf, mutantCapMs, pastCandidatesOf, resumeArenas, sealedRefs, setMutantCap, type Candidate, type PastInput, type PastTruth, type PlantedTruth } from '../engine/school/arenas.js';
+import { arenaInfo as arenaInfoOf, arenaTasks, buildPast, buildPlanted, BUSY_REFUSAL, candidatesOf, listArenas, mutantCapMs, pastCandidatesOf, pauseStrandedBuilds, resumeArenas, sealedRefs, setArenaGatePoll, setMutantCap, type Candidate, type PastInput, type PastTruth, type PlantedTruth } from '../engine/school/arenas.js';
+import { verifyReplay } from '../engine/market/replay.js';
+import { sailVoyage } from '../engine/school/voyages.js';
 import type { BeagleArena } from '../engine/school/beagle-api.js';
 import { closeBeagle, loadBeagle } from '../engine/school/beagle.js';
 import { schoolOff, TURNED_OFF_REASON } from '../engine/school/tick.js';
-import { setGate } from '../engine/school/trainer.js';
+import { ENGINE_STOPPED_REASON, holdTrain, liveTrains, pauseAll, setGate } from '../engine/school/trainer.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localCredits } from '../shared/credits.js';
-import type { ArenaInfo, GateState, Repo } from '../shared/types.js';
+import type { ArenaInfo, GateState, Repo, TrainState } from '../shared/types.js';
 import { CHECK_MS } from '../engine/guild/checks.js';
 import { checks, FULL, git, makeRepo, setUp, tearDown, tempDir } from './guild-fixtures.js';
 
@@ -110,6 +112,8 @@ beforeEach(() => {
   onSpawn = null;
   setSpawner(recording);
   setGate(async () => gateState(true));
+  // the gate is read between candidates here; the timer that reads it mid-grade is tested on its own
+  setArenaGatePoll(10 * 60_000);
   patchSettings({ school: { ...getSettings().school, enabled: true } });
 });
 
@@ -118,6 +122,7 @@ afterEach(async () => {
   setTestCheck(null);
   resetGateCache();
   setMutantCap(null);
+  setArenaGatePoll(null);
   setGate(null);
   closeBeagle();
   delete process.env.BEAGLE_HOME;
@@ -216,7 +221,7 @@ test('a gate loss pauses and resumes the rest', async () => {
   const triedFirst = first.filter((c) => c.state !== 'untried').length;
   assert.equal(triedFirst, 2, 'the gate held for the start and two candidates');
   assert.equal(arenaTasks(paused.id).length, 0, 'a paused arena has no tasks yet');
-  assert.equal(query({ kind: 'arena.built' }).length, 1, 'the pause is recorded with the arena');
+  assert.deepEqual(query({ kind: 'arena.built' }).map((e) => (e.data as { arena: ArenaInfo }).arena.status), ['building', 'paused'], 'the build is recorded as it starts, then its pause');
 
   const before = spawns.length;
   setGate(async () => gateState(true));
@@ -251,6 +256,122 @@ test('turning the school off stops a build, which pauses', async () => {
   assert.equal(off.status, 'failed');
   assert.match(off.reason ?? '', /school is off/);
   assert.equal(arenaInfoOf(info.id)?.status, 'paused', 'a refusal leaves the paused arena as it was');
+});
+
+test('a build holds an arena train while it runs: its row says building, and a voyage waits for it', async () => {
+  const repo = tinyRepo();
+  let seen: TrainState[] | null = null;
+  let row: ArenaInfo | undefined;
+  let voyage: Promise<unknown> | null = null;
+  onSpawn = (s) => {
+    if (seen !== null || !s.cwd.includes('-grade')) return;
+    seen = liveTrains();
+    row = listArenas(FULL)[0];
+    voyage = sailVoyage('any-arena', NOW).then(
+      () => 'sailed',
+      (err: Error) => err.message,
+    );
+  };
+  const info = await buildPlanted(repo, NOW);
+  assert.equal(info.status, 'ready', info.reason ?? '');
+  assert.deepEqual(((seen as TrainState[] | null) ?? []).map((t) => t.kind), ['arena'], 'the build is a live train of kind arena');
+  assert.equal(row?.id, info.id);
+  assert.equal(row?.status, 'building', 'the arena is listed as building while it builds');
+  assert.equal(await voyage, 'A train is already running', 'a voyage does not sail beside a build');
+  assert.deepEqual(liveTrains(), [], 'the train is let go when the build ends');
+  const statuses = query({ kind: 'arena.built' }).map((e) => (e.data as { arena: ArenaInfo }).arena.status);
+  assert.deepEqual(statuses, ['building', 'ready']);
+  assert.deepEqual(verifyReplay().diffs.filter((d) => /^arena/.test(d)), []);
+});
+
+test('a build is refused in plain words while another train runs, and pauseAll stops one', async () => {
+  const repo = tinyRepo();
+  const other: TrainState = { id: 'train-nets', kind: 'nets', status: 'running', reason: null, startedAt: new Date(NOW).toISOString(), endedAt: null, seconds: 0, steps: null, credits: 0 };
+  const release = holdTrain(other, () => {});
+  try {
+    const r = await buildPlanted(repo, NOW);
+    assert.equal(r.status, 'failed');
+    assert.equal(r.reason, BUSY_REFUSAL);
+    assert.equal(BUSY_REFUSAL, 'A train is already running; build the arena once it ends');
+    assert.equal(spawns.length, 0, 'nothing ran');
+    assert.equal(query({ kind: 'arena.built' }).length, 0, 'nothing was recorded');
+  } finally {
+    release();
+  }
+
+  let graded = 0;
+  onSpawn = (s) => {
+    if (s.cwd.includes('-grade') && ++graded === 2) void pauseAll('the engine is stopping');
+  };
+  const info = await buildPlanted(repo, NOW);
+  assert.equal(info.status, 'paused');
+  assert.equal(info.reason, 'the engine is stopping');
+  assert.ok(candidatesOf(info.id).some((c) => c.state === 'untried'));
+  assert.deepEqual(liveTrains(), []);
+});
+
+test('a build the engine stopped mid-way is paused at the next start and resumed under its own id', async () => {
+  const repo = tinyRepo();
+  let calls = 0;
+  setGate(async () => (++calls <= 3 ? gateState(true) : gateState(false, 'on battery')));
+  const first = await buildPlanted(repo, NOW);
+  assert.equal(first.status, 'paused');
+  // as an engine that died mid-build leaves it: the state file, and a row that still says building
+  const crashed: ArenaInfo = { ...first, status: 'building', reason: null };
+  openDb().prepare('INSERT OR REPLACE INTO arenas (id, repo, json) VALUES (?, ?, ?)').run(crashed.id, crashed.repo, JSON.stringify(crashed));
+  record('arena.built', { arena: crashed });
+
+  const moved = pauseStrandedBuilds(NOW + 1000);
+  assert.deepEqual(moved.map((a) => a.id), [first.id]);
+  const row = arenaInfoOf(first.id);
+  assert.equal(row?.status, 'paused');
+  assert.equal(row?.reason, ENGINE_STOPPED_REASON);
+  assert.equal(ENGINE_STOPPED_REASON, 'the engine stopped');
+  assert.equal((query({ kind: 'arena.built' }).at(-1)?.data as { arena: ArenaInfo }).arena.status, 'paused');
+  assert.deepEqual(verifyReplay().diffs.filter((d) => /^arena/.test(d)), []);
+  assert.deepEqual(pauseStrandedBuilds(NOW + 2000), [], 'a second start moves nothing');
+
+  setGate(async () => gateState(true));
+  const resumed = await resumeArenas(NOW + 24 * 60 * 60 * 1000);
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0].id, first.id, 'the stopped build goes on under its own id');
+  assert.equal(resumed[0].status, 'ready', resumed[0].reason ?? '');
+  assert.equal(listArenas(FULL).length, 1, 'no second arena, no orphaned state');
+  assert.equal(installSpawns().length, 1, 'its base was kept');
+});
+
+const SLOW_SUITE = "import { test } from 'node:test';\ntest('slow', async () => { await new Promise((r) => setTimeout(r, 120_000)); });\n";
+
+test('a gate that fails mid-grade stops the build within the poll, not at the grade\'s end', async () => {
+  makeRepo(checks({ test: 'node --test test/slow.test.js' }), {
+    'package.json': JSON.stringify({ name: 'widgets', type: 'module' }),
+    'src/math.js': MATH,
+    'test/slow.test.js': SLOW_SUITE,
+  });
+  setArenaGatePoll(100);
+  let closed: (() => Promise<GateState>) | null = null;
+  setGate(async (kind) => (closed ? closed() : { ...gateState(true), kind }));
+  onSpawn = (s) => {
+    if (s.cwd.includes('-grade')) closed = async () => gateState(false, 'on battery');
+  };
+  const t0 = Date.now();
+  const info = await buildPlanted(getRepo(FULL)!, NOW);
+  assert.equal(info.status, 'paused');
+  assert.equal(info.reason, 'on battery');
+  assert.ok(Date.now() - t0 < 60_000, 'the head suite was not waited out');
+
+  // a gate that cannot be read stops it too
+  closed = null;
+  onSpawn = (s) => {
+    if (s.cwd.includes('-grade')) closed = async () => Promise.reject(new Error('pmset fell over'));
+  };
+  const t1 = Date.now();
+  const again = await buildPlanted(getRepo(FULL)!, NOW);
+  assert.equal(again.id, info.id, 'the paused build was resumed');
+  assert.equal(again.status, 'paused');
+  assert.equal(again.reason, 'the gate could not be read: pmset fell over');
+  assert.ok(Date.now() - t1 < 60_000);
+  assert.deepEqual(liveTrains(), []);
 });
 
 test('a market-off repo is refused', async () => {

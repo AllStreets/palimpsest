@@ -41,11 +41,16 @@
  * the change's test diff and the failure, never the fix; `arena_tasks.ref`
  * is the PR number or the sha.
  *
- * Every command runs through `execTool()` under the tool profile. The gate
- * is read before each candidate; a gate loss, or the school turned off,
+ * Every command runs through `execTool()` under the tool profile. A build
+ * holds a train of kind `arena` (`holdTrain`) and is refused while any other
+ * train runs, so the school runs one train at a time. It is recorded
+ * `building` as it starts. The gate is read before each candidate and every
+ * `GATE.pollMs` while a grade runs; a gate loss (or a gate that cannot be
+ * read), the school turned off or `pauseAll` stops the grade in flight and
  * pauses the build (`arena.built` with status `paused`), and the next build
  * of that repo, or `resumeArenas()` on a later night, tries only the
- * candidates not yet tried. The wall time of each session is charged as
+ * candidates not yet tried. A build an engine crash left `building` is
+ * paused at the next start (`pauseStrandedBuilds`). The wall time of each session is charged as
  * local `school` credits to the city.
  *
  * What a build has tried lives in `<school>/arenas/<id>/state.json`; its
@@ -58,8 +63,8 @@ import { isAbsolute, join, normalize, sep } from 'node:path';
 
 import { localCredits } from '../../shared/credits.js';
 import { poolOfModel } from '../../shared/market-rules.js';
-import { ARENA, arenaRefusal, RACE_REFUSAL } from '../../shared/school-rules.js';
-import type { ArenaInfo, ModelRef, Repo } from '../../shared/types.js';
+import { ARENA, arenaRefusal, BUSY_REFUSAL, GATE, RACE_REFUSAL } from '../../shared/school-rules.js';
+import type { ArenaInfo, ModelRef, Repo, TrainState } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { getRunner } from '../exec.js';
 import { paths } from '../home.js';
@@ -83,7 +88,7 @@ import { isSourceFile, verifiedChanges, type VerifiedChange } from './history.js
 import { isTestFile } from '../audit/schema.js';
 import { mutable, mutate, shuffled, type Mutant } from './mutants.js';
 import { registerAbort, TURNED_OFF_REASON } from './tick.js';
-import { liveTrains, readGate, takeMachine } from './trainer.js';
+import { ENGINE_STOPPED_REASON, holdTrain, liveTrains, readGate, takeMachine } from './trainer.js';
 
 /** What a planted task shows the agent: which tests fail and how, never where the bug is. */
 export interface PlantedInput {
@@ -218,6 +223,17 @@ const SHA = /^[0-9a-f]{40}$/;
 
 /** The one build running now, if any. */
 let live: { id: string; repo: string } | null = null;
+
+/** Why a build is refused while another train holds the machine (shared with the district page). */
+export { BUSY_REFUSAL };
+
+/** How often a build reads the gate while a grade runs (GATE.pollMs; tests shorten it). */
+let gatePollMs: number = GATE.pollMs;
+
+/** Replaces how often a build reads the gate mid-grade (tests); null restores GATE.pollMs. */
+export function setArenaGatePoll(ms: number | null): void {
+  gatePollMs = ms ?? GATE.pollMs;
+}
 
 // ---------------------------------------------------------------- where things live
 
@@ -842,6 +858,8 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
   const why = refusal(repo);
   if (why) return refused(repo, why, now, kind);
   if (live) return refused(repo, `An arena is already being built (${live.repo})`, now, kind);
+  // one train at a time (the school's rule): a build waits for the nets, a LoRA or a voyage, as they wait for it
+  if (liveTrains().length > 0) return refused(repo, BUSY_REFUSAL, now, kind);
 
   const state: BuildState = pausedOf(repo.fullName, kind) ?? {
     kind,
@@ -858,10 +876,26 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
   const started = Date.now();
   const at = () => now + (Date.now() - started);
   const ctl = new AbortController();
+  // the build is a train of kind arena: liveTrains() sees it, so the nets, a LoRA, a voyage and the tick wait,
+  // and pauseAll (the stop file, the engine stopping) stops it as it stops any train
+  const train: TrainState = { id: `train-arena-${randomUUID().slice(0, 8)}`, kind: 'arena', status: 'running', reason: null, startedAt: new Date(now).toISOString(), endedAt: null, seconds: 0, steps: null, credits: 0 };
+  const unhold = holdTrain(train, (reason) => ctl.abort(reason));
   const unregister = registerAbort(() => ctl.abort(TURNED_OFF_REASON));
   const onOuter = () => ctl.abort(o.signal?.reason ?? 'stopped');
   o.signal?.addEventListener('abort', onOuter, { once: true });
   const signal = ctl.signal;
+  // the gate re-read every GATE.pollMs while a grade runs: closed or unreadable, the grade in flight is stopped
+  const checkGate = async () => {
+    if (signal.aborted) return;
+    try {
+      const g = await readGate('heavy', at());
+      if (!g.ok && !signal.aborted) ctl.abort(g.reason ?? 'the gate closed');
+    } catch (err) {
+      if (!signal.aborted) ctl.abort(`the gate could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const gateTimer = setInterval(() => void checkGate(), gatePollMs);
+  gateTimer.unref?.();
   const logFile = join(arenaDir(state.id), 'log.jsonl');
   mkdirSync(arenaDir(state.id), { recursive: true });
   const log = (line: RunLogLine) => {
@@ -929,6 +963,9 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
   };
 
   try {
+    // the row says building from the start, so the screens show it and a crash leaves something to pause and resume
+    writeState(state);
+    putInfo(infoOf(state, 'building', null, now));
     const first = await readGate('heavy', at());
     if (!first.ok) return await pause(first.reason ?? 'the gate closed');
     // the build is a heavy train: the graduates' server (ruling 26) ends its calls, stops, and stays down until it ends
@@ -996,10 +1033,27 @@ async function build(kind: ArenaInfo['kind'], repo: Repo, now: number, o: { sign
       });
     }
     giveBack();
+    clearInterval(gateTimer);
     o.signal?.removeEventListener('abort', onOuter);
     unregister();
+    unhold();
     live = null;
   }
+}
+
+/**
+ * At engine start: a build the last engine was running when it stopped can
+ * never report again. Its `building` row becomes `paused` with
+ * `ENGINE_STOPPED_REASON` (recorded), so `resumeArenas` goes on with it under
+ * its own id, its state and base kept. Returns the arenas it moved.
+ */
+export function pauseStrandedBuilds(now: number = Date.now()): ArenaInfo[] {
+  const out: ArenaInfo[] = [];
+  for (const a of listArenas()) {
+    if (a.status !== 'building' || live?.id === a.id) continue;
+    out.push(putInfo({ ...a, status: 'paused', reason: ENGINE_STOPPED_REASON, builtAt: new Date(now).toISOString() }));
+  }
+  return out;
 }
 
 /**

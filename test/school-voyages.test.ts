@@ -31,7 +31,7 @@ import { resetGateCache } from '../engine/school/gate.js';
 import { schoolOff, startSchool, TURNED_OFF_REASON } from '../engine/school/tick.js';
 import { failInterruptedTrains, liveTrains, setGate } from '../engine/school/trainer.js';
 import { commission } from '../engine/school/roster.js';
-import { sailVoyage, setVoyagePoll, voyages } from '../engine/school/voyages.js';
+import { pauseStrandedVoyages, sailVoyage, setVoyagePoll, voyages } from '../engine/school/voyages.js';
 import { localDay } from '../shared/day.js';
 import { COMMISSION, SEALED_USES, VOYAGE } from '../shared/school-rules.js';
 import type { ArenaInfo, GateState, Trip, VoyageView } from '../shared/types.js';
@@ -756,6 +756,35 @@ test('a voyage the engine stopped mid-sail replays clean once the next engine pa
   (await import('../engine/ledger.js')).record('train.started', { train, voyageId: 'v-dead' });
   await failInterruptedTrains();
   assertSchoolReplays();
+});
+
+test('a voyage left sailing by a crash reads paused, the engine stopped, until the tick resumes it', async () => {
+  seedLocals();
+  backends();
+  await fakeArena();
+  gateOk = () => calls.length < 5;
+  const night1 = await sailVoyage(ARENA, NOW);
+  assert.equal(night1.status, 'paused');
+  // as an engine that died mid-sail leaves it: the row and its last entry say sailing
+  const stranded: VoyageView = { ...night1, status: 'sailing', reason: null, pausedAt: null };
+  openDb().prepare('INSERT OR REPLACE INTO voyages (id, json) VALUES (?, ?)').run(stranded.id, JSON.stringify(stranded));
+  record('voyage.generation', { voyageId: stranded.id, voyage: stranded, repo: stranded.repo ?? null });
+
+  const moved = pauseStrandedVoyages(NOW + HOUR);
+  assert.deepEqual(moved.map((v) => v.id), [night1.id]);
+  const v = voyages().find((x) => x.id === night1.id)!;
+  assert.equal(v.status, 'paused');
+  assert.equal(v.reason, 'the engine stopped');
+  assert.equal(v.pausedAt, new Date(NOW + HOUR).toISOString());
+  assert.equal((ledgerOf('voyage.generation').at(-1)!.voyage as VoyageView).status, 'paused');
+  assertSchoolReplays();
+  assert.deepEqual(pauseStrandedVoyages(NOW + HOUR), [], 'nothing else is moved');
+
+  gateOk = () => true;
+  readingAt(NOW + 2 * HOUR);
+  const night2 = await sailVoyage(ARENA, NOW + 2 * HOUR);
+  assert.equal(night2.id, night1.id, 'the tick resumes it');
+  assert.equal(night2.status, 'done', night2.reason ?? '');
 });
 
 test("a voyage waits for the graduates' calls in flight and stops their server before it sails", async () => {

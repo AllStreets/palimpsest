@@ -216,7 +216,7 @@ The ride also stops at a few of the floors earned in the market: the newest, the
 
 Phase 4 opens a university. It teaches the city from what actually happened in it: it breeds agents on arenas built from my own repos, teaches a small local coder on work that passed and survived, trains five small nets and a master net on the ledger, and asks my permission, one kind of work and one repo at a time, before the city does anything on its own.
 
-The school is off until I switch it on in Settings. While it is off nothing is built, nothing sails, nothing trains, no net touches an award or the brief, and the city never acts by itself. Turning it off stops a train that is running.
+The school is off until I switch it on in Settings. While it is off nothing is built, nothing sails, nothing trains, no net touches an award or the brief, and the city never acts by itself. Turning it off stops a train that is running. It also cuts off a graduate in the middle of a market job: that job goes back to the board without costing its firm an attempt, and no graduate is served again until the school is back on.
 
 Everything it trains is shown with a held-out score, a 95% interval and how many rows it was scored on. A net with too little to learn from says so, and says why, instead of showing a number.
 
@@ -251,7 +251,7 @@ Each arena is split into breeding, race and sealed tasks, 60, 25 and 15 in a hun
 
 Breeding runs on [Beagle](https://github.com/AllStreets/beagle), my agent breeding engine, imported as a library. Every model call it makes goes through the city's own caps, slots and credits, so it can't spend outside them.
 
-A voyage is one breeding run on one arena: eight agent designs, four generations, local models only. A designer proposes the children from what their parents did on the breeding tasks, and a child is kept only when it beats its parents on the race tasks by a margin whose interval stays above zero. A voyage is about 500 runs that each use tools, so it spans several nights, and it picks up where it stopped. The champion is then raced on the sealed tasks against every local agent the firms already have. If it beats each of them, it joins the roster for firms to hire. Claude agents are not in that comparison, and the screen says so.
+A voyage is one breeding run on one arena: eight agent designs, four generations, local models only. A designer proposes the children from what their parents did on the breeding tasks, and a child is kept only when it beats its parents on the race tasks by a margin whose interval stays above zero. A voyage is about 500 runs that each use tools, so it spans several nights, and it picks up where it stopped. The champion is then raced on the sealed tasks against the local agents the firms were seeded with, the same ones the voyage started from. If it beats each of them, it joins the roster for firms to hire. Claude agents are not in that comparison, and the screen says so.
 
 The designer runs on Claude Sonnet by default, at most 30 credits a day, and Settings can put it on a local model instead. A firm with at least 400 credits can pay the school 120 to sail a voyage on an arena of a repo it has worked, and gets the first offer of its champion for a week. The fee is all it pays. The voyage's own spend is the city's, under the same caps as everything else.
 
@@ -301,7 +301,7 @@ A net's page plots every version with its interval against the baseline. A net w
 
 <p align="center"><sub>The observatory opening while the sample school's nets train. Click for the video.</sub></p>
 
-The observatory is shut and dark while the master has nothing to show. Once it is trusted, the dome's shutters part while the nets train, the plate inside lights, and the telescope turns.
+The observatory is shut and dark between trainings. Whenever the nets train, trusted or not, the dome's shutters part, the inside lights and the telescope turns, and each new master looks at a new part of the sky. The brass plate by the door waits for trust: it lights only once the master is trusted.
 
 ### Earned autonomy
 
@@ -333,7 +333,7 @@ Training runs only when all of this holds:
 - for a LoRA, a voyage or an arena build, it has been idle for 15 minutes, no thermal or performance warning is recorded, and 20 GB of disk is free;
 - and no local job of the market's is running or waiting. Real work always comes first.
 
-Train now in Settings skips the window and the idle wait for three hours, but never the power, the thermals or the disk. The gate is read every 30 seconds while anything trains. When it fails, the trainer is stopped within 30 seconds and resumes from its last checkpoint the next time the gate holds. A resumed LoRA restarts its optimiser, and its card says so.
+Train now in Settings skips the window and the idle wait for three hours, but never the power, the thermals or the disk. The gate is read every 30 seconds while anything trains, races or builds an arena. When it fails, that work is stopped within 30 seconds. A train resumes from its last checkpoint the next time the gate holds, and an arena build goes on with the candidates it hasn't graded yet. Only one of them runs at a time: an arena build waits for a train or a voyage, and they wait for it. A resumed LoRA restarts its optimiser, and its card says so.
 
 Local training and racing are charged as local credits by the minute and the model's size, and never touch my Claude windows. The school's only Claude use is the voyage designer: at most 30 credits a day, 3% of a window, in one of the city's Claude slots, waiting while I'm using Claude myself, and counted in the night cap.
 
@@ -378,6 +378,8 @@ Every agent process runs under a `sandbox-exec` profile that denies by default. 
 No agent gets a shell. Claude works through the `claude` CLI with file tools and one tool that hands each command to the broker, and the local models' tool loop calls the broker directly. The broker checks every command against the guard and runs it under the sandbox in the run's own folder, with an environment built from nothing.
 
 The guard refuses, among other things: any push, changing the git remotes or config, rewriting history, deleting a tag or any branch not named `palimpsest/`, the GitHub CLI, `sudo`, `launchctl`, `osascript` and `security`, piping a download into a shell, recursive removal outside the repository, and any command that names a credential file or Claude's configuration. It is one of three layers: a command it misses still runs without credentials, inside the sandbox.
+
+One limit I know of: a process inside the sandbox can hardlink a file it may read into the folder it may write to. The profiles deny writes to the secret paths, but the limit is there, and I'd rather say so.
 
 Every agent's instructions carry the never list: never, without asking, delete a repo, force-push, rewrite history, change repo settings, secrets or visibility, touch billing, or delete branches the city did not create. The engine's own pushes refuse any force flag, and the only branches it ever deletes are its own `palimpsest/` branches.
 

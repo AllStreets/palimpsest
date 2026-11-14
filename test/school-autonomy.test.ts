@@ -594,7 +594,7 @@ test('mayAct reads his decision and the job again after the last wait', async ()
   const b = waitingPR('b');
   // the job leaves waiting while gh answers
   whileGh = () => {
-    storeJobRow(b.job.id, { ...b.job, status: 'done' });
+    storeJobRow(b.job.id, { ...b.job, status: 'merged' });
   };
   await refused('merge:normal', FULL, b.job.id, 'job-b has no PR waiting on you.');
   whileGh = null;
