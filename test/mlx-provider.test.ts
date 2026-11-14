@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
 import { paths } from '../engine/home.js';
-import { beginHeavy, ensureServer, GraduatesDown, heavyRunning, MLX_GB, MLX_IDLE_MS, mlxProvider, reapStrayServer, serverPidFile, serverState, STRAY_KILL_GRACE_MS } from '../engine/market/mlx.js';
+import { beginHeavy, ensureServer, GraduatesDown, heavyRunning, MLX_GB, MLX_IDLE_MS, mlxProvider, reapStrayServer, SchoolOff, serverPidFile, serverState, STRAY_KILL_GRACE_MS } from '../engine/market/mlx.js';
 import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { loraBaseDir } from '../engine/school/lora.js';
@@ -41,6 +41,8 @@ function complete(model: ModelRef, text = 'hello', signal = new AbortController(
 
 beforeEach(async () => {
   setUp('mlx-provider');
+  // a graduate is served only while the school is on
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
   m = await installMlx();
   ({ spawned, bodies, timers, port } = m);
 });
@@ -66,6 +68,27 @@ test('turning the school off stops the server, a call in flight ending with an e
   await assert.rejects(call, /stopped|abort/i);
   assert.deepEqual(spawned[0].kills, ['SIGTERM']);
   assert.equal(serverState(), null);
+});
+
+test('with the school off no graduate is served, and a run cut off by the flip goes back to the board unspent', async () => {
+  m.replies = [{ json: completion({ content: 'never' }), delayMs: 30_000 }];
+  const run = mlxProvider().work(workInput('run-flip'));
+  await until(() => bodies.length === 1);
+  patchSettings({ school: { ...getSettings().school, enabled: false } });
+  const r = await run;
+  assert.equal(r.ended, 'crashed');
+  assert.equal(r.spendsAttempt, false, 'the firm keeps its attempt');
+  assert.equal(r.reason, 'the school is off');
+  assert.equal(serverState(), null);
+
+  // a hired graduate's next call never starts the server again
+  await assert.rejects(ensureServer(GRAD_1), (err: Error) => err instanceof SchoolOff && err.message === 'the school is off');
+  await assert.rejects(complete(GRAD_1), /the school is off/);
+  const w = await mlxProvider().work(workInput('run-off'));
+  assert.equal(w.ended, 'crashed');
+  assert.equal(w.spendsAttempt, false);
+  assert.equal(w.reason, 'the school is off');
+  assert.equal(spawned.length, 1, 'no server started after the flip');
 });
 
 function workInput(runId: string): WorkInput {

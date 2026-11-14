@@ -39,6 +39,7 @@ import { AUDIT_PERSONA, auditPrompt, checkCommands } from '../audit/schema.js';
 import { openDb } from '../db.js';
 import { getRunner, getSpawner, signalGroup, type Spawned } from '../exec.js';
 import { paths } from '../home.js';
+import { getSettings } from '../settings.js';
 import { trainerEnv, trainerPython } from '../school/trainer-env.js';
 import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
 import { parseAnswer, planAnswer, PLAN_JSON, reviewAnswer, REVIEW_JSON } from './ollama.js';
@@ -118,6 +119,8 @@ function graduateLora(model: ModelRef): string | null {
  * reason, when there is none or the base is not downloaded.
  */
 export async function adapterFor(model: ModelRef): Promise<ServedAdapter> {
+  // turning the school off stops the graduates' server: nothing serves one again until it is on
+  if (!getSettings().school.enabled) throw new SchoolOff();
   // loaded on use: lora.ts reaches back into the market through history.ts
   const { baseReady, trainedAdapter } = await import('../school/lora.js');
   if (!model.startsWith('mlx:')) throw new Error(`${model} is not an mlx model`);
@@ -417,6 +420,18 @@ export class GraduatesDown extends Error {
   }
 }
 
+/** The reason a graduate is refused while the school is off. */
+export const SCHOOL_OFF = 'the school is off';
+
+/** Thrown when a graduate is asked for while the school is off: the model is unavailable, not broken. */
+export class SchoolOff extends Error {
+  readonly unavailable = true;
+  constructor() {
+    super(SCHOOL_OFF);
+    this.name = 'SchoolOff';
+  }
+}
+
 /** The heavy trains holding the machine now, oldest first. */
 const heavy: string[] = [];
 
@@ -454,6 +469,7 @@ export async function beginHeavy(what: string): Promise<() => void> {
 function acquire(model: ModelRef, signal?: AbortSignal): Promise<Live> {
   return serialized(async () => {
     signal?.throwIfAborted();
+    if (!getSettings().school.enabled) throw new SchoolOff();
     if (heavy.length) throw new GraduatesDown(heavy[0]);
     const adapter = await adapterFor(model);
     let l = current && !current.exited ? current : null;
@@ -694,6 +710,11 @@ export function mlxProvider(): Provider {
         i.log({ at: new Date().toISOString(), kind: 'engine', text: `mlx run crashed: ${reason}` });
         return { summary: '', usage: usageOf(0), ended: 'crashed', reason };
       }
+      // the school is off: no graduate is served, so the job goes back to the board unspent
+      if (!getSettings().school.enabled) {
+        i.log({ at: new Date().toISOString(), kind: 'engine', text: SCHOOL_OFF });
+        return { summary: '', usage: usageOf(0), ended: 'crashed', reason: SCHOOL_OFF, spendsAttempt: false };
+      }
       // a heavy train holds the machine: the model is unavailable, so the job goes back to the board unspent
       const down = heavyRunning();
       if (down) {
@@ -720,6 +741,8 @@ export function mlxProvider(): Provider {
       });
       // a train took the machine between turns: unavailable, not the agent's failure
       if (refused !== null && r.ended === 'crashed') return { ...r, reason: refused, spendsAttempt: false as const };
+      // the school was turned off mid-run, its server stopped under the call: unavailable too, the firm's attempt kept
+      if (r.ended === 'crashed' && !getSettings().school.enabled) return { ...r, reason: SCHOOL_OFF, spendsAttempt: false as const };
       return r;
     },
 
