@@ -369,14 +369,18 @@ test('a test file in any spelling is refused, and a source file only in its own 
 
 test('test configuration, runner files and whatever the test command names are refused', () => {
   const files = [
-    'conftest.py', 'pkg/conftest.py', 'jest.config.js', 'vite.config.ts', 'Vitest.Config.mts', '.mocharc.js', '.eslintrc.cjs', 'setupTests.js', 'setup.py', 'vitest.setup.ts',
-    'karma.conf.js', 'jest.setup.js', 'run.sh', 'scripts/ci.sh', 'package.json', 'e2e/flow.js', 'src/__mocks__/fs.js', 'fixtures/data.js', 'src/fixtures/data.ts', 'scripts/check.js', 'tools/runner/main.js',
+    'conftest.py', 'pkg/conftest.py', 'jest.config.js', 'vite.config.ts', 'Vitest.Config.mts', '.mocharc.js', '.eslintrc.cjs', 'mocharc.yml', 'eslintrc.json', 'Babelrc.js',
+    'setupTests.js', 'src/SetupTests.ts', 'test-setup.js', 'vitest.setup.ts', 'test/setup.js', 'spec/helpers/setup.ts',
+    'karma.conf.js', 'jest.setup.js', 'run.sh', 'scripts/ci.sh', 'package.json', 'e2e/flow.js', 'src/__mocks__/fs.js', 'fixtures/data.js', 'src/fixtures/data.ts', 'scripts/check.js',
   ];
-  const dir = looseTree(Object.fromEntries([...files, 'src/math.js'].map((f) => [f, 'x\n'])));
+  // Setup that is not test setup, a source file merely named like rc, and a file under a folder the command names (not named itself) stay editable.
+  const editable = ['src/setupRoutes.ts', 'src/setup.js', 'src.js', 'lib/arc.js', 'tools/runner/main.js', 'tools/runner.js'];
+  const dir = looseTree(Object.fromEntries([...files, ...editable, 'src/math.js'].map((f) => [f, 'x\n'])));
   const command = 'node scripts/check.js && node --test --import=./tools/runner test/';
   for (const f of files) assert.match(arenas.applyEdits(dir, edit(f), command) ?? '', /may not be changed/, f);
   for (const f of files) assert.equal(readFileSync(join(dir, f), 'utf8'), 'x\n', `${f} is unchanged`);
   assert.equal(arenas.applyEdits(dir, edit('src/math.js'), command), null, 'a plain source file may be edited');
+  for (const f of editable) assert.equal(arenas.applyEdits(dir, edit(f), command), null, `${f} may be edited`);
 });
 
 test('a source edit that exits 0 before the tests run does not score 1', async () => {

@@ -1166,7 +1166,9 @@ const TEST_CONFIG = [
   /^conftest\.py$/,
   /\.config\.[^.]+$/,
   /^\.[^/]*rc(\.[^.]+)?$/,
-  /^setup/,
+  /^(mocharc|nycrc|c8rc|avarc|jestrc|vitestrc|karmarc|babelrc|swcrc|eslintrc|prettierrc|stylelintrc|npmrc|yarnrc|pnpmrc|coveragerc|pylintrc|flake8rc)(\.[^.]+)?$/,
+  /^setuptests\./,
+  /^test-setup\./,
   /^(jest|vitest|karma)\./,
   /\.sh$/,
   /^package\.json$/,
@@ -1176,7 +1178,7 @@ const TEST_CONFIG = [
 const TESTS_REFUSED = 'the tests may not be changed';
 const CONFIG_REFUSED = 'test configuration and runner files may not be changed';
 
-/** The repo paths a test command names (`node --test test/a.js`, `sh scripts/check.sh`), relative and lower-cased. */
+/** The repo paths a test command names (`node --test test/a.js`, `sh scripts/check.sh`), relative and lower-cased; only a file named whole is protected by it, never a folder's contents. */
 function commandPaths(command: string): string[] {
   const out: string[] = [];
   for (const raw of command.split(/[\s;&|()]+/)) {
@@ -1191,8 +1193,10 @@ function commandPaths(command: string): string[] {
 
 /**
  * Why a racer may not edit `rel` (ruling 21), or null: a test file or a
- * file in a test folder, test configuration or a runner file, or any file
- * the declared test command names (or one under a folder it names). Every
+ * file in a test folder (its setup files with it), test configuration or a
+ * runner file (setup only by a test setup name: `setupTests.*`,
+ * `test-setup.*`, `jest.setup.*`, `vitest.setup.*`), or a file the
+ * declared test command names (never a whole folder it names). Every
  * comparison is on the path lower-cased, since APFS ignores case.
  */
 export function protectedReason(rel: string, command: string): string | null {
@@ -1201,7 +1205,7 @@ export function protectedReason(rel: string, command: string): string | null {
   const name = parts[parts.length - 1];
   if (isTestFile(rel) || isTestFile(lower) || parts.slice(0, -1).some((p) => ARENA_TEST_FOLDERS.has(p))) return TESTS_REFUSED;
   if (TEST_CONFIG.some((re) => re.test(name))) return CONFIG_REFUSED;
-  for (const c of commandPaths(command)) if (lower === c || lower.startsWith(`${c}/`)) return CONFIG_REFUSED;
+  for (const c of commandPaths(command)) if (lower === c) return CONFIG_REFUSED;
   return null;
 }
 
