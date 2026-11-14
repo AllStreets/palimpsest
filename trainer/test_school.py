@@ -338,3 +338,160 @@ class Nets(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def build_tiny_qwen(path, layers=2):
+    """A random Qwen2-shaped model with `layers` layers and a byte-level tokenizer with a chat
+    template, written from a config into `path`. Nothing is downloaded: every weight is random."""
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+    from mlx_lm.models import qwen2
+    from tokenizers import AddedToken, Tokenizer, decoders, models, pre_tokenizers
+
+    os.makedirs(path, exist_ok=True)
+    vocab = {c: i for i, c in enumerate(sorted(pre_tokenizers.ByteLevel.alphabet()))}
+    specials = ["<|im_start|>", "<|im_end|>", "<|endoftext|>"]
+    for s in specials:
+        vocab[s] = len(vocab)
+    tok = Tokenizer(models.BPE(vocab=vocab, merges=[]))
+    tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tok.decoder = decoders.ByteLevel()
+    tok.add_special_tokens([AddedToken(s, special=True) for s in specials])
+    tok.save(os.path.join(path, "tokenizer.json"))
+    template = (
+        "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+        "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+    )
+    with open(os.path.join(path, "tokenizer_config.json"), "w") as f:
+        json.dump({"tokenizer_class": "PreTrainedTokenizerFast", "eos_token": "<|im_end|>", "pad_token": "<|endoftext|>", "chat_template": template, "model_max_length": 4096}, f)
+    config = {
+        "model_type": "qwen2", "hidden_size": 64, "num_hidden_layers": layers, "intermediate_size": 128,
+        "num_attention_heads": 4, "num_key_value_heads": 2, "rms_norm_eps": 1e-6, "vocab_size": 320,
+        "rope_theta": 10000.0, "tie_word_embeddings": True, "max_position_embeddings": 4096,
+    }
+    with open(os.path.join(path, "config.json"), "w") as f:
+        json.dump(config, f)
+    mx.random.seed(0)
+    model = qwen2.Model(qwen2.ModelArgs.from_dict(config))
+    mx.save_safetensors(os.path.join(path, "model.safetensors"), dict(tree_flatten(model.parameters())))
+
+
+def write_chats(path, n, seed):
+    """`n` chats in the LoRA data shape (system, user, assistant), as the engine writes them."""
+    rng = random.Random(seed)
+    with open(path, "w") as f:
+        for i in range(n):
+            word = "".join(rng.choice("abcdef") for _ in range(6))
+            messages = [
+                {"role": "system", "content": "Reply with JSON only."},
+                {"role": "user", "content": f"A change to acme/widgets was asked for:\nRename {word}.\n\nMake the change to the source."},
+                {"role": "assistant", "content": json.dumps({"action": "answer", "answer": {"edits": [{"file": "src/a.ts", "find": word, "replace": word.upper()}]}})},
+            ]
+            f.write(json.dumps({"messages": messages}) + "\n")
+
+
+class LoraTrain(unittest.TestCase):
+    """lora_train on a tiny random Qwen-shaped model built here from a config; never a download."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = os.path.join(self.tmp.name, "base")
+        self.data = os.path.join(self.tmp.name, "data")
+        self.adapters = os.path.join(self.tmp.name, "adapters")
+        build_tiny_qwen(self.base)
+        os.makedirs(self.data)
+        write_chats(os.path.join(self.data, "train.jsonl"), 8, 1)
+        write_chats(os.path.join(self.data, "valid.jsonl"), 2, 2)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def args(self, iters, resume=False):
+        a = [
+            "--model", self.base, "--train", "--data", self.data,
+            "--fine-tune-type", "lora", "--num-layers", "2", "--batch-size", "2", "--iters", str(iters),
+            "--learning-rate", "1e-5", "--max-seq-length", "256", "--mask-prompt", "--grad-checkpoint",
+            "--save-every", "2", "--adapter-path", self.adapters,
+        ]
+        if resume:
+            a += ["--resume-adapter-file", os.path.join(self.adapters, "adapters.safetensors")]
+        return a
+
+    def run_lines(self, request):
+        out = subprocess.run([sys.executable, SCHOOL], input=json.dumps(request) + "\n", capture_output=True, text=True, cwd=self.tmp.name, env=env(), timeout=300)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        # stdout carries our JSON lines alone: mlx-lm's own report goes to stderr
+        return [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
+
+    def test_lora_train_on_a_two_layer_random_qwen_shaped_model_built_from_a_config_writes_adapters_and_step_lines(self):
+        lines = self.run_lines({"id": 3, "cmd": "lora_train", "args": self.args(4), "start": 0, "of": 4})
+        reply = lines[-1]
+        self.assertEqual(reply, {"id": 3, "ok": True, "step": 4, "of": 4, "stopped": False, "adapter": os.path.join(self.adapters, "adapters.safetensors")})
+        self.assertEqual([l for l in lines if "step" in l and "ok" not in l], [{"id": 3, "step": s, "of": 4} for s in (1, 2, 3, 4)])
+        self.assertEqual([l["saved"] for l in lines if "saved" in l], [2, 4])
+        for name in ("adapters.safetensors", "0000002_adapters.safetensors", "0000004_adapters.safetensors", "adapter_config.json"):
+            self.assertTrue(os.path.exists(os.path.join(self.adapters, name)), name)
+        with open(os.path.join(self.adapters, "adapter_config.json")) as f:
+            config = json.load(f)
+        # what loading the adapter later needs to rebuild its layers
+        self.assertEqual((config["fine_tune_type"], config["num_layers"], config["lora_parameters"]["rank"]), ("lora", 2, 8))
+
+        # a resume from step 2 of 4 runs the remaining 2 from the saved adapter, counting on from 2
+        again = self.run_lines({"id": 4, "cmd": "lora_train", "args": self.args(2, resume=True), "start": 2, "of": 4})
+        self.assertEqual(again[-1]["ok"], True, again[-1])
+        self.assertEqual(again[-1]["step"], 4)
+        self.assertEqual([l["step"] for l in again if "step" in l and "ok" not in l], [3, 4])
+        self.assertEqual([l["saved"] for l in again if "saved" in l], [4])
+
+    def test_lora_train_on_sigterm_saves_the_step_it_reached_and_says_stopped(self):
+        req = {"id": 7, "cmd": "lora_train", "args": self.args(100000), "start": 0, "of": 100000}
+        p = subprocess.Popen([sys.executable, SCHOOL], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=self.tmp.name, env=env())
+        try:
+            p.stdin.write(json.dumps(req) + "\n")
+            p.stdin.flush()
+            first = json.loads(p.stdout.readline())
+            self.assertEqual(first, {"id": 7, "step": 1, "of": 100000})
+            p.send_signal(signal.SIGTERM)
+            stdout, stderr = p.communicate(timeout=120)
+        finally:
+            if p.poll() is None:
+                p.kill()
+        self.assertEqual(p.returncode, 0, stderr)
+        lines = [json.loads(l) for l in stdout.splitlines() if l.strip()]
+        reply = lines[-1]
+        self.assertTrue(reply["ok"], reply)
+        self.assertTrue(reply["stopped"])
+        self.assertLess(reply["step"], 100000)
+        self.assertEqual(lines[-2], {"id": 7, "saved": reply["step"]}, "the step it stopped at is on disk")
+        self.assertTrue(os.path.exists(os.path.join(self.adapters, "adapters.safetensors")))
+
+    def test_lora_train_refuses_a_flag_the_engine_never_sends(self):
+        for extra in (["--report-to", "wandb"], ["--config", "x.yaml"], ["--test"]):
+            lines = self.run_lines({"id": 1, "cmd": "lora_train", "args": self.args(2) + extra, "start": 0, "of": 2})
+            self.assertEqual(lines[-1]["ok"], False, extra)
+            self.assertIn("not allowed", lines[-1]["error"])
+        self.assertFalse(os.path.exists(os.path.join(self.adapters, "adapters.safetensors")))
+
+
+class DownloadBase(unittest.TestCase):
+    """download_base reaches the network only through the engine's proxy, so here it is only refused."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_download_base_refuses_offline_and_a_bad_repo_or_dir_and_reaches_nothing(self):
+        dest = os.path.join(self.tmp.name, "base")
+        requests = [
+            {"id": 1, "cmd": "download_base", "repo": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", "dir": dest},
+            {"id": 2, "cmd": "download_base", "repo": "../etc", "dir": dest},
+            {"id": 3, "cmd": "download_base", "repo": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit", "dir": "relative/base"},
+        ]
+        out = subprocess.run([sys.executable, SCHOOL], input="".join(json.dumps(r) + "\n" for r in requests), capture_output=True, text=True, cwd=self.tmp.name, env=env(), timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        replies = [json.loads(l) for l in out.stdout.splitlines() if l.strip()]
+        self.assertEqual([r["ok"] for r in replies], [False, False, False])
+        self.assertIn("HF_HUB_OFFLINE", replies[0]["error"])
+        self.assertFalse(os.path.exists(dest))

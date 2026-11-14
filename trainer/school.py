@@ -1,11 +1,14 @@
 """The school's trainer (Phase 4): one warm process the engine talks to in JSON lines.
 
 Each request on stdin is one line, {"id": ..., "cmd": ..., ...}; each answer on stdout is one
-line with the same id and "ok". train_net and predict_net run the small nets (nets.py); later
-tasks add lora_train and download_base. `school.py ping` answers once and exits, for the engine's setup check.
+line with the same id and "ok". train_net and predict_net run the small nets (nets.py);
+lora_train fine-tunes the base model with mlx-lm (ruling 24); download_base fetches the base
+model on his click. `school.py ping` answers once and exits, for the engine's setup check.
 
 It runs under the trainer's sandbox profile with HF_HUB_OFFLINE=1; nothing here reaches the
-network, and versions are read from package metadata, so a ping never starts the GPU.
+network, and versions are read from package metadata, so a ping never starts the GPU. The one
+exception is download_base, which the engine starts alone under a profile whose only network
+allow is its egress proxy's loopback port, with HF_HUB_OFFLINE unset and HTTPS_PROXY set to it.
 
 When the engine's gate closes (battery, warm, he is back) the engine sends SIGTERM and, ten
 seconds later, SIGKILL. SIGTERM sets `STOPPING`; a long command checks `stopping()` between
@@ -13,13 +16,18 @@ steps, writes what it has, answers with "stopped": true, and the process exits 0
 reading another request. Progress goes to stdout as {"id", "step", "of"} lines and each save as
 {"id", "saved": step}, which is how the engine counts the steps a pause lost.
 """
+import contextlib
+import functools
 import importlib.metadata
 import json
 import os
 import platform
+import re
+import shutil
 import signal
 import sys
 import time
+import types
 
 STOPPING = False
 
@@ -87,7 +95,137 @@ def predict_net(request):
     return nets.predict_net(request)
 
 
-COMMANDS = {"ping": ping, "sleep": sleep, "train_net": train_net, "predict_net": predict_net}
+# The flags the engine sends lora_train (ruling 24), and the ones a test may add; nothing else, so no
+# request can turn on a report to a remote service or read a config file of its own.
+LORA_FLAGS = {
+    "--model": True, "--train": False, "--data": True, "--fine-tune-type": True, "--num-layers": True,
+    "--batch-size": True, "--iters": True, "--learning-rate": True, "--max-seq-length": True,
+    "--mask-prompt": False, "--grad-checkpoint": False, "--save-every": True, "--adapter-path": True,
+    "--resume-adapter-file": True, "--seed": True, "--steps-per-eval": True, "--val-batches": True,
+    "--steps-per-report": True,
+}
+
+
+def lora_args(argv):
+    if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+        raise ValueError("args is a list of strings")
+    i = 0
+    while i < len(argv):
+        name = argv[i]
+        if name not in LORA_FLAGS:
+            raise ValueError(f"flag not allowed: {name}")
+        i += 2 if LORA_FLAGS[name] else 1
+    if i != len(argv):
+        raise ValueError(f"flag without a value: {argv[-1]}")
+    for needed in ("--model", "--data", "--adapter-path", "--iters", "--train"):
+        if needed not in argv:
+            raise ValueError(f"lora_train needs {needed}")
+
+
+def lora_train(request):
+    """Fine-tune with mlx-lm's own trainer, in this process (ruling 24).
+
+    `args` is mlx_lm.lora's argv; `start` is the step the run resumes from (its adapter is
+    `--resume-adapter-file`) and `of` the steps of the whole LoRA. Progress and saves are counted
+    from `start`, so a resumed run reports the LoRA's own steps. A {"saved": step} line follows each
+    checkpoint mlx-lm writes (every `--save-every` and at the end). On SIGTERM it stops between
+    steps; mlx-lm then writes the adapter as it stands, so the step reached is saved, not lost.
+    mlx-lm's own report goes to stderr: stdout is the engine's.
+    """
+    rid = request.get("id")
+    argv = request.get("args")
+    lora_args(argv)
+    start = request.get("start", 0)
+    of = request.get("of")
+    if not isinstance(start, int) or start < 0:
+        raise ValueError("start is a whole number")
+
+    import mlx_lm.lora as lora
+    from mlx_lm.tuner import trainer
+
+    args = vars(lora.build_parser().parse_args(argv))
+    for k, v in lora.CONFIG_DEFAULTS.items():
+        if args.get(k) is None:
+            args[k] = v
+    iters = int(args["iters"])
+    save_every = int(args["save_every"])
+    if not isinstance(of, int) or of < start + iters:
+        raise ValueError("of is at least start plus --iters")
+    out = sys.stdout
+    done = [0]
+    last_saved = [None]
+
+    def line(obj):
+        print(json.dumps(obj), file=out, flush=True)
+
+    def note_saved(k):
+        if last_saved[0] != k:
+            last_saved[0] = k
+            line({"id": rid, "saved": start + k})
+
+    def batches(*a, **kw):
+        # the validation passes read batches too, without loop: those are not steps
+        if not kw.get("loop"):
+            yield from trainer.iterate_batches(*a, **kw)
+            return
+        # Asked for batch k+1 only once step k (and its save, if due) is done. A batch handed out
+        # is always trained on: the stop is read before it, never after.
+        for batch in trainer.iterate_batches(*a, **kw):
+            if done[0] > 0:
+                line({"id": rid, "step": start + done[0], "of": of})
+                if done[0] % save_every == 0:
+                    note_saved(done[0])
+            if stopping():
+                return
+            done[0] += 1
+            yield batch
+
+    real_train = lora.train
+    lora.train = functools.partial(trainer.train, iterate_batches=batches)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            lora.run(types.SimpleNamespace(**args))
+    finally:
+        lora.train = real_train
+    # zip() stops on the last step without asking for another batch: its line is written here
+    if done[0] > 0 and done[0] == iters:
+        line({"id": rid, "step": start + done[0], "of": of})
+    # mlx-lm writes adapters.safetensors once more as it ends, the step reached
+    note_saved(done[0])
+    adapter = os.path.join(args["adapter_path"], "adapters.safetensors")
+    return {"step": start + done[0], "of": of, "stopped": stopping(), "adapter": adapter}
+
+
+HF_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def download_base(request):
+    """The base model, on his click only (Decision 6): snapshot_download into `dir`, by way of
+    `dir`.part so a half download is never taken for the model. Never with his login (token=False,
+    and the engine sets HF_TOKEN empty), never over xet (HF_HUB_DISABLE_XET=1), and only through
+    the engine's proxy (HTTPS_PROXY), which allows the Hugging Face hosts alone."""
+    repo = request.get("repo")
+    dest = request.get("dir")
+    if not isinstance(repo, str) or not HF_REPO.match(repo) or ".." in repo:
+        raise ValueError("repo is a Hugging Face model name")
+    if not isinstance(dest, str) or not os.path.isabs(dest):
+        raise ValueError("dir is an absolute path")
+    if os.environ.get("HF_HUB_OFFLINE"):
+        raise RuntimeError("HF_HUB_OFFLINE is set: only the engine's download command may reach the network")
+    from huggingface_hub import snapshot_download
+
+    part = dest + ".part"
+    with contextlib.redirect_stdout(sys.stderr):
+        snapshot_download(repo_id=repo, local_dir=part, token=False)
+    if not os.path.exists(os.path.join(part, "config.json")):
+        raise RuntimeError("the download has no config.json")
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+    os.replace(part, dest)
+    return {"dir": dest}
+
+
+COMMANDS = {"ping": ping, "sleep": sleep, "train_net": train_net, "predict_net": predict_net, "lora_train": lora_train, "download_base": download_base}
 
 
 def answer(line):

@@ -55,6 +55,14 @@ export interface StartTrain {
   proxyPort?: number;
   /** Extra variables the caller names explicitly (HF_HOME for a download); any key or token among them is dropped (`safeEnv`). */
   env?: Record<string, string>;
+  /**
+   * The step this train resumes from (a LoRA's checkpoint, ruling 24): it is
+   * already on disk, so a pause loses only the steps past it, and the train
+   * says from its start that its optimiser restarted.
+   */
+  resumeFrom?: number;
+  /** Carried beside `train` in each of this train's ledger entries and events (a LoRA's id and resume). */
+  extra?: Record<string, unknown>;
 }
 
 /** The reason a train is paused when the trainer's own switch goes off while it runs. */
@@ -102,8 +110,10 @@ interface Live {
   state: TrainState;
   gate: GateKind;
   child: Spawned;
-  /** The step last written to disk, from the child's `saved` lines. */
+  /** The step last written to disk, from the child's `saved` lines (or the step it resumed from). */
   savedStep: number;
+  /** True for a resumed train: its optimiser state and batch order restarted. */
+  resumed: boolean;
   poll: ReturnType<typeof setInterval> | null;
   killTimer: ReturnType<typeof setTimeout> | null;
 }
@@ -161,7 +171,7 @@ function noteLine(l: Live, line: SpawnLine): void {
   const saved = num(d.saved);
   if (step !== null && of !== null) {
     const prev = l.state.steps;
-    l.state.steps = { done: step, of, lost: prev?.lost ?? 0, optimizerReset: prev?.optimizerReset ?? false };
+    l.state.steps = { done: step, of, lost: prev?.lost ?? 0, optimizerReset: prev?.optimizerReset ?? l.resumed };
   }
   if (saved !== null) l.savedStep = Math.max(l.savedStep, saved);
 }
@@ -242,12 +252,14 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
   });
 
   state.status = 'running';
-  const l: Live = { state, gate: o.gate, child, savedStep: 0, poll: null, killTimer: null };
+  const resumeFrom = o.resumeFrom !== undefined && Number.isFinite(o.resumeFrom) && o.resumeFrom > 0 ? o.resumeFrom : 0;
+  const l: Live = { state, gate: o.gate, child, savedStep: resumeFrom, resumed: resumeFrom > 0, poll: null, killTimer: null };
+  const extra = o.extra ?? {};
   live.set(id, l);
   // the pid is the process group too (the spawner starts children detached): a restart reaps it by this
   putTrainRow(state);
-  record('train.started', { train: { ...state }, pid: child.pid });
-  emit('train.started', { train: { ...state } });
+  record('train.started', { ...extra, train: { ...state }, pid: child.pid });
+  emit('train.started', { ...extra, train: { ...state } });
 
   l.poll = setInterval(() => void pollOnce(l), GATE.pollMs);
   unref(l.poll);
@@ -277,6 +289,8 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
   state.seconds = seconds;
   state.credits = credits;
   if (paused && state.steps) state.steps = { ...state.steps, lost: Math.max(0, state.steps.done - l.savedStep), optimizerReset: true };
+  // a failed train also lost what it did past its last save
+  else if (state.steps && !(done.code === 0 && !done.error)) state.steps = { ...state.steps, lost: Math.max(0, state.steps.done - l.savedStep) };
   if (!paused) {
     if (done.error) {
       state.status = 'failed';
@@ -297,7 +311,7 @@ export async function startTrain(o: StartTrain): Promise<TrainState> {
     unattended: wasUnattended,
     at: endedAt,
   });
-  const entry = paused ? { train: { ...state }, reason: state.reason, lost: state.steps?.lost ?? 0 } : { train: { ...state } };
+  const entry = paused ? { ...extra, train: { ...state }, reason: state.reason, lost: state.steps?.lost ?? 0 } : { ...extra, train: { ...state } };
   putTrainRow(state);
   record(paused ? 'train.paused' : 'train.ended', entry);
   emit(paused ? 'train.paused' : 'train.ended', entry);

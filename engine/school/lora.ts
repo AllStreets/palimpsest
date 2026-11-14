@@ -51,20 +51,26 @@
  * context. Lines are oldest first. Nothing in the files names a path of
  * this Mac.
  */
-import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { LORA } from '../../shared/school-rules.js';
-import type { Repo } from '../../shared/types.js';
-import { getRunner } from '../exec.js';
+import { GATE, LORA } from '../../shared/school-rules.js';
+import type { Repo, TrainState } from '../../shared/types.js';
+import { getRunner, getSpawner, type SpawnLine } from '../exec.js';
 import { paths } from '../home.js';
 import { mirrorDir } from '../mirror.js';
+import { refusedHosts, startEgress, type Egress } from '../market/egress.js';
 import { redact } from '../market/jobs.js';
-import { SECRET_PATHS } from '../market/sandbox.js';
+import type { RunLogLine } from '../market/provider.js';
+import { SECRET_PATHS, wrap } from '../market/sandbox.js';
+import { getSettings, patchSettings } from '../settings.js';
 import { ENGINE_GIT_FLAGS } from '../market/worktree.js';
 import { listRepos } from '../repos.js';
 import { protectedReason, sealedRefs, toBeagleArena, type ArenaEdit } from './arenas.js';
 import { isSourceFile, verifiedChanges, type VerifiedChange } from './history.js';
+import { readGate, startTrain } from './trainer.js';
+import { TRAINER_DIR, trainerEnv, trainerPython } from './trainer-env.js';
 
 export type LoraSkip = 'sealed' | 'secret' | 'too-large' | 'too-long' | 'not-unique' | 'no-edit';
 
@@ -548,4 +554,375 @@ export async function buildLoraData(now: number, o: { check?: boolean; signal?: 
   writeAtomic(path, jsonl(train));
   writeAtomic(validPath, jsonl(valid));
   return { examples, skipped, path, validPath, failed };
+}
+
+// ---------------------------------------------------------------- training (ruling 24)
+
+/** Where the base model is downloaded to, and read from: `paths().school/lora/base`. */
+export function loraBaseDir(): string {
+  return join(paths().school, 'lora', 'base');
+}
+
+/** One LoRA's own folder: its adapter checkpoints and the copy of the data it trains on. */
+function adapterDir(id: string): string {
+  return join(paths().school, 'lora', 'adapters', id);
+}
+
+/** Where each LoRA's record is kept: under the school's ctl, which the trainer profile denies the trainer writing. */
+function runsDir(): string {
+  return join(paths().school, 'ctl', 'lora');
+}
+
+/** The checkpoint mlx-lm rewrites at each save and at the end, and that a resume loads. */
+const ADAPTER_FILE = 'adapters.safetensors';
+const LORA_ID = /^lora-[0-9a-f]{8}$/;
+
+/**
+ * One LoRA, from its first train to its last: what is on disk, every pause
+ * and every resume. Written by the engine alone, so a crash of the engine
+ * or the trainer leaves the last saved step known.
+ */
+export interface LoraRun {
+  id: string;
+  /** The base model's repo, as it was when this LoRA started. */
+  base: string;
+  /** `trained` only once every step is saved and the trainer answered ok: only then may it be evaluated. */
+  status: 'training' | 'paused' | 'trained' | 'failed';
+  reason: string | null;
+  /** The steps a whole run takes (`LORA.iters`). */
+  iters: number;
+  /** The last step written to `adapters.safetensors`, from the trainer's `{"saved": step}` lines. */
+  saved: number;
+  examples: number;
+  createdAt: string;
+  endedAt: string | null;
+  /** The trains (trainer.ts) this LoRA ran in, in order. */
+  trains: string[];
+  /** Every resume: weights only, so the optimiser state and the batch order restarted. */
+  resumes: Array<{ at: string; from: number; iters: number; optimizerReset: true }>;
+  pauses: Array<{ at: string; train: string; reason: string | null; done: number; saved: number; lost: number }>;
+  /** True once any resume happened: the result is not the same as an uninterrupted run, and the card says so. */
+  optimizerReset: boolean;
+}
+
+function writeRun(run: LoraRun): void {
+  mkdirSync(runsDir(), { recursive: true });
+  writeAtomic(join(runsDir(), `${run.id}.json`), JSON.stringify(run, null, 2) + '\n');
+}
+
+/** Every LoRA recorded, oldest first. */
+export function loraRuns(): LoraRun[] {
+  let names: string[];
+  try {
+    names = readdirSync(runsDir());
+  } catch {
+    return [];
+  }
+  const out: LoraRun[] = [];
+  for (const n of names) {
+    if (!n.endsWith('.json') || !LORA_ID.test(n.slice(0, -5))) continue;
+    try {
+      const r = JSON.parse(readFileSync(join(runsDir(), n), 'utf8')) as LoraRun;
+      if (r && r.id === n.slice(0, -5)) out.push(r);
+    } catch {
+      // a record that cannot be read is left out, never guessed at
+    }
+  }
+  return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+}
+
+/**
+ * The newest fully trained adapter, or null. A paused, training or failed
+ * LoRA is never offered, whatever its `adapters.safetensors` holds: a
+ * half-trained adapter is never evaluated (Review Focus 1).
+ */
+export function trainedAdapter(): { id: string; path: string; file: string } | null {
+  const run = loraRuns().filter((r) => r.status === 'trained').at(-1);
+  if (!run) return null;
+  const path = adapterDir(run.id);
+  const file = join(path, ADAPTER_FILE);
+  return existsSync(file) ? { id: run.id, path, file } : null;
+}
+
+/** The base is ready when the setting says so and its files are there. */
+function baseReady(): boolean {
+  return getSettings().school.baseModelReady === true && existsSync(join(loraBaseDir(), 'config.json'));
+}
+
+/** Ruling 24's argv for `mlx_lm.lora`, as `lora_train` passes it on: the full run, or the remaining steps from the checkpoint. */
+export function loraArgs(o: { dir: string; iters: number; resume: boolean }): string[] {
+  const args = [
+    '--model', loraBaseDir(),
+    '--train',
+    '--data', join(o.dir, 'data'),
+    '--fine-tune-type', 'lora',
+    '--num-layers', String(LORA.layers),
+    '--batch-size', String(LORA.batch),
+    '--iters', String(o.iters),
+    '--learning-rate', LORA.lr.toExponential(),
+    '--max-seq-length', String(LORA.maxSeq),
+    '--mask-prompt',
+    '--grad-checkpoint',
+    '--save-every', String(LORA.saveEvery),
+    '--adapter-path', o.dir,
+  ];
+  if (o.resume) args.push('--resume-adapter-file', join(o.dir, ADAPTER_FILE));
+  return args;
+}
+
+type DataBuilder = (now: number, o: { check?: boolean; signal?: AbortSignal }) => Promise<LoraData>;
+let dataBuilder: DataBuilder = buildLoraData;
+
+/** Installs the dataset builder for tests, or `null` for `buildLoraData`. */
+export function setLoraDataBuilder(fn: DataBuilder | null): void {
+  dataBuilder = fn ?? buildLoraData;
+}
+
+export interface LoraTrainResult {
+  /** `refused`: no base or too few examples; `waiting`: the gate or the switch said no, nothing started. */
+  status: 'refused' | 'waiting' | 'paused' | 'trained' | 'failed';
+  reason: string | null;
+  lora: LoraRun | null;
+  train: TrainState | null;
+}
+
+let training = false;
+
+/**
+ * Trains the school's LoRA (ruling 24) one night's stretch at a time,
+ * behind the heavy gate. Refused without the base model, or under
+ * `LORA.min` examples ("n of 100 verified changes"). A new LoRA builds the
+ * dataset with history's gated test checks on (`check: true`) and keeps its
+ * own copy of it, so every resume trains on the same examples. A LoRA that
+ * a pause stopped resumes from `adapters.safetensors` with `--iters` the
+ * remaining steps; that loads the weights only, so the optimiser state and
+ * the batch order restart, and the resume is recorded with
+ * `optimizerReset: true`. It is `trained` only when every step is saved and
+ * the trainer answered ok; a trained LoRA is not trained again.
+ */
+export async function trainLora(now: number = Date.now()): Promise<LoraTrainResult> {
+  const answer = (status: LoraTrainResult['status'], reason: string | null, lora: LoraRun | null = null, train: TrainState | null = null): LoraTrainResult => ({ status, reason, lora, train });
+  if (!baseReady()) return answer('refused', 'The base model is not downloaded');
+  if (training) return answer('waiting', 'a LoRA is already training');
+  training = true;
+  try {
+    let run = loraRuns().filter((r) => r.status !== 'failed').at(-1) ?? null;
+    if (run?.status === 'trained') return answer('trained', null, run);
+    // nothing is built or started for a train the switch or the gate would refuse now
+    if (!getSettings().school.enabled) return answer('waiting', 'the school is off', run);
+    if (!trainerPython()) return answer('failed', 'The trainer is not set up on this Mac', run);
+    const g = await readGate('heavy', now);
+    if (!g.ok) return answer('waiting', g.reason ?? 'the gate closed', run);
+
+    if (!run) {
+      const data = await dataBuilder(now, { check: true });
+      const n = data.examples.length;
+      // LORA.min also keeps valid.jsonl (the newest 10%) at 10 or more, never under the batch mlx-lm needs
+      if (n < LORA.min) return answer('refused', `${n} of ${LORA.min} verified changes`);
+      run = {
+        id: `lora-${randomUUID().slice(0, 8)}`,
+        base: getSettings().school.baseModel,
+        status: 'training',
+        reason: null,
+        iters: LORA.iters,
+        saved: 0,
+        examples: n,
+        createdAt: new Date(now).toISOString(),
+        endedAt: null,
+        trains: [],
+        resumes: [],
+        pauses: [],
+        optimizerReset: false,
+      };
+      const dir = adapterDir(run.id);
+      mkdirSync(join(dir, 'data'), { recursive: true });
+      copyFileSync(data.path, join(dir, 'data', 'train.jsonl'));
+      copyFileSync(data.validPath, join(dir, 'data', 'valid.jsonl'));
+      writeRun(run);
+    }
+    const dir = adapterDir(run.id);
+    // A checkpoint is only resumed from when it is on disk; without it the saved steps are gone and it starts again.
+    if (run.saved > 0 && !existsSync(join(dir, ADAPTER_FILE))) run.saved = 0;
+    const from = Math.min(run.saved, run.iters);
+    const iters = run.iters - from;
+    const resumed = from > 0;
+    const before = { status: run.status, reason: run.reason, resumes: [...run.resumes], optimizerReset: run.optimizerReset };
+    const resume = { at: new Date(now).toISOString(), from, iters, optimizerReset: true as const };
+    if (resumed) {
+      run.resumes.push(resume);
+      run.optimizerReset = true;
+    }
+    run.status = 'training';
+    run.reason = null;
+    writeRun(run);
+
+    const current = run;
+    let reply: { ok: boolean; error?: string } | null = null;
+    const onLine = (line: SpawnLine) => {
+      if (line.stream !== 'stdout' || !line.line.startsWith('{')) return;
+      let d: Record<string, unknown>;
+      try {
+        d = JSON.parse(line.line) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (!d || typeof d !== 'object') return;
+      if (typeof d.saved === 'number' && Number.isInteger(d.saved) && d.saved > current.saved) {
+        current.saved = Math.min(d.saved, current.iters);
+        writeRun(current);
+      }
+      if (typeof d.ok === 'boolean') reply = { ok: d.ok, error: typeof d.error === 'string' ? d.error : undefined };
+    };
+    const state = await startTrain({
+      kind: 'lora',
+      gate: 'heavy',
+      command: { id: 1, cmd: 'lora_train', args: loraArgs({ dir, iters, resume: resumed }), start: from, of: run.iters },
+      gb: LORA.gb,
+      onLine,
+      now,
+      resumeFrom: from,
+      extra: { lora: { id: run.id, from, iters, optimizerReset: resumed } },
+    });
+
+    if (state.status === 'waiting' || (state.status === 'failed' && state.endedAt === null)) {
+      // nothing started: the run is as it was
+      Object.assign(run, before);
+      writeRun(run);
+      return answer(state.status, state.reason, run, state);
+    }
+    run.trains.push(state.id);
+    run.endedAt = state.endedAt;
+    const got = reply as { ok: boolean; error?: string } | null;
+    if (state.status === 'paused') {
+      run.status = 'paused';
+      run.reason = state.reason;
+      run.pauses.push({ at: state.endedAt ?? new Date().toISOString(), train: state.id, reason: state.reason, done: state.steps?.done ?? run.saved, saved: run.saved, lost: state.steps?.lost ?? 0 });
+    } else if (state.status === 'done' && got?.ok === true && run.saved >= run.iters) {
+      run.status = 'trained';
+    } else {
+      run.status = 'failed';
+      run.reason = got?.ok === false ? `the trainer answered: ${got.error ?? 'an error'}` : state.reason ?? `the trainer stopped at step ${run.saved} of ${run.iters} without finishing`;
+    }
+    writeRun(run);
+    return answer(run.status, run.reason, run, state);
+  } finally {
+    training = false;
+  }
+}
+
+// ---------------------------------------------------------------- the base model download (Decision 6)
+
+/** The hosts the download's proxy allows, and no others (the xet transfer is off). */
+export const HF_HOSTS: readonly string[] = ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co'];
+const HF_REPO = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+type EgressStarter = (runId: string, log: (line: RunLogLine) => void) => Promise<Egress>;
+let egressStarter: EgressStarter = (runId, log) => startEgress(runId, log);
+
+/** Installs the download's proxy for tests (a fake), or `null` for the real `startEgress`. */
+export function setEgressStarter(fn: EgressStarter | null): void {
+  egressStarter = fn ?? ((runId, log) => startEgress(runId, log));
+}
+
+export interface DownloadResult {
+  status: 'ready' | 'failed';
+  reason: string | null;
+}
+
+let download: { promise: Promise<DownloadResult>; kill: (() => void) | null } | null = null;
+
+/** Stops a download in progress (the engine stopping); it resumes from its partial files at the next click. */
+export function stopDownload(): void {
+  download?.kill?.();
+}
+
+/**
+ * Downloads the base model, on his click only (Decision 6): `school.py
+ * download_base`, which runs `snapshot_download` into `loraBaseDir()`. It
+ * runs under its own trainer profile whose one network exception is the
+ * loopback port of a per-download egress proxy allowing only `HF_HOSTS`,
+ * with `HTTPS_PROXY` pointing at it, `HF_HUB_DISABLE_XET=1`, an empty
+ * `HF_TOKEN` (his login is never sent) and `HF_HUB_OFFLINE` unset. Sets
+ * `baseModelReady` when the files are there. A second click while it runs
+ * waits on the same download.
+ */
+export function downloadBase(): Promise<DownloadResult> {
+  if (baseReady()) return Promise.resolve({ status: 'ready', reason: null });
+  if (download) return download.promise;
+  const entry: { promise: Promise<DownloadResult>; kill: (() => void) | null } = { promise: Promise.resolve({ status: 'failed', reason: null }), kill: null };
+  entry.promise = runDownload((kill) => {
+    entry.kill = kill;
+  }).finally(() => {
+    if (download === entry) download = null;
+  });
+  download = entry;
+  return entry.promise;
+}
+
+async function runDownload(onKill: (kill: () => void) => void): Promise<DownloadResult> {
+  const failed = (reason: string): DownloadResult => ({ status: 'failed', reason });
+  const python = trainerPython();
+  if (!python) return failed('The trainer is not set up on this Mac');
+  const repo = getSettings().school.baseModel;
+  if (!HF_REPO.test(repo) || repo.includes('..')) return failed(`not a model name: ${repo}`);
+  const school = paths().school;
+  const tmp = join(school, 'tmp');
+  mkdirSync(tmp, { recursive: true });
+  const runId = `download-base-${randomUUID().slice(0, 8)}`;
+  let egress: Egress | null = null;
+  try {
+    // what the proxy refused is read back with refusedHosts for the reason below
+    egress = await egressStarter(runId, () => {});
+    egress.setStage('install', [...HF_HOSTS]);
+    const argv = wrap([python, join(TRAINER_DIR, 'school.py')], 'trainer', { school, tmp, proxyPort: egress.port, name: 'trainer-download.sb' }, () => {});
+    const env: Record<string, string> = { ...trainerEnv() };
+    delete env.HF_HUB_OFFLINE;
+    Object.assign(env, {
+      HOME: tmp,
+      TMPDIR: tmp,
+      HF_HOME: join(school, 'lora', 'hf'),
+      HF_HUB_DISABLE_XET: '1',
+      HF_TOKEN: '',
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1',
+      HF_HUB_DISABLE_TELEMETRY: '1',
+      HTTPS_PROXY: `http://palimpsest:${egress.token}@127.0.0.1:${egress.port}`,
+    });
+    const child = getSpawner()(argv[0], argv.slice(1), {
+      cwd: tmp,
+      env,
+      clearEnv: true,
+      stdin: JSON.stringify({ id: 1, cmd: 'download_base', repo, dir: loraBaseDir() }) + '\n',
+      killGraceMs: GATE.killGraceMs,
+    });
+    onKill(() => child.kill('SIGTERM'));
+    let reply: { ok: boolean; error?: string } | null = null;
+    for await (const line of child.lines) {
+      if (line.stream !== 'stdout' || !line.line.startsWith('{')) continue;
+      try {
+        const d = JSON.parse(line.line) as Record<string, unknown>;
+        if (d && typeof d.ok === 'boolean') reply = { ok: d.ok, error: typeof d.error === 'string' ? d.error : undefined };
+      } catch {
+        // not one of ours
+      }
+    }
+    const done = await child.done;
+    const got = reply as { ok: boolean; error?: string } | null;
+    if (got?.ok === true && done.code === 0 && existsSync(join(loraBaseDir(), 'config.json'))) {
+      patchSettings({ school: { ...getSettings().school, baseModelReady: true } });
+      return { status: 'ready', reason: null };
+    }
+    const refused = refusedHosts(runId);
+    const why = got?.ok === false ? (got.error ?? 'an error') : done.error ? `it could not start: ${done.error}` : done.signal ? `it was stopped by ${done.signal}` : `it exited ${done.code}`;
+    return failed(`The base model did not download: ${why}${refused.length ? ` (the proxy refused ${refused.join(', ')})` : ''}`);
+  } catch (err) {
+    return failed(`The base model did not download: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    try {
+      await egress?.close();
+    } catch {
+      // best effort
+    }
+    // its token and port are forgotten with it
+    rmSync(join(paths().runs, runId), { recursive: true, force: true });
+  }
 }

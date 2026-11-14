@@ -81,6 +81,12 @@ export interface TrainerProfileInput {
   bindPort?: number;
   proxyPort?: number;
   home?: string;
+  /**
+   * The profile's file name under `<school>/ctl` (default `trainer.sb`). The
+   * download writes its own, so a train starting beside it never launches
+   * on the profile that carries the proxy port, nor the reverse.
+   */
+  name?: 'trainer.sb' | 'trainer-download.sb';
 }
 
 /** The Ollama port: only the engine talks to it. */
@@ -595,7 +601,7 @@ export function wrap(argv: string[], kind: 'tool' | 'cli' | 'trainer', o: Profil
     const t = o as TrainerProfileInput;
     text = trainerProfile(t);
     ctl = join(t.school, 'ctl');
-    name = 'trainer.sb';
+    name = t.name ?? 'trainer.sb';
   } else {
     const m = o as ProfileInput | CliProfileInput;
     text = kind === 'tool' ? toolProfile(m) : cliProfile(m as CliProfileInput);

@@ -17,6 +17,7 @@ import { registerArenas } from './school/arenas.js';
 import { ensureCampus } from './school/campus.js';
 import { closeOrphanedActs } from './school/autonomy.js';
 import { catchUpPredictions, installDecisions } from './school/decisions.js';
+import { stopDownload } from './school/lora.js';
 import { installRoster } from './school/roster.js';
 import { startSchool } from './school/tick.js';
 import { ENGINE_STOPPED_REASON, failInterruptedTrains, pauseAll } from './school/trainer.js';
@@ -125,6 +126,8 @@ async function main(): Promise<void> {
   const closeAll = async () => {
     school.stop();
     await pauseAll(ENGINE_STOPPED_REASON);
+    // a base model download in progress stops too; its partial files resume at his next click
+    stopDownload();
     await close();
   };
   const shutdown = shutdownHandler(scheduler, { close: closeAll, exit: (code) => process.exit(code), log: (l) => console.log(l) });

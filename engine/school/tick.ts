@@ -23,7 +23,10 @@
  *   (`resumeArenas`, each behind the heavy gate); it never starts one.
  *   Then it sails a voyage (`sailDue`, voyages.ts): the unfinished one
  *   first, behind the heavy gate. A sailing voyage holds a train, so the
- *   nets and the voyage never run at once.
+ *   nets and the voyage never run at once. Last, once the base model is
+ *   downloaded and no train is live, the LoRA trains or resumes
+ *   (`trainLora`, ruling 24); a refusal or a finished LoRA waits for the
+ *   next night, a gate or a pause is tried again at a later tick.
  * - `schoolOff(now)` is the switch going off, from `patchSettings` or
  *   anywhere else: it records `school.enabled { on: false }`, pauses every
  *   live train at once (no poll waited for) and calls every abort registered
@@ -115,6 +118,8 @@ export interface SchoolOptions {
   resume?: (now: number) => Promise<unknown>;
   /** Sails tonight's voyage (behind the heavy gate, one at a time, resumed per run); defaults to `sailDue`. */
   sail?: (now: number) => Promise<unknown>;
+  /** Trains or resumes the LoRA (behind the heavy gate) once the base model is downloaded; defaults to `trainLora`. */
+  lora?: (now: number) => Promise<{ status: string }>;
   deps?: DatasetDeps;
 }
 
@@ -162,6 +167,8 @@ export function startSchool(o: SchoolOptions = {}): School {
   const resume = o.resume ?? (async (now: number) => (await import('./arenas.js')).resumeArenas(now));
   // loaded when first used, like the arenas: voyages.ts registers its voyage's abort here
   const sail = o.sail ?? (async (now: number) => (await import('./voyages.js')).sailDue(now));
+  // loaded when first used, like the voyages (lora.ts reaches back here through arenas.ts)
+  const lora = o.lora ?? (async (now: number) => (await import('./lora.js')).trainLora(now));
   /** Nets tried tonight that came back thin or failed: not tried again until the next night. */
   const tried = new Set<string>();
   let busy = false;
@@ -225,6 +232,18 @@ export function startSchool(o: SchoolOptions = {}): School {
           await sail(now);
         } catch (err) {
           console.error('palimpsest: the school could not sail a voyage:', err);
+        }
+      }
+      // Last, the LoRA (ruling 24), once he has downloaded the base and nothing else holds a train. A refusal
+      // (too few examples), a failure or a finished LoRA is not tried again tonight; a gate or a pause is.
+      const loraKey = `${night}\nlora`;
+      if (!stopped && getSettings().school.enabled && getSettings().school.baseModelReady && liveTrains().length === 0 && !tried.has(loraKey)) {
+        try {
+          const r = await lora(now);
+          if (r.status !== 'waiting' && r.status !== 'paused') tried.add(loraKey);
+        } catch (err) {
+          tried.add(loraKey);
+          console.error('palimpsest: the school could not train its LoRA:', err);
         }
       }
       return out;
