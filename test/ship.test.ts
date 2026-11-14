@@ -610,7 +610,7 @@ test('a revert of an older commit with the same title before the merge does not 
 });
 
 test('failed inspection lays a scar on the repo tower only', async () => {
-  const { repo } = makeRemoteRepo(checks());
+  const { repo } = makeRemoteRepo(checks({ test: 'true' }));
   const worker = addAgent('w1', 'quickset', 'claude:sonnet');
   for (const kind of ['claude', 'ollama', 'anthropic'] as const) setProvider(kind, fakeProvider({}));
   const posted = postJob(['**']);

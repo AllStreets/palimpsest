@@ -445,7 +445,8 @@ test('run detail, log, diff and inspection never carry a home path or a raw secr
 });
 
 test('kill ends a run', async () => {
-  const repo = repoOf();
+  // A run never starts blind, so this repo names a command.
+  const repo = makeRepo(checks({ test: 'true' }), { 'README.md': 'widgets\n', 'src/header.ts': 'export const header = 1;\n' });
   void repo;
   const a = addAgent('l1', 'gamma', 'ollama:qwen3');
   const posted = postJob(['**']);

@@ -59,7 +59,8 @@ import { emit } from '../events.js';
 import { getSpawner, type Spawned } from '../exec.js';
 import { onRealDataHome, paths } from '../home.js';
 import { record } from '../ledger.js';
-import { getRepo, listRepos, updateRepoMarket } from '../repos.js';
+import { detectChecks } from '../guild/checks.js';
+import { CHECKS_UNKNOWN, checksKnown, getRepo, learnChecks, listRepos, updateRepoMarket } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
 import { award, bidById, collectBids, firmExamples, openBidding } from './bids.js';
@@ -695,12 +696,23 @@ function wallMsOf(a: Agent): number {
 async function lifecycle(st: LiveRun): Promise<Run> {
   const log = logTo(st);
   let phase: 'before' | 'work' | 'after' = 'before';
-  const ecosystems = st.repo.checks?.ecosystems ?? [];
+  let ecosystems = st.repo.checks?.ecosystems ?? [];
   try {
     boundary(st, 'preparing');
     const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch));
     st.run = { ...st.run, dir, baseSha };
     saveRun(st.run);
+    // Checks never read (or naming no command) are read now from the run's own clone, before the baseline and the install need them.
+    if (!checksKnown(st.repo.checks)) {
+      st.repo = learnChecks(st.repo.fullName, detectChecks(dir)) ?? st.repo;
+      ecosystems = st.repo.checks?.ecosystems ?? [];
+      if (checksKnown(st.repo.checks)) engineLog(st, '[palimpsest] the repo\'s checks were not known; they were read from its files');
+    }
+    // Never a run blind: with nothing to install or check, the job goes back on the board and the repo halts with the reason.
+    if (!checksKnown(st.repo.checks)) {
+      haltRepo(st.repo.fullName, CHECKS_UNKNOWN, iso(), { exceptRun: st.run.id });
+      return end(st, 'crashed', `${CHECKS_UNKNOWN}.`, { job: 'reopen' });
+    }
     st.egress = await guarded(st, startEgress(st.run.id, log));
     if (st.agent.model.startsWith('claude:')) {
       st.broker = await guarded(st, startBroker(st.run.id, { runRoot: st.runRoot, dir, log, signal: st.lease.signal, stage: () => st.toolStage }));

@@ -46,8 +46,9 @@ import {
   WATCH_MS,
   type SchedulerDeps,
 } from '../engine/market/runs.js';
+import { emptyChecks } from '../engine/guild/checks.js';
 import { patchSettings } from '../engine/settings.js';
-import { getRepo, updateRepoMarket } from '../engine/repos.js';
+import { CHECKS_UNKNOWN, getRepo, updateRepoMarket } from '../engine/repos.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Agent, Bid, CheckResult, Firm, Inspection, Job, ModelRef, Repo, Run } from '../shared/types.js';
 
@@ -152,7 +153,7 @@ function reading(five = 10): void {
 
 let slot = 0;
 /** A connected repo with the market on, and its bare mirror where syncMirror would put it. */
-function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
+function makeRepo(full = FULL, over: Partial<Repo> = {}, files: Record<string, string> = {}): Repo {
   const repo: Repo = {
     fullName: full,
     private: false,
@@ -170,6 +171,8 @@ function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
     ...repoMarketDefaults(),
     market: true,
     joinedAt: '2026-11-01T00:00:00.000Z',
+    // Known checks, so a run never stops to learn them; a test that wants them unknown passes `checks: null`.
+    checks: { ...emptyChecks(), test: 'true' },
     ...over,
   };
   openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(repo.fullName, JSON.stringify(repo));
@@ -178,6 +181,7 @@ function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
   git(work, 'init', '-q', '-b', 'main');
   writeFileSync(join(work, 'README.md'), 'widgets\n');
   writeFileSync(join(work, 'src', 'header.ts'), 'export const header = 1;\n');
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(work, name), text);
   git(work, 'add', '.');
   git(work, 'commit', '-q', '-m', 'first');
   git(tempDir, 'clone', '-q', '--bare', work, mirrorDir(full));
@@ -647,6 +651,77 @@ test('the runner hands the baseline its signal and the install its egress', asyn
   assert.equal(baselines[0].sha, r.baseSha);
   assert.equal(baselines[0].signal, ctxs[0].signal);
   assert.equal(typeof ctxs[0].egress?.setStage, 'function');
+});
+
+test('a repo whose checks were never read learns them from the run\'s clone, and its install opens only the npm registry', async () => {
+  makeRepo(FULL, { checks: null }, {
+    'package.json': JSON.stringify({ scripts: { test: 'node --test', build: 'vite build' }, devDependencies: { vite: '1' } }),
+    'package-lock.json': '{}',
+  });
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const seen: Array<Repo> = [];
+  const s = createScheduler(
+    deps({
+      installDeps: async (_ctx, repo) => {
+        seen.push(repo);
+        return { ...skipped, status: 'pass', detail: 'npm ci' };
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(seen.length, 1, 'the install ran');
+  assert.equal(seen[0].checks?.install, 'npm ci');
+  assert.deepEqual(seen[0].checks?.ecosystems, ['npm']);
+  assert.equal(getRepo(FULL)!.checks?.build, 'npm run build', 'the repo keeps what the run learned');
+  assert.equal(getRepo(FULL)!.halted, null);
+  const log = readFileSync(join(paths().runs, r.id, 'log.jsonl'), 'utf8');
+  assert.match(log, /stage install: registry\.npmjs\.org/);
+  assert.doesNotMatch(log, /stage install: nothing allowed/);
+  assert.notEqual(r.endedReason, `${CHECKS_UNKNOWN}.`);
+});
+
+test('a run on a repo where no build or test command can be found does not start blind: the job returns to the board and the repo says why', async () => {
+  makeRepo(FULL, { checks: null });
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  let installs = 0;
+  let worked = 0;
+  useScript({
+    work: async (i) => {
+      worked++;
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(
+    deps({
+      installDeps: async () => {
+        installs++;
+        return skipped;
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(installs, 0, 'nothing was installed');
+  assert.equal(worked, 0, 'no agent worked');
+  assert.equal(r.outcome, 'crashed');
+  assert.equal(r.endedReason, `${CHECKS_UNKNOWN}.`);
+  assert.match(r.endedReason ?? '', /build and test commands are not known yet/);
+  const after = job(j.id)!;
+  assert.equal(after.status, 'open', 'back on the board');
+  assert.equal(after.attempts, 0, 'no attempt spent');
+  assert.deepEqual(after.excludedFirms, []);
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0, 'not the firm\'s failure');
+  const repo = getRepo(FULL)!;
+  assert.equal(repo.halted?.reason, CHECKS_UNKNOWN);
+  assert.ok(entries().some((e) => e.kind === 'repo.halted' && (e.data as { reason: string }).reason === CHECKS_UNKNOWN));
+  // Halted, the repo opens no bidding until he resumes it.
+  await s.tick();
+  await s.idle();
+  assert.equal(job(j.id)?.status, 'open');
+  assert.equal(runsOf(j.id).length, 1);
 });
 
 test('the real inspection is the default: a third failed inspection halts the repo, and its run still ends failed with a scar', async () => {
