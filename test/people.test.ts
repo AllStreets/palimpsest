@@ -339,3 +339,126 @@ test('dispose() takes the figures and their meshes away', () => {
   people.update(0.016, camera);
   assert.equal(people.view(camera).figures, 0, 'an update after dispose is harmless');
 });
+
+// ---------------------------------------------------------------- the university (Phase 4 Task 37)
+
+/** The campus as people.ts needs it: its origin, the square it keeps, and the way from the street up the stair to the gate. */
+function campusOf(origin: P): { origin: P; half: number; approach: Array<[number, number, number]> } {
+  const o = origin;
+  return {
+    origin: o,
+    half: 112,
+    approach: [
+      [o.x + 114, 0, o.z],
+      [o.x + 111, 0, o.z],
+      [o.x + 105, 3, o.z],
+      [o.x + 101, 3, o.z],
+      [o.x + 95, 6, o.z],
+      [o.x + 93, 6, o.z],
+      [o.x + 87, 6, o.z + 3.5],
+    ],
+  };
+}
+
+/** Inside the campus's square, off the stair well, a figure must stand on the terrace, never under it. */
+function assertOnTerrace(p: THREE.Vector3, o: P, when: string): void {
+  const dx = p.x - o.x;
+  const dz = p.z - o.z;
+  if (Math.abs(dx) >= 112 || Math.abs(dz) >= 112) return;
+  if (dx > 92 && Math.abs(dz) < 8) return; // the stair well
+  assert.ok(p.y > 5.9, `on the terrace, not under it (${dx.toFixed(1)}, ${p.y.toFixed(2)}, ${dz.toFixed(1)}) ${when}`);
+}
+
+test('a school trip ends at the gate', () => {
+  const origin = districtOrigin(6);
+  const campus = campusOf(origin);
+  const gate = campus.approach[campus.approach.length - 1];
+  // On foot from the street beside the campus: the engine routes the trip to the campus's origin, under the terrace.
+  const walk = { ...tripOf('ines', { x: origin.x + 120, z: origin.z + 60 }, origin), reason: 'school' as const };
+  assert.equal(walk.legs[0].mode, 'walk');
+  const start = Date.parse(walk.startedAt);
+  const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start, campus: () => campus });
+  people.set([walk], [agentOf('ines')]);
+  for (let t = 0; t < 400; t++) {
+    people.update(1);
+    assertOnTerrace(people.positionOf('ines')!, origin, `at ${t} s`);
+  }
+  const p = people.positionOf('ines')!;
+  assert.ok(Math.hypot(p.x - gate[0], p.z - gate[2]) < 4 && Math.abs(p.y - 6) < 0.1, `stands just inside the gate on the terrace (${(p.x - origin.x).toFixed(1)}, ${p.y.toFixed(1)}, ${(p.z - origin.z).toFixed(1)})`);
+  assert.equal(people.figures()[0].walking, 0, 'and has stopped');
+  // From across the city, by whatever the router picks (a cab at this distance): the ride sets down at the ring
+  // street before the stair and the figure climbs on foot.
+  const far = { ...tripOf('hal', { x: origin.x + 900, z: origin.z + 40 }, origin), reason: 'school' as const };
+  assert.ok(far.legs.some((l) => l.mode !== 'walk'), `a ride is taken (${far.legs.map((l) => l.mode).join(', ')})`);
+  const riders = createPeople({ vehicles: () => null, net: () => NET, now: () => start, campus: () => campus });
+  riders.set([far], [agentOf('hal')]);
+  let climbed = false;
+  for (let t = 0; t < 400; t++) {
+    riders.update(1);
+    const q = riders.positionOf('hal')!;
+    assertOnTerrace(q, origin, `at ${t} s by cab`);
+    if (q.y > 0.5 && q.y < 5.5 && riders.figures()[0].mode === 'walk') climbed = true;
+  }
+  const q = riders.positionOf('hal')!;
+  assert.ok(climbed, 'climbs the stair on foot');
+  assert.ok(Math.hypot(q.x - gate[0], q.z - gate[2]) < 4 && Math.abs(q.y - 6) < 0.1, `the cab rider ends inside the gate too (${(q.x - origin.x).toFixed(1)}, ${q.y.toFixed(1)}, ${(q.z - origin.z).toFixed(1)})`);
+  // A trip from the campus (a graduate leaving, a parent going home) starts at the gate and comes down the stair.
+  const home = { ...tripOf('wren', origin, { x: origin.x + 120, z: origin.z + 60 }), reason: 'home' as const };
+  const leavers = createPeople({ vehicles: () => null, net: () => NET, now: () => start, campus: () => campus });
+  leavers.set([home], [agentOf('wren')]);
+  leavers.update(0);
+  const g0 = leavers.positionOf('wren')!;
+  assert.ok(Math.hypot(g0.x - gate[0], g0.z - gate[2]) < 4 && Math.abs(g0.y - 6) < 0.1, `leaves from inside the gate (${(g0.x - origin.x).toFixed(1)}, ${g0.y.toFixed(1)}, ${(g0.z - origin.z).toFixed(1)})`);
+  for (let t = 0; t < 300; t++) {
+    leavers.update(1);
+    assertOnTerrace(leavers.positionOf('wren')!, origin, `leaving at ${t} s`);
+  }
+  const g1 = leavers.positionOf('wren')!;
+  assert.ok(Math.hypot(g1.x - home.to.x, g1.z - home.to.z) < 8 && g1.y < 0.2, 'and reaches the street');
+  // Without a campus the trip ends where the engine said, as before.
+  const plain = createPeople({ vehicles: () => null, net: () => NET, now: () => start });
+  plain.set([walk], [agentOf('ines')]);
+  plain.update(400);
+  const r = plain.positionOf('ines')!;
+  assert.ok(Math.hypot(r.x - origin.x, r.z - origin.z) < 1, 'no campus: the engine’s point');
+});
+
+test('walkers walk their path as given, carry no plate and survive a set of trips', () => {
+  const start = 0;
+  const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start });
+  const path: Array<[number, number, number]> = [[100, 6, 100], [130, 6, 100], [130, 6, 140]];
+  people.setWalkers([{ id: 'student:1', path, speed: 1.2 }]);
+  people.update(5);
+  const p = people.positionOf('student:1')!;
+  // Six metres in, on the path's own line (no pavement offset), at its height.
+  assert.ok(Math.abs(p.x - 106) < 0.3 && Math.abs(p.z - 100) < 0.05 && Math.abs(p.y - 6) < 1e-6, `walks the line given (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`);
+  assert.deepEqual(people.walkers(), [{ id: 'student:1', arrived: false }]);
+  // A set of trips (the live ones) does not take the walkers away.
+  people.set([tripOf('ada', { x: 440, z: 200 }, { x: 440, z: 320 })], [agentOf('ada')]);
+  people.update(80);
+  assert.deepEqual(people.walkers(), [{ id: 'student:1', arrived: true }]);
+  const end = people.positionOf('student:1')!;
+  assert.ok(Math.hypot(end.x - 130, end.z - 140) < 0.3, 'arrives at the path’s end');
+  // Drawn close, the walker has no plate; the agent does.
+  const camera = new THREE.PerspectiveCamera(36, 1.6, 0.5, 20000);
+  camera.position.set(140, 8, 150);
+  camera.lookAt(130, 6, 140);
+  people.update(0.016, camera);
+  assert.ok(people.plates().every((pl) => pl.key !== 'person:student:1'), 'no plate over a walker');
+  assert.equal(people.figures().filter((f) => f.kind === 'walker').length, 1);
+  // Its figure names no trip: a walker is never one of the market's trips, however it is listed.
+  assert.equal(people.figures().find((f) => f.agentId === 'student:1')!.tripId, null, 'a walker lists no trip');
+  assert.ok(people.figures().find((f) => f.agentId === 'ada')!.tripId, 'the agent does');
+  // A new path restarts it; arrived, it turns to face what it was given; an empty set takes it away.
+  people.setWalkers([{ id: 'student:1', path: [[0, 6, 0], [10, 6, 0]], speed: 1.2, key: 'b', face: Math.PI / 2 }]);
+  people.update(1);
+  assert.ok(people.positionOf('student:1')!.x < 3, 'on the new path from its start');
+  people.update(20);
+  const h0 = people.figures().find((f) => f.agentId === 'student:1')!.heading;
+  people.update(4);
+  const h1 = people.figures().find((f) => f.agentId === 'student:1')!.heading;
+  assert.ok(Math.abs(h1 - Math.PI / 2) < Math.abs(h0 - Math.PI / 2) || Math.abs(h1 - Math.PI / 2) < 0.05, `it turns toward what it faces (${h0.toFixed(2)} then ${h1.toFixed(2)})`);
+  people.setWalkers([]);
+  assert.equal(people.positionOf('student:1'), null);
+  people.dispose();
+});

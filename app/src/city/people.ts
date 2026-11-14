@@ -23,10 +23,19 @@
  * follow() gives the camera a pose to keep 12 m behind and above; it lets go
  * when the trip ends or the agent retires (camera.ts lets go on a drag or
  * Escape).
+ *
+ * The university (Phase 4 Task 37): a trip to the campus (reason `school`,
+ * or any whose end lies on its plot) is walked round the ring street to the
+ * stair before the gate and up it onto the forecourt, never under the
+ * terrace to the plot's centre the engine routed it to; a trip from the
+ * campus starts inside the gate and comes down the same way (campusTrip).
+ * Walkers are unlabelled figures on a path of their own (the campus's
+ * students, campus/life.ts): no plate, no trip, no vehicle.
  */
 import * as THREE from 'three';
 
-import { inChannel, SPEED, streetLine, type Network } from '../../../shared/commute.js';
+import { BOARD_WAIT_S, CAB_WAIT_S, inChannel, SPEED, streetLine, type Network } from '../../../shared/commute.js';
+import { DISTRICT_PITCH } from '../../../shared/district-layout.js';
 import type { Agent, Trip, TripMode } from '../../../shared/types.js';
 import { asSkinned, B, bodyOf, Builder, dissolve, FIGURE_CODE, figureGeometry, figureShader, SHOULDER_IN, wornTriangles } from './ambient.js';
 import type { Plate } from './labels.js';
@@ -37,6 +46,8 @@ import { kerbOf, type Ride, type VehicleRef, type Vehicles } from './vehicles.js
 
 type V3 = [number, number, number];
 type P = { x: number; z: number };
+/** A trip's leg as walked here: `exact` legs are followed as given (the campus's stair), never moved to the pavement. */
+type Leg = Trip['legs'][number] & { exact?: boolean };
 
 /** Eye distances: the modelled figure in full to 24 m and reduced to 150 m, the plain figure to 440 m, the lantern alone from 400 m. */
 export const PEOPLE_LOD = { close: { near: 16, far: 24 }, near: { near: 110, far: 150 }, out: { near: 380, far: 440 }, plate: 150 } as const;
@@ -68,6 +79,8 @@ export type FigureStage = 'walk' | 'wait' | 'board' | 'ride' | 'alight' | 'idle'
 
 export interface FigureView {
   agentId: string;
+  /** An agent's persona on its trips, or an unlabelled walker (a student). */
+  kind: 'agent' | 'walker';
   name: string;
   tripId: string | null;
   /** Whether its trip is still among the live ones (a figure finishes an ended trip on foot). */
@@ -118,6 +131,29 @@ export interface PeopleDeps {
   onActivate?(agentId: string): void;
   /** The follow let go of itself: its trip ended or its agent retired. */
   onRelease?(): void;
+  /** The university as it stands (campus/index.ts): trips to and from it go by the gate; null before the engine took the plot. */
+  campus?(): CampusWay | null;
+}
+
+/** The campus as a trip meets it: its origin, half the square it keeps, and the way from the street up the stair to the gate. */
+export interface CampusWay {
+  origin: P;
+  half: number;
+  approach: ReadonlyArray<V3>;
+}
+
+/** An unlabelled figure walking a path of its own (the campus's students). A new `key` restarts it from the path's start. */
+export interface Walker {
+  id: string;
+  key?: string;
+  path: ReadonlyArray<V3>;
+  /** Metres a second. */
+  speed: number;
+  coat?: [number, number, number];
+  /** 0 short to 1 long; left out, from the id. */
+  coatLen?: number;
+  /** The way it turns to face once it has arrived (radians, x forward is cos h), as if looking at something; left out, it keeps the way it came. */
+  face?: number;
 }
 
 export interface People {
@@ -146,6 +182,10 @@ export interface People {
   /** Holds the clock (captures); skip moves it on in steps, held or not. */
   hold(on: boolean): void;
   skip(seconds: number): void;
+  /** The walkers as a whole: those left out go, a new key restarts one, the rest walk on. */
+  setWalkers(walkers: ReadonlyArray<Walker>): void;
+  /** Each walker and whether it has reached its path's end. */
+  walkers(): Array<{ id: string; arrived: boolean }>;
   dispose(): void;
 }
 
@@ -164,6 +204,10 @@ interface Look {
 
 interface Figure {
   agent: Agent;
+  kind: 'agent' | 'walker';
+  /** A walker's path key, so the same path is not restarted, and the way it faces once arrived. */
+  key: string | null;
+  face: number | null;
   look: Look;
   trip: Trip | null;
   live: boolean;
@@ -521,6 +565,110 @@ function lanternMaterial(): THREE.ShaderMaterial {
 
 // ---------------------------------------------------------------- the people
 
+/** Seconds a leg takes: its wait, and its length at its mode's pace. */
+function legMs(mode: TripMode, path: ReadonlyArray<V3>): number {
+  const wait = mode === 'walk' ? 0 : mode === 'cab' ? CAB_WAIT_S : BOARD_WAIT_S;
+  return Math.max(1, Math.round((wait + pathLength(path) / SPEED[mode]) * 1000));
+}
+
+/** Drops repeated points and points in the middle of a straight run. */
+function tidyPath(pts: ReadonlyArray<V3>): V3[] {
+  const out: V3[] = [];
+  for (const p of pts) {
+    const b = out[out.length - 1];
+    if (b && Math.hypot(p[0] - b[0], p[2] - b[2]) < 1e-6) continue;
+    const a = out[out.length - 2];
+    if (a && b) {
+      const cross = (b[0] - a[0]) * (p[2] - b[2]) - (b[2] - a[2]) * (p[0] - b[0]);
+      const dot = (b[0] - a[0]) * (p[0] - b[0]) + (b[2] - a[2]) * (p[2] - b[2]);
+      if (Math.abs(cross) < 1e-6 && dot >= 0) out.pop();
+    }
+    out.push([p[0], p[1], p[2]]);
+  }
+  return out;
+}
+
+/**
+ * The way along the ring street round a plot (its centre line DISTRICT_PITCH / 2
+ * from the origin) from one point to another: each is taken to the ring's
+ * nearest point, then the shorter way round through the corners passed.
+ */
+function ringWay(from: V3, to: V3, o: P, R: number): V3[] {
+  const onRing = (p: V3): { q: V3; t: number } => {
+    const dx = clamp(p[0] - o.x, -R, R);
+    const dz = clamp(p[2] - o.z, -R, R);
+    // The nearest side: push the clamped point out to it.
+    const gaps = [R - dx, R - dz, R + dx, R + dz]; // to +x, +z, -x, -z
+    const side = gaps.indexOf(Math.min(...gaps));
+    const q: V3 = side === 0 ? [o.x + R, 0, o.z + dz] : side === 1 ? [o.x + dx, 0, o.z + R] : side === 2 ? [o.x - R, 0, o.z + dz] : [o.x + dx, 0, o.z - R];
+    // The perimeter's parameter, clockwise from the corner (+R, -R): along +x side, +z side, -x side, -z side.
+    const t = side === 0 ? q[2] - o.z + R : side === 1 ? 2 * R + (o.x + R - q[0]) : side === 2 ? 4 * R + (o.z + R - q[2]) : 6 * R + (q[0] - o.x + R);
+    return { q, t };
+  };
+  /** The corner where the side starting at parameter t begins: side k starts at corner k. */
+  const cornerAt = (t: number): V3 => {
+    const k = ((Math.round(t / (2 * R)) % 4) + 4) % 4;
+    return k === 0 ? [o.x + R, 0, o.z - R] : k === 1 ? [o.x + R, 0, o.z + R] : k === 2 ? [o.x - R, 0, o.z + R] : [o.x - R, 0, o.z - R];
+  };
+  const a = onRing(from);
+  const b = onRing(to);
+  const L = 8 * R;
+  let d = b.t - a.t;
+  if (d > L / 2) d -= L;
+  if (d < -L / 2) d += L;
+  const out: V3[] = [from, a.q];
+  // Every corner passed the shorter way round, in order.
+  const eps = 1e-6;
+  if (d > 0) {
+    for (let t = Math.floor(a.t / (2 * R) + eps) * 2 * R + 2 * R; t < a.t + d - eps; t += 2 * R) out.push(cornerAt(t));
+  } else if (d < 0) {
+    for (let t = Math.ceil(a.t / (2 * R) - eps) * 2 * R - 2 * R; t > a.t + d + eps; t -= 2 * R) out.push(cornerAt(t));
+  }
+  out.push(b.q, to);
+  return out;
+}
+
+/**
+ * A trip to or from the campus, rewritten to go by the gate: the engine
+ * routes to the plot's origin, which is under the terrace. The leg that
+ * reaches the plot is cut where it enters the square, carried round the
+ * ring street to the kerb before the stair, and a walk up the approach
+ * added (and the reverse for a trip that starts there). Other trips are
+ * returned as they are.
+ */
+export function campusTrip(trip: Trip, c: CampusWay | null): Trip {
+  if (!c || c.approach.length < 2) return trip;
+  const inside = (x: number, z: number): boolean => Math.abs(x - c.origin.x) < c.half && Math.abs(z - c.origin.z) < c.half;
+  const toCampus = inside(trip.to.x, trip.to.z);
+  const fromCampus = inside(trip.from.x, trip.from.z);
+  if (!toCampus && !fromCampus) return trip;
+  const R = DISTRICT_PITCH / 2;
+  const kerb = c.approach[0];
+  const legs: Leg[] = trip.legs.map((l) => ({ ...l, path: l.path.map((p) => [p[0], p[1], p[2]] as V3) }));
+  const outside = (path: ReadonlyArray<V3>): V3[] => path.filter((p) => !inside(p[0], p[2]));
+  if (toCampus && legs.length) {
+    const last = legs[legs.length - 1];
+    const kept = outside(last.path);
+    const start = kept.length ? kept : [last.path[0]];
+    // A ride's path ends at the ring street itself (the cab sets down in the street); a walk goes on to the kerb.
+    const way = ringWay(start[start.length - 1], kerb, c.origin, R);
+    last.path = tidyPath([...start, ...(last.mode === 'walk' ? way : way.slice(0, -1))]);
+    last.ms = legMs(last.mode, last.path);
+    legs.push({ mode: 'walk', path: [...c.approach], ms: legMs('walk', c.approach), exact: true });
+  }
+  if (fromCampus && legs.length) {
+    const first = legs[0];
+    const kept = outside(first.path);
+    const end = kept.length ? kept : [first.path[first.path.length - 1]];
+    const way = ringWay(kerb, end[0], c.origin, R);
+    first.path = tidyPath([...(first.mode === 'walk' ? way : way.slice(1)), ...end]);
+    first.ms = legMs(first.mode, first.path);
+    legs.unshift({ mode: 'walk', path: [...c.approach].reverse(), ms: legMs('walk', c.approach), exact: true });
+  }
+  const stand = c.approach[c.approach.length - 1];
+  return { ...trip, legs, to: toCampus ? { x: stand[0], z: stand[2] } : trip.to, from: fromCampus ? { x: stand[0], z: stand[2] } : trip.from };
+}
+
 export function createPeople(deps: PeopleDeps): People {
   const now = deps.now ?? (() => Date.now());
   const hour = deps.hour ?? (() => new Date().getHours() + new Date().getMinutes() / 60);
@@ -623,9 +771,12 @@ export function createPeople(deps: PeopleDeps): People {
     return look;
   }
 
-  function newFigure(agent: Agent): Figure {
+  function newFigure(agent: Agent, kind: 'agent' | 'walker' = 'agent'): Figure {
     return {
       agent,
+      kind,
+      key: null,
+      face: null,
       look: lookOf(agent),
       trip: null,
       live: false,
@@ -658,7 +809,8 @@ export function createPeople(deps: PeopleDeps): People {
   }
 
   /** Puts a figure on a trip: at the point its elapsed time says, legs by their nominal times (a ride waits for its real vehicle). */
-  function startTrip(f: Figure, trip: Trip): void {
+  function startTrip(f: Figure, given: Trip): void {
+    const trip = campusTrip(given, deps.campus?.() ?? null);
     f.trip = trip;
     f.live = true;
     f.ride = null;
@@ -685,20 +837,27 @@ export function createPeople(deps: PeopleDeps): People {
     const t = f.trip;
     f.stage = 'idle';
     f.ride = null;
-    if (t) {
-      [f.x, , f.z] = standPoint([t.to.x, 0, t.to.z]);
-      f.y = groundY(f.x);
+    if (!t) return;
+    const last = t.legs[t.legs.length - 1] as Leg | undefined;
+    if (last?.exact) {
+      // An exact leg ends where its path does, at the path's own height (the campus's forecourt).
+      [f.x, f.y, f.z] = last.path[last.path.length - 1];
+      return;
     }
+    [f.x, , f.z] = standPoint([t.to.x, 0, t.to.z]);
+    f.y = groundY(f.x);
   }
 
   /** Sets a figure up for the leg it is on: walking, or waiting where its vehicle will call. */
   function enterLeg(f: Figure): void {
     const trip = f.trip!;
     if (f.leg >= trip.legs.length) return arrive(f);
-    const leg = trip.legs[f.leg];
+    const leg = trip.legs[f.leg] as Leg;
     f.ride = null;
     f.k = 0;
-    f.path = leg.mode === 'walk' ? pavementPath(leg.path) : leg.path;
+    f.path = leg.mode === 'walk' && !leg.exact ? pavementPath(leg.path) : leg.path;
+    // A walk after another leg sets off from where the figure stands (the kerb it alighted at, the stair's foot).
+    if (leg.mode === 'walk' && f.leg > 0 && f.s === 0 && Math.hypot(f.x - f.path[0][0], f.z - f.path[0][2]) > 0.5) f.path = [[f.x, f.y, f.z], ...f.path];
     if (leg.mode === 'walk') {
       f.stage = 'walk';
       const at = { p: [0, 0, 0] as V3, h: f.heading };
@@ -755,6 +914,8 @@ export function createPeople(deps: PeopleDeps): People {
       f.hold = 0;
       f.lean = 0;
       f.phase += dt * 1.6;
+      // Arrived, a walker turns slowly to face what it came to look at (a friend, the lawn, the gate).
+      if (f.face !== null && f.walking === 0) f.heading = turnTo(f.heading, f.face, Math.min(1, dt * 1.6));
       return;
     }
     const leg = trip.legs[f.leg];
@@ -948,7 +1109,7 @@ export function createPeople(deps: PeopleDeps): People {
       if (d < PEOPLE_LOD.close.far) write(close, f, litNow);
       if (d < PEOPLE_LOD.near.far) {
         if (d > PEOPLE_LOD.close.near) write(near, f, litNow);
-        if (d < PEOPLE_LOD.plate) {
+        if (d < PEOPLE_LOD.plate && f.kind === 'agent') {
           plates.push({
             key: `person:${f.agent.id}`,
             origin: { x: f.x, z: f.z },
@@ -1003,8 +1164,9 @@ export function createPeople(deps: PeopleDeps): People {
       const byId = new Map(agents.map((a) => [a.id, a]));
       const liveBy = new Map<string, Trip>();
       for (const t of trips) if (!t.endedAt) liveBy.set(t.agentId, t);
-      // Agents gone or retired take their figures with them.
+      // Agents gone or retired take their figures with them (the walkers are not the agents' and stay).
       for (const [id, f] of figures) {
+        if (f.kind === 'walker') continue;
         const a = byId.get(id);
         if (!a || a.retired) {
           figures.delete(id);
@@ -1024,7 +1186,7 @@ export function createPeople(deps: PeopleDeps): People {
       }
       // A trip no longer live: the figure finishes it on foot (or as far as its ride goes); the follow lets go.
       for (const [id, f] of figures) {
-        if (liveBy.has(id)) continue;
+        if (liveBy.has(id) || f.kind === 'walker') continue;
         f.live = false;
         if (followed === id) release();
       }
@@ -1056,8 +1218,10 @@ export function createPeople(deps: PeopleDeps): People {
     figures: () =>
       [...figures.values()].map((f) => ({
         agentId: f.agent.id,
+        kind: f.kind,
         name: f.agent.name,
-        tripId: f.trip?.id ?? null,
+        // A walker's path is its own, never one of the market's trips.
+        tripId: f.kind === 'walker' ? null : (f.trip?.id ?? null),
         live: f.live,
         leg: f.leg,
         mode: f.trip?.legs[f.leg]?.mode ?? null,
@@ -1095,6 +1259,35 @@ export function createPeople(deps: PeopleDeps): People {
     skip(seconds) {
       for (let t = 0; t < seconds; t += 0.1) step(Math.min(0.1, seconds - t));
     },
+    setWalkers(walkers) {
+      const keep = new Set(walkers.map((w) => w.id));
+      for (const [id, f] of figures) if (f.kind === 'walker' && !keep.has(id)) figures.delete(id);
+      for (const w of walkers) {
+        const key = w.key ?? `${w.id}:${w.path.map((p) => p.join(',')).join(';')}`;
+        let f = figures.get(w.id);
+        if (!f) {
+          f = newFigure({ id: w.id, firmId: '', name: '' } as unknown as Agent, 'walker');
+          if (w.coat) f.look.coat = w.coat;
+          if (w.coatLen !== undefined) f.look.coatLen = w.coatLen;
+          figures.set(w.id, f);
+        }
+        f.face = w.face ?? null;
+        if (f.key === key) continue;
+        f.key = key;
+        const path = w.path.map((p) => [p[0], p[1], p[2]] as V3);
+        const leg: Leg = { mode: 'walk', path, ms: Math.max(1, Math.round((pathLength(path) / Math.max(0.1, w.speed)) * 1000)), exact: true };
+        const trip: Trip = { id: key, agentId: w.id, firmId: '', reason: 'school', jobId: null, from: { x: path[0][0], z: path[0][2] }, to: { x: path[path.length - 1][0], z: path[path.length - 1][2] }, legs: [leg], startedAt: new Date(now()).toISOString(), ms: leg.ms, endedAt: null };
+        f.trip = trip;
+        f.live = true;
+        f.ride = null;
+        f.leg = 0;
+        f.s = 0;
+        f.k = 0;
+        enterLeg(f);
+      }
+      version++;
+    },
+    walkers: () => [...figures.values()].filter((f) => f.kind === 'walker').map((f) => ({ id: f.agent.id, arrived: !f.trip || f.leg >= f.trip.legs.length })),
     dispose() {
       release();
       group.remove(close.mesh, near.mesh, far.mesh, lanterns);

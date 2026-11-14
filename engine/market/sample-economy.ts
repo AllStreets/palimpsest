@@ -72,6 +72,8 @@ import type {
   TripReason,
   Run,
   Verdict,
+  VoyageView,
+  Graduate,
 } from '../../shared/types.js';
 import { proposeFromAudit } from '../audit/proposals.js';
 import { auditSlug, countVerdicts, renderAudit } from '../audit/schema.js';
@@ -93,10 +95,13 @@ import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js'
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
 import { charge } from './budget.js';
-import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, listAgents, listFirms, seedFirms } from './firms.js';
+import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, hireSeed, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
 import { installMilestones } from './milestones.js';
 import { activeTrips, EXCHANGE, homeOf, siteOf, startTrip } from './trips.js';
+import { campusOrigin } from '../school/campus.js';
+import { schoolRoster } from '../school/roster.js';
+import { VOYAGE } from '../../shared/school-rules.js';
 import { reputation } from './reputation.js';
 import { localDay, writeDailyReport } from './report.js';
 import { haltRepo, listRuns, run as storedRun } from './runs.js';
@@ -455,6 +460,25 @@ const HISTORY: Story[] = [
 
 /** The day a merge of Lodestar's was the last it would see. */
 const HISTORY_DAYS = 8;
+
+/**
+ * The school's graduate in the sample, in the engine's shape (lora.ts `graduate()`, Task 27): qwen2.5-coder 7b
+ * fine-tuned on his verified work, graduated on a sealed race on the harbour's arena. Hired through the school's
+ * roster (roster.ts `schoolRoster()`) and makeAgent, it is `grad-qwen25c7-1`, named Ada Quarry.
+ */
+export const SAMPLE_GRADUATE: Graduate = {
+  id: 'grad-qwen25c7-1',
+  model: 'mlx:grad-qwen25c7-1',
+  base: 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit',
+  loraId: 'lora-qwen25c7-1',
+  sealed: { value: 0.58, lo: 0.46, hi: 0.7, n: 15 },
+  baseSealed: { value: 0.39, lo: 0.27, hi: 0.51, n: 15 },
+  vsBase: { diff: 0.19, lo: 0.05, hi: 0.33 },
+  examples: 112,
+  arenas: ['arena-harbor-ledger-1'],
+  at: '',
+  agentId: null,
+};
 
 // ---------------------------------------------------------------- storage the market keeps private
 
@@ -1464,6 +1488,21 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
     dailyTick(Date.now(), { sales: !holdSale });
   });
 
+  // A graduate of the university (Phase 4 Task 38, ahead of Task 28's school seed): the fine-tuned coder the school
+  // graduated, hired the day after the tick. Quickset's quarter is full (its three agents and the specialist it hired),
+  // so it joins Ashlar & Vane; it has had no job yet, so its tower is the collegiate root alone.
+  // It graduates as the engine's graduate() does (its row, then graduate.made with agentId null, unhired; the ledger
+  // carries no arena whole, since the sample's arena has no row), and Ashlar & Vane hires it from the school's roster.
+  q.push(at(7.4), () => {
+    const g: Graduate = { ...SAMPLE_GRADUATE, at: iso() };
+    openDb().prepare('INSERT OR REPLACE INTO graduates (id, json) VALUES (?, ?)').run(g.id, JSON.stringify(g));
+    record('graduate.made', { graduate: g, arenas: [] });
+  });
+  q.push(at(7.5), () => {
+    const seed = schoolRoster().find((s) => s.id === SAMPLE_GRADUATE.id);
+    if (seed) hireSeed('ashlar-vane', seed, new Date(Date.now()));
+  });
+
   // Three daily reports, each written ten minutes after its day ended.
   for (const back of [3, 2, 1]) {
     const day = localDay(now - back * DAY);
@@ -1673,6 +1712,39 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
     go('oskar-kiln', 'job', byIssue(33).id, homeOf(agentOf('oskar-kiln')), siteOf(REPO.Q));
     go('ola-bergstrom', 'home', null, siteOf(REPO.K), homeOf(agentOf('ola-bergstrom')));
     go('dagny-hollis', 'bid', byIssue(219).id, homeOf(agentOf('dagny-hollis')), EXCHANGE);
+    // Two parents of the voyage below on their way to the university (Phase 4 ruling 28), once the engine has its plot.
+    const campus = campusOrigin();
+    if (campus) {
+      go('bruno-kiln', 'school', null, homeOf(agentOf('bruno-kiln')), campus);
+      go('juno-pike', 'school', null, homeOf(agentOf('juno-pike')), campus);
+    }
+  });
+
+  // The school (Phase 4 Task 37): a voyage sailing on the harbour's arena since the night before last, its second
+  // generation under way tonight. The city's own fixture in the engine's shape (voyages.ts announce(): the row and
+  // `{ voyageId, voyage, repo }`; the sample has no school seeding of its own yet): the library's reading room lights a
+  // bay per genome racing, read on load through voyages().
+  const voyage = (generation: number, runs: number): VoyageView => {
+    const scores: VoyageView['scores'] = [];
+    for (let g = 1; g <= generation; g++) {
+      for (let i = 0; i < VOYAGE.population; i++) {
+        const mean = 0.38 + 0.05 * g + 0.03 * ((i * 5) % 7);
+        scores.push({ genome: `harbour-${g}-${i}`, name: `Harbour ${g}.${i + 1}`, generation: g, mean, lo: mean - 0.09, hi: mean + 0.09, parents: g > 1 ? [`harbour-${g - 1}-${i}`, `harbour-${g - 1}-${(i + 3) % VOYAGE.population}`] : [] });
+      }
+    }
+    return { id: 'voy-harbour-1', arena: 'arena-harbor-ledger-1', status: 'sailing', generation, of: VOYAGE.generations, runs: { done: runs, of: 480 }, commissionedBy: null, scores, promoted: [], sealed: null, credits: 9.6 + runs / 40, startedAt: iso(ago(2 * DAY)), endedAt: null, repo: REPO.H, reason: null, pausedAt: null };
+  };
+  // The voyage's row goes with each entry, as the engine's would, so the ledger replays clean (replay.ts).
+  const saveVoyage = (v: VoyageView) => openDb().prepare('INSERT OR REPLACE INTO voyages (id, json) VALUES (?, ?)').run(v.id, JSON.stringify(v));
+  q.push(ago(2 * DAY), () => {
+    const v = voyage(1, 0);
+    saveVoyage(v);
+    record('voyage.started', { voyageId: v.id, voyage: v, repo: REPO.H });
+  });
+  q.push(ago(6 * HOUR), () => {
+    const v = voyage(2, 137);
+    saveVoyage(v);
+    record('voyage.generation', { voyageId: v.id, voyage: v, repo: REPO.H });
   });
 }
 

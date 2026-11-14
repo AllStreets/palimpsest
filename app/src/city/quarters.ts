@@ -130,7 +130,8 @@ export function quarterShow(q: Quarter, clocks: QuarterClocks = {}): QuarterShow
     const s = t.agentId ? clocks.sold?.get(t.agentId) : undefined;
     if (bought && s !== undefined && s < RECLAD_TOTAL) {
       settled = false;
-      const seller: TowerSpec = { ...t, firmId: q.firmId, root: q.root, dark: true };
+      // Behind the rising scaffold the tower stands as it stood: on the seller's root, or on the school's if it is a graduate's.
+      const seller: TowerSpec = { ...t, firmId: q.firmId, root: t.school ? 'collegiate' : q.root, dark: true };
       const buyer: TowerSpec = { ...t, dark: false };
       if (s < RECLAD.rise) return { spec: seller, lit: 0, scaffold: ease(s / RECLAD.rise), phase: 'rising' };
       const r = s - RECLAD.rise;
@@ -183,8 +184,8 @@ const STONE: Record<RootStyle, MatKey> = {
   gothic: 'gothic',
   pagoda: 'granite',
   chicago: 'limestone',
-  // The school's root borrows gothic until Task 38.
-  collegiate: 'gothic',
+  // The school's root: its dressings are limestone.
+  collegiate: 'limestone',
 };
 
 /**
@@ -212,6 +213,8 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
     const built = buildTower(t, quality, mats(look), look, { firmSlots: opts.firmSlots, dark: false } satisfies BuildOptions);
     built.group.name = `tower:${t.id}`;
     built.group.position.set(at.x, 0, at.z);
+    // A school tower (the collegiate root) is drawn apart, in the university's masonry (school-towers.ts).
+    built.group.userData.school = t.root === 'collegiate';
     group.add(built.group);
     for (const [p, id] of built.pickables) {
       pickables.set(p, id);
@@ -428,9 +431,21 @@ const WALKS: Record<RootStyle, WalkBuilder> = {
     k.box('steel', length + 1.5, 0.36, 0.1, M(0, height + 0.75, -WALK_WIDTH / 2 - 0.72));
     floorAndLamps(k, 'limestone', length, height, n, pitch);
   },
-  // The school's root walks as gothic until Task 38.
+  // A brick cloister: pointed limestone arches in brick walls, buttressed at every pier, under a slate lean-to.
   collegiate(k, length, height) {
-    WALKS.gothic(k, length, height);
+    const { n, pitch } = bays(length, 3.4);
+    arcade(k, 'brickWall', length, height, 3.4, (u, w) => pointedArch(u, w * 0.9, 0.02, height - 0.6 - w * 0.9 * 0.87));
+    for (let i = 0; i <= n; i++) {
+      const x = -length / 2 + i * pitch;
+      for (const side of [-1, 1]) k.box('limestone', 0.5, height * 0.8, 0.8, M(x, height * 0.4, side * (WALK_WIDTH / 2 + 0.35)));
+    }
+    const half = WALK_WIDTH / 2 + 0.5;
+    const rise = 1.4;
+    const slope = Math.atan2(rise, half);
+    for (const side of [-1, 1]) {
+      const g = new THREE.BoxGeometry(length + 0.6, 0.16, Math.hypot(half, rise));
+      k.add('roofTile', g, M(0, height + 0.5 + rise / 2, side * half * 0.5).multiply(new THREE.Matrix4().makeRotationX(side * slope)));
+    }
   },
 };
 

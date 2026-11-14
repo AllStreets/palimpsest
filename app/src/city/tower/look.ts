@@ -387,7 +387,42 @@ const ROOM_GLSL = /* glsl */ `
       roughnessFactor = 0.85;
       roomLight = lamp * fibre * (0.12 + lit * 0.95) * (1.0 - bar);
     }
-    if (style > 0.9) {
+    bool reading = style > 0.52 && style < 0.58;
+    if (reading) {
+      // A library's reading room (campus/library.ts): lamplight pooled low over the desks, brightest at the sill
+      // and falling toward the head of the window; a back wall of shelves across the lower third, the books as
+      // narrow spines; desks at sill height with readers' heads and shoulders dark against the light. The warm
+      // channel jitters the lamplight's hue bay by bay; lit is the bay's own level (life.ts), the flicker in it.
+      vec2 q = ro.xy + 20.0;
+      float up = clamp(ro.y / sz.y + 0.5, 0.0, 1.0);
+      vec3 lampC = mix(vec3(1.0, 0.78, 0.5), vec3(1.0, 0.6, 0.3), warm);
+      float grad = 0.3 + 0.7 * (1.0 - smoothstep(0.1, 1.0, up));
+      vec3 g = lampC * grad;
+      // Shelves from the floor to a third of the height: a dim band, spines of different depth, a shelf board every 0.36 m.
+      if (up < 0.34) {
+        float spine = rh(floor(q.x / 0.075) + seed * 7.0);
+        float board = step(0.88, fract(q.y / 0.36));
+        g *= 0.09 + 0.17 * spine * spine + 0.08 * board;
+      }
+      // Desks and readers: a desk top as a dark line at sill height, a reader at every other desk.
+      float slot = floor(q.x / 1.15 + seed * 3.0);
+      float dx = fract(q.x / 1.15 + seed * 3.0);
+      float here = rh(slot * 3.1 + seed * 19.0);
+      if (up > 0.085 && up < 0.125 && here > 0.2) g *= 0.1;
+      float hx = abs(dx - 0.5);
+      bool shoulders = up > 0.125 && up < 0.2 && hx < 0.24;
+      bool head = up >= 0.2 && up < 0.27 && hx < 0.085;
+      if (here > 0.45 && (shoulders || head)) g *= 0.08;
+      // A reading lamp on the desk, a small bright point at the desk's near edge.
+      if (here > 0.6 && up > 0.125 && up < 0.145 && abs(dx - 0.82) < 0.03) g *= 2.4;
+      roomLight = g * lit * 2.4;
+      float peakR = max(roomLight.r, max(roomLight.g, roomLight.b));
+      roomLight *= 1.0 / (1.0 + 0.45 * peakR);
+      roomLight *= uGlassTint;
+      roughnessFactor = 0.035;
+      diffuseColor.rgb = uGlassBody;
+    }
+    if (style > 0.9 || reading) {
       // Glazing bars: a frame round the edge, one upright and a meeting rail.
       vec2 c = ro.xy / sz;
       vec2 e = 0.5 - abs(c);

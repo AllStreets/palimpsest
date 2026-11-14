@@ -11,6 +11,7 @@ import {
   agent,
   firm,
   hire,
+  hireSeed,
   idleAgents,
   installedModels,
   listAgents,
@@ -31,10 +32,11 @@ import { SYSTEM_PATH } from '../engine/market/sandbox.js';
 import { layEarnedFloor } from '../engine/repos.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { netCard } from '../engine/school/nets.js';
-import { firstRefusal, installRoster } from '../engine/school/roster.js';
+import { graduates } from '../engine/school/lora.js';
+import { firstRefusal, installRoster, schoolRoster } from '../engine/school/roster.js';
 import { startServer } from '../engine/server.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
-import type { Agent, Floor, Repo } from '../shared/types.js';
+import type { Agent, Floor, Graduate, Repo } from '../shared/types.js';
 import { bredVoyage, readyArena } from './roster-fixtures.js';
 import { constant, installNet } from './school-fixtures.js';
 
@@ -355,6 +357,47 @@ test('hire adds a roster agent with roster lineage and refuses a fifth tower', (
   assert.ok(second);
   assert.notEqual(second.name, first.name);
   assert.equal(quarters().find((q) => q.firmId === 'quickset')!.towers.length, 4);
+});
+
+test("a graduate of the school joins a firm on the collegiate root, with school lineage, and its tower stands in the firm's quarter", () => {
+  seedFirms(INSTALLED);
+  // A graduate as lora.ts graduate() stores it (Task 27), unhired; the roster names it and makeAgent hires it.
+  const made: Graduate = {
+    id: 'grad-qwen25c7-1',
+    model: 'mlx:grad-qwen25c7-1',
+    base: 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit',
+    loraId: 'lora-1',
+    sealed: { value: 0.62, lo: 0.5, hi: 0.74, n: 12 },
+    baseSealed: { value: 0.41, lo: 0.29, hi: 0.53, n: 12 },
+    vsBase: { diff: 0.21, lo: 0.06, hi: 0.36 },
+    examples: 112,
+    arenas: ['arena-1'],
+    at: '2026-11-11T04:00:00.000Z',
+    agentId: null,
+  };
+  openDb().prepare('INSERT INTO graduates (id, json) VALUES (?, ?)').run(made.id, JSON.stringify(made));
+  const seed = schoolRoster().find((s) => s.id === 'grad-qwen25c7-1')!;
+  assert.ok(seed, 'the graduate is on the school roster under its own id');
+  const g = hireSeed('ashlar-vane', seed);
+  assert.ok(g);
+  assert.equal(g.id, 'grad-qwen25c7-1');
+  assert.equal(g.name, 'Ada Quarry', 'the first graduate takes the first name');
+  assert.equal(g.firmId, 'ashlar-vane');
+  assert.equal(g.lineage.origin, 'school');
+  assert.equal(g.model, 'mlx:grad-qwen25c7-1');
+  assert.equal(g.towerIndex, 2, 'the lowest free plot');
+  assert.equal(g.retired, false);
+  assert.equal(graduates()[0].agentId, 'grad-qwen25c7-1', 'the graduate names the agent it became once hired');
+  const hiredRows = entries().filter((e) => e.kind === 'agent.hired');
+  assert.equal(hiredRows.length, 1);
+  assert.deepEqual(hiredRows[0].data, { agent: agent(g.id) });
+  const q = quarters().find((x) => x.firmId === 'ashlar-vane')!;
+  const t = q.towers.find((x) => x.agentId === g.id)!;
+  assert.equal(t.root, 'collegiate', "a graduate's tower stands on the school's root, not the firm's");
+  assert.equal(t.school, true);
+  assert.equal(q.root, 'gothic', "the quarter itself keeps the firm's root");
+  assert.ok(q.towers.filter((x) => x.agentId !== g.id).every((x) => x.root === 'gothic'));
+  assert.equal(hireSeed('ashlar-vane', seed), null, 'never hired twice');
 });
 
 test('retiring frees the plot; a bankrupt firm goes dark and a sold tower is re-clad by its buyer', () => {

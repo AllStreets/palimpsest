@@ -122,6 +122,7 @@ export const PANE_CHANNEL = 0.25; // ribbed channel glass: translucent, the room
 export const PANE_SILL = 0.5; // punched window over a sill
 export const PANE_SHOJI = 0.75; // lit paper in a timber lattice
 export const PANE_SASH = 1.0; // punched window with glazing bars
+export const PANE_READING = 0.55; // a library's reading room: lamplight over the desks, shelves and readers in silhouette (campus)
 
 export function paneData(lit: number, warm: number, style: number): THREE.Color {
   return new THREE.Color(lit, warm, style);
@@ -424,6 +425,8 @@ export class Kit {
       const mesh = new THREE.Mesh(g, this.m[mat]);
       mesh.castShadow = mesh.receiveShadow = true;
       mesh.name = `tower:${mat}`;
+      // The slot it draws in, for anything that restamps a built tower (school-towers.ts).
+      mesh.userData.mat = mat;
       group.add(mesh);
     }
     for (const [key, b] of this.batches) {
@@ -477,6 +480,7 @@ export class Kit {
     mesh.castShadow = b.shadow;
     mesh.receiveShadow = true;
     mesh.name = `tower:${key}`;
+    mesh.userData.mat = b.mat;
     return mesh;
   }
 }

@@ -142,6 +142,8 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
     root.updateMatrixWorld(true);
     const lods = new Map<string, { near: Inst[]; far: Inst[]; distance: number }>();
     const visit = (o: THREE.Object3D): void => {
+      // Nothing under a hidden object is drawn (a school tower's parts, drawn by their own batch), so none of it merges.
+      if (!o.visible && o !== root) return;
       if ((o as THREE.LOD).isLOD) {
         const lod = o as THREE.LOD;
         const [near, far] = lod.levels;

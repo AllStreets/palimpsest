@@ -1206,7 +1206,7 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
  * numerals in the index's serif, drawn on a canvas, so only in the browser
  * (null in node tests, where the face is plain).
  */
-function clockDial(): THREE.CanvasTexture | null {
+export function clockDial(): THREE.CanvasTexture | null {
   if (typeof document === 'undefined') return null;
   const N = 1024;
   const canvas = document.createElement('canvas');

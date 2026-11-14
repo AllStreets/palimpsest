@@ -10,6 +10,8 @@ import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
 import { dropText } from './city/governor';
 import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
+import { EMPTY_LIFE, foldLifeEvent, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
+import { foldSchoolEvent, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
@@ -17,7 +19,7 @@ import type { MilestoneShow } from './city/milestones.js';
 import type { VehicleRef, VehiclesView } from './city/vehicles.js';
 import type { AmbientView } from './city/ambient.js';
 import { route } from '../../shared/commute.js';
-import type { Trip } from '../../shared/types';
+import type { Trip, TripReason } from '../../shared/types';
 import { towerCenterpiece, towerMaterials } from './city/tower/look';
 import { firmMarkColor } from './city/tower/eras';
 import { cleanText } from './ui/board';
@@ -31,7 +33,7 @@ import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
 import { currentRoute, navigate, onRoute, type Place, type Route } from './router';
-import { createInspector, ROOT_NAMES, type MarketNames } from './ui/inspector';
+import { createInspector, ROOT_NAMES, type CampusInspectorView, type MarketNames } from './ui/inspector';
 import { dossierBlock, startRide, type Ride, type RideState } from './city/ride';
 import type { Dossier } from '../../shared/ride';
 import { createDossierReader } from './city/dossier-reader';
@@ -92,6 +94,20 @@ interface DebugHandle {
   project(p: number[]): number[];
   /** Each milestone as the city shows it now (milestones.ts), by id. */
   milestones(): Array<MilestoneShow & { id: string }>;
+  /** The university as it stands (campus/index.ts): its origin and the later buildings' anchors, or null before the engine took the plot. */
+  campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
+  /** Holds the campus clock tower at a moment (ms since the epoch), for the clock still; null frees it. */
+  campusClock(ms: number | null): void;
+  /** Tells the city the school's state (the observatory opens while the nets train, its plate lit while the master is trusted), as the ledger would; null gives the ledger's back. */
+  school(s: ObservatoryState | null): void;
+  /** The observatory as it shows now, or null before the campus stands. */
+  observatory(): ObservatoryView | null;
+  /** Tells the city the campus's life (the voyage sailing, the nets, the graduates) in place of the ledger's; null gives the ledger's back. */
+  life(s: LifeState | null): void;
+  /** The campus's life as it shows now: the bays' light, the live voyage, the students; null before the campus stands. */
+  campusLife(): CampusLifeView | null;
+  /** Opens the inspector on the university, as clicking the library does. */
+  inspectCampus(): void;
   /** Stands these milestones in place of the engine's for a capture (the finial on a tower of its own), or the engine's again with null. */
   stageMilestones(ms: Milestone[] | null): void;
   precompile(): Promise<void>;
@@ -125,8 +141,8 @@ interface DebugHandle {
   person(agentId: string): FigureView | null;
   /** Every figure as it stands now. */
   persons(): FigureView[];
-  /** Sends an agent's figure on a synthetic trip from one point to another, routed over the network (captures and the UI test). */
-  peopleTrip(agentId: string, from: number[], to: number[]): string | null;
+  /** Sends an agent's figure on a synthetic trip from one point to another, routed over the network (captures and the UI test); `reason` as a real trip's, `job` by default. */
+  peopleTrip(agentId: string, from: number[], to: number[], reason?: TripReason): string | null;
   /** Holds or releases the people's and the vehicles' clocks together, or moves both on (captures and tests). */
   peopleHold(on: boolean): void;
   peopleSkip(seconds: number): void;
@@ -341,6 +357,8 @@ async function main(): Promise<void> {
     makeExchange: (q) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')) }),
     // The skyline's mast and finial in the city's galvanised steel and polished bronze.
     milestoneMaterials: towerMaterials(lookFor('civic:exchange')),
+    // The university's halls light their windows in the same glass as every tower.
+    campusMaterials: towerMaterials(lookFor('civic:exchange')),
     // A firm's ribbon in its own mark colour, as its floors' marks are.
     firmColour: (firmId) => firmMarkColor(firmId, firmSlots),
     describeTrip: (trip, agent) => describeTrip(trip, agent),
@@ -479,12 +497,12 @@ async function main(): Promise<void> {
     people: () => city.people()?.view(city.camera) ?? null,
     person: (id) => city.people()?.figures().find((f) => f.agentId === id) ?? null,
     persons: () => city.people()?.figures() ?? [],
-    peopleTrip(agentId, from, to) {
+    peopleTrip(agentId, from, to, reason = 'job') {
       const net = city.transitNetwork();
       const agent = agentsAll().find((a) => a.id === agentId);
       if (!net || !agent) return null;
       const legs = route({ x: from[0], z: from[1] }, { x: to[0], z: to[1] }, net);
-      const trip: Trip = { id: `probe:${agentId}:${Date.now()}`, agentId, firmId: agent.firmId, reason: 'job', jobId: null, from: { x: from[0], z: from[1] }, to: { x: to[0], z: to[1] }, legs, startedAt: new Date().toISOString(), ms: legs.reduce((s, l) => s + l.ms, 0), endedAt: null };
+      const trip: Trip = { id: `probe:${agentId}:${Date.now()}`, agentId, firmId: agent.firmId, reason, jobId: null, from: { x: from[0], z: from[1] }, to: { x: to[0], z: to[1] }, legs, startedAt: new Date().toISOString(), ms: legs.reduce((s, l) => s + l.ms, 0), endedAt: null };
       probeTrips.set(agentId, trip);
       showTrips();
       return trip.id;
@@ -499,6 +517,25 @@ async function main(): Promise<void> {
     },
     peopleLantern: (on) => city.people()?.lantern(on),
     milestones: () => [...city.milestoneShows()].map(([id, m]) => ({ id, ...m })),
+    campus() {
+      const c = city.campus();
+      if (!c) return null;
+      const a = c.anchors;
+      return { origin: c.origin, anchors: { library: a.library.toArray(), clock: a.clock.toArray(), dome: a.dome.toArray(), gate: a.gate.toArray() } };
+    },
+    campusClock: (ms) => city.setCampusClock(ms),
+    school(s) {
+      heldSchool = s ? { ...s } : null;
+      city.setSchool(heldSchool ?? school);
+    },
+    observatory: () => city.observatory(),
+    life(s) {
+      heldLife = s;
+      city.setLife(heldLife ?? life);
+      showCampusInspector();
+    },
+    campusLife: () => city.campusLife(),
+    inspectCampus: () => inspectCampus(),
     stageMilestones: (ms) => (ms ? city.setMilestones(ms) : showMilestones()),
     follow: (id) => followAgent(id),
     following: () => city.following(),
@@ -751,6 +788,21 @@ async function main(): Promise<void> {
     ),
   );
 
+  // ---------------------------------------------------------------- the university's plot (Phase 4)
+  /** The engine takes the campus's plot once at its start (engine/school/campus.ts): read on load and on reconnect. */
+  const readCampus = coalesced(() =>
+    api.campus().then(
+      (c) => {
+        city.setCampus(c.origin);
+        // The voyage sailing when the page opened (events before it are not replayed): the library lights by it.
+        const v = c.voyage ?? null;
+        const next: LifeState = v && (v.status === 'sailing' || v.status === 'paused') ? { ...life, voyage: lifeVoyage(v, c.voyageRepo ?? null, life.voyage?.id === v.id ? life.voyage : null) } : life.voyage && !v ? { ...life, voyage: null } : life;
+        setLife(next);
+      },
+      () => {},
+    ),
+  );
+
   // ---------------------------------------------------------------- the market's names
   /** Agent and firm names for the earned floors, and each scar's inspection report, read from the engine. */
   let names: MarketNames = { agents: new Map(), firms: new Map(), inspections: new Map() };
@@ -805,7 +857,7 @@ async function main(): Promise<void> {
 
   // The panel's width follows the window, and so does the view's offset.
   addEventListener('resize', () => {
-    if (inspector.repo) city.setInset(inspector.width);
+    if (inspector.repo || inspector.campus) city.setInset(inspector.width);
   });
 
   /** An agent's tower or a firm's plinth opens its page (Task 38), and the camera comes to the tower. */
@@ -825,6 +877,14 @@ async function main(): Promise<void> {
     debug.opened = JOBS_ROUTE;
     location.hash = JOBS_ROUTE;
   }
+  /**
+   * The observatory's dome opens the school screen at the master's card: the same navigation every other click in
+   * the city makes, the address changing (screens-track Task 28 draws the screen and routes `#/school/<section>`).
+   */
+  function openSchool(route: string): void {
+    debug.opened = route;
+    location.hash = route;
+  }
 
   city.onPick((hit) => {
     debug.lastPick = hit;
@@ -836,8 +896,54 @@ async function main(): Promise<void> {
       debug.opened = `#/agents/${encodeURIComponent(hit.agentId)}`;
       location.hash = debug.opened;
     } else if (hit.kind === 'exchange') openJobs();
+    else if (hit.kind === 'observatory') openSchool(hit.route);
+    else if (hit.kind === 'campus') inspectCampus();
     else openFirm(hit.firmId);
   });
+
+  // ---------------------------------------------------------------- the school (Phase 4 Task 36)
+  /**
+   * The school as the ledger's stream tells it: a nets train starting opens the observatory and its end shuts it;
+   * the master's promoted version, if trusted, lights the plate by its door. Read whole from api.school() on load
+   * and reconnect once Task 28 lands; until then the state starts shut and dark and follows the events.
+   */
+  let school: ObservatoryState = { training: false, masterTrusted: false, version: 0 };
+  /** A capture's or a test's state in place of the ledger's, or null. */
+  let heldSchool: ObservatoryState | null = null;
+  const foldSchool = (e: EngineEvent): void => {
+    const next = foldSchoolEvent(school, e);
+    if (next === school) return;
+    school = next;
+    if (!heldSchool) city.setSchool(school);
+  };
+  /**
+   * The campus's life as the ledger's stream tells it (campus/life.ts): a voyage sailing lights the library's
+   * reading room, a bay per genome racing; the nets trained and the graduates made are listed by the inspector on
+   * the university. Read from api.campus() on load (the voyage only, until Task 28 serves the school whole).
+   */
+  let life: LifeState = EMPTY_LIFE;
+  /** A capture's or a test's life in place of the ledger's. */
+  let heldLife: LifeState | null = null;
+  const setLife = (next: LifeState): void => {
+    if (next === life) return;
+    life = next;
+    if (!heldLife) city.setLife(life);
+    showCampusInspector();
+  };
+  const foldLife = (e: EngineEvent): void => setLife(foldLifeEvent(life, e));
+  /** The inspector's view of the university, from the life shown (held or the ledger's). */
+  const campusInspectorView = (): CampusInspectorView => {
+    const shown = heldLife ?? life;
+    return { voyage: shown.voyage, nets: shown.nets, graduates: shown.graduates, bays: city.campusLife()?.bays.length ?? 0 };
+  };
+  function inspectCampus(): void {
+    if (!city.campus()) return;
+    inspector.openCampus(campusInspectorView());
+    city.setInset(inspector.width);
+  }
+  function showCampusInspector(): void {
+    if (inspector.campus) inspector.updateCampus(campusInspectorView());
+  }
 
   // ---------------------------------------------------------------- the exchange's tote board
   /** The open and bidding jobs, in the order they were posted, as the board last read them. */
@@ -924,6 +1030,7 @@ async function main(): Promise<void> {
   function describeTrip(trip: Trip, agent: Agent): string {
     const title = titleOf(trip.jobId);
     const place = placeOf(trip.to);
+    if (trip.reason === 'school') return 'to the university, a parent in the voyage';
     if (trip.reason === 'home') return `home to ${firmViews.get(agent.firmId)?.name ?? place}`;
     if (trip.reason === 'bid') return title ? `to the exchange to bid on ${title}` : 'to the exchange to bid';
     if (trip.reason === 'inspect') return title ? `to ${place} to inspect ${title}` : `to ${place} to inspect`;
@@ -1060,6 +1167,7 @@ async function main(): Promise<void> {
     readBoard();
     readLive();
     readMilestones();
+    readCampus();
   } catch (err) {
     console.warn('could not load the city from the engine', err);
     show([]);
@@ -1085,6 +1193,7 @@ async function main(): Promise<void> {
     }
     if (e.type === 'engine.reconnected') {
       readMilestones();
+      readCampus();
       // Events sent while the stream was down are lost: read the repos, the city and the kill switch afresh.
       void api.repos().then((list) => {
         takeRepos(list);
@@ -1133,6 +1242,8 @@ async function main(): Promise<void> {
       if (sold?.from && darkened.delete(sold.from)) place();
     }
     if (LIVE_ON.has(e.type)) readLive();
+    foldSchool(e);
+    foldLife(e);
     if (REFRESH_ON.has(e.type)) refresh();
     if (NAMES_ON.has(e.type)) readNames();
     for (const fn of listeners) fn(e);

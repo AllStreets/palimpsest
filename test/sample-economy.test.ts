@@ -234,8 +234,17 @@ test('the economy seeds every job status and replays clean', async () => {
   assert.equal(lodestar.towers[0].dark, false);
   assert.equal(listAgents().filter((a) => a.lineage.origin === 'roster').length, 1);
 
+  // The school's graduate (Task 38): hired by Ashlar & Vane the day after the tick, on the collegiate root, no job yet.
+  const graduates = listAgents().filter((a) => a.lineage.origin === 'school');
+  assert.equal(graduates.length, 1);
+  assert.equal(graduates[0].firmId, 'ashlar-vane');
+  assert.equal(graduates[0].model, 'mlx:grad-qwen25c7-1');
+  const gradTower = quarters().flatMap((q) => q.towers).find((t) => t.agentId === graduates[0].id)!;
+  assert.equal(gradTower.root, 'collegiate');
+  assert.equal(gradTower.floors.length, 0);
+
   // Agent towers already hold 3 to 14 earned floors, in every silhouette.
-  const towers = quarters().flatMap((q) => q.towers);
+  const towers = quarters().flatMap((q) => q.towers).filter((t) => t.root !== 'collegiate');
   assert.equal(towers.length, 12);
   for (const t of towers) assert.ok(t.floors.length >= 3 && t.floors.length <= 14, `${t.agentId} holds ${t.floors.length} floors`);
   assert.deepEqual(new Set(towers.map((t) => t.silhouette)), new Set<Silhouette>(['lens', 'cantilever', 'needle', 'plain']));

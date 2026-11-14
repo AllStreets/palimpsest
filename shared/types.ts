@@ -90,6 +90,8 @@ export interface TowerSpec {
   silhouette?: Silhouette;
   /** An agent tower's plot in its quarter (the agent's towerIndex, Task 4): QUARTER_OFFSETS[towerIndex]. */
   towerIndex?: number;
+  /** A graduate's tower (Phase 4): it stood on the school's collegiate root before any sale re-clad it. */
+  school?: boolean;
 }
 
 export interface District {

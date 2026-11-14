@@ -303,6 +303,17 @@ test('a dark quarter has no lit panes', () => {
   assert.equal(quarterBuildKey(settled.quarter), quarterBuildKey(quarterShow(lit).quarter));
 });
 
+test("a sold school tower stood on the collegiate root before its sale, and the seller's spec keeps it", () => {
+  const before = bankruptQuarter();
+  const sold = { ...before.towers[0], school: true, root: 'collegiate' as const };
+  const after: Quarter = { ...before, towers: [{ ...sold, firmId: 'quickset', root: 'chicago', dark: false }, before.towers[1]] };
+  const rising = quarterShow(after, { sold: new Map([[sold.agentId!, RECLAD.rise / 2]]) }).towers[0];
+  assert.equal(rising.spec.root, 'collegiate', "behind the rising scaffold the graduate's tower stands on the school's root, not the seller firm's");
+  assert.equal(rising.spec.firmId, 'lodestar');
+  const rebuilt = quarterShow(after, { sold: new Map([[sold.agentId!, RECLAD.rise + 0.1]]) }).towers[0];
+  assert.equal(rebuilt.spec.root, 'chicago', "re-clad in the buyer's root");
+});
+
 test("a sold tower rebuilds with the buyer's look and root", () => {
   const before = bankruptQuarter();
   const sold = before.towers[0];
@@ -350,7 +361,8 @@ test("a sold tower rebuilds with the buyer's look and root", () => {
 test("the court's lantern stands over every agent root and under the lowest district tower, its glass as built", () => {
   const roots = Object.keys(ROOT_HEIGHT) as RootStyle[];
   const agentRoof = Math.max(...roots.map(agentRootHeight));
-  const lowestDistrict = Math.min(...roots.map((r) => ROOT_HEIGHT[r]));
+  // The collegiate root is the school's, for agent towers alone (engine/repos.ts ROOTS): no district stands on it.
+  const lowestDistrict = Math.min(...roots.filter((r) => r !== 'collegiate').map((r) => ROOT_HEIGHT[r]));
   assert.ok(LANTERN_TOP > agentRoof && LANTERN_TOP < lowestDistrict, `its top ${LANTERN_TOP} m is between ${agentRoof.toFixed(1)} and ${lowestDistrict} m`);
   // The glass burns over the agents' roofs, inside the cage.
   assert.ok(LANTERN_GLASS.y > agentRoof, `the glass's centre ${LANTERN_GLASS.y} m clears every agent root`);

@@ -4,8 +4,17 @@ import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.
 import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
+import { plainBatch } from './plain-batch.js';
+import { schoolBatch, type SchoolBatch } from './school-towers.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
 import { createCameraRig, type ScriptPose } from './camera';
+import { CAMPUS_INSPECT, createCampus, type Campus, type CampusAnchors } from './campus/index.js';
+import { campusLife, EMPTY_LIFE, type CampusLife, type CampusLifeView, type LifeState } from './campus/life.js';
+import type { ObservatoryState, ObservatoryView } from './campus/observatory.js';
+import { masonryMaterial } from './campus/masonry.js';
+import { CAMPUS_HALF, campusPlaza, TERRACE } from './campus/site.js';
+import type { CollarPlaza } from './collar.js';
+import { HALL } from './campus/halls.js';
 import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
@@ -42,6 +51,10 @@ export type PickHit =
   | { kind: 'agent'; agentId: string; firmId: string; floorId: string | null }
   | { kind: 'firm'; firmId: string }
   | { kind: 'exchange'; route: string }
+  /** The observatory's dome (campus/observatory.ts): the school screen at the master. */
+  | { kind: 'observatory'; route: string }
+  /** The library (campus/index.ts): the campus's inspector, with the live voyage, the nets and the graduates. */
+  | { kind: 'campus' }
   /** A persona's plate (people.ts). */
   | { kind: 'person'; agentId: string };
 
@@ -83,6 +96,8 @@ export interface CityOptions {
   coatOf?: (agent: Agent) => [number, number, number];
   /** The steel and bronze the skyline's mast and finial are built in (milestones.ts); without them no milestone shows. */
   milestoneMaterials?: TowerMaterials;
+  /** The university's materials (Phase 4): the halls' windows draw in its `window`; without it no campus is built. */
+  campusMaterials?: TowerMaterials;
   /** A firm's mark colour (eras.ts firmMarkColor with the city's slots): its ribbon's satin. */
   firmColour?: (firmId: string) => THREE.Color;
 }
@@ -223,6 +238,24 @@ export interface City {
   setMilestones(ms: ReadonlyArray<Milestone>): void;
   /** Each milestone as it shows now, by id (tests and captures). */
   milestoneShows(): Map<string, MilestoneShow>;
+  /**
+   * Stands the university on its plot (GET /api/school/campus, Phase 4
+   * Task 34): the terrace, its quads and the four halls, with the ambient
+   * city cleared off the block; null takes it down.
+   */
+  setCampus(origin: { x: number; z: number } | null): void;
+  /** The campus as it stands: its origin and the anchors the later buildings take, or null before the engine took the plot. */
+  campus(): { origin: { x: number; z: number }; anchors: CampusAnchors } | null;
+  /** Holds the campus's clock at a moment (ms since the epoch) for a still or a test; null lets it follow his wall clock. */
+  setCampusClock(ms: number | null): void;
+  /** The school as the ledger tells it (Task 36): the observatory opens while the nets train, its plate lit while the master is trusted. */
+  setSchool(s: ObservatoryState): void;
+  /** The observatory as it shows now, or null before the campus stands (tests and captures). */
+  observatory(): ObservatoryView | null;
+  /** The campus's life as the ledger tells it (Task 37): the voyage sailing lights the library's bays; the nets and graduates for its inspector. */
+  setLife(s: LifeState): void;
+  /** The campus's life as it shows now (the bays' light, the live voyage, the students), or null before the campus stands. */
+  campusLife(): CampusLifeView | null;
 }
 
 /** The frame rate and triangles the city drew when it stepped down, and whether that was the home view. */
@@ -409,6 +442,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
           for (const fn of pickListeners) fn({ kind: 'person', agentId });
         },
         onRelease: () => rig.unfollow(),
+        // Trips to the university end at its gate, and trips from it start there (Task 37).
+        campus: () => (campus && campusOrigin ? { origin: campusOrigin, half: CAMPUS_HALF, approach: campus.approach() } : null),
       });
       peopleRoot.add(people.group);
       people.set(pendingTrips.trips, pendingTrips.agents);
@@ -437,6 +472,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     const now = new Date();
     return ambientDensity(now.getHours() + now.getMinutes() / 60);
   };
+  /** The streets' density at and below which the city counts as evening (the curve's level from eleven at night). */
+  const EVENING_DENSITY = 0.5;
+  /**
+   * The city's own word on evening for the campus clock's dials: when the ambient density is held (a test or a
+   * still saying what hour it is) the dials follow it, so they change with the streets; otherwise null, and the
+   * tower reads sunset from the season and his clock.
+   */
+  const campusEvening = (): boolean | null => (campusClockAt !== null ? null : forcedDensity !== null ? forcedDensity <= EVENING_DENSITY : null);
 
   // ---------------------------------------------------------------- the civic exchange
   // Built once on the plaza at the origin, and again at medium if the city steps down; it keeps the board and the switch.
@@ -465,8 +508,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let quarterPieces: Array<{ firmId: string; key: string; piece: Centerpiece; q: Quarter }> = [];
   /** Bumped whenever what stands in the districts changes, so the distance pass (districtLod) judges it afresh. */
   let lodRevision = 0;
+  /** The district towers' plain meshes, one draw per material across every district (plain-batch.ts). */
+  const towerPlains = plainBatch();
+  districtGroup.add(towerPlains.group);
   /** Every pickable part in the city: towers' floors and roots, quarters' towers and plinths. */
-  const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : [])];
+  const allPickables = (): THREE.Object3D[] => [...[...centerpieces, ...quarterPieces].flatMap(({ piece }) => [...piece.pickables.keys()]), ...(exchange ? exchange.pickables.keys() : []), ...(campus ? campus.pickables.keys() : [])];
   let scaffolds = new Map<string, Scaffold>();
   let framed = false;
 
@@ -489,9 +535,46 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (!milestones) return;
     const next = milestones.set(milestoneRows, towerPiece, Date.now(), { fallen });
     sun.shadow.needsUpdate = true;
+    // The ornaments' draws may be new meshes: the distance pass judges their AO afresh.
+    lodRevision++;
     // A milestone with an end (a revival's lights, a ribbon) goes dark at it, with no event to say so: placed again then.
     if (milestoneTimer) clearTimeout(milestoneTimer);
     milestoneTimer = next === null ? null : setTimeout(placeMilestones, Math.min(Math.max(0, next - Date.now()) + 50, 2 ** 31 - 1));
+  }
+
+  // ---------------------------------------------------------------- the university (campus/index.ts)
+  const campusRoot = new THREE.Group();
+  campusRoot.name = 'campus';
+  scene.add(campusRoot);
+  let campus: Campus | null = null;
+  let campusOrigin: { x: number; z: number } | null = null;
+  /** The campus's one opaque material, made once and kept across rebuilds. */
+  let campusMasonry: THREE.Material | null = null;
+  /** The campus clock held at a moment, or null for his wall clock. */
+  let campusClockAt: number | null = null;
+  /** The school's state as last told, kept across the campus's rebuilds. */
+  let school: ObservatoryState = { training: false, masterTrusted: false, version: 0 };
+  /** The campus's life (campus/life.ts), rebuilt with the campus; its state kept across rebuilds. */
+  let campusLiving: CampusLife | null = null;
+  let lifeState: LifeState = EMPTY_LIFE;
+  /** Builds (or rebuilds at the quality now) and stands the campus where the engine put it. */
+  function placeCampus(): void {
+    if (campus) {
+      campusLiving?.dispose();
+      campusLiving = null;
+      campusRoot.remove(campus.group);
+      campus.dispose();
+      campus = null;
+    }
+    if (!campusOrigin || !opts.campusMaterials) return;
+    campusMasonry ??= masonryMaterial();
+    campus = createCampus({ quality, materials: opts.campusMaterials, masonry: campusMasonry, now: () => (campusClockAt === null ? new Date() : new Date(campusClockAt)), evening: campusEvening });
+    campus.set(campusOrigin);
+    campus.setSchool(school);
+    campusRoot.add(campus.group);
+    campusLiving = campusLife(campus, { people: () => people, quality });
+    campusLiving.setState(lifeState);
+    sun.shadow.needsUpdate = true;
   }
 
   // ---------------------------------------------------------------- the view grows with the city
@@ -531,10 +614,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let occNow: Occupancy = lastOcc;
   function updatePlazas(occ: Occupancy): void {
     lastOcc = occ;
-    // Only occupied plots are paved and cleared: a district, or a site under scaffold (and the board's spots).
-    const plazas = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z }))];
+    // Only occupied plots are paved and cleared: a district, or a site under scaffold (and the board's spots). The
+    // campus's block is cleared like a quarter's court but never paved: its terrace is its own ground.
+    const plazas: CollarPlaza[] = [...plazasOf(occ, opts.districtTones), ...boardSpots.map((b) => ({ x: b.x, z: b.z })), ...(campusOrigin ? [campusPlaza(campusOrigin)] : [])];
     grid.setPlazas(plazas);
-    ground.setPlazas(plazas);
+    ground.setPlazas(plazas.filter((p) => !p.terrace));
     // The ambient traffic keeps off every plaza, court and site; the crowd walks the districts' and the civic plaza's.
     ambientPlazas = [
       { x: 0, z: 0, kind: 'civic' },
@@ -542,6 +626,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       ...occ.sites.map((st) => ({ ...st.origin, kind: 'site' as const })),
       ...occ.quarters.map((q) => ({ x: q.origin.x, z: q.origin.z, kind: 'court' as const, court: QUARTER_COURT })),
       ...boardSpots.map((b) => ({ x: b.x, z: b.z, kind: 'site' as const })),
+      ...(campusOrigin ? [{ x: campusOrigin.x, z: campusOrigin.z, kind: 'court' as const, court: campusPlaza(campusOrigin).court }] : []),
     ];
     ambient?.setPlazas(ambientPlazas);
     searchLitTree(grid.group);
@@ -571,7 +656,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
-    if (built > 0 || old.size > 0) lodRevision++;
+    if (built > 0 || old.size > 0) {
+      const picks = new Set(centerpieces.flatMap(({ piece }) => [...piece.pickables.keys()]));
+      towerPlains.set(
+        centerpieces.map(({ piece }) => piece.object),
+        (o) => picks.has(o),
+      );
+      lodRevision++;
+    }
     if (highlighted) applyHighlight();
     return built;
   }
@@ -602,6 +694,28 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     districtGroup.add(quarterBatch.group);
   }
 
+  /**
+   * The school's towers (Task 38): every agent tower on the collegiate root,
+   * taken out of its quarter's draw and drawn across the city in the
+   * university's own masonry (school-towers.ts), under the `schoolTowers`
+   * key: at most four calls from home however many graduates are hired.
+   */
+  const schoolRoot = new THREE.Group();
+  schoolRoot.name = 'schoolTowers';
+  scene.add(schoolRoot);
+  let schoolTowers: SchoolBatch | null = null;
+  function batchSchoolTowers(): void {
+    const towers = quarterPieces.flatMap(({ piece }) => piece.object.children.filter((c) => c.userData.school === true));
+    if (!schoolTowers) {
+      if (towers.length === 0 || !opts.campusMaterials) return;
+      campusMasonry ??= masonryMaterial();
+      schoolTowers = schoolBatch(campusMasonry, opts.campusMaterials.window);
+      schoolRoot.add(schoolTowers.group);
+    }
+    districtGroup.updateMatrixWorld(true);
+    if (schoolTowers.set(towers)) sun.shadow.needsUpdate = true;
+  }
+
   function placeQuarters(quarters: Quarter[]): number {
     const old = new Map(quarterPieces.map((c) => [c.firmId, c]));
     let built = 0;
@@ -625,7 +739,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
-    if (built > 0 || removed > 0) rebatchQuarters();
+    if (built > 0 || removed > 0) {
+      // The school's towers are taken first, so the quarters' batch leaves their hidden parts alone.
+      batchSchoolTowers();
+      rebatchQuarters();
+    }
     return built;
   }
 
@@ -658,7 +776,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       placeQuarters(draw);
       placeMilestones();
       searchLitTree(districtGroup);
+      searchLitTree(schoolRoot);
       lightsOutTree(districtGroup);
+      lightsOutTree(schoolRoot);
       sun.shadow.needsUpdate = true;
     }
     lifeShadow += dt;
@@ -678,7 +798,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         return { origin: { x: q.origin.x + at.x, z: q.origin.z + at.z }, tower: t };
       }),
     );
-    extent = cityExtent([...occ.districts, ...agents]);
+    extent = cityExtent([...occ.districts, ...agents], campusOrigin ? [{ x: campusOrigin.x, z: campusOrigin.z, height: TERRACE + HALL.ridge + 4 }] : []);
     // The city opens on its home framing, with its limits in force at once, at the first placement that has
     // anything standing (an empty first answer leaves the camera unframed); after that the limits ease.
     const open = opensHome(framed, occ.districts.length + occ.quarters.length);
@@ -972,7 +1092,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     reframe(occ);
     placeSites(occ.sites);
     // The network grows with the city: its loops enclose every district, quarter and site, a rank at each plaza.
-    const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin)];
+    // The campus too: the loop's street must run outside its terrace, never across it.
+    const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin), ...(campusOrigin ? [campusOrigin] : [])];
     if (standing.length && transit.set({ blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) })) {
       sun.shadow.needsUpdate = true;
       layVehicles();
@@ -981,11 +1102,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     placeConstructions();
     // The inspection's searchlights streak whatever they sweep: towers, quarters and the blocks round them.
     searchLitTree(districtGroup);
-    // A bankrupt firm's towers take a dead building's dust where the power is off (lightsout.ts).
+    searchLitTree(schoolRoot);
+    // A bankrupt firm's towers take a dead building's dust where the power is off (lightsout.ts); a school tower's masonry
+    // and panes too (the zones are positional, so the campus, in the same masonry, is never touched).
     lightsOutTree(districtGroup);
+    lightsOutTree(schoolRoot);
     // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
     placeMilestones();
-    const key = JSON.stringify(plazasOf(occ));
+    const key = JSON.stringify(plazasOf(occ)) + (campusOrigin ? `|campus:${campusOrigin.x},${campusOrigin.z}` : '');
     if (key !== lastPlazas) {
       lastPlazas = key;
       updatePlazas(occ);
@@ -1209,6 +1333,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       }
       const route = exchange?.pickables.get(h.object);
       if (route) return send({ kind: 'exchange', route });
+      const dome = campus?.pickables.get(h.object);
+      if (dome === CAMPUS_INSPECT) return send({ kind: 'campus' });
+      if (dome) return send({ kind: 'observatory', route: dome });
     }
   };
   renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -1289,6 +1416,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const lodEye = new THREE.Vector3(Infinity, 0, 0);
   let lodSeen = -1;
   const lodSphere = new THREE.Sphere();
+  const lodMatrix = new THREE.Matrix4();
+  const lodPoint = new THREE.Vector3();
   function districtLod(): boolean {
     if (lodSeen === lodRevision && camera.position.distanceToSquared(lodEye) < 25) return false;
     lodSeen = lodRevision;
@@ -1305,10 +1434,39 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
       const own = inst.isInstancedMesh ? inst.boundingSphere : mesh.geometry.boundingSphere;
       if (!own) return;
-      lodSphere.copy(own).applyMatrix4(mesh.matrixWorld);
-      const d = Math.max(0, lodSphere.distanceToPoint(camera.position));
+      // A batch across the city is judged by its nearest part, not by its whole span (plain-batch.ts).
+      const parts = mesh.userData.lodParts as THREE.Sphere[] | undefined;
+      let d = Infinity;
+      for (const s of parts ?? [own]) d = Math.min(d, Math.max(0, lodSphere.copy(s).applyMatrix4(mesh.matrixWorld).distanceToPoint(camera.position)));
       if (d > AO_NEAR) setLayers(mesh, LAYER.view, LAYER.shadow);
       else mesh.layers.set(0);
+    });
+    // The skyline's ornaments stand on the towers and keep their rule: past the AO's reach (judged by the nearest
+    // ornament each draw holds) they draw in the view and the shadow map, not the AO's normal pass. Their world
+    // matrices are brought up to date first: a draw placed this frame is judged where it stands, not where it stood.
+    milestones?.group.updateMatrixWorld();
+    milestones?.group.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      // Its own layers as built, kept to put back when it comes near again.
+      const own = (mesh.userData.ownLayers ??= mesh.layers.mask) as number;
+      const im = mesh as THREE.InstancedMesh;
+      if (im.isInstancedMesh && im.count === 0) return;
+      if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+      const r = mesh.geometry.boundingSphere!.radius;
+      let d = Infinity;
+      if (im.isInstancedMesh) {
+        for (let i = 0; i < im.count; i++) {
+          im.getMatrixAt(i, lodMatrix);
+          lodMatrix.premultiply(im.matrixWorld);
+          lodPoint.setFromMatrixPosition(lodMatrix);
+          d = Math.min(d, Math.max(0, lodPoint.distanceTo(camera.position) - r * lodMatrix.getMaxScaleOnAxis()));
+        }
+      } else {
+        d = Math.max(0, lodSphere.copy(mesh.geometry.boundingSphere!).applyMatrix4(mesh.matrixWorld).distanceToPoint(camera.position));
+      }
+      if (d > AO_NEAR) setLayers(mesh, LAYER.view, LAYER.shadow);
+      else mesh.layers.mask = own;
     });
     // Thin parts, judged whether shown or hidden now.
     for (const { piece } of centerpieces) {
@@ -1343,8 +1501,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ['quarters', quarterBatch?.group ?? new THREE.Object3D()],
     ['quarters', life.group],
     ...(exchange ? [['exchange', exchange.object] as [string, THREE.Object3D]] : []),
+    ['towers', towerPlains.group],
     ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
     ...(milestones ? [['milestones', milestones.group] as [string, THREE.Object3D]] : []),
+    ['campus', campusRoot],
+    ['schoolTowers', schoolRoot],
     ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
   ];
   const clock = new THREE.Clock();
@@ -1387,6 +1548,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       scene.add(milestones.group);
       placeMilestones();
     }
+    placeCampus();
     for (const fn of dropListeners) fn(saw);
   }
   renderer.setAnimationLoop(() => {
@@ -1461,6 +1623,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
     if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
     if (districtLod()) sun.shadow.needsUpdate = true;
+    campus?.update(dt, clock.elapsedTime, camera.position);
+    campusLiving?.update(dt, clock.elapsedTime);
+    schoolTowers?.update(camera.position);
     renderer.info.reset();
     if (breakdownWanted.length) {
       sun.shadow.needsUpdate = true;
@@ -1621,6 +1786,29 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       placeMilestones();
     },
     milestoneShows: () => milestones?.shows() ?? new Map(),
+    setCampusClock(ms) {
+      campusClockAt = ms;
+    },
+    setSchool(s) {
+      school = { ...s };
+      campus?.setSchool(school);
+    },
+    observatory: () => campus?.observatory() ?? null,
+    setLife(s) {
+      lifeState = s;
+      campusLiving?.setState(s);
+    },
+    campusLife: () => campusLiving?.view() ?? null,
+    setCampus(origin) {
+      const same = (origin === null) === (campusOrigin === null) && (!origin || !campusOrigin || (origin.x === campusOrigin.x && origin.z === campusOrigin.z));
+      if (same) return;
+      campusOrigin = origin ? { x: origin.x, z: origin.z } : null;
+      placeCampus();
+      // The block is cleared, the network's loop runs outside it and the home framing holds it.
+      lastPlazas = '';
+      setPlots(occNow);
+    },
+    campus: () => (campus && campusOrigin ? { origin: { ...campusOrigin }, anchors: campus.anchors() } : null),
     onQualityDrop(fn) {
       dropListeners.push(fn);
     },
@@ -1630,6 +1818,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       quarterBatch?.dispose();
+      schoolTowers?.dispose();
+      towerPlains.dispose();
       exchange?.dispose();
       for (const { piece } of [...centerpieces, ...quarterPieces]) piece.dispose?.();
       centerpieces = [];
@@ -1655,6 +1845,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       vehicles?.dispose();
       if (milestoneTimer) clearTimeout(milestoneTimer);
       milestones?.dispose();
+      campus?.dispose();
+      campusMasonry?.dispose();
       ambient?.dispose();
       ground.dispose();
       sky.dispose();

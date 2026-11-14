@@ -63,6 +63,7 @@ import { loadBeagle, schoolDriver, useDriver } from './beagle.js';
 import { ci, pairedCi } from './stats.js';
 import { registerAbort, TURNED_OFF_REASON } from './tick.js';
 import { holdTrain, liveTrains, readGate, takeMachine } from './trainer.js';
+import { voyage, voyages } from './voyage-table.js';
 
 /** The agents of a generation the designer keeps unchanged. */
 export const ELITES = 2;
@@ -95,16 +96,8 @@ const isUnfinished = (v: VoyageView) => v.status === 'sailing' || v.status === '
 
 // ---------------------------------------------------------------- the tables
 
-/** Every voyage, oldest first. */
-export function voyages(): VoyageView[] {
-  const rows = openDb().prepare('SELECT json FROM voyages').all() as Array<{ json: string }>;
-  return rows.map((r) => JSON.parse(r.json) as VoyageView).sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id));
-}
-
-export function voyage(id: string): VoyageView | null {
-  const row = openDb().prepare('SELECT json FROM voyages WHERE id = ?').get(id) as { json: string } | undefined;
-  return row ? (JSON.parse(row.json) as VoyageView) : null;
-}
+/** Every voyage, oldest first, and one by id: the table's one reading (voyage-table.ts, which the campus shares). */
+export { voyage, voyages } from './voyage-table.js';
 
 /** Whether a voyage is sailing in this engine now. */
 export function voyageSailing(): boolean {

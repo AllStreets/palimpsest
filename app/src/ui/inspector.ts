@@ -1,3 +1,4 @@
+import type { LifeGraduate, LifeNet, LifeVoyage } from '../city/campus/life.js';
 import type { District, Era, Floor, FloorSize, Milestone, RootStyle, TowerSpec } from '../../../shared/types.js';
 import { milestoneNote } from '../city/milestones.js';
 
@@ -160,8 +161,74 @@ export interface InspectorHandlers {
   onClose(): void;
 }
 
+/** What the campus's panel lists: the live voyage, the nets' newest versions, the graduates, and the reading room's bays. */
+export interface CampusInspectorView {
+  voyage: LifeVoyage | null;
+  nets: LifeNet[];
+  graduates: LifeGraduate[];
+  bays: number;
+}
+
+export interface CampusRow {
+  title: string;
+  meta: string;
+  state: string | null;
+  /** Where the row leads (a voyage's or an agent's page), or null. */
+  href: string | null;
+}
+
+export interface CampusSection {
+  key: 'voyage' | 'nets' | 'graduates';
+  heading: string;
+  count: string;
+  rows: CampusRow[];
+  /** What to say when there are no rows: the honest empty, in words. */
+  empty: string | null;
+}
+
+const NET_NAMES: Record<string, string> = { appraiser: 'Appraiser', router: 'Router', durability: 'Durability', triage: 'Triage', taste: 'Taste', master: 'Master' };
+const netName = (net: string): string => NET_NAMES[net] ?? net.charAt(0).toUpperCase() + net.slice(1);
+const signed = (v: number): string => `${v < 0 ? '-' : ''}${Math.abs(v).toFixed(2)}`;
+
+/**
+ * The campus's inspector in words (Task 37): a voyage sailing (or paused for
+ * the night) with its generation, runs and the bays it lights; each net's
+ * newest version and whether it is trusted; each graduate, named by the
+ * agent it became when hired, with its sealed difference against its base.
+ * Every section says plainly when there is nothing yet.
+ */
+export function campusSections(v: CampusInspectorView, names: MarketNames): CampusSection[] {
+  const voyage: CampusRow[] = [];
+  if (v.voyage) {
+    const w = v.voyage;
+    const where = w.repo ? (w.repo.split('/')[1] ?? w.repo) : w.arena;
+    const litBays = w.status === 'sailing' ? Math.min(v.bays, w.racing) : 0;
+    const by = w.commissionedBy ? ` Commissioned by ${names.firms.get(w.commissionedBy) ?? w.commissionedBy}.` : '';
+    const state = w.status === 'sailing' ? `${plural(w.racing, 'genome')} racing, ${litBays} of ${v.bays} reading-room bays lit.${by}` : `Paused for the night, the reading room dark.${by}`;
+    voyage.push({ title: `A voyage on ${where}`, meta: `generation ${w.generation} of ${w.of}, ${w.runs.done} of ${w.runs.of} runs`, state, href: `#/school/voyages/${encodeURIComponent(w.id)}` });
+  }
+  const nets: CampusRow[] = v.nets.map((n) => ({ title: netName(n.net), meta: `version ${n.version}, ${n.trusted ? 'trusted' : 'trained but not yet trusted'}`, state: n.at ? floorDate(n.at) : null, href: null }));
+  const graduates: CampusRow[] = v.graduates.map((g) => ({
+    title: g.agentId ? (names.agents.get(g.agentId) ?? g.agentId) : g.model,
+    meta: `${g.model} on ${g.base}, ${plural(g.examples, 'example')}`,
+    state: `Beat its base by ${signed(g.vsBase.diff)} [${signed(g.vsBase.lo)}, ${signed(g.vsBase.hi)}] on the sealed race.`,
+    href: g.agentId ? `#/agents/${encodeURIComponent(g.agentId)}` : null,
+  }));
+  return [
+    { key: 'voyage', heading: 'Sailing now', count: voyage.length ? '1' : '', rows: voyage, empty: voyage.length ? null : 'No voyage sails tonight. The reading room is dark.' },
+    { key: 'nets', heading: 'Trained nets', count: nets.length ? String(nets.length) : '', rows: nets, empty: nets.length ? null : 'No net has trained yet.' },
+    { key: 'graduates', heading: 'Graduates', count: graduates.length ? String(graduates.length) : '', rows: graduates, empty: graduates.length ? null : 'No graduate yet. An adapter graduates only when it beats its base on a sealed race.' },
+  ];
+}
+
 export interface Inspector {
   open(d: District, floorId?: string | null): void;
+  /** Opens the panel on the university: the live voyage, the trained nets and the graduates (Task 37). */
+  openCampus(v: CampusInspectorView): void;
+  /** Re-draws the campus panel when it is open; nothing otherwise. */
+  updateCampus(v: CampusInspectorView): void;
+  /** Whether the campus panel is open. */
+  readonly campus: boolean;
   /** Re-reads a district that was rebuilt, keeping the selection when its floor still exists. */
   update(d: District): void;
   /** Takes the market's names (agents, firms, inspection reports) and redraws the open tower's earned floors with them. */
@@ -358,10 +425,49 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
   parent.appendChild(panel);
 
   let district: District | null = null;
+  let campusView: CampusInspectorView | null = null;
   let selected: string | null = null;
   let rows: HTMLElement[] = [];
   let opener: HTMLElement | null = null;
   let names: MarketNames = NO_NAMES;
+
+  /** The campus's panel: a head for the university and a list of the three sections (campusSections). */
+  function renderCampus(v: CampusInspectorView): void {
+    panel.replaceChildren();
+    panel.classList.add('insp-campus');
+    const head = el('header', 'insp-head');
+    const close = el('button', 'insp-close');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Close the inspector');
+    close.innerHTML = CLOSE_ICON;
+    close.addEventListener('click', () => api.close());
+    const title = el('h2', 'insp-name', 'The University');
+    title.id = 'insp-name';
+    panel.setAttribute('aria-labelledby', title.id);
+    const sections = campusSections(v, names);
+    const facts = v.voyage ? (v.voyage.status === 'sailing' ? 'A voyage sails tonight' : 'A voyage, paused for the night') : 'Nothing sails tonight';
+    head.append(close, el('p', 'insp-owner', 'The school'), title, el('p', 'insp-facts', `${facts}; ${plural(v.nets.length, 'net')} trained, ${plural(v.graduates.length, 'graduate')}`));
+    const list = el('ol', 'insp-floors');
+    list.setAttribute('aria-label', 'The university: its voyage, nets and graduates');
+    for (const sec of sections) {
+      const h = el('li', `insp-era insp-${sec.key}`);
+      h.append(el('span', 'insp-era-name', sec.heading), el('span', 'insp-era-count', sec.count));
+      list.append(h);
+      if (sec.empty) {
+        list.append(el('li', 'insp-empty', sec.empty));
+        continue;
+      }
+      for (const r of sec.rows) {
+        const li = el('li', 'insp-floor insp-earned insp-campus-row');
+        const t = r.href ? link(r.title, r.href, r.title, false, 'insp-title') : el('span', 'insp-title', r.title);
+        if (r.href) (t as HTMLAnchorElement).tabIndex = 0;
+        li.append(t, el('span', 'insp-meta', r.meta));
+        if (r.state) li.append(el('span', 'insp-state', r.state));
+        list.append(li);
+      }
+    }
+    panel.append(head, list);
+  }
 
   const rowFor = (id: string | null): HTMLElement | undefined => rows.find((r) => r.dataset.floor === (id ? encodeURIComponent(id) : ''));
 
@@ -382,6 +488,7 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
 
   function render(d: District): void {
     panel.replaceChildren();
+    panel.classList.remove('insp-campus');
     const [owner, name] = d.repo.split('/');
     const floors = d.tower.floors;
 
@@ -424,13 +531,13 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
   }
 
   panel.addEventListener('keydown', (e) => {
-    if (!district) return;
+    if (!district && !campusView) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       api.close();
       return;
     }
-    if (rows.length === 0) return;
+    if (!district || rows.length === 0) return;
     const at = rows.findIndex((r) => r.dataset.floor === (selected ? encodeURIComponent(selected) : ''));
     const go = (i: number): void => {
       const next = rows[Math.max(0, Math.min(rows.length - 1, i))];
@@ -466,7 +573,7 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
 
   // Escape closes from anywhere while the inspector is open, unless the user is typing in a field.
   const onDocKey = (e: KeyboardEvent): void => {
-    if (e.key !== 'Escape' || !district || e.defaultPrevented) return;
+    if (e.key !== 'Escape' || (!district && !campusView) || e.defaultPrevented) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     api.close();
@@ -479,7 +586,8 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
       // Remember where focus came from (a plate, say), unless it is already inside the panel.
       const active = document.activeElement as HTMLElement | null;
       if (active && active !== document.body && !panel.contains(active)) opener = active;
-      else if (!district) opener = null;
+      else if (!district && !campusView) opener = null;
+      campusView = null;
       district = d;
       render(d);
       panel.hidden = false;
@@ -489,6 +597,33 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
       if (!known && !reopening) panel.querySelector<HTMLElement>('.insp-floors')?.scrollTo({ top: 0 });
       const target = rowFor(known) ?? rows[0];
       (target ?? panel.querySelector<HTMLElement>('.insp-close'))?.focus({ preventScroll: true });
+    },
+    openCampus(v) {
+      const active = document.activeElement as HTMLElement | null;
+      if (active && active !== document.body && !panel.contains(active)) opener = active;
+      else if (!district && !campusView) opener = null;
+      district = null;
+      selected = null;
+      rows = [];
+      campusView = v;
+      renderCampus(v);
+      panel.hidden = false;
+      requestAnimationFrame(() => panel.classList.add('open'));
+      panel.querySelector<HTMLElement>('.insp-floors')?.scrollTo({ top: 0 });
+      panel.querySelector<HTMLElement>('.insp-close')?.focus({ preventScroll: true });
+    },
+    updateCampus(v) {
+      if (!campusView) return;
+      if (JSON.stringify(v) === JSON.stringify(campusView)) return;
+      const scroll = panel.querySelector('.insp-floors')?.scrollTop ?? 0;
+      const hadFocus = panel.contains(document.activeElement);
+      campusView = v;
+      renderCampus(v);
+      panel.querySelector('.insp-floors')?.scrollTo({ top: scroll });
+      if (hadFocus) panel.querySelector<HTMLElement>('.insp-close')?.focus({ preventScroll: true });
+    },
+    get campus() {
+      return campusView !== null;
     },
     update(d) {
       if (!district || district.repo !== d.repo) return;
@@ -507,6 +642,10 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
     },
     setNames(next) {
       names = next;
+      if (campusView) {
+        renderCampus(campusView);
+        return;
+      }
       if (!district) return;
       const keep = selected;
       const scroll = panel.querySelector('.insp-floors')?.scrollTop ?? 0;
@@ -516,8 +655,10 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
       select(keep, { focus: hadFocus && keep !== null });
     },
     close() {
-      if (!district) return;
+      if (!district && !campusView) return;
       district = null;
+      campusView = null;
+      panel.classList.remove('insp-campus');
       selected = null;
       rows = [];
       const hadFocus = panel.contains(document.activeElement);
@@ -535,7 +676,7 @@ export function createInspector(parent: HTMLElement, h: InspectorHandlers): Insp
       return district?.repo ?? null;
     },
     get width() {
-      return district ? panel.getBoundingClientRect().width : 0;
+      return district || campusView ? panel.getBoundingClientRect().width : 0;
     },
   };
   return api;

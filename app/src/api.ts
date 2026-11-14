@@ -28,8 +28,19 @@ import type {
   Tier,
   TreasuryView,
   UsageReading,
+  VoyageView,
 } from '../../shared/types.js';
 import { weekOf } from '../../shared/tour.js';
+
+/** What `GET /api/school/campus` answers (engine/school/campus.ts): where the campus stands, once the engine has taken its plot. */
+export interface CampusView {
+  origin: { x: number; z: number } | null;
+  slot: number | null;
+  live: { voyage: boolean; nets: boolean; lora: boolean };
+  /** The voyage sailing or paused now (the library's reading room lights by it, Task 37), else null. */
+  voyage: VoyageView | null;
+  voyageRepo: string | null;
+}
 
 /** A failed engine call: the HTTP status plus the engine's readable message. */
 export class ApiError extends Error {
@@ -112,6 +123,18 @@ const EVENT_TYPES = [
   'audit.ended',
   'brief.action',
   'milestone.reached',
+  // Phase 4: the school's training and its nets (the observatory opens while the nets train, Task 36).
+  'train.started',
+  'train.paused',
+  'train.ended',
+  'net.trained',
+  'net.promoted',
+  // Phase 4: the voyages and the graduates (the library's reading room lights while a voyage sails, Task 37).
+  'voyage.started',
+  'voyage.commissioned',
+  'voyage.generation',
+  'voyage.ended',
+  'graduate.made',
 ];
 
 /** What the settings page may change (the engine checks every value again). */
@@ -207,6 +230,8 @@ export const api = {
   briefAct: (itemId: string, action: BriefAction, body: { tier?: Tier; pct?: number } = {}) =>
     request<{ item: BriefItem; result: unknown }>('POST', `/api/brief/items/${enc(itemId)}/${enc(action)}`, body),
   milestones: (active = false) => request<Milestone[]>('GET', `/api/milestones${active ? '?active=1' : ''}`),
+  /** The university's plot (Phase 4): its origin and slot, null until the engine has taken it, and what is under way there. */
+  campus: () => request<CampusView>('GET', '/api/school/campus'),
   /** The tour of a week (a Monday, YYYY-MM-DD); without one, the week that holds today, named by its Monday here. */
   tour: (week: string = weekOf(Date.now()).week) => request<Tour | null>('GET', `/api/tour${queryOf({ week })}`),
   firms: () => request<FirmView[]>('GET', '/api/firms'),

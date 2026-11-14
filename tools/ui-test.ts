@@ -32,7 +32,7 @@ import type { Browser, Page } from 'playwright';
 
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import { crownFor } from '../shared/silhouette.js';
-import { layoutTower } from '../shared/tower-layout.js';
+import { agentRootHeight, layoutTower } from '../shared/tower-layout.js';
 import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../shared/types.js';
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
@@ -153,7 +153,26 @@ interface Debug {
   quarters: number;
   opened: string;
   lastPick: { kind: string; agentId?: string; firmId?: string; repo?: string } | null;
+  /** The university as it stands (campus/index.ts), or null before the engine took the plot. */
+  campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
+  campusClock(ms: number | null): void;
+  /** The school's state in place of the ledger's (the observatory opens while the nets train); null gives the ledger's back. */
+  school(s: { training: boolean; masterTrusted: boolean; version: number } | null): void;
+  /** The observatory as it shows now: how far open, whether the plate is lit, where the telescope points. */
+  observatory(): { open: number; training: boolean; lit: boolean; version: number; altitude: number; azimuth: number } | null;
+  /** The campus's life in place of the ledger's (the voyage sailing lights the library); null gives the ledger's back. */
+  life(s: LifeProbe | null): void;
+  /** The campus's life as it shows now: the bays' light, the live voyage, the students. */
+  campusLife(): { voyage: LifeProbe['voyage']; bays: number[]; lit: number; students: number } | null;
+  /** Opens the inspector on the university. */
+  inspectCampus(): void;
+  dropQuality(): void;
 }
+type LifeProbe = {
+  voyage: { id: string; arena: string; repo: string | null; status: string; generation: number; of: number; runs: { done: number; of: number }; racing: number; commissionedBy: string | null; startedAt: string } | null;
+  nets: Array<{ net: string; version: number; trusted: boolean; at: string | null }>;
+  graduates: unknown[];
+};
 
 /** Holds the ambient traffic and crowd at full density (once the network is laid), so every budget sees its worst. */
 async function fullDensity(page: Page): Promise<void> {
@@ -873,6 +892,226 @@ async function spireAfterDropChecks(page: Page, before: SpireShow[]): Promise<vo
   check(own > 0 && own <= MILESTONE_CALLS.medium && budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `at medium the milestones draw in at most ${MILESTONE_CALLS.medium} calls and the city stays within its budget from home (${own}, ${budget.calls}, ${(budget.triangles / 1e6).toFixed(2)}M)`);
 }
 
+// ---------------------------------------------------------------- the university (Phase 4 Task 34)
+
+/** The campus's own budget from home, shadows and its life included, on each tier (Decision 17). */
+const CAMPUS_HOME_CALLS = 15;
+const CAMPUS_HOME_TRIANGLES = 900_000;
+
+/**
+ * The campus stands on the plot the engine took, with the ambient city off
+ * its block, and draws from home within its own budget on the tier the city
+ * is at now, while the whole city keeps its guard. On high it is shot from
+ * home, across the front quad from the gate, and close on a hall's porch.
+ */
+async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
+  check((await debug(page, (d) => d.quality())) === tier, `the city stands at ${tier} for the campus checks`);
+  const c = await debug(page, (d) => d.campus());
+  check(c !== null, `the university stands on its plot (${tier})`);
+  if (!c) return;
+  // The campus plot is its own: no district (a sample repo, the site fixture, a connect) stands on its slot or origin.
+  const { campusSlot } = await import('../engine/school/campus.js');
+  const slot = campusSlot();
+  const sharing = (await cityOf(page)).filter((d) => d.index === slot || Math.hypot(d.origin.x - c.origin.x, d.origin.z - c.origin.z) < 1);
+  check(slot !== null && sharing.length === 0, `no district shares the campus plot (slot ${slot}${sharing.length ? `: ${sharing.map((d) => d.repo).join(', ')}` : ''})`);
+  const b = await homeBreakdown(page);
+  const sum = (p: Record<string, Tally> | undefined): Tally => Object.values(p ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  const own = sum(b.campus);
+  const total = callsOf(b);
+  const triangles = Object.values(b).reduce((n, v) => n + sum(v).triangles, 0);
+  const passes = Object.entries(b.campus ?? {})
+    .map(([pass, t]) => `${pass} ${t.calls}/${(t.triangles / 1000).toFixed(0)}k`)
+    .join(', ');
+  console.log(`info  the campus stands at (${c.origin.x}, ${c.origin.z}), its gate at (${c.anchors.gate.map((v) => v.toFixed(0)).join(', ')})`);
+  console.log(`info  on ${tier} the campus from home: ${own.calls} calls, ${(own.triangles / 1000).toFixed(0)}k triangles (${passes}); the city ${total} calls, ${(triangles / 1e6).toFixed(2)}M`);
+  const roots = Object.entries(b)
+    .map(([k, v]) => [k, sum(v).calls] as const)
+    .sort((x, y) => y[1] - x[1])
+    .map(([k, n]) => `${k} ${n}`)
+    .join(', ');
+  console.log(`info  on ${tier} the city's calls from home by root: ${roots}`);
+  check(own.calls > 0 && own.calls <= CAMPUS_HOME_CALLS && own.triangles <= CAMPUS_HOME_TRIANGLES, `on ${tier} breakdown().campus is within ${CAMPUS_HOME_CALLS} calls and ${CAMPUS_HOME_TRIANGLES / 1000}k triangles from home with shadows (${own.calls}, ${(own.triangles / 1000).toFixed(0)}k)`);
+  check(total < HOME_CALLS && triangles <= HOME_TRIANGLES, `on ${tier} the whole city still draws under ${HOME_CALLS} calls and within ${HOME_TRIANGLES / 1e6}M with the campus (${total}, ${(triangles / 1e6).toFixed(2)}M)`);
+  // The ambient city keeps off the block: no building stands within the terrace's square.
+  const plots = await debug(page, (d) => d.plots());
+  check(plots.buildings > 0, `the ambient city still stands round it (${plots.buildings} buildings)`);
+  if (tier !== 'high') return;
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: join(SHOTS, 'campus-home.png') });
+  // And a crop round it, where it lands on the screen from home.
+  const px = (await page.evaluate(`window.__palimpsest.project(${JSON.stringify([c.origin.x, 6, c.origin.z])})`)) as number[];
+  const sx = ((px[0] + 1) / 2) * VIEWPORT.width;
+  const sy = ((1 - px[1]) / 2) * VIEWPORT.height;
+  console.log(`info  from home the campus lands at (${sx.toFixed(0)}, ${sy.toFixed(0)}) on the screen`);
+  await page.screenshot({ path: join(SHOTS, 'campus-home-crop.png'), clip: { x: Math.max(0, Math.min(VIEWPORT.width - 480, sx - 240)), y: Math.max(0, Math.min(VIEWPORT.height - 320, sy - 160)), width: 480, height: 320 } });
+  // The campus's own frame: x from the gate toward the library (its axis), z across it (the campus's own -z).
+  const g = c.anchors.gate;
+  const l = c.anchors.library;
+  const ax = [l[0] - g[0], l[2] - g[2]];
+  const n = Math.hypot(ax[0], ax[1]);
+  ax[0] /= n;
+  ax[1] /= n;
+  const at = (x: number, y: number, z: number): number[] => [g[0] + ax[0] * x - ax[1] * z, y, g[2] + ax[1] * x + ax[0] * z];
+  // Across the front quad from over the gate, the two halls either side and the inner quad beyond.
+  await setView(page, at(-30, 30, 10), at(60, 10, -4));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-quad.png') });
+  // Close on the south hall's porch from the lawn.
+  await setView(page, at(92, 8, 36), at(66, 11, 54));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-hall.png') });
+  // The terrace from the street: the wall, the stair cut into it and the piers, the halls' gables above.
+  await setView(page, at(-44, 5, -34), at(-10, 7, -2));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-terrace.png') });
+  // The library across the inner quad: the frontispiece, its turrets and the lantern over the ridge.
+  await setView(page, at(104, 18, 8), at(181, 20, -1));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-library.png') });
+  // The clock tower from the front quad's lawn, its dials lit: the campus clock held at ten past ten at night.
+  await debug(page, (d) => d.campusClock(new Date(2026, 10, 12, 22, 10).getTime()));
+  await page.waitForTimeout(400);
+  await setView(page, at(28, 10, 2), at(97, 27, -56));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-clock.png') });
+  await debug(page, (d) => d.campusClock(null));
+  // The front quad from above: the walks' plan, the trees' two species, the tower's cap.
+  await setView(page, at(40, 110, 30), at(62, 6, -6));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-above.png') });
+  await observatoryChecks(page, at);
+  await lifeChecks(page, at, c);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(800);
+}
+
+/**
+ * The campus's life (Task 37), on the sample economy: the voyage sailing on
+ * the harbour's arena lights eight reading-room bays of the library (one per
+ * genome racing), the students walk the quads unlabelled, a parent sent to
+ * the university walks in through the gate, the inspector on the library
+ * lists the voyage, and the campus keeps its budget with all of it on. The
+ * library stands at at(185, 6, 0) in the campus's frame, its front toward
+ * the gate at about at(176).
+ */
+async function lifeChecks(page: Page, at: (x: number, y: number, z: number) => number[], c: { origin: { x: number; z: number }; anchors: Record<string, number[]> }): Promise<void> {
+  // The voyage the fixture recorded is read with the campus on load; the bays light one after another over a few seconds.
+  await page.waitForTimeout(6500);
+  const life = await debug(page, (d) => d.campusLife());
+  check(!!life?.voyage && life.voyage.status === 'sailing' && life.voyage.racing === 8, `the sample economy's voyage sails on the campus (${JSON.stringify(life?.voyage)})`);
+  check(!!life && life.lit === 8 && life.bays.length >= 8, `the sailing voyage lights the library: ${life?.lit} of ${life?.bays.length} reading-room bays`);
+  check(!!life && life.students >= 8, `students walk the campus (${life?.students})`);
+  const persons = await callDebug<Array<{ kind: string; position: number[] }>>(page, 'd.persons()');
+  const students = persons.filter((f) => f.kind === 'walker');
+  check(students.length >= 8 && students.every((f) => f.position[1] > 5.9), `the students are the people's walkers, on the terrace (${students.length})`);
+  // Across the inner quad to the library at dusk, its bays lit for the voyage.
+  await setView(page, at(100, 12, 34), at(181, 17, -4));
+  await debug(page, (x) => x.precompile());
+  await page.waitForTimeout(1500);
+  const plates = page.locator('.plate.plate-person');
+  const texts = await plates.allTextContents();
+  check(texts.every((t) => t.trim().length > 0), `no plate stands over a student (${(await plates.count())} plates in view)`);
+  await page.screenshot({ path: join(SHOTS, 'campus-voyage.png') });
+  // Close on the lit bays: the tracery against the light.
+  await setView(page, at(147, 9.5, 19), at(178, 10, -1));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-bays.png') });
+  // A parent walks in through the gate: sent on a school trip from the ring street before the stair, caught on the
+  // upper flight; it ends inside the gate on the terrace, never under it.
+  const id = 'priya-rao';
+  await callDebug(page, 'd.peopleHold(true)');
+  const from = at(-27, 0, 70);
+  const tripId = await callDebug<string | null>(page, `d.peopleTrip(${JSON.stringify(id)}, ${JSON.stringify([from[0], from[2]])}, ${JSON.stringify([c.origin.x, c.origin.z])}, 'school')`);
+  check(!!tripId, 'a parent is sent to the university on a school trip');
+  let f = await runUntil(page, id, (x) => x.position[1] > 3.3 && x.position[1] < 5.7 && x.stage === 'walk', 400);
+  check(!!f && f.position[1] > 3.3 && f.position[1] < 5.7, `she climbs the stair to the gate (${f?.position.map((v) => v.toFixed(1)).join(', ')}, ${f?.stage})`);
+  if (f) {
+    await setView(page, aroundPerson(f.position, f.heading, -9, 3.2, f.position[1] + 2.6), aroundPerson(f.position, f.heading, 6, -1, f.position[1] + 1.6));
+    await debug(page, (x) => x.precompile());
+    await page.waitForTimeout(900);
+    await page.screenshot({ path: join(SHOTS, 'campus-gate.png') });
+  }
+  f = await runUntil(page, id, (x) => x.stage === 'idle', 300);
+  const gate = c.anchors.gate;
+  const off = f ? Math.hypot(f.position[0] - gate[0], f.position[2] - gate[2]) : Infinity;
+  check(!!f && f.stage === 'idle' && off < 9 && Math.abs(f.position[1] - 6) < 0.1, `a school trip ends at the gate (${off.toFixed(1)} m from it, ${f?.position[1].toFixed(1)} m up)`);
+  await callDebug(page, 'd.peopleHold(false)');
+  // The inspector on the university: the voyage, the nets and the graduates, in words.
+  await debug(page, (d) => d.inspectCampus());
+  await page.waitForSelector('.inspector.open.insp-campus', { timeout: 5000 });
+  const panel = (await page.locator('.inspector').textContent()) ?? '';
+  check(/A voyage on harbor-ledger/.test(panel) && /8 genomes racing, 8 of \d+ reading-room bays lit/.test(panel), `the inspector lists the live voyage (${panel.replace(/\s+/g, ' ').slice(0, 160)})`);
+  check(/No net has trained yet/.test(panel) && /No graduate yet/.test(panel), 'and says plainly that no net has trained and no graduate is made');
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: join(SHOTS, 'campus-inspector.png') });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  check((await page.locator('.inspector.open').count()) === 0, 'Escape closes it');
+  // Paused for the night, the bays go dark; the ledger's state back, they light again.
+  const live = (await debug(page, (d) => d.campusLife()))!;
+  await page.evaluate(`window.__palimpsest.life(${JSON.stringify({ voyage: { ...live.voyage, status: 'paused' }, nets: [], graduates: [] })})`);
+  await page.waitForTimeout(8000);
+  const dark = await debug(page, (d) => d.campusLife());
+  check(!!dark && dark.lit === 0, `paused for the night, the bays go dark (${dark?.lit} lit)`);
+  await debug(page, (d) => d.life(null));
+  await page.waitForTimeout(8000);
+  const again = await debug(page, (d) => d.campusLife());
+  check(!!again && again.lit === 8, `sailing again, they light (${again?.lit} lit)`);
+  // With the bays lit, the students walking and a parent at the gate, the campus keeps its budget from home.
+  const b = await homeBreakdown(page);
+  const own = Object.values(b.campus ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  check(own.calls <= CAMPUS_HOME_CALLS && own.triangles <= CAMPUS_HOME_TRIANGLES, `with life on the campus draws within ${CAMPUS_HOME_CALLS} calls and ${CAMPUS_HOME_TRIANGLES / 1000}k triangles from home (${own.calls}, ${(own.triangles / 1000).toFixed(0)}k)`);
+  const total = callsOf(b);
+  check(total < HOME_CALLS, `and the whole city under ${HOME_CALLS} calls with it (${total})`);
+}
+
+/**
+ * The observatory (Task 36), from the lawn before its door: shut and dark
+ * with a thin master; then, the nets training and the master trusted, its
+ * shutters parted over a lit slit, the plate lit and the telescope turning.
+ * Open, the campus still draws within its budget from home. The dome stands
+ * at the back corner, at(183, 6, 90) in the campus's frame, its door and
+ * slit facing the gate along the back lawn (the frame's -x).
+ */
+async function observatoryChecks(page: Page, at: (x: number, y: number, z: number) => number[]): Promise<void> {
+  // (The debug reader is serialised: no closure over the state.)
+  await debug(page, (d) => d.school({ training: false, masterTrusted: false, version: 0 }));
+  await page.waitForTimeout(400);
+  const shut = await debug(page, (d) => d.observatory());
+  check(shut !== null && shut.open === 0 && !shut.lit, `a thin master leaves the observatory shut and dark (${JSON.stringify(shut)})`);
+  await setView(page, at(131, 11, 84), at(183, 14, 90));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'observatory-shut.png') });
+  // The nets train and the master is trusted: the shutters take six seconds to part.
+  await debug(page, (d) => d.school({ training: true, masterTrusted: true, version: 1 }));
+  await page.waitForTimeout(7500);
+  const open = await debug(page, (d) => d.observatory());
+  check(open !== null && open.open === 1 && open.lit && open.training, `training, the slit is open and the plate lit (${JSON.stringify(open)})`);
+  await page.waitForTimeout(1200);
+  const later = await debug(page, (d) => d.observatory());
+  check(later !== null && open !== null && later.altitude !== open.altitude, 'the telescope turns while the nets train');
+  await page.screenshot({ path: join(SHOTS, 'observatory-open.png') });
+  // Close on the open slit: the leaves, the lit lining and the telescope's tube in it.
+  await setView(page, at(159, 21, 82), at(183, 19, 90));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'observatory-slit.png') });
+  // And down the back lawn at dusk from the front quad's corner, the halls' gables on one hand and the wall on the other.
+  await setView(page, at(70, 13, 93), at(183, 13, 90));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'observatory-quad.png') });
+  // Open, the campus keeps its budget from home (the same meshes draw shut or open).
+  const b = await homeBreakdown(page);
+  const own = Object.values(b.campus ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  check(own.calls <= CAMPUS_HOME_CALLS && own.triangles <= CAMPUS_HOME_TRIANGLES, `with the observatory open the campus draws within ${CAMPUS_HOME_CALLS} calls and ${CAMPUS_HOME_TRIANGLES / 1000}k triangles from home (${own.calls}, ${(own.triangles / 1000).toFixed(0)}k)`);
+  // The ledger's state back (shut on this branch): the leaves start to close and the telescope stands.
+  await debug(page, (d) => d.school(null));
+  await page.waitForTimeout(1500);
+  const closing = await debug(page, (d) => d.observatory());
+  check(closing !== null && closing.open < 1 && !closing.training, `the train over, the shutters close (${closing?.open.toFixed(2)})`);
+}
+
 // ---------------------------------------------------------------- silhouettes (Task 23)
 
 /**
@@ -935,6 +1174,137 @@ async function silhouetteChecks(page: Page): Promise<void> {
   // The board comes down: every later budget sees the city alone.
   await page.evaluate('window.__palimpsest.clearAgentBoard()');
   await page.waitForTimeout(500);
+}
+
+// ---------------------------------------------------------------- the school's towers (Phase 4 Task 38)
+
+/** The school towers' own budget from home, every pass counted, on each tier (Decision 17). */
+const SCHOOL_HOME_CALLS = 4;
+
+/** Two more graduates, stood straight into the engine's store as a hire would store them, so the city reads them on agent.hired. */
+async function standGraduates(page: Page, firmId: string, other: string): Promise<Array<{ id: string; firmId: string; towerIndex: number; floors: number }>> {
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const { layEarnedFloor } = await import('../engine/repos.js');
+  const { agent: agentOf, listAgents } = await import('../engine/market/firms.js');
+  const db = openDb();
+  const at = new Date().toISOString();
+  const base = agentOf('grad-qwen25c7-1');
+  check(base !== null, "the sample's graduate is in the engine's store");
+  if (!base) return [];
+  const ids: Array<{ id: string; firmId: string; towerIndex: number; floors: number }> = [];
+  for (const [i, firm] of [firmId, other].entries()) {
+    const taken = new Set(listAgents(firm).filter((a) => !a.retired).map((a) => a.towerIndex));
+    let towerIndex = 0;
+    while (taken.has(towerIndex)) towerIndex += 1;
+    const id = `grad-qwen25c7-${i + 2}`;
+    const a = { ...base, id, firmId: firm, name: `grad-qwen25c7-${i + 2}`, model: `mlx:grad-qwen25c7-${i + 2}`, towerIndex, lineage: { ...base.lineage, at } };
+    db.prepare('INSERT INTO agents (id, firm_id, json) VALUES (?, ?, ?)').run(id, firm, JSON.stringify(a));
+    // The one beside the sample's graduate has worked: three brick floors earned, so the root carries a shaft.
+    if (i === 0) {
+      for (let f = 0; f < 3; f++) {
+        layEarnedFloor(`agent:${id}`, {
+          id: `agent:${id}#job-${f}`,
+          repo: 'tidewater/harbor-ledger',
+          kind: 'pr',
+          refs: [],
+          title: `Graduate's change ${f + 1}`,
+          at: new Date(Date.now() - (3 - f) * 86_400_000).toISOString(),
+          era: 'brick',
+          size: 'medium',
+          lines: 40,
+          claude: false,
+          founding: false,
+          url: null,
+          earned: { jobId: `grad-job-${f}`, runId: `grad-run-${f}`, agentId: id, firmId: firm, state: 'lit', reverted: false },
+        });
+      }
+    }
+    emit('agent.hired', { agent: a });
+    ids.push({ id, firmId: firm, towerIndex, floors: i === 0 ? 3 : 0 });
+  }
+  await page.waitForTimeout(3000);
+  return ids;
+}
+
+/** Takes the stood graduates down again, so the rest of the run sees the sample as seeded. */
+async function strikeGraduates(page: Page, stood: Array<{ id: string }>): Promise<void> {
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const db = openDb();
+  for (const { id } of stood) {
+    const row = db.prepare('SELECT firm_id FROM agents WHERE id = ?').get(id) as { firm_id: string } | undefined;
+    db.prepare('DELETE FROM earned_floors WHERE tower_id = ?').run(`agent:${id}`);
+    db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+    emit('agent.retired', { agentId: id, firmId: row?.firm_id ?? '', reason: 'ui-test fixture struck', at: new Date().toISOString() });
+  }
+  await page.waitForTimeout(2500);
+}
+
+/**
+ * A graduate's tower stands on the collegiate root in its firm's quarter
+ * and draws, root and floors, under `schoolTowers` in at most four calls
+ * from home with one standing and with three, every pass counted; the city
+ * keeps its guard with three. On high it is shot from its court, close on
+ * its entrance, and the quarter with two school towers side by side.
+ */
+async function schoolTowerChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
+  const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const school = qs.flatMap((q) => q.towers.filter((t) => t.root === 'collegiate').map((t) => ({ q, t })));
+  check(school.length === 1, `one graduate's tower stands on the collegiate root (${school.map(({ q, t }) => `${t.agentId} with ${q.firmId}`).join(', ') || 'none'})`);
+  const grad = school[0];
+  if (!grad) return;
+  const sum = (p: Record<string, Tally> | undefined): Tally => Object.values(p ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  const passes = (b: Breakdown): string =>
+    Object.entries(b.schoolTowers ?? {})
+      .map(([pass, t]) => `${pass} ${t.calls}/${(t.triangles / 1000).toFixed(0)}k`)
+      .join(', ');
+  let b = await homeBreakdown(page);
+  let own = sum(b.schoolTowers);
+  console.log(`info  on ${tier} the school's tower from home: ${own.calls} calls, ${(own.triangles / 1000).toFixed(0)}k triangles (${passes(b)}); the city ${callsOf(b)} calls`);
+  check(own.calls > 0 && own.calls <= SCHOOL_HOME_CALLS, `on ${tier} breakdown().schoolTowers is at most ${SCHOOL_HOME_CALLS} calls from home with one school tower standing (${own.calls})`);
+  // Two more graduates: one beside the sample's, with floors, one in another firm's quarter.
+  const other = qs.find((q) => q.firmId !== grad.q.firmId && !q.dark && q.towers.length < 4)?.firmId;
+  check(other !== undefined, 'another firm has a plot free for a graduate');
+  const extra = other ? await standGraduates(page, grad.q.firmId, other) : [];
+  const standing = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[]).flatMap((q) => q.towers).filter((t) => t.root === 'collegiate').length;
+  check(standing === 3, `three school towers stand (${standing})`);
+  b = await homeBreakdown(page);
+  own = sum(b.schoolTowers);
+  const total = callsOf(b);
+  const triangles = Object.values(b).reduce((n, v) => n + sum(v).triangles, 0);
+  console.log(`info  on ${tier} three school towers from home: ${own.calls} calls, ${(own.triangles / 1000).toFixed(0)}k triangles (${passes(b)}); the city ${total} calls, ${(triangles / 1e6).toFixed(2)}M`);
+  check(own.calls > 0 && own.calls <= SCHOOL_HOME_CALLS, `on ${tier} breakdown().schoolTowers is at most ${SCHOOL_HOME_CALLS} calls from home with three school towers standing (${own.calls})`);
+  check(total < HOME_CALLS && triangles <= HOME_TRIANGLES, `on ${tier} the whole city still draws under ${HOME_CALLS} calls and within ${HOME_TRIANGLES / 1e6}M with three school towers (${total}, ${(triangles / 1e6).toFixed(2)}M)`);
+  if (tier === 'high') {
+    const at = QUARTER_OFFSETS[grad.t.towerIndex ?? 0];
+    const ox = grad.q.origin.x + at.x;
+    const oz = grad.q.origin.z + at.z;
+    // The tower from its court, the entrance front toward the eye; then close on the entrance; then the quarter's two school towers.
+    await setView(page, [ox + 26, 11, oz + 40], [ox, 7.5, oz]);
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: join(SHOTS, 'graduate-tower.png') });
+    await setView(page, [ox + 6.5, 3.4, oz + 19], [ox, 2.4, oz + 8]);
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: join(SHOTS, 'graduate-tower-entrance.png') });
+    await setView(page, [grad.q.origin.x + 40, 36, grad.q.origin.z + 150], [grad.q.origin.x, 12, grad.q.origin.z + 30]);
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: join(SHOTS, 'school-towers.png') });
+    // The floored school tower's seam: where the root's slated roof and footing carry the first brick floor.
+    const floored = extra.find((e) => e.floors > 0);
+    if (floored) {
+      const fat = QUARTER_OFFSETS[floored.towerIndex];
+      const fx = grad.q.origin.x + fat.x;
+      const fz = grad.q.origin.z + fat.z;
+      const footing = agentRootHeight('collegiate');
+      await setView(page, [fx + 17, footing + 6, fz + 26], [fx, footing - 1.5, fz]);
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: join(SHOTS, 'school-tower-seam.png') });
+    }
+  }
+  await strikeGraduates(page, extra);
+  const left = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[]).flatMap((q) => q.towers).filter((t) => t.root === 'collegiate').length;
+  check(left === 1, `the two stood graduates are struck again (${left} standing)`);
 }
 
 // ---------------------------------------------------------------- quarters (Task 24)
@@ -1704,7 +2074,9 @@ async function siteChecks(page: Page): Promise<void> {
   const { districtOrigin } = await import('../shared/district-layout.js');
   const db = openDb();
   const fullName = 'wren/new-site';
-  const slot = SAMPLE.length;
+  // Its own free plot, as a connect would take it: never the campus's (ensureCampus() took the slot after the sample's).
+  const { nextSlot } = await import('../engine/repos.js');
+  const slot = nextSlot('repo', fullName);
   const now = new Date().toISOString();
   const repo: Repo = {
     fullName,
@@ -1770,6 +2142,42 @@ async function siteChecks(page: Page): Promise<void> {
   await page.screenshot({ path: join(SHOTS, 'site-built.png') });
 }
 
+
+/**
+ * The full run's site fixture (siteChecks) stood straight up as a finished district on its own free plot, for the
+ * partial budget runs: the home view is measured with the seventh plot the full run has.
+ */
+async function standFixture(page: Page): Promise<void> {
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const { foundingFloors } = await import('../engine/history.js');
+  const { nextSlot } = await import('../engine/repos.js');
+  const db = openDb();
+  const fullName = 'wren/new-site';
+  const slot = nextSlot('repo', fullName);
+  const now = new Date().toISOString();
+  const repo: Repo = { fullName, private: false, defaultBranch: 'main', language: 'TypeScript', description: 'fixture', connected: true, pushMode: false, root: 'chicago', slot, status: 'ready', error: null, connectedAt: now, analyzedAt: now, ...repoMarketDefaults() };
+  const commits = Array.from({ length: 22 }, (_, i) => ({
+    sha: `${slot}${i.toString(16).padStart(6, '0')}`.padEnd(40, 'a'),
+    at: new Date(Date.parse('2025-06-01T09:00:00Z') + i * 30 * 3600_000).toISOString(),
+    author: 'Ada',
+    subject: `Site change ${i + 1}`,
+    body: '',
+    lines: 40 + i * 11,
+  }));
+  const floors = foundingFloors(fullName, commits, []);
+  const tower: TowerSpec = { id: `${fullName}#founding`, repo: fullName, kind: 'founding', root: 'chicago', floors, datumIndex: floors.length };
+  db.prepare('INSERT INTO repos (full_name, json) VALUES (?, ?)').run(fullName, JSON.stringify(repo));
+  db.prepare('INSERT INTO towers (repo, json) VALUES (?, ?)').run(fullName, JSON.stringify(tower));
+  emit('repo.analyzed', { repo });
+  const n = SAMPLE.length + 1;
+  const stood = await page
+    .waitForFunction((k) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === k, n, { timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  check(stood, `the site fixture stands as a seventh district on slot ${slot}`);
+  await page.waitForTimeout(1500);
+}
 
 // ---------------------------------------------------------------- a fake GitHub
 
@@ -2805,6 +3213,8 @@ async function main(): Promise<void> {
   writeFileSync(keychain, '');
   const { startServer } = await import('../engine/server.js');
   let server = await startServer({ port: PORT, claudeSettingsPath, keychain });
+  // The engine's own start takes the university's plot (Phase 4 Task 1); startServer alone does not, so it is taken here.
+  (await import('../engine/school/campus.js')).ensureCampus();
   // Today's brief is opened first, as his first window would, so every check before the brief's own finds the
   // city; briefChecks takes today's open out again to see the day's first open (tools/ui-test-brief.ts).
   await fetch(`http://127.0.0.1:${PORT}/api/brief/open`, { method: 'POST', headers: { 'x-palimpsest': '1' } });
@@ -2857,15 +3267,34 @@ async function main(): Promise<void> {
     // name what it saw. A quick run for the notice rounds; the full run takes the same checks in their places.
     const forceDrop = process.env.UI_FORCE_DROP === '1';
     // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=campus: the university's checks and shots on high, then on medium after the step down (Task 34's rounds).
+    // UI_ONLY=school: the school towers' checks and shots on high, then on medium (Task 38's rounds).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
-      if (process.env.UI_ONLY === 'budget') {
-        const high = await homeBreakdown(page, process.env.UI_BUDGET === 'detail');
+      if (process.env.UI_ONLY === 'campus') {
+        await campusChecks(page, 'high');
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(2500);
+        await campusChecks(page, 'medium');
+      } else if (process.env.UI_ONLY === 'school') {
+        await schoolTowerChecks(page, 'high');
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await schoolTowerChecks(page, 'medium');
+      } else if (process.env.UI_ONLY === 'budget') {
+        await standFixture(page);
+        await campusChecks(page, 'high');
+        const high = await homeBreakdown(page, process.env.UI_BUDGET === 'detail');
+        console.log(`info  budget high: ${JSON.stringify(high)}`);
+        await page.screenshot({ path: join(SHOTS, 'home-high.png') });
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await campusChecks(page, 'medium');
         await tierBudgetChecks(page, high);
+        console.log(`info  budget medium: ${JSON.stringify(await homeBreakdown(page, process.env.UI_BUDGET === 'detail'))}`);
+        await page.screenshot({ path: join(SHOTS, 'home-medium.png') });
       } else {
         await spireChecks(page);
         await revivalChecks(page);
@@ -2994,11 +3423,15 @@ async function main(): Promise<void> {
         await vehicleChecks(page);
         await peopleChecks(page);
         await ambientChecks(page);
+        await campusChecks(page, 'high');
+        await schoolTowerChecks(page, 'high');
         await everyScreenChecks(page, consoleErrors);
         const spiresBefore = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
         const highHome = await homeBreakdown(page);
         await qualityDropChecks(page, consoleErrors);
         await spireAfterDropChecks(page, spiresBefore);
+        await campusChecks(page, 'medium');
+        await schoolTowerChecks(page, 'medium');
         await tierBudgetChecks(page, highHome);
       }
     }

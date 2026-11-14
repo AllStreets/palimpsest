@@ -4,15 +4,16 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { buildTower, FLOOR_WIDTH } from '../app/src/city/tower/build.js';
+import { AGENT_FLOOR_WIDTH, buildTower, FLOOR_WIDTH } from '../app/src/city/tower/build.js';
+import { ROOT_TOP_HALF } from '../app/src/city/tower/roots.js';
 import { crownFloors } from '../app/src/city/tower/eras.js';
 import { PANE_CHANNEL, PANE_FULL, type TowerMaterials } from '../app/src/city/tower/kit.js';
 import { FAMILIES, type Look, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
 import { DATUM_HEIGHT } from '../app/src/city/tower/datum.js';
-import { layoutTower, ROOT_HEIGHT } from '../shared/tower-layout.js';
+import { agentRootHeight, layoutTower, ROOT_HEIGHT } from '../shared/tower-layout.js';
 import type { Era, Floor, FloorSize, RootStyle, TowerSpec } from '../shared/types.js';
 
-const ROOTS: RootStyle[] = ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago'];
+const ROOTS: RootStyle[] = ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago', 'collegiate'];
 const ERAS: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
 const SIZES: FloorSize[] = ['small', 'medium', 'large'];
 /** The ambient city keeps this far from a district's origin. */
@@ -128,6 +129,47 @@ test('the root alone stands at its own height for every style', () => {
     const rootBox = proxyBounds(t.rootPick);
     assert.ok(Math.abs(rootBox.max.y - ROOT_HEIGHT[root]) < 1e-6, `${root} root proxy tops out at ${ROOT_HEIGHT[root]}`);
   }
+});
+
+test('a collegiate root builds with the expected height and slots', () => {
+  // The school's own root (Phase 4 Task 38): its own height, no longer gothic's.
+  assert.notEqual(ROOT_HEIGHT.collegiate, ROOT_HEIGHT.gothic);
+  const s: TowerSpec = { id: 'acme/grad#founding', repo: 'acme/grad', kind: 'founding', root: 'collegiate', floors: [], datumIndex: 0 };
+  const t = buildTower(s, 'high', plainMaterials());
+  const box = bounds(t.group);
+  assert.ok(Math.abs(box.max.y - ROOT_HEIGHT.collegiate) < 1e-3, `the root tops out at ${box.max.y}, expected ${ROOT_HEIGHT.collegiate}`);
+  // The slots it draws in: the university's brick and limestone, slate on its roof, lit panes; never the gothic grey.
+  const names = new Set<string>();
+  t.group.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh && o.visible) names.add(o.name);
+  });
+  for (const slot of ['tower:brickWall', 'tower:limestone', 'tower:roofTile', 'tower:pane']) assert.ok(names.has(slot), `draws in ${slot} (${[...names].join(', ')})`);
+  assert.ok(!names.has('tower:gothic') && !names.has('tower:sand'), 'no gothic grey or sandstone');
+  // Two storeys: panes stand in two bands, one under and one over the string course, and the entrance is a tall lit pane low on the front.
+  const panes = t.group.getObjectByName('tower:pane') as THREE.InstancedMesh;
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const sc = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  const ys: number[] = [];
+  let entrance = 0;
+  for (let i = 0; i < panes.count; i++) {
+    panes.getMatrixAt(i, m);
+    m.decompose(p, q, sc);
+    ys.push(p.y);
+    // The fanlight over the doors: the widest pane on the root, in the head of the entrance arch.
+    if (sc.x > 3 && p.y > 5.5 && p.y < 8) entrance++;
+  }
+  assert.ok(ys.some((v) => v < 9) && ys.some((v) => v > 11), 'windows in both storeys');
+  const steel = t.group.getObjectByName('tower:col:frame') as THREE.InstancedMesh;
+  assert.ok(steel && steel.count >= 18 * 3, 'every window is glazed in a frame');
+  assert.equal(entrance, 2, 'a glazed fanlight over the doors on each front, wider than any window');
+  // At the agent scale it stands at agentRootHeight and its footing carries an agent floor.
+  const agent = buildTower({ ...s, kind: 'agent', firmId: 'quickset', agentId: 'grad' }, 'medium', plainMaterials());
+  assert.ok(Math.abs(bounds(agent.group).max.y - agentRootHeight('collegiate')) < 1e-3);
+  assert.ok(ROOT_TOP_HALF.collegiate * (16 / 26) >= AGENT_FLOOR_WIDTH / 2, 'the footing is at least as wide as an agent floor');
+  t.dispose();
+  agent.dispose();
 });
 
 test('dispose frees instanced buffers as well as geometry', () => {

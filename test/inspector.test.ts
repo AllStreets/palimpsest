@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { earnedRow, floorDate, floorLink, inspectorEntries } from '../app/src/ui/inspector.js';
+import { campusSections, earnedRow, floorDate, floorLink, inspectorEntries, type CampusInspectorView } from '../app/src/ui/inspector.js';
 import type { Floor, TowerSpec } from '../shared/types.js';
 
 function floor(p: Partial<Floor>): Floor {
@@ -142,4 +142,47 @@ test('the earned floors list under their own heading above the datum, the foundi
   // A tower with no earned floors keeps the datum on top, as before.
   const plain = inspectorEntries({ ...spec, floors: founding });
   assert.equal(plain[0].type, 'datum');
+});
+
+// ---------------------------------------------------------------- the campus (Phase 4 Task 37)
+
+test('the inspector lists the live voyage', () => {
+  const view: CampusInspectorView = {
+    voyage: { id: 'voy-1', arena: 'arena-harbor-1', repo: 'tidewater/harbor-ledger', status: 'sailing', generation: 2, of: 4, runs: { done: 137, of: 480 }, racing: 8, commissionedBy: 'quickset', startedAt: '2026-11-11T22:00:00Z' },
+    nets: [
+      { net: 'appraiser', version: 6, trusted: true, at: '2026-11-12T20:00:00Z' },
+      { net: 'router', version: 2, trusted: false, at: null },
+    ],
+    graduates: [{ id: 'mlx:grad-qwen25c7-1', model: 'mlx:grad-qwen25c7-1', base: 'qwen2.5-coder:7b', agentId: 'grad-1', at: '2026-11-12T05:00:00Z', vsBase: { diff: 0.14, lo: 0.06, hi: 0.22 }, examples: 212 }],
+    bays: 14,
+  };
+  const names = { agents: new Map([['grad-1', 'Quill Bennet']]), firms: new Map([['quickset', 'Quickset']]), inspections: new Map() };
+  const sections = campusSections(view, names);
+  assert.deepEqual(sections.map((s) => s.heading), ['Sailing now', 'Trained nets', 'Graduates']);
+  const [voyage, nets, grads] = sections;
+  assert.equal(voyage.rows.length, 1);
+  assert.equal(voyage.rows[0].title, 'A voyage on harbor-ledger');
+  assert.equal(voyage.rows[0].meta, 'generation 2 of 4, 137 of 480 runs');
+  assert.equal(voyage.rows[0].state, '8 genomes racing, 8 of 14 reading-room bays lit. Commissioned by Quickset.');
+  assert.equal(voyage.rows[0].href, '#/school/voyages/voy-1');
+  assert.equal(nets.count, '2');
+  assert.deepEqual(nets.rows.map((r) => [r.title, r.meta]), [['Appraiser', 'version 6, trusted'], ['Router', 'version 2, trained but not yet trusted']]);
+  assert.equal(nets.rows[0].state, 'Nov 12, 2026');
+  assert.equal(grads.rows[0].title, 'Quill Bennet');
+  assert.equal(grads.rows[0].meta, 'mlx:grad-qwen25c7-1 on qwen2.5-coder:7b, 212 examples');
+  assert.equal(grads.rows[0].state, 'Beat its base by 0.14 [0.06, 0.22] on the sealed race.');
+  assert.equal(grads.rows[0].href, '#/agents/grad-1');
+  // Paused for the night, the bays are dark and the sentence says so.
+  const paused = campusSections({ ...view, voyage: { ...view.voyage!, status: 'paused', commissionedBy: null } }, names)[0];
+  assert.equal(paused.rows[0].state, 'Paused for the night, the reading room dark.');
+  // Nothing yet: each section says so plainly, in words rather than an empty list.
+  const empty = campusSections({ voyage: null, nets: [], graduates: [], bays: 14 }, names);
+  assert.equal(empty[0].rows.length, 0);
+  assert.equal(empty[0].empty, 'No voyage sails tonight. The reading room is dark.');
+  assert.equal(empty[1].empty, 'No net has trained yet.');
+  assert.equal(empty[2].empty, 'No graduate yet. An adapter graduates only when it beats its base on a sealed race.');
+  // A graduate not yet hired is named by its model.
+  const unhired = campusSections({ ...view, graduates: [{ ...view.graduates[0], agentId: null }] }, names)[2];
+  assert.equal(unhired.rows[0].title, 'mlx:grad-qwen25c7-1');
+  assert.equal(unhired.rows[0].href, null);
 });

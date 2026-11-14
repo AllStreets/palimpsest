@@ -391,8 +391,9 @@ export function agentTowerId(agentId: string): string {
  * Every firm's quarter, in slot order: one agent tower per standing agent at
  * its plot in the quarter, in the firm's root with the agent's silhouette,
  * holding the floors the agent has earned (an agent tower has no founding
- * history, so its datum is at 0). A bankrupt firm's towers are dark until
- * sold; a sold tower stays on its plot, re-clad in its buyer's root.
+ * history, so its datum is at 0). A graduate of the school stands on the
+ * collegiate root in its firm's quarter. A bankrupt firm's towers are dark
+ * until sold; a sold tower stays on its plot, re-clad in its buyer's root.
  */
 export function quarters(): Quarter[] {
   const firms = listFirms();
@@ -408,8 +409,9 @@ export function quarters(): Quarter[] {
           // An agent tower belongs to no repo; its floors name the repos they were earned on.
           repo: '',
           kind: 'agent',
-          // a school graduate stands in collegiate brick (Phase 4 ruling 25) until a buyer re-clads it
-          root: buyer ? buyer.root : isGraduateAgent(a) ? 'collegiate' : f.root,
+          // A school agent stands on the university's own collegiate root (Phase 4 ruling 25 for a graduate, the city's
+          // Task 38 for every agent of school lineage); a sold tower is re-clad in its buyer's.
+          root: buyer ? buyer.root : isGraduateAgent(a) || a.lineage.origin === 'school' ? 'collegiate' : f.root,
           floors: earnedFloors(id),
           datumIndex: 0,
           firmId: buyer ? buyer.id : f.id,
@@ -417,6 +419,7 @@ export function quarters(): Quarter[] {
           dark: !buyer && a.retired,
           silhouette: a.silhouette,
           towerIndex: a.towerIndex,
+          ...(a.lineage.origin === 'school' ? { school: true } : {}),
         };
       });
     return { firmId: f.id, slot: f.slot, origin: quarterOrigin(f.slot), root: f.root, dark: f.status === 'bankrupt', towers };
@@ -437,10 +440,25 @@ export function quarters(): Quarter[] {
 export function hire(firmId: string, now: Date = new Date()): Agent | null {
   const f = firm(firmId);
   if (!f || f.status !== 'active') return null;
+  const seed = schoolCandidates(firmId, now.getTime()).find((r) => !storedAgent(r.id)) ?? ROSTER.find((r) => !storedAgent(r.id));
+  return seed ? hireSeed(firmId, seed, now) : null;
+}
+
+/**
+ * Hires `seed` (a hand-written specialist, or a school seed from
+ * roster.ts `schoolRoster()`: a bred champion or a graduate) into
+ * `firmId`, on the lowest free plot of its quarter, through makeAgent, and
+ * records `agent.hired`. A school seed keeps its persona and lineage
+ * (origin `school`), so a graduate's tower stands on the collegiate root
+ * (quarters). Null when the firm is missing or bankrupt, its quarter
+ * already stands four towers, or the seed was hired already. hire() picks
+ * the seed; the sample economy hires its graduate by name.
+ */
+export function hireSeed(firmId: string, seed: RosterSeed, now: Date = new Date()): Agent | null {
+  const f = firm(firmId);
+  if (!f || f.status !== 'active' || storedAgent(seed.id)) return null;
   const taken = new Set(storedAgents(firmId).filter(standing).map((a) => a.towerIndex));
   if (taken.size >= MAX_TOWERS) return null;
-  const seed = schoolCandidates(firmId, now.getTime()).find((r) => !storedAgent(r.id)) ?? ROSTER.find((r) => !storedAgent(r.id));
-  if (!seed) return null;
   let towerIndex = 0;
   while (taken.has(towerIndex)) towerIndex += 1;
   const origin = seed.origin === 'school' ? 'school' : 'roster';
