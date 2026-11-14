@@ -27,6 +27,7 @@ export function createRunhead(parent: HTMLElement): Runhead {
     ['brief', 'Brief'],
     ['jobs', 'Jobs'],
     ['firms', 'Firms'],
+    ['school', 'School'],
     ['treasury', 'Treasury'],
     ['repos', 'Repos'],
     ['settings', 'Settings'],

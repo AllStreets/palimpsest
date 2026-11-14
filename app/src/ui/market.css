@@ -4958,3 +4958,614 @@ a.brief-act {
 .sheet.brief .sheet-body {
   margin-top: 0;
 }
+
+/* ================================================================ the school (Phase 4 Task 30) */
+/* The school's ledger: each claim a number with its interval and n, each empty card a sentence. */
+
+.school-sub {
+  max-width: 78ch;
+}
+.school-sec {
+  margin-top: 4px;
+}
+.school-h3 {
+  margin-top: 26px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 15.5px;
+  color: var(--ink-2);
+}
+.school-empty {
+  margin-top: 16px;
+  max-width: 64ch;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.school-table {
+  margin-top: 14px;
+}
+.school-head,
+.school-row {
+  display: grid;
+  column-gap: 16px;
+  align-items: start;
+  padding: 14px 0 15px;
+  border-bottom: 1px solid var(--rule);
+}
+.school-head {
+  padding: 0 0 7px;
+  align-items: end;
+  border-bottom: 1px solid var(--rule-strong);
+}
+.school-th {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.school-th.c-n,
+.school-th.c-fig,
+.school-cell.c-n,
+.school-cell.c-fig {
+  text-align: right;
+}
+.school-cell.c-n,
+.school-cell.c-fig {
+  padding-top: 4px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.school-cell {
+  min-width: 0;
+}
+
+/* The nets: name and standing, the score with its interval, the plate against the baseline, the labels. */
+.net-ledger .school-head,
+.net-ledger .school-row {
+  grid-template-columns: minmax(0, 1fr) 150px 168px 44px;
+}
+.net-name-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+}
+.net-name,
+.voyage-name {
+  font-family: var(--serif);
+  font-size: 19px;
+  line-height: 1.2;
+  color: var(--ink);
+  text-decoration: none;
+}
+.net-name:hover,
+.voyage-name:hover,
+.grant-repo:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--ink-3);
+  text-underline-offset: 4px;
+}
+.net-name:focus-visible,
+.voyage-name:focus-visible,
+.grant-repo:focus-visible,
+.gate-settings:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 3px;
+}
+.net-status,
+.voyage-by {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.net-status.s-trusted {
+  color: var(--bronze);
+}
+.net-learns {
+  margin-top: 2px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--ink-3);
+}
+.net-line,
+.kind-line,
+.grant-line,
+.arena-line,
+.voyage-line,
+.train-line,
+.graduate-diff,
+.graduate-sealed-line {
+  margin-top: 5px;
+  max-width: 56ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.net-self,
+.arena-when {
+  margin-top: 4px;
+  max-width: 56ch;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.school-cell.c-score {
+  display: flex;
+  flex-direction: column;
+  padding-top: 4px;
+}
+.net-score {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.net-score.better {
+  color: #d9b48a;
+}
+.net-ci {
+  white-space: nowrap;
+}
+.net-ci,
+.net-base {
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.net-none {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.school-cell.c-plate {
+  padding-top: 2px;
+}
+.school-cell.c-plate .net-base {
+  display: block;
+}
+
+/* An interval on a ruled scale: the score's interval in bronze with its pointer, the baseline's beneath in faint ink. */
+.ciplate {
+  display: block;
+  overflow: visible;
+}
+.ciplate-rule {
+  stroke: rgba(236, 230, 218, 0.28);
+  stroke-width: 1;
+}
+.ciplate-tick {
+  stroke: rgba(236, 230, 218, 0.3);
+  stroke-width: 1;
+}
+.ciplate-ref {
+  stroke: rgba(236, 230, 218, 0.26);
+  stroke-width: 3;
+}
+.ciplate-ref-mark {
+  stroke: rgba(236, 230, 218, 0.7);
+  stroke-width: 1;
+}
+.ciplate-ci {
+  stroke: var(--bronze);
+  stroke-width: 2;
+}
+.ciplate-cap {
+  stroke: var(--bronze);
+  stroke-width: 1;
+}
+.ciplate-pointer {
+  fill: #d9b48a;
+}
+.ciplate-mark {
+  stroke: var(--bronze);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+
+/* The master: its Brier large, its words beside; then his kinds of work and the grants. */
+.master-card {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  column-gap: 26px;
+  padding: 20px 0 18px;
+  border-bottom: 1px solid var(--rule);
+}
+.master-card:has(.master-words.wide) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.master-fig,
+.graduate-score {
+  display: flex;
+  flex-direction: column;
+}
+.master-name {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-2);
+}
+.master-num {
+  margin-top: 2px;
+  font-family: var(--serif);
+  font-size: 46px;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.master-note {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.master-words {
+  min-width: 0;
+}
+.master-line {
+  max-width: 66ch;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.master-line + .master-line {
+  margin-top: 8px;
+}
+.master-key {
+  margin-top: 10px;
+  max-width: 66ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.kinds .school-head,
+.kinds .school-row {
+  grid-template-columns: minmax(0, 1fr) 168px 72px;
+}
+.kind-name {
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--ink);
+}
+.grants {
+  margin-top: 6px;
+}
+.grant-ledger .school-head,
+.grant-ledger .school-row,
+.arena-ledger .school-head,
+.arena-ledger .school-row {
+  grid-template-columns: minmax(0, 1fr) 150px;
+}
+.grant-name-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.grant-on,
+.arena-kind {
+  font-size: 13px;
+  color: var(--ink-3);
+  white-space: pre;
+}
+.grant-repo {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.school-cell.c-state {
+  display: flex;
+  flex-direction: column;
+  padding-top: 4px;
+}
+.grant-state {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.grant-state.g-granted,
+.grant-state.g-ready {
+  color: var(--bronze);
+}
+.grant-state.g-suspended,
+.grant-state.g-failed,
+.grant-state.g-spent {
+  color: var(--rust);
+}
+.grant-state.g-asked,
+.grant-state.g-building {
+  color: var(--ink);
+}
+.arena-reason {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.arena-refusals {
+  margin-top: 14px;
+  list-style: none;
+}
+.arena-refusal {
+  position: relative;
+  max-width: 64ch;
+  padding: 8px 0 8px 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.arena-refusal::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 11px;
+  bottom: 11px;
+  width: 2px;
+  background: var(--rust);
+}
+.refusal-when {
+  color: var(--rust);
+}
+
+/* Voyages, graduates and trains: the name and its line, the date at the right. */
+.voyage-ledger .school-head,
+.voyage-ledger .school-row,
+.graduate-ledger .school-head,
+.graduate-ledger .school-row {
+  grid-template-columns: minmax(0, 1fr) 110px;
+}
+.train-ledger .school-head,
+.train-ledger .school-row {
+  grid-template-columns: minmax(0, 1fr) 150px 64px;
+}
+.school-cell.c-when {
+  display: flex;
+  flex-direction: column;
+  padding-top: 4px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.voyage-when-note {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.voyage-row[data-status='sailing'] .voyage-name::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 9px;
+  border-radius: 50%;
+  background: var(--bronze);
+  vertical-align: 3px;
+}
+.train-row .train-line {
+  margin-top: 0;
+}
+.lora-card {
+  padding: 18px 0 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.lora-line {
+  font-family: var(--serif);
+  font-size: 21px;
+  line-height: 1.2;
+  color: var(--ink);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.lora-base {
+  margin-top: 6px;
+  max-width: 66ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* Training: the gate, the trainer and the settings they read. */
+.gate-card {
+  padding: 18px 0 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.gate-off {
+  margin-bottom: 10px;
+  max-width: 66ch;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+.gate-settings {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(236, 230, 218, 0.3);
+  text-underline-offset: 3px;
+}
+.gate-line {
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+.gate-line.light {
+  font-size: 15px;
+  color: var(--ink-2);
+}
+.gate-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+}
+.gate-row + .gate-row {
+  margin-top: 4px;
+}
+.gate-scope {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.trainer-line {
+  margin-top: 8px;
+  max-width: 66ch;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.gate-settings-line {
+  margin-top: 4px;
+  max-width: 66ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+/* A net's page: the plate of its versions, then every version. */
+.netplot {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 18px;
+  overflow: visible;
+}
+.netplot-grid {
+  stroke: rgba(236, 230, 218, 0.1);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+.netplot-rule {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+}
+.netplot-axis,
+.netplot-tick-label {
+  fill: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.netplot-tick-label.current {
+  fill: var(--ink);
+}
+.netplot-base {
+  fill: none;
+  stroke: rgba(236, 230, 218, 0.4);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  stroke-linejoin: round;
+}
+.netplot-line {
+  fill: none;
+  stroke: #d9b48a;
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+}
+.netplot-whisker {
+  fill: none;
+  stroke: rgba(217, 180, 138, 0.7);
+  stroke-width: 1;
+}
+.netplot-point {
+  fill: #0a0b0f;
+  stroke: #d9b48a;
+  stroke-width: 1.25;
+}
+.netplot-point.trusted {
+  fill: #d9b48a;
+}
+.netplot-none {
+  margin-top: 16px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-3);
+}
+.version-ledger .school-head,
+.version-ledger .school-row {
+  grid-template-columns: 112px 150px 168px minmax(0, 1fr);
+}
+.school-cell.c-v,
+.school-cell.c-rows {
+  display: flex;
+  flex-direction: column;
+  padding-top: 2px;
+}
+.version-num {
+  font-family: var(--serif);
+  font-size: 19px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.version-when,
+.version-rows,
+.version-secs {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.version-rows {
+  margin-top: 6px;
+  color: var(--ink-2);
+}
+.version-trust {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.version-trust.yes {
+  color: var(--bronze);
+}
+
+/* A voyage's page: its generations, each genome with its mean and interval; the champion against each local agent. */
+.voyage-gen {
+  margin-top: 4px;
+}
+.genome-ledger .school-head,
+.genome-ledger .school-row,
+.vslocal-ledger .school-head,
+.vslocal-ledger .school-row {
+  grid-template-columns: minmax(0, 1fr) 190px;
+}
+.genome-ledger .school-row,
+.vslocal-ledger .school-row {
+  padding: 9px 0 10px;
+}
+.genome-name {
+  font-size: 13.5px;
+  color: var(--ink);
+}
+.genome-parents {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.genome-promoted {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--bronze);
+}
+.voyage-champion {
+  padding-top: 14px;
+}
+
+/* A graduate's page: its sealed score beside its base's. */
+.graduate-sealed {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 26px;
+  padding: 20px 0 14px;
+}
+.graduate-score.base .master-num {
+  color: var(--ink-2);
+}
+.graduate-page .graduate-diff {
+  margin-top: 0;
+  max-width: 66ch;
+  font-size: 13.5px;
+}

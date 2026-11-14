@@ -40,6 +40,7 @@ import { detailChecks } from './ui-test-detail.js';
 import { firmChecks } from './ui-test-firms.js';
 import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
+import { schoolChecks, schoolEmptyChecks } from './ui-test-school.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
@@ -3149,6 +3150,7 @@ async function everyScreenChecks(page: Page, errors: string[]): Promise<void> {
     ...(firms[0] ? ([['firm', `#/firms/${firms[0].id}`, '.sheet.firmpage .sheet-title']] as Array<[string, string, string]>) : []),
     ...(firms[0]?.agents[0] ? ([['agent', `#/agents/${firms[0].agents[0].id}`, '.sheet.agentpage .sheet-title']] as Array<[string, string, string]>) : []),
     ['treasury', '#/treasury', '.sheet.treasury .sheet-title'],
+    ['school', '#/school', '.sheet.school .net-row'],
     ['repos', '#/repos', '.sheet.repos .sheet-title'],
     ['district', `#/repos/${SAMPLE[0].fullName}`, '.sheet.district .sheet-title'],
     ['settings', '#/settings', '.sheet.settings .sheet-title'],
@@ -3272,11 +3274,14 @@ async function main(): Promise<void> {
     // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
     // UI_ONLY=campus: the university's checks and shots on high, then on medium after the step down (Task 34's rounds).
     // UI_ONLY=school: the school towers' checks and shots on high, then on medium (Task 38's rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=schoolscreen: the school screen's checks and shots on the economy, then on the empty home (Task 30's rounds).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
-      if (process.env.UI_ONLY === 'campus') {
+      if (process.env.UI_ONLY === 'schoolscreen') {
+        await schoolChecks(page, check, SHOTS);
+      } else if (process.env.UI_ONLY === 'campus') {
         await campusChecks(page, 'high');
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(2500);
@@ -3406,6 +3411,8 @@ async function main(): Promise<void> {
         await rideAgentChecks(page);
         // The treasury and the daily report (Task 39).
         await treasuryChecks(page, check, SHOTS);
+        // The school screen, full (Phase 4 Task 30); its empty variant runs on the empty home at the end.
+        await schoolChecks(page, check, SHOTS);
         // The notice stack: one Dismiss each, keyed replacement, recall, the keyboard, and clear of an open sheet (Phase 3 Task 12).
         await noticeChecks(page, check, SHOTS);
         // The market switches on Repos, the district page and the provider settings (Task 40).
@@ -3443,11 +3450,14 @@ async function main(): Promise<void> {
 
     // The empty morning (Phase 3 Task 11), last: on a fresh home with no repos, since the economy's is never empty.
     await page.close();
-    if (!forceDrop && !spireOnly) {
+    const schoolOnly = process.env.UI_ONLY === 'schoolscreen';
+    if (!forceDrop && (!spireOnly || schoolOnly)) {
       await server.close();
       process.env.PALIMPSEST_HOME = join(tmp, 'home-empty');
       server = await startServer({ port: PORT, claudeSettingsPath, keychain });
-      await emptyMorningChecks(browser, `http://127.0.0.1:${PORT}`, check, SHOTS);
+      if (!schoolOnly) await emptyMorningChecks(browser, `http://127.0.0.1:${PORT}`, check, SHOTS);
+      // The school on an empty home (Phase 4 Task 30): every net thin with its cause, nothing drawn.
+      await schoolEmptyChecks(browser, `http://127.0.0.1:${PORT}`, check, SHOTS);
     }
   } finally {
     await browser.close();

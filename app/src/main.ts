@@ -46,6 +46,7 @@ import { createAgentPage } from './ui/agent';
 import { createFirmPage } from './ui/firm';
 import { createFirms } from './ui/firms';
 import { createTreasury } from './ui/treasury';
+import { createSchool, type SchoolRoute } from './ui/school';
 import { createInspectionPage } from './ui/inspection';
 import { createJobPage } from './ui/job';
 import { createJobs } from './ui/jobs';
@@ -879,14 +880,12 @@ async function main(): Promise<void> {
   }
   /**
    * The observatory's dome opens the school at the master's card: the same navigation every other click in the city
-   * makes, the address changing to `#/school/master` (router.ts parses the school's four routes). Until the school's
-   * own screen is drawn (screens-track Task 30), the school's routes open the nearest screen there is, the inspector on
-   * the university, over the city (applyRoute); a click on the address already shown opens it again.
+   * makes, the address changing to `#/school/master` (router.ts parses the school's four routes; the school screen,
+   * Task 30, lands on the master's section).
    */
   function openSchool(route: string): void {
     debug.opened = route;
-    if (location.hash === route) inspectCampus();
-    else location.hash = route;
+    location.hash = route;
   }
 
   city.onPick((hit) => {
@@ -1378,6 +1377,8 @@ async function main(): Promise<void> {
 
   // A district's own page: its market switches, label, checks, network, halt, jobs and floors (Task 40).
   const districtPage = createDistrictPage(document.body, { listen, onDismiss: toCity });
+  // The school: the nets, the master, arenas, voyages, graduates and training, and a page each for a net, a voyage and a graduate (Phase 4 Task 30).
+  const schoolPage = createSchool(document.body, { listen, onDismiss: toCity });
   // A README audit's own page (Phase 3 Task 10): the claims, their evidence and the jobs that close the gap.
   const auditPage = createAuditPage(document.body, { listen, onDismiss: toCity });
 
@@ -1478,16 +1479,15 @@ async function main(): Promise<void> {
   });
 
   // Repos, Settings, the job board, the job, run and inspection pages, the firms and a firm's and an
-  // agent's page and the treasury draw over the city, which keeps running beside them. A place with no
-  // screen yet (a district) leaves the city showing.
-  const SCREENS = new Set(['repos', 'repo', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent', 'treasury', 'audit', 'brief']);
-  /** The school, a net, a voyage and a graduate: no screen of their own yet, so the city shows with the university inspected. */
+  // agent's page, the treasury and the school draw over the city, which keeps running beside them.
+  const SCREENS = new Set(['repos', 'repo', 'settings', 'jobs', 'job', 'run', 'inspection', 'firms', 'firm', 'agent', 'treasury', 'audit', 'brief', 'school', 'net', 'voyage', 'graduate']);
+  /** The school's screen, under its four routes: the school itself (at a section when the address names one), a net, a voyage, a graduate. */
   const SCHOOL_ROUTES = new Set<Route>(['school', 'net', 'voyage', 'graduate']);
   let lastRoute = 'city';
   const applyRoute = (to: Route, place: Place): void => {
-    const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent', 'repo', 'audit'].includes(to)) ? to : 'city';
+    const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent', 'repo', 'audit', 'net', 'voyage', 'graduate'].includes(to)) ? to : 'city';
     document.body.dataset.route = route;
-    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route === 'repo' || route === 'audit' ? 'repos' : route);
+    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route === 'repo' || route === 'audit' ? 'repos' : SCHOOL_ROUTES.has(route as Route) ? 'school' : route);
     if (route !== 'city') {
       inspector.close();
       // A sheet opened over the city ends a ride or a tour under way.
@@ -1522,8 +1522,8 @@ async function main(): Promise<void> {
     else auditPage.hide();
     if (route === 'brief') brief.show();
     else brief.hide();
-    // The school's routes (Task 28) open the inspector on the university until the school's screen is drawn (Task 30).
-    if (SCHOOL_ROUTES.has(to)) inspectCampus();
+    if (SCHOOL_ROUTES.has(route as Route)) schoolPage.show(route as SchoolRoute, place.id);
+    else schoolPage.hide();
     // Back in the city, focus returns to it rather than to a sheet that has gone.
     if (route === 'city' && lastRoute !== 'city') document.querySelector<HTMLElement>('#city canvas')?.focus({ preventScroll: true });
     lastRoute = route;
@@ -1545,8 +1545,6 @@ async function main(): Promise<void> {
 
   await city.ready;
   debug.ready = true;
-  // Opened at a school address, the university is inspected once it stands.
-  if (SCHOOL_ROUTES.has(currentRoute())) inspectCampus();
   veil?.classList.add('gone');
   setTimeout(() => veil?.remove(), 1400);
 }
