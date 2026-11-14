@@ -55,10 +55,15 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { GATE, LORA } from '../../shared/school-rules.js';
-import type { Repo, TrainState } from '../../shared/types.js';
+import { GATE, LORA, SEALED_USES, VOYAGE } from '../../shared/school-rules.js';
+import type { ArenaInfo, Graduate, Interval, Repo, TrainState } from '../../shared/types.js';
+import { openDb } from '../db.js';
+import { emit } from '../events.js';
 import { getRunner, getSpawner, type SpawnLine } from '../exec.js';
 import { paths } from '../home.js';
+import { record } from '../ledger.js';
+import { creditEntries } from '../market/budget.js';
+import { agent as storedAgent } from '../market/firms.js';
 import { mirrorDir } from '../mirror.js';
 import { refusedHosts, startEgress, type Egress } from '../market/egress.js';
 import { redact } from '../market/jobs.js';
@@ -67,9 +72,13 @@ import { SECRET_PATHS, wrap } from '../market/sandbox.js';
 import { getSettings, patchSettings } from '../settings.js';
 import { ENGINE_GIT_FLAGS } from '../market/worktree.js';
 import { listRepos } from '../repos.js';
-import { protectedReason, sealedRefs, toBeagleArena, type ArenaEdit } from './arenas.js';
+import { arenaInfo, listArenas, protectedReason, registerArenas, sealedRefs, toBeagleArena, type ArenaEdit } from './arenas.js';
+import type { BeagleApi, BeagleDriver, BeagleGenome } from './beagle-api.js';
+import { loadBeagle, schoolDriver, useDriver } from './beagle.js';
 import { isSourceFile, verifiedChanges, type VerifiedChange } from './history.js';
-import { readGate, startTrain } from './trainer.js';
+import { ci, pairedCi } from './stats.js';
+import { registerAbort, TURNED_OFF_REASON } from './tick.js';
+import { holdTrain, liveTrains, readGate, startTrain } from './trainer.js';
 import { TRAINER_DIR, trainerEnv, trainerPython } from './trainer-env.js';
 
 export type LoraSkip = 'sealed' | 'secret' | 'too-large' | 'too-long' | 'not-unique' | 'no-edit';
@@ -672,6 +681,14 @@ export interface LoraRun {
   torn: Array<{ at: string; saved: number; from: number; lost: number }>;
   /** True once any resume happened: the result is not the same as an uninterrupted run, and the card says so. */
   optimizerReset: boolean;
+  /**
+   * The sealed splits its data was built without (ruling 25): each arena whose
+   * sealed tasks were in `sealedRefs()` when the data was built, with its
+   * sealed hash then. Only these arenas, unchanged, may score it (Task 27).
+   */
+  sealedArenas?: Record<string, string>;
+  /** Every sealed race it was scored in against its base, oldest first (Task 27). */
+  evaluations?: LoraEvaluation[];
 }
 
 function writeRun(run: LoraRun): void {
@@ -785,6 +802,8 @@ export async function trainLora(now: number = Date.now()): Promise<LoraTrainResu
     if (!g.ok) return answer('waiting', g.reason ?? 'the gate closed', run);
 
     if (!run) {
+      // the sealed splits the data is about to be built without: only these may ever score this adapter
+      const sealedArenas = heldOutSplits();
       const data = await dataBuilder(now, { check: true });
       const n = data.examples.length;
       // LORA.min also keeps valid.jsonl (the newest 10%) at 10 or more, never under the batch mlx-lm needs
@@ -805,6 +824,8 @@ export async function trainLora(now: number = Date.now()): Promise<LoraTrainResu
         good: 0,
         torn: [],
         optimizerReset: false,
+        sealedArenas,
+        evaluations: [],
       };
       const dir = adapterDir(run.id);
       mkdirSync(join(dir, 'data'), { recursive: true });
@@ -1023,5 +1044,396 @@ async function runDownload(onKill: (kill: () => void) => void): Promise<Download
     }
     // its token and port are forgotten with it
     rmSync(join(paths().runs, runId), { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------- graduation (ruling 25, Task 27)
+
+/** The base genome's id in a sealed race: the base model alone (`mlx:base`). */
+export const BASE_GENOME = 'base';
+/** Instructions a graduate is given, and both sides of its sealed race: its training is in its adapter, so they are plain. */
+export const GRADUATE_INSTRUCTIONS =
+  'You work on his repositories. Read the task and the files it names, find the smallest change that does what it asks, make it, and run the checks before you answer. Say plainly what you changed and why.\n';
+/** How often a sealed race reads the stop file and the switch; the gate is read every `GATE.pollMs`. */
+const EVAL_POLL_MS = 2_000;
+
+/** One sealed race of an adapter against its base: what it raced, what it cost and what came of it. */
+export interface LoraEvaluation {
+  at: string;
+  /** `passed`: the paired interval sits above zero; `failed`: it does not; `stopped`: the race did not finish. */
+  status: 'passed' | 'failed' | 'stopped';
+  reason: string | null;
+  /** The train (kind `eval`) the race held. */
+  train: string;
+  /** Each arena raced: the sealed hash Beagle used, the arena's sealed uses after this one, and the tasks both sides finished (0 when the hash had changed). */
+  arenas: Array<{ id: string; hash: string | null; uses: number; tasks: number }>;
+  sealed: Interval | null;
+  baseSealed: Interval | null;
+  vsBase: { diff: number; lo: number; hi: number } | null;
+  credits: number;
+  /** The graduate it made, once `graduate()` made one. */
+  graduate: string | null;
+}
+
+/** An adapter that cannot be scored now, and why; nothing was raced or spent. */
+export class EvaluationRefused extends Error {
+  override name = 'EvaluationRefused';
+}
+
+/** The arenas whose sealed splits stand in the school now, with their hashes: what a new LoRA's data is built without. */
+function heldOutSplits(): Record<string, string> {
+  const withSealed = new Set((openDb().prepare("SELECT DISTINCT arena FROM arena_tasks WHERE split = 'sealed'").all() as Array<{ arena: string }>).map((r) => r.arena));
+  const out: Record<string, string> = {};
+  for (const a of listArenas()) {
+    if (a.sealedHash && withSealed.has(a.id) && (a.status === 'ready' || a.status === 'spent')) out[a.id] = a.sealedHash;
+  }
+  return out;
+}
+
+function putArena(info: ArenaInfo): void {
+  openDb().prepare('INSERT OR REPLACE INTO arenas (id, repo, json) VALUES (?, ?, ?)').run(info.id, info.repo, JSON.stringify(info));
+}
+
+function runById(id: string): LoraRun | null {
+  return loraRuns().find((r) => r.id === id) ?? null;
+}
+
+/** Puts `ev` on the LoRA's record, read afresh, replacing an evaluation of the same train. */
+function keepEvaluation(id: string, ev: LoraEvaluation): void {
+  const run = runById(id);
+  if (!run) return;
+  run.evaluations = [...(run.evaluations ?? []).filter((e) => e.train !== ev.train), ev];
+  writeRun(run);
+}
+
+const iso = (ms: number) => new Date(ms).toISOString();
+const two = (x: number) => x.toFixed(2);
+const reasonOf = (s: AbortSignal): string => (s.reason instanceof Error ? s.reason.message : String(s.reason ?? 'stopped'));
+const usesLine = (arenas: ArenaInfo[]) => arenas.map((a) => `${a.id}: ${a.sealedUses} of ${SEALED_USES} sealed uses`).join('; ');
+
+/**
+ * The arenas `run` may be scored on (ruling 25): those whose sealed split
+ * its data was built without and that still hold that split unchanged
+ * (`sealedHash` as recorded), ready or spent. Throws `EvaluationRefused`
+ * when there are none, or when every one of them is spent.
+ */
+function scoringArenas(run: LoraRun): ArenaInfo[] {
+  const held = run.sealedArenas ?? {};
+  const eligible = Object.keys(held)
+    .sort()
+    .map((id) => arenaInfo(id))
+    .filter((a): a is ArenaInfo => a !== null && (a.status === 'ready' || a.status === 'spent') && a.sealedHash !== null && a.sealedHash === held[a.id]);
+  if (eligible.length === 0) throw new EvaluationRefused("No arena's sealed tasks were held out of its data and still stand unchanged, so there is nothing sealed to score it on");
+  const usable = eligible.filter((a) => a.status !== 'spent' && a.sealedUses < SEALED_USES);
+  if (usable.length === 0) {
+    throw new EvaluationRefused(`sealed set spent: ${usesLine(eligible)}; no adapter is scored on a spent split until he rebuilds the arena`);
+  }
+  return usable;
+}
+
+/** Sets Beagle's concurrency to one run at a time for a sealed race, so the one server swaps between adapter and base per run, not per turn; returns the restore. */
+function oneRunAtATime(b: BeagleApi): () => void {
+  const row = b.store.open().prepare("SELECT value FROM settings WHERE key = 'concurrency'").get() as { value: string } | undefined;
+  b.store.open().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('concurrency', ?)").run(JSON.stringify(VOYAGE.concurrency));
+  return () => {
+    try {
+      if (row) b.store.open().prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('concurrency', ?)").run(row.value);
+      else b.store.open().prepare("DELETE FROM settings WHERE key = 'concurrency'").run();
+    } catch (err) {
+      console.error("palimpsest: Beagle's concurrency could not be put back:", err);
+    }
+  };
+}
+
+function genomeOf(id: string, model: string, tools: string[]): BeagleGenome {
+  return { id, name: id === BASE_GENOME ? 'The base model' : `Adapter ${id}`, model, instructions: GRADUATE_INSTRUCTIONS, tools: [...tools], workflow: { shape: 'single' }, memory: { examples: 0 } };
+}
+
+function trainCredits(loraId: string): number {
+  return Math.round(creditEntries(loraId).filter((r) => r.kind === 'train').reduce((n, r) => n + r.credits, 0) * 1e6) / 1e6;
+}
+
+function putTrain(kind: 'train.started' | 'train.paused' | 'train.ended', t: TrainState, extra: object): void {
+  openDb().prepare('INSERT OR REPLACE INTO trains (id, kind, status, json) VALUES (?, ?, ?, ?)').run(t.id, t.kind, t.status, JSON.stringify(t));
+  const data = { train: structuredClone(t), ...extra };
+  record(kind, data);
+  emit(kind, structuredClone(data));
+}
+
+let evaluating = false;
+
+/**
+ * Scores a trained adapter against its base (ruling 25): one `sealedRace()`
+ * per arena whose sealed split its data was built without (unchanged since,
+ * and not spent), the adapter genome against the base genome with the same
+ * single-shape instructions. Each race spends one sealed use of its arena,
+ * counted before any race starts; the tenth spends the split, and an arena
+ * with none left refuses with "sealed set spent".
+ *
+ * It holds the graduates' server, not the machine: the adapter and the base
+ * alone (`mlx:base`, ruling 26's fence) are served in turn behind the heavy
+ * gate, as a train of kind `eval` that every other train waits for. It is
+ * refused while a heavy train holds the machine, and a heavy train that
+ * takes it during the race stops it: a call the machine refused is never
+ * scored. The stop file, the switch, a gate loss or a failed call stop it
+ * the same way. Every call is charged `train` to the city under the LoRA.
+ *
+ * Throws `EvaluationRefused` (nothing raced, nothing spent) when it cannot
+ * start; otherwise resolves with the evaluation, also kept on the LoRA's
+ * record. It graduates nothing: `graduate()` does.
+ */
+export async function evaluateAdapter(loraId: string, now: number = Date.now()): Promise<LoraEvaluation> {
+  if (evaluating) throw new EvaluationRefused('An adapter is already being scored');
+  evaluating = true;
+  try {
+    return await evaluate(loraId, now);
+  } finally {
+    evaluating = false;
+  }
+}
+
+async function evaluate(loraId: string, now: number): Promise<LoraEvaluation> {
+  const mlx = await import('../market/mlx.js');
+  const canStart = (): void => {
+    if (!getSettings().school.enabled) throw new EvaluationRefused('The school is off');
+    const down = mlx.heavyRunning();
+    if (down) throw new EvaluationRefused(`The adapter is not scored while ${down} runs: the graduates' server stays down until it ends`);
+    if (liveTrains().length > 0) throw new EvaluationRefused('A train is already running');
+  };
+  canStart();
+  const run = runById(loraId);
+  if (!run || !trainedAdapter(loraId)) throw new EvaluationRefused(`${loraId} is not a trained adapter, so it is not scored`);
+  if (!baseReady()) throw new EvaluationRefused('The base model is not downloaded');
+  scoringArenas(run);
+  const g = await readGate('heavy', now);
+  if (!g.ok) throw new EvaluationRefused(g.reason ?? 'the gate closed');
+  canStart();
+
+  const b = await loadBeagle();
+  const usable = scoringArenas(run);
+  if (usable.some((a) => !b.arenas.arenaIds().includes(a.id))) await registerArenas();
+  const held = run.sealedArenas ?? {};
+  const raced = usable.filter((a) => b.arenas.arenaIds().includes(a.id) && b.race.sealedHash(a.id) === held[a.id]);
+  if (raced.length === 0) throw new EvaluationRefused("No arena it may be scored on holds the same sealed split in Beagle's store");
+  canStart();
+
+  // each use is counted before its race starts: once the race runs, the sealed tasks may have been shown
+  const counted = raced.map((a) => {
+    const fresh = arenaInfo(a.id) ?? a;
+    const uses = fresh.sealedUses + 1;
+    const next: ArenaInfo = { ...fresh, sealedUses: uses, status: uses >= SEALED_USES ? 'spent' : fresh.status };
+    putArena(next);
+    return next;
+  });
+
+  const t0 = Date.now();
+  const clock = () => now + (Date.now() - t0);
+  const ctl = new AbortController();
+  const train: TrainState = { id: `train-eval-${randomUUID().slice(0, 8)}`, kind: 'eval', status: 'running', reason: null, startedAt: iso(now), endedAt: null, seconds: 0, steps: null, credits: 0 };
+  const extra = { lora: { id: loraId }, arenas: counted.map((a) => structuredClone(a)) };
+  const unhold = holdTrain(train, (reason) => ctl.abort(reason));
+  const unregister = registerAbort(() => ctl.abort(TURNED_OFF_REASON));
+  const releaseBase = mlx.serveBase();
+  const restore = oneRunAtATime(b);
+  const creditsBefore = trainCredits(loraId);
+  const inner = schoolDriver({ voyageId: loraId, designer: getSettings().school.designer, signal: ctl.signal, now: clock, kind: 'train' });
+  const driver: BeagleDriver = async (provider, name, turns, call) => {
+    try {
+      return await inner(provider, name, turns, call);
+    } catch (err) {
+      // a call the machine could not answer (a heavy train took it, the server failed) is never scored as the model's miss
+      if (!(err instanceof b.models.LimitError) && !ctl.signal.aborted) ctl.abort(err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  };
+  useDriver(driver);
+  let lastGate = Date.now();
+  const timer = setInterval(() => {
+    if (ctl.signal.aborted) return;
+    if (existsSync(paths().stop)) ctl.abort('The stop file is set.');
+    else if (!getSettings().school.enabled) ctl.abort(TURNED_OFF_REASON);
+    else if (mlx.heavyRunning()) ctl.abort(`${mlx.heavyRunning()} took the machine`);
+    else if (Date.now() - lastGate >= GATE.pollMs) {
+      lastGate = Date.now();
+      void readGate('heavy', clock()).then(
+        (gs) => {
+          if (!gs.ok && !ctl.signal.aborted) ctl.abort(gs.reason ?? 'the gate closed');
+        },
+        (err: unknown) => {
+          if (!ctl.signal.aborted) ctl.abort(`the gate could not be read: ${err instanceof Error ? err.message : String(err)}`);
+        },
+      );
+    }
+  }, EVAL_POLL_MS);
+  timer.unref?.();
+
+  const arenas: LoraEvaluation['arenas'] = [];
+  const mine: number[] = [];
+  const theirs: number[] = [];
+  const changed: string[] = [];
+  let stop: string | null = null;
+  try {
+    putTrain('train.started', train, extra);
+    for (const a of counted) {
+      if (ctl.signal.aborted) {
+        stop = reasonOf(ctl.signal);
+        break;
+      }
+      const tools = b.arenas.getArena(a.id).tools.map((t) => t.name);
+      const r = await b.race.sealedRace(a.id, [genomeOf(loraId, `mlx:${loraId}`, tools), genomeOf(BASE_GENOME, mlx.MLX_BASE, tools)], { signal: ctl.signal, seed: 1 });
+      const ours = r.perTask[loraId] ?? {};
+      const base = r.perTask[BASE_GENOME] ?? {};
+      const tasks = Object.keys(ours).filter((t) => t in base).sort();
+      if (!r.complete) {
+        arenas.push({ id: a.id, hash: r.hash, uses: a.sealedUses, tasks: 0 });
+        stop = ctl.signal.aborted ? reasonOf(ctl.signal) : (r.reason ?? 'the sealed race stopped');
+        break;
+      }
+      // a split that changed since the data was built without it is not the one held out: it scores nothing
+      if (r.hash !== held[a.id] || r.hash !== a.sealedHash) {
+        changed.push(a.id);
+        arenas.push({ id: a.id, hash: r.hash, uses: a.sealedUses, tasks: 0 });
+        continue;
+      }
+      arenas.push({ id: a.id, hash: r.hash, uses: a.sealedUses, tasks: tasks.length });
+      for (const t of tasks) {
+        mine.push(ours[t]);
+        theirs.push(base[t]);
+      }
+    }
+  } catch (err) {
+    stop = ctl.signal.aborted ? reasonOf(ctl.signal) : err instanceof Error ? err.message : String(err);
+  } finally {
+    clearInterval(timer);
+    unregister();
+    useDriver(null);
+    releaseBase();
+    restore();
+  }
+
+  const end = clock();
+  const ev: LoraEvaluation = { at: iso(now), status: 'stopped', reason: null, train: train.id, arenas, sealed: null, baseSealed: null, vsBase: null, credits: 0, graduate: null };
+  if (stop !== null) {
+    ev.reason = `${stop}. The sealed race stopped before it finished, and its uses are spent (${usesLine(counted)}); it is not scored`;
+  } else if (mine.length === 0) {
+    ev.status = 'failed';
+    ev.reason = changed.length ? `The sealed tasks of ${changed.join(', ')} changed since its data was built, so nothing was scored` : 'No sealed task was finished by both the adapter and its base';
+  } else {
+    ev.sealed = ci(mine, 1);
+    ev.baseSealed = ci(theirs, 1);
+    ev.vsBase = pairedCi(mine, theirs, 1);
+    const won = ev.vsBase.lo > 0;
+    ev.status = won ? 'passed' : 'failed';
+    ev.reason = won
+      ? null
+      : `The adapter did not beat its base on the sealed tasks: the paired difference was ${two(ev.vsBase.diff)} [${two(ev.vsBase.lo)}, ${two(ev.vsBase.hi)}] over ${mine.length} sealed tasks (adapter ${two(ev.sealed.value)} against base ${two(ev.baseSealed.value)}), and it graduates only when the whole interval is above zero`;
+  }
+  ev.credits = Math.round((trainCredits(loraId) - creditsBefore) * 1e6) / 1e6;
+
+  train.status = ev.status === 'stopped' ? 'paused' : 'done';
+  train.reason = ev.status === 'stopped' ? stop : null;
+  train.endedAt = iso(end);
+  train.seconds = Math.max(0, Math.round((Date.now() - t0) / 1000));
+  train.credits = ev.credits;
+  if (train.status === 'paused') putTrain('train.paused', train, { ...extra, reason: train.reason, lost: 0 });
+  else putTrain('train.ended', train, extra);
+  unhold();
+  keepEvaluation(loraId, ev);
+  return structuredClone(ev);
+}
+
+/**
+ * The short name of a base model for its graduates' names: the model's own
+ * name, its version's dots dropped, each later word's first letter and its
+ * size in billions, without the instruct, chat and quantization words.
+ * `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` is `qwen25c7`.
+ */
+export function baseShort(repo: string): string {
+  const name = (repo.split('/').pop() ?? repo).toLowerCase();
+  const [first, ...rest] = name.split(/[-_]+/).filter(Boolean);
+  let out = (first ?? '').replace(/[^a-z0-9]/g, '');
+  for (const t of rest) {
+    if (/^(instruct|chat|it|base|hf|mlx|gguf)$/.test(t) || /^\d+bits?$/.test(t) || /^q\d/.test(t) || /^(fp|bf)\d+$/.test(t)) continue;
+    const size = /^(\d+(?:\.\d+)?)b$/.exec(t);
+    out += size ? size[1].replace('.', '') : (t.replace(/[^a-z0-9]/g, '')[0] ?? '');
+  }
+  return out.slice(0, 24) || 'base';
+}
+
+/** Every graduate, oldest first; `agentId` is the agent it was hired as, once a firm has hired it. */
+export function graduates(): Graduate[] {
+  const rows = openDb().prepare('SELECT json FROM graduates').all() as Array<{ json: string }>;
+  const out: Graduate[] = [];
+  for (const r of rows) {
+    try {
+      out.push(JSON.parse(r.json) as Graduate);
+    } catch {
+      // a row that cannot be read is left out, never guessed at
+    }
+  }
+  return out
+    .sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))
+    .map((g) => ({ ...g, agentId: storedAgent(g.id) ? g.id : (g.agentId ?? null) }));
+}
+
+/**
+ * Graduates the LoRA `loraId` (ruling 25) when its sealed race against its
+ * base (`evaluateAdapter`) puts the paired interval above zero: it becomes
+ * `mlx:grad-<base short>-<n>`, a roster agent of origin `school` whose tower
+ * is collegiate, stored and recorded as `graduate.made { graduate, arenas }`
+ * and emitted as `graduate.made { graduate }` for the city. Null when it did
+ * not beat its base (the evaluation on its record says why, with the
+ * numbers) or the race stopped. A LoRA that already graduated answers its
+ * graduate and is not raced again. Throws `EvaluationRefused` as
+ * `evaluateAdapter` does.
+ */
+export async function graduate(loraId: string, now: number = Date.now()): Promise<Graduate | null> {
+  const already = graduates().find((g) => g.loraId === loraId);
+  if (already) return already;
+  const ev = await evaluateAdapter(loraId, now);
+  const run = runById(loraId);
+  if (ev.status !== 'passed' || !ev.sealed || !ev.baseSealed || !ev.vsBase || !run) return null;
+  const short = baseShort(run.base);
+  const prefix = `grad-${short}-`;
+  const n = 1 + graduates().reduce((m, g) => (g.id.startsWith(prefix) ? Math.max(m, Number(g.id.slice(prefix.length)) || 0) : m), 0);
+  const id = `${prefix}${n}`;
+  const used = ev.arenas.filter((a) => a.tasks > 0).map((a) => a.id);
+  const g: Graduate = {
+    id,
+    model: `mlx:${id}`,
+    base: run.base,
+    loraId,
+    sealed: ev.sealed,
+    baseSealed: ev.baseSealed,
+    vsBase: ev.vsBase,
+    examples: run.examples,
+    arenas: used,
+    at: iso(now),
+    agentId: null,
+  };
+  openDb().prepare('INSERT OR REPLACE INTO graduates (id, json) VALUES (?, ?)').run(g.id, JSON.stringify(g));
+  keepEvaluation(loraId, { ...ev, graduate: g.id });
+  const arenas = used.map((a) => arenaInfo(a)).filter((a): a is ArenaInfo => a !== null);
+  record('graduate.made', { graduate: structuredClone(g), arenas });
+  emit('graduate.made', { graduate: structuredClone(g) });
+  return structuredClone(g);
+}
+
+/**
+ * The tick's graduation: the newest trained adapter that has not graduated
+ * and has not been scored to the end yet is raced once against its base
+ * (`graduate`). A race that stopped may be run again on a later night; a
+ * scored one never is. Null when nothing graduated; a refusal is logged.
+ */
+export async function graduateDue(now: number = Date.now()): Promise<Graduate | null> {
+  const t = trainedAdapter();
+  if (!t || graduates().some((g) => g.loraId === t.id)) return null;
+  if ((runById(t.id)?.evaluations ?? []).some((e) => e.status !== 'stopped')) return null;
+  try {
+    return await graduate(t.id, now);
+  } catch (err) {
+    if (!(err instanceof EvaluationRefused)) throw err;
+    console.error(`palimpsest: ${t.id} was not scored: ${err.message}`);
+    return null;
   }
 }

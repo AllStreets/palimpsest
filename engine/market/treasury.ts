@@ -39,7 +39,7 @@ import { openDb } from '../db.js';
 import { SPEND_KINDS } from './budget.js';
 import { emit, subscribe, type Event } from '../events.js';
 import { COMMISSION } from '../../shared/school-rules.js';
-import { commissionDue } from '../school/hooks.js';
+import { commissionDue, schoolHired } from '../school/hooks.js';
 import { query, record, type LedgerEntry } from '../ledger.js';
 
 export type MoneyKind = 'bid' | 'run' | 'pay' | 'review-pay' | 'hire' | 'sale' | 'commission';
@@ -531,6 +531,8 @@ function hireSpecialists(t: number): void {
       if (!a) return;
       transfer({ kind: 'hire', firmId: f.id, micro: toMicro(HIRE_FEE), agentId: a.id }, t);
       later('agent.hired', { agent: a });
+      // a graduate's first trip leaves the campus for its quarter, heard after the hire (ruling 28)
+      schoolHired(a, t, later);
     });
   }
 }

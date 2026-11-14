@@ -44,8 +44,9 @@
  *   none. `arena.built { arena }`; `voyage.started | .generation |
  *   .ended { voyage }`, and `voyage.commissioned { voyage }` for a voyage
  *   queued at commissioning (its fee is a `credits.moved`); `train.started | .paused | .ended { train }`;
- *   `graduate.made { graduate }`. A `voyage.ended` or `graduate.made` that
- *   spends sealed uses carries the arena (`arena`, or `arenas`) whole.
+ *   `graduate.made { graduate }`. A `voyage.ended`, a graduation's
+ *   `train.*` (kind `eval`) or a `graduate.made` that spends sealed uses
+ *   carries the arena (`arena`, or `arenas`) whole.
  *   `school.enabled` carries no table, nor does `merge.followup { jobId,
  *   runId, repo, floorId, mergeSha, fixSha, files, at }` (ruling 9): a fix
  *   of his after a city merge leaves the floor lit, unreverted and the repo
@@ -641,6 +642,8 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     case 'train.ended': {
       const t = obj(d.train) as TrainState | null;
       if (t && str(t.id)) s.trains[t.id] = clone(t);
+      // a graduation's sealed race (Task 27) carries the arenas whose sealed uses it spent
+      putArenas(s, d);
       return s;
     }
     case 'graduate.made': {

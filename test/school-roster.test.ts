@@ -70,7 +70,7 @@ test('a school-bred champion appears on the roster with origin school', () => {
   const seeds = schoolRoster();
   assert.deepEqual(
     seeds.map((s) => s.id),
-    ['bred-g-sharp', 'grad-grad-7'],
+    ['bred-g-sharp', 'grad-7'],
   );
   const bred = seeds[0];
   assert.equal(bred.name, 'Sharp One');
@@ -92,7 +92,7 @@ test('a school-bred champion appears on the roster with origin school', () => {
   // the roster reads them after the hand-written specialists
   const all = rosterSeeds();
   assert.deepEqual(all.slice(0, ROSTER.length), ROSTER);
-  assert.deepEqual(all.slice(ROSTER.length).map((s) => s.id), ['bred-g-sharp', 'grad-grad-7']);
+  assert.deepEqual(all.slice(ROSTER.length).map((s) => s.id), ['bred-g-sharp', 'grad-7']);
 
   // hired, the champion is an agent of school lineage
   const a = hire('quill', new Date(NOW));
@@ -108,7 +108,7 @@ test('a school-bred champion appears on the roster with origin school', () => {
   const hired = query({ kind: ['agent.hired'] }).map((e) => (e.data as { agent: { id: string } }).agent.id);
   assert.deepEqual(hired, ['bred-g-sharp']);
   // the graduate comes next, then the hand-written roster
-  assert.equal(hire('quill', new Date(NOW))?.id, 'grad-grad-7');
+  assert.equal(hire('quill', new Date(NOW))?.id, 'grad-7');
   assert.equal(hire('quill', new Date(NOW))?.id, ROSTER[0].id);
 });
 

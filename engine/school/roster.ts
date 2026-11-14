@@ -5,7 +5,7 @@
  * - `schoolRoster()`: the specialists the school has made, as roster seeds
  *   of origin `school`: each finished voyage's champion that beat every
  *   seeded local agent on the sealed tasks (`claim`), with its genome, and
- *   each graduate (Task 27's `graduates()`, empty until it lands). A bred
+ *   each graduate (lora.ts `graduates()`, Task 27). A bred
  *   champion takes its era, tiers and turns from its first ancestor, the
  *   seeded agent it was bred from.
  * - `commission(firmId, arenaId, now)`: a firm with at least 400 credits,
@@ -43,14 +43,16 @@ import { COMMISSION, VOYAGE } from '../../shared/school-rules.js';
 import type { Agent, Graduate, Job, VoyageView } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { record } from '../ledger.js';
-import { agent as storedAgent, agentTowerId, firm, idleAgents, listAgents, listFirms, type RosterSeed } from '../market/firms.js';
+import { agent as storedAgent, agentTowerId, firm, idleAgents, isGraduateAgent, listAgents, listFirms, type RosterSeed } from '../market/firms.js';
 import { balances, payCommission } from '../market/treasury.js';
+import { fromCampus, type TripOptions } from '../market/trips.js';
 import { earnedFloors, getRepo } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { arenaInfo, listArenas } from './arenas.js';
 import { bidRaw } from './datasets.js';
 import { predict, standingOf } from './decisions.js';
 import { setRosterHook } from './hooks.js';
+import { graduates, GRADUATE_INSTRUCTIONS } from './lora.js';
 import { netCard } from './nets.js';
 import { NOT_COMPARED, voyages } from './voyages.js';
 
@@ -68,7 +70,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(
 /** Whether the router is trusted, as its card says (nets.ts `netCard`); tests may say so instead. */
 const byCard = (now: number): boolean => netCard('router', now).status === 'trusted';
 let trust: (now: number) => boolean = byCard;
-let graduatesOf: () => Graduate[] = () => [];
+let graduatesOf: () => Graduate[] = graduates;
 /** The nets' answer (decisions.ts `predict`); tests may stub the router's. */
 let ask: typeof predict = predict;
 
@@ -83,15 +85,14 @@ export function routerTrusted(now: number): boolean {
 
 // ---------------------------------------------------------------- the roster
 
-/** Instructions a graduate is given: its training is in its adapter, so they are plain. */
-const GRADUATE_INSTRUCTIONS =
-  'You work on his repositories. Read the task and the files it names, find the smallest change that does what it asks, make it, and run the checks before you answer. Say plainly what you changed and why.\n';
-const GRADUATE_NAMES = ['Ada Quarry', 'Tamsin Reed', 'Ilse Brand', 'Rafe Collier', 'Noor Hale', 'Esme Thorne', 'Pell Arden', 'Corin Vale'];
+/** The graduates' names, given in the order they graduate: the first is Ada Quarry, the ninth Ada Quarry II. */
+export const GRADUATE_NAMES = ['Ada Quarry', 'Tamsin Reed', 'Ilse Brand', 'Rafe Collier', 'Noor Hale', 'Esme Thorne', 'Pell Arden', 'Corin Vale'];
+const NUMERALS = ['', ' II', ' III', ' IV', ' V', ' VI', ' VII', ' VIII', ' IX', ' X'];
 
-function nameFor(id: string): string {
-  let h = 0;
-  for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return GRADUATE_NAMES[h % GRADUATE_NAMES.length];
+/** The name of the graduate that graduated `ordinal`-th (from 0): unique, and fixed once given, since graduates are only ever added. */
+export function graduateName(ordinal: number): string {
+  const round = Math.floor(ordinal / GRADUATE_NAMES.length);
+  return `${GRADUATE_NAMES[ordinal % GRADUATE_NAMES.length]}${NUMERALS[round] ?? ` ${round + 1}`}`;
 }
 
 /** The agent id a voyage's champion is hired as. */
@@ -99,9 +100,10 @@ export function bredId(genome: string): string {
   return `bred-${slug(genome)}`;
 }
 
-/** The agent id a graduate is hired as. */
+/** The agent id a graduate is hired as: its own id (`grad-<base short>-<n>`), which already names it a graduate. */
 export function graduateId(graduateIdValue: string): string {
-  return `grad-${slug(graduateIdValue)}`;
+  const s = slug(graduateIdValue);
+  return s.startsWith('grad-') ? s : `grad-${s}`;
 }
 
 /** The seeded agent a champion was first bred from: walks its parents back to the voyage's first generation. */
@@ -145,10 +147,12 @@ function bredSeed(v: VoyageView): RosterSeed {
   };
 }
 
-function graduateSeed(g: Graduate): RosterSeed {
+const two = (x: number) => x.toFixed(2);
+
+function graduateSeed(g: Graduate, ordinal: number): RosterSeed {
   return {
     id: graduateId(g.id),
-    name: nameFor(g.id),
+    name: graduateName(ordinal),
     model: g.model,
     capability: 'glass',
     bidsOn: ['low', 'normal'],
@@ -158,7 +162,7 @@ function graduateSeed(g: Graduate): RosterSeed {
     workflow: { shape: 'single' },
     origin: 'school',
     persona: {
-      line: `Graduated from the school: ${g.base} taught on ${g.examples} examples of his verified work, and beat its base on a sealed race.`,
+      line: `Graduated from the school: ${g.base} taught on ${g.examples} examples of his verified work; beat its base on a sealed race by ${two(g.vsBase.diff)} [${two(g.vsBase.lo)}, ${two(g.vsBase.hi)}].`,
       body: GRADUATE_INSTRUCTIONS,
     },
     parents: [],
@@ -179,7 +183,10 @@ function made(): Array<{ seed: RosterSeed; voyage: VoyageView | null }> {
     if (v.status !== 'done' || v.claim !== true || !v.champion?.body) continue;
     add(bredSeed(v), v);
   }
-  for (const g of graduatesOf()) add(graduateSeed(g), null);
+  graduatesOf()
+    .slice()
+    .sort((a, z) => a.at.localeCompare(z.at) || a.id.localeCompare(z.id))
+    .forEach((g, i) => add(graduateSeed(g, i), null));
   return out;
 }
 
@@ -351,18 +358,23 @@ export function commissionDue(now: number): VoyageView | null {
  * Puts the school's roster behind the market's hooks (main.ts calls it once)
  * and returns the uninstall. Tests may say whether the router is trusted
  * (`trusted`, else its card), what the graduates are (`graduates`, else
- * none: Task 27's `graduates()` is wired here when it lands) and what the
- * nets answer (`predict`, else decisions.ts's).
+ * lora.ts's `graduates()`) and what the nets answer (`predict`, else
+ * decisions.ts's).
  */
 export function installRoster(o: { trusted?: (now: number) => boolean; graduates?: () => Graduate[]; predict?: typeof predict } = {}): () => void {
   trust = o.trusted ?? byCard;
-  graduatesOf = o.graduates ?? (() => []);
+  graduatesOf = o.graduates ?? graduates;
   ask = o.predict ?? predict;
-  setRosterHook({ seeds: schoolRoster, candidates, commissionDue: (now) => void commissionDue(now) });
+  setRosterHook({ seeds: schoolRoster, candidates, commissionDue: (now) => void commissionDue(now), hired });
   return () => {
     setRosterHook(null);
     trust = byCard;
-    graduatesOf = () => [];
+    graduatesOf = graduates;
     ask = predict;
   };
+}
+
+/** A firm hired `a` (ruling 28): a graduate's first trip goes from the campus to its firm's quarter. */
+function hired(a: Agent, now: number, opts: TripOptions = {}): void {
+  if (isGraduateAgent(a)) fromCampus(a, now, opts);
 }

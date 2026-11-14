@@ -22,7 +22,7 @@
  * never breaks a proposal, a PR, an award, a decision, a revert, a hire or
  * the daily tick.
  */
-import type { Bid, Inspection, Job, Run, WorkKind } from '../../shared/types.js';
+import type { Agent, Bid, Inspection, Job, Run, WorkKind } from '../../shared/types.js';
 import type { RosterSeed } from '../market/firms.js';
 
 /** Writes the master's guess down on a decision that just became pending. */
@@ -129,6 +129,8 @@ export interface RosterHook {
   candidates(firmId: string, now: number): RosterSeed[];
   /** The daily tick's commission rule: at most one firm commissions a voyage. */
   commissionDue(now: number): void;
+  /** A firm hired `a`: a graduate's first trip leaves the campus for its quarter (ruling 28), its events carried by `announce`. */
+  hired?(a: Agent, now: number, opts: { announce?: (type: string, data: object) => void }): void;
 }
 
 let roster: RosterHook | null = null;
@@ -157,6 +159,16 @@ export function schoolCandidates(firmId: string, now: number): RosterSeed[] {
   } catch (err) {
     console.error(`palimpsest: the school's roster could not be offered to ${firmId}: ${err instanceof Error ? err.message : String(err)}`);
     return [];
+  }
+}
+
+/** Tells the school a firm hired `a` (the treasury, after its hire); nothing it throws escapes. */
+export function schoolHired(a: Agent, now: number, announce?: (type: string, data: object) => void): void {
+  if (!roster?.hired) return;
+  try {
+    roster.hired(a, now, announce ? { announce } : {});
+  } catch (err) {
+    console.error(`palimpsest: the school could not see ${a.id} off to its quarter: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

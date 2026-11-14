@@ -14,7 +14,10 @@
  * whose checkpoint is whole; never a paused, training or failed one), and
  * only over the base the school downloaded on his click. The graduate's
  * LoRA comes from its `graduates` row (Task 27 writes them); `mlx:lora-<id>`
- * names a trained LoRA directly, for graduation's own sealed race.
+ * names a trained LoRA directly, for graduation's own sealed race. The base
+ * alone (`mlx:base`, no `--adapter-path`, the same fence) is served only
+ * while a graduation's sealed race holds it (`serveBase`, Task 27), for the
+ * base side of that race.
  *
  * The transport is OpenAI's chat completions with tools, unstreamed. The
  * request never names a model or an adapter, so the server answers only
@@ -65,6 +68,36 @@ const LOOPBACK = '127.0.0.1';
 
 const LORA_REF = /^mlx:(lora-[0-9a-f]{8})$/;
 
+/** The base model alone, with no adapter: the other side of a graduation's sealed race (ruling 25). */
+export const MLX_BASE = 'mlx:base' as ModelRef;
+/** What `adapterFor` names the base alone by. */
+const BASE_ID = 'base';
+
+/** How many graduation races hold the base-alone server open now (`serveBase`). */
+let baseHolds = 0;
+
+/**
+ * A graduation's sealed race (Task 27) holds the base alone open to be
+ * served until the returned function is called, once. Outside such a hold
+ * `mlx:base` is refused: no firm's agent is ever the bare base.
+ */
+export function serveBase(): () => void {
+  baseHolds++;
+  let given = false;
+  return () => {
+    if (given) return;
+    given = true;
+    baseHolds = Math.max(0, baseHolds - 1);
+  };
+}
+
+/** What a model is served with: a trained adapter over the base, or (`path` null) the base alone. */
+export interface ServedAdapter {
+  id: string;
+  path: string | null;
+  file: string | null;
+}
+
 /** The LoRA a graduate was made from, from its `graduates` row; null when no graduate is this model. */
 function graduateLora(model: ModelRef): string | null {
   for (const row of openDb().prepare('SELECT json FROM graduates').all() as Array<{ json: string }>) {
@@ -80,13 +113,19 @@ function graduateLora(model: ModelRef): string | null {
 
 /**
  * The adapter `model` is served with, from `trainedAdapter()` alone: the
- * graduate's LoRA, or the LoRA `mlx:lora-<id>` names. Throws, with the
+ * graduate's LoRA, or the LoRA `mlx:lora-<id>` names; `mlx:base` is the
+ * base alone, and only while a graduation's race holds it. Throws, with the
  * reason, when there is none or the base is not downloaded.
  */
-export async function adapterFor(model: ModelRef): Promise<{ id: string; path: string; file: string }> {
+export async function adapterFor(model: ModelRef): Promise<ServedAdapter> {
   // loaded on use: lora.ts reaches back into the market through history.ts
   const { baseReady, trainedAdapter } = await import('../school/lora.js');
   if (!model.startsWith('mlx:')) throw new Error(`${model} is not an mlx model`);
+  if (model === MLX_BASE) {
+    if (baseHolds === 0) throw new Error("The base model alone is served only for a graduation's sealed race");
+    if (!baseReady()) throw new Error('The base model is not downloaded');
+    return { id: BASE_ID, path: null, file: null };
+  }
   const loraId = LORA_REF.exec(model)?.[1] ?? graduateLora(model);
   const adapter = loraId ? trainedAdapter(loraId) : null;
   if (!adapter) throw new Error(`${model} has no trained adapter to serve`);
@@ -320,7 +359,7 @@ async function ownsPort(l: Live): Promise<boolean> {
 }
 
 /** Starts the server for `model` over `adapter` under the trainer profile, on one loopback port, and waits until it answers. */
-async function start(model: ModelRef, adapter: { id: string; path: string }): Promise<Live> {
+async function start(model: ModelRef, adapter: { id: string; path: string | null }): Promise<Live> {
   const python = trainerPython();
   if (!python) throw new Error('The trainer is not set up on this Mac');
   const { loraBaseDir } = await import('../school/lora.js');
@@ -333,7 +372,7 @@ async function start(model: ModelRef, adapter: { id: string; path: string }): Pr
   const tail: string[] = [];
   const argv = wrap(
     // -I: no cwd or user site on the path, no PYTHON* variables; -B: no bytecode written into a venv it borrows
-    [python, '-I', '-B', '-m', 'mlx_lm.server', '--model', base, '--adapter-path', adapter.path, '--host', LOOPBACK, '--port', String(port)],
+    [python, '-I', '-B', '-m', 'mlx_lm.server', '--model', base, ...(adapter.path === null ? [] : ['--adapter-path', adapter.path]), '--host', LOOPBACK, '--port', String(port)],
     'trainer',
     { school, tmp, bindPort: port, name: 'trainer-serve.sb' },
     (line) => tail.push(`[palimpsest] ${line}`),

@@ -26,7 +26,10 @@
  *   nets and the voyage never run at once. Last, once the base model is
  *   downloaded and no train is live, the LoRA trains or resumes
  *   (`trainLora`, ruling 24); a refusal or a finished LoRA waits for the
- *   next night, a gate or a pause is tried again at a later tick.
+ *   next night, a gate or a pause is tried again at a later tick. Then, at
+ *   most once a night and with no train live, a trained adapter is raced
+ *   against its base on the sealed tasks and graduates if it wins
+ *   (`graduateDue`, ruling 25).
  * - `schoolOff(now)` is the switch going off, from `patchSettings` or
  *   anywhere else: it records `school.enabled { on: false }`, pauses every
  *   live train at once (no poll waited for) and calls every abort registered
@@ -136,6 +139,8 @@ export interface SchoolOptions {
   sail?: (now: number) => Promise<unknown>;
   /** Trains or resumes the LoRA (behind the heavy gate) once the base model is downloaded; defaults to `trainLora`. */
   lora?: (now: number) => Promise<{ status: string }>;
+  /** Scores a trained adapter against its base on a sealed race and graduates it if it wins (ruling 25); defaults to `graduateDue`. */
+  graduate?: (now: number) => Promise<unknown>;
   deps?: DatasetDeps;
 }
 
@@ -185,6 +190,7 @@ export function startSchool(o: SchoolOptions = {}): School {
   const sail = o.sail ?? (async (now: number) => (await import('./voyages.js')).sailDue(now));
   // loaded when first used, like the voyages (lora.ts reaches back here through arenas.ts)
   const lora = o.lora ?? (async (now: number) => (await import('./lora.js')).trainLora(now));
+  const graduate = o.graduate ?? (async (now: number) => (await import('./lora.js')).graduateDue(now));
   /** Nets tried tonight that came back thin or failed: not tried again until the next night. */
   const tried = new Set<string>();
   let busy = false;
@@ -260,6 +266,17 @@ export function startSchool(o: SchoolOptions = {}): School {
         } catch (err) {
           tried.add(loraKey);
           console.error('palimpsest: the school could not train its LoRA:', err);
+        }
+      }
+      // Then a trained adapter's sealed race against its base (ruling 25), once a night: it holds the
+      // graduates' server behind the heavy gate, so it runs only when no train is live.
+      const gradKey = `${night}\ngraduate`;
+      if (!stopped && getSettings().school.enabled && getSettings().school.baseModelReady && liveTrains().length === 0 && !tried.has(gradKey)) {
+        tried.add(gradKey);
+        try {
+          await graduate(now);
+        } catch (err) {
+          console.error('palimpsest: the school could not score its adapter:', err);
         }
       }
       return out;

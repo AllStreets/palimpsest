@@ -163,13 +163,16 @@ function stopError(s: AbortSignal): Error {
  * `o.designer`; every call leases `acquire(model, 'school', estimate, { waitUntil:
  * now + 10 min })`, runs `providerFor(model).complete()` under the voyage as
  * `runId`, and is charged `school`, `firmId: null`, `unattended: unattended(now)`
- * at its start (the Anthropic API charges itself the same way). A call that
+ * at its start (the Anthropic API charges itself the same way). A
+ * graduation's sealed race (Task 27) passes `kind: 'train'` and the LoRA id
+ * as `voyageId`: an evaluation pass is charged `train` (ruling 3). A call that
  * fails part way is charged what it spent. A refused lease, or a lease the
  * city stopped mid-call (the hard stop), throws Beagle's `LimitError`; `o.signal`
  * or Beagle's own signal aborts the call.
  */
-export function schoolDriver(o: { voyageId: string | null; designer: ModelRef; signal: AbortSignal; now?: () => number }): BeagleDriver {
+export function schoolDriver(o: { voyageId: string | null; designer: ModelRef; signal: AbortSignal; now?: () => number; kind?: 'school' | 'train' }): BeagleDriver {
   const clock = o.now ?? Date.now;
+  const spendKind = o.kind ?? 'school';
   return async (provider, name, turns, call) => {
     const beagle = loaded;
     if (!beagle) throw new Error('Beagle is not loaded');
@@ -192,7 +195,7 @@ export function schoolDriver(o: { voyageId: string | null; designer: ModelRef; s
     const started = Date.now();
     let selfCharged = false;
     const chargeSchool = (usage: CompleteResult['usage']) => {
-      if (!selfCharged) charge({ runId: o.voyageId, firmId: null, model, kind: 'school', usage, unattended: night, lease, at: clock() });
+      if (!selfCharged) charge({ runId: o.voyageId, firmId: null, model, kind: spendKind, usage, unattended: night, lease, at: clock() });
     };
     try {
       const backend = providerFor(model);

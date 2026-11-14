@@ -13,7 +13,8 @@
  * where the agent stands. A bankrupt firm's trips end at once (the
  * treasury). A voyage's parents go to school (reason `school`, to the
  * campus at `campusOrigin()`) and home from it when the voyage ends or
- * pauses for the night (Phase 4 ruling 28). Every trip is stored, recorded (`trip.started`,
+ * pauses for the night (Phase 4 ruling 28); a graduate's first trip, when a
+ * firm hires it, goes from the campus to its quarter. Every trip is stored, recorded (`trip.started`,
  * `trip.ended`) and emitted; the ledger keeps the history the table drops.
  */
 import { randomUUID } from 'node:crypto';
@@ -205,6 +206,17 @@ export function toSchool(a: Agent, now: number = Date.now()): Trip | null {
   const campus = campusOrigin();
   if (!campus || a.retired || atWork().has(a.id)) return null;
   return startTrip(a, 'school', null, whereIs(a), campus, now);
+}
+
+/**
+ * A graduate's first trip (ruling 28): from the campus, where it graduated,
+ * to its firm's quarter, when a firm hires it. Null before the campus has
+ * its plot, and for an agent that has made any trip already.
+ */
+export function fromCampus(a: Agent, now: number = Date.now(), opts: TripOptions = {}): Trip | null {
+  const campus = campusOrigin();
+  if (!campus || a.retired || tripsOf(a.id).length > 0) return null;
+  return startTrip(a, 'home', null, campus, homeOf(a), now, opts);
 }
 
 /**

@@ -377,6 +377,11 @@ export function agent(id: string): Agent | null {
   return a ? publicAgent(a) : null;
 }
 
+/** Whether `a` is a school graduate (Phase 4 ruling 25): a school agent on an `mlx:` model, its LoRA over the base. */
+export function isGraduateAgent(a: Pick<Agent, 'model' | 'lineage'>): boolean {
+  return a.lineage.origin === 'school' && a.model.startsWith('mlx:');
+}
+
 /** The tower id an agent's earned floors are laid on (`earned_floors.tower_id`). */
 export function agentTowerId(agentId: string): string {
   return `agent:${agentId}`;
@@ -403,7 +408,8 @@ export function quarters(): Quarter[] {
           // An agent tower belongs to no repo; its floors name the repos they were earned on.
           repo: '',
           kind: 'agent',
-          root: buyer ? buyer.root : f.root,
+          // a school graduate stands in collegiate brick (Phase 4 ruling 25) until a buyer re-clads it
+          root: buyer ? buyer.root : isGraduateAgent(a) ? 'collegiate' : f.root,
           floors: earnedFloors(id),
           datumIndex: 0,
           firmId: buyer ? buyer.id : f.id,
