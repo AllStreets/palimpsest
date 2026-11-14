@@ -372,6 +372,18 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
   const key = itemKey(kind, jobId);
   // A key he has decided is his: the city never acts on it, whatever the store says the job is.
   if (decided(key)) return no(`You have already decided ${key}.`);
+  /** Everything read without the network, read once more after a wait: his decision, the job, then the grant's standing. */
+  const again = (): string | null => {
+    if (decided(key)) return `You have already decided ${key}.`;
+    const j = storedJob(jobId);
+    if (kind.startsWith('propose:')) {
+      if (!j || j.status !== 'proposed') return `${jobId} is not a proposal waiting on you.`;
+    } else {
+      const r = j ? prRun(j) : null;
+      if (!j || j.status !== 'waiting' || !r || r.stage !== 'waiting' || r.outcome !== null || r.prNumber === null) return `${jobId} has no PR waiting on you.`;
+    }
+    return standing(kind, repo, now).refused;
+  };
   const pred = registered(key);
   if (!pred) return no(`The master made no guess on ${key}.`);
   if (pred.p === null) return no(`The master abstained on ${key}: ${sentence(pred.reason ?? 'no reason was written down')}`);
@@ -392,8 +404,8 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
     const pr = await prState(repo, run.prNumber as number);
     if (pr.state !== 'OPEN') return no(`PR #${run.prNumber} on ${repo} is ${pr.state.toLowerCase()}.`);
     if (!run.headSha || pr.headRefOid !== run.headSha) return no(`The head of PR #${run.prNumber} on ${repo} moved: it is ${short(pr.headRefOid)}, not the inspected ${short(run.headSha)}.`);
-    const again = standing(kind, repo, now);
-    if (again.refused) return no(again.refused);
+    const moved = again();
+    if (moved) return no(moved);
   }
 
   // The fresh revert read before any autonomous action on the repo, a proposal's accept included; always forced
@@ -408,8 +420,8 @@ async function check(kind: WorkKind, repo: string, jobId: string, now: number): 
     return no(`A city merge on ${repo} was reverted: ${read.reverted.join('; ')}.`);
   }
   // The world moved while git answered: everything read without the network is read once more.
-  const last = standing(kind, repo, now);
-  if (last.refused) return no(last.refused);
+  const last = again();
+  if (last) return no(last);
   return { ok: true, reason: null };
 }
 

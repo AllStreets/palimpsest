@@ -582,6 +582,24 @@ test('mayAct reads the switch, the stop file and the grant again after the last 
   assert.deepEqual(await mayAct('merge:normal', FULL, a.job.id, clock), { ok: true, reason: null });
 });
 
+test('mayAct reads his decision and the job again after the last wait', async () => {
+  granted('merge:normal');
+  const a = waitingPR('a');
+  const { resolve } = await import('../engine/school/decisions.js');
+  // he merges it himself while gh answers: the key is his now
+  whileGh = () => {
+    resolve(a.job, 'merge', clock, { run: a.run });
+  };
+  await refused('merge:normal', FULL, a.job.id, 'You have already decided merge:normal:job-a.');
+  const b = waitingPR('b');
+  // the job leaves waiting while gh answers
+  whileGh = () => {
+    storeJobRow(b.job.id, { ...b.job, status: 'done' });
+  };
+  await refused('merge:normal', FULL, b.job.id, 'job-b has no PR waiting on you.');
+  whileGh = null;
+});
+
 test('mayAct reads his agreement again after the last wait', async () => {
   granted('merge:normal');
   const a = waitingPR('a');
