@@ -831,15 +831,31 @@ test('the sample school replays clean', async () => {
   assert.deepEqual([agree('merge:low').agreed, agree('merge:low').rows, agree('merge:low').eligible], [44, 50, false]);
   assert.equal(s.agreements.filter((a) => a.skewed).length, 1, 'one kind marked skewed');
 
-  // The grants: an open ask, a grant that acted twice, one revoked by a revert, one he revoked by hand.
+  assert.deepEqual([agree('merge:normal').rows, agree('merge:normal').eligible], [50, true], 'the fieldnotes and quarry grants have their window');
+
+  // The grants: an open ask; kumo's, which acted twice while eligible and is suspended since the window fell; one
+  // revoked by a revert; one he revoked by hand.
   const pair = (kind: string, repo: string) => s.grants.find((g) => g.kind === kind && g.repo === repo);
   assert.equal(pair('propose:readme-gap', H)?.state, 'asked');
   const kumo = pair('merge:low', K)!;
-  assert.deepEqual([kumo.state, kumo.acted], ['granted', 2]);
+  assert.deepEqual([kumo.state, kumo.acted, kumo.by], ['suspended', 2, 'school']);
+  assert.equal(kumo.reason, 'The master agreed with you on 44 of the last 50 merge:low decisions; autonomy needs 50 at 95%.');
+  // Each grant came after its window was eligible: the ask carries the rate it was asked at, and each act came under a grant.
+  for (const e of query({ kind: 'autonomy.granted' })) {
+    const g = (e.data as { grant: { rate: { value: number; n: number } } }).grant;
+    assert.ok(g.rate.value >= 0.95 && g.rate.n === 50, `granted at ${JSON.stringify(g.rate)}`);
+  }
+  const lastAct = query({ kind: 'autonomy.acted' }).filter((e) => (e.data as { repo?: string; grant?: unknown }).repo === K && (e.data as { grant?: unknown }).grant).at(-1)!;
+  assert.ok(query({ kind: 'autonomy.suspended' }).every((e) => e.id > lastAct.id), 'suspended after its acts');
+  for (const r of [K, 'kestrel/fieldnotes', 'ferro/quarry', H]) {
+    const checks = (await import('../engine/repos.js')).getRepo(r)?.checks;
+    assert.ok(checks?.test && checks.build, `${r} has the test and build commands an ask requires`);
+  }
   assert.equal(query({ kind: 'autonomy.acted' }).filter((e) => (e.data as { repo?: string; grant?: unknown }).repo === K && (e.data as { grant?: unknown }).grant).length, 2, 'two autonomous merges on kumo');
   const reverted = s.grants.find((g) => g.state === 'revoked' && g.by === 'revert');
   assert.ok(reverted, 'an earlier grant revoked by a revert');
   const byHand = s.grants.find((g) => g.state === 'revoked' && g.by === 'him')!;
+  assert.deepEqual([byHand.kind, byHand.repo], ['merge:normal', 'ferro/quarry']);
   assert.ok(byHand.quietUntil && Date.parse(byHand.quietUntil) > NOW, `he revoked one by hand, quiet until ${byHand.quietUntil}`);
 
   // Two arenas, three voyages, one graduate, a paused LoRA.
@@ -871,6 +887,10 @@ test('the sample school replays clean', async () => {
   const trains = (openDb().prepare('SELECT json FROM trains').all() as Array<{ json: string }>).map((r) => JSON.parse(r.json) as { kind: string; status: string; reason: string | null; steps: { optimizerReset: boolean } | null });
   assert.ok(trains.some((t) => t.kind === 'lora' && t.status === 'paused' && t.reason === 'on battery' && t.steps?.optimizerReset), 'the LoRA train paused on battery');
   assert.ok(trains.some((t) => t.kind === 'nets' && t.status === 'done'));
+  // Every train that ended or paused is charged to the city, as startTrain charges it.
+  const stoppedTrains = (openDb().prepare("SELECT id FROM trains WHERE status IN ('done', 'paused')").all() as Array<{ id: string }>).map((r) => r.id);
+  const charged = new Set((openDb().prepare("SELECT run_id FROM credits WHERE kind = 'train'").all() as Array<{ run_id: string }>).map((r) => r.run_id));
+  assert.ok(stoppedTrains.length > 20 && stoppedTrains.every((id) => charged.has(id)), 'train credits charged');
 
   // The campus still lights its bays from the sailing voyage, and the school view answers.
   const campus = campusView();
@@ -883,6 +903,8 @@ test('the sample school replays clean', async () => {
     assert.equal(view.gate.light.power, 'ac', 'the sample Mac answers the gate');
     assert.equal(view.voyages.find((v) => v.commissionedBy === 'quickset')?.queued, true);
     assert.equal(view.lora.baseReady, true);
+    assert.equal(view.lora.examples, 61, '61 of 100 verified changes');
+    assert.ok(view.lora.examples < view.lora.needs && paused.examples >= view.lora.needs, 'the paused LoRA resumes on its own copy; no new one can start');
   } finally {
     setTrainerProbe(null);
   }
@@ -963,7 +985,8 @@ test('the brief holds an ask and an acted item', async () => {
   assert.match(ask.text, /48 of the last 50 propose:readme-gap decisions/);
   const acted = items.find((i) => i.kind === 'acted');
   assert.ok(acted, 'an act of the city on its own');
-  assert.match(acted.text, /on its own, under its merge:low grant/);
+  assert.equal(acted.repo, 'ferro/quarry');
+  assert.match(acted.text, /on its own, under its merge:normal grant/);
   assert.deepEqual(acted.actions, ['why'], 'he has revoked that grant since');
 });
 

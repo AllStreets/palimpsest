@@ -46,7 +46,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, utimesSync, writeF
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CREDIT_PCT } from '../../shared/credits.js';
+import { CREDIT_PCT, localCredits } from '../../shared/credits.js';
 import { calibrated as calibrate, expectedValue, proposalKey, TIER_VALUE } from '../../shared/market-rules.js';
 import { silhouetteFor } from '../../shared/silhouette.js';
 import type {
@@ -105,13 +105,14 @@ import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiH
 import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
-import { charge } from './budget.js';
+import { charge, unattended } from './budget.js';
 import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, hireSeed, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
 import { installMilestones } from './milestones.js';
 import { activeTrips, EXCHANGE, homeFromSchool, homeOf, siteOf, startTrip } from './trips.js';
 import { campusOrigin } from '../school/campus.js';
-import { grant, noteActed, noteActResult, revoke, revokeOnRevert } from '../school/autonomy.js';
+import { grant, mayAct, noteActed, noteActResult, revoke, revokeOnRevert } from '../school/autonomy.js';
+import { agreement } from '../school/decisions.js';
 import { rowsFor } from '../school/datasets.js';
 import { markCurrent, putNetRow } from '../school/nets.js';
 import { schoolRoster } from '../school/roster.js';
@@ -472,9 +473,9 @@ const HISTORY: Story[] = [
   { day: 6.7, repo: 'Q', tier: 'low', title: 'Add property tests for the identifier quoting', by: [m('dagny-hollis')] },
   { day: 6.9, repo: 'A', tier: 'high', title: "Chain of custody: sign each transfer with the operator's key", by: [m('hal-meridian')] },
   { day: 7.0, repo: 'H', tier: 'normal', title: 'Harbour map: berth labels overlap at low zoom', by: [m('ola-bergstrom')] },
-  { day: 7.1, repo: 'Q', tier: 'normal', title: 'Query builder: quote identifiers that clash with SQL keywords', by: [m('oskar-kiln')] },
-  // Merged by the city last night under its merge:low grant on assay-kit, which he revoked by hand this morning (Task 29).
-  { day: 7.2, repo: 'A', tier: 'low', title: 'Sample intake: trim spaces from pasted lot numbers', by: [m('mack-quickset')], city: 'merge:low' },
+  // Merged by the city last night under its merge:normal grant on quarry, which he revoked by hand this morning (Task 29).
+  { day: 7.1, repo: 'Q', tier: 'normal', title: 'Query builder: quote identifiers that clash with SQL keywords', by: [m('oskar-kiln')], city: 'merge:normal' },
+  { day: 7.2, repo: 'A', tier: 'low', title: 'Sample intake: trim spaces from pasted lot numbers', by: [m('mack-quickset')] },
   { day: 7.25, repo: 'A', tier: 'normal', title: 'Add tests for the freezer map slot counts', by: [m('dagny-hollis')] },
   { day: 7.3, repo: 'H', tier: 'normal', title: 'Tide tables cache misses on every request after midnight', by: [m('priya-rao')] },
 ];
@@ -1792,15 +1793,15 @@ interface NetStep {
   rows?: NetVersion['rows'];
 }
 
-const NET_STEPS: NetStep[] = [
-  { net: 'master', version: 1, night: 2, score: [0.13, 0.08, 0.19], base: [0.19, 0.13, 0.25], n: 10, trusted: true, agreement: [0.9, 0.7, 1], rows: { train: 30, heldOut: 10, distilled: 0 } },
+const NET_STEPS: NetStep[] = ([
+  { net: 'master', version: 1, night: 1, score: [0.13, 0.08, 0.19], base: [0.19, 0.13, 0.25], n: 10, trusted: true, agreement: [0.9, 0.7, 1], rows: { train: 30, heldOut: 10, distilled: 0 } },
   { net: 'appraiser-pass', version: 1, night: 2, score: [0.24, 0.17, 0.31], base: [0.23, 0.16, 0.3], n: 10, trusted: false },
-  { net: 'master', version: 2, night: 3, score: [0.12, 0.08, 0.17], base: [0.18, 0.13, 0.24], n: 14, trusted: true, agreement: [0.86, 0.71, 1], rows: { train: 52, heldOut: 14, distilled: 0 } },
+  { net: 'master', version: 2, night: 2, score: [0.12, 0.08, 0.17], base: [0.18, 0.13, 0.24], n: 14, trusted: true, agreement: [0.86, 0.71, 1], rows: { train: 52, heldOut: 14, distilled: 0 } },
   { net: 'appraiser-pass', version: 2, night: 3, score: [0.21, 0.15, 0.27], base: [0.23, 0.17, 0.29], n: 12, trusted: false },
   { net: 'router', version: 1, night: 3, score: [0.24, 0.18, 0.3], base: [0.23, 0.17, 0.29], n: 12, trusted: false },
-  { net: 'master', version: 3, night: 4, score: [0.15, 0.1, 0.2], base: [0.17, 0.12, 0.22], n: 18, trusted: false, agreement: [0.83, 0.67, 0.94], rows: { train: 70, heldOut: 18, distilled: 0 } },
+  { net: 'master', version: 3, night: 3, score: [0.15, 0.1, 0.2], base: [0.17, 0.12, 0.22], n: 18, trusted: false, agreement: [0.83, 0.67, 0.94], rows: { train: 70, heldOut: 18, distilled: 0 } },
   { net: 'appraiser-pass', version: 3, night: 4, score: [0.17, 0.12, 0.22], base: [0.23, 0.18, 0.28], n: 14, trusted: true },
-  { net: 'master', version: 4, night: 5, score: [0.1, 0.06, 0.15], base: [0.17, 0.12, 0.22], n: 21, trusted: true, agreement: [0.9, 0.76, 1], rows: { train: 84, heldOut: 21, distilled: 0 } },
+  { net: 'master', version: 4, night: 4, score: [0.1, 0.06, 0.15], base: [0.17, 0.12, 0.22], n: 21, trusted: true, agreement: [0.9, 0.76, 1], rows: { train: 84, heldOut: 21, distilled: 0 } },
   { net: 'appraiser-pass', version: 4, night: 5, score: [0.19, 0.14, 0.24], base: [0.22, 0.17, 0.27], n: 15, trusted: false },
   { net: 'router', version: 2, night: 5, score: [0.22, 0.17, 0.27], base: [0.22, 0.17, 0.27], n: 15, trusted: false },
   { net: 'triage', version: 1, night: 5, score: [0.22, 0.18, 0.26], base: [0.23, 0.19, 0.27], n: 18, trusted: false, rows: { train: 71, heldOut: 18, distilled: 18 } },
@@ -1809,7 +1810,7 @@ const NET_STEPS: NetStep[] = [
   { net: 'appraiser-pass', version: 6, night: 7, score: [0.14, 0.1, 0.19], base: [0.22, 0.17, 0.27], n: 64, trusted: true, rows: { train: 256, heldOut: 64, distilled: 0 } },
   { net: 'router', version: 3, night: 7, score: [0.21, 0.16, 0.26], base: [0.22, 0.17, 0.27], n: 64, trusted: false, rows: { train: 256, heldOut: 64, distilled: 0 } },
   { net: 'triage', version: 2, night: 7, score: [0.17, 0.13, 0.21], base: [0.23, 0.19, 0.27], n: 23, trusted: true, rows: { train: 89, heldOut: 23, distilled: 22 } },
-];
+] satisfies NetStep[]).sort((a, b) => a.night - b.night);
 /** What each net's weights say whatever they see: a sample net is a constant (the nets are a few kilobytes; nothing trained them). */
 const NET_P: Partial<Record<NetName, number>> = { 'appraiser-pass': 0.7, router: 0.6, triage: 0.5, master: 0.9 };
 /** The kind the master marks skewed: he accepts every harness proposal, and it cannot beat that habit. */
@@ -1831,8 +1832,30 @@ function constantNet(net: NetName, version: number, p: number): NetWeights {
   };
 }
 
-/** A train as trainer.ts writes it: its row, the entry carrying it whole, the event. */
+/**
+ * Runs `fn` with the school's switch on in the settings row, then puts it back.
+ * The tick only runs with the school on, but the history writes it off (a
+ * trusted appraiser would re-weigh the scripted awards); finishSchool() turns
+ * it on for good.
+ */
+async function withSchoolOn<T>(fn: () => Promise<T>): Promise<T> {
+  const was = getSettings().school;
+  const put = (school: typeof was) => openDb().prepare('INSERT INTO settings (key, json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET json = excluded.json').run('school', JSON.stringify(school));
+  put({ ...was, enabled: true });
+  try {
+    return await fn();
+  } finally {
+    put(was);
+  }
+}
+
+/** A train as trainer.ts writes it: its row, the entry carrying it whole, the event; an ended or paused train's local credits charged to the city, as startTrain charges them. */
 function putTrain(kind: 'train.started' | 'train.paused' | 'train.ended', t: TrainState, extra: Record<string, unknown> = {}): void {
+  if (kind !== 'train.started' && t.credits > 0) {
+    const at = Date.parse(t.endedAt ?? iso());
+    const model: ModelRef = t.kind === 'nets' ? 'mlx:nets' : `mlx:${getSettings().school.baseModel}`;
+    charge({ runId: t.id, firmId: null, model, kind: 'train', usage: { weightedTokens: 0, seconds: t.seconds, usd: 0, credits: t.credits }, unattended: unattended(Date.parse(t.startedAt)), at });
+  }
   openDb().prepare('INSERT OR REPLACE INTO trains (id, kind, status, json) VALUES (?, ?, ?, ?)').run(t.id, t.kind, t.status, JSON.stringify(t));
   const data = { ...extra, train: clone(t) };
   record(kind, kind === 'train.started' ? { ...data, pid: null } : data);
@@ -1847,8 +1870,8 @@ function running(id: string, kind: TrainState['kind'], startedAt: number, steps:
 /** The same train stopped at `endedAt`: done, or paused with the gate's reason. */
 function stopped(t: TrainState, endedAt: number, status: 'done' | 'paused', reason: string | null, steps: TrainState['steps'] = t.steps): TrainState {
   const seconds = Math.max(0, Math.round((endedAt - Date.parse(t.startedAt)) / 1000));
-  // the local credits' per-second floor, and the base model's size for a heavy train (Decision 10's rates)
-  const credits = round2(seconds * (t.kind === 'nets' ? 0.00002 : 0.0004));
+  // the local credits trainer.ts charges: the per-second floor, and the base model's size for a heavy train
+  const credits = localCredits(seconds, t.kind === 'nets' ? 0 : LORA.gb);
   return { ...t, status, reason, endedAt: iso(endedAt), seconds, credits, steps };
 }
 
@@ -2133,33 +2156,58 @@ function seedSchool(now: number, start: number, q: Queue): void {
       emit('decision.resolved', { decision });
     });
   };
+  // Forty before any master (no guess on them), then each kind's window filled one guess at a time. Every grant
+  // below comes after its kind's window was eligible (50 at 95% or better) and its repo passed its own test.
   const cycle = [REPO.H, REPO.A, REPO.K, REPO.Q];
   for (let i = 0; i < 40; i++) {
     const harness = i % 2 === 0;
-    decide(i, harness ? 'propose:harness' : 'merge:normal', cycle[i % 4], harness || i % 5 !== 1, at(0.25 + (i * 1.65) / 40), null);
+    decide(i, harness ? 'propose:harness' : 'merge:normal', cycle[i % 4], harness || i % 5 !== 1, at(0.25 + (i * 0.65) / 40), null);
   }
-  const readmeMisses = new Set([5, 17]);
-  const lowMisses = new Set([3, 11, 20, 28, 36, 41]);
-  const lowRepos = [REPO.K, REPO.Q, REPO.A, REPO.H, REPO.F];
-  for (let i = 0; i < 100; i++) {
-    const k = Math.floor(i / 2);
-    const t = at(2.1 + (i * 5.55) / 100);
-    if (i % 2 === 0) decide(40 + i, 'propose:readme-gap', k % 3 === 2 ? (k % 2 ? REPO.A : REPO.K) : REPO.H, k % 9 !== 4, t, !readmeMisses.has(k));
-    else decide(40 + i, 'merge:low', lowRepos[k % lowRepos.length], k % 8 !== 6, t, !lowMisses.has(k));
-  }
+  let n = 40;
+  /** `count` decisions of `kind` spread over [from, to] days, on `repos` in turn; `misses` the indices the master got wrong. */
+  const spread = (kind: WorkKind, count: number, from: number, to: number, repos: string[], misses: ReadonlySet<number>, approve: (k: number) => boolean) => {
+    for (let k = 0; k < count; k++) decide(n++, kind, repos[k % repos.length], approve(k), at(from + ((to - from) * k) / Math.max(1, count - 1)), !misses.has(k));
+  };
+  // README proposals: 48 of 50, eligible; the harbour's last ten all agreed.
+  spread('propose:readme-gap', 50, 1.06, 7.6, [REPO.H, REPO.H, REPO.K, REPO.H, REPO.H, REPO.A], new Set([5, 17]), (k) => k % 9 !== 4);
+  // Low-tier merges: fifty agreed before the kumo ask, forty more while the city merged there on its own, then ten
+  // in the last evening with six misses, which bring the window to 44 of 50 and the kumo grant down.
+  const low = [REPO.K, REPO.Q, REPO.A, REPO.H, REPO.F];
+  spread('merge:low', 50, 1.08, 2.0, low, new Set(), (k) => k % 8 !== 6);
+  spread('merge:low', 40, 2.1, 7.5, low, new Set(), (k) => k % 8 !== 3);
+  spread('merge:low', 10, 7.52, 7.68, low, new Set([0, 2, 3, 5, 7, 8]), (k) => k % 3 !== 1);
+  // Normal-tier merges: 49 of 50 before the fieldnotes ask, eligible since; fieldnotes and quarry pass their own test.
+  spread('merge:normal', 50, 1.1, 3.85, [REPO.F, REPO.Q, REPO.H, REPO.A, REPO.K], new Set([2]), (k) => k % 7 !== 5);
 
   // ---- the grants (rulings 17 to 19); the city's acts are the history's merges (Story.city)
-  const rate = ivl(0.96, 0.9, 0.99, AGREE.window);
-  q.push(at(2.04), () => void ask('merge:low', REPO.K, rate, Date.now()));
-  q.push(at(2.06), () => void grant('merge:low', REPO.K, Date.now()));
-  q.push(at(3.9), () => void ask('merge:normal', REPO.F, rate, Date.now()));
+  /** The tick's ask, at the agreement the pair has now. */
+  const askNow = (kind: WorkKind, repo: string) => {
+    const a = agreement(kind, repo);
+    if (!a.eligible || !a.repoOk || !a.rate) throw new Error(`sample economy: ${kind} on ${repo} is not eligible to ask (${a.agreed} of ${a.rows})`);
+    ask(kind, repo, a.rate, Date.now());
+  };
+  q.push(at(2.03), () => askNow('merge:low', REPO.K));
+  q.push(at(2.05), () => void grant('merge:low', REPO.K, Date.now()));
+  // He gave fieldnotes a Swift test and build command after dismissing its harness proposal: it may be asked about now.
+  q.push(at(3.85), () => {
+    const repo = getRepo(REPO.F)!;
+    const checks = { ...repo.checks!, test: 'swift test', build: 'swift build' };
+    openDb().prepare('UPDATE repos SET json = ? WHERE full_name = ?').run(JSON.stringify({ ...repo, checks } satisfies Repo), REPO.F);
+  });
+  q.push(at(3.9), () => askNow('merge:normal', REPO.F));
   q.push(at(3.95), () => void grant('merge:normal', REPO.F, Date.now()));
-  q.push(at(6.9), () => void ask('merge:low', REPO.A, rate, Date.now()));
-  q.push(at(6.95), () => void grant('merge:low', REPO.A, Date.now()));
-  // This morning he took assay-kit's back by hand: quiet for 30 days.
-  q.push(ago(5 * HOUR), () => void revoke('merge:low', REPO.A, 'him', null, Date.now()));
+  q.push(at(6.9), () => askNow('merge:normal', REPO.Q));
+  q.push(at(6.95), () => void grant('merge:normal', REPO.Q, Date.now()));
+  // The last evening's misses bring merge:low under 95%: the next time the city could act on kumo, mayAct suspends the
+  // pair with its own sentence. The tick runs with the school on; the sample's switch is written on after the history.
+  q.push(at(7.69), async () => {
+    const job = listJobs({ repo: REPO.K }).at(-1);
+    await withSchoolOn(() => mayAct('merge:low', REPO.K, job?.id ?? 'none', Date.now()));
+  });
   // Last night's tick asked about the harbour's README proposals; the ask waits in his brief.
-  q.push(ago(7 * HOUR), () => void ask('propose:readme-gap', REPO.H, ivl(0.96, 0.88, 0.99, AGREE.window), Date.now()));
+  q.push(ago(7 * HOUR), () => askNow('propose:readme-gap', REPO.H));
+  // This morning he took quarry's merge:normal back by hand: quiet for 30 days.
+  q.push(ago(5 * HOUR), () => void revoke('merge:normal', REPO.Q, 'him', null, Date.now()));
 
   // ---- the graduate's LoRA: trained in one night, raced twice against its base on the planted arena's sealed tasks
   let loraA: TrainState;
@@ -2403,7 +2451,7 @@ function finishSchool(now: number): void {
     reason: 'on battery',
     iters: LORA.iters,
     saved: 250,
-    examples: 131,
+    examples: 104,
     createdAt: iso(at(6.25)),
     endedAt: iso(at(7.2)),
     trains: [TRAIN.loraB1, TRAIN.loraB2],
@@ -2421,6 +2469,44 @@ function finishSchool(now: number): void {
     evaluationAskedAt: null,
   };
   for (const r of [trained, paused]) writeFileSync(join(dir, `${r.id}.json`), `${JSON.stringify(r, null, 2)}\n`);
+  seedVerified(now);
+}
+
+/** Verified changes on each repo now: his PRs and commits that survived 30 days with the suite passing (rulings 8 and 23). */
+const VERIFIED_NOW: Record<string, { pr: number; commit: number; struck: number }> = {
+  [REPO.H]: { pr: 14, commit: 8, struck: 15 },
+  [REPO.K]: { pr: 9, commit: 5, struck: 10 },
+  [REPO.Q]: { pr: 6, commit: 5, struck: 8 },
+  [REPO.A]: { pr: 5, commit: 4, struck: 7 },
+  [REPO.F]: { pr: 3, commit: 2, struck: 3 },
+};
+
+/**
+ * The `verified` table as history.ts keeps it (derived from his repos, not
+ * replayed): 61 changes verified now, 39 short of the 100 a new LoRA needs.
+ * The paused LoRA built its 104 examples before the last re-check; the 43
+ * changes since struck had their test fail at the change on that re-check
+ * (`change` null, the failed check kept), so it resumes on its own copy and
+ * no new LoRA can start.
+ */
+function seedVerified(now: number): void {
+  const db = openDb();
+  const put = db.prepare('INSERT OR REPLACE INTO verified (repo, sha, json) VALUES (?, ?, ?)');
+  for (const [repo, n] of Object.entries(VERIFIED_NOW)) {
+    const command = getRepo(repo)?.checks?.test ?? 'npm test';
+    const total = n.pr + n.commit + n.struck;
+    for (let i = 0; i < total; i++) {
+      const s = sha(`verified ${repo} ${i}`);
+      const at = iso(now - (40 + i * 6) * DAY);
+      const kind = i < n.pr ? 'pr' : 'commit';
+      const struck = i >= n.pr + n.commit;
+      const check = { passed: !struck, detail: struck ? 'a test failed at this change on the re-check' : 'the suite passed', command, at: iso(now - (struck ? 1 : 9) * DAY) };
+      const change = struck
+        ? null
+        : { ref: kind === 'pr' ? `pr:${200 - i}` : `commit:${s}`, sha: s, parent: sha(`verified ${repo} ${i} parent`), kind, files: ['src/index', 'test/index'], touchesTests: true, at };
+      put.run(repo, s, JSON.stringify({ check, change }));
+    }
+  }
 }
 
 /**
