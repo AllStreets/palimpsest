@@ -32,7 +32,7 @@ import type { Browser, Page } from 'playwright';
 
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import { crownFor } from '../shared/silhouette.js';
-import { layoutTower } from '../shared/tower-layout.js';
+import { agentRootHeight, layoutTower } from '../shared/tower-layout.js';
 import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import type { District, Era, FirmView, Quarter, Repo, TowerSpec } from '../shared/types.js';
 import { BOARD_ORDER, boardFrame, boardTowers, boardViews } from './agent-board.js';
@@ -1182,7 +1182,7 @@ async function silhouetteChecks(page: Page): Promise<void> {
 const SCHOOL_HOME_CALLS = 4;
 
 /** Two more graduates, stood straight into the engine's store as a hire would store them, so the city reads them on agent.hired. */
-async function standGraduates(page: Page, firmId: string, other: string): Promise<string[]> {
+async function standGraduates(page: Page, firmId: string, other: string): Promise<Array<{ id: string; firmId: string; towerIndex: number; floors: number }>> {
   const { openDb } = await import('../engine/db.js');
   const { emit } = await import('../engine/events.js');
   const { layEarnedFloor } = await import('../engine/repos.js');
@@ -1192,7 +1192,7 @@ async function standGraduates(page: Page, firmId: string, other: string): Promis
   const base = agentOf('grad-qwen25c7-1');
   check(base !== null, "the sample's graduate is in the engine's store");
   if (!base) return [];
-  const ids: string[] = [];
+  const ids: Array<{ id: string; firmId: string; towerIndex: number; floors: number }> = [];
   for (const [i, firm] of [firmId, other].entries()) {
     const taken = new Set(listAgents(firm).filter((a) => !a.retired).map((a) => a.towerIndex));
     let towerIndex = 0;
@@ -1221,18 +1221,18 @@ async function standGraduates(page: Page, firmId: string, other: string): Promis
       }
     }
     emit('agent.hired', { agent: a });
-    ids.push(id);
+    ids.push({ id, firmId: firm, towerIndex, floors: i === 0 ? 3 : 0 });
   }
   await page.waitForTimeout(3000);
   return ids;
 }
 
 /** Takes the stood graduates down again, so the rest of the run sees the sample as seeded. */
-async function strikeGraduates(page: Page, ids: string[]): Promise<void> {
+async function strikeGraduates(page: Page, stood: Array<{ id: string }>): Promise<void> {
   const { openDb } = await import('../engine/db.js');
   const { emit } = await import('../engine/events.js');
   const db = openDb();
-  for (const id of ids) {
+  for (const { id } of stood) {
     const row = db.prepare('SELECT firm_id FROM agents WHERE id = ?').get(id) as { firm_id: string } | undefined;
     db.prepare('DELETE FROM earned_floors WHERE tower_id = ?').run(`agent:${id}`);
     db.prepare('DELETE FROM agents WHERE id = ?').run(id);
@@ -1290,6 +1290,17 @@ async function schoolTowerChecks(page: Page, tier: 'high' | 'medium'): Promise<v
     await setView(page, [grad.q.origin.x + 40, 36, grad.q.origin.z + 150], [grad.q.origin.x, 12, grad.q.origin.z + 30]);
     await page.waitForTimeout(1500);
     await page.screenshot({ path: join(SHOTS, 'school-towers.png') });
+    // The floored school tower's seam: where the root's slated roof and footing carry the first brick floor.
+    const floored = extra.find((e) => e.floors > 0);
+    if (floored) {
+      const fat = QUARTER_OFFSETS[floored.towerIndex];
+      const fx = grad.q.origin.x + fat.x;
+      const fz = grad.q.origin.z + fat.z;
+      const footing = agentRootHeight('collegiate');
+      await setView(page, [fx + 17, footing + 6, fz + 26], [fx, footing - 1.5, fz]);
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: join(SHOTS, 'school-tower-seam.png') });
+    }
   }
   await strikeGraduates(page, extra);
   const left = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[]).flatMap((q) => q.towers).filter((t) => t.root === 'collegiate').length;

@@ -388,6 +388,7 @@ export function quarters(): Quarter[] {
           dark: !buyer && a.retired,
           silhouette: a.silhouette,
           towerIndex: a.towerIndex,
+          ...(a.lineage.origin === 'school' ? { school: true } : {}),
         };
       });
     return { firmId: f.id, slot: f.slot, origin: quarterOrigin(f.slot), root: f.root, dark: f.status === 'bankrupt', towers };

@@ -776,7 +776,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       placeQuarters(draw);
       placeMilestones();
       searchLitTree(districtGroup);
+      searchLitTree(schoolRoot);
       lightsOutTree(districtGroup);
+      lightsOutTree(schoolRoot);
       sun.shadow.needsUpdate = true;
     }
     lifeShadow += dt;
@@ -1100,8 +1102,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     placeConstructions();
     // The inspection's searchlights streak whatever they sweep: towers, quarters and the blocks round them.
     searchLitTree(districtGroup);
-    // A bankrupt firm's towers take a dead building's dust where the power is off (lightsout.ts).
+    searchLitTree(schoolRoot);
+    // A bankrupt firm's towers take a dead building's dust where the power is off (lightsout.ts); a school tower's masonry
+    // and panes too (the zones are positional, so the campus, in the same masonry, is never touched).
     lightsOutTree(districtGroup);
+    lightsOutTree(schoolRoot);
     // The skyline is rebuilt only when the set of plazas changed, not on every refresh.
     placeMilestones();
     const key = JSON.stringify(plazasOf(occ)) + (campusOrigin ? `|campus:${campusOrigin.x},${campusOrigin.z}` : '');

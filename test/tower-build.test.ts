@@ -157,10 +157,13 @@ test('a collegiate root builds with the expected height and slots', () => {
     panes.getMatrixAt(i, m);
     m.decompose(p, q, sc);
     ys.push(p.y);
-    if (sc.x > 3 && sc.y > 5 && p.y < 6.5) entrance++;
+    // The fanlight over the doors: the widest pane on the root, in the head of the entrance arch.
+    if (sc.x > 3 && p.y > 5.5 && p.y < 8) entrance++;
   }
   assert.ok(ys.some((v) => v < 9) && ys.some((v) => v > 11), 'windows in both storeys');
-  assert.equal(entrance, 2, 'a tall lit doorway on each front, wider than any window');
+  const steel = t.group.getObjectByName('tower:col:frame') as THREE.InstancedMesh;
+  assert.ok(steel && steel.count >= 18 * 3, 'every window is glazed in a frame');
+  assert.equal(entrance, 2, 'a glazed fanlight over the doors on each front, wider than any window');
   // At the agent scale it stands at agentRootHeight and its footing carries an agent floor.
   const agent = buildTower({ ...s, kind: 'agent', firmId: 'quickset', agentId: 'grad' }, 'medium', plainMaterials());
   assert.ok(Math.abs(bounds(agent.group).max.y - agentRootHeight('collegiate')) < 1e-3);

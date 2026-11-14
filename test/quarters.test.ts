@@ -303,6 +303,17 @@ test('a dark quarter has no lit panes', () => {
   assert.equal(quarterBuildKey(settled.quarter), quarterBuildKey(quarterShow(lit).quarter));
 });
 
+test("a sold school tower stood on the collegiate root before its sale, and the seller's spec keeps it", () => {
+  const before = bankruptQuarter();
+  const sold = { ...before.towers[0], school: true, root: 'collegiate' as const };
+  const after: Quarter = { ...before, towers: [{ ...sold, firmId: 'quickset', root: 'chicago', dark: false }, before.towers[1]] };
+  const rising = quarterShow(after, { sold: new Map([[sold.agentId!, RECLAD.rise / 2]]) }).towers[0];
+  assert.equal(rising.spec.root, 'collegiate', "behind the rising scaffold the graduate's tower stands on the school's root, not the seller firm's");
+  assert.equal(rising.spec.firmId, 'lodestar');
+  const rebuilt = quarterShow(after, { sold: new Map([[sold.agentId!, RECLAD.rise + 0.1]]) }).towers[0];
+  assert.equal(rebuilt.spec.root, 'chicago', "re-clad in the buyer's root");
+});
+
 test("a sold tower rebuilds with the buyer's look and root", () => {
   const before = bankruptQuarter();
   const sold = before.towers[0];

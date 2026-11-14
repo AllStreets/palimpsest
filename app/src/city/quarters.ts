@@ -130,7 +130,8 @@ export function quarterShow(q: Quarter, clocks: QuarterClocks = {}): QuarterShow
     const s = t.agentId ? clocks.sold?.get(t.agentId) : undefined;
     if (bought && s !== undefined && s < RECLAD_TOTAL) {
       settled = false;
-      const seller: TowerSpec = { ...t, firmId: q.firmId, root: q.root, dark: true };
+      // Behind the rising scaffold the tower stands as it stood: on the seller's root, or on the school's if it is a graduate's.
+      const seller: TowerSpec = { ...t, firmId: q.firmId, root: t.school ? 'collegiate' : q.root, dark: true };
       const buyer: TowerSpec = { ...t, dark: false };
       if (s < RECLAD.rise) return { spec: seller, lit: 0, scaffold: ease(s / RECLAD.rise), phase: 'rising' };
       const r = s - RECLAD.rise;

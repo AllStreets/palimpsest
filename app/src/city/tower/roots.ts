@@ -856,7 +856,26 @@ const collegiate: RootBuilder = (k, detail, rand) => {
     k.tint.setScalar(1);
   };
   const GROUND = steps(k, 'limestone', [38, 36], 0.45);
+  // Where the stone meets the ground it is damp and dark: a weathered base course round the lowest step.
+  k.tint.setRGB(0.6, 0.58, 0.56);
+  k.add('limestone', squareSweep(19.0, [[-0.6, 0], [0.03, 0], [0.03, 0.26], [-0.6, 0.26]]));
+  k.tint.setScalar(1);
   let y = GROUND;
+  /** A window's light: a lamplit room behind glass that still mirrors the dusk, or a dark one. */
+  const glow = (on = 0.72): THREE.Color => (rand() < on ? paneData(0.26 + 0.3 * rand(), 1, PANE_SASH) : paneData(0.03, 1, PANE_SASH));
+  /**
+   * Real glazing in an opening on the face frame F: the pane set a jamb's depth into the reveal (not at its back),
+   * in a dark steel frame with a transom bar and lead cames, so the glass has depth, a frame and bars.
+   */
+  const glaze = (F: THREE.Matrix4, u: number, y0: number, y1: number, w: number, z: number, cames = 2): void => {
+    const h = y1 - y0;
+    const mid = y + (y0 + y1) / 2;
+    k.inst('col:frame', 'steel', unitBox, F.clone().multiply(M(u - w / 2 - 0.03, mid, z, 0, 0.06, h, 0.1)));
+    k.inst('col:frame', 'steel', unitBox, F.clone().multiply(M(u + w / 2 + 0.03, mid, z, 0, 0.06, h, 0.1)));
+    k.inst('col:frame', 'steel', unitBox, F.clone().multiply(M(u, y + y0 + 0.03, z, 0, w + 0.12, 0.06, 0.1)));
+    k.inst('col:bar', 'steel', unitBox, F.clone().multiply(M(u, y + y0 + h * 0.56, z + 0.02, 0, w, 0.05, 0.05)));
+    for (let i = 1; i <= cames; i++) k.inst('col:came', 'steel', unitBox, F.clone().multiply(M(u - w / 2 + (w * i) / (cames + 1), mid, z + 0.02, 0, 0.035, h, 0.04)));
+  };
   const plinthH = 1.1;
   k.add('limestone', squareSweep(a, [[-1, y], [0.5, y], [0.5, y + plinthH - 0.3], [0.1, y + plinthH], [-1, y + plinthH]]));
   y += plinthH;
@@ -896,12 +915,22 @@ const collegiate: RootBuilder = (k, detail, rand) => {
     const F = face(side, a);
 
     // Ground storey: two-light pointed windows, a sill, a mullion, a hood mould over the head.
+    const gz = -depth * 0.45;
     for (const o of lowers) {
       const top = arcTop(o);
-      pane(k, F, o.u, y + (o.y0 + top) / 2, o.w + 0.2, top - o.y0 + 0.1, -depth - 0.05, warmLight(rand, PANE_SASH, 0.8));
+      pane(k, F, o.u, y + (o.y0 + top) / 2, o.w + 0.2, top - o.y0 + 0.1, gz - 0.03, glow());
+      glaze(F, o.u, o.y0, o.ys, o.w, gz);
       k.box('limestone', o.w + 0.44, 0.16, 0.38, F.clone().multiply(M(o.u, y + o.y0 - 0.08, 0.02)));
+      // The inner sill, and the reveal's cill board under the glass.
+      k.box('limestone', o.w + 0.2, 0.1, -gz + 0.1, F.clone().multiply(M(o.u, y + o.y0 - 0.05, gz / 2 + 0.03)));
       stain(F, o.u, o.y0, o.w);
-      k.inst('col:mullion', 'limestone', unitBox, F.clone().multiply(M(o.u, y + (o.y0 + o.ys + 0.5) / 2, -depth / 2, 0, 0.16, o.ys + 0.5 - o.y0, 0.3)));
+      // Y tracery: a limestone mullion to the spring, forking to the arch's two sides.
+      k.inst('col:mullion', 'limestone', unitBox, F.clone().multiply(M(o.u, y + (o.y0 + o.ys) / 2, gz, 0, 0.16, o.ys - o.y0, 0.3)));
+      // From the mullion's head at the spring to the arch's sides a third of the way up: Y tracery that meets the arch.
+      for (const sgn of [-1, 1]) {
+        const len = o.w * 0.66;
+        k.inst('col:tracery', 'limestone', unitBox, F.clone().multiply(ME(o.u + sgn * 0.183 * o.w, y + o.ys + 0.25 * o.w, gz, 0, 0, sgn * 0.63, 0.14, len, 0.28)));
+      }
       if (detail) {
         const band = new THREE.Shape(pointedArch(0, o.w + 0.5, o.ys - 0.6, o.ys));
         band.holes.push(new THREE.Path(pointedArch(0, o.w + 0.02, o.ys - 0.58, o.ys)));
@@ -913,13 +942,15 @@ const collegiate: RootBuilder = (k, detail, rand) => {
     const mid = y + (upperY0 + upperY1) / 2;
     const wh = upperY1 - upperY0;
     for (const u of uppers) {
-      pane(k, F, u, mid, upperW + 0.2, wh + 0.1, -depth - 0.05, warmLight(rand, PANE_SASH, 0.75));
+      pane(k, F, u, mid, upperW + 0.2, wh + 0.1, gz - 0.03, glow(0.68));
+      glaze(F, u, upperY0, upperY1, upperW, gz, 1);
+      k.box('limestone', upperW + 0.2, 0.1, -gz + 0.1, F.clone().multiply(M(u, y + upperY0 - 0.05, gz / 2 + 0.03)));
       for (const s of [-1, 1]) k.box('limestone', 0.28, wh + 0.3, 0.14, F.clone().multiply(M(u + s * (upperW / 2 + 0.14), mid, 0.07)));
       k.box('limestone', upperW + 0.64, 0.16, 0.36, F.clone().multiply(M(u, y + upperY0 - 0.08, 0.02)));
       stain(F, u, upperY0, upperW);
       k.box('limestone', upperW + 0.8, 0.3, 0.16, F.clone().multiply(M(u, y + upperY1 + 0.15, 0.08)));
-      k.inst('col:mullion', 'limestone', unitBox, F.clone().multiply(M(u, mid, -depth / 2, 0, 0.16, wh, 0.3)));
-      k.inst('col:transom', 'limestone', unitBox, F.clone().multiply(M(u, y + upperY0 + wh * 0.62, -depth / 2, 0, upperW, 0.14, 0.28)));
+      k.inst('col:mullion', 'limestone', unitBox, F.clone().multiply(M(u, mid, gz, 0, 0.16, wh, 0.3)));
+      k.inst('col:transom', 'limestone', unitBox, F.clone().multiply(M(u, y + upperY0 + wh * 0.62, gz, 0, upperW, 0.14, 0.28)));
     }
 
     // Quoins: long and short in alternate courses, the two faces of a corner taking turns, a joint between each
@@ -939,20 +970,34 @@ const collegiate: RootBuilder = (k, detail, rand) => {
       // stepping out round it, a tablet over it.
       const top = arcTop(door);
       const leafH = 3.9;
-      pane(k, F, 0, y + (door.y0 + top) / 2, door.w + 0.2, top - door.y0 + 0.1, -depth - 0.05, paneData(0.9, 1, PANE_FULL));
-      // Dark oak leaves, their raised panels a shade lighter, so the joinery reads at the door and not as one slab.
+      const dz = -depth + 0.3;
+      // The fanlight: glass in a dark frame over the door, a limestone mullion up the middle and a Y of tracery in the head.
+      pane(k, F, 0, y + (leafH + top) / 2, door.w + 0.2, top - leafH + 0.1, dz - 0.08, paneData(0.5, 1, PANE_SASH));
+      k.inst('col:frame', 'steel', unitBox, F.clone().multiply(M(0, y + leafH + 0.1, dz - 0.04, 0, door.w + 0.1, 0.08, 0.08)));
+      k.inst('col:mullion', 'limestone', unitBox, F.clone().multiply(M(0, y + (leafH + door.ys) / 2 + 0.1, dz - 0.04, 0, 0.14, door.ys - leafH + 0.2, 0.22)));
+      for (const sgn of [-1, 1]) {
+        k.inst('col:tracery', 'limestone', unitBox, F.clone().multiply(ME(sgn * 0.183 * door.w, y + door.ys + 0.25 * door.w, dz - 0.04, 0, 0, sgn * 0.63, 0.12, door.w * 0.66, 0.22)));
+      }
+      // A pair of dark oak doors: a recessed border round each raised and fielded panel, so the joinery reads at the door.
       k.tint.setRGB(0.16, 0.1, 0.06);
-      k.box('timber', door.w + 0.1, leafH, 0.12, F.clone().multiply(M(0, y + leafH / 2, -depth + 0.3)));
-      k.tint.setRGB(0.27, 0.17, 0.1);
-      for (const s of [-1, 1]) {
-        for (const py of [0.75, 2.1, 3.25]) k.box('timber', door.w / 2 - 0.42, py > 3 ? 0.7 : 1.0, 0.06, F.clone().multiply(M(s * door.w / 4, py > 3 ? y + py + 0.05 : y + py, -depth + 0.39)));
+      k.box('timber', door.w + 0.1, leafH, 0.12, F.clone().multiply(M(0, y + leafH / 2, dz)));
+      for (const sgn of [-1, 1]) {
+        const pw = door.w / 2 - 0.42;
+        for (const [py, ph] of [[0.78, 1.0], [2.08, 1.3], [3.3, 0.72]] as const) {
+          k.tint.setRGB(0.1, 0.06, 0.035);
+          k.box('timber', pw, ph, 0.04, F.clone().multiply(M(sgn * door.w / 4, y + py, dz + 0.08)));
+          // The field: a shallow truncated pyramid standing out of its border, its bevels catching the lanterns.
+          k.tint.setRGB(0.27, 0.17, 0.1);
+          k.add('timber', frustum(pw - 0.14, 0.08, ph - 0.14, 0.78), F.clone().multiply(ME(sgn * door.w / 4, y + py, dz + 0.1, Math.PI / 2, 0, 0)));
+        }
       }
       k.tint.setScalar(1);
-      k.box('steel', 0.06, leafH, 0.14, F.clone().multiply(M(0, y + leafH / 2, -depth + 0.31)));
+      k.box('steel', 0.06, leafH, 0.14, F.clone().multiply(M(0, y + leafH / 2, dz + 0.01)));
       k.box('limestone', door.w + 0.3, 0.16, 0.5, F.clone().multiply(M(0, y + leafH + 0.08, -depth + 0.25)));
+      // Three orders of moulding, each overlapping the next, so no gap opens between them at the arch's head.
       for (let o = 0; o < 3; o++) {
         const inner = door.w + o * 0.5;
-        const band = new THREE.Shape(pointedArch(0, inner + 0.42, 0, door.ys));
+        const band = new THREE.Shape(pointedArch(0, inner + 0.62, 0, door.ys));
         band.holes.push(new THREE.Path(pointedArch(0, inner, 0.02, door.ys)));
         k.add('limestone', new THREE.ExtrudeGeometry(band, { depth: 0.14 + o * 0.1, bevelEnabled: false, curveSegments: 12 }), F.clone().multiply(M(0, y, 0)));
       }
@@ -963,12 +1008,23 @@ const collegiate: RootBuilder = (k, detail, rand) => {
         const rise = (plinthH / 4) * (i + 1);
         k.box('limestone', 6.4 - i * 0.3, rise, 0.5, F.clone().multiply(M(0, GROUND + rise / 2, 0.75 + 0.5 * (3 - i))));
       }
+      // A lantern either side on a wrought bracket: a glass body flaring to its shoulder between four corner posts,
+      // under a pyramid cap and a finial, a drip ring under its foot.
       for (const s of [-1, 1]) {
-        const u = s * (door.w / 2 + 1.25);
-        k.box('steel', 0.1, 0.1, 0.7, F.clone().multiply(M(u, y + 3.3, 0.35)));
-        k.box('steel', 0.46, 0.14, 0.46, F.clone().multiply(M(u, y + 3.22, 0.62)));
-        k.box('vent', 0.34, 0.4, 0.34, F.clone().multiply(M(u, y + 2.95, 0.62)));
-        k.box('steel', 0.4, 0.12, 0.4, F.clone().multiply(M(u, y + 2.7, 0.62)));
+        const u = s * (door.w / 2 + 1.35);
+        const lz = 0.66;
+        const ly = y + 3.0;
+        k.box('steel', 0.07, 0.07, 0.8, F.clone().multiply(M(u, ly + 0.5, 0.4)));
+        k.box('steel', 0.07, 0.5, 0.07, F.clone().multiply(M(u, ly + 0.25, 0.04)));
+        k.add('steel', new THREE.CylinderGeometry(0.05, 0.05, 0.9, 6).rotateX(-0.78), F.clone().multiply(M(u, ly + 0.2, 0.36)));
+        k.box('steel', 0.3, 0.05, 0.3, F.clone().multiply(M(u, ly + 0.42, lz)));
+        k.add('vent', frustum(0.26, 0.4, 0.26, 1.28), F.clone().multiply(M(u, ly + 0.2, lz)));
+        for (const px of [-1, 1]) for (const pz of [-1, 1]) k.box('steel', 0.03, 0.42, 0.03, F.clone().multiply(M(u + px * 0.155, ly + 0.2, lz + pz * 0.155)));
+        k.box('steel', 0.36, 0.04, 0.36, F.clone().multiply(M(u, ly - 0.02, lz)));
+        k.add('steel', new THREE.ConeGeometry(0.27, 0.22, 4).rotateY(Math.PI / 4), F.clone().multiply(M(u, ly - 0.14, lz)));
+        k.box('steel', 0.24, 0.04, 0.24, F.clone().multiply(M(u, ly + 0.46, lz)));
+        k.add('steel', new THREE.ConeGeometry(0.16, 0.16, 4).rotateY(Math.PI / 4), F.clone().multiply(M(u, ly + 0.56, lz)));
+        k.add('steel', new THREE.SphereGeometry(0.035, 8, 6), F.clone().multiply(M(u, ly + 0.68, lz)));
       }
     }
   }
