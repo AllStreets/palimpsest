@@ -75,6 +75,8 @@ export interface SchoolView {
   agreements: Agreement[];
   grants: Grant[];
   arenas: ArenaInfo[];
+  /** Arena builds he asked for that the engine refused as they started, newest first, with the reason. */
+  arenaRefusals: Array<{ repo: string; kind: 'planted' | 'past'; reason: string; at: string }>;
   voyages: VoyageView[];
   graduates: Graduate[];
   trains: TrainState[];
@@ -184,6 +186,7 @@ const EVENT_TYPES = [
   'voyage.generation',
   'voyage.ended',
   'graduate.made',
+  'arena.refused',
   // Phase 4 (Task 28): his autonomy, asked, granted, declined, suspended, revoked and acted on.
   'autonomy.asked',
   'autonomy.granted',

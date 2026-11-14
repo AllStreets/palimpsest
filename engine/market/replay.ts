@@ -31,7 +31,7 @@
  *   the end. Milestones: `milestone.reached { milestone }`, idempotent by
  *   id. `brief.opened` and `brief.action` carry no table.
  * - the school (Phase 4): an entry that changes a school row carries that
- *   row whole, as `job.changed` carries its job. `net.trained { netVersion }`
+ *   row whole, as `job.changed` carries its job. `net.trained { version }`
  *   adds a version; `net.promoted { net, version }` makes it the one current
  *   version of its net. `master.predicted { key, kind, repo, jobId, p,
  *   version, reason, at }` is one prediction, whose id is this entry's id.
@@ -566,7 +566,8 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
       // never halts and never scars, so it touches neither floors nor halts here.
       return s;
     case 'net.trained': {
-      const v = obj(d.netVersion) as NetVersion | null;
+      // nets.ts records the version whole as `version`, beside `skewed` and `trainId`.
+      const v = obj(d.version) as NetVersion | null;
       if (v && str(v.net) && typeof v.version === 'number') s.nets[netKey(v.net, v.version)] = clone(v);
       return s;
     }
@@ -622,6 +623,9 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     }
     case 'arena.built':
       putArenas(s, d);
+      return s;
+    case 'arena.refused':
+      // His build refused as it started: a sentence for the school view, no row.
       return s;
     case 'voyage.started':
     case 'voyage.generation':

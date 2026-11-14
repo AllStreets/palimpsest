@@ -59,6 +59,8 @@ export const LEDGER_KINDS = [
   // Phase 4: the school, its arenas, voyages and training, the nets, his decisions and earned autonomy
   'school.enabled',
   'arena.built',
+  // Task 28 fix round 1: an arena build he asked for that the engine refused as it started, with the reason (no table).
+  'arena.refused',
   'voyage.started',
   'voyage.commissioned',
   'voyage.generation',

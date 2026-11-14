@@ -168,7 +168,7 @@ test('the db has the ten school tables', () => {
 
 test('the ledger takes every school kind', () => {
   const kinds = [
-    'school.enabled', 'arena.built', 'voyage.started', 'voyage.commissioned', 'voyage.generation', 'voyage.ended',
+    'school.enabled', 'arena.built', 'arena.refused', 'voyage.started', 'voyage.commissioned', 'voyage.generation', 'voyage.ended',
     'train.started', 'train.paused', 'train.ended', 'net.trained', 'net.promoted', 'master.predicted', 'decision.resolved',
     'autonomy.asked', 'autonomy.granted', 'autonomy.declined', 'autonomy.suspended', 'autonomy.revoked', 'autonomy.acted',
     'graduate.made', 'merge.followup',

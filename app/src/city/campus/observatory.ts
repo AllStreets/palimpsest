@@ -161,6 +161,17 @@ export function schoolFromView(view: SchoolSeed, memory: SchoolMemory = schoolMe
   return { training: memory.running.size > 0, masterTrusted: cur?.trusted === true, version: cur?.version ?? 0 };
 }
 
+/**
+ * The school view's state with the events that arrived while it was being
+ * read folded on top, in order (main.ts buffers them between the request and
+ * its answer), so none of them is lost to the snapshot.
+ */
+export function schoolAfter(view: SchoolSeed, pending: ReadonlyArray<{ type: string; data: unknown }>, memory: SchoolMemory = schoolMemory): ObservatoryState {
+  let s = schoolFromView(view, memory);
+  for (const e of pending) s = foldSchoolEvent(s, e, memory);
+  return s;
+}
+
 // ---------------------------------------------------------------- the dome's surfaces
 
 /**

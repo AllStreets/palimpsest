@@ -264,7 +264,7 @@ test('the client names the school routes and listens for its events', async () =
   const source = FakeEventSource.last!;
   const SCHOOL_EVENTS = [
     'train.started', 'train.paused', 'train.ended', 'net.trained', 'net.promoted',
-    'voyage.started', 'voyage.commissioned', 'voyage.generation', 'voyage.ended', 'graduate.made',
+    'voyage.started', 'voyage.commissioned', 'voyage.generation', 'voyage.ended', 'graduate.made', 'arena.refused',
     'autonomy.asked', 'autonomy.granted', 'autonomy.declined', 'autonomy.suspended', 'autonomy.revoked', 'autonomy.acted',
   ];
   for (const type of SCHOOL_EVENTS) source.send(type, { type });

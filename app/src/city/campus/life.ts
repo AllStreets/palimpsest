@@ -205,6 +205,13 @@ export function lifeFromSchool(s: LifeState, view: LifeSeed): LifeState {
   return { ...s, nets, graduates };
 }
 
+/** `lifeFromSchool` with the events that arrived while the school was being read folded on top, in order. */
+export function lifeAfter(s: LifeState, view: LifeSeed, pending: ReadonlyArray<{ type: string; data: unknown }>): LifeState {
+  let next = lifeFromSchool(s, view);
+  for (const e of pending) next = foldLifeEvent(next, e);
+  return next;
+}
+
 /** Which bays a state lights, one level each: the first `racing` of them while the voyage sails, none otherwise. */
 export function bayTargets(s: LifeState, bays: number): number[] {
   const n = s.voyage && s.voyage.status === 'sailing' ? Math.min(bays, s.voyage.racing) : 0;

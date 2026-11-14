@@ -13,6 +13,7 @@ import { record } from '../engine/ledger.js';
 import { registerPrediction, resolve } from '../engine/school/decisions.js';
 import { FEATURES } from '../shared/net-features.js';
 import { outFor, type NetWeights } from '../shared/nets.js';
+import { markCurrent, putNetRow } from '../engine/school/nets.js';
 import type { Job, NetName, NetVersion, Run, WorkKind } from '../shared/types.js';
 
 /** One hidden unit: `gelu(sum of w * column + b)`, weighted by `head` into the output. */
@@ -82,7 +83,9 @@ export function installNet(weights: NetWeights, o: { trusted?: boolean; at?: str
     path: rel,
   };
   record('net.trained', { version, skewed: [], trainId: `train-${weights.net}-${weights.version}` });
+  putNetRow(version);
   record('net.promoted', { net: weights.net, version: weights.version, from: null, trusted, at: version.at });
+  markCurrent(weights.net, weights.version);
   return version;
 }
 

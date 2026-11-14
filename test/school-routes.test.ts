@@ -19,7 +19,9 @@ import { realRunner, setRunner, type Runner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
 import { record } from '../engine/ledger.js';
 import { resetGateCache } from '../engine/school/gate.js';
-import { resetSchoolApi, setTrainerProbe } from '../engine/school/api.js';
+import { buildSettled, resetSchoolApi, setTrainerProbe } from '../engine/school/api.js';
+import { holdTrain } from '../engine/school/trainer.js';
+import { entries } from '../engine/ledger.js';
 import { trainerStatus } from '../engine/school/trainer-env.js';
 import { startServer, type StartedServer } from '../engine/server.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
@@ -431,4 +433,69 @@ test('GET /api/school/campus fills live from the trains running', async () => {
   putVoyage(voyageOf());
   c = (await call('GET', '/api/school/campus')).json;
   assert.deepEqual(c.live, { voyage: true, nets: false, lora: true });
+});
+
+test('an arena build the engine refuses as it starts is recorded, emitted and shown with its reason', async () => {
+  school({ enabled: true });
+  putRepo({});
+  // A graduation's sealed race holds the machine: the build refuses as it starts, after the route answered 202.
+  const evalTrain: TrainState = { id: 'train-eval', kind: 'eval', status: 'running', reason: null, startedAt: new Date().toISOString(), endedAt: null, seconds: 0, steps: null, credits: 0 };
+  const release = holdTrain(evalTrain, () => {});
+  const heard: unknown[] = [];
+  const { subscribe } = await import('../engine/events.js');
+  const stop = subscribe((e) => {
+    if (e.type === 'arena.refused') heard.push(e.data);
+  });
+  try {
+    const r = await call('POST', '/api/school/arenas/acme/widgets', { kind: 'planted' });
+    assert.equal(r.status, 202);
+    await buildSettled();
+  } finally {
+    release();
+    stop();
+  }
+  const rec = entries().filter((e) => e.kind === 'arena.refused');
+  assert.equal(rec.length, 1);
+  assert.deepEqual({ ...(rec[0].data as object), at: undefined }, { repo: 'acme/widgets', kind: 'planted', reason: 'A graduation race is running; build the arena once it ends', at: undefined });
+  assert.equal(heard.length, 1, 'emitted for the page');
+  const v = (await call('GET', '/api/school')).json;
+  assert.equal(v.arenaRefusals.length, 1);
+  assert.equal(v.arenaRefusals[0].reason, 'A graduation race is running; build the arena once it ends');
+  assert.deepEqual(v.arenas, [], 'nothing was built');
+});
+
+test("SSE scrubs the school's events: a voyage's champion body and any path never leave", async () => {
+  const s = await start();
+  const text = await new Promise<string>((resolve, reject) => {
+    let armed = false;
+    const req = httpRequest({ host: '127.0.0.1', port: s.port, path: '/api/events', headers: { host: `127.0.0.1:${s.port}` } }, (res) => {
+      let t = '';
+      res.setEncoding('utf8');
+      res.on('data', (c: string) => {
+        t += c;
+        if (!armed && t.includes(': connected')) {
+          armed = true;
+          const v = voyageOf({ champion: { genome: 'g1', name: 'Bruno', model: 'ollama:qwen', generation: 1, parents: [], body: { id: 'g1', instructions: 'SECRET-GENOME-INSTRUCTIONS' } as never } });
+          emit('voyage.generation', { voyageId: v.id, voyage: v, repo: 'acme/widgets' });
+          emit('arena.refused', { repo: 'acme/widgets', kind: 'past', reason: `rows at ${paths().school}/arenas/a/rows.jsonl`, at: 'x' });
+          emit('train.paused', { train: { id: 't', kind: 'lora' }, reason: `${homedir()}/Library/Application Support/Palimpsest/school/lora/train.jsonl`, lost: 0 });
+        }
+        if (t.includes('event: train.paused')) {
+          req.destroy();
+          resolve(t);
+        }
+      });
+    });
+    req.on('error', (e) => {
+      if ((e as NodeJS.ErrnoException).code !== 'ECONNRESET') reject(e);
+    });
+    req.end();
+    setTimeout(() => {
+      req.destroy();
+      reject(new Error('timed out waiting for the event'));
+    }, 30_000).unref();
+  });
+  assert.ok(text.includes('event: voyage.generation\n'));
+  assert.ok(text.includes('"champion":{"genome":"g1"'), 'the champion itself still goes');
+  for (const bad of ['SECRET-GENOME', '"body"', 'rows.jsonl', 'train.jsonl', homedir(), paths().school]) assert.ok(!text.includes(bad), `the stream carries ${bad}`);
 });

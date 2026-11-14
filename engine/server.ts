@@ -23,7 +23,7 @@ import { analyze, BAD_NAME, city, connect, disconnect, getRepo, isValidFullName,
 import { getSettings, patchSettings } from './settings.js';
 // Loaded for its effect: the settings route turning the school off runs schoolOff at once (tick.ts installs the hook).
 import './school/tick.js';
-import { schoolPatch } from './school/api.js';
+import { schoolPatch, schoolScrub } from './school/api.js';
 import { realRunner, getRunner, setRunner, getSpawner, realSpawner, setSpawner } from './exec.js';
 import { isSampleHome, sampleGh, sampleSpawner, useSampleFolders } from './sample.js';
 import { claudeSettingsTarget, installHook, isStale, latestReading, NO_CLAUDE_SETTINGS, uninstallHook } from './usage.js';
@@ -328,9 +328,13 @@ function setStopped(on: boolean): boolean {
   return on;
 }
 
+/** The school's event families (Task 28): scrubbed as the school's views are, so no genome body, file or path of this Mac leaves. */
+const SCHOOL_EVENT = /^(voyage|train|net|graduate|arena|autonomy)\./;
+
 /** Sends one SSE event frame. */
 function writeSseEvent(res: ServerResponse, e: Event): void {
-  res.write(`event: ${e.type}\ndata: ${JSON.stringify(scrub(e.data))}\n\n`);
+  const data = SCHOOL_EVENT.test(e.type) ? schoolScrub(e.data) : e.data;
+  res.write(`event: ${e.type}\ndata: ${JSON.stringify(scrub(data))}\n\n`);
 }
 
 function handleSse(req: IncomingMessage, res: ServerResponse, sseClients: Set<ServerResponse>): void {

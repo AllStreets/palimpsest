@@ -15,8 +15,8 @@ import { drawnMeshes } from '../app/src/city/batch.js';
 import { createCampus, type CampusAnchors } from '../app/src/city/campus/index.js';
 import { afterSunset, handAngles, makeClockTower, TOWER } from '../app/src/city/campus/clock.js';
 import { buildHall, instanceHalls } from '../app/src/city/campus/halls.js';
-import { campusLife, EMPTY_LIFE, FLICKER, foldLifeEvent, lifeFromSchool, racingGenomes } from '../app/src/city/campus/life.js';
-import { foldSchoolEvent, makeObservatory, OBSERVATORY, SCHOOL_MASTER_ROUTE, schoolFromView, type ObservatoryState } from '../app/src/city/campus/observatory.js';
+import { campusLife, EMPTY_LIFE, FLICKER, foldLifeEvent, lifeAfter, lifeFromSchool, racingGenomes } from '../app/src/city/campus/life.js';
+import { foldSchoolEvent, makeObservatory, OBSERVATORY, SCHOOL_MASTER_ROUTE, schoolAfter, schoolFromView, type ObservatoryState } from '../app/src/city/campus/observatory.js';
 import type { People } from '../app/src/city/people.js';
 import { Kit, PANE_READING } from '../app/src/city/tower/kit.js';
 import { CAMPUS_HALF, campusPlaza, TERRACE } from '../app/src/city/campus/site.js';
@@ -644,4 +644,20 @@ test('the observatory and the campus life are seeded from the school view on loa
   assert.equal(life.voyage, voyage, 'the voyage is the campus read');
   assert.deepEqual(life.nets.map((n) => [n.net, n.version, n.trusted, n.at]), [['appraiser-pass', 6, true, '2026-11-11T03:00:00Z'], ['master', 5, false, '2026-11-11T03:00:00Z']]);
   assert.deepEqual(life.graduates.map((g) => [g.id, g.agentId]), [['grad-qwen25c7-1', 'grad-qwen25c7-1']]);
+});
+
+test('events heard while the school is read are folded on top of its answer, so none is lost', () => {
+  const memory = { running: new Set<string>(), trusted: new Map<number, boolean>() };
+  const view = { nets: [], trains: [], graduates: [] };
+  // A nets train started and the master was promoted after the engine answered, before the answer arrived.
+  const pending = [
+    { type: 'train.started', data: { train: { id: 'train-x', kind: 'nets', status: 'running' } } },
+    { type: 'net.promoted', data: { net: 'master', version: 2, from: null, trusted: true } },
+    { type: 'net.trained', data: { net: 'router', version: 1, trusted: false } },
+  ];
+  assert.deepEqual(schoolAfter(view as never, pending, memory), { training: true, masterTrusted: true, version: 2 });
+  assert.deepEqual([...memory.running], ['train-x']);
+  assert.deepEqual(schoolAfter(view as never, [], memory), shut, 'with nothing heard meanwhile, the answer alone');
+  const life = lifeAfter(EMPTY_LIFE, view as never, pending);
+  assert.deepEqual(life.nets.map((n) => [n.net, n.version]), [['router', 1]], 'the net trained meanwhile is kept');
 });

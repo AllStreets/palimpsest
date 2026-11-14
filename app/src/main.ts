@@ -10,8 +10,8 @@ import { coalesced } from './coalesce';
 import type { Plate } from './city/labels';
 import { dropText } from './city/governor';
 import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
-import { EMPTY_LIFE, foldLifeEvent, lifeFromSchool, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
-import { foldSchoolEvent, schoolFromView, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
+import { EMPTY_LIFE, foldLifeEvent, lifeAfter, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
+import { foldSchoolEvent, schoolAfter, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
 import { occupancy, type RepoState } from './city/occupancy.js';
 import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
@@ -913,7 +913,10 @@ async function main(): Promise<void> {
   let school: ObservatoryState = { training: false, masterTrusted: false, version: 0 };
   /** A capture's or a test's state in place of the ledger's, or null. */
   let heldSchool: ObservatoryState | null = null;
+  /** The events heard while api.school() is being read, folded on top of its answer so none is lost; null between reads. */
+  let schoolPending: EngineEvent[] | null = null;
   const foldSchool = (e: EngineEvent): void => {
+    schoolPending?.push(e);
     const next = foldSchoolEvent(school, e);
     if (next === school) return;
     school = next;
@@ -939,18 +942,25 @@ async function main(): Promise<void> {
    * The school read whole (Task 28), on load and when the stream comes back: a nets train already running opens
    * the dome and the master already promoted aims the telescope and lights the plate; the nets trained and the
    * graduates made before the page opened are listed by the inspector. The folds' memory is set to match, so the
-   * events after it fold on from the engine's state.
+   * events after it fold on from the engine's state. The events heard between the request and its answer are
+   * folded on top of the answer in order (schoolAfter, lifeAfter), so a train that starts meanwhile is not lost.
    */
-  const readSchool = coalesced(() =>
-    api.school().then(
+  const readSchool = coalesced(() => {
+    const pending: EngineEvent[] = [];
+    schoolPending = pending;
+    const done = (): void => {
+      if (schoolPending === pending) schoolPending = null;
+    };
+    return api.school().then(
       (v) => {
-        school = schoolFromView(v);
+        done();
+        school = schoolAfter(v, pending);
         if (!heldSchool) city.setSchool(school);
-        setLife(lifeFromSchool(life, v));
+        setLife(lifeAfter(life, v, pending));
       },
-      () => {},
-    ),
-  );
+      done,
+    );
+  });
   /** The inspector's view of the university, from the life shown (held or the ledger's). */
   const campusInspectorView = (): CampusInspectorView => {
     const shown = heldLife ?? life;

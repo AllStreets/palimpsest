@@ -371,9 +371,10 @@ test('replay rebuilds each school table and verifyReplay flags a corrupted grant
     path: join(paths().school, 'nets', 'master', `v${version}.json`),
   });
   record('school.enabled', { enabled: true, at: '2026-11-10T00:00:00.000Z' });
-  record('net.trained', { netVersion: net(1, false) });
-  record('net.trained', { netVersion: net(2, true) });
-  record('net.promoted', { net: 'master', version: 2, at: '2026-11-12T02:01:00.000Z' });
+  // As nets.ts records them: the version whole under `version`, beside `skewed` and `trainId`.
+  record('net.trained', { version: net(1, false), skewed: [], trainId: 'train-n1' });
+  record('net.trained', { version: net(2, true), skewed: ['propose:harness'], trainId: 'train-n2' });
+  record('net.promoted', { net: 'master', version: 2, from: 1, trusted: true, at: '2026-11-12T02:01:00.000Z' });
 
   const predicted = { key: 'merge:low:job-1', kind: 'merge:low', repo: FULL, jobId: 'job-1', p: 0.93, version: 2, reason: null, at: '2026-11-12T03:00:00.000Z' } as const;
   const predictionId = record('master.predicted', predicted);
@@ -453,4 +454,22 @@ test('replay rebuilds each school table and verifyReplay flags a corrupted grant
   assert.ok(worse.diffs.some((x) => x.startsWith(`grant merge:high ${FULL}: in the tables but not in the ledger`)), worse.diffs.join('\n'));
   assert.ok(worse.diffs.some((x) => x.startsWith('net master v1: the tables hold')), worse.diffs.join('\n'));
   assert.ok(worse.diffs.some((x) => x.startsWith('decision merge:low:job-1 #2: in the ledger but not in the tables')), worse.diffs.join('\n'));
+});
+
+test("replay rebuilds the nets exactly from nets.ts's own entries, and the nets table agrees", async () => {
+  const { constant, installNet } = await import('./school-fixtures.js');
+  const { versions } = await import('../engine/school/nets.js');
+  installNet(constant('master', 1, 0.6), { trusted: false, at: '2026-11-11T02:00:00.000Z' });
+  installNet(constant('master', 2, 0.7), { trusted: true, at: '2026-11-12T02:00:00.000Z' });
+  installNet(constant('router', 1, 0.5), { trusted: true, at: '2026-11-12T03:00:00.000Z' });
+  const state = replay(entries());
+  const want = Object.fromEntries([...versions('master'), ...versions('router')].map((v) => [`${v.net} v${v.version}`, v]));
+  assert.deepEqual(state.nets, want, 'every version, the promoted one current');
+  assert.equal(state.nets['master v1'].current, false);
+  assert.equal(state.nets['master v2'].current, true);
+  const ok = verifyReplay();
+  assert.deepEqual(ok.diffs, []);
+  // A table row whose current drifted from the ledger is caught.
+  openDb().prepare("UPDATE nets SET current = 1 WHERE net = 'master' AND version = 1").run();
+  assert.ok(verifyReplay().diffs.some((d) => /master v1/.test(d)));
 });

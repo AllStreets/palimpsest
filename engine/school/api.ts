@@ -21,7 +21,9 @@ import { LORA, voyageQueued, WORK_KINDS } from '../../shared/school-rules.js';
 import type { ArenaInfo, Graduate, NetName, NetVersion, SchoolSettings, Settings, TrainState, VoyageView, WorkKind } from '../../shared/types.js';
 import { AUDIT_MODEL_SHAPE } from '../../shared/market-rules.js';
 import { openDb } from '../db.js';
+import { emit } from '../events.js';
 import { HttpError, readJsonBody } from '../http.js';
+import { record } from '../ledger.js';
 import { getRepo, isValidFullName, BAD_NAME } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { redact } from '../market/jobs.js';
@@ -165,6 +167,8 @@ export interface SchoolView {
   agreements: ReturnType<typeof agreements>;
   grants: ReturnType<typeof grants>;
   arenas: ArenaInfo[];
+  /** Builds he asked for that the engine refused as they started, newest first, with the reason. */
+  arenaRefusals: ArenaRefusal[];
   voyages: VoyageView[];
   graduates: Graduate[];
   trains: TrainState[];
@@ -192,6 +196,7 @@ export async function schoolView(now: number = Date.now()): Promise<SchoolView> 
     agreements: agreements(),
     grants: grants(),
     arenas: listArenas(),
+    arenaRefusals: arenaRefusals(),
     voyages: voyages().map(voyageOut),
     graduates: graduates(),
     trains: recentTrains(),
@@ -280,15 +285,68 @@ export function schoolPatch(v: unknown, current: Settings['school']): Settings['
 
 // ---------------------------------------------------------------- routes
 
-/** Starts an arena build in the background, stopped when the school is turned off. */
-function startBuild(kind: ArenaInfo['kind'], fullName: string): void {
+/** An arena build he asked for that the engine refused as it started (`arena.refused`), as the school view lists it. */
+export interface ArenaRefusal {
+  repo: string;
+  kind: ArenaInfo['kind'];
+  reason: string;
+  at: string;
+}
+
+/** How many refused builds the school view lists, newest first. */
+const REFUSALS_SHOWN = 10;
+
+/** Records and emits a refused build with its reason in plain words. */
+function refuseBuild(repo: string, kind: ArenaInfo['kind'], reason: string): void {
+  const data: ArenaRefusal = { repo, kind, reason, at: new Date().toISOString() };
+  record('arena.refused', data);
+  emit('arena.refused', { ...data });
+}
+
+/** The newest refused builds, read newest first from the ledger (one indexed read, bounded). */
+function arenaRefusals(): ArenaRefusal[] {
+  const rows = openDb().prepare("SELECT json FROM ledger WHERE kind = 'arena.refused' ORDER BY id DESC LIMIT ?").all(REFUSALS_SHOWN) as Array<{ json: string }>;
+  const out: ArenaRefusal[] = [];
+  for (const r of rows) {
+    try {
+      const d = JSON.parse(r.json) as ArenaRefusal;
+      if (d && typeof d.repo === 'string' && typeof d.reason === 'string') out.push(d);
+    } catch {
+      // a row that cannot be read is left out
+    }
+  }
+  return out;
+}
+
+/**
+ * Starts an arena build in the background, stopped when the school is turned
+ * off. A build the engine refuses as it starts (another build running, a
+ * graduation race holding the machine, the repo changed since the route
+ * checked it) answers an arena with no id: that, or a build that throws, is
+ * recorded and emitted as `arena.refused` with the reason, so the school view
+ * says why nothing was built.
+ */
+function startBuild(kind: ArenaInfo['kind'], fullName: string): Promise<void> {
   const repo = getRepo(fullName)!;
   const ctl = new AbortController();
   const unregister = registerAbort(() => ctl.abort());
   const build = kind === 'planted' ? buildPlanted : buildPast;
-  void build(repo, Date.now(), { signal: ctl.signal })
-    .catch((err: unknown) => console.error('palimpsest: an arena build failed:', err instanceof Error ? err.message : err))
+  return build(repo, Date.now(), { signal: ctl.signal })
+    .then(
+      (info) => {
+        if (!info.id && info.status === 'failed') refuseBuild(fullName, kind, info.reason ?? 'The build was refused');
+      },
+      (err: unknown) => refuseBuild(fullName, kind, `The build stopped: ${err instanceof Error ? err.message : String(err)}`),
+    )
     .finally(unregister);
+}
+
+/** The newest build started from a route, for tests to wait on. */
+let lastBuild: Promise<void> = Promise.resolve();
+
+/** Resolves when the newest build a route started has ended or been refused (tests). */
+export function buildSettled(): Promise<void> {
+  return lastBuild;
 }
 
 /**
@@ -341,7 +399,7 @@ export async function handleSchoolApi(req: IncomingMessage, pathname: string, me
     if (!repo) throw new HttpError(404, { error: 'unknown repo' });
     const why = refusal(repo);
     if (why) throw new HttpError(409, { error: why });
-    startBuild(kind, full);
+    lastBuild = startBuild(kind, full);
     return out(202, { repo: full, kind, status: 'building' });
   }
 

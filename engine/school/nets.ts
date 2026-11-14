@@ -171,6 +171,21 @@ function trainedOf(net: NetName): Trained[] {
   return out;
 }
 
+/**
+ * The nets table beside the ledger (Task 28 fix round 1): a version's row as
+ * `net.trained` records it, and `current` moved by each `net.promoted`, so
+ * replay.ts can check the table against the ledger. The ledger stays what
+ * `versions()` and `current()` read.
+ */
+export function putNetRow(v: NetVersion): void {
+  openDb().prepare('INSERT OR REPLACE INTO nets (net, version, at, current, json) VALUES (?, ?, ?, ?, ?)').run(v.net, v.version, v.at, v.current ? 1 : 0, JSON.stringify(v));
+}
+
+/** `version` of `net` is now its current one, every other version of it not. */
+export function markCurrent(net: NetName, version: number): void {
+  openDb().prepare('UPDATE nets SET current = (version = ?) WHERE net = ?').run(version, net);
+}
+
 /** The version number last promoted for `net`, or null. */
 function promotedVersion(net: NetName): number | null {
   let v: number | null = null;
@@ -382,10 +397,12 @@ export async function trainNet(net: NetName, now: number, deps: DatasetDeps = {}
   };
   const skewed = net === 'master' ? skewOf(train, heldOut, preds) : [];
   record('net.trained', { version: v, skewed, trainId: state.id });
+  putNetRow(v);
   emit('net.trained', { net, version: v.version, trusted: v.trusted });
   if (promote) {
     const data = { net, version, from: was?.version.version ?? null, trusted: v.trusted, at: v.at };
     record('net.promoted', data);
+    markCurrent(net, version);
     emit('net.promoted', data);
   }
   return { net, status: 'trained', reason: null, version: v, promoted: promote, train: state };
