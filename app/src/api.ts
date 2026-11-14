@@ -28,6 +28,7 @@ import type {
   Tier,
   TreasuryView,
   UsageReading,
+  VoyageView,
 } from '../../shared/types.js';
 import { weekOf } from '../../shared/tour.js';
 
@@ -36,6 +37,9 @@ export interface CampusView {
   origin: { x: number; z: number } | null;
   slot: number | null;
   live: { voyage: boolean; nets: boolean; lora: boolean };
+  /** The voyage sailing or paused now (the library's reading room lights by it, Task 37), else null. */
+  voyage: VoyageView | null;
+  voyageRepo: string | null;
 }
 
 /** A failed engine call: the HTTP status plus the engine's readable message. */
@@ -125,6 +129,12 @@ const EVENT_TYPES = [
   'train.ended',
   'net.trained',
   'net.promoted',
+  // Phase 4: the voyages and the graduates (the library's reading room lights while a voyage sails, Task 37).
+  'voyage.started',
+  'voyage.commissioned',
+  'voyage.generation',
+  'voyage.ended',
+  'graduate.made',
 ];
 
 /** What the settings page may change (the engine checks every value again). */

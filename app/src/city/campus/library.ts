@@ -13,11 +13,16 @@
  * into the site's one masonry draw; its panes ride in the halls' pane draw.
  * Local frame: origin at the library's anchor on the terrace, +x toward the
  * gate (its front), the length along z. Pure three.js: tested in Node.
+ *
+ * The reading room's bays are built dark (Task 37): the campus's life lights
+ * one per genome racing while a voyage sails, through the panes' instance
+ * colours, and the great windows at either end and the lantern with them.
+ * makeLibrary answers where those panes stand so the campus can find them.
  */
 import * as THREE from 'three';
 
 import { Kit, M, ME, paneData, PANE_SASH, piercedWall, pointedArch, rng } from '../tower/kit.js';
-import { circle, Gothic, type Opening, type Stages } from './gothic.js';
+import { circle, Gothic, top, type Opening, type Stages } from './gothic.js';
 
 /** The library's plan: its length along z, its width across x, its floor over the terrace, eaves and ridge. */
 export const LIBRARY = { length: 54, width: 18, podium: 1.2, eaves: 12.5, ridge: 22.5, wall: 0.55 } as const;
@@ -25,6 +30,23 @@ export const LIBRARY = { length: 54, width: 18, podium: 1.2, eaves: 12.5, ridge:
 export interface LibraryOptions {
   quality: 'high' | 'medium';
   seed?: string;
+}
+
+/** The light the reading room's panes carry when nothing sails: dark glass, in the window shader's own terms. */
+export const BAY_DARK = 0.04;
+/** The lantern's lights when the room is dark: a night light on the ridge. */
+export const LANTERN_IDLE = 0.3;
+
+/**
+ * Where the library's lit panes stand, in the Kit's frame (its base applied):
+ * the reading-room bays along the long walls (the front's first, nearest the
+ * frontispiece outward, then the back's), the great windows of the gable
+ * ends and the lantern's lights.
+ */
+export interface LibraryLights {
+  bays: THREE.Vector3[];
+  ends: THREE.Vector3[];
+  lantern: THREE.Vector3[];
 }
 
 /**
@@ -37,11 +59,14 @@ function libraryFace(side: number, out?: number): THREE.Matrix4 {
   return M(0, 0, 0, Math.PI / 2 - (side * Math.PI) / 2).multiply(M(0, 0, o));
 }
 
-export function makeLibrary(k: Kit, o: LibraryOptions): void {
+export function makeLibrary(k: Kit, o: LibraryOptions): LibraryLights {
   const detail = o.quality === 'high';
   const g = new Gothic(k, rng(o.seed ?? 'library'), detail);
   const { length: L, width: W, podium: P, eaves: E, ridge: R, wall: D } = LIBRARY;
   const pitch = Math.atan2(R - E, W / 2);
+  const lights: LibraryLights = { bays: [], ends: [], lantern: [] };
+  /** Where an opening's pane stands (gothic.ts dress), in the Kit's frame. */
+  const paneAt = (F: THREE.Matrix4, op: Opening, z = -D - 0.05): THREE.Vector3 => new THREE.Vector3().applyMatrix4(k.base.clone().multiply(F).multiply(M(op.u, (op.y0 + top(op)) / 2, z)));
 
   // ---------------------------------------------------------------- the podium
   // A limestone podium the floor stands on, a plinth course proud of the brick above it.
@@ -51,7 +76,8 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
 
   // ---------------------------------------------------------------- the long walls
   const wallH = E - plinthH;
-  const bayWin = (u: number): Opening => ({ u, w: 3.0, y0: P + 1.7, y1: P + 7.6, pointed: true, lights: 3, transom: P + 5.0, lit: 0.85 });
+  // Dark until a voyage sails: the campus's life lights the bays.
+  const bayWin = (u: number): Opening => ({ u, w: 3.0, y0: P + 1.7, y1: P + 7.6, pointed: true, lights: 3, transom: P + 5.0, lit: BAY_DARK });
   const stages: Stages = [
     [plinthH, P + 4.6, 1.35, 1.5],
     [P + 4.6, P + 8.4, 0.95, 1.3],
@@ -60,8 +86,12 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
   // The front: bays either side of the frontispiece; the back: every bay.
   const front = libraryFace(0);
   const back = libraryFace(2);
-  g.wall(front, L, plinthH, wallH, D, [-21, -15, -9, 9, 15, 21].map(bayWin));
-  g.wall(back, L, plinthH, wallH, D, [-21, -15, -9, -3, 3, 9, 15, 21].map(bayWin));
+  const frontBays = [-9, 9, -15, 15, -21, 21].map(bayWin);
+  const backBays = [-3, 3, -9, 9, -15, 15, -21, 21].map(bayWin);
+  g.wall(front, L, plinthH, wallH, D, frontBays);
+  g.wall(back, L, plinthH, wallH, D, backBays);
+  for (const op of frontBays) lights.bays.push(paneAt(front, op));
+  for (const op of backBays) lights.bays.push(paneAt(back, op));
   for (const u of [-18, -12, 12, 18]) g.buttress(front, u, stages, plinthH);
   for (const u of [-18, -12, -6, 0, 6, 12, 18]) g.buttress(back, u, stages, plinthH);
   // Angle buttresses at the corners.
@@ -81,9 +111,10 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
   // ---------------------------------------------------------------- the gable ends
   for (const side of [1, 3]) {
     const F = libraryFace(side);
-    const great: Opening = { u: 0, w: 6.0, y0: P + 1.7, y1: P + 8.6, pointed: true, lights: 5, transom: P + 5.6, lit: 0.9 };
+    const great: Opening = { u: 0, w: 6.0, y0: P + 1.7, y1: P + 8.6, pointed: true, lights: 5, transom: P + 5.6, lit: BAY_DARK };
     const flank = (u: number): Opening => ({ u, w: 1.3, y0: P + 1.7, y1: P + 4.6, pointed: true, lights: 1, lit: 0.7 });
     g.wall(F, W - 2 * D, plinthH, wallH, D, [great, flank(-6.3), flank(6.3)]);
+    lights.ends.push(paneAt(F, great));
     // The gable over it with a rose, coped, kneelers at the feet of the rakes, a finial at the apex.
     const roseY = E + 4.6;
     const shape = new THREE.Shape([new THREE.Vector2(-W / 2, 0), new THREE.Vector2(W / 2, 0), new THREE.Vector2(0, R - E)]);
@@ -126,7 +157,8 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
       const F = M(Math.sin(a) * lr, d0, Math.cos(a) * lr, a);
-      g.pane(F, 0, dh / 2, lr * 2 * Math.sin(Math.PI / 8) - 0.5, dh - 0.4, -0.1, paneData(0.85, 1, PANE_SASH));
+      g.pane(F, 0, dh / 2, lr * 2 * Math.sin(Math.PI / 8) - 0.5, dh - 0.4, -0.1, paneData(LANTERN_IDLE, 1, PANE_SASH));
+      lights.lantern.push(new THREE.Vector3().applyMatrix4(k.base.clone().multiply(F).multiply(M(0, dh / 2, -0.1))));
       const C = M(Math.sin(a + Math.PI / 8) * lr * Math.cos(Math.PI / 8), d0, Math.cos(a + Math.PI / 8) * lr * Math.cos(Math.PI / 8), 0);
       g.add('limestone', new THREE.CylinderGeometry(0.16, 0.18, dh, 8).translate(0, dh / 2, 0), C);
     }
@@ -210,4 +242,5 @@ export function makeLibrary(k: Kit, o: LibraryOptions): void {
     g.add('limestone', new THREE.ConeGeometry(tr + 0.4, 4.2, 8).translate(0, 2.1, 0), M(tx, th + 0.7, tz, Math.PI / 8));
     if (detail) g.add('limestone', new THREE.SphereGeometry(0.2, 8, 6), M(tx, th + 4.9 + 0.2, tz));
   }
+  return lights;
 }

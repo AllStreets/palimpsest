@@ -827,3 +827,40 @@ body[data-riding] .runhead {
     transform: none;
   }
 }
+
+/* ---------------------------------------------------------------- the inspector on the university (Phase 4 Task 37) */
+/* The campus's rows are read, not picked: no gutter number, no selection mark; a title that leads somewhere is a link. */
+.insp-campus .insp-campus-row {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'title'
+    'meta'
+    'state';
+  cursor: default;
+}
+.insp-campus .insp-campus-row::before,
+.insp-campus .insp-campus-row:hover::after {
+  display: none;
+}
+.insp-campus .insp-campus-row .insp-title {
+  white-space: normal;
+}
+.insp-campus .insp-campus-row a.insp-title {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule-strong);
+  width: fit-content;
+}
+.insp-campus .insp-campus-row a.insp-title:hover {
+  border-bottom-color: var(--bronze);
+}
+.insp-campus .insp-campus-row a.insp-title:focus-visible {
+  outline: 1px solid var(--bronze);
+  outline-offset: 3px;
+}
+.insp-campus .insp-campus-row .insp-meta {
+  grid-area: meta;
+}
+.insp-campus .insp-voyage .insp-era-name {
+  color: #d9b48a;
+}

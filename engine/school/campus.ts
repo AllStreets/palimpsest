@@ -6,7 +6,9 @@
  * campus is that one 240 m block; the city draws it from this origin.
  */
 import { districtOrigin } from '../../shared/district-layout.js';
+import type { VoyageView } from '../../shared/types.js';
 import { openDb } from '../db.js';
+import { query } from '../ledger.js';
 import { nextSlot } from '../repos.js';
 
 /** The campus's owner in the slots table. */
@@ -33,11 +35,31 @@ export function campusOrigin(): { x: number; z: number } | null {
 export interface CampusView {
   origin: { x: number; z: number } | null;
   slot: number | null;
-  /** What is under way on the campus, for its life (Task 37); all false until the voyages, nets and LoRA land. */
+  /** What is under way on the campus, for its life (Task 37): `voyage` from the ledger here; nets and LoRA false until Task 28 reads the trains. */
   live: { voyage: boolean; nets: boolean; lora: boolean };
+  /**
+   * The voyage sailing or paused now, as the ledger's newest `voyage.*` entry carries it (`data.voyage`, a
+   * VoyageView), else null: the city lights the library's reading room by it on load, before any event arrives.
+   * Task 22's `voyages()` is the better source once it lands; the shape is the same.
+   */
+  voyage: VoyageView | null;
+  /** The live voyage's arena's repo, when its entry names one (`repo`, or `arena.repo`); the city says "a voyage on <repo>". */
+  voyageRepo: string | null;
+}
+
+/** The newest voyage the ledger knows, when it is still live (sailing or paused for the night), and its repo if its entry says. */
+export function liveVoyage(): { voyage: VoyageView; repo: string | null } | null {
+  const last = query({ kind: ['voyage.started', 'voyage.generation', 'voyage.ended'], last: true })[0];
+  const d = (last?.data ?? {}) as { voyage?: VoyageView; repo?: unknown; arena?: { repo?: unknown } };
+  const v = d.voyage;
+  if (!v || typeof v !== 'object' || !v.id) return null;
+  if (v.status !== 'sailing' && v.status !== 'paused') return null;
+  const repo = typeof d.repo === 'string' ? d.repo : typeof d.arena?.repo === 'string' ? d.arena.repo : null;
+  return { voyage: v, repo };
 }
 
 export function campusView(): CampusView {
   const slot = campusSlot();
-  return { origin: slot === null ? null : districtOrigin(slot), slot, live: { voyage: false, nets: false, lora: false } };
+  const live = liveVoyage();
+  return { origin: slot === null ? null : districtOrigin(slot), slot, live: { voyage: live !== null, nets: false, lora: false }, voyage: live?.voyage ?? null, voyageRepo: live?.repo ?? null };
 }

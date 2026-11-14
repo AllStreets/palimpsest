@@ -501,3 +501,86 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
 
   return mergeStamped(pieces);
 }
+
+// ---------------------------------------------------------------- the ways people take (Task 37)
+
+type V3 = [number, number, number];
+
+/**
+ * The way in from the street, in the campus's frame: the pavement before
+ * the stair's mouth (the ring street's centre line runs at 120, its pavement
+ * 6 m in), the foot of the lower flight, the landing, the head of the upper
+ * flight, the gate and a stand on the forecourt just inside it, off the
+ * axis. people.ts walks a trip to the campus up it and a trip from the
+ * campus down it.
+ */
+export function approachPath(): V3[] {
+  const x0 = WALL_FOOT;
+  const run = 20 * 0.3;
+  const landing = WELL_DEPTH - 2 * run;
+  const gate = siteAnchors().gate;
+  return [
+    [120 - 6, 0, 0],
+    [x0 + 0.4, 0, 0],
+    [x0 - run, TERRACE / 2, 0],
+    [x0 - run - landing, TERRACE / 2, 0],
+    [x0 - WELL_DEPTH, TERRACE, 0],
+    [gate.x, TERRACE, 0],
+    [gate.x - 6, TERRACE, 3.5],
+  ];
+}
+
+/**
+ * The walks as a graph for the students (life.ts): nodes on the walks'
+ * centre lines (the axis, each quad's perimeter and cross walk with a spur
+ * to each hall's door, the cross walk between the ranges, the observatory's
+ * walk, the parapet walk and the library's forecourt), a hand above the
+ * terrace, and the edges between them along the gravel.
+ */
+export function walkGraph(): { nodes: V3[]; edges: Array<[number, number]> } {
+  const y = TERRACE + 0.06;
+  const nodes: V3[] = [];
+  const edges: Array<[number, number]> = [];
+  const at = new Map<string, number>();
+  const node = (x: number, z: number): number => {
+    const key = `${x},${z}`;
+    let i = at.get(key);
+    if (i === undefined) {
+      i = nodes.length;
+      nodes.push([x, y, z]);
+      at.set(key, i);
+    }
+    return i;
+  };
+  const link = (a: number, b: number): void => {
+    if (a !== b) edges.push([a, b]);
+  };
+  const chain = (pts: Array<[number, number]>): void => {
+    for (let i = 1; i < pts.length; i++) link(node(pts[i - 1][0], pts[i - 1][1]), node(pts[i][0], pts[i][1]));
+  };
+  const crossX = (FRONT_QUAD.x0 + INNER_QUAD.x1) / 2;
+  const gate = siteAnchors().gate.x;
+  const ring = COPING_IN - 2;
+  const q = QUAD_HALF + 2;
+  // The axis from the gate to the library's forecourt.
+  const quads = [FRONT_QUAD, INNER_QUAD].map((qd) => ({ xa: qd.x0 - 2, xb: qd.x1 + 2, cx: (qd.x0 + qd.x1) / 2 }));
+  chain([[gate, 0], [gate - 7, 0], [quads[0].xb, 0], [quads[0].cx, 0], [quads[0].xa, 0], [crossX, 0], [quads[1].xb, 0], [quads[1].cx, 0], [quads[1].xa, 0], [-78, 0]]);
+  // Each quad: the perimeter walk, the cross walk from hall door to hall door.
+  for (const { xa, xb, cx } of quads) {
+    for (const sz of [-1, 1]) {
+      chain([[xa, 0], [xa, sz * q]]);
+      chain([[xb, 0], [xb, sz * q]]);
+      chain([[xa, sz * q], [cx, sz * q], [xb, sz * q]]);
+      chain([[cx, 0], [cx, sz * q], [cx, sz * (HALL_Z - 5)]]);
+    }
+  }
+  // The cross walk between the ranges, from parapet to parapet, and the observatory's walk off it.
+  chain([[crossX, -ring], [crossX, -90], [crossX, -q], [crossX, 0], [crossX, q], [crossX, ring]]);
+  chain([[crossX, -90], [-78, -90]]);
+  // The parapet walk, broken at the stair well.
+  for (const sz of [-1, 1]) chain([[crossX, sz * ring], [-ring, sz * ring], [-ring, 0]]);
+  for (const sz of [-1, 1]) chain([[crossX, sz * ring], [ring, sz * ring], [ring, sz * 14]]);
+  // The library's forecourt.
+  chain([[-78, -18], [-78, 0], [-78, 18]]);
+  return { nodes, edges };
+}

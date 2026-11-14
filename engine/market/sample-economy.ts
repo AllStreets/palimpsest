@@ -72,6 +72,7 @@ import type {
   TripReason,
   Run,
   Verdict,
+  VoyageView,
 } from '../../shared/types.js';
 import { proposeFromAudit } from '../audit/proposals.js';
 import { auditSlug, countVerdicts, renderAudit } from '../audit/schema.js';
@@ -97,6 +98,8 @@ import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, listAgents, list
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
 import { installMilestones } from './milestones.js';
 import { activeTrips, EXCHANGE, homeOf, siteOf, startTrip } from './trips.js';
+import { campusOrigin } from '../school/campus.js';
+import { VOYAGE } from '../../shared/school-rules.js';
 import { reputation } from './reputation.js';
 import { localDay, writeDailyReport } from './report.js';
 import { haltRepo, listRuns, run as storedRun } from './runs.js';
@@ -1672,6 +1675,38 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
     go('oskar-kiln', 'job', byIssue(33).id, homeOf(agentOf('oskar-kiln')), siteOf(REPO.Q));
     go('ola-bergstrom', 'home', null, siteOf(REPO.K), homeOf(agentOf('ola-bergstrom')));
     go('dagny-hollis', 'bid', byIssue(219).id, homeOf(agentOf('dagny-hollis')), EXCHANGE);
+    // Two parents of the voyage below on their way to the university (Phase 4 ruling 28), once the engine has its plot.
+    const campus = campusOrigin();
+    if (campus) {
+      go('bruno-kiln', 'school', null, homeOf(agentOf('bruno-kiln')), campus);
+      go('juno-pike', 'school', null, homeOf(agentOf('juno-pike')), campus);
+    }
+  });
+
+  // The school (Phase 4 Task 37): a voyage sailing on the harbour's arena since the night before last, its second
+  // generation under way tonight. The city's own fixture in the ledger's shape (Task 22 records the real ones, Task
+  // 29 seeds the school whole): the library's reading room lights a bay per genome racing.
+  const voyage = (generation: number, runs: number): VoyageView => {
+    const scores: VoyageView['scores'] = [];
+    for (let g = 1; g <= generation; g++) {
+      for (let i = 0; i < VOYAGE.population; i++) {
+        const mean = 0.38 + 0.05 * g + 0.03 * ((i * 5) % 7);
+        scores.push({ genome: `harbour-${g}-${i}`, name: `Harbour ${g}.${i + 1}`, generation: g, mean, lo: mean - 0.09, hi: mean + 0.09, parents: g > 1 ? [`harbour-${g - 1}-${i}`, `harbour-${g - 1}-${(i + 3) % VOYAGE.population}`] : [] });
+      }
+    }
+    return { id: 'voy-harbour-1', arena: 'arena-harbor-ledger-1', status: 'sailing', generation, of: VOYAGE.generations, runs: { done: runs, of: 480 }, commissionedBy: null, scores, promoted: [], sealed: null, credits: 9.6 + runs / 40, startedAt: iso(ago(2 * DAY)), endedAt: null };
+  };
+  // The voyage's row goes with each entry, as the engine's would, so the ledger replays clean (replay.ts).
+  const saveVoyage = (v: VoyageView) => openDb().prepare('INSERT OR REPLACE INTO voyages (id, json) VALUES (?, ?)').run(v.id, JSON.stringify(v));
+  q.push(ago(2 * DAY), () => {
+    const v = voyage(1, 0);
+    saveVoyage(v);
+    record('voyage.started', { voyageId: v.id, voyage: v, repo: REPO.H });
+  });
+  q.push(ago(6 * HOUR), () => {
+    const v = voyage(2, 137);
+    saveVoyage(v);
+    record('voyage.generation', { voyageId: v.id, voyage: v, repo: REPO.H });
   });
 }
 

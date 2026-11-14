@@ -406,6 +406,10 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await still(page, 'observatory-open', at(131, 11, 84), at(183, 14, 90));
       await still(page, 'observatory-quad', at(70, 13, 93), at(183, 13, 90));
       await page.evaluate('window.__palimpsest.school(null)');
+      // The library lit for the voyage the sample economy sails (Task 37): across the inner quad, then close on the bays.
+      await page.waitForTimeout(6500);
+      await still(page, 'campus-voyage', at(100, 12, 34), at(181, 17, -4));
+      await still(page, 'campus-bays', at(147, 9.5, 19), at(178, 10, -1));
       const extra = JSON.parse(process.env.CAMPUS_VIEWS ?? '[]') as [V3, V3][];
       for (const [i, [e, t]] of extra.entries()) await still(page, `campus-${i}`, at(e[0], e[1], e[2]), at(t[0], t[1], t[2]));
     },

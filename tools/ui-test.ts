@@ -160,8 +160,19 @@ interface Debug {
   school(s: { training: boolean; masterTrusted: boolean; version: number } | null): void;
   /** The observatory as it shows now: how far open, whether the plate is lit, where the telescope points. */
   observatory(): { open: number; training: boolean; lit: boolean; version: number; altitude: number; azimuth: number } | null;
+  /** The campus's life in place of the ledger's (the voyage sailing lights the library); null gives the ledger's back. */
+  life(s: LifeProbe | null): void;
+  /** The campus's life as it shows now: the bays' light, the live voyage, the students. */
+  campusLife(): { voyage: LifeProbe['voyage']; bays: number[]; lit: number; students: number } | null;
+  /** Opens the inspector on the university. */
+  inspectCampus(): void;
   dropQuality(): void;
 }
+type LifeProbe = {
+  voyage: { id: string; arena: string; repo: string | null; status: string; generation: number; of: number; runs: { done: number; of: number }; racing: number; commissionedBy: string | null; startedAt: string } | null;
+  nets: Array<{ net: string; version: number; trusted: boolean; at: string | null }>;
+  graduates: unknown[];
+};
 
 /** Holds the ambient traffic and crowd at full density (once the network is laid), so every budget sees its worst. */
 async function fullDensity(page: Page): Promise<void> {
@@ -971,8 +982,89 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(SHOTS, 'campus-above.png') });
   await observatoryChecks(page, at);
+  await lifeChecks(page, at, c);
   await setView(page, home.eye, home.target);
   await page.waitForTimeout(800);
+}
+
+/**
+ * The campus's life (Task 37), on the sample economy: the voyage sailing on
+ * the harbour's arena lights eight reading-room bays of the library (one per
+ * genome racing), the students walk the quads unlabelled, a parent sent to
+ * the university walks in through the gate, the inspector on the library
+ * lists the voyage, and the campus keeps its budget with all of it on. The
+ * library stands at at(185, 6, 0) in the campus's frame, its front toward
+ * the gate at about at(176).
+ */
+async function lifeChecks(page: Page, at: (x: number, y: number, z: number) => number[], c: { origin: { x: number; z: number }; anchors: Record<string, number[]> }): Promise<void> {
+  // The voyage the fixture recorded is read with the campus on load; the bays light one after another over a few seconds.
+  await page.waitForTimeout(6500);
+  const life = await debug(page, (d) => d.campusLife());
+  check(!!life?.voyage && life.voyage.status === 'sailing' && life.voyage.racing === 8, `the sample economy's voyage sails on the campus (${JSON.stringify(life?.voyage)})`);
+  check(!!life && life.lit === 8 && life.bays.length >= 8, `the sailing voyage lights the library: ${life?.lit} of ${life?.bays.length} reading-room bays`);
+  check(!!life && life.students >= 8, `students walk the campus (${life?.students})`);
+  const persons = await callDebug<Array<{ kind: string; position: number[] }>>(page, 'd.persons()');
+  const students = persons.filter((f) => f.kind === 'walker');
+  check(students.length >= 8 && students.every((f) => f.position[1] > 5.9), `the students are the people's walkers, on the terrace (${students.length})`);
+  // Across the inner quad to the library at dusk, its bays lit for the voyage.
+  await setView(page, at(100, 12, 34), at(181, 17, -4));
+  await debug(page, (x) => x.precompile());
+  await page.waitForTimeout(1500);
+  const plates = page.locator('.plate.plate-person');
+  const texts = await plates.allTextContents();
+  check(texts.every((t) => t.trim().length > 0), `no plate stands over a student (${(await plates.count())} plates in view)`);
+  await page.screenshot({ path: join(SHOTS, 'campus-voyage.png') });
+  // Close on the lit bays: the tracery against the light.
+  await setView(page, at(147, 9.5, 19), at(178, 10, -1));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(SHOTS, 'campus-bays.png') });
+  // A parent walks in through the gate: sent on a school trip from the ring street before the stair, caught on the
+  // upper flight; it ends inside the gate on the terrace, never under it.
+  const id = 'priya-rao';
+  await callDebug(page, 'd.peopleHold(true)');
+  const from = at(-27, 0, 70);
+  const tripId = await callDebug<string | null>(page, `d.peopleTrip(${JSON.stringify(id)}, ${JSON.stringify([from[0], from[2]])}, ${JSON.stringify([c.origin.x, c.origin.z])}, 'school')`);
+  check(!!tripId, 'a parent is sent to the university on a school trip');
+  let f = await runUntil(page, id, (x) => x.position[1] > 3.3 && x.position[1] < 5.7 && x.stage === 'walk', 400);
+  check(!!f && f.position[1] > 3.3 && f.position[1] < 5.7, `she climbs the stair to the gate (${f?.position.map((v) => v.toFixed(1)).join(', ')}, ${f?.stage})`);
+  if (f) {
+    await setView(page, aroundPerson(f.position, f.heading, -9, 3.2, f.position[1] + 2.6), aroundPerson(f.position, f.heading, 6, -1, f.position[1] + 1.6));
+    await debug(page, (x) => x.precompile());
+    await page.waitForTimeout(900);
+    await page.screenshot({ path: join(SHOTS, 'campus-gate.png') });
+  }
+  f = await runUntil(page, id, (x) => x.stage === 'idle', 300);
+  const gate = c.anchors.gate;
+  const off = f ? Math.hypot(f.position[0] - gate[0], f.position[2] - gate[2]) : Infinity;
+  check(!!f && f.stage === 'idle' && off < 9 && Math.abs(f.position[1] - 6) < 0.1, `a school trip ends at the gate (${off.toFixed(1)} m from it, ${f?.position[1].toFixed(1)} m up)`);
+  await callDebug(page, 'd.peopleHold(false)');
+  // The inspector on the university: the voyage, the nets and the graduates, in words.
+  await debug(page, (d) => d.inspectCampus());
+  await page.waitForSelector('.inspector.open.insp-campus', { timeout: 5000 });
+  const panel = (await page.locator('.inspector').textContent()) ?? '';
+  check(/A voyage on harbor-ledger/.test(panel) && /8 genomes racing, 8 of \d+ reading-room bays lit/.test(panel), `the inspector lists the live voyage (${panel.replace(/\s+/g, ' ').slice(0, 160)})`);
+  check(/No net has trained yet/.test(panel) && /No graduate yet/.test(panel), 'and says plainly that no net has trained and no graduate is made');
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: join(SHOTS, 'campus-inspector.png') });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  check((await page.locator('.inspector.open').count()) === 0, 'Escape closes it');
+  // Paused for the night, the bays go dark; the ledger's state back, they light again.
+  const live = (await debug(page, (d) => d.campusLife()))!;
+  await page.evaluate(`window.__palimpsest.life(${JSON.stringify({ voyage: { ...live.voyage, status: 'paused' }, nets: [], graduates: [] })})`);
+  await page.waitForTimeout(8000);
+  const dark = await debug(page, (d) => d.campusLife());
+  check(!!dark && dark.lit === 0, `paused for the night, the bays go dark (${dark?.lit} lit)`);
+  await debug(page, (d) => d.life(null));
+  await page.waitForTimeout(8000);
+  const again = await debug(page, (d) => d.campusLife());
+  check(!!again && again.lit === 8, `sailing again, they light (${again?.lit} lit)`);
+  // With the bays lit, the students walking and a parent at the gate, the campus keeps its budget from home.
+  const b = await homeBreakdown(page);
+  const own = Object.values(b.campus ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  check(own.calls <= CAMPUS_HOME_CALLS && own.triangles <= CAMPUS_HOME_TRIANGLES, `with life on the campus draws within ${CAMPUS_HOME_CALLS} calls and ${CAMPUS_HOME_TRIANGLES / 1000}k triangles from home (${own.calls}, ${(own.triangles / 1000).toFixed(0)}k)`);
+  const total = callsOf(b);
+  check(total < HOME_CALLS, `and the whole city under ${HOME_CALLS} calls with it (${total})`);
 }
 
 /**

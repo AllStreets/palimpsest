@@ -7,10 +7,11 @@ import { batchPieces, type Batched } from './batch.js';
 import { plainBatch } from './plain-batch.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
 import { createCameraRig, type ScriptPose } from './camera';
-import { createCampus, type Campus, type CampusAnchors } from './campus/index.js';
+import { CAMPUS_INSPECT, createCampus, type Campus, type CampusAnchors } from './campus/index.js';
+import { campusLife, EMPTY_LIFE, type CampusLife, type CampusLifeView, type LifeState } from './campus/life.js';
 import type { ObservatoryState, ObservatoryView } from './campus/observatory.js';
 import { masonryMaterial } from './campus/masonry.js';
-import { campusPlaza, TERRACE } from './campus/site.js';
+import { CAMPUS_HALF, campusPlaza, TERRACE } from './campus/site.js';
 import type { CollarPlaza } from './collar.js';
 import { HALL } from './campus/halls.js';
 import type { RideFloor } from './ride.js';
@@ -51,6 +52,8 @@ export type PickHit =
   | { kind: 'exchange'; route: string }
   /** The observatory's dome (campus/observatory.ts): the school screen at the master. */
   | { kind: 'observatory'; route: string }
+  /** The library (campus/index.ts): the campus's inspector, with the live voyage, the nets and the graduates. */
+  | { kind: 'campus' }
   /** A persona's plate (people.ts). */
   | { kind: 'person'; agentId: string };
 
@@ -248,6 +251,10 @@ export interface City {
   setSchool(s: ObservatoryState): void;
   /** The observatory as it shows now, or null before the campus stands (tests and captures). */
   observatory(): ObservatoryView | null;
+  /** The campus's life as the ledger tells it (Task 37): the voyage sailing lights the library's bays; the nets and graduates for its inspector. */
+  setLife(s: LifeState): void;
+  /** The campus's life as it shows now (the bays' light, the live voyage, the students), or null before the campus stands. */
+  campusLife(): CampusLifeView | null;
 }
 
 /** The frame rate and triangles the city drew when it stepped down, and whether that was the home view. */
@@ -434,6 +441,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
           for (const fn of pickListeners) fn({ kind: 'person', agentId });
         },
         onRelease: () => rig.unfollow(),
+        // Trips to the university end at its gate, and trips from it start there (Task 37).
+        campus: () => (campus && campusOrigin ? { origin: campusOrigin, half: CAMPUS_HALF, approach: campus.approach() } : null),
       });
       peopleRoot.add(people.group);
       people.set(pendingTrips.trips, pendingTrips.agents);
@@ -544,9 +553,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let campusClockAt: number | null = null;
   /** The school's state as last told, kept across the campus's rebuilds. */
   let school: ObservatoryState = { training: false, masterTrusted: false, version: 0 };
+  /** The campus's life (campus/life.ts), rebuilt with the campus; its state kept across rebuilds. */
+  let campusLiving: CampusLife | null = null;
+  let lifeState: LifeState = EMPTY_LIFE;
   /** Builds (or rebuilds at the quality now) and stands the campus where the engine put it. */
   function placeCampus(): void {
     if (campus) {
+      campusLiving?.dispose();
+      campusLiving = null;
       campusRoot.remove(campus.group);
       campus.dispose();
       campus = null;
@@ -557,6 +571,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     campus.set(campusOrigin);
     campus.setSchool(school);
     campusRoot.add(campus.group);
+    campusLiving = campusLife(campus, { people: () => people, quality });
+    campusLiving.setState(lifeState);
     sun.shadow.needsUpdate = true;
   }
 
@@ -1286,6 +1302,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       const route = exchange?.pickables.get(h.object);
       if (route) return send({ kind: 'exchange', route });
       const dome = campus?.pickables.get(h.object);
+      if (dome === CAMPUS_INSPECT) return send({ kind: 'campus' });
       if (dome) return send({ kind: 'observatory', route: dome });
     }
   };
@@ -1574,6 +1591,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
     if (districtLod()) sun.shadow.needsUpdate = true;
     campus?.update(dt, clock.elapsedTime, camera.position);
+    campusLiving?.update(dt, clock.elapsedTime);
     renderer.info.reset();
     if (breakdownWanted.length) {
       sun.shadow.needsUpdate = true;
@@ -1742,6 +1760,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       campus?.setSchool(school);
     },
     observatory: () => campus?.observatory() ?? null,
+    setLife(s) {
+      lifeState = s;
+      campusLiving?.setState(s);
+    },
+    campusLife: () => campusLiving?.view() ?? null,
     setCampus(origin) {
       const same = (origin === null) === (campusOrigin === null) && (!origin || !campusOrigin || (origin.x === campusOrigin.x && origin.z === campusOrigin.z));
       if (same) return;

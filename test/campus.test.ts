@@ -15,12 +15,16 @@ import { drawnMeshes } from '../app/src/city/batch.js';
 import { createCampus, type CampusAnchors } from '../app/src/city/campus/index.js';
 import { afterSunset, handAngles, makeClockTower, TOWER } from '../app/src/city/campus/clock.js';
 import { buildHall, instanceHalls } from '../app/src/city/campus/halls.js';
+import { campusLife, EMPTY_LIFE, foldLifeEvent, racingGenomes } from '../app/src/city/campus/life.js';
 import { foldSchoolEvent, makeObservatory, OBSERVATORY, SCHOOL_MASTER_ROUTE, type ObservatoryState } from '../app/src/city/campus/observatory.js';
+import type { People } from '../app/src/city/people.js';
 import { Kit } from '../app/src/city/tower/kit.js';
 import { CAMPUS_HALF, campusPlaza, TERRACE } from '../app/src/city/campus/site.js';
 import { PITCH, standingLots } from '../app/src/city/lots.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
 import { DISTRICT_PITCH, districtOrigin } from '../shared/district-layout.js';
+import { VOYAGE } from '../shared/school-rules.js';
+import type { VoyageView } from '../shared/types.js';
 
 /** Plain materials, one per key, so the campus builds in Node. */
 function plainMaterials(): TowerMaterials {
@@ -338,5 +342,121 @@ test('clicking the dome opens the school screen at the master', () => {
   campus.setSchool({ training: true, masterTrusted: true, version: 1 });
   for (let i = 0; i < 40; i++) campus.update(0.5, 0, new THREE.Vector3(origin.x, 50, origin.z));
   assert.equal(campus.observatory().open, 1, 'the campus opens its observatory');
+  campus.dispose();
+});
+
+// ---------------------------------------------------------------- campus life (Task 37)
+
+/** A voyage as the school's ledger carries it: eight genomes racing in its current generation. */
+function voyageOf(status: VoyageView['status'], generation = 2, population = 8): VoyageView {
+  const scores: VoyageView['scores'] = [];
+  for (let g = 1; g <= generation; g++) {
+    for (let i = 0; i < population; i++) scores.push({ genome: `g${g}-${i}`, name: `Genome ${g}.${i}`, generation: g, mean: 0.5, lo: 0.4, hi: 0.6, parents: g > 1 ? [`g${g - 1}-${i}`] : [] });
+  }
+  return { id: 'voy-1', arena: 'arena-harbor-1', status, generation, of: 4, runs: { done: 137, of: 480 }, commissionedBy: null, scores, promoted: [], sealed: null, credits: 14.2, startedAt: '2026-11-11T22:00:00Z', endedAt: null };
+}
+
+test('a voyage of 8 lights 8 bays and its pause darkens them', () => {
+  const campus = createCampus({ quality: 'high', materials: plainMaterials(), masonry: plain() });
+  campus.set(districtOrigin(2));
+  const life = campusLife(campus, { people: () => null, quality: 'high' });
+  // The reading room has more bays than a voyage's population, and starts dark.
+  assert.ok(campus.library.bays >= 8, `the reading room has ${campus.library.bays} bays`);
+  assert.equal(life.view().lit, 0, 'dark before any voyage');
+  // The ledger's fold: a voyage sailing with eight genomes in its generation races eight.
+  let s = foldLifeEvent(EMPTY_LIFE, { type: 'voyage.started', data: { voyageId: 'voy-1', voyage: voyageOf('sailing', 1) } });
+  assert.ok(s.voyage && s.voyage.status === 'sailing' && s.voyage.racing === 8, `eight racing (${JSON.stringify(s.voyage)})`);
+  assert.equal(racingGenomes(voyageOf('sailing', 3, 6)), 6, 'the genomes of the current generation');
+  assert.equal(racingGenomes({ ...voyageOf('sailing', 1), scores: [] }), VOYAGE.population, 'before the first run, the population');
+  life.apply({ type: 'voyage.started', data: { voyageId: 'voy-1', voyage: voyageOf('sailing', 1) } });
+  for (let i = 0; i < 20; i++) life.update(0.5, i * 0.5);
+  const v = life.view();
+  assert.equal(v.lit, 8, `eight bays lit (${v.bays.map((b) => b.toFixed(2)).join(' ')})`);
+  // The light is in the panes' own instance colours: one instanced draw, no mesh added.
+  let panes: THREE.InstancedMesh | null = null;
+  campus.group.traverse((o) => {
+    if (o.name === 'campus:panes') panes = o as THREE.InstancedMesh;
+  });
+  assert.ok(panes, 'the campus panes draw');
+  const c = new THREE.Color();
+  // A lit bay sits in the window shader's amber band (0.45 to 0.62, no two alike), a dark one at 0.04.
+  const litPanes = campus.library.panes.filter((j) => {
+    panes!.getColorAt(j, c);
+    return c.r > 0.3;
+  });
+  assert.equal(litPanes.length, 8, 'eight panes carry the light');
+  assert.ok(litPanes.every((j) => (panes!.getColorAt(j, c), c.r <= 0.75)), 'and none is blown out');
+  assert.equal(drawnMeshes(campus.group), 6, 'and the campus still draws in six meshes');
+  // The voyage pauses for the night (its train pauses): the bays go dark over a few seconds.
+  life.apply({ type: 'train.paused', data: { train: { id: 'train-v1', kind: 'voyage', status: 'paused' } } });
+  assert.equal(life.state().voyage?.status, 'paused');
+  for (let i = 0; i < 20; i++) life.update(0.5, 10 + i * 0.5);
+  assert.equal(life.view().lit, 0, 'dark while paused');
+  // It sails again on the next night, then ends: dark again and no live voyage.
+  life.apply({ type: 'train.started', data: { train: { id: 'train-v2', kind: 'voyage', status: 'running' } } });
+  for (let i = 0; i < 20; i++) life.update(0.5, 20 + i * 0.5);
+  assert.equal(life.view().lit, 8, 'lit again when it sails on');
+  life.apply({ type: 'voyage.generation', data: { voyageId: 'voy-1', voyage: voyageOf('sailing', 3, 6) } });
+  for (let i = 0; i < 20; i++) life.update(0.5, 30 + i * 0.5);
+  assert.equal(life.view().lit, 6, 'a generation of six lights six');
+  life.apply({ type: 'voyage.ended', data: { voyageId: 'voy-1', voyage: { ...voyageOf('done', 4), endedAt: '2026-11-13T04:00:00Z' } } });
+  for (let i = 0; i < 20; i++) life.update(0.5, 40 + i * 0.5);
+  assert.equal(life.view().lit, 0, 'dark when the voyage ends');
+  assert.equal(life.state().voyage, null, 'no live voyage');
+  // Other kinds of training do not touch the reading room.
+  s = foldLifeEvent(EMPTY_LIFE, { type: 'train.started', data: { train: { id: 't', kind: 'nets', status: 'running' } } });
+  assert.equal(s, EMPTY_LIFE, 'a nets train is the observatory, not the library');
+  assert.equal(foldLifeEvent(EMPTY_LIFE, { type: 'job.posted', data: {} }), EMPTY_LIFE, 'anything else leaves the state as it was');
+  life.dispose();
+  campus.dispose();
+});
+
+test('trained nets and graduates are remembered for the inspector', () => {
+  let s = foldLifeEvent(EMPTY_LIFE, { type: 'net.trained', data: { netVersion: { net: 'appraiser', version: 6, trusted: true, at: '2026-11-12T03:00:00Z' } } });
+  s = foldLifeEvent(s, { type: 'net.trained', data: { netVersion: { net: 'router', version: 2, trusted: false } } });
+  s = foldLifeEvent(s, { type: 'net.trained', data: { netVersion: { net: 'appraiser', version: 7, trusted: false } } });
+  assert.deepEqual(s.nets.map((n) => [n.net, n.version, n.trusted]), [['appraiser', 7, false], ['router', 2, false]], 'the newest version of each net');
+  s = foldLifeEvent(s, { type: 'graduate.made', data: { graduate: { id: 'mlx:grad-qwen25c7-1', model: 'mlx:grad-qwen25c7-1', base: 'qwen2.5-coder:7b', loraId: 'lora-1', sealed: { mean: 0.61, lo: 0.52, hi: 0.7, n: 40 }, baseSealed: { mean: 0.47, lo: 0.38, hi: 0.56, n: 40 }, vsBase: { diff: 0.14, lo: 0.06, hi: 0.22 }, examples: 212, arenas: ['arena-1'], at: '2026-11-12T05:00:00Z', agentId: null } } });
+  assert.equal(s.graduates.length, 1);
+  assert.equal(s.graduates[0].id, 'mlx:grad-qwen25c7-1');
+  // Recorded twice (a replay), it is one graduate.
+  const again = foldLifeEvent(s, { type: 'graduate.made', data: { graduate: { ...s.graduates[0], loraId: 'lora-1', sealed: { mean: 0.61, lo: 0.52, hi: 0.7, n: 40 }, baseSealed: { mean: 0.47, lo: 0.38, hi: 0.56, n: 40 }, vsBase: { diff: 0.14, lo: 0.06, hi: 0.22 }, arenas: [] } } });
+  assert.equal(again.graduates.length, 1);
+});
+
+test('the campus walks its students, unlabelled, and lets them be picked up by the people', () => {
+  const campus = createCampus({ quality: 'medium', materials: plainMaterials(), masonry: plain() });
+  const origin = districtOrigin(2);
+  campus.set(origin);
+  const walks = campus.walks();
+  assert.ok(walks.nodes.length >= 20 && walks.edges.length >= walks.nodes.length - 1, `a walk graph (${walks.nodes.length} nodes, ${walks.edges.length} edges)`);
+  // Every node stands on the terrace inside the campus.
+  for (const n of walks.nodes) {
+    assert.ok(Math.abs(n[0] - origin.x) < CAMPUS_HALF && Math.abs(n[2] - origin.z) < CAMPUS_HALF, `node (${n[0].toFixed(0)}, ${n[2].toFixed(0)}) inside the campus`);
+    assert.ok(Math.abs(n[1] - TERRACE) < 0.5, 'on the terrace');
+  }
+  // The approach from the street climbs the stair to the gate.
+  const approach = campus.approach();
+  assert.ok(approach.length >= 4, 'street, foot, landing, gate');
+  assert.ok(Math.abs(approach[0][1]) < 0.2 && Math.abs(approach[approach.length - 1][1] - TERRACE) < 0.1, 'from the street up to the terrace');
+  const gate = campus.anchors().gate;
+  assert.ok(approach.some((p) => Math.hypot(p[0] - gate.x, p[2] - gate.z) < 1), 'through the gate');
+  // The students are the people's walkers: handed over whenever they need a path, never with a plate.
+  const given: Array<{ id: string; path: number[][] }> = [];
+  const fakePeople = {
+    setWalkers(ws: ReadonlyArray<{ id: string; path: ReadonlyArray<number[]> }>) {
+      given.splice(0, given.length, ...ws.map((w) => ({ id: w.id, path: w.path.map((p) => [...p]) })));
+    },
+    walkers: () => given.map((w) => ({ id: w.id, arrived: true })),
+  };
+  const life = campusLife(campus, { people: () => fakePeople as unknown as People, quality: 'medium' });
+  life.update(0.1, 0);
+  assert.ok(given.length >= 6, `students on the walks (${given.length})`);
+  for (const w of given) {
+    assert.ok(w.path.length >= 2, 'each on a path');
+    for (const p of w.path) assert.ok(Math.abs(p[0] - origin.x) < CAMPUS_HALF && Math.abs(p[2] - origin.z) < CAMPUS_HALF, 'that stays on the campus');
+  }
+  assert.equal(life.view().students, given.length);
+  life.dispose();
   campus.dispose();
 });

@@ -21,9 +21,14 @@ import { Kit, type TowerMaterials } from '../tower/kit.js';
 import { makeClockTower } from './clock.js';
 import { stampBuilt } from './gothic.js';
 import { buildHall, instanceHalls, type Hall } from './halls.js';
-import { makeLibrary } from './library.js';
+import { BAY_DARK, LANTERN_IDLE, LIBRARY, makeLibrary } from './library.js';
 import { makeObservatory, type ObservatoryState, type ObservatoryView } from './observatory.js';
-import { buildSite, FRONT_QUAD, HALL_Z, INNER_QUAD, mergeStamped, siteAnchors, TERRACE } from './site.js';
+import { approachPath, buildSite, FRONT_QUAD, HALL_Z, INNER_QUAD, mergeStamped, siteAnchors, TERRACE, walkGraph } from './site.js';
+
+type V3 = [number, number, number];
+
+/** The library's pick proxy maps to this in `pickables`: the city opens the campus's inspector (the live voyage, the nets, the graduates). */
+export const CAMPUS_INSPECT = 'campus:inspect';
 
 export interface CampusOptions {
   quality: 'high' | 'medium';
@@ -46,6 +51,13 @@ export interface CampusAnchors {
   gate: THREE.Vector3;
 }
 
+/** The library's light as the campus's life sets it (life.ts): one level per reading-room bay, one for the gable ends, one for the lantern. */
+export interface LibraryLight {
+  bays: ReadonlyArray<number>;
+  ends: number;
+  lantern: number;
+}
+
 export interface Campus {
   group: THREE.Group;
   /** Stands the campus on its plot, turned so the gate faces the city's centre. */
@@ -56,8 +68,18 @@ export interface Campus {
   setSchool(s: ObservatoryState): void;
   /** The observatory as it shows now (tests and captures). */
   observatory(): ObservatoryView;
-  /** The campus's pickable parts, each mapped to the route it opens: the dome, to the school screen at the master. */
+  /** The campus's pickable parts, each mapped to the route it opens: the dome, to the school screen at the master; the library, to CAMPUS_INSPECT. */
   pickables: Map<THREE.Object3D, string>;
+  /** The library's reading room: how many bays it has, which panes of the campus's pane draw they are (in bay order), and its light. */
+  library: {
+    bays: number;
+    panes: ReadonlyArray<number>;
+    set(light: LibraryLight): void;
+  };
+  /** The way from the street up the stair to the gate and onto the forecourt, in the world (people.ts). */
+  approach(): V3[];
+  /** The walks as a graph in the world, for the students (life.ts). */
+  walks(): { nodes: V3[]; edges: Array<[number, number]> };
   /** Per frame: `clock` is the city's seconds, `eye` the camera, which decides whether the AO still sees the campus. */
   update(dt: number, clock: number, eye: THREE.Vector3): void;
   dispose(): void;
@@ -84,6 +106,8 @@ export function hallPlacements(): THREE.Matrix4[] {
   return out;
 }
 
+/** The reading-room bays' light when lit, bay by bay: the window shader's amber band, no two desks alike. */
+const BAY_LIT = [0.54, 0.46, 0.6, 0.5, 0.57, 0.48, 0.62, 0.52, 0.58, 0.45, 0.55, 0.49, 0.61, 0.51];
 /** Each hall's brick fired in its own year: a little lighter or darker than the next. */
 const HALL_TINTS = [1.0, 0.95, 1.04, 0.97].map((k) => new THREE.Color(k, k, k));
 
@@ -100,7 +124,7 @@ export function createCampus(opts: CampusOptions): Campus {
   const kit = new Kit(opts.materials);
   kit.detail = detail;
   kit.base = new THREE.Matrix4().makeTranslation(local.library.x, TERRACE, local.library.z);
-  makeLibrary(kit, { quality: opts.quality, seed: opts.seed });
+  const libraryLights = makeLibrary(kit, { quality: opts.quality, seed: opts.seed });
   kit.base = new THREE.Matrix4().makeTranslation(local.clock.x, TERRACE, local.clock.z);
   const tower = makeClockTower(kit, now, { masonry, quality: opts.quality, seed: opts.seed, evening: opts.evening });
   // The observatory at the back corner, its door and slit facing the gate along the back lawn (the campus's +x).
@@ -114,9 +138,41 @@ export function createCampus(opts: CampusOptions): Campus {
   group.add(site);
 
   const hall: Hall = buildHall({ quality: opts.quality, materials: opts.materials, masonry, seed: opts.seed ?? 'university' });
-  const halls = instanceHalls(hall, hallPlacements(), HALL_TINTS, built.panes);
+  const placements = hallPlacements();
+  const halls = instanceHalls(hall, placements, HALL_TINTS, built.panes);
+  // The library's lit panes among the extras: each found by where it stands (the Kit laid them in its own order).
+  const firstExtra = hall.panes.matrices.length * placements.length;
+  const paneNear = (p: THREE.Vector3): number => {
+    let best = -1;
+    let d = Infinity;
+    const t = new THREE.Vector3();
+    built.panes.matrices.forEach((m, j) => {
+      const dj = t.setFromMatrixPosition(m).distanceTo(p);
+      if (dj < d) {
+        d = dj;
+        best = j;
+      }
+    });
+    return firstExtra + best;
+  };
+  const bayPanes = libraryLights.bays.map(paneNear);
+  const endPanes = libraryLights.ends.map(paneNear);
+  const lanternPanes = libraryLights.lantern.map(paneNear);
   built.panes.geometry.dispose();
   group.add(halls.group);
+  const paneColour = new THREE.Color();
+  const setPane = (j: number, lit: number): void => {
+    halls.panes.getColorAt(j, paneColour);
+    paneColour.r = lit;
+    halls.panes.setColorAt(j, paneColour);
+  };
+  // The library's pick proxy: a box over the reading room and its frontispiece, never drawn; it opens the campus's inspector.
+  const libraryPick = new THREE.Mesh(new THREE.BoxGeometry(LIBRARY.width + 10, 34, LIBRARY.length + 2), new THREE.MeshBasicMaterial({ visible: false }));
+  libraryPick.name = 'campus:library-pick';
+  libraryPick.visible = false;
+  libraryPick.position.set(local.library.x + 2, TERRACE + 17, local.library.z);
+  group.add(libraryPick);
+  observatory.pickables.set(libraryPick, CAMPUS_INSPECT);
   // The panes never cast and are too thin for the AO: the view alone draws them. The hands likewise.
   setLayers(halls.panes, LAYER.view);
   setLayers(tower.hands, LAYER.view);
@@ -129,6 +185,10 @@ export function createCampus(opts: CampusOptions): Campus {
   let origin: { x: number; z: number } | null = null;
   const sphere = new THREE.Sphere();
   let aoSeen: boolean | null = null;
+  const toWorld = (p: V3): V3 => {
+    const v = new THREE.Vector3(p[0], p[1], p[2]).applyMatrix4(group.matrixWorld);
+    return [v.x, v.y, v.z];
+  };
 
   return {
     group,
@@ -143,6 +203,26 @@ export function createCampus(opts: CampusOptions): Campus {
     setSchool: (s) => observatory.setState(s),
     observatory: () => observatory.view(),
     pickables: observatory.pickables,
+    library: {
+      bays: bayPanes.length,
+      panes: bayPanes,
+      set(light) {
+        // A lit bay is a reading room's amber, not a blown pane: each at its own level, as the halls' windows are.
+        bayPanes.forEach((j, i) => setPane(j, BAY_DARK + (BAY_LIT[i % BAY_LIT.length] - BAY_DARK) * Math.max(0, Math.min(1, light.bays[i] ?? 0))));
+        for (const j of endPanes) setPane(j, BAY_DARK + (0.6 - BAY_DARK) * Math.max(0, Math.min(1, light.ends)));
+        for (const j of lanternPanes) setPane(j, LANTERN_IDLE + (0.82 - LANTERN_IDLE) * Math.max(0, Math.min(1, light.lantern)));
+        if (halls.panes.instanceColor) halls.panes.instanceColor.needsUpdate = true;
+      },
+    },
+    approach() {
+      group.updateWorldMatrix(true, false);
+      return approachPath().map(toWorld);
+    },
+    walks() {
+      group.updateWorldMatrix(true, false);
+      const g = walkGraph();
+      return { nodes: g.nodes.map(toWorld), edges: g.edges };
+    },
     anchors() {
       group.updateWorldMatrix(true, false);
       const w = (v: THREE.Vector3): THREE.Vector3 => v.clone().applyMatrix4(group.matrixWorld);
@@ -170,6 +250,8 @@ export function createCampus(opts: CampusOptions): Campus {
       tower.dispose();
       observatory.dispose();
       siteGeo.dispose();
+      libraryPick.geometry.dispose();
+      (libraryPick.material as THREE.Material).dispose();
     },
   };
 }
