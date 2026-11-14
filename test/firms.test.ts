@@ -11,6 +11,7 @@ import {
   agent,
   firm,
   hire,
+  hireGraduate,
   idleAgents,
   installedModels,
   listAgents,
@@ -351,6 +352,28 @@ test('hire adds a roster agent with roster lineage and refuses a fifth tower', (
   assert.ok(second);
   assert.notEqual(second.name, first.name);
   assert.equal(quarters().find((q) => q.firmId === 'quickset')!.towers.length, 4);
+});
+
+test("a graduate of the school joins a firm on the collegiate root, with school lineage, and its tower stands in the firm's quarter", () => {
+  seedFirms(INSTALLED);
+  const g = hireGraduate('ashlar-vane', { id: 'grad-qwen25c7-1', model: 'mlx:grad-qwen25c7-1', base: 'qwen2.5-coder:7b', examples: 112, parents: ['lora-1'] });
+  assert.ok(g);
+  assert.equal(g.firmId, 'ashlar-vane');
+  assert.equal(g.lineage.origin, 'school');
+  assert.deepEqual(g.lineage.parents, ['lora-1']);
+  assert.equal(g.model, 'mlx:grad-qwen25c7-1');
+  assert.equal(g.towerIndex, 2, 'the lowest free plot');
+  assert.deepEqual(g.bidsOn, [], 'it bids on nothing until the mlx backend serves it');
+  assert.equal(g.retired, false);
+  const hiredRows = entries().filter((e) => e.kind === 'agent.hired');
+  assert.equal(hiredRows.length, 1);
+  assert.deepEqual(hiredRows[0].data, { agent: agent(g.id) });
+  const q = quarters().find((x) => x.firmId === 'ashlar-vane')!;
+  const t = q.towers.find((x) => x.agentId === g.id)!;
+  assert.equal(t.root, 'collegiate', "a graduate's tower stands on the school's root, not the firm's");
+  assert.equal(q.root, 'gothic', "the quarter itself keeps the firm's root");
+  assert.ok(q.towers.filter((x) => x.agentId !== g.id).every((x) => x.root === 'gothic'));
+  assert.equal(hireGraduate('ashlar-vane', { id: 'grad-qwen25c7-1', model: 'mlx:grad-qwen25c7-1', base: 'qwen2.5-coder:7b', examples: 112 }), null, 'never hired twice');
 });
 
 test('retiring frees the plot; a bankrupt firm goes dark and a sold tower is re-clad by its buyer', () => {

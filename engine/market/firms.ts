@@ -361,8 +361,9 @@ export function agentTowerId(agentId: string): string {
  * Every firm's quarter, in slot order: one agent tower per standing agent at
  * its plot in the quarter, in the firm's root with the agent's silhouette,
  * holding the floors the agent has earned (an agent tower has no founding
- * history, so its datum is at 0). A bankrupt firm's towers are dark until
- * sold; a sold tower stays on its plot, re-clad in its buyer's root.
+ * history, so its datum is at 0). A graduate of the school stands on the
+ * collegiate root in its firm's quarter. A bankrupt firm's towers are dark
+ * until sold; a sold tower stays on its plot, re-clad in its buyer's root.
  */
 export function quarters(): Quarter[] {
   const firms = listFirms();
@@ -378,7 +379,8 @@ export function quarters(): Quarter[] {
           // An agent tower belongs to no repo; its floors name the repos they were earned on.
           repo: '',
           kind: 'agent',
-          root: buyer ? buyer.root : f.root,
+          // A graduate of the school stands on the university's own root; a sold tower is re-clad in its buyer's.
+          root: buyer ? buyer.root : a.lineage.origin === 'school' ? 'collegiate' : f.root,
           floors: earnedFloors(id),
           datumIndex: 0,
           firmId: buyer ? buyer.id : f.id,
@@ -408,6 +410,58 @@ export function hire(firmId: string, now: Date = new Date()): Agent | null {
   let towerIndex = 0;
   while (taken.has(towerIndex)) towerIndex += 1;
   const a = makeAgent(seed, firmId, `specialist in ${seed.specialty}`, seed.workflow, 'roster', towerIndex, seed.model as ModelRef, true, now.toISOString());
+  saveAgent(a);
+  record('agent.hired', { agent: a });
+  return a;
+}
+
+/** What the school hands a firm when a fine-tuned coder graduates (Task 27 makes them): its adapter's model, the base it was tuned from, the examples it learned from, its parents. */
+export interface GraduateSeed {
+  id: string;
+  model: ModelRef;
+  base: string;
+  examples: number;
+  parents?: string[];
+  name?: string;
+  capability?: Era;
+}
+
+/**
+ * Hires a graduate of the school into `firmId`, on the lowest free plot of
+ * its quarter, with school lineage; its tower stands on the collegiate root
+ * (quarters). It bids on nothing until the mlx backend serves it (Task 26),
+ * so no job is routed to a model that cannot yet answer. Records
+ * `agent.hired`. Null when the firm is missing or bankrupt, its quarter
+ * stands four towers, or the graduate was hired already.
+ */
+export function hireGraduate(firmId: string, g: GraduateSeed, now: Date = new Date()): Agent | null {
+  const f = firm(firmId);
+  if (!f || f.status !== 'active' || storedAgent(g.id)) return null;
+  const taken = new Set(storedAgents(firmId).filter(standing).map((a) => a.towerIndex));
+  if (taken.size >= MAX_TOWERS) return null;
+  let towerIndex = 0;
+  while (taken.has(towerIndex)) towerIndex += 1;
+  const at = now.toISOString();
+  const a: Agent = {
+    id: g.id,
+    firmId,
+    name: g.name ?? g.model.replace(/^mlx:/, ''),
+    model: g.model,
+    persona: `A graduate of the university: ${g.base} fine-tuned on ${g.examples} of his verified changes.`,
+    temperament: 'a graduate, schooled on his own verified work',
+    instructions: `You were fine-tuned on ${g.examples} verified changes from the repositories of this city. Work as the firm asks, in its voice; keep every change small, tested and honest about what it did not do.\n`,
+    tools: [...AGENT_TOOLS],
+    workflow: { shape: 'self-check' },
+    memory: { examples: DEFAULT_EXAMPLES },
+    lineage: { origin: 'school', parents: [...(g.parents ?? [])], generation: 1, at },
+    silhouette: 'plain',
+    maxTurns: 40,
+    capability: g.capability ?? 'brick',
+    bidsOn: [],
+    retired: false,
+    retiredReason: null,
+    towerIndex,
+  };
   saveAgent(a);
   record('agent.hired', { agent: a });
   return a;

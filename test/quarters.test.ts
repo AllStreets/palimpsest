@@ -350,7 +350,8 @@ test("a sold tower rebuilds with the buyer's look and root", () => {
 test("the court's lantern stands over every agent root and under the lowest district tower, its glass as built", () => {
   const roots = Object.keys(ROOT_HEIGHT) as RootStyle[];
   const agentRoof = Math.max(...roots.map(agentRootHeight));
-  const lowestDistrict = Math.min(...roots.map((r) => ROOT_HEIGHT[r]));
+  // The collegiate root is the school's, for agent towers alone (engine/repos.ts ROOTS): no district stands on it.
+  const lowestDistrict = Math.min(...roots.filter((r) => r !== 'collegiate').map((r) => ROOT_HEIGHT[r]));
   assert.ok(LANTERN_TOP > agentRoof && LANTERN_TOP < lowestDistrict, `its top ${LANTERN_TOP} m is between ${agentRoof.toFixed(1)} and ${lowestDistrict} m`);
   // The glass burns over the agents' roofs, inside the cage.
   assert.ok(LANTERN_GLASS.y > agentRoof, `the glass's centre ${LANTERN_GLASS.y} m clears every agent root`);

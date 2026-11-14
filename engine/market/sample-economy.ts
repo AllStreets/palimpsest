@@ -94,7 +94,7 @@ import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js'
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
 import { charge } from './budget.js';
-import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, listAgents, listFirms, seedFirms } from './firms.js';
+import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, hireGraduate, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
 import { installMilestones } from './milestones.js';
 import { activeTrips, EXCHANGE, homeOf, siteOf, startTrip } from './trips.js';
@@ -458,6 +458,9 @@ const HISTORY: Story[] = [
 
 /** The day a merge of Lodestar's was the last it would see. */
 const HISTORY_DAYS = 8;
+
+/** The school's graduate in the sample (the plan's Task 28): qwen2.5-coder 7b fine-tuned on his verified work, graduated on a sealed race. */
+export const SAMPLE_GRADUATE = { id: 'grad-qwen25c7-1', model: 'mlx:grad-qwen25c7-1' as const, base: 'qwen2.5-coder:7b', examples: 112, parents: ['lora-qwen25c7-1'] };
 
 // ---------------------------------------------------------------- storage the market keeps private
 
@@ -1464,6 +1467,13 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
     if (process.env.PALIMPSEST_ECONOMY_DEBUG) console.log('balances at the daily tick', JSON.stringify(Object.fromEntries(listFirms().map((x) => [x.id, x.balance]))));
     // Held back (holdSale), Lodestar's tower still stands dark at `now`, for economyClock's `sell` to sell live.
     dailyTick(Date.now(), { sales: !holdSale });
+  });
+
+  // A graduate of the university (Phase 4 Task 38, ahead of Task 28's school seed): the fine-tuned coder the school
+  // graduated, hired the day after the tick. Quickset's quarter is full (its three agents and the specialist it hired),
+  // so it joins Ashlar & Vane; it has had no job yet, so its tower is the collegiate root alone.
+  q.push(at(7.5), () => {
+    hireGraduate('ashlar-vane', SAMPLE_GRADUATE, new Date(Date.now()));
   });
 
   // Three daily reports, each written ten minutes after its day ended.

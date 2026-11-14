@@ -10,8 +10,9 @@
  * is painted here from its own UVs (metres across and along the dome, so
  * the standing seams and the streaks keep their size), a smooth paint, a
  * brass lit by `uPlateLit` while the master is trusted, and the warm lining
- * inside the dome lit by `uSlitLit` while the shutters are open. App only:
- * it loads textures.
+ * inside the dome lit by `uSlitLit` while the shutters are open. The line
+ * kind (Task 38) is a bare emitter for the school towers' lit lines and
+ * lamps, which draw in this masonry too. App only: it loads textures.
  */
 import * as THREE from 'three';
 
@@ -146,6 +147,9 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           } else if (ck == 14) {
             // The lining's paint is near black (the sun through the slit adds nothing): its tone is its lamplight.
             s = vec4(0.06);
+          } else if (ck == 15) {
+            // A bare emitter (a school tower's lit lines and lamps): black paint, its tone is its light.
+            s = vec4(0.0, 0.0, 0.0, 1.0);
           } else {
             // Turf: a mown lawn, mottled by the sand scan at a coarse tile and a finer one, with the mower's stripes.
             float a = texture2D(uSandMap, vMapUv * 0.13).g;
@@ -177,6 +181,7 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           else if (ck == 12) r = 0.36;
           else if (ck == 13) r = 0.28;
           else if (ck == 14) r = 0.9;
+          else if (ck == 15) r = 0.6;
           else r = 0.96;
           roughnessFactor *= r;
         }`,
@@ -203,7 +208,7 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           else if (ck == 3) { mapN = texture2D(uAshNor, vNormalMapUv).xyz; k = 1.1; }
           else if (ck == 5) { mapN = texture2D(uSandNor, vNormalMapUv).xyz; k = 0.25; }
           else if (ck == 2) { mapN = texture2D(normalMap, vNormalMapUv).xyz; k = 0.35; }
-          else if (ck == 6 || ck == 7 || ck == 8 || ck == 9 || ck == 12 || ck == 13 || ck == 14) { mapN = vec3(0.5, 0.5, 1.0); }
+          else if (ck == 6 || ck == 7 || ck == 8 || ck == 9 || ck == 12 || ck == 13 || ck == 14 || ck == 15) { mapN = vec3(0.5, 0.5, 1.0); }
           else if (ck == 11) { mapN = texture2D(uSandNor, vNormalMapUv * 0.55).xyz; k = 0.22; }
           else { mapN = texture2D(uSandNor, vNormalMapUv * 2.9).xyz; k = 0.3; }
           mapN = mapN * 2.0 - 1.0;
@@ -237,7 +242,9 @@ export function masonryMaterial(): THREE.MeshStandardMaterial {
           // carry a fraction of it and read dark against the lining.
           totalEmissiveRadiance += vColor.rgb * (0.15 + 0.85 * down * down) * cloth * uSlitLit;
         }
-        if (campusKind() == 13) totalEmissiveRadiance += vColor.rgb * (0.9 * uPlateLit);`,
+        if (campusKind() == 13) totalEmissiveRadiance += vColor.rgb * (0.9 * uPlateLit);
+        // A school tower's lit lines and lamps: the tone is the tower's own emitter colour at its own level.
+        if (campusKind() == 15) totalEmissiveRadiance += vColor.rgb;`,
       );
   };
   return m;

@@ -425,6 +425,8 @@ export class Kit {
       const mesh = new THREE.Mesh(g, this.m[mat]);
       mesh.castShadow = mesh.receiveShadow = true;
       mesh.name = `tower:${mat}`;
+      // The slot it draws in, for anything that restamps a built tower (school-towers.ts).
+      mesh.userData.mat = mat;
       group.add(mesh);
     }
     for (const [key, b] of this.batches) {
@@ -478,6 +480,7 @@ export class Kit {
     mesh.castShadow = b.shadow;
     mesh.receiveShadow = true;
     mesh.name = `tower:${key}`;
+    mesh.userData.mat = b.mat;
     return mesh;
   }
 }

@@ -1176,6 +1176,126 @@ async function silhouetteChecks(page: Page): Promise<void> {
   await page.waitForTimeout(500);
 }
 
+// ---------------------------------------------------------------- the school's towers (Phase 4 Task 38)
+
+/** The school towers' own budget from home, every pass counted, on each tier (Decision 17). */
+const SCHOOL_HOME_CALLS = 4;
+
+/** Two more graduates, stood straight into the engine's store as a hire would store them, so the city reads them on agent.hired. */
+async function standGraduates(page: Page, firmId: string, other: string): Promise<string[]> {
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const { layEarnedFloor } = await import('../engine/repos.js');
+  const { agent: agentOf, listAgents } = await import('../engine/market/firms.js');
+  const db = openDb();
+  const at = new Date().toISOString();
+  const base = agentOf('grad-qwen25c7-1');
+  check(base !== null, "the sample's graduate is in the engine's store");
+  if (!base) return [];
+  const ids: string[] = [];
+  for (const [i, firm] of [firmId, other].entries()) {
+    const taken = new Set(listAgents(firm).filter((a) => !a.retired).map((a) => a.towerIndex));
+    let towerIndex = 0;
+    while (taken.has(towerIndex)) towerIndex += 1;
+    const id = `grad-qwen25c7-${i + 2}`;
+    const a = { ...base, id, firmId: firm, name: `grad-qwen25c7-${i + 2}`, model: `mlx:grad-qwen25c7-${i + 2}`, towerIndex, lineage: { ...base.lineage, at } };
+    db.prepare('INSERT INTO agents (id, firm_id, json) VALUES (?, ?, ?)').run(id, firm, JSON.stringify(a));
+    // The one beside the sample's graduate has worked: three brick floors earned, so the root carries a shaft.
+    if (i === 0) {
+      for (let f = 0; f < 3; f++) {
+        layEarnedFloor(`agent:${id}`, {
+          id: `agent:${id}#job-${f}`,
+          repo: 'tidewater/harbor-ledger',
+          kind: 'pr',
+          refs: [],
+          title: `Graduate's change ${f + 1}`,
+          at: new Date(Date.now() - (3 - f) * 86_400_000).toISOString(),
+          era: 'brick',
+          size: 'medium',
+          lines: 40,
+          claude: false,
+          founding: false,
+          url: null,
+          earned: { jobId: `grad-job-${f}`, runId: `grad-run-${f}`, agentId: id, firmId: firm, state: 'lit', reverted: false },
+        });
+      }
+    }
+    emit('agent.hired', { agent: a });
+    ids.push(id);
+  }
+  await page.waitForTimeout(3000);
+  return ids;
+}
+
+/** Takes the stood graduates down again, so the rest of the run sees the sample as seeded. */
+async function strikeGraduates(page: Page, ids: string[]): Promise<void> {
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const db = openDb();
+  for (const id of ids) {
+    const row = db.prepare('SELECT firm_id FROM agents WHERE id = ?').get(id) as { firm_id: string } | undefined;
+    db.prepare('DELETE FROM earned_floors WHERE tower_id = ?').run(`agent:${id}`);
+    db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+    emit('agent.retired', { agentId: id, firmId: row?.firm_id ?? '', reason: 'ui-test fixture struck', at: new Date().toISOString() });
+  }
+  await page.waitForTimeout(2500);
+}
+
+/**
+ * A graduate's tower stands on the collegiate root in its firm's quarter
+ * and draws, root and floors, under `schoolTowers` in at most four calls
+ * from home with one standing and with three, every pass counted; the city
+ * keeps its guard with three. On high it is shot from its court, close on
+ * its entrance, and the quarter with two school towers side by side.
+ */
+async function schoolTowerChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
+  const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+  const school = qs.flatMap((q) => q.towers.filter((t) => t.root === 'collegiate').map((t) => ({ q, t })));
+  check(school.length === 1, `one graduate's tower stands on the collegiate root (${school.map(({ q, t }) => `${t.agentId} with ${q.firmId}`).join(', ') || 'none'})`);
+  const grad = school[0];
+  if (!grad) return;
+  const sum = (p: Record<string, Tally> | undefined): Tally => Object.values(p ?? {}).reduce((a, t) => ({ calls: a.calls + t.calls, triangles: a.triangles + t.triangles }), { calls: 0, triangles: 0 });
+  const passes = (b: Breakdown): string =>
+    Object.entries(b.schoolTowers ?? {})
+      .map(([pass, t]) => `${pass} ${t.calls}/${(t.triangles / 1000).toFixed(0)}k`)
+      .join(', ');
+  let b = await homeBreakdown(page);
+  let own = sum(b.schoolTowers);
+  console.log(`info  on ${tier} the school's tower from home: ${own.calls} calls, ${(own.triangles / 1000).toFixed(0)}k triangles (${passes(b)}); the city ${callsOf(b)} calls`);
+  check(own.calls > 0 && own.calls <= SCHOOL_HOME_CALLS, `on ${tier} breakdown().schoolTowers is at most ${SCHOOL_HOME_CALLS} calls from home with one school tower standing (${own.calls})`);
+  // Two more graduates: one beside the sample's, with floors, one in another firm's quarter.
+  const other = qs.find((q) => q.firmId !== grad.q.firmId && !q.dark && q.towers.length < 4)?.firmId;
+  check(other !== undefined, 'another firm has a plot free for a graduate');
+  const extra = other ? await standGraduates(page, grad.q.firmId, other) : [];
+  const standing = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[]).flatMap((q) => q.towers).filter((t) => t.root === 'collegiate').length;
+  check(standing === 3, `three school towers stand (${standing})`);
+  b = await homeBreakdown(page);
+  own = sum(b.schoolTowers);
+  const total = callsOf(b);
+  const triangles = Object.values(b).reduce((n, v) => n + sum(v).triangles, 0);
+  console.log(`info  on ${tier} three school towers from home: ${own.calls} calls, ${(own.triangles / 1000).toFixed(0)}k triangles (${passes(b)}); the city ${total} calls, ${(triangles / 1e6).toFixed(2)}M`);
+  check(own.calls > 0 && own.calls <= SCHOOL_HOME_CALLS, `on ${tier} breakdown().schoolTowers is at most ${SCHOOL_HOME_CALLS} calls from home with three school towers standing (${own.calls})`);
+  check(total < HOME_CALLS && triangles <= HOME_TRIANGLES, `on ${tier} the whole city still draws under ${HOME_CALLS} calls and within ${HOME_TRIANGLES / 1e6}M with three school towers (${total}, ${(triangles / 1e6).toFixed(2)}M)`);
+  if (tier === 'high') {
+    const at = QUARTER_OFFSETS[grad.t.towerIndex ?? 0];
+    const ox = grad.q.origin.x + at.x;
+    const oz = grad.q.origin.z + at.z;
+    // The tower from its court, the entrance front toward the eye; then close on the entrance; then the quarter's two school towers.
+    await setView(page, [ox + 26, 11, oz + 40], [ox, 7.5, oz]);
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: join(SHOTS, 'graduate-tower.png') });
+    await setView(page, [ox + 6.5, 3.4, oz + 19], [ox, 2.4, oz + 8]);
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: join(SHOTS, 'graduate-tower-entrance.png') });
+    await setView(page, [grad.q.origin.x + 40, 36, grad.q.origin.z + 150], [grad.q.origin.x, 12, grad.q.origin.z + 30]);
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: join(SHOTS, 'school-towers.png') });
+  }
+  await strikeGraduates(page, extra);
+  const left = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[]).flatMap((q) => q.towers).filter((t) => t.root === 'collegiate').length;
+  check(left === 1, `the two stood graduates are struck again (${left} standing)`);
+}
+
 // ---------------------------------------------------------------- quarters (Task 24)
 
 /**
@@ -3137,7 +3257,8 @@ async function main(): Promise<void> {
     const forceDrop = process.env.UI_FORCE_DROP === '1';
     // UI_ONLY=spire: the economy seeded and the skyline's checks and shots alone (Task 14's quality rounds).
     // UI_ONLY=campus: the university's checks and shots on high, then on medium after the step down (Task 34's rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=school: the school towers' checks and shots on high, then on medium (Task 38's rounds).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3146,6 +3267,11 @@ async function main(): Promise<void> {
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(2500);
         await campusChecks(page, 'medium');
+      } else if (process.env.UI_ONLY === 'school') {
+        await schoolTowerChecks(page, 'high');
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await schoolTowerChecks(page, 'medium');
       } else if (process.env.UI_ONLY === 'budget') {
         await standFixture(page);
         await campusChecks(page, 'high');
@@ -3287,12 +3413,14 @@ async function main(): Promise<void> {
         await peopleChecks(page);
         await ambientChecks(page);
         await campusChecks(page, 'high');
+        await schoolTowerChecks(page, 'high');
         await everyScreenChecks(page, consoleErrors);
         const spiresBefore = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
         const highHome = await homeBreakdown(page);
         await qualityDropChecks(page, consoleErrors);
         await spireAfterDropChecks(page, spiresBefore);
         await campusChecks(page, 'medium');
+        await schoolTowerChecks(page, 'medium');
         await tierBudgetChecks(page, highHome);
       }
     }

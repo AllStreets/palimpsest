@@ -5,6 +5,7 @@ import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
 import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types';
 import { batchPieces, type Batched } from './batch.js';
 import { plainBatch } from './plain-batch.js';
+import { schoolBatch, type SchoolBatch } from './school-towers.js';
 import { frameBreakdown, type Breakdown } from './breakdown.js';
 import { createCameraRig, type ScriptPose } from './camera';
 import { CAMPUS_INSPECT, createCampus, type Campus, type CampusAnchors } from './campus/index.js';
@@ -693,6 +694,28 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     districtGroup.add(quarterBatch.group);
   }
 
+  /**
+   * The school's towers (Task 38): every agent tower on the collegiate root,
+   * taken out of its quarter's draw and drawn across the city in the
+   * university's own masonry (school-towers.ts), under the `schoolTowers`
+   * key: at most four calls from home however many graduates are hired.
+   */
+  const schoolRoot = new THREE.Group();
+  schoolRoot.name = 'schoolTowers';
+  scene.add(schoolRoot);
+  let schoolTowers: SchoolBatch | null = null;
+  function batchSchoolTowers(): void {
+    const towers = quarterPieces.flatMap(({ piece }) => piece.object.children.filter((c) => c.userData.school === true));
+    if (!schoolTowers) {
+      if (towers.length === 0 || !opts.campusMaterials) return;
+      campusMasonry ??= masonryMaterial();
+      schoolTowers = schoolBatch(campusMasonry, opts.campusMaterials.window);
+      schoolRoot.add(schoolTowers.group);
+    }
+    districtGroup.updateMatrixWorld(true);
+    if (schoolTowers.set(towers)) sun.shadow.needsUpdate = true;
+  }
+
   function placeQuarters(quarters: Quarter[]): number {
     const old = new Map(quarterPieces.map((c) => [c.firmId, c]));
     let built = 0;
@@ -716,7 +739,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       districtGroup.remove(piece.object);
       piece.dispose?.();
     }
-    if (built > 0 || removed > 0) rebatchQuarters();
+    if (built > 0 || removed > 0) {
+      // The school's towers are taken first, so the quarters' batch leaves their hidden parts alone.
+      batchSchoolTowers();
+      rebatchQuarters();
+    }
     return built;
   }
 
@@ -1473,6 +1500,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
     ...(milestones ? [['milestones', milestones.group] as [string, THREE.Object3D]] : []),
     ['campus', campusRoot],
+    ['schoolTowers', schoolRoot],
     ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
   ];
   const clock = new THREE.Clock();
@@ -1592,6 +1620,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (districtLod()) sun.shadow.needsUpdate = true;
     campus?.update(dt, clock.elapsedTime, camera.position);
     campusLiving?.update(dt, clock.elapsedTime);
+    schoolTowers?.update(camera.position);
     renderer.info.reset();
     if (breakdownWanted.length) {
       sun.shadow.needsUpdate = true;
@@ -1784,6 +1813,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       quarterBatch?.dispose();
+      schoolTowers?.dispose();
       towerPlains.dispose();
       exchange?.dispose();
       for (const { piece } of [...centerpieces, ...quarterPieces]) piece.dispose?.();

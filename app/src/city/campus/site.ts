@@ -42,10 +42,10 @@ export const QUAD_HALF = 44;
 /** A hall's centre line from the axis: its front stands at QUAD_HALF + a path. */
 export const HALL_Z = 56.5;
 
-export type Kind = 'brick' | 'limestone' | 'slate' | 'ashlar' | 'turf' | 'gravel' | 'lamp' | 'dial' | 'louvre' | 'gilt' | 'yew' | 'copper' | 'paint' | 'brass' | 'glow';
-export const KIND: Record<Kind, number> = { brick: 0, limestone: 1, slate: 2, ashlar: 3, turf: 4, gravel: 5, lamp: 6, dial: 7, louvre: 8, gilt: 9, yew: 10, copper: 11, paint: 12, brass: 13, glow: 14 };
+export type Kind = 'brick' | 'limestone' | 'slate' | 'ashlar' | 'turf' | 'gravel' | 'lamp' | 'dial' | 'louvre' | 'gilt' | 'yew' | 'copper' | 'paint' | 'brass' | 'glow' | 'line';
+export const KIND: Record<Kind, number> = { brick: 0, limestone: 1, slate: 2, ashlar: 3, turf: 4, gravel: 5, lamp: 6, dial: 7, louvre: 8, gilt: 9, yew: 10, copper: 11, paint: 12, brass: 13, glow: 14, line: 15 };
 /** Metres per tile of each kind's scan (the Kit's TILE for brick and limestone); 0 keeps the piece's own UVs (a clock dial's painted face, the copper's seams). */
-const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ashlar: 2.4, turf: 9, gravel: 1.6, lamp: 0, dial: 0, louvre: 1, gilt: 1, yew: 1, copper: 0, paint: 1, brass: 1, glow: 0 };
+const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ashlar: 2.4, turf: 9, gravel: 1.6, lamp: 0, dial: 0, louvre: 1, gilt: 1, yew: 1, copper: 0, paint: 1, brass: 1, glow: 0, line: 0 };
 /**
  * Each kind's tone, a vertex colour over its scan: red-brown brick, a pale
  * warm limestone, a cool blue-grey slate, the terrace's pale buff ashlar, a
@@ -58,7 +58,9 @@ const TILE: Record<Kind, number> = { brick: 1.5, limestone: 3.0, slate: 2.0, ash
  * its telescope, the brass of its plate (lit by a uniform while the master
  * is trusted) and the warm lamplit lining inside its dome (its tone is the
  * lamplight itself, in linear light, which the shader emits by a uniform
- * while the slit is open; its paint is near black).
+ * while the slit is open; its paint is near black), and a bare emitter
+ * whose tone is its light (a school tower's lit lines and lamps, drawn in
+ * this masonry by school-towers.ts; its paint is black).
  */
 export const TONE: Record<Kind, THREE.Color> = {
   brick: new THREE.Color(0.74, 0.5, 0.4),
@@ -76,6 +78,7 @@ export const TONE: Record<Kind, THREE.Color> = {
   paint: new THREE.Color(0.74, 0.71, 0.64),
   brass: new THREE.Color(0.8, 0.6, 0.26),
   glow: new THREE.Color(0.55, 0.19, 0.035),
+  line: new THREE.Color(1, 1, 1),
 };
 
 /** A small seeded generator for the trees' and lamps' variety (lots.ts rng, kept local so this module stays pure). */
