@@ -61,7 +61,7 @@ import { arenaInfo, listArenas, registerArenas, releaseArenaViews, sealedRefs } 
 import type { BeagleApi, BeagleGenome, BeagleRaceEvent } from './beagle-api.js';
 import { loadBeagle, schoolDriver, useDriver } from './beagle.js';
 import { ci, pairedCi } from './stats.js';
-import { registerAbort, TURNED_OFF_REASON } from './tick.js';
+import { registerAbort, stopGraduates, TURNED_OFF_REASON } from './tick.js';
 import { holdTrain, liveTrains, readGate } from './trainer.js';
 
 /** The agents of a generation the designer keeps unchanged. */
@@ -411,6 +411,8 @@ export async function sailVoyage(arenaId: string, now: number): Promise<VoyageVi
     const g = await readGate('heavy', now);
     if (!g.ok) throw new VoyageRefused(g.reason ?? 'the gate closed');
     if (!getSettings().school.enabled) throw new VoyageRefused('The school is off');
+    // a voyage is a heavy train: the graduates' server (ruling 26) ends its calls and stops first
+    await stopGraduates(true);
     return await sail(info, now);
   } finally {
     sailing = null;

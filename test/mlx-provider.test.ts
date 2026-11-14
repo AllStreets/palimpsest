@@ -1,225 +1,196 @@
 /**
  * The mlx backend (Phase 4 Task 26, ruling 26): the school's graduates served
  * by `mlx_lm.server` over the downloaded base, fenced in the trainer profile
- * on one loopback port. Every child is a fake spawner and the server is a
- * fake HTTP server on port 0 (test safety rule 11: no Python, no mlx_lm);
- * nothing here reaches the network. Temp home only.
+ * on one loopback port. Every server child is a fake (mlx-fixtures.ts) and
+ * the server is a fake HTTP server on port 0 (test safety rule 11: no
+ * Python, no mlx_lm); nothing here reaches the network. Temp home only.
  */
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 
-import { openDb } from '../engine/db.js';
-import { realSpawner, setSpawner, type SpawnDone, type Spawned, type SpawnLine, type SpawnOpts, type Spawner } from '../engine/exec.js';
 import { paths } from '../engine/home.js';
-import { ensureServer, MLX_GB, MLX_IDLE_MS, mlxProvider, serverState, setPortPicker, setServerTimers, stopServer } from '../engine/market/mlx.js';
+import { ensureServer, MLX_GB, MLX_IDLE_MS, mlxProvider, reapStrayServer, serverPidFile, serverState, STRAY_KILL_GRACE_MS } from '../engine/market/mlx.js';
 import type { RunLogLine, WorkInput } from '../engine/market/provider.js';
 import { providerFor } from '../engine/market/providers.js';
 import { loraBaseDir } from '../engine/school/lora.js';
+import { schoolOff, startSchool } from '../engine/school/tick.js';
+import { setGate } from '../engine/school/trainer.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
 import { localCredits } from '../shared/credits.js';
 import { poolOfModel } from '../shared/market-rules.js';
-import type { Agent, Job, ModelRef, RunProgress } from '../shared/types.js';
-import { setUp, tearDown, tempDir } from './guild-fixtures.js';
+import type { Agent, GateState, Job, ModelRef, RunProgress } from '../shared/types.js';
+import { setUp, tearDown } from './guild-fixtures.js';
+import { adapterDir, completion, GRAD_1, GRAD_2, graduate, installMlx, KEYS, lora, LORA_1, LORA_2, safetensors, SERVER_PID, uninstallMlx, until, type Mlx } from './mlx-fixtures.js';
 
-const KEYS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN', 'HF_TOKEN'];
-const GRAD_1: ModelRef = 'mlx:grad-qwen25c7-1';
-const GRAD_2: ModelRef = 'mlx:grad-qwen25c7-2';
-const LORA_1 = 'lora-0000000a';
-const LORA_2 = 'lora-0000000b';
-
-interface Fake {
-  cmd: string;
-  args: string[];
-  opts: SpawnOpts;
-  kills: string[];
-  end(code: number | null, signal?: string | null): void;
-}
-
-let spawned: Fake[];
-let saved: Record<string, string | undefined>;
-let server: Server | null;
+let m: Mlx;
+let spawned: Mlx['spawned'];
+let bodies: Mlx['bodies'];
+let timers: Mlx['timers'];
 let port: number;
-let bodies: Array<Record<string, unknown>>;
-let replies: Array<{ json: unknown; delayMs?: number }>;
-let timers: Array<{ fn: () => void; ms: number; cleared: boolean }>;
-
-/**
- * A fake spawner for the server, whose child lives until it is killed or
- * ended. Anything else (the broker's file tools in a work loop, node under
- * the tool profile) goes to the real spawner: no Python is ever started.
- */
-const fakeSpawner: Spawner = (cmd, args, opts): Spawned => {
-  if (![cmd, ...args].includes('mlx_lm.server')) {
-    assert.ok(!/python/.test([cmd, ...args].join(' ')), 'no Python under npm test');
-    return realSpawner(cmd, args, opts);
-  }
-  let closed = false;
-  let resolveDone!: (d: SpawnDone) => void;
-  const done = new Promise<SpawnDone>((r) => {
-    resolveDone = r;
-  });
-  const waiting: Array<(r: IteratorResult<SpawnLine>) => void> = [];
-  const f: Fake = {
-    cmd,
-    args,
-    opts,
-    kills: [],
-    end(code, signal = null) {
-      if (closed) return;
-      closed = true;
-      for (const w of waiting.splice(0)) w({ value: undefined, done: true });
-      resolveDone({ code, signal });
-    },
-  };
-  spawned.push(f);
-  const lines: AsyncIterable<SpawnLine> = {
-    [Symbol.asyncIterator]: () => ({
-      next: () => (closed ? Promise.resolve({ value: undefined, done: true }) : new Promise((r) => waiting.push(r))),
-    }),
-  };
-  return {
-    pid: 5151,
-    lines,
-    kill: (sig = 'SIGTERM') => {
-      f.kills.push(sig);
-      f.end(null, sig);
-    },
-    done,
-  };
-};
-
-/** A fake mlx_lm.server: GET /v1/models answers, POST /v1/chat/completions answers the next scripted reply. */
-async function fakeServer(): Promise<void> {
-  server = createServer((req, res) => {
-    let b = '';
-    req.on('data', (d) => (b += d));
-    req.on('end', () => {
-      if (req.method === 'GET' && req.url === '/v1/models') {
-        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ object: 'list', data: [] }));
-        return;
-      }
-      if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
-        res.writeHead(404).end();
-        return;
-      }
-      bodies.push(JSON.parse(b));
-      const reply = replies[bodies.length - 1];
-      if (!reply) {
-        res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'script ran out' }));
-        return;
-      }
-      setTimeout(() => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(reply.json)), reply.delayMs ?? 0);
-    });
-  });
-  await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
-  port = (server!.address() as { port: number }).port;
-}
-
-/** An OpenAI chat completion as mlx_lm.server answers it. */
-function completion(message: Record<string, unknown>, finish = 'stop'): unknown {
-  return { id: 'chatcmpl-1', object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: '', ...message }, finish_reason: finish }], usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 } };
-}
-
-function fakePython(): string {
-  const p = join(tempDir, 'venv', 'bin', 'python');
-  mkdirSync(join(p, '..'), { recursive: true });
-  writeFileSync(p, '#!/bin/sh\nexit 99\n');
-  chmodSync(p, 0o755);
-  return p;
-}
-
-/** A whole safetensors file as mlx-lm writes one. */
-function safetensors(n = 4): Buffer {
-  const header = JSON.stringify({ __metadata__: { format: 'mlx' }, 'a.lora_a': { dtype: 'F32', shape: [n], data_offsets: [0, 4 * n] } });
-  const len = Buffer.alloc(8);
-  len.writeBigUInt64LE(BigInt(Buffer.byteLength(header)));
-  return Buffer.concat([len, Buffer.from(header), Buffer.alloc(4 * n)]);
-}
-
-function baseReady(): void {
-  mkdirSync(loraBaseDir(), { recursive: true });
-  writeFileSync(join(loraBaseDir(), 'config.json'), '{"model_type":"qwen2"}\n');
-  patchSettings({ school: { ...getSettings().school, baseModelReady: true } });
-}
-
-function adapterDir(id: string): string {
-  return join(paths().school, 'lora', 'adapters', id);
-}
-
-/** A LoRA's record and its adapter on disk, as lora.ts leaves them. */
-function lora(id: string, status: 'trained' | 'paused' | 'failed', createdAt: string): void {
-  const runs = join(paths().school, 'ctl', 'lora');
-  mkdirSync(runs, { recursive: true });
-  mkdirSync(adapterDir(id), { recursive: true });
-  writeFileSync(join(adapterDir(id), 'adapters.safetensors'), safetensors());
-  const base = getSettings().school.baseModel;
-  writeFileSync(
-    join(runs, `${id}.json`),
-    JSON.stringify({ id, base, status, reason: null, iters: 600, saved: status === 'trained' ? 600 : 230, examples: 120, createdAt, endedAt: createdAt, trains: [], resumes: [], pauses: [], good: 0, torn: [], optimizerReset: false }),
-  );
-}
-
-/** A graduate row as Task 27 writes it. */
-function graduate(model: ModelRef, loraId: string): void {
-  const g = { id: model.slice(4), model, base: getSettings().school.baseModel, loraId, sealed: { mean: 0.6, lo: 0.5, hi: 0.7 }, baseSealed: { mean: 0.4, lo: 0.3, hi: 0.5 }, vsBase: { diff: 0.2, lo: 0.1, hi: 0.3 }, examples: 120, arenas: [], at: '2026-11-12T03:00:00.000Z', agentId: null };
-  openDb().prepare('INSERT OR REPLACE INTO graduates (id, json) VALUES (?, ?)').run(g.id, JSON.stringify(g));
-}
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-function complete(model: ModelRef, text = 'hello'): ReturnType<ReturnType<typeof mlxProvider>['complete']> {
-  return mlxProvider().complete({ model, system: 'You help.', turns: [{ role: 'user', content: text }], schema: null, signal: new AbortController().signal, maxMs: 60_000, runId: null });
+function complete(model: ModelRef, text = 'hello', signal = new AbortController().signal): ReturnType<ReturnType<typeof mlxProvider>['complete']> {
+  return mlxProvider().complete({ model, system: 'You help.', turns: [{ role: 'user', content: text }], schema: null, signal, maxMs: 60_000, runId: null });
 }
 
 beforeEach(async () => {
   setUp('mlx-provider');
-  saved = Object.fromEntries(['PALIMPSEST_PYTHON', ...KEYS].map((k) => [k, process.env[k]]));
-  process.env.PALIMPSEST_PYTHON = fakePython();
-  for (const k of KEYS) process.env[k] = 'secret-value';
-  spawned = [];
-  bodies = [];
-  replies = [];
-  timers = [];
-  server = null;
-  await fakeServer();
-  setSpawner(fakeSpawner);
-  setPortPicker(async () => port);
-  setServerTimers({
-    set: (fn, ms) => {
-      const t = { fn, ms, cleared: false };
-      timers.push(t);
-      return t;
-    },
-    clear: (t) => {
-      (t as { cleared: boolean }).cleared = true;
-    },
-  });
-  baseReady();
-  lora(LORA_1, 'trained', '2026-11-10T03:00:00.000Z');
-  lora(LORA_2, 'trained', '2026-11-11T03:00:00.000Z');
-  graduate(GRAD_1, LORA_1);
-  graduate(GRAD_2, LORA_2);
+  m = await installMlx();
+  ({ spawned, bodies, timers, port } = m);
 });
 
 afterEach(async () => {
-  await stopServer();
-  setPortPicker(null);
-  setServerTimers(null);
-  setSpawner(realSpawner);
-  server?.closeAllConnections();
-  if (server) await new Promise((r) => server!.close(r));
-  for (const [k, v] of Object.entries(saved)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
+  setGate(null);
+  await uninstallMlx();
   await tearDown();
 });
+
+// ---------------------------------------------------------------- fix round 1
+
+function okGate(kind: 'light' | 'heavy'): GateState {
+  return { kind, ok: true, reason: null, power: 'ac', powerMode: 0, idleMin: 60, inWindow: true, trainNowUntil: null, freeGB: 300, thermal: 'nominal' };
+}
+
+test('turning the school off stops the server, a call in flight ending with an error', async () => {
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  m.replies = [{ json: completion({ content: 'never' }), delayMs: 30_000 }];
+  const call = complete(GRAD_1);
+  await until(() => bodies.length === 1);
+  schoolOff();
+  await assert.rejects(call, /stopped|abort/i);
+  assert.deepEqual(spawned[0].kills, ['SIGTERM']);
+  assert.equal(serverState(), null);
+});
+
+test('a heavy train waits for the calls in flight, then the server stops before it starts', async () => {
+  patchSettings({ school: { ...getSettings().school, enabled: true } });
+  m.replies = [{ json: completion({ content: 'finished first' }), delayMs: 300 }];
+  const order: string[] = [];
+  const call = complete(GRAD_1).then((r) => {
+    order.push(`call ${r.text}`);
+    return r;
+  });
+  await until(() => bodies.length === 1);
+  const seen: Array<{ step: string; server: ReturnType<typeof serverState> }> = [];
+  const school = startSchool({
+    intervalMs: 3_600_000,
+    gate: async (kind) => okGate(kind as 'light'),
+    labels: () => ({}) as never,
+    ask: () => [],
+    act: async () => 0,
+    resume: async () => {
+      order.push('resume');
+      seen.push({ step: 'resume', server: serverState() });
+    },
+    sail: async () => {
+      seen.push({ step: 'sail', server: serverState() });
+    },
+    lora: async () => {
+      seen.push({ step: 'lora', server: serverState() });
+      return { status: 'refused' };
+    },
+  });
+  try {
+    await school.tick(Date.now());
+  } finally {
+    school.stop();
+  }
+  assert.equal((await call).text, 'finished first', 'the call in flight was not cut');
+  assert.deepEqual(order, ['call finished first', 'resume'], 'the train waited for the call');
+  assert.deepEqual(spawned[0].kills, ['SIGTERM']);
+  for (const s of seen) assert.equal(s.server, null, `${s.step} started with no server running`);
+
+  // and the LoRA too, when a graduate was serving between the voyage and it
+  const school2 = startSchool({
+    intervalMs: 3_600_000,
+    gate: async (kind) => okGate(kind as 'light'),
+    labels: () => ({}) as never,
+    ask: () => [],
+    act: async () => 0,
+    resume: async () => {},
+    sail: async () => {
+      m.replies.push({ json: completion({ content: 'between' }) });
+      await complete(GRAD_1);
+    },
+    lora: async () => {
+      seen.push({ step: 'lora after a call', server: serverState() });
+      return { status: 'refused' };
+    },
+  });
+  try {
+    patchSettings({ school: { ...getSettings().school, baseModelReady: true } });
+    await school2.tick(Date.now() + 1);
+  } finally {
+    school2.stop();
+  }
+  assert.equal(seen.at(-1)?.step, 'lora after a call');
+  assert.equal(seen.at(-1)?.server, null);
+  assert.deepEqual(spawned[1].kills, ['SIGTERM']);
+});
+
+test("the server's pid is kept under ctl while it runs and gone when it stops", async () => {
+  await ensureServer(GRAD_1);
+  const rec = JSON.parse(readFileSync(serverPidFile(), 'utf8')) as { pid: number; base: string; port: number };
+  assert.equal(serverPidFile(), join(paths().school, 'ctl', 'mlx-server.json'));
+  assert.equal(rec.pid, SERVER_PID);
+  assert.equal(rec.base, loraBaseDir());
+  assert.equal(rec.port, port);
+  spawned[0].end(null, 'SIGTERM');
+  await until(() => !existsSync(serverPidFile()));
+});
+
+test('a stray server left by the last engine is killed only while its command line is still ours', async () => {
+  const write = (pid: number) => {
+    mkdirSync(join(serverPidFile(), '..'), { recursive: true });
+    writeFileSync(serverPidFile(), JSON.stringify({ pid, port: 50123, model: GRAD_1, adapterId: LORA_1, base: loraBaseDir(), at: '2026-11-12T03:00:00.000Z' }));
+  };
+  // ours: SIGTERM to the group now, SIGKILL after the grace
+  write(7001);
+  m.ps.set(7001, `/venv/bin/python -I -B -m mlx_lm.server --model ${loraBaseDir()} --adapter-path ${adapterDir(LORA_1)} --host 127.0.0.1 --port 50123`);
+  assert.equal(await reapStrayServer(), true);
+  assert.deepEqual(m.kills, [{ pid: 7001, signal: 'SIGTERM' }]);
+  assert.equal(STRAY_KILL_GRACE_MS, 10_000);
+  assert.equal(existsSync(serverPidFile()), false);
+
+  // a reused pid running something else is never signalled
+  m.kills.length = 0;
+  write(7002);
+  m.ps.set(7002, '/usr/bin/vim notes.txt');
+  assert.equal(await reapStrayServer(), false);
+  // an mlx_lm.server over another base is not ours either
+  write(7003);
+  m.ps.set(7003, '/x/python -m mlx_lm.server --model /elsewhere/base --port 1');
+  assert.equal(await reapStrayServer(), false);
+  // a pid that is gone
+  write(7004);
+  assert.equal(await reapStrayServer(), false);
+  assert.deepEqual(m.kills, []);
+  assert.equal(existsSync(serverPidFile()), false);
+  // no file: nothing looked up
+  const before = m.runs.length;
+  assert.equal(await reapStrayServer(), false);
+  assert.equal(m.runs.length, before);
+});
+
+test('a port that answers but is not held by our child is never trusted', async () => {
+  m.listeners = [SERVER_PID, 9999];
+  await assert.rejects(ensureServer(GRAD_1), /not from the mlx server the engine started/);
+  assert.deepEqual(spawned[0].kills, ['SIGTERM']);
+  m.listeners = [9999];
+  await assert.rejects(ensureServer(GRAD_1), /not from the mlx server/);
+  m.listeners = [SERVER_PID];
+  await ensureServer(GRAD_1);
+  const lsof = m.runs.filter((r) => r[0] === '/usr/sbin/lsof').at(-1)!;
+  assert.deepEqual(lsof, ['/usr/sbin/lsof', '-nP', '-a', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']);
+});
+
+// ---------------------------------------------------------------- the backend
 
 test('providerFor mlx returns the mlx backend', () => {
   assert.equal(providerFor(GRAD_1).kind, 'mlx');
@@ -227,7 +198,7 @@ test('providerFor mlx returns the mlx backend', () => {
 });
 
 test("a work loop's tool call round-trips", async () => {
-  replies = [
+  m.replies = [
     { json: completion({ content: 'Let me look.', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"src/a.ts"}' } }] }, 'tool_calls') },
     // Qwen's own tag in the text, when the server left it unparsed
     { json: completion({ content: '<tool_call>\n{"name": "write_file", "arguments": {"path": "docs/CHANGELOG.md", "content": "# Changelog\\n"}}\n</tool_call>' }) },
@@ -269,7 +240,7 @@ test("a work loop's tool call round-trips", async () => {
 
 test('the server starts once under the profile with loopback bind only and stops after 10 idle minutes', async () => {
   delete process.env.PALIMPSEST_SANDBOX;
-  replies = [{ json: completion({ content: 'one' }) }, { json: completion({ content: 'two' }) }, { json: completion({ content: 'three' }) }];
+  m.replies = [{ json: completion({ content: 'one' }) }, { json: completion({ content: 'two' }) }, { json: completion({ content: 'three' }) }];
   assert.equal((await complete(GRAD_1)).text, 'one');
   assert.equal((await complete(GRAD_1)).text, 'two');
   assert.equal(spawned.length, 1, 'started once');
@@ -326,7 +297,7 @@ function readFileSyncOr(path: string): string {
 }
 
 test('a second graduate stops the first server', async () => {
-  replies = [{ json: completion({ content: 'first' }) }, { json: completion({ content: 'second' }) }];
+  m.replies = [{ json: completion({ content: 'first' }) }, { json: completion({ content: 'second' }) }];
   await complete(GRAD_1);
   assert.equal(serverState()?.model, GRAD_1);
   await complete(GRAD_2);
@@ -355,7 +326,7 @@ test('only a trained, whole adapter over the downloaded base is ever served', as
 });
 
 test('credits are local by seconds', async () => {
-  replies = [{ json: completion({ content: 'slow' }), delayMs: 250 }];
+  m.replies = [{ json: completion({ content: 'slow' }), delayMs: 250 }];
   const r = await complete(GRAD_1);
   assert.equal(r.usage.usd, 0);
   assert.equal(r.usage.weightedTokens, 0);

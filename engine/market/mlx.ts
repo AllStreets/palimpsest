@@ -24,7 +24,7 @@
  * caller charges them and leases the local pool (`poolOfModel` is `local`).
  */
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -34,7 +34,7 @@ import { LORA } from '../../shared/school-rules.js';
 import type { ModelRef } from '../../shared/types.js';
 import { AUDIT_PERSONA, auditPrompt, checkCommands } from '../audit/schema.js';
 import { openDb } from '../db.js';
-import { getSpawner, type Spawned } from '../exec.js';
+import { getRunner, getSpawner, signalGroup, type Spawned } from '../exec.js';
 import { paths } from '../home.js';
 import { trainerEnv, trainerPython } from '../school/trainer-env.js';
 import { planPrompt, reviewPrompt, systemPrompt } from './claude.js';
@@ -108,6 +108,8 @@ interface Live {
   idle: unknown;
   exited: boolean;
   drained: Array<() => void>;
+  /** Aborted when the server is stopped: a call still in flight ends with an error at once. */
+  calls: AbortController;
   /** The server's last lines, for a failure's reason. */
   tail: string[];
 }
@@ -177,6 +179,17 @@ export function setServerTimers(t: ServerTimers | null): void {
   timers = t ?? realTimers;
 }
 
+type Kill = (pgid: number, signal: 'SIGTERM' | 'SIGKILL') => boolean;
+let killFn: Kill = signalGroup;
+
+/** Installs the group kill `reapStrayServer` uses, for tests, or `null` for the real one. */
+export function setServerKill(fn: Kill | null): void {
+  killFn = fn ?? signalGroup;
+}
+
+/** How long after a stray server's SIGTERM it gets SIGKILL. */
+export const STRAY_KILL_GRACE_MS = 10_000;
+
 /** The running server, or null. */
 export function serverState(): { model: ModelRef; adapterId: string; port: number; inflight: number } | null {
   return current && !current.exited ? { model: current.model, adapterId: current.adapterId, port: current.port, inflight: current.inflight } : null;
@@ -191,11 +204,80 @@ function clearIdle(l: Live): void {
   l.idle = null;
 }
 
-/** Ends `l`: waits for its calls in flight, then SIGTERM (the spawner escalates to SIGKILL), and waits for it to go. */
+/* The server's pid, kept under the school's ctl (the trainer profile denies the server writing there), so the next engine reaps a server this one left behind. */
+
+/** Where the running server's pid is recorded: `<school>/ctl/mlx-server.json`. */
+export function serverPidFile(): string {
+  return join(paths().school, 'ctl', 'mlx-server.json');
+}
+
+function writePid(l: Live, base: string): void {
+  if (l.child.pid === null) return;
+  const file = serverPidFile();
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(file, JSON.stringify({ pid: l.child.pid, port: l.port, model: l.model, adapterId: l.adapterId, base, at: new Date().toISOString() }) + '\n');
+}
+
+function readPid(): { pid: number; base: string } | null {
+  try {
+    const d = JSON.parse(readFileSync(serverPidFile(), 'utf8')) as { pid?: unknown; base?: unknown };
+    return typeof d.pid === 'number' && Number.isInteger(d.pid) && typeof d.base === 'string' ? { pid: d.pid, base: d.base } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Removes the pid file when it still names `pid` (a later server's file is left alone). */
+function forgetPid(pid: number | null): void {
+  if (pid !== null && readPid()?.pid === pid) rmSync(serverPidFile(), { force: true });
+}
+
+/** Whether `pid` is still our `mlx_lm.server` over `base`, by its command line, so a reused pid is never signalled. */
+async function isOurServer(pid: number, base: string): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try {
+    const r = await getRunner()('/bin/ps', ['-o', 'command=', '-p', String(pid)], { timeoutMs: 5_000 });
+    return r.code === 0 && r.stdout.includes('mlx_lm.server') && r.stdout.includes(`--model ${base}`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * At engine start: a server the last engine left running (its pid file is
+ * still there) gets SIGTERM, and SIGKILL `STRAY_KILL_GRACE_MS` later, but
+ * only while its command line is still our `mlx_lm.server` over the
+ * school's base; a reused pid is never signalled. The file goes either way.
+ * Answers whether a stray was signalled.
+ */
+export async function reapStrayServer(): Promise<boolean> {
+  const rec = readPid();
+  if (!rec) {
+    rmSync(serverPidFile(), { force: true });
+    return false;
+  }
+  if (current && current.child.pid === rec.pid) return false;
+  let hit = false;
+  if (await isOurServer(rec.pid, rec.base)) {
+    killFn(rec.pid, 'SIGTERM');
+    const later = setTimeout(() => killFn(rec.pid, 'SIGKILL'), STRAY_KILL_GRACE_MS);
+    later.unref();
+    hit = true;
+  }
+  forgetPid(rec.pid);
+  return hit;
+}
+
+/**
+ * Ends `l`. With `waitForCalls`, first waits for its calls in flight to
+ * end; without, they are aborted at once. Then SIGTERM (the spawner
+ * escalates to SIGKILL), and waits for it to go.
+ */
 async function stopLive(l: Live, waitForCalls: boolean): Promise<void> {
   if (waitForCalls && l.inflight > 0) await new Promise<void>((r) => l.drained.push(r));
   clearIdle(l);
   if (current === l) current = null;
+  l.calls.abort(new Error('the mlx server was stopped'));
   if (!l.exited) {
     l.child.kill('SIGTERM');
     await l.child.done;
@@ -219,11 +301,30 @@ async function waitReady(l: Live): Promise<void> {
   }
 }
 
+/**
+ * Whether the port that answered is held by our child and no one else: the
+ * pids listening on it (`lsof`) must be exactly the child's. Another
+ * process that took the port first would answer the readiness check, and
+ * every prompt would go to it.
+ */
+async function ownsPort(l: Live): Promise<boolean> {
+  if (l.child.pid === null) return false;
+  try {
+    const r = await getRunner()('/usr/sbin/lsof', ['-nP', '-a', `-iTCP:${l.port}`, '-sTCP:LISTEN', '-t'], { timeoutMs: 10_000 });
+    if (r.code !== 0) return false;
+    const pids = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean).map(Number);
+    return pids.length > 0 && pids.every((p) => p === l.child.pid);
+  } catch {
+    return false;
+  }
+}
+
 /** Starts the server for `model` over `adapter` under the trainer profile, on one loopback port, and waits until it answers. */
 async function start(model: ModelRef, adapter: { id: string; path: string }): Promise<Live> {
   const python = trainerPython();
   if (!python) throw new Error('The trainer is not set up on this Mac');
   const { loraBaseDir } = await import('../school/lora.js');
+  const base = loraBaseDir();
   const port = await pickPort();
   if (!Number.isInteger(port) || port < 1 || port > 65535 || RESERVED_PORTS.has(port)) throw new Error(`the mlx server may not use port ${port}`);
   const school = paths().school;
@@ -232,7 +333,7 @@ async function start(model: ModelRef, adapter: { id: string; path: string }): Pr
   const tail: string[] = [];
   const argv = wrap(
     // -I: no cwd or user site on the path, no PYTHON* variables; -B: no bytecode written into a venv it borrows
-    [python, '-I', '-B', '-m', 'mlx_lm.server', '--model', loraBaseDir(), '--adapter-path', adapter.path, '--host', LOOPBACK, '--port', String(port)],
+    [python, '-I', '-B', '-m', 'mlx_lm.server', '--model', base, '--adapter-path', adapter.path, '--host', LOOPBACK, '--port', String(port)],
     'trainer',
     { school, tmp, bindPort: port, name: 'trainer-serve.sb' },
     (line) => tail.push(`[palimpsest] ${line}`),
@@ -242,7 +343,8 @@ async function start(model: ModelRef, adapter: { id: string; path: string }): Pr
     env: { ...trainerEnv(), HOME: tmp, TMPDIR: tmp },
     clearEnv: true,
   });
-  const l: Live = { model, adapterId: adapter.id, port, url: `http://${LOOPBACK}:${port}`, child, inflight: 0, idle: null, exited: false, drained: [], tail };
+  const l: Live = { model, adapterId: adapter.id, port, url: `http://${LOOPBACK}:${port}`, child, inflight: 0, idle: null, exited: false, drained: [], calls: new AbortController(), tail };
+  writePid(l, base);
   void (async () => {
     for await (const line of child.lines) {
       tail.push(line.line.slice(0, 500));
@@ -253,10 +355,13 @@ async function start(model: ModelRef, adapter: { id: string; path: string }): Pr
     l.exited = true;
     clearIdle(l);
     if (current === l) current = null;
+    l.calls.abort(new Error('the mlx server ended'));
+    forgetPid(child.pid);
     for (const r of l.drained.splice(0)) r();
   });
   try {
     await waitReady(l);
+    if (!(await ownsPort(l))) throw new Error(`port ${port} answered, but not from the mlx server the engine started`);
   } catch (err) {
     await stopLive(l, false);
     throw err;
@@ -308,17 +413,21 @@ export async function ensureServer(model: ModelRef, signal?: AbortSignal): Promi
   return view(l);
 }
 
-/** Stops the running server, if any (engine stop, tests). */
-export function stopServer(): Promise<void> {
+/**
+ * Stops the running server, if any. With `drain`, its calls in flight end
+ * first (before a heavy train takes the machine); without, they end with an
+ * error at once (the school turned off, the engine stopping).
+ */
+export function stopServer(o: { drain?: boolean } = {}): Promise<void> {
   return serialized(async () => {
-    if (current) await stopLive(current, false);
+    if (current) await stopLive(current, o.drain === true);
   });
 }
 
-async function withServer<T>(model: ModelRef, signal: AbortSignal, fn: (url: string) => Promise<T>): Promise<T> {
+async function withServer<T>(model: ModelRef, signal: AbortSignal, fn: (url: string, signal: AbortSignal) => Promise<T>): Promise<T> {
   const l = await acquire(model, signal);
   try {
-    return await fn(l.url);
+    return await fn(l.url, AbortSignal.any([signal, l.calls.signal]));
   } finally {
     release(l);
   }
@@ -427,8 +536,8 @@ export function mlxTransport(model: ModelRef): ChatTransport {
       const started = Date.now();
       let reply: OpenAIReply;
       try {
-        reply = await withServer(model, signal, (url) =>
-          post(url, { messages: toOpenAIMessages(messages), ...(tools.length ? { tools: toOpenAITools(tools) } : {}), stream: false, max_tokens: MLX_MAX_TOKENS }, signal),
+        reply = await withServer(model, signal, (url, sig) =>
+          post(url, { messages: toOpenAIMessages(messages), ...(tools.length ? { tools: toOpenAITools(tools) } : {}), stream: false, max_tokens: MLX_MAX_TOKENS }, sig),
         );
       } catch (err) {
         // the machine was busy until the call failed: its seconds are charged
@@ -460,7 +569,7 @@ async function once(model: ModelRef, messages: ChatMessage[], signal: AbortSigna
   signal.addEventListener('abort', onAbort, { once: true });
   const timer = setTimeout(() => ctl.abort(new Error('the mlx call ran out of time')), Math.max(1, Math.min(maxMs, CALL_MAX_MS)));
   try {
-    const reply = await withServer(model, ctl.signal, (url) => post(url, { messages: toOpenAIMessages(messages), stream: false, max_tokens: MLX_MAX_TOKENS }, ctl.signal));
+    const reply = await withServer(model, ctl.signal, (url, sig) => post(url, { messages: toOpenAIMessages(messages), stream: false, max_tokens: MLX_MAX_TOKENS }, sig));
     return { text: readReply(reply).text, usage: usageOf((Date.now() - started) / 1000) };
   } catch (err) {
     throw withSpent(err instanceof Error ? err : new Error(String(err)), usageOf((Date.now() - started) / 1000));

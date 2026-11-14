@@ -18,7 +18,8 @@ import { query, record } from '../engine/ledger.js';
 import { acquire, creditsFor, liveLeaseCount, schoolClaudeSpent, type Lease } from '../engine/market/budget.js';
 import { fakeProvider } from '../engine/market/fake-provider.js';
 import type { CompleteInput, CompleteResult, Usage } from '../engine/market/provider.js';
-import { setProvider } from '../engine/market/providers.js';
+import { providerFor, setProvider } from '../engine/market/providers.js';
+import { serverState } from '../engine/market/mlx.js';
 import { verifyReplay } from '../engine/market/replay.js';
 import { balances, replayBalances } from '../engine/market/treasury.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
@@ -36,6 +37,7 @@ import { COMMISSION, SEALED_USES, VOYAGE } from '../shared/school-rules.js';
 import type { ArenaInfo, GateState, Trip, VoyageView } from '../shared/types.js';
 import { addAgent, FULL, HOUR, setUp, tearDown } from './guild-fixtures.js';
 import { floorOn } from './roster-fixtures.js';
+import { completion, GRAD_1, installMlx, uninstallMlx, until } from './mlx-fixtures.js';
 
 const ARENA = 'arena-fake';
 const LOCAL = 'ollama:qwen2.5-coder:7b';
@@ -754,4 +756,37 @@ test('a voyage the engine stopped mid-sail replays clean once the next engine pa
   (await import('../engine/ledger.js')).record('train.started', { train, voyageId: 'v-dead' });
   await failInterruptedTrains();
   assertSchoolReplays();
+});
+
+test("a voyage waits for the graduates' calls in flight and stops their server before it sails", async () => {
+  const mlx = await installMlx();
+  try {
+    seedLocals();
+    let serverAtFirstCall: ReturnType<typeof serverState> | undefined;
+    backends({
+      hold: () => {
+        if (serverAtFirstCall === undefined) serverAtFirstCall = serverState();
+        return null;
+      },
+    });
+    await fakeArena();
+    mlx.replies = [{ json: completion({ content: 'done before the voyage' }), delayMs: 300 }];
+    const order: string[] = [];
+    const call = providerFor(GRAD_1)
+      .complete({ model: GRAD_1, system: 'You help.', turns: [{ role: 'user', content: 'hi' }], schema: null, signal: new AbortController().signal, maxMs: 60_000, runId: null })
+      .then((r) => {
+        order.push(r.text);
+        return r;
+      });
+    await until(() => mlx.bodies.length === 1);
+    const view = await sailVoyage(ARENA, NOW);
+    order.push('sailed');
+    assert.equal(view.status, 'done', view.reason ?? '');
+    assert.equal((await call).text, 'done before the voyage');
+    assert.deepEqual(order, ['done before the voyage', 'sailed']);
+    assert.deepEqual(mlx.spawned[0].kills, ['SIGTERM']);
+    assert.equal(serverAtFirstCall, null, 'no graduate server runs while the voyage races');
+  } finally {
+    await uninstallMlx();
+  }
 });

@@ -87,12 +87,27 @@ export function registerAbort(fn: Abort): () => void {
 export function schoolOff(now: number = Date.now()): void {
   record('school.enabled', { on: false, at: new Date(now).toISOString() });
   void pauseAll(TURNED_OFF_REASON);
+  // the graduates' server (ruling 26) stops too, a call in flight ending with an error
+  void stopGraduates(false);
   for (const abort of [...aborts]) {
     try {
       abort();
     } catch (err) {
       console.error('palimpsest: stopping school work failed:', err);
     }
+  }
+}
+
+/**
+ * Stops the graduates' mlx server (ruling 26): drained first before a heavy
+ * train takes the machine, at once when the school is turned off. Loaded on
+ * use (the market backend reaches back into the school). Never throws.
+ */
+export async function stopGraduates(drain: boolean): Promise<void> {
+  try {
+    await (await import('../market/mlx.js')).stopServer({ drain });
+  } catch (err) {
+    console.error('palimpsest: the graduates\' server could not be stopped:', err);
   }
 }
 
@@ -220,6 +235,8 @@ export function startSchool(o: SchoolOptions = {}): School {
       // A paused arena build (never a new one: only his click starts those) goes on with its untried candidates.
       if (!stopped && getSettings().school.enabled) {
         try {
+          // an arena build is a heavy train: the graduates' server gives the machine back first
+          await stopGraduates(true);
           await resume(now);
         } catch (err) {
           console.error('palimpsest: the school could not resume an arena build:', err);
@@ -239,6 +256,7 @@ export function startSchool(o: SchoolOptions = {}): School {
       const loraKey = `${night}\nlora`;
       if (!stopped && getSettings().school.enabled && getSettings().school.baseModelReady && liveTrains().length === 0 && !tried.has(loraKey)) {
         try {
+          await stopGraduates(true);
           const r = await lora(now);
           if (r.status !== 'waiting' && r.status !== 'paused') tried.add(loraKey);
         } catch (err) {
