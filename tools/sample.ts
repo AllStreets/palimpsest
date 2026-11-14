@@ -7,7 +7,8 @@
  *
  * writes a complete PALIMPSEST_HOME at <dir>, marked as a sample home. With
  * --economy it also writes the sample economy (engine/market/sample-economy.ts):
- * eight days of a fictional market and a board in every state; serve it with
+ * eight days of a fictional market and a board in every state, and the
+ * university's school (nets, voyages, a graduate, grants); serve it with
  * PALIMPSEST_SAMPLE_ECONOMY=live to watch the board move. Serve
  * it beside the installed engine with
  * PALIMPSEST_HOME=<dir> PALIMPSEST_PORT=4790 npm run engine. An engine on a
@@ -239,6 +240,14 @@ async function main(): Promise<void> {
     const { listAudits } = await import('../engine/audit/store.js');
     const audits = listAudits();
     console.log(`economy: ${audits.length} audits (${audits.map((a) => `${a.repo} ${a.status}`).join(', ')})`);
+    // The sample school (Phase 4 Task 29): its nets, voyages, graduates and grants, as the school screens read them.
+    const { netCards } = await import('../engine/school/nets.js');
+    const { voyages } = await import('../engine/school/voyage-table.js');
+    const { grants } = await import('../engine/school/autonomy.js');
+    const { graduates } = await import('../engine/school/lora.js');
+    const nets = netCards(Date.now()).map((n) => `${n.net} ${n.status}${n.current ? ` v${n.current.version}` : ''}`);
+    console.log(`economy: school nets (${nets.join(', ')})`);
+    console.log(`economy: school ${voyages().map((v) => `voyage ${v.status}${v.commissionedBy ? ` for ${v.commissionedBy}` : ''}`).join(', ')}; ${graduates().map((g) => `graduate ${g.id}`).join(', ')}; ${grants().map((g) => `${g.kind} on ${g.repo} ${g.state}`).join(', ')}`);
   }
   console.log(`wrote ${home}`);
 }

@@ -13,7 +13,7 @@ import { AUDIT_CREDITS_RANGE, AUDIT_MODEL_SHAPE as AUDIT_MODEL, pushModeRefusal 
 import { handleMarketApi, scrub, setMarketExtras } from './market/api.js';
 import { fakeProvider } from './market/fake-provider.js';
 import { setProvider } from './market/providers.js';
-import { economyClock, economySites, sampleOllamaUsage } from './market/sample-economy.js';
+import { economyClock, economySites, SAMPLE_TRAINER, sampleOllamaUsage } from './market/sample-economy.js';
 import { noteSseClients } from './market/budget.js';
 import { resumeRepo, updateKeepAwake } from './market/runs.js';
 import { availableRepos, GhError } from './github.js';
@@ -23,7 +23,7 @@ import { analyze, BAD_NAME, city, connect, disconnect, getRepo, isValidFullName,
 import { getSettings, patchSettings } from './settings.js';
 // Loaded for its effect: the settings route turning the school off runs schoolOff at once (tick.ts installs the hook).
 import './school/tick.js';
-import { schoolPatch, schoolScrub } from './school/api.js';
+import { schoolPatch, schoolScrub, setTrainerProbe } from './school/api.js';
 import { realRunner, getRunner, setRunner, getSpawner, realSpawner, setSpawner } from './exec.js';
 import { isSampleHome, sampleGh, sampleSpawner, useSampleFolders } from './sample.js';
 import { claudeSettingsTarget, installHook, isStale, latestReading, NO_CLAUDE_SETTINGS, uninstallHook } from './usage.js';
@@ -586,13 +586,21 @@ function enterSampleMode(): () => void {
   const fake = fakeProvider();
   for (const kind of ['claude', 'ollama', 'anthropic'] as const) setProvider(kind, fake);
   setMarketExtras({ sites: economySites, providers: { ollama: () => sampleOllamaUsage() } });
-  if (process.env.PALIMPSEST_SAMPLE_ECONOMY !== 'live') return () => setMarketExtras({});
+  // The school's trainer card shows the sample's fake trainer: no Python is found or pinged (Phase 4 Task 29).
+  setTrainerProbe(async () => SAMPLE_TRAINER);
+  if (process.env.PALIMPSEST_SAMPLE_ECONOMY !== 'live') {
+    return () => {
+      setTrainerProbe(null);
+      setMarketExtras({});
+    };
+  }
   const clock = economyClock({ now: () => Date.now(), speed: sampleSpeed(), board: true });
   const timer = setInterval(() => clock.tick(1000), 1000);
   timer.unref();
   return () => {
     clearInterval(timer);
     clock.stop();
+    setTrainerProbe(null);
     setMarketExtras({});
   };
 }

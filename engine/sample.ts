@@ -321,6 +321,16 @@ const US = '\x1f';
  * never touches the network. `delayMs` slows every call, so each step of an
  * analysis is visible. Connecting any repo reads an 18-commit history.
  */
+/** The training gate's probes (engine/school/gate.ts) as the sample Mac answers them, or null for any other command. */
+function gateAnswer(cmd: string, args: string[]): string | null {
+  if (cmd === '/usr/bin/pmset' && args.join(' ') === '-g batt') return "Now drawing from 'AC Power'\n -InternalBattery-0 (id=4653155)\t100%; charged; 0:00 remaining present: true\n";
+  if (cmd === '/usr/bin/pmset' && args.join(' ') === '-g therm') return 'Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\n';
+  if (cmd === '/usr/bin/pmset' && args.join(' ') === '-g') return 'System-wide power settings:\nCurrently in use:\n standby              1\n powermode            0\n sleep                1\n';
+  if (cmd === '/usr/sbin/ioreg' && args[0] === '-c' && args[1] === 'IOHIDSystem') return `    | |   "HIDIdleTime" = ${42n * 60n * 1_000_000_000n}\n`;
+  if (cmd === '/bin/df' && args[0] === '-k') return 'Filesystem     1024-blocks      Used Available Capacity  Mounted on\n/dev/disk3s5    971350180 780000000 175781250    82%    /System/Volumes/Data\n';
+  return null;
+}
+
 export function sampleGh(delayMs = 0): (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number }> {
   const available = [
     ...SAMPLE.map((s) => ({ fullName: s.fullName, private: false, description: s.description, language: s.language })),
@@ -366,6 +376,10 @@ export function sampleGh(delayMs = 0): (cmd: string, args: string[]) => Promise<
       return ok(log);
     }
     if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'list') return ok('[]');
+    // The sample Mac as the school's training gate reads it (Phase 4 Task 29): on AC, Automatic power mode, cool,
+    // idle 42 minutes, 180 GB free; whether the gate holds is then the training window's to say.
+    const gate = gateAnswer(cmd, args);
+    if (gate !== null) return ok(gate);
     const market = marketAnswer(cmd, args);
     if (market) return market;
     throw new Error(`sampleGh: unexpected command ${cmd} ${args.join(' ')}`);

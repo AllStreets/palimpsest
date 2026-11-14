@@ -774,3 +774,223 @@ test('the board, the run pages and the treasury count the same runs under way', 
   const waiting = listJobs({ status: 'waiting' }).filter((j) => listRuns().some((r) => r.jobId === j.id && r.endedAt === null));
   assert.ok(waiting.length > 0, 'the sample has a run waiting on his review');
 });
+
+// ---------------------------------------------------------------- the sample school (Phase 4 Task 29)
+
+/** The school as the sample seeds it, read through the engine's own readers. */
+async function schoolNow() {
+  const { netCards } = await import('../engine/school/nets.js');
+  const { agreements } = await import('../engine/school/decisions.js');
+  const { grants } = await import('../engine/school/autonomy.js');
+  const { listArenas } = await import('../engine/school/arenas.js');
+  const { voyages } = await import('../engine/school/voyage-table.js');
+  const { graduates, loraRuns } = await import('../engine/school/lora.js');
+  return { nets: netCards(NOW), agreements: agreements(), grants: grants(), arenas: listArenas(), voyages: voyages(), graduates: graduates(), loras: loraRuns() };
+}
+
+const iv = (x: { value: number; lo: number; hi: number; n?: number } | null | undefined) => (x ? [x.value, x.lo, x.hi, x.n] : null);
+
+test('the sample school replays clean', async () => {
+  await seed();
+  const { getSettings } = await import('../engine/settings.js');
+  const { campusView } = await import('../engine/school/campus.js');
+  const { schoolView, setTrainerProbe } = await import('../engine/school/api.js');
+  const { SAMPLE_TRAINER } = await import('../engine/market/sample-economy.js');
+  const s = await schoolNow();
+  assert.equal(getSettings().school.enabled, true, 'the school is on');
+  assert.equal(query({ kind: 'school.enabled' }).length, 1, 'he turned it on once, early in the story');
+
+  // The nets, with the capture's numbers.
+  const card = (net: string) => s.nets.find((n) => n.net === net)!;
+  const pass = card('appraiser-pass');
+  assert.equal(pass.status, 'trusted');
+  assert.equal(pass.current?.version, 6);
+  assert.deepEqual(iv(pass.current?.score), [0.14, 0.1, 0.19, 64]);
+  assert.equal(pass.current?.baseline.value, 0.22);
+  assert.equal(card('router').status, 'trained');
+  assert.match(card('router').reason ?? '', /does not beat its baseline/);
+  const durability = card('durability');
+  assert.equal(durability.status, 'thin');
+  assert.equal(durability.reason, '18 of 40 labels');
+  assert.match(durability.cause ?? '', /^18 of 40 city merges/);
+  const triage = card('triage');
+  assert.equal(triage.status, 'trusted');
+  assert.equal(triage.current?.rows.distilled, 22, 'taught by the master on 22 rows');
+  assert.equal(card('taste').status, 'thin');
+  const master = card('master');
+  assert.equal(master.status, 'trusted');
+  assert.equal(master.current?.version, 5);
+  assert.deepEqual(iv(master.current?.score), [0.09, 0.05, 0.14, 50]);
+  assert.equal(master.current?.baseline.value, 0.16);
+  assert.deepEqual(iv(master.current?.agreement), [0.92, 0.84, 0.98, 50]);
+  for (const n of s.nets) assert.ok(!('path' in (n.current ?? {})), 'a card never carries a path');
+
+  // His agreement with the master: one kind eligible, one not, one skewed.
+  const agree = (kind: string) => s.agreements.find((a) => a.kind === kind)!;
+  assert.deepEqual([agree('propose:readme-gap').agreed, agree('propose:readme-gap').rows, agree('propose:readme-gap').eligible], [48, 50, true]);
+  assert.deepEqual([agree('merge:low').agreed, agree('merge:low').rows, agree('merge:low').eligible], [44, 50, false]);
+  assert.equal(s.agreements.filter((a) => a.skewed).length, 1, 'one kind marked skewed');
+
+  // The grants: an open ask, a grant that acted twice, one revoked by a revert, one he revoked by hand.
+  const pair = (kind: string, repo: string) => s.grants.find((g) => g.kind === kind && g.repo === repo);
+  assert.equal(pair('propose:readme-gap', H)?.state, 'asked');
+  const kumo = pair('merge:low', K)!;
+  assert.deepEqual([kumo.state, kumo.acted], ['granted', 2]);
+  assert.equal(query({ kind: 'autonomy.acted' }).filter((e) => (e.data as { repo?: string; grant?: unknown }).repo === K && (e.data as { grant?: unknown }).grant).length, 2, 'two autonomous merges on kumo');
+  const reverted = s.grants.find((g) => g.state === 'revoked' && g.by === 'revert');
+  assert.ok(reverted, 'an earlier grant revoked by a revert');
+  const byHand = s.grants.find((g) => g.state === 'revoked' && g.by === 'him')!;
+  assert.ok(byHand.quietUntil && Date.parse(byHand.quietUntil) > NOW, `he revoked one by hand, quiet until ${byHand.quietUntil}`);
+
+  // Two arenas, three voyages, one graduate, a paused LoRA.
+  const planted = s.arenas.find((a) => a.kind === 'planted')!;
+  assert.equal(planted.repo, H);
+  assert.equal(planted.tasks.breeding + planted.tasks.race + planted.tasks.sealed, 48);
+  assert.equal(planted.sealedUses, 3);
+  const past = s.arenas.find((a) => a.kind === 'past')!;
+  assert.equal(past.repo, K);
+  assert.equal(past.tasks.breeding + past.tasks.race + past.tasks.sealed, 22);
+  const done = s.voyages.filter((v) => v.status === 'done');
+  const sailing = s.voyages.filter((v) => v.status === 'sailing');
+  const queued = s.voyages.filter((v) => v.status === 'paused' && v.generation === 0);
+  assert.deepEqual([done.length, sailing.length, queued.length, s.voyages.length], [1, 1, 1, 3]);
+  assert.equal(done[0].claim, true);
+  assert.equal(sailing[0].repo, H);
+  assert.deepEqual([sailing[0].generation, sailing[0].of, sailing[0].runs.done, sailing[0].runs.of], [2, 4, 137, 480]);
+  assert.equal(queued[0].commissionedBy, 'quickset');
+  assert.equal(s.graduates.length, 1);
+  const g = s.graduates[0];
+  assert.deepEqual([g.id, g.model, g.agentId], ['grad-qwen25c7-1', 'mlx:grad-qwen25c7-1', 'grad-qwen25c7-1']);
+  assert.deepEqual([iv(g.sealed)?.slice(0, 3), iv(g.baseSealed)?.slice(0, 3), [g.vsBase.diff, g.vsBase.lo, g.vsBase.hi]], [[0.61, 0.52, 0.7], [0.47, 0.38, 0.56], [0.14, 0.06, 0.22]]);
+  assert.equal(listAgents().find((a) => a.id === g.agentId)?.firmId, 'ashlar-vane', "hired by Ashlar & Vane: Quickset's quarter is full");
+  assert.ok(s.loras.some((l) => l.id === g.loraId && l.status === 'trained'), "the graduate's LoRA is on record");
+  const paused = s.loras.find((l) => l.status === 'paused')!;
+  assert.equal(paused.reason, 'on battery');
+  assert.equal(paused.optimizerReset, true);
+  assert.equal(paused.resumes[0]?.optimizerReset, true);
+  const trains = (openDb().prepare('SELECT json FROM trains').all() as Array<{ json: string }>).map((r) => JSON.parse(r.json) as { kind: string; status: string; reason: string | null; steps: { optimizerReset: boolean } | null });
+  assert.ok(trains.some((t) => t.kind === 'lora' && t.status === 'paused' && t.reason === 'on battery' && t.steps?.optimizerReset), 'the LoRA train paused on battery');
+  assert.ok(trains.some((t) => t.kind === 'nets' && t.status === 'done'));
+
+  // The campus still lights its bays from the sailing voyage, and the school view answers.
+  const campus = campusView();
+  assert.equal(campus.voyage?.id, sailing[0].id);
+  assert.equal(campus.voyageRepo, H);
+  setTrainerProbe(async () => SAMPLE_TRAINER);
+  try {
+    const view = await schoolView(NOW);
+    assert.equal(view.trainer.ready, true);
+    assert.equal(view.gate.light.power, 'ac', 'the sample Mac answers the gate');
+    assert.equal(view.voyages.find((v) => v.commissionedBy === 'quickset')?.queued, true);
+    assert.equal(view.lora.baseReady, true);
+  } finally {
+    setTrainerProbe(null);
+  }
+
+  const v = verifyReplay();
+  assert.ok(v.ok, v.diffs.join('\n'));
+});
+
+test('the clock ends the sailing voyage', async () => {
+  // The engine takes the campus's plot as it starts; the parents ride to it and back.
+  const { ensureCampus } = await import('../engine/school/campus.js');
+  await seedSample(NOW);
+  ensureCampus();
+  await seedEconomy(NOW);
+  const { voyages } = await import('../engine/school/voyage-table.js');
+  const { listArenas } = await import('../engine/school/arenas.js');
+  const sailing = voyages().find((v) => v.status === 'sailing')!;
+  const seen: Array<{ type: string; data: any }> = [];
+  const unsubscribe = subscribe((e) => seen.push(e as { type: string; data: any }));
+  try {
+    let t = NOW;
+    const clock = economyClock({ now: () => t, speed: 20 });
+    // 30 wall seconds at speed 20.
+    for (let i = 0; i < 29; i++) {
+      t += 1000;
+      clock.tick(1000);
+      await clock.idle();
+    }
+    assert.equal(voyages().find((v) => v.id === sailing.id)?.status, 'sailing', 'still sailing at 29 s');
+    assert.ok(seen.some((e) => e.type === 'voyage.generation' && e.data.voyageId === sailing.id), 'its generations go by');
+    t += 1000;
+    clock.tick(1000);
+    await clock.idle();
+    clock.stop();
+    const ended = voyages().find((v) => v.id === sailing.id)!;
+    assert.equal(ended.status, 'done');
+    assert.equal(ended.generation, 4);
+    assert.equal(ended.runs.done, ended.runs.of);
+    assert.ok(ended.endedAt && ended.champion);
+    const end = seen.find((e) => e.type === 'voyage.ended');
+    assert.equal(end?.data.voyageId, sailing.id);
+    assert.equal(end?.data.repo, H);
+    assert.equal(listArenas().find((a) => a.id === sailing.arena)?.sealedUses, 4, 'its sealed claim spent one use');
+    assert.ok(seen.some((e) => e.type === 'train.ended' && e.data.voyageId === sailing.id), 'its train ends');
+    const school = trips().filter((x) => x.reason === 'school' && Date.parse(x.startedAt) < NOW).map((x) => x.agentId).sort();
+    assert.deepEqual(school, ['bruno-kiln', 'juno-pike'], 'two parents rode to the campus before the clock');
+    const home = trips().filter((x) => x.reason === 'home' && Date.parse(x.startedAt) >= NOW && ['bruno-kiln', 'juno-pike'].includes(x.agentId));
+    assert.equal(home.length, 2, 'the parents ride home from the campus');
+    const v = verifyReplay();
+    assert.ok(v.ok, v.diffs.join('\n'));
+  } finally {
+    unsubscribe();
+  }
+
+  // With the school off, the clock leaves the voyage sailing.
+  process.env.PALIMPSEST_HOME = join(tempDir, 'home-quiet');
+  resetShipping();
+  samplePRs.reset();
+  await seed();
+  let t = NOW;
+  const quiet = economyClock({ now: () => t, speed: 20, school: false });
+  for (let i = 0; i < 31; i++) {
+    t += 1000;
+    quiet.tick(1000);
+    await quiet.idle();
+  }
+  quiet.stop();
+  assert.equal(voyages().filter((v) => v.status === 'sailing').length, 1);
+});
+
+test('the brief holds an ask and an acted item', async () => {
+  await seed();
+  const items = briefItems(openBrief(NOW));
+  const ask = items.find((i) => i.kind === 'autonomy');
+  assert.ok(ask, `an ask (${items.map((i) => i.kind).join(', ')})`);
+  assert.equal(ask.repo, H);
+  assert.deepEqual(ask.actions, ['grant', 'decline', 'why']);
+  assert.match(ask.text, /48 of the last 50 propose:readme-gap decisions/);
+  const acted = items.find((i) => i.kind === 'acted');
+  assert.ok(acted, 'an act of the city on its own');
+  assert.match(acted.text, /on its own, under its merge:low grant/);
+  assert.deepEqual(acted.actions, ['why'], 'he has revoked that grant since');
+});
+
+test('the sample never spawns python or mlx_lm', async () => {
+  await seed();
+  const { schoolView, setTrainerProbe } = await import('../engine/school/api.js');
+  const { SAMPLE_TRAINER } = await import('../engine/market/sample-economy.js');
+  let t = NOW;
+  const clock = economyClock({ now: () => t, speed: 20, board: true });
+  for (let i = 0; i < 40; i++) {
+    t += 1000;
+    clock.tick(1000);
+    await clock.idle();
+  }
+  clock.stop();
+  setTrainerProbe(async () => SAMPLE_TRAINER);
+  try {
+    await schoolView(t);
+  } finally {
+    setTrainerProbe(null);
+  }
+  assert.equal(spawns, 0, 'no process spawned');
+  assert.equal(fetches, 0, 'nothing fetched');
+  const reached = calls.filter((c) => /python|mlx|school\.py/i.test(`${c.cmd} ${c.args.join(' ')}`));
+  assert.deepEqual(reached.map((c) => `${c.cmd} ${c.args.join(' ')}`), [], 'no Python, no mlx_lm');
+  // The trainer the sample shows is the fake one: ready, on the pinned versions, with no Python named.
+  assert.equal(SAMPLE_TRAINER.python, null);
+  assert.equal(SAMPLE_TRAINER.ready, true);
+  assert.equal(SAMPLE_TRAINER.pinned, true);
+});

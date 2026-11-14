@@ -74,7 +74,18 @@ import type {
   Verdict,
   VoyageView,
   Graduate,
+  ArenaInfo,
+  Decision,
+  Grant,
+  Interval,
+  NetName,
+  NetVersion,
+  Prediction,
+  TrainState,
+  WorkKind,
 } from '../../shared/types.js';
+import { FEATURES } from '../../shared/net-features.js';
+import { outFor, type NetWeights } from '../../shared/nets.js';
 import { proposeFromAudit } from '../audit/proposals.js';
 import { auditSlug, countVerdicts, renderAudit } from '../audit/schema.js';
 import { audit as storedAudit, listAudits, saveAudit } from '../audit/store.js';
@@ -98,15 +109,20 @@ import { charge } from './budget.js';
 import { agent as storedAgent, AGENT_TOOLS, agentTowerId, firm, hireSeed, listAgents, listFirms, seedFirms } from './firms.js';
 import { attachRun, dismissProposed, job as storedJob, listJobs, pollJobs, postManualJob, proposeHarnessJob, settleJobEffects, transition } from './jobs.js';
 import { installMilestones } from './milestones.js';
-import { activeTrips, EXCHANGE, homeOf, siteOf, startTrip } from './trips.js';
+import { activeTrips, EXCHANGE, homeFromSchool, homeOf, siteOf, startTrip } from './trips.js';
 import { campusOrigin } from '../school/campus.js';
+import { grant, noteActed, noteActResult, revoke, revokeOnRevert } from '../school/autonomy.js';
+import { rowsFor } from '../school/datasets.js';
+import { markCurrent, putNetRow } from '../school/nets.js';
 import { schoolRoster } from '../school/roster.js';
-import { VOYAGE } from '../../shared/school-rules.js';
+import { PINS, type TrainerStatus } from '../school/trainer-env.js';
+import { voyages as storedVoyages } from '../school/voyage-table.js';
+import { AGREE, ARENA, COMMISSION, itemKey, LORA, SEALED_USES, VOYAGE } from '../../shared/school-rules.js';
 import { reputation } from './reputation.js';
 import { localDay, writeDailyReport } from './report.js';
 import { haltRepo, listRuns, run as storedRun } from './runs.js';
 import { agentFloorId, layJobFloors, layScar, pollPRs, repoFloorId, repoTowerId, resetShipping } from './ship.js';
-import { bankruptcyTick, dailyTick, installTreasury, sellDarkTowers, settle } from './treasury.js';
+import { bankruptcyTick, dailyTick, installTreasury, payCommission, sellDarkTowers, settle } from './treasury.js';
 
 export { SAMPLE_INSTALLED, sampleReading } from '../sample.js';
 
@@ -366,6 +382,8 @@ interface Story {
   revertDay?: number;
   /** The day he merged the PR, when the story fixes it (else his own time, 1.2 to 11 hours after it shipped). */
   mergeDay?: number;
+  /** The city merged it on its own, under his grant of this kind on the repo (Phase 4 Task 29): `autonomy.acted` before, its result after. */
+  city?: WorkKind;
 }
 
 /** The four jobs on the board when the daily tick sells Lodestar's tower and Quickset hires. */
@@ -404,7 +422,8 @@ const HISTORY: Story[] = [
   { day: 1.6, repo: 'A', tier: 'low', title: 'Barcode labels print at 300 dpi on the 203 dpi printer', by: [m('mack-quickset')] },
   { day: 1.7, repo: 'H', tier: 'high', title: 'Search index rebuild blocks the API for 40 seconds', by: [f('corin-hale'), m('ines-ashlar')] },
   { day: 1.9, repo: 'A', tier: 'normal', title: 'Batch import: report every bad row, not just the first', by: [f('corin-hale'), m('priya-rao')] },
-  { day: 2.0, repo: 'K', tier: 'low', title: 'Station list: sort stations by distance from home', by: [m('wren-sparrow')] },
+  // The city merged these two itself, under his merge:low grant on kumo (Task 29).
+  { day: 2.0, repo: 'K', tier: 'low', title: 'Station list: sort stations by distance from home', by: [m('wren-sparrow')], city: 'merge:low' },
   { day: 2.1, repo: 'K', tier: 'normal', title: 'Alerts fire twice when two stations cross the threshold together', by: [f('corin-hale'), m('ola-bergstrom')] },
   { day: 2.2, repo: 'A', tier: 'normal', title: 'Freezer map: show free slots per rack', by: [m('priya-rao')] },
   { day: 2.3, repo: 'Q', tier: 'high', title: 'Prepared statements leak when a query is dropped mid-iteration', by: [f('corin-hale'), m('hal-meridian')] },
@@ -425,7 +444,8 @@ const HISTORY: Story[] = [
   { day: 3.8, repo: 'H', tier: 'low', title: 'Invoice PDF cuts off long vessel names', by: [m('wren-sparrow')] },
   { day: 3.9, repo: 'K', tier: 'normal', title: 'Tile cache: serve stale tiles while a refresh is in flight', by: [m('ola-bergstrom')] },
   // Reverted yesterday, inside the brief's window (Task 9).
-  { day: 4.0, repo: 'F', tier: 'normal', title: 'Photo notes: keep the EXIF location when a photo is attached', by: [m('teodor-vane')], revertDay: 7.3 },
+  // Merged by the city under its merge:normal grant on fieldnotes, which his revert revoked (Task 29).
+  { day: 4.0, repo: 'F', tier: 'normal', title: 'Photo notes: keep the EXIF location when a photo is attached', by: [m('teodor-vane')], revertDay: 7.3, city: 'merge:normal' },
   { day: 4.1, repo: 'Q', tier: 'normal', title: 'Typed rows: support chrono timestamps behind a feature flag', by: [m('oskar-kiln')] },
   { day: 4.2, repo: 'A', tier: 'normal', title: 'Audit trail: record who voided a result and why', by: [m('ines-ashlar')] },
   { day: 4.4, repo: 'H', tier: 'normal', title: 'Pilot bookings: warn when two pilots are booked for one tide', by: [m('priya-rao')] },
@@ -435,7 +455,7 @@ const HISTORY: Story[] = [
   { day: 4.9, repo: 'F', tier: 'low', title: 'Map pins: keep the pin colour per species', by: [m('wren-sparrow')] },
   { day: 5.0, repo: 'Q', tier: 'normal', title: 'Typed rows: derive FromRow for tuple structs', by: [m('priya-rao')] },
   { day: 5.1, repo: 'F', tier: 'low', title: 'Export to CSV: include the GPS accuracy column', by: [m('mack-quickset')] },
-  { day: 5.2, repo: 'K', tier: 'low', title: 'Document the colour ramp in the README', by: [m('juno-pike')] },
+  { day: 5.2, repo: 'K', tier: 'low', title: 'Document the colour ramp in the README', by: [m('juno-pike')], city: 'merge:low' },
   { day: 5.3, repo: 'H', tier: 'normal', title: 'Replace moment with Intl in the schedule view', by: [m('ines-ashlar')] },
   { day: 5.4, repo: 'A', tier: 'high', title: 'Batch import: stream large CSVs instead of loading them whole', by: [m('oskar-kiln')] },
   { day: 5.45, repo: 'K', tier: 'low', title: 'Station feed: drop readings stamped in the future', by: [f('wren-sparrow'), f('mack-quickset')] },
@@ -453,7 +473,8 @@ const HISTORY: Story[] = [
   { day: 6.9, repo: 'A', tier: 'high', title: "Chain of custody: sign each transfer with the operator's key", by: [m('hal-meridian')] },
   { day: 7.0, repo: 'H', tier: 'normal', title: 'Harbour map: berth labels overlap at low zoom', by: [m('ola-bergstrom')] },
   { day: 7.1, repo: 'Q', tier: 'normal', title: 'Query builder: quote identifiers that clash with SQL keywords', by: [m('oskar-kiln')] },
-  { day: 7.2, repo: 'A', tier: 'low', title: 'Sample intake: trim spaces from pasted lot numbers', by: [m('mack-quickset')] },
+  // Merged by the city last night under its merge:low grant on assay-kit, which he revoked by hand this morning (Task 29).
+  { day: 7.2, repo: 'A', tier: 'low', title: 'Sample intake: trim spaces from pasted lot numbers', by: [m('mack-quickset')], city: 'merge:low' },
   { day: 7.25, repo: 'A', tier: 'normal', title: 'Add tests for the freezer map slot counts', by: [m('dagny-hollis')] },
   { day: 7.3, repo: 'H', tier: 'normal', title: 'Tide tables cache misses on every request after midnight', by: [m('priya-rao')] },
 ];
@@ -464,16 +485,17 @@ const HISTORY_DAYS = 8;
 /**
  * The school's graduate in the sample, in the engine's shape (lora.ts `graduate()`, Task 27): qwen2.5-coder 7b
  * fine-tuned on his verified work, graduated on a sealed race on the harbour's arena. Hired through the school's
- * roster (roster.ts `schoolRoster()`) and makeAgent, it is `grad-qwen25c7-1`, named Ada Quarry.
+ * roster (roster.ts `schoolRoster()`) and makeAgent, it is `grad-qwen25c7-1`, named Ada Quarry. Its LoRA's record
+ * (an id lora.ts accepts) is written by finishSchool().
  */
 export const SAMPLE_GRADUATE: Graduate = {
   id: 'grad-qwen25c7-1',
   model: 'mlx:grad-qwen25c7-1',
   base: 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit',
-  loraId: 'lora-qwen25c7-1',
-  sealed: { value: 0.58, lo: 0.46, hi: 0.7, n: 15 },
-  baseSealed: { value: 0.39, lo: 0.27, hi: 0.51, n: 15 },
-  vsBase: { diff: 0.19, lo: 0.05, hi: 0.33 },
+  loraId: 'lora-7a2c91e4',
+  sealed: { value: 0.61, lo: 0.52, hi: 0.7, n: 15 },
+  baseSealed: { value: 0.47, lo: 0.38, hi: 0.56, n: 15 },
+  vsBase: { diff: 0.14, lo: 0.06, hi: 0.22 },
   examples: 112,
   arenas: ['arena-harbor-ledger-1'],
   at: '',
@@ -1442,7 +1464,12 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
           const later = Math.min(Date.now() + between(1.2, 11) * HOUR, now - 3 * HOUR);
           q.push(s.mergeDay !== undefined ? at(s.mergeDay) : Math.max(Date.now() + 20 * MIN, later), async () => {
             if (a.end === 'closed') await p.close(run);
-            else await p.merge(run);
+            else if (s.city) {
+              // The city's own merge under his grant, as autonomy.ts act() writes it: the row before, the result after.
+              noteActed(s.city, run.repo, run.jobId, Date.now());
+              await p.merge(run);
+              noteActResult(s.city, run.repo, run.jobId, { ok: true, reason: null }, Date.now());
+            } else await p.merge(run);
           });
           if (s.revertDay !== undefined) {
             q.push(at(s.revertDay), () => revert(run, s.title));
@@ -1463,6 +1490,8 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
     const data = { jobId: run.jobId, runId: run.id, repo: run.repo, floorId: e.id, mergeSha: merged.mergeSha, revertSha: sha(`${run.id}@revert`), at: iso() };
     record('merge.reverted', data);
     emit('merge.reverted', data);
+    // A revert of a merge the city made on its own revokes that grant first (ruling 19), as ship.ts's revert hook does.
+    revokeOnRevert(data);
     haltRepo(run.repo, `A city merge was reverted: ${title}`, iso());
   };
 
@@ -1488,20 +1517,8 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
     dailyTick(Date.now(), { sales: !holdSale });
   });
 
-  // A graduate of the university (Phase 4 Task 38, ahead of Task 28's school seed): the fine-tuned coder the school
-  // graduated, hired the day after the tick. Quickset's quarter is full (its three agents and the specialist it hired),
-  // so it joins Ashlar & Vane; it has had no job yet, so its tower is the collegiate root alone.
-  // It graduates as the engine's graduate() does (its row, then graduate.made with agentId null, unhired; the ledger
-  // carries no arena whole, since the sample's arena has no row), and Ashlar & Vane hires it from the school's roster.
-  q.push(at(7.4), () => {
-    const g: Graduate = { ...SAMPLE_GRADUATE, at: iso() };
-    openDb().prepare('INSERT OR REPLACE INTO graduates (id, json) VALUES (?, ?)').run(g.id, JSON.stringify(g));
-    record('graduate.made', { graduate: g, arenas: [] });
-  });
-  q.push(at(7.5), () => {
-    const seed = schoolRoster().find((s) => s.id === SAMPLE_GRADUATE.id);
-    if (seed) hireSeed('ashlar-vane', seed, new Date(Date.now()));
-  });
+  // The university (Phase 4 Task 29): nets, his decisions, grants, arenas, voyages, LoRAs and the graduate Ashlar & Vane hires.
+  seedSchool(now, start, q);
 
   // Three daily reports, each written ten minutes after its day ended.
   for (const back of [3, 2, 1]) {
@@ -1522,6 +1539,7 @@ async function writeHistory(now: number, start: number, time: { set(ms: number):
   await q.drain(time, now);
   time.set(now);
   settle(now);
+  finishSchool(now);
 }
 
 /** The board at `now`: the eight issues in every state, people on their way. */
@@ -1712,39 +1730,733 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
     go('oskar-kiln', 'job', byIssue(33).id, homeOf(agentOf('oskar-kiln')), siteOf(REPO.Q));
     go('ola-bergstrom', 'home', null, siteOf(REPO.K), homeOf(agentOf('ola-bergstrom')));
     go('dagny-hollis', 'bid', byIssue(219).id, homeOf(agentOf('dagny-hollis')), EXCHANGE);
-    // Two parents of the voyage below on their way to the university (Phase 4 ruling 28), once the engine has its plot.
+  });
+}
+
+// ---------------------------------------------------------------- the school (Phase 4 Task 29)
+
+/**
+ * The trainer the sample Mac shows (Task 29): set up, on arm64, on the
+ * pinned mlx and mlx-lm. No Python is named or asked: a sample engine sets
+ * it as the school view's trainer probe, so nothing pings Python.
+ */
+export const SAMPLE_TRAINER: TrainerStatus = { ready: true, reason: null, python: null, arch: 'arm64', mlx: PINS.mlx, mlxLm: PINS.mlxLm, pinned: true };
+
+/** The planted arena on the harbour (48 tasks) and the past arena on kumo (22 tasks). */
+const PLANTED = 'arena-harbor-ledger-1';
+const PAST = 'arena-kumo-1';
+const PLANTED_TASKS = { breeding: 18, race: 15, sealed: 15 };
+const PAST_TASKS = { breeding: 8, race: 7, sealed: 7 };
+/** The seeded agents on local models: a voyage's first generation, its parents. */
+const LOCALS = ['oskar-kiln', 'bruno-kiln', 'wren-sparrow', 'juno-pike'];
+/** The two parents of tonight's voyage on their way to the campus. */
+const PARENTS = ['bruno-kiln', 'juno-pike'];
+/** The LoRA that graduated, and the one paused on battery. */
+const LORA_PAUSED = 'lora-b31f06d2';
+/** voyages.ts's own words; voyages.ts itself would pull Beagle into the market's import graph. */
+const NOT_COMPARED = 'Claude agents were not compared: voyages race local models only.';
+const OUTSIDE = 'outside the training window';
+
+const sid = (prefix: string, seed: string, n = 8) => `${prefix}${sha(`school ${seed}`).slice(0, n)}`;
+/** Every train of the sample school, by what it did. */
+const TRAIN = {
+  plantedBuild: sid('train-', 'build planted'),
+  pastBuild: sid('train-', 'build past'),
+  loraA: sid('train-', 'lora a'),
+  evalStopped: sid('train-eval-', 'eval 1'),
+  evalPassed: sid('train-eval-', 'eval 2'),
+  finished1: sid('train-voyage-', 'finished 1'),
+  finished2: sid('train-voyage-', 'finished 2'),
+  sailing1: sid('train-voyage-', 'sailing 1'),
+  sailing2: sid('train-voyage-', 'sailing 2'),
+  loraB1: sid('train-', 'lora b 1'),
+  loraB2: sid('train-', 'lora b 2'),
+};
+const SEALED_HASH: Record<string, string> = { [PLANTED]: sha('school planted sealed'), [PAST]: sha('school past sealed') };
+
+const clone = <T>(x: T): T => structuredClone(x);
+const ivl = (value: number, lo: number, hi: number, n: number): Interval => ({ value, lo, hi, n });
+
+// ---- one net version a night (rulings 11 and 12): the capture's numbers are the newest of each
+
+interface NetStep {
+  net: NetName;
+  version: number;
+  /** The night it trained: days after the firms were seeded. */
+  night: number;
+  score: [number, number, number];
+  base: [number, number, number];
+  n: number;
+  trusted: boolean;
+  agreement?: [number, number, number];
+  rows?: NetVersion['rows'];
+}
+
+const NET_STEPS: NetStep[] = [
+  { net: 'master', version: 1, night: 2, score: [0.13, 0.08, 0.19], base: [0.19, 0.13, 0.25], n: 10, trusted: true, agreement: [0.9, 0.7, 1], rows: { train: 30, heldOut: 10, distilled: 0 } },
+  { net: 'appraiser-pass', version: 1, night: 2, score: [0.24, 0.17, 0.31], base: [0.23, 0.16, 0.3], n: 10, trusted: false },
+  { net: 'master', version: 2, night: 3, score: [0.12, 0.08, 0.17], base: [0.18, 0.13, 0.24], n: 14, trusted: true, agreement: [0.86, 0.71, 1], rows: { train: 52, heldOut: 14, distilled: 0 } },
+  { net: 'appraiser-pass', version: 2, night: 3, score: [0.21, 0.15, 0.27], base: [0.23, 0.17, 0.29], n: 12, trusted: false },
+  { net: 'router', version: 1, night: 3, score: [0.24, 0.18, 0.3], base: [0.23, 0.17, 0.29], n: 12, trusted: false },
+  { net: 'master', version: 3, night: 4, score: [0.15, 0.1, 0.2], base: [0.17, 0.12, 0.22], n: 18, trusted: false, agreement: [0.83, 0.67, 0.94], rows: { train: 70, heldOut: 18, distilled: 0 } },
+  { net: 'appraiser-pass', version: 3, night: 4, score: [0.17, 0.12, 0.22], base: [0.23, 0.18, 0.28], n: 14, trusted: true },
+  { net: 'master', version: 4, night: 5, score: [0.1, 0.06, 0.15], base: [0.17, 0.12, 0.22], n: 21, trusted: true, agreement: [0.9, 0.76, 1], rows: { train: 84, heldOut: 21, distilled: 0 } },
+  { net: 'appraiser-pass', version: 4, night: 5, score: [0.19, 0.14, 0.24], base: [0.22, 0.17, 0.27], n: 15, trusted: false },
+  { net: 'router', version: 2, night: 5, score: [0.22, 0.17, 0.27], base: [0.22, 0.17, 0.27], n: 15, trusted: false },
+  { net: 'triage', version: 1, night: 5, score: [0.22, 0.18, 0.26], base: [0.23, 0.19, 0.27], n: 18, trusted: false, rows: { train: 71, heldOut: 18, distilled: 18 } },
+  { net: 'master', version: 5, night: 6, score: [0.09, 0.05, 0.14], base: [0.16, 0.11, 0.22], n: 50, trusted: true, agreement: [0.92, 0.84, 0.98], rows: { train: 70, heldOut: 50, distilled: 0 } },
+  { net: 'appraiser-pass', version: 5, night: 6, score: [0.16, 0.12, 0.21], base: [0.22, 0.17, 0.27], n: 16, trusted: true },
+  { net: 'appraiser-pass', version: 6, night: 7, score: [0.14, 0.1, 0.19], base: [0.22, 0.17, 0.27], n: 64, trusted: true, rows: { train: 256, heldOut: 64, distilled: 0 } },
+  { net: 'router', version: 3, night: 7, score: [0.21, 0.16, 0.26], base: [0.22, 0.17, 0.27], n: 64, trusted: false, rows: { train: 256, heldOut: 64, distilled: 0 } },
+  { net: 'triage', version: 2, night: 7, score: [0.17, 0.13, 0.21], base: [0.23, 0.19, 0.27], n: 23, trusted: true, rows: { train: 89, heldOut: 23, distilled: 22 } },
+];
+/** What each net's weights say whatever they see: a sample net is a constant (the nets are a few kilobytes; nothing trained them). */
+const NET_P: Partial<Record<NetName, number>> = { 'appraiser-pass': 0.7, router: 0.6, triage: 0.5, master: 0.9 };
+/** The kind the master marks skewed: he accepts every harness proposal, and it cannot beat that habit. */
+const SKEWED: WorkKind[] = ['propose:harness'];
+
+/** A constant net in the trainer's format: zero hidden weights and the head's bias at the logit of `p`. */
+function constantNet(net: NetName, version: number, p: number): NetWeights {
+  const d = FEATURES[net].length;
+  return {
+    net,
+    version,
+    features: [...FEATURES[net]],
+    norm: { mean: new Array<number>(d).fill(0), std: new Array<number>(d).fill(1) },
+    layers: [
+      { W: [new Array<number>(d).fill(0)], b: [0] },
+      { W: [[0]], b: [Math.log(p / (1 - p))] },
+    ],
+    out: outFor(net),
+  };
+}
+
+/** A train as trainer.ts writes it: its row, the entry carrying it whole, the event. */
+function putTrain(kind: 'train.started' | 'train.paused' | 'train.ended', t: TrainState, extra: Record<string, unknown> = {}): void {
+  openDb().prepare('INSERT OR REPLACE INTO trains (id, kind, status, json) VALUES (?, ?, ?, ?)').run(t.id, t.kind, t.status, JSON.stringify(t));
+  const data = { ...extra, train: clone(t) };
+  record(kind, kind === 'train.started' ? { ...data, pid: null } : data);
+  emit(kind, clone(data));
+}
+
+/** A train's state at `startedAt`, running. */
+function running(id: string, kind: TrainState['kind'], startedAt: number, steps: TrainState['steps'] = null): TrainState {
+  return { id, kind, status: 'running', reason: null, startedAt: iso(startedAt), endedAt: null, seconds: 0, steps, credits: 0 };
+}
+
+/** The same train stopped at `endedAt`: done, or paused with the gate's reason. */
+function stopped(t: TrainState, endedAt: number, status: 'done' | 'paused', reason: string | null, steps: TrainState['steps'] = t.steps): TrainState {
+  const seconds = Math.max(0, Math.round((endedAt - Date.parse(t.startedAt)) / 1000));
+  // the local credits' per-second floor, and the base model's size for a heavy train (Decision 10's rates)
+  const credits = round2(seconds * (t.kind === 'nets' ? 0.00002 : 0.0004));
+  return { ...t, status, reason, endedAt: iso(endedAt), seconds, credits, steps };
+}
+
+function arenaRow(id: string): ArenaInfo {
+  const row = openDb().prepare('SELECT json FROM arenas WHERE id = ?').get(id) as { json: string } | undefined;
+  if (!row) throw new Error(`sample economy: no arena ${id}`);
+  return JSON.parse(row.json) as ArenaInfo;
+}
+
+function putArena(a: ArenaInfo): ArenaInfo {
+  openDb().prepare('INSERT OR REPLACE INTO arenas (id, repo, json) VALUES (?, ?, ?)').run(a.id, a.repo, JSON.stringify(a));
+  return a;
+}
+
+/** One sealed use of the arena spent (ruling 25): its row moved, to be carried whole by the entry that spent it. */
+function spendUse(id: string): ArenaInfo {
+  const a = arenaRow(id);
+  const uses = a.sealedUses + 1;
+  return putArena({ ...a, sealedUses: uses, status: uses >= SEALED_USES ? 'spent' : a.status });
+}
+
+/** A voyage's view written, recorded whole and announced, as voyages.ts announce() does. */
+function announceVoyage(kind: 'voyage.started' | 'voyage.generation' | 'voyage.ended', v: VoyageView, extra: { arena?: ArenaInfo } = {}): void {
+  openDb().prepare('INSERT OR REPLACE INTO voyages (id, json) VALUES (?, ?)').run(v.id, JSON.stringify(v));
+  const data = { voyageId: v.id, voyage: clone(v), repo: v.repo ?? null, ...(extra.arena ? { arena: clone(extra.arena) } : {}) };
+  record(kind, data);
+  emit(kind, clone(data));
+}
+
+/** The voyage's genomes: the local agents first, then eight bred each generation; `racing` the generation whose race is under way. */
+function voyageScores(label: string, generations: number, racing: number | null): VoyageView['scores'] {
+  const out: VoyageView['scores'] = [];
+  const idOf = (g: number, i: number) => (g === 1 ? LOCALS[i] : `${label.toLowerCase()}-${g}-${i + 1}`);
+  for (let g = 1; g <= generations; g++) {
+    const size = g === 1 ? LOCALS.length : VOYAGE.population;
+    for (let i = 0; i < size; i++) {
+      const name = g === 1 ? (storedAgent(LOCALS[i])?.name ?? LOCALS[i]) : `${label} ${g}.${i + 1}`;
+      const prev = g === 2 ? LOCALS.length : VOYAGE.population;
+      const parents = g === 1 ? [] : [idOf(g - 1, i % prev), idOf(g - 1, (i + 3) % prev)];
+      if (g === racing) {
+        out.push({ genome: idOf(g, i), name, generation: g, mean: 0, lo: 0, hi: 0, parents, scored: false });
+        continue;
+      }
+      const mean = round2(Math.min(0.78, 0.3 + 0.06 * (g - 1) + 0.025 * ((i * 5) % 7)));
+      out.push({ genome: idOf(g, i), name, generation: g, mean, lo: round2(mean - 0.09), hi: round2(mean + 0.09), parents, scored: true });
+    }
+  }
+  return out;
+}
+
+/** The children kept over their parents, up to generation `g`: a promotion needs its paired interval above zero. */
+function promotions(label: string, through: number): VoyageView['promoted'] {
+  const out: VoyageView['promoted'] = [];
+  for (let g = 2; g <= through; g++) {
+    for (const i of [1, 4]) out.push({ child: `${label.toLowerCase()}-${g}-${i + 1}`, parent: g === 2 ? LOCALS[i % LOCALS.length] : `${label.toLowerCase()}-${g - 1}-${i + 1}`, diff: 0.07, lo: 0.02, hi: 0.12 });
+  }
+  return out;
+}
+
+interface VoyagePlan {
+  id: string;
+  arena: string;
+  repo: string;
+  label: string;
+  startedAt: number;
+}
+
+/** The view of a voyage under way at generation `g`, its race unscored, `runs` done. */
+function sailingView(p: VoyagePlan, g: number, runs: number, status: 'sailing' | 'paused', o: { reason?: string | null; pausedAt?: string | null } = {}): VoyageView {
+  return {
+    id: p.id,
+    arena: p.arena,
+    status,
+    generation: g,
+    of: VOYAGE.generations,
+    runs: { done: runs, of: VOYAGE.population * PLANTED_TASKS.race * VOYAGE.generations },
+    commissionedBy: null,
+    scores: voyageScores(p.label, g, g),
+    promoted: promotions(p.label, g - 1),
+    sealed: null,
+    credits: round2(9.6 + runs / 40),
+    startedAt: iso(p.startedAt),
+    endedAt: null,
+    repo: p.repo,
+    reason: o.reason ?? null,
+    pausedAt: o.pausedAt ?? null,
+    champion: null,
+    vsLocal: [],
+    claim: false,
+    notCompared: NOT_COMPARED,
+  };
+}
+
+/** The voyage ended: four generations scored, its champion beating every local agent on the sealed tasks. */
+function endedView(v: VoyageView, endedAt: number): VoyageView {
+  const label = v.scores.find((x) => x.generation === 2)?.name.split(' ')[0] ?? 'Voyage';
+  const scores = voyageScores(label, VOYAGE.generations, null);
+  const last = scores.filter((x) => x.generation === VOYAGE.generations).sort((a, b) => b.mean - a.mean || a.genome.localeCompare(b.genome))[0];
+  return {
+    ...v,
+    status: 'done',
+    generation: VOYAGE.generations,
+    runs: { done: v.runs.of, of: v.runs.of },
+    scores,
+    promoted: promotions(label, VOYAGE.generations),
+    sealed: ivl(0.58, 0.46, 0.7, PLANTED_TASKS.sealed),
+    credits: round2(9.6 + v.runs.of / 40),
+    endedAt: iso(endedAt),
+    reason: null,
+    pausedAt: null,
+    champion: { genome: last.genome, name: last.name, model: storedAgent('wren-sparrow')?.model ?? 'ollama:qwen2.5-coder:7b-instruct', generation: last.generation, parents: [...last.parents] },
+    vsLocal: LOCALS.map((id, i) => {
+      const diff = round2(0.21 - 0.03 * i);
+      return { agent: id, name: storedAgent(id)?.name ?? id, diff, lo: round2(diff - 0.08), hi: round2(diff + 0.08) };
+    }),
+    claim: true,
+    notCompared: NOT_COMPARED,
+    sealedUsesSpent: 1,
+  };
+}
+
+/** The pair's row as autonomy.ts keeps it. */
+function grantRow(kind: WorkKind, repo: string): Grant | null {
+  const row = openDb().prepare('SELECT json FROM grants WHERE kind = ? AND repo = ?').get(kind, repo) as { json: string } | undefined;
+  return row ? (JSON.parse(row.json) as Grant) : null;
+}
+
+/**
+ * The tick's ask (ruling 17), written as autonomy.ts askDue() writes it: the
+ * row and `autonomy.asked` carrying it whole. The sample's school setting is
+ * written on only after the history (an appraiser trusted mid-history would
+ * move the scripted awards), so askDue() itself, which reads it, is not called.
+ */
+function ask(kind: WorkKind, repo: string, rate: Interval, at: number): Grant {
+  const had = grantRow(kind, repo);
+  const g: Grant = { kind, repo, state: 'asked', at: iso(at), by: 'school', rate, reason: null, acted: had?.acted ?? 0, quietUntil: null };
+  openDb()
+    .prepare('INSERT INTO grants (kind, repo, state, at, json) VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind, repo) DO UPDATE SET state = excluded.state, at = excluded.at, json = excluded.json')
+    .run(g.kind, g.repo, g.state, g.at, JSON.stringify(g));
+  record('autonomy.asked', { kind, repo, grant: g, at: g.at });
+  emit('autonomy.asked', { kind, repo, grant: g });
+  return g;
+}
+
+/**
+ * The school of the sample economy (Task 29), into the history's queue at
+ * the times the story puts each fact. Every fact is the engine's own record:
+ * the rows the school's modules keep and the ledger entries that carry them
+ * whole, so `verifyReplay()` rebuilds the nets, predictions, decisions,
+ * grants, arenas, voyages, trains and graduates exactly; the grants move
+ * through autonomy.ts itself (grant, revoke, noteActed, noteActResult,
+ * revokeOnRevert, the last two from the history's merges and its revert).
+ * Nothing trains: the nets are constant weights written as the trainer
+ * writes them, the LoRA records are written by finishSchool(), and no
+ * process is started.
+ *
+ * - He turns the school on the first evening (`school.enabled`).
+ * - Nets, a night each from the second: appraiser-pass trusted at v6, Brier
+ *   0.14 [0.10, 0.19] against 0.22 on 64; the router trained, never trusted;
+ *   triage trusted at v2, taught by the master on 22 rows; the master trusted
+ *   at v5, Brier 0.09 [0.05, 0.14] against 0.16, agreeing with him 0.92
+ *   [0.84, 0.98] on 50, marking `propose:harness` skewed. Durability and taste
+ *   stay thin: durability has 18 of its 40 labels, his follow-ups on city
+ *   merges (`merge.followup`) and the reverted merge.
+ * - His decisions: forty before the first master (no prediction), then a
+ *   hundred each predicted forty minutes before: `propose:readme-gap` agreed
+ *   48 of 50 (eligible), `merge:low` 44 of 50.
+ * - Grants: merge:low on kumo, under which the city merged two PRs itself;
+ *   merge:normal on fieldnotes, revoked by his revert; merge:low on
+ *   assay-kit, under which it merged last night, revoked by him this morning
+ *   and quiet for 30 days; and tonight's open ask, `propose:readme-gap` on
+ *   the harbour.
+ * - Arenas: planted on the harbour (48 tasks; three sealed uses: a race cut
+ *   short, a finished voyage's claim, the graduation) and past on kumo (22).
+ * - Voyages: one finished with a champion claim; one sailing on the harbour
+ *   since the night before last, generation 2 of 4 and 137 of 480 runs, its
+ *   two parents on their way to the campus (economyClock ends it); one
+ *   commissioned by Quickset on kumo's arena, queued.
+ * - LoRAs: one trained, raced twice against its base and graduated as
+ *   `grad-qwen25c7-1` (0.61 [0.52, 0.70] against 0.47 [0.38, 0.56], by 0.14
+ *   [0.06, 0.22]), hired by Ashlar & Vane since Quickset's quarter is full;
+ *   one paused on battery after a resume that reset its optimiser.
+ */
+function seedSchool(now: number, start: number, q: Queue): void {
+  const at = (day: number) => start + Math.round(day * DAY);
+  const ago = (ms: number) => now - ms;
+
+  // He turns the school on the first evening.
+  q.push(at(0.3), () => {
+    record('school.enabled', { on: true, at: iso() });
+  });
+
+  // ---- the arenas (rulings 20 and 21): each a heavy train, recorded building, then ready
+  const build = (id: string, repo: string, kind: ArenaInfo['kind'], tasks: ArenaInfo['tasks'], candidates: number, from: number, to: number, trainId: string) => {
+    let t: TrainState;
+    q.push(at(from), () => {
+      t = running(trainId, 'arena', Date.now());
+      putTrain('train.started', t, { arena: id });
+      const info: ArenaInfo = { id, repo, kind, sha: sha(`${repo}@arena`), tasks: { breeding: 0, race: 0, sealed: 0 }, candidates: 0, kept: 0, sealedUses: 0, sealedHash: null, builtAt: iso(), status: 'building', reason: null };
+      record('arena.built', { arena: putArena(info) });
+    });
+    q.push(at(to), () => {
+      const cur = arenaRow(id);
+      const ready: ArenaInfo = { ...cur, tasks, candidates, kept: tasks.breeding + tasks.race + tasks.sealed, sealedHash: SEALED_HASH[id], status: 'ready' };
+      record('arena.built', { arena: putArena(ready) });
+      putTrain('train.ended', stopped(t, Date.now(), 'done', null), { arena: id });
+    });
+  };
+  build(PLANTED, REPO.H, 'planted', PLANTED_TASKS, ARENA.mutants, 1.1, 1.2, TRAIN.plantedBuild);
+  build(PAST, REPO.K, 'past', PAST_TASKS, 31, 1.25, 1.32, TRAIN.pastBuild);
+
+  // ---- the nets, a night at a time, promoted by nets.ts's rule (trusted, or the current one is not)
+  let masterNow: number | null = null;
+  const currentTrusted = new Map<NetName, { version: number; trusted: boolean }>();
+  NET_STEPS.forEach((s, k) => {
+    const t0 = at(s.night - 0.03) + k * 3 * MIN;
+    let train: TrainState;
+    q.push(t0, () => {
+      train = running(sid('train-', `${s.net} v${s.version}`), 'nets', Date.now());
+      putTrain('train.started', train);
+    });
+    q.push(t0 + 2 * MIN, () => {
+      const rel = join('nets', s.net, `v${s.version}.json`);
+      mkdirSync(join(paths().school, 'nets', s.net), { recursive: true });
+      writeFileSync(join(paths().school, rel), JSON.stringify(constantNet(s.net, s.version, NET_P[s.net] ?? 0.5)));
+      const ended = stopped(train, Date.now(), 'done', null);
+      putTrain('train.ended', ended);
+      const was = currentTrusted.get(s.net) ?? null;
+      const promote = s.trusted || !was?.trusted;
+      const diff = round2(s.score[0] - s.base[0]);
+      const v: NetVersion = {
+        net: s.net,
+        version: s.version,
+        at: ended.endedAt!,
+        rows: s.rows ?? { train: s.n * 4, heldOut: s.n, distilled: 0 },
+        metric: outFor(s.net) === 'linear' ? 'mae' : 'brier',
+        score: ivl(s.score[0], s.score[1], s.score[2], s.n),
+        baseline: ivl(s.base[0], s.base[1], s.base[2], s.n),
+        vsBaseline: { diff, lo: round2(diff - 0.04), hi: round2(diff + 0.04) },
+        agreement: s.agreement ? ivl(s.agreement[0], s.agreement[1], s.agreement[2], s.n) : null,
+        trusted: s.trusted,
+        current: promote,
+        seconds: ended.seconds,
+        path: rel,
+      };
+      record('net.trained', { version: v, skewed: s.net === 'master' ? SKEWED : [], trainId: train.id });
+      putNetRow(v);
+      emit('net.trained', { net: s.net, version: s.version, trusted: s.trusted });
+      if (promote) {
+        const data = { net: s.net, version: s.version, from: was?.version ?? null, trusted: s.trusted, at: v.at };
+        record('net.promoted', data);
+        markCurrent(s.net, s.version);
+        emit('net.promoted', data);
+        currentTrusted.set(s.net, { version: s.version, trusted: s.trusted });
+        if (s.net === 'master') masterNow = s.trusted ? s.version : null;
+      }
+    });
+  });
+
+  // ---- his decisions (rulings 14 to 16): forty before any master, then a hundred each predicted first
+  const decide = (i: number, kind: WorkKind, repo: string, approved: boolean, t: number, agreed: boolean | null) => {
+    const jobId = `job-${sha(`school decision ${i}`).slice(0, 12)}`;
+    const key = itemKey(kind, jobId);
+    let predictionId: number | null = null;
+    if (agreed !== null) {
+      q.push(t - 40 * MIN, () => {
+        // agreed: the guess fell on his side of 0.5; a miss fell on the other
+        const p = agreed ? (approved ? 0.86 : 0.22) : approved ? 0.31 : 0.74;
+        const data = { key, kind, repo, jobId, p, version: masterNow, reason: masterNow === null ? 'there is no master yet' : null, at: iso() };
+        const id = record('master.predicted', { ...data, inputs: {} });
+        predictionId = id;
+        const prediction: Prediction = { id, ...data };
+        openDb().prepare('INSERT OR IGNORE INTO predictions (id, key, kind, repo, at, json) VALUES (?, ?, ?, ?, ?, ?)').run(id, key, kind, repo, data.at, JSON.stringify(prediction));
+        emit('master.predicted', { prediction });
+      });
+    }
+    q.push(t, () => {
+      const by: Decision['by'] = kind.startsWith('propose:') ? (approved ? 'accept' : 'dismiss') : approved ? 'merge' : 'close';
+      const decision: Decision = { key, kind, repo, jobId, approved, by, predictionId, agreed: predictionId === null ? null : agreed, at: iso() };
+      record('decision.resolved', { ...decision, ...(predictionId !== null ? { inputs: {} } : {}) });
+      openDb().prepare('INSERT INTO decisions (key, at, kind, repo, json) VALUES (?, ?, ?, ?, ?)').run(key, decision.at, kind, repo, JSON.stringify(decision));
+      emit('decision.resolved', { decision });
+    });
+  };
+  const cycle = [REPO.H, REPO.A, REPO.K, REPO.Q];
+  for (let i = 0; i < 40; i++) {
+    const harness = i % 2 === 0;
+    decide(i, harness ? 'propose:harness' : 'merge:normal', cycle[i % 4], harness || i % 5 !== 1, at(0.25 + (i * 1.65) / 40), null);
+  }
+  const readmeMisses = new Set([5, 17]);
+  const lowMisses = new Set([3, 11, 20, 28, 36, 41]);
+  const lowRepos = [REPO.K, REPO.Q, REPO.A, REPO.H, REPO.F];
+  for (let i = 0; i < 100; i++) {
+    const k = Math.floor(i / 2);
+    const t = at(2.1 + (i * 5.55) / 100);
+    if (i % 2 === 0) decide(40 + i, 'propose:readme-gap', k % 3 === 2 ? (k % 2 ? REPO.A : REPO.K) : REPO.H, k % 9 !== 4, t, !readmeMisses.has(k));
+    else decide(40 + i, 'merge:low', lowRepos[k % lowRepos.length], k % 8 !== 6, t, !lowMisses.has(k));
+  }
+
+  // ---- the grants (rulings 17 to 19); the city's acts are the history's merges (Story.city)
+  const rate = ivl(0.96, 0.9, 0.99, AGREE.window);
+  q.push(at(2.04), () => void ask('merge:low', REPO.K, rate, Date.now()));
+  q.push(at(2.06), () => void grant('merge:low', REPO.K, Date.now()));
+  q.push(at(3.9), () => void ask('merge:normal', REPO.F, rate, Date.now()));
+  q.push(at(3.95), () => void grant('merge:normal', REPO.F, Date.now()));
+  q.push(at(6.9), () => void ask('merge:low', REPO.A, rate, Date.now()));
+  q.push(at(6.95), () => void grant('merge:low', REPO.A, Date.now()));
+  // This morning he took assay-kit's back by hand: quiet for 30 days.
+  q.push(ago(5 * HOUR), () => void revoke('merge:low', REPO.A, 'him', null, Date.now()));
+  // Last night's tick asked about the harbour's README proposals; the ask waits in his brief.
+  q.push(ago(7 * HOUR), () => void ask('propose:readme-gap', REPO.H, ivl(0.96, 0.88, 0.99, AGREE.window), Date.now()));
+
+  // ---- the graduate's LoRA: trained in one night, raced twice against its base on the planted arena's sealed tasks
+  let loraA: TrainState;
+  q.push(at(2.1), () => {
+    loraA = running(TRAIN.loraA, 'lora', Date.now(), { done: 0, of: LORA.iters, lost: 0, optimizerReset: false });
+    putTrain('train.started', loraA, { lora: { id: SAMPLE_GRADUATE.loraId, from: 0, iters: LORA.iters, optimizerReset: false } });
+  });
+  q.push(at(2.24), () => {
+    putTrain('train.ended', stopped(loraA, Date.now(), 'done', null, { done: LORA.iters, of: LORA.iters, lost: 0, optimizerReset: false }), { lora: { id: SAMPLE_GRADUATE.loraId, from: 0, iters: LORA.iters, optimizerReset: false } });
+  });
+  const race = (trainId: string, from: number, to: number, outcome: 'paused' | 'done') => {
+    const lora = { id: SAMPLE_GRADUATE.loraId };
+    let t: TrainState;
+    q.push(at(from), () => {
+      t = running(trainId, 'eval', Date.now());
+      putTrain('train.started', t, { lora, arenas: [] });
+    });
+    q.push(at(from) + MIN, () => {
+      // the race's first model call spends the use, the row and its entry in one write (lora.ts spendUse)
+      const next = spendUse(PLANTED);
+      record('train.started', { train: clone(t), lora, arenas: [clone(next)], sealedUse: next.id });
+    });
+    q.push(at(to), () => {
+      const extra = { lora, arenas: [arenaRow(PLANTED)] };
+      if (outcome === 'paused') putTrain('train.paused', stopped(t, Date.now(), 'paused', OUTSIDE), { ...extra, reason: OUTSIDE, lost: 0 });
+      else putTrain('train.ended', stopped(t, Date.now(), 'done', null), extra);
+    });
+  };
+  race(TRAIN.evalStopped, 3.1, 3.2, 'paused');
+
+  // ---- the finished voyage, over two nights on the planted arena
+  const finished: VoyagePlan = { id: `v-${iso(at(4.05)).slice(0, 10)}-${sha('school finished voyage').slice(0, 6)}`, arena: PLANTED, repo: REPO.H, label: 'Ledger', startedAt: at(4.05) };
+  let f1: TrainState;
+  let f2: TrainState;
+  q.push(at(4.05), () => {
+    f1 = running(TRAIN.finished1, 'voyage', Date.now());
+    putTrain('train.started', f1, { voyageId: finished.id });
+    announceVoyage('voyage.started', sailingView(finished, 1, 0, 'sailing'));
+  });
+  q.push(at(4.2), () => {
+    announceVoyage('voyage.generation', sailingView(finished, 2, 160, 'paused', { reason: OUTSIDE, pausedAt: iso() }));
+    putTrain('train.paused', stopped(f1, Date.now(), 'paused', OUTSIDE), { reason: OUTSIDE, lost: 0, voyageId: finished.id });
+  });
+  q.push(at(5.05), () => {
+    f2 = running(TRAIN.finished2, 'voyage', Date.now());
+    putTrain('train.started', f2, { voyageId: finished.id });
+    announceVoyage('voyage.generation', sailingView(finished, 2, 160, 'sailing'));
+  });
+  q.push(at(5.1), () => announceVoyage('voyage.generation', sailingView(finished, 3, 240, 'sailing')));
+  q.push(at(5.15), () => announceVoyage('voyage.generation', sailingView(finished, 4, 360, 'sailing')));
+  q.push(at(5.2), () => {
+    const arena = spendUse(PLANTED);
+    const v = endedView(sailingView(finished, 4, 480, 'sailing'), Date.now());
+    announceVoyage('voyage.ended', v, { arena });
+    putTrain('train.ended', stopped(f2, Date.now(), 'done', null), { voyageId: finished.id });
+  });
+
+  // ---- tonight's voyage on the planted arena: sailing since the night before last, generation 2 under way again
+  const sailing: VoyagePlan = { id: `v-${iso(ago(2 * DAY)).slice(0, 10)}-${sha('school sailing voyage').slice(0, 6)}`, arena: PLANTED, repo: REPO.H, label: 'Harbour', startedAt: ago(2 * DAY) };
+  let s1: TrainState;
+  q.push(ago(2 * DAY), () => {
+    s1 = running(TRAIN.sailing1, 'voyage', Date.now());
+    putTrain('train.started', s1, { voyageId: sailing.id });
+    announceVoyage('voyage.started', sailingView(sailing, 1, 0, 'sailing'));
+  });
+  q.push(ago(2 * DAY) + 5 * HOUR, () => {
+    announceVoyage('voyage.generation', sailingView(sailing, 2, 60, 'paused', { reason: OUTSIDE, pausedAt: iso() }));
+    putTrain('train.paused', stopped(s1, Date.now(), 'paused', OUTSIDE), { reason: OUTSIDE, lost: 0, voyageId: sailing.id });
+  });
+  q.push(ago(6 * HOUR), () => {
+    putTrain('train.started', running(TRAIN.sailing2, 'voyage', Date.now()), { voyageId: sailing.id });
+    announceVoyage('voyage.generation', sailingView(sailing, 2, 137, 'sailing'));
+  });
+  // Two of its parents on their way to the university (ruling 28), once the engine has its plot.
+  q.push(ago(70_000), () => {
     const campus = campusOrigin();
-    if (campus) {
-      go('bruno-kiln', 'school', null, homeOf(agentOf('bruno-kiln')), campus);
-      go('juno-pike', 'school', null, homeOf(agentOf('juno-pike')), campus);
+    if (!campus) return;
+    for (const id of PARENTS) {
+      const a = storedAgent(id);
+      if (a) startTrip(a, 'school', null, homeOf(a), campus, Date.now());
     }
   });
 
-  // The school (Phase 4 Task 37): a voyage sailing on the harbour's arena since the night before last, its second
-  // generation under way tonight. The city's own fixture in the engine's shape (voyages.ts announce(): the row and
-  // `{ voyageId, voyage, repo }`; the sample has no school seeding of its own yet): the library's reading room lights a
-  // bay per genome racing, read on load through voyages().
-  const voyage = (generation: number, runs: number): VoyageView => {
-    const scores: VoyageView['scores'] = [];
-    for (let g = 1; g <= generation; g++) {
-      for (let i = 0; i < VOYAGE.population; i++) {
-        const mean = 0.38 + 0.05 * g + 0.03 * ((i * 5) % 7);
-        scores.push({ genome: `harbour-${g}-${i}`, name: `Harbour ${g}.${i + 1}`, generation: g, mean, lo: mean - 0.09, hi: mean + 0.09, parents: g > 1 ? [`harbour-${g - 1}-${i}`, `harbour-${g - 1}-${(i + 3) % VOYAGE.population}`] : [] });
-      }
-    }
-    return { id: 'voy-harbour-1', arena: 'arena-harbor-ledger-1', status: 'sailing', generation, of: VOYAGE.generations, runs: { done: runs, of: 480 }, commissionedBy: null, scores, promoted: [], sealed: null, credits: 9.6 + runs / 40, startedAt: iso(ago(2 * DAY)), endedAt: null, repo: REPO.H, reason: null, pausedAt: null };
-  };
-  // The voyage's row goes with each entry, as the engine's would, so the ledger replays clean (replay.ts).
-  const saveVoyage = (v: VoyageView) => openDb().prepare('INSERT OR REPLACE INTO voyages (id, json) VALUES (?, ?)').run(v.id, JSON.stringify(v));
-  q.push(ago(2 * DAY), () => {
-    const v = voyage(1, 0);
-    saveVoyage(v);
-    record('voyage.started', { voyageId: v.id, voyage: v, repo: REPO.H });
+  // ---- the paused LoRA: a night cut short, a resume that reset its optimiser, then on battery
+  const loraB = (from: number, optimizerReset: boolean) => ({ lora: { id: LORA_PAUSED, from, iters: LORA.iters, optimizerReset } });
+  let b1: TrainState;
+  let b2: TrainState;
+  q.push(at(6.25), () => {
+    b1 = running(TRAIN.loraB1, 'lora', Date.now(), { done: 0, of: LORA.iters, lost: 0, optimizerReset: false });
+    putTrain('train.started', b1, loraB(0, false));
   });
-  q.push(ago(6 * HOUR), () => {
-    const v = voyage(2, 137);
-    saveVoyage(v);
-    record('voyage.generation', { voyageId: v.id, voyage: v, repo: REPO.H });
+  q.push(at(6.32), () => {
+    putTrain('train.paused', stopped(b1, Date.now(), 'paused', OUTSIDE, { done: 162, of: LORA.iters, lost: 12, optimizerReset: true }), { ...loraB(0, false), reason: OUTSIDE, lost: 12 });
+  });
+  q.push(at(7.05), () => {
+    b2 = running(TRAIN.loraB2, 'lora', Date.now(), { done: 150, of: LORA.iters, lost: 0, optimizerReset: true });
+    putTrain('train.started', b2, loraB(150, true));
+  });
+  q.push(at(7.2), () => {
+    putTrain('train.paused', stopped(b2, Date.now(), 'paused', 'on battery', { done: 263, of: LORA.iters, lost: 13, optimizerReset: true }), { ...loraB(150, true), reason: 'on battery', lost: 13 });
+  });
+
+  // ---- the graduation: the second race beats the base, the graduate is made, and Ashlar & Vane hires it
+  race(TRAIN.evalPassed, 7.3, 7.38, 'done');
+  // Quickset's quarter is full (its three agents and the specialist it hired), so it joins Ashlar & Vane; it has
+  // had no job yet, so its tower is the collegiate root alone.
+  q.push(at(7.4), () => {
+    const g: Graduate = { ...SAMPLE_GRADUATE, at: iso() };
+    openDb().prepare('INSERT OR REPLACE INTO graduates (id, json) VALUES (?, ?)').run(g.id, JSON.stringify(g));
+    record('graduate.made', { graduate: g, arenas: [arenaRow(PLANTED)] });
+    emit('graduate.made', { graduate: clone(g) });
+  });
+  q.push(at(7.5), () => {
+    const seed = schoolRoster().find((s) => s.id === SAMPLE_GRADUATE.id);
+    if (seed) hireSeed('ashlar-vane', seed, new Date(Date.now()));
+  });
+
+  // ---- Quickset commissions a voyage on kumo's arena (ruling 22): queued, its fee paid to the city
+  q.push(at(7.6), () => {
+    const id = `v-${iso().slice(0, 10)}-${sha('school commissioned voyage').slice(0, 6)}`;
+    const info = arenaRow(PAST);
+    const view: VoyageView = {
+      id,
+      arena: PAST,
+      status: 'paused',
+      generation: 0,
+      of: VOYAGE.generations,
+      runs: { done: 0, of: VOYAGE.population * Math.max(1, info.tasks.race) * VOYAGE.generations },
+      commissionedBy: 'quickset',
+      scores: [],
+      promoted: [],
+      sealed: null,
+      credits: 0,
+      startedAt: iso(),
+      endedAt: null,
+      repo: info.repo,
+      reason: `Commissioned by ${firm('quickset')?.name ?? 'Quickset'}; it sails first on the school's next night`,
+      pausedAt: null,
+      champion: null,
+      vsLocal: [],
+      claim: false,
+      notCompared: NOT_COMPARED,
+    };
+    payCommission('quickset', id, Date.now(), () => {
+      openDb().prepare('INSERT INTO voyages (id, json) VALUES (?, ?)').run(id, JSON.stringify(view));
+      const data = { voyageId: id, firmId: 'quickset', fee: COMMISSION.fee, arena: PAST, repo: info.repo, voyage: clone(view) };
+      record('voyage.commissioned', data);
+      return [['voyage.commissioned', clone(data)]];
+    });
+  });
+
+  // ---- durability's labels: his follow-ups on city merges (ruling 9), found by the tick after his fixes
+  q.push(ago(2 * HOUR), () => {
+    const have = rowsFor('durability', Date.now()).filter((r) => r.source === 'real').length;
+    const need = Math.max(0, 18 - have);
+    const touched = new Set(query({ kind: ['merge.reverted', 'merge.followup'] }).map((e) => (e.data as { runId?: string }).runId));
+    const merged = listRuns()
+      .filter((r) => r.outcome === 'merged' && r.mergeSha && r.endedAt && !touched.has(r.id))
+      .sort((a, b) => a.endedAt!.localeCompare(b.endedAt!) || a.id.localeCompare(b.id));
+    for (const r of merged.slice(0, need)) {
+      const diff = query({ kind: 'run.diff', runId: r.id, last: true })[0]?.data as { files?: string[] } | undefined;
+      const fixAt = Math.min(Date.parse(r.endedAt!) + 26 * HOUR, Date.now() - HOUR);
+      record('merge.followup', { jobId: r.jobId, runId: r.id, repo: r.repo, floorId: repoFloorId(r.repo, r.jobId), mergeSha: r.mergeSha, fixSha: sha(`${r.id}@followup`), files: (diff?.files ?? []).slice(0, 1), at: iso(fixAt) });
+    }
+  });
+}
+
+/**
+ * What the school keeps beside the ledger, written once the history is in:
+ * the school's switch on (and the base model there, since a graduate was
+ * made on it), the base model's folder, and each LoRA's record as lora.ts
+ * keeps it under the school's ctl (the trained one with its two races, the
+ * paused one with its pauses and its resume).
+ */
+function finishSchool(now: number): void {
+  const start = now - HISTORY_DAYS * DAY;
+  const at = (day: number) => start + Math.round(day * DAY);
+  const db = openDb();
+  db.prepare('INSERT INTO settings (key, json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET json = excluded.json').run(
+    'school',
+    JSON.stringify({ ...getSettings().school, enabled: true, baseModelReady: true }),
+  );
+  const base = join(paths().school, 'lora', 'base');
+  mkdirSync(base, { recursive: true });
+  writeFileSync(join(base, 'config.json'), `${JSON.stringify({ model_type: 'qwen2', sample: true })}\n`);
+
+  const dir = join(paths().school, 'ctl', 'lora');
+  mkdirSync(dir, { recursive: true });
+  const sealedArenas = { [PLANTED]: SEALED_HASH[PLANTED] };
+  const g = SAMPLE_GRADUATE;
+  const trained = {
+    id: g.loraId,
+    base: g.base,
+    status: 'trained',
+    reason: null,
+    iters: LORA.iters,
+    saved: LORA.iters,
+    examples: g.examples,
+    createdAt: iso(at(2.1)),
+    endedAt: iso(at(2.24)),
+    trains: [TRAIN.loraA],
+    resumes: [],
+    pauses: [],
+    good: LORA.iters,
+    torn: [],
+    optimizerReset: false,
+    sealedArenas,
+    evaluations: [
+      {
+        at: iso(at(3.1)),
+        status: 'stopped',
+        reason: `${OUTSIDE}. The sealed race stopped before it finished, and the uses its races began are spent (${PLANTED}: 1 of ${SEALED_USES}); it is not scored`,
+        train: TRAIN.evalStopped,
+        arenas: [{ id: PLANTED, hash: SEALED_HASH[PLANTED], uses: 1, tasks: 0 }],
+        sealed: null,
+        baseSealed: null,
+        vsBase: null,
+        credits: 0.62,
+        graduate: null,
+      },
+      {
+        at: iso(at(7.3)),
+        status: 'passed',
+        reason: null,
+        train: TRAIN.evalPassed,
+        arenas: [{ id: PLANTED, hash: SEALED_HASH[PLANTED], uses: 3, tasks: PLANTED_TASKS.sealed }],
+        sealed: g.sealed,
+        baseSealed: g.baseSealed,
+        vsBase: g.vsBase,
+        credits: 1.84,
+        graduate: g.id,
+      },
+    ],
+    evaluationHeld: null,
+    evaluationAskedAt: null,
+  };
+  const paused = {
+    id: LORA_PAUSED,
+    base: g.base,
+    status: 'paused',
+    reason: 'on battery',
+    iters: LORA.iters,
+    saved: 250,
+    examples: 131,
+    createdAt: iso(at(6.25)),
+    endedAt: iso(at(7.2)),
+    trains: [TRAIN.loraB1, TRAIN.loraB2],
+    resumes: [{ at: iso(at(7.05)), from: 150, iters: LORA.iters, optimizerReset: true }],
+    pauses: [
+      { at: iso(at(6.32)), train: TRAIN.loraB1, reason: OUTSIDE, done: 162, saved: 150, lost: 12 },
+      { at: iso(at(7.2)), train: TRAIN.loraB2, reason: 'on battery', done: 263, saved: 250, lost: 13 },
+    ],
+    good: 250,
+    torn: [],
+    optimizerReset: true,
+    sealedArenas,
+    evaluations: [],
+    evaluationHeld: null,
+    evaluationAskedAt: null,
+  };
+  for (const r of [trained, paused]) writeFileSync(join(dir, `${r.id}.json`), `${JSON.stringify(r, null, 2)}\n`);
+}
+
+/**
+ * The clock's part in the school (`school`, the default): the voyage sailing
+ * at the start races generation 3 at 200 script seconds and 4 at 400, then
+ * ends at 600 (30 wall seconds at speed 20) with its champion's sealed claim,
+ * which spends one sealed use of the arena, as voyages.ts ends one: the view
+ * recorded as `voyage.ended` with the arena whole, its train ended, and the
+ * parents at the campus ride home.
+ */
+function schoolSteps(at: (sec: number, run: () => void) => void, now: () => number, speed: number): void {
+  const v0 = storedVoyages().find((v) => v.status === 'sailing');
+  if (!v0) return;
+  const id = v0.id;
+  const label = v0.scores.find((x) => x.generation === 2)?.name.split(' ')[0] ?? 'Harbour';
+  const plan: VoyagePlan = { id, arena: v0.arena, repo: v0.repo ?? REPO.H, label, startedAt: Date.parse(v0.startedAt) };
+  const current = () => storedVoyages().find((v) => v.id === id && v.status === 'sailing') ?? null;
+  for (const [sec, g, runs] of [[200, 3, 180], [400, 4, 300]] as const) {
+    at(sec, () => {
+      if (!current()) return;
+      announceVoyage('voyage.generation', sailingView(plan, g, runs, 'sailing'));
+    });
+  }
+  at(600, () => {
+    const v = current();
+    if (!v) return;
+    const t = now();
+    const arena = spendUse(v.arena);
+    announceVoyage('voyage.ended', endedView(sailingView(plan, VOYAGE.generations, v.runs.of, 'sailing'), t), { arena });
+    const started = query({ kind: 'train.started' }).filter((e) => (e.data as { voyageId?: string }).voyageId === id).at(-1);
+    const train = (started?.data as { train?: TrainState } | undefined)?.train;
+    if (train) putTrain('train.ended', stopped(train, t, 'done', null), { voyageId: id });
+    for (const a of LOCALS) {
+      const agent = storedAgent(a);
+      if (agent) homeFromSchool(agent, t, { msScale: 1 / speed });
+    }
   });
 }
 
@@ -2382,8 +3094,15 @@ export interface EconomyClock {
  * With `runs: false`, the runs and the awarded jobs stay where the seed left
  * them (the audit screens' checks end the kumo audit without moving the
  * construction the city checks after them expect).
+ *
+ * With `school` (the default), the voyage sailing at the start races its
+ * last two generations and ends done 600 script seconds in (30 wall seconds
+ * at speed 20), its champion's sealed claim spending one use of the arena,
+ * and its parents ride home from the campus (schoolSteps). `school: false`
+ * leaves it sailing (ui-test's construction clocks, so the campus checks
+ * after them still see the library lit).
  */
-export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number; board?: boolean; audit?: boolean; runs?: boolean }): EconomyClock {
+export function economyClock(opts: { now: () => number; speed: number; fail?: string[]; sell?: number; board?: boolean; audit?: boolean; runs?: boolean; school?: boolean }): EconomyClock {
   const S = 1000;
   const p = new Pipeline(rng('sample-clock'));
   const steps: Array<{ at: number; run: () => void | Promise<void> }> = [];
@@ -2511,6 +3230,9 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
       });
     }
   }
+
+  // The school (Task 29): the voyage sailing at the start races on and ends 600 script seconds in.
+  if (opts.school !== false) schoolSteps(at, opts.now, opts.speed);
 
   // What is under way at the start, in script seconds.
   const live = opts.runs === false ? [] : listRuns().filter((r) => r.outcome === null);

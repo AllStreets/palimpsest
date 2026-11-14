@@ -222,10 +222,11 @@ export function fromCampus(a: Agent, now: number = Date.now(), opts: TripOptions
 /**
  * A parent goes home from the campus when its voyage ends or pauses for the
  * night. Only an agent whose latest trip took it to school; null otherwise.
+ * `opts` as startTrip's (the sample clock scales the legs).
  */
-export function homeFromSchool(a: Agent, now: number = Date.now()): Trip | null {
+export function homeFromSchool(a: Agent, now: number = Date.now(), opts: TripOptions = {}): Trip | null {
   const campus = campusOrigin();
   const latest = tripsOf(a.id).at(-1);
   if (!campus || !latest || latest.reason !== 'school' || a.retired) return null;
-  return startTrip(a, 'home', null, campus, homeOf(a), now);
+  return startTrip(a, 'home', null, campus, homeOf(a), now, opts);
 }

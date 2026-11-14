@@ -1043,8 +1043,9 @@ async function lifeChecks(page: Page, at: (x: number, y: number, z: number) => n
   await page.waitForSelector('.inspector.open.insp-campus', { timeout: 5000 });
   const panel = (await page.locator('.inspector').textContent()) ?? '';
   check(/A voyage on harbor-ledger/.test(panel) && /8 genomes racing, 8 of \d+ reading-room bays lit/.test(panel), `the inspector lists the live voyage (${panel.replace(/\s+/g, ' ').slice(0, 160)})`);
-  // The nets and graduates are read whole from the school on load (Task 28): the sample's graduate, made in history, is listed by the agent it became.
-  check(/No net has trained yet/.test(panel) && /(Ada Quarry|grad-qwen25c7-1)[\s\S]*Beat its base by 0\.19/.test(panel), `and says plainly that no net has trained, and lists the graduate made before the page opened (${panel.replace(/\s+/g, ' ').slice(-200)})`);
+  // The nets and graduates are read whole from the school on load (Task 28): the sample school's nets (Task 29) by their
+  // newest versions, and its graduate, made in history, by the agent it became.
+  check(/Master[\s\S]*version 5, trusted/.test(panel) && /Router[\s\S]*version 3, trained but not yet trusted/.test(panel) && /(Ada Quarry|grad-qwen25c7-1)[\s\S]*Beat its base by 0\.14/.test(panel), `and lists the sample school's nets and the graduate made before the page opened (${panel.replace(/\s+/g, ' ').slice(-260)})`);
   await page.waitForTimeout(600);
   await page.screenshot({ path: join(SHOTS, 'campus-inspector.png') });
   await page.keyboard.press('Escape');
@@ -1506,7 +1507,8 @@ async function constructionChecks(page: Page): Promise<void> {
   const { setMarketExtras } = await import('../engine/market/api.js');
   const { economyClock, economySites } = await import('../engine/market/sample-economy.js');
   setMarketExtras({ sites: economySites });
-  const clock = economyClock({ now: () => Date.now(), speed: 20 });
+  // school: false keeps tonight's voyage sailing, so the campus checks after these still see the library lit.
+  const clock = economyClock({ now: () => Date.now(), speed: 20, school: false });
   try {
     await page.reload();
     await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
@@ -1670,7 +1672,7 @@ async function lifecycleChecks(page: Page): Promise<void> {
   const view = (repo: string): Promise<SV | null> => page.evaluate((r) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(r), repo);
   // The repo whose inspection the clock fails: the one still working (the other passed during the construction checks).
   const working = (await sites()).find((s) => s.stage === 'framing')?.repo ?? 'tidewater/harbor-ledger';
-  const clock = economyClock({ now: () => Date.now(), speed: 20, fail: [working] });
+  const clock = economyClock({ now: () => Date.now(), speed: 20, fail: [working], school: false });
   const B = [0.63, 0.78];
   const tick = async (ms: number): Promise<void> => {
     clock.tick(ms);
