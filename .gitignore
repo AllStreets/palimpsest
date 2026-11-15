@@ -9,3 +9,4 @@ target/
 shots/
 trainer/.venv/
 __pycache__/
+sample-home/

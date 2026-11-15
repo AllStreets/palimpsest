@@ -1060,3 +1060,58 @@ test('the sample never spawns python or mlx_lm', async () => {
   assert.equal(SAMPLE_TRAINER.ready, true);
   assert.equal(SAMPLE_TRAINER.pinned, true);
 });
+
+// ---------------------------------------------------------------- Phase 5 Task 20: the sample's own guard
+
+test('seedEconomy throws Not a sample home on a plain temp home', async () => {
+  // The sample's repos are there, written by hand, but nothing marked the home as a sample's.
+  await seedSample(NOW);
+  rmSync(join(process.env.PALIMPSEST_HOME!, SAMPLE_MARKER));
+  await assert.rejects(seedEconomy(NOW), /Not a sample home/);
+  assert.equal(listJobs().length, 0, 'nothing of the economy was written');
+});
+
+test('seedEconomy on a seedSample home with no other step succeeds', async () => {
+  // The path tools/perf.ts, tools/ui-test.ts and tools/capture.ts take: seedSample, then seedEconomy, no marker by hand.
+  const { isSampleHome } = await import('../engine/sample.js');
+  await seedSample(NOW);
+  assert.equal(isSampleHome(), true, 'seedSample marked the home');
+  await seedEconomy(NOW);
+  assert.ok(listJobs().length > 0);
+  assert.ok(query({ kind: 'net.trained' }).length > 0, 'and the school');
+});
+
+test('the sample seeds the same ledger twice at SEED_AT', async () => {
+  const { SEED_AT } = await import('../tools/sample.js');
+  const ledgers: string[] = [];
+  for (const name of ['one', 'two']) {
+    process.env.PALIMPSEST_HOME = join(tempDir, `seed-${name}`);
+    resetShipping();
+    samplePRs.reset();
+    await seedSample(SEED_AT);
+    await seedEconomy(SEED_AT);
+    // The same story, entry for entry: only the random ids (named in order of first use) and the home's own path differ.
+    const ids = new Map<string, string>();
+    const home = process.env.PALIMPSEST_HOME;
+    const rows = JSON.stringify(openDb().prepare('SELECT at, kind, json, job_id, run_id FROM ledger ORDER BY id').all())
+      .split(home)
+      .join('<home>')
+      .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{7,}\b/g, (m) => {
+        if (!ids.has(m)) ids.set(m, `#${ids.size}`);
+        return ids.get(m)!;
+      });
+    ledgers.push(rows);
+  }
+  assert.ok(ledgers[0].length > 1000);
+  assert.equal(ledgers[0], ledgers[1]);
+});
+
+test('no sample plan reads as a template', async () => {
+  await seed();
+  const plans = query({ kind: 'bid.placed' }).map((e) => (e.data as { plan?: string }).plan ?? '');
+  assert.ok(plans.length > 20, `${plans.length} plans`);
+  for (const p of plans) {
+    assert.doesNotMatch(p, /find where .* happens in/i);
+    assert.doesNotMatch(p, /\{(file|test|what)\}/, 'no placeholder left in');
+  }
+});

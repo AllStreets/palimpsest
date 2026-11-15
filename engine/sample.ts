@@ -23,6 +23,16 @@ export function isSampleHome(dir: string = home()): boolean {
   return existsSync(join(dir, SAMPLE_MARKER));
 }
 
+/**
+ * Throws "Not a sample home" unless `dir` holds the sample marker. Everything
+ * that writes the sample's story (seedEconomy, its school) or points his
+ * folders at the sample's own (useSampleFolders) calls it first, so none of
+ * it ever lands on a home that is not a sample's.
+ */
+export function assertSampleHome(dir: string = home()): void {
+  if (!isSampleHome(dir)) throw new Error(`Not a sample home: ${dir} has no ${SAMPLE_MARKER}. Seed it with seedSample() (tools/sample.ts) first.`);
+}
+
 /** The stand-in Claude settings file a sample engine's usage hook writes, inside the sample home. */
 export function sampleClaudeSettingsPath(dir: string = home()): string {
   return join(dir, 'claude-settings.json');
@@ -86,9 +96,12 @@ function namesHisFolder(p: string): boolean {
  * Claude transcripts the budget scans, and the Codex and Gemini homes
  * Settings reads. A variable already set (a test's or a tool's temp folder)
  * is kept, unless it names his own `.claude`, `.codex` or `.gemini`, by its
- * text or by its real path.
+ * text or by its real path. Only on a sample home: anywhere else it throws
+ * and changes nothing, so a folder override is never honoured for a home
+ * that is not a sample's.
  */
 export function useSampleFolders(dir: string = home()): void {
+  assertSampleHome(dir);
   const set = (k: string, v: string) => {
     const now = process.env[k];
     if (!now || namesHisFolder(now)) process.env[k] = v;

@@ -101,7 +101,7 @@ import { paths } from '../home.js';
 import { districtOrigin, quarterOrigin } from '../layout.js';
 import { query, record } from '../ledger.js';
 import { analysesSettled, earnedFloors, getRepo, holdAuditTrigger, listRepos, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
-import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, sampleReading, SAMPLE_TREES, useSampleFolders } from '../sample.js';
+import { assertSampleHome, SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, sampleReading, SAMPLE_TREES, useSampleFolders } from '../sample.js';
 import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
@@ -1317,6 +1317,8 @@ function writeProviderFixtures(now: number): void {
  * installed its own runner.
  */
 export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: boolean } = {}): Promise<void> {
+  // Only ever on a home seedSample() marked (Phase 5 ruling 13): never his real one, never a plain test home.
+  assertSampleHome();
   for (const s of SAMPLE) if (!getRepo(s.fullName)) throw new Error(`seedEconomy runs on top of seedSample(): ${s.fullName} is missing`);
   // gh and git go to the stand-in from here, so an analysis still running finishes on it too.
   const own = getRunner() === realRunner;
@@ -2069,6 +2071,7 @@ function ask(kind: WorkKind, repo: string, rate: Interval, at: number): Grant {
  *   one paused on battery after a resume that reset its optimiser.
  */
 function seedSchool(now: number, start: number, q: Queue): void {
+  assertSampleHome();
   const at = (day: number) => start + Math.round(day * DAY);
   const ago = (ms: number) => now - ms;
 
