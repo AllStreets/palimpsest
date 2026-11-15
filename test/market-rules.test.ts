@@ -277,3 +277,12 @@ test('runs under way are the runs with no end, counted by the pool their model d
   assert.deepEqual(runsUnderWay(runs, jobs), { total: 4, claude: 2, local: 1, api: 1 });
   assert.deepEqual(runsUnderWay([], []), { total: 0, claude: 0, local: 0, api: 0 });
 });
+
+test('TIER_LABELS with custom base label', () => {
+  assert.deepEqual(TIER_LABELS('city'), ['city', 'city:low', 'city:high']);
+});
+
+test('TIER_VALUE gives low < normal < high', () => {
+  assert.ok(TIER_VALUE.low < TIER_VALUE.normal);
+  assert.ok(TIER_VALUE.normal < TIER_VALUE.high);
+});
