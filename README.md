@@ -22,7 +22,7 @@
   <img src="docs/media/hero.webp" alt="The sample city at dusk from above the rooftops, in a violet haze. Six towers rise from lit plazas over the low blocks and streets. Left of centre the inspection guild's searchlights climb the Gothic tower to the new floor at its top, under a crane, and a second crane stands on the tower behind it. The tallest tower stands on the right against a violet sky." width="100%" />
 </p>
 
-<!-- The film's length below is the brief's. Task 27 sets the real length once the film is cut, and Task 33 changes only the link target if the film is uploaded to GitHub. -->
+<!-- The film's length below is the brief's. Task 28 sets the real length once the film is cut, and Task 33 changes only the link target if the film is uploaded to GitHub. -->
 <p align="center">
   <a href="docs/media/film.mp4"><img src="docs/media/film-poster.webp" alt="The launch film's poster: the sample city at dusk." width="100%" /></a>
 </p>
@@ -442,25 +442,25 @@ What works now:
 <!-- The Node count is from a full npm test run on this branch (1,843, 2 of them skipped). The Python and app shell counts are counted from the source, not run. Task 29 sets all three from a full run of each suite. -->
 There are 1,878 tests: 1,843 in Node for the engine, the market, the school and the city (`npm test`), 22 in Python for the trainer (`npm run test:trainer`), and 13 for the app shell (`cargo test` in `src-tauri/`). An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city, the sample market and the sample school, through every screen.
 
-Every screenshot and clip in this README comes from that sample. It runs through the market's and the school's own code, with stand-ins for GitHub, the models and the trainer. Every score in the school pictures, such as the appraiser's Brier of 0.14 or the graduate beating its base by 0.14, is the sample's, made up to show what the screens do with real numbers.
+The sample runs through the market's and the school's own code, with stand-ins for GitHub, the models and the trainer. Every score in the school pictures, such as the appraiser's Brier of 0.14 or the graduate beating its base by 0.14, is the sample's, made up to show what the screens do with real numbers.
 
 ### What has run for real
 
 One real job has gone the whole way. I labelled a small issue in this repo, and Oskar Kiln of Kiln Brothers, an agent on `qwen3-coder:30b-a3b` in Ollama on my Mac, won the bidding, passed inspection and opened [pull request #4](https://github.com/AllStreets/palimpsest/pull/4). I merged it, and the engine lit the floor and paid the firm.
 
-That is the only real run so far. The first real README audit hasn't run yet. The school has its base model downloaded and its first night of training scheduled, but it hasn't trained anything real yet. Still to run:
+That is the only real run so far. The first real README audit hasn't run yet, and the school hasn't trained on anything real yet. Still to run:
 
 - a README audit on one of my repos;
 - the school's first night: the trainer, the gate and the nets on my ledger;
 - a first arena, voyage and coder on one of my repos.
 
-Their numbers will go here once they have run, whatever they turn out to be.
+Their numbers will go here once they have run.
 
 ### The school, honestly
 
-What I already know is that there is very little to learn from. The one real job above is the market's whole record on my repos so far, and every net needs 30 rows to train on and 10 to test on. So every net is thin and the master has nothing to learn from. Nothing can be asked or granted yet. My repos have about a dozen merged pull requests between them against the 100 examples a coder needs, which is why my own surviving commits count as verified work. When I last looked, on 12 November, Understudy had 37 taste statements and no answered pairs, so Taste has nothing from it either.
+What I already know is that there is very little to learn from. The one real job above is the market's whole record on my repos so far, and every net needs 30 rows to train on and 10 to test on. So every net is thin and the master has nothing to learn from. Nothing can be asked or granted yet. My repos have very few merged pull requests between them, far fewer than the 100 examples a coder needs, which is why my own surviving commits count as verified work. Taste has nothing from Understudy yet either.
 
-That means the school will spend its first months saying it has nothing to show, and the screens are built to say exactly that, with the reason, rather than look busy. The arenas and voyages on a repo whose market is on are what can run first. The nets come as the market and the brief build up a ledger, and autonomy, if it ever comes, comes after that.
+Until then the school's screens say what they lack and why, as below, and the arenas and voyages on a repo whose market is on are what can run first.
 
 <img src="docs/media/school-empty.webp" alt="The School screen on a fresh home with no repos: the school is off and none of the nets is trusted. Each net reads no score: thin, 0 labels, and a sentence saying why, such as 0 of 40 labels, no bid has been run: the market is off on every repo, or no city merge has had 30 days yet. No chart is drawn anywhere. The empty city stands on the right." />
 
@@ -516,7 +516,7 @@ node bin/palimpsest.mjs engine install
 npm run app
 ```
 
-<!-- Task 33 keeps the sentence that matches npm run install:check. While it fails, put this line here: "A fresh clone will not install yet: the school's Beagle dependency points at a copy on my Mac until its pull request is merged." While it passes, as now, there is no sentence here. -->
+<!-- Task 33 keeps the sentence that matches npm run install:check. While it fails, put this line here: "A fresh clone will not install yet: the school's Beagle dependency points at a copy on my Mac until its pull request is merged." While it passes, as now, there is no sentence here. Before choosing, re-run npm run install:check on main, and check the Beagle sentence in The school, honestly, and the plain npm install in Try it on the sample city and in Run it against that result. -->
 
 `engine install` sets the engine up as a launchd user agent, so it keeps running when the window is closed. It serves the city at http://127.0.0.1:4770, which also works in a browser. `node bin/palimpsest.mjs engine status` tells you whether it's up, and `engine uninstall` removes it.
 
@@ -560,7 +560,7 @@ Plan usage comes from a statusline hook you install yourself. Claude Code alread
 
 Every image and clip in this README was captured from the app by [`tools/capture.ts`](tools/capture.ts). It starts a separate engine on its own port with a temporary data folder, and fills it with the sample city from [`tools/sample.ts`](tools/sample.ts) and the sample market from [`engine/market/sample-economy.ts`](engine/market/sample-economy.ts). That is six made-up repos with histories from nine years down to none, and eight days of made-up market history on them: six firms, their jobs, bids, runs, inspections and books, README audits and the jobs proposed from them, the city's milestones and a morning brief. On top of that is a sample school: its arenas, a voyage sailing and one finished, nets with versions, scores and intervals, my decisions and the master's guesses, a grant, a suspension, a revocation and an open ask, and one graduate. GitHub, the models and the trainer are answered by stand-ins, so nothing real is read, run or trained. The empty school is shot on a second, fresh data folder with nothing in it. The UI tests and `npm run sample` use the same sample.
 
-The capture opens the built UI in Chromium on the GPU, at twice the window's density. It sets the camera itself for every frame and waits for that frame to render before taking it. For the clips it also holds the city's clock still between frames and moves it on by exactly one frame each time, so the traffic, the people, the sparks, the library's lights and the observatory's shutters move at their real pace however long a frame takes to save. Nothing is screen-recorded, so no frame is dropped or repeated. ffmpeg turns the frames into MP4s and animated AVIFs.
+The capture opens the built UI in Chromium on the GPU, at twice the window's density. It sets the camera itself for every frame and waits for that frame to render before taking it. For the clips it also holds the city's clock still between frames and moves it on by exactly one frame each time, so everything moves at its real pace however long a frame takes to save. Nothing is screen-recorded, so no frame is dropped or repeated. ffmpeg turns the frames into MP4s and animated AVIFs.
 
 ```sh
 npm run build
