@@ -11,7 +11,7 @@ import { join } from 'node:path';
 
 import { CREDIT_PCT } from '../../shared/credits.js';
 import { localDay } from '../../shared/day.js';
-import { MAX_ATTEMPTS, todayCap } from '../../shared/market-rules.js';
+import { creditsText, MAX_ATTEMPTS, todayCap } from '../../shared/market-rules.js';
 import type { Bid, Job } from '../../shared/types.js';
 import { audit as storedAudit } from '../audit/store.js';
 import { openDb } from '../db.js';
@@ -402,7 +402,7 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
   const lead = jobs.posted.length + jobs.awarded.length + jobs.merged.length + jobs.failed.length === 0
     ? 'No jobs were posted, awarded, merged or failed today.'
     : `Today: ${listOf(counts)}.`;
-  const spent = spend.total.all > 0 ? ` The city spent ${num(spend.total.all)} credits on model calls and paid firms ${num(spend.paid.pay + spend.paid.reviewPay)}.` : ' The city made no model calls.';
+  const spent = spend.total.all > 0 ? ` The city spent ${creditsText(spend.total.all)} credits on model calls and paid firms ${creditsText(spend.paid.pay + spend.paid.reviewPay)}.` : ' The city made no model calls.';
   out.push(lead + spent, '');
 
   // What waits on him first: it is the part he acts on.
@@ -424,8 +424,8 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
     row.parts.push(part);
   };
   for (const j of jobs.posted) add(j, 'Posted.');
-  for (const j of jobs.awarded) add(j, `Awarded to ${names.agent(j.agentId)} of ${firm(j.firmId)} at ${num(j.price)} credits.`);
-  for (const j of jobs.merged) add(j, j.firmId ? `Merged, and ${firm(j.firmId)} was paid${j.price !== null ? ` ${num(j.price)} credits` : ''}.` : 'Merged.');
+  for (const j of jobs.awarded) add(j, `Awarded to ${names.agent(j.agentId)} of ${firm(j.firmId)} at ${creditsText(j.price)} credits.`);
+  for (const j of jobs.merged) add(j, j.firmId ? `Merged, and ${firm(j.firmId)} was paid${j.price !== null ? ` ${creditsText(j.price)} credits` : ''}.` : 'Merged.');
   for (const j of jobs.failed) add(j, `${j.final ? `Failed for good after ${MAX_ATTEMPTS} attempts.` : 'Failed, with one attempt left.'} ${sentence(clean(j.why, 400))}`);
   for (const j of jobs.closed) add(j, 'Closed with no merge the city is paid for.');
   const lines = [...rowsByJob.values()].map((x) => [clean(x.title), x.repo, x.parts.join(' ')]);
@@ -435,16 +435,16 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
   // Credits.
   out.push('## Credits', '');
   if (spend.total.all > 0) {
-    const parts = [`${num(spend.total.bid)} on bids`, `${num(spend.total.run)} on runs`];
-    if (spend.total.review + spend.total.judge > 0) parts.push(`${num(spend.total.review + spend.total.judge)} on reviews and design checks`);
+    const parts = [`${creditsText(spend.total.bid)} on bids`, `${creditsText(spend.total.run)} on runs`];
+    if (spend.total.review + spend.total.judge > 0) parts.push(`${creditsText(spend.total.review + spend.total.judge)} on reviews and design checks`);
     // Reports written before the audit existed have no audit total.
     const auditSpend = spend.total.audit ?? 0;
-    if (auditSpend > 0) parts.push(`${num(auditSpend)} on README audits`);
+    if (auditSpend > 0) parts.push(`${creditsText(auditSpend)} on README audits`);
     // Reports written before the school existed have no school or training totals.
-    if ((spend.total.school ?? 0) > 0) parts.push(`${num(spend.total.school)} on the school's model calls`);
-    if ((spend.total.train ?? 0) > 0) parts.push(`${num(spend.total.train)} on training`);
-    const pay = [spend.paid.pay > 0 ? `${num(spend.paid.pay)} for merges` : '', spend.paid.reviewPay > 0 ? `${num(spend.paid.reviewPay)} for reviews` : ''].filter(Boolean);
-    out.push(`Model calls cost ${num(spend.total.all)} credits: ${listOf(parts)}.${pay.length ? ` The city paid firms ${listOf(pay)}.` : ''}`, '');
+    if ((spend.total.school ?? 0) > 0) parts.push(`${creditsText(spend.total.school)} on the school's model calls`);
+    if ((spend.total.train ?? 0) > 0) parts.push(`${creditsText(spend.total.train)} on training`);
+    const pay = [spend.paid.pay > 0 ? `${creditsText(spend.paid.pay)} for merges` : '', spend.paid.reviewPay > 0 ? `${creditsText(spend.paid.reviewPay)} for reviews` : ''].filter(Boolean);
+    out.push(`Model calls cost ${creditsText(spend.total.all)} credits: ${listOf(parts)}.${pay.length ? ` The city paid firms ${listOf(pay)}.` : ''}`, '');
   } else {
     out.push('No model calls were charged today.', '');
   }
@@ -452,21 +452,21 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
   const commissions = rec.commission ?? 0;
   const receivedTotal = rec.total ?? rec.hire + rec.sale + commissions;
   if (receivedTotal > 0) {
-    const parts = [rec.hire > 0 ? `${num(rec.hire)} in hiring fees` : '', rec.sale > 0 ? `${num(rec.sale)} for dark towers` : '', commissions > 0 ? `${num(commissions)} for commissioned voyages` : ''].filter(Boolean);
-    out.push(`Firms paid the city ${num(receivedTotal)} credits: ${listOf(parts)}.`, '');
+    const parts = [rec.hire > 0 ? `${creditsText(rec.hire)} in hiring fees` : '', rec.sale > 0 ? `${creditsText(rec.sale)} for dark towers` : '', commissions > 0 ? `${creditsText(commissions)} for commissioned voyages` : ''].filter(Boolean);
+    out.push(`Firms paid the city ${creditsText(receivedTotal)} credits: ${listOf(parts)}.`, '');
   }
   if (spend.firms.length) {
-    out.push(...table(['Firm', 'Bids', 'Runs', 'Paid', 'Balance now'], spend.firms.map((f) => [f.name, num(f.bids), num(f.runs), num(f.paid), num(f.balance)])), '');
+    out.push(...table(['Firm', 'Bids', 'Runs', 'Paid', 'Balance now'], spend.firms.map((f) => [f.name, creditsText(f.bids), creditsText(f.runs), creditsText(f.paid), creditsText(f.balance)])), '');
   }
   if (spend.models.length) {
-    out.push(...table(['Model', 'Credits', 'Share of a five-hour window'], spend.models.map((m) => [m.model, num(m.credits), m.windowPct === null ? (m.usd > 0 ? `API, ${usd(m.usd)}` : 'local') : `${num(m.windowPct)}%`])), '');
+    out.push(...table(['Model', 'Credits', 'Share of a five-hour window'], spend.models.map((m) => [m.model, creditsText(m.credits), m.windowPct === null ? (m.usd > 0 ? `API, ${usd(m.usd)}` : 'local') : `${num(m.windowPct)}%`])), '');
   }
   const c = spend.caps;
   const capLine =
     c.todayCapPct !== null && c.todayCapPct !== undefined
       ? `Today's limit is ${c.todayCapPct}% of each five-hour window, set by you, in place of the ${c.dayCapPct}% cap, and ${c.nightCapPct}% of the week at night.`
-      : `The cap is ${c.dayCapPct}% of each five-hour window, ${num(c.dayCapCredits)} credits a window, and ${c.nightCapPct}% of the week at night.`;
-  out.push(`${capLine} Claude calls today came to ${num(spend.claudeCredits)} credits, ${num(spend.claudeCredits * CREDIT_PCT)}% of one window.`, '');
+      : `The cap is ${c.dayCapPct}% of each five-hour window, ${creditsText(c.dayCapCredits)} credits a window, and ${c.nightCapPct}% of the week at night.`;
+  out.push(`${capLine} Claude calls today came to ${creditsText(spend.claudeCredits)} credits, ${num(spend.claudeCredits * CREDIT_PCT)}% of one window.`, '');
   out.push(
     r.calibration.measured
       ? `1% of the five-hour window is about ${num(r.calibration.tokensPerPct)} weighted tokens, measured from ${plural(r.calibration.samples, 'pair')} of readings.`
@@ -496,7 +496,7 @@ export function renderReport(r: ReportData, names: { firm: (id: string) => strin
   out.push('## Firms', '');
   const fs: string[] = [];
   for (const b of r.bankruptcies) fs.push(`- ${b.name} went bankrupt. Its towers stand dark until another firm buys them.`);
-  for (const s of r.sales) fs.push(`- ${firm(s.to)} bought the dark tower of ${names.agent(s.agentId)} from ${firm(s.from)} for ${num(s.price)} credits.`);
+  for (const s of r.sales) fs.push(`- ${firm(s.to)} bought the dark tower of ${names.agent(s.agentId)} from ${firm(s.from)} for ${creditsText(s.price)} credits.`);
   for (const h of r.hires) fs.push(`- ${firm(h.firmId)} hired ${h.name}.`);
   out.push(...(fs.length ? fs : ['No firm went bankrupt, sold a tower or hired today.']), '');
 

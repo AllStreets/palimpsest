@@ -136,6 +136,8 @@ test('money and chances are set the same everywhere', () => {
   assert.equal(money(38), '38');
   assert.equal(money(38.456), '38.46');
   assert.equal(money(4.5), '4.50');
+  assert.equal(money(2809.888), '2,809.89', 'the same comma and places as every other credit on screen');
+  assert.equal(money(-12), '−12');
   assert.equal(pct(0.8), '80%');
   assert.equal(pct(0.716), '72%');
   assert.equal(pct(null), 'no record');

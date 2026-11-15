@@ -277,3 +277,27 @@ test("the school screen discloses the cost head's bias from excluded capped runs
   // Only the cost head carries this note; the pass head counts a capped run as nothing, which says nothing either way.
   assert.deepEqual(Object.keys(NET_BIAS), ['appraiser-cost']);
 });
+
+test('a net with enough labels and no training says when it trains, or why not', async () => {
+  const { untrainedWhen } = await import('../app/src/ui/school-words.js');
+  const s = { enabled: true, window: { from: '01:00', to: '06:00' }, idleMinutes: 20 };
+  const waiting = card({ status: 'untrained', reason: 'Enough labels; not trained yet', cause: null, labels: 77 });
+  assert.equal(untrainedWhen(waiting, s, gate({ kind: 'light', ok: false, reason: 'outside 1:00 to 6:00', inWindow: false })), '77 labels, enough to train. It trains in the next window, 1:00 to 6:00, once the Mac is on power and idle 20 minutes; now training waits: outside 1:00 to 6:00.');
+  assert.equal(untrainedWhen(waiting, s, gate({ kind: 'light' })), '77 labels, enough to train. The gate is open, so it trains on the school\'s next pass.');
+  assert.equal(untrainedWhen(waiting, { ...s, enabled: false }, gate({ kind: 'light' })), '77 labels, enough to train. The school is off, so nothing trains until you turn it on in Settings.');
+  // The engine's own refusal is kept whole.
+  assert.equal(untrainedWhen(card({ status: 'untrained', reason: "v3's weights are missing", cause: null, labels: 77 }), s, gate({ kind: 'light' })), "v3's weights are missing.");
+  // Any other standing says what netRowLine says.
+  assert.equal(untrainedWhen(card({}), s, gate({ kind: 'light' })), '18 of 40 labels. No city merge has had 30 days yet.');
+  for (const x of [untrainedWhen(waiting, s, gate({ kind: 'light', ok: false, reason: 'on battery' }))]) noDashes(x);
+});
+
+test('the school says in plain words what a Brier score, its range and its baseline mean', async () => {
+  const { SCORE_KEY } = await import('../app/src/ui/school-words.js');
+  noDashes(SCORE_KEY);
+  assert.match(SCORE_KEY, /0 is perfect/);
+  assert.match(SCORE_KEY, /0\.25/);
+  assert.match(SCORE_KEY, /lower is better/i);
+  assert.match(SCORE_KEY, /range/);
+  assert.match(SCORE_KEY, /baseline/);
+});

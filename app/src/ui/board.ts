@@ -5,6 +5,7 @@
  * clean-up every piece of text from GitHub passes before it is shown.
  */
 import type { Agent, Bid, FirmView, Job, JobStatus, Repo, RunProgress, RunStage } from '../../../shared/types.js';
+import { creditsText } from '../../../shared/market-rules.js';
 
 export type SectionKey = 'proposed' | 'bidding' | 'running' | 'waiting' | 'done' | 'failed' | 'halted';
 
@@ -171,9 +172,9 @@ export function bidOrder(bids: Bid[]): Bid[] {
   return [...bids].sort((a, b) => b.ev - a.ev || a.price - b.price || b.calibrated - a.calibrated || a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
 }
 
-/** Credits: whole numbers bare, anything else to the cent. */
+/** Credits, as every screen sets them (shared/market-rules creditsText). */
 export function money(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(2);
+  return creditsText(n);
 }
 
 /** A chance as a whole percent, or "no record" when the city has none. */

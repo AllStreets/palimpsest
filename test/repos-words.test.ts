@@ -27,3 +27,12 @@ test('a push-mode reason is forgotten when its repo reconnects, re-analyses or c
   forgetPushWhy(why, { type: 'engine.reconnected', data: null });
   assert.equal(why.size, 0);
 });
+
+test('the Repos count keeps its room when there is nothing to count, so the head never shifts', async () => {
+  const { repoCount } = await import('../app/src/ui/repos-words.js');
+  assert.deepEqual(repoCount(6), { text: '6', shown: true });
+  assert.deepEqual(repoCount(12), { text: '12', shown: true });
+  // A fresh home: the count is held, unseen, at the width of one figure, so Settings and Find stand where they always do.
+  assert.deepEqual(repoCount(0), { text: '0', shown: false });
+  assert.deepEqual(repoCount(-1), { text: '0', shown: false });
+});

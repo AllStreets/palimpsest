@@ -79,6 +79,31 @@ export function netRowLine(card: NetCard): string {
   return netLine(card);
 }
 
+/** The engine's word for a net with enough labels that has not trained yet (engine/school/nets.ts). */
+const NOT_TRAINED = 'Enough labels; not trained yet';
+
+/**
+ * A net's line on the school's ledger, saying when an untrained net with
+ * enough labels will train, or why it will not: the school off, or the gate
+ * shut and what it waits for. The engine's own refusal is kept whole, and
+ * any other standing reads as netRowLine says it.
+ */
+export function untrainedWhen(card: NetCard, school: { enabled: boolean; window: { from: string; to: string }; idleMinutes: number }, light: GateState): string {
+  if (card.status !== 'untrained' || (card.reason !== null && card.reason !== NOT_TRAINED)) return netRowLine(card);
+  const enough = `${card.labels} labels, enough to train.`;
+  if (!school.enabled) return `${enough} The school is off, so nothing trains until you turn it on in Settings.`;
+  if (light.ok) return `${enough} The gate is open, so it trains on the school's next pass.`;
+  const when = `It trains in the next window, ${hour(school.window.from)} to ${hour(school.window.to)}, once the Mac is on power and idle ${plural(school.idleMinutes, 'minute')}`;
+  return `${enough} ${when}; now training waits: ${light.reason ?? 'the gate did not say why'}.`;
+}
+
+/**
+ * What the scores on the school screen mean, in plain words: Brier, its
+ * range and n, the baseline, and when a net counts as better.
+ */
+export const SCORE_KEY =
+  'Brier says how far a net\'s chances land from what then happened: 0 is perfect, 0.25 is what saying even odds every time would score, and lower is better. Each score is taken on rows the net never trained on, and the range beside it holds the true score 19 times in 20. The baseline is the plain guess a net must beat, the usual rate; a net is trusted only when it beats it across that whole range. The cost net is scored instead by how many credits its guesses miss by.';
+
 export const STATUS_WORD: Record<NetCard['status'], string> = { thin: 'thin', untrained: 'not trained yet', trained: 'trained, not trusted', trusted: 'trusted' };
 
 /**

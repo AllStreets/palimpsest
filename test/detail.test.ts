@@ -333,3 +333,32 @@ test('the credits explanation stands in the page, not in a tooltip only', () => 
   assert.equal(creditsNote(61, 60), 'Over its bid: the firm pays the difference from its own books.');
   assert.equal(creditsNote(3, null), 'What the work has cost so far.');
 });
+
+test('an inspection page is titled in plain words: which checks failed', async () => {
+  const { inspectionTitle } = await import('../app/src/ui/detail.js');
+  const c = (name: CheckView['name'], status: CheckView['status']): CheckView => ({ name, status, detail: '', durationMs: 1, testsRun: null, log: null });
+  const base = { id: 'i', runId: 'r', jobId: 'j', repo: 'a/b', reviewerAgentId: null, reviewerFirmId: null, design: null, cost: 0, at: '' } as const;
+  const i = (patch: Partial<InspectionView>): InspectionView => ({ ...base, checks: [], passed: false, pushable: false, ...patch });
+  const eight = (fails: CheckView['name'][]): CheckView[] => (['install', 'test', 'typecheck', 'lint', 'build', 'scope', 'review', 'design'] as const).map((n) => c(n, fails.includes(n) ? 'fail' : 'pass'));
+  assert.equal(inspectionTitle(i({ checks: eight(['scope', 'review']) })), 'Failed the scope and the review');
+  assert.equal(inspectionTitle(i({ checks: eight(['test']) })), 'Failed the tests');
+  assert.equal(inspectionTitle(i({ checks: eight(['install', 'typecheck', 'design']) })), 'Failed the install, the type check and the design');
+  assert.equal(inspectionTitle(i({ passed: true, pushable: true, checks: eight([]) })), 'Passed all 8 checks; it may be pushed');
+  assert.equal(inspectionTitle(i({ passed: true, pushable: false, checks: eight([]) })), 'Passed all 8 checks; it opens a pull request');
+  assert.equal(inspectionTitle(i({ inconclusive: 'the diff is too large for any reviewer' })), 'Inconclusive: the diff is too large for any reviewer');
+});
+
+test('a check says its key reason whole, cut only between sentences', async () => {
+  const { checkSummary } = await import('../app/src/ui/detail.js');
+  const design = 'Shot 2 routes before and after at 1440 x 900. Before 7, after 6 of 10 (pass at 6, no more than a point below before). The rebuild banner is legible and honest about stale results, but it pushes the results down a row and its spinner never stops on a still page; the berth board is unchanged.';
+  assert.equal(checkSummary(design), design, 'the judge\'s reason is never cut');
+  const long = `${'The first sentence says what failed. '.repeat(12)}And the tail.`;
+  const s = checkSummary(long);
+  assert.ok(s.length <= 400, `${s.length}`);
+  assert.match(s, /failed\.$/, 'ends on a whole sentence');
+  assert.equal(checkSummary('npm ci'), 'npm ci');
+  assert.equal(checkSummary(''), '');
+  // One sentence too long to keep whole is cut at a clause, never mid-word.
+  const clause = `${'word '.repeat(70)}; ${'more '.repeat(30)}`;
+  assert.match(checkSummary(clause), /word…$/);
+});

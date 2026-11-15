@@ -764,6 +764,50 @@ export function verdict(i: InspectionView): Verdict {
   return { state: 'fail', text: failed.length ? `Failed: ${failed.join(', ')}` : 'Failed' };
 }
 
+/** A check as it reads inside a sentence: "the scope", "the tests". */
+const CHECK_IN_TEXT: Record<CheckName, string> = {
+  install: 'the install',
+  test: 'the tests',
+  typecheck: 'the type check',
+  lint: 'the lint',
+  build: 'the build',
+  scope: 'the scope',
+  review: 'the review',
+  design: 'the design',
+};
+
+/**
+ * The inspection page's title, plain for a first read: "Failed the scope
+ * and the review" (the count stands beside the checks), "Passed all 8
+ * checks; it may be pushed", or why it could not be judged.
+ */
+export function inspectionTitle(i: InspectionView): string {
+  if (i.inconclusive) return verdict(i).text;
+  const total = i.checks.length;
+  if (i.passed) return `Passed ${total ? `all ${total} checks` : 'inspection'}; ${i.pushable ? 'it may be pushed' : 'it opens a pull request'}`;
+  const failed = i.checks.filter((c) => c.status === 'fail').map((c) => CHECK_IN_TEXT[c.name] ?? c.name);
+  if (!failed.length) return 'Failed inspection';
+  const list = failed.length === 1 ? failed[0] : `${failed.slice(0, -1).join(', ')} and ${failed.at(-1)}`;
+  return `Failed ${list}`;
+}
+
+/**
+ * What a check found, as its table cell says it: whole when it fits, else
+ * cut between sentences, so the key reason is never broken off; one long
+ * sentence is cut at a clause. The rest stays under More.
+ */
+export function checkSummary(text: unknown, max = 400): string {
+  const t = cleanText(text, Number.MAX_SAFE_INTEGER);
+  if (t.length <= max) return t;
+  const head = t.slice(0, max + 1);
+  let end = -1;
+  for (const m of head.matchAll(/[.!?](?=\s)/g)) if (m.index !== undefined && m.index < max) end = m.index;
+  if (end > 0) return t.slice(0, end + 1);
+  const clause = Math.max(head.lastIndexOf('; '), head.lastIndexOf(', '));
+  const cut = clause > 0 ? clause : head.lastIndexOf(' ');
+  return `${t.slice(0, cut > 0 ? cut : max).trimEnd()}…`;
+}
+
 /** A check's duration: "3 ms", "42 s", "1 min 12 s". */
 export function duration(ms: number): string {
   if (!(ms > 0)) return '';

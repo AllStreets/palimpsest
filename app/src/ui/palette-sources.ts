@@ -9,7 +9,7 @@ import type { District, FirmView, Grant, Job, JobStatus, NetCard, Repo, VoyageVi
 import type { api as client, SchoolView } from '../api.js';
 import type { Route } from '../router.js';
 import { SCHOOL_SECTIONS, SCREENS } from '../router.js';
-import { cleanText } from './board.js';
+import { cleanText, money } from './board.js';
 import { plural } from './controls.js';
 import type { PaletteEntry } from './palette-rank.js';
 import { fixed, KIND_LABEL, NET_LABEL, signed, STATUS_WORD } from './school-words.js';
@@ -43,7 +43,7 @@ const shortRepo = (fullName: string): string => fullName.split('/').pop() ?? ful
 const ownerOf = (fullName: string): string => fullName.split('/')[0] ?? '';
 const shortModel = (model: string): string => model.split(':').slice(1).join(':') || model;
 const cap = (s: string): string => (s ? s[0].toUpperCase() + s.slice(1) : s);
-const credits = (n: number): string => `${Math.round(n).toLocaleString('en-US')} credits`;
+const credits = (n: number): string => `${money(n)} credits`;
 
 const JOB_STAGE: Record<JobStatus, string> = {
   proposed: 'proposed',

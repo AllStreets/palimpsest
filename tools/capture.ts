@@ -46,7 +46,10 @@
  * week-poster (the week's poster, framed off the sun), overview-clear (the
  * overview in clear air, where the build has the haze control), street and
  * people-follow (the life and people stills on their own), and diagrams
- * (the eight diagram images, through tools/diagrams.ts).
+ * (the eight diagram images, through tools/diagrams.ts), and palette (Cmd+K
+ * opened over the overview, a query typed, its ranked results; PALETTE_QUERY).
+ * The city stills (hero, stills, overview and the rest) stand the app on the
+ * city first, so the brief the day's first open draws is never in them.
  * Options (env): CAPTURE_FPS=30, CAPTURE_DPR=2, CAPTURE_KEEP=1 keeps the raw frames,
  * PROBE='[[[eye],[target]], ...]' for quick stills in the probe shot, PROBE_CHROME=1
  * keeps the running head and plates in them, PROBE_RESTYLE (see the probe
@@ -375,17 +378,33 @@ async function shows(page: Page): Promise<Show[]> {
   return (await page.evaluate('window.__palimpsest.milestones()')) as Show[];
 }
 
-/** Hides the running head and the name plates, for the shots that show only the city. */
-async function chrome(page: Page, on: boolean): Promise<void> {
-  await page.evaluate((show) => {
+/**
+ * Hides the running head, the notices and the name plates, for the shots that show only the city, and stands the
+ * app on the city first: on the day's first open the brief draws over the left of the frame, and a city still is
+ * never a page beside a city (Phase 5 audit). `plates` keeps the name plates, which are the city's own.
+ */
+async function chrome(page: Page, on: boolean, o: { plates?: boolean } = {}): Promise<void> {
+  if (!on) await toCity(page);
+  await page.evaluate(([show, plates]) => {
     let style = document.getElementById('capture-chrome');
     if (!style) {
       style = document.createElement('style');
       style.id = 'capture-chrome';
       document.head.append(style);
     }
-    style.textContent = show ? '' : '.runhead, .plates { display: none !important; }';
-  }, on);
+    style.textContent = show ? '' : `.runhead, .city-notice${plates ? '' : ', .plates'} { display: none !important; }`;
+  }, [on, !!o.plates] as [boolean, boolean]);
+}
+
+/** Closes any sheet (the brief the day's first open draws, or a screen left open) so the city is the whole frame. */
+async function toCity(page: Page): Promise<void> {
+  if ((await page.evaluate('document.body.dataset.route')) === 'city') return;
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
+  await page.waitForSelector('body[data-route="city"]', { timeout: 10_000 });
+  // The sheet and its scrim fade out (0.3 s) before the frame is the city's alone.
+  await page.waitForTimeout(900);
 }
 
 /** Opens a screen from the running head, as a click would, and waits for it to settle. */
@@ -2067,10 +2086,30 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async overview(page) {
-      // The app as it opens: the city, the running head and every district's name plate.
-      await chrome(page, true);
+      // The city from home with every district's name plate, and nothing else over it: no brief, no running head,
+      // no notice (Phase 5 audit: the city is the subject, not a wallpaper beside a page).
+      await chrome(page, false, { plates: true });
       const v = await withSpire(page, 'overview', OVERVIEW);
       await still(page, 'overview', v.eye, v.target);
+      await chrome(page, true);
+    },
+
+    async palette(page) {
+      // Find (Cmd+K) as a first-time user meets it by keyboard: opened over the city, a query typed, its results ranked.
+      // PALETTE_QUERY overrides the query.
+      await chrome(page, false, { plates: true });
+      await chrome(page, true);
+      await frame(page, OVERVIEW.eye, OVERVIEW.target);
+      await page.waitForTimeout(600);
+      await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K');
+      await page.waitForSelector('.palette .palette-input', { state: 'visible', timeout: 5000 });
+      await page.waitForSelector('.palette .palette-row', { timeout: 10_000 });
+      await page.keyboard.type(process.env.PALETTE_QUERY ?? 'harb', { delay: 90 });
+      await page.waitForTimeout(900);
+      await page.waitForSelector('.palette .palette-row', { timeout: 5000 });
+      await shoot(page, 'palette');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(400);
     },
 
     async 'overview-clear'(page) {
@@ -2331,7 +2370,11 @@ async function main(): Promise<void> {
       await empty.goto(`http://127.0.0.1:${PORT}/?fixed-quality&debug#/school`);
       await empty.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 60_000 });
       await empty.waitForSelector('.sheet.school .net-row[data-status="thin"]', { timeout: 15_000 });
-      await empty.waitForTimeout(2500);
+      // The morning's line on a fresh home folds onto its mark after a few seconds (notices.ts NOTICE_MS): the page
+      // is shot as it reads once it has, and the city beside it framed on the skyline, not a street canyon.
+      await frame(empty, SCREENS.eye, SCREENS.target);
+      await empty.waitForTimeout(7500);
+      await frame(empty, SCREENS.eye, SCREENS.target);
       await lean(empty, 'school-empty', true);
     }
     if (errors.length) console.log(`console errors: ${errors.join(' | ')}`);

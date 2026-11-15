@@ -47,7 +47,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CREDIT_PCT, localCredits } from '../../shared/credits.js';
-import { calibrated as calibrate, expectedValue, proposalKey, roundOpen, TIER_VALUE } from '../../shared/market-rules.js';
+import { calibrated as calibrate, creditsText, expectedValue, proposalKey, roundOpen, TIER_VALUE } from '../../shared/market-rules.js';
 import { silhouetteFor } from '../../shared/silhouette.js';
 import type {
   Agent,
@@ -3153,7 +3153,7 @@ export function sampleOllamaUsage(now: number = Date.now()): ProviderUsage {
     windows: [],
     tokens: null,
     spendUsd: null,
-    detail: `${SAMPLE_INSTALLED.length} models installed; local credits ${since(midnight.getTime())} today, ${since(now - 7 * DAY)} this week`,
+    detail: `${SAMPLE_INSTALLED.length} models installed; local credits ${creditsText(since(midnight.getTime()))} today, ${creditsText(since(now - 7 * DAY))} this week`,
     models: [...SAMPLE_INSTALLED],
     host: getSettings().ollamaHost,
   };

@@ -657,7 +657,8 @@ test("today's brief holds every item kind", async () => {
     assert.deepEqual(acted, ['accept', 'dismiss']);
     assert.ok(items.filter((i) => i.kind === 'proposal' && !i.acted && i.actions.includes('accept')).length >= 3, 'the rest still offer accept');
     const usage = items.find((i) => i.kind === 'usage')!;
-    assert.match(usage.title, /five-hour window is at 44/);
+    // The whole figure Settings and the brief's line show for the same moment (shared windowNowPct), not 44.6.
+    assert.match(usage.title, /five-hour window is at 45%$/);
     assert.deepEqual(usage.actions, ['cap']);
     const failed = items.find((i) => i.kind === 'failed')!;
     assert.match(failed.text, /The run finished without changing anything\./);

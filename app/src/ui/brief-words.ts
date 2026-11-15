@@ -8,7 +8,7 @@
  * Every item's title and text were composed by the engine from the ledger
  * and from model output, so they are only ever cleaned and set as text.
  */
-import { TIER_VALUE } from '../../../shared/market-rules.js';
+import { TIER_VALUE, windowNowPct } from '../../../shared/market-rules.js';
 import { AGREE, isBeagle, WORK_KINDS } from '../../../shared/school-rules.js';
 import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant, WorkKind } from '../../../shared/types.js';
 import { cleanText } from './board.js';
@@ -165,7 +165,8 @@ export function actedLine(item: BriefItem, capPct?: number | null): string {
   return done ? `${done}, ${at}` : '';
 }
 
-const pctOf = (w: BudgetWindow): number | null => (w.usedPct === null && w.estimatedPct <= 0 ? null : Math.round(Math.max(w.estimatedPct, w.usedPct ?? 0)));
+/** A window now, as Settings and the treasury show it too (shared windowNowPct). */
+const pctOf = (w: BudgetWindow): number | null => windowNowPct(w);
 
 /**
  * Both windows and today's limit, in one sentence: "The five-hour window

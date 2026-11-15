@@ -1,4 +1,5 @@
 import type { BudgetWindow, CreditEntry, FirmView, ReportView, SpendPeriod, TreasuryView } from '../../../shared/types';
+import { windowNowPct } from '../../../shared/market-rules';
 import { api, type EngineEvent } from '../api';
 import { placeHref, routeHref } from '../router';
 import { cleanText, githubUrl } from './board';
@@ -282,7 +283,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     // Today's limit, when he set one from the brief, stands in place of the city's cap until midnight (ruling 10).
     const mine = which === 'five' && v.todayCapPct !== null;
     const capLabel = which === 'five' ? (mine ? `today's limit ${pctOf(cap)}` : `city cap ${pctOf(cap)}`) : 'week';
-    const label = `${name}: ${w.usedPct === null ? 'unread' : `${pctOf(w.usedPct)} used`} by the last reading, about ${pctOf(w.estimatedPct)} now; the city's share ${pctOf(w.cityPct)}${which === 'five' ? ` against its ${pctOf(cap)} cap` : `, unattended ${pctOf(v.night.usedPct)} against the ${pctOf(v.night.capPct)} night cap`}; hard stop at ${v.hardStopPct}%; ${resetWords(w.resetsAt, now)}.`;
+    const label = `${name}: ${w.usedPct === null ? 'unread' : `${pctOf(w.usedPct)} used`} by the last reading, about ${windowNowPct(w) ?? 0}% now; the city's share ${pctOf(w.cityPct)}${which === 'five' ? ` against its ${pctOf(cap)} cap` : `, unattended ${pctOf(v.night.usedPct)} against the ${pctOf(v.night.capPct)} night cap`}; hard stop at ${v.hardStopPct}%; ${resetWords(w.resetsAt, now)}.`;
     right.append(head, meterRule(w, which === 'five' ? { cap, capLabel, stop: v.hardStopPct, label } : { cap: null, capLabel, stop: v.hardStopPct, label, night: v.night }));
     const legend = el('p', 'meter-legend');
     const key = (cls: string, text: string): HTMLElement => {
@@ -294,7 +295,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     };
     const since = w.estimatedPct - (w.usedPct ?? 0);
     legend.append(
-      key('his', `Your plan, about ${pctOf(w.estimatedPct)} now${since >= 0.05 ? ` with ${pctOf(since)} spent since the reading` : ''}`),
+      key('his', `Your plan, about ${windowNowPct(w) ?? 0}% now${since >= 0.05 ? ` with ${pctOf(since)} spent since the reading` : ''}`),
       key('city', `The city’s share, ${pctOf(w.cityPct)} of the window${which === 'five' ? `, against its ${pctOf(cap)} cap` : ''}`),
       ...(which === 'seven' ? [key('night', `Unattended, ${pctOf(v.night.usedPct)} of the week, against the ${pctOf(v.night.capPct)} night cap`)] : []),
     );

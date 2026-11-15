@@ -22,6 +22,11 @@ export const NOTICES_KEPT = 3;
 /** The space between an open sheet's edge and the column beside it. */
 const BESIDE_GAP = 28;
 
+/** The words on the mark that recalls the faded column: how many notices it holds. */
+export function recallText(n: number): string {
+  return n > 0 ? `${n} ${n === 1 ? 'notice' : 'notices'}` : '';
+}
+
 export interface Kept {
   /** The notice's key: the one it was given, or its own words. */
   key: string;
@@ -89,7 +94,7 @@ export function createNotices(parent: HTMLElement): Notices {
   const recall = doc.createElement('button');
   recall.type = 'button';
   recall.className = 'city-notice-recall';
-  recall.textContent = 'Notice';
+  recall.textContent = '';
   recall.title = 'Show the last notices again';
   recall.setAttribute('aria-controls', list.id);
   recall.setAttribute('aria-expanded', 'false');
@@ -153,6 +158,7 @@ export function createNotices(parent: HTMLElement): Notices {
       return li;
     });
     list.replaceChildren(...lines);
+    recall.textContent = recallText(lines.length);
     box.hidden = lines.length === 0;
     if (box.hidden) fade();
   };

@@ -93,3 +93,10 @@ test('notices keep contrast over a lit tower: an ink plate at 0.82 opacity', () 
 test('a long notice wraps to two lines, then ellipsises', () => {
   assert.equal(NOTICE_LINES, 2);
 });
+
+test('the mark that recalls the column says what it holds, never a bare tag', async () => {
+  const { recallText } = await import('../app/src/ui/notices.js');
+  assert.equal(recallText(1), '1 notice');
+  assert.equal(recallText(3), '3 notices');
+  assert.equal(recallText(0), '');
+});

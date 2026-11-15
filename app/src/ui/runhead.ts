@@ -1,7 +1,9 @@
 import type { Route } from '../router';
 import { routeHref, SCREENS } from '../router';
 import { el } from './controls';
+import { repoCount } from './repos-words';
 import { createPalette, shortcutLabel } from './palette';
+import { guardPlates } from './plate-guard';
 
 export interface Runhead {
   /** The head itself, for the city's one-line notices to stand in. */
@@ -29,7 +31,10 @@ export function createRunhead(parent: HTMLElement): Runhead {
   icon.alt = '';
   const mark = el('span', 'runhead-mark', 'Palimpsest');
   const links = new Map<Route, HTMLAnchorElement>();
-  const count = el('span', 'runhead-count');
+  // Held unseen until the first count comes, so the head is laid out once (repoCount).
+  const count = el('span', 'runhead-count', '0');
+  count.style.visibility = 'hidden';
+  count.setAttribute('aria-hidden', 'true');
   nav.append(icon, mark);
   for (const { route, name: text } of SCREENS) {
     const a = el('a', 'runhead-link', text);
@@ -54,6 +59,8 @@ export function createRunhead(parent: HTMLElement): Runhead {
   stopped.hidden = true;
   nav.append(stopped);
   parent.append(nav);
+  // No name plate shows half past an open sheet's edge (plate-guard.ts).
+  guardPlates(parent.ownerDocument);
 
   return {
     el: nav,
@@ -64,7 +71,11 @@ export function createRunhead(parent: HTMLElement): Runhead {
       }
     },
     setConnected(n) {
-      count.textContent = n > 0 ? String(n) : '';
+      const c = repoCount(n);
+      count.textContent = c.text;
+      count.style.visibility = c.shown ? '' : 'hidden';
+      if (c.shown) count.removeAttribute('aria-hidden');
+      else count.setAttribute('aria-hidden', 'true');
     },
     setStopped(on) {
       stopped.hidden = !on;

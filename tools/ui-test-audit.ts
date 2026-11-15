@@ -100,9 +100,9 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     const rest = states.filter((x) => !accepted.includes(x ?? ''));
     check(states.length === 4 && JSON.stringify(rest) === JSON.stringify(['proposed', 'proposed', 'withdrawn']), `four proposals stand with their states: one accepted, two waiting on him, one dismissed (${states.join(', ')})`);
     const acceptedRow = props.and(page.locator(`[data-job="${view.proposals.find((j) => accepted.includes(j.status))?.id}"]`));
-    check(/^accepted/.test(((await acceptedRow.locator('.prop-word').textContent()) ?? '').trim()), `the accepted one says so (${((await acceptedRow.locator('.prop-word').textContent()) ?? '').trim()})`);
+    check(/^accepted/i.test(((await acceptedRow.locator('.prop-word').textContent()) ?? '').trim()), `the accepted one says so (${((await acceptedRow.locator('.prop-word').textContent()) ?? '').trim()})`);
     const dismissedRow = props.and(page.locator(`[data-job="${schedule?.id}"]`));
-    check(/dismissed/.test((await dismissedRow.locator('.prop-word').textContent()) ?? ''), 'the dismissed one says so');
+    check(/dismissed/i.test((await dismissedRow.locator('.prop-word').textContent()) ?? ''), 'the dismissed one says so');
     check((await dismissedRow.locator('.prop-again').count()) === 1, 'and offers Propose again');
     check((await props.and(page.locator(`[data-job="${ubl?.id}"]`)).locator('.prop-accept, .prop-dismiss, .prop-tier [role="radio"]').count()) === 5, 'a proposed one offers Accept, three tiers and Dismiss');
     check((await sec.locator('img, script, iframe').count()) === 0, 'the audit is set as text only');
@@ -121,7 +121,7 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     const reasonRow = props.and(page.locator(`[data-job="${reason?.id}"]`));
     await reasonRow.locator('.prop-accept').click();
     check(await within(page, 4000, async () => (await reasonRow.getAttribute('data-state')) === 'open'), `Accept moves the row on in place (${await reasonRow.getAttribute('data-state')})`);
-    check(/accepted/.test((await reasonRow.locator('.prop-word').textContent()) ?? ''), 'and it says accepted');
+    check(/accepted/i.test((await reasonRow.locator('.prop-word').textContent()) ?? ''), 'and it says accepted');
 
     // Propose again: the dismissed proposal is back, waiting on him.
     await dismissedRow.locator('.prop-again').click();

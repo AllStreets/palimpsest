@@ -988,7 +988,7 @@ a.repo-name:focus-visible {
   color: var(--ink-2);
 }
 .usage-row .usage-pct {
-  font-size: 26px;
+  font-size: 17px;
 }
 .prov-hook {
   display: flex;
@@ -1130,19 +1130,27 @@ a.repo-name:focus-visible {
 .apikey-input:focus {
   border-bottom-color: var(--bronze);
 }
+.apikey-note,
+.apikey-daily-note {
+  max-width: 52ch;
+  margin-top: 6px;
+}
 .awake-text {
   color: var(--ink);
   cursor: pointer;
 }
 
 .usage-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
 }
+/* The figure in the book's serif at the size of the line it stands in: a sentence of the page, not a tile. */
 .usage-pct {
   font-family: var(--serif);
-  font-size: 30px;
+  font-size: 17px;
   line-height: 1;
   color: var(--ink);
   font-variant-numeric: tabular-nums lining-nums;
@@ -1152,23 +1160,20 @@ a.repo-name:focus-visible {
   color: var(--ink-3);
 }
 .usage-reset {
-  margin-left: auto;
-  font-size: 12.5px;
   color: var(--ink-2);
-  font-variant-numeric: tabular-nums;
 }
 .usage-meter {
   position: relative;
-  margin-top: 9px;
-  height: 3px;
-  background: rgba(236, 230, 218, 0.1);
+  margin-top: 6px;
+  height: 1px;
+  background: rgba(236, 230, 218, 0.12);
 }
 .usage-fill {
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
-  background: #c9a27a;
+  background: rgba(201, 162, 122, 0.8);
 }
 .usage-none {
   font-family: var(--serif);

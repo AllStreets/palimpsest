@@ -109,10 +109,9 @@ export function balanceCell(f: Firm, now = Date.now(), opts: { always?: boolean 
   return cell;
 }
 
-/** A thousands comma for the head's sums. */
+/** The head's sums, set as every other credit on screen. */
 export function grouped(n: number): string {
-  const [i, d] = money(Math.abs(n)).split('.');
-  return `${n < 0 ? '−' : ''}${i.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${d ? `.${d}` : ''}`;
+  return money(n);
 }
 
 // ---------------------------------------------------------------- the list

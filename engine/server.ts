@@ -14,7 +14,7 @@ import { handleMarketApi, scrub, setMarketExtras } from './market/api.js';
 import { fakeProvider } from './market/fake-provider.js';
 import { setProvider } from './market/providers.js';
 import { economyClock, economySites, SAMPLE_TRAINER, sampleOllamaUsage } from './market/sample-economy.js';
-import { noteSseClients } from './market/budget.js';
+import { noteSseClients, planNow } from './market/budget.js';
 import { resumeRepo, updateKeepAwake } from './market/runs.js';
 import { availableRepos, GhError } from './github.js';
 import { paths } from './home.js';
@@ -415,10 +415,19 @@ async function handleApi(
 
     if (pathname === '/api/usage' && method === 'GET') {
       const reading = latestReading();
+      // The windows as they stand now, the same whole figure the brief and the treasury show (null where the
+      // treasury cannot be read; the reading above still holds).
+      let now: { fiveHour: number | null; sevenDay: number | null } | null = null;
+      try {
+        now = planNow();
+      } catch {
+        now = null;
+      }
       sendJson(res, 200, {
         reading,
         stale: reading ? isStale(reading) : false,
         hookInstalled: getSettings().hookInstalled,
+        now,
       });
       return;
     }

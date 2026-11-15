@@ -3,7 +3,7 @@ import { api, ApiError, type EngineEvent } from '../api';
 import { placeHref } from '../router';
 import { cleanText, money } from './board';
 import { el } from './controls';
-import { CHECK_WORDS, cleanLog, duration, redactLog, verdict } from './detail';
+import { CHECK_WORDS, checkSummary, cleanLog, duration, inspectionTitle, redactLog, verdict } from './detail';
 import { coalesce, detailSheet, keyedSlot, namesOf, pageLink, secHead, setTrail, statusMark } from './pages';
 import './market.css';
 
@@ -74,7 +74,7 @@ export function createInspectionPage(parent: HTMLElement, opts: { listen(fn: (e:
     const detail = el('td', 'c-detail');
     const full = cleanLog(redactLog(c.detail ?? '')).trim();
     // The review's own words are read in full under The reviewer; the table says only how it came out.
-    const first = c.name === 'review' ? (c.status === 'pass' ? 'Approved the change.' : 'Asked for changes; the concerns are below.') : cleanText(c.detail, 200);
+    const first = c.name === 'review' ? (c.status === 'pass' ? 'Approved the change.' : 'Asked for changes; the concerns are below.') : checkSummary(c.detail);
     detail.append(el('span', 'check-detail', first || (c.status === 'skipped' ? 'Not run.' : '')));
     const more = !!c.log || (c.name !== 'review' && full.replace(/\s+/g, ' ') !== first);
     if (c.testsRun !== null && c.testsRun !== undefined) detail.append(el('span', 'check-tests', `${c.testsRun} tests`));
@@ -118,7 +118,7 @@ export function createInspectionPage(parent: HTMLElement, opts: { listen(fn: (e:
   function checksSection(i: InspectionView): HTMLElement {
     const sec = el('section', 'detail-sec insp-checks');
     const fails = i.checks.filter((c) => c.status === 'fail').length;
-    sec.append(secHead('Checks', `${i.checks.length} checks${fails ? `, ${fails} failed` : ''}`));
+    sec.append(secHead('Checks', `${i.checks.length} checks${fails ? `, ${fails} failed` : ', all passed'}`));
     sec.append(el('p', 'jobs-key', 'A change passes only if every check holds: the repo’s own install, tests, type check, lint and build, the scope, a review by another firm, and for a change to the screens a design judgement. A missing check is skipped, never counted as a pass.'));
     const t = el('table', 'checks');
     t.append(el('caption', 'bids-cap', 'The checks this inspection ran'));
@@ -286,10 +286,11 @@ export function createInspectionPage(parent: HTMLElement, opts: { listen(fn: (e:
       ['Inspection', null],
     ]);
     const v = verdict(i);
+    const title = inspectionTitle(i);
     sheet.root.dataset.verdict = v.state;
-    if (sheet.title.dataset.text !== v.text) {
-      sheet.title.dataset.text = v.text;
-      sheet.title.replaceChildren(el('i', `verdict-mark ${v.state}`), el('span', 'verdict-text', v.text));
+    if (sheet.title.dataset.text !== title) {
+      sheet.title.dataset.text = title;
+      sheet.title.replaceChildren(el('i', `verdict-mark ${v.state}`), el('span', 'verdict-text', title));
       sheet.title.querySelector('i')!.setAttribute('aria-hidden', 'true');
     }
     const run = job?.runs.find((r) => r.id === i.runId);

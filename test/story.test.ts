@@ -63,7 +63,7 @@ test('a round in a line: won and what became of it, or lost and the EV that lost
   assert.equal(roundWords(round(true, bid('quickset', 5.63), bid('quickset', 5.63), 'merged'), names), 'Won at an expected value of 5.63; merged.');
   assert.equal(roundWords(round(true, bid('quickset', 5.63), bid('quickset', 5.63), 'live'), names), 'Won at an expected value of 5.63; at work now.');
   assert.equal(roundWords(round(false, bid('quickset', 3.42), bid('kiln', 12)), names), 'Lost to Kiln Brothers: 3.42 against 12.');
-  assert.equal(roundWords(round(false, bid('quickset', -2), null), names), 'Nobody won: no bid was worth its price (this one -2).');
+  assert.equal(roundWords(round(false, bid('quickset', -2), null), names), 'Nobody won: no bid was worth its price (this one −2).');
 });
 
 test('the reputation line is drawn as steps between its points, inside its box', () => {
@@ -87,9 +87,10 @@ test('workflow shapes and lineage, in words', () => {
   assert.equal(lineageWords({ lineage: { ...a.lineage, origin: 'school', generation: 0 } } as Agent), 'Graduated from the school on 9 November 2026: taught on his verified work, not bred.');
 });
 
-test('a sum of credits reads as the books set it', () => {
+test('a sum of credits reads as every other credit on screen', () => {
   assert.equal(figure(606.18), '606.18');
-  assert.equal(figure(300), '300.00');
+  assert.equal(figure(300), '300', 'whole bare, as the board and the palette set it');
+  assert.equal(figure(2809.888), '2,809.89');
   assert.equal(figure(-419.42), '−419.42');
   assert.equal(figure(12345.6), '12,345.60');
 });

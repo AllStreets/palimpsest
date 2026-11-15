@@ -290,3 +290,24 @@ test('bid.placed outside the current round is refused: a round is open only whil
   assert.equal(roundOpen({ status: 'bidding', bidsCloseAt: 'not a time' }, at), false);
   assert.equal(roundOpen(null, at), false);
 });
+
+test('credits are set one way on every screen: a thousands comma, whole bare, else to the cent', async () => {
+  const { creditsText } = await import('../shared/market-rules.js');
+  assert.equal(creditsText(2809.888), '2,809.89', 'never three places');
+  assert.equal(creditsText(82.22), '82.22');
+  assert.equal(creditsText(300), '300');
+  assert.equal(creditsText(23.4), '23.40');
+  assert.equal(creditsText(12345.6), '12,345.60');
+  assert.equal(creditsText(-419.42), '−419.42', 'a true minus');
+  assert.equal(creditsText(0.004), '0');
+  assert.equal(creditsText(-0.001), '0', 'no minus on nothing');
+  assert.equal(creditsText(59.999), '60');
+});
+
+test('a plan window now is one figure: the larger of the reading and the estimate, whole', async () => {
+  const { windowNowPct } = await import('../shared/market-rules.js');
+  assert.equal(windowNowPct({ usedPct: 44, estimatedPct: 44.6 }), 45, 'the reading plus what the city spent since');
+  assert.equal(windowNowPct({ usedPct: 50, estimatedPct: 20 }), 50, 'never under the reading');
+  assert.equal(windowNowPct({ usedPct: null, estimatedPct: 3.2 }), 3, 'an estimate with no reading');
+  assert.equal(windowNowPct({ usedPct: null, estimatedPct: 0 }), null, 'nothing read and nothing spent');
+});

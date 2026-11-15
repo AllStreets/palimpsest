@@ -218,8 +218,8 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     check(await within(page, 5000, async () => (await page.evaluate(() => location.hash)) === `#/inspections/${insp.id}` && (await page.locator('.insppage .check-row').count()) === 8), `the inspection page shows eight checks (${await page.locator('.insppage .check-row').count()})`);
     const fails = await page.locator('.insppage .check-row.s-fail').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.check));
     check(JSON.stringify(fails) === JSON.stringify(['scope', 'review']), `fail on two: scope and review (${fails.join(', ')})`);
-    check((await page.locator('.insppage .check-row.s-fail .status-word').first().textContent()) === 'fail' && (await page.locator('.insppage .check-row.s-fail .status-shape').count()) === 2, 'each status is a word with a small shape');
-    check(((await page.locator('.insppage .sheet-title').textContent()) ?? '').trim() === 'Failed: scope, review', 'the verdict line reads Failed: scope, review');
+    check((await page.locator('.insppage .check-row.s-fail .status-word').first().textContent()) === 'failed' && (await page.locator('.insppage .check-row.s-fail .status-shape').count()) === 2, 'each status is a word with a small shape');
+    check(((await page.locator('.insppage .sheet-title').textContent()) ?? '').trim() === 'Failed the scope and the review', 'the title reads Failed the scope and the review');
     // The table keeps its cells on fixed column tracks: nothing is drawn over its neighbour, Took stands under Took, and the rows do not overlap.
     // The sheet slides in over 0.34 s (translateX from -14 px): a rect read while it moves is off by up to that much, and the head and the
     // rows used to be read in separate calls. Wait for the slide to end, then read the head and every row in the one call.

@@ -3,6 +3,7 @@ import { pctFor } from '../../../shared/credits';
 import { api, type EngineEvent, type UsageState } from '../api';
 import { cleanText } from './board';
 import { AUDIT_CREDITS_RANGE, AUDIT_MODEL_SHAPE } from '../../../shared/market-rules';
+import { API_DAILY_NOTE, HOOK_NOTE, KEYCHAIN_NOTE, settingsWindow, windowSentence } from './settings-words';
 import { ago, button, checkRadio, createSheet, createSwitch, el, latestWins, markBusy, plural, rovingRadios, textButton } from './controls';
 import { grantsAside, grantsBlock } from './autonomy';
 import { schoolSettings } from './settings-school';
@@ -194,7 +195,7 @@ export function createSettings(
   windows.append(fiveRow.row, weekRow.row);
   const usageFoot = el('p', 'usage-foot');
   const hookState = el('p', 'hook-state');
-  const hookNote = el('p', 'set-note', 'Chains your existing statusline, so it looks the same, and records only the usage percentages Claude Code reports.');
+  const hookNote = el('p', 'set-note', HOOK_NOTE);
   const hookError = el('p', 'set-error');
   hookError.hidden = true;
   const install = button('hook-install', 'Install', () => void setHook(true));
@@ -237,6 +238,7 @@ export function createSettings(
   const keySave = el('button', 'btn apikey-save', 'Store in keychain');
   keySave.type = 'submit';
   keyForm.append(keyInput, keySave);
+  const keyNote = el('p', 'set-note apikey-note', KEYCHAIN_NOTE);
   const keyError = el('p', 'set-error apikey-error');
   keyError.setAttribute('aria-live', 'polite');
   keyError.hidden = true;
@@ -255,8 +257,9 @@ export function createSettings(
   dailyWrap.append(el('span', 'cap-unit', '$'), daily);
   const dailyLine = el('div', 'apikey-daily-line');
   dailyLine.append(dailyWrap, el('span', 'cap-of', 'a day at most'));
-  apiControls.append(enableWrap, dailyLine);
-  apiP.main.append(apiLine, keyRow, keyForm, keyError, apiControls, apiP.agents);
+  const dailyNote = el('p', 'set-note apikey-daily-note', API_DAILY_NOTE);
+  apiControls.append(enableWrap, dailyLine, dailyNote);
+  apiP.main.append(apiLine, keyRow, keyForm, keyNote, keyError, apiControls, apiP.agents);
   let savedDaily = 0;
   const apiSync = latestWins<Partial<Settings['anthropicApi']>>(
     async (v) => {
@@ -369,7 +372,8 @@ export function createSettings(
     claudeTrouble.hidden = !trouble;
     if (!c || c.status === 'unknown') return;
     const held = `The statusline percentages held${readAt ? `, read ${ago(readAt)}` : ''}.`;
-    setState(claude, c.status, c.status !== 'ready' ? 'No usage reading yet.' : trouble ? held : `${cleanText(c.detail, 160).replace(/\d+(\.\d+)?/g, (n) => numberFormat.format(Number(n)))}.`);
+    // The engine sets the credits as every screen does (shared creditsText); they are shown as they come.
+    setState(claude, c.status, c.status !== 'ready' ? 'No usage reading yet.' : trouble ? held : `${cleanText(c.detail, 160)}.`);
   }
 
   /** What each provider reads now, from GET /api/providers, and who works on it. */
@@ -442,23 +446,30 @@ export function createSettings(
     return w;
   }
 
-  function fillWindow(r: { main: HTMLElement }, w: UsageWindow | null | undefined): void {
+  /** One window as a line of the page: the figure as it stands now (the brief's own), what it is of, and when it resets; a hairline rule under it. */
+  function fillWindow(r: { main: HTMLElement }, w: UsageWindow | null | undefined, now: number | null | undefined): void {
     r.main.replaceChildren();
-    if (!w) {
+    const shown = settingsWindow(now, w);
+    if (!w || !shown) {
       r.main.append(el('span', 'usage-none', 'No reading'));
       return;
     }
-    const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)));
-    const line = el('div', 'usage-line');
-    line.append(el('span', 'usage-pct', `${pct}%`), el('span', 'usage-used', 'used'), el('span', 'usage-reset', resetText(w.resetsAt)));
+    // The sentence windowSentence writes, with the figure and the reset in spans of their own.
+    const line = el('p', 'usage-line');
+    const reset = resetText(w.resetsAt);
+    const words = windowSentence(shown, '');
+    const figure = `${shown.pct}%`;
+    line.append(el('span', 'usage-pct', figure), document.createTextNode(words.slice(figure.length, -1)));
+    if (reset) line.append(document.createTextNode('; '), el('span', 'usage-reset', reset));
+    line.append(document.createTextNode('.'));
     const meter = el('div', 'usage-meter');
     meter.setAttribute('role', 'meter');
     meter.setAttribute('aria-valuemin', '0');
     meter.setAttribute('aria-valuemax', '100');
-    meter.setAttribute('aria-valuenow', String(pct));
+    meter.setAttribute('aria-valuenow', String(shown.pct));
     meter.setAttribute('aria-label', 'Used');
     const fill = el('span', 'usage-fill');
-    fill.style.width = `${pct}%`;
+    fill.style.width = `${shown.pct}%`;
     meter.append(fill);
     r.main.append(line, meter);
   }
@@ -466,8 +477,8 @@ export function createSettings(
   function fillUsage(u: UsageState | null): void {
     readAt = u?.reading?.at ?? null;
     if (lastClaude) fillClaudeState();
-    fillWindow(fiveRow, u?.reading?.fiveHour);
-    fillWindow(weekRow, u?.reading?.sevenDay);
+    fillWindow(fiveRow, u?.reading?.fiveHour, u?.now?.fiveHour);
+    fillWindow(weekRow, u?.reading?.sevenDay, u?.now?.sevenDay);
     usageFoot.replaceChildren();
     if (!u) {
       usageFoot.append(el('span', 'set-error', 'The engine did not answer.'));
@@ -479,7 +490,7 @@ export function createSettings(
       const warn = el('span', 'usage-stale', `Last reading ${ago(u.reading.at)}, so these numbers may be out of date.`);
       usageFoot.append(warn, el('span', 'usage-stale-hint', ' Claude Code sends a new one while you use it.'));
     } else {
-      usageFoot.textContent = `Read ${ago(u.reading.at)} from your Claude Code statusline.`;
+      usageFoot.textContent = `Your last reading came ${ago(u.reading.at)} from your Claude Code statusline; the brief and the treasury show the same figures.`;
     }
   }
 

@@ -3,7 +3,33 @@
  * reputation score and era, firm money and the job transition table. Shared
  * by the engine and the UI; imports nothing from engine/.
  */
-import type { Era, Job, JobStatus, ModelRef, Repo, RepoChecks, Reputation, Run, Settings, Tier } from './types.js';
+import type { BudgetWindow, Era, Job, JobStatus, ModelRef, Repo, RepoChecks, Reputation, Run, Settings, Tier } from './types.js';
+
+/**
+ * Credits as every screen and sentence sets them (Phase 5 audit): a
+ * thousands comma, a whole number bare, anything else to the cent, and a
+ * true minus. Never three places, never a minus on nothing.
+ */
+export function creditsText(n: number): string {
+  const cents = Math.round(n * 100);
+  if (cents === 0) return '0';
+  const abs = Math.abs(cents);
+  const whole = Math.floor(abs / 100);
+  const part = abs % 100;
+  const grouped = String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${cents < 0 ? '−' : ''}${grouped}${part === 0 ? '' : `.${String(part).padStart(2, '0')}`}`;
+}
+
+/**
+ * How much of a plan window stands used now, the one figure the brief,
+ * Settings and the treasury all show: the larger of his last reading and
+ * the estimate (the reading plus what the city spent since), whole. Null
+ * when nothing has read the window and nothing has been spent in it.
+ */
+export function windowNowPct(w: Pick<BudgetWindow, 'usedPct' | 'estimatedPct'>): number | null {
+  if (w.usedPct === null && w.estimatedPct <= 0) return null;
+  return Math.round(Math.max(w.estimatedPct, w.usedPct ?? 0));
+}
 
 /** A job's value (the bid ceiling) by tier, in credits (ruling 3). */
 export const TIER_VALUE: Record<Tier, number> = { low: 20, normal: 60, high: 150 };

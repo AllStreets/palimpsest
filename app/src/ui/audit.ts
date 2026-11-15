@@ -16,7 +16,7 @@ import { TIER_VALUE } from '../../../shared/market-rules';
 import type { AuditView, Evidence, Finding, FirmView, Job, Tier, Verdict } from '../../../shared/types';
 import { api, type EngineEvent } from '../api';
 import { placeHref } from '../router';
-import { auditedBecause, auditStage, canProposeAgain, evidenceHref, evidenceText, leadOf, proposalWord, verdictMark, verdictWord } from './audit-words';
+import { auditedBecause, auditStage, canProposeAgain, evidenceHref, evidenceText, leadOf, proposalState, tierChoiceWords, verdictMark, verdictWord } from './audit-words';
 import { cleanText, money } from './board';
 import { button, checkRadio, el, rovingRadios, textButton } from './controls';
 import type { Names } from './detail';
@@ -164,23 +164,26 @@ function proposalLine(v: AuditView, f: Finding, opts: AuditBlockOptions): HTMLEl
     head.append(a);
   } else head.append(el('span', 'prop-title', title));
   box.append(head);
+  // One treatment for every proposal, whatever its state: the title, then where it stands in a sentence, then
+  // what can be done with it. Waiting on him, that is the cost as a choice in words and an Accept that names it.
+  box.append(el('p', 'prop-word', proposalState(j)));
   const line = el('div', 'prop-act');
   if (j?.status === 'proposed') {
-    const accept = button('prop-accept', 'Accept', () => opts.onAccept(j.id));
-    accept.setAttribute('aria-label', `Accept: ${title}`);
+    const words = tierChoiceWords(j.tier);
+    const choose = el('div', 'prop-choose');
+    choose.append(el('span', 'prop-choose-lead', words.lead), tierPicker(j.tier, `What the city pays at most for ${title}`, (t) => opts.onTier(j.id, t), opts.busy?.has(j.id)), el('span', 'prop-choose-unit', 'credits'));
+    const accept = button('prop-accept', words.accept, () => opts.onAccept(j.id));
+    accept.setAttribute('aria-label', `${words.accept}: ${title}`);
     const dismiss = textButton('prop-dismiss', 'Dismiss', () => opts.onDismiss(j.id));
     dismiss.setAttribute('aria-label', `Dismiss: ${title}`);
-    line.append(accept, tierPicker(j.tier, `Tier for ${title}`, (t) => opts.onTier(j.id, t), opts.busy?.has(j.id)), dismiss);
-    line.append(el('span', 'prop-word', 'waiting on you; no firm bids until you accept it'));
-  } else {
-    line.append(el('span', 'prop-word', `${proposalWord(j)}${j && j.status !== 'withdrawn' ? `, ${j.tier} tier, ${money(j.value)} credits` : ''}`));
-    if (j && opts.onProposeAgain && canProposeAgain(j, [...(opts.jobs ?? []), ...v.proposals])) {
-      const again = textButton('prop-again', 'Propose again', () => opts.onProposeAgain!(j.id));
-      again.setAttribute('aria-label', `Propose again: ${title}`);
-      line.append(again);
-    }
+    box.append(choose);
+    line.append(accept, dismiss);
+  } else if (j && opts.onProposeAgain && canProposeAgain(j, [...(opts.jobs ?? []), ...v.proposals])) {
+    const again = textButton('prop-again', 'Propose again', () => opts.onProposeAgain!(j.id));
+    again.setAttribute('aria-label', `Propose again: ${title}`);
+    line.append(again);
   }
-  box.append(line);
+  if (line.childElementCount) box.append(line);
   const err = j ? opts.errors?.get(j.id) : undefined;
   if (err) {
     const e = el('p', 'job-error', err);

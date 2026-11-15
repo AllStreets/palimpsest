@@ -119,6 +119,8 @@ export interface UsageState {
   reading: UsageReading | null;
   stale: boolean;
   hookInstalled: boolean;
+  /** Both windows as they stand now, whole: the figure the brief and the treasury show too. Null when the treasury cannot be read. */
+  now?: { fiveHour: number | null; sevenDay: number | null } | null;
 }
 
 /**
