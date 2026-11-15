@@ -43,8 +43,8 @@ export function diagrams(): Diagram[] {
   return [machine(), floor(), sandbox(), school()];
 }
 
-/** Where the images go: docs/media only with CAPTURE_WRITE_MEDIA=1 (rule 17), else CAPTURE_OUT, else a temp dir. */
-export function outDir(env: NodeJS.ProcessEnv = process.env): string {
+/** Where the images go: docs/media only with CAPTURE_WRITE_MEDIA=1 (rule 17), else CAPTURE_OUT, else a temp dir. The capture and film tools share it. */
+export function outDir(env: NodeJS.ProcessEnv = process.env, prefix = 'palimpsest-diagrams-'): string {
   if (env.CAPTURE_WRITE_MEDIA === '1') return MEDIA;
   if (env.CAPTURE_OUT) {
     const out = resolve(env.CAPTURE_OUT);
@@ -52,7 +52,7 @@ export function outDir(env: NodeJS.ProcessEnv = process.env): string {
     if (rel === '' || (!rel.startsWith('..') && !rel.startsWith('/'))) throw new Error('docs/media is written only with CAPTURE_WRITE_MEDIA=1 (Task 27)');
     return out;
   }
-  return mkdtempSync(join(tmpdir(), 'palimpsest-diagrams-'));
+  return mkdtempSync(join(tmpdir(), prefix));
 }
 
 export function diagramsPort(raw: string | undefined): number {

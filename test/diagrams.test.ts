@@ -109,3 +109,19 @@ test('every label is sentence case', () => {
     }
   }
 });
+
+test('outDir sends media to docs/media only with CAPTURE_WRITE_MEDIA=1 (guard)', async () => {
+  const { outDir } = await import('../tools/diagrams.js');
+  const { rmSync } = await import('node:fs');
+  const { join, resolve } = await import('node:path');
+  const media = resolve('docs', 'media');
+  assert.equal(outDir({ CAPTURE_WRITE_MEDIA: '1' }), media);
+  assert.throws(() => outDir({ CAPTURE_OUT: media }), /CAPTURE_WRITE_MEDIA=1/);
+  assert.throws(() => outDir({ CAPTURE_OUT: join(media, 'sub') }), /CAPTURE_WRITE_MEDIA=1/);
+  const tmp = outDir({});
+  try {
+    assert.ok(!resolve(tmp).startsWith(media), tmp);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

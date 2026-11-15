@@ -1,7 +1,8 @@
 /**
  * README and profile media, captured frame by frame from the real app.
  *
- * Starts its own engine in-process on port 4789 with a temp data home and a
+ * Starts its own engine in-process on CAPTURE_PORT (4788 on the screens
+ * track, 4789 after the merge) with a temp data home and a
  * temp claude settings file (never the real engine on 4770, never the real
  * data home), seeds the sample city from tools/sample.ts, answers every gh
  * and git call with the sample's stand-in, opens the built UI in Chromium on
@@ -33,8 +34,20 @@
  * app/src/city/tower/rendered.ts).
  * The city-only shots hide the running head and the name plates; overview,
  * inspector, repos and settings show the app as it is.
+ * Where it writes (Phase 5 test safety rule 17): a fresh temp dir by default,
+ * CAPTURE_OUT=<dir> for probing, and docs/media only with
+ * CAPTURE_WRITE_MEDIA=1 (Tasks 27 and 28). CAPTURE_FRAMES=<dir> keeps each
+ * clip's frames in <dir>/<clip>/ (with clip.json naming its frame rate) and
+ * each still's PNG in <dir>/stills/, for tools/film.ts.
+ * Phase 5 adds: district-audit and job-scope (stills), audit (a clip: 30 s at
+ * the clock's speed, the kumo audit ending and its proposals appearing on the
+ * board; the audit page's still is audit-page, written as audit.webp),
+ * hero-rise (a clip for the film: up from the street to the hero framing),
+ * week-poster (the week's poster, framed off the sun), overview-clear (the
+ * overview in clear air, where the build has the haze control), street and
+ * people-follow (the life and people stills on their own), and diagrams
+ * (the eight diagram images, through tools/diagrams.ts).
  * Options (env): CAPTURE_FPS=30, CAPTURE_DPR=2, CAPTURE_KEEP=1 keeps the raw frames,
- * CAPTURE_OUT=<dir> writes somewhere other than docs/media (for probing),
  * PROBE='[[[eye],[target]], ...]' for quick stills in the probe shot, PROBE_CHROME=1
  * keeps the running head and plates in them, PROBE_RESTYLE (see the probe
  * shot) rebuilds towers in named variants, CAPTURE_CITY=tall seeds the
@@ -49,8 +62,8 @@
  * Re-run it whenever the city changes, and add a shot here for each new
  * thing worth showing.
  */
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,12 +71,15 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import type { Page } from 'playwright';
 
+import { SUN_DIRECTION } from '../app/src/city/sky.js';
 import { FAMILIES, VARIANTS } from '../app/src/city/tower/variants.js';
 import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District, Quarter } from '../shared/types.js';
 import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
+import { outDir } from './diagrams.js';
+import { BUDGET } from './media-check.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, type FigureProbe, type VehicleProbe } from './people-stage.js';
 import { decodePng, labOf } from './png.js';
@@ -71,9 +87,11 @@ import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sampl
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
-// CAPTURE_OUT sends everything elsewhere, for framing probes that should not touch docs/media.
-const MEDIA = process.env.CAPTURE_OUT ?? join(ROOT, 'docs', 'media');
-const PORT = Number(process.env.CAPTURE_PORT ?? 4789);
+// A temp dir unless CAPTURE_OUT names one; docs/media only with CAPTURE_WRITE_MEDIA=1 (test safety rule 17).
+const MEDIA = outDir(process.env, 'palimpsest-capture-');
+const WRITE_MEDIA = process.env.CAPTURE_WRITE_MEDIA === '1';
+const PORT = Number(process.env.CAPTURE_PORT ?? 4788);
+if (PORT === 4770 || PORT === 4771) throw new Error(`CAPTURE_PORT ${PORT} is the engine's or the dev server's; pick another`);
 /** The sample economy's clock (CAPTURE_ECONOMY=live), ticked on demand by the shots that show it moving. */
 let economy: { tick(ms: number): void; idle(): Promise<void> } | null = null;
 /** The block pitch (lots.ts PITCH), for framing streets. */
@@ -108,6 +126,8 @@ interface Shot {
   seconds: number;
   /** Camera at t in [0, 1]. */
   at(t: number): { eye: V3; target: V3 };
+  /** Where in the clip its poster is taken, 0 to 1 (default the middle). */
+  posterAt?: number;
 }
 
 // ---------------------------------------------------------------- encoding
@@ -121,33 +141,75 @@ function mb(path: string): string {
 }
 
 /**
- * From 2x PNG frames: a 1600x1000 H.264 MP4 (yuv420p), an animated AVIF at
- * 1280x800 for the README, an 800x500 AVIF with a WebP fallback for the
- * GitHub profile card, and a 480x300 GIF fallback.
+ * From 2x PNG frames: a 1600x1000 H.264 MP4, an animated AVIF at 1280x800
+ * for the README to play inline, and a poster from the clip itself as the
+ * AVIF's fallback (Phase 5 dropped the GIF and the profile card: the
+ * profile clip is tools/film.ts's).
  */
-function encode(dir: string, name: string): void {
+function encode(dir: string, name: string, posterAt = 0.5): void {
   const input = ['-framerate', String(FPS), '-i', join(dir, 'f%04d.png')];
   const mp4 = join(MEDIA, `${name}.mp4`);
-  ff([...input, '-vf', 'scale=1600:1000:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', '21', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]);
+  const c = underBudget(mp4, BUDGET.linkedMp4, 21, 2, (crf) => ff([...input, '-vf', 'scale=1600:1000:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]));
   const avif = join(MEDIA, `${name}.avif`);
-  ff([...input, '-vf', 'scale=1280:800:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', '30', '-g', '120', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]);
-  // The GitHub profile card: 800x500. AVIF first (a moving camera is cheap in AV1), WebP as its fallback.
-  const cardAvif = join(MEDIA, `${name}-card.avif`);
-  ff([...input, '-vf', 'fps=20,scale=800:500:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', '32', '-g', '100', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', cardAvif]);
-  // Card frames at 800x500, 15 fps, for the WebP and the GIF.
-  const small = join(dir, 'small');
-  mkdirSync(small, { recursive: true });
-  ff([...input, '-vf', 'fps=15,scale=800:500:flags=lanczos', join(small, 's%04d.png')]);
-  const frames = readdirSync(small).filter((f) => f.endsWith('.png')).sort();
-  const webp = join(MEDIA, `${name}-card.webp`);
-  // Keyframes every 15 frames so dark gradients never keep stale blocks.
-  execFileSync('img2webp', ['-loop', '0', '-lossy', '-q', '62', '-m', '6', '-kmax', '15', '-d', String(Math.round(1000 / 15)), ...frames.map((f) => join(small, f)), '-o', webp], {
-    stdio: 'inherit',
-  });
-  const gif = join(MEDIA, `${name}.gif`);
-  // A moving camera changes every pixel, so the GIF fallback is kept small: 480x300, 10 fps, 96 colours.
-  ff(['-i', mp4, '-vf', 'fps=10,scale=480:300:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle', '-loop', '0', gif]);
-  console.log(`  ${name}: mp4 ${mb(mp4)}, avif ${mb(avif)}, card avif ${mb(cardAvif)}, card webp ${mb(webp)}, gif ${mb(gif)}`);
+  const a = underBudget(avif, BUDGET.inlineAnimation, 30, 3, (crf) => ff([...input, '-vf', 'scale=1280:800:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', String(crf), '-g', '120', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]));
+  console.log(`  ${name}: mp4 ${mb(mp4)} (crf ${c}), avif ${mb(avif)} (crf ${a})`);
+  writePoster(dir, name, posterAt);
+}
+
+/**
+ * Encodes at `crf`, then steps it up by `step` until the file is within
+ * `cap` bytes (the README's media budget, tools/media-check.ts), at most
+ * five steps; returns the CRF it settled on. Over the cap after that is
+ * left for media:check to name.
+ */
+function underBudget(path: string, cap: number, crf: number, step: number, run: (crf: number) => void): number {
+  for (let i = 0; ; i++, crf += step) {
+    run(crf);
+    if (statSync(path).size <= cap || i === 5) return crf;
+  }
+}
+
+/** A 2x PNG as a 1600 x 1000 WebP, its quality stepped down from `quality` until it is within the still budget (450 KB). */
+function stillWebp(png: string, webp: string, quality: number): number {
+  for (let q = quality; ; q -= 4) {
+    execFileSync('cwebp', ['-q', String(q), '-m', '6', '-resize', '1600', '1000', png, '-o', webp], { stdio: 'ignore' });
+    if (statSync(webp).size <= BUDGET.still || q <= 60) return q;
+  }
+}
+
+/** A still from the clip itself, for the README to show where the clip is linked, or as its inline AVIF's fallback. */
+function writePoster(dir: string, name: string, posterAt: number): void {
+  const frames = readdirSync(dir).filter((f) => /^f\d+\.png$/.test(f)).sort();
+  const pick = frames[Math.min(frames.length - 1, Math.round(posterAt * (frames.length - 1)))];
+  const poster = join(MEDIA, `${name}-poster.webp`);
+  const q = stillWebp(join(dir, pick), poster, 86);
+  console.log(`  ${name}-poster.webp ${mb(poster)} (frame ${pick}, q${q})`);
+}
+
+/**
+ * A clip's frames once encoded: kept in CAPTURE_FRAMES/<name>/ for the film
+ * (with the frame rate they were taken at), kept where they are with
+ * CAPTURE_KEEP=1, or removed.
+ */
+function keepFrames(dir: string, name: string, fps: number = FPS): void {
+  if (process.env.CAPTURE_FRAMES) {
+    const to = join(process.env.CAPTURE_FRAMES, name);
+    rmSync(to, { recursive: true, force: true });
+    mkdirSync(dirname(to), { recursive: true });
+    cpSync(dir, to, { recursive: true, filter: (src) => src === dir || /\/f\d+\.png$/.test(src) });
+    writeFileSync(join(to, 'clip.json'), `${JSON.stringify({ fps, frames: readdirSync(to).filter((f) => f.endsWith('.png')).length })}\n`);
+    rmSync(dir, { recursive: true, force: true });
+    console.log(`  frames kept in ${to}`);
+  } else if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
+  else rmSync(dir, { recursive: true, force: true });
+}
+
+/** A still's full-size PNG, kept in CAPTURE_FRAMES/stills/ for the film. */
+function keepStill(path: string, name: string): void {
+  if (!process.env.CAPTURE_FRAMES) return;
+  const dir = join(process.env.CAPTURE_FRAMES, 'stills');
+  mkdirSync(dir, { recursive: true });
+  cpSync(path, join(dir, `${name}.png`));
 }
 
 async function record(page: Page, shot: Shot): Promise<void> {
@@ -160,9 +222,8 @@ async function record(page: Page, shot: Shot): Promise<void> {
     await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
     if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
   }
-  encode(dir, shot.name);
-  if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
-  else rmSync(dir, { recursive: true, force: true });
+  encode(dir, shot.name, shot.posterAt);
+  keepFrames(dir, shot.name);
 }
 
 /**
@@ -171,23 +232,16 @@ async function record(page: Page, shot: Shot): Promise<void> {
  * the page plays. No card or GIF set: those are the flyover's and the rise's.
  */
 function encodeClip(dir: string, name: string, inline: boolean, posterAt?: number, fps: number = FPS, mp4Opts: { size: string; crf: number; film?: boolean } = { size: '1280:800', crf: 24 }): void {
-  // A still from the clip itself, for the README to show where the clip is linked rather than played.
-  if (posterAt !== undefined) {
-    const frames = readdirSync(dir).filter((f) => /^f\d+\.png$/.test(f)).sort();
-    const pick = frames[Math.min(frames.length - 1, Math.round(posterAt * (frames.length - 1)))];
-    const poster = join(MEDIA, `${name}-poster.webp`);
-    execFileSync('cwebp', ['-q', '86', '-m', '6', '-resize', '1600', '1000', join(dir, pick), '-o', poster], { stdio: 'ignore' });
-    console.log(`  ${name}-poster.webp ${mb(poster)} (frame ${pick})`);
-  }
+  if (posterAt !== undefined) writePoster(dir, name, posterAt);
   const input = ['-framerate', String(fps), '-i', join(dir, 'f%04d.png')];
   const mp4 = join(MEDIA, `${name}.mp4`);
   const tuning = mp4Opts.film ? ['-preset', 'veryslow', '-tune', 'film'] : ['-preset', 'slow'];
-  ff([...input, '-vf', `scale=${mp4Opts.size}:flags=lanczos`, '-c:v', 'libx264', ...tuning, '-crf', String(mp4Opts.crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]);
-  let line = `  ${name}: mp4 ${mb(mp4)}`;
+  const c = underBudget(mp4, BUDGET.linkedMp4, mp4Opts.crf, 2, (crf) => ff([...input, '-vf', `scale=${mp4Opts.size}:flags=lanczos`, '-c:v', 'libx264', ...tuning, '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]));
+  let line = `  ${name}: mp4 ${mb(mp4)} (crf ${c})`;
   if (inline) {
     const avif = join(MEDIA, `${name}.avif`);
-    ff([...input, '-vf', 'fps=24,scale=800:500:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', '36', '-g', '96', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]);
-    line += `, avif ${mb(avif)}`;
+    const a = underBudget(avif, BUDGET.inlineAnimation, 36, 3, (crf) => ff([...input, '-vf', 'fps=24,scale=800:500:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', String(crf), '-g', '96', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]));
+    line += `, avif ${mb(avif)} (crf ${a})`;
   }
   console.log(line);
 }
@@ -245,8 +299,7 @@ async function film(page: Page, name: string, frames: number, each: (i: number, 
     await clock.off();
   }
   encodeClip(dir, name, inline, posterAt);
-  if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
-  else rmSync(dir, { recursive: true, force: true });
+  keepFrames(dir, name);
 }
 
 /** Eases a camera toward a moving aim, so a followed figure's turns never jerk the frame. */
@@ -268,18 +321,19 @@ async function still(page: Page, name: string, eye: V3, target: V3): Promise<voi
 }
 
 /**
- * Screenshots the page at 2x and writes the WebP the README shows. Only the
- * hero keeps its full-size PNG as well (for the profile and the release
- * page); the other PNGs are removed once their WebP is written, unless
- * CAPTURE_OUT sends the shots somewhere else for review.
+ * Screenshots the page at 2x and writes the WebP the README shows, at
+ * 1600 x 1000 and within the still budget (450 KB). In docs/media the PNG
+ * is removed once its WebP is written; elsewhere it stays for review.
  */
 async function save(page: Page, name: string, quality: number): Promise<void> {
   const path = join(MEDIA, `${name}.png`);
   const webp = join(MEDIA, `${name}.webp`);
   await page.screenshot({ path });
-  execFileSync('cwebp', ['-q', String(quality), '-m', '6', path, '-o', webp], { stdio: 'ignore' });
-  console.log(`  ${name}.png ${mb(path)}, .webp ${mb(webp)}`);
-  if (name !== 'hero' && !name.startsWith('probe') && !process.env.CAPTURE_OUT) rmSync(path);
+  const q = stillWebp(path, webp, quality);
+  console.log(`  ${name}.png ${mb(path)}, .webp ${mb(webp)} (q${q})`);
+  keepStill(path, name);
+  // docs/media keeps only what the README uses (media:check); elsewhere the PNG stays for review.
+  if (WRITE_MEDIA) rmSync(path);
 }
 
 // ---------------------------------------------------------------- shots
@@ -300,9 +354,10 @@ async function lean(page: Page, name: string, text = false): Promise<void> {
   const path = join(MEDIA, `${name}.png`);
   const webp = join(MEDIA, `${name}.webp`);
   await page.screenshot({ path });
-  execFileSync('cwebp', ['-q', text ? '90' : '84', '-m', '6', '-resize', '1600', '1000', path, '-o', webp], { stdio: 'ignore' });
-  console.log(`  ${name}.webp ${mb(webp)}`);
-  if (!process.env.CAPTURE_OUT) rmSync(path);
+  const q = stillWebp(path, webp, text ? 90 : 84);
+  console.log(`  ${name}.webp ${mb(webp)} (q${q})`);
+  keepStill(path, name);
+  if (WRITE_MEDIA) rmSync(path);
 }
 
 type Show = { id: string; kind: string; towerId: string; lit: boolean; y: number; height: number; tip: number[] };
@@ -370,6 +425,49 @@ async function toSheetTop(page: Page, sel: string): Promise<void> {
     body.scrollTop += sec.getBoundingClientRect().top - body.getBoundingClientRect().top - 16;
   });
   await page.waitForTimeout(500);
+}
+
+/** Runs `fn` with one environment variable set, then puts it back. */
+async function withEnv(key: string, value: string, fn: () => Promise<void>): Promise<void> {
+  const was = process.env[key];
+  process.env[key] = value;
+  try {
+    await fn();
+  } finally {
+    if (was === undefined) delete process.env[key];
+    else process.env[key] = was;
+  }
+}
+
+/** True when the low sun stands in (or at the edge of) the frame the camera holds now, so its bloom would be in the shot. */
+async function sunInFrame(page: Page): Promise<boolean> {
+  const eye = (await page.evaluate('window.__palimpsest.camera()')) as number[];
+  const at: V3 = [eye[0] + SUN_DIRECTION.x * 500, eye[1] + SUN_DIRECTION.y * 500, eye[2] + SUN_DIRECTION.z * 500];
+  const [x, y, z] = (await page.evaluate(`window.__palimpsest.project(${JSON.stringify(at)})`)) as number[];
+  return z < 1 && Math.abs(x) < 1.35 && Math.abs(y) < 1.35;
+}
+
+/**
+ * A framing pulled back along its line, 6% at a time, until the lit spire's
+ * tip stands inside the frame with a margin (Phase 5: hero and overview
+ * re-framed with the spire standing). Unchanged where no spire is lit.
+ */
+async function withSpire(page: Page, name: string, v: { eye: V3; target: V3 }): Promise<{ eye: V3; target: V3 }> {
+  const lit = (await shows(page).catch(() => [] as Show[])).find((m) => m.kind === 'skyline' && m.lit);
+  if (!lit) {
+    console.log(`  ${name}: no lit spire stands; the framing is unchanged`);
+    return v;
+  }
+  let eye = v.eye;
+  let pulled = 0;
+  for (; pulled < 12; pulled++) {
+    await frame(page, eye, v.target);
+    const [x, y, z] = (await page.evaluate(`window.__palimpsest.project(${JSON.stringify(lit.tip)})`)) as number[];
+    if (z < 1 && Math.abs(x) < 0.92 && y < 0.88) break;
+    eye = lerp3(v.target, eye, 1.06);
+  }
+  if (pulled) console.log(`  ${name}: pulled back ${pulled} steps so the spire stands in the frame`);
+  return { eye, target: v.target };
 }
 
 function shots(city: District[]): Record<string, (page: Page) => Promise<void>> {
@@ -651,8 +749,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
           await clock.off();
         }
         encodeClip(dir, 'ride', true, Number(process.env.RIDE_POSTER ?? 0.5));
-        if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
-        else rmSync(dir, { recursive: true, force: true });
+        keepFrames(dir, 'ride');
       }
       await page.evaluate('window.__palimpsest.ride(null)');
       // The ride's last caption holds a moment after the ride ends: let it go before the next shot.
@@ -667,14 +764,72 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await openHash(page, '#/', 'body[data-route="city"]');
     },
 
-    async audit(page) {
+    async 'audit-page'(page) {
       // The harbour README audit's own page: the claims, each verdict with its evidence at file and line, the proposals.
+      // Written as audit.webp; the shot named audit is the clip of the kumo audit ending.
       const audits = (await page.evaluate(() => fetch('/api/audits?repo=tidewater%2Fharbor-ledger').then((r) => r.json()))) as Array<{ id: string; status: string }>;
       const done = audits.find((a) => a.status === 'done');
       if (!done) throw new Error('the economy has no finished harbour audit');
       await openHash(page, `#/audits/${done.id}`, '.sheet.auditpage .claim');
       await page.waitForTimeout(600);
       await lean(page, 'audit', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'district-audit'(page) {
+      // The harbour district's page at its README audit (Phase 3 Task 12): the lead with its counts, then each claim
+      // with its verdict, its evidence at file and line, and the job proposed from it with its state.
+      await openHash(page, `#/repos/${tall.repo}`, '.sheet.district .district-audit .audit-claims .claim');
+      await page.locator('.sheet.district .district-audit').first().evaluate((sec) => sec.scrollIntoView({ block: 'start' }));
+      await page.waitForTimeout(600);
+      await lean(page, 'district-audit', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async 'job-scope'(page) {
+      // A proposal's own page (Phase 3 Task 13): why the city proposes it (the claim, its verdict and its evidence)
+      // and the scope it may touch, which can be edited while it is proposed.
+      const audits = (await page.evaluate(() => fetch('/api/audits?repo=tidewater%2Fharbor-ledger').then((r) => r.json()))) as Array<{ id: string; status: string }>;
+      const done = audits.find((a) => a.status === 'done');
+      if (!done) throw new Error('the economy has no finished harbour audit');
+      const view = (await page.evaluate((id) => fetch(`/api/audits/${id}`).then((r) => r.json()), done.id)) as { proposals: Array<{ id: string; title: string; status: string }> };
+      const job = view.proposals.find((j) => j.status === 'proposed' && /UBL/.test(j.title)) ?? view.proposals.find((j) => j.status === 'proposed');
+      if (!job) throw new Error('the harbour audit has no proposal waiting');
+      await openHash(page, `#/jobs/${job.id}`, '.sheet.jobpage .job-why');
+      await toSheetTop(page, '.sheet.jobpage .job-why').catch(() => {});
+      await lean(page, 'job-scope', true);
+      await openHash(page, '#/', 'body[data-route="city"]');
+    },
+
+    async audit(page) {
+      // The kumo README audit ending (Phase 3), 30 s at the clock's speed over the job board: the audit reads on, answers
+      // 400 script seconds in (20 s at speed 20), and its two proposals appear on the board under its heading. On a
+      // clock of its own that moves only the audit (main leaves the audit off the economy's clock when this shot is
+      // named), so the construction the other clips film stays where it stands.
+      const { economyClock } = await import('../engine/market/sample-economy.js');
+      const clock = economyClock({ now: () => Date.now(), speed: 20, runs: false, school: false });
+      try {
+        await openHash(page, '#/jobs', '.sheet .sec-proposed');
+        await toSheetTop(page, '.sheet .sec-proposed').catch(() => {});
+        const seconds = Number(process.env.AUDIT_SECONDS ?? 30);
+        await film(
+          page,
+          'audit',
+          Math.round(seconds * FPS),
+          async () => {
+            clock.tick(1000 / FPS);
+            await clock.idle();
+            return SCREENS;
+          },
+          false,
+          Number(process.env.AUDIT_POSTER ?? 0.85),
+        );
+        const kumo = (await page.evaluate(() => fetch('/api/audits?repo=hoshi%2Fkumo').then((r) => r.json()))) as Array<{ status: string }>;
+        const shown = await page.locator('.sec-proposed .audit-group[data-repo="hoshi/kumo"] .prop-line').count();
+        console.log(`  audit: kumo ${kumo[0]?.status ?? 'none'}, ${shown} proposals on the board`);
+      } finally {
+        clock.stop();
+      }
       await openHash(page, '#/', 'body[data-route="city"]');
     },
 
@@ -705,7 +860,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       const d = r ? city.find((x) => x.tower.id === r.towerId) : undefined;
       if (!r || !d) throw new Error('no revival in the economy');
       const mid = r.y + r.height * 0.5;
-      await frame(page, [d.origin.x - 38, mid + 4, d.origin.z + 46], [d.origin.x, mid - 1, d.origin.z]);
+      // Close enough that the festoon's bulbs read as bulbs (Phase 5: the Phase 3 still stood too far off).
+      await frame(page, [d.origin.x - 24, mid + 3, d.origin.z + 29], [d.origin.x, mid - 1, d.origin.z]);
       await page.waitForTimeout(1800);
       await lean(page, 'revival');
       await chrome(page, true);
@@ -743,13 +899,27 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       if (!(await page.evaluate((r) => (window as unknown as { __palimpsest: { ride(k: string): boolean } }).__palimpsest.ride(r), repo))) throw new Error('the ride did not start');
       await page.evaluate('window.__palimpsest.rideHold(true)');
       const r = (await page.evaluate('window.__palimpsest.riding()')) as { stops: Array<{ t: number; dossier: boolean }> };
-      // RIDE_DOSSIER_STOP picks which dossier stop (default the first: lower on the tower, the low sun behind the city).
+      // RIDE_DOSSIER_STOP picks which dossier stop to try first (default the first: lower on the tower); the still is
+      // taken at the first moment, at that stop or the next, with the sun out of the frame (Phase 5: framed off the sun).
       const dossierStops = r.stops.filter((x) => x.dossier);
-      const stop = dossierStops[Math.min(dossierStops.length - 1, Number(process.env.RIDE_DOSSIER_STOP ?? 0))];
-      if (!stop) throw new Error('the harbour ride has no dossier stop');
-      await page.evaluate(`window.__palimpsest.rideSeek(${stop.t + 0.8})`);
+      const first = Math.min(dossierStops.length - 1, Number(process.env.RIDE_DOSSIER_STOP ?? 0));
+      if (first < 0) throw new Error('the harbour ride has no dossier stop');
+      const order = [...dossierStops.slice(first), ...dossierStops.slice(0, first)];
+      let at = order[0].t + 0.8;
+      seek: for (const stop of order) {
+        for (const off of [0.8, 0.4, 1.4, 2.0]) {
+          await page.evaluate(`window.__palimpsest.rideSeek(${stop.t + off})`);
+          await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+          if (!(await sunInFrame(page))) {
+            at = stop.t + off;
+            break seek;
+          }
+        }
+      }
+      console.log(`  ride-dossier at ${at.toFixed(1)} s${(await sunInFrame(page)) ? ' (no moment off the sun; the first stop)' : ''}`);
+      await page.evaluate(`window.__palimpsest.rideSeek(${at})`);
       await page.waitForTimeout(1600);
-      await page.evaluate(`window.__palimpsest.rideSeek(${stop.t + 0.8})`);
+      await page.evaluate(`window.__palimpsest.rideSeek(${at})`);
       await lean(page, 'ride-dossier', true);
       await page.evaluate('window.__palimpsest.ride(null)');
       await page.waitForTimeout(4000);
@@ -783,12 +953,54 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       }
       // The walk moves the whole frame for most of its length, so the ride's encoding would run to tens of megabytes: the
       // week is linked from its poster rather than played inline, and kept to 960 x 600 at CRF 32 (about 5 MB).
-      encodeClip(dir, 'week', false, Number(process.env.WEEK_POSTER ?? 0.45), fps, { size: '960:600', crf: 32, film: true });
-      if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
-      else rmSync(dir, { recursive: true, force: true });
+      // Its poster is the week-poster shot's, framed off the sun.
+      encodeClip(dir, 'week', false, undefined, fps, { size: '960:600', crf: 32, film: true });
+      keepFrames(dir, 'week', fps);
       await page.evaluate('window.__palimpsest.tourHold(false)');
       await page.keyboard.press('Escape');
       await page.waitForTimeout(3000);
+    },
+
+    async 'week-poster'(page) {
+      // The week's poster (Phase 5): a stop on the tour framed off the sun, so the low sun's bloom stays out of it, at
+      // the moment off the sun nearest WEEK_POSTER (0.45 of the walk).
+      await chrome(page, true);
+      if (!((await page.evaluate('window.__palimpsest.tourStart()')) as boolean)) throw new Error('the week has no tour to walk');
+      await page.evaluate('window.__palimpsest.tourHold(true)');
+      const { length } = (await page.evaluate('window.__palimpsest.tour()')) as { length: number };
+      const want = Number(process.env.WEEK_POSTER ?? 0.45) * length;
+      const times: number[] = [];
+      for (let t = length * 0.1; t <= length * 0.9; t += 0.5) times.push(t);
+      times.sort((a, b) => Math.abs(a - want) - Math.abs(b - want));
+      let at = want;
+      for (const t of times) {
+        await page.evaluate(`window.__palimpsest.tourSeek(${t})`);
+        await page.evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
+        if (!(await sunInFrame(page))) {
+          at = t;
+          break;
+        }
+      }
+      console.log(`  week-poster at ${at.toFixed(1)} of ${length.toFixed(1)} s`);
+      await page.evaluate(`window.__palimpsest.tourSeek(${at})`);
+      await page.waitForTimeout(1800);
+      await page.evaluate(`window.__palimpsest.tourSeek(${at})`);
+      await lean(page, 'week-poster');
+      await page.evaluate('window.__palimpsest.tourHold(false)');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(3000);
+    },
+
+    async street(page) {
+      // The life shot's street still on its own (Phase 5 ruling 17: in the README only if the controller agrees).
+      const table = this as unknown as Record<string, (p: Page) => Promise<void>>;
+      await withEnv('LIFE_ONLY', 'street', () => table.life(page));
+    },
+
+    async 'people-follow'(page) {
+      // The people shot's follow still on its own (ruling 17, as street).
+      const table = this as unknown as Record<string, (p: Page) => Promise<void>>;
+      await withEnv('PEOPLE_ONLY', 'follow', () => table.people(page));
     },
 
     async river(page) {
@@ -1805,14 +2017,33 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       }
       console.log(`commute: ${n} frames`);
       encodeClip(dir, 'commute', false, Number(process.env.COMMUTE_POSTER ?? 0.4));
-      if (process.env.CAPTURE_KEEP) console.log(`  frames kept in ${dir}`);
-      else rmSync(dir, { recursive: true, force: true });
+      keepFrames(dir, 'commute');
     },
 
     async hero(page) {
       // The whole sample city at dusk from above the rooftops, the sunlit faces turned to the eye.
+      // Pulled back, if it must be, until the lit spire on the tallest tower stands inside the frame.
       await chrome(page, false);
-      await still(page, 'hero', HERO.eye, HERO.target);
+      const v = await withSpire(page, 'hero', HERO);
+      await still(page, 'hero', v.eye, v.target);
+    },
+
+    async 'hero-rise'(page) {
+      // The film's opening (Phase 5 ruling 9): the camera rises from low over the streets to the hero framing, the city
+      // at dusk opening out below. Nine seconds, moving for the first 85% and holding on the hero.
+      await chrome(page, false);
+      const end = await withSpire(page, 'hero-rise', HERO);
+      const eye0: V3 = [lerp(end.target[0], end.eye[0], 0.94), 12, lerp(end.target[2], end.eye[2], 0.94)];
+      const target0: V3 = [end.target[0], end.target[1] * 0.45, end.target[2]];
+      await record(page, {
+        name: 'hero-rise',
+        seconds: Number(process.env.HERO_RISE_SECONDS ?? 9),
+        posterAt: 1,
+        at(t) {
+          const k = easeSine(Math.min(1, t / 0.85));
+          return { eye: lerp3(eye0, end.eye, k), target: lerp3(target0, end.target, k) };
+        },
+      });
     },
 
     async stills(page) {
@@ -1830,7 +2061,26 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     async overview(page) {
       // The app as it opens: the city, the running head and every district's name plate.
       await chrome(page, true);
-      await still(page, 'overview', OVERVIEW.eye, OVERVIEW.target);
+      const v = await withSpire(page, 'overview', OVERVIEW);
+      await still(page, 'overview', v.eye, v.target);
+    },
+
+    async 'overview-clear'(page) {
+      // The overview in clear air (Phase 5 Decision 5: a clear-air dusk, the haze at 40% of the home value). The haze
+      // control is the city track's (Task 6, the debug handle's haze(k), null for the home value); a build without it
+      // cannot take this still and says so.
+      if (!(await page.evaluate('typeof window.__palimpsest.haze === "function"'))) {
+        console.log('  overview-clear: this build has no haze control (city Task 6); not shot');
+        return;
+      }
+      await chrome(page, true);
+      await page.evaluate('window.__palimpsest.haze(0.4)');
+      try {
+        const v = await withSpire(page, 'overview-clear', OVERVIEW);
+        await still(page, 'overview-clear', v.eye, v.target);
+      } finally {
+        await page.evaluate('window.__palimpsest.haze(null)');
+      }
     },
 
     async inspector(page) {
@@ -1918,7 +2168,9 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
 }
 
 /** What a bare `tools/capture.ts` writes: the README's media. */
-const README_SHOTS = ['hero', 'stills', 'overview', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'brief', 'audit', 'school-screens', 'campus', 'graduate-tower', 'voyage', 'observatory', 'spire', 'revival', 'ribbon', 'ride-dossier', 'people', 'life', 'ride', 'week', 'flyover', 'rise', 'construction-clip', 'commute', 'school-empty'];
+// street and people-follow stay out unless the controller agrees (Phase 5 ruling 17); the audit clip runs on its own
+// clock, so its place in the order moves nothing the others show.
+const README_SHOTS = ['hero', 'stills', 'overview', 'overview-clear', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'brief', 'audit-page', 'district-audit', 'job-scope', 'school-screens', 'campus', 'graduate-tower', 'voyage', 'observatory', 'spire', 'revival', 'ribbon', 'ride-dossier', 'ride', 'week', 'week-poster', 'flyover', 'rise', 'construction-clip', 'audit', 'commute', 'diagrams', 'school-empty'];
 
 /** The market overview's framing and where it looks for a passing tram (MARKET_VIEW and MARKET_TRAM override). */
 const MARKET_VIEW_DEFAULT: [V3, V3] = [[620, 190, 560], [60, 60, -40]];
@@ -1960,13 +2212,25 @@ async function main(): Promise<void> {
   // With no shots named: every still and clip the README shows, on the sample economy with its clock running, in an
   // order where nothing that ticks the clock comes before the screens and stills that show the board as it stands.
   const readme = process.argv.slice(2).length === 0;
-  const wanted = readme ? README_SHOTS : process.argv.slice(2);
+  const wanted = readme ? [...README_SHOTS] : process.argv.slice(2);
   if (readme) {
     process.env.CAPTURE_ECONOMY ??= 'live';
-    process.env.PEOPLE_ONLY ??= 'follow';
-    process.env.LIFE_ONLY ??= 'street';
     process.env.RIDE_ONLY ??= 'clip';
     process.env.CAMPUS_ONLY ??= 'home,quad,clock,observatory-open';
+  }
+  // The eight diagram images are drawn by tools/diagrams.ts, into the same place as everything else.
+  if (wanted.includes('diagrams')) {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.CAPTURE_WRITE_MEDIA;
+    if (WRITE_MEDIA) env.CAPTURE_WRITE_MEDIA = '1';
+    else env.CAPTURE_OUT = MEDIA;
+    const r = spawnSync(process.execPath, ['--no-warnings', '--import', 'tsx', join(ROOT, 'tools', 'diagrams.ts')], { stdio: 'inherit', env, cwd: ROOT });
+    if (r.status !== 0) throw new Error(`capture: the diagrams failed (exit ${r.status})`);
+    wanted.splice(wanted.indexOf('diagrams'), 1);
+    if (wanted.length === 0) {
+      console.log(`Wrote to ${MEDIA}`);
+      return;
+    }
   }
   const tmp = mkdtempSync(join(tmpdir(), 'palimpsest-capture-'));
   process.env.PALIMPSEST_HOME = join(tmp, 'home');
@@ -2020,7 +2284,8 @@ async function main(): Promise<void> {
     startTrip(rider('bruno-kiln'), 'home', null, { x: 600, z: -600 }, { x: -600, z: 600 });
     // The lifecycle shot has the clock fail the inspecting repo's inspection, so a scar is struck (CAPTURE_FAIL overrides).
     const fail = process.env.CAPTURE_FAIL ? process.env.CAPTURE_FAIL.split(',') : wanted.includes('lifecycle') ? ['lantern/assay-kit'] : [];
-    economy = economyClock({ now: () => Date.now(), speed: 20, fail, sell: process.env.CAPTURE_HOLD_SALE ? 5 : undefined });
+    // The audit clip ends the kumo audit on a clock of its own; the economy's leaves it reading for that shot.
+    economy = economyClock({ now: () => Date.now(), speed: 20, fail, sell: process.env.CAPTURE_HOLD_SALE ? 5 : undefined, audit: !wanted.includes('audit') });
   }
   const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   try {
@@ -2067,6 +2332,7 @@ async function main(): Promise<void> {
     await server.close();
     rmSync(tmp, { recursive: true, force: true });
   }
+  console.log(`Wrote to ${MEDIA}`);
   process.exit(0);
 }
 
