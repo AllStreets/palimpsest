@@ -698,7 +698,7 @@ async function lifecycle(st: LiveRun): Promise<Run> {
   const ecosystems = st.repo.checks?.ecosystems ?? [];
   try {
     boundary(st, 'preparing');
-    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch));
+    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch, { signal: st.lease.signal }));
     st.run = { ...st.run, dir, baseSha };
     saveRun(st.run);
     st.egress = await guarded(st, startEgress(st.run.id, log));

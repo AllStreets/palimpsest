@@ -206,6 +206,20 @@ fn open_folder_access(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Zooms the window, then shows it. A zoom that fails is logged and the window
+/// is shown anyway at its centred size, so the app never starts with its
+/// window hidden; only a failed show is an error.
+fn zoom_then_show<E: std::fmt::Display>(
+    maximize: impl FnOnce() -> Result<(), E>,
+    show: impl FnOnce() -> Result<(), E>,
+    log: &mut dyn FnMut(String),
+) -> Result<(), E> {
+    if let Err(e) = maximize() {
+        log(format!("palimpsest: the window could not be zoomed, so it opens at its centred size: {e}"));
+    }
+    show()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -232,8 +246,7 @@ fn main() {
                 .build()?;
             // Opens zoomed to the screen's visible frame: menu bar and Dock stay, no fullscreen Space.
             // Zoomed after build, because the builder places a centred window after any zoom it was asked for.
-            window.maximize()?;
-            window.show()?;
+            zoom_then_show(|| window.maximize(), || window.show(), &mut |line| eprintln!("{line}"))?;
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -365,5 +378,24 @@ mod tests {
         assert_eq!(protected_folder(Path::new("/Users/c/Desktop/palimpsest"), home), "Desktop");
         assert_eq!(protected_folder(Path::new("/Volumes/Work/palimpsest"), home), "/Volumes/Work");
         assert_eq!(protected_folder(Path::new("/Users/c/DownloadsOld/palimpsest"), home), "/Users/c/DownloadsOld");
+    }
+
+    #[test]
+    fn a_failed_zoom_is_logged_and_the_window_is_still_shown() {
+        let mut shown = false;
+        let mut lines: Vec<String> = Vec::new();
+        let r = zoom_then_show(|| Err::<(), String>("no screen".into()), || { shown = true; Ok(()) }, &mut |l| lines.push(l));
+        assert_eq!(r, Ok(()));
+        assert!(shown, "a failed zoom left the window hidden");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("no screen"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn a_good_zoom_logs_nothing_and_a_failed_show_is_still_an_error() {
+        let mut lines: Vec<String> = Vec::new();
+        assert_eq!(zoom_then_show(|| Ok::<(), String>(()), || Ok(()), &mut |l| lines.push(l)), Ok(()));
+        assert!(lines.is_empty());
+        assert_eq!(zoom_then_show(|| Ok::<(), String>(()), || Err("hidden".to_string()), &mut |l| lines.push(l)), Err("hidden".to_string()));
     }
 }

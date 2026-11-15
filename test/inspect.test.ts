@@ -271,9 +271,11 @@ test('abort ends the inspection and kills the running check', { timeout: 60_000 
       if (Date.now() - started > 20_000) throw new Error('the check never started');
       await new Promise((r) => setTimeout(r, 20));
     }
+    // Promptness is timed from the abort: the clone and install before the check take what the machine gives them.
+    const aborted = Date.now();
     abortLease(lease, new Error('stop the inspection'));
     await assert.rejects(p, /stop the inspection|stopped|abort/i);
-    assert.ok(Date.now() - started < 15_000, 'the inspection ended promptly');
+    assert.ok(Date.now() - aborted < 15_000, 'the inspection ended promptly');
     let alive = true;
     for (let i = 0; i < 50 && alive; i++) {
       try {

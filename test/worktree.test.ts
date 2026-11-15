@@ -87,6 +87,20 @@ test('createRunDir clones without hardlinks on the branch with origin fetch rewr
   assert.ok(!existsSync(join(dir, 'ctl')), 'control files stay outside the repo dir');
 });
 
+test('createRunDir takes the caller\'s signal: a stopped run clones nothing and an abort mid-clone ends its git', async () => {
+  const stopped = new AbortController();
+  stopped.abort();
+  await assert.rejects(createRunDir(repo, 'run-stopped', 'palimpsest/run-stopped', { signal: stopped.signal }), /stopped/i);
+  assert.equal(existsSync(join(tempDir, 'data', 'runs', 'run-stopped', 'repo')), false, 'no clone for a stopped run');
+
+  // Aborted while its first git runs: the call rejects and no recorded config is left to vouch for a half clone.
+  const mid = new AbortController();
+  const pending = createRunDir(repo, 'run-mid', 'palimpsest/run-mid', { signal: mid.signal });
+  mid.abort();
+  await assert.rejects(pending, /stopped/i);
+  assert.equal(existsSync(join(tempDir, 'data', 'runs', 'run-mid', 'ctl', 'git-config.sha')), false);
+});
+
 test('a push from the run dir fails', async () => {
   const { runRoot, dir } = await createRunDir(repo, 'run1', 'palimpsest/job1');
   writeFileSync(join(dir, 'x.txt'), 'x\n');

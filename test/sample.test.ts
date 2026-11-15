@@ -98,3 +98,31 @@ test('the sample stand-in keeps an API key in memory: security never runs, and n
     delete process.env.PALIMPSEST_HOME;
   }
 });
+
+test('a sample engine never keeps a folder override that names his own Claude, Codex or Gemini folders; a test temp folder is kept', async () => {
+  const { homedir } = await import('node:os');
+  const { useSampleFolders, sampleProjectsDir, sampleCodexHome, sampleGeminiHome } = await import('../engine/sample.js');
+  const KEYS = ['PALIMPSEST_CLAUDE_PROJECTS', 'PALIMPSEST_CODEX_HOME', 'PALIMPSEST_GEMINI_HOME'] as const;
+  const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+  const dir = join(tempDir, 'sample-home');
+  try {
+    // Only named, never opened: the comparison is on the path's text.
+    process.env.PALIMPSEST_CLAUDE_PROJECTS = join(homedir(), '.claude', 'projects');
+    process.env.PALIMPSEST_CODEX_HOME = join(homedir(), '.CODEX');
+    process.env.PALIMPSEST_GEMINI_HOME = `${join(homedir(), '.gemini')}/`;
+    useSampleFolders(dir);
+    assert.equal(process.env.PALIMPSEST_CLAUDE_PROJECTS, sampleProjectsDir(dir));
+    assert.equal(process.env.PALIMPSEST_CODEX_HOME, sampleCodexHome(dir));
+    assert.equal(process.env.PALIMPSEST_GEMINI_HOME, sampleGeminiHome(dir));
+
+    const mine = join(tempDir, 'projects');
+    process.env.PALIMPSEST_CLAUDE_PROJECTS = mine;
+    useSampleFolders(dir);
+    assert.equal(process.env.PALIMPSEST_CLAUDE_PROJECTS, mine, 'a temp folder override is kept');
+  } finally {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});

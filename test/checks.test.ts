@@ -154,6 +154,16 @@ test('install commands follow the lockfile', () => {
   assert.deepEqual(bare.ecosystems, []);
 });
 
+test('an npm repo without a lockfile installs its declared dependencies, writing no lockfile, so its checks are not preexisting for want of them', () => {
+  const pkg = JSON.stringify({ scripts: { test: 'vitest run', build: 'tsc' }, devDependencies: { vitest: '^2.0.0', typescript: '^5.0.0' } });
+  const c = detectChecks(fixture('l-nolock', { 'package.json': pkg }));
+  assert.equal(c.install, 'npm install --no-package-lock --no-audit --no-fund');
+  assert.deepEqual(c.ecosystems, ['npm']);
+  assert.equal(c.test, 'npm test');
+  // With a lockfile it is the lockfile's install, as before.
+  assert.equal(detectChecks(fixture('l-lock', { 'package.json': pkg, 'package-lock.json': '{}' })).install, 'npm ci');
+});
+
 test('test counts parse from node --test output', () => {
   const tap = ['TAP version 13', '# Subtest: a', 'ok 1 - a', '1..3', '# tests 3', '# suites 0', '# pass 2', '# fail 1'].join('\n');
   assert.equal(parseTestsRun(tap), 3);

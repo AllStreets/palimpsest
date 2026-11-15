@@ -149,6 +149,17 @@ test('an aborted baseline is not cached', { timeout: 60_000 }, async () => {
   assert.equal(commands.includes('node --test'), false);
 });
 
+test('a baseline whose check was refused is not cached, so a later real failure is never read as preexisting', { timeout: 60_000 }, async () => {
+  // The guard refuses any git push: the check never ran, so it says nothing about the repo at this sha.
+  const { repo, first } = makeRepo(checks({ test: 'git push origin main' }));
+  const results = await baseline(repo, first);
+  const test = results.find((c) => c.name === 'test');
+  assert.equal(test?.status, 'fail');
+  assert.match(test?.detail ?? '', /^Refused/);
+  assert.equal(test?.inconclusive, 'refused');
+  assert.equal(cachedBaseline(repo.fullName, first), null, 'a refused check was cached as a baseline failure');
+});
+
 test('a joiner whose own signal is live recomputes when the first caller is stopped', { timeout: 120_000 }, async () => {
   const { repo, first } = makeRepo(checks({ test: 'node --test' }));
   const skipped = { name: 'install' as const, status: 'skipped' as const, detail: '', durationMs: 0, logPath: null, testsRun: null };

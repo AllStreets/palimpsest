@@ -212,3 +212,37 @@ test('syncMirror gives a first clone ten minutes, not the two allowed other comm
   assert.equal(CLONE_TIMEOUT_MS, 600_000);
   assert.deepEqual(timeouts, [CLONE_TIMEOUT_MS]);
 });
+
+test('the engine reads its mirrors with none of his git config: log, refs and the checks read run on an environment built from nothing', async () => {
+  const { detectChecksInMirror } = await import('../engine/guild/checks.js');
+  const seen: Array<{ args: string[]; env: Record<string, string> | undefined }> = [];
+  setRunner(async (_cmd, args, opts) => {
+    seen.push({ args, env: opts?.env });
+    if (args.includes('log')) return { stdout: '', stderr: "fatal: bad revision 'main'\nunknown revision", code: 128 };
+    if (args.includes('for-each-ref')) return { stdout: '', stderr: '', code: 0 };
+    if (args.includes('ls-tree')) return { stdout: 'package.json\0', stderr: '', code: 0 };
+    if (args.includes('show')) return { stdout: '{"scripts":{"test":"node --test"}}', stderr: '', code: 0 };
+    return { stdout: '', stderr: '', code: 0 };
+  });
+  assert.deepEqual(await readLog(join(tempDir, 'm.git'), 'main'), []);
+  await detectChecksInMirror(join(tempDir, 'm.git'), 'main');
+  assert.ok(seen.length >= 4, `${seen.length} git calls`);
+  for (const { args, env } of seen) {
+    assert.ok(env, `git ${args.join(' ')} inherited the engine's environment`);
+    assert.equal(env.GIT_CONFIG_GLOBAL, '/dev/null');
+    assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');
+    assert.notEqual(env.HOME, process.env.HOME);
+    assert.equal(env.GIT_TERMINAL_PROMPT, '0');
+  }
+});
+
+test('the fetch of his own repos keeps his environment, so his credential helper still reaches a private repo (guard)', async () => {
+  mkdirSync(join(paths().mirrors, 'acme__widgets.git'), { recursive: true });
+  let env: Record<string, string> | undefined = { marker: 'unset' };
+  setRunner(async (_cmd, _args, opts) => {
+    env = opts?.env;
+    return { stdout: '', stderr: '', code: 0 };
+  });
+  await syncMirror('acme/widgets');
+  assert.equal(env, undefined);
+});

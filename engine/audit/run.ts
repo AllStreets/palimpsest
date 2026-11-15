@@ -456,7 +456,7 @@ async function lifecycle(st: LiveAudit, o: StartOptions): Promise<Audit> {
   const checks = checkCommands(st.repo.checks);
   try {
     checkpoint(st);
-    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.audit.id, `palimpsest/${st.audit.id}`));
+    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.audit.id, `palimpsest/${st.audit.id}`, { signal: st.lease.signal }));
     st.egress = await guarded(st, startEgress(st.audit.id, log));
     if (st.model.startsWith('claude:')) {
       st.broker = await guarded(st, startBroker(st.audit.id, { runRoot: st.runRoot, dir, log, signal: st.lease.signal, stage: () => st.toolStage, allowedCommands: checks }));

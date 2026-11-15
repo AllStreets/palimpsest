@@ -64,7 +64,7 @@ import { paths } from '../home.js';
 import { record } from '../ledger.js';
 import { creditEntries } from '../market/budget.js';
 import { agent as storedAgent } from '../market/firms.js';
-import { mirrorDir } from '../mirror.js';
+import { mirrorDir, mirrorReadEnv } from '../mirror.js';
 import { refusedHosts, startEgress, type Egress } from '../market/egress.js';
 import { redact } from '../market/jobs.js';
 import type { RunLogLine } from '../market/provider.js';
@@ -317,7 +317,7 @@ export function estimateTokens(messages: ChatMessage[]): number {
 // ---------------------------------------------------------------- git
 
 async function mirrorGit(repo: Repo, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(repo.fullName), ...args], { timeoutMs: GIT_MS });
+  return getRunner()('git', [...ENGINE_GIT_FLAGS, '-C', mirrorDir(repo.fullName), ...args], { timeoutMs: GIT_MS, env: mirrorReadEnv() });
 }
 
 interface RawEntry {

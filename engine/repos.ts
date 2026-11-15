@@ -318,6 +318,18 @@ function settled(fullName: string): void {
   running.delete(fullName);
 }
 
+/** Thrown inside an analysis whose repo was turned off: it stops at the next step and writes nothing more. */
+class AnalysisStopped extends Error {
+  constructor() {
+    super('The analysis was stopped: the repo was disconnected.');
+  }
+}
+
+/** Stops the analysis when its repo has been turned off since it started (a stopped connect). */
+function stillWanted(fullName: string): void {
+  if (loadRepo(fullName)?.connected === false) throw new AnalysisStopped();
+}
+
 async function runAnalysis(fullName: string): Promise<void> {
   try {
     let repo = loadRepo(fullName);
@@ -329,17 +341,23 @@ async function runAnalysis(fullName: string): Promise<void> {
     const joinedAt = repo.joinedAt ?? new Date().toISOString();
 
     // Each step event carries the repo as stored now, so a toggle changed mid-analysis is never reported stale.
+    // Between steps the repo is read again: once it has been turned off, the analysis stops there.
+    stillWanted(fullName);
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'mirror' });
     const meta = await repoMeta(fullName);
+    stillWanted(fullName);
     // Re-read before each write: the toggles (connected, pushMode, root) may have changed while gh ran.
     repo = saveRepo({ ...(loadRepo(fullName) ?? repo), ...meta });
     const dir = await syncMirror(fullName);
+    stillWanted(fullName);
 
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'log' });
     const commits = await readLog(dir, repo.defaultBranch);
+    stillWanted(fullName);
 
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'prs' });
     const prs = await mergedPRs(fullName);
+    stillWanted(fullName);
 
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'floors' });
     const floors = foundingFloors(fullName, commits, prs, { until: joinedAt });
@@ -353,6 +371,7 @@ async function runAnalysis(fullName: string): Promise<void> {
     } catch {
       detected = null;
     }
+    stillWanted(fullName);
 
     const tower: TowerSpec = {
       id: `${fullName}#founding`,
@@ -393,6 +412,10 @@ async function runAnalysis(fullName: string): Promise<void> {
     // Phase 3 ruling 6: a repo analysed with its market already on is audited once, by itself.
     queueAutoAudit(repo);
   } catch (err) {
+    if (err instanceof AnalysisStopped) {
+      stoppedAnalysis(fullName);
+      return;
+    }
     const message = err instanceof GhError ? err.message : readableMessage(err);
     // Guarded: loadRepo/saveRepo/emit/record can themselves throw (a closed
     // db handle, a bad write), and this is already the error path. Letting
@@ -409,6 +432,23 @@ async function runAnalysis(fullName: string): Promise<void> {
     } catch (innerErr) {
       console.error(`analyze(${fullName}): failed to record error state '${message}':`, innerErr);
     }
+  }
+}
+
+/**
+ * The end of an analysis stopped by a disconnect: the repo is left as it
+ * stood before (ready on the tower it had, else idle), never analysing and
+ * never in error, and the screens are told so with the repo as it now is.
+ */
+function stoppedAnalysis(fullName: string): void {
+  try {
+    settled(fullName);
+    const repo = loadRepo(fullName);
+    if (!repo) return;
+    const updated = saveRepo({ ...repo, status: loadFoundingTower(fullName) ? 'ready' : 'idle', error: null });
+    emit('repo.disconnected', { repo: updated });
+  } catch (err) {
+    console.error(`analyze(${fullName}): failed to settle a stopped analysis:`, err);
   }
 }
 

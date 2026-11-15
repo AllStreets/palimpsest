@@ -7,7 +7,8 @@
  * hook's Claude settings inside the sample home.
  */
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, join, resolve, sep } from 'node:path';
 
 import type { RootStyle } from '../shared/types.js';
 import { openDb } from './db.js';
@@ -42,14 +43,30 @@ export function sampleGeminiHome(dir: string = home()): string {
   return join(dir, 'providers', 'gemini');
 }
 
+/** His own folders a sample engine never reads, whatever a variable says. */
+function hisFolders(): string[] {
+  return ['.claude', '.codex', '.gemini'].map((f) => join(homedir(), f));
+}
+
+/** True when `p` names one of his own folders or a path inside one, compared on its text in any letter case (nothing is opened). */
+function namesHisFolder(p: string): boolean {
+  const abs = resolve(p).toLowerCase();
+  return hisFolders().some((f) => {
+    const root = resolve(f).toLowerCase();
+    return abs === root || abs.startsWith(root + sep);
+  });
+}
+
 /**
  * Points every reader of his other folders at the sample home's own: the
  * Claude transcripts the budget scans, and the Codex and Gemini homes
- * Settings reads. A variable already set (a test's temp folder) is kept.
+ * Settings reads. A variable already set (a test's or a tool's temp folder)
+ * is kept, unless it names his own `.claude`, `.codex` or `.gemini`.
  */
 export function useSampleFolders(dir: string = home()): void {
   const set = (k: string, v: string) => {
-    if (!process.env[k]) process.env[k] = v;
+    const now = process.env[k];
+    if (!now || namesHisFolder(now)) process.env[k] = v;
   };
   set('PALIMPSEST_CLAUDE_PROJECTS', sampleProjectsDir(dir));
   set('PALIMPSEST_CODEX_HOME', sampleCodexHome(dir));

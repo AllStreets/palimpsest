@@ -13,6 +13,7 @@ import { join } from 'node:path';
 
 import type { CheckName, CheckResult, RepoChecks } from '../../shared/types.js';
 import { getRunner } from '../exec.js';
+import { mirrorReadEnv } from '../mirror.js';
 import { execTool } from '../market/broker.js';
 import type { RunContext } from '../market/install.js';
 import type { RunLogLine } from '../market/provider.js';
@@ -60,6 +61,9 @@ function makeTargets(text: string | null): Set<string> {
   return targets;
 }
 
+/** The install of an npm repo that has dependencies and no lockfile. */
+export const NPM_NO_LOCK_INSTALL = 'npm install --no-package-lock --no-audit --no-fund';
+
 /**
  * The detection itself, over a repo root: `names` are the root's entries and
  * `read` returns a root file's text (null when absent or unreadable).
@@ -80,6 +84,10 @@ export function detectFrom(names: Set<string>, read: (name: string) => string | 
   } else if (has('yarn.lock')) {
     installs.push('yarn install --immutable');
     manager = 'yarn';
+  } else if (pkg && [pkg.dependencies, pkg.devDependencies].some((d) => d && typeof d === 'object' && Object.keys(d).length > 0)) {
+    // No lockfile, but declared dependencies: without them every check fails before and after a change
+    // and reads preexisting. npm installs them and writes no lockfile, so the run's diff stays its own.
+    installs.push(NPM_NO_LOCK_INSTALL);
   }
   if (installs.length) ecosystems.push('npm');
   let venv = false;
@@ -193,7 +201,7 @@ export function detectChecks(dir: string): RepoChecks {
  */
 export async function detectChecksInMirror(mirror: string, branch: string): Promise<RepoChecks> {
   const runner = getRunner();
-  const ls = await runner('git', ['-C', mirror, 'ls-tree', '-z', '--name-only', branch], { timeoutMs: 60_000 });
+  const ls = await runner('git', ['-C', mirror, 'ls-tree', '-z', '--name-only', branch], { timeoutMs: 60_000, env: mirrorReadEnv() });
   if (ls.code !== 0) {
     if (/not a valid object name|does not have any commits|unknown revision/i.test(ls.stderr)) return emptyChecks();
     throw new Error(`git ls-tree failed: ${ls.stderr.trim()}`);
@@ -202,7 +210,7 @@ export async function detectChecksInMirror(mirror: string, branch: string): Prom
   const texts = new Map<string, string | null>();
   for (const n of READ) {
     if (!names.has(n)) continue;
-    const r = await runner('git', ['-C', mirror, 'show', `${branch}:${n}`], { timeoutMs: 60_000 });
+    const r = await runner('git', ['-C', mirror, 'show', `${branch}:${n}`], { timeoutMs: 60_000, env: mirrorReadEnv() });
     texts.set(n, r.code === 0 && r.stdout.length <= MAX_MANIFEST_BYTES ? r.stdout : null);
   }
   return detectFrom(names, (n) => texts.get(n) ?? null);
@@ -260,7 +268,8 @@ const MAX_CHECK_LOG_BYTES = 4 * 1024 * 1024;
  * baseline has set the egress to allow nothing) and a 15 minute cap. The
  * check's output goes to the run log as it streams and to
  * `<runRoot>/inspection/<name>.log`; `testsRun` is parsed from it. A
- * refusal, a non-zero exit, a timeout or an abort is a `fail`.
+ * refusal, a non-zero exit, a timeout or an abort is a `fail`; a refusal or
+ * a timeout is also `inconclusive`, so no baseline keeps it.
  */
 export async function runCheck(
   ctx: RunContext,
@@ -292,11 +301,11 @@ export async function runCheck(
     logPath = null;
   }
   const testsRun = name === 'test' ? parseTestsRun(output) : null;
-  if (r.refused) return { name, status: 'fail', detail: `Refused: ${r.refused}`, durationMs, logPath, testsRun: null };
+  if (r.refused) return { name, status: 'fail', detail: `Refused: ${r.refused}`, durationMs, logPath, testsRun: null, inconclusive: 'refused' };
   if (r.code !== 0 || ctx.signal.aborted) {
     const tail = output.trim().split('\n').slice(-5).join('\n');
     const how = ctx.signal.aborted ? 'was stopped' : `exited ${r.code ?? 'without a code'}`;
-    return { name, status: 'fail', detail: `${command} ${how}${tail ? `: ${tail}` : ''}`.slice(0, 4000), durationMs, logPath, testsRun };
+    return { name, status: 'fail', detail: `${command} ${how}${tail ? `: ${tail}` : ''}`.slice(0, 4000), durationMs, logPath, testsRun, ...(r.timedOut ? { inconclusive: 'timed out' as const } : {}) };
   }
   return { name, status: 'pass', detail: command, durationMs, logPath, testsRun };
 }
