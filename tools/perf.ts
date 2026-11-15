@@ -17,7 +17,12 @@
  * the city from home (homeBudget, tools/ui-test.ts) and shoots and measures
  * each named view on the settled economy: its frame rate (viewFps) and its
  * calls and triangles with the shadow map redrawn. PERF_ONLY=home,street
- * keeps to those views. Phase two (unless PERF_STATIC) turns the economy's
+ * keeps to those views. The people views (people-follow, people-close,
+ * face-close, people-platform, people-seated) are staged first, as
+ * tools/capture.ts stages them: the people's and the vehicles' clocks held
+ * while the figure is put where the shot wants it, and held through the
+ * still and its frame rate (the pose frozen costs the same to draw).
+ * Phase two (unless PERF_STATIC) turns the economy's
  * job sites live (four sites) on high and measures the city from home, the
  * overview and the quarters with them, with the quality governor running.
  * Writes <out>/<view>.png (high) and <out>/<view>-medium.png, <out>/perf.json
@@ -37,6 +42,7 @@ import type { Page } from 'playwright';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District, Quarter } from '../shared/types.js';
 import { frameStats } from '../app/src/city/governor.js';
+import { around, apart, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
 import { seedSample, sampleGh } from './sample.js';
 import { homeBudget } from './ui-test.js';
 
@@ -183,6 +189,47 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
   ];
 }
 
+/**
+ * The views that need a figure staged (Task 3), yielded one by one with the
+ * clocks held at the moment of each: Dagny twenty seconds into her walk to
+ * the tram (the follow camera's framing, a close pass, and her face from
+ * 1.8 m), on the platform as the tram comes in, and Bruno seated in the
+ * train. A stage that cannot be reached (no figure, no vehicle) is skipped
+ * and said.
+ */
+async function* stagedViews(page: Page): AsyncGenerator<[string, V3, V3]> {
+  await callDebug(page, 'd.peopleHold(true)');
+  try {
+    await sendPerson(page, 'dagny-hollis', [560, -300], [600, 200]);
+    await callDebug(page, 'd.peopleSkip(22)');
+    const f = await person(page, 'dagny-hollis');
+    if (f) {
+      yield ['people-follow', ...followView(f)];
+      yield ['people-close', around(f.position, f.heading, 2.6, -3.0, f.position[1] + 1.5), around(f.position, f.heading, -5.5, 6.2, f.position[1] + 0.5)];
+      // Her face from 1.8 m: a three-quarter view from her front, on the side the low sun comes from (sky.ts
+      // SUN_DIRECTION, toward -x and +z), so the sun lights the face and never blooms behind her; the lantern in her
+      // right hand is put out for this one (its glass would flare from so close), and lit again after.
+      const sunward = Math.sign(-Math.sin(f.heading) * -260 + Math.cos(f.heading) * 120) || 1;
+      await callDebug(page, 'd.peopleLantern(false)');
+      yield ['face-close', around(f.position, f.heading, 0.95, sunward * 1.5, f.position[1] + 1.68), around(f.position, f.heading, 0.06, 0, f.position[1] + 1.6)];
+      await callDebug(page, 'd.peopleLantern(null)');
+    } else console.log('people: no figure for Dagny; the follow, close and face views are skipped');
+    const w = await runUntil(page, 'dagny-hollis', (x) => x.mode === 'tram' && x.stage === 'wait');
+    const t = w ? await runUntil(page, 'dagny-hollis', (x, v) => x.stage !== 'wait' || (!!v && apart(x, v) < 34 && v.speed > 0.5), 1200) : null;
+    if (t) yield ['people-platform', around(t.position, t.heading, 11, 2.4, t.position[1] + 2.4), around(t.position, t.heading, -1.5, 0.3, t.position[1] + 1.2)];
+    else console.log('people: no figure on the platform; people-platform is skipped');
+    await sendPerson(page, 'bruno-kiln', [600, -600], [-600, 600]);
+    const r = await runUntil(page, 'bruno-kiln', (x) => x.mode === 'rail' && x.stage === 'ride', 1800, 2);
+    if (r) {
+      await callDebug(page, 'd.peopleSkip(3)');
+      const b = (await person(page, 'bruno-kiln'))!;
+      yield ['people-seated', around(b.position, b.heading, 2.4, -1.3, b.position[1] + 1.15), around(b.position, b.heading, -0.1, 0.1, b.position[1] + 0.55)];
+    } else console.log('people: no figure seated on the train; people-seated is skipped');
+  } finally {
+    await callDebug(page, 'd.peopleHold(false)');
+  }
+}
+
 const sum = (b: Breakdown): Tally => {
   const t = { calls: 0, triangles: 0 };
   for (const p of Object.values(b)) for (const v of Object.values(p)) {
@@ -275,8 +322,7 @@ async function main(): Promise<void> {
       const top = Object.entries(home.parts).sort((x, y) => y[1].triangles - x[1].triangles).slice(0, 4);
       console.log(`${tier} home budget, the shadow map redrawn: ${home.calls} calls, ${(home.triangles / 1e6).toFixed(2)}M triangles (${top.map(([k, t]) => `${k} ${(t.triangles / 1e6).toFixed(2)}M/${t.calls}`).join(', ')})`);
       const rows: Record<string, ViewRow> = {};
-      for (const [name, eye, target] of await views(page)) {
-        if (only && !only.includes(name)) continue;
+      const measure = async (name: string, eye: V3, target: V3): Promise<void> => {
         await settle(page, eye, target);
         await page.screenshot({ path: join(out, tier === 'high' ? `${name}.png` : `${name}-${tier}.png`) });
         const breakdown = await breakdownOf(page, !!process.env.PERF_DETAIL);
@@ -286,6 +332,17 @@ async function main(): Promise<void> {
         rows[name] = { fps: f, calls: drawn.calls, triangles: drawn.triangles };
         console.log(`${tier} ${name}: ${f.toFixed(1)} fps, steady ${stats.calls} calls ${(stats.triangles / 1e6).toFixed(2)}M; with the shadow redrawn ${drawn.calls} calls ${(drawn.triangles / 1e6).toFixed(2)}M`);
         console.log(table(`${tier} ${name}`, breakdown));
+      };
+      for (const [name, eye, target] of await views(page)) {
+        if (only && !only.includes(name)) continue;
+        await measure(name, eye, target);
+      }
+      const PEOPLE = ['people-follow', 'people-close', 'face-close', 'people-platform', 'people-seated'];
+      if (!only || PEOPLE.some((n) => only.includes(n))) {
+        for await (const [name, eye, target] of stagedViews(page)) {
+          if (only && !only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
       }
       result.tiers[tier] = { home, views: rows };
     }

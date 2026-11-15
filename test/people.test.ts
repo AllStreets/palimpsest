@@ -7,7 +7,9 @@ import * as THREE from 'three';
 import { extentBlocks, network, route } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
 import type { Agent, Trip } from '../shared/types.js';
-import { createPeople, strideRate } from '../app/src/city/people.js';
+import { createPeople, paceOf, phaseOf, SEAT, SEATED, strideRate } from '../app/src/city/people.js';
+import { clearSkin, figureLevel } from '../app/src/city/figures.js';
+import { FIGURE_CODE, skinPoint } from '../app/src/city/ambient.js';
 import { createVehicles } from '../app/src/city/vehicles.js';
 import { FOUNTAIN } from '../app/src/city/exchange.js';
 
@@ -430,8 +432,8 @@ test('walkers walk their path as given, carry no plate and survive a set of trip
   people.setWalkers([{ id: 'student:1', path, speed: 1.2 }]);
   people.update(5);
   const p = people.positionOf('student:1')!;
-  // Six metres in, on the path's own line (no pavement offset), at its height.
-  assert.ok(Math.abs(p.x - 106) < 0.3 && Math.abs(p.z - 100) < 0.05 && Math.abs(p.y - 6) < 1e-6, `walks the line given (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`);
+  // Six metres in (at its own pace, within 12% either way), on the path's own line (no pavement offset), at its height.
+  assert.ok(Math.abs(p.x - 100 - 6 * paceOf('student:1')) < 0.3 && Math.abs(p.x - 106) < 6 * 0.12 + 0.3 && Math.abs(p.z - 100) < 0.05 && Math.abs(p.y - 6) < 1e-6, `walks the line given (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`);
   assert.deepEqual(people.walkers(), [{ id: 'student:1', arrived: false }]);
   // A set of trips (the live ones) does not take the walkers away.
   people.set([tripOf('ada', { x: 440, z: 200 }, { x: 440, z: 320 })], [agentOf('ada')]);
@@ -460,5 +462,135 @@ test('walkers walk their path as given, carry no plate and survive a set of trip
   assert.ok(Math.abs(h1 - Math.PI / 2) < Math.abs(h0 - Math.PI / 2) || Math.abs(h1 - Math.PI / 2) < 0.05, `it turns toward what it faces (${h0.toFixed(2)} then ${h1.toFixed(2)})`);
   people.setWalkers([]);
   assert.equal(people.positionOf('student:1'), null);
+  people.dispose();
+});
+
+// ---------------------------------------------------------------- their own pace (Phase 5 Task 3)
+
+test('two walkers side by side are out of phase', () => {
+  const people = createPeople({ vehicles: () => null, net: () => NET, now: () => 0 });
+  // Two students on parallel lines a metre apart, the same speed, set off together.
+  people.setWalkers([
+    { id: 'student:a', path: [[100, 6, 100], [160, 6, 100]], speed: 1.3 },
+    { id: 'student:b', path: [[100, 6, 101], [160, 6, 101]], speed: 1.3 },
+  ]);
+  people.update(6);
+  const [a, b] = ['student:a', 'student:b'].map((id) => people.figures().find((f) => f.agentId === id)!);
+  const wrap = (x: number): number => Math.atan2(Math.sin(x), Math.cos(x));
+  assert.ok(Math.abs(wrap(a.phase - b.phase)) > 0.5, `their strides differ in phase (${a.phase.toFixed(2)} against ${b.phase.toFixed(2)})`);
+  // And in pace: each within 12% of the speed given, and not the same.
+  const pa = people.positionOf('student:a')!;
+  const pb = people.positionOf('student:b')!;
+  for (const [id, p] of [['a', pa], ['b', pb]] as const) {
+    const walked = p.x - 100;
+    assert.ok(walked >= 6 * 1.3 * 0.88 - 0.3 && walked <= 6 * 1.3 * 1.12 + 0.3, `${id} walked ${walked.toFixed(2)} m in 6 s at 1.3 m/s, within 12%`);
+  }
+  assert.ok(Math.abs(pa.x - pb.x) > 0.05, `they do not keep abreast (${pa.x.toFixed(2)} against ${pb.x.toFixed(2)})`);
+  assert.ok(Math.abs(paceOf('student:a') - 1) <= 0.12 && Math.abs(paceOf('student:b') - 1) <= 0.12, 'the spread is plus or minus 12%');
+  people.dispose();
+});
+
+test('stride phase is stable per id across reloads', () => {
+  assert.equal(phaseOf('dagny-hollis'), phaseOf('dagny-hollis'));
+  assert.ok(phaseOf('dagny-hollis') >= 0 && phaseOf('dagny-hollis') < Math.PI * 2, 'a phase in one turn');
+  assert.notEqual(phaseOf('dagny-hollis'), phaseOf('hal-meridian'));
+  // Two pages (two people sets) give the same figure the same phase at the same moment of its trip.
+  const trip = tripOf('ada', { x: 440, z: 200 }, { x: 440, z: 320 });
+  const start = Date.parse(trip.startedAt);
+  const phases = [0, 1].map(() => {
+    const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start });
+    people.set([trip], [agentOf('ada')]);
+    people.update(0);
+    const ph = people.figures().find((f) => f.agentId === 'ada')!.phase;
+    people.dispose();
+    return ph;
+  });
+  assert.equal(phases[0], phases[1]);
+  assert.equal(phases[0], phaseOf('ada'));
+  // Many ids spread over the turn, not bunched.
+  const sample = Array.from({ length: 64 }, (_, i) => phaseOf(`agent-${i}`));
+  const bins = new Set(sample.map((p) => Math.floor((p / (Math.PI * 2)) * 8)));
+  assert.ok(bins.size >= 6, `phases fall in ${bins.size} of 8 bins`);
+});
+
+test('the skin atlas is not fetched until a close figure is drawn', async () => {
+  const asked: string[] = [];
+  clearSkin();
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown) => {
+    asked.push(String(url));
+    return new Response(new Uint8Array(0));
+  }) as typeof fetch;
+  try {
+    const trip = tripOf('cy', { x: 440, z: 200 }, { x: 440, z: 320 });
+    const start = Date.parse(trip.startedAt);
+    const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start });
+    people.set([trip], [agentOf('cy')]);
+    const camera = new THREE.PerspectiveCamera(36, 1.6, 0.5, 20000);
+    const look = (d: number): void => {
+      camera.position.set(440 + d, 1.7 + d * 0.3, 200);
+      camera.lookAt(440, 1, 200);
+      camera.updateMatrixWorld();
+      people.update(0.016, camera);
+    };
+    look(60);
+    look(250);
+    assert.equal(asked.filter((u) => u.includes('figures-skin')).length, 0, 'the near and far levels never ask for the skin');
+    look(3);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(asked.filter((u) => u.endsWith('kits/figures-skin.webp')).length, 1, `the first close figure fetches the atlas once (${asked.join(', ')})`);
+    look(3);
+    look(2);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(asked.filter((u) => u.includes('figures-skin')).length, 1, 'and never again');
+    people.dispose();
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("a seated figure's hip sits on the seat", () => {
+  // The seated pose (PERSONA_RIG with aPose.x = 1): hips and knees at SEATED.hip and SEATED.knee, the body dropped by
+  // SEATED.drop so the seat of the trousers rests on the seat, the figure's origin being set at the seat's height (aboard()).
+  const g = figureLevel('hi');
+  assert.ok(g, 'the modelled figure');
+  const p = g.attributes.position;
+  const skin = g.attributes.aSkin;
+  const surf = g.attributes.aSurf;
+  const pose = { hipL: SEATED.hip, hipR: SEATED.hip, kneeL: SEATED.knee, kneeR: SEATED.knee };
+  let lowest = Infinity;
+  let kneeFront = -Infinity;
+  let ankleY = Infinity;
+  for (let i = 0; i < p.count; i++) {
+    if (Math.round(surf.getX(i)) !== FIGURE_CODE.legs) continue;
+    const rest = new THREE.Vector3(p.getX(i), p.getY(i), p.getZ(i));
+    const at = skinPoint(rest, skin.getX(i), skin.getY(i), skin.getZ(i) / 255, pose);
+    at.y -= SEATED.drop;
+    // Under the hips (the seat of the trousers), the lowest point rests on the seat.
+    if (rest.y > 0.8 && Math.abs(rest.x) < 0.1) lowest = Math.min(lowest, at.y);
+    // The thighs run forward to the knees, which stand ahead of the seat's edge; the shins come down to the floor.
+    if (rest.y > 0.46 && rest.y < 0.54) kneeFront = Math.max(kneeFront, at.x);
+    if (rest.y < 0.1) ankleY = Math.min(ankleY, at.y);
+  }
+  assert.ok(Math.abs(lowest) < 0.03, `the seat of the trousers rests on the seat (${lowest.toFixed(3)} m)`);
+  assert.ok(kneeFront > 0.3, `the knees are ahead of the seat (${kneeFront.toFixed(2)} m)`);
+  assert.ok(ankleY < -(SEAT.bench - 0.08) && ankleY > -(SEAT.bench + 0.08), `the feet reach a bench's floor ${SEAT.bench} m below (${ankleY.toFixed(2)} m)`);
+  // A rider in a cab or a carriage sits at its seat's height (its origin), and the rig puts its hips there.
+  const trip = tripOf('bo', { x: 446.5, z: 330 }, { x: 1100, z: -200 });
+  const k = trip.legs.findIndex((l) => l.mode === 'cab');
+  assert.ok(k >= 0, 'a cab trip');
+  const v = createVehicles(NET, 'high');
+  const people = createPeople({ vehicles: () => v, net: () => NET, now: () => Date.parse(trip.startedAt) });
+  people.set([trip], [agentOf('bo')]);
+  people.update(0);
+  const cab = v.vehicles('cab').find((c) => c.id === people.rideOf('bo')!.id)!;
+  for (let t = 0; t < 600 && cab.phase() !== 'carrying'; t++) {
+    v.update(1);
+    people.update(1);
+  }
+  const fig = people.figures().find((f) => f.agentId === 'bo')!;
+  assert.equal(fig.stage, 'ride');
+  assert.ok(Math.abs(fig.position[1] - (cab.floorY() + SEAT.cab)) < 1e-6, `seated at the cab's bench height (${fig.position[1].toFixed(2)} against floor ${cab.floorY().toFixed(2)} + ${SEAT.cab})`);
+  assert.ok(fig.sit > 0.99 && fig.walking === 0, 'sitting, not walking');
   people.dispose();
 });

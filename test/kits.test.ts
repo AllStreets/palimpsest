@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 
 import { blockLots, lotParts } from '../app/src/city/lots.js';
-import { crownSlots, hasKit, kitShared } from '../app/src/city/kits.js';
+import { crownSlots, hasKit, kitShared, parseGlb } from '../app/src/city/kits.js';
 import { buildTower } from '../app/src/city/tower/build.js';
 import { LOD_FAR, type TowerMaterials } from '../app/src/city/tower/kit.js';
 import { FAMILIES, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
@@ -175,4 +175,58 @@ test('the ambient city draws its roofs and massing from the kit: bays on walk-up
 
 test('every sci-fi variant still names a family the kit crowns', () => {
   for (const v of VARIANTS.scifi) assert.ok(v.family && crownSlots(v.family).length >= 3, v.id);
+});
+
+test('parseGlb reads quantised positions through the node scale and translation, and the uvs a mesh carries', () => {
+  // A GLB by hand: one triangle with int16 normalized positions (KHR_mesh_quantization), a node that scales them to metres
+  // and lifts them, and uint16 normalized uvs.
+  const pos = new Int16Array([0, 0, 0, 0, 32767, 32767, 0, 0, 16384, 0, 0, 0]);
+  const uv = new Uint16Array([0, 0, 65535, 0, 0, 65535]);
+  const idx = new Uint16Array([0, 1, 2, 0]);
+  const bin = new Uint8Array(pos.byteLength + uv.byteLength + idx.byteLength);
+  bin.set(new Uint8Array(pos.buffer), 0);
+  bin.set(new Uint8Array(uv.buffer), pos.byteLength);
+  bin.set(new Uint8Array(idx.buffer), pos.byteLength + uv.byteLength);
+  const doc = {
+    asset: { version: '2.0' },
+    extensionsUsed: ['KHR_mesh_quantization'],
+    extensionsRequired: ['KHR_mesh_quantization'],
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ name: 'tri', mesh: 0, translation: [0, 0.5, 0], scale: [2, 2, 2] }],
+    meshes: [{ name: 'tri', primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, mode: 4 }] }],
+    accessors: [
+      { bufferView: 0, componentType: 5122, normalized: true, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+      { bufferView: 1, componentType: 5123, normalized: true, count: 3, type: 'VEC2' },
+      { bufferView: 2, componentType: 5123, count: 3, type: 'SCALAR' },
+    ],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: pos.byteLength, byteStride: 8, target: 34962 },
+      { buffer: 0, byteOffset: pos.byteLength, byteLength: uv.byteLength, target: 34962 },
+      { buffer: 0, byteOffset: pos.byteLength + uv.byteLength, byteLength: idx.byteLength, target: 34963 },
+    ],
+    buffers: [{ byteLength: bin.byteLength }],
+  };
+  let js = Buffer.from(JSON.stringify(doc));
+  while (js.length % 4) js = Buffer.concat([js, Buffer.from(' ')]);
+  const head = Buffer.alloc(12);
+  head.writeUInt32LE(0x46546c67, 0);
+  head.writeUInt32LE(2, 4);
+  head.writeUInt32LE(12 + 8 + js.length + 8 + bin.byteLength, 8);
+  const jh = Buffer.alloc(8);
+  jh.writeUInt32LE(js.length, 0);
+  jh.writeUInt32LE(0x4e4f534a, 4);
+  const bh = Buffer.alloc(8);
+  bh.writeUInt32LE(bin.byteLength, 0);
+  bh.writeUInt32LE(0x004e4942, 4);
+  const glb = Buffer.concat([head, jh, js, bh, Buffer.from(bin)]);
+  const g = parseGlb(glb.buffer.slice(glb.byteOffset, glb.byteOffset + glb.byteLength)).get('tri')!;
+  assert.ok(g, 'the mesh by its node name');
+  const p = g.attributes.position;
+  assert.deepEqual([p.getX(0), p.getY(0), p.getZ(0)], [0, 0.5, 0]);
+  assert.ok(Math.abs(p.getX(1) - 2) < 1e-4 && Math.abs(p.getY(1) - 2.5) < 1e-4, `the second point scaled and lifted (${p.getX(1)}, ${p.getY(1)})`);
+  assert.ok(Math.abs(p.getX(2) - 1) < 1e-3 && Math.abs(p.getY(2) - 0.5) < 1e-4, `the third point at half (${p.getX(2)}, ${p.getY(2)})`);
+  const t = g.attributes.uv;
+  assert.deepEqual([t.getX(0), t.getY(0), t.getX(1), t.getY(1), t.getX(2), t.getY(2)], [0, 0, 1, 0, 0, 1]);
+  assert.deepEqual(Array.from(g.index!.array as ArrayLike<number>), [0, 1, 2]);
 });

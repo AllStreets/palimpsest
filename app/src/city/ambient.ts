@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 import { inChannel, railHalf, STREET_PITCH, streetLine, tramHalf, type Network } from '../../../shared/commute.js';
 import { CIVIC_LAMPS, FOUNTAIN, onExchange } from './exchange.js';
-import { figureLevel } from './figures.js';
+import { figureLevel, loadSkin, SKIN_UNIFORMS } from './figures.js';
 import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
 import { LAMP_EDGE, LAMP_OFFSETS, PITCH } from './lots.js';
@@ -1573,6 +1573,21 @@ export const FIGURE_PART = { base: 0, buzz: 1, short: 2, long: 3, bun: 4, hat: 5
 export const SHOULDER_IN = 0.0156;
 
 /**
+ * The seated pose (the personas in a cab or a carriage, the crowd on a
+ * shelter's bench): the hip and knee angles, and how far the body drops so
+ * the seat of the trousers rests on the seat when the figure's origin is set
+ * at the seat's height (test/people.test.ts measures it on the modelled figure).
+ */
+export const SEATED = { hip: 1.5, knee: 1.5, drop: 0.81 } as const;
+
+/**
+ * A tram shelter's bench (transit.ts tramShelter): its seat's top over the
+ * pavement, its distance from the line, and where along it people sit (the
+ * hips a little back of the seat's centre, the knees toward the track).
+ */
+export const BENCH = { y: 0.765, l: 6.42, slots: [-1.95, -1.05, -0.15, 0.75, 1.65] } as const;
+
+/**
  * The plain figure (original): boxes on the rig, for the far level, and for
  * every level when figures.glb did not load. Its attributes are the
  * modelled figure's (aSkin, aSurf), so one shader poses both.
@@ -1858,6 +1873,9 @@ export const FIGURE_GLSL = /* glsl */ `
   varying float vCloth;
   varying float vEye;
   varying vec3 vIris;
+  /** The close level's skin: the figure's uv in the atlas and its tone (negative on anything but skin). */
+  varying vec2 vSkinUv;
+  varying float vSkinT;
   vec3 skinTone(float t) {
     vec3 a = vec3(0.72, 0.47, 0.37);
     vec3 b = vec3(0.47, 0.27, 0.17);
@@ -1890,6 +1908,20 @@ export const FIGURE_GLSL = /* glsl */ `
     mat3 head; mat3 torso;
     float shift; float drop; float sway;
   };
+  /** Sitting down (people.ts SEATED): hips and knees to right angles, forearms on the thighs, the body dropped to the seat and leaning back. */
+  void sitDown(inout Rig R, float sit, float lean) {
+    if (sit <= 0.0) return;
+    R.hipL = mix(R.hipL, ${SEATED.hip.toFixed(2)}, sit);
+    R.hipR = mix(R.hipR, ${SEATED.hip.toFixed(2)}, sit);
+    R.kneeL = mix(R.kneeL, ${SEATED.knee.toFixed(2)}, sit);
+    R.kneeR = mix(R.kneeR, ${SEATED.knee.toFixed(2)}, sit);
+    R.armL = mix(R.armL, 0.45, sit);
+    R.armR = mix(R.armR, 0.45, sit);
+    R.elbL = mix(R.elbL, 1.0, sit);
+    R.elbR = mix(R.elbR, 1.0, sit);
+    R.torso = R.torso * rotZ(-0.06 * sit - 0.3 * lean);
+    R.drop += ${SEATED.drop.toFixed(2)} * sit;
+  }
   /** One bone's move of a rest point: child joints before their parents. */
   void boneMove(int bone, Rig R, inout vec3 p, inout vec3 n) {
     vec3 L = vec3(1.0, 1.0, -1.0);
@@ -1962,7 +1994,12 @@ export const FIGURE_GLSL = /* glsl */ `
     rough = 0.86;
     metal = 0.0;
     if (code == 0) { alb = mix(skin, skin * vec3(1.12, 0.8, 0.76), blush); rough = 0.5; }
-    else if (code == 1) { alb = aBody.z > 0.5 && aSurf.y < 0.5 ? aCoat * 0.45 + vec3(0.01) : hairTone(aLook.y); rough = 0.46; }
+    else if (code == 1) {
+      alb = aBody.z > 0.5 && aSurf.y < 0.5 ? aCoat * 0.45 + vec3(0.01) : hairTone(aLook.y);
+      // The hair cards each carry their own shade (figures.py: the mass at the middle, the cards spread about it).
+      alb *= blush > 0.0 ? 0.72 + 0.56 * blush : 1.0;
+      rough = 0.46;
+    }
     else if (code == 3) { alb = aLegs; rough = 0.8; }
     else if (code == 4) { alb = fract(aLook.y * 7.3) > 0.7 ? vec3(0.07, 0.035, 0.018) : vec3(0.016, 0.014, 0.012); rough = 0.36; }
     else if (code == 5) { alb = vec3(0.02, 0.016, 0.013); rough = 0.35; }
@@ -2004,6 +2041,8 @@ export const FIGURE_GLSL = /* glsl */ `
     vEye = code == 7 ? 1.0 : 0.0;
     float t = fract(aLook.y * 13.7 + aLook.x * 2.3);
     vIris = aLook.x > 0.45 || t < 0.55 ? vec3(0.03, 0.016, 0.008) : t < 0.8 ? vec3(0.06, 0.045, 0.02) : vec3(0.05, 0.075, 0.09);
+    vSkinUv = uv;
+    vSkinT = (code == 0 || code == 9) ? aLook.x : -1.0;
   }`;
 
 /** The figure's fragment: its surface, the iris and pupil on the eye, a fine weave close up, occlusion on the ambient light. */
@@ -2015,10 +2054,75 @@ export const FIGURE_FRAG = /* glsl */ `
   varying vec3 vObj;
   varying float vCloth;
   varying float vEye;
-  varying vec3 vIris;`;
+  varying vec3 vIris;
+  varying vec2 vSkinUv;
+  varying float vSkinT;`;
 
-/** Wires FIGURE_GLSL into a standard material's shader: `rig` is GLSL returning the instance's Rig; `extra` runs after (sees code). */
-export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: string, extra = '', extraFrag = ''): void {
+/**
+ * The skin atlas on the close level (figures.ts SKIN_UNIFORMS, figures-skin.webp):
+ * the figure's tone picks the quadrant; its colour over the quadrant's own
+ * tone gives the breakup (so every tone in between keeps its own colour);
+ * the alpha's height makes the pores, within a few metres, as a bump map.
+ */
+const SKIN_FRAG = /* glsl */ `
+  uniform sampler2D uSkin;
+  uniform float uSkinOn;
+  vec3 skinToneF(float t) {
+    vec3 a = vec3(0.72, 0.47, 0.37);
+    vec3 b = vec3(0.47, 0.27, 0.17);
+    vec3 c = vec3(0.13, 0.072, 0.045);
+    return t < 0.55 ? mix(a, b, t / 0.55) : mix(b, c, (t - 0.55) / 0.45);
+  }
+  /** The quadrant a tone reads (0 to 3, row by row) and its centre tone. */
+  float skinQuad(float t) { return floor(clamp(t, 0.0, 0.999) * 4.0); }
+  vec2 skinAtlasUv(float q, vec2 uv) { return (clamp(uv, 0.0, 1.0) * 0.984 + 0.008 + vec2(mod(q, 2.0), floor(q * 0.5))) * 0.5; }
+  vec3 perturbSkin(vec3 surf_pos, vec3 surf_norm, vec2 dHdxy, float faceDirection) {
+    vec3 vSigmaX = normalize(dFdx(surf_pos.xyz));
+    vec3 vSigmaY = normalize(dFdy(surf_pos.xyz));
+    vec3 R1 = cross(vSigmaY, surf_norm);
+    vec3 R2 = cross(surf_norm, vSigmaX);
+    float fDet = dot(vSigmaX, R1) * faceDirection;
+    vec3 vGrad = sign(fDet) * (dHdxy.x * R1 + dHdxy.y * R2);
+    return normalize(abs(fDet) * surf_norm - vGrad);
+  }`;
+/**
+ * In color_fragment (three's main reads the colour, then the roughness, then
+ * the normal): the atlas sample, the colour over the tone, the roughness and
+ * the pores' slope; SKIN_NORMAL bends the normal by that slope once it exists.
+ */
+const SKIN_COLOR = /* glsl */ `
+  float skinOn = uSkinOn * step(0.0, vSkinT);
+  vec4 skinS = vec4(0.5);
+  float skinRough = vRough;
+  vec2 skinDH = vec2(0.0);
+  if (skinOn > 0.5) {
+    float q = skinQuad(vSkinT);
+    vec2 sUv = skinAtlasUv(q, vSkinUv);
+    skinS = texture2D(uSkin, sUv);
+    // The quadrant's own tone out, the figure's own in: the atlas gives the breakup, the figure its colour.
+    vec3 tone = max(skinToneF((q + 0.5) * 0.25), vec3(0.01));
+    skinS.rgb /= tone;
+    // The pores' height is the colour's luminance over the tone's (the pits a tenth darker): a bump within a few metres.
+    float near = smoothstep(7.0, 2.0, length(vViewPosition));
+    vec2 dSTdx = dFdx(sUv);
+    vec2 dSTdy = dFdy(sUv);
+    float toneLum = dot(tone, vec3(0.3333));
+    float h = dot(skinS.rgb, vec3(0.3333));
+    float hx = dot(texture2D(uSkin, sUv + dSTdx).rgb, vec3(0.3333)) / toneLum - h;
+    float hy = dot(texture2D(uSkin, sUv + dSTdy).rgb, vec3(0.3333)) / toneLum - h;
+    skinDH = vec2(hx, hy) * (0.006 * near);
+    // Matte in the pores, a little smoother on the plateaus, never a gloss.
+    skinRough = mix(0.66, 0.5, smoothstep(0.86, 1.0, h)) + 0.04 * (1.0 - near);
+  }`;
+const SKIN_NORMAL = /* glsl */ `
+  if (skinOn > 0.5) normal = perturbSkin(-vViewPosition, normal, skinDH, faceDirection);`;
+
+/** Wires FIGURE_GLSL into a standard material's shader: `rig` is GLSL returning the instance's Rig; `extra` runs after (sees code); `skin` adds the atlas (the close level). */
+export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: string, extra = '', extraFrag = '', skin = false): void {
+  if (skin) {
+    sh.uniforms.uSkin = SKIN_UNIFORMS.uSkin;
+    sh.uniforms.uSkinOn = SKIN_UNIFORMS.uSkinOn;
+  }
   sh.vertexShader = sh.vertexShader
     .replace(
       '#include <common>',
@@ -2040,10 +2144,11 @@ export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: 
     )
     .replace('#include <begin_vertex>', 'vec3 transformed = posedP;');
   sh.fragmentShader = sh.fragmentShader
-    .replace('#include <common>', `#include <common>\n${FIGURE_FRAG}\n${LAMP_FRAG}\n${extraFrag}`)
+    .replace('#include <common>', `#include <common>\n${FIGURE_FRAG}\n${LAMP_FRAG}\n${skin ? SKIN_FRAG : ''}\n${extraFrag}`)
     .replace(
       '#include <normal_fragment_begin>',
       `#include <normal_fragment_begin>
+      ${skin ? SKIN_NORMAL : ''}
       if (vCloth > 0.5) {
         float near = smoothstep(14.0, 3.0, length(vViewPosition));
         float wv = sin(vObj.y * 620.0) * sin((vObj.x + vObj.z) * 540.0) + 0.5 * sin(vObj.y * 1900.0 + vObj.x * 1100.0);
@@ -2054,6 +2159,7 @@ export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: 
       '#include <color_fragment>',
       `#include <color_fragment>
       diffuseColor.rgb = vAlb;
+      ${skin ? `${SKIN_COLOR}\n      if (skinOn > 0.5) diffuseColor.rgb *= skinS.rgb;` : ''}
       if (vEye > 0.5) {
         float r = length(vec2(vObj.y - ${EYE_AT[1].toFixed(4)}, abs(vObj.z) - ${EYE_AT[2].toFixed(4)}));
         float front = smoothstep(${(EYE_AT[0] + 0.006).toFixed(4)}, ${(EYE_AT[0] + 0.0095).toFixed(4)}, vObj.x);
@@ -2061,7 +2167,7 @@ export function figureShader(sh: THREE.WebGLProgramParametersWithUniforms, rig: 
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.004), front * (1.0 - smoothstep(0.0022, 0.0028, r)));
       }`,
     )
-    .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = vRough;')
+    .replace('#include <roughnessmap_fragment>', skin ? 'float roughnessFactor = skinRough;' : 'float roughnessFactor = vRough;')
     .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vMetal;')
     .replace('#include <aomap_fragment>', 'reflectedLight.indirectDiffuse *= vAo;\nreflectedLight.indirectSpecular *= mix(0.3, 1.0, vAo);')
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${LAMP_FRAG_MAIN}`);
@@ -2121,6 +2227,11 @@ const CROWD_RIG = /* glsl */ `
     // The whole body drops as the legs spread (so the planted foot stays down), and sways over the standing foot.
     R.drop = w * 0.86 * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow);
     R.sway = w * 0.022 * s + idle * 0.012 * slow;
+    // Seated on a bench (style 5): hips and knees bent, the hands on the knees, looking out from the seat.
+    if (style == 5) {
+      R.head = rotY(0.3 * sin(ph * 0.23 + aLook.y * 6.0)) * rotZ(-0.02);
+      sitDown(R, 1.0, 0.0);
+    }
     return R;
   }`;
 
@@ -2136,7 +2247,7 @@ function figureMaterial(level: 'hi' | 'lo' | 'far', inBand?: { value: THREE.Vect
     if (level === 'hi') dissolve(sh, LIFE_LOD.close, 'near');
     else if (level === 'lo') dissolve(sh, LIFE_LOD.close, 'far', LIFE_LOD.person, inBand);
     else dissolve(sh, LIFE_LOD.person, 'far', LIFE_LOD.crowdEnd);
-    figureShader(sh, CROWD_RIG);
+    figureShader(sh, CROWD_RIG, '', '', level === 'hi');
   };
   m.customProgramCacheKey = () => `palimpsest-ambient-figure-${level}`;
   return m;
@@ -2742,7 +2853,25 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
         const toTrack = Math.atan2(-nrm.z * lat, -nrm.x * lat);
         const along = Math.atan2(-t.z * lat, -t.x * lat);
         const placed: Array<[number, number]> = [];
+        // A few sit on the shelter's bench (transit.ts: along the shelter at BENCH.l from the line, its seat BENCH.y up), spaced along it.
+        const seats = BENCH.slots.filter(() => r() < 0.45).slice(0, Math.max(0, k - 1));
         for (let i = 0; i < k; i++) {
+          if (i < seats.length) {
+            const p = add(newPerson(nextPerson++, r));
+            if (!p) break;
+            const u = seats[i] + (r() - 0.5) * 0.12;
+            p.x = st.x + t.x * u + nrm.x * lat * BENCH.l;
+            p.z = st.z + t.z * u + nrm.z * lat * BENCH.l;
+            p.y = BENCH.y;
+            p.state = 'waiting';
+            p.face = toTrack + gauss(r) * 0.12;
+            p.yaw = p.face;
+            p.v = 0;
+            p.style = 5;
+            p.timer = 1e9;
+            placed.push([u, BENCH.l]);
+            continue;
+          }
           // Most wait by the shelter, under its canopy or at the edge before it; a few down the platform.
           let u = 0;
           let l = 0;
@@ -3685,7 +3814,10 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       const stride = Math.asin(clamp((p.step * Math.max(0.55, wv)) / (2 * 0.86 * k), 0, 0.62));
       if (d < LIFE_LOD.person.far) {
         lampLight(lamps, p.x, p.y + 1.3, p.z, p.lamp);
-        if (close && d < LIFE_LOD.close.far) writePerson(closePeople, p, wv, stride);
+        if (close && d < LIFE_LOD.close.far) {
+          writePerson(closePeople, p, wv, stride);
+          loadSkin();
+        }
         if (!close || d > LIFE_LOD.close.near) writePerson(nearPeople, p, wv, stride);
         addShade(p.x, p.y, p.z, p.yaw, 0.62 * k, 0.5 * k * p.build);
       } else p.lamp[3] = 0;

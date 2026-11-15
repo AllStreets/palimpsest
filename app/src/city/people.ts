@@ -37,7 +37,8 @@ import * as THREE from 'three';
 import { BOARD_WAIT_S, CAB_WAIT_S, inChannel, SPEED, streetLine, type Network } from '../../../shared/commute.js';
 import { DISTRICT_PITCH } from '../../../shared/district-layout.js';
 import type { Agent, Trip, TripMode } from '../../../shared/types.js';
-import { asSkinned, B, bodyOf, Builder, dissolve, FIGURE_CODE, figureGeometry, figureShader, SHOULDER_IN, wornTriangles } from './ambient.js';
+import { asSkinned, B, bodyOf, Builder, dissolve, FIGURE_CODE, figureGeometry, figureShader, SEATED, SHOULDER_IN, wornTriangles } from './ambient.js';
+import { loadSkin } from './figures.js';
 import type { Plate } from './labels.js';
 import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
@@ -53,9 +54,9 @@ type Leg = Trip['legs'][number] & { exact?: boolean };
 export const PEOPLE_LOD = { close: { near: 16, far: 24 }, near: { near: 110, far: 150 }, out: { near: 380, far: 440 }, plate: 150 } as const;
 /** The lantern lights between these hours (the city is lit for dusk; the lantern says the hour on the figure). */
 const DUSK = { from: 16.5, to: 7.5 } as const;
-/** Where the hips sit above a seat, and how far down the figure drops into it; a cab's bench is low under its 1 m roof. */
-const SEAT = 0.45;
-const CAB_SEAT = 0.14;
+/** A seat's height over its vehicle's floor, where a rider's figure is set (its hips rest there, ambient.ts SEATED): a cab's bench is low under its 1 m roof. */
+export const SEAT = { bench: 0.45, cab: 0.14 } as const;
+export { SEATED };
 /** The leg's length in the rig (hip to ankle), the stride's half angle at a walk. */
 const LEG = 0.86;
 const STRIDE = 0.42;
@@ -91,6 +92,8 @@ export interface FigureView {
   position: V3;
   heading: number;
   walking: number;
+  /** Its place in the stride (phaseOf, then the ground covered). */
+  phase: number;
   sit: number;
   /** The lantern's light, 0 (dark) to 1 (lit for dusk). */
   lit: number;
@@ -272,6 +275,23 @@ function hashOf(s: string): () => number {
   };
 }
 
+/** The spread of a walker's pace about the speed it is given: plus or minus 12%, by its id. */
+export const PACE_SPREAD = 0.12;
+
+/**
+ * A figure's own place in the stride (0 to 2 pi), from its id alone, so two
+ * figures setting off together are never in step, and a figure has the same
+ * stride on every load of the page.
+ */
+export function phaseOf(id: string): number {
+  return hashOf(`stride:${id}`)() * Math.PI * 2;
+}
+
+/** A walker's own pace as a factor on the speed it is given, within PACE_SPREAD either way, from its id alone. */
+export function paceOf(id: string): number {
+  return 1 + (hashOf(`pace:${id}`)() * 2 - 1) * PACE_SPREAD;
+}
+
 /** The length of a leg's path in plan, and the point and heading `s` metres along it. */
 function pathLength(path: ReadonlyArray<V3>): number {
   let len = 0;
@@ -403,9 +423,9 @@ function doorOf(ref: VehicleRef, mode: TripMode): V3 {
 function aboard(ref: VehicleRef, mode: TripMode): V3 {
   const p = ref.position();
   const h = ref.heading();
-  if (mode === 'cab') return around(p, h, -0.45, 0.38, ref.floorY() + CAB_SEAT);
-  if (mode === 'ferry') return around(p, h, 0.5, 1.2, ref.floorY() + SEAT);
-  if (mode === 'rail') return around(p, h, 0, 0.6, ref.floorY() + SEAT);
+  if (mode === 'cab') return around(p, h, -0.45, 0.38, ref.floorY() + SEAT.cab);
+  if (mode === 'ferry') return around(p, h, 0.5, 1.2, ref.floorY() + SEAT.bench);
+  if (mode === 'rail') return around(p, h, 0, 0.6, ref.floorY() + SEAT.bench);
   return around(p, h, 0, 0.55, ref.floorY());
 }
 
@@ -496,24 +516,16 @@ const PERSONA_RIG = /* glsl */ `
     // Holding a strap: the left arm raised to it.
     R.armL = mix(R.armL, 1.75, hold);
     R.elbL = mix(R.elbL, 0.5, hold);
-    // Sitting: hips and knees at right angles, the forearms resting on the thighs.
-    R.hipL = mix(R.hipL, 1.5, sit);
-    R.hipR = mix(R.hipR, 1.5, sit);
-    R.kneeL = mix(R.kneeL, 1.5, sit);
-    R.kneeR = mix(R.kneeR, 1.5, sit);
-    R.armL = mix(R.armL, 0.45, sit);
-    R.armR = mix(R.armR, 0.45, sit);
-    R.elbL = mix(R.elbL, 1.0, sit);
-    R.elbR = mix(R.elbR, 1.0, sit);
     R.outL = 0.06 + 0.04 * w;
     R.outR = -0.06 - 0.04 * w;
     float look = idle * (1.0 - sit) * 0.38 * sin(ph * 0.31 + aLook.y * 6.0);
     R.head = rotY(look - 0.06 * s * w) * rotZ(-0.04 * w);
-    // Seated: the upper body leans back into the seat (more in a cab's low bench).
-    R.torso = rotY(0.07 * s * w) * rotZ(-0.055 * w - 0.06 * sit - 0.3 * lean);
+    R.torso = rotY(0.07 * s * w) * rotZ(-0.055 * w);
     R.shift = ${SHOULDER_IN} * aBody.x;
-    R.drop = w * ${LEG.toFixed(2)} * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow) + 0.84 * sit;
+    R.drop = w * ${LEG.toFixed(2)} * (1.0 - cos(A * s)) + idle * 0.006 * (1.0 + slow);
     R.sway = w * 0.022 * s + idle * 0.012 * slow;
+    // Seated (ambient.ts sitDown): hips and knees bent, the forearms on the thighs, leaning back into the seat (more on a cab's low bench).
+    sitDown(R, sit, lean);
     return R;
   }`;
 
@@ -531,7 +543,7 @@ function personaMaterial(level: 'hi' | 'lo' | 'far'): THREE.MeshStandardMaterial
     if (level === 'hi') dissolve(sh, PEOPLE_LOD.close, 'near');
     else if (level === 'lo') dissolve(sh, PEOPLE_LOD.close, 'far', PEOPLE_LOD.near);
     else dissolve(sh, PEOPLE_LOD.near, 'far', PEOPLE_LOD.out);
-    figureShader(sh, PERSONA_RIG, PERSONA_SURFACE, 'varying vec3 vEmit;');
+    figureShader(sh, PERSONA_RIG, PERSONA_SURFACE, 'varying vec3 vEmit;', level === 'hi');
     sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vEmit;');
   };
   m.customProgramCacheKey = () => `palimpsest-people-${level}`;
@@ -803,7 +815,7 @@ export function createPeople(deps: PeopleDeps): People {
       y: 0,
       z: 0,
       heading: 0,
-      phase: 0,
+      phase: phaseOf(agent.id),
       walking: 0,
       sit: 0,
       hold: 0,
@@ -940,8 +952,9 @@ export function createPeople(deps: PeopleDeps): People {
       if (f.s >= len) nextLeg(f);
     };
     if (leg.mode === 'walk') {
-      // At the leg's own pace (its length over its time, 1.4 m/s), measured on the street line it was routed on.
-      walkOn(Math.max(0.5, pathLength(leg.path) / Math.max(1e-3, leg.ms / 1000)));
+      // At the leg's own pace (its length over its time, 1.4 m/s), measured on the street line it was routed on; a
+      // walker (a student, whose path is its own and not one of the market's timed trips) at its own pace about it.
+      walkOn(Math.max(0.5, pathLength(leg.path) / Math.max(1e-3, leg.ms / 1000)) * (f.kind === 'walker' ? paceOf(f.agent.id) : 1));
       return;
     }
     const ref = vehicleFor(f, f.leg, leg.mode);
@@ -1115,7 +1128,10 @@ export function createPeople(deps: PeopleDeps): People {
       q.setFromAxisAngle(up, -f.heading);
       m4.compose(pos, q, scl.set(k * (0.94 + 0.06 * f.look.build), k, k * f.look.build));
       if (deps.lampLight) deps.lampLight(f.x, f.y + 1.3, f.z, f.lamp);
-      if (d < PEOPLE_LOD.close.far) write(close, f, litNow);
+      if (d < PEOPLE_LOD.close.far) {
+        write(close, f, litNow);
+        loadSkin();
+      }
       if (d < PEOPLE_LOD.near.far) {
         if (d > PEOPLE_LOD.close.near) write(near, f, litNow);
         if (d < PEOPLE_LOD.plate && f.kind === 'agent') {
@@ -1238,6 +1254,7 @@ export function createPeople(deps: PeopleDeps): People {
         position: [f.x, f.y, f.z] as V3,
         heading: f.heading,
         walking: f.walking,
+        phase: f.phase,
         sit: f.sit,
         lit: lit(),
         ride: rideOf(f.agent.id),

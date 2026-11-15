@@ -2814,6 +2814,46 @@ async function peopleChecks(page: Page): Promise<void> {
   check((await debug(page, (d) => d.quality())) === 'high', 'the people hold high quality');
 }
 
+/** The median frame rate over three seconds through the debug handle's frameLog (Phase 5 ruling 3), after a second's settle. */
+async function medianFps(page: Page): Promise<number> {
+  await page.waitForTimeout(1000);
+  await callDebug(page, 'd.frameLog.start()');
+  await page.waitForTimeout(3000);
+  const ms = await callDebug<number[]>(page, 'd.frameLog.stop()');
+  const rates = ms.filter((t) => t > 0).map((t) => 1000 / t).sort((a, b) => a - b);
+  const m = rates.length >> 1;
+  return rates.length === 0 ? 0 : rates.length % 2 ? rates[m] : (rates[m - 1] + rates[m]) / 2;
+}
+
+/**
+ * The people-follow view's frame rate on a tier (Phase 5 Task 3, a guard):
+ * Dagny staged twenty seconds into her walk to the tram as the capture and
+ * the perf tool stage her, the follow camera on her, the clocks running, at
+ * least 58 fps median.
+ */
+async function peopleFpsChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
+  check((await debug(page, (d) => d.quality())) === tier, `the city stands at ${tier} for the people's frame rate`);
+  await callDebug(page, 'd.peopleHold(true)');
+  const id = 'dagny-hollis';
+  await sendPerson(page, id, [560, -300], [600, 200]);
+  await callDebug(page, 'd.peopleSkip(22)');
+  const f = await person(page, id);
+  check(!!f && f.stage === 'walk' && f.walking > 0.9, `she is walking when the follow begins (${f?.stage}, ${f?.walking.toFixed(2)})`);
+  if (f) {
+    const [eye, target] = followView(f);
+    await setView(page, eye, target);
+    await debug(page, (d) => d.precompile());
+  }
+  await callDebug(page, `d.follow(${JSON.stringify(id)})`);
+  await callDebug(page, 'd.peopleHold(false)');
+  const fps = await medianFps(page);
+  const v = await callDebug<{ close: number; near: number; triangles: number; meshes: number } | null>(page, 'd.people()');
+  const stats = await debug(page, (d) => d.stats());
+  console.log(`info  people-follow on ${tier}: ${fps.toFixed(1)} fps, ${stats.calls} draw calls, ${(stats.triangles / 1e6).toFixed(2)}M triangles (${v?.close} close, ${v?.near} near figures in ${v?.meshes} calls)`);
+  check(fps >= 58, `people-follow holds 58 fps on ${tier} (${fps.toFixed(1)})`);
+  await callDebug(page, 'd.follow(null)');
+}
+
 // ---------------------------------------------------------------- the ambient traffic and crowd (Task 32)
 
 /** From home the ambient life draws its far levels only: a few calls, and its share of the home budget's room. */
@@ -3007,7 +3047,8 @@ async function main(): Promise<void> {
     // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
     // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
     // UI_ONLY=street: the street floor's and the street facades' checks alone (Phase 5 Tasks 1 and 2's rounds).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=people: the personas' checks and the people-follow frame rate on high, then on medium (Phase 5 Task 3).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3040,6 +3081,12 @@ async function main(): Promise<void> {
       } else if (process.env.UI_ONLY === 'street') {
         await streetChecks(page);
         await windowChecks(page);
+      } else if (process.env.UI_ONLY === 'people') {
+        await peopleChecks(page);
+        await peopleFpsChecks(page, 'high');
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await peopleFpsChecks(page, 'medium');
       } else if (process.env.UI_ONLY === 'budget') {
         await standFixture(page);
         await campusChecks(page, 'high');
@@ -3197,6 +3244,7 @@ async function main(): Promise<void> {
         await transitChecks(page);
         await vehicleChecks(page);
         await peopleChecks(page);
+        await peopleFpsChecks(page, 'high');
         await ambientChecks(page);
         await campusChecks(page, 'high');
         await schoolTowerChecks(page, 'high');
@@ -3207,6 +3255,7 @@ async function main(): Promise<void> {
         await qualityDropChecks(page, consoleErrors);
         await spireAfterDropChecks(page, spiresBefore);
         await campusChecks(page, 'medium');
+        await peopleFpsChecks(page, 'medium');
         await schoolTowerChecks(page, 'medium');
         await homeBudgetChecks(page, 'medium');
         await tierBudgetChecks(page, highHome);
