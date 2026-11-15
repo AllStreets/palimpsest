@@ -49,6 +49,7 @@ import type { Page } from 'playwright';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District, Quarter } from '../shared/types.js';
 import { frameStats } from '../app/src/city/governor.js';
+import { podVariant } from '../app/src/city/vehicles.js';
 import { around, apart, callDebug, followView, person, runUntil, sendPerson, tramFromHome } from './people-stage.js';
 import { decodePng } from './png.js';
 import { seedSample, sampleGh } from './sample.js';
@@ -201,7 +202,7 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
 }
 
 /** The views of Task 5 that stage a vehicle or the ride; an eye of null leaves the camera where the ride holds it. */
-const CLOSE = ['ferry-wake', 'pod-interior', 'train-windscreen', 'lod-400', 'ride-car'];
+const CLOSE = ['ferry-wake', 'pod-interior', 'train-windscreen', 'lod-400', 'ride-car', 'ride-car-dusk'];
 
 /**
  * The close views (Task 5), yielded one by one with the vehicles' clock
@@ -224,8 +225,16 @@ async function* closeViews(page: Page, out: string): AsyncGenerator<[string, V3 
     } else console.log('close: no ferry under way in mid-river; ferry-wake is skipped');
     // A pod standing at the station tools/capture.ts shoots its pod-interior from (the platform at (227, 20, 124)
     // looking along to (252, 20, 123)): from the platform's side of the pod, 3.4 m off its door, at a standing eye.
-    const pod = await callDebug<Probe | null>(page, "d.vehicleStage('pod', [252, 122])");
+    // The pod in the rust colourway if one can be stood there (the stage picks whichever pod comes next; up to four
+    // tries), so the still shows the second colourway against the strip.
+    let pod: Probe | null = null;
+    for (let k = 0; k < 4; k++) {
+      pod = await callDebug<Probe | null>(page, "d.vehicleStage('pod', [252, 122])");
+      if (!pod || podVariant(pod.id).seat === 1) break;
+      await callDebug(page, 'd.vehicleSkip(40)');
+    }
     if (pod) {
+      console.log(`close: pod-interior on ${pod.id} (seat colourway ${podVariant(pod.id).seat}, strip ${podVariant(pod.id).strip})`);
       const side = Math.sign(-(227 - pod.position[0]) * Math.sin(pod.heading) + (123.6 - pod.position[2]) * Math.cos(pod.heading)) || 1;
       // Along the platform past its screen frame (which cut the left of the still at 3 m), looking back into the saloon.
       yield ['pod-interior', around(pod.position, pod.heading, 5.0, side * 4.6, pod.position[1] + 1.7), around(pod.position, pod.heading, -0.6, 0, pod.position[1] + 1.1)];
@@ -262,29 +271,38 @@ async function* closeViews(page: Page, out: string): AsyncGenerator<[string, V3 
     await callDebug(page, 'd.vehicleHold(false)');
   }
   // The ride: the first district's tower, the car sought to 20 m over the street and held there, the camera the ride's.
+  // Twice: from wherever the eye stands (ride-car, the +x face in the sample, the low sun behind the tower), and from
+  // off the -z face (ride-car-dusk: the ride takes the face nearest the eye), a face at right angles to the sun with
+  // the dusk sky behind the eye, where the car's lamps are the brightest thing in its glass.
   const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
   const d0 = city.find((d) => d.tower.floors.length > 3) ?? city[0];
   type Riding = { t: number; length: number; car: number; stops: Array<{ t: number }> };
-  if (d0 && (await callDebug<boolean>(page, `d.ride(${JSON.stringify(d0.repo)})`))) {
-    await callDebug(page, 'd.rideHold(true)');
-    await page.waitForTimeout(600);
-    let r = await callDebug<Riding>(page, 'd.riding()');
-    // The car climbs with t: bisect for the moment it stands at 20 m.
-    let lo = 0;
-    let hi = r.length;
-    for (let i = 0; i < 18; i++) {
-      const mid = (lo + hi) / 2;
-      await callDebug(page, `d.rideSeek(${mid})`);
-      await page.waitForTimeout(120);
-      r = await callDebug<Riding>(page, 'd.riding()');
-      if (r.car < 20) lo = mid;
-      else hi = mid;
-    }
-    console.log(`close: ride-car up ${d0.repo}, the car at ${r.car.toFixed(1)} m (t ${r.t.toFixed(1)} of ${r.length.toFixed(0)} s)`);
-    yield ['ride-car', null, [0, 0, 0]];
-    await callDebug(page, 'd.ride(null)');
-    await page.waitForTimeout(1500);
-  } else console.log('close: no tower to ride; ride-car is skipped');
+  for (const [name, from] of [
+    ['ride-car', null],
+    ['ride-car-dusk', d0 ? ([d0.origin.x + 30, 24, d0.origin.z - 90] as V3) : null],
+  ] as Array<[string, V3 | null]>) {
+    if (from && d0) await settle(page, from, [d0.origin.x, 20, d0.origin.z]);
+    if (d0 && (await callDebug<boolean>(page, `d.ride(${JSON.stringify(d0.repo)})`))) {
+      await callDebug(page, 'd.rideHold(true)');
+      await page.waitForTimeout(600);
+      let r = await callDebug<Riding>(page, 'd.riding()');
+      // The car climbs with t: bisect for the moment it stands at 20 m.
+      let lo = 0;
+      let hi = r.length;
+      for (let i = 0; i < 18; i++) {
+        const mid = (lo + hi) / 2;
+        await callDebug(page, `d.rideSeek(${mid})`);
+        await page.waitForTimeout(120);
+        r = await callDebug<Riding>(page, 'd.riding()');
+        if (r.car < 20) lo = mid;
+        else hi = mid;
+      }
+      console.log(`close: ${name} up ${d0.repo}, the car at ${r.car.toFixed(1)} m (t ${r.t.toFixed(1)} of ${r.length.toFixed(0)} s)`);
+      yield [name, null, [0, 0, 0]];
+      await callDebug(page, 'd.ride(null)');
+      await page.waitForTimeout(1500);
+    } else console.log(`close: no tower to ride; ${name} is skipped`);
+  }
 }
 
 /**

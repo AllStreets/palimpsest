@@ -1179,11 +1179,13 @@ interface Paint {
  * metalness and roughness; a lamp's vertices say what kind of lamp it is.
  */
 class Kit {
-  private data = new Map<Part, { pos: number[]; nor: number[]; col: number[]; surf: number[]; kind: number[]; alt: number[] }>();
+  private data = new Map<Part, { pos: number[]; nor: number[]; col: number[]; surf: number[]; kind: number[]; alt: number[]; lit: number[] }>();
   /** While set, every vertex carries this as its other colour (the `alt` attribute): the shaders swap to it on the cars whose variant says so. */
   alt: RGB | null = null;
+  /** While set, every vertex carries this much of the cabin's own light (the `lit` attribute): the strip on the seats and the floor. */
+  lit = 0;
   constructor(readonly lo: boolean) {
-    for (const p of PARTS) this.data.set(p, { pos: [], nor: [], col: [], surf: [], kind: [], alt: [] });
+    for (const p of PARTS) this.data.set(p, { pos: [], nor: [], col: [], surf: [], kind: [], alt: [], lit: [] });
   }
   private vert(part: Part, p: V3, n: V3, c: RGB, s: Surf, k: RGB): void {
     const d = this.data.get(part)!;
@@ -1194,6 +1196,7 @@ class Kit {
     d.kind.push(...k);
     if (this.alt) d.alt.push(...this.alt);
     else d.alt.push(0, 0, 0);
+    d.lit.push(this.lit);
   }
   tri(part: Part, a: V3, b: V3, c: V3, na: V3, nb: V3, nc: V3, col: RGB, s: Surf = [0, 0.5], k: RGB = [0, 0, 0]): void {
     this.vert(part, a, na, col, s, k);
@@ -1378,6 +1381,7 @@ class Kit {
     g.setAttribute('surf', new THREE.Float32BufferAttribute(d.surf, 2));
     g.setAttribute('lampKind', new THREE.Float32BufferAttribute(d.kind, 3));
     g.setAttribute('alt', new THREE.Float32BufferAttribute(d.alt, 3));
+    g.setAttribute('lit', new THREE.Float32BufferAttribute(d.lit, 1));
     g.computeBoundingSphere();
     return g;
   }
@@ -2259,14 +2263,20 @@ function cabin(kit: Kit, i: Interior, name: ModelName): void {
     kit.tri('trim', p, r, t, n, n, n, col, sf);
   };
   const e = 0.012;
+  // The floor and the ceiling panels carry a little of the strip's light (the `lit` attribute), so the room reads
+  // through the glass at dusk rather than falling to black.
+  kit.lit = 0.35;
   quad([x0, y0 + e, z0], [x1, y0 + e, z0], [x1, y0 + e, z1], [x0, y0 + e, z1], [0, 1, 0], floor, [0, 0.7]);
+  kit.lit = 0.5;
   quad([x0, y1 - e, z0], [x1, y1 - e, z0], [x1, y1 - e, z1], [x0, y1 - e, z1], [0, -1, 0], ceiling);
+  kit.lit = 0.2;
   for (const sz of [-1, 1]) {
     const z = sz * (z1 - e);
     quad([x0, y0, z], [x1, y0, z], [x1, sill, z], [x0, sill, z], [0, 0, -sz], lining);
     if (head < y1 - 0.02) quad([x0, head, z], [x1, head, z], [x1, y1, z], [x0, y1, z], [0, 0, -sz], ceiling);
   }
   for (const [x, nx] of [[x0 + e, 1], [x1 - e, -1]] as const) quad([x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1], [nx, 0, 0], lining);
+  kit.lit = 0;
   // Seats: rows facing forward either side of an aisle (a bench across a cab), one row where the rider sits.
   const seat = CABIN_SEAT[name];
   if (seat && (i.seats || seat.bench)) {
@@ -2285,12 +2295,34 @@ function cabin(kit: Kit, i: Interior, name: ModelName): void {
         for (let k2 = 0; k2 < n; k2++) {
           const zc = za + w * (k2 + 0.5);
           kit.box('trim', [x + 0.04, y0 + (seat.height - 0.09) / 2, zc], [0.4, seat.height - 0.09, w - 0.08], lin('#1d1d1e'), [0.6, 0.45]);
-          // The cushion and the back in the car's colourway; a second colourway rides along as the other colour.
-          kit.alt = i.seat2 ?? null;
-          kit.box('trim', [x + 0.05, y0 + seat.height - 0.045, zc], [0.46, 0.09, w - 0.03], i.seat, [0, 0.85]);
-          kit.alt = i.seat2 ? scale(i.seat2, 1.15) : null;
-          kit.box('trim', [x - 0.2, y0 + seat.height + 0.27, zc], [0.07, 0.5, w - 0.03], scale(i.seat, 1.15), [0, 0.85], undefined, 0, -0.1);
+          // The cushion and the back in the car's colourway (a second colourway rides along as the other colour),
+          // each lit by the ceiling's strip (the `lit` attribute): the pan a thick cushion with a rolled front edge,
+          // the back in two leaves, upright then raked, a roll along its top catching the light, and a pale piping
+          // along the edges, so the seat has form through the glass and its colour reads.
+          const c = i.seat;
+          const c2 = i.seat2 ?? null;
+          const piping = scale(c, 1.6);
+          const piping2 = c2 ? scale(c2, 1.6) : null;
+          kit.alt = c2;
+          kit.lit = 0.55;
+          kit.box('trim', [x + 0.05, y0 + seat.height - 0.045, zc], [0.46, 0.09, w - 0.03], c, [0, 0.85]);
+          kit.lit = 0.75;
+          kit.box('trim', [x + 0.27, y0 + seat.height - 0.03, zc], [0.05, 0.11, w - 0.03], scale(c, 1.1), [0, 0.8]);
+          kit.alt = c2 ? scale(c2, 1.15) : null;
+          kit.lit = 0.45;
+          kit.box('trim', [x - 0.19, y0 + seat.height + 0.14, zc], [0.07, 0.3, w - 0.03], scale(c, 1.15), [0, 0.85]);
+          kit.lit = 0.65;
+          kit.box('trim', [x - 0.23, y0 + seat.height + 0.4, zc], [0.07, 0.26, w - 0.03], scale(c, 1.15), [0, 0.85], undefined, 0, -0.18);
+          kit.lit = 0.9;
+          kit.box('trim', [x - 0.26, y0 + seat.height + 0.54, zc], [0.09, 0.06, w - 0.03], scale(c, 1.3), [0, 0.75]);
+          kit.alt = piping2;
+          kit.lit = 1.0;
+          for (const sz of [-1, 1]) {
+            kit.box('trim', [x - 0.2, y0 + seat.height + 0.3, zc + sz * (w - 0.03) / 2], [0.09, 0.56, 0.012], piping, [0, 0.7], undefined, 0, -0.1);
+            kit.box('trim', [x + 0.05, y0 + seat.height + 0.002, zc + sz * (w - 0.03) / 2], [0.46, 0.012, 0.012], piping, [0, 0.7]);
+          }
           kit.alt = null;
+          kit.lit = 0;
         }
       }
     }
@@ -2532,10 +2564,18 @@ function trimMaterial(): THREE.MeshStandardMaterial {
   m.onBeforeCompile = (sh) => {
     dither(sh, 'near');
     surfaced(sh);
-    // A vertex with another colour (a seat in the second colourway) wears it on the cars whose variant says so.
+    // A vertex with another colour (a seat in the second colourway) wears it on the cars whose variant says so; a
+    // vertex the cabin's strip lights (`lit`) carries that light as its own, in the strip's colour by the variant.
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', `#include <common>\nattribute vec3 alt;\nattribute float aVar;${VARIANT_GLSL}`)
-      .replace('#include <color_vertex>', '#include <color_vertex>\nif (dot(alt, alt) > 0.0 && variantSeat(aVar) > 0.5) vColor.rgb = alt;');
+      .replace('#include <common>', `#include <common>\nattribute vec3 alt;\nattribute float aVar;\nattribute float lit;\nvarying float vLit;\nvarying float vStripVar;${VARIANT_GLSL}`)
+      .replace('#include <color_vertex>', '#include <color_vertex>\nif (dot(alt, alt) > 0.0 && variantSeat(aVar) > 0.5) vColor.rgb = alt;\nvLit = lit;\nvStripVar = variantStrip(aVar);');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying float vLit;\nvarying float vStripVar;`)
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        totalEmissiveRadiance += diffuseColor.rgb * mix(vec3(${STRIP_WARM.map((v) => v.toFixed(2)).join(', ')}), vec3(${STRIP_COOL.map((v) => v.toFixed(2)).join(', ')}), vStripVar) * vLit * 0.9;`,
+      );
   };
   m.customProgramCacheKey = () => 'palimpsest-vehicle-trim';
   return m;
@@ -2650,8 +2690,8 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             float joint = 0.82 + 0.18 * step(0.03, fract(h.x / 1.25));
             c = L * (0.5 * joint + 3.4 * line * uLines + 0.4 * (1.0 - uLines));
           } else if (tf.y <= t + 1e-5) {
-            // The floor: dark, brighter down the aisle under the lights.
-            c = L * 0.09 * (0.55 + 0.45 * (1.0 - smoothstep(0.1, hw, abs(h.z))));
+            // The floor: warmed by the strips, brightest down the aisle under them.
+            c = L * 0.16 * (0.55 + 0.45 * (1.0 - smoothstep(0.1, hw, abs(h.z))));
           } else if (tf.z <= t + 1e-5) {
             // The far side: its windows onto the dusk, their pillars, and the panels under and over them.
             if (h.y > uWin.x && h.y < uWin.y) {
@@ -2678,7 +2718,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
               float up = smoothstep(fl + 0.4, fl + 1.1, hs.y);
               float rim = 1.0 - smoothstep(0.0, 0.05, fl + 1.1 - hs.y);
               float aisle = smoothstep(0.3, 0.36, abs(hs.z));
-              c = seatCol * L * (0.18 + 0.4 * up) + L * 0.3 * rim + L * 0.05 * (1.0 - aisle);
+              c = seatCol * L * (0.3 + 0.5 * up) + L * 0.6 * rim + L * 0.08 * (1.0 - aisle);
               t = ts;
             }
             // The cushions, seen from above: lit by the strip, darker in the fold under the back.
@@ -2688,7 +2728,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
               if (abs(hc.z) > 0.3) {
                 float fold = smoothstep(0.0, 0.25, fract(hc.x / 0.9 + 0.5) * 0.9);
                 float under = 1.0 - smoothstep(0.1, 0.3, abs(abs(hc.z) - hw * 0.5));
-                c = seatCol * L * (0.3 + 0.25 * fold) + L * 0.06 * fold * under;
+                c = seatCol * L * (0.45 + 0.3 * fold) + L * 0.1 * fold * under;
                 t = tc;
               }
             }

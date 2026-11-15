@@ -88,7 +88,9 @@ test("a destination renders into the board's columns whole, unclipped, each lett
 function solid(name: Parameters<typeof nearPart>[0]): THREE.Mesh {
   const geos = (['body', 'trim', 'lamp'] as const).map((p) => nearPart(name, p)).filter((g): g is THREE.BufferGeometry => !!g);
   const pos: number[] = [];
-  for (const g of geos) pos.push(...(g.attributes.position.array as Float32Array));
+  // Appended one by one: the near trim runs to hundreds of thousands of floats (the cabins' seats), past what a spread
+  // into push can take on the stack.
+  for (const g of geos) for (const v of g.attributes.position.array as Float32Array) pos.push(v);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.computeVertexNormals();

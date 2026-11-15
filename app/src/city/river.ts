@@ -1176,14 +1176,19 @@ function waterFragment(steps: number): string {
           float str = k == 1 ? ${WAKE.inner[0].strength.toFixed(2)} : ${WAKE.inner[1].strength.toFixed(2)};
           g += side * sign(a) * (-2.0 * dIn / w2) * exp(-dIn * dIn / w2) * arm * str * wkAmp(crestFade) * 0.6;
         }
-        // Foam along the crest's top, thick by the hull and thinning astern, broken up by its own noise: the arm
-        // is a pale line as well as a ridge, so it reads from the quay at dusk.
-        float tip = gauss * smoothstep(130.0, 6.0, b) * (0.5 + 0.5 * crestFade);
-        if (tip > 0.02) foam += tip * arm * 0.7 * smoothstep(0.35, 0.8, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2)));
+        // A thin glint along the ridge's line: the sky caught on its face, continuous, a hair wide, thinning astern
+        // with the crest. The arm reads as a line, not a smear; the noise only breathes its thickness.
+        float line = pow(gauss, 6.0) * arm * smoothstep(${WAKE.reach.toFixed(1)}, 20.0, b);
+        float breathe = 0.7 + 0.3 * wNoise(vec2(aa * 0.4, b * 0.25 - uTime * 0.2));
+        foam += line * 0.22 * breathe;
+        // Foam on the crest only near the stern, white where the arm leaves the hull and gone within forty metres.
+        float tip = gauss * smoothstep(42.0, 6.0, b) * (0.5 + 0.5 * crestFade);
+        if (tip > 0.02) foam += tip * arm * 0.6 * (0.45 + 0.55 * smoothstep(0.3, 0.8, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2))));
       }
       // The churn astern of the hull (its stern stands 11 m behind the middle), and white water along its sides.
       float s = u - 10.5;
-      float churn = s > -1.0 ? exp(-aa * aa / (2.4 + 0.2 * max(s, 0.0))) * exp(-max(s, 0.0) / (24.0 + 40.0 * sp)) : 0.0;
+      // The propeller wash straight behind the stern: turbulent white water that fades within two boat lengths.
+      float churn = s > -1.0 ? exp(-aa * aa / (2.4 + 0.2 * max(s, 0.0))) * exp(-max(s, 0.0) / (12.0 + 12.0 * sp)) : 0.0;
       float hullW = 3.15 * sqrt(max(0.0, 1.0 - (u / 11.2) * (u / 11.2)));
       float sideF = exp(-pow(aa - hullW - 0.35, 2.0) / 0.35) * smoothstep(-11.6, -9.0, u) * (1.0 - smoothstep(6.0, 12.0, u));
       if (churn + sideF > 0.01) {

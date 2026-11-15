@@ -147,8 +147,8 @@ const MARK_BRONZE = new THREE.Color(0.86, 0.6, 0.34);
  */
 export const RIDE_LAMPS = {
   ceiling: [0.62, 0.5, 0.36],
-  downlight: [0.8, 0.64, 0.44],
-  halo: [0.15, 0.1, 0.06],
+  downlight: [0.76, 0.6, 0.42],
+  halo: [0.2, 0.13, 0.08],
   glass: [0.05, 0.039, 0.0275],
 } as const;
 
@@ -162,7 +162,7 @@ export const RIDE_LAMPS = {
 export const RIDE_GLASS = { roughness: 0.24, metalness: 0.08, opacity: 0.34 } as const;
 
 /** The car's own materials, as buildCar uses them (exported so the tests can hold them to RIDE_LAMPS and RIDE_GLASS). */
-export function carMaterials(): { glass: THREE.MeshStandardMaterial; lamp: THREE.MeshBasicMaterial; downlight: THREE.MeshBasicMaterial; halo: THREE.MeshBasicMaterial; haloTex: THREE.DataTexture } {
+export function carMaterials(): { glass: THREE.MeshStandardMaterial; lamp: THREE.MeshBasicMaterial; downlight: THREE.MeshBasicMaterial; halo: THREE.SpriteMaterial; haloTex: THREE.DataTexture } {
   const glass = new THREE.MeshStandardMaterial({
     color: 0x55666a,
     roughness: RIDE_GLASS.roughness,
@@ -176,7 +176,8 @@ export function carMaterials(): { glass: THREE.MeshStandardMaterial; lamp: THREE
   });
   const lamp = new THREE.MeshBasicMaterial({ color: new THREE.Color(...RIDE_LAMPS.ceiling) });
   const downlight = new THREE.MeshBasicMaterial({ color: new THREE.Color(...RIDE_LAMPS.downlight) });
-  // The halo: a soft radial fade added over what is behind it, on planes that cross at the lamp.
+  // The halo: a soft radial fade added over what is behind it, on a sprite that faces the eye, one layer from any
+  // side (three crossed planes each added their share and their overlap bloomed at the car's corner, round 5).
   const n = 64;
   const data = new Uint8Array(n * n * 4);
   for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
@@ -190,7 +191,7 @@ export function carMaterials(): { glass: THREE.MeshStandardMaterial; lamp: THREE
   }
   const haloTex = new THREE.DataTexture(data, n, n);
   haloTex.needsUpdate = true;
-  const halo = new THREE.MeshBasicMaterial({ map: haloTex, color: new THREE.Color(...RIDE_LAMPS.halo), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const halo = new THREE.SpriteMaterial({ map: haloTex, color: new THREE.Color(...RIDE_LAMPS.halo), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
   return { glass, lamp, downlight, halo, haloTex };
 }
 
@@ -352,7 +353,7 @@ function buildCar(rail: Rail): Rig {
   const { glass, lamp, downlight, halo, haloTex } = carMaterials();
   // A honed limestone floor, lit by the ceiling panel over it.
   const floorMat = new THREE.MeshStandardMaterial({ color: 0x8b8073, roughness: 0.7, metalness: 0.02, emissive: new THREE.Color(1.0, 0.8, 0.6), emissiveIntensity: 0.16 });
-  const haloGeo = new THREE.PlaneGeometry(1, 1);
+
   const rope = new THREE.MeshStandardMaterial({ color: 0x1b1c1d, roughness: 0.5, metalness: 0.8 });
 
   // ---------------------------------------------------------------- the rail
@@ -491,25 +492,15 @@ function buildCar(rail: Rail): Rig {
     d.name = 'ride:car-downlight';
     car.add(d);
   }
-  // Three crossed fades per lamp (flat, and upright both ways), so the halo reads from the street and from the seat.
-  for (const [z, size] of [
-    [0, 1.7],
-    [D / 2 - 0.5, 0.8],
-    [-(D / 2 - 0.5), 0.8],
-  ] as const) {
-    for (const rot of [
-      [Math.PI / 2, 0, 0],
-      [0, 0, 0],
-      [0, Math.PI / 2, 0],
-    ] as const) {
-      const h = new THREE.Mesh(haloGeo, halo);
-      h.rotation.set(rot[0], rot[1], rot[2]);
-      h.scale.set(size, size, 1);
-      h.position.set(0, H - 0.12, z);
-      h.name = 'ride:car-halo';
-      h.renderOrder = 1;
-      car.add(h);
-    }
+  // A halo under each downlight (none under the panel's middle: a third one over the two put their overlap, with the
+  // downlight behind, over the threshold), 1.4 m across, facing the eye from the street and from the seat.
+  for (const z of [D / 2 - 0.5, -(D / 2 - 0.5)]) {
+    const h = new THREE.Sprite(halo);
+    h.scale.set(1.4, 1.4, 1);
+    h.position.set(0, H - 0.12, z);
+    h.name = 'ride:car-halo';
+    h.renderOrder = 1;
+    car.add(h);
   }
   group.add(car);
 
@@ -556,7 +547,6 @@ function buildCar(rail: Rail): Rig {
       ropeGeo.dispose();
       for (const m of [paint, steel, glass, floorMat, lamp, downlight, halo, rope]) m.dispose();
       downGeo.dispose();
-      haloGeo.dispose();
       haloTex.dispose();
       group.removeFromParent();
     },
