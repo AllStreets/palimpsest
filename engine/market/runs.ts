@@ -60,6 +60,7 @@ import { getSpawner, type Spawned } from '../exec.js';
 import { onRealDataHome, paths } from '../home.js';
 import { record } from '../ledger.js';
 import { detectChecks } from '../guild/checks.js';
+import { syncMirror } from '../mirror.js';
 import { CHECKS_UNKNOWN, checksKnown, getRepo, learnChecks, listRepos, updateRepoMarket } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
@@ -118,6 +119,8 @@ const SELF_CHECK_DIFF_MAX = 20_000;
 export const RUN_EXTRA_MINUTES = 90;
 
 export const STOP_REASON = 'The stop file is set.';
+/** Why a run ended before it cloned: its repo's latest commits could not be fetched (the reason follows). */
+export const SYNC_FAILED = "Could not fetch the repo's latest commits";
 /** Inconclusive inspections a job may have in a row before it leaves the board (controller ruling, Task 15). */
 export const MAX_INCONCLUSIVE = 2;
 export const NEEDS_REVIEWER = 'needs a reviewer: too large or no reviewer available';
@@ -185,6 +188,11 @@ export interface SchedulerDeps {
   reap?: (runRoot: string) => Promise<number[]>;
   /** Why no agent run may start, or null (default: the sandbox membership helper must build). */
   preflight?: () => Promise<string | null>;
+  /**
+   * Fetches the repo's latest commits into its local mirror (default syncMirror), before a bidding round and before a
+   * run clones the mirror, so neither works on old code. Tests pass a stand-in: no test ever reaches the network.
+   */
+  sync?: (fullName: string) => Promise<unknown>;
   /** The watcher's interval; 0 starts none (tests call watch()). Default WATCH_MS. */
   watchMs?: number;
   /** A run's whole wall time; past it the watcher ends the run `capped`. Default its work cap plus RUN_EXTRA_MINUTES. */
@@ -233,8 +241,24 @@ function defaults(): Config {
     quiet: runQuiet,
     reap: reapRun,
     preflight: defaultPreflight,
+    sync: syncMirror,
     watchMs: WATCH_MS,
   };
+}
+
+/** The mirror fetch under way per repo: a second one waits for the first, so two fetches never race on its refs. */
+const syncing = new Map<string, Promise<unknown>>();
+
+/** Fetches `fullName`'s latest commits into its mirror, one fetch per repo at a time. */
+function syncRepo(fullName: string): Promise<unknown> {
+  const before = syncing.get(fullName) ?? Promise.resolve();
+  const p = before.catch(() => {}).then(() => config.sync(fullName));
+  const kept = p.finally(() => {
+    if (syncing.get(fullName) === kept) syncing.delete(fullName);
+  });
+  kept.catch(() => {});
+  syncing.set(fullName, kept);
+  return p;
 }
 
 let config: Config = defaults();
@@ -699,6 +723,15 @@ async function lifecycle(st: LiveRun): Promise<Run> {
   let ecosystems = st.repo.checks?.ecosystems ?? [];
   try {
     boundary(st, 'preparing');
+    // The clone comes from the local mirror, so the mirror first gets the repo's latest commits: a run on old code
+    // cannot find what the issue names. A fetch that fails (the network, GitHub) is nobody's fault: the job goes back
+    // on the board with no attempt spent, no firm blamed and the repo not halted.
+    try {
+      await guarded(st, syncRepo(st.repo.fullName));
+    } catch (err) {
+      if (err instanceof Killed) throw err;
+      return end(st, 'crashed', `${SYNC_FAILED}: ${errText(err)}`, { job: 'reopen' });
+    }
     const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch));
     st.run = { ...st.run, dir, baseSha };
     saveRun(st.run);
@@ -1176,12 +1209,20 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
     }
 
+    const fetching = new Map<string, Promise<unknown>>();
     for (const j of listJobs({ status: 'bidding' })) {
       if (!eligible.has(j.repo)) continue;
       const key = `${j.id} ${j.bidsCloseAt}`;
       if (collecting.has(key)) continue;
       collecting.add(key);
-      track(collectBids(j, now)).catch((err) => console.error(`palimpsest: collecting bids on ${j.id} failed: ${errText(err)}`));
+      // Plans are made against the repo as it is now: its mirror is fetched first. A fetch that fails is only logged;
+      // the round goes on, and the run fetches again before it clones.
+      let fetched = fetching.get(j.repo);
+      if (!fetched) {
+        fetched = syncRepo(j.repo).catch((err) => console.warn(`palimpsest: fetching ${j.repo} before bidding failed: ${errText(err)}`));
+        fetching.set(j.repo, fetched);
+      }
+      track(fetched.then(() => collectBids(j, now))).catch((err) => console.error(`palimpsest: collecting bids on ${j.id} failed: ${errText(err)}`));
     }
 
     for (const j of listJobs({ status: 'bidding' })) {
@@ -1337,5 +1378,6 @@ export function resetRuns(): void {
   if (caffeinate) caffeinate.kill('SIGTERM');
   caffeinate = null;
   preflightOk = null;
+  syncing.clear();
   config = defaults();
 }

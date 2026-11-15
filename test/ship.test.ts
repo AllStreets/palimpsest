@@ -631,6 +631,7 @@ test('failed inspection lays a scar on the repo tower only', async () => {
     quiet: async () => {},
     reap: async () => [],
     preflight: async () => null,
+    sync: async () => {},
     watchMs: 0,
   });
   const r = await startRun(bid);

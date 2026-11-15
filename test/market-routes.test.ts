@@ -474,6 +474,7 @@ test('kill ends a run', async () => {
     quiet: async () => {},
     reap: async () => [],
     preflight: async () => null,
+    sync: async () => {},
     watchMs: 0,
   });
   await s.tick();

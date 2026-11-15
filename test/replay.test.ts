@@ -114,6 +114,7 @@ function deps(over: Partial<SchedulerDeps> = {}): SchedulerDeps {
     quiet: async () => {},
     reap: async () => [],
     preflight: async () => null,
+    sync: async () => {},
     watchMs: 0,
     ...over,
   };

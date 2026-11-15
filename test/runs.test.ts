@@ -307,6 +307,8 @@ function deps(over: Partial<SchedulerDeps> = {}): { deps: SchedulerDeps; calls: 
       return [];
     },
     preflight: async () => null,
+    // Never the network: a test that wants the mirror fetched passes its own.
+    sync: async () => {},
     watchMs: 0,
     ...over,
   };
@@ -1350,4 +1352,123 @@ test('proposed jobs never bid', async () => {
   assert.equal(runsOf(p.id).length, 0);
   assert.equal(evOf('bid.placed').length, 0);
   assert.deepEqual(jobMoves(p.id), []);
+});
+
+// ---------------------------------------------------------------- the mirror is fetched first
+
+/** Adds a commit to the repo's working source (the stand-in for GitHub), not to its mirror; returns its sha. */
+function pushUpstream(full: string, name: string, text: string): string {
+  const work = join(tempDir, 'work', full.replace('/', '__'));
+  writeFileSync(join(work, name), text);
+  git(work, 'add', '.');
+  git(work, 'commit', '-q', '-m', `add ${name}`);
+  return git(work, 'rev-parse', 'HEAD');
+}
+
+/** A sync that fetches the temp working source into the temp mirror, as syncMirror would fetch GitHub. */
+function fetchingSync(calls: string[]) {
+  return async (full: string) => {
+    calls.push(full);
+    git(tempDir, `--git-dir=${mirrorDir(full)}`, 'fetch', '-q', join(tempDir, 'work', full.replace('/', '__')), '+refs/heads/*:refs/heads/*');
+  };
+}
+
+test('a run fetches the repo\'s latest commits before it clones, so it works on the current code', async () => {
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('a1', 'alpha', 'claude:sonnet'));
+  const head = pushUpstream(FULL, 'NEW.md', 'named in the issue\n');
+  const synced: string[] = [];
+  let sawNew = false;
+  useScript({
+    work: async (i) => {
+      sawNew = existsSync(join(i.dir, 'NEW.md'));
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(deps({ sync: fetchingSync(synced) }).deps);
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.deepEqual(synced, [FULL]);
+  assert.equal(r.baseSha, head, 'the clone starts at the newest commit');
+  assert.ok(sawNew, 'the agent sees the file the newest commit added');
+});
+
+test('a run whose fetch fails goes back on the board with no attempt spent and no firm blamed', async () => {
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('a1', 'alpha', 'claude:sonnet'));
+  let worked = 0;
+  useScript({
+    work: async (i) => {
+      worked++;
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(
+    deps({
+      sync: async () => {
+        throw new Error('Could not resolve host: github.com');
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(worked, 0, 'no agent worked');
+  assert.equal(r.outcome, 'crashed');
+  assert.equal(r.endedReason, "Could not fetch the repo's latest commits: Could not resolve host: github.com");
+  assert.equal(r.dir, null, 'nothing was cloned');
+  const after = job(j.id)!;
+  assert.equal(after.status, 'open', 'back on the board');
+  assert.equal(after.attempts, 0, 'no attempt spent');
+  assert.deepEqual(after.excludedFirms, []);
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0, 'not the firm\'s failure');
+  assert.equal(getRepo(FULL)?.halted ?? null, null, 'a network error never halts the repo');
+});
+
+test('a bidding round fetches the repo\'s latest commits before the plans are asked for', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  const order: string[] = [];
+  useScript({
+    plan: (i) => {
+      order.push('plan');
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  const posted = postJob();
+  const s = createScheduler(
+    deps({
+      sync: async (full) => {
+        order.push(`sync ${full}`);
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  assert.equal(job(posted.id)?.status, 'bidding');
+  assert.deepEqual(order, [`sync ${FULL}`, 'plan']);
+});
+
+test('a bidding round whose fetch fails still asks for plans', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  let planned = 0;
+  useScript({
+    plan: (i) => {
+      planned++;
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  postJob();
+  const s = createScheduler(
+    deps({
+      sync: async () => {
+        throw new Error('offline');
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  assert.equal(planned, 1);
 });
