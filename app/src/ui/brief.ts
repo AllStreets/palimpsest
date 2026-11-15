@@ -25,6 +25,7 @@ import { agreementLine } from './school-words';
 import { WORK_KINDS } from '../../../shared/school-rules';
 import { createSheet, el, textButton } from './controls';
 import { awardRounds, type Names } from './detail';
+import { handoffs } from './handoffs';
 import { coalesce, namesOf, refusal, secHead } from './pages';
 import './market.css';
 
@@ -67,6 +68,9 @@ function headOf(item: BriefItem): string {
 const isGithub = (url: string | undefined): url is string => typeof url === 'string' && /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(url);
 
 export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScreen {
+  // The palette (Phase 5) goes where the brief's items go: the city's flight to a tower, and the one event stream.
+  handoffs.listen = opts.listen;
+  handoffs.flyToTower = (repo) => opts.flyToFloor({ repo, floorId: null, agentId: null });
   const sheet = createSheet(parent, 'brief', '', opts.onDismiss);
   const head = sheet.root.querySelector<HTMLElement>('.sheet-head')!;
   // Scrolled, the head is ruled off from the rows passing under it.

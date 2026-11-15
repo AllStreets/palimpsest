@@ -4,7 +4,7 @@
  * edits that file): the Mac app's splash, the Repos screen against a fake
  * GitHub, a plot given back to the city when its repo goes, Settings
  * against a temp claude settings file, and every screen once more by its
- * address. tools/ui-test.ts hands over its check, its shots folder and its
+ * address, and the command palette (Phase 5). tools/ui-test.ts hands over its check, its shots folder and its
  * viewport through screensHarness() before it calls any of them.
  */
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -520,7 +520,159 @@ export async function everyScreenChecks(page: Page, errors: string[]): Promise<v
     const fresh = errors.slice(before);
     check(shown && fresh.length === 0, `the ${name} screen opens at ${hash} with no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
   }
+  // The command palette (Phase 5), over the city and over a screen.
+  await paletteChecks(page, errors);
   await page.evaluate(() => {
     location.hash = '#/';
   });
+}
+
+// ---------------------------------------------------------------- the command palette (Phase 5)
+
+/** The palette's rows as shown: kind, name, state and which is selected. */
+async function paletteRows(page: Page): Promise<Array<{ kind: string; name: string; state: string; selected: boolean }>> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('.palette-row')].map((r) => ({
+      kind: r.querySelector('.palette-kind')?.textContent ?? '',
+      name: r.querySelector('.palette-name')?.textContent ?? '',
+      state: r.querySelector('.palette-state')?.textContent ?? '',
+      selected: r.getAttribute('aria-selected') === 'true',
+    })),
+  );
+}
+
+const paletteOpen = (page: Page): Promise<boolean> => page.evaluate(() => !document.querySelector<HTMLElement>('.palette')!.hidden);
+const activeIs = (page: Page, sel: string): Promise<boolean> => page.evaluate((s) => document.activeElement === document.querySelector(s), sel);
+const camera = (page: Page): Promise<number[]> => page.evaluate(() => (window as unknown as { __palimpsest: { camera(): number[] } }).__palimpsest.camera());
+const moved = (a: number[], b: number[]): boolean => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) > 1;
+
+/** Opens the palette with the keyboard and waits for its first read. */
+async function openPalette(page: Page): Promise<void> {
+  await page.keyboard.press('Meta+k');
+  await page.waitForSelector('.palette:not([hidden])', { timeout: 4000 });
+  await page.waitForFunction(() => document.querySelectorAll('.palette-row').length > 0, null, { timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(350);
+}
+
+/**
+ * Cmd+K opens the palette over the city and over a screen; the empty query
+ * counts the city and lists pages; typing filters one ranked list; Enter on a
+ * district flies the city, on a firm flies to its quarter, on a net opens its
+ * school page; Escape and a click outside close it, with focus back where it
+ * was; all of it by keyboard. Shots: palette-empty.png and palette-query.png.
+ */
+export async function paletteChecks(page: Page, errors: string[]): Promise<void> {
+  const before = errors.length;
+  const api = <T>(path: string): Promise<T> => page.evaluate((p) => fetch(p).then((r) => r.json()), path) as Promise<T>;
+  const repos = await api<Repo[]>('/api/repos');
+  const firms = await api<FirmView[]>('/api/firms');
+  const city = await api<District[]>('/api/city');
+  const school = await api<{ nets: Array<{ net: string }> }>('/api/school');
+  const standing = repos.filter((r) => r.connected && city.some((d) => d.repo === r.fullName));
+
+  // From the city, by the keyboard, with focus on a link of the running head first so its return can be seen.
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
+  await page.waitForTimeout(600);
+  await page.focus('.runhead a[data-route="jobs"]');
+  await openPalette(page);
+  check(await paletteOpen(page), 'Cmd+K opens the palette over the city');
+  check(await activeIs(page, '.palette-input'), 'the palette takes focus into its field');
+  check(await page.evaluate(() => document.querySelector('.palette')?.getAttribute('role') === 'dialog' && document.querySelector('.palette')?.getAttribute('aria-modal') === 'true' && document.querySelector('.palette-input')?.getAttribute('role') === 'combobox' && document.querySelector('.palette-list')?.getAttribute('role') === 'listbox'), 'the palette is a dialog with a combobox over a listbox, labelled for a screen reader');
+  let rows = await paletteRows(page);
+  const foot = (await page.locator('.palette-foot').textContent()) ?? '';
+  check(/^The city holds \d+ districts? and \d+ floors?, \d+ firms? and \d+ agents?\.$/.test(foot), `the empty query counts what the city holds: "${foot}"`);
+  check(rows.length > 0 && rows[0].selected && rows.some((r) => r.kind === 'Page' && r.name === 'Treasury'), `the empty query lists the pages with the first row selected (${rows.length} rows)`);
+  await page.screenshot({ path: join(SHOTS, 'palette-empty.png') });
+  // Tab stays inside.
+  await page.keyboard.press('Tab');
+  check(await activeIs(page, '.palette-input'), 'Tab keeps focus inside the palette');
+  // Arrow keys move the selection and the field says which row is active.
+  await page.keyboard.press('ArrowDown');
+  rows = await paletteRows(page);
+  check(rows[1]?.selected === true && (await page.evaluate(() => document.querySelector('.palette-input')?.getAttribute('aria-activedescendant'))) === 'palette-opt-1', 'ArrowDown moves the selection and aria-activedescendant follows');
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowUp');
+  rows = await paletteRows(page);
+  check(rows.at(-1)?.selected === true, 'ArrowUp from the first row wraps to the last');
+  // Escape closes and focus returns to the link that had it.
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  check(!(await paletteOpen(page)), 'Escape closes the palette');
+  check(await activeIs(page, '.runhead a[data-route="jobs"]'), 'focus returns to where it was before the palette opened');
+  check(await page.evaluate(() => document.body.dataset.route === 'city'), 'Escape in the palette does not leave the city or close anything else');
+
+  // A district: the query filters one ranked list, the first row the repo by prefix, and Enter flies the city to it.
+  const target = standing[0];
+  if (target) {
+    const prefix = target.fullName.slice(0, 5);
+    await openPalette(page);
+    await page.keyboard.type(prefix);
+    await page.waitForTimeout(250);
+    rows = await paletteRows(page);
+    check(rows[0]?.kind === 'District' && rows[0].name === target.fullName && /\d+ floors?/.test(rows[0].state), `typing "${prefix}" puts the district ${target.fullName} first with its floors: ${JSON.stringify(rows[0])}`);
+    check(rows.every((r) => new RegExp(prefix, 'i').test(`${r.name} ${r.state}`) || r.kind !== 'Page'), 'every row shown answers to the query');
+    await page.screenshot({ path: join(SHOTS, 'palette-query.png') });
+    const cam0 = await camera(page);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1600);
+    check(!(await paletteOpen(page)), 'Enter closes the palette');
+    check(await page.evaluate(() => document.body.dataset.route === 'city') && moved(cam0, await camera(page)), 'Enter on a district flies the city to its tower');
+  } else check(false, 'a standing district for the palette to fly to');
+
+  // A firm: Enter flies to its quarter when it stands, else opens its page.
+  const firm = firms.find((f) => f.status === 'active') ?? firms[0];
+  if (firm) {
+    await openPalette(page);
+    await page.keyboard.type(firm.name);
+    await page.waitForTimeout(250);
+    rows = await paletteRows(page);
+    check(rows[0]?.kind === 'Firm' && rows[0].name === firm.name && /credits, \d+ agents?|Bankrupt/.test(rows[0].state), `typing the firm's name puts ${firm.name} first with its balance: ${JSON.stringify(rows[0])}`);
+    const cam0 = await camera(page);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1600);
+    const route = await page.evaluate(() => document.body.dataset.route);
+    const hash = await page.evaluate(() => location.hash);
+    check((route === 'city' && moved(cam0, await camera(page))) || hash === `#/firms/${encodeURIComponent(firm.id)}`, `Enter on a firm flies to its quarter or opens its page (${route} ${hash})`);
+  } else check(false, 'a firm for the palette to go to');
+
+  // A school page: a net by its name, Enter opens it; and the palette opens over a screen too.
+  const net = school.nets.find((n) => n.net === 'triage') ?? school.nets[0];
+  if (net) {
+    await page.evaluate(() => {
+      location.hash = '#/jobs';
+    });
+    await page.waitForTimeout(700);
+    await openPalette(page);
+    check(await paletteOpen(page), 'Cmd+K opens the palette over a screen');
+    await page.keyboard.type('Triage');
+    await page.waitForTimeout(250);
+    rows = await paletteRows(page);
+    check(rows[0]?.kind === 'Net' && rows[0].name === 'Triage' && rows[0].state.length > 0, `typing "Triage" puts the net first with its trust: ${JSON.stringify(rows[0])}`);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(900);
+    check((await page.evaluate(() => location.hash)) === '#/school/nets/triage' && (await page.evaluate(() => document.body.dataset.route)) === 'net', 'Enter on a net opens its school page');
+  } else check(false, 'a net for the palette to open');
+
+  // Nothing answers: said plainly. A click outside closes. The Find word in the head opens it too, and recent picks rise.
+  await openPalette(page);
+  await page.keyboard.type('zqxv');
+  await page.waitForTimeout(250);
+  check((await paletteRows(page)).length === 0 && /Nothing in the city answers to/.test((await page.locator('.palette-foot').textContent()) ?? ''), 'a query nothing answers says so');
+  await page.mouse.click(30, 900);
+  await page.waitForTimeout(200);
+  check(!(await paletteOpen(page)), 'a click outside closes the palette');
+  await page.locator('.runhead-find').click();
+  await page.waitForTimeout(500);
+  rows = await paletteRows(page);
+  check(await paletteOpen(page) && rows[0]?.kind === 'Net' && rows[0].name === 'Triage', `Find in the running head opens the palette, the last pick first: ${JSON.stringify(rows[0])}`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  const fresh = errors.slice(before);
+  check(fresh.length === 0, `the palette raised no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
+  await page.evaluate(() => {
+    location.hash = '#/';
+  });
+  await page.waitForTimeout(600);
 }

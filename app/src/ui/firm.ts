@@ -7,6 +7,7 @@ import { button, checkRadio, el, plural, rovingRadios, textButton } from './cont
 import { clock, dayHeading } from './detail';
 import { balanceCell, gauge, grouped, measures, silhouetteGlyph, svgEl } from './firms';
 import { ERA_NAMES, ROOT_NAMES } from './inspector';
+import { handoffs } from './handoffs';
 import { coalesce, detailSheet, keyedSlot, pageLink, secHead, setTrail } from './pages';
 import { bankruptIn, bookLines, figure, longDate, roundWords, shortDate, stepPath, type StoryNames } from './story';
 import './market.css';
@@ -52,6 +53,12 @@ function signed(n: number): string {
  * and its hires and the towers it bought or lost. Updates from the event stream.
  */
 export function createFirmPage(parent: HTMLElement, opts: FirmPageOptions): FirmPage {
+  // The palette (Phase 5) flies to a firm's quarter the way this page's own link does.
+  handoffs.flyToQuarter = (firmId) => {
+    if (!opts.quarterStands(firmId)) return false;
+    opts.flyToQuarter(firmId);
+    return true;
+  };
   const sheet = detailSheet(parent, 'firmpage', opts.onDismiss);
   const body = sheet.body;
   const motto = el('p', 'firm-motto-big');

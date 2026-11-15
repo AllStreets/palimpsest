@@ -480,7 +480,8 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
       check(await within(page, 8000, async () => (await btn.count()) === 1 && (await btn.textContent()) === 'Build an arena'), `${onRepo.fullName}'s district page offers Build an arena`);
       check(await within(page, 4000, async () => (await btn.getAttribute('aria-disabled')) === null), `enabled on a market-on repo with a test command (${((await sec.locator('.darena-why').textContent()) ?? '').trim() || 'no reason'})`);
       check((await sec.locator('.darena-kind[role="radio"]').count()) === 2, 'with its two kinds, planted bugs and past changes');
-      check((await page.locator('.sheet.district .district-autonomy .grant-entry').count()) === now.grants.filter((g) => g.repo === onRepo.fullName).length, 'its pairs are listed on its page');
+      // The block draws after the page's own school read lands: waited for, as the arena button above is.
+      check(await within(page, 8000, async () => (await page.locator('.sheet.district .district-autonomy .grant-entry').count()) === now.grants.filter((g) => g.repo === onRepo.fullName).length), 'its pairs are listed on its page');
       await page.locator('.sheet.district .district-autonomy').evaluate((s) => {
         const body = s.closest('.sheet-body') as HTMLElement;
         body.scrollTop += s.getBoundingClientRect().top - body.getBoundingClientRect().top - 24;

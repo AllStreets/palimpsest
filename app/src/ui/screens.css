@@ -1308,3 +1308,181 @@ a.repo-name:focus-visible {
     transition: none;
   }
 }
+
+/* ---------------------------------------------------------------- the command palette (Phase 5) */
+
+/* Find, at the end of the running head's places: the word, and the key beside it in the head's small grey. */
+.runhead-find {
+  all: unset;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-left: 6px;
+  padding: 4px 0 6px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.runhead-find:hover .runhead-find-word {
+  color: var(--ink);
+}
+.runhead-find:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 4px;
+}
+.runhead-find-key {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  background: rgba(6, 7, 11, 0.5);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.palette-scrim.open {
+  opacity: 1;
+}
+.palette-scrim[hidden],
+.palette[hidden] {
+  display: none;
+}
+/* The popup: the sheet's paper and rule, square corners, a little above centre, as a book opens to a page. */
+.palette {
+  position: fixed;
+  left: 50%;
+  top: 17vh;
+  z-index: 9;
+  width: min(640px, calc(100vw - 2 * var(--gutter)));
+  transform: translate(-50%, -6px);
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink);
+  font-family: var(--sans);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.palette.open {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.palette-find {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 22px 28px 16px;
+  border-bottom: 1px solid var(--rule-strong);
+}
+.palette-input {
+  all: unset;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--serif);
+  font-size: 24px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  caret-color: var(--bronze);
+}
+.palette-input::placeholder {
+  font-style: italic;
+  color: var(--ink-3);
+}
+.palette-esc {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 0;
+  max-height: min(52vh, 540px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(236, 230, 218, 0.18) transparent;
+}
+.palette-list:empty {
+  padding: 0;
+}
+/* A row: the kind in the margin, the name in the book's serif, its state set small at the right. */
+.palette-row {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 9px 28px;
+  cursor: pointer;
+}
+.palette-row[aria-selected='true'] {
+  background: rgba(236, 230, 218, 0.05);
+}
+.palette-row[aria-selected='true']::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 1px;
+  background: var(--bronze);
+}
+.palette-kind {
+  flex: 0 0 72px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.palette-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-family: var(--serif);
+  font-size: 17.5px;
+  line-height: 1.2;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-state {
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-width: 40%;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.palette-row[aria-selected='true'] .palette-state {
+  color: var(--ink);
+}
+/* The foot: what the city holds on an empty query, in the veil's italic; a count or a plain no otherwise. */
+.palette-foot {
+  margin: 0;
+  padding: 12px 28px 15px;
+  border-top: 1px solid var(--rule);
+  font-size: 12.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.palette-foot.palette-foot-tally {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+.palette-foot:empty {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .palette,
+  .palette-scrim {
+    transition: none;
+  }
+}
