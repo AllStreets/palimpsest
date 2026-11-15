@@ -38,7 +38,7 @@ import type { RunProgress } from '../../shared/types.js';
 import { getSpawner, type Spawned } from '../exec.js';
 import { home as dataHomeDir, paths } from '../home.js';
 import { storedCalibration } from '../usage.js';
-import { brokerMcpServer, enginePort, guardHookCommand, protectPids, reapRun, runQuiet } from './broker.js';
+import { brokerMcpServer, enginePort, guardHookCommand, MAX_TOOL_MS, protectPids, reapRun, runQuiet } from './broker.js';
 import { CLAUDE_HOSTS, isAnthropicHost, refusedHosts, startEgress } from './egress.js';
 import { record } from '../ledger.js';
 import { CLI_DISALLOWED_TOOLS, CLI_PERMISSIONS_DENY } from './guard.js';
@@ -108,8 +108,12 @@ export function isBuiltinPlugin(p: unknown): boolean {
  * `failIfUnavailable` makes a CLI that cannot sandbox end the run.
  */
 export const CLAUDE_SANDBOX = { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false } as const;
-/** The broker's tool timeout, in ms, as claude reads it (MCP_TOOL_TIMEOUT). */
-export const MCP_TOOL_TIMEOUT_MS = 900_000;
+/**
+ * The broker's tool timeout, in ms, as claude reads it (MCP_TOOL_TIMEOUT):
+ * the longest command (MAX_TOOL_MS) plus room for the broker to stop it and
+ * reap what it left, so the agent always reads the broker's own answer.
+ */
+export const MCP_TOOL_TIMEOUT_MS = MAX_TOOL_MS + 2 * 60_000;
 /** After a SIGTERM to the group on a cap or an abort, SIGKILL follows after this. */
 export const KILL_AFTER_MS = 5000;
 /** Turns a plan, review or judge call may take. */
@@ -146,8 +150,12 @@ export interface ClaudeOptions {
    * with it inside the CLI profile. The smoke run's plain call passes false.
    */
   nestedSandbox?: boolean;
-  /** Reaps the run and throws if anything of it is left (runQuiet), before claude starts and before each tool turn. */
-  quiet?: (runRoot: string) => Promise<void>;
+  /**
+   * Reaps the run and throws if anything of it is left (runQuiet), before
+   * claude starts and before each tool turn. It may return the pids it had
+   * to kill, which the run log notes.
+   */
+  quiet?: (runRoot: string) => Promise<void | number[]>;
   /** Kills whatever a plan, review or judge call left under its scratch root before the root is removed. Default reapRun. */
   reap?: (root: string) => Promise<unknown>;
   /** Weighted tokens per percent of the five-hour window. Default: the stored calibration. */
@@ -281,7 +289,7 @@ interface SessionSpec {
   log: (line: RunLogLine) => void;
   onProgress?: (p: Partial<RunProgress>) => void;
   /** Run `quiet(runRoot)` before each tool turn (work only). */
-  quiet?: (runRoot: string) => Promise<void>;
+  quiet?: (runRoot: string) => Promise<void | number[]>;
   tokensPerPct: number;
   killAfterMs: number;
 }
@@ -289,6 +297,8 @@ interface SessionSpec {
 interface SessionOut {
   ended: Ended;
   reason: string | null;
+  /** The session ended for the engine's own reasons (claude never started, a reap failed), not the firm's. */
+  engineFault?: boolean;
   usage: Usage;
   text: string;
   structured: unknown;
@@ -334,7 +344,7 @@ async function session(s: SessionSpec): Promise<SessionOut> {
   let model = s.model;
   let initSeen = false;
   let resultLine: Record<string, unknown> | null = null;
-  let stopped: { ended: Ended; reason: string } | null = null;
+  let stopped: { ended: Ended; reason: string; engineFault?: boolean } | null = null;
   let quietChain: Promise<void> = Promise.resolve();
   const timers: NodeJS.Timeout[] = [];
   const log = (kind: RunLogLine['kind'], text: string, data?: unknown) => s.log({ at: now(), kind, text, ...(data === undefined ? {} : { data }) });
@@ -349,13 +359,13 @@ async function session(s: SessionSpec): Promise<SessionOut> {
   } catch (err) {
     const reason = `claude did not start: ${err instanceof Error ? err.message : String(err)}`;
     log('engine', reason);
-    return { ended: 'crashed', reason, usage: { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 }, text: '', structured: null };
+    return { ended: 'crashed', reason, usage: { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 }, text: '', structured: null, engineFault: true };
   }
   if (child.pid !== null) protectPids(s.runRoot, [child.pid]);
 
-  const stop = (ended: Ended, reason: string) => {
+  const stop = (ended: Ended, reason: string, engineFault = false) => {
     if (stopped) return;
-    stopped = { ended, reason };
+    stopped = engineFault ? { ended, reason, engineFault } : { ended, reason };
     child.kill('SIGTERM');
     timers.push(setTimeout(() => child.kill('SIGKILL'), s.killAfterMs));
     try {
@@ -431,9 +441,13 @@ async function session(s: SessionSpec): Promise<SessionOut> {
         quietChain = quietChain.then(async () => {
           if (stopped) return;
           try {
-            await quiet(s.runRoot);
+            // A leftover (a command's straggler) is reaped with a note; only one that cannot be reaped ends the run.
+            const reaped = await quiet(s.runRoot);
+            if (Array.isArray(reaped) && reaped.length) {
+              log('engine', `[palimpsest] killed ${reaped.length} process(es) left running before a tool turn: ${reaped.join(', ')}`);
+            }
           } catch (err) {
-            stop('crashed', `run not quiet before a tool turn: ${err instanceof Error ? err.message : String(err)}`);
+            stop('crashed', `run not quiet before a tool turn: ${err instanceof Error ? err.message : String(err)}`, true);
           }
         });
       }
@@ -529,8 +543,8 @@ async function session(s: SessionSpec): Promise<SessionOut> {
       text: r && typeof r.result === 'string' ? r.result : '',
       structured: r ? (r.structured_output ?? null) : null,
     });
-    const st = stopped as { ended: Ended; reason: string } | null;
-    if (st) return out(st.ended, st.reason);
+    const st = stopped as { ended: Ended; reason: string; engineFault?: boolean } | null;
+    if (st) return st.engineFault ? { ...out(st.ended, st.reason), engineFault: true } : out(st.ended, st.reason);
     if (!initSeen) return out('crashed', `the stream ended without system/init (exit ${done.code ?? done.signal ?? done.error ?? 'unknown'})`);
     if (!r) return out('crashed', `the stream ended without a result (exit ${done.code ?? done.signal ?? done.error ?? 'unknown'})`);
     if (r.subtype === 'error_max_turns') return out('capped', 'claude reached its turn limit');
@@ -718,9 +732,10 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
    */
   async function drive(d: DriveInput): Promise<Driven> {
     const zero: Usage = { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 };
+    // Every crash before claude starts is the engine's (its broker, its proxy, its reap), never the firm's.
     const crash = (reason: string): Driven => {
       d.log({ at: now(), kind: 'engine', text: `claude ${d.what} crashed: ${reason}` });
-      return { ended: 'crashed', reason, usage: zero, text: '', structured: null, loginRefused: null };
+      return { ended: 'crashed', reason, usage: zero, text: '', structured: null, loginRefused: null, engineFault: true };
     };
     if (d.signal.aborted) return { ended: 'aborted', reason: 'signal', usage: zero, text: '', structured: null, loginRefused: null };
 
@@ -784,7 +799,10 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
     }
 
     try {
-      await quiet(runRoot);
+      const reaped = await quiet(runRoot);
+      if (Array.isArray(reaped) && reaped.length) {
+        d.log({ at: now(), kind: 'engine', text: `[palimpsest] killed ${reaped.length} process(es) left running before claude started: ${reaped.join(', ')}` });
+      }
     } catch (err) {
       return crash(`run not quiet before claude started: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -841,6 +859,8 @@ export function claudeProvider(o: ClaudeOptions = {}): Provider {
       }
       return { summary: out.text, usage: out.usage, ended: 'crashed' as const, reason: note, spendsAttempt: false as const };
     }
+    // The engine's own failure (a reap that could not clear the run, a broker or proxy that is not running) spends no attempt.
+    if (out.engineFault && out.ended === 'crashed') return { summary: out.text, usage: out.usage, ended: 'crashed' as const, reason: out.reason, spendsAttempt: false as const };
     return { summary: out.text, usage: out.usage, ended: out.ended, reason: out.reason };
   }
 

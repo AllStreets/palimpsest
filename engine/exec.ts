@@ -108,8 +108,14 @@ export type SpawnOpts = {
   stdin?: string;
   /** Start from an empty environment plus `env`, inheriting nothing from the engine. */
   clearEnv?: boolean;
-  /** Wall-clock cap: past it the group gets SIGTERM (then SIGKILL) and done reports `timedOut`. */
+  /** Wall-clock cap: past it the group gets `timeoutSignal` (a SIGTERM is followed by a SIGKILL) and done reports `timedOut`. */
   maxMs?: number;
+  /**
+   * What the group gets at `maxMs` (default SIGTERM). SIGKILL reaches every
+   * member at once while the group is still provably ours, so a member that
+   * ignores SIGTERM cannot outlive the leader and escape the escalation.
+   */
+  timeoutSignal?: 'SIGTERM' | 'SIGKILL';
   /** How long after a SIGTERM from `kill` the group gets SIGKILL. Default KILL_GRACE_MS; the trainer gets GATE.killGraceMs to write its last step. */
   killGraceMs?: number;
   /** Lines held for a slow reader before newer ones are dropped (with a marker). Default MAX_BUFFERED_LINES. */
@@ -359,7 +365,7 @@ export const realSpawner: Spawner = (cmd, args, opts) => {
     later(Math.max(0, opts.maxMs), () => {
       if (settled) return;
       timedOut = true;
-      kill('SIGTERM');
+      kill(opts.timeoutSignal ?? 'SIGTERM');
     });
   }
 

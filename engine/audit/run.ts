@@ -98,7 +98,7 @@ export interface StartOptions {
   now: () => number;
   /** Why no agent run may start, or null (the scheduler's preflight). */
   preflight: () => Promise<string | null>;
-  quiet?: (runRoot: string) => Promise<void>;
+  quiet?: (runRoot: string) => Promise<unknown>;
   reap?: (runRoot: string) => Promise<number[]>;
   installDeps?: InstallDeps;
   /** The installed Ollama models (default: the last `ollama list` the engine took). */

@@ -209,6 +209,19 @@ test('maxMs caps a child by wall clock', async () => {
   assert.ok(Date.now() - start < 3000);
 });
 
+test('timeoutSignal SIGKILL kills a group member that ignores SIGTERM and holds none of the pipes', async () => {
+  // Under a TERM the shell would die, the pipes close and the group would no longer be provably ours, so the member
+  // that ignored the TERM would never get the KILL. A KILL at the limit reaches every member at once.
+  const child = realSpawner('/bin/sh', ['-c', '( trap "" TERM; exec /bin/sleep 30 ) </dev/null >/dev/null 2>&1 & echo $!; sleep 30'], { maxMs: 300, timeoutSignal: 'SIGKILL' });
+  const it = child.lines[Symbol.asyncIterator]();
+  const bg = Number((await it.next()).value?.line);
+  assert.ok(bg > 1);
+  const done = await child.done;
+  assert.equal(done.timedOut, true);
+  assert.equal(done.signal, 'SIGKILL');
+  assert.ok(await until(() => !alive(bg)), 'the member that ignored SIGTERM outlived the limit');
+});
+
 test('the line queue is bounded and marks what it dropped', async () => {
   const child = realSpawner('/bin/sh', ['-c', 'i=0; while [ $i -lt 20 ]; do echo $i; i=$((i+1)); done'], { maxBufferedLines: 5 });
   await child.done;

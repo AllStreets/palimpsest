@@ -29,6 +29,13 @@
  * attempt (ruling 16). The proxy and the broker close, the run root is
  * reaped and the lease released on every end.
  *
+ * Attempts: only the firm's own failure spends one of a job's attempts (its
+ * change fails inspection, it changes nothing, it reaches a cap or its
+ * deadline while working, or its provider ends without finishing). A run
+ * the engine itself ends (a fetch, an install, a reap, the city's git, an
+ * engine restart, a kill or the hard stop) returns its job to the board
+ * with the attempt refunded and no firm excluded.
+ *
  * Model output (the bid's plan, the agent's own diff in a self-check) goes
  * back into prompts only as quoted data (quote.ts).
  */
@@ -184,7 +191,7 @@ export interface SchedulerDeps {
   /** The last local day already seen (the newest daily report's day after a restart), so the day that ended while the engine was down still gets its daily call. */
   lastDay?: string | null;
   /** Kills the run's strays and confirms none is left (default runQuiet). */
-  quiet?: (runRoot: string) => Promise<void>;
+  quiet?: (runRoot: string) => Promise<unknown>;
   /** Kills whatever of the run is left at its end (default reapRun). */
   reap?: (runRoot: string) => Promise<number[]>;
   /** Why no agent run may start, or null (default: the sandbox membership helper must build). */
@@ -773,8 +780,8 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     const install = await guarded(st, config.installDeps(ctx, st.repo));
     record('check.done', { runId: st.run.id, jobId: st.run.jobId, check: install });
     checkpoint(st);
-    // An install failure is the repo's or the city's, never the firm's: crashed, an attempt spent, no reputation hit.
-    if (install.status === 'fail') return end(st, 'crashed', `The install failed: ${install.detail}`, { job: 'fail' });
+    // An install failure is the repo's or the city's, never the firm's: crashed, the job back on the board, no attempt spent.
+    if (install.status === 'fail') return end(st, 'crashed', `The install failed: ${install.detail}`, { job: 'reopen' });
 
     phase = 'work';
     checkpoint(st);
@@ -858,12 +865,15 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     setStage(st, st.run.stage === 'done' ? 'done' : 'waiting');
     return st.run;
   } catch (err) {
-    // Past its wall deadline the run is capped: an attempt spent, the firm excluded only if it was still working.
-    if (st.deadlineHit) return end(st, 'capped', reasonOf(st), { job: 'fail', exclude: phase === 'work' });
+    // Past its wall deadline the run is capped. While the agent worked it is the firm's (an attempt spent, the firm
+    // excluded); a stage of the city's that hung past it is the engine's (no attempt spent).
+    if (st.deadlineHit) return end(st, 'capped', reasonOf(st), phase === 'work' ? { job: 'fail', exclude: true } : { job: 'reopen' });
     if (st.lease.signal.aborted || err instanceof Killed) return end(st, 'killed', reasonOf(st), { job: 'reopen' });
     const msg = err instanceof Error ? err.message : String(err);
-    // A crash while the agent worked is the agent's; one before or after it, or in the city's own step, is the city's.
-    return end(st, 'crashed', msg, { job: 'fail', exclude: phase === 'work' && !(err instanceof CityError) });
+    // A crash while the agent worked is the agent's; one before or after it, or in the city's own step, is the
+    // engine's, and the job goes back on the board with no attempt spent.
+    if (phase === 'work' && !(err instanceof CityError)) return end(st, 'crashed', msg, { job: 'fail', exclude: true });
+    return end(st, 'crashed', msg, { job: 'reopen' });
   } finally {
     for (const close of [() => st.broker?.close(), () => st.egress?.close()]) {
       try {
@@ -1039,8 +1049,8 @@ export function updateRun(id: string, patch: Partial<Omit<Run, 'id' | 'jobId'>>)
 
 /**
  * At engine start: runs left in a live stage by the last engine can never
- * finish. Each ends `crashed`, and its job fails one attempt and returns to
- * the board if it has one left (ruling 16).
+ * finish. Each ends `crashed`, and its job returns to the board: the engine
+ * stopping under a run is the engine's failure, so no attempt is spent.
  */
 export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Promise<number[]> } = {}): Promise<Run[]> {
   const reap = opts.reap ?? reapRun;
@@ -1052,7 +1062,7 @@ export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Pr
     record('run.ended', { runId: r.id, jobId: r.jobId, outcome: 'crashed', reason: INTERRUPTED_RUN, summary: r.summary ?? null, run: ended });
     emit('run.ended', { runId: r.id, outcome: 'crashed', reason: INTERRUPTED_RUN });
     sendHome(ended);
-    settleJob({ run: ended }, 'fail', false);
+    settleJob({ run: ended }, 'reopen', false);
     // Whatever the run left running (a daemon that outlived the engine) is killed before its files go.
     const runRoot = join(paths().runs, r.id);
     try {

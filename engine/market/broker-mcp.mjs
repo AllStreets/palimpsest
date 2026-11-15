@@ -20,7 +20,12 @@ const TOOL = {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The shell command, run with /bin/sh -c in the repository.' },
-      timeoutMs: { type: 'number', description: 'How long it may run, in milliseconds (at most 15 minutes).' },
+      timeoutMs: {
+        type: 'number',
+        description:
+          'How long it may run, in milliseconds: default 120000 (2 minutes), at most 900000 (15 minutes, the time limit the city gives the repository\'s own checks). ' +
+          'A whole test suite or build often needs longer than the default: ask for it. A command still running at its limit is stopped with every process it started.',
+      },
     },
     required: ['command'],
     additionalProperties: false,

@@ -180,7 +180,13 @@ export const LOOP_TOOLS: ToolSpec[] = [
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The command line.', maxLength: 64 * 1024 },
-        timeout_seconds: { type: 'integer', description: 'How long it may run (default 120, at most 900).', minimum: 1, maximum: 900 },
+        timeout_seconds: {
+          type: 'integer',
+          description:
+            'How long it may run, in seconds: default 120, at most 900 (the time limit the city gives the repository\'s own checks). A whole test suite or build often needs longer than the default: ask for it. A command still running at its limit is stopped with every process it started.',
+          minimum: 1,
+          maximum: 900,
+        },
       },
       required: ['command'],
       additionalProperties: false,

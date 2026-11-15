@@ -20,10 +20,15 @@ import { home as dataHomeDir, paths } from '../home.js';
 import { record } from '../ledger.js';
 import { forbidden } from './guard.js';
 import type { RunLogLine } from './provider.js';
-import { noteLiveGroup, reapRun } from './reaper.js';
+import { noteLiveGroup, reapGroup, reapRun, settleRun } from './reaper.js';
 import { childEnv, detectToolchains, liveRunPorts, realish, registerRunPorts, unregisterRunPorts, wrap, type ProfileInput } from './sandbox.js';
 
-/** The longest a single agent command may run. A request above it is cut to it. */
+/**
+ * The longest a single agent command may run: the time limit the city's own
+ * checks give the repository's test and build commands (CHECK_MS in
+ * guild/checks.ts, which a test holds equal), so an agent can always run the
+ * repository's whole suite. A request above it is cut to it.
+ */
 export const MAX_TOOL_MS = 15 * 60_000;
 /** The shortest timeout a command gets. */
 export const MIN_TOOL_MS = 1_000;
@@ -237,6 +242,22 @@ function clampTimeout(requested: number, log: (l: RunLogLine) => void): number {
   return Math.max(MIN_TOOL_MS, Math.floor(requested));
 }
 
+/** A time limit in words: `2 minutes`, `1.5 seconds`. */
+function limitWords(ms: number): string {
+  if (ms >= 60_000 && ms % 60_000 === 0) return `${ms / 60_000} minute${ms === 60_000 ? '' : 's'}`;
+  const sec = Math.round(ms / 100) / 10;
+  return `${sec} second${sec === 1 ? '' : 's'}`;
+}
+
+/** What a command that reached its time limit is told, in its result. */
+export function timeLimitNote(ms: number): string {
+  return (
+    `[palimpsest] The command was stopped at its time limit of ${limitWords(ms)}: it was still running, so it was ended with every process it started. ` +
+    `If it needs longer (a whole test suite or build often does), run it again with a longer timeout, up to ${limitWords(MAX_TOOL_MS)}; ` +
+    'or run a narrower command, such as one test file or one package.\n'
+  );
+}
+
 function refuse(o: { runId: string; stage?: string; log: (l: RunLogLine) => void }, what: string, reason: string): ToolResult {
   o.log({ at: now(), kind: 'refused', text: `refused: ${reason}`, data: { what: what.slice(0, 2000), reason } });
   record('run.refused', { runId: o.runId, stage: o.stage ?? null, what: what.slice(0, 2000), reason });
@@ -319,38 +340,56 @@ async function runSandboxed(
     env: childEnv(o.runRoot, { side }),
     clearEnv: true,
     maxMs,
+    // At its limit, and when the run ends, the whole group is killed at once while the spawner can still prove it is
+    // ours: a TERM lets the shell die first, after which a member that ignored it (a test runner's worker) is no
+    // longer reachable through the group's escalation.
+    timeoutSignal: 'SIGKILL',
     ...(stdin === undefined ? {} : { stdin }),
   });
   noteLiveGroup(o.runRoot, child.pid, true);
   let aborted = false;
   const onAbort = () => {
     aborted = true;
-    child.kill('SIGTERM');
+    child.kill('SIGKILL');
   };
   o.signal.addEventListener('abort', onAbort, { once: true });
   const out = new Capped(outCap);
   const err = new Capped(MAX_RETURN_BYTES);
   const spooler = spoolIt ? new Spooler(o.runId, o.log) : null;
+  let done: Awaited<Spawned['done']> | null = null;
   try {
     for await (const l of child.lines) {
       (l.stream === 'stdout' ? out : err).add(l.line);
       spooler?.add(l.stream, l.line);
     }
-    const done = await child.done;
-    let stderr = err.value();
-    if (done.error) stderr += `[palimpsest] the command could not start: ${done.error}\n`;
-    if (done.timedOut) stderr += `[palimpsest] timed out after ${maxMs} ms\n`;
-    if (aborted) stderr += '[palimpsest] aborted\n';
-    return { code: done.code, stdout: out.value(), stderr, timedOut: !!done.timedOut, aborted };
+    done = await child.done;
   } finally {
     o.signal.removeEventListener('abort', onAbort);
     spooler?.end();
     child.kill('SIGTERM');
     noteLiveGroup(o.runRoot, child.pid, false);
-    // Whatever the command left behind (a forked, setsid daemon) is killed before the result returns.
-    const reaped = await reapRun(o.runRoot);
-    if (reaped.length) o.log({ at: now(), kind: 'engine', text: `[palimpsest] killed ${reaped.length} process(es) the command left running: ${reaped.join(', ')}` });
+    // What is left of the command's own process group (a member that ignored the TERM, or one that keeps forking
+    // so no pid lives long enough to be caught alone) is killed as one group, before the result returns.
+    const group = await reapGroup(o.runRoot, child.pid);
+    if (group.length) o.log({ at: now(), kind: 'engine', text: `[palimpsest] killed what was left of the command's process group: ${group.join(', ')}` });
+    // Reading the output failed: the rest of the run's strays are still killed before the error goes up.
+    if (done === null) await reapRun(o.runRoot);
   }
+  const timedOut = !!done.timedOut;
+  // Whatever else the command left behind (a forked, setsid daemon) is killed too. A command stopped at its limit or by
+  // the run's end is reaped until nothing of the run is left, so the next tool turn finds the run quiet.
+  const ended = timedOut || aborted;
+  const { reaped, left } = ended ? await settleRun(o.runRoot) : { reaped: await reapRun(o.runRoot), left: [] as number[] };
+  if (reaped.length) o.log({ at: now(), kind: 'engine', text: `[palimpsest] killed ${reaped.length} process(es) the command left running: ${reaped.join(', ')}` });
+  let stderr = err.value();
+  if (done.error) stderr += `[palimpsest] the command could not start: ${done.error}\n`;
+  if (timedOut) stderr += `[palimpsest] timed out after ${maxMs} ms\n${timeLimitNote(maxMs)}`;
+  if (aborted) stderr += '[palimpsest] aborted: the run is ending, so the command was stopped with every process it started\n';
+  if (left.length) {
+    stderr += `[palimpsest] ${left.length} process(es) it started could not be stopped: ${left.join(', ')}\n`;
+    o.log({ at: now(), kind: 'engine', text: `[palimpsest] ${left.length} process(es) the command started could not be stopped: ${left.join(', ')}` });
+  }
+  return { code: done.code, stdout: out.value(), stderr, timedOut, aborted };
 }
 
 /**

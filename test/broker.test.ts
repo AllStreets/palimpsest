@@ -7,8 +7,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { getSpawner, realSpawner, setSpawner, type Spawner } from '../engine/exec.js';
+import { CHECK_MS } from '../engine/guild/checks.js';
 import { entries } from '../engine/ledger.js';
 import {
+  DEFAULT_TOOL_MS,
   MAX_SPOOL_BYTES,
   MAX_TOOL_MS,
   brokerMcpServer,
@@ -24,6 +26,7 @@ import {
 } from '../engine/market/broker.js';
 import type { RunLogLine } from '../engine/market/provider.js';
 import { liveRunPorts, wrap } from '../engine/market/sandbox.js';
+import { LOOP_TOOLS } from '../engine/market/toolloop.js';
 
 const ENV_KEYS = ['PALIMPSEST_HOME', 'PALIMPSEST_SANDBOX', 'PALIMPSEST_BROKER_TEST_SENTINEL'];
 let previousEnv: Record<string, string | undefined>;
@@ -150,6 +153,45 @@ describe('execTool', () => {
     const r = await execTool({ ...base(run, []), command: 'sleep 30', timeoutMs: 1000 });
     assert.ok(Date.now() - started < 8000);
     assert.match(r.stderr, /timed out/);
+  });
+
+  test('a timed-out command is told plainly that it was stopped at its limit, and what to do', async () => {
+    const run = makeRun('run-timeout-words');
+    const r = await execTool({ ...base(run, []), command: 'sleep 30', timeoutMs: 1500 });
+    assert.equal(r.code, null);
+    assert.match(r.stderr, /stopped at its time limit of 1\.5 seconds/);
+    assert.match(r.stderr, /every process it started/);
+    assert.match(r.stderr, /longer timeout/);
+    assert.match(r.stderr, /15 minutes/);
+    assert.match(r.stderr, /narrower command/);
+    const minutes = await execTool({ ...base(run, []), command: 'true', timeoutMs: 2 * 60_000 });
+    assert.doesNotMatch(minutes.stderr, /time limit/, 'a command that ends in time gets no note');
+  });
+
+  test('an agent may ask for a longer timeout, up to the time limit of the repo\'s own checks', async () => {
+    const run = makeRun('run-longer');
+    const seen: Array<number | undefined> = [];
+    setSpawner(((cmd, args, opts) => {
+      seen.push(opts.maxMs);
+      return realSpawner('/usr/bin/true', [], { clearEnv: true });
+    }) as Spawner);
+    const log: RunLogLine[] = [];
+    await execTool({ ...base(run, log), command: 'npm test', timeoutMs: 10 * 60_000 });
+    await execTool({ ...base(run, log), command: 'npm test', timeoutMs: CHECK_MS });
+    await execTool({ ...base(run, log), command: 'npm test', timeoutMs: CHECK_MS + 60_000 });
+    assert.deepEqual(seen, [10 * 60_000, CHECK_MS, CHECK_MS]);
+    assert.equal(MAX_TOOL_MS, CHECK_MS, 'an agent can give a command as long as the checks give the repo\'s tests');
+    assert.equal(log.filter((l) => /cut to/.test(l.text)).length, 1);
+    // Both run tools say so.
+    const loopRun = LOOP_TOOLS.find((t) => t.name === 'run')!;
+    const seconds = loopRun.parameters.properties.timeout_seconds;
+    assert.equal(seconds.maximum, CHECK_MS / 1000);
+    assert.match(seconds.description, new RegExp(`default ${DEFAULT_TOOL_MS / 1000}\\b`));
+    assert.match(seconds.description, /test suite/);
+    const mcp = readFileSync(new URL('../engine/market/broker-mcp.mjs', import.meta.url), 'utf8');
+    assert.ok(mcp.includes(`default ${DEFAULT_TOOL_MS}`), 'the MCP run tool names its default');
+    assert.ok(mcp.includes(`at most ${CHECK_MS}`), 'the MCP run tool names its maximum');
+    assert.match(mcp, /test suite/);
   });
 
   test('the spool stops growing at the cap and says so', async () => {
@@ -509,6 +551,35 @@ describe('the reaper', () => {
       assert.doesNotThrow(() => process.kill(pid, 0));
     }
     protectPids(run.runRoot, []);
+  });
+
+  test('a command that times out leaves no process alive, even one that keeps forking, and the next tool turn is quiet', { skip: noSandbox }, async () => {
+    process.env.PALIMPSEST_SANDBOX = 'on';
+    const run = makeRun('run-chain');
+    // A process that ignores SIGTERM and forks and lets its parent exit every 50 ms (as a test runner shutting down
+    // its workers slowly might), so no pid lives long enough for a pid-by-pid reap to catch it; it holds none of the
+    // command's pipes, and it gives up by itself after a minute so a failing test leaves nothing behind for long.
+    const chain = `perl -e '$SIG{TERM} = "IGNORE"; for (1..1200) { exit if fork; open(P, ">", "chain.pid"); print P $$; close P; select(undef, undef, undef, 0.05) }' </dev/null >/dev/null 2>&1 & sleep 30`;
+    const pidFile = join(run.dir, 'chain.pid');
+    try {
+      const r = await execTool({ ...base(run, []), command: chain, timeoutMs: 2000 });
+      assert.equal(r.code, null);
+      assert.match(r.stderr, /stopped at its time limit of 2 seconds/);
+      const last = readFileSync(pidFile, 'utf8');
+      await new Promise((res) => setTimeout(res, 500));
+      assert.equal(readFileSync(pidFile, 'utf8'), last, 'the chain still forks after execTool returned');
+      assert.equal(psOf(Number(last)), null, 'the chain outlived its command');
+      // The next tool turn's check finds nothing to kill and nothing it cannot.
+      assert.deepEqual(await runQuiet(run.runRoot), []);
+    } finally {
+      try {
+        const pid = Number(readFileSync(pidFile, 'utf8'));
+        const pgid = Number(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+        if (pgid > 1) process.kill(-pgid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
   });
 
   test('runQuiet reaps and then confirms nothing is left', { skip: noSandbox }, async () => {

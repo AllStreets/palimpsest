@@ -350,7 +350,8 @@ describe('work', () => {
     assert.equal(env.LOGNAME, userInfo().username);
     for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']) assert.equal(env[k], undefined, k);
     assert.ok(!Object.values(env).some((v) => v.includes('sk-ant-test') || v.includes('auth-test')));
-    assert.equal(env.MCP_TOOL_TIMEOUT, '900000');
+    // The longest command (15 minutes) plus room for the broker to stop it and answer.
+    assert.equal(env.MCP_TOOL_TIMEOUT, '1020000');
     assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
     assert.equal(env.NO_PROXY, '127.0.0.1,localhost');
     // claude has its own temp dir, ctmp, which no tool child can write (Task 11)
@@ -674,6 +675,39 @@ describe('work', () => {
     assert.equal(out.ended, 'crashed');
     assert.match(out.reason ?? '', /still alive/);
     assert.ok(calls[0].kills.includes('SIGTERM'));
+    // A process the reaper cannot clear is the engine's failure, never the firm's: no attempt spent.
+    assert.equal(out.spendsAttempt, false);
+  });
+
+  test('a leftover process found before a tool turn is reaped with a note, and the run goes on', async () => {
+    fake(happyWork());
+    let n = 0;
+    const { p } = provider({
+      quiet: async () => {
+        n += 1;
+        return n === 2 ? [4242, 4243] : [];
+      },
+    });
+    const { input, logs } = workInput();
+    const out = await p.work(input);
+    assert.equal(out.ended, 'finished');
+    assert.ok(
+      logs.some((l) => l.kind === 'engine' && /left running/.test(l.text) && /4242, 4243/.test(l.text) && /tool turn/.test(l.text)),
+      logs.map((l) => l.text).join('\n'),
+    );
+  });
+
+  test('a run that cannot be made quiet before claude starts is the engine\'s failure', async () => {
+    fake(happyWork());
+    const { p } = provider({
+      quiet: async () => {
+        throw new Error('run processes still alive: 77');
+      },
+    });
+    const { input } = workInput();
+    const out = await p.work(input);
+    assert.equal(out.ended, 'crashed');
+    assert.equal(out.spendsAttempt, false);
   });
 
   test('a run without its broker or proxy crashes before claude starts', async () => {

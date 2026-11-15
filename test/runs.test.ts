@@ -575,7 +575,64 @@ test('a hard stop aborts claude runs and leaves local runs going', async () => {
   assert.equal(job(claudeRun.job.id)?.attempts, 0);
 });
 
-test('a crash while installing moves the job from awarded to failed', async () => {
+for (const ended of ['crashed', 'capped'] as const) {
+  test(`a hard stop whose provider then ends ${ended} is still a kill and spends no attempt`, async () => {
+    const started: WorkInput[] = [];
+    useScript({
+      work: async (i) => {
+        started.push(i);
+        await new Promise<void>((resolve) => i.signal.addEventListener('abort', () => resolve(), { once: true }));
+        // The CLI killed under the hard stop: its stream ends without a result, or a cap fires on the way out.
+        return { summary: '', usage: { weightedTokens: 0, seconds: 1, usd: 0, credits: 0 }, ended, reason: 'the stream ended without a result (exit SIGTERM)' };
+      },
+    });
+    const { job: j } = awarded(makeRepo().fullName, addAgent('c1', 'alpha', 'claude:sonnet'));
+    const s = createScheduler(deps().deps);
+    await s.tick();
+    await until(() => started.length === 1);
+    reading(95);
+    s.watch();
+    await until(() => runsOf(j.id)[0]?.outcome != null);
+    await s.idle();
+    const [r] = runsOf(j.id);
+    assert.equal(r.outcome, 'killed');
+    assert.match(r.endedReason ?? '', /hard/);
+    const after = job(j.id) as Job;
+    assert.equal(after.attempts, 0);
+    assert.equal(after.status, 'open');
+    assert.deepEqual(after.excludedFirms, []);
+  });
+}
+
+test('a provider that says its crash was the engine\'s reopens the job without an attempt', async () => {
+  useScript({
+    work: async () => ({ summary: '', usage: { weightedTokens: 0, seconds: 1, usd: 0, credits: 0 }, ended: 'crashed', reason: 'run not quiet before a tool turn: run processes still alive: 77', spendsAttempt: false }),
+  });
+  const { job: j } = awarded(makeRepo().fullName, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const s = createScheduler(deps().deps);
+  await s.tick();
+  await s.idle();
+  assert.equal(runsOf(j.id)[0].outcome, 'crashed');
+  assert.equal(job(j.id)?.attempts, 0);
+  assert.equal(job(j.id)?.status, 'open');
+  assert.deepEqual(job(j.id)?.excludedFirms, []);
+});
+
+test('a failed inspection still spends one attempt and excludes the firm', async () => {
+  useScript({});
+  const { job: j } = awarded(makeRepo().fullName, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const s = createScheduler(deps({ inspect: async (r) => inspection(r, false) }).deps);
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(r.outcome, 'failed');
+  const after = job(j.id) as Job;
+  assert.equal(after.attempts, 1);
+  assert.equal(after.status, 'open', 'one attempt left');
+  assert.deepEqual(after.excludedFirms, ['alpha']);
+});
+
+test('a crash while installing reopens the job without spending an attempt', async () => {
   makeRepo();
   const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
   const s = createScheduler(
@@ -590,14 +647,16 @@ test('a crash while installing moves the job from awarded to failed', async () =
   const [r] = runsOf(j.id);
   assert.equal(r.outcome, 'crashed');
   assert.match(r.endedReason ?? '', /npm exploded/);
-  assert.ok(jobMoves(j.id).includes('awarded>failed'));
+  assert.ok(jobMoves(j.id).includes('awarded>open'));
+  assert.ok(!jobMoves(j.id).includes('awarded>failed'), 'the engine\'s own crash is no failure of the job');
   assert.ok(!jobMoves(j.id).includes('awarded>running'));
   const after = job(j.id) as Job;
-  assert.equal(after.attempts, 1);
-  assert.equal(after.status, 'open', 'one attempt left, so it returns to the board');
+  assert.equal(after.attempts, 0, 'no attempt spent');
+  assert.equal(after.status, 'open');
+  assert.deepEqual(after.excludedFirms, []);
 });
 
-test('an install failure fails the run without a scar', async () => {
+test('an install failure crashes the run without a scar and spends no attempt', async () => {
   makeRepo();
   const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
   const ctxs: RunContext[] = [];
@@ -612,7 +671,7 @@ test('an install failure fails the run without a scar', async () => {
   await s.tick();
   await s.idle();
   const [r] = runsOf(j.id);
-  // Ruling (fix round 1): an install failure is crashed, spends the attempt, and never counts against the firm.
+  // An install failure is crashed and never counts against the firm; it is the engine's or the repo's, so no attempt is spent.
   assert.equal(r.outcome, 'crashed');
   assert.equal(r.scar, false);
   assert.match(r.endedReason ?? '', /install/);
@@ -625,7 +684,8 @@ test('an install failure fails the run without a scar', async () => {
   assert.equal(check.check.status, 'fail');
   const lastSite = evOf('site.changed').map((e) => (e.site as { stage: string }).stage).at(-1);
   assert.equal(lastSite, 'teardown');
-  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(j.id)?.attempts, 0);
+  assert.equal(job(j.id)?.status, 'open');
   assert.equal(entries().filter((e) => e.kind === 'floor.scarred').length, 0);
 });
 
@@ -1006,9 +1066,11 @@ test('interrupted runs crash at startup and reopen their jobs', async () => {
   assert.equal(storedRun(preparing.r.id)?.outcome, 'crashed');
   assert.equal(storedRun(waiting.r.id)?.outcome, null, 'a run waiting on its PR is not live');
   assert.equal(job(working.j.id)?.status, 'open');
-  assert.equal(job(working.j.id)?.attempts, 1);
+  // The engine stopping under a run is the engine's failure: no attempt spent.
+  assert.equal(job(working.j.id)?.attempts, 0);
   assert.equal(job(preparing.j.id)?.status, 'open');
-  assert.ok(jobMoves(preparing.j.id).includes('awarded>failed'));
+  assert.equal(job(preparing.j.id)?.attempts, 0);
+  assert.ok(jobMoves(preparing.j.id).includes('awarded>open'));
   assert.equal(job(waiting.j.id)?.status, 'waiting');
 });
 
@@ -1168,7 +1230,7 @@ test('a stage that hangs past the run wall deadline is ended by the watcher', as
   const [r] = runsOf(j.id);
   assert.equal(r.outcome, 'capped');
   assert.match(r.endedReason ?? '', /wall deadline/);
-  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(j.id)?.attempts, 0, 'the agent had finished: the hang was not its, so no attempt is spent');
   assert.deepEqual(job(j.id)?.excludedFirms, [], 'the agent had finished: the hang was not its');
   assert.equal(treasury(clock).concurrency.claude, 0);
 });
@@ -1259,7 +1321,8 @@ test('a city failure after the work is not blamed on the agent', async () => {
   const [r] = runsOf(j.id);
   assert.equal(r.outcome, 'crashed');
   assert.match(r.endedReason ?? '', /still alive/);
-  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(j.id)?.attempts, 0, 'a reap failure is the engine\'s: no attempt spent');
+  assert.equal(job(j.id)?.status, 'open');
   assert.deepEqual(job(j.id)?.excludedFirms, []);
 });
 
