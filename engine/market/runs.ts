@@ -132,6 +132,13 @@ export const BID_SYNC_MS = 20_000;
 /** Inconclusive inspections a job may have in a row before it leaves the board (controller ruling, Task 15). */
 export const MAX_INCONCLUSIVE = 2;
 export const NEEDS_REVIEWER = 'needs a reviewer: too large or no reviewer available';
+/** Runs of one job in a row the engine itself may end before the job is held instead of reposted (each round costs bids). */
+export const MAX_ENGINE_FAILURES = 3;
+/** The hold note for a job the engine keeps failing on, for his brief and the job page. */
+export function engineFailureNote(count: number, reason: string): string {
+  const last = reason.replace(/\s+/g, ' ').trim().slice(0, 300);
+  return `held: the city itself failed this job ${count} runs in a row, last with "${last}". Fix the cause, then resume it.`;
+}
 export const SHUTDOWN_REASON = 'The engine is shutting down.';
 export const INTERRUPTED_RUN = 'The engine stopped during the run.';
 export const HELPER_MISSING =
@@ -533,8 +540,16 @@ function syncWatcher(): void {
 
 // ---------------------------------------------------------------- jobs
 
-/** Moves the run's job as its end says, when the job still belongs to this run. */
-function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'fail', exclude: boolean, summary?: string): void {
+/**
+ * Moves the run's job as its end says, when the job still belongs to this
+ * run. `reopen` puts it back on the board (a kill, an inconclusive
+ * inspection); `engine` does too, for a run the engine itself ended, and
+ * counts it: the MAX_ENGINE_FAILURES-th such run in a row holds the job
+ * (halted, with a note naming the failure) instead of reposting it, since
+ * every round costs bids. `fail` is the firm's failure: it spends an attempt
+ * and clears that count.
+ */
+function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'engine' | 'fail', exclude: boolean, summary?: string): void {
   const r = st.run;
   const cur = storedJob(r.jobId);
   if (!cur || cur.runId !== r.id || !LIVE_JOB.includes(cur.status)) return;
@@ -544,8 +559,19 @@ function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'fail', exclude: 
       transition(cur, 'open', reopen);
       return;
     }
+    if (how === 'engine') {
+      const count = (cur.engineFailures ?? 0) + 1;
+      if (count < MAX_ENGINE_FAILURES) {
+        transition(cur, 'open', { ...reopen, engineFailures: count });
+        return;
+      }
+      const note = engineFailureNote(count, r.endedReason ?? 'no reason given');
+      transition(cur, 'halted', { ...reopen, engineFailures: count, haltNote: note });
+      record('run.note', { runId: r.id, jobId: r.jobId, repo: r.repo, note, engineFailures: count, at: new Date().toISOString() });
+      return;
+    }
     const excludedFirms = exclude && !cur.excludedFirms.includes(r.firmId) ? [...cur.excludedFirms, r.firmId] : cur.excludedFirms;
-    const failed = transition(cur, 'failed', { excludedFirms }, summary ? { summary } : {});
+    const failed = transition(cur, 'failed', { excludedFirms, engineFailures: 0 }, summary ? { summary } : {});
     if (failed.attempts < MAX_ATTEMPTS) {
       const open = transition(failed, 'open', reopen);
       // The repo was halted while this run finished (its own third failed inspection): the job waits halted too.
@@ -577,7 +603,7 @@ function checkpoint(st: LiveRun): void {
   if (st.lease.signal.aborted) throw new Killed(reasonOf(st));
 }
 
-function end(st: LiveRun, outcome: RunOutcome, reason: string | null, o: { job: 'reopen' | 'fail' | 'none'; exclude?: boolean; scar?: boolean; summary?: string }): Run {
+function end(st: LiveRun, outcome: RunOutcome, reason: string | null, o: { job: 'reopen' | 'engine' | 'fail' | 'none'; exclude?: boolean; scar?: boolean; summary?: string }): Run {
   st.run = { ...st.run, outcome, endedReason: reason, endedAt: iso(), stage: 'done', scar: !!o.scar, summary: st.summary };
   saveRun(st.run);
   record('run.ended', { runId: st.run.id, jobId: st.run.jobId, outcome, reason, summary: st.summary, run: st.run });
@@ -751,7 +777,7 @@ async function lifecycle(st: LiveRun): Promise<Run> {
       await guarded(st, syncRepo(st.repo.fullName));
     } catch (err) {
       if (err instanceof Killed) throw err;
-      return end(st, 'crashed', `${SYNC_FAILED}: ${errText(err)}`, { job: 'reopen' });
+      return end(st, 'crashed', `${SYNC_FAILED}: ${errText(err)}`, { job: 'engine' });
     }
     const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch));
     st.run = { ...st.run, dir, baseSha };
@@ -781,7 +807,7 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     record('check.done', { runId: st.run.id, jobId: st.run.jobId, check: install });
     checkpoint(st);
     // An install failure is the repo's or the city's, never the firm's: crashed, the job back on the board, no attempt spent.
-    if (install.status === 'fail') return end(st, 'crashed', `The install failed: ${install.detail}`, { job: 'reopen' });
+    if (install.status === 'fail') return end(st, 'crashed', `The install failed: ${install.detail}`, { job: 'engine' });
 
     phase = 'work';
     checkpoint(st);
@@ -798,7 +824,7 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     if (out.ended === 'capped') return end(st, 'capped', out.reason ?? 'The run reached a cap.', { job: 'fail', exclude: true });
     if (out.ended === 'crashed' || out.ended === 'aborted') {
       const reason = out.reason ?? (out.ended === 'aborted' ? 'The provider stopped on its own.' : 'The provider crashed.');
-      if (out.spendsAttempt === false) return end(st, 'crashed', reason, { job: 'reopen' });
+      if (out.spendsAttempt === false) return end(st, 'crashed', reason, { job: 'engine' });
       return end(st, 'crashed', reason, { job: 'fail', exclude: true });
     }
 
@@ -867,13 +893,13 @@ async function lifecycle(st: LiveRun): Promise<Run> {
   } catch (err) {
     // Past its wall deadline the run is capped. While the agent worked it is the firm's (an attempt spent, the firm
     // excluded); a stage of the city's that hung past it is the engine's (no attempt spent).
-    if (st.deadlineHit) return end(st, 'capped', reasonOf(st), phase === 'work' ? { job: 'fail', exclude: true } : { job: 'reopen' });
+    if (st.deadlineHit) return end(st, 'capped', reasonOf(st), phase === 'work' ? { job: 'fail', exclude: true } : { job: 'engine' });
     if (st.lease.signal.aborted || err instanceof Killed) return end(st, 'killed', reasonOf(st), { job: 'reopen' });
     const msg = err instanceof Error ? err.message : String(err);
     // A crash while the agent worked is the agent's; one before or after it, or in the city's own step, is the
     // engine's, and the job goes back on the board with no attempt spent.
     if (phase === 'work' && !(err instanceof CityError)) return end(st, 'crashed', msg, { job: 'fail', exclude: true });
-    return end(st, 'crashed', msg, { job: 'reopen' });
+    return end(st, 'crashed', msg, { job: 'engine' });
   } finally {
     for (const close of [() => st.broker?.close(), () => st.egress?.close()]) {
       try {
@@ -1062,7 +1088,7 @@ export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Pr
     record('run.ended', { runId: r.id, jobId: r.jobId, outcome: 'crashed', reason: INTERRUPTED_RUN, summary: r.summary ?? null, run: ended });
     emit('run.ended', { runId: r.id, outcome: 'crashed', reason: INTERRUPTED_RUN });
     sendHome(ended);
-    settleJob({ run: ended }, 'reopen', false);
+    settleJob({ run: ended }, 'engine', false);
     // Whatever the run left running (a daemon that outlived the engine) is killed before its files go.
     const runRoot = join(paths().runs, r.id);
     try {
@@ -1111,7 +1137,7 @@ export function haltRepo(fullName: string, reason: string, at: string = new Date
  */
 export function resumeJob(j: Job): Job {
   if (j.haltedFrom === 'waiting') return transition(j, 'waiting');
-  return transition(j, 'open', { runId: null, awardedBid: null, bidsCloseAt: null, inconclusive: 0, haltNote: null });
+  return transition(j, 'open', { runId: null, awardedBid: null, bidsCloseAt: null, inconclusive: 0, engineFailures: 0, haltNote: null });
 }
 
 /**

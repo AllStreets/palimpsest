@@ -41,6 +41,8 @@ import {
   resetRuns,
   settleRuns,
   resumeRepo,
+  resumeJob,
+  MAX_ENGINE_FAILURES,
   run as storedRun,
   sites,
   WATCH_MS,
@@ -616,6 +618,104 @@ test('a provider that says its crash was the engine\'s reopens the job without a
   assert.equal(job(j.id)?.attempts, 0);
   assert.equal(job(j.id)?.status, 'open');
   assert.deepEqual(job(j.id)?.excludedFirms, []);
+});
+
+/** Puts an open job back up and awards it to `a`, as a round would. */
+let reawards = 0;
+function reaward(j: Job, a: Agent): Job {
+  const open = openBidding(job(j.id) as Job, NOW);
+  const bid: Bid = {
+    id: `bid-again-${reawards++}-${a.id}`,
+    jobId: j.id,
+    firmId: a.firmId,
+    agentId: a.id,
+    plan: '1. Read. 2. Change the header.',
+    price: 20,
+    confidence: 0.8,
+    calibrated: 0.68,
+    appraisal: null,
+    ev: 20,
+    cost: 3,
+    at: new Date(NOW).toISOString(),
+  };
+  openDb().prepare('INSERT INTO bids (id, job_id, json) VALUES (?, ?, ?)').run(bid.id, bid.jobId, JSON.stringify({ round: open.bidsCloseAt, bid }));
+  record('job.awarded', { jobId: j.id, tier: j.tier, considered: [bid], satOut: [], chosen: bid, why: 'test', at: new Date(NOW).toISOString(), coolOffUntil: null });
+  return transition(open, 'awarded', { awardedBid: bid.id });
+}
+
+test('a job the engine keeps failing on is held with a plain note after three runs in a row, and a resume puts it back', async () => {
+  useScript({});
+  makeRepo();
+  const a = addAgent('c1', 'alpha', 'claude:sonnet');
+  const { job: j } = awarded(FULL, a);
+  const s = createScheduler(
+    deps({ installDeps: async () => ({ name: 'install', status: 'fail', detail: 'npm ci exited 1', durationMs: 5, logPath: null, testsRun: null }) }).deps,
+  );
+  assert.equal(MAX_ENGINE_FAILURES, 3);
+  for (let round = 1; round <= 3; round++) {
+    if (round > 1) reaward(j, a);
+    await s.tick();
+    await s.idle();
+    const after = job(j.id) as Job;
+    assert.equal(runsOf(j.id).length, round);
+    assert.equal(after.attempts, 0);
+    assert.equal(after.engineFailures, round);
+    if (round < 3) assert.equal(after.status, 'open', `round ${round} reposts the job`);
+  }
+  const held = job(j.id) as Job;
+  assert.equal(held.status, 'halted', 'the third engine failure in a row holds the job instead of reposting it');
+  assert.match(held.haltNote ?? '', /3 runs in a row/);
+  assert.match(held.haltNote ?? '', /The install failed: npm ci exited 1/);
+  assert.match(held.haltNote ?? '', /resume/);
+  const note = entries().find((e) => e.kind === 'run.note' && (e.data as { jobId?: string }).jobId === j.id)?.data as { note: string };
+  assert.equal(note.note, held.haltNote, 'his brief reads the same note');
+  // No more rounds: a tick leaves a held job alone.
+  await s.tick();
+  await s.idle();
+  assert.equal(runsOf(j.id).length, 3);
+  assert.equal(job(j.id)?.status, 'halted');
+  const resumed = resumeJob(job(j.id) as Job);
+  assert.equal(resumed.status, 'open');
+  assert.equal(resumed.engineFailures, 0);
+  assert.equal(resumed.haltNote, null);
+});
+
+test('a firm failure between the engine\'s own failures starts the count again', async () => {
+  useScript({});
+  makeRepo();
+  const a = addAgent('c1', 'alpha', 'claude:sonnet');
+  const b = addAgent('b1', 'beta', 'claude:sonnet');
+  const { job: j } = awarded(FULL, a);
+  let installFails = true;
+  let inspectionFails = false;
+  const s = createScheduler(
+    deps({
+      installDeps: async () => (installFails ? { name: 'install', status: 'fail', detail: 'npm ci exited 1', durationMs: 5, logPath: null, testsRun: null } : skipped),
+      inspect: async (r) => inspection(r, !inspectionFails),
+    }).deps,
+  );
+  for (const round of [1, 2]) {
+    if (round > 1) reaward(j, a);
+    await s.tick();
+    await s.idle();
+  }
+  assert.equal(job(j.id)?.engineFailures, 2);
+  // The firm's own failure: its change fails inspection.
+  installFails = false;
+  inspectionFails = true;
+  reaward(j, a);
+  await s.tick();
+  await s.idle();
+  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(j.id)?.engineFailures, 0);
+  assert.equal(job(j.id)?.status, 'open');
+  // The engine fails once more: the count starts again, and the job is reposted.
+  installFails = true;
+  reaward(j, b);
+  await s.tick();
+  await s.idle();
+  assert.equal(job(j.id)?.engineFailures, 1);
+  assert.equal(job(j.id)?.status, 'open');
 });
 
 test('a failed inspection still spends one attempt and excludes the firm', async () => {
