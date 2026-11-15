@@ -7,7 +7,7 @@ import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteStat
 import { previousWeek, weekOf } from '../../shared/tour';
 import { api } from './api';
 import { coalesced } from './coalesce';
-import type { Plate } from './city/labels';
+import { bandKey, type Plate } from './city/labels';
 import { dropText } from './city/governor';
 import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } from './city/exchange';
 import { EMPTY_LIFE, foldLifeEvent, lifeAfter, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
@@ -101,6 +101,8 @@ interface DebugHandle {
   project(p: number[]): number[];
   /** Each milestone as the city shows it now (milestones.ts), by id. */
   milestones(): Array<MilestoneShow & { id: string }>;
+  /** Hides or shows the ribbons (tests: the band read against the frame without it). */
+  ribbons(on: boolean): void;
   /** The university as it stands (campus/index.ts): its origin and the later buildings' anchors, or null before the engine took the plot. */
   campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
   /** Holds the campus clock tower at a moment (ms since the epoch), for the clock still; null frees it. */
@@ -306,6 +308,22 @@ const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 
 /** What a firm's plate and plinth show of it, for telling when they change. */
 const plateOf = (f: FirmView): string => `${f.id}|${f.name}|${Math.round(f.balance)}|${f.status}|${f.agents.filter((a) => !a.retired).length}`;
 
+/**
+ * Whether the empty morning's line is still to be said today: once a local
+ * day at most, whatever the engine's own record says (a fresh home answers
+ * "first open" on every launch). Kept in this window's storage; without it
+ * the line is said, as before.
+ */
+function emptyMorningDue(day: string): boolean {
+  try {
+    if (localStorage.getItem('palimpsest:empty-morning') === day) return false;
+    localStorage.setItem('palimpsest:empty-morning', day);
+  } catch {
+    /* no storage: say it */
+  }
+  return true;
+}
+
 async function main(): Promise<void> {
   const host = document.getElementById('city');
   const veil = document.getElementById('veil');
@@ -375,7 +393,7 @@ async function main(): Promise<void> {
     },
     quarterKey: (q) => `${firmViews.get(q.firmId)?.name ?? ''}|${quality}|${firmsKey}`,
     // The civic exchange in the city's own pale limestone and granite.
-    makeExchange: (q) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')) }),
+    makeExchange: (q, campanile) => makeExchange(q, { materials: towerMaterials(lookFor('civic:exchange')), campanile }),
     // The skyline's mast and finial in the city's galvanised steel and polished bronze.
     milestoneMaterials: towerMaterials(lookFor('civic:exchange')),
     // The university's halls light their windows in the same glass as every tower.
@@ -614,6 +632,7 @@ async function main(): Promise<void> {
     },
     peopleLantern: (on) => city.people()?.lantern(on),
     milestones: () => [...city.milestoneShows()].map(([id, m]) => ({ id, ...m })),
+    ribbons: (on) => city.showRibbons(on),
     campus() {
       const c = city.campus();
       if (!c) return null;
@@ -1221,6 +1240,8 @@ async function main(): Promise<void> {
         origin: d.origin,
         name: name ?? d.repo,
         sub: `${owner}, ${n === 0 ? 'root only' : plural(n, 'floor')}`,
+        // Hovering a tower's plate says what its lit and dark bands are, in the inspector's words.
+        title: bandKey(d.tower.floors.slice(d.tower.datumIndex)) || undefined,
         onActivate: () => inspect(d.repo, null),
       };
     });
@@ -1643,7 +1664,7 @@ async function main(): Promise<void> {
       // Drawn now, not on the hashchange after it, so the brief stands before the veil lifts.
       applyRoute('brief', { route: 'brief', id: null });
     }
-    else if (opened.first && !opened.brief.due) notice.add(`${emptyMorning()}.`);
+    else if (opened.first && !opened.brief.due && emptyMorningDue(opened.brief.day)) notice.add(`${emptyMorning()}.`);
   }
 
   await city.ready;

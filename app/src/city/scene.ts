@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
-import { FLOOR_HEIGHT } from '../../../shared/tower-layout.js';
+import { FLOOR_HEIGHT, layoutTower } from '../../../shared/tower-layout.js';
 import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types.js';
 import { batchPieces, type Batched } from './batch.js';
 import { plainBatch } from './plain-batch.js';
@@ -18,7 +18,7 @@ import { HALL } from './campus/halls.js';
 import type { RideFloor } from './ride.js';
 import { searchLitTree } from './searchlight.js';
 import { makeConstruction, makeConstructionField, WORK_LAMP, type Construction, type ConstructionField } from './construction.js';
-import type { BoardJob, Exchange } from './exchange.js';
+import { campanileStands, type BoardJob, type Exchange } from './exchange.js';
 import { createGrid, type LotSummary } from './grid.js';
 import { createGround, makePlinth } from './ground.js';
 import { createPlates, type Plate } from './labels.js';
@@ -91,7 +91,8 @@ export interface CityOptions {
   /** Anything beyond the quarter's own data that changes what the factory builds (its name, its looks); a change rebuilds it. */
   quarterKey?: (q: Quarter) => string;
   /** Builds the civic exchange on the plaza at the origin (exchange.ts); without it the plaza stands empty. */
-  makeExchange?: (quality: 'high' | 'medium') => Exchange;
+  /** The exchange at a quality, with or without its campanile (exchange.ts campanileStands). */
+  makeExchange?: (quality: 'high' | 'medium', campanile: boolean) => Exchange;
   /** A persona's plate's second line for its trip (people.ts): "to <district> for <job title>". */
   describeTrip?: (trip: Trip, agent: Agent) => string;
   /** A persona's coat, linear RGB: its firm's colour. */
@@ -246,6 +247,8 @@ export interface City {
   setMilestones(ms: ReadonlyArray<Milestone>): void;
   /** Each milestone as it shows now, by id (tests and captures). */
   milestoneShows(): Map<string, MilestoneShow>;
+  /** Hides or shows the ribbons (tests). */
+  showRibbons(on: boolean): void;
   /**
    * Stands the university on its plot (GET /api/school/campus, Phase 4
    * Task 34): the terrace, its quads and the four halls, with the ambient
@@ -502,13 +505,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let exchange: Exchange | null = null;
   let board: ReadonlyArray<BoardJob> = [];
   let stopped = false;
+  /** Whether the campanile stands: only once a district rises 20 m over it (campanileStands), so it never tops a small new city. */
+  let campanile = false;
   function buildExchange(): void {
     if (!opts.makeExchange) return;
     if (exchange) {
       scene.remove(exchange.object);
       exchange.dispose();
     }
-    exchange = opts.makeExchange(quality);
+    exchange = opts.makeExchange(quality, campanile);
     exchange.setBoard(board);
     exchange.setStopped(stopped);
     scene.add(exchange.object);
@@ -1110,6 +1115,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   function setPlots(occ: Occupancy): number {
     occNow = occ;
     const built = placeDistricts(occ.districts) + placeQuarters(life.set(occ.quarters));
+    const wants = campanileStands(occ.districts.map((d) => layoutTower(d.tower).top));
+    if (wants !== campanile) {
+      campanile = wants;
+      buildExchange();
+    }
     reframe(occ);
     placeSites(occ.sites);
     // The network grows with the city: its loops enclose every district, quarter and site, a rank at each plaza.
@@ -1830,6 +1840,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       placeMilestones();
     },
     milestoneShows: () => milestones?.shows() ?? new Map(),
+    showRibbons: (on) => milestones?.ribbons(on),
     setCampusClock(ms) {
       campusClockAt = ms;
     },

@@ -161,7 +161,7 @@ function ringBand(r: number, w: number, h: number): THREE.BufferGeometry {
  * each narrower than the one below and collared where they meet, an aviation
  * lamp at mid height and one at the tip under a short lightning rod.
  */
-export function makeSpire(k: Kit, height: number, half: number): void {
+export function makeSpire(k: Kit, height: number, half: number, collar: { proud: number; half: number } = { proud: 0.12, half: 0.1 }): void {
   const footing = Math.min(1.8, height * 0.1);
   const base = Math.min(half * 0.38, 2.2);
   // A square footing, battered to an octagon, so the mast grows out of the roof rather than standing on it.
@@ -181,7 +181,7 @@ export function makeSpire(k: Kit, height: number, half: number): void {
     k.add('galvanised', new THREE.CylinderGeometry(r1, r, h, 8, 1, false), M(0, y + h / 2, 0, Math.PI / 8));
     if (i < parts.length - 1) {
       // The joint collar, and the next section steps in from it.
-      k.add('steel', lathe([[0, -0.1], [r1 + 0.12, -0.1], [r1 + 0.12, 0.1], [0, 0.1]], 8), M(0, y + h, 0, Math.PI / 8));
+      k.add('steel', lathe([[0, -collar.half], [r1 + collar.proud, -collar.half], [r1 + collar.proud, collar.half], [0, collar.half]], 8), M(0, y + h, 0, Math.PI / 8));
       if (i === 0) {
         // The mid lamp on a short arm at the first joint.
         k.box('galvanised', 0.08, 0.08, 0.3, M(0, y + h - 0.3, r1 + 0.2));

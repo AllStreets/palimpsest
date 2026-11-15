@@ -372,6 +372,49 @@ test("a lower stage's festoon hangs within its own floor", () => {
   lit.dispose();
 });
 
+test('revival bulbs light the scaffold boards: one baked light term per string, no point lights', () => {
+  const stages = [
+    { halfX: 8, halfZ: 8, y0: 0, y1: 4.6 },
+    { halfX: 7, halfZ: 7, y0: 4.6, y1: 9.2 },
+  ];
+  const lit = makeLitScaffold(stages, true);
+  lit.object.updateMatrixWorld(true);
+  let lights = 0;
+  lit.object.traverse((o) => {
+    if ((o as THREE.Light).isLight) lights++;
+  });
+  assert.equal(lights, 0, 'no point light');
+  const boards = lit.object.getObjectByName('reclad-scaffold:boards') as THREE.InstancedMesh | undefined;
+  assert.ok(boards, 'the boards are their own draw');
+  const term = boards.geometry.getAttribute('aFestoon') as THREE.InstancedBufferAttribute | undefined;
+  assert.ok(term, 'each board carries its baked festoon light');
+  const mat = boards.material as THREE.MeshStandardMaterial;
+  assert.ok(mat.userData.festoon === true && mat.isMeshStandardMaterial, 'lit by a term in its own material, still a lit surface');
+  // Each board's light: strongest on the boards a string hangs under, nothing on a board far from every string.
+  const level: Array<{ y: number; v: number }> = [];
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  for (let i = 0; i < boards.count; i++) {
+    boards.getMatrixAt(i, m);
+    p.setFromMatrixPosition(m);
+    level.push({ y: p.y, v: term.getX(i) });
+  }
+  const max = Math.max(...level.map((x) => x.v));
+  assert.ok(max > 0, 'the boards by a string take its light');
+  // One string a stage, FESTOON_LAMPS bulbs each: each string's mean height.
+  assert.equal(lit.lamps.length, 32, 'one string a stage');
+  const strings = [0, 1].map((k) => lit.lamps.slice(k * 16, k * 16 + 16).reduce((a, l) => a + l.y, 0) / 16);
+  for (const { y, v } of level) {
+    const near = Math.min(...strings.map((s) => Math.abs(s - y)));
+    if (near > 3) assert.ok(v < max * 0.2, `a board ${near.toFixed(1)} m from every string takes little (${v.toFixed(3)} of ${max.toFixed(3)})`);
+  }
+  assert.ok(level.some((x) => x.v > max * 0.6 && Math.min(...strings.map((s) => Math.abs(s - x.y))) < 1.2), 'the boards by each string are lit');
+  // Lit boards stay under the bloom threshold: warm light on timber, never a lamp.
+  const peak = (lit as unknown as { festoonPeak?: number }).festoonPeak ?? Number.NaN;
+  assert.ok(peak > 0.12 && peak * EXPOSURE < BLOOM_THRESHOLD, `the brightest board reads lit and under the threshold (${peak.toFixed(2)})`);
+  lit.dispose();
+});
+
 function ribbon(towerId: string, floorId: string, firmId = 'f1', until: string | null = null): Milestone {
   return { id: `ribbon:${firmId}:job-8`, kind: 'ribbon', towerId, repo: 'acme/widgets', firmId, agentId: 'a1', floorId, at: '2026-11-10T09:00:00Z', until, lit: true, title: 'The first PR of Quickset', detail: '' };
 }

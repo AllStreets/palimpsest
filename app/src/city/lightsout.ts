@@ -91,8 +91,42 @@ const WORLD_VERTEX = /* glsl */ `
   }
 `;
 
-/** What an emitter shows with its power off: a dead lamp's dull glass, not black. */
-const DEAD = '0.014, 0.014, 0.015';
+/**
+ * What an emitter shows with its power off: a dead lamp's dull glass, not
+ * black, holding the cold of the sky it faces, so a dark tower's crown (its
+ * lantern, its light lines, its beacon) reads cold rather than as a hole.
+ */
+export const DEAD_CROWN = new THREE.Color(0.014, 0.019, 0.027);
+const DEAD = `${DEAD_CROWN.r}, ${DEAD_CROWN.g}, ${DEAD_CROWN.b}`;
+
+/** A dead building's glass: dust on dark glazing with nothing lit behind it, glossy enough to hold the sky. */
+export const DEAD_GLASS = new THREE.Color(0.034, 0.032, 0.03);
+/** The storey height the stair's landings are counted in, and every how many storeys a landing keeps its exit light. */
+export const DEAD_STOREY = 4.2;
+export const DEAD_LANDING_EVERY = 4;
+/** About one pane in fifty off the stair keeps an exit sign burning on its battery. */
+export const DEAD_EXIT_ODD = 0.02;
+
+/** The shader's pane hash (look.ts rh), in JS. */
+const rh = (x: number): number => {
+  const v = Math.sin(x * 91.345) * 47453.5453;
+  return v - Math.floor(v);
+};
+
+/**
+ * A pane of a dark tower (look.ts DEAD_GLSL, in JS): no room behind it is
+ * lit; the ground floor is boarded; on the stair's column (one bay on each
+ * face toward the city) every DEAD_LANDING_EVERY storeys a landing keeps its
+ * exit light on its battery, and now and then another pane an exit sign.
+ * `seed` is the pane's own hash, `y` its centre's height.
+ */
+export function deadPane(seed: number, y: number, stair: boolean): { room: number; exit: number; boarded: boolean } {
+  if (y < 6) return { room: 0, exit: 0, boarded: true };
+  const landing = stair && Math.floor(y / DEAD_STOREY) % DEAD_LANDING_EVERY === 1;
+  if (landing) return { room: 0, exit: 1, boarded: false };
+  if (!stair && rh(seed * 23) < DEAD_EXIT_ODD) return { room: 0, exit: 0.6, boarded: false };
+  return { room: 0, exit: 0, boarded: false };
+}
 
 /**
  * An emitter (a light line, a vent, a lantern's glass, a beacon) goes out

@@ -53,7 +53,7 @@ import type { Page } from 'playwright';
 
 import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import { layoutTower } from '../shared/tower-layout.js';
-import type { District, Era, Quarter, Repo, TowerSpec } from '../shared/types.js';
+import type { District, Era, Quarter, Repo, SiteState, TowerSpec } from '../shared/types.js';
 import { frameStats } from '../app/src/city/governor.js';
 import { podVariant } from '../app/src/city/vehicles.js';
 import { around, apart, callDebug, followView, person, runUntil, sendPerson, tramFromHome } from './people-stage.js';
@@ -96,8 +96,12 @@ export function perfTiers(raw: string | undefined): Tier[] {
  * the 1512 by 982 built-in display, "UI looks like"), at its backing scale 2.
  */
 export const PERF_VIEWPORT = { width: 1512, height: 890, dpr: 2 } as const;
-/** The sample's fixed date: every run seeds the same history, so the same windows are lit. */
-const SEED_AT = Date.parse('2026-11-10T17:30:00Z');
+/**
+ * The sample's fixed date: every run seeds the same history, so the same windows are lit. PERF_SEED_AT=now seeds
+ * it at the run's start instead, for the stills of what lasts only days after it happens (Task 8: the revival's
+ * lights, the ribbon, a dark tower before its sale).
+ */
+const SEED_AT = process.env.PERF_SEED_AT === 'now' ? Date.now() : Date.parse('2026-11-10T17:30:00Z');
 const BEARING = { x: 0.63, z: 0.78 };
 
 type V3 = [number, number, number];
@@ -334,6 +338,124 @@ async function* familyViews(page: Page): AsyncGenerator<[string, V3, V3]> {
       // The roof pavilion from 120 m, 18 m over the roof, so its structure stands against the sky.
       yield [name, [o.x + BEARING.x * 120, top + 18, o.z + BEARING.z * 120], [o.x, top - 6, o.z]];
     }
+  }
+}
+
+/** The market's and the milestones' views (Task 8), staged one by one; an eye of null leaves the camera where the tour holds it. */
+const MARKET = ['dark-tower-home', 'spire-lenses', 'revival-close', 'ribbon-shade', 'tour-stop-roof', 'construction-home', 'beams-near', 'glint-tall', 'glazed-beam-close'];
+
+/**
+ * The market and the milestones from home (Task 8), yielded one by one: the
+ * bankrupt firm's dark tower from the home eye (dark-tower-home), the lit
+ * spire's lenses from 700 m (spire-lenses), the revival's festoon from 26 m
+ * (revival-close), the ribbon's band on its shaded side, the sun at the
+ * tower's back (ribbon-shade), the week tour held at its first tower stop
+ * (tour-stop-roof); then the sample economy's job sites turned live, as
+ * phase two turns them: the city from home with its lit sites
+ * (construction-home), a framing site's steel from 24 m (beams-near), and an
+ * inspection on the tallest glass tower from the home eye (glint-tall) and
+ * from 60 m (glazed-beam-close). No sample run inspects the tallest tower at
+ * the seed, so an inspection is stood there for the two glint stills (a
+ * site the live view lists, not a run in the ledger), only under PERF_ONLY;
+ * the sites are taken down again after.
+ */
+async function* marketViews(page: Page, reopen: () => Promise<void>, only: string[] | undefined): AsyncGenerator<[string, V3 | null, V3]> {
+  const want = (n: string): boolean => !only || only.includes(n);
+  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+  const home = await dbg<{ eye: V3; target: V3 }>(page, '(d) => d.limits().home');
+  type Show = { id: string; kind: string; towerId: string; lit: boolean; y: number; height: number; tip: number[] };
+  const shows = await callDebug<Show[]>(page, 'd.milestones()');
+  if (want('dark-tower-home')) {
+    const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+    const lode = qs.find((q) => q.dark && q.towers.some((t) => t.dark));
+    const t = lode?.towers.find((x) => x.dark);
+    if (lode && t) {
+      const off = QUARTER_OFFSETS[t.towerIndex ?? 0];
+      yield ['dark-tower-home', home.eye, [lode.origin.x + off.x, 28, lode.origin.z + off.z]];
+    } else console.log('market: no dark tower in the economy; dark-tower-home is skipped');
+  }
+  if (want('spire-lenses')) {
+    const spire = shows.find((m) => m.kind === 'skyline' && m.lit) ?? shows.find((m) => m.kind === 'skyline' || m.kind === 'founding-skyline');
+    if (spire) {
+      const [x, y, z] = spire.tip;
+      // From 700 m on the home bearing, level with the lenses' galleries: their sizes at a distance the city is seen from.
+      yield ['spire-lenses', [x + BEARING.x * 700, y - 20, z + BEARING.z * 700], [x, y - spire.height * 0.4, z]];
+    } else console.log('market: no spire stands; spire-lenses is skipped');
+  }
+  const towerOf = (id: string): District | undefined => city.find((d) => d.tower.id === id);
+  if (want('revival-close')) {
+    const r = shows.find((m) => m.kind === 'revival');
+    const d = r ? towerOf(r.towerId) : undefined;
+    if (r && d) {
+      const mid = r.y + r.height * 0.5;
+      yield ['revival-close', [d.origin.x - 17, mid + 3, d.origin.z + 20], [d.origin.x, mid - 0.5, d.origin.z]];
+    } else console.log('market: no revival stands; revival-close is skipped');
+  }
+  if (want('ribbon-shade')) {
+    const r = shows.find((m) => m.kind === 'ribbon');
+    const d = r ? towerOf(r.towerId) : undefined;
+    if (r && d) {
+      // The sun stands toward -x and +z (sky.ts SUN_DIRECTION): the faces toward +x and -z are the ribbon's shaded side.
+      yield ['ribbon-shade', [d.origin.x + 30, r.y + 4, d.origin.z - 22], [d.origin.x, r.y, d.origin.z]];
+    } else console.log('market: no ribbon flies; ribbon-shade is skipped');
+  }
+  if (want('tour-stop-roof')) {
+    type Tour = { t: number; length: number; index: number; dwelling: boolean };
+    if (await callDebug<boolean>(page, 'd.tourStart()')) {
+      await callDebug(page, 'd.tourHold(true)');
+      // The first stop past the exchange: on to its dwell.
+      await page.keyboard.press('Space');
+      await callDebug(page, 'd.tourHold(false)');
+      await page.waitForTimeout(400);
+      await callDebug(page, 'd.tourHold(true)');
+      const tour = await callDebug<Tour>(page, 'd.tour()');
+      await callDebug(page, `d.tourSeek(${(tour.t + 1.2).toFixed(2)})`);
+      await page.waitForTimeout(1600);
+      console.log(`market: tour-stop-roof at stop ${tour.index} (${tour.t.toFixed(1)} s)`);
+      yield ['tour-stop-roof', null, [0, 0, 0]];
+      await callDebug(page, 'd.tourHold(false)');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(2500);
+    } else console.log('market: the week has no tour to walk; tour-stop-roof is skipped');
+  }
+  const SITES = ['construction-home', 'beams-near', 'glint-tall', 'glazed-beam-close'];
+  if (!SITES.some(want)) return;
+  const { setMarketExtras } = await import('../engine/market/api.js');
+  const { economySites } = await import('../engine/market/sample-economy.js');
+  const tallest = [...city].sort((a, b) => layoutTower(b.tower).top - layoutTower(a.tower).top)[0];
+  const glint = want('glint-tall') || want('glazed-beam-close');
+  let stand = false;
+  const stood: SiteState = { repo: tallest.repo, runId: 'perf-glint', jobId: 'perf-glint', agentId: 'perf', firmId: 'perf', stage: 'inspecting', progress: 0.8, size: 'medium', since: new Date(SEED_AT).toISOString() };
+  // For the glint stills the tallest tower's own site (if it has one) stands aside for the inspection.
+  setMarketExtras({ sites: () => (stand ? [...economySites().filter((s) => s.repo !== tallest.repo), stood] : economySites()) });
+  type SV = { stage: string; top: number; floorHeight: number; centre: number[]; crane: number[] };
+  try {
+    await reopen();
+    await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().length >= 3, null, { timeout: 15_000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+    const sites = await callDebug<Array<{ repo: string; stage: string }>>(page, 'd.liveSites()');
+    console.log(`market: ${sites.length} live sites (${sites.map((s) => `${s.repo} ${s.stage}`).join(', ')})`);
+    if (want('construction-home')) yield ['construction-home', home.eye, home.target];
+    const framing = sites.find((s) => s.stage === 'framing' || s.stage === 'crane');
+    if (want('beams-near') && framing) {
+      const s = await callDebug<SV>(page, `d.site(${JSON.stringify(framing.repo)})`);
+      const [cx, cz] = s.centre;
+      console.log(`market: beams-near on ${framing.repo}, its deck at ${s.top.toFixed(1)} m round (${cx.toFixed(0)}, ${cz.toFixed(0)})`);
+      yield ['beams-near', [cx + BEARING.x * 20 + 6, s.top + 7, cz + BEARING.z * 20 - 4], [cx, s.top + 2.5, cz]];
+    } else if (want('beams-near')) console.log('market: no site frames; beams-near is skipped');
+    if (glint) {
+      stand = true;
+      await reopen();
+      await page.waitForTimeout(3000);
+      const s = await callDebug<SV | null>(page, `d.site(${JSON.stringify(tallest.repo)})`);
+      if (s && s.stage === 'inspecting') {
+        console.log(`market: an inspection stood on ${tallest.repo} for the glint, its top at ${s.top.toFixed(0)} m`);
+        if (want('glint-tall')) yield ['glint-tall', home.eye, [s.centre[0], s.top - 10, s.centre[1]]];
+        if (want('glazed-beam-close')) yield ['glazed-beam-close', [s.centre[0] + BEARING.x * 60 + 10, s.top - 12, s.centre[1] + BEARING.z * 60 - 8], [s.centre[0], s.top - 6, s.centre[1]]];
+      } else console.log(`market: ${tallest.repo} is not under inspection (${s?.stage ?? 'no site'}); the glint stills are skipped`);
+    }
+  } finally {
+    setMarketExtras({});
   }
 }
 
@@ -666,7 +788,8 @@ async function main(): Promise<void> {
     throw new Error(`perf: the transcripts folder ${projects ?? '(unset)'} is not inside the temp home ${tmp}; refusing to run`);
   }
   const { seedEconomy } = await import('../engine/market/sample-economy.js');
-  await seedEconomy(SEED_AT);
+  // PERF_HOLD_SALE=1 holds the bankrupt firm's tower back from the daily tick, so it still stands dark (dark-tower-home).
+  await seedEconomy(SEED_AT, { holdSale: !!process.env.PERF_HOLD_SALE });
   const { setRunner } = await import('../engine/exec.js');
   setRunner(sampleGh());
   const { startServer } = await import('../engine/server.js');
@@ -756,6 +879,12 @@ async function main(): Promise<void> {
         const ov = (await views(page)).find(([n]) => n === 'overview')!;
         for await (const [name, eye, target] of hazeViews(page, [ov[1], ov[2]])) {
           if (only && !only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
+      }
+      if (only && MARKET.some((n) => only.includes(n))) {
+        for await (const [name, eye, target] of marketViews(page, () => open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug'), only)) {
+          if (!only.includes(name)) continue;
           await measure(name, eye, target);
         }
       }

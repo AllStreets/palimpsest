@@ -28,8 +28,8 @@ import { crownFor } from '../../../shared/silhouette.js';
 import { layoutTower, type TowerLayout } from '../../../shared/tower-layout.js';
 import type { Milestone, MilestoneKind, Quarter, TowerSpec } from '../../../shared/types.js';
 import { LAYER, setLayers } from './lod.js';
-import { hash01 } from './construction.js';
-import { makeLitScaffold, type LitScaffold } from './scaffold-kit.js';
+import { hash01, pixelScale } from './construction.js';
+import { FESTOON_BULB, makeLitScaffold, type LitScaffold } from './scaffold-kit.js';
 import { RIBBON, ribbonGeometry, ribbonMaterial, sheenOf, type RibbonSpec } from './ribbon.js';
 import { makeSpire } from './tower/crowns.js';
 import { Kit, lathe, M, type MatKey, type TowerMaterials } from './tower/kit.js';
@@ -132,8 +132,9 @@ export const SPIRE = {
   breath: [0.5, 1.06] as [number, number],
   /** Seconds per breath. */
   period: 4,
-  /** The far point's size in pixels. */
+  /** The far point's size in pixels, and the least any lit lens stands across on screen. */
   point: 3.5,
+  lens: 2,
 } as const;
 
 /**
@@ -143,7 +144,7 @@ export const SPIRE = {
  * as on any string that has hung a week on a site.
  */
 export const FESTOON = {
-  bulb: [1.0, 0.5, 0.18] as [number, number, number],
+  bulb: FESTOON_BULB,
   radius: 0.12,
   dead: 0.06,
 } as const;
@@ -173,6 +174,8 @@ export interface Milestones {
   set(ms: ReadonlyArray<Milestone>, towers: (towerId: string) => TowerPiece | null, now?: number, o?: { fallen?: ReadonlySet<string> }): number | null;
   update(dt: number, clock: number): void;
   shows(): Map<string, MilestoneShow>;
+  /** Hides or shows every ribbon (tests: the band read against the frame without it). */
+  ribbons(on: boolean): void;
   dispose(): void;
 }
 
@@ -248,7 +251,8 @@ const LAMPS = lampSpots();
 function mastKit(k: Kit): void {
   // In galvanised steel throughout, its joint collars included: the needle's dark collars read as black bands on a lit mast.
   k.remap = { beacon: null, steel: 'galvanised' };
-  makeSpire(k, SPIRE.height, 8);
+  // Its joint collars light: a band a little proud of the mast, not a heavy ring (the needle crowns keep theirs).
+  makeSpire(k, SPIRE.height, 8, { proud: 0.05, half: 0.06 });
   k.remap = {};
   for (const g of GALLERIES) {
     const y = g * SPIRE.height;
@@ -354,8 +358,18 @@ class Draw {
   ) {
     this.mesh = this.make(4);
   }
+  private hook: ((renderer: THREE.WebGLRenderer, camera: THREE.Camera) => void) | null = null;
+  /** Runs before each draw of the mesh, as it is now or rebuilt larger. */
+  onRender(fn: (renderer: THREE.WebGLRenderer, camera: THREE.Camera) => void): void {
+    this.hook = fn;
+    this.mesh.onBeforeRender = (r, _s, c) => fn(r, c);
+  }
   private make(n: number): THREE.InstancedMesh {
     const m = new THREE.InstancedMesh(this.geo, this.mat, n);
+    if (this.hook) {
+      const fn = this.hook;
+      m.onBeforeRender = (r, _s, c) => fn(r, c);
+    }
     m.name = `milestone:${this.name}`;
     m.castShadow = this.shadow;
     m.receiveShadow = true;
@@ -393,6 +407,25 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
   const [lr, lg, lb] = SPIRE.lamp;
   const lamp = new THREE.MeshBasicMaterial({ color: new THREE.Color(lr, lg, lb) });
   lamp.name = 'milestone-lamp';
+  // Every lit lens carried to SPIRE.lens pixels across at any distance, about its own centre: from home the galleries'
+  // lenses still read as lamps, and up close each is its true size.
+  const lensPixel = { value: 0.001 };
+  lamp.onBeforeCompile = (sh) => {
+    sh.uniforms.uPixel = lensPixel;
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform float uPixel;').replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      #ifdef USE_INSTANCING
+      {
+        mat4 lw = modelMatrix * instanceMatrix;
+        float rw = length(lw[0].xyz);
+        float want = distance(lw[3].xyz, cameraPosition) * uPixel * ${(SPIRE.lens / 2).toFixed(2)};
+        transformed *= max(1.0, want / max(rw, 1e-4));
+      }
+      #endif`,
+    );
+  };
+  lamp.customProgramCacheKey = () => 'milestone-lens-px';
   // A lamp with the power off: a dark amber lens, a little gloss, so it still reads as glass up close.
   const darkLamp = new THREE.MeshStandardMaterial({ color: 0x3a2516, roughness: 0.28, metalness: 0.1 });
   darkLamp.name = 'milestone-lamp-dark';
@@ -402,6 +435,9 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
   const stays = parts(m, opts.quality, stayKit).map((p) => new Draw(p.geo, p.mat, `stays:${p.key}`, true, group));
   const lampGeo = parts(m, opts.quality, lampKit)[0].geo;
   const litLamps = new Draw(lampGeo, lamp, 'lamp:lit', false, group);
+  litLamps.onRender((renderer, camera) => {
+    lensPixel.value = pixelScale(renderer, camera);
+  });
   const darkLamps = new Draw(lampGeo.clone(), darkLamp, 'lamp:dark', false, group);
   const finials = parts(m, opts.quality, finialKit).map((p) => new Draw(p.geo, p.mat, 'finial', true, group));
   const sleeves = parts(m, opts.quality, sleeveKit).map((p) => new Draw(p.geo, p.mat, 'sleeve', true, group));
@@ -421,6 +457,21 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
   const [br, bg, bb] = FESTOON.bulb;
   const bulb = new THREE.MeshBasicMaterial({ color: new THREE.Color(br, bg, bb) });
   bulb.name = 'milestone-festoon';
+  // A lit bulb, not a flat disc: brightest where its glass faces the eye, falling off to its rim (at most 1.05 of its
+  // level, still under the bloom threshold).
+  bulb.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying float vFace;')
+      .replace(
+        '#include <project_vertex>',
+        `#include <project_vertex>
+        vFace = abs(dot(normalize(normalMatrix * normal), normalize(-mvPosition.xyz)));`,
+      );
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vFace;')
+      .replace('#include <opaque_fragment>', 'outgoingLight *= 0.5 + 0.55 * vFace * vFace;\n#include <opaque_fragment>');
+  };
+  bulb.customProgramCacheKey = () => 'milestone-festoon-bulb';
   const bulbGeo = new THREE.SphereGeometry(FESTOON.radius, 8, 6);
   let festoon = makeFestoon(64);
   function makeFestoon(n: number): THREE.InstancedMesh {
@@ -444,6 +495,11 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
   ribbonMesh.castShadow = true;
   ribbonMesh.receiveShadow = true;
   ribbonMesh.visible = false;
+  // The far band's least width on screen (ribbon.ts RIBBON.px) reads the pixel's size at the eye's distance.
+  ribbonMesh.onBeforeRender = (renderer, _s, camera) => {
+    (ribbonMat.userData as unknown as { pixel: { value: number } }).pixel.value = pixelScale(renderer, camera);
+  };
+  let ribbonsOn = true;
   group.add(ribbonMesh);
   let lastRibbons = '';
   let lastClock = 0;
@@ -623,7 +679,7 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
         ribbonMesh.geometry = ribbonGeometry(specs);
         ribbonMat.sheenColor.copy(sheenOf(specs.map((x) => x.colour)));
       }
-      ribbonMesh.visible = specs.length > 0;
+      ribbonMesh.visible = ribbonsOn && specs.length > 0;
 
       shows = nextShows;
       return next;
@@ -639,6 +695,10 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
       pointMat.color.setRGB(lr * kp, lg * kp, lb * kp);
     },
     shows: () => new Map(shows),
+    ribbons(on) {
+      ribbonsOn = on;
+      ribbonMesh.visible = on && lastRibbons !== '' && lastRibbons !== '[]';
+    },
     dispose() {
       ribbonMesh.geometry.dispose();
       ribbonMat.dispose();

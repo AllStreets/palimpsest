@@ -12,6 +12,7 @@ import { districtOrigin } from '../shared/district-layout.js';
 import type { Floor, Quarter, TowerSpec } from '../shared/types.js';
 import { CAMPANILE, onExchange, CIVIC_LAMPS, EXCHANGE_SLOTS, FOUNTAIN, HALL, JOBS_ROUTE, LAMPS_PER_SLOT, boardLabel, makeExchange, toteBoard } from '../app/src/city/exchange.js';
 import { BLOCK, PITCH, standingLots } from '../app/src/city/lots.js';
+import * as exchangeModule from '../app/src/city/exchange.js';
 import type { JobStatus } from '../shared/types.js';
 
 /** Instances of a named instanced mesh whose colour is lit (an emitter above the bloom threshold). */
@@ -210,6 +211,24 @@ test('the campanile rises well over the hall and stays below the district towers
   assert.ok(top < 115, `${top.toFixed(0)} m`);
   // Five clocks (the entrance and each face of the campanile), every hand in one instanced batch.
   assert.equal((ex.object.getObjectByName('exchange:hands') as THREE.InstancedMesh).count, 10);
+  ex.dispose();
+});
+
+test('the campanile skips a small new district', () => {
+  // Read through the module, so a build without the rule fails this test alone.
+  const stands = (exchangeModule as unknown as { campanileStands?: (tops: number[]) => boolean }).campanileStands;
+  assert.equal(typeof stands, 'function', 'the exchange says whether its campanile stands');
+  // A new city of one small district: a 107 m campanile would top it, so it does not stand.
+  assert.equal(stands!([]), false, 'no district, no campanile');
+  assert.equal(stands!([42]), false, 'one small new district');
+  assert.equal(stands!([CAMPANILE.top + 19.9]), false, 'a tower short of the campanile plus 20 m');
+  assert.equal(stands!([42, CAMPANILE.top + 20]), true, 'one tower at the campanile plus 20 m');
+  const make = makeExchange as unknown as (q: 'high' | 'medium', o: { campanile?: boolean }) => ReturnType<typeof makeExchange>;
+  const ex = make('medium', { campanile: false });
+  ex.object.updateMatrixWorld(true);
+  const top = new THREE.Box3().setFromObject(ex.object).max.y;
+  assert.ok(top < CAMPANILE.top - 30, `without it the dome is the exchange's top (${top.toFixed(1)} m)`);
+  assert.equal((ex.object.getObjectByName('exchange:hands') as THREE.InstancedMesh).count, 2, "the entrance clock's two hands alone");
   ex.dispose();
 });
 

@@ -9,6 +9,7 @@ import { ambientCap, COURT_APRON } from '../app/src/city/collar.js';
 import { standingLots } from '../app/src/city/lots.js';
 import { occupancy, plazasOf } from '../app/src/city/occupancy.js';
 import { lightsOutAt, quarterZones } from '../app/src/city/lightsout.js';
+import * as lightsoutModule from '../app/src/city/lightsout.js';
 import { agentLook, DARKEN_S, LANTERN_GLASS, LANTERN_TOP, quarterBuildKey, quarterCenterpiece, quarterLooks, quarterShow, QUARTER_OFFSETS, RECLAD } from '../app/src/city/quarters.js';
 import { AGENT_FLOOR_WIDTH } from '../app/src/city/tower/build.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
@@ -301,6 +302,44 @@ test('a dark quarter has no lit panes', () => {
   // Going dark never rebuilds the quarter: its build is the same lit or dark, and the light is a uniform.
   const lit: Quarter = { ...q, dark: false, towers: q.towers.map((t) => ({ ...t, dark: false })) };
   assert.equal(quarterBuildKey(settled.quarter), quarterBuildKey(quarterShow(lit).quarter));
+});
+
+test('a dark tower shows no lit window', () => {
+  // Read through the module, so a build without the dead building's panes fails this test alone.
+  const lo = lightsoutModule as unknown as {
+    deadPane?: (seed: number, y: number, stair: boolean) => { room: number; exit: number; boarded: boolean };
+    DEAD_GLASS?: THREE.Color;
+    DEAD_CROWN?: THREE.Color;
+  };
+  assert.equal(typeof lo.deadPane, 'function', 'a dead pane is worked out in JS as the shader does');
+  // Every pane of a 30 floor tower's faces, the stair column's and the rest: no room is lit.
+  let n = 0;
+  let exits = 0;
+  let stairExits = 0;
+  for (let i = 0; i < 40; i++) {
+    const seed = (i * 0.618034) % 1;
+    for (let y = 2.1; y < 130; y += 4.2) {
+      for (const stair of [false, true]) {
+        const p = lo.deadPane!(seed, y, stair);
+        assert.equal(p.room, 0, `no lit window (seed ${seed.toFixed(3)}, ${y.toFixed(1)} m${stair ? ', the stair' : ''})`);
+        if (y < 6) assert.ok(p.boarded && p.exit === 0, 'the ground floor boarded');
+        n++;
+        if (p.exit > 0) {
+          exits++;
+          if (stair) stairExits++;
+        }
+      }
+    }
+  }
+  // A few emergency exit lights: now and then off the stair (whose column is one bay of a face's eight or so), and
+  // on the stair at one landing in four, never a lit face.
+  const odd = exits - stairExits;
+  assert.ok(odd > 0 && odd / (n / 2) < 0.05, `a few exit signs off the stair (${odd} of ${n / 2} panes)`);
+  assert.ok(stairExits / (n / 2) > 0.15 && stairExits / (n / 2) < 0.35, `the stair keeps one at a landing in four (${stairExits} of ${n / 2})`);
+  // Darker glass than a live tower's dusty film, and a crown gone cold rather than black.
+  const lum = (c: THREE.Color): number => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  assert.ok(lo.DEAD_GLASS && lum(lo.DEAD_GLASS) < 0.05, 'the dead glass is dark');
+  assert.ok(lo.DEAD_CROWN && lo.DEAD_CROWN.b > lo.DEAD_CROWN.r * 1.3 && lum(lo.DEAD_CROWN) < 0.04, 'the crown is cold and unlit');
 });
 
 test("a sold school tower stood on the collegiate root before its sale, and the seller's spec keeps it", () => {

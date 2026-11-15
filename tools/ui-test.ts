@@ -3036,6 +3036,113 @@ const TALL_TOWER = 120;
  * line's spacing (courseGroup in look.ts, from the course height and the
  * run's own pixels per metre) is logged beside it.
  */
+/**
+ * The market and the milestones from home (Phase 5 Task 8, UI_ONLY=market):
+ * the ribbon's band on its shaded side stays above luminance 0.05
+ * (ribbon-shade, the band's pixels read against the same frame with the
+ * ribbons hidden); a lit site's warm haze reads from home at least 6 px
+ * across (construction-home, against the same frame with the sites hidden);
+ * and the guards on both tiers: home under 850 calls and 12M triangles, and
+ * the milestones within MILESTONE_CALLS.
+ */
+async function marketHomeChecks(page: Page): Promise<void> {
+  const lumOf = (img: ReturnType<typeof decodePng>, x: number, y: number): number => {
+    const i = (y * img.width + x) * 4;
+    return (0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2]) / 255;
+  };
+  const hide = await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride, .notices { display: none !important; }' });
+  // ribbon-shade: the sun stands toward -x and +z (sky.ts SUN_DIRECTION); the ribbon seen on its +x and -z faces.
+  await page.waitForFunction(`window.__palimpsest.milestones().some((m) => m.kind === 'ribbon')`, null, { timeout: 10_000 }).catch(() => {});
+  const shows = (await page.evaluate('window.__palimpsest.milestones()')) as SpireShow[];
+  const r = shows.find((m) => m.kind === 'ribbon');
+  const hasToggle = await page.evaluate("typeof window.__palimpsest.ribbons === 'function'");
+  if (!r || !hasToggle) {
+    check(false, `ribbon-shade's dark side is above luminance 0.05 (${r ? 'no ribbon toggle to read the band against' : 'no ribbon flies'})`);
+  } else {
+    const [x, y, z] = r.tip;
+    await setView(page, [x + 30, y + 4, z - 22], [x, y, z]);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(2500);
+    const on = decodePng(await page.screenshot({ path: join(SHOTS, 'ribbon-shade.png') }));
+    await page.evaluate('window.__palimpsest.ribbons(false)');
+    await page.waitForTimeout(500);
+    const off = decodePng(await page.screenshot());
+    await page.evaluate('window.__palimpsest.ribbons(true)');
+    const band: number[] = [];
+    for (let py = 0; py < on.height; py++) {
+      for (let px = 0; px < on.width; px++) {
+        const i = (py * on.width + px) * 4;
+        const d = Math.abs(on.data[i] - off.data[i]) + Math.abs(on.data[i + 1] - off.data[i + 1]) + Math.abs(on.data[i + 2] - off.data[i + 2]);
+        if (d > 12) band.push(lumOf(on, px, py));
+      }
+    }
+    band.sort((a, b) => a - b);
+    // The shaded side: the darker half of the band's pixels, read at its quarter.
+    const dark = band.length ? band[Math.floor(band.length * 0.25)] : 0;
+    console.log(`info  ribbon-shade: ${band.length} band pixels, luminance at the quarter ${dark.toFixed(3)}, median ${(band[Math.floor(band.length / 2)] ?? 0).toFixed(3)}`);
+    check(band.length > 200 && dark > 0.05, `ribbon-shade's dark side is above luminance 0.05 (${dark.toFixed(3)} over ${band.length} px)`);
+  }
+
+  // construction-home: the economy's live sites, from home.
+  type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): { top: number; floorHeight: number; centre: number[]; stage: string } | null; showSites(on: boolean): void; project(p: number[]): number[] };
+  const { setMarketExtras } = await import('../engine/market/api.js');
+  const { economySites } = await import('../engine/market/sample-economy.js');
+  setMarketExtras({ sites: economySites });
+  try {
+    await page.reload();
+    await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 30_000 });
+    await fullDensity(page);
+    await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride, .notices { display: none !important; }' });
+    await page.waitForFunction(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().some((s) => s.stage === 'framing'), null, { timeout: 10_000 }).catch(() => {});
+    const repo = (await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.liveSites().find((s) => s.stage === 'framing')?.repo ?? null)) as string | null;
+    const home = await debug(page, (d) => d.limits().home);
+    await setView(page, home.eye, home.target);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(3000);
+    const s = repo ? await page.evaluate((k) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(k), repo) : null;
+    if (!s) {
+      check(false, "construction-home shows the site's haze above a pixel floor (no site frames)");
+    } else {
+      const on = decodePng(await page.screenshot({ path: join(SHOTS, 'construction-home.png') }));
+      await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.showSites(false));
+      await page.waitForTimeout(600);
+      const off = decodePng(await page.screenshot());
+      await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.showSites(true));
+      // The haze's centre over the deck, as the field places it (construction.ts DECK_HAZE: 0.7 of a floor over the roof).
+      const q = await page.evaluate((p) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.project(p), [s.centre[0], s.top + s.floorHeight * 0.7, s.centre[1]]);
+      const cx = Math.round(((q[0] + 1) / 2) * on.width);
+      const cy = Math.round(((1 - q[1]) / 2) * on.height);
+      // Across the haze: the widest run of pixels on the rows round its centre lifted by at least 2 levels in 255.
+      let width = 0;
+      for (let row = Math.max(0, cy - 6); row <= Math.min(on.height - 1, cy + 6); row++) {
+        let run = 0;
+        for (let px = Math.max(0, cx - 60); px <= Math.min(on.width - 1, cx + 60); px++) {
+          const lift = lumOf(on, px, row) - lumOf(off, px, row);
+          run = lift * 255 >= 2 ? run + 1 : 0;
+          width = Math.max(width, run);
+        }
+      }
+      console.log(`info  construction-home: ${repo} at (${cx}, ${cy}) on screen, the haze ${width} px across`);
+      check(width >= 6, `construction-home shows the site's haze above a pixel floor (${width} px across at 2 levels in 255 over the frame without the sites)`);
+    }
+  } finally {
+    setMarketExtras({});
+  }
+  await hide.evaluate((e) => (e as HTMLElement).remove()).catch(() => {});
+
+  // The guards on both tiers (guard): home under the budget, the milestones within their calls.
+  for (const tier of ['high', 'medium'] as const) {
+    if (tier === 'medium') {
+      await page.evaluate('window.__palimpsest.dropQuality()');
+      await page.waitForTimeout(2500);
+    }
+    const budget = await homeBudgetNow(page);
+    const own = budget.parts.milestones?.calls ?? 0;
+    check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `on ${tier} home stays under ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+    check(own > 0 && own <= MILESTONE_CALLS[tier], `on ${tier} the milestones draw in at most ${MILESTONE_CALLS[tier]} calls from home (guard; ${own})`);
+  }
+}
+
 async function farChecks(page: Page): Promise<void> {
   const budget = await homeBudgetNow(page);
   check(budget.calls < 850 && budget.triangles <= 12e6, `home stays under 850 calls and 12M with the far architecture in (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
@@ -3496,7 +3603,8 @@ async function main(): Promise<void> {
     // UI_ONLY=people: the personas' checks and the people-follow frame rate on high, then on medium (Phase 5 Task 3).
     // UI_ONLY=haze: the six towers' hue spread in the overview (Phase 5 Task 6).
     // UI_ONLY=far: the stone's coursing read from 1,100 m, and the home guard (Phase 5 Task 7).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=market: the ribbon's shaded side, a lit site's haze from home, and the guards on both tiers (Phase 5 Task 8).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3537,6 +3645,8 @@ async function main(): Promise<void> {
         await hazeChecks(page);
       } else if (process.env.UI_ONLY === 'far') {
         await farChecks(page);
+      } else if (process.env.UI_ONLY === 'market') {
+        await marketHomeChecks(page);
       } else if (process.env.UI_ONLY === 'people') {
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');

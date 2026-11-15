@@ -41,6 +41,36 @@ export const SEARCH = (() => {
  */
 export const SEARCH_CAP = (0.85 * Math.PI) / (EXPOSURE * SEARCH.peak);
 
+/**
+ * Glazing under the beam (glazed-beam-close): its diffuse share and its
+ * glint each held to this after exposure, so the two together stay below
+ * white (the bloom threshold) where a pale wall alone may take SEARCH_CAP's
+ * 0.85.
+ */
+export const SEARCH_GLASS_CAP = 0.45;
+export const SEARCH_GLINT_CAP = 0.45;
+/** What glazing under the beam may come to after exposure, its lit room and the glint together: below white. */
+export const SEARCH_GLASS_WHITE = 0.9;
+
+/** The beam length at which the glint is as it was drawn for a 20 floor tower; longer beams catch more of it. */
+const GLINT_REACH = 110;
+/** The most a long beam lifts the glint. */
+const GLINT_MAX = 4;
+
+/**
+ * How much stronger (and broader) the beam's glint on glass is for a beam
+ * of `length` metres: 1 up to GLINT_REACH, then in proportion to the length
+ * up to GLINT_MAX. A beam raking the top of a 376 m glass tower is seen from
+ * home across 1,500 m: its glint must cover more of the face to show at all,
+ * and SEARCH_GLINT_CAP still holds it under white.
+ */
+export function searchGlint(length: number): number {
+  return Math.min(GLINT_MAX, Math.max(1, length / GLINT_REACH));
+}
+
+/** The largest channel of the beam's colour made unit length: the glint's colour is normalize(uSearchColor). */
+const GLINT_CHANNEL = Math.max(SEARCH.color.r, SEARCH.color.g, SEARCH.color.b) / Math.hypot(SEARCH.color.r, SEARCH.color.g, SEARCH.color.b);
+
 /** The shared uniforms: each lamp's lens and aim in world space, its cone (cos outer, cos inner, throw gain, beam length). */
 export const SEARCH_UNIFORMS = {
   uSearchPosW: { value: Array.from({ length: MAX_SEARCH }, () => new THREE.Vector3()) },
@@ -76,14 +106,27 @@ export const SEARCH_LIGHT = /* glsl */ `
     // Irradiance held under the level at which this surface would reach the bloom threshold: the beam lifts a
     // surface in proportion to its own colour (its hue kept) and never burns it out, dark or pale.
     float sAlb = max(dot(material.diffuseColor, vec3(0.2126, 0.7152, 0.0722)), 0.04);
-    float sE = min(uSearchCone[i].z * sSpot * sNl / (sNear * sNear), ${SEARCH_CAP.toExponential(4)} / sAlb);
+    #ifdef SEARCH_GLINT
+      // Glazing shares the budget with its glint: its diffuse held to SEARCH_GLASS_CAP, so the two stay below white.
+      float sCap = ${((SEARCH_CAP * SEARCH_GLASS_CAP) / 0.85).toExponential(4)};
+    #else
+      float sCap = ${SEARCH_CAP.toExponential(4)};
+    #endif
+    float sE = min(uSearchCone[i].z * sSpot * sNl / (sNear * sNear), sCap / sAlb);
     reflectedLight.directDiffuse += uSearchColor * sE * BRDF_Lambert(material.diffuseColor);
     #ifdef SEARCH_GLINT
-      // Glass: the beam's glint, a broad sheen lobe of weathered, dusty glazing (a beam from the plaza below rakes the face, so the half vector to an eye out over the city sits well off the normal) (13% of the beam's irradiance about the
-      // half vector to the eye), held under 0.5 so it reads as a bright moving glint on the face and never burns out.
+      // Glass: the beam's glint, a broad sheen lobe of weathered, dusty glazing (a beam from the plaza below rakes the
+      // face, so the half vector to an eye out over the city sits well off the normal): 13% of the beam's irradiance
+      // about the half vector to the eye, stronger and broader for a long beam (searchGlint), so the top of a very tall
+      // glass tower catches it from home; held to SEARCH_GLINT_CAP after exposure, a bright moving glint that never burns out.
+      float sGl = clamp(uSearchCone[i].w / ${GLINT_REACH.toFixed(1)}, 1.0, ${GLINT_MAX.toFixed(1)});
       float sH = max(dot(geometryNormal, normalize(sL + geometryViewDir)), 0.0);
-      float sG = min(uSearchCone[i].z * sSpot / (sNear * sNear) * pow(sH, 4.0) * ${(SEARCH.peak * 0.13).toFixed(1)}, 0.5);
-      reflectedLight.directSpecular += normalize(uSearchColor) * 1.7 * sG;
+      float sG = min(uSearchCone[i].z * sSpot / (sNear * sNear) * pow(sH, 4.0 / sqrt(sGl)) * ${(SEARCH.peak * 0.13 * 1.7).toFixed(1)} * sGl, ${(SEARCH_GLINT_CAP / (EXPOSURE * GLINT_CHANNEL)).toFixed(4)});
+      // And never past white with what the glass already shows: a lit room behind it (its emissive) leaves the glint
+      // only the headroom up to SEARCH_GLASS_WHITE.
+      float sRoom = max(totalEmissiveRadiance.r, max(totalEmissiveRadiance.g, totalEmissiveRadiance.b));
+      sG = min(sG, max(0.0, ${(SEARCH_GLASS_WHITE / EXPOSURE).toFixed(4)} - sRoom) / ${GLINT_CHANNEL.toFixed(4)});
+      reflectedLight.directSpecular += normalize(uSearchColor) * sG;
     #endif
   }
 `;

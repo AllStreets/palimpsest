@@ -140,6 +140,22 @@ export interface Exchange {
 export interface ExchangeOptions {
   /** The city's stone and glass (look.ts towerMaterials); plain stand-ins in node tests. */
   materials?: TowerMaterials;
+  /** Whether the campanile stands behind the hall (campanileStands); true when unsaid. */
+  campanile?: boolean;
+}
+
+/** How far the city's tallest district must stand over the campanile's finial before the campanile is built. */
+export const CAMPANILE_CLEAR = 20;
+
+/**
+ * Whether the campanile stands, given the tops of the city's district
+ * towers: only when one of them rises at least CAMPANILE_CLEAR over its
+ * finial. In a new city of small districts a 107 m civic tower would top
+ * the market's own towers, so the exchange stands without it until the
+ * city outgrows it.
+ */
+export function campanileStands(tops: ReadonlyArray<number>): boolean {
+  return tops.some((t) => t >= CAMPANILE.top + CAMPANILE_CLEAR);
 }
 
 // ---------------------------------------------------------------- dimensions
@@ -1031,7 +1047,7 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
   colonnade(k, detail);
   porticoWall(k, rand);
   entablature(k, detail);
-  const clocks = [aedicule(k), ...campanile(k, rand)];
+  const clocks = [aedicule(k), ...(opts.campanile === false ? [] : campanile(k, rand))];
   dome(k, detail, rand);
 
   // The tote board's brass frames, along the frieze over the portico.

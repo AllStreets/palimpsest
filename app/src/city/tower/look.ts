@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { lightsOutEmitter, OUT_PARS, OUT_UNIFORMS } from '../lightsout.js';
+import { DEAD_EXIT_ODD, DEAD_GLASS, DEAD_LANDING_EVERY, DEAD_STOREY, lightsOutEmitter, OUT_PARS, OUT_UNIFORMS } from '../lightsout.js';
 
 import type { District } from '../../../../shared/types';
 import { materials, texture } from '../materials';
@@ -87,7 +87,7 @@ function floodlit<T extends THREE.MeshStandardMaterial>(m: T, key: string, stren
 
 /** A scanned metal plate's normal and roughness under a flat tint: cast bronze. */
 function metal(color: number, rough: number, normal: number): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({
+  const m = new THREE.MeshStandardMaterial({
     color,
     metalness: 1,
     roughness: rough,
@@ -95,6 +95,25 @@ function metal(color: number, rough: number, normal: number): THREE.MeshStandard
     roughnessMap: texture('metal_arm.jpg'),
     normalScale: new THREE.Vector2(normal, normal),
   });
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sunCapped(sh.fragmentShader);
+  };
+  m.customProgramCacheKey = () => 'palimpsest-metal-suncap';
+  return m;
+}
+
+/**
+ * The low sun's specular on the towers' metal (a bronze datum band, a
+ * copper fin, a titanium corner) held to SUN_SPEC after exposure (post.ts
+ * EXPOSURE, 0.85): a lit edge, never a hot line that blooms at a tour stop
+ * or a ride (Phase 5 Task 6's rule: only emitters catch the bloom).
+ */
+const SUN_SPEC = 0.7;
+function sunCapped(frag: string): string {
+  return frag.replace(
+    '#include <lights_fragment_end>',
+    `#include <lights_fragment_end>\nreflectedLight.directSpecular = min(reflectedLight.directSpecular, vec3(${(SUN_SPEC / 0.85).toFixed(4)}));`,
+  );
 }
 
 let grain: { normal: THREE.Texture; rough: THREE.Texture } | null = null;
@@ -189,9 +208,14 @@ function brushed(color: number, rough: number, aniso: number, env: number, verte
   // See aniso-patch.ts: keeps three's anisotropic path from producing NaN pixels.
   if (ANISO_PATCH_OK) {
     // One program for every brushed metal: the patch is the same text, and colour and grain strength are uniforms.
-    m.customProgramCacheKey = () => 'palimpsest-brushed';
+    m.customProgramCacheKey = () => 'palimpsest-brushed-suncap';
     m.onBeforeCompile = (sh) => {
-      sh.fragmentShader = patchAnisotropy(sh.fragmentShader);
+      sh.fragmentShader = sunCapped(patchAnisotropy(sh.fragmentShader));
+    };
+  } else {
+    m.customProgramCacheKey = () => 'palimpsest-brushed-plain-suncap';
+    m.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sunCapped(sh.fragmentShader);
     };
   }
   return m;
@@ -249,13 +273,41 @@ function windowMaterial(glazing: Glazing = { body: 0x000000, tint: 0xffffff, env
   return m;
 }
 
+/** Where an emitter's near cap holds (metres from the eye) and where it has eased back to its own level. */
+export const NEAR_CAP: [number, number] = [260, 700];
+
 /**
- * A window where the power is off (lightsout.ts): the room goes out with
- * it. What is left is a dead building's glass: a film of dust, heaviest at
- * the foot of each pane where the rain leaves it; the ground floor boarded
- * in weathered plywood, and a pane here and there above it; the stair's
- * battery luminaires burning on, one bay off the middle of the two faces
- * that look toward the city, a few of them failed; and an exit sign in the
+ * An emitter that blooms from across the city but not up close: inside
+ * NEAR_CAP's first distance its brightest channel, after the renderer's
+ * exposure (post.ts EXPOSURE, 0.85), is held to `cap` (under the bloom
+ * threshold, 0.97), easing back to its own level by the second.
+ */
+export function nearCap<T extends THREE.MeshBasicMaterial>(m: T, cap: number): T {
+  const peak = Math.max(m.color.r, m.color.g, m.color.b) * 0.85;
+  const k = Math.min(1, cap / peak);
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying float vCapDist;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvCapDist = -mvPosition.z;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vCapDist;')
+      .replace('#include <opaque_fragment>', `outgoingLight *= mix(${k.toFixed(4)}, 1.0, smoothstep(${NEAR_CAP[0].toFixed(1)}, ${NEAR_CAP[1].toFixed(1)}, vCapDist));\n#include <opaque_fragment>`);
+  };
+  m.customProgramCacheKey = () => `near-cap-${k.toFixed(4)}`;
+  m.userData.nearCap = k;
+  return m;
+}
+
+/**
+ * A window where the power is off (lightsout.ts deadPane, the same in JS):
+ * the room goes out with it and nothing behind any pane is lit. What is left
+ * is a dead building's glass: dark glazing under a film of dust, heaviest at
+ * the foot of each pane where the rain leaves it, still glossy enough to hold
+ * the sky, so the tower reads as a building gone dark rather than a block;
+ * the ground floor boarded in weathered plywood, and a pane here and there
+ * above it; and the few emergency exit lights a dead building keeps on its
+ * batteries: one at every fourth landing of the stair, one bay off the
+ * middle of the two faces that look toward the city, and an exit sign in the
  * odd room.
  */
 const DEAD_GLSL = /* glsl */ `
@@ -266,15 +318,16 @@ const DEAD_GLSL = /* glsl */ `
         roomLight *= 1.0 - dOut;
         float ny0 = clamp((ro.y / sz.y) + 0.5, 0.0, 1.0);
         float grime = 0.5 + 0.5 * smoothstep(0.75, 0.0, ny0);
-        vec3 film = vec3(0.08, 0.074, 0.066) * (0.75 + 0.5 * rh(seed * 7.0));
-        diffuseColor.rgb = mix(diffuseColor.rgb, film, dOut * 0.75 * grime);
-        roughnessFactor = mix(roughnessFactor, 0.3 + 0.24 * grime, dOut);
+        vec3 film = vec3(${DEAD_GLASS.r}, ${DEAD_GLASS.g}, ${DEAD_GLASS.b}) * (0.8 + 0.4 * rh(seed * 7.0));
+        diffuseColor.rgb = mix(diffuseColor.rgb, film, dOut * (0.7 + 0.3 * grime));
+        roughnessFactor = mix(roughnessFactor, 0.1 + 0.22 * grime, dOut);
         // The pane's outward normal: the stair shows on the faces turned to the city's home bearing (+x and +z).
         vec2 nrm = normalize(vPaneT.xz);
         float u = dot(vPaneC.xz - oz.xy, vec2(-nrm.y, nrm.x));
         bool toCity = nrm.y > 0.7 || nrm.x > 0.7;
-        bool stair = toCity && abs(u - 3.4) < sz.x * 0.5 && vOutW.y > 6.5;
-        bool boarded = vOutW.y < 6.0 || (!stair && rh(seed * 3.1) < 0.09);
+        bool stair = toCity && abs(u - 3.4) < sz.x * 0.5 && vPaneC.y > 6.0;
+        bool boarded = vPaneC.y < 6.0 || (!stair && rh(seed * 3.1) < 0.09);
+        bool landing = stair && mod(floor(vPaneC.y / ${DEAD_STOREY.toFixed(1)}), ${DEAD_LANDING_EVERY.toFixed(1)}) == 1.0;
         if (boarded) {
           vec2 q = ro.xy + 20.0;
           float sheetId = floor(q.x / 1.22);
@@ -286,16 +339,17 @@ const DEAD_GLSL = /* glsl */ `
           diffuseColor.rgb = mix(diffuseColor.rgb, ply, dOut);
           roughnessFactor = mix(roughnessFactor, 0.93, dOut);
           roomLight = vec3(0.0);
-        } else if (stair) {
-          float alive = step(0.28, rh(seed * 17.0));
-          vec2 c = ro.xy - vec2(0.0, sz.y * 0.22);
-          float spot = exp(-dot(c, c) * 1.6) + 0.18 * exp(-dot(c, c) * 0.12);
-          roomLight += vec3(0.6, 0.78, 0.74) * 0.36 * spot * alive * dOut;
-        } else if (rh(seed * 23.0) < 0.05) {
-          vec2 e = abs(ro.xy - vec2(0.0, sz.y * 0.3)) - vec2(0.2, 0.07);
+        } else if (landing || (!stair && rh(seed * 23.0) < ${DEAD_EXIT_ODD.toFixed(3)})) {
+          // The exit sign over the landing's door, green on its battery, and the faint cold spill it throws on the
+          // stair's wall: a point of light in a dark face, never a lit room.
+          float k = landing ? 1.0 : 0.6;
+          vec2 at = ro.xy - vec2(0.0, sz.y * 0.3);
+          vec2 e = abs(at) - vec2(0.22, 0.08);
           float sign_ = 1.0 - smoothstep(0.0, 0.015, max(e.x, e.y));
-          float spill = exp(-dot(ro.xy - vec2(0.0, sz.y * 0.3), ro.xy - vec2(0.0, sz.y * 0.3)) * 2.2);
-          roomLight += vec3(0.1, 0.8, 0.3) * (0.75 * sign_ + 0.06 * spill) * dOut;
+          // The landing's battery luminaire washes the stairwell behind the pane a cold green-white, so from across the
+          // city a landing still reads as one faint point in the dark face.
+          float spill = exp(-dot(at, at) * 1.4) + 0.5 * exp(-dot(at, at) * 0.12);
+          roomLight += (vec3(0.1, 0.8, 0.3) * 0.8 * sign_ + vec3(0.32, 0.6, 0.5) * 0.16 * spill) * k * dOut;
         }
       }
     }
@@ -801,7 +855,8 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     // Neutral white (about 4500 K), at a level that reads as a lit reveal rather than neon.
     lightLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.88, 0.93, 1.0).multiplyScalar(1.0) })),
     // Saturated amber, a hue the architecture never uses, so a Claude floor reads apart from any light line.
-    accent: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) })),
+    // Up close (a tour stop, the ride) held under the bloom threshold, so a roof's line reads as a lit edge, not a hot wire.
+    accent: lightsOutEmitter(nearCap(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) }), 0.9)),
     // Cool moonlight blue-white, darker than the neutral light line: a merged floor's slab edge reads as lit
     // from the city's distance without reaching the bloom threshold (0.97), and never as the Claude amber.
     // Dimmed (AUD-C) so the line reads as a lit reveal under the floor's own lit rooms, not a strip in front of them.

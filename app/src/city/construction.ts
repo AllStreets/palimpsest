@@ -501,6 +501,40 @@ export function hash01(n: number): number {
   return (((w >>> 22) ^ w) >>> 0) / 4294967295;
 }
 
+/** The integer cell a world point falls in, hashed (the same bits in the steel's shader, STEEL_PATCH_GLSL). */
+function cellHash(x: number, y: number, z: number, k: number): number {
+  return hash01((Math.imul(Math.floor(x * k), 73856093) ^ Math.imul(Math.floor(y * k), 19349663) ^ Math.imul(Math.floor(z * k), 83492791)) >>> 0);
+}
+
+/**
+ * The steel's patches by hash of where it stands, so near beams vary as
+ * steel on a real site does: about one cell in nine (cells of 1.1 m) a
+ * touched-up patch of fresh primer, brighter and redder than the coat round
+ * it, and about two in five of the coarser cells (2.2 m) weathered, darker,
+ * greyer and rougher. Each is 0 to 1, a soft step on its cell's hash; the
+ * shader reads the same hash, so a member always reads the same.
+ */
+export function steelPatch(x: number, y: number, z: number): { primer: number; weather: number } {
+  const step = (a: number, b: number, v: number): number => THREE.MathUtils.smoothstep(v, a, b);
+  return { primer: step(0.86, 0.9, cellHash(x, y, z, 0.9)), weather: step(0.56, 0.64, cellHash(x + 17.3, y, z - 5.1, 0.45)) };
+}
+
+const STEEL_PATCH_GLSL = /* glsl */ `
+  float sHash(uint n) {
+    uint h = n * 747796405u + 2891336453u;
+    uint w = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    w = (w >> 22u) ^ w;
+    return float(w) / 4294967295.0;
+  }
+  float cellHash(vec3 p, float k) {
+    ivec3 c = ivec3(floor(p * k));
+    return sHash(uint(c.x * 73856093) ^ uint(c.y * 19349663) ^ uint(c.z * 83492791));
+  }
+  vec2 steelPatch(vec3 p) {
+    return vec2(smoothstep(0.86, 0.9, cellHash(p, 0.9)), smoothstep(0.56, 0.64, cellHash(p + vec3(17.3, 0.0, -5.1), 0.45)));
+  }
+`;
+
 /** Bead length: a welder runs a bead, stops, moves the rod, strikes again. */
 const BEAD = 1.3;
 /** The clock wraps here so float32 keeps millisecond precision in the shader. */
@@ -2000,8 +2034,10 @@ export const GLARE_FRAG = /* glsl */ `
     float r = length(vQuad);
     float core = exp(-r * r * 26.0);
     float glow = exp(-r * 5.5) * 0.18;
-    // A soft haze (vSoft 1): the warm air over a lit deck, no hot core, faded to nothing at the quad's edge.
-    float haze = exp(-r * r * 3.2) * (1.0 - smoothstep(0.75, 1.0, r));
+    // A soft haze (vSoft 1): the warm air over a lit deck, no hot core, spread wider than it stands tall as lit air
+    // hangs over a working floor, and gone well before the quad's edge so no disc shows round it.
+    float rh = length(vQuad * vec2(0.82, 1.3));
+    float haze = exp(-rh * rh * 4.2) * (1.0 - smoothstep(0.55, 1.0, rh));
     float a = mix(core + glow, haze, vSoft);
     if (a <= 0.003) discard;
     gl_FragColor = vec4(vColor * a, 1.0);
@@ -2174,6 +2210,7 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: FieldLight
         uniform vec3 uFloodPos[${MAX_FLOODS}];
         uniform int uFloodCount;
         uniform vec3 uFloodColor;
+        ${grime ? STEEL_PATCH_GLSL : ''}
         ${SEARCH_PARS}`,
       )
       .replace(
@@ -2195,6 +2232,13 @@ function floodLit<T extends THREE.MeshStandardMaterial>(m: T, floods: FieldLight
           float run = fract(vFieldWorld.y / 2.4 + lane * 0.37);
           fieldRust = step(0.8, lane) * pow(1.0 - run, 2.5) * (0.35 + vWear.y);
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.20, 0.075, 0.03), clamp(fieldRust, 0.0, 0.75));
+          // Patches by hash (steelPatch): weathered stretches darker and greyer; on primer, touched-up patches of fresh coat.
+          vec2 sp = steelPatch(vFieldWorld);
+          float sLum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+          diffuseColor.rgb = mix(diffuseColor.rgb, mix(vec3(sLum), diffuseColor.rgb, 0.6) * 0.72, sp.y * 0.8);
+          fieldRust = max(fieldRust, sp.y * 0.25);
+          float isPrimer = step(1.6 * diffuseColor.g, diffuseColor.r) * step(2.0 * diffuseColor.b, diffuseColor.r);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.55, 1.3, 1.2), sp.x * isPrimer);
         }`
             : ''
         }`,
@@ -2609,7 +2653,8 @@ export function makeConstructionField(quality: 'high' | 'medium'): ConstructionF
           a.set(sp.at.x + at.x, sp.at.y + at.y, sp.at.z + at.z, sp.time);
           b.set(at.x, at.z, sp.deck + at.y, sp.half);
           const w = s.weld();
-          if (w && w.intensity > 0) put(new THREE.Vector3(a.x, a.y, a.z), col.copy(ARC_GLARE).multiplyScalar(w.intensity / FLICKER.peak), 0.35, 3);
+          // The arc's glare never under four pixels: from across the city a site still flickers as its welder strikes and breaks.
+          if (w && w.intensity > 0) put(new THREE.Vector3(a.x, a.y, a.z), col.copy(ARC_GLARE).multiplyScalar(w.intensity / FLICKER.peak), 0.35, 4);
         } else b.set(0, 0, 0, 0);
         for (const f of s.floods()) {
           const p = f.add(at);
