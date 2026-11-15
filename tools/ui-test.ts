@@ -3101,7 +3101,7 @@ async function marketHomeChecks(page: Page): Promise<void> {
     await page.waitForTimeout(3000);
     const s = repo ? await page.evaluate((k) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.site(k), repo) : null;
     if (!s) {
-      check(false, "construction-home shows the site's haze above a pixel floor (no site frames)");
+      check(false, "construction-home shows the site's haze above a pixel floor (guard; no site frames)");
     } else {
       const on = decodePng(await page.screenshot({ path: join(SHOTS, 'construction-home.png') }));
       await page.evaluate(() => (window as unknown as { __palimpsest: Dbg }).__palimpsest.showSites(false));
@@ -3123,7 +3123,8 @@ async function marketHomeChecks(page: Page): Promise<void> {
         }
       }
       console.log(`info  construction-home: ${repo} at (${cx}, ${cy}) on screen, the haze ${width} px across`);
-      check(width >= 6, `construction-home shows the site's haze above a pixel floor (${width} px across at 2 levels in 255 over the frame without the sites)`);
+      // A guard: the base's haze already read 74 px across (as a disc); the change in its shape is judged by the stills.
+      check(width >= 6, `construction-home shows the site's haze above a pixel floor (guard; ${width} px across at 2 levels in 255 over the frame without the sites)`);
     }
   } finally {
     setMarketExtras({});

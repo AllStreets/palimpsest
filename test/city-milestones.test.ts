@@ -415,6 +415,38 @@ test('revival bulbs light the scaffold boards: one baked light term per string, 
   lit.dispose();
 });
 
+test("the festoon's flicker reads hashes worked out once in set, the same for the same string", () => {
+  const s = scene();
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const now = Date.parse('2026-11-12T12:00:00Z');
+  const lay = layoutTower(s.district);
+  const r = revival(s.district.id, lay.floors[lay.floors.length - 1].floor.id, '2026-11-17T09:00:00Z');
+  const make = (): ReturnType<typeof createMilestones> & { festoonHashes?: () => Float32Array } => createMilestones({ quality: 'high', materials: plainMaterials() });
+  const ms = make();
+  assert.equal(typeof ms.festoonHashes, 'function', 'the festoon shows the hashes its flicker reads');
+  ms.set([r], towers, now);
+  const bulbs = lampLevels(ms).length;
+  const first = Array.from(ms.festoonHashes!().slice(0, bulbs * 2));
+  // The same string built again, here and in a fresh city: the same hashes.
+  ms.set([r], towers, now);
+  assert.deepEqual(Array.from(ms.festoonHashes!().slice(0, bulbs * 2)), first, 'set again, the same hashes');
+  const other = make();
+  other.set([r], towers, now);
+  assert.deepEqual(Array.from(other.festoonHashes!().slice(0, bulbs * 2)), first, 'built afresh, the same hashes');
+  // A frame reads them and never works them out: frames leave them as they are, and what the frame shows follows them.
+  ms.update(0.016, 1.0);
+  ms.update(0.016, 2.3);
+  assert.deepEqual(Array.from(ms.festoonHashes!().slice(0, bulbs * 2)), first, 'frames never rewrite them');
+  const h = ms.festoonHashes!();
+  for (let i = 0; i < bulbs; i++) h[i * 2 + 1] = 0;
+  ms.update(0.016, 3.1);
+  const levels = lampLevels(ms);
+  assert.ok(levels.every((x) => Math.abs(x - levels[0]) < 1e-9), `with every second hash set to 0 each bulb reads dead, as the frame read the stored hashes (${levels.slice(0, 4).map((x) => x.toFixed(3)).join(', ')})`);
+  ms.dispose();
+  other.dispose();
+  s.dispose();
+});
+
 function ribbon(towerId: string, floorId: string, firmId = 'f1', until: string | null = null): Milestone {
   return { id: `ribbon:${firmId}:job-8`, kind: 'ribbon', towerId, repo: 'acme/widgets', firmId, agentId: 'a1', floorId, at: '2026-11-10T09:00:00Z', until, lit: true, title: 'The first PR of Quickset', detail: '' };
 }

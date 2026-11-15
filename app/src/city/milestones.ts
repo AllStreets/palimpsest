@@ -176,6 +176,8 @@ export interface Milestones {
   shows(): Map<string, MilestoneShow>;
   /** Hides or shows every ribbon (tests: the band read against the frame without it). */
   ribbons(on: boolean): void;
+  /** The festoon bulbs' two hashes each, worked out in set() and only read by each frame's flicker (tests). */
+  festoonHashes(): Float32Array;
   dispose(): void;
 }
 
@@ -695,6 +697,7 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
       pointMat.color.setRGB(lr * kp, lg * kp, lb * kp);
     },
     shows: () => new Map(shows),
+    festoonHashes: () => bulbHash,
     ribbons(on) {
       ribbonsOn = on;
       ribbonMesh.visible = on && lastRibbons !== '' && lastRibbons !== '[]';

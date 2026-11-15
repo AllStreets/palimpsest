@@ -40,8 +40,12 @@ function stone(color: number, key: string, normal = 0.9, desat = 0, rough = 1): 
  * walls, strongest at the foot, carrying up the root and gone by the floors.
  */
 function floodlit<T extends THREE.MeshStandardMaterial>(m: T, key: string, strength = 1, desat = 0): T {
-  m.customProgramCacheKey = () => `palimpsest-tower-flood-${key}`;
+  // A metal (metal(), brushed()) carries the sun cap in its own hook, which this one replaces: it is put back below
+  // (userData.sunCap), so a floodlit metal keeps the cap and its program key says so.
+  const capped = m.userData.sunCap === true;
+  m.customProgramCacheKey = () => `palimpsest-tower-flood-${key}${capped ? '-suncap' : ''}`;
   m.onBeforeCompile = (sh) => {
+    if (capped) sh.fragmentShader = sunCapped(sh.fragmentShader);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;')
       .replace(
@@ -99,6 +103,8 @@ function metal(color: number, rough: number, normal: number): THREE.MeshStandard
     sh.fragmentShader = sunCapped(sh.fragmentShader);
   };
   m.customProgramCacheKey = () => 'palimpsest-metal-suncap';
+  // Read by floodlit(), which replaces this hook: it applies the cap itself, so wrapping never drops it.
+  m.userData.sunCap = true;
   return m;
 }
 
@@ -218,6 +224,8 @@ function brushed(color: number, rough: number, aniso: number, env: number, verte
       sh.fragmentShader = sunCapped(sh.fragmentShader);
     };
   }
+  // floodlit() would drop the anisotropy patch too, so a brushed metal is never floodlit; the flag keeps the cap if one is.
+  m.userData.sunCap = true;
   return m;
 }
 
