@@ -72,8 +72,9 @@ export function school(): Diagram {
 
   // The master's line wraps down into the guess.
   const wrapY = (R + netBottom) / 2 + 150;
-  s.path(`M1370,${master.bottom + 14} V${wrapY - 8} Q1370,${wrapY} 1362,${wrapY} H72 Q64,${wrapY} 64,${wrapY + 8} V${guess.rule - 8} Q64,${guess.rule} 72,${guess.rule} H78`, 'l-strong');
-  s.arrow(78, guess.rule, 0, 'l-strong', 6);
+  s.path(`M1370,${master.bottom + 14} V${wrapY - 8} Q1370,${wrapY} 1362,${wrapY} H72 Q64,${wrapY} 64,${wrapY + 8} V${guess.rule - 8} Q64,${guess.rule} 72,${guess.rule} H78`, 'l-accent l-dash');
+  s.arrow(78, guess.rule, 0, 'l-accent', 6);
+  s.text(96, wrapY - 10, 'The master’s guess on each of his decisions, written before he makes it', { kind: 'figure', cls: 't-accent', keys: ['feed:guess'] });
 
   // Per kind of work.
   const kindsY = agree.bottom + 36;

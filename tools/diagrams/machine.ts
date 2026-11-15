@@ -36,10 +36,15 @@ export function machine(o: { enginePort?: number; ollamaPort?: number } = {}): D
   const R1 = 282;
   const app = s.entry(A.x, R1, A.w, 'Palimpsest.app', { note: 'The window: a splash, then the city the engine serves' });
   const browser = s.entry(A.x, R1 + 120, A.w, 'Any browser', { note: 'The same city at the same address' });
+  s.text(A.x, 560, 'When the window closes', { kind: 'head' });
+  s.entry(A.x, 605, A.w, 'Nothing stops', {
+    note: 'The engine is not the window’s child. Jobs, bids, inspections, nightly training and the ledger go on, and the window shows them again when it opens.',
+    rule: 'l-rule',
+  });
 
   // ------------------------------------------------------------ the engine
   const engine = s.entry(B.x, R1, B.w, 'The engine', {
-    note: `A launchd user agent, ${LAUNCHD_LABEL}. It keeps running when the window is closed.`,
+    note: `A launchd user agent, ${LAUNCHD_LABEL}, started at login.`,
     keys: [`port:${enginePort}`],
   });
   s.line(A.x + A.w, app.rule, B.x, engine.rule, 'l-ink');

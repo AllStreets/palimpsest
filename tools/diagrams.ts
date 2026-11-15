@@ -35,6 +35,8 @@ const MEDIA = join(ROOT, 'docs', 'media');
 const FONTS = join(ROOT, 'app', 'public', 'fonts');
 export const DIAGRAMS_PORT_DEFAULT = 4792;
 export const MAX_BYTES = 300 * 1024;
+/** The size each image aims under, for margin below the cap. */
+export const AIM_BYTES = 270 * 1024;
 const WIDTH = 1600;
 
 export function diagrams(): Diagram[] {
@@ -108,7 +110,7 @@ async function main(): Promise<void> {
         let q = 92;
         for (;;) {
           execFileSync('cwebp', ['-q', String(q), '-m', '6', '-sharp_yuv', png, '-o', webp], { stdio: 'ignore' });
-          if (statSync(webp).size <= MAX_BYTES || q <= 60) break;
+          if (statSync(webp).size <= AIM_BYTES || q <= 60) break;
           q -= 4;
         }
         const kb = Math.round(statSync(webp).size / 1024);

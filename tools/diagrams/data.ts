@@ -135,7 +135,7 @@ export const REOPEN_NOTES: Partial<Record<`${JobStatus}>${JobStatus}`, string>> 
   'running>open': 'Killed, no attempt spent',
   'inspecting>open': 'Killed mid-inspection',
   'shipping>open': 'Push refused twice, no scar',
-  'failed>open': `While attempts are under ${MAX_ATTEMPTS}`,
+  'failed>open': `If under ${MAX_ATTEMPTS} attempts`,
   'halted>open': 'Resumed',
 };
 

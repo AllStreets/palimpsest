@@ -129,7 +129,7 @@ export function floor(): Diagram {
     const words = out.map(([, b], i) => {
       const n = REOPEN_NOTES[`${r}>${b}`];
       const or = i > 0 ? 'or ' : '';
-      if (b === 'open') return r === 'failed' ? `Open again ${n?.toLowerCase() ?? ''}`.trim() : `${n ?? 'Back'} to open`;
+      if (b === 'open') return r === 'failed' ? `Reopens ${n?.toLowerCase() ?? ''}`.trim() : `${n ?? 'Back'} to open`;
       if (b === 'waiting') return `${or}to waiting if its pull request is open`;
       return `${or}${JOB_STATE_LABEL[b].toLowerCase()}`;
     });
