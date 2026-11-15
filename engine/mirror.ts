@@ -27,6 +27,9 @@ export interface Commit {
   lines: number;
 }
 
+/** Why a run or an audit ended before it cloned: the repo's latest commits could not be fetched (the reason follows). */
+export const SYNC_FAILED = "Could not fetch the repo's latest commits";
+
 /** The bare mirror directory for `fullName` under paths().mirrors. */
 export function mirrorDir(fullName: string): string {
   const [owner, name] = fullName.split('/');

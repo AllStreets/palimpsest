@@ -1059,3 +1059,59 @@ test('turning the market on with no audit trigger registered warns once and stil
     console.warn = original;
   }
 });
+
+/** A ready repo row that was never detected (checks null), as an analysis before detection existed left it. */
+function undetectedRepo(fullName: string): Repo {
+  const repo = { ...repoMarketDefaults(), fullName, private: false, defaultBranch: 'main', language: null, description: null, connected: true, pushMode: false, root: 'roman', slot: 0, status: 'ready', error: null, connectedAt: '2026-11-01T00:00:00.000Z', analyzedAt: '2026-11-01T00:00:00.000Z', joinedAt: '2026-11-01T00:00:00.000Z' } as Repo;
+  openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(repo.fullName, JSON.stringify(repo));
+  return repo;
+}
+
+test('turning the market on detects the checks of a repo that never had them, from its mirror and without a fetch', async () => {
+  const { checksSettled, getRepo, registerAuditTrigger } = await import('../engine/repos.js');
+  registerAuditTrigger(() => {});
+  const fullName = 'acme/neverread';
+  undetectedRepo(fullName);
+  const calls: string[] = [];
+  const tree = treeRunner(fullName, { 'package.json': JSON.stringify({ scripts: { test: 'node --test', build: 'vite build' }, devDependencies: { vite: '1' } }), 'package-lock.json': '{}' });
+  setRunner(async (cmd, args) => {
+    calls.push(`${cmd} ${args.join(' ')}`);
+    return tree(cmd, args);
+  });
+  const patched = waitForEvent('repo.patched');
+  patchRepo(fullName, { market: true });
+  await patched;
+  await checksSettled();
+  const c = getRepo(fullName)!.checks;
+  assert.equal(c?.install, 'npm ci');
+  assert.deepEqual(c?.ecosystems, ['npm']);
+  assert.equal(c?.test, 'npm test');
+  assert.equal(c?.build, 'npm run build');
+  assert.equal(c?.detected, true);
+  assert.ok(!calls.some((c) => /fetch|clone|^gh /.test(c)), `no network: ${calls.join('; ')}`);
+  registerAuditTrigger(null);
+});
+
+test('turning the market on leaves known checks alone, and a failed detection leaves them null', async () => {
+  const { checksSettled, getRepo, registerAuditTrigger } = await import('../engine/repos.js');
+  registerAuditTrigger(() => {});
+  undetectedRepo('acme/nomirror');
+  let calls = 0;
+  setRunner(async () => {
+    calls++;
+    return { stdout: '', stderr: 'fatal: cannot change to the mirror', code: 128 };
+  });
+  patchRepo('acme/nomirror', { market: true });
+  await checksSettled();
+  assert.equal(getRepo('acme/nomirror')!.checks, null);
+  assert.equal(getRepo('acme/nomirror')!.market, true);
+
+  calls = 0;
+  patchRepo('acme/nomirror', { market: false });
+  patchRepo('acme/nomirror', { checks: { test: 'make test' } });
+  patchRepo('acme/nomirror', { market: true });
+  await checksSettled();
+  assert.equal(calls, 0, 'known checks are not read again');
+  assert.equal(getRepo('acme/nomirror')!.checks?.test, 'make test');
+  registerAuditTrigger(null);
+});

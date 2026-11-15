@@ -61,7 +61,8 @@ afterEach(async () => {
 });
 
 /** A connected repo with the market on; GitHub is a temp bare repo the mirror was cloned from. */
-function makeRemoteRepo(c = checks()): Repo {
+/** A run needs a known command (it never starts blind), so the default names a test that always passes. */
+function makeRemoteRepo(c = checks({ test: 'true' })): Repo {
   const repo: Repo = {
     fullName: FULL,
     private: false,
@@ -113,6 +114,7 @@ function deps(over: Partial<SchedulerDeps> = {}): SchedulerDeps {
     quiet: async () => {},
     reap: async () => [],
     preflight: async () => null,
+    sync: async () => {},
     watchMs: 0,
     ...over,
   };

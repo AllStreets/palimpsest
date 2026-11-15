@@ -477,7 +477,7 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     const others = ranked.filter((b) => b !== chosen);
     if (others.length) parts.push(`Also considered: ${others.map(describe).join('; ')}.`);
   } else {
-    parts.push(bids.length ? `No bid had a positive expected value, so the job goes back on the board.` : `No bids came in, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.`);
+    parts.push(bids.length ? `No bid had a positive expected value, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.` : `No bids came in, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.`);
     if (bids.length) parts.push(`Considered: ${ranked.map(describe).join('; ')}.`);
   }
   if (satOut.length) parts.push(`Sat out: ${satOut.map((s) => `${nameOf(s.agentId)} (${s.reason})`).join('; ')}.`);
@@ -492,8 +492,9 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     chosen,
     why,
     at: new Date(now).toISOString(),
-    // Nobody eligible, or everyone sat out: wait before the next round.
-    coolOffUntil: bids.length === 0 ? new Date(now + BID_COOL_OFF_MS).toISOString() : null,
+    // No award (nobody eligible, everyone sat out, or no bid worth its price): wait before the next
+    // round, since the same firms would bid the same again and each Claude bid spends his plan.
+    coolOffUntil: chosen ? null : new Date(now + BID_COOL_OFF_MS).toISOString(),
     // Decision 14: the appraisals the award weighed, and whether they changed the choice (its later rows are then partly its own).
     ...(school ? { appraisals: Object.fromEntries(school.map((w) => [w.bid.id, w.bid.appraisal])) } : {}),
     ...(moved ? { appraiserMoved: true } : {}),

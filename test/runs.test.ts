@@ -46,8 +46,9 @@ import {
   WATCH_MS,
   type SchedulerDeps,
 } from '../engine/market/runs.js';
+import { emptyChecks } from '../engine/guild/checks.js';
 import { patchSettings } from '../engine/settings.js';
-import { getRepo, updateRepoMarket } from '../engine/repos.js';
+import { CHECKS_UNKNOWN, getRepo, updateRepoMarket } from '../engine/repos.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Agent, Bid, CheckResult, Firm, Inspection, Job, ModelRef, Repo, Run } from '../shared/types.js';
 
@@ -152,7 +153,7 @@ function reading(five = 10): void {
 
 let slot = 0;
 /** A connected repo with the market on, and its bare mirror where syncMirror would put it. */
-function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
+function makeRepo(full = FULL, over: Partial<Repo> = {}, files: Record<string, string> = {}): Repo {
   const repo: Repo = {
     fullName: full,
     private: false,
@@ -170,6 +171,8 @@ function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
     ...repoMarketDefaults(),
     market: true,
     joinedAt: '2026-11-01T00:00:00.000Z',
+    // Known checks, so a run never stops to learn them; a test that wants them unknown passes `checks: null`.
+    checks: { ...emptyChecks(), test: 'true' },
     ...over,
   };
   openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(repo.fullName, JSON.stringify(repo));
@@ -178,6 +181,7 @@ function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
   git(work, 'init', '-q', '-b', 'main');
   writeFileSync(join(work, 'README.md'), 'widgets\n');
   writeFileSync(join(work, 'src', 'header.ts'), 'export const header = 1;\n');
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(work, name), text);
   git(work, 'add', '.');
   git(work, 'commit', '-q', '-m', 'first');
   git(tempDir, 'clone', '-q', '--bare', work, mirrorDir(full));
@@ -303,6 +307,8 @@ function deps(over: Partial<SchedulerDeps> = {}): { deps: SchedulerDeps; calls: 
       return [];
     },
     preflight: async () => null,
+    // Never the network: a test that wants the mirror fetched passes its own.
+    sync: async () => {},
     watchMs: 0,
     ...over,
   };
@@ -647,6 +653,77 @@ test('the runner hands the baseline its signal and the install its egress', asyn
   assert.equal(baselines[0].sha, r.baseSha);
   assert.equal(baselines[0].signal, ctxs[0].signal);
   assert.equal(typeof ctxs[0].egress?.setStage, 'function');
+});
+
+test('a repo whose checks were never read learns them from the run\'s clone, and its install opens only the npm registry', async () => {
+  makeRepo(FULL, { checks: null }, {
+    'package.json': JSON.stringify({ scripts: { test: 'node --test', build: 'vite build' }, devDependencies: { vite: '1' } }),
+    'package-lock.json': '{}',
+  });
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const seen: Array<Repo> = [];
+  const s = createScheduler(
+    deps({
+      installDeps: async (_ctx, repo) => {
+        seen.push(repo);
+        return { ...skipped, status: 'pass', detail: 'npm ci' };
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(seen.length, 1, 'the install ran');
+  assert.equal(seen[0].checks?.install, 'npm ci');
+  assert.deepEqual(seen[0].checks?.ecosystems, ['npm']);
+  assert.equal(getRepo(FULL)!.checks?.build, 'npm run build', 'the repo keeps what the run learned');
+  assert.equal(getRepo(FULL)!.halted, null);
+  const log = readFileSync(join(paths().runs, r.id, 'log.jsonl'), 'utf8');
+  assert.match(log, /stage install: registry\.npmjs\.org/);
+  assert.doesNotMatch(log, /stage install: nothing allowed/);
+  assert.notEqual(r.endedReason, `${CHECKS_UNKNOWN}.`);
+});
+
+test('a run on a repo where no build or test command can be found does not start blind: the job returns to the board and the repo says why', async () => {
+  makeRepo(FULL, { checks: null });
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  let installs = 0;
+  let worked = 0;
+  useScript({
+    work: async (i) => {
+      worked++;
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(
+    deps({
+      installDeps: async () => {
+        installs++;
+        return skipped;
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(installs, 0, 'nothing was installed');
+  assert.equal(worked, 0, 'no agent worked');
+  assert.equal(r.outcome, 'crashed');
+  assert.equal(r.endedReason, `${CHECKS_UNKNOWN}.`);
+  assert.match(r.endedReason ?? '', /build and test commands are not known yet/);
+  const after = job(j.id)!;
+  assert.equal(after.status, 'open', 'back on the board');
+  assert.equal(after.attempts, 0, 'no attempt spent');
+  assert.deepEqual(after.excludedFirms, []);
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0, 'not the firm\'s failure');
+  const repo = getRepo(FULL)!;
+  assert.equal(repo.halted?.reason, CHECKS_UNKNOWN);
+  assert.ok(entries().some((e) => e.kind === 'repo.halted' && (e.data as { reason: string }).reason === CHECKS_UNKNOWN));
+  // Halted, the repo opens no bidding until he resumes it.
+  await s.tick();
+  await s.idle();
+  assert.equal(job(j.id)?.status, 'open');
+  assert.equal(runsOf(j.id).length, 1);
 });
 
 test('the real inspection is the default: a third failed inspection halts the repo, and its run still ends failed with a scar', async () => {
@@ -1287,4 +1364,145 @@ test('proposed jobs never bid', async () => {
   assert.equal(runsOf(p.id).length, 0);
   assert.equal(evOf('bid.placed').length, 0);
   assert.deepEqual(jobMoves(p.id), []);
+});
+
+// ---------------------------------------------------------------- the mirror is fetched first
+
+/** Adds a commit to the repo's working source (the stand-in for GitHub), not to its mirror; returns its sha. */
+function pushUpstream(full: string, name: string, text: string): string {
+  const work = join(tempDir, 'work', full.replace('/', '__'));
+  writeFileSync(join(work, name), text);
+  git(work, 'add', '.');
+  git(work, 'commit', '-q', '-m', `add ${name}`);
+  return git(work, 'rev-parse', 'HEAD');
+}
+
+/** A sync that fetches the temp working source into the temp mirror, as syncMirror would fetch GitHub. */
+function fetchingSync(calls: string[]) {
+  return async (full: string) => {
+    calls.push(full);
+    git(tempDir, `--git-dir=${mirrorDir(full)}`, 'fetch', '-q', join(tempDir, 'work', full.replace('/', '__')), '+refs/heads/*:refs/heads/*');
+  };
+}
+
+test('a run fetches the repo\'s latest commits before it clones, so it works on the current code', async () => {
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('a1', 'alpha', 'claude:sonnet'));
+  const head = pushUpstream(FULL, 'NEW.md', 'named in the issue\n');
+  const synced: string[] = [];
+  let sawNew = false;
+  useScript({
+    work: async (i) => {
+      sawNew = existsSync(join(i.dir, 'NEW.md'));
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(deps({ sync: fetchingSync(synced) }).deps);
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.deepEqual(synced, [FULL]);
+  assert.equal(r.baseSha, head, 'the clone starts at the newest commit');
+  assert.ok(sawNew, 'the agent sees the file the newest commit added');
+});
+
+test('a run whose fetch fails goes back on the board with no attempt spent and no firm blamed', async () => {
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('a1', 'alpha', 'claude:sonnet'));
+  let worked = 0;
+  useScript({
+    work: async (i) => {
+      worked++;
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(
+    deps({
+      sync: async () => {
+        throw new Error('Could not resolve host: github.com');
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(worked, 0, 'no agent worked');
+  assert.equal(r.outcome, 'crashed');
+  assert.equal(r.endedReason, "Could not fetch the repo's latest commits: Could not resolve host: github.com");
+  assert.equal(r.dir, null, 'nothing was cloned');
+  const after = job(j.id)!;
+  assert.equal(after.status, 'open', 'back on the board');
+  assert.equal(after.attempts, 0, 'no attempt spent');
+  assert.deepEqual(after.excludedFirms, []);
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0, 'not the firm\'s failure');
+  assert.equal(getRepo(FULL)?.halted ?? null, null, 'a network error never halts the repo');
+});
+
+test('a bidding round fetches the repo\'s latest commits before the plans are asked for', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  const order: string[] = [];
+  useScript({
+    plan: (i) => {
+      order.push('plan');
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  const posted = postJob();
+  const s = createScheduler(
+    deps({
+      sync: async (full) => {
+        order.push(`sync ${full}`);
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  assert.equal(job(posted.id)?.status, 'bidding');
+  assert.deepEqual(order, [`sync ${FULL}`, 'plan']);
+});
+
+test('a bidding round whose fetch fails still asks for plans', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  let planned = 0;
+  useScript({
+    plan: (i) => {
+      planned++;
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  postJob();
+  const s = createScheduler(
+    deps({
+      sync: async () => {
+        throw new Error('offline');
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  assert.equal(planned, 1);
+});
+
+test('a slow fetch before bidding is cut short so the bid window stays whole', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  let planned = 0;
+  useScript({
+    plan: (i) => {
+      planned++;
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  postJob();
+  let release!: () => void;
+  const hung = new Promise<void>((r) => (release = r));
+  const s = createScheduler(deps({ sync: () => hung, bidSyncMs: 30 }).deps);
+  const t0 = Date.now();
+  await s.tick();
+  await until(() => planned === 1, 3000);
+  assert.ok(Date.now() - t0 < 3000, 'the plans did not wait for the fetch');
+  release();
+  await s.idle();
 });

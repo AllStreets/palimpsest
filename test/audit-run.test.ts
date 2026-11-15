@@ -211,7 +211,7 @@ const skipped: CheckResult = { name: 'install', status: 'skipped', detail: 'Noth
 
 type StartOpts = Partial<Parameters<typeof startQueuedAudit>[0]>;
 function start(over: StartOpts = {}) {
-  return startQueuedAudit({ now: () => clock, preflight: async () => null, quiet: async () => {}, reap: async () => [], installDeps: async () => skipped, ...over });
+  return startQueuedAudit({ now: () => clock, preflight: async () => null, quiet: async () => {}, reap: async () => [], installDeps: async () => skipped, sync: async () => {}, ...over });
 }
 
 function deps(over: Partial<SchedulerDeps> = {}): SchedulerDeps {
@@ -228,6 +228,7 @@ function deps(over: Partial<SchedulerDeps> = {}): SchedulerDeps {
     quiet: async () => {},
     reap: async () => [],
     preflight: async () => null,
+    sync: async () => {},
     watchMs: 0,
     ...over,
   };
@@ -1174,4 +1175,56 @@ test('while the audits are being stopped no queued audit starts', async () => {
   assert.equal(await second, null);
   assert.equal(held.started.length, 1);
   assert.equal(storedAudit(listAudits({ repo: 'acme/other' })[0].id)?.status, 'waiting');
+});
+
+// ---------------------------------------------------------------- the mirror is fetched first
+
+test('an audit fetches the repo\'s latest commits before it clones, so it reads the current README', async () => {
+  const repo = makeRepo();
+  const work = join(tempDir, 'work', FULL.replace('/', '__'));
+  writeFileSync(join(work, 'README.md'), '# Widgets\n\nNow with a CSV export.\n');
+  git(work, 'commit', '-q', '-am', 'newer README');
+  const head = git(work, 'rev-parse', 'HEAD');
+  const synced: string[] = [];
+  let seen: { readme: string | null; baseSha: string } | null = null;
+  useScript({
+    audit: (i) => {
+      seen = { readme: i.readme?.text ?? null, baseSha: i.baseSha };
+      return answer([]);
+    },
+  });
+  queueAudit(repo, 'demand');
+  const ended = (await start({
+    sync: async (full) => {
+      synced.push(full);
+      git(tempDir, `--git-dir=${mirrorDir(full)}`, 'fetch', '-q', work, '+refs/heads/*:refs/heads/*');
+    },
+  })) as Audit;
+  assert.equal(ended.status, 'done');
+  assert.deepEqual(synced, [FULL]);
+  assert.deepEqual(seen, { readme: '# Widgets\n\nNow with a CSV export.\n', baseSha: head });
+});
+
+test('an audit whose fetch fails ends crashed with the reason, never reads, and leaves the repo as it was', async () => {
+  const repo = makeRepo();
+  let read = 0;
+  useScript({
+    audit: () => {
+      read++;
+      return answer([]);
+    },
+  });
+  queueAudit(repo, 'demand');
+  const ended = (await start({
+    sync: async () => {
+      throw new Error('Could not resolve host: github.com');
+    },
+  })) as Audit;
+  assert.equal(read, 0);
+  assert.equal(ended.status, 'crashed');
+  assert.equal(ended.endedReason, "Could not fetch the repo's latest commits: Could not resolve host: github.com");
+  assert.equal(ended.baseSha ?? null, null, 'nothing was cloned');
+  const after = getRepo(FULL)!;
+  assert.equal(after.auditedAt, null);
+  assert.equal(after.halted ?? null, null);
 });

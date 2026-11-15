@@ -59,7 +59,9 @@ import { emit } from '../events.js';
 import { getSpawner, type Spawned } from '../exec.js';
 import { onRealDataHome, paths } from '../home.js';
 import { record } from '../ledger.js';
-import { getRepo, listRepos, updateRepoMarket } from '../repos.js';
+import { detectChecks } from '../guild/checks.js';
+import { SYNC_FAILED, syncMirror } from '../mirror.js';
+import { CHECKS_UNKNOWN, checksKnown, getRepo, learnChecks, listRepos, updateRepoMarket } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
 import { award, bidById, collectBids, firmExamples, openBidding } from './bids.js';
@@ -117,6 +119,9 @@ const SELF_CHECK_DIFF_MAX = 20_000;
 export const RUN_EXTRA_MINUTES = 90;
 
 export const STOP_REASON = 'The stop file is set.';
+export { SYNC_FAILED };
+/** The longest a bidding round waits for its repo's fetch before it goes on with the mirror as it is. */
+export const BID_SYNC_MS = 20_000;
 /** Inconclusive inspections a job may have in a row before it leaves the board (controller ruling, Task 15). */
 export const MAX_INCONCLUSIVE = 2;
 export const NEEDS_REVIEWER = 'needs a reviewer: too large or no reviewer available';
@@ -184,6 +189,13 @@ export interface SchedulerDeps {
   reap?: (runRoot: string) => Promise<number[]>;
   /** Why no agent run may start, or null (default: the sandbox membership helper must build). */
   preflight?: () => Promise<string | null>;
+  /**
+   * Fetches the repo's latest commits into its local mirror (default syncMirror), before a bidding round and before a
+   * run clones the mirror, so neither works on old code. Tests pass a stand-in: no test ever reaches the network.
+   */
+  sync?: (fullName: string) => Promise<unknown>;
+  /** The longest a bidding round waits for its fetch, so the fetch never eats the bid window. Default BID_SYNC_MS. */
+  bidSyncMs?: number;
   /** The watcher's interval; 0 starts none (tests call watch()). Default WATCH_MS. */
   watchMs?: number;
   /** A run's whole wall time; past it the watcher ends the run `capped`. Default its work cap plus RUN_EXTRA_MINUTES. */
@@ -232,11 +244,38 @@ function defaults(): Config {
     quiet: runQuiet,
     reap: reapRun,
     preflight: defaultPreflight,
+    sync: syncMirror,
+    bidSyncMs: BID_SYNC_MS,
     watchMs: WATCH_MS,
   };
 }
 
+/** The mirror fetch under way per repo: a second one waits for the first, so two fetches never race on its refs. */
+const syncing = new Map<string, Promise<unknown>>();
+
+/** Fetches `fullName`'s latest commits into its mirror, one fetch per repo at a time. */
+function syncRepo(fullName: string): Promise<unknown> {
+  const before = syncing.get(fullName) ?? Promise.resolve();
+  const p = before.catch(() => {}).then(() => config.sync(fullName));
+  const kept = p.finally(() => {
+    if (syncing.get(fullName) === kept) syncing.delete(fullName);
+  });
+  kept.catch(() => {});
+  syncing.set(fullName, kept);
+  return p;
+}
+
 let config: Config = defaults();
+
+/** `p`, or a rejection once `ms` have passed (the fetch itself goes on, and the next one waits for it). */
+function withinMs(p: Promise<unknown>, ms: number, fullName: string): Promise<unknown> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the fetch of ${fullName} took over ${Math.round(ms / 1000)} s; bidding goes on with the mirror as it is`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 
 // ---------------------------------------------------------------- storage
 
@@ -695,12 +734,32 @@ function wallMsOf(a: Agent): number {
 async function lifecycle(st: LiveRun): Promise<Run> {
   const log = logTo(st);
   let phase: 'before' | 'work' | 'after' = 'before';
-  const ecosystems = st.repo.checks?.ecosystems ?? [];
+  let ecosystems = st.repo.checks?.ecosystems ?? [];
   try {
     boundary(st, 'preparing');
+    // The clone comes from the local mirror, so the mirror first gets the repo's latest commits: a run on old code
+    // cannot find what the issue names. A fetch that fails (the network, GitHub) is nobody's fault: the job goes back
+    // on the board with no attempt spent, no firm blamed and the repo not halted.
+    try {
+      await guarded(st, syncRepo(st.repo.fullName));
+    } catch (err) {
+      if (err instanceof Killed) throw err;
+      return end(st, 'crashed', `${SYNC_FAILED}: ${errText(err)}`, { job: 'reopen' });
+    }
     const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch));
     st.run = { ...st.run, dir, baseSha };
     saveRun(st.run);
+    // Checks never read (or naming no command) are read now from the run's own clone, before the baseline and the install need them.
+    if (!checksKnown(st.repo.checks)) {
+      st.repo = learnChecks(st.repo.fullName, detectChecks(dir)) ?? st.repo;
+      ecosystems = st.repo.checks?.ecosystems ?? [];
+      if (checksKnown(st.repo.checks)) engineLog(st, '[palimpsest] the repo\'s checks were not known; they were read from its files');
+    }
+    // Never a run blind: with nothing to install or check, the job goes back on the board and the repo halts with the reason.
+    if (!checksKnown(st.repo.checks)) {
+      haltRepo(st.repo.fullName, CHECKS_UNKNOWN, iso(), { exceptRun: st.run.id });
+      return end(st, 'crashed', `${CHECKS_UNKNOWN}.`, { job: 'reopen' });
+    }
     st.egress = await guarded(st, startEgress(st.run.id, log));
     if (st.agent.model.startsWith('claude:')) {
       st.broker = await guarded(st, startBroker(st.run.id, { runRoot: st.runRoot, dir, log, signal: st.lease.signal, stage: () => st.toolStage }));
@@ -1164,12 +1223,21 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
     }
 
+    const fetching = new Map<string, Promise<unknown>>();
     for (const j of listJobs({ status: 'bidding' })) {
       if (!eligible.has(j.repo)) continue;
       const key = `${j.id} ${j.bidsCloseAt}`;
       if (collecting.has(key)) continue;
       collecting.add(key);
-      track(collectBids(j, now)).catch((err) => console.error(`palimpsest: collecting bids on ${j.id} failed: ${errText(err)}`));
+      // Plans are made against the repo as it is now: its mirror is fetched first, for at most bidSyncMs so the
+      // window stays whole. A fetch that fails or is slow is only logged; the round goes on with the mirror as it is,
+      // and the run fetches again before it clones.
+      let fetched = fetching.get(j.repo);
+      if (!fetched) {
+        fetched = withinMs(syncRepo(j.repo), config.bidSyncMs, j.repo).catch((err) => console.warn(`palimpsest: fetching ${j.repo} before bidding failed: ${errText(err)}`));
+        fetching.set(j.repo, fetched);
+      }
+      track(fetched.then(() => collectBids(j, now))).catch((err) => console.error(`palimpsest: collecting bids on ${j.id} failed: ${errText(err)}`));
     }
 
     for (const j of listJobs({ status: 'bidding' })) {
@@ -1186,7 +1254,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     await startRuns(now, eligible);
     // The README audits (Phase 3) start outside the market-on filter, so an on-demand audit on a market-off repo runs.
-    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs, onLive: syncWatcher })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
+    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs, onLive: syncWatcher, sync: syncRepo })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
 
     for (const step of [config.pollPRs, config.watchReverts]) {
       try {
@@ -1325,5 +1393,6 @@ export function resetRuns(): void {
   if (caffeinate) caffeinate.kill('SIGTERM');
   caffeinate = null;
   preflightOk = null;
+  syncing.clear();
   config = defaults();
 }

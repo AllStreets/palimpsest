@@ -547,6 +547,27 @@ describe('work', () => {
     assert.ok(logs.some((l) => l.kind === 'stderr' && l.text.includes('Segmentation fault')));
   });
 
+  test('a work run, which passes no --json-schema, may not list StructuredOutput', async () => {
+    const { calls } = fake([init({ tools: [...WORK_TOOLS, 'StructuredOutput'] }), ...happyWork().slice(1)], { hang: true });
+    const out = await provider().p.work(workInput({ runId: 'run-structured' }).input);
+    assert.ok(!claudeArgs(calls[0]).includes('--json-schema'));
+    assert.equal(out.ended, 'crashed');
+    assert.equal(out.reason, 'unexpected tools');
+    assert.ok(calls[0].kills.includes('SIGTERM'));
+  });
+
+  test('a work run may list built-in plugins but not one from elsewhere', async () => {
+    const builtin = { name: 'cc-plugin-privacy', path: 'builtin', source: 'cc-plugin-privacy@builtin' };
+    fake([init({ plugins: [builtin] }), ...happyWork().slice(1)]);
+    const ok = await provider().p.work(workInput({ runId: 'run-builtin' }).input);
+    assert.equal(ok.ended, 'finished');
+    const { calls } = fake([init({ plugins: [builtin, { name: 'p', path: '/x', source: 'p@local' }] }), ...happyWork().slice(1)], { hang: true });
+    const out = await provider().p.work(workInput({ runId: 'run-foreign-plugin' }).input);
+    assert.equal(out.ended, 'crashed');
+    assert.equal(out.reason, 'unexpected plugins');
+    assert.ok(calls[0].kills.includes('SIGTERM'));
+  });
+
   test('init without a tools or mcp_servers list crashes the run', async () => {
     for (const drop of ['tools', 'mcp_servers']) {
       const bad = init();
@@ -790,6 +811,30 @@ describe('plan and review', () => {
       assert.equal(reaps.length, 1);
       assert.ok(reaps[0].existed);
       assert.ok(!existsSync(root));
+    }
+  });
+
+  test('a schema call may list StructuredOutput and the CLI\'s built-in plugins (claude 2.1.319)', async () => {
+    const builtins = ['cc-plugin-agents-md', 'cc-plugin-telemetry', 'cc-plugin-privacy', 'cc-plugin-plugin-authoring'].map((name) => ({ name, path: 'builtin', source: `${name}@builtin` }));
+    const { calls } = fake([callInit({ tools: ['StructuredOutput'], plugins: builtins }), result({ structured_output: { plan: 'p', price: 10, confidence: 0.5 } })]);
+    const out = await provider().p.plan(planInput, new AbortController().signal);
+    assert.equal(out.plan, 'p');
+    assert.ok(claudeArgs(calls[0]).includes('--json-schema'));
+  });
+
+  test('a schema call whose init lists a plugin not built in, or a tool past StructuredOutput, crashes', async () => {
+    const agentsMd = { name: 'cc-plugin-agents-md', path: 'builtin', source: 'cc-plugin-agents-md@builtin' };
+    for (const bad of [
+      { plugins: [agentsMd, { name: 'his-plugin', path: '/Users/x/.claude/plugins/his-plugin', source: 'his-plugin@market' }] },
+      { plugins: [{ name: 'fake', path: 'builtin', source: 'fake@market' }] },
+      { plugins: [{ name: 'fake', path: '/x/builtin', source: 'fake@builtin' }] },
+      { plugins: ['cc-plugin-agents-md'] },
+      { tools: ['StructuredOutput', 'Bash'] },
+      { tools: ['StructuredOutput', 'Mystery'] },
+    ]) {
+      const { calls } = fake([callInit(bad), result({ structured_output: { plan: 'p', price: 10, confidence: 0.5 } })], { hang: true });
+      await assert.rejects(provider().p.plan(planInput, new AbortController().signal), /unexpected (plugins|tools)/, JSON.stringify(bad));
+      assert.ok(calls[0].kills.includes('SIGTERM'));
     }
   });
 
