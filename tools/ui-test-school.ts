@@ -80,7 +80,7 @@ export async function schoolChecks(page: Page, check: Check, shots: string): Pro
         check(/^(Brier|Error) \d\.\d\d$/.test(score.trim()) && /\d\.\d\d to \d\.\d\d, \d+ rows/.test(((await row.locator('.net-ci').textContent()) ?? '').trim()), `${n.net} shows its score with the interval and n (${score.trim()}; ${((await row.locator('.net-ci').textContent()) ?? '').trim()})`);
         check((await row.locator('svg.ciplate').count()) === 1, `${n.net} draws its interval against the baseline as a plate`);
       } else {
-        check(n.status === 'thin' ? new RegExp(`\\b${n.labels} of ${n.needs}\\b`).test(line) && line.endsWith('.') && (!n.cause || line.includes(n.cause)) : /not trained|weights|beat its baseline/.test(line), `${n.net} says why it has no score (${line})`);
+        check(n.status === 'thin' ? new RegExp(`\\b${n.labels} of ${n.needs}\\b`).test(line) && line.endsWith('.') && (!n.cause || line.includes(n.cause)) : /not trained|weights|beat its baseline|enough to train/.test(line), `${n.net} says why it has no score (${line})`);
         check((await row.locator('svg').count()) === 0, `${n.net} draws no plate`);
       }
       check(line.length > 0 && !/undefined|null|NaN/.test(line), `${n.net}'s line reads (${line})`);

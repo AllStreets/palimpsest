@@ -2,7 +2,7 @@ import type { BudgetWindow, CreditEntry, FirmView, ReportView, SpendPeriod, Trea
 import { windowNowPct } from '../../../shared/market-rules';
 import { api, type EngineEvent } from '../api';
 import { placeHref, routeHref } from '../router';
-import { cleanText, githubUrl } from './board';
+import { cleanText, githubUrl, money } from './board';
 import { ago, button, checkRadio, createSheet, el, rovingRadios } from './controls';
 import { gauge, svgEl } from './firms';
 import { coalesce, keyedSlot, namesOf, outLink, refusal, secHead } from './pages';
@@ -445,7 +445,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     }
     box.append(list);
     const more = got.count - got.rows.length;
-    box.append(el('p', 'entries-note', `${got.count === 1 ? '1 entry' : `${got.count} entries`} in the last 7 days, ${figure(got.total)} credits${more > 0 ? `; the newest ${got.rows.length} are shown` : ''}.`));
+    box.append(el('p', 'entries-note', `${got.count === 1 ? '1 entry' : `${got.count} entries`} in the last 7 days, ${money(got.total)} credits${more > 0 ? `; the newest ${got.rows.length} are shown` : ''}.`));
     return box;
   }
 

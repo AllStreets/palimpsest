@@ -16,32 +16,45 @@ export function underSheet(feet: readonly number[], sheetRight: number | null): 
 /** How often the guard looks, in frames: the plates move only with the camera. */
 const EVERY = 4;
 
-/** Starts the guard on `doc`; it reads only while a sheet is open. */
+/**
+ * Starts the guard on `doc`. It looks only while a sheet is open: a watch on
+ * the sheets' `hidden` starts the frame loop when one opens and stops it
+ * (clearing every mark) when the last closes, so a city with no sheet costs
+ * nothing.
+ */
 export function guardPlates(doc: Document): void {
   const win = doc.defaultView;
   if (!win) return;
   let frame = 0;
-  let marked = false;
+  let raf: number | null = null;
+  let open: HTMLElement | null = null;
+  const plates = (): HTMLElement[] => [...doc.querySelectorAll<HTMLElement>('.plates .plate')];
   const look = (): void => {
-    win.requestAnimationFrame(look);
-    if (frame++ % EVERY !== 0) return;
-    const open = [...doc.querySelectorAll<HTMLElement>('.sheet')].find((s) => !s.hidden);
-    const plates = [...doc.querySelectorAll<HTMLElement>('.plates .plate')];
-    if (!open) {
-      if (marked) for (const p of plates) delete p.dataset.underSheet;
-      marked = false;
-      return;
-    }
-    const edge = open.getBoundingClientRect().right;
+    raf = win.requestAnimationFrame(look);
+    if (!open || frame++ % EVERY !== 0) return;
+    const all = plates();
     const under = underSheet(
-      plates.map((p) => p.getBoundingClientRect().left),
-      edge,
+      all.map((p) => p.getBoundingClientRect().left),
+      open.getBoundingClientRect().right,
     );
-    plates.forEach((p, i) => {
+    all.forEach((p, i) => {
       if (under[i]) p.dataset.underSheet = '';
       else delete p.dataset.underSheet;
     });
-    marked = true;
   };
-  win.requestAnimationFrame(look);
+  const watch = (): void => {
+    open = [...doc.querySelectorAll<HTMLElement>('.sheet')].find((s) => !s.hidden) ?? null;
+    if (open && raf === null) {
+      frame = 0;
+      raf = win.requestAnimationFrame(look);
+    } else if (!open && raf !== null) {
+      win.cancelAnimationFrame(raf);
+      raf = null;
+      for (const p of plates()) delete p.dataset.underSheet;
+    }
+  };
+  new MutationObserver((records) => {
+    if (records.some((r) => r.target instanceof HTMLElement && r.target.classList.contains('sheet'))) watch();
+  }).observe(doc.body, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  watch();
 }

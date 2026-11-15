@@ -87,10 +87,13 @@ test('workflow shapes and lineage, in words', () => {
   assert.equal(lineageWords({ lineage: { ...a.lineage, origin: 'school', generation: 0 } } as Agent), 'Graduated from the school on 9 November 2026: taught on his verified work, not bred.');
 });
 
-test('a sum of credits reads as every other credit on screen', () => {
+test('a sum of credits in the books keeps two places, with the comma and minus of every other credit', () => {
   assert.equal(figure(606.18), '606.18');
-  assert.equal(figure(300), '300', 'whole bare, as the board and the palette set it');
+  assert.equal(figure(300), '300.00', 'a books column keeps two places so its figures align');
   assert.equal(figure(2809.888), '2,809.89');
+  assert.equal(figure(-0.001), '0.00', 'no minus on nothing');
+  // A column of figures: every one ends in two places, so the points stand in one line.
+  assert.ok([300, 299.5, 12345.6, -41].map(figure).every((f) => /\.\d{2}$/.test(f)));
   assert.equal(figure(-419.42), '−419.42');
   assert.equal(figure(12345.6), '12,345.60');
 });

@@ -339,7 +339,11 @@ export async function settingsChecks(page: Page, claudeSettingsPath: string): Pr
   await page.waitForTimeout(400);
   const five = (await page.locator('.usage-five .usage-pct').textContent())?.trim();
   const week = (await page.locator('.usage-week .usage-pct').textContent())?.trim();
-  check(five === '62%' && week === '18%', `usage shows the seeded percentages (${five}, ${week})`);
+  // Settings shows each window as it stands now, the brief's own figure (GET /api/usage now): the seeded five-hour
+  // window of 62% has reset since, so it stands at what was spent after the reset; the week holds its 18%.
+  const usageNow = ((await page.evaluate(() => fetch('/api/usage').then((r) => r.json()))) as { now: { fiveHour: number | null; sevenDay: number | null } | null }).now;
+  const want = { five: `${usageNow?.fiveHour ?? 62}%`, week: `${usageNow?.sevenDay ?? 18}%` };
+  check(five === want.five && week === want.week && week === '18%', `usage shows each window as it stands now, as the brief does (${five}, ${week}; the engine says ${want.five}, ${want.week})`);
   check(await page.locator('.usage-stale').isVisible(), 'an old reading carries the stale warning');
   check(/reset/i.test((await page.locator('.usage-five').textContent()) ?? ''), 'each window shows when it resets');
   check(/window reset/.test((await page.locator('.usage-five .usage-reset').textContent()) ?? ''), 'a reset already past reads as past');

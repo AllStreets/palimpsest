@@ -1,4 +1,4 @@
-import { HIRE_FEE } from '../../../shared/market-rules';
+import { creditsFixed, HIRE_FEE } from '../../../shared/market-rules';
 import type { FirmDetail, FirmRound, FirmView, Quarter, ReputationPoint } from '../../../shared/types';
 import { api, type EngineEvent } from '../api';
 import { placeHref } from '../router';
@@ -41,7 +41,7 @@ type RoundFilter = 'all' | 'won' | 'lost' | 'none';
 
 /** A signed amount for the books: a true minus, and a plus on money coming in. */
 function signed(n: number): string {
-  return n < 0 ? `−${(-n).toFixed(2)}` : `+${n.toFixed(2)}`;
+  return n < 0 && Math.round(n * 100) !== 0 ? creditsFixed(n) : `+${creditsFixed(Math.abs(n))}`;
 }
 
 /**

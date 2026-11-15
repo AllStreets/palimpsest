@@ -311,3 +311,12 @@ test('a plan window now is one figure: the larger of the reading and the estimat
   assert.equal(windowNowPct({ usedPct: null, estimatedPct: 3.2 }), 3, 'an estimate with no reading');
   assert.equal(windowNowPct({ usedPct: null, estimatedPct: 0 }), null, 'nothing read and nothing spent');
 });
+
+test('a column of credits keeps two places, with the same comma and true minus', async () => {
+  const { creditsFixed } = await import('../shared/market-rules.js');
+  assert.equal(creditsFixed(300), '300.00');
+  assert.equal(creditsFixed(2809.888), '2,809.89');
+  assert.equal(creditsFixed(-419.42), '−419.42');
+  assert.equal(creditsFixed(-0.001), '0.00');
+  assert.equal(creditsFixed(59.999), '60.00');
+});

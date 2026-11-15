@@ -7,7 +7,7 @@ import { issueBlocks } from './detail';
 import { gauge, measures, silhouetteGlyph } from './firms';
 import { ERA_NAMES, floorList, ROOT_NAMES, type MarketNames } from './inspector';
 import { blockNodes, coalesce, detailSheet, keyedSlot, pageLink, secHead, setTrail } from './pages';
-import { figure, lineageWords, longDate, shortDate, workflowWords } from './story';
+import { lineageWords, longDate, shortDate, workflowWords } from './story';
 import { bredLine, diffText, fixed, graduatedLine, intervalText, signed } from './school-words';
 import './market.css';
 
@@ -345,7 +345,7 @@ export function createAgentPage(parent: HTMLElement, opts: AgentPageOptions): Ag
     if (d.firm) {
       // The firm's books, read as the firms list and its page read them.
       const bal = el('p', `agent-firm-bal${d.firm.balance < 0 ? ' neg' : ''}`);
-      bal.append(`${firm} holds `, el('span', 'agent-firm-bal-num', figure(d.firm.balance)), ' credits.');
+      bal.append(`${firm} holds `, el('span', 'agent-firm-bal-num', money(d.firm.balance)), ' credits.');
       sec.append(bal);
     }
     const ms = el('dl', 'standing-measures cal-measures');

@@ -21,6 +21,18 @@ export function creditsText(n: number): string {
 }
 
 /**
+ * Credits in a column of figures (the books, a ledger, a balance column):
+ * the same comma and true minus as creditsText, but always two places, so
+ * the points stand in one line down the column.
+ */
+export function creditsFixed(n: number): string {
+  const cents = Math.round(n * 100);
+  const abs = Math.abs(cents);
+  const grouped = String(Math.floor(abs / 100)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${cents < 0 ? '−' : ''}${grouped}.${String(abs % 100).padStart(2, '0')}`;
+}
+
+/**
  * How much of a plan window stands used now, the one figure the brief,
  * Settings and the treasury all show: the larger of his last reading and
  * the estimate (the reading plus what the city spent since), whole. Null
