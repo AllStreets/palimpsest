@@ -44,7 +44,7 @@ import { makeScaffold, type Scaffold } from './scaffold.js';
 import { createMilestones, findTowerPiece, type MilestoneShow, type Milestones, type TowerPiece } from './milestones.js';
 import type { TowerMaterials } from './tower/kit.js';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky.js';
-import { cityExtent, easeLimits, fogFor, opensHome, viewLimits, type EasedLimits, type ViewLimits } from './view.js';
+import { cityExtent, easeHome, easeLimits, fogFrom, opensHome, viewLimits, type EasedHome, type EasedLimits, type ViewLimits } from './view.js';
 
 /** What a click in the city landed on: a district's tower (a floor, or its root), an agent's tower in a quarter, or a firm's plinth. */
 export type PickHit =
@@ -160,6 +160,8 @@ export interface City {
   home(): void;
   /** The view's limits now: the home framing, and how far, how hazy and how deep, as eased this frame (tests and debugging). */
   limits(): { home: { eye: number[]; target: number[] }; maxDistance: number; fogDensity: number; far: number; settled: boolean };
+  /** Multiplies the haze by k (the clear-air still shoots at 0.4 of the home value, Decision 5); null restores the city's own (debug and captures). */
+  haze(k: number | null): void;
   onPick(fn: (hit: PickHit) => void): void;
   dispose(): void;
   /** Resolves once textures have loaded and the first frames are on screen. */
@@ -597,21 +599,22 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let extent = cityExtent([]);
   let limits: ViewLimits = viewLimits(extent, width() / height());
   let eased: EasedLimits = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
-  /** The home distance the haze thins against, eased with the rest so a growing city never makes it jump. */
-  let easedHome = limits.homeDistance;
+  /** The home the haze thins against (its distance and its target), eased with the rest so a growing city never makes it jump. */
+  let easedHome: EasedHome = easeHome({ distance: 0, target: [0, 0, 0] }, { distance: limits.homeDistance, target: limits.home.target }, Infinity);
+  /** A debug multiplier on the haze (the clear-air still, Decision 5): 1 is the city's own. */
+  let hazeScale = 1;
   function relimit(snap: boolean): void {
     limits = viewLimits(extent, width() / height());
     if (snap) {
       eased = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
-      easedHome = limits.homeDistance;
+      easedHome = easeHome(easedHome, { distance: limits.homeDistance, target: limits.home.target }, Infinity);
     }
   }
-  const homeTarget = new THREE.Vector3();
   const applyLimits = (): void => {
     rig.controls.maxDistance = eased.maxDistance;
-    // Flown out past home the haze thins, so the whole city still reads from as far as the camera may go.
-    const fromCity = camera.position.distanceTo(homeTarget.set(limits.home.target[0], limits.home.target[1], limits.home.target[2]));
-    fog.density = fogFor(eased.fogDensity, easedHome, fromCity);
+    // Flown out past home the haze thins, so the whole city still reads from as far as the camera may go: measured
+    // from the eased home, never from a home that just jumped (Task 6).
+    fog.density = fogFrom(eased.fogDensity, easedHome, [camera.position.x, camera.position.y, camera.position.z]) * hazeScale;
     if (camera.far !== eased.far) {
       camera.far = eased.far;
       camera.updateProjectionMatrix();
@@ -1577,7 +1580,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       applyInset();
     }
     eased = easeLimits(eased, limits, dt, camera.position.distanceTo(rig.controls.target));
-    easedHome = THREE.MathUtils.damp(easedHome, limits.homeDistance, 3, dt);
+    easedHome = easeHome(easedHome, { distance: limits.homeDistance, target: limits.home.target }, dt);
     rig.update(dt);
     exchange?.update(dt);
     updateConstructions(dt);
@@ -1712,6 +1715,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       ...eased,
       settled: eased.maxDistance === limits.maxDistance && eased.fogDensity === limits.fogDensity && eased.far === limits.far,
     }),
+    haze(k) {
+      hazeScale = k === null || !Number.isFinite(k) ? 1 : Math.max(0, k);
+      applyLimits();
+    },
     onPick(fn) {
       pickListeners.push(fn);
     },

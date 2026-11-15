@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CROWN_ALLOWANCE, cityExtent, easeLimits, fogFor, FOV, HERO_FOG, opensHome, viewLimits, type CityExtent, type V3 } from '../app/src/city/view.js';
+import { CROWN_ALLOWANCE, cityExtent, easeHome, easeLimits, fogFor, fogFrom, FOV, HERO_FOG, opensHome, viewLimits, type CityExtent, type EasedHome, type V3 } from '../app/src/city/view.js';
 import { FLOOR_HEIGHT, ROOT_HEIGHT } from '../shared/tower-layout.js';
 
 // ---------------------------------------------------------------- an independent pinhole camera
@@ -196,6 +196,31 @@ test('easing: the limits move toward a grown city over a second or two, never in
   assert.ok(Math.abs(cur.maxDistance - to.maxDistance) < 1, `after three seconds ${cur.maxDistance}`);
   assert.ok(Math.abs(cur.fogDensity - to.fogDensity) < 1e-6);
   assert.ok(Math.abs(cur.far - to.far) < 1);
+});
+
+test('fog is measured from the eased home', () => {
+  // The city grows while the eye is flown out past home: the home framing jumps at once (it is only used when asked
+  // for), but the haze thins against the eased home, its distance and its target both, so no frame measures the eye
+  // from a target that moved three hundred metres in a step.
+  const dist = (a: V3, b: V3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const was: EasedHome = { distance: 900, target: [0, 60, 0] };
+  const grown = { distance: 1400, target: [300, 80, 300] as V3 };
+  const eye: V3 = [0.63 * 2600, 420, 0.78 * 2600];
+  const density = HERO_FOG;
+  let cur = easeHome(was, grown, 1 / 60);
+  assert.ok(cur.distance > was.distance && cur.distance < was.distance + 40, `one frame moved the home distance to ${cur.distance}`);
+  assert.ok(cur.target[0] > 0 && cur.target[0] < 25, `one frame moved the home target to x ${cur.target[0]}`);
+  // This frame's fog is the eased home's, and not the grown home's.
+  const fromGrown = fogFor(density, grown.distance, dist(eye, grown.target));
+  assert.equal(fogFrom(density, cur, eye), fogFor(density, cur.distance, dist(eye, cur.target)));
+  assert.notEqual(fogFrom(density, cur, eye), fromGrown);
+  // Nearer the old home's fog than the new one's after one frame; the new one's after three seconds.
+  const fromWas = fogFor(density, was.distance, dist(eye, was.target));
+  assert.ok(Math.abs(fogFrom(density, cur, eye) - fromWas) < Math.abs(fogFrom(density, cur, eye) - fromGrown));
+  for (let i = 0; i < 60 * 3; i++) cur = easeHome(cur, grown, 1 / 60);
+  assert.ok(Math.abs(fogFrom(density, cur, eye) - fromGrown) < fromGrown * 1e-3, `after three seconds ${fogFrom(density, cur, eye)} against ${fromGrown}`);
+  // Snapping (the first placement) takes the new home whole.
+  assert.deepEqual(easeHome(was, grown, Infinity), { distance: grown.distance, target: grown.target });
 });
 
 test('easing never pulls in a camera that stands beyond a shrinking limit', () => {

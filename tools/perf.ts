@@ -28,7 +28,12 @@
  * views (Task 5: ferry-wake, train-windscreen, lod-400, ride-car) stage a
  * ferry under way, a train standing at its station, a tram crossing 400 m
  * (three frames half a second apart, lod-400-a/b/c.png) and the lift car
- * twenty metres up a tower, seen from the ride's own camera.
+ * twenty metres up a tower, seen from the ride's own camera. The haze views
+ * (Task 6: sun-low, ride-dossier-view, overview-clear, and sun-glow in
+ * views(), the sun's band low in the frame) hold the week tour at
+ * its poster moment, the ride at its first dossier stop, and thin the haze
+ * to CLEAR_HAZE of the home value through the debug handle's haze(k); the six
+ * look-<repo> views frame each sample tower whole for Decision 6's sheet.
  * Phase two (unless PERF_STATIC) turns the economy's
  * job sites live (four sites) on high and measures the city from home, the
  * overview and the quarters with them, with the quality governor running.
@@ -177,6 +182,9 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     ['horizon', [-120, 60, 520], [-600, 40, -600]],
     // The hero (tools/capture.ts HERO on the sample): low and looking up at the skyline at dusk (ruling 7).
     ['hero', [700, 70, 700], [0, 170, 80]],
+    // The sun's glow low in the frame (Task 6): from the city's east side, 40 m up, looking along the sun's bearing
+    // (sky.ts SUN_DIRECTION, toward -x and +z) over the roofs, the glow's band in the upper right of the frame.
+    ['sun-glow', [520, 40, -120], [-380, 150, 300]],
     // The street floor (Task 1) on the README street (along z at x = 200, its kerbs at 196 and 204) between the junctions
     // at z = -200 and -120, clear of every plaza, the elevated line and its station: an eye at 1.6 m on the kerb looking up the
     // street, 0.9 m over the gutter, a crossing from its corner, and 60 m over the junction.
@@ -198,7 +206,75 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     // Where the stone bridge's eastern river pier meets the water (Task 4): from a boat's eye a few metres off the
     // east quay, downstream of the bridge, looking at the pier's downstream cutwater at the waterline.
     ['pier-foot', [-338.0, -2.6, 30.0], [-349.5, -5.6, 11.0]],
+    // The six pinned looks (Decision 6's sheet, Task 6 round 0; Task 15 completes it): each sample tower's lower
+    // floors (the root, the stone and the brick eras and the first glass, where the pinned materials read) from 190 m
+    // on the home bearing; a 115 floor needle framed whole was only its haze.
+    ...city.map((d): [string, V3, V3] => {
+      const t = Math.min(layoutTower(d.tower).top, 120);
+      return [`look-${d.repo.split('/').pop()}`, [d.origin.x + BEARING.x * 190, t * 0.5 + 22, d.origin.z + BEARING.z * 190], [d.origin.x, t * 0.5, d.origin.z]];
+    }),
   ];
+}
+
+/** The views of Task 6 that need the tour, the ride or the haze handle; an eye of null leaves the camera where a script holds it. */
+const HAZE = ['sun-low', 'ride-dossier-view', 'overview-clear'];
+/** The clear-air dusk still's haze, as a share of the home value (Decision 5; tools/capture.ts shoots overview-clear with the same). */
+const CLEAR_HAZE = 0.4;
+
+/**
+ * The haze views (Task 6), yielded one by one: the week tour held at its
+ * poster moment (sun-low, the framing toward the low sun that tools/capture.ts
+ * keeps as the week's poster), the ride held at its first dossier stop on the
+ * tallest tower without a crew (ride-dossier-view, as the capture's
+ * ride-dossier), and the overview with the haze at CLEAR_HAZE of the home value
+ * through the debug handle's haze(k) (overview-clear), the default restored
+ * after. A stage that cannot be reached is skipped and said.
+ */
+async function* hazeViews(page: Page, overview: [V3, V3]): AsyncGenerator<[string, V3 | null, V3]> {
+  type Tour = { t: number; length: number };
+  if (await callDebug<boolean>(page, 'd.tourStart()')) {
+    await callDebug(page, 'd.tourHold(true)');
+    await page.waitForTimeout(400);
+    const tour = await callDebug<Tour>(page, 'd.tour()');
+    await callDebug(page, `d.tourSeek(${(tour.length * 0.45).toFixed(2)})`);
+    await page.waitForTimeout(1600);
+    await callDebug(page, `d.tourSeek(${(tour.length * 0.45).toFixed(2)})`);
+    console.log(`haze: sun-low at ${(tour.length * 0.45).toFixed(1)} s of the ${tour.length.toFixed(0)} s tour`);
+    yield ['sun-low', null, [0, 0, 0]];
+    await callDebug(page, 'd.tourHold(false)');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(2500);
+  } else console.log('haze: the week has no tour to walk; sun-low is skipped');
+  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+  const busy = new Set((await callDebug<Array<{ repo: string }>>(page, 'd.liveSites()')).map((x) => x.repo));
+  const repo = [...city].filter((x) => !busy.has(x.repo) && x.tower.floors.some((f) => f.earned)).sort((a, b) => b.tower.floors.length - a.tower.floors.length)[0]?.repo;
+  type Riding = { stops: Array<{ t: number; dossier: boolean }> };
+  if (repo) {
+    const home = await dbg<{ eye: V3; target: V3 }>(page, '(d) => d.limits().home');
+    await settle(page, home.eye, home.target);
+    if (await callDebug<boolean>(page, `d.ride(${JSON.stringify(repo)})`)) {
+      await callDebug(page, 'd.rideHold(true)');
+      await page.waitForTimeout(600);
+      const stop = (await callDebug<Riding>(page, 'd.riding()')).stops.find((s) => s.dossier);
+      if (stop) {
+        await callDebug(page, `d.rideSeek(${(stop.t + 0.8).toFixed(2)})`);
+        await page.waitForTimeout(1600);
+        await callDebug(page, `d.rideSeek(${(stop.t + 0.8).toFixed(2)})`);
+        console.log(`haze: ride-dossier-view on ${repo} at its first dossier stop`);
+        yield ['ride-dossier-view', null, [0, 0, 0]];
+      } else console.log(`haze: the ride up ${repo} has no dossier stop; ride-dossier-view is skipped`);
+      await callDebug(page, 'd.ride(null)');
+      await page.waitForTimeout(1500);
+    } else console.log(`haze: no ride up ${repo}; ride-dossier-view is skipped`);
+  } else console.log('haze: no tower without a crew to ride; ride-dossier-view is skipped');
+  if (await callDebug<boolean>(page, "typeof d.haze === 'function'")) {
+    await callDebug(page, `d.haze(${CLEAR_HAZE})`);
+    try {
+      yield ['overview-clear', overview[0], overview[1]];
+    } finally {
+      await callDebug(page, 'd.haze(null)');
+    }
+  } else console.log('haze: this build has no haze handle; overview-clear is skipped');
 }
 
 /** The views of Task 5 that stage a vehicle or the ride; an eye of null leaves the camera where the ride holds it. */
@@ -492,7 +568,7 @@ async function main(): Promise<void> {
       await page.goto(`http://127.0.0.1:${PORT}/?${q}`);
       await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 60_000 });
       // The stills are of the city: no running head, no plates, and not the morning's brief sheet over the left half.
-      await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief { display: none !important; }' });
+      await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride { display: none !important; }' });
       await page.waitForTimeout(2500);
     };
     for (const tier of tiers) {
@@ -537,6 +613,13 @@ async function main(): Promise<void> {
       }
       if (!only || CLOSE.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of closeViews(page, out)) {
+          if (only && !only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
+      }
+      if (!only || HAZE.some((n) => only.includes(n))) {
+        const ov = (await views(page)).find(([n]) => n === 'overview')!;
+        for await (const [name, eye, target] of hazeViews(page, [ov[1], ov[2]])) {
           if (only && !only.includes(name)) continue;
           await measure(name, eye, target);
         }

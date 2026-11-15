@@ -93,6 +93,8 @@ interface DebugHandle {
   home(): void;
   /** The view's limits now, as eased this frame. */
   limits(): ReturnType<ReturnType<typeof createCity>['limits']>;
+  /** Multiplies the home haze by k (the clear-air still, tools/capture.ts and tools/perf.ts overview-clear at 0.4); null restores the default. */
+  haze(k: number | null): void;
   /** Where a world point lands on screen, in normalised device coordinates (y up, the frame is -1 to 1). */
   project(p: number[]): number[];
   /** Each milestone as the city shows it now (milestones.ts), by id. */
@@ -482,6 +484,7 @@ async function main(): Promise<void> {
     camera: () => city.camera.position.toArray(),
     home: () => city.home(),
     limits: () => city.limits(),
+    haze: (k) => city.haze(k),
     project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),

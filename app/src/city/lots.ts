@@ -575,17 +575,28 @@ function clearOf(t: Tone, lot: Lot, rings: CollarPlaza[]): boolean {
 }
 
 /**
- * Chooses every lot's tone, in lot order: each lot ranks its type's tones
- * by a hash of the block and its own index (weighted), and takes the first
- * that no touching lot of the same type already wears and that keeps clear
+ * Chooses the tone of every lot without one, in lot order: each lot ranks
+ * its type's tones by a hash of the block and its own index (weighted), and
+ * takes the first that no touching lot already wears and that keeps clear
  * of the towers whose ring it stands in. When nothing of its own type can
- * keep clear of a tower, the lot is built as the type that can.
+ * keep clear of a tower, the lot is built as the type that can. Lots that
+ * arrive with a tone keep it (standingLots clears only the ring lots'), so
+ * one tower's look change retones its own ring and no neighbour.
  */
 function assignTones(i: number, j: number, lots: Lot[], plazas: CollarPlaza[]): void {
   const districts = plazas.filter((p) => p.tones?.length || p.value !== undefined);
+  const ringsOf = (l: Lot): CollarPlaza[] => districts.filter((p) => Math.hypot(l.x - p.x, l.z - p.z) <= RING_REACH);
   for (const lot of lots) {
-    const rings = districts.filter((p) => Math.hypot(lot.x - p.x, lot.z - p.z) <= RING_REACH);
-    const taken = new Set(lots.filter((o) => o.index < lot.index && o.tone && touching(o, lot)).map((o) => o.tone));
+    if (lot.tone) continue;
+    const rings = ringsOf(lot);
+    // What a touching lot already wears: every lot that keeps its tone (out of every ring, or earlier in this pass),
+    // and an earlier ring lot only when it stands in no ring this one does not (so a lot in one tower's ring
+    // depends on that tower alone: another tower's look change never reaches it through a neighbour).
+    const taken = new Set(
+      lots
+        .filter((o) => o !== lot && o.tone && touching(o, lot) && (o.index < lot.index || ringsOf(o).length === 0) && ringsOf(o).every((p) => rings.includes(p)))
+        .map((o) => o.tone),
+    );
     const ranked = (a: Archetype): Tone[] =>
       TONES[a]
         .map((t, k) => ({ t, key: Math.pow(hash(blockSeed(i, j), lot.index * 31 + k, 7), 1 / (t.weight ?? 1)) }))
@@ -641,9 +652,11 @@ export function standingLots(i: number, j: number, plazas: CollarPlaza[]): Lot[]
     // A factory stack stands only where nothing caps the skyline.
     out.push({ ...lot, h: cutTo(lot.archetype, lot.h, cap), stack: cap === Infinity ? lot.stack : 0 });
   }
-  if (plazas.some((p) => (p.tones?.length || p.value !== undefined) && out.some((l) => Math.hypot(l.x - p.x, l.z - p.z) <= RING_REACH))) {
-    // Each lot keeps its index on the block, so lots out of the ring keep their tones unless a neighbour's change forces one.
-    for (const l of out) l.tone = '';
+  const toned = plazas.filter((p) => p.tones?.length || p.value !== undefined);
+  if (out.some((l) => toned.some((p) => Math.hypot(l.x - p.x, l.z - p.z) <= RING_REACH))) {
+    // Only the lots in a tower's ring are retoned; every other lot keeps the block's own tone, so one tower's look
+    // change (a re-measure, a sale) retones its own ring and never a neighbour (Task 6).
+    for (const l of out) if (toned.some((p) => Math.hypot(l.x - p.x, l.z - p.z) <= RING_REACH)) l.tone = '';
     assignTones(i, j, out, plazas);
     for (const l of out) {
       const cap = ambientCap(l.x, l.z, plazas);

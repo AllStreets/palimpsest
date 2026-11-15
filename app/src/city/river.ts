@@ -1306,9 +1306,9 @@ function waterFragment(steps: number): string {
     float foam = clamp(wk.z, 0.0, 1.0);
     col = mix(col, skyHaze(vec3(0.0, 1.0, 0.0)) * 0.5 + refl * 0.25 + vec3(0.01, 0.011, 0.012), smoothstep(0.0, 1.0, foam) * 0.75);
 
-    // The same sky-coloured haze the scene's fog draws.
+    // The same haze the scene's fog draws (sky.ts hazeOver; the water lies at the ground haze's foot, so its layer is the ground's).
     float ff = 1.0 - exp(-uFog * uFog * dist * dist);
-    col = mix(col, skyHaze(-V), ff);
+    col = hazeOver(col, -V, ff);
     gl_FragColor = vec4(col, 1.0);
   }`;
 }

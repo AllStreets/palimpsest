@@ -255,6 +255,32 @@ export function fogFor(density: number, homeDistance: number, cameraDistance: nu
   return Math.max(density * (homeDistance / cameraDistance), horizon);
 }
 
+/** The home the haze is measured from: its distance and its target, eased together as the city grows. */
+export interface EasedHome {
+  distance: number;
+  target: V3;
+}
+
+/**
+ * One frame of easing the home the haze is measured from toward the city's
+ * new home (the framing itself jumps at once, since it is only used when
+ * asked for). Both the distance and the target ease, at the limits' rate,
+ * so no frame measures the eye against a target that moved in a step. A dt
+ * of Infinity snaps to the new home (the first placement).
+ */
+export function easeHome(cur: EasedHome, to: { homeDistance?: number; distance?: number; target: V3 }, dt: number): EasedHome {
+  const distance = to.distance ?? to.homeDistance ?? cur.distance;
+  if (!Number.isFinite(dt)) return { distance, target: [to.target[0], to.target[1], to.target[2]] };
+  const k = 1 - Math.exp(-EASE_RATE * dt);
+  const step = (a: number, b: number): number => (Math.abs(b - a) <= Math.max(1e-6, Math.abs(b) * 1e-5) ? b : a + (b - a) * k);
+  return { distance: step(cur.distance, distance), target: [step(cur.target[0], to.target[0]), step(cur.target[1], to.target[1]), step(cur.target[2], to.target[2])] };
+}
+
+/** The haze density for an eye at `eye`, measured from the eased home (fogFor against its distance and its target). */
+export function fogFrom(density: number, home: EasedHome, eye: V3): number {
+  return fogFor(density, home.distance, Math.hypot(eye[0] - home.target[0], eye[1] - home.target[1], eye[2] - home.target[2]));
+}
+
 /**
  * One frame of easing from the limits in force toward the city's new ones.
  * The farthest distance never drops below where the camera stands now

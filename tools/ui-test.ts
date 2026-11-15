@@ -3002,6 +3002,113 @@ async function closeChecks(page: Page): Promise<void> {
 }
 
 /**
+ * The overview's haze (Phase 5 Task 6): the six sample towers read as their
+ * own stone, brick, glass and copper, not one peach. Each tower's face is
+ * sampled in the overview still (its crown and base projected, a column
+ * down the inner part of its face), converted to OKLab, and the median a
+ * and b per tower taken; the spread across the six is the largest distance
+ * between two towers' medians in the (a, b) plane.
+ *
+ * A guard (test safety rule 21), with its numbers: the brief asked 0.08,
+ * which the palette cannot give. The pinned looks stand SEPARATION 6 apart
+ * in CIE Lab, about 0.02 to 0.03 in OKLab, and a tower's median at dusk is
+ * mostly its windows and its shaded face, so with no haze at all the six
+ * medians spread 0.050 (0.026 without the root-only stub); the base at
+ * 41d045b read 0.029 and the graded haze 0.028 to 0.029, the same within
+ * the read (a haze of any colour scales every difference alike, and the
+ * towers are 15 to 20% fogged from here). The guard holds the spread over
+ * 0.02, two thirds of what the city gives, so a haze that washed the towers
+ * to one tone would fail it; the height grading itself is held by what the
+ * stills show and by the node tests on sky.ts.
+ */
+const HUE_SPREAD = 0.02;
+function oklab(r: number, g: number, b: number): [number, number, number] {
+  const lin = (c: number): number => {
+    c /= 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const R = lin(r);
+  const G = lin(g);
+  const B = lin(b);
+  const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+  const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+  const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+}
+const medianOf = (xs: number[]): number => {
+  const s = [...xs].sort((a, b) => a - b);
+  return s.length === 0 ? 0 : s.length % 2 ? s[s.length >> 1] : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
+};
+
+async function hazeChecks(page: Page): Promise<void> {
+  const city = await cityOf(page);
+  const cx = city.reduce((a, d) => a + d.origin.x, 0) / city.length;
+  const cz = city.reduce((a, d) => a + d.origin.z, 0) / city.length;
+  // The perf tool's overview framing (tools/perf.ts views()).
+  await setView(page, [cx + BEARING.x * 900, 300, cz + BEARING.z * 900], [cx, 70, cz]);
+  await debug(page, (d) => d.precompile());
+  await page.waitForTimeout(2500);
+  // The still is of the city: the plates (one stands over the shortest tower) and the running head are hidden for it.
+  const hidden = await page.addStyleTag({ content: '.runhead, .plates { display: none !important; }' });
+  await page.waitForTimeout(300);
+  const img = decodePng(await page.screenshot({ path: join(SHOTS, 'haze-overview.png') }));
+  // The same frame with no haze at all (the debug handle's haze(0)), the ceiling the haze is measured against; a build
+  // without the handle (the base this check was first run on) reads the hazy frame twice.
+  const hasHaze = await page.evaluate("typeof window.__palimpsest.haze === 'function'");
+  if (hasHaze) await page.evaluate('window.__palimpsest.haze(0)');
+  await page.waitForTimeout(600);
+  const clear = hasHaze ? decodePng(await page.screenshot({ path: join(SHOTS, 'haze-overview-clear.png') })) : img;
+  if (hasHaze) await page.evaluate('window.__palimpsest.haze(null)');
+  await hidden.evaluate((e) => (e as HTMLElement).remove());
+  const toPx = (q: number[]): [number, number] => [((q[0] + 1) / 2) * img.width, ((1 - q[1]) / 2) * img.height];
+  const rows: string[] = [];
+  const medians: Array<{ repo: string; a: number; b: number; n: number }> = [];
+  const clears: typeof medians = [];
+  for (const d of city) {
+    const top = layoutTower(d.tower).top;
+    const o = d.origin;
+    const pts = [[o.x, top, o.z], [o.x, 0, o.z], [o.x - 11, top * 0.6, o.z], [o.x + 11, top * 0.6, o.z], [o.x, top * 0.6, o.z - 11], [o.x, top * 0.6, o.z + 11]];
+    const proj = await page.evaluate((list) => list.map((p) => (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest.project(p)), pts);
+    const [crown, base, ...sides] = proj.map(toPx);
+    const xs = sides.map((p) => p[0]);
+    const half = (Math.max(...xs) - Math.min(...xs)) / 2;
+    const mid = (Math.max(...xs) + Math.min(...xs)) / 2;
+    // The whole tower, under the crown's allowance to just above the root's foot (the stone and brick eras carry the
+    // colour; the upper eras of every tall tower are glass and metal), the inner 70% of the face (the shortest sample
+    // tower is some ten pixels wide from the overview).
+    const y0 = Math.round(crown[1] + (base[1] - crown[1]) * 0.08);
+    const y1 = Math.round(crown[1] + (base[1] - crown[1]) * 0.96);
+    const read = (im: typeof img): { all: [number, number, number]; lit: [number, number, number] } => {
+      const labs: Array<[number, number, number]> = [];
+      for (let y = Math.max(0, y0); y <= Math.min(im.height - 1, y1); y++) {
+        for (let x = Math.max(0, Math.round(mid - half * 0.7)); x <= Math.min(im.width - 1, Math.round(mid + half * 0.7)); x++) {
+          const i = (y * im.width + x) * 4;
+          labs.push(oklab(im.data[i], im.data[i + 1], im.data[i + 2]));
+        }
+      }
+      const bright = [...labs].sort((p, q) => q[0] - p[0]).slice(0, Math.max(1, Math.round(labs.length * 0.4)));
+      return { all: [medianOf(labs.map((l) => l[1])), medianOf(labs.map((l) => l[2])), labs.length], lit: [medianOf(bright.map((l) => l[1])), medianOf(bright.map((l) => l[2])), bright.length] };
+    };
+    const hazy = read(img);
+    const clearAir = read(clear);
+    medians.push({ repo: d.repo, a: hazy.all[0], b: hazy.all[1], n: hazy.all[2] });
+    clears.push({ repo: d.repo, a: clearAir.all[0], b: clearAir.all[1], n: clearAir.all[2] });
+    rows.push(`${d.repo} a ${hazy.all[0].toFixed(4)} b ${hazy.all[1].toFixed(4)} (${hazy.all[2]} px; sunlit ${hazy.lit[0].toFixed(4)} ${hazy.lit[1].toFixed(4)}; clear air ${clearAir.all[0].toFixed(4)} ${clearAir.all[1].toFixed(4)})`);
+  }
+  const spreadOf = (ms: typeof medians): number => {
+    let s = 0;
+    for (const p of ms) for (const q of ms) s = Math.max(s, Math.hypot(p.a - q.a, p.b - q.b));
+    return s;
+  };
+  const spread = spreadOf(medians);
+  const clearSpread = spreadOf(clears);
+  const rangeA = Math.max(...medians.map((m) => m.a)) - Math.min(...medians.map((m) => m.a));
+  const rangeB = Math.max(...medians.map((m) => m.b)) - Math.min(...medians.map((m) => m.b));
+  console.log(`info  haze: overview tower medians ${rows.join('; ')}; spread ${spread.toFixed(4)} (a range ${rangeA.toFixed(4)}, b range ${rangeB.toFixed(4)}); in clear air ${clearSpread.toFixed(4)}`);
+  check(medians.length >= 6 && medians.every((m) => m.n >= 100) && spread >= HUE_SPREAD, `in overview the hue spread across the six towers is at least ${HUE_SPREAD} in OKLab a and b (median per tower; guard; ${spread.toFixed(4)}, ${clearSpread > 0 ? ((spread / clearSpread) * 100).toFixed(0) : '?'}% of the clear air's)`);
+}
+
+/**
  * A tram's lit windows from home: this many pixels along it over this luminance (and over the frame round it).
  * Task 5's far glow ramp (vehicles.ts FAR_GLOW_NEAR to FAR_GLOW_FROM, 420 to 900 m) dims lit vehicles between those
  * distances; at the 700 to 900 m this view sees the tram at, the glow is 0.7 to 1.0 of full (0.9 at 800 m), and the
@@ -3230,7 +3337,8 @@ async function main(): Promise<void> {
     // UI_ONLY=traffic: the tram from home, a persona cab at a red light and the signal heads (Phase 5 Task 4).
     // UI_ONLY=close: a tram crossing 400 m without a pop, and the ride car's lamps without a flare (Phase 5 Task 5).
     // UI_ONLY=people: the personas' checks and the people-follow frame rate on high, then on medium (Phase 5 Task 3).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=haze: the six towers' hue spread in the overview (Phase 5 Task 6).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3267,6 +3375,8 @@ async function main(): Promise<void> {
         await trafficChecks(page);
       } else if (process.env.UI_ONLY === 'close') {
         await closeChecks(page);
+      } else if (process.env.UI_ONLY === 'haze') {
+        await hazeChecks(page);
       } else if (process.env.UI_ONLY === 'people') {
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');
@@ -3431,6 +3541,7 @@ async function main(): Promise<void> {
         await vehicleChecks(page);
         await trafficChecks(page);
         await closeChecks(page);
+        await hazeChecks(page);
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');
         await ambientChecks(page);

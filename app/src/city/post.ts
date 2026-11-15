@@ -49,6 +49,13 @@ function fadeWithDistance(gtao: GTAOPass, camera: THREE.PerspectiveCamera): void
 export const BLOOM_THRESHOLD = 0.97;
 /** The renderer's exposure (scene.ts), which the threshold is measured after. */
 export const EXPOSURE = 0.85;
+/**
+ * The brightest the sky may be in the HDR frame, the sun's glow included
+ * (sky.ts skyCap): under the bloom threshold, so the sky itself never reaches
+ * the bloom pass and a low view toward the sun keeps its upper right. The
+ * glow still rises toward the sun through a soft knee; only emitters bloom.
+ */
+export const SUN_BLOOM_MAX = 0.94;
 
 /**
  * The budget for flickering lights (a welder's arc on a job site, Task 26):

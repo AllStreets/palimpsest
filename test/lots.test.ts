@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { CollarPlaza } from '../app/src/city/collar.js';
-import { blockLots, farLot, farLotStands, lotParts, standingLots } from '../app/src/city/lots.js';
+import { blockLots, farLot, farLotStands, lotParts, PITCH, RING_REACH, standingLots, towerTones } from '../app/src/city/lots.js';
+import { lookFor } from '../app/src/city/tower/variants.js';
 import { BANKS, BRIDGE_APPROACH, BRIDGE_DECK, BRIDGES, QUAY } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
 
@@ -54,4 +55,40 @@ test('blocks away from the river keep every lot', () => {
   for (const [i, j] of [[0, 5], [3, -2], [-1, 9], [-8, 0], [6, 6]]) {
     assert.equal(standingLots(i, j, []).length, blockLots(i, j).length, `block ${i},${j}`);
   }
+});
+
+test('a look change retones only its own lot', () => {
+  // Two towers' rings reach a block: A's covers part of it, B's the far side. When A's look changes (a re-measure, a
+  // sale, another firm's colours), the lots in A's ring may take new tones; every lot outside it keeps its tone, its
+  // type and its height, and B's ring never hears of it.
+  const SAMPLE = ['tidewater/harbor-ledger', 'kestrel/fieldnotes', 'lantern/assay-kit', 'ferro/quarry', 'hoshi/kumo', 'alder/blank-slate'];
+  const looks = SAMPLE.map((r) => towerTones(lookFor(r)));
+  let inRing = 0;
+  let outRing = 0;
+  const bad: string[] = [];
+  for (const [i, j] of [[0, 5], [3, -2], [-1, 9], [6, 6], [2, 3], [-8, 0], [4, -5], [1, 7], [5, 1], [-3, -6]]) {
+    const ax = i * PITCH + 170;
+    const az = j * PITCH + 60;
+    const b: CollarPlaza = { x: i * PITCH - 150, z: j * PITCH - 80, rootHeight: 30, ...looks[5] };
+    for (let k = 0; k < looks.length - 1; k++) {
+      const was = standingLots(i, j, [CIVIC, { x: ax, z: az, rootHeight: 30, ...looks[k] }, b]);
+      const now = standingLots(i, j, [CIVIC, { x: ax, z: az, rootHeight: 30, ...looks[k + 1] }, b]);
+      assert.equal(was.length, now.length, `block ${i},${j}: a look change moved a lot`);
+      for (let n = 0; n < was.length; n++) {
+        const l0 = was[n];
+        const l1 = now[n];
+        assert.equal(l0.index, l1.index);
+        const same = l0.tone === l1.tone && l0.archetype === l1.archetype && l0.h === l1.h;
+        if (Math.hypot(l0.x - ax, l0.z - az) <= RING_REACH) {
+          if (!same) inRing++;
+        } else {
+          outRing++;
+          if (!same) bad.push(`block ${i},${j}, look ${k} to ${k + 1}: lot ${n} at ${l0.x.toFixed(0)},${l0.z.toFixed(0)} went ${l0.tone} ${l0.archetype} ${l0.h} to ${l1.tone} ${l1.archetype} ${l1.h}`);
+        }
+      }
+    }
+  }
+  assert.ok(outRing > 40, `${outRing} lots stood outside A's ring`);
+  assert.ok(inRing > 0, 'the looks differ enough that some lot in the ring takes a new tone');
+  assert.deepEqual(bad, [], `${bad.length} lots outside the ring retoned:\n${bad.slice(0, 12).join('\n')}`);
 });
