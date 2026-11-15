@@ -108,6 +108,9 @@ export function shadowColumn(
   };
 }
 
+/** The ambient city's far form (Task 7, facade.ts): it fades in from `near` and is whole by `full`, metres from the eye. */
+export const FAR_FORM = { near: 420, full: 1300 } as const;
+
 /** Under this many pixels wide a tower's thin repeated part hides; it comes back over SHOW_PX. */
 export const HIDE_PX = 0.5;
 export const SHOW_PX = 0.6;

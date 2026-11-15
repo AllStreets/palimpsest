@@ -92,3 +92,40 @@ test('a look change retones only its own lot', () => {
   assert.ok(inRing > 0, 'the looks differ enough that some lot in the ring takes a new tone');
   assert.deepEqual(bad, [], `${bad.length} lots outside the ring retoned:\n${bad.slice(0, 12).join('\n')}`);
 });
+
+test('the far ring gathers into clusters and breaks within blocks, off the river and never overlapping', async () => {
+  // Task 7: farLots is the far ring's skyline. Deterministic by block; each block's buildings stand inside the block,
+  // clear of the river's ground and of each other; some blocks stand two buildings and some carry a cluster's tower.
+  const lots = (await import('../app/src/city/lots.js')) as unknown as Record<string, unknown>;
+  const farLots = lots.farLots as ((i: number, j: number) => Array<{ x: number; z: number; w: number; d: number; h: number }>) | undefined;
+  assert.ok(farLots, 'the far ring has its skyline (lots.ts farLots)');
+  let two = 0;
+  let tall = 0;
+  let blocks = 0;
+  for (let i = -40; i <= 40; i += 3) {
+    for (let j = -40; j <= 40; j += 3) {
+      if (Math.max(Math.abs(i), Math.abs(j)) <= 22 || !farLotStands(i, j)) continue;
+      blocks++;
+      const a: Array<{ x: number; z: number; w: number; d: number; h: number }> = farLots!(i, j);
+      assert.deepEqual(farLots!(i, j), a, `block ${i},${j} is deterministic`);
+      if (a.length > 1) two++;
+      if (a.some((l) => l.h > 40)) tall++;
+      for (const l of a) {
+        assert.ok(Math.abs(l.x - i * PITCH) + l.w / 2 <= 32.5 && Math.abs(l.z - j * PITCH) + l.d / 2 <= 32.5, `block ${i},${j}: a building past its block`);
+        if (i >= -6 && i <= -3) assert.ok(!overlaps(l.x, l.w, BANKS.west - QUAY, BANKS.east + QUAY), `far lot ${i},${j} on the river`);
+      }
+      for (let p = 0; p < a.length; p++) {
+        for (let q = p + 1; q < a.length; q++) {
+          const clear = Math.abs(a[p].x - a[q].x) >= (a[p].w + a[q].w) / 2 || Math.abs(a[p].z - a[q].z) >= (a[p].d + a[q].d) / 2;
+          assert.ok(clear, `block ${i},${j}: two buildings overlap`);
+        }
+      }
+    }
+  }
+  assert.ok(two > blocks * 0.2 && two < blocks * 0.8, `${two} of ${blocks} blocks stand a second building`);
+  assert.ok(tall > blocks * 0.03 && tall < blocks * 0.5, `${tall} of ${blocks} blocks carry a cluster's tower`);
+  // The facades' far form fades in before it is whole, and only well past the near city's detail.
+  const lod = (await import('../app/src/city/lod.js')) as unknown as Record<string, unknown>;
+  const form = lod.FAR_FORM as { near: number; full: number } | undefined;
+  assert.ok(form && form.near >= 300 && form.near < form.full, `FAR_FORM ${JSON.stringify(form)}`);
+});

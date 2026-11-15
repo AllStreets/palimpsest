@@ -147,6 +147,19 @@ test("each scan's split between body and joint straddles the middle of its two r
   }
 });
 
+test('the ceramic glaze stays cool in the low sun: a low warm band in its body and a glaze\'s reflection, not a mirror\'s', () => {
+  // Task 7: under the orange key a glazed body's red is what the sun pushes hardest, and an environment weight of 4.2
+  // made the glaze a mirror of the orange horizon. The organic family's glaze keeps its red at most 0x3c and under a
+  // third of its blue, and its sky reflection at most 2.6 (a polished stone's weight).
+  const organic = VARIANTS.scifi.find((v) => v.family === 'organic')!;
+  const wall = organic.wall as Extract<Finish, { kind: 'scan' }>;
+  const r = (wall.body >> 16) & 0xff;
+  const b = wall.body & 0xff;
+  assert.ok(r <= 0x3c && r / b <= 0.33, `the glaze's body red ${r} against blue ${b}`);
+  const env = (variants as Record<string, unknown>).GLAZE_ENV as number | undefined;
+  assert.ok(env !== undefined && env <= 2.6 && env >= 1.5, `the glaze's sky reflection ${env}`);
+});
+
 test('the sample corner keeps SEPARATION', () => {
   // Every pair of neighbouring districts in the sample's six and in his six, whichever was placed first, reads apart
   // in every era the picker steers by colour (the corner where quarry and kumo meet was 5.8 in stone).

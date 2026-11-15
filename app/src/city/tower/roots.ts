@@ -601,15 +601,16 @@ function buttress(k: Kit, F: THREE.Matrix4, u: number, y0: number, h: number, de
   }
   // Pinnacle: a square shaft with gablets, then a crocketed spire.
   const top = y0 + h;
-  k.add('gothic', new THREE.BoxGeometry(0.95, 3.0, 0.95), F.clone().multiply(M(u, top + 1.5, 0.55)));
-  k.add('gothic', new THREE.ConeGeometry(0.72, 3.4, 4).rotateY(Math.PI / 4), F.clone().multiply(M(u, top + 3.0 + 1.7, 0.55)));
+  // Sized to stand as a pinnacle from 600 m (gothic-far): a shaft over a metre square, a spire 1.9 m across its foot.
+  k.add('gothic', new THREE.BoxGeometry(1.2, 3.0, 1.2), F.clone().multiply(M(u, top + 1.5, 0.55)));
+  k.add('gothic', new THREE.ConeGeometry(0.95, 3.4, 4).rotateY(Math.PI / 4), F.clone().multiply(M(u, top + 3.0 + 1.7, 0.55)));
   if (detail) {
-    // Crockets big enough to stand on the pinnacle's edge from 600 m (gothic-far): a 24 cm knob is half a pixel there.
-    const crocket = (): THREE.BufferGeometry => new THREE.BoxGeometry(0.24, 0.24, 0.34);
+    // Crockets big enough to stand on the pinnacle's edge from 600 m (gothic-far): a 30 cm knob is over half a pixel there.
+    const crocket = (): THREE.BufferGeometry => new THREE.BoxGeometry(0.3, 0.3, 0.4);
     for (let i = 0; i < 4; i++) {
       for (const c of [0, 1, 2, 3]) {
         const t = (i + 0.5) / 4.5;
-        const r = 0.72 * (1 - t) * Math.SQRT1_2 + 0.12;
+        const r = 0.95 * (1 - t) * Math.SQRT1_2 + 0.14;
         const ang = (c * Math.PI) / 2;
         k.inst('goth:crocket', 'gothic', crocket, F.clone().multiply(M(u, top + 3.0 + t * 3.4, 0.55)).multiply(M(0, 0, 0, ang)).multiply(M(0, 0, r)));
       }

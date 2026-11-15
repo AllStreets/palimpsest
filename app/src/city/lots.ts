@@ -556,8 +556,8 @@ export function farLot(i: number, j: number): Lot {
  * haze. The ring keeps its one building per block (farLot) and gains a
  * city's grain: blocks gather into clusters of taller building over a field
  * a few blocks across (the spine's towers, stepped back by lotParts like the
- * near city's), and outside them about half the blocks stand a second,
- * lower building on the half the first leaves free, so the roofline breaks
+ * near city's), and many blocks stand a second, lower building in the
+ * widest strip the first leaves free, so the roofline breaks
  * across a block as well as between blocks. Walls only, like the ring.
  */
 export function farLots(i: number, j: number): Lot[] {
@@ -582,17 +582,26 @@ export function farLots(i: number, j: number): Lot[] {
     out.push(base);
   }
   const first = out[0];
-  if (r() < 0.5) {
-    // A second, lower building on the half of the block the first leaves free.
-    const alongX = r() < 0.5;
-    const room = alongX ? BLOCK - first.w - 4 - Math.abs(first.x - i * PITCH) * 2 : BLOCK - first.d - 4 - Math.abs(first.z - j * PITCH) * 2;
-    if (room >= 14) {
+  if (r() < 0.6) {
+    // A second, lower building in the widest strip of the block the first leaves free, across x or across z.
+    const cx = i * PITCH;
+    const cz = j * PITCH;
+    const strips = [
+      { alongX: true, side: -1, room: first.x - first.w / 2 - (cx - BLOCK / 2) },
+      { alongX: true, side: 1, room: cx + BLOCK / 2 - (first.x + first.w / 2) },
+      { alongX: false, side: -1, room: first.z - first.d / 2 - (cz - BLOCK / 2) },
+      { alongX: false, side: 1, room: cz + BLOCK / 2 - (first.z + first.d / 2) },
+    ].sort((a, b) => b.room - a.room);
+    const { alongX, side, room } = strips[0];
+    const span = room - 3;
+    if (span >= 10) {
       const a = pickType(r, hood, 'free');
-      const w2 = alongX ? Math.min(room, 14 + r() * 18) : 18 + r() * 24;
-      const d2 = alongX ? 18 + r() * 24 : Math.min(room, 14 + r() * 18);
-      const side = alongX ? (first.x > i * PITCH ? -1 : 1) : first.z > j * PITCH ? -1 : 1;
-      const x = alongX ? i * PITCH + side * (BLOCK / 2 - w2 / 2 - 1) : i * PITCH + (r() - 0.5) * (BLOCK - w2);
-      const z = alongX ? j * PITCH + (r() - 0.5) * (BLOCK - d2) : j * PITCH + side * (BLOCK / 2 - d2 / 2 - 1);
+      const across = Math.min(span, 10 + r() * 16);
+      const along = 18 + r() * 26;
+      const w2 = alongX ? across : along;
+      const d2 = alongX ? along : across;
+      const x = alongX ? cx + side * (BLOCK / 2 - 1 - w2 / 2) : cx + (r() - 0.5) * (BLOCK - 2 - w2);
+      const z = alongX ? cz + (r() - 0.5) * (BLOCK - 2 - d2) : cz + side * (BLOCK / 2 - 1 - d2 / 2);
       const n = Math.max(1, Math.min(SECTIONS[a].storeys[1], 1 + Math.floor(r() * 5)));
       const lot: Lot = { ...first, archetype: a, x, z, w: w2, d: d2, h: sectionHeight(a, n), style: [0, r(), first.style[2], r()], index: 1 };
       lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w: w2, d: d2, front: [], seed: lot.style[1] }));

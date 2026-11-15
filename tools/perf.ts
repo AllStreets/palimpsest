@@ -53,8 +53,7 @@ import type { Page } from 'playwright';
 
 import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import { layoutTower } from '../shared/tower-layout.js';
-import type { District, Era, Quarter, TowerSpec } from '../shared/types.js';
-import { pickLooks } from '../app/src/city/tower/variants.js';
+import type { District, Era, Quarter, Repo, TowerSpec } from '../shared/types.js';
 import { frameStats } from '../app/src/city/governor.js';
 import { podVariant } from '../app/src/city/vehicles.js';
 import { around, apart, callDebug, followView, person, runUntil, sendPerson, tramFromHome } from './people-stage.js';
@@ -181,9 +180,11 @@ function task7Views(city: District[]): Array<[string, V3, V3]> {
   if (crowned) out.push(['scifi-crown-hero', [700, 70, 700], [crowned.origin.x, layoutTower(crowned.tower).top - 6, crowned.origin.z]]);
   const byRoot = (root: string): District | undefined => city.find((d) => d.tower.root === root);
   const gothic = byRoot('gothic');
-  if (gothic) out.push(['gothic-far', ...at(gothic.origin, 600, 70, 30)]);
+  // The root's top (the Gothic pinnacles at 27 to 34 m, the pagoda's eaves at 12 to 26 m) from 600 m and 150 m up, so
+  // the roofs between pass under the line of sight and the linework stands against the lit plaza round the root.
+  if (gothic) out.push(['gothic-far', ...at(gothic.origin, 600, 150, 29)]);
   const pagoda = byRoot('pagoda');
-  if (pagoda) out.push(['pagoda-far', ...at(pagoda.origin, 600, 70, 22)]);
+  if (pagoda) out.push(['pagoda-far', ...at(pagoda.origin, 600, 150, 20)]);
   // The market overview's distance: about 600 m off the exchange (at the civic plaza's centre), high over the roofs.
   out.push(['exchange-600', [BEARING.x * 560, 210, BEARING.z * 560], [0, 10, 0]]);
   const beaux = byRoot('beauxarts');
@@ -268,46 +269,72 @@ const FAMILY = ['ceramic-sun', 'cluster-pods', 'arcology-pavilion'];
 
 /**
  * The organic family's ceramic in the low sun, the cluster family's
- * cantilevered pods and the arcology's roof pavilion, close. Neither family need stand in the sample with a long run, so the
- * district with the most sci-fi floors is restyled to each family through
- * the debug handle for its shot and given its own look back after.
+ * cantilevered pods and the arcology's roof pavilion, close. No sample tower
+ * tops out in a sci-fi run (their top floors are earned in their agents'
+ * eras), so a fixture district is stood for them, as tools/ui-test.ts stands
+ * its site fixture: twelve founding floors all laid in the sci-fi era on a
+ * Chicago root, on the next slot, restyled to each family for its shot.
+ * It joins the city for the rest of the run, so these views run only when
+ * PERF_ONLY names them.
  */
 async function* familyViews(page: Page): AsyncGenerator<[string, V3, V3]> {
-  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
-  // A tower with no site on it (a crane over the roof would stand in the shot), the longest sci-fi run of those.
-  const busy = new Set((await callDebug<Array<{ repo: string }>>(page, 'd.liveSites()')).map((x) => x.repo));
-  const quiet = (x: District): boolean => {
-    const last = x.tower.floors[x.tower.floors.length - 1];
-    return !busy.has(x.repo) && !(last?.earned && last.earned.state !== 'lit');
-  };
-  const longest = (xs: District[]): District[] => xs.filter((x) => eraSpan(x.tower, 'scifi')).sort((a, b) => eraSpan(b.tower, 'scifi')!.n - eraSpan(a.tower, 'scifi')!.n);
-  const d = longest(city.filter(quiet))[0] ?? longest(city)[0];
-  if (!d) return;
-  const own = pickLooks(city.map((x) => ({ repo: x.repo, slot: x.index }))).get(d.repo)!;
-  const s = eraSpan(d.tower, 'scifi')!;
-  const top = layoutTower(d.tower).top;
+  const { openDb } = await import('../engine/db.js');
+  const { emit } = await import('../engine/events.js');
+  const { foundingFloors } = await import('../engine/history.js');
+  const { nextSlot } = await import('../engine/repos.js');
+  const { repoMarketDefaults } = await import('../shared/market-rules.js');
+  const before = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+  const fullName = 'fixture/sci-fi-run';
+  const slot = nextSlot('repo', fullName);
+  const now = new Date(SEED_AT).toISOString();
+  const repo: Repo = { fullName, private: false, defaultBranch: 'main', language: 'TypeScript', description: 'fixture', connected: true, pushMode: false, root: 'chicago', slot, status: 'ready', error: null, connectedAt: now, analyzedAt: now, ...repoMarketDefaults() };
+  const commits = Array.from({ length: 12 }, (_, i) => ({
+    sha: `${slot}${i.toString(16).padStart(6, '0')}`.padEnd(40, 'b'),
+    at: new Date(Date.parse('2025-06-01T09:00:00Z') + i * 30 * 3600_000).toISOString(),
+    author: 'Ada',
+    subject: `Change ${i + 1}`,
+    body: '',
+    lines: 60 + i * 13,
+  }));
+  const floors = foundingFloors(fullName, commits, []).map((f) => ({ ...f, era: 'scifi' as const }));
+  const tower: TowerSpec = { id: `${fullName}#founding`, repo: fullName, kind: 'founding', root: 'chicago', floors, datumIndex: floors.length };
+  const db = openDb();
+  // On the second tier the fixture already stands (the page reopened on the same home): written again, it is the same.
+  const stood = before.some((x) => x.repo === fullName);
+  db.prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(fullName, JSON.stringify(repo));
+  db.prepare('INSERT OR REPLACE INTO towers (repo, json) VALUES (?, ?)').run(fullName, JSON.stringify(tower));
+  if (!stood) emit('repo.analyzed', { repo });
+  await page.waitForFunction((k) => (window as unknown as { __palimpsest: { districts: number } }).__palimpsest.districts === k, before.length + (stood ? 0 : 1), { timeout: 10_000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  const d = ((await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[]).find((x) => x.repo === fullName);
+  if (!d) {
+    console.log('family views: the fixture did not stand; skipped');
+    return;
+  }
+  const lay = layoutTower(d.tower);
   const o = d.origin;
+  const top = lay.top;
+  const y0 = lay.floors[0].y0;
+  console.log(`family views on the fixture at slot ${slot} (${o.x}, ${o.z}): ${floors.length} sci-fi floors from ${y0.toFixed(0)} to ${top.toFixed(0)} m`);
   // The sun stands toward -x and +z (sky.ts SUN_DIRECTION): an eye on that side has the sun at its back.
   const SUN = { x: -0.908, z: 0.419 };
   for (const [name, family] of [['ceramic-sun', 'organic'], ['cluster-pods', 'cluster'], ['arcology-pavilion', 'arcology']] as const) {
-    await callDebug(page, `d.restyle(${JSON.stringify(d.repo)}, ['scifi:${family}'])`);
+    await callDebug(page, `d.restyle(${JSON.stringify(fullName)}, ['scifi:${family}'])`);
     // The rebuild is spread over frames: wait well past it before the still.
     await page.waitForTimeout(5000);
     if (name === 'ceramic-sun') {
-      // The organic family's glazed shell square to the low sun, from 230 m with the sun at the eye's back.
-      const y = s.y0 + (s.y1 - s.y0) * 0.4;
-      yield [name, [o.x + SUN.x * 230, y + 10, o.z + SUN.z * 230], [o.x, y, o.z]];
+      // The glazed shell square to the low sun, from 110 m with the sun at the eye's back, the run's middle in frame.
+      const y = (y0 + top) / 2;
+      yield [name, [o.x + SUN.x * 110, y + 8, o.z + SUN.z * 110], [o.x, y, o.z]];
     } else if (name === 'cluster-pods') {
-      // The pods in the run's middle, from 70 m and a little above them, on the home bearing.
-      const y = s.y0 + (s.y1 - s.y0) * 0.55;
-      yield [name, [o.x + BEARING.x * 70, y + 8, o.z + BEARING.z * 70], [o.x, y, o.z]];
+      // The pods in the run's upper half from 70 m, a little above them, on the home bearing.
+      const y = y0 + (top - y0) * 0.6;
+      yield [name, [o.x + BEARING.x * 70, y + 6, o.z + BEARING.z * 70], [o.x, y, o.z]];
     } else {
       // The roof pavilion from 120 m, 18 m over the roof, so its structure stands against the sky.
-      yield [name, [o.x + BEARING.x * 120, top + 18, o.z + BEARING.z * 120], [o.x, top - 8, o.z]];
+      yield [name, [o.x + BEARING.x * 120, top + 18, o.z + BEARING.z * 120], [o.x, top - 6, o.z]];
     }
   }
-  await callDebug(page, `d.restyle(${JSON.stringify(d.repo)}, [${JSON.stringify(own.scifi.id)}])`);
-  await page.waitForTimeout(1500);
 }
 
 /** The views of Task 6 that need the tour, the ride or the haze handle; an eye of null leaves the camera where a script holds it. */
@@ -719,7 +746,7 @@ async function main(): Promise<void> {
           await measure(name, eye, target);
         }
       }
-      if (!only || FAMILY.some((n) => only.includes(n))) {
+      if (only && FAMILY.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of familyViews(page)) {
           if (only && !only.includes(name)) continue;
           await measure(name, eye, target);

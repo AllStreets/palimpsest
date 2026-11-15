@@ -248,16 +248,23 @@ export interface BoardHold {
   maxX: number;
   /** Which edge stays put as it grows taller: 1 its foot (it grows up), -1 its head (it grows down). */
   anchor: 1 | -1;
+  /** How far a lit piece may widen: past its neighbours for a lamp (lit lamps run together), within its frame for a card. */
+  litMaxX: number;
+  /** Whether an unlit piece grows too (a card's shutter, yes; a dark lamp, no). */
+  darkHolds: boolean;
 }
-// The lamps grow up to the gap between them and a card to its brass frame (1.56 m); a lamp grows down from its head
-// and a card up from its foot, so the two never cross however far off the eye is.
-export const LAMP_HOLD: BoardHold = { size: [0.15, 0.15], px: [1.6, 2.4], maxX: 0.19 / 0.15, anchor: -1 };
-export const CARD_HOLD: BoardHold = { size: [1.34, 0.66], px: [4.0, 2.2], maxX: 1.5 / 1.34, anchor: 1 };
+// A dark lamp keeps its own size; a lit one grows down from its head and widens to 6 times (0.9 m, two CSS pixels at
+// 600 m) over its dark neighbours, so a slot's lit lamps read as a bar whose length is its bids. A card grows up from
+// its foot, so lamps and cards never cross, and only within its brass frame (1.56 m): past about 650 m it shrinks
+// with distance again and the lit lamps carry the board alone.
+export const LAMP_HOLD: BoardHold = { size: [0.15, 0.15], px: [2.0, 3.2], maxX: 1, anchor: -1, litMaxX: 6, darkHolds: false };
+export const CARD_HOLD: BoardHold = { size: [1.34, 0.66], px: [4.0, 2.2], maxX: 1.5 / 1.34, anchor: 1, litMaxX: 1.5 / 1.34, darkHolds: true };
 
 /** How much a board piece grows (across, up) at `distance` metres in a view `viewPx` CSS pixels tall through a `fov` degree lens. */
-export function boardGrow(hold: BoardHold, distance: number, viewPx: number, fov = 36): [number, number] {
+export function boardGrow(hold: BoardHold, distance: number, viewPx: number, fov = 36, lit = false): [number, number] {
   const pxm = (2 * distance * Math.tan((fov * Math.PI) / 360)) / viewPx;
-  return [Math.min(hold.maxX, Math.max(1, (hold.px[0] * pxm) / hold.size[0])), Math.max(1, (hold.px[1] * pxm) / hold.size[1])];
+  if (!lit && !hold.darkHolds) return [1, 1];
+  return [Math.min(lit ? hold.litMaxX : hold.maxX, Math.max(1, (hold.px[0] * pxm) / hold.size[0])), Math.max(1, (hold.px[1] * pxm) / hold.size[1])];
 }
 
 /**
@@ -268,7 +275,7 @@ export function boardGrow(hold: BoardHold, distance: number, viewPx: number, fov
  */
 function boardMaterial(name: string, roughness: number, hold: BoardHold): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness, metalness: 0.0, envMapIntensity: 1.0, name });
-  m.customProgramCacheKey = () => `palimpsest-exchange-board-${hold.size.join('x')}-${hold.px.join('x')}-${hold.anchor}`;
+  m.customProgramCacheKey = () => `palimpsest-exchange-board-${hold.size.join('x')}-${hold.px.join('x')}-${hold.anchor}-${hold.litMaxX}-${hold.darkHolds}`;
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uViewPx = VIEW_PX;
     // Each lamp and card holds its least size on screen (boardGrow): grown about its own centre, in its own plane.
@@ -283,7 +290,19 @@ function boardMaterial(name: string, roughness: number, hold: BoardHold): THREE.
         #endif
         float pxm = 2.0 * distance(bc.xyz, cameraPosition) / (projectionMatrix[1][1] * max(uViewPx, 1.0));
         vec2 grow = max(vec2(1.0), vec2(${hold.px[0].toFixed(2)}, ${hold.px[1].toFixed(2)}) * pxm / vec2(${hold.size[0].toFixed(3)}, ${hold.size[1].toFixed(3)}));
-        grow.x = min(grow.x, ${hold.maxX.toFixed(3)});
+        float litX = ${hold.maxX.toFixed(3)};
+        #ifdef USE_INSTANCING_COLOR
+          // A lit piece may widen past its neighbours (a lit lamp over the dark one beside it, a little in front), so
+          // a slot's lit lamps run together into a bar as long as its bids are many.
+          if (max(instanceColor.r, max(instanceColor.g, instanceColor.b)) >= 1.0) {
+            litX = ${hold.litMaxX.toFixed(3)};
+            transformed.z += 0.02 * min(grow.x, litX);
+          } else if (${hold.darkHolds ? 'false' : 'true'}) {
+            // A dark lamp keeps its own size: grown, a slot's unlit lamps were a row of dark smudges under the lit.
+            grow = vec2(1.0);
+          }
+        #endif
+        grow.x = min(grow.x, litX);
         transformed.xy *= grow;
         // Grown away from its neighbour: a lamp down from its head, a card up from its foot.
         transformed.y += ${(hold.anchor * 0.5).toFixed(2)} * (grow.y - 1.0) * ${hold.size[1].toFixed(3)};

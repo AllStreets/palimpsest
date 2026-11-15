@@ -17,6 +17,7 @@ import {
   slot,
   squareSweep,
   unitBox,
+  onFace,
 } from './kit.js';
 import { hasKit, kitPiece } from '../kits.js';
 import type { Family, MasonryRhythm, Variant } from './variants.js';
@@ -691,27 +692,28 @@ const arcology: EraBuilder = (k, w, h, f, c) => {
 };
 
 /**
- * The arcology's roof pavilion (Task 7): over the glass pavilion on the
- * crown's sky-garden deck (kits.py crown_arcology: the deck at 0.34 of the
- * crown's height, the pavilion's roof at 0.66 to 0.70, half 0.62 of the
- * shaft's half-width), a concrete pergola: four columns at the roof's
- * corners carrying deep beams out over the deck, and a run of slender
- * fins across them, so the low sun breaks across the deck in bars and the
+ * The arcology's roof pavilion (Task 7): on the crown's sky-garden deck
+ * (kits.py crown_arcology: the deck at 0.34 of the crown's height, the
+ * glass pavilion to 0.66, all under the crown's canopy at the top, which
+ * shades the deck from above), a screen of deep concrete fins stands round
+ * the pavilion near the deck's edge, so the low sun comes in under the
+ * canopy and breaks across the deck and the pavilion's glass in bars: the
  * pavilion reads as a structure, not a box on a box. All inside the crown.
  */
 function pergola(k: Kit, b: number, H: number): void {
-  const yRoof = 0.7 * H;
-  const deep = Math.min(0.7, H * 0.06);
-  const yBeam = yRoof + 0.05;
-  const span = b * 1.12;
-  const post = b * 0.6;
-  for (const [x, z] of corners(post, 0)) k.inst('arc:beam', 'scifiTrim', unitBox, M(x, (0.34 * H + yRoof) / 2, z, 0, 0.45, yRoof - 0.34 * H, 0.45));
-  for (const z of [-post, post]) k.inst('arc:beam', 'scifiTrim', unitBox, M(0, yBeam + deep / 2, z, 0, span * 2, deep, 0.4));
-  const fins = Math.max(5, Math.round((span * 2) / 1.5));
-  for (let i = 0; i < fins; i++) {
-    const x = -span + ((i + 0.5) / fins) * span * 2;
-    k.inst('arc:beam', 'scifiTrim', unitBox, M(x, yBeam + deep + 0.2, 0, 0, 0.2, 0.4, post * 2 + 1.6));
+  const y0 = 0.34 * H;
+  const y1 = 0.64 * H;
+  const at = b * 1.08;
+  const pitch = 1.5;
+  const n = Math.max(4, Math.round((at * 2) / pitch));
+  for (let side = 0; side < 4; side++) {
+    for (let i = 0; i < n; i++) {
+      const u = -at + ((i + 0.5) / n) * at * 2;
+      k.inst('arc:beam', 'scifiTrim', unitBox, onFace(side, at, u, (y0 + y1) / 2, 0, 0.28, y1 - y0, 1.0));
+    }
   }
+  // A beam along the fins' heads on each side, tying them.
+  for (let side = 0; side < 4; side++) k.inst('arc:beam', 'scifiTrim', unitBox, onFace(side, at, 0, y1 + 0.2, 0, at * 2 + 1.0, 0.4, 1.1));
 }
 
 // ---- organic

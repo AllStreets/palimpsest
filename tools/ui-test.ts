@@ -3122,7 +3122,10 @@ async function farChecks(page: Page): Promise<void> {
   const a = read(on);
   const b = read(off);
   console.log(`info  far: coursing-1100 on ${d.repo}: ${pxPerM.toFixed(2)} px/m, a line every ${group} course(s) (${period.toFixed(2)} px); line contrast ${a.contrast.toFixed(4)} drawn, ${b.contrast.toFixed(4)} without; autocorrelation at the spacing ${a.corr.toFixed(3)} drawn, ${b.corr.toFixed(3)} without`);
-  // The autocorrelation is read, not asserted: the floors' window rows share the frame with the courses and set its sign.
+  // The bar is a line-contrast ratio (the brief allows an FFT or a line-contrast measure; this is the latter), set at
+  // 1.3 times the frame without the line; the run measured 1.32 when it was set, so it is a narrow pass: the sample's
+  // longest stone run is mostly glass and the line shows only on its piers. The autocorrelation is read, not asserted:
+  // the floors' window rows share the frame with the courses and set its sign.
   check(a.contrast >= 1.3 * b.contrast && a.contrast >= 0.012, `coursing lines are resolvable in coursing-1100 (line contrast ${a.contrast.toFixed(4)} against ${b.contrast.toFixed(4)} without, at least 1.3 times and 0.012)`);
 }
 

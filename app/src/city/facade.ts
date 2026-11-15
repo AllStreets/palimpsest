@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import type { Archetype } from './lots.js';
 import { SECTIONS } from './lots.js';
 import { texture } from './materials.js';
+import { FAR_FORM } from './lod.js';
 import { ROOM, ROOM_GLSL } from './rooms.js';
 import { SUN_DIRECTION } from './sky.js';
 import { CUT, NAMES_PER_SET, PALETTES, signRows, type CornerKind } from './shopfronts.js';
@@ -40,9 +41,6 @@ import { CUT, NAMES_PER_SET, PALETTES, signRows, type CornerKind } from './shopf
  * round the corner (rooms.ts cornerU), so they keep their width. The
  * rooms' and corners' arithmetic lives in rooms.ts, which the tests read.
  */
-
-/** The ambient city's far form (Task 7): it fades in from `near` and is whole by `full`, metres from the eye. */
-export const FAR_FORM = { near: 420, full: 1300 } as const;
 
 /** The room trace behind the shop glass runs at high quality; medium keeps the glass, joinery and signs and draws a plain glow. */
 const ROOMS = { value: 1 };

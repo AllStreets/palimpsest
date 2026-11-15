@@ -302,9 +302,10 @@ test('the bid lamps and the lit cards hold their size from the market overview, 
   const view = 890;
   const pxPerM = (d: number): number => view / (2 * d * Math.tan((36 * Math.PI) / 360));
   for (const d of [560, 620]) {
-    const [, ly] = grow!(lamp!, d, view);
+    const [lx, ly] = (grow as unknown as (h: unknown, d: number, px: number, fov: number, lit: boolean) => [number, number])(lamp!, d, view, 36, true);
     const [cx, cy] = grow!(card!, d, view);
-    assert.ok(lamp!.size[1] * ly * pxPerM(d) >= 1.3, `a lamp stands ${(lamp!.size[1] * ly * pxPerM(d)).toFixed(2)} px tall at ${d} m`);
+    // A lit lamp at least 3 device pixels (1.5 CSS pixels at DPR 2) each way.
+    assert.ok(lamp!.size[1] * ly * pxPerM(d) >= 1.5 && lamp!.size[0] * lx * pxPerM(d) >= 1.5, `a lit lamp stands ${(lamp!.size[0] * lx * pxPerM(d)).toFixed(2)} by ${(lamp!.size[1] * ly * pxPerM(d)).toFixed(2)} px at ${d} m`);
     assert.ok(card!.size[0] * cx * pxPerM(d) >= 3 && card!.size[1] * cy * pxPerM(d) >= 1.6, `a card stands ${(card!.size[0] * cx * pxPerM(d)).toFixed(1)} by ${(card!.size[1] * cy * pxPerM(d)).toFixed(1)} px at ${d} m`);
     // Within its slot: a lamp no wider than the gap to the next (0.2 m), a card inside its brass frame (1.56 m).
     assert.ok(lamp!.size[0] * lamp!.maxX <= 0.2 && card!.size[0] * card!.maxX <= 1.56, 'each grows only within its slot');

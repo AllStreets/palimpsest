@@ -213,6 +213,16 @@ const TERRACOTTA = scan('brick', 0xd0d8e2, 0.2, { joint: 0x969ca3, normal: 0.55 
  * GLAZE_ENV), not a mirror's.
  */
 const CERAMIC = scan('ashlar', 0x3a73b2, 0.16, { joint: 0x34414f, normal: 0.12, polish: 1.0, detail: 0.15, weather: 0, courses: { h: 1.2, l: 1.8, joint: 0.7, vary: 0.06, gap: 0.045 }, seen: 0x9fb4c8 });
+/**
+ * A full glaze's sky reflection (Task 7). The clear coat already carries a
+ * glaze's own Fresnel (F0 0.04, a fired glaze's index of about 1.5); the
+ * environment weight on top was 4.2, which made the ceramic a mirror of the
+ * orange horizon wherever the low sun stood behind the eye. At 2.4 the
+ * glaze's reflection is twice a polished stone's at grazing and under it
+ * square on, as a glazed tile measures against a honed one.
+ */
+export const GLAZE_ENV = 2.4;
+
 /** Pale cast stone for the deco shaft: cool grey-buff panels in wide courses, lightly weathered. */
 const CAST_STONE = scan('ashlar', 0xc3c1b9, 0.6, { joint: 0x8f8d86, normal: 0.6, weather: 0.12, courses: { h: 1.2, l: 2.6, joint: 0.5, vary: 0.05 } });
 /** Dark basalt-grey concrete for the ziggurat's sloped faces: board-marked, streaked by rain. */

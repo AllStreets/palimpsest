@@ -8,7 +8,7 @@ import { ANISO_PATCH_OK, patchAnisotropy } from './aniso-patch';
 import type { Centerpiece } from '../scene';
 import { type BuildOptions, buildTower } from './build';
 import type { EraMatKey, TowerMaterials } from './kit';
-import { type Finish, type Glazing, type Look, lookFor, lookKey, SCAN_STATS } from './variants';
+import { type Finish, GLAZE_ENV, type Glazing, type Look, lookFor, lookKey, SCAN_STATS } from './variants';
 
 /**
  * The tower materials in the browser: the scanned stone, brick and metal
@@ -504,15 +504,6 @@ float courseLine(float y, float h, float px) {
 }
 `;
 
-/**
- * A full glaze's sky reflection (Task 7). The clear coat already carries a
- * glaze's own Fresnel (F0 0.04, a fired glaze's index of about 1.5); the
- * environment weight on top was 4.2, which made the ceramic a mirror of the
- * orange horizon wherever the low sun stood behind the eye. At 2.4 the
- * glaze's reflection is twice a polished stone's at grazing and under it
- * square on, as a glazed tile measures against a honed one.
- */
-const GLAZE_ENV = 2.4;
 
 /**
  * A scanned masonry or patina set in a variant's colours. The scan's
