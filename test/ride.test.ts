@@ -280,3 +280,25 @@ test('dossierFloors picks the scars, the proposals and the newest earned floors,
   assert.ok(picked.every((id) => !floors.slice(0, 4).some((f) => f.id === id)), 'no founding floor');
   assert.ok(picked.length <= 6);
 });
+
+// ---------------------------------------------------------------- the car's lamps (Phase 5 Task 5)
+
+import { RIDE_LAMPS } from '../app/src/city/ride.js';
+import { BLOOM_THRESHOLD } from '../app/src/city/post.js';
+
+test("the ride car's lamp colours stay under BLOOM_THRESHOLD", () => {
+  const under = (c: readonly number[], what: string): void => {
+    for (const ch of c) assert.ok(ch > 0 && ch < BLOOM_THRESHOLD, `${what} at ${c.map((x) => x.toFixed(3)).join(', ')} stays under the threshold`);
+  };
+  under(RIDE_LAMPS.ceiling, 'the ceiling panel');
+  under(RIDE_LAMPS.downlight, 'a downlight');
+  under(RIDE_LAMPS.halo, 'the halo');
+  // The halo lies over the lamps additively: the brightest lamp and the halo's peak together stay under too, so the
+  // glass in front of them never flares.
+  for (let i = 0; i < 3; i++) {
+    assert.ok(Math.max(RIDE_LAMPS.ceiling[i], RIDE_LAMPS.downlight[i]) + RIDE_LAMPS.halo[i] < BLOOM_THRESHOLD, 'lamp and halo together stay under the threshold');
+    assert.ok(RIDE_LAMPS.glass[i] < 0.1, 'the glass carries only a trace of the light');
+  }
+  // Warm: more red than blue in every lamp.
+  for (const c of [RIDE_LAMPS.ceiling, RIDE_LAMPS.downlight, RIDE_LAMPS.halo]) assert.ok(c[0] > c[2]);
+});

@@ -126,3 +126,52 @@ test('a seat stands where a rider sits, in the cars people sit in', () => {
     assert.ok(Math.abs(top - height) < 0.08, `${name}: the seat's top stands ${top.toFixed(2)} m over the floor (the rider sits at ${height})`);
   }
 });
+
+// ---------------------------------------------------------------- up close (Phase 5 Task 5)
+
+import { extentBlocks, network } from '../shared/commute.js';
+import { districtOrigin } from '../shared/district-layout.js';
+import { createVehicles, lodBlend, podVariant, VEHICLE_LOD } from '../app/src/city/vehicles.js';
+
+test('two pods side by side differ in seats or strip', () => {
+  const slots = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
+  const v = createVehicles(network({ blocks: extentBlocks(slots), districts: slots.slice(0, 6) }), 'high');
+  const pods = v.vehicles('pod');
+  assert.ok(pods.length >= 4, `${pods.length} pods`);
+  // The pods of one line in the order they follow each other: each against the next, and the last against the first.
+  const lines = new Map<string, string[]>();
+  for (const p of pods) {
+    const line = p.id.slice(0, p.id.lastIndexOf(':'));
+    lines.set(line, [...(lines.get(line) ?? []), p.id]);
+  }
+  let pairs = 0;
+  for (const ids of lines.values()) {
+    ids.sort((a, b) => Number(a.slice(a.lastIndexOf(':') + 1)) - Number(b.slice(b.lastIndexOf(':') + 1)));
+    for (let k = 0; k < ids.length; k++) {
+      const a = podVariant(ids[k]);
+      const b = podVariant(ids[(k + 1) % ids.length]);
+      if (ids.length < 2) continue;
+      pairs++;
+      assert.ok(a.seat !== b.seat || a.strip !== b.strip, `${ids[k]} and ${ids[(k + 1) % ids.length]} are the same inside (${JSON.stringify(a)})`);
+      for (const x of [a, b]) {
+        assert.ok(x.seat === 0 || x.seat === 1, 'two seat colourways');
+        assert.ok(x.strip === 0 || x.strip === 1, 'two ceiling strips');
+      }
+    }
+  }
+  assert.ok(pairs >= 4, `${pairs} pairs compared`);
+  v.dispose();
+});
+
+test('the cross-fade keeps summed opacity within 0.95 to 1.05 across 380 to 420 m', () => {
+  assert.equal((VEHICLE_LOD.near + VEHICLE_LOD.far) / 2, 400, 'the band is centred on 400 m');
+  for (let d = 380; d <= 420; d += 0.5) {
+    const b = lodBlend(d);
+    assert.ok(b.near >= 0 && b.near <= 1 && b.far >= 0 && b.far <= 1, `at ${d} m the levels' shares are shares`);
+    assert.ok(b.near + b.far >= 0.95 && b.near + b.far <= 1.05, `at ${d} m the levels sum to ${(b.near + b.far).toFixed(3)}`);
+  }
+  // Short of the band the near level alone; past it the far level alone; the middle an even split.
+  assert.deepEqual(lodBlend(VEHICLE_LOD.near - 1), { near: 1, far: 0 });
+  assert.deepEqual(lodBlend(VEHICLE_LOD.far + 1), { near: 0, far: 1 });
+  assert.ok(Math.abs(lodBlend(400).near - 0.5) < 1e-6);
+});

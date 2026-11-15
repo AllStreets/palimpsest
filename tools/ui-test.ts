@@ -2871,6 +2871,117 @@ async function trafficChecks(page: Page): Promise<void> {
   const heads = await callDebug<{ heads: number; drawn: number }>(page, 'd.signalHeads()');
   check(heads.heads > 100 && heads.drawn > 0, `signal heads stand at the junctions (${heads.heads}, ${heads.drawn} near the eye)`);
 }
+/**
+ * The vehicles up close (Phase 5 Task 5): a tram crossing the levels' band
+ * 400 m from the eye shows no pop (three frames half a second apart, the
+ * mean luminance of the frame round it within 2%), and the lift car twenty
+ * metres up a tower shows no blown flare on its glass (no run of white in the
+ * frame round the car's lamps).
+ */
+async function closeChecks(page: Page): Promise<void> {
+  type Probe = { id: string; position: number[]; heading: number; speed: number };
+  const lum = (im: { width: number; data: Uint8Array }, x: number, y: number): number => {
+    const i = (y * im.width + x) * 4;
+    return (0.2126 * im.data[i] + 0.7152 * im.data[i + 1] + 0.0722 * im.data[i + 2]) / 255;
+  };
+  await callDebug(page, 'd.vehicleHold(true)');
+  const found = await callDebug<boolean>(page, "d.vehicleSeek([{ kind: 'tram', near: [0, 0], radius: 1500, moving: 3 }], 4000)");
+  check(found, 'a tram runs for the 400 m crossing');
+  if (found) {
+    // The moving tram heading furthest from the low sun (toward -x and +z), so the sun's bloom stays out of the frame.
+    const sunward = (v: Probe): number => Math.cos(v.heading) * -0.908 + Math.sin(v.heading) * 0.419;
+    const all = await callDebug<Probe[]>(page, "d.vehicleKinds('tram')");
+    const t = all.filter((v) => v.speed > 2).sort((a, b) => sunward(a) - sunward(b))[0] ?? all[0];
+    const eye = [t.position[0] - Math.cos(t.heading) * 399 - Math.sin(t.heading) * 14, t.position[1] + 45, t.position[2] - Math.sin(t.heading) * 399 + Math.cos(t.heading) * 14];
+    await setView(page, eye, [t.position[0], t.position[1] + 2, t.position[2]]);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(1200);
+    // Everything but the vehicles' clock held, the tram stepped half a second at a time through 400 m, and the frame
+    // round its three places (its ends projected, a small margin) read at each step: only the tram changes in it.
+    await callDebug(page, 'd.ambientHold(true)');
+    await callDebug(page, 'd.peopleHold(true)');
+    const boxOf = async (now: Probe, img: { width: number; height: number }): Promise<[number, number, number, number]> => {
+      const ends: number[][] = [];
+      for (const s of [-15, 15]) {
+        const q = await callDebug<number[]>(page, `d.project([${now.position[0] + Math.cos(now.heading) * s}, ${now.position[1] + 1.6}, ${now.position[2] + Math.sin(now.heading) * s}])`);
+        ends.push([((q[0] + 1) / 2) * img.width, ((1 - q[1]) / 2) * img.height]);
+      }
+      return [Math.floor(Math.min(ends[0][0], ends[1][0])) - 4, Math.floor(Math.min(ends[0][1], ends[1][1])) - 5, Math.ceil(Math.max(ends[0][0], ends[1][0])) + 4, Math.ceil(Math.max(ends[0][1], ends[1][1])) + 5];
+    };
+    const size = page.viewportSize() ?? VIEWPORT;
+    // At each step the tram's own pixels (the frame with the vehicles shown against the same frame with them hidden)
+    // and their mean luminance: what the tram itself draws, whatever lies behind it, as the levels dissolve.
+    const means: number[] = [];
+    const dists: number[] = [];
+    const counts: number[] = [];
+    for (let k = 0; k < 3; k++) {
+      const now = await callDebug<Probe | null>(page, `d.vehicle(${JSON.stringify(t.id)})`);
+      if (!now) break;
+      await page.waitForTimeout(350);
+      const shown = decodePng(await page.screenshot());
+      await callDebug(page, 'd.vehicleShow(false)');
+      await page.waitForTimeout(250);
+      const bare = decodePng(await page.screenshot());
+      await callDebug(page, 'd.vehicleShow(true)');
+      const b = await boxOf(now, size);
+      let sum = 0;
+      let n = 0;
+      for (let y = Math.max(0, b[1]); y <= Math.min(shown.height - 1, b[3]); y++) for (let x = Math.max(0, b[0]); x <= Math.min(shown.width - 1, b[2]); x++) {
+        const l = lum(shown, x, y);
+        if (Math.abs(l - lum(bare, x, y)) > 0.03) {
+          sum += l;
+          n++;
+        }
+      }
+      means.push(n ? sum / n : 0);
+      counts.push(n);
+      dists.push(Math.hypot(now.position[0] - eye[0], now.position[2] - eye[2]));
+      if (k === 0) await page.screenshot({ path: join(SHOTS, 'lod-400.png') });
+      if (k < 2) await callDebug(page, 'd.vehicleSkip(0.5)');
+    }
+    await callDebug(page, 'd.ambientHold(false)');
+    await callDebug(page, 'd.peopleHold(false)');
+    const lo = Math.min(...means);
+    const hi = Math.max(...means);
+    const diff = lo > 0 ? (hi - lo) / lo : 1;
+    console.log(`info  lod-400: the tram at ${dists.map((d) => d.toFixed(0)).join(', ')} m, its own pixels (${counts.join(', ')}) at mean luminance ${means.map((m) => m.toFixed(4)).join(', ')}`);
+    check(means.length === 3 && diff < 0.02, `lod-400 frames differ by under 2% in mean luminance (${(diff * 100).toFixed(2)}%)`);
+  }
+  await callDebug(page, 'd.vehicleHold(false)');
+
+  // The lift car twenty metres up the first tower with floors, from the ride's camera: the lamps lit, no flare.
+  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as Array<{ repo: string; tower: { floors: unknown[] } }>;
+  const d0 = city.find((d) => d.tower.floors.length > 3) ?? city[0];
+  type Riding = { t: number; length: number; car: number };
+  const rode = d0 ? await callDebug<boolean>(page, `d.ride(${JSON.stringify(d0.repo)})`) : false;
+  check(rode, 'the ride takes the car up a tower');
+  if (rode) {
+    await callDebug(page, 'd.rideHold(true)');
+    await page.waitForTimeout(600);
+    let r = await callDebug<Riding>(page, 'd.riding()');
+    let lo = 0;
+    let hi = r.length;
+    for (let i = 0; i < 18; i++) {
+      const mid = (lo + hi) / 2;
+      await callDebug(page, `d.rideSeek(${mid})`);
+      await page.waitForTimeout(100);
+      r = await callDebug<Riding>(page, 'd.riding()');
+      if (r.car < 20) lo = mid;
+      else hi = mid;
+    }
+    await page.waitForTimeout(1500);
+    const img = decodePng(await page.screenshot({ path: join(SHOTS, 'ride-car.png') }));
+    // White runs: pixels at the top of the range, where a lamp's flare blows out; the lit panel itself stays under.
+    let white = 0;
+    for (let i = 0; i < img.width * img.height; i++) if (img.data[i * 4] >= 252 && img.data[i * 4 + 1] >= 252 && img.data[i * 4 + 2] >= 248) white++;
+    const share = white / (img.width * img.height);
+    console.log(`info  ride-car: the car at ${r.car.toFixed(1)} m; ${white} white pixels (${(share * 100).toFixed(3)}%)`);
+    check(share < 0.002, `the ride car's glass shows no blown flare (${(share * 100).toFixed(3)}% of the frame white)`);
+    await callDebug(page, 'd.ride(null)');
+    await page.waitForTimeout(2000);
+  }
+}
+
 /** A tram's lit windows from home: this many pixels along it over this luminance (and over the frame round it). */
 const TRAM_LIT_FLOOR = 0.42;
 const TRAM_LIT_GAIN = 0.08;
@@ -3093,8 +3204,9 @@ async function main(): Promise<void> {
     // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
     // UI_ONLY=street: the street floor's and the street facades' checks alone (Phase 5 Tasks 1 and 2's rounds).
     // UI_ONLY=traffic: the tram from home, a persona cab at a red light and the signal heads (Phase 5 Task 4).
+    // UI_ONLY=close: a tram crossing 400 m without a pop, and the ride car's lamps without a flare (Phase 5 Task 5).
     // UI_ONLY=people: the personas' checks and the people-follow frame rate on high, then on medium (Phase 5 Task 3).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic'].includes(process.env.UI_ONLY ?? '');
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3129,6 +3241,8 @@ async function main(): Promise<void> {
         await windowChecks(page);
       } else if (process.env.UI_ONLY === 'traffic') {
         await trafficChecks(page);
+      } else if (process.env.UI_ONLY === 'close') {
+        await closeChecks(page);
       } else if (process.env.UI_ONLY === 'people') {
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');
@@ -3292,6 +3406,7 @@ async function main(): Promise<void> {
         await transitChecks(page);
         await vehicleChecks(page);
         await trafficChecks(page);
+        await closeChecks(page);
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');
         await ambientChecks(page);

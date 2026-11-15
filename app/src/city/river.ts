@@ -28,6 +28,7 @@ import { LAYER, setLayers } from './lod.js';
 import { materials, texture } from './materials.js';
 import { chunkAt, chunkLod, chunks, waterSettings, type Chunk } from './river-lod.js';
 import { SKY_GLSL, SUN_DIRECTION } from './sky.js';
+import { WAKE, WAKE_GLSL } from './wake.js';
 
 import { BRIDGE_KINDS, pontoonOf, RIVER_BED, STONE_PIERS, WATER_Y } from './river-bed.js';
 export { BRIDGE_KINDS, pontoonOf, RIVER_BED, riverFeet, WATER_Y, type BridgeKind } from './river-bed.js';
@@ -1126,6 +1127,7 @@ function waterFragment(steps: number): string {
     vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
     return mix(mix(wHash(i), wHash(i + vec2(1, 0)), f.x), mix(wHash(i + vec2(0, 1)), wHash(i + vec2(1, 1)), f.x), f.y);
   }
+  ${WAKE_GLSL}
   vec3 wakes(vec2 p, float dist, float vy) {
     vec2 g = vec2(0.0);
     float foam = 0.0;
@@ -1149,38 +1151,33 @@ function waterFragment(steps: number): string {
       if (b < 0.0 || b > 220.0) continue;
       // Outside the wedge (its arms at their widest wander) nothing of the wake reaches: skip the noise there.
       if (aa > 2.4 + 0.394 * b + 3.0 * (1.1 + 0.05 * b) + 3.0) continue;
-      float decay = sp * exp(-b / 90.0);
-      float width = 1.1 + 0.05 * b;
-      float edge0 = 2.4 + 0.354 * b;
-      float wander = 0.3 + 0.02 * b;
-      // Close to the boat the arms stand up: a V that reads behind it, not only the churn in its track.
-      float close = 1.0 + 1.6 * exp(-b / 45.0);
-      // The arms: divergent crests as continuous ridge lines running in across each arm of the 19.5 degree wedge,
-      // their spacing and strength wandering with noise and fading astern and with distance; only the foam breaks up.
-      float band = 2.6 * width;
-      if (b < 150.0 && abs(aa - edge0) < band + wander + width) {
-        // One slow noise steers the arm's line, its ridges' spacing and their strength.
-        float flow = wNoise(vec2(aa * 0.05 + uTime * 0.05, b * 0.04 - uTime * 0.08));
+      float width = wkWidth(b);
+      float edge0 = 2.4 + ${WAKE.tanHalf.toFixed(4)} * b;
+      float wander = wkWander(b);
+      // The arms (wake.ts): each a continuous divergent crest along the 19.5 degree wedge, its height the decayed
+      // envelope with a slow wander (wkArm, never under 0.7 of itself, so it reads as one line from the bow to where
+      // it fades), its line wandering a little about the wedge; two fainter crests run inside it, parallel, as the
+      // divergent train does. Only the foam on the crest breaks up.
+      if (b < ${WAKE.reach.toFixed(1)} && abs(aa - edge0) < width * 7.0 + wander) {
+        float flow = wkFlow(b * 0.04 - uTime * 0.08);
         float edge = edge0 + (flow - 0.5) * wander;
-        float armD = aa - edge;
-        // A broad, one-sided envelope: the ridges reach in from the arm's line toward the track, not out past it.
-        float env = exp(-armD * armD / (band * band)) * smoothstep(width * 1.2, -width * 0.2, armD);
-        // The ridge lines cross the arm at about 35 degrees; their spacing stretches and squeezes slowly.
-        float spacing = 1.0 + 0.35 * (flow - 0.5);
-        float ph = (aa * 0.82 + b * 0.57) * 1.15 / spacing - uTime * 2.0;
+        float arm = sp * wkArm(b, uTime);
+        // Far off and at a glancing view the crests are finer than a pixel: they thin out, the churn's track stays.
         float crestFade = (1.0 - smoothstep(0.5, 1.4, 1.15 * footprint)) * near;
-        float strength = 0.6 + 0.8 * fract(flow * 3.7 + 0.21);
-        float s0 = sin(ph);
-        float c0 = 0.5 + 0.5 * s0;
-        float sharp = mix(3.0, 1.4, smoothstep(10.0, 140.0, b));
-        float dcrest = sharp * pow(c0, sharp - 1.0) * cos(ph) * 0.5;
-        vec2 across = normalize(side * sign(a) * 0.82 - dir * 0.57);
-        g += across * dcrest * env * decay * 0.17 * close * strength * crestFade;
-        // The swell under the arm: the gradient of a smooth ridge.
-        g += side * sign(a) * (-2.0 * armD / (width * width)) * exp(-armD * armD / (width * width)) * decay * 0.1 * close;
-        // Foam only on the ridge tops near the boat, broken up by its own noise.
-        float tip = pow(c0, 6.0) * env * smoothstep(80.0, 4.0, b) * crestFade;
-        if (tip > 0.01) foam += tip * decay * 0.5 * close * smoothstep(0.45, 0.85, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2)));
+        float w2 = width * width;
+        float armD = aa - edge;
+        float gauss = exp(-armD * armD / w2);
+        // The crest: the gradient of a smooth ridge across the arm's line, standing up toward the boat.
+        g += side * sign(a) * (-2.0 * armD / w2) * gauss * arm * (0.1 + 0.12 * crestFade);
+        // The inner crests, each a ridge the same shape a few widths inside the arm, fainter.
+        for (int k = 1; k <= 2; k++) {
+          float dIn = aa - (edge - width * 2.4 * float(k));
+          float str = k == 1 ? ${WAKE.inner[0].strength.toFixed(2)} : ${WAKE.inner[1].strength.toFixed(2)};
+          g += side * sign(a) * (-2.0 * dIn / w2) * exp(-dIn * dIn / w2) * arm * str * (0.06 + 0.1 * crestFade);
+        }
+        // Foam only on the crest's top near the boat, broken up by its own noise.
+        float tip = gauss * smoothstep(80.0, 4.0, b) * crestFade;
+        if (tip > 0.02) foam += tip * arm * 0.45 * smoothstep(0.45, 0.85, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2)));
       }
       // The churn astern of the hull (its stern stands 11 m behind the middle), and white water along its sides.
       float s = u - 10.5;

@@ -24,7 +24,11 @@
  * still and its frame rate (the pose frozen costs the same to draw).
  * The transit views (junction-signal, tram-home, viaduct-corner) are staged
  * the same way: a persona cab waited for at a red light, a tram moved on to
- * where home sees its line, a train sought on the viaduct's curve.
+ * where home sees its line, a train sought on the viaduct's curve. The close
+ * views (Task 5: ferry-wake, train-windscreen, lod-400, ride-car) stage a
+ * ferry under way, a train standing at its station, a tram crossing 400 m
+ * (three frames half a second apart, lod-400-a/b/c.png) and the lift car
+ * twenty metres up a tower, seen from the ride's own camera.
  * Phase two (unless PERF_STATIC) turns the economy's
  * job sites live (four sites) on high and measures the city from home, the
  * overview and the quarters with them, with the quality governor running.
@@ -196,6 +200,92 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
   ];
 }
 
+/** The views of Task 5 that stage a vehicle or the ride; an eye of null leaves the camera where the ride holds it. */
+const CLOSE = ['ferry-wake', 'pod-interior', 'train-windscreen', 'lod-400', 'ride-car'];
+
+/**
+ * The close views (Task 5), yielded one by one with the vehicles' clock
+ * held: a ferry under way in mid-river from the stone bridge's parapet
+ * behind it (ferry-wake, framed as tools/capture.ts frames it), a train
+ * standing at its station from in front of its nose (train-windscreen), a
+ * tram 400 m from the eye with the clock running for three frames half a
+ * second apart (lod-400, the stills a/b/c beside the measured one), and the
+ * lift car twenty metres up the first tower from the ride's own camera
+ * (ride-car). A stage that cannot be reached is skipped and said.
+ */
+async function* closeViews(page: Page, out: string): AsyncGenerator<[string, V3 | null, V3]> {
+  type Probe = { id: string; position: number[]; heading: number; speed: number };
+  const near = (ps: Probe[], x: number, z: number): Probe => [...ps].sort((a, b) => Math.hypot(a.position[0] - x, a.position[2] - z) - Math.hypot(b.position[0] - x, b.position[2] - z))[0];
+  await callDebug(page, 'd.vehicleHold(true)');
+  try {
+    if (await callDebug<boolean>(page, "d.vehicleSeek([{ kind: 'ferry', near: [-360, 210], radius: 50, moving: 5.5 }], 4000)")) {
+      const f = near(await callDebug<Probe[]>(page, "d.vehicleKinds('ferry')"), -360, 210);
+      yield ['ferry-wake', around(f.position, f.heading, -70, 8, 9), around(f.position, f.heading, 6, 0, -5)];
+    } else console.log('close: no ferry under way in mid-river; ferry-wake is skipped');
+    // A pod standing at the station tools/capture.ts shoots its pod-interior from (the platform at (227, 20, 124)
+    // looking along to (252, 20, 123)): from the platform's side of the pod, 3.4 m off its door, at a standing eye.
+    const pod = await callDebug<Probe | null>(page, "d.vehicleStage('pod', [252, 122])");
+    if (pod) {
+      const side = Math.sign(-(227 - pod.position[0]) * Math.sin(pod.heading) + (123.6 - pod.position[2]) * Math.cos(pod.heading)) || 1;
+      yield ['pod-interior', around(pod.position, pod.heading, 3.0, side * 5.2, pod.position[1] + 1.75), around(pod.position, pod.heading, -0.4, 0, pod.position[1] + 1.1)];
+    } else console.log('close: no pod stands at its station; pod-interior is skipped');
+    // A train standing at a station: its nose (the lead cab car's front, 16 m and a car's half length ahead of the
+    // middle car) from 7 m ahead and a little to its right, at the driver's eye.
+    const train = await callDebug<Probe | null>(page, "d.vehicleStage('rail')");
+    if (train) {
+      const nose = 16 + 7.6;
+      yield ['train-windscreen', around(train.position, train.heading, nose + 7.5, 2.6, train.position[1] + 2.4), around(train.position, train.heading, nose - 0.3, 0, train.position[1] + 2.1)];
+    } else console.log('close: no train stands at a station; train-windscreen is skipped');
+    // A tram under way, the eye 400 m from it (VEHICLE_LOD's middle) and 30 m up, looking along its way; the clock runs
+    // for three frames half a second apart while the tram crosses the band, then holds for the measure.
+    if (await callDebug<boolean>(page, "d.vehicleSeek([{ kind: 'tram', near: [0, 0], radius: 1500, moving: 3 }], 4000)")) {
+      // The moving tram heading furthest from the low sun (sky.ts SUN_DIRECTION, toward -x and +z): the eye looks
+      // along its heading, and a tram heading into the sun put the sun's bloom across the frame.
+      const trams = (await callDebug<Probe[]>(page, "d.vehicleKinds('tram')")).filter((v) => v.speed > 2);
+      const sunward = (v: Probe): number => Math.cos(v.heading) * -0.908 + Math.sin(v.heading) * 0.419;
+      const t = trams.sort((a, b) => sunward(a) - sunward(b))[0] ?? near(await callDebug<Probe[]>(page, "d.vehicleKinds('tram')"), 0, 0);
+      // Behind the tram along its heading and off its line, 45 m up (a following tram's lamps under the eye flared
+      // the whole frame from 30 m), so it runs away from the eye through 400 m.
+      const eye = around(t.position, t.heading, -399, 14, t.position[1] + 45);
+      const target: V3 = [t.position[0], t.position[1] + 2, t.position[2]];
+      await settle(page, eye, target);
+      await callDebug(page, 'd.vehicleHold(false)');
+      for (const k of ['a', 'b', 'c']) {
+        await page.screenshot({ path: join(out, `lod-400-${k}.png`) });
+        await page.waitForTimeout(500);
+      }
+      await callDebug(page, 'd.vehicleHold(true)');
+      yield ['lod-400', eye, target];
+    } else console.log('close: no tram under way; lod-400 is skipped');
+  } finally {
+    await callDebug(page, 'd.vehicleHold(false)');
+  }
+  // The ride: the first district's tower, the car sought to 20 m over the street and held there, the camera the ride's.
+  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+  const d0 = city.find((d) => d.tower.floors.length > 3) ?? city[0];
+  type Riding = { t: number; length: number; car: number; stops: Array<{ t: number }> };
+  if (d0 && (await callDebug<boolean>(page, `d.ride(${JSON.stringify(d0.repo)})`))) {
+    await callDebug(page, 'd.rideHold(true)');
+    await page.waitForTimeout(600);
+    let r = await callDebug<Riding>(page, 'd.riding()');
+    // The car climbs with t: bisect for the moment it stands at 20 m.
+    let lo = 0;
+    let hi = r.length;
+    for (let i = 0; i < 18; i++) {
+      const mid = (lo + hi) / 2;
+      await callDebug(page, `d.rideSeek(${mid})`);
+      await page.waitForTimeout(120);
+      r = await callDebug<Riding>(page, 'd.riding()');
+      if (r.car < 20) lo = mid;
+      else hi = mid;
+    }
+    console.log(`close: ride-car up ${d0.repo}, the car at ${r.car.toFixed(1)} m (t ${r.t.toFixed(1)} of ${r.length.toFixed(0)} s)`);
+    yield ['ride-car', null, [0, 0, 0]];
+    await callDebug(page, 'd.ride(null)');
+    await page.waitForTimeout(1500);
+  } else console.log('close: no tower to ride; ride-car is skipped');
+}
+
 /**
  * The transit views that need a vehicle staged (Task 4), yielded one by one
  * with the clocks held at the moment of each: a persona cab standing at a
@@ -324,8 +414,9 @@ function table(name: string, b: Breakdown): string {
   return lines.join('\n');
 }
 
-async function settle(page: Page, eye: V3, target: V3): Promise<void> {
-  await page.evaluate(([e, t]) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.view(e, t), [eye, target]);
+async function settle(page: Page, eye: V3 | null, target: V3): Promise<void> {
+  // A null eye leaves the camera where a script holds it (the ride's).
+  if (eye) await page.evaluate(([e, t]) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.view(e, t), [eye, target]);
   await page.waitForTimeout(600);
   await dbg(page, '(d) => d.precompile()');
   await page.waitForTimeout(1800);
@@ -395,7 +486,7 @@ async function main(): Promise<void> {
       const top = Object.entries(home.parts).sort((x, y) => y[1].triangles - x[1].triangles).slice(0, 4);
       console.log(`${tier} home budget, the shadow map redrawn: ${home.calls} calls, ${(home.triangles / 1e6).toFixed(2)}M triangles (${top.map(([k, t]) => `${k} ${(t.triangles / 1e6).toFixed(2)}M/${t.calls}`).join(', ')})`);
       const rows: Record<string, ViewRow> = {};
-      const measure = async (name: string, eye: V3, target: V3): Promise<void> => {
+      const measure = async (name: string, eye: V3 | null, target: V3): Promise<void> => {
         await settle(page, eye, target);
         await page.screenshot({ path: join(out, tier === 'high' ? `${name}.png` : `${name}-${tier}.png`) });
         const breakdown = await breakdownOf(page, !!process.env.PERF_DETAIL);
@@ -421,6 +512,12 @@ async function main(): Promise<void> {
       const PEOPLE = ['people-follow', 'people-close', 'face-close', 'people-platform', 'people-seated'];
       if (!only || PEOPLE.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of stagedViews(page)) {
+          if (only && !only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
+      }
+      if (!only || CLOSE.some((n) => only.includes(n))) {
+        for await (const [name, eye, target] of closeViews(page, out)) {
           if (only && !only.includes(name)) continue;
           await measure(name, eye, target);
         }

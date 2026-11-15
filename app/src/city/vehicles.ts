@@ -1179,9 +1179,11 @@ interface Paint {
  * metalness and roughness; a lamp's vertices say what kind of lamp it is.
  */
 class Kit {
-  private data = new Map<Part, { pos: number[]; nor: number[]; col: number[]; surf: number[]; kind: number[] }>();
+  private data = new Map<Part, { pos: number[]; nor: number[]; col: number[]; surf: number[]; kind: number[]; alt: number[] }>();
+  /** While set, every vertex carries this as its other colour (the `alt` attribute): the shaders swap to it on the cars whose variant says so. */
+  alt: RGB | null = null;
   constructor(readonly lo: boolean) {
-    for (const p of PARTS) this.data.set(p, { pos: [], nor: [], col: [], surf: [], kind: [] });
+    for (const p of PARTS) this.data.set(p, { pos: [], nor: [], col: [], surf: [], kind: [], alt: [] });
   }
   private vert(part: Part, p: V3, n: V3, c: RGB, s: Surf, k: RGB): void {
     const d = this.data.get(part)!;
@@ -1190,6 +1192,8 @@ class Kit {
     d.col.push(...c);
     d.surf.push(...s);
     d.kind.push(...k);
+    if (this.alt) d.alt.push(...this.alt);
+    else d.alt.push(0, 0, 0);
   }
   tri(part: Part, a: V3, b: V3, c: V3, na: V3, nb: V3, nc: V3, col: RGB, s: Surf = [0, 0.5], k: RGB = [0, 0, 0]): void {
     this.vert(part, a, na, col, s, k);
@@ -1373,6 +1377,7 @@ class Kit {
     g.setAttribute('color', new THREE.Float32BufferAttribute(d.col, 3));
     g.setAttribute('surf', new THREE.Float32BufferAttribute(d.surf, 2));
     g.setAttribute('lampKind', new THREE.Float32BufferAttribute(d.kind, 3));
+    g.setAttribute('alt', new THREE.Float32BufferAttribute(d.alt, 3));
     g.computeBoundingSphere();
     return g;
   }
@@ -1591,7 +1596,15 @@ interface Interior {
   driver?: boolean;
   /** Light lines down the ceiling (a cab's small cabin has a soft dome light instead). */
   lines?: boolean;
+  /** A second seat colourway, a second ceiling strip and the light it gives the room: the cars whose variant says so wear these. */
+  seat2?: RGB;
+  strip2?: RGB;
+  light2?: RGB;
 }
+
+/** The ceiling strips' own light: the warm one every car has, and the cool one the other pods carry. */
+const STRIP_WARM: RGB = [1.0, 0.86, 0.68];
+const STRIP_COOL: RGB = [0.72, 0.84, 1.0];
 
 const WARM: RGB = [1.0, 0.72, 0.46];
 const COOL: RGB = [0.92, 0.96, 1.0];
@@ -1708,8 +1721,45 @@ function tramModel(kit: Kit): void {
   // that size and level bloomed to a white billboard over the windscreen.
   noseLamp(kit, TRAM_RINGS[8], 0, 2.53, 1.25, 0.2, 'tramBoard', [1.5, 0.72, 0.16]);
   if (!kit.lo) {
-    // Two wipers parked at the foot of the windscreen.
-    for (const sz of [-0.45, 0.35]) kit.bar('trim', [7.08, 1.06, sz - 0.3], [7.0, 1.42, sz + 0.25], 0.03, 0.02, lin('#0b0b0c'), [0.3, 0.5]);
+    // The windscreen's frame: a rubber gasket along its sill and its head, and the pillars either side where the
+    // glass meets the body, so the glass reads as a pane set in the nose and not a painted band.
+    windscreenFrame(kit, TRAM_RINGS, 1.02, 2.32, 1.08, 0.006);
+    // Two wipers parked at the foot of the windscreen, their arms and blades.
+    for (const sz of [-0.45, 0.35]) {
+      kit.bar('trim', [7.08, 1.06, sz - 0.3], [7.0, 1.42, sz + 0.25], 0.03, 0.02, lin('#0b0b0c'), [0.3, 0.5]);
+      kit.bar('trim', [7.07, 1.36, sz - 0.02], [6.96, 1.72, sz + 0.5], 0.02, 0.025, lin('#0b0b0c'), [0.3, 0.5]);
+    }
+  }
+}
+
+/**
+ * A windscreen's frame on a nose: the gasket along the sill and the head
+ * (a thin band following the nose's curve), and a pillar up each side at
+ * lateral z, following the rings from sill to head, all a hair proud of the
+ * skin (`proud`; the kit's subdivided shell sits a little inside its rings).
+ */
+function windscreenFrame(kit: Kit, rings: Ring[], sill: number, head: number, pillarZ: number, proud: number): void {
+  const rubber = lin('#08090a');
+  const ringAt = (y: number): Ring => rings.reduce((a, b) => (Math.abs(b.y - y) < Math.abs(a.y - y) ? b : a));
+  for (const y of [sill, head]) {
+    const r = ringAt(y);
+    const n = 11;
+    let prev: V3 | null = null;
+    for (let k = 0; k <= n; k++) {
+      const z = -r.w * 0.985 + (2 * r.w * 0.985 * k) / n;
+      const at = noseAt(r, z);
+      const p: V3 = [at.x + proud, y, z];
+      if (prev) kit.bar('trim', prev, p, 0.025, 0.055, rubber, [0.2, 0.4]);
+      prev = p;
+    }
+  }
+  for (const z of [-pillarZ, pillarZ]) {
+    const pts: V3[] = [];
+    for (let k = 0; k <= 8; k++) {
+      const y = sill + (head - sill) * (k / 8);
+      pts.push([noseAt(ringAt(y), z).x + proud, y, z]);
+    }
+    for (let k = 1; k < pts.length; k++) kit.bar('trim', pts[k - 1], pts[k], 0.07, 0.03, rubber, [0.2, 0.45]);
   }
 }
 
@@ -1756,6 +1806,9 @@ function railModel(kit: Kit, nose: boolean): void {
   if (nose && !kit.lo && hasKit('veh_railEnd')) {
     kit.coded(kitShared('veh_railEnd'));
     kit.coded(kitShared('veh_railEnd_gear'));
+    // The windscreen's frame on the modelled shell (kits.glb is at its cap): the gasket along the sill and the head
+    // and a pillar each side, on the rings the shell was cut to, a little proud of the subdivided skin.
+    windscreenFrame(kit, RAIL_RINGS(true), 1.8, 2.83, 1.1, 0.03);
     return;
   }
   const steel = lin('#8d9093');
@@ -1933,6 +1986,10 @@ const POD_INTERIOR: Interior = {
   doorW: POD_DOOR_W,
   seats: true,
   crowd: 0.22,
+  // Two colourways (a slate blue and a rust) and two ceiling strips (cool, warm): pods side by side differ.
+  seat2: lin('#7a4232'),
+  strip2: STRIP_WARM,
+  light2: scale(WARM, 1.15),
 };
 
 // ---- the ferry: a low double-ended river bus, navy hull, a white saloon glazed all round, a wheelhouse amidships.
@@ -2228,23 +2285,61 @@ function cabin(kit: Kit, i: Interior, name: ModelName): void {
         for (let k2 = 0; k2 < n; k2++) {
           const zc = za + w * (k2 + 0.5);
           kit.box('trim', [x + 0.04, y0 + (seat.height - 0.09) / 2, zc], [0.4, seat.height - 0.09, w - 0.08], lin('#1d1d1e'), [0.6, 0.45]);
+          // The cushion and the back in the car's colourway; a second colourway rides along as the other colour.
+          kit.alt = i.seat2 ?? null;
           kit.box('trim', [x + 0.05, y0 + seat.height - 0.045, zc], [0.46, 0.09, w - 0.03], i.seat, [0, 0.85]);
+          kit.alt = i.seat2 ? scale(i.seat2, 1.15) : null;
           kit.box('trim', [x - 0.2, y0 + seat.height + 0.27, zc], [0.07, 0.5, w - 0.03], scale(i.seat, 1.15), [0, 0.85], undefined, 0, -0.1);
+          kit.alt = null;
         }
       }
     }
   }
-  // Light lines down the ceiling (the cab has its dome light in the glazing's room instead).
+  // Light lines down the ceiling (the cab has its dome light in the glazing's room instead); a car with a second strip
+  // carries it as the lines' other colour, and the lamp shader picks by the car's variant.
   if (name !== 'cab' && i.lines !== false) {
-    for (const sz of [-1, 1]) kit.box('lamp', [(x0 + x1) / 2, y1 - 0.03, sz * Math.min(0.5, z1 * 0.4)], [x1 - x0 - 0.6, 0.02, 0.06], [1.0, 0.86, 0.68], [0, 0.4], 'always');
+    kit.alt = i.strip2 ?? null;
+    const strip: RGB = i.strip2 ? STRIP_COOL : STRIP_WARM;
+    for (const sz of [-1, 1]) kit.box('lamp', [(x0 + x1) / 2, y1 - 0.03, sz * Math.min(0.5, z1 * 0.4)], [x1 - x0 - 0.6, 0.02, 0.06], strip, [0, 0.4], 'always');
+    kit.alt = null;
   }
 }
 const MODEL_KIND: Record<ModelName, VehicleKind> = { tram: 'tram', railEnd: 'rail', railMid: 'rail', pod: 'pod', ferry: 'ferry', cab: 'cab' };
 
 // ---------------------------------------------------------------- materials
 
-/** The near level dissolves into the far one across this band, in metres from the eye. */
-export const VEHICLE_LOD = { near: 380, far: 460 } as const;
+/** The near level dissolves into the far one across this band, in metres from the eye, centred on 400 m. */
+export const VEHICLE_LOD = { near: 380, far: 420 } as const;
+
+/**
+ * The two levels' shares of a car `dist` metres from the eye: the far level's
+ * is the shader's smoothstep across the band and the near level keeps the
+ * rest, so between them every car is drawn whole and nothing pops (tests).
+ */
+export function lodBlend(dist: number): { near: number; far: number } {
+  const t = Math.min(Math.max((dist - VEHICLE_LOD.near) / (VEHICLE_LOD.far - VEHICLE_LOD.near), 0), 1);
+  const far = t * t * (3 - 2 * t);
+  return { near: 1 - far, far };
+}
+
+/**
+ * A vehicle's own variation, from its unit id (`<line>:<k>`, its place on
+ * its line): a small stable number the shaders vary the interior by, so the
+ * cars that follow each other on a line differ, and a car keeps its own look
+ * from frame to frame whatever its instance slot.
+ */
+function variantCode(id: string): number {
+  const parts = id.split(':');
+  const k = Number(parts[parts.length - 1]);
+  const line = Number(parts[parts.length - 2]);
+  return (Number.isFinite(k) ? k : 0) + (Number.isFinite(line) ? line * 3 : 0);
+}
+
+/** A pod's interior from its id: which of two seat colourways and which ceiling strip (pods side by side differ). */
+export function podVariant(id: string): { seat: 0 | 1; strip: 0 | 1 } {
+  const code = variantCode(id);
+  return { seat: (code & 1) as 0 | 1, strip: ((code >> 1) & 1) as 0 | 1 };
+}
 
 /**
  * Each instance measures its own distance from the eye (lod-shader.ts's
@@ -2395,8 +2490,9 @@ function lampMaterial(): THREE.MeshBasicMaterial {
   m.onBeforeCompile = (sh) => {
     dither(sh, 'near');
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 lampKind;\nattribute vec3 color;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKind = lampKind;\nvOwn = color;\nvLead = aLead;\nvBrake = aBrake;\nvLampP = position;');
+      .replace('#include <common>', `#include <common>\nattribute vec3 lampKind;\nattribute vec3 color;\nattribute vec3 alt;\nattribute float aVar;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;${VARIANT_GLSL}`)
+      // A ceiling strip with another colour (the second strip) shows it on the cars whose variant says so.
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvKind = lampKind;\nvOwn = (dot(alt, alt) > 0.0 && variantStrip(aVar) > 0.5) ? alt : color;\nvLead = aLead;\nvBrake = aBrake;\nvLampP = position;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying vec3 vKind;\nvarying vec3 vOwn;\nvarying float vLead;\nvarying float vBrake;\n${LAMP_GLSL}`)
       .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = lampShow(vKind, vOwn, vLead, vBrake);');
@@ -2416,12 +2512,21 @@ function bodyMaterial(): THREE.MeshPhysicalMaterial {
   return m;
 }
 
+/** The variant's two bits (vehicles.ts variantCode): the seat colourway and the ceiling strip. */
+const VARIANT_GLSL = /* glsl */ `
+  float variantSeat(float v) { return mod(floor(v + 0.5), 2.0); }
+  float variantStrip(float v) { return mod(floor(floor(v + 0.5) / 2.0), 2.0); }`;
+
 function trimMaterial(): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2 });
   m.name = 'vehicle-trim';
   m.onBeforeCompile = (sh) => {
     dither(sh, 'near');
     surfaced(sh);
+    // A vertex with another colour (a seat in the second colourway) wears it on the cars whose variant says so.
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>\nattribute vec3 alt;\nattribute float aVar;${VARIANT_GLSL}`)
+      .replace('#include <color_vertex>', '#include <color_vertex>\nif (dot(alt, alt) > 0.0 && variantSeat(aVar) > 0.5) vColor.rgb = alt;');
   };
   m.customProgramCacheKey = () => 'palimpsest-vehicle-trim';
   return m;
@@ -2446,7 +2551,9 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
     uBoxMin: { value: new THREE.Vector3(...i.min) },
     uBoxMax: { value: new THREE.Vector3(...i.max) },
     uLight: { value: new THREE.Vector3(...i.light) },
+    uLight2: { value: new THREE.Vector3(...(i.light2 ?? i.light)) },
     uSeatCol: { value: new THREE.Vector3(...i.seat) },
+    uSeatCol2: { value: new THREE.Vector3(...(i.seat2 ?? i.seat)) },
     uOutside: { value: new THREE.Vector3(0.012, 0.016, 0.024) },
     uWin: { value: new THREE.Vector4(i.sill, i.head, i.pitch, i.pillar) },
     uPillarAt: { value: i.pillarAt },
@@ -2462,18 +2569,18 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
     dither(sh, 'near');
     Object.assign(sh.uniforms, uniforms);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vLP;\nvarying vec3 vLN;\nvarying vec3 vLE;\nvarying float vInst;')
+      .replace('#include <common>', '#include <common>\nattribute float aVar;\nvarying vec3 vLP;\nvarying vec3 vLN;\nvarying vec3 vLE;\nvarying float vInst;')
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
         vLP = transformed;
         vLN = objectNormal;
+        // The car's own variation (its place on its line), not its instance slot: its crowd and colourway hold still.
+        vInst = aVar;
         #ifdef USE_INSTANCING
           mat4 vToWorld = modelMatrix * instanceMatrix;
-          vInst = float(gl_InstanceID);
         #else
           mat4 vToWorld = modelMatrix;
-          vInst = 0.0;
         #endif
         vLE = (inverse(vToWorld) * vec4(cameraPosition, 1.0)).xyz;`,
       );
@@ -2488,8 +2595,10 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
         uniform vec3 uBoxMin;
         uniform vec3 uBoxMax;
         uniform vec3 uLight;
+        uniform vec3 uLight2;
         uniform vec3 uSeatCol;
-        uniform vec3 uOutside;
+        uniform vec3 uSeatCol2;
+        uniform vec3 uOutside;${VARIANT_GLSL}
         uniform vec4 uWin;
         uniform float uPillarAt;
         uniform vec4 uDoors;
@@ -2522,7 +2631,9 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
           float hw = bmax.z;
           float fl = bmin.y;
           float span = bmax.y - bmin.y;
-          vec3 L = uLight;
+          // This car's room: its ceiling strip's light and its seat colourway, by its variant.
+          vec3 L = mix(uLight, uLight2, variantStrip(vInst));
+          vec3 seatCol = mix(uSeatCol, uSeatCol2, variantSeat(vInst));
           vec3 c;
           if (tf.y <= t + 1e-5 && d.y > 0.0) {
             // The ceiling: two light lines along it, the panels between lit by them.
@@ -2554,7 +2665,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             vec3 hs = p + d * ts;
             if (ts > 0.0 && ts < t && abs(hs.z) > 0.3 && hs.y > fl + 0.4 && hs.y < fl + 1.1) {
               float top = smoothstep(fl + 0.96, fl + 1.08, hs.y);
-              c = uSeatCol * L * (0.28 + 0.5 * top);
+              c = seatCol * L * (0.28 + 0.5 * top);
               t = ts;
             }
             // The cushions, seen from above.
@@ -2562,7 +2673,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             if (d.y < 0.0 && tc > 0.0 && tc < t) {
               vec3 hc = p + d * tc;
               if (abs(hc.z) > 0.3) {
-                c = uSeatCol * L * 0.42;
+                c = seatCol * L * 0.42;
                 t = tc;
               }
             }
@@ -2663,6 +2774,9 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
               inside = mix(uLight * 0.006 * (0.6 + 0.4 * smoothstep(uBoxMin.y, uBoxMax.y, hb.y)), room(vec3(uBoxMax.x - 0.01, hb.y, hb.z), d) * 0.3, wedge);
               // A faint lit panel over the door: the cab's own instruments light.
               inside += vec3(0.25, 0.4, 0.5) * 0.05 * step(abs(hb.z + 0.6), 0.25) * step(abs(hb.y - (uBoxMin.y + 1.9)), 0.08);
+              // The bulkhead meets the cab's ceiling, floor and sides in shade, not a hard box edge.
+              float soft = smoothstep(0.0, 0.35, min(min(hb.y - uBoxMin.y, uBoxMax.y - hb.y), uBoxMax.z - abs(hb.z)));
+              inside *= 0.5 + 0.5 * soft;
             }
             if (tsb > 0.0 && tsb < tb && seat > 0.5) inside = uLight * 0.012 + vec3(0.004);
           }
@@ -2689,6 +2803,17 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
 }
 
 /** The far level: painted faces as painted, the glazing as its lit room's colour, the lamps by kind; one call per model. */
+/**
+ * The far level's lit glazing at the near edge of the cross-fade, as a share
+ * of its glow from home (FAR_GLOW_FROM metres out): the glow is pitched to
+ * read through the haze from 850 m (Task 4), and at 400 m that is several
+ * times what the near level's glass shows of its room, so the dissolve
+ * brightened the car as it crossed the band (the lod-400 check, Task 5).
+ * Between the band and FAR_GLOW_FROM the glow rises to its full.
+ */
+export const FAR_GLOW_NEAR = 0.05;
+export const FAR_GLOW_FROM = 900;
+
 function farMaterial(): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0 });
   m.name = 'vehicle-far';
@@ -2696,10 +2821,26 @@ function farMaterial(): THREE.MeshStandardMaterial {
     dither(sh, 'far');
     surfaced(sh);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 glow;\nattribute vec3 lampKind;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = glow;\nvKind = lampKind;\nvLead = aLead;\nvBrake = aBrake;\nvLampP = position;');
+      .replace('#include <common>', '#include <common>\nattribute vec3 glow;\nattribute vec3 lampKind;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;\nvarying float vFarDist;')
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vGlow = glow;
+        vKind = lampKind;
+        vLead = aLead;
+        vBrake = aBrake;
+        vLampP = position;
+        {
+          #ifdef USE_INSTANCING
+            vec4 farAt = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          #else
+            vec4 farAt = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          #endif
+          vFarDist = distance(farAt.xyz, uLodEye);
+        }`,
+      );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\n${LAMP_GLSL}`)
+      .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying float vFarDist;\n${LAMP_GLSL}`)
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
@@ -2708,7 +2849,8 @@ function farMaterial(): THREE.MeshStandardMaterial {
           totalEmissiveRadiance += min(lampShow(vKind, own, vLead, vBrake), vec3(${FAR_EMIT_MAX.toFixed(3)}));
           diffuseColor.rgb = vec3(0.0);
         }
-        totalEmissiveRadiance += vGlow;`,
+        // The glow at the band matches the near level's glass; it rises to its full by FAR_GLOW_FROM (see above).
+        totalEmissiveRadiance += vGlow * mix(${FAR_GLOW_NEAR.toFixed(2)}, 1.0, smoothstep(${VEHICLE_LOD.far.toFixed(1)}, ${FAR_GLOW_FROM.toFixed(1)}, vFarDist));`,
       )
       // Lit glazing and lamps are small bright sources: the haze dims them far less than a painted side, so the
       // tram's lit cars on the viaduct and the ferry's lamps read from home.
@@ -2716,7 +2858,7 @@ function farMaterial(): THREE.MeshStandardMaterial {
         '#include <fog_fragment>',
         `vec3 preFog = gl_FragColor.rgb;
         #include <fog_fragment>
-        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.72 * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.72 * smoothstep(${VEHICLE_LOD.far.toFixed(1)}, ${FAR_GLOW_FROM.toFixed(1)}, vFarDist) * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
       );
   };
   m.customProgramCacheKey = () => 'palimpsest-vehicle-far';
@@ -2864,6 +3006,8 @@ interface Drawn {
   far: THREE.InstancedMesh;
   lead: THREE.InstancedBufferAttribute[];
   brake: THREE.InstancedBufferAttribute[];
+  /** Each car's variation (variantCode), one per near part and one for the far level. */
+  vary: THREE.InstancedBufferAttribute[];
   nearCount: number;
   farCount: number;
   tris: { near: number; far: number };
@@ -2923,11 +3067,16 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     const near: THREE.InstancedMesh[] = [];
     const lead: THREE.InstancedBufferAttribute[] = [];
     const brake: THREE.InstancedBufferAttribute[] = [];
+    const vary: THREE.InstancedBufferAttribute[] = [];
     let nearTris = 0;
     for (const p of PARTS) {
       const g = nearKit.part(p);
       if (!g) continue;
       drawnGeos.push(g);
+      const va = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+      va.setUsage(THREE.DynamicDrawUsage);
+      g.setAttribute('aVar', va);
+      vary.push(va);
       if (p === 'lamp') {
         const la = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
         const ba = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
@@ -2964,6 +3113,10 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     fg.setAttribute('aBrake', fb);
     lead.push(fl);
     brake.push(fb);
+    const fv = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+    fv.setUsage(THREE.DynamicDrawUsage);
+    fg.setAttribute('aVar', fv);
+    vary.push(fv);
     const farMesh = new THREE.InstancedMesh(fg, far, cap);
     farMesh.name = `vehicles:${name}:far`;
     farMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -2974,7 +3127,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     // Far off a car neither casts nor joins the AO: the view draws it alone.
     setLayers(farMesh, LAYER.view);
     group.add(farMesh);
-    drawn.set(name, { name, near, far: farMesh, lead, brake, nearCount: 0, farCount: 0, tris: { near: nearTris, far: fg.attributes.position.count / 3 } });
+    drawn.set(name, { name, near, far: farMesh, lead, brake, vary, nearCount: 0, farCount: 0, tris: { near: nearTris, far: fg.attributes.position.count / 3 } });
   }
   }
   buildDrawn();
@@ -3002,7 +3155,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
   const size = new THREE.Vector3();
 
   /** Lays one car into its model's near and far instances by its distance from the eye. */
-  function place(name: ModelName, x: number, y: number, z: number, yaw: number, pitch: number, roll: number, lead: number, brake: number): void {
+  function place(name: ModelName, x: number, y: number, z: number, yaw: number, pitch: number, roll: number, lead: number, brake: number, variant: number): void {
     const d = drawn.get(name)!;
     pos.set(x, y, z);
     e.set(roll, -yaw, pitch, 'YZX');
@@ -3017,12 +3170,14 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
         d.lead[k].setX(i, ld);
         d.brake[k].setX(i, brake);
       }
+      for (let k = 0; k < d.vary.length - 1; k++) d.vary[k].setX(i, variant);
     }
     if (dist > VEHICLE_LOD.near && d.farCount < d.far.instanceMatrix.count) {
       const i = d.farCount++;
       d.far.setMatrixAt(i, m4);
       d.lead[d.lead.length - 1].setX(i, ld);
       d.brake[d.brake.length - 1].setX(i, brake);
+      d.vary[d.vary.length - 1].setX(i, variant);
     }
   }
 
@@ -3081,19 +3236,20 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
         heave = 0.05 * Math.sin(t * 0.9 + ph) + 0.02 * Math.sin(t * 2.3 + ph * 2);
         roll = 0.008 * Math.sin(t * 0.7 + ph) * (1 + v / SPEED.ferry);
       }
+      const variant = variantCode(u.id);
       cars.forEach((c, k) => {
-        place(c.model, c.x, c.y + RAIL_HEAD[kind] + heave, c.z, c.yaw, c.pitch + (kind === 'ferry' ? 0.004 * Math.sin(t * 0.5 + u.offset) : 0), roll, c.lead, c.lead < 0 || kind !== 'tram' ? braking : 0);
+        place(c.model, c.x, c.y + RAIL_HEAD[kind] + heave, c.z, c.yaw, c.pitch + (kind === 'ferry' ? 0.004 * Math.sin(t * 0.5 + u.offset) : 0), roll, c.lead, c.lead < 0 || kind !== 'tram' ? braking : 0, variant + k);
         if (kind === 'tram') addShade(c.x, c.y, c.z, c.yaw, 14.6, 3.1);
         // The leading car lays its headlamps' light on the road (trams only: the rail and pods run high).
         if (kind === 'tram' && c.lead > 0 && k === 0) addPool(c.x + Math.cos(c.yaw) * 7.3, c.y + RAIL_HEAD.tram, c.z + Math.sin(c.yaw) * 7.3, c.yaw, 18, 5.2, 0.12);
       });
     }
-    for (const cab of fleet.cabs) {
+    fleet.cabs.forEach((cab, k) => {
       const p = cabPose(cab, t);
-      place('cab', p.x, p.y, p.z, p.yaw, 0, 0, 1, p.braking ? 1 : 0);
+      place('cab', p.x, p.y, p.z, p.yaw, 0, 0, 1, p.braking ? 1 : 0, k);
       addShade(p.x, p.y, p.z, p.yaw, 4.5, 2.3);
       if (cab.phase !== 'parked') addPool(p.x + Math.cos(p.yaw) * 1.95, p.y, p.z + Math.sin(p.yaw) * 1.95, p.yaw, 12, 3.8, 0.1);
-    }
+    });
     for (const d of drawn.values()) {
       for (const mesh of d.near) {
         mesh.count = d.nearCount;
@@ -3103,7 +3259,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       d.far.count = d.farCount;
       d.far.visible = d.farCount > 0;
       d.far.instanceMatrix.needsUpdate = true;
-      for (const a of [...d.lead, ...d.brake]) a.needsUpdate = true;
+      for (const a of [...d.lead, ...d.brake, ...d.vary]) a.needsUpdate = true;
     }
     pools.count = poolCount;
     pools.visible = poolCount > 0;
