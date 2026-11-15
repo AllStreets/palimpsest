@@ -4,12 +4,14 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
-import { extentBlocks, network, route } from '../shared/commute.js';
+import { extentBlocks, network, PIERS, route, streetLine } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
 import type { Agent, Trip } from '../shared/types.js';
 import { createPeople, paceOf, phaseOf, SEAT, SEATED, strideRate } from '../app/src/city/people.js';
 import { clearSkin, figureLevel } from '../app/src/city/figures.js';
-import { FIGURE_CODE, skinPoint } from '../app/src/city/ambient.js';
+import { createAmbient, FIGURE_CODE, skinPoint } from '../app/src/city/ambient.js';
+import { pontoonOf } from '../app/src/city/river-bed.js';
+import { signalAt, signalJunction, signalsOf, type SignalJunction, type Signals } from '../app/src/city/signals.js';
 import { createVehicles } from '../app/src/city/vehicles.js';
 import { FOUNTAIN } from '../app/src/city/exchange.js';
 
@@ -593,4 +595,110 @@ test("a seated figure's hip sits on the seat", () => {
   assert.ok(Math.abs(fig.position[1] - (cab.floorY() + SEAT.cab)) < 1e-6, `seated at the cab's bench height (${fig.position[1].toFixed(2)} against floor ${cab.floorY().toFixed(2)} + ${SEAT.cab})`);
   assert.ok(fig.sit > 0.99 && fig.walking === 0, 'sitting, not walking');
   people.dispose();
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 4: the kerb and the pier
+
+/** Every junction of the street grid out to the rail's loop, with signals, on the given clock. */
+const gridSignals = (clock: () => number): Signals => {
+  const js: SignalJunction[] = [];
+  for (let x = -760; x <= 760; x += 80) for (let z = -760; z <= 760; z += 80) js.push(signalJunction(x, z));
+  return signalsOf(js, clock);
+};
+/**
+ * The traffic a point on a carriageway stands in the way of, at a signalled
+ * junction: along x when it is on the street along x (and off the one along
+ * z), and the other way about; null on a pavement, in the box, or at a
+ * junction without signals.
+ */
+function crossedAt(x: number, z: number, sig: Signals): { j: SignalJunction; traffic: 'x' | 'z' } | null {
+  const sx = streetLine(x);
+  const sz = streetLine(z);
+  const onX = Math.abs(z - sz) < 3.6;
+  const onZ = Math.abs(x - sx) < 3.6;
+  if (onX === onZ) return null;
+  const j = sig.at(sx, sz);
+  return j && Math.abs(x - sx) < 14 && Math.abs(z - sz) < 14 ? { j, traffic: onX ? 'x' : 'z' } : null;
+}
+
+test('walkers do not cross on go for traffic', () => {
+  // Personas on foot: three walks that cross signalled streets, on the lights' own clock.
+  let t = 0;
+  const sig = gridSignals(() => t);
+  const trips = [tripOf('ann', { x: 440, z: 215 }, { x: 440, z: 350 }), tripOf('ben', { x: 100, z: -100 }, { x: 225, z: -40 }), tripOf('cat', { x: -200, z: 330 }, { x: -200, z: 190 })];
+  for (const trip of trips) assert.equal(trip.legs[0].mode, 'walk');
+  const start = Date.parse(trips[0].startedAt);
+  const people = createPeople({ vehicles: () => null, net: () => NET, now: () => start + t * 1000, signals: () => sig });
+  people.set(trips, ['ann', 'ben', 'cat'].map((id) => agentOf(id)));
+  const crossings = new Set<string>();
+  let waited = 0;
+  const last = new Map<string, { x: number; z: number }>();
+  for (let i = 0; i < 2400; i++) {
+    t += 0.25;
+    people.update(0.25);
+    for (const id of ['ann', 'ben', 'cat']) {
+      const p = people.positionOf(id)!;
+      const was = last.get(id);
+      last.set(id, { x: p.x, z: p.z });
+      const f = people.figures().find((x) => x.agentId === id)!;
+      // (Arrived, a figure stands at its trip's end as the engine gives it, wherever that is.)
+      const c = f.stage === 'walk' ? crossedAt(p.x, p.z, sig) : null;
+      if (c) {
+        crossings.add(`${id}@${c.j.x},${c.j.z}`);
+        assert.equal(signalAt(c.j, t, c.traffic), 'stop', `${id} is on the road across the ${c.traffic} traffic at (${c.j.x}, ${c.j.z}) only while it stands at red`);
+      }
+      if (was && f.stage === 'walk' && Math.hypot(p.x - was.x, p.z - was.z) < 1e-6 && f.walking < 0.5) waited++;
+    }
+  }
+  assert.ok(crossings.size >= 3, `they crossed signalled streets (${[...crossings].join(' ')})`);
+  assert.ok(waited > 0, 'and some stood at the kerb for the light');
+  for (const trip of trips) {
+    const end = people.positionOf(trip.agentId)!;
+    assert.ok(Math.hypot(end.x - trip.to.x, end.z - trip.to.z) < 0.5, `${trip.agentId} still gets where it was going`);
+  }
+  people.dispose();
+
+  // The crowd: nobody on a crossing while the traffic it crosses has go.
+  const a = createAmbient(NET, 'high', { seed: 5 });
+  a.setDensity(1);
+  const lights = a.signals();
+  let seen = 0;
+  for (let i = 0; i < 1500; i++) {
+    a.update(0.1);
+    for (const p of a.people()) {
+      if (p.state !== 'crossing') continue;
+      const c = crossedAt(p.x, p.z, lights);
+      if (!c) continue;
+      seen++;
+      assert.equal(signalAt(c.j, lights.now(), c.traffic), 'stop', `a walker on the crossing at (${c.j.x}, ${c.j.z}) only while the ${c.traffic} traffic stands`);
+    }
+  }
+  assert.ok(seen > 100, `the crowd crossed at signals (${seen})`);
+  a.dispose();
+});
+
+test('a ferry rider waits on the pontoon at its deck, not up on the quay', () => {
+  const pier = PIERS.find((p) => p.bank === 'west')!;
+  const other = [...PIERS].filter((p) => p.bank === 'east').sort((p, q) => Math.abs(p.z - pier.z) - Math.abs(q.z - pier.z))[0];
+  const trip = tripOf('fay', { x: pier.x - 40, z: pier.z }, { x: other.x + 40, z: other.z });
+  const k = trip.legs.findIndex((l) => l.mode === 'ferry');
+  assert.ok(k >= 0, `the trip takes the ferry (${trip.legs.map((l) => l.mode).join(', ')})`);
+  const v = createVehicles(NET, 'high');
+  const start = Date.parse(trip.startedAt);
+  let t = 0;
+  const people = createPeople({ vehicles: () => v, net: () => NET, now: () => start + t * 1000 });
+  people.set([trip], [agentOf('fay')]);
+  for (let i = 0; i < 2000 && people.figures().find((f) => f.agentId === 'fay')!.stage !== 'wait'; i++) {
+    t += 0.5;
+    v.update(0.5);
+    people.update(0.5);
+  }
+  const fig = people.figures().find((f) => f.agentId === 'fay')!;
+  assert.equal(fig.stage, 'wait', 'it comes to wait for the ferry');
+  const p = people.positionOf('fay')!;
+  const deck = pontoonOf(pier);
+  assert.ok(Math.abs(p.y - deck.deck) < 0.1, `at the pontoon's deck height (${p.y.toFixed(2)} against ${deck.deck.toFixed(2)})`);
+  assert.ok(Math.abs(p.x - deck.x) < deck.half.x && Math.abs(p.z - deck.z) < deck.half.z, `on the pontoon (${p.x.toFixed(1)}, ${p.z.toFixed(1)} against its centre ${deck.x.toFixed(1)}, ${deck.z.toFixed(1)})`);
+  people.dispose();
+  v.dispose();
 });

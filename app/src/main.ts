@@ -17,9 +17,10 @@ import { quarterCenterpiece, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
 import type { LotSummary } from './city/grid';
 import type { MilestoneShow } from './city/milestones.js';
-import type { VehicleRef, VehiclesView } from './city/vehicles.js';
+import { CAB_HALF_LEN, JUNCTION_BOX, type VehicleRef, type VehiclesView } from './city/vehicles.js';
+import { signalAt } from './city/signals.js';
 import type { AmbientView } from './city/ambient.js';
-import { route } from '../../shared/commute.js';
+import { route, streetLine } from '../../shared/commute.js';
 import type { Trip, TripReason } from '../../shared/types';
 import { towerCenterpiece, towerMaterials } from './city/tower/look';
 import { firmMarkColor } from './city/tower/eras';
@@ -135,6 +136,16 @@ interface DebugHandle {
   vehicleSeek(conds: Array<{ kind: 'tram' | 'rail' | 'pod' | 'ferry'; near: number[]; radius: number; moving?: number }>, horizon?: number): boolean;
   /** A vehicle by id, as it stands now. */
   vehicle(id: string): VehicleProbe | null;
+  /**
+   * The persona cabs standing at a red light now: each with the junction it
+   * waits at and how many cars stand behind it in its lane within 30 m
+   * (captures: the junction-signal still).
+   */
+  /** Shows or hides the vehicles (the tram-home check compares the frame with and without them). */
+  vehicleShow(on: boolean): void;
+  /** The signal heads at the junctions: how many stand and how many draw near the eye. */
+  signalHeads(): { heads: number; drawn: number };
+  cabsAtRed(): Array<{ id: string; position: number[]; heading: number; junction: number[]; behind: number }>;
   /** Every vehicle of a kind, as each stands now. */
   vehicleKinds(kind: 'tram' | 'rail' | 'pod' | 'ferry' | 'cab'): VehicleProbe[];
   /** A stand-in rider at a point facing a heading, or none. */
@@ -509,7 +520,7 @@ async function main(): Promise<void> {
       const net = city.transitNetwork();
       if (!v || !net) return [];
       const legs = route({ x: from[0], z: from[1] }, { x: to[0], z: to[1] }, net);
-      const trip: Trip = { id: 'probe', agentId: 'probe', firmId: 'probe', reason: 'home', jobId: null, from: { x: from[0], z: from[1] }, to: { x: to[0], z: to[1] }, legs, startedAt: new Date().toISOString(), ms: 0, endedAt: null };
+      const trip: Trip = { id: `probe:${++probeSeq}`, agentId: 'probe', firmId: 'probe', reason: 'home', jobId: null, from: { x: from[0], z: from[1] }, to: { x: to[0], z: to[1] }, legs, startedAt: new Date().toISOString(), ms: 0, endedAt: null };
       return legs.map((l, i) => {
         if (l.mode === 'walk') return { mode: l.mode, id: null, boardsIn: 0, alightsIn: 0 };
         if (l.mode === 'cab') {
@@ -534,6 +545,44 @@ async function main(): Promise<void> {
       return null;
     },
     vehicleRider: (at, heading) => city.vehicles()?.rider(at ? [at[0], at[1], at[2]] : null, heading),
+    signalHeads: () => city.signalHeads(),
+    vehicleShow(on) {
+      const v = city.vehicles();
+      if (v) v.group.visible = on;
+    },
+    cabsAtRed() {
+      const v = city.vehicles();
+      const a = city.ambient();
+      if (!v || !a) return [];
+      const lights = a.signals();
+      const cars = a.cars();
+      const out: Array<{ id: string; position: number[]; heading: number; junction: number[]; behind: number }> = [];
+      for (const c of v.vehicles('cab')) {
+        const ph = c.phase();
+        if ((ph !== 'to-pickup' && ph !== 'carrying' && ph !== 'returning') || c.speed() > 0.05) continue;
+        const p = c.position();
+        const h = c.heading();
+        const fx = Math.cos(h);
+        const fz = Math.sin(h);
+        // Its nose just short of a signalled junction's box.
+        const ax = p[0] + fx * (CAB_HALF_LEN + 2);
+        const az = p[2] + fz * (CAB_HALF_LEN + 2);
+        const jx = streetLine(ax);
+        const jz = streetLine(az);
+        const j = Math.abs(ax - jx) < JUNCTION_BOX && Math.abs(az - jz) < JUNCTION_BOX ? lights.at(jx, jz) : null;
+        if (!j || signalAt(j, lights.now(), Math.abs(fx) >= Math.abs(fz) ? 'x' : 'z') !== 'stop') continue;
+        let behind = 0;
+        for (const car of cars) {
+          const rx = car.x - p[0];
+          const rz = car.z - p[2];
+          const along = rx * fx + rz * fz;
+          if (along > -2 || along < -30 || Math.abs(-rx * fz + rz * fx) > 1.6) continue;
+          behind++;
+        }
+        out.push({ id: c.id, position: p, heading: h, junction: [jx, jz], behind });
+      }
+      return out.sort((x, y) => y.behind - x.behind);
+    },
     people: () => city.people()?.view(city.camera) ?? null,
     person: (id) => city.people()?.figures().find((f) => f.agentId === id) ?? null,
     persons: () => city.people()?.figures() ?? [],
@@ -1068,6 +1117,8 @@ async function main(): Promise<void> {
    */
   let liveTrips: Trip[] = [];
   const probeTrips = new Map<string, Trip>();
+  /** A number for each synthetic vehicle trip, so each probe books a cab of its own. */
+  let probeSeq = 0;
   const agentsAll = (): Agent[] => [...firmViews.values()].flatMap((f) => f.agents);
   const showTrips = (): void => {
     const trips = probeTrips.size ? [...liveTrips.filter((t) => !probeTrips.has(t.agentId)), ...probeTrips.values()] : liveTrips;

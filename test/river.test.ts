@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { COURT_APRON, RESERVE_RADIUS } from '../app/src/city/collar.js';
+import { pontoonOf, RIVER_BED, riverFeet, WATER_Y } from '../app/src/city/river-bed.js';
 import { BANKS, BRIDGE_DECK, BRIDGES, crossesRiver, PIER_HALF, PIERS, RIVER } from '../shared/commute.js';
 import { districtOrigin, QUARTER_COURT } from '../shared/district-layout.js';
 
@@ -49,4 +50,22 @@ test('a pier every 480 m from z -1440 to 1440 on alternating banks, one at the c
   assert.equal(civic.bank, 'east');
   assert.ok(Math.abs(civic.z) < 120);
   for (const p of PIERS) for (const b of BRIDGES) assert.ok(Math.abs(p.z - b) - PIER_HALF - BRIDGE_DECK / 2 >= 20, `pier at ${p.z} clears the bridge at ${b}`);
+});
+
+test('every pier foot is within 0.2 m of the riverbed', () => {
+  const feet = riverFeet();
+  // The stone bridge's two piers (a cutwater each face), the steel arch's two abutments, the stayed deck's shelf, and
+  // two guide piles at every ferry pier.
+  assert.ok(feet.length >= 4 + 2 + 1 + 2 * PIERS.length, `${feet.length} feet`);
+  for (const f of feet) {
+    assert.ok(Math.abs(f.y - RIVER_BED) <= 0.2, `the ${f.what} at (${f.x.toFixed(1)}, ${f.z.toFixed(1)}) stands at ${f.y} m, the bed at ${RIVER_BED} m`);
+    assert.ok(f.x > BANKS.west - 3 && f.x < BANKS.east + 3, `the ${f.what} stands in the river (${f.x.toFixed(1)})`);
+  }
+  // Under the water, which lies over the bed.
+  assert.ok(RIVER_BED < WATER_Y - 2, 'the bed lies under the water');
+  for (const p of PIERS) {
+    const pt = pontoonOf(p);
+    assert.ok(pt.deck > WATER_Y && pt.deck < WATER_Y + 1.2, 'the pontoon floats a deck just over the water');
+    for (const q of pt.piles) assert.ok(q.x > BANKS.west && q.x < BANKS.east, 'its piles stand in the water');
+  }
 });

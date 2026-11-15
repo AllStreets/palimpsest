@@ -52,7 +52,7 @@ import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
 import { dropNoticeChecks, noticeChecks } from './ui-test-notices.js';
 import { everyScreenChecks, freedPlotChecks, reposChecks, screensHarness, settingsChecks, splashChecks } from './ui-test-screens.js';
-import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
+import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, tramFromHome } from './people-stage.js';
 import { SAMPLE, sampleGh, seedSample } from './sample.js';
 import { decodePng } from './png.js';
 import { uiPort } from './ui-port.js';
@@ -2831,6 +2831,51 @@ async function medianFps(page: Page): Promise<number> {
  * the perf tool stage her, the follow camera on her, the clocks running, at
  * least 58 fps median.
  */
+
+/**
+ * The traffic and its lights (Phase 5 Task 4): from home, a tram moved on to
+ * where home's framing sees the tram's line nearest; its lit saloon windows
+ * and its headlamp read as a run of lit pixels along the car (above a floor
+ * of luminance, and over the frame round it); a persona cab, sent across the
+ * grid, comes to stand at a red light with the traffic queued behind it; and
+ * the signal heads stand at the junctions.
+ */
+async function trafficChecks(page: Page): Promise<void> {
+  type V3 = [number, number, number];
+  const home = await callDebug<{ eye: V3; target: V3 }>(page, 'd.limits().home');
+  await setView(page, home.eye, home.target);
+  await callDebug(page, 'd.vehicleHold(true)');
+  await page.waitForTimeout(1500);
+  const best = await tramFromHome(page, decodePng, { steps: 60, step: 6, gain: TRAM_LIT_GAIN, floor: TRAM_LIT_FLOOR });
+  check(!!best, 'a tram runs where home sees the tram line');
+  if (best) {
+    await page.waitForTimeout(800);
+    await page.screenshot({ path: join(SHOTS, 'tram-home.png') });
+    console.log(`info  tram-home: the tram ${best.d.toFixed(0)} m off, its box ${best.box.join(', ')}: ${best.lit} pixels it lights`);
+    check(best.lit >= TRAM_LIT_PIXELS, `the tram's windows read in tram-home (${best.lit} pixels it lights over ${TRAM_LIT_FLOOR}, ${best.d.toFixed(0)} m from home)`);
+  }
+  await callDebug(page, 'd.vehicleHold(false)');
+
+  // A persona cab at a red light with the traffic behind it (the evening's full traffic), and the heads at the junctions.
+  await callDebug(page, 'd.ambientDensity(1)');
+  await callDebug(page, 'd.vehicleTrip([520, -360], [-440, 280])');
+  await callDebug(page, 'd.vehicleTrip([-200, 520], [600, -440])');
+  await callDebug(page, 'd.vehicleTrip([280, 300], [-520, -200])');
+  let red: { junction: number[]; behind: number } | null = null;
+  for (let k = 0; k < 720 && !red; k++) {
+    await page.waitForTimeout(500);
+    red = (await callDebug<Array<{ junction: number[]; behind: number }>>(page, 'd.cabsAtRed()')).find((r) => r.behind >= 1) ?? null;
+  }
+  await callDebug(page, 'd.ambientDensity(null)');
+  check(!!red, `a persona cab stands at a red light with the traffic queued behind it${red ? ` (at ${red.junction.join(', ')}, ${red.behind} behind)` : ''}`);
+  const heads = await callDebug<{ heads: number; drawn: number }>(page, 'd.signalHeads()');
+  check(heads.heads > 100 && heads.drawn > 0, `signal heads stand at the junctions (${heads.heads}, ${heads.drawn} near the eye)`);
+}
+/** A tram's lit windows from home: this many pixels along it over this luminance (and over the frame round it). */
+const TRAM_LIT_FLOOR = 0.42;
+const TRAM_LIT_GAIN = 0.08;
+const TRAM_LIT_PIXELS = 12;
+
 async function peopleFpsChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
   check((await debug(page, (d) => d.quality())) === tier, `the city stands at ${tier} for the people's frame rate`);
   await callDebug(page, 'd.peopleHold(true)');
@@ -3047,8 +3092,9 @@ async function main(): Promise<void> {
     // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
     // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
     // UI_ONLY=street: the street floor's and the street facades' checks alone (Phase 5 Tasks 1 and 2's rounds).
+    // UI_ONLY=traffic: the tram from home, a persona cab at a red light and the signal heads (Phase 5 Task 4).
     // UI_ONLY=people: the personas' checks and the people-follow frame rate on high, then on medium (Phase 5 Task 3).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people'].includes(process.env.UI_ONLY ?? '');
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3081,6 +3127,8 @@ async function main(): Promise<void> {
       } else if (process.env.UI_ONLY === 'street') {
         await streetChecks(page);
         await windowChecks(page);
+      } else if (process.env.UI_ONLY === 'traffic') {
+        await trafficChecks(page);
       } else if (process.env.UI_ONLY === 'people') {
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');
@@ -3243,6 +3291,7 @@ async function main(): Promise<void> {
         await riverChecks(page);
         await transitChecks(page);
         await vehicleChecks(page);
+        await trafficChecks(page);
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');
         await ambientChecks(page);

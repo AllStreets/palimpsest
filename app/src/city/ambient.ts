@@ -7,6 +7,7 @@ import { LAYER, setLayers } from './lod.js';
 import { LOD_EYE } from './lod-shader.js';
 import { LAMP_EDGE, LAMP_OFFSETS, PITCH } from './lots.js';
 import { HEADLAMP } from './post.js';
+import { SIGNAL, signalJunction, signalPhase, signalsOf, type SignalJunction, type Signals } from './signals.js';
 import { streetFloor } from './street.js';
 
 /**
@@ -192,14 +193,8 @@ function segDist(p: V2, a: V2, b: V2): number {
 type Axis = 'x' | 'z';
 type Turn = 'straight' | 'left' | 'right';
 
-interface Signal {
-  /** Seconds of green for traffic along x, then along z. */
-  gx: number;
-  gz: number;
-  offset: number;
-}
-const AMBER = 3;
-const ALL_RED = 2;
+const AMBER = SIGNAL.amber;
+const ALL_RED = SIGNAL.allRed;
 
 interface Junction {
   key: string;
@@ -208,7 +203,8 @@ interface Junction {
   /** Lanes coming in and going out, by the way they run. */
   into: Lane[];
   out: Lane[];
-  signal: Signal | null;
+  /** Its signals (signals.ts), where two streets with traffic cross. */
+  signal: SignalJunction | null;
   /** People on each crossing now: walking along x (across the street along z), walking along z. */
   walkers: { x: number; z: number };
   /** Whether any car's lane runs along each axis here. */
@@ -381,40 +377,25 @@ function layRoads(net: Network, plazas: readonly AmbientPlaza[], r: () => number
   for (const lane of lanes) {
     for (const o of lane.to.out) if (o.to !== lane.from) lane.moves.push(moveOf(lane, o));
   }
-  // Signals where two streets cross, with greens of their own and a place in the cycle.
+  // Signals where two streets cross, each on the city's one cycle at its own place in it (signals.ts), shared with
+  // the persona cabs and walkers. The draw keeps the seeded stream as it was when the play was drawn here.
   for (const j of junctions.values()) {
     if (!(j.axes.x && j.axes.z)) continue;
-    // One cycle across the grid, its greens timed as a wave along x (80 m a block at 10 m/s) so eastbound
-    // traffic moves in platoons, and a little play per junction so no two corners change at once.
-    const gx = 22;
-    const gz = 20;
-    j.signal = { gx, gz, offset: -j.x / 10 - j.z / 25 + (r() - 0.5) * 3 };
+    r();
+    j.signal = signalJunction(j.x, j.z);
   }
   return { junctions, lanes, length: lanes.reduce((s, l) => s + l.len, 0) };
 }
 
 /** A junction's signals at time t: which axis may go, whether its amber shows, and seconds left in that state. */
 function signalAt(j: Junction, t: number, out: { green: Axis | null; amber: boolean; left: number } = { green: null, amber: false, left: 0 }): { green: Axis | null; amber: boolean; left: number } {
-  const set = (green: Axis | null, amber: boolean, left: number): typeof out => {
-    out.green = green;
-    out.amber = amber;
-    out.left = left;
+  if (!j.signal) {
+    out.green = null;
+    out.amber = false;
+    out.left = Infinity;
     return out;
-  };
-  const s = j.signal;
-  if (!s) return set(null, false, Infinity);
-  const cycle = s.gx + s.gz + 2 * (AMBER + ALL_RED);
-  let u = (((t + s.offset) % cycle) + cycle) % cycle;
-  if (u < s.gx) return set('x', false, s.gx - u);
-  u -= s.gx;
-  if (u < AMBER) return set('x', true, AMBER - u);
-  u -= AMBER;
-  if (u < ALL_RED) return set(null, false, ALL_RED - u);
-  u -= ALL_RED;
-  if (u < s.gz) return set('z', false, s.gz - u);
-  u -= s.gz;
-  if (u < AMBER) return set('z', true, AMBER - u);
-  return set(null, false, Math.max(0, ALL_RED - (u - AMBER)));
+  }
+  return signalPhase(j.signal, t, out);
 }
 
 // ---------------------------------------------------------------- the cars
@@ -532,7 +513,11 @@ function aheadOf(car: Car, idx: number, env: Env): typeof AHEAD {
         AHEAD.gap = tail.s - tail.len - (car.s - lane.len - m.len);
         AHEAD.vl = tail.v;
       }
-      if ((!car.commit && !mayEnter(car, env)) || cabHolds(car, env)) {
+      // A car committed to the box but held short of it by a persona cab standing there gives up its commitment:
+      // once the cab has gone it asks afresh, so it never goes in on a red it waited into.
+      const held = cabHolds(car, env);
+      if (held && car.commit) car.commit = false;
+      if ((!car.commit && !mayEnter(car, env)) || held) {
         const line = lane.len - car.s;
         if (line < AHEAD.gap) {
           AHEAD.gap = line;
@@ -679,6 +664,7 @@ function carPoint(car: Car, back: number, out: V2): V2 {
 
 const PF = { x: 0, z: 0 };
 const PB = { x: 0, z: 0 };
+const REAR = { x: 0, z: 0 };
 const POSE: { x: number; z: number; yaw: number; junction: Junction | null; axis: Axis } = { x: 0, z: 0, yaw: 0, junction: null, axis: 'x' };
 
 /** A car's pose (into a shared scratch: copy what you keep): its middle, heading, and the junction whose box it stands in. */
@@ -2438,6 +2424,16 @@ export interface Ambient {
    * a car follows one ahead in its lane and keeps out of a box one is in.
    */
   setCabs(at: ReadonlyArray<CabPose>): void;
+  /** The junctions with signals and the clock their lights run on (signals.ts): the persona cabs and walkers read the same lights. */
+  signals(): Signals;
+  /** Runs the lights on another clock that reads `t` now (scene.ts: the vehicles' clock, which the persona cabs plan by). */
+  syncSignals(t: number): void;
+  /**
+   * The nearest car ahead of a point going the same way in its lane, within
+   * `reach` metres: the gap to its rear and its speed (vehicles.ts: a
+   * persona cab queues behind it), or null.
+   */
+  carAhead(x: number, z: number, heading: number, reach: number): { gap: number; speed: number } | null;
   cars(): AmbientCar[];
   /** How many cars, moving and parked, the car buffers hold now (tests: every kept car has room). */
   carRoom(): number;
@@ -2495,6 +2491,10 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   /** After a relay, until the streets are back to their numbers. */
   let refill = false;
   let roads: Roads;
+  /** The signalled junctions, as the persona cabs and walkers read them, on the clock the lights run on. */
+  let signalled: Signals;
+  /** The lights run this far ahead of the traffic's own clock (syncSignals: the vehicles' clock, so the cabs and the cars see one light). */
+  let signalShift = 0;
   let walk: Walkway;
   let cars: Car[] = [];
   let people: Person[] = [];
@@ -2650,6 +2650,10 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     const oldPeople = keep ? people : [];
     const r = mulberry(seed * 7919 + 17);
     roads = layRoads(net, plazas, r);
+    signalled = signalsOf(
+      [...roads.junctions.values()].flatMap((j) => (j.signal ? [j.signal] : [])),
+      () => time + signalShift,
+    );
     layStreams(r);
     walk = layWalkway(net, plazas, roads);
     posts = [];
@@ -3136,7 +3140,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     // A car moving off along that street, its rear not yet clear of the crossing.
     for (const o of j.out) if (o.axis === crossed) for (const c of o.cars) if (c.v > 1 && c.s - c.len < 4 && c.s >= 0) return false;
     if (j.signal) {
-      const s = signalAt(j, time, XSIG);
+      const s = signalAt(j, time + signalShift, XSIG);
       return s.green === axis && !s.amber && s.left > need + ALL_RED;
     }
     // No signals: across a street with traffic only when nothing comes within 30 m.
@@ -3460,7 +3464,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
   }
 
   function stepCars(dt: number): void {
-    env.t = time;
+    env.t = time + signalShift;
     gatherInRoad();
     for (const lane of roads.lanes) if (lane.cars.length > 1) lane.cars.sort(bySDesc);
     movedCars.length = 0;
@@ -3911,6 +3915,30 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     setCabs(at) {
       env.cabs = at;
     },
+    signals: () => signalled,
+    carAhead(x, z, heading, reach) {
+      const hx = Math.cos(heading);
+      const hz = Math.sin(heading);
+      let best: { gap: number; speed: number } | null = null;
+      for (const c of cars) {
+        // Its rear: where a cab behind it would stop.
+        carPoint(c, c.len, REAR);
+        const rx = REAR.x - x;
+        const rz = REAR.z - z;
+        if (Math.abs(rx) > reach + 6 || Math.abs(rz) > reach + 6) continue;
+        const along = rx * hx + rz * hz;
+        if (along < -1 || along > reach) continue;
+        if (Math.abs(-rx * hz + rz * hx) > CAB_IN_LANE) continue;
+        // Going the same way (not crossing in a box, not oncoming).
+        const p = carPose(c);
+        if (Math.cos(p.yaw) * hx + Math.sin(p.yaw) * hz < 0.7) continue;
+        if (!best || along < best.gap) best = { gap: along, speed: c.v };
+      }
+      return best;
+    },
+    syncSignals(t) {
+      signalShift = t - time;
+    },
     relay(n) {
       if (n.blocks === net.blocks && JSON.stringify(n.ranks) === JSON.stringify(net.ranks)) return;
       net = n;
@@ -3920,7 +3948,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       cars.map((c) => {
         const p = carPose(c);
         const m = c.s < 0 ? c.via : c.next;
-        return { id: c.id, model: c.model, x: p.x, z: p.z, yaw: p.yaw, speed: c.v, lane: c.lane.key, s: c.s, length: c.len, junction: p.junction?.key ?? null, axis: p.axis, turn: m?.turn ?? 'straight', braking: c.brake, blinking: blinkerOf(c), hold: holdOf(c, time), width: c.width };
+        return { id: c.id, model: c.model, x: p.x, z: p.z, yaw: p.yaw, speed: c.v, lane: c.lane.key, s: c.s, length: c.len, junction: p.junction?.key ?? null, axis: p.axis, turn: m?.turn ?? 'straight', braking: c.brake, blinking: blinkerOf(c), hold: holdOf(c, time + signalShift), width: c.width };
       }),
     carRoom: () => carCap,
     parked: () => parked.map((c) => ({ x: c.x, z: c.z, yaw: c.yaw, model: c.model, paint: [...c.paint] as [number, number, number], kerb: c.kerb })),

@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 
 import { BLOCK, PITCH, STREET } from '../app/src/city/lots.js';
-import { CROSSING, DROPPED, gutterAt, KERB, KERB_EDGE, kerbShare, kerbTileGeometry, streetFloor, streetSurface, TILE_RADIUS, WEAR_GLSL, wearAt } from '../app/src/city/street.js';
+import { CROSSING, DROPPED, gutterAt, KERB, KERB_EDGE, kerbShare, kerbTileGeometry, streetFloor, streetSurface, TILE_RADIUS, tileClearsRiver, WEAR_GLSL, wearAt } from '../app/src/city/street.js';
+import { BANKS, COPING } from '../shared/commute.js';
 
 // The street floor (Phase 5 Task 1): kerbs along every street edge, dropped at the crossings, gutters beside them, and
 // asphalt worn by where it is in the world.
@@ -138,4 +139,16 @@ test('kerbs draw in one instanced call per tier', () => {
   assert.ok(md.kerbs.instanceMatrix.count < hi.kerbs.instanceMatrix.count);
   hi.dispose();
   md.dispose();
+});
+
+test('no kerb tile hangs over the river: a block the channel cuts keeps its quay at street level', () => {
+  for (let i = -12; i <= 12; i++) {
+    const x = i * PITCH;
+    const over = x + KERB_EDGE > BANKS.west - COPING && x - KERB_EDGE < BANKS.east + COPING;
+    assert.equal(tileClearsRiver(x), !over, `the block at x ${x}`);
+    if (over) for (const dx of [-30, -10, 10, 30]) assert.equal(streetFloor(x + dx, 10), 0, `no step up on its quay (${x + dx})`);
+  }
+  assert.equal(tileClearsRiver(-400), false);
+  assert.equal(tileClearsRiver(-320), false);
+  assert.equal(tileClearsRiver(-480), true);
 });

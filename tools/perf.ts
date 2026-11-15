@@ -22,6 +22,9 @@
  * tools/capture.ts stages them: the people's and the vehicles' clocks held
  * while the figure is put where the shot wants it, and held through the
  * still and its frame rate (the pose frozen costs the same to draw).
+ * The transit views (junction-signal, tram-home, viaduct-corner) are staged
+ * the same way: a persona cab waited for at a red light, a tram moved on to
+ * where home sees its line, a train sought on the viaduct's curve.
  * Phase two (unless PERF_STATIC) turns the economy's
  * job sites live (four sites) on high and measures the city from home, the
  * overview and the quarters with them, with the quality governor running.
@@ -42,7 +45,8 @@ import type { Page } from 'playwright';
 import { layoutTower } from '../shared/tower-layout.js';
 import type { District, Quarter } from '../shared/types.js';
 import { frameStats } from '../app/src/city/governor.js';
-import { around, apart, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
+import { around, apart, callDebug, followView, person, runUntil, sendPerson, tramFromHome } from './people-stage.js';
+import { decodePng } from './png.js';
 import { seedSample, sampleGh } from './sample.js';
 import { homeBudget } from './ui-test.js';
 
@@ -186,7 +190,76 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     ['shop-close', [198.0, 1.6, -108.5], [191.95, 1.9, -110.5]],
     ['corner-chamfer', [140.0, 8.0, -120.0], [112.05, 9.0, -112.05]],
     ['corner-round', [366.0, 5.0, 106.0], [351.95, 8.0, 128.0]],
+    // Where the stone bridge's eastern river pier meets the water (Task 4): from a boat's eye a few metres off the
+    // east quay, downstream of the bridge, looking at the pier's downstream cutwater at the waterline.
+    ['pier-foot', [-338.0, -2.6, 30.0], [-349.5, -5.6, 11.0]],
   ];
+}
+
+/**
+ * The transit views that need a vehicle staged (Task 4), yielded one by one
+ * with the clocks held at the moment of each: a persona cab standing at a
+ * red light with the traffic queued behind it (junction-signal), a tram
+ * running where home sees the tram's line (tram-home, the home framing),
+ * and a train on the viaduct's curve (viaduct-corner). A stage that cannot
+ * be reached is skipped and said.
+ */
+async function* transitViews(page: Page, home: { eye: V3; target: V3 }): AsyncGenerator<[string, V3, V3]> {
+  type Red = { id: string; position: number[]; heading: number; junction: number[]; behind: number };
+  // A persona cab sent on a long drive across the grid; the city runs as it does (nothing held) until it stands at
+  // a red with cars behind it, then the cars and the cabs are held for the shot.
+  // The evening's full traffic for this one shot, so a queue forms behind the cab (the hour's density again after).
+  await callDebug(page, 'd.ambientDensity(1)');
+  const sent = [await callDebug<unknown>(page, 'd.vehicleTrip([520, -360], [-440, 280])'), await callDebug<unknown>(page, 'd.vehicleTrip([-200, 520], [600, -440])'), await callDebug<unknown>(page, 'd.vehicleTrip([280, 300], [-520, -200])')];
+  console.log(`transit: sent ${JSON.stringify(sent)}`);
+  let red: Red | null = null;
+  let stood = 0;
+  const canWait = await callDebug<boolean>(page, '!!d.cabsAtRed');
+  for (let k = 0; k < (canWait ? 720 : 0) && !red; k++) {
+    await page.waitForTimeout(500);
+    const reds = await callDebug<Red[]>(page, 'd.cabsAtRed ? d.cabsAtRed() : []');
+    if (reds.length) stood++;
+    red = reds.find((r) => r.behind >= 2) ?? (k > 120 ? (reds.find((r) => r.behind >= 1) ?? null) : null);
+  }
+  console.log(`transit: ${stood} looks found a persona cab at a red`);
+  if (red) {
+    await callDebug(page, 'd.vehicleHold(true)');
+    await callDebug(page, 'd.ambientHold(true)');
+    const p = red.position;
+    const h = red.heading;
+    // Back along the lane behind the queue and to its kerb side, at a walker's eye, looking up the queue to the cab
+    // and the junction beyond it.
+    yield ['junction-signal', around(p, h, -15, 5.4, 1.65), around(p, h, 8, 1.2, 1.5)];
+    await callDebug(page, 'd.vehicleHold(false)');
+    await callDebug(page, 'd.ambientHold(false)');
+  } else console.log('transit: no persona cab stood at a red with cars behind; junction-signal is skipped');
+  await callDebug(page, 'd.ambientDensity(null)');
+
+  // The tram line from home: a tram moved on to where home's framing sees the line nearest and in frame.
+  await callDebug(page, 'd.vehicleHold(true)');
+  try {
+    await page.evaluate(([e, t]) => (window as unknown as { __palimpsest: Dbg }).__palimpsest.view(e, t), [home.eye, home.target]);
+    await page.waitForTimeout(300);
+    await page.waitForTimeout(1500);
+    // The moment home sees a tram best: its lit windows the most pixels they light (tools/people-stage.ts).
+    const best = await tramFromHome(page, decodePng, { steps: 60, step: 6, gain: 0.08, floor: 0.42 });
+    if (best) {
+      console.log(`transit: tram-home ${best.d.toFixed(0)} m off, ${best.lit} pixels lit in its box ${best.box.join(', ')}`);
+      yield ['tram-home', home.eye, home.target];
+    } else console.log('transit: no tram in the home framing; tram-home is skipped');
+  } finally {
+    await callDebug(page, 'd.vehicleHold(false)');
+  }
+
+  // A train on the viaduct's curve at (760, 760), from over the corner's outside, above the roofs there.
+  await callDebug(page, 'd.vehicleHold(true)');
+  try {
+    const ok = await callDebug<boolean>(page, "d.vehicleSeek([{ kind: 'rail', near: [754, 754], radius: 9, moving: 0.5 }], 4000)");
+    if (ok) yield ['viaduct-corner', [805, 50, 805], [751, 11, 751]];
+    else console.log('transit: no train on the curve; viaduct-corner is skipped');
+  } finally {
+    await callDebug(page, 'd.vehicleHold(false)');
+  }
 }
 
 /**
@@ -336,6 +409,14 @@ async function main(): Promise<void> {
       for (const [name, eye, target] of await views(page)) {
         if (only && !only.includes(name)) continue;
         await measure(name, eye, target);
+      }
+      const TRANSIT = ['junction-signal', 'tram-home', 'viaduct-corner'];
+      if (!only || TRANSIT.some((n) => only.includes(n))) {
+        const home = await dbg<{ eye: V3; target: V3 }>(page, '(d) => d.limits().home');
+        for await (const [name, eye, target] of transitViews(page, home)) {
+          if (only && !only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
       }
       const PEOPLE = ['people-follow', 'people-close', 'face-close', 'people-platform', 'people-seated'];
       if (!only || PEOPLE.some((n) => only.includes(n))) {

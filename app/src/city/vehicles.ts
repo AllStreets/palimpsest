@@ -3,9 +3,11 @@ import * as THREE from 'three';
 import { BANKS, FERRY_Y, inChannel, PIERS, POD_Y, RAIL_Y, RIVER, SPEED, STREET_AT, streetLine, streetWay, tramHeight, type Line, type Network, type Rank } from '../../../shared/commute.js';
 import type { Trip, TripMode } from '../../../shared/types.js';
 import { LAYER, setLayers } from './lod.js';
+import { BLOOM_THRESHOLD } from './post.js';
 import { hasKit, kitShared } from './kits.js';
 import { LOD_EYE } from './lod-shader.js';
-import { CONTACT_Y, filleted, offsetLoop, POD_BEAM, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK } from './lines.js';
+import { CONTACT_Y, filleted, offsetLoop, POD_BEAM, RAIL_CAR, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK } from './lines.js';
+import { greenIn, greenLeft, SIGNAL, signalAt, type Axis, type SignalJunction, type Signals } from './signals.js';
 
 /**
  * The city's transit vehicles (Task 31): trams on the loop, elevated trains
@@ -145,6 +147,8 @@ export interface MotionOptions {
   lateral?: number;
   /** Seconds standing at each stop. */
   dwell: number;
+  /** Seconds standing at each stop in turn, where it differs from `dwell` (a cab held at a red light). */
+  dwells?: readonly number[];
 }
 
 export interface Plan {
@@ -165,43 +169,69 @@ export interface Plan {
  * motion between grid points is at constant acceleration, so it is smooth.
  * On an open track it starts and ends at a stand.
  */
+const CURVATURE = new WeakMap<Track, Float64Array>();
+
 export function motionPlan(track: Track, stops: readonly number[], o: MotionOptions): Plan {
   const L = track.length;
   const closed = track.closed;
   const decel = o.decel ?? o.accel;
-  const raw: number[] = [];
   const steps = Math.max(1, Math.ceil(L));
-  for (let i = 0; i < steps; i++) raw.push((i * L) / steps);
-  if (!closed) raw.push(L);
-  const stopSet = new Set<number>();
-  for (const s of stops) {
+  const stopSet = new Map<number, number>();
+  const at: number[] = [];
+  stops.forEach((s, k) => {
     const w = closed ? ((s % L) + L) % L : Math.min(Math.max(s, 0), L);
-    raw.push(w);
-    stopSet.add(w);
+    at.push(w);
+    stopSet.set(w, Math.max(stopSet.get(w) ?? 0, o.dwells?.[k] ?? o.dwell));
+  });
+  at.sort((a, b) => a - b);
+  // The metre grid is in order already: the stops are merged into it.
+  const raw: number[] = [];
+  let k = 0;
+  for (let i = 0; i <= steps; i++) {
+    if (i === steps && closed) break;
+    const g = (i * L) / steps;
+    while (k < at.length && at[k] <= g) raw.push(at[k++]);
+    raw.push(g);
   }
-  raw.sort((a, b) => a - b);
+  while (k < at.length) raw.push(at[k++]);
   const S: number[] = [];
   const isStop: boolean[] = [];
+  const dwellOf: number[] = [];
   for (const s of raw) {
     const last = S.length - 1;
     if (last >= 0 && s - S[last] < 1e-6) {
       if (stopSet.has(s)) {
         S[last] = s;
         isStop[last] = true;
+        dwellOf[last] = Math.max(dwellOf[last], stopSet.get(s)!);
       }
       continue;
     }
     S.push(s);
     isStop.push(stopSet.has(s));
+    dwellOf.push(stopSet.get(s) ?? 0);
   }
   const N = S.length;
   const ds = (i: number): number => (i + 1 < N ? S[i + 1] : closed ? L + S[0] : S[i]) - S[i];
   const next = (i: number): number => (i + 1 < N ? i + 1 : closed ? 0 : i);
+  // The track's curvature on its metre grid, worked out once per track (a cab's drive is planned again for each red
+  // light on it, on the same track).
+  let curv = CURVATURE.get(track);
+  if (o.lateral && !curv) {
+    curv = new Float64Array(steps + 2);
+    for (let i = 0; i <= steps + 1; i++) curv[i] = track.curvature(Math.min((i * L) / steps, L));
+    CURVATURE.set(track, curv);
+  }
+  const curvAt = (s: number): number => {
+    const u = (s / L) * steps;
+    const i = Math.floor(u);
+    return Math.abs(u - i) < 1e-6 && curv ? curv[i] : track.curvature(s);
+  };
   const v = S.map((s, i) => {
     if (isStop[i]) return 0;
     let lim = o.speed;
     if (o.lateral) {
-      const k = track.curvature(s);
+      const k = curvAt(s);
       if (k > 1e-4) lim = Math.min(lim, Math.sqrt(o.lateral / k));
     }
     return lim;
@@ -231,7 +261,7 @@ export function motionPlan(track: Track, stops: readonly number[], o: MotionOpti
   let t = 0;
   for (let i = 0; i < N; i++) {
     tA[i] = t;
-    tD[i] = t + (isStop[i] ? o.dwell : 0);
+    tD[i] = t + (isStop[i] ? dwellOf[i] : 0);
     if (i + 1 < N || closed) t = tD[i] + (2 * ds(i)) / Math.max(v[i] + v[next(i)], 1e-3);
   }
   const period = closed ? t : tA[N - 1];
@@ -395,9 +425,16 @@ const CONSIST: Record<Exclude<VehicleKind, 'cab'>, { models: Array<{ model: Mode
   // Two articulated sections nose to nose on the outside; the second runs reversed, its nose at the tail.
   tram: { models: [{ model: 'tram', flip: false }, { model: 'tram', flip: true }], pitch: 14.8, bogie: 8.6, floor: 0.34 },
   // Three cars: a cab car each end and a trailer between.
-  rail: { models: [{ model: 'railEnd', flip: false }, { model: 'railMid', flip: false }, { model: 'railEnd', flip: true }], pitch: 16.0, bogie: 10.6, floor: 0.95 },
+  rail: { models: [{ model: 'railEnd', flip: false }, { model: 'railMid', flip: false }, { model: 'railEnd', flip: true }], pitch: 16.0, bogie: RAIL_CAR.bogie, floor: 0.95 },
   pod: { models: [{ model: 'pod', flip: false }], pitch: 0, bogie: 3.2, floor: 0.36 },
   ferry: { models: [{ model: 'ferry', flip: false }], pitch: 0, bogie: 12, floor: 0.12 },
+};
+/** Each line's car body: half its length nose to tail and half its width (the widest rings of its model). */
+export const CAR_BODY: Record<Exclude<VehicleKind, 'cab'>, { half: number; width: number }> = {
+  tram: { half: 7.12, width: 1.27 },
+  rail: { half: RAIL_CAR.half, width: RAIL_CAR.width },
+  pod: { half: 3.2, width: 1.3 },
+  ferry: { half: 14, width: 4 },
 };
 /** The cab's floor over the road. */
 const CAB_FLOOR = 0.42;
@@ -449,10 +486,18 @@ interface Cab {
   rank: Rank;
   bay: number;
   phase: CabPhase;
-  /** The current drive (to the pickup, the ride, the way back) and when it started. */
-  run: { track: Track; plan: Plan } | null;
+  /** The current drive (to the pickup, the ride, the way back) or stand at the kerb, and when it started. */
+  run: { track: Track; plan: Plan; crossings?: Crossing[] } | null;
   since: number;
-  legs: { pickup: { track: Track; plan: Plan }; carry: { track: Track; plan: Plan }; back: { track: Track; plan: Plan } } | null;
+  legs: { pickup: Drive; carry: Drive; back: Drive } | null;
+  /**
+   * How it is held up behind a car ahead (setTraffic): its own speed while
+   * it follows slower than its timetable (or null when it keeps to it), and
+   * whether it has fallen behind the timetable it was planned on (so the
+   * signals it planned by no longer hold, and it is planned again from its
+   * next stand).
+   */
+  follow?: { v: number | null; late: boolean; replannedAt: number };
   /** An errand waiting for this cab to be back at its bay (when every bay in the city was out). */
   queue?: { token: string; a: V2; b: V2; est: { pickup: number; carry: number } } | null;
   /** The errand it is on (its booking's token) and that errand's own ends, as the trip gave them. */
@@ -740,14 +785,156 @@ function roadY(p: V2): number {
   return inChannel(p.x, 2) ? 0.08 : 0;
 }
 
-/** A cab's drive along a way on the street grid: round the plazas, right of the centre line, corners rounded, a stand at each end. */
-function drive(way: V2[], plazas: readonly V2[] = []): { track: Track; plan: Plan } {
-  const pts = rounded(laneOf(aroundPlazas(densify(way, false, 1e9), plazas), CAB_LANE), 7);
-  const track = trackOf(
-    pts.map((p) => [p.x, roadY(p), p.z] as V3),
-    false,
-  );
-  return { track, plan: motionPlan(track, [], CAB_OPTS) };
+/** A cab's run on the street grid: its track, its timetable, and the signalled junctions it crosses on the way. */
+interface Drive {
+  track: Track;
+  plan: Plan;
+  crossings: Crossing[];
+  /** When it was timed to set off, on the vehicles' clock (NaN: not timed to the lights yet, an estimate for the waits). */
+  t0: number;
+  /** The track's points, so the rest of it can be driven from a stand part way along (rest). */
+  pts: V3[];
+}
+
+/** Where a drive crosses a signalled junction: which, along which axis, and where along the track its middle stands. */
+interface Crossing {
+  j: SignalJunction;
+  axis: Axis;
+  /** The middle when its nose stands STOP_SHORT behind the stop line. */
+  line: number;
+  /** The middle when its tail has left the box. */
+  clear: number;
+}
+
+/** The lights a drive is planned by: the junctions, and the signal clock's lead over the vehicles' clock. */
+interface Lights {
+  signals: Signals;
+  shift: number;
+}
+
+/** The cab's nose and tail, this far from its middle (the point its track carries). */
+export const CAB_HALF_LEN = 2.3;
+/** A junction's box reaches this far each way from its centre: the stop lines (ambient.ts BOX). */
+export const JUNCTION_BOX = 6.5;
+/** A cab held up in traffic stops this far behind the car ahead. */
+const FOLLOW_GAP = 2.4;
+/** A cab stops with its nose this far short of the line, and moves off this long after its green shows. */
+const STOP_SHORT = 0.6;
+const MOVE_OFF = 1.2;
+
+/** The signalled junctions a track's middle passes through, in order, with where to stop for each and where it is clear. */
+function crossingsOf(track: Track, signals: Signals): Crossing[] {
+  const out: Crossing[] = [];
+  let inBox: SignalJunction | null = null;
+  let entry = 0;
+  const step = 0.5;
+  for (let s = 0; s <= track.length + 1e-6; s += step) {
+    const p = track.point(s);
+    const jx = streetLine(p.x);
+    const jz = streetLine(p.z);
+    const here = Math.abs(p.x - jx) < JUNCTION_BOX && Math.abs(p.z - jz) < JUNCTION_BOX ? signals.at(jx, jz) : null;
+    if (here !== inBox) {
+      if (inBox && here === null) {
+        // A drive that sets off with its nose already in the box has no line to stop at; one that sets off just
+        // short of it (stood at the line) stops where it stands.
+        const line = Math.max(0, entry - CAB_HALF_LEN - STOP_SHORT);
+        if (entry - CAB_HALF_LEN > 0.05) {
+          const t = track.tangent(Math.max(0, entry - 1));
+          out.push({ j: inBox, axis: Math.abs(t.x) >= Math.abs(t.z) ? 'x' : 'z', line, clear: Math.min(track.length, s + CAB_HALF_LEN) });
+        }
+      }
+      if (here) {
+        // Where the middle crosses into the box, to a centimetre.
+        let lo = Math.max(0, s - step);
+        let hi = s;
+        for (let k = 0; k < 6; k++) {
+          const mid = (lo + hi) / 2;
+          const q = track.point(mid);
+          if (Math.abs(q.x - jx) < JUNCTION_BOX && Math.abs(q.z - jz) < JUNCTION_BOX) hi = mid;
+          else lo = mid;
+        }
+        entry = hi;
+      }
+      inBox = here;
+    }
+  }
+  return out;
+}
+
+/**
+ * A cab's timetable on its track from the moment it sets off (`t0`, on the
+ * vehicles' clock), keeping to the signals: it goes through a junction only
+ * when its nose meets the line on green and its tail is out of the box
+ * before the red; otherwise it brakes to a stand short of the line and
+ * moves off a moment after its green shows. Junctions are taken in order,
+ * so each stop is timed on the plan with every stop before it.
+ */
+function signalPlan(track: Track, crossings: readonly Crossing[], t0: number, lights: Lights | null): Plan {
+  const stops: number[] = [];
+  const dwells: number[] = [];
+  // Planned with every stop so far at no dwell (one plan per stop added): a dwell only delays what comes after it, so
+  // the time at s is that plan's time plus the dwells of the stops before s. The last plan carries the dwells.
+  let plan = motionPlan(track, stops, CAB_OPTS);
+  if (!lights || !crossings.length) return plan;
+  const at = (t: number): number => t0 + t + lights.shift;
+  const timeAt = (s: number): number => {
+    let t = plan.timeAt(s);
+    for (let k = 0; k < stops.length; k++) if (stops[k] < s - 1e-6) t += dwells[k];
+    return t;
+  };
+  for (const c of crossings) {
+    const nose = timeAt(c.line + STOP_SHORT);
+    const tail = timeAt(c.clear);
+    // Through on green (not amber), the box cleared while its light still shows go.
+    if (greenLeft(c.j, at(nose), c.axis) + SIGNAL.amber > tail - nose + 0.3) continue;
+    stops.push(c.line);
+    dwells.push(0);
+    plan = motionPlan(track, stops, CAB_OPTS);
+    const stand = at(timeAt(c.line));
+    let wait = greenIn(c.j, stand, c.axis);
+    // A green too short to clear the box from a stand waits for the next one.
+    if (wait === 0 && greenLeft(c.j, stand, c.axis) < MOVE_OFF + 6) wait = greenLeft(c.j, stand, c.axis) + greenIn(c.j, stand + greenLeft(c.j, stand, c.axis) + 0.01, c.axis) + 0.01;
+    dwells[dwells.length - 1] = wait + MOVE_OFF;
+  }
+  return stops.length ? motionPlan(track, stops, { ...CAB_OPTS, dwells }) : plan;
+}
+
+/**
+ * A cab's drive along a way on the street grid: round the plazas, right of
+ * the centre line, corners rounded, a stand at each end, and kept to the
+ * signals when it sets off at `t0` under `lights`.
+ */
+function drive(way: V2[], plazas: readonly V2[] = [], t0 = 0, lights: Lights | null = null): Drive {
+  const pts = rounded(laneOf(aroundPlazas(densify(way, false, 1e9), plazas), CAB_LANE), 7).map((p) => [p.x, roadY(p), p.z] as V3);
+  return timed(pts, t0, lights);
+}
+
+/** A drive over these points, timed to the signals from `t0`. */
+function timed(pts: V3[], t0: number, lights: Lights | null): Drive {
+  const track = trackOf(pts, false);
+  const crossings = lights ? crossingsOf(track, lights.signals) : [];
+  return { track, plan: signalPlan(track, crossings, t0, lights), crossings, t0, pts };
+}
+
+/** The same track timed again from `t0` (a cab whose way is unchanged but which sets off later than planned). */
+function retime(d: Drive, t0: number, lights: Lights | null): Drive {
+  return timed(d.pts, t0, lights);
+}
+
+/** The rest of a drive from a stand `s0` along it, timed from `t0`. */
+function rest(d: Drive, s0: number, t0: number, lights: Lights | null): Drive {
+  const out: V3[] = [];
+  const p = d.track.point(s0);
+  out.push([p.x, p.y, p.z]);
+  let run = 0;
+  for (let i = 1; i < d.pts.length; i++) {
+    const a = d.pts[i - 1];
+    const b = d.pts[i];
+    run += Math.hypot(b[0] - a[0], b[2] - a[2]);
+    if (run > s0 + 0.05) out.push(b);
+  }
+  if (out.length < 2) out.push([...d.pts[d.pts.length - 1]] as V3);
+  return timed(out, t0, lights);
 }
 
 /** Where a cab pulls in to the kerb: this far from the street's centre line. */
@@ -781,6 +968,16 @@ function kerbPlan(p: V2, net: Network): { kerb: V2; via: V2 } {
     let out = 0;
     for (let pass = 0; pass < 4; pass++) {
       let moved = false;
+      // Never in a junction's box (a cab standing there would stand in the crossing traffic's way): out along the
+      // street to clear the cross street's stop line by a cab's length, on the side it leans to (or the way it was slid).
+      const u = axis === 'z' ? q.z : q.x;
+      const cross = streetLine(u);
+      const clear = JUNCTION_BOX + CAB_HALF_LEN + 1.5;
+      if (Math.abs(u - cross) < clear) {
+        const side = out || Math.sign(u - cross) || 1;
+        q = axis === 'z' ? { x: q.x, z: cross + side * clear } : { x: cross + side * clear, z: q.z };
+        moved = true;
+      }
       for (const o of plazas) {
         if (dist(q, o) >= PLAZA_CLEAR) continue;
         // Out along the street to the nearer edge of the plaza.
@@ -881,11 +1078,14 @@ function cabPose(cab: Cab, time: number): { x: number; y: number; z: number; yaw
   const p = track.point(s);
   const tan = track.tangent(Math.min(s, track.length - 0.01));
   const ahead = plan.at(t + 0.25).v;
+  // Held up behind a car, it goes at its own pace, not its timetable's.
+  const held = cab.follow?.v ?? null;
+  if (held !== null) return { ...p, yaw: Math.atan2(tan.z, tan.x), v: held, braking: held < v - 0.05 || held < 0.05 };
   return { ...p, yaw: Math.atan2(tan.z, tan.x), v, braking: ahead < v - 0.05 || (v < 0.05 && t > 0) };
 }
 
-/** Moves each summoned cab on to the next part of its errand when the current one is done. */
-function advanceCab(cab: Cab, time: number): void {
+/** Moves each summoned cab on to the next part of its errand when the current one is done (a drive set off late timed again under `lights`). */
+function advanceCab(cab: Cab, time: number, lights: Lights | null = null): void {
   for (let guard = 0; guard < 6; guard++) {
     const t = time - cab.since;
     const legs = cab.legs;
@@ -912,10 +1112,14 @@ function advanceCab(cab: Cab, time: number): void {
     if (!next) return;
     cab.since += at;
     cab.phase = next;
+    if (cab.follow) cab.follow.v = null;
+    // A drive planned to set off earlier (the cab was held up on the way) is timed again from now, so the lights it
+    // planned by are the lights it meets.
+    const due = (d: Drive): Drive => (lights && !(Math.abs(d.t0 - cab.since) <= 0.05) ? retime(d, cab.since, lights) : d);
     if (next === 'pickup') cab.run = { track: legs.pickup.track, plan: standAt(legs.pickup.track, legs.pickup.track.length) };
-    else if (next === 'carrying') cab.run = legs.carry;
+    else if (next === 'carrying') cab.run = legs.carry = due(legs.carry);
     else if (next === 'setdown') cab.run = { track: legs.carry.track, plan: standAt(legs.carry.track, legs.carry.track.length) };
-    else if (next === 'returning') cab.run = legs.back;
+    else if (next === 'returning') cab.run = legs.back = due(legs.back);
     else {
       cab.run = null;
       cab.legs = null;
@@ -1929,14 +2133,30 @@ const CAB_INTERIOR: Interior = {
   crowd: 0,
 };
 
+/**
+ * The far level's lit saloon (the tram) and lamps, each a real emitter just
+ * under the bloom threshold, so a vehicle a kilometre off reads as its lit
+ * windows and a lamp point, never a flare. The bloom pass reads the linear
+ * frame before the output pass applies the exposure, so the radiance itself
+ * stays under BLOOM_THRESHOLD (a far lamp at 1.08 still flared in round 1).
+ */
+export const FAR_EMIT_MAX = BLOOM_THRESHOLD * 0.9;
+const FAR_SALOON = 0.9;
+
 const MODELS: Record<ModelName, { build(kit: Kit): void; interior: Interior; glow: RGB }> = {
-  tram: { build: tramModel, interior: TRAM_INTERIOR, glow: scale(WARM, 0.55) },
+  // The tram's saloon, lit for dusk, reads from home through the haze: its far level's windows at FAR_SALOON.
+  tram: { build: tramModel, interior: TRAM_INTERIOR, glow: scale(WARM, FAR_SALOON) },
   railEnd: { build: (k) => railModel(k, true), interior: RAIL_INTERIOR(true), glow: scale(COOL, 0.6) },
   railMid: { build: (k) => railModel(k, false), interior: RAIL_INTERIOR(false), glow: scale(COOL, 0.6) },
   pod: { build: podModel, interior: POD_INTERIOR, glow: scale(COOL, 0.55) },
   ferry: { build: ferryModel, interior: FERRY_INTERIOR, glow: scale(WARM, 0.45) },
   cab: { build: cabModel, interior: CAB_INTERIOR, glow: scale(WARM, 0.12) },
 };
+
+/** A model's far level lit glazing, linear RGB (tests: the tram's saloon reads from home and does not bloom). */
+export function farGlowOf(name: ModelName): RGB {
+  return [...MODELS[name].glow] as RGB;
+}
 
 /** A model at a level: its shell and fittings, and near, the cabin a rider sits in. */
 function buildModel(kit: Kit, name: ModelName): void {
@@ -2485,7 +2705,7 @@ function farMaterial(): THREE.MeshStandardMaterial {
         `#include <emissivemap_fragment>
         if (vKind.x + vKind.y + vKind.z > 0.0) {
           vec3 own = vColor.rgb;
-          totalEmissiveRadiance += lampShow(vKind, own, vLead, vBrake);
+          totalEmissiveRadiance += min(lampShow(vKind, own, vLead, vBrake), vec3(${FAR_EMIT_MAX.toFixed(3)}));
           diffuseColor.rgb = vec3(0.0);
         }
         totalEmissiveRadiance += vGlow;`,
@@ -2496,7 +2716,7 @@ function farMaterial(): THREE.MeshStandardMaterial {
         '#include <fog_fragment>',
         `vec3 preFog = gl_FragColor.rgb;
         #include <fog_fragment>
-        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.6 * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.72 * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
       );
   };
   m.customProgramCacheKey = () => 'palimpsest-vehicle-far';
@@ -2616,6 +2836,17 @@ export interface Vehicles {
   seek(conds: ReadonlyArray<{ kind: Exclude<VehicleKind, 'cab'>; near: V2; radius: number; moving?: number }>, horizon?: number): boolean;
   /** A stand-in rider (until the figures of Task 34) standing at a point facing a heading, or none (captures). */
   rider(at: V3 | null, heading?: number): void;
+  /**
+   * The signals the persona cabs keep to (ambient.ts signals(): the same
+   * lights as the traffic), or none. Errands planned from now on keep to them.
+   */
+  setSignals(signals: Signals | null): void;
+  /** The traffic a persona cab queues behind: the nearest car ahead of a point going its way (ambient.ts carAhead), or none. */
+  setTraffic(ahead: ((x: number, z: number, heading: number, reach: number) => { gap: number; speed: number } | null) | null): void;
+  /** Seconds on the vehicles' clock (the lights run on it: scene.ts syncs the traffic's signals to it). */
+  clock(): number;
+  /** Every car of a line's vehicles now: its middle, heading, and its body's half length and half width (tests: the cars keep to the viaduct). */
+  cars(kind: Exclude<VehicleKind, 'cab'>): Array<{ x: number; y: number; z: number; yaw: number; half: number; width: number }>;
   dispose(): void;
 }
 
@@ -3055,7 +3286,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       // Every bay in the city is out: the cab whose errand ends soonest (and has none waiting) takes this one next.
       // Its rider's booking says 'queued' and counts the real wait: that errand's end, then the drive from the bay.
       cab = [...fleet.cabs].sort((p, q) => cabFreeIn(p, fleet.time) + (p.queue ? 1e6 : 0) - (cabFreeIn(q, fleet.time) + (q.queue ? 1e6 : 0)))[0];
-      const plan = errandLegs(cab, a, b);
+      const plan = errandLegs(cab, a, b, fleet.time + cabFreeIn(cab, fleet.time));
       cab.queue = { token, a, b, est: { pickup: plan.pickup.plan.period, carry: plan.carry.plan.period } };
       return booking(cab, token);
     }
@@ -3063,25 +3294,38 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     return booking(cab, token);
   }
 
-  /** The three drives of an errand for a cab from its bay: to the kerb by a, on to the kerb by b, and back. */
-  function errandLegs(cab: Cab, a: V2, b: V2): NonNullable<Cab['legs']> {
+  /** The signals the cabs keep to, and the lead of the lights' clock over this one (setSignals). */
+  let lights: Lights | null = null;
+  const lightsNow = (): Lights | null => (signals ? { signals, shift: signals.now() - fleet.time } : null);
+  let signals: Signals | null = null;
+  /** The traffic a cab queues behind (setTraffic): the nearest car ahead of a point, going its way. */
+  let traffic: ((x: number, z: number, heading: number, reach: number) => { gap: number; speed: number } | null) | null = null;
+
+  /**
+   * The three drives of an errand for a cab setting off from its bay at
+   * `t0`: to the kerb by a, on to the kerb by b, and back, each timed to the
+   * signals from when it will set off.
+   */
+  function errandLegs(cab: Cab, a: V2, b: V2, t0: number): NonNullable<Cab['legs']> {
     const start = kerbPlan(a, net);
     const end = kerbPlan(b, net);
     const bay = bayPose(cab.rank, cab.bay);
-    return {
-      pickup: drive([...streetWay(bay, start.via), start.kerb], plazas),
-      carry: drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas),
-      back: drive([end.kerb, ...streetWay(end.via, bay)], plazas),
-    };
+    lights = lightsNow();
+    // The drive it sets off on now is timed to the lights; the two after it are timed when each sets off (advanceCab),
+    // and until then their untimed runs stand for the waits a rider is told.
+    const pickup = drive([...streetWay(bay, start.via), start.kerb], plazas, t0, lights);
+    const later = (way: V2[]): Drive => ({ ...drive(way, plazas), t0: NaN });
+    return { pickup, carry: later([start.kerb, ...streetWay(start.via, end.via), end.kerb]), back: later([end.kerb, ...streetWay(end.via, bay)]) };
   }
 
   function sendCab(cab: Cab, a: V2, b: V2, token: string): void {
-    cab.legs = errandLegs(cab, a, b);
+    cab.legs = errandLegs(cab, a, b, fleet.time);
     cab.errand = token;
     cab.ends = { a, b };
     cab.phase = 'to-pickup';
     cab.since = fleet.time;
     cab.run = cab.legs.pickup;
+    cab.follow = { v: null, late: false, replannedAt: -Infinity };
   }
 
   /**
@@ -3134,8 +3378,9 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
 
   /** Each cab moves on through its errand; one back at its bay with another queued sets off again. */
   function advanceCabs(): void {
+    lights = lightsNow();
     for (const c of fleet.cabs) {
-      advanceCab(c, fleet.time);
+      advanceCab(c, fleet.time, lights);
       if (c.phase === 'parked' && c.queue) {
         const q = c.queue;
         c.queue = null;
@@ -3156,24 +3401,126 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     const start = kerbPlan(c.ends.a, net);
     const end = kerbPlan(c.ends.b, net);
     const bay = bayPose(c.rank, c.bay);
-    const toEnd = (from: V2): { track: Track; plan: Plan } => drive([from, ...streetWay(from, end.via), end.kerb], plazas);
-    const back = drive([end.kerb, ...streetWay(end.via, bay)], plazas);
+    lights = lightsNow();
+    // Each drive timed from when it will set off; one that sets off later than that is timed again then (advanceCab).
+    const t = time - c.since;
+    const toEnd = (from: V2, t0: number): Drive => drive([from, ...streetWay(from, end.via), end.kerb], plazas, t0, lights);
+    const backFrom = (t0: number): Drive => drive([end.kerb, ...streetWay(end.via, bay)], plazas, t0, lights);
     if (c.phase === 'to-pickup') {
-      c.legs = { pickup: drive([pos, ...streetWay(pos, start.via), start.kerb], plazas), carry: drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas), back };
+      const pickup = drive([pos, ...streetWay(pos, start.via), start.kerb], plazas, time, lights);
+      const t1 = time + pickup.plan.period + CAB_BOARD_S;
+      const carry = drive([start.kerb, ...streetWay(start.via, end.via), end.kerb], plazas, t1, lights);
+      c.legs = { pickup, carry, back: backFrom(t1 + carry.plan.period + CAB_ALIGHT_S) };
       c.run = c.legs.pickup;
       c.since = time;
     } else if (c.phase === 'pickup') {
-      c.legs = { ...c.legs, carry: toEnd(pos), back };
+      const t1 = time + Math.max(0, CAB_BOARD_S - t);
+      const carry = toEnd(pos, t1);
+      c.legs = { ...c.legs, carry, back: backFrom(t1 + carry.plan.period + CAB_ALIGHT_S) };
     } else if (c.phase === 'carrying') {
-      c.legs = { ...c.legs, carry: toEnd(pos), back };
+      const carry = toEnd(pos, time);
+      c.legs = { ...c.legs, carry, back: backFrom(time + carry.plan.period + CAB_ALIGHT_S) };
       c.run = c.legs.carry;
       c.since = time;
     } else if (c.phase === 'setdown') {
-      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas) };
+      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas, time + Math.max(0, CAB_ALIGHT_S - t), lights) };
     } else if (c.phase === 'returning') {
-      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas) };
+      c.legs = { ...c.legs, back: drive([pos, ...streetWay(pos, bay)], plazas, time, lights) };
       c.run = c.legs.back;
       c.since = time;
+    }
+    if (c.follow) {
+      c.follow.v = null;
+      c.follow.late = false;
+      c.follow.replannedAt = time;
+    }
+  }
+
+  /**
+   * The persona cabs in traffic (setTraffic): a cab that would close on a
+   * car ahead of it in its lane goes no faster than lets it stop a safe gap
+   * behind, its timetable's clock held back by as much. Every cab also
+   * treats the stop line of a junction whose light does not show go, with
+   * the time to clear, as a car standing there (its timetable already stops
+   * for the reds it planned by; this keeps it to the lights as they are when
+   * it has fallen behind that timetable). One held up and standing has the
+   * rest of its drive timed again from there once its way ahead clears.
+   */
+  function followTraffic(dt: number): void {
+    if (dt <= 0) return;
+    for (const c of fleet.cabs) {
+      const run = c.run;
+      if (!run || !(c.phase === 'to-pickup' || c.phase === 'carrying' || c.phase === 'returning')) continue;
+      const f = (c.follow ??= { v: null, late: false, replannedAt: -Infinity });
+      const t1 = fleet.time - c.since;
+      const t0 = t1 - dt;
+      const was = run.plan.at(t0);
+      const will = run.plan.at(t1);
+      if (will.s - was.s < 1e-4 && !f.late) {
+        f.v = null;
+        continue;
+      }
+      const tan = run.track.tangent(Math.min(was.s, run.track.length - 0.01));
+      const heading = Math.atan2(tan.z, tan.x);
+      const p = run.track.point(was.s);
+      const nose = { x: p.x + tan.x * CAB_HALF_LEN, z: p.z + tan.z * CAB_HALF_LEN };
+      // The room it has: to the car ahead, and (once late) to a line it may not cross.
+      let room = Infinity;
+      let lead = 0;
+      const car = traffic?.(nose.x, nose.z, heading, 60) ?? null;
+      if (car) {
+        room = car.gap - FOLLOW_GAP;
+        lead = car.speed;
+      }
+      if (lights) {
+        const tNow = fleet.time + lights.shift;
+        for (const x of run.crossings ?? []) {
+          if (x.line + STOP_SHORT <= was.s) continue;
+          if (x.line > was.s + 80) break;
+          // Too close to stop short of the box at a firm 6 m/s²: it goes on through.
+          const v = f.v ?? was.v;
+          const edge = x.line + STOP_SHORT - was.s;
+          if ((v * v) / 12 > edge) continue;
+          // The light it would meet now: the line is a wall unless it shows go with time to clear.
+          if (greenLeft(x.j, tNow, x.axis) + SIGNAL.amber > 5 && signalAt(x.j, tNow, x.axis) === 'go') continue;
+          room = Math.min(room, Math.max(x.line - was.s, Math.min(edge - 0.05, 0.2)));
+          lead = 0;
+          break;
+        }
+      }
+      const want = will.s - was.s;
+      // Stood behind a car that has now gone (late, at a stand, room ahead): the rest of the drive is timed again from
+      // here, once, on the lights as they are, and it pulls away on that.
+      if (f.late && f.v !== null && f.v < 0.05 && room > FOLLOW_GAP + 3 && fleet.time - f.replannedAt > 1) {
+        const leg = c.phase === 'to-pickup' ? 'pickup' : c.phase === 'carrying' ? 'carry' : 'back';
+        const d = rest(c.legs![leg], was.s, fleet.time, lights);
+        c.legs![leg] = d;
+        c.run = d;
+        c.since = fleet.time;
+        f.v = null;
+        f.late = false;
+        f.replannedAt = fleet.time;
+        continue;
+      }
+      // The most it may go this step: what stops it within the room left at a comfortable 3 m/s².
+      const v0 = f.v ?? was.v;
+      const safe = room <= 0 ? 0 : Math.min(Math.sqrt(lead * lead + 2 * 3 * room), v0 + 2.2 * dt);
+      const may = Math.max(0, Math.min(want, safe * dt, Math.max(0, room)));
+      if (may >= want - 1e-4) {
+        f.v = null;
+        continue;
+      }
+      // Held back: its clock moves only as far as it goes.
+      let lo = t0;
+      let hi = t1;
+      for (let k = 0; k < 24; k++) {
+        const mid = (lo + hi) / 2;
+        if (run.plan.at(mid).s - was.s < may) lo = mid;
+        else hi = mid;
+      }
+      c.since += t1 - lo;
+      f.v = may / dt;
+      f.late = true;
     }
   }
 
@@ -3229,7 +3576,10 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     group,
     update(dt, eye) {
       if (disposed) return;
-      if (!held) fleet.time += dt;
+      if (!held) {
+        fleet.time += dt;
+        followTraffic(dt);
+      }
       advanceCabs();
       if (eye) eyeAt.copy(eye);
       draw();
@@ -3335,6 +3685,20 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
         return true;
       }
       return false;
+    },
+    setSignals(next) {
+      signals = next;
+      lights = lightsNow();
+    },
+    setTraffic(ahead) {
+      traffic = ahead;
+    },
+    clock: () => fleet.time,
+    cars(kind) {
+      const body = CAR_BODY[kind];
+      return fleet.units
+        .filter((u) => u.service.kind === kind)
+        .flatMap((u) => unitCars(u, fleet.time).cars.map((c) => ({ x: c.x, y: c.y, z: c.z, yaw: c.yaw, half: body.half, width: body.width })));
     },
     rider(at, heading = 0) {
       if (!at) {

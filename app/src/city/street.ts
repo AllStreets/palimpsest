@@ -121,7 +121,17 @@ export function kerbShare(lx: number, lz: number): number {
 export function streetFloor(x: number, z: number): number {
   const [lx, lz] = local(x, z);
   if (Math.abs(lx) > KERB_EDGE || Math.abs(lz) > KERB_EDGE) return 0;
+  if (!tileClearsRiver(x - lx)) return 0;
   return KERB.height * kerbShare(lx, lz);
+}
+
+/**
+ * Whether a block's kerb tile (centred at x) stands clear of the river: a
+ * block the channel or its copings cut into keeps its quay at street level
+ * (the ground's own paving), so no raised pavement hangs over the water.
+ */
+export function tileClearsRiver(x: number): boolean {
+  return x + KERB_EDGE <= BANKS.west - COPING || x - KERB_EDGE >= BANKS.east + COPING;
 }
 
 /** 1 in a gutter (the road within KERB.gutter of a kerb face), 0 elsewhere. */
@@ -927,7 +937,7 @@ export function streetSurface(quality: 'high' | 'medium', maps: FloorMaps = blan
         const dx = Math.max(Math.abs(eye.x - x) - KERB_EDGE, 0);
         const dz = Math.max(Math.abs(eye.z - z) - KERB_EDGE, 0);
         if (Math.hypot(dx, dz) > reach.far + TILE_STEP) continue;
-        if (sunk(x, z)) continue;
+        if (sunk(x, z) || !tileClearsRiver(x)) continue;
         m.makeTranslation(x, 0, z);
         kerbs.setMatrixAt(n++, m);
       }

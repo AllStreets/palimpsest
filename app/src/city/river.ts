@@ -29,12 +29,11 @@ import { materials, texture } from './materials.js';
 import { chunkAt, chunkLod, chunks, waterSettings, type Chunk } from './river-lod.js';
 import { SKY_GLSL, SUN_DIRECTION } from './sky.js';
 
-/** The water's surface, metres below the quays. */
-export const WATER_Y = -6.2;
+import { BRIDGE_KINDS, pontoonOf, RIVER_BED, STONE_PIERS, WATER_Y } from './river-bed.js';
+export { BRIDGE_KINDS, pontoonOf, RIVER_BED, riverFeet, WATER_Y, type BridgeKind } from './river-bed.js';
 /** The most boats whose wakes the water draws. */
 const WAKES = 4;
-/** The quay walls stand on footings this deep (hidden under the water). */
-const WALL_FOOT = -9;
+const WALL_FOOT = RIVER_BED;
 /** The river runs the length of the ground. */
 const LENGTH = 16000;
 /** The parapet along each quay, on the coping. */
@@ -49,9 +48,7 @@ const DECK_TOP = 0.08;
 /** Lamp light, as HDR colour: warm metal halide on the quays and bridges, a little whiter than the sodium streets. */
 const LANTERN = new THREE.Color(1.0, 0.74, 0.46).multiplyScalar(2.8);
 
-export type BridgeKind = 'arch' | 'stone' | 'stayed';
-/** Which bridge stands where (z): the steel tied arch upstream, the stone arch on the civic axis, the cable-stayed deck downstream. */
-export const BRIDGE_KINDS: Record<number, BridgeKind> = { [BRIDGES[0]]: 'arch', [BRIDGES[1]]: 'stone', [BRIDGES[2]]: 'stayed' };
+
 
 /** The names on the piers' signs, in PIERS order. Places of the city, not of anyone's data. */
 export const PIER_NAMES = ['Tannery Wharf', 'Ropewalk Stairs', 'Ironworks Pier', 'Lock Street', 'Chandlers Quay', 'Mill Stairs', 'Gasholder Pier', 'Exchange Stairs'];
@@ -594,8 +591,8 @@ function stoneBridge(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vecto
   const x1 = BANKS.east + 4;
   const half = BRIDGE_DECK / 2;
   const spring = WATER_Y + 1.3;
-  const piers = [RIVER.x - 10.5, RIVER.x + 10.5];
-  const pw = 3;
+  const piers = STONE_PIERS.x;
+  const pw = STONE_PIERS.width;
   const spans: Array<[number, number, number]> = [
     [BANKS.west, piers[0] - pw / 2, 3.3],
     [piers[0] + pw / 2, piers[1] - pw / 2, 3.8],
@@ -953,8 +950,9 @@ function ferryPier(b: Build, M: RiverMaterials, p: Pier, row: number, lamps: THR
   // Pontoon: 28 m by 7 m, off the stairs' landing.
   const gx0 = face + s * (sw + 0.4);
   const pw = 7;
-  const pcx = gx0 + s * (3.2 + pw / 2);
-  const pz = landZ - 3;
+  const pontoon = pontoonOf(p);
+  const pcx = pontoon.x;
+  const pz = pontoon.z;
   const deckY = WATER_Y + 0.85;
   b.tier = 'core';
   b.box(M.hull, pcx, WATER_Y + 0.1, pz, pw, 1.5, PIER_HALF * 2);
@@ -967,10 +965,9 @@ function ferryPier(b: Build, M: RiverMaterials, p: Pier, row: number, lamps: THR
   b.beam(M.steel, [gx0 - s * 0.2, WATER_Y + 0.95, landZ - 0.2], [gx0 + s * 3.4, gy, landZ - 0.2], 1.6, 0.14);
   for (const side of [-0.8, 0.8]) b.beam(M.iron, [gx0 - s * 0.2, WATER_Y + 1.95, landZ - 0.2 + side], [gx0 + s * 3.4, gy + 1.0, landZ - 0.2 + side], 0.05, 0.05);
   // Guide piles at the pontoon's outer edge, through hoops.
-  for (const dz of [-PIER_HALF + 3, PIER_HALF - 3]) {
-    const x = pcx + s * (pw / 2 + 0.55);
-    b.rod(M.steel, [x, WALL_FOOT, pz + dz], [x, deckY + 3.4, pz + dz], 0.34, 10);
-    b.box(M.steel, x - s * 0.35, deckY + 0.3, pz + dz, 0.8, 0.25, 0.9);
+  for (const q of pontoon.piles) {
+    b.rod(M.steel, [q.x, WALL_FOOT, q.z], [q.x, deckY + 3.4, q.z], 0.34, 10);
+    b.box(M.steel, q.x - s * 0.35, deckY + 0.3, q.z, 0.8, 0.25, 0.9);
   }
   // Railings round the pontoon, open on its river edge's boarding gate.
   for (const side of [-1, 1]) b.box(M.iron, pcx, deckY + 1.05, pz + side * (PIER_HALF - 0.1), pw - 0.4, 0.05, 0.05);

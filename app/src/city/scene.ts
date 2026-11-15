@@ -38,6 +38,7 @@ import { createVehicles, type Vehicles } from './vehicles.js';
 import { createPeople, type People } from './people.js';
 import type { Agent, Trip } from '../../../shared/types.js';
 import { ambientDensity, createAmbient, type Ambient, type AmbientPlaza, type CabPose } from './ambient.js';
+import { createSignalHeads } from './signal-heads.js';
 import { extentBlocks, type Network } from '../../../shared/commute.js';
 import { makeScaffold, type Scaffold } from './scaffold.js';
 import { createMilestones, findTowerPiece, type MilestoneShow, type Milestones, type TowerPiece } from './milestones.js';
@@ -179,6 +180,8 @@ export interface City {
   transit(): TransitView;
   /** The trams, trains, pods, ferries and cabs running on the network (vehicles.ts), or null before it is laid. */
   vehicles(): Vehicles | null;
+  /** The signal heads at the junctions (signal-heads.ts): how many stand and how many draw near the eye. */
+  signalHeads(): { heads: number; drawn: number };
   /** The network as laid now (shared/commute.ts), or null before the city has districts. */
   transitNetwork(): Network | null;
   /** The ambient traffic and crowd (ambient.ts), or null before the network is laid. */
@@ -416,6 +419,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   vehicleRoot.name = 'vehicles';
   scene.add(vehicleRoot);
   let vehicles: Vehicles | null = null;
+  /** Whether the cabs have been given the traffic to queue behind. */
+  let trafficSet = false;
   function layVehicles(): void {
     const net = transit.network();
     if (!net) return;
@@ -439,6 +444,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         net: () => transit.network(),
         lampLight: (x, y, z, out) => ambient?.lampLight(x, y, z, out),
         floorAt: (x, z) => ambient?.floorAt(x, z) ?? 0,
+        // The lights the traffic keeps to: a persona on foot waits at the kerb for them.
+        signals: () => ambient?.signals() ?? null,
         describe: opts.describeTrip,
         coatOf: opts.coatOf,
         onActivate: (agentId) => {
@@ -465,6 +472,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const ambientRoot = new THREE.Group();
   ambientRoot.name = 'traffic';
   scene.add(ambientRoot);
+  // The signal heads at the junctions with lights (signal-heads.ts), counted with the traffic.
+  const signalHeads = createSignalHeads();
+  ambientRoot.add(signalHeads.group);
   let ambient: Ambient | null = null;
   let ambientPlazas: AmbientPlaza[] = [{ x: 0, z: 0, kind: 'civic' }];
   let forcedDensity: number | null = null;
@@ -1611,8 +1621,20 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         });
         ambient.setTrams(tramAt);
         ambient.setCabs(cabAt);
+        // One set of lights for the cars and the persona cabs, run on the vehicles' clock (which the cabs plan by),
+        // and the cabs queue behind the cars ahead of them.
+        ambient.syncSignals(vehicles.clock());
+        vehicles.setSignals(ambient.signals());
+        if (!trafficSet) {
+          const amb = ambient;
+          vehicles.setTraffic((x, z, h, reach) => amb.carAhead(x, z, h, reach));
+          trafficSet = true;
+        }
       }
       ambient.update(dt, camera, renderer.domElement.height);
+      // The signal heads at the junctions show the lights the traffic keeps to.
+      signalHeads.set(ambient.signals());
+      signalHeads.update(camera.position);
     }
     if (people) {
       people.update(dt, camera);
@@ -1702,6 +1724,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ambientLots: (x, z, r) => grid.lots(x, z, r),
     transit: () => transit.view(camera),
     vehicles: () => vehicles,
+    signalHeads: () => signalHeads.view(),
     transitNetwork: () => transit.network(),
     ambient: () => ambient,
     people: () => people,
@@ -1856,6 +1879,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       campus?.dispose();
       campusMasonry?.dispose();
       ambient?.dispose();
+      signalHeads.dispose();
       ground.dispose();
       sky.dispose();
       renderer.dispose();

@@ -18,7 +18,7 @@ import {
   type Rank,
   type Stop,
 } from '../../../shared/commute.js';
-import { CONTACT_Y, filleted, miters, offsetLoop, POD_BEAM, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK } from './lines.js';
+import { CONTACT_Y, filleted, miters, offsetLoop, POD_BEAM, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK, VIADUCT_HALF } from './lines.js';
 import { LAYER, setLayers } from './lod.js';
 import { signPlates } from './sign-plates.js';
 import { materials } from './materials';
@@ -1046,18 +1046,23 @@ function tramShelter(b: Build, M: TransitMaterials, s: Stop, f: ReturnType<typeo
 
 // ---------------------------------------------------------------- the elevated rail
 
-/** The trough's cross-section: a deck slab with two webs that double as the parapets, lateral to the left. */
+/**
+ * The trough's cross-section: a deck slab with two webs that double as the
+ * parapets, lateral to the left. Its webs' outer faces stand VIADUCT_HALF
+ * out (lines.ts), wide enough that a car's body on the loop's curves keeps
+ * over the deck (VIADUCT_MIN_RADIUS).
+ */
 const TROUGH: Array<[number, number]> = [
-  [-4.5, -1.15],
-  [4.5, -1.15],
-  [4.5, 0.85],
-  [4.1, 0.95],
+  [-VIADUCT_HALF, -1.15],
+  [VIADUCT_HALF, -1.15],
+  [VIADUCT_HALF, 0.85],
+  [VIADUCT_HALF - 0.4, 0.95],
   [3.85, 0.95],
   [3.85, -0.55],
   [-3.85, -0.55],
   [-3.85, 0.95],
-  [-4.1, 0.95],
-  [-4.5, 0.85],
+  [-(VIADUCT_HALF - 0.4), 0.95],
+  [-VIADUCT_HALF, 0.85],
 ];
 /** Two ribs under the slab, which the crossheads carry on bearings. */
 const RIB: Array<[number, number]> = [
@@ -1099,7 +1104,7 @@ function buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
     for (const u of us) {
       const p = f.at(u);
       const st = stationAt(p);
-      bent(b, M, p, f.t, f.n, st ? 7.6 : 4.7);
+      bent(b, M, p, f.t, f.n, st ? 7.6 : VIADUCT_HALF + 0.2);
       bents++;
     }
   }
@@ -1114,7 +1119,7 @@ function buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
     for (let k = 1; k < arc.length; k++) railSpan(b, M, arc[k - 1], arc[k]);
     const m = arc[4];
     const tm = norm({ x: d0.x + d1.x, z: d0.z + d1.z })!;
-    bent(b, M, m, tm, { x: -tm.z, z: tm.x }, 4.7);
+    bent(b, M, m, tm, { x: -tm.z, z: tm.x }, VIADUCT_HALF + 0.2);
     bents++;
   }
 
@@ -1146,7 +1151,7 @@ function railSpan(b: Build, M: TransitMaterials, a: V2, c: V2): void {
     }
     // Cable trays on the webs' outer faces, and the drip line under the slab's edge.
     for (const s of [-1, 1]) {
-      b.beam(M.frame, at3(off(a, s * 4.58), SLAB_TOP + 0.35), at3(off(c, s * 4.58), SLAB_TOP + 0.35), 0.16, 0.22);
+      b.beam(M.frame, at3(off(a, s * (VIADUCT_HALF + 0.08)), SLAB_TOP + 0.35), at3(off(c, s * (VIADUCT_HALF + 0.08)), SLAB_TOP + 0.35), 0.16, 0.22);
       b.beam(M.frame, at3(off(a, s * 4.15), SLAB_TOP + 1.12), at3(off(c, s * 4.15), SLAB_TOP + 1.12), 0.05, 0.3);
     }
   });
