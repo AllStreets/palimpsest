@@ -22,7 +22,7 @@ import { signalAt } from './city/signals.js';
 import type { AmbientView } from './city/ambient.js';
 import { route, streetLine } from '../../shared/commute.js';
 import type { Trip, TripReason } from '../../shared/types';
-import { towerCenterpiece, towerMaterials } from './city/tower/look';
+import { COURSE_FAR, towerCenterpiece, towerMaterials } from './city/tower/look';
 import { firmMarkColor } from './city/tower/eras';
 import { cleanText } from './ui/board';
 import type { FigureView, PeopleView } from './city/people.js';
@@ -95,6 +95,8 @@ interface DebugHandle {
   limits(): ReturnType<ReturnType<typeof createCity>['limits']>;
   /** Multiplies the home haze by k (the clear-air still, tools/capture.ts and tools/perf.ts overview-clear at 0.4); null restores the default. */
   haze(k: number | null): void;
+  /** Draws (true) or leaves out (false) the stone's far coursing line (look.ts COURSE_FAR), for the UI check's before and after. */
+  coursing(on: boolean): void;
   /** Where a world point lands on screen, in normalised device coordinates (y up, the frame is -1 to 1). */
   project(p: number[]): number[];
   /** Each milestone as the city shows it now (milestones.ts), by id. */
@@ -485,6 +487,9 @@ async function main(): Promise<void> {
     home: () => city.home(),
     limits: () => city.limits(),
     haze: (k) => city.haze(k),
+    coursing: (on) => {
+      COURSE_FAR.value = on ? 1 : 0;
+    },
     project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
@@ -726,6 +731,8 @@ async function main(): Promise<void> {
    * scaffold up until the refresh that brings its tower.
    */
   const known = new Map<string, KnownRepo>();
+  /** Every repo that has held a slot this session, by slot: the picker keeps a removed one's look in reserve. */
+  const sited = new Map<string, number>();
   /** The last tower the engine served for each repo: a repo turned off and on again stands it until the refresh lists it again. */
   const kept = new Map<string, District>();
   const byRepo = (repo: string): District | undefined => districts.find((d) => d.repo === repo);
@@ -1196,7 +1203,10 @@ async function main(): Promise<void> {
     const sites = new Map<string, number>();
     for (const d of served) sites.set(d.repo, d.index);
     for (const r of known.values()) sites.set(r.fullName, r.slot);
-    looks = pickLooks([...sites].map(([repo, slot]) => ({ repo, slot })));
+    // A repo that leaves the list keeps its slot: its district holds its look in reserve (LookSite.gone), so its
+    // going re-picks no other tower and frees its variant for nobody else.
+    for (const [repo, slot] of sites) sited.set(repo, slot);
+    looks = pickLooks([...sited].map(([repo, slot]) => ({ repo, slot, ...(sites.has(repo) ? {} : { gone: true }) })));
     districts = occ.districts;
     debug.builds += city.setPlots(occ);
     debug.districts = occ.districts.length;

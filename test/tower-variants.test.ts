@@ -7,6 +7,10 @@ import { readFileSync } from 'node:fs';
 
 import { RENDERED } from '../app/src/city/tower/rendered.js';
 import { FAMILIES, type Finish, lookFor, lookKey, pickLooks, preference, PREFERRED, renderedDistance, SEPARATION, swatch, VARIANTS } from '../app/src/city/tower/variants.js';
+import * as variants from '../app/src/city/tower/variants.js';
+
+/** The scans' body and joint split, read off the module so a build without it fails its own test alone. */
+const SCAN_STATS = ((variants as Record<string, unknown>).SCAN_STATS ?? {}) as Record<string, { lo: number; hi: number; refBody: number; refJoint: number }>;
 
 const ERAS: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
 /** The eras the picker steers by rendered colour; the sci-fi era is steered by family (see pickLooks). */
@@ -109,6 +113,58 @@ test('a tower keeps its look when later repos join the city', () => {
 });
 
 
+test('a variant freed by a removed repo is reused only in its own district', () => {
+  // A repo removed from the city keeps its slot, so its district keeps its look in reserve: no tower anywhere else
+  // re-picks, none takes the freed variant, and the repo, back on its slot, stands in exactly the look it had.
+  for (const names of [HIS, SAMPLE, Array.from({ length: 30 }, (_, i) => `org${i % 7}/r${i}`)]) {
+    const sites = names.map((repo, slot) => ({ repo, slot }));
+    const base = pickLooks(sites);
+    for (let k = 0; k < sites.length; k += 2) {
+      const gone = sites[k];
+      const after = pickLooks(sites.map((s) => (s === gone ? { ...s, gone: true } : s)));
+      assert.equal(after.has(gone.repo), false, `${gone.repo} was removed: it stands nowhere`);
+      for (const s of sites) {
+        if (s === gone) continue;
+        assert.equal(lookKey(after.get(s.repo)!), lookKey(base.get(s.repo)!), `${s.repo} re-picked when ${gone.repo} was removed`);
+      }
+      const back = pickLooks(sites);
+      assert.equal(lookKey(back.get(gone.repo)!), lookKey(base.get(gone.repo)!), `${gone.repo} came back in another look`);
+    }
+  }
+});
+
+test("each scan's split between body and joint straddles the middle of its two references (the granite window)", () => {
+  // The recolour reads a texel as body past one end of the window and as joint past the other: a window that misses
+  // the midpoint between the scan's typical body and joint luminance sends half its body to the joint colour, and a
+  // window a hundredth wide turns the grain into a two-tone speckle (granite's was 0.05 to 0.06 about a midpoint of 0.064).
+  assert.ok(Object.keys(SCAN_STATS).length >= 6, 'every scan has its split (variants.ts SCAN_STATS)');
+  for (const [scan, st] of Object.entries(SCAN_STATS)) {
+    const lo = Math.min(st.lo, st.hi);
+    const hi = Math.max(st.lo, st.hi);
+    const mid = (st.refBody + st.refJoint) / 2;
+    assert.ok(lo <= mid && mid <= hi, `${scan}: window ${lo} to ${hi} misses the midpoint ${mid.toFixed(4)}`);
+    assert.ok(hi - lo >= 0.02, `${scan}: window ${(hi - lo).toFixed(3)} wide is a step, not a blend`);
+  }
+});
+
+test('the sample corner keeps SEPARATION', () => {
+  // Every pair of neighbouring districts in the sample's six and in his six, whichever was placed first, reads apart
+  // in every era the picker steers by colour (the corner where quarry and kumo meet was 5.8 in stone).
+  for (const names of [SAMPLE, HIS]) {
+    const sites = names.map((repo, slot) => ({ repo, slot }));
+    const looks = pickLooks(sites);
+    for (const era of COLOUR_ERAS) {
+      for (const a of sites) {
+        for (const b of sites) {
+          if (b.slot <= a.slot || blocks(a.slot, b.slot) > 1) continue;
+          const d = renderedDistance(looks.get(a.repo)![era], looks.get(b.repo)![era]);
+          assert.ok(d >= SEPARATION, `${a.repo} and ${b.repo} in ${era} render ${d.toFixed(2)} apart`);
+        }
+      }
+    }
+  }
+});
+
 test('every variant has a rendered measurement from the real scene light', () => {
   for (const era of ERAS) {
     for (const v of VARIANTS[era]) {
@@ -147,7 +203,30 @@ test('a variant repeats across the city only when no unused one renders as well 
         const order: Era[] = ['stone', 'brick', 'glass', 'titanium', 'scifi'];
         const below = order.indexOf(era) > 0 ? looks.get(s.repo)![order[order.indexOf(era) - 1]] : null;
         // Unused and as good on every rule the picker ranks above reuse: apart from neighbours with the margin, apart from the era below.
-        const better = unused.filter((v) => near.every((n) => renderedDistance(v, n) >= PREFERRED) && (!below || renderedDistance(v, below) >= SEPARATION));
+        // In stone the picker also keeps the next district on the spiral free to read apart (pickLooks rule 5): an
+        // unused variant that would leave an empty neighbouring block with nothing SEPARATION from all round it is no better.
+        const at = districtOrigin(s.slot);
+        const boxedIn = (v: (typeof VARIANTS)[Era][number]): number => {
+          if (era !== 'stone') return 0;
+          let n = 0;
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+              const b = { x: at.x + dx * DISTRICT_PITCH, z: at.z + dz * DISTRICT_PITCH };
+              if ((!dx && !dz) || (!b.x && !b.z)) continue;
+              const held = sites.filter((o) => o.slot < s.slot);
+              if (held.some((o) => districtOrigin(o.slot).x === b.x && districtOrigin(o.slot).z === b.z)) continue;
+              const round = held
+                .filter((o) => Math.max(Math.abs(districtOrigin(o.slot).x - b.x), Math.abs(districtOrigin(o.slot).z - b.z)) === DISTRICT_PITCH)
+                .map((o) => looks.get(o.repo)![era]);
+              round.push(v);
+              if (!VARIANTS[era].some((w) => round.every((r) => renderedDistance(r, w) >= SEPARATION))) n++;
+            }
+          }
+          return n;
+        };
+        const better = unused.filter(
+          (v) => near.every((n) => renderedDistance(v, n) >= PREFERRED) && (!below || renderedDistance(v, below) >= SEPARATION) && boxedIn(v) <= boxedIn(mine),
+        );
         if (!near.every((n) => renderedDistance(mine, n) >= PREFERRED) || (below && renderedDistance(mine, below) < SEPARATION)) continue;
         assert.equal(better.length, 0, `${s.repo} repeats ${mine.id} though ${better.map((b) => b.id).join(', ')} was unused and rendered apart from its neighbours`);
       }
@@ -228,12 +307,16 @@ const PINNED: Record<string, string> = {
   'AllStreets/teardown': 'stone:pink-granite,brick:terracotta,glass:bronze,titanium:copper,scifi:arcology',
   'AllStreets/understudy': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:needle',
   'AllStreets/ONEXUS': 'stone:dark-granite,brick:cream,glass:channel,titanium:zinc,scifi:cluster',
-  'AllStreets/Chicago-Open-World': 'stone:limestone,brick:red,glass:green,titanium:bronze,scifi:ziggurat',
+  // Phase 5 Task 7: the stone pick looks one district ahead (pickLooks rule 5), so a corner is never left with no
+  // stone that reads apart from both its neighbours: the sample's quarry and kumo met at 5.8 in stone. Deliberate, and
+  // stone only: quarry limestone to marble and kumo sandstone to pink granite; Chicago-Open-World limestone to marble
+  // (its limestone left the next block on the spiral with no stone apart from both it and ONEXUS's dark granite).
+  'AllStreets/Chicago-Open-World': 'stone:marble,brick:red,glass:green,titanium:bronze,scifi:ziggurat',
   'tidewater/harbor-ledger': 'stone:pink-granite,brick:green-terracotta,glass:green,titanium:bronze,scifi:ziggurat',
   'kestrel/fieldnotes': 'stone:marble,brick:salmon,glass:channel,titanium:copper,scifi:organic',
   'lantern/assay-kit': 'stone:dark-granite,brick:terracotta,glass:bronze,titanium:zinc,scifi:needle',
-  'ferro/quarry': 'stone:limestone,brick:red,glass:blue,titanium:bronze,scifi:arcology',
-  'hoshi/kumo': 'stone:sandstone,brick:cream,glass:channel,titanium:black,scifi:deco',
+  'ferro/quarry': 'stone:marble,brick:red,glass:blue,titanium:bronze,scifi:arcology',
+  'hoshi/kumo': 'stone:pink-granite,brick:cream,glass:channel,titanium:black,scifi:deco',
   'alder/blank-slate': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:cluster',
 };
 

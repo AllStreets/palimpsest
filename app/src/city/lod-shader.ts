@@ -9,6 +9,9 @@ import * as THREE from 'three';
 
 import { AMBIENT_LOD } from './lod.js';
 
+/** The view's height in CSS pixels, set by the scene each frame, for pieces that hold a least size on screen (the exchange's tote board). */
+export const VIEW_PX = { value: 900 };
+
 /** The eye the fade measures from: the view camera, set each frame (the shadow pass has its own camera). */
 export const LOD_EYE = { value: new THREE.Vector3() };
 

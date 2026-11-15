@@ -22,6 +22,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { JobStatus } from '../../../shared/types.js';
+import { VIEW_PX } from './lod-shader.js';
 import { flutedShaft, Kit, lathe, M, ME, type MatKey, paneData, PANE_SASH, PANE_SILL, piercedWall, roundArch, type TowerMaterials, wedge } from './tower/kit.js';
 
 /** The route the hall opens when picked: the job board screen (Task 36). */
@@ -233,15 +234,61 @@ function copperMaterial(): THREE.MeshStandardMaterial {
 }
 
 /**
+ * How a lamp or a card on the tote board holds up with distance (Task 7):
+ * its size in metres (across, up), the least it may stand on screen in CSS
+ * pixels, and how far it may widen (a lamp no wider than the gap to the next,
+ * so a row of lit lamps reads as a bar as long as the bids are many). From
+ * the market overview (about 600 m) a 15 cm lamp was under a pixel and a
+ * card three: grown to their least size, they read without being brighter,
+ * so no light passes the bloom threshold that did not before.
+ */
+export interface BoardHold {
+  size: [number, number];
+  px: [number, number];
+  maxX: number;
+  /** Which edge stays put as it grows taller: 1 its foot (it grows up), -1 its head (it grows down). */
+  anchor: 1 | -1;
+}
+// The lamps grow up to the gap between them and a card to its brass frame (1.56 m); a lamp grows down from its head
+// and a card up from its foot, so the two never cross however far off the eye is.
+export const LAMP_HOLD: BoardHold = { size: [0.15, 0.15], px: [1.6, 2.4], maxX: 0.19 / 0.15, anchor: -1 };
+export const CARD_HOLD: BoardHold = { size: [1.34, 0.66], px: [4.0, 2.2], maxX: 1.5 / 1.34, anchor: 1 };
+
+/** How much a board piece grows (across, up) at `distance` metres in a view `viewPx` CSS pixels tall through a `fov` degree lens. */
+export function boardGrow(hold: BoardHold, distance: number, viewPx: number, fov = 36): [number, number] {
+  const pxm = (2 * distance * Math.tan((fov * Math.PI) / 360)) / viewPx;
+  return [Math.min(hold.maxX, Math.max(1, (hold.px[0] * pxm) / hold.size[0])), Math.max(1, (hold.px[1] * pxm) / hold.size[1])];
+}
+
+/**
  * A lamp or a card on the tote board: a dark glass face whose instance
  * colour, when any channel is past 1, is its own light (a lit card, a lit
  * bid lamp); below that the colour is the face's albedo (dark glass, a
  * brass shutter).
  */
-function boardMaterial(name: string, roughness: number): THREE.MeshStandardMaterial {
+function boardMaterial(name: string, roughness: number, hold: BoardHold): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness, metalness: 0.0, envMapIntensity: 1.0, name });
-  m.customProgramCacheKey = () => 'palimpsest-exchange-board';
+  m.customProgramCacheKey = () => `palimpsest-exchange-board-${hold.size.join('x')}-${hold.px.join('x')}-${hold.anchor}`;
   m.onBeforeCompile = (sh) => {
+    sh.uniforms.uViewPx = VIEW_PX;
+    // Each lamp and card holds its least size on screen (boardGrow): grown about its own centre, in its own plane.
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform float uViewPx;').replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      {
+        #ifdef USE_INSTANCING
+          vec4 bc = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+        #else
+          vec4 bc = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+        #endif
+        float pxm = 2.0 * distance(bc.xyz, cameraPosition) / (projectionMatrix[1][1] * max(uViewPx, 1.0));
+        vec2 grow = max(vec2(1.0), vec2(${hold.px[0].toFixed(2)}, ${hold.px[1].toFixed(2)}) * pxm / vec2(${hold.size[0].toFixed(3)}, ${hold.size[1].toFixed(3)}));
+        grow.x = min(grow.x, ${hold.maxX.toFixed(3)});
+        transformed.xy *= grow;
+        // Grown away from its neighbour: a lamp down from its head, a card up from its foot.
+        transformed.y += ${(hold.anchor * 0.5).toFixed(2)} * (grow.y - 1.0) * ${hold.size[1].toFixed(3)};
+      }`,
+    );
     sh.fragmentShader = sh.fragmentShader.replace(
       '#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
@@ -996,11 +1043,11 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
 
   // ---------------------------------------------------------------- the board
   const cardGeo = new THREE.PlaneGeometry(1.34, 0.66);
-  const cardMat = own(boardMaterial('exchange:card', 0.18));
+  const cardMat = own(boardMaterial('exchange:card', 0.18, CARD_HOLD));
   const cards = new THREE.InstancedMesh(cardGeo, cardMat, EXCHANGE_SLOTS);
   cards.name = 'exchange:slots';
   const lampGeo = new THREE.SphereGeometry(0.075, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2).rotateX(Math.PI / 2);
-  const lampMat = own(boardMaterial('exchange:lamp', 0.12));
+  const lampMat = own(boardMaterial('exchange:lamp', 0.12, LAMP_HOLD));
   const lamps = new THREE.InstancedMesh(lampGeo, lampMat, EXCHANGE_SLOTS * LAMPS_PER_SLOT);
   lamps.name = 'exchange:lamps';
   const cardY = BOARD_Y + 0.25;

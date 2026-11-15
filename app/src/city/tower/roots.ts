@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { ROOT_HEIGHT } from '../../../../shared/tower-layout.js';
 import type { RootStyle } from '../../../../shared/types.js';
@@ -185,6 +186,89 @@ function balustrade(k: Kit, mat: MatKey, half: number, y0: number, detail: boole
   return plinth + bh + rail;
 }
 
+// ---------------------------------------------------------------- the Ionic volute
+
+/** The Ionic volute: its outer radius, the eye's, the turns it winds, and how far out from the column's axis it stands. */
+const VOLUTE = { r: 0.4, eye: 0.075, turns: 2.5, fillet: 0.17 } as const;
+const VOLUTE_X = 0.86;
+/** The plane of each volute's face, out from the column's axis (the abacus is 1.15 either side). */
+const VOLUTE_FACE = 0.62;
+
+/**
+ * One face of an Ionic capital, in the face's frame (z = 0 the scroll's
+ * back, +z out of the face, y from the column's order base): two scrolls,
+ * each a flat face bounded by its outer turn, a fillet winding in over it
+ * (a logarithmic spiral, `turns` round) with the channel sunk between its
+ * turns, and a proud eye at its centre; the canalis across the top between
+ * them, its lips standing as fillets, its top on the abacus at `top`; and
+ * behind each scroll half its bolster, waisted by a band, back to the
+ * capital's middle (z = -VOLUTE_FACE). `far` keeps only each scroll's face, in a dozen
+ * segments, and the canalis: the level drawn past LOD_FAR.
+ */
+export function ionicFace(x: number, top: number, far = false): THREE.BufferGeometry {
+  const R = VOLUTE.r;
+  const cy = top - R;
+  const k = Math.log(R / VOLUTE.eye) / (VOLUTE.turns * Math.PI * 2);
+  const parts: THREE.BufferGeometry[] = [];
+  const BODY = 0.1;
+  const LIP = 0.05;
+  for (const side of [-1, 1]) {
+    const cx = side * x;
+    // Out from the top, round the outside and down, then in: clockwise on the right, its mirror on the left.
+    const at = (t: number, s = 1): THREE.Vector2 => {
+      const a = Math.PI / 2 - side * t;
+      const r = R * Math.exp(-k * t) * s;
+      return new THREE.Vector2(cx + r * Math.cos(a), cy + r * Math.sin(a));
+    };
+    const step = (Math.PI * 2) / (far ? 12 : 36);
+    // The scroll's face: the region inside its outer turn.
+    const face: THREE.Vector2[] = [];
+    for (let t = 0; t <= Math.PI * 2 + 1e-6; t += step) face.push(at(t));
+    parts.push(new THREE.ExtrudeGeometry(new THREE.Shape(face), { depth: BODY, bevelEnabled: false, curveSegments: 1 }));
+    if (far) continue;
+    // The fillet: a band along the spiral, its width a share of the radius, ending at the eye.
+    const end = VOLUTE.turns * Math.PI * 2 - 0.6;
+    const outer: THREE.Vector2[] = [];
+    const inner: THREE.Vector2[] = [];
+    for (let t = 0; t <= end + 1e-6; t += step) {
+      outer.push(at(t));
+      inner.push(at(t, 1 - VOLUTE.fillet));
+    }
+    const band = new THREE.ExtrudeGeometry(new THREE.Shape([...outer, ...inner.reverse()]), { depth: LIP, bevelEnabled: false, curveSegments: 1 });
+    parts.push(band.translate(0, 0, BODY));
+    // The eye: a boss proud of the fillet.
+    parts.push(new THREE.CylinderGeometry(VOLUTE.eye, VOLUTE.eye, LIP + 0.03, 12).rotateX(Math.PI / 2).translate(cx, cy, BODY + (LIP + 0.03) / 2));
+    // The bolster's half, from the scroll's back to the capital's middle, drawn in by the band at its waist.
+    const bolster = new THREE.LatheGeometry(
+      [
+        new THREE.Vector2(0, 0),
+        new THREE.Vector2(R * 0.92, 0),
+        new THREE.Vector2(R * 0.84, VOLUTE_FACE * 0.55),
+        new THREE.Vector2(R * 0.72, VOLUTE_FACE * 0.8),
+        new THREE.Vector2(R * 0.74, VOLUTE_FACE * 0.86),
+        new THREE.Vector2(R * 0.72, VOLUTE_FACE),
+        new THREE.Vector2(0, VOLUTE_FACE),
+      ],
+      14,
+    );
+    // Lathed about +y from the scroll's back (y 0) to the middle (y = VOLUTE_FACE): turned to run along -z.
+    parts.push(bolster.rotateX(-Math.PI / 2).translate(cx, cy, 0));
+  }
+  // The canalis: a sunk band from scroll to scroll under the abacus, a fillet along each edge.
+  const span = 2 * x;
+  const H = 0.16;
+  parts.push(new THREE.BoxGeometry(span, H, BODY).translate(0, top - H / 2, BODY / 2));
+  for (const y of [top - 0.02, top - H + 0.02]) parts.push(new THREE.BoxGeometry(span, 0.04, BODY + LIP).translate(0, y, (BODY + LIP) / 2));
+  const flat = parts.map((g) => (g.index ? g.toNonIndexed() : g));
+  for (const g of flat) {
+    for (const name of Object.keys(g.attributes)) if (name !== 'position' && name !== 'normal' && name !== 'uv') g.deleteAttribute(name);
+    g.computeVertexNormals();
+  }
+  const merged = mergeGeometries(flat, false)!;
+  for (const g of [...parts, ...flat]) g.dispose();
+  return merged;
+}
+
 // ---------------------------------------------------------------- Beaux-Arts
 
 /**
@@ -247,7 +331,10 @@ const beauxarts: RootBuilder = (k, detail, rand) => {
   const echinusG = (): THREE.BufferGeometry =>
     lathe([[0, 0], [0.74, 0], [0.8, 0.1], [0.74, 0.16], [0.9, 0.3], [1.0, 0.48], [0, 0.48]], detail ? 32 : 16);
   const abacusG = (): THREE.BufferGeometry => new THREE.BoxGeometry(2.3, 0.34, 2.3);
-  const voluteG = (): THREE.BufferGeometry => new THREE.TorusGeometry(0.34, 0.12, 8, 18);
+  // One face of the capital: its two volutes, the canalis between them under the abacus, and each volute's half of
+  // the bolster running back to the capital's middle, where the other face's half meets it.
+  const voluteG = (): THREE.BufferGeometry => ionicFace(VOLUTE_X, order - 0.34);
+  const voluteFarG = (): THREE.BufferGeometry => ionicFace(VOLUTE_X, order - 0.34, true);
   for (let side = 0; side < 4; side++) {
     for (let i = 0; i < per; i++) {
       const u = -ring + pitch * i;
@@ -257,11 +344,10 @@ const beauxarts: RootBuilder = (k, detail, rand) => {
       k.inst('col:echinus', 'sand', echinusG, P.clone().multiply(M(0, y + 0.58 + shaftH, 0)));
       k.inst('col:abacus', 'sand', abacusG, P.clone().multiply(M(0, y + order - 0.17 + 0.0, 0)));
       if (detail) {
-        // Volutes on the face of each capital, scrolled outward.
-        for (const s of [-1, 1]) {
-          k.inst('col:volute', 'sand', voluteG, P.clone().multiply(M(s * 0.86, y + order - 0.62, 0.62)));
-          k.inst('col:volute', 'sand', voluteG, P.clone().multiply(M(s * 0.86, y + order - 0.62, -0.62)));
-        }
+        // The volutes on both faces of each capital, scrolled outward, the abacus on them.
+        // Past LOD_FAR the scrolls draw as plain discs on the bolster (a few pixels there), so home pays for no spiral.
+        k.instLod('col:volute', 'sand', voluteG, voluteFarG, P.clone().multiply(M(0, y, VOLUTE_FACE)));
+        k.instLod('col:volute', 'sand', voluteG, voluteFarG, P.clone().multiply(M(0, y, -VOLUTE_FACE, Math.PI)));
       }
     }
   }
@@ -518,7 +604,8 @@ function buttress(k: Kit, F: THREE.Matrix4, u: number, y0: number, h: number, de
   k.add('gothic', new THREE.BoxGeometry(0.95, 3.0, 0.95), F.clone().multiply(M(u, top + 1.5, 0.55)));
   k.add('gothic', new THREE.ConeGeometry(0.72, 3.4, 4).rotateY(Math.PI / 4), F.clone().multiply(M(u, top + 3.0 + 1.7, 0.55)));
   if (detail) {
-    const crocket = (): THREE.BufferGeometry => new THREE.BoxGeometry(0.16, 0.16, 0.32);
+    // Crockets big enough to stand on the pinnacle's edge from 600 m (gothic-far): a 24 cm knob is half a pixel there.
+    const crocket = (): THREE.BufferGeometry => new THREE.BoxGeometry(0.24, 0.24, 0.34);
     for (let i = 0; i < 4; i++) {
       for (const c of [0, 1, 2, 3]) {
         const t = (i + 0.5) / 4.5;
@@ -598,7 +685,8 @@ const pagoda: RootBuilder = (k, detail, rand) => {
     const F = face(side, top);
     for (let i = 0; i < 7; i++) pane(k, F, -top + (top * 2 / 7) * (i + 0.5), 24.75 + (H - 24.75) / 2, 2.6, H - 24.75 - 0.6, 0.03, warmLight(rand, PANE_SHOJI, 0.85));
     const R = face(side, top + 1.45);
-    for (let i = 0; i <= 14; i++) k.inst('pag:rail', 'timber', unitBox, R.clone().multiply(M(-top - 1.45 + ((top + 1.45) * 2 / 14) * i, 24.75 + 0.55, 0, 0, 0.18, 1.1, 0.18)));
+    // Balusters 24 cm square, so the gallery's rail still reads as posts from 600 m (pagoda-far).
+    for (let i = 0; i <= 14; i++) k.inst('pag:rail', 'timber', unitBox, R.clone().multiply(M(-top - 1.45 + ((top + 1.45) * 2 / 14) * i, 24.75 + 0.55, 0, 0, 0.24, 1.1, 0.24)));
   }
   k.add('timber', squareSweep(top + 1.45, [[-0.1, 25.9], [0.1, 25.9], [0.1, 26.1], [-0.1, 26.1]]), undefined, false);
   k.add('timber', squareSweep(top, [[-0.1, H - 0.4], [0.18, H - 0.4], [0.18, H], [-0.1, H]]), undefined, false);
@@ -716,7 +804,8 @@ function eave(k: Kit, e: EaveSpec): void {
         const mid = p0.clone().lerp(p1, 0.5);
         const m = new THREE.Matrix4().lookAt(p0, p1, new THREE.Vector3(0, 1, 0));
         m.setPosition(mid.x, mid.y - 0.16, mid.z);
-        m.scale(new THREE.Vector3(0.16, 0.2, p0.distanceTo(p1)));
+        // 18 by 24 cm: the rafter ends rule the eave's soffit from 600 m (pagoda-far) instead of hiding there.
+        m.scale(new THREE.Vector3(0.18, 0.24, p0.distanceTo(p1)));
         k.inst('pag:rafter', 'timber', unitBox, m);
       }
     }

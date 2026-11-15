@@ -29,6 +29,7 @@ import { qualityGovernor, type DropReading } from './governor.js';
 import { setFacadeRooms } from './facade.js';
 import { lightsOutTree } from './lightsout.js';
 import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
+import { VIEW_PX } from './lod-shader.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
 import { quarterBuildKey, type QuarterShow } from './quarters.js';
 import { createPost, EXPOSURE, FLICKER } from './post.js';
@@ -1490,6 +1491,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       if (d > AO_NEAR) setLayers(mesh, LAYER.view, LAYER.shadow);
       else mesh.layers.mask = own;
     });
+    // The view's height for the pieces that hold a least size on screen (the exchange's tote board).
+    VIEW_PX.value = height();
     // Thin parts, judged whether shown or hidden now.
     for (const { piece } of centerpieces) {
       piece.object.traverse((o) => {

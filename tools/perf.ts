@@ -51,8 +51,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import type { Page } from 'playwright';
 
+import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import { layoutTower } from '../shared/tower-layout.js';
-import type { District, Quarter } from '../shared/types.js';
+import type { District, Era, Quarter, TowerSpec } from '../shared/types.js';
+import { pickLooks } from '../app/src/city/tower/variants.js';
 import { frameStats } from '../app/src/city/governor.js';
 import { podVariant } from '../app/src/city/vehicles.js';
 import { around, apart, callDebug, followView, person, runUntil, sendPerson, tramFromHome } from './people-stage.js';
@@ -154,6 +156,46 @@ export async function viewFps(page: Page): Promise<number> {
   return median((await frameTimes(page, 3000)).filter((t) => t > 0).map((t) => 1000 / t));
 }
 
+/** The stretch of a tower's floors laid in one era: its lowest and highest y, or null. */
+function eraSpan(t: TowerSpec, era: Era): { y0: number; y1: number; n: number } | null {
+  const fl = layoutTower(t).floors.filter((f) => f.floor.era === era);
+  if (!fl.length) return null;
+  return { y0: fl[0].y0, y1: fl[fl.length - 1].y0 + fl[fl.length - 1].h, n: fl.length };
+}
+
+/** The Task 7 stills (see views()). */
+function task7Views(city: District[]): Array<[string, V3, V3]> {
+  const out: Array<[string, V3, V3]> = [];
+  const at = (o: { x: number; z: number }, dist: number, y: number, ty: number, dir = BEARING): [V3, V3] => [
+    [o.x + dir.x * dist, y, o.z + dir.z * dist],
+    [o.x, ty, o.z],
+  ];
+  const stone = city.map((d) => ({ d, s: eraSpan(d.tower, 'stone') })).filter((x) => x.s).sort((a, b) => b.s!.n - a.s!.n)[0];
+  if (stone) {
+    const y = (stone.s!.y0 + stone.s!.y1) / 2;
+    // The eye rises a fifth of its distance over the run, so the roofs between never cover the run's foot.
+    out.push(['coursing-700', ...at(stone.d.origin, 700, y + 140, y)]);
+    out.push(['coursing-1100', ...at(stone.d.origin, 1100, y + 220, y)]);
+  }
+  const crowned = city.filter((d) => eraSpan(d.tower, 'scifi')).sort((a, b) => layoutTower(b.tower).top - layoutTower(a.tower).top)[0];
+  if (crowned) out.push(['scifi-crown-hero', [700, 70, 700], [crowned.origin.x, layoutTower(crowned.tower).top - 6, crowned.origin.z]]);
+  const byRoot = (root: string): District | undefined => city.find((d) => d.tower.root === root);
+  const gothic = byRoot('gothic');
+  if (gothic) out.push(['gothic-far', ...at(gothic.origin, 600, 70, 30)]);
+  const pagoda = byRoot('pagoda');
+  if (pagoda) out.push(['pagoda-far', ...at(pagoda.origin, 600, 70, 22)]);
+  // The market overview's distance: about 600 m off the exchange (at the civic plaza's centre), high over the roofs.
+  out.push(['exchange-600', [BEARING.x * 560, 210, BEARING.z * 560], [0, 10, 0]]);
+  const beaux = byRoot('beauxarts');
+  if (beaux) {
+    // The giant order's capitals (roots.ts beauxarts): volutes at 21.8 m on the colonnade ring 15.75 m out, the fifth
+    // column of the south front at x = -1.75; the eye 9 m off, a little below and to one side.
+    const o = beaux.origin;
+    out.push(['ionic-close', [o.x + 2.5, 21.0, o.z + 24.5], [o.x - 1.75, 21.9, o.z + 16.3]]);
+  }
+  return out;
+}
+
 async function views(page: Page): Promise<Array<[string, V3, V3]>> {
   const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
   const qs = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[]).filter((q) => q.towers.length > 0);
@@ -206,6 +248,11 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     // Where the stone bridge's eastern river pier meets the water (Task 4): from a boat's eye a few metres off the
     // east quay, downstream of the bridge, looking at the pier's downstream cutwater at the waterline.
     ['pier-foot', [-338.0, -2.6, 30.0], [-349.5, -5.6, 11.0]],
+    // Far architecture (Task 7). The longest stone run in the sample (the coursed kit blocks) from 700 and 1100 m on the
+    // home bearing, over the run's middle by a fifth of the distance; the organic family's ceramic shell with the low sun behind the eye; the
+    // hero's own eye turned onto the tallest sci-fi crown (so a crown's height in pixels is the hero's); the Gothic and
+    // the pagoda roots from 600 m, 70 m up (over the roofs between); the exchange from the market overview's distance; and one Ionic capital of the Beaux-Arts root from 9 m.
+    ...task7Views(city),
     // The six pinned looks (Decision 6's sheet, Task 6 round 0; Task 15 completes it): each sample tower's lower
     // floors (the root, the stone and the brick eras and the first glass, where the pinned materials read) from 190 m
     // on the home bearing; a 115 floor needle framed whole was only its haze.
@@ -214,6 +261,53 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
       return [`look-${d.repo.split('/').pop()}`, [d.origin.x + BEARING.x * 190, t * 0.5 + 22, d.origin.z + BEARING.z * 190], [d.origin.x, t * 0.5, d.origin.z]];
     }),
   ];
+}
+
+/** The family views (Task 7), staged: the longest sci-fi run in the city restyled for the shot, then put back. */
+const FAMILY = ['ceramic-sun', 'cluster-pods', 'arcology-pavilion'];
+
+/**
+ * The organic family's ceramic in the low sun, the cluster family's
+ * cantilevered pods and the arcology's roof pavilion, close. Neither family need stand in the sample with a long run, so the
+ * district with the most sci-fi floors is restyled to each family through
+ * the debug handle for its shot and given its own look back after.
+ */
+async function* familyViews(page: Page): AsyncGenerator<[string, V3, V3]> {
+  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+  // A tower with no site on it (a crane over the roof would stand in the shot), the longest sci-fi run of those.
+  const busy = new Set((await callDebug<Array<{ repo: string }>>(page, 'd.liveSites()')).map((x) => x.repo));
+  const quiet = (x: District): boolean => {
+    const last = x.tower.floors[x.tower.floors.length - 1];
+    return !busy.has(x.repo) && !(last?.earned && last.earned.state !== 'lit');
+  };
+  const longest = (xs: District[]): District[] => xs.filter((x) => eraSpan(x.tower, 'scifi')).sort((a, b) => eraSpan(b.tower, 'scifi')!.n - eraSpan(a.tower, 'scifi')!.n);
+  const d = longest(city.filter(quiet))[0] ?? longest(city)[0];
+  if (!d) return;
+  const own = pickLooks(city.map((x) => ({ repo: x.repo, slot: x.index }))).get(d.repo)!;
+  const s = eraSpan(d.tower, 'scifi')!;
+  const top = layoutTower(d.tower).top;
+  const o = d.origin;
+  // The sun stands toward -x and +z (sky.ts SUN_DIRECTION): an eye on that side has the sun at its back.
+  const SUN = { x: -0.908, z: 0.419 };
+  for (const [name, family] of [['ceramic-sun', 'organic'], ['cluster-pods', 'cluster'], ['arcology-pavilion', 'arcology']] as const) {
+    await callDebug(page, `d.restyle(${JSON.stringify(d.repo)}, ['scifi:${family}'])`);
+    // The rebuild is spread over frames: wait well past it before the still.
+    await page.waitForTimeout(5000);
+    if (name === 'ceramic-sun') {
+      // The organic family's glazed shell square to the low sun, from 230 m with the sun at the eye's back.
+      const y = s.y0 + (s.y1 - s.y0) * 0.4;
+      yield [name, [o.x + SUN.x * 230, y + 10, o.z + SUN.z * 230], [o.x, y, o.z]];
+    } else if (name === 'cluster-pods') {
+      // The pods in the run's middle, from 70 m and a little above them, on the home bearing.
+      const y = s.y0 + (s.y1 - s.y0) * 0.55;
+      yield [name, [o.x + BEARING.x * 70, y + 8, o.z + BEARING.z * 70], [o.x, y, o.z]];
+    } else {
+      // The roof pavilion from 120 m, 18 m over the roof, so its structure stands against the sky.
+      yield [name, [o.x + BEARING.x * 120, top + 18, o.z + BEARING.z * 120], [o.x, top - 8, o.z]];
+    }
+  }
+  await callDebug(page, `d.restyle(${JSON.stringify(d.repo)}, [${JSON.stringify(own.scifi.id)}])`);
+  await page.waitForTimeout(1500);
 }
 
 /** The views of Task 6 that need the tour, the ride or the haze handle; an eye of null leaves the camera where a script holds it. */
@@ -596,6 +690,12 @@ async function main(): Promise<void> {
       };
       for (const [name, eye, target] of await views(page)) {
         if (only && !only.includes(name)) continue;
+        if (name === 'exchange-600') {
+          // The tote board as it stands once the jobs have loaded: its lit cards and lamps are what the still is for.
+          await page.waitForFunction(() => ((window as unknown as { __palimpsest: { exchange(): { slots: Array<{ state: string; lamps: number }> } | null } }).__palimpsest.exchange()?.slots ?? []).some((x) => x.state === 'bidding'), null, { timeout: 15_000 }).catch(() => {});
+          const board = await dbg<Array<{ state: string; lamps: number }>>(page, '(d) => d.exchange()?.slots ?? []');
+          console.log(`exchange-600: ${board.filter((x) => x.state === 'bidding').length} cards lit, ${board.reduce((a, x) => a + x.lamps, 0)} lamps`);
+        }
         await measure(name, eye, target);
       }
       const TRANSIT = ['junction-signal', 'tram-home', 'viaduct-corner'];
@@ -615,6 +715,12 @@ async function main(): Promise<void> {
       }
       if (!only || CLOSE.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of closeViews(page, out)) {
+          if (only && !only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
+      }
+      if (!only || FAMILY.some((n) => only.includes(n))) {
+        for await (const [name, eye, target] of familyViews(page)) {
           if (only && !only.includes(name)) continue;
           await measure(name, eye, target);
         }

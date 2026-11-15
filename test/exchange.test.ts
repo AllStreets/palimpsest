@@ -290,3 +290,26 @@ test('the exchange draws in the city-wide batches, under 30 calls over the city 
   ex.dispose();
   q.dispose();
 });
+
+test('the bid lamps and the lit cards hold their size from the market overview, without more light', async () => {
+  // From about 600 m (the market overview) a 15 cm lamp stood under a pixel and a card about three: the board grows
+  // each to a least size on screen, within its own slot, and lights nothing brighter than before.
+  const ex = (await import('../app/src/city/exchange.js')) as unknown as Record<string, unknown>;
+  const grow = ex.boardGrow as ((h: unknown, d: number, px: number) => [number, number]) | undefined;
+  const lamp = ex.LAMP_HOLD as { size: [number, number]; px: [number, number]; maxX: number } | undefined;
+  const card = ex.CARD_HOLD as { size: [number, number]; px: [number, number]; maxX: number } | undefined;
+  assert.ok(grow && lamp && card, 'the board pieces hold a least size');
+  const view = 890;
+  const pxPerM = (d: number): number => view / (2 * d * Math.tan((36 * Math.PI) / 360));
+  for (const d of [560, 620]) {
+    const [, ly] = grow!(lamp!, d, view);
+    const [cx, cy] = grow!(card!, d, view);
+    assert.ok(lamp!.size[1] * ly * pxPerM(d) >= 1.3, `a lamp stands ${(lamp!.size[1] * ly * pxPerM(d)).toFixed(2)} px tall at ${d} m`);
+    assert.ok(card!.size[0] * cx * pxPerM(d) >= 3 && card!.size[1] * cy * pxPerM(d) >= 1.6, `a card stands ${(card!.size[0] * cx * pxPerM(d)).toFixed(1)} by ${(card!.size[1] * cy * pxPerM(d)).toFixed(1)} px at ${d} m`);
+    // Within its slot: a lamp no wider than the gap to the next (0.2 m), a card inside its brass frame (1.56 m).
+    assert.ok(lamp!.size[0] * lamp!.maxX <= 0.2 && card!.size[0] * card!.maxX <= 1.56, 'each grows only within its slot');
+  }
+  // Near the eye nothing grows.
+  assert.deepEqual(grow!(lamp!, 30, view), [1, 1]);
+  assert.deepEqual(grow!(card!, 30, view), [1, 1]);
+});

@@ -6,7 +6,7 @@ import type { Silhouette, TowerSpec } from '../../../../shared/types.js';
 import { crownSlots } from '../kits.js';
 import { makeLensCrown, makeSpire } from './crowns.js';
 import { addDatum, type DatumPlan } from './datum.js';
-import { bareEdge, crownFloors, earnedLine, ERA_BUILDERS, firmMark, firmMarkColor, type FloorShape, scarFloor, TITANIUM_TWIST } from './eras.js';
+import { bareEdge, crownSpan, earnedLine, ERA_BUILDERS, firmMark, firmMarkColor, type FloorShape, scarFloor, TITANIUM_TWIST } from './eras.js';
 import { bracketGeometry, Kit, M, type MatKey, rng, type TowerMaterials } from './kit.js';
 import { ROOT_BUILDERS, ROOT_TOP_HALF } from './roots.js';
 import { type Look, lookFor } from './variants.js';
@@ -71,6 +71,8 @@ export interface BuiltTower {
   top: number;
   /** What stands on an agent tower's roof by its silhouette (crownFor), or nothing. */
   crown: { kind: 'lens' | 'spire' | 'none'; rings: number; height: number };
+  /** The height of the sci-fi family crown over the top floors, in metres (0 without one). */
+  familyCrown: number;
   dispose(): void;
 }
 
@@ -165,7 +167,7 @@ export function buildTower(
   if (roofCrown.kind === 'none' && last >= 0 && layout.floors[last].floor.era === 'scifi' && stateAt(last) !== 'scar' && crownSlots(family).length > 0) {
     let start = last;
     while (start > 0 && sameRun(start - 1, start) && stateAt(start - 1) !== 'scar') start--;
-    let n = crownFloors(last - start + 1);
+    let n = crownSpan(layout.floors.slice(start, last + 1).map((l) => l.h));
     const d = spec.datumIndex - 1;
     if (d >= last - n + 1 && d < last) n = last - d;
     crownStart = last - n + 1;
@@ -285,6 +287,7 @@ export function buildTower(
     rootPick,
     top: layout.top,
     crown: roofCrown,
+    familyCrown: crownHeight,
     dispose() {
       group.traverse((o) => {
         const m = o as THREE.Mesh;

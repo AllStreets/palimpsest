@@ -4,6 +4,7 @@ import type { Archetype } from './lots.js';
 import { SECTIONS } from './lots.js';
 import { texture } from './materials.js';
 import { ROOM, ROOM_GLSL } from './rooms.js';
+import { SUN_DIRECTION } from './sky.js';
 import { CUT, NAMES_PER_SET, PALETTES, signRows, type CornerKind } from './shopfronts.js';
 
 /**
@@ -39,6 +40,9 @@ import { CUT, NAMES_PER_SET, PALETTES, signRows, type CornerKind } from './shopf
  * round the corner (rooms.ts cornerU), so they keep their width. The
  * rooms' and corners' arithmetic lives in rooms.ts, which the tests read.
  */
+
+/** The ambient city's far form (Task 7): it fades in from `near` and is whole by `full`, metres from the eye. */
+export const FAR_FORM = { near: 420, full: 1300 } as const;
 
 /** The room trace behind the shop glass runs at high quality; medium keeps the glass, joinery and signs and draws a plain glow. */
 const ROOMS = { value: 1 };
@@ -144,6 +148,10 @@ export function facadeMaterial(arch: Archetype, cut: CornerKind | null = null): 
       ROOM_FAR_HIGH: ROOM.far.high.toFixed(1),
       ROOM_FAR_MEDIUM: ROOM.far.medium.toFixed(1),
       ROOM_UNLIT_FAR: ROOM.unlitFar.toFixed(4),
+      // The far form (Task 7): where it starts and where it is whole, metres from the eye, and the low sun's bearing.
+      FAR_FORM_NEAR: FAR_FORM.near.toFixed(1),
+      FAR_FORM_FULL: FAR_FORM.full.toFixed(1),
+      FAR_SUN: `normalize(vec3(${SUN_DIRECTION.x.toFixed(4)}, 0.0, ${SUN_DIRECTION.z.toFixed(4)}))`,
     };
     sh.vertexShader = sh.vertexShader
       .replace(
@@ -824,6 +832,24 @@ const FACADE_GLSL = /* glsl */ `
         roughnessFactor = 0.08;
         metalnessFactor = 0.6;
       #endif
+    }
+    {
+      // Far architecture (Phase 5 Task 7). Past a few hundred metres the window grain averages out and the haze takes
+      // most of the difference between a block's faces, so the ambient city read as flat cut-outs and the far ring as an
+      // even texture of boxes. Its form is carried instead, as the eye reads a city at distance: the faces turned from
+      // the low sun fall darker and those turned to it lift, the corner where two faces meet holds a line of shadow a
+      // pixel wide, and the coping at the top of each tier catches the sky in a pale line, each line sized to its pixel.
+      float dEye = distance(cameraPosition, vWP);
+      float farF = smoothstep(FAR_FORM_NEAR, FAR_FORM_FULL, dEye);
+      if (farF > 0.0) {
+        float pxm = max(length(dFdx(vWP)), length(dFdy(vWP)));
+        float facing = dot(Nw, FAR_SUN);
+        diffuseColor.rgb *= mix(1.0 - 0.24 * farF, 1.0 + 0.14 * farF, smoothstep(-0.35, 0.35, facing));
+        float cornerLine = 1.0 - smoothstep(0.5 * pxm, 1.3 * pxm, edge);
+        diffuseColor.rgb *= 1.0 - 0.32 * farF * cornerLine;
+        float cope = 1.0 - smoothstep(0.6 * pxm, 1.6 * pxm, fromTop);
+        diffuseColor.rgb = mix(diffuseColor.rgb, max(diffuseColor.rgb * 1.6, vec3(0.3, 0.31, 0.34)), 0.55 * farF * cope);
+      }
     }
   } else if (vWN.y > 0.5) {
     // Roofs, as each type has them: tar and silver-coated tar on walk-ups, gravel ballast, grey and white

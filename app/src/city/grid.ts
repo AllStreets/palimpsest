@@ -7,7 +7,7 @@ import { kitShared } from './kits.js';
 import { lightsOutEmitter } from './lightsout.js';
 import { AMBIENT_LOD, AO_NEAR, boxDistance, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
 import { lodDepthMaterial, lodMaterial, LOD_EYE } from './lod-shader.js';
-import { ARCHETYPES, BLOCK, blockLots, blockSeed, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, farLot, farLotStands, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots.js';
+import { ARCHETYPES, BLOCK, blockLots, blockSeed, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, farLotStands, farLots, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots.js';
 import { inChannel } from '../../../shared/commute.js';
 import { materials } from './materials.js';
 import { AWNING, STRIPED } from './shopfronts.js';
@@ -332,7 +332,12 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const need = new Map<PartKind, number>();
   const count = (k: PartKind): void => void need.set(k, (need.get(k) ?? 0) + 1);
   for (let i = -radius; i <= radius; i++) for (let j = -radius; j <= radius; j++) for (const lot of blockLots(i, j)) for (const p of lotParts(lot)) count(p.kind);
-  for (let i = -farRadius; i <= farRadius; i++) for (let j = -farRadius; j <= farRadius; j++) if (Math.max(Math.abs(i), Math.abs(j)) > radius) count(`wall:${farLot(i, j).archetype}`);
+  for (let i = -farRadius; i <= farRadius; i++) {
+    for (let j = -farRadius; j <= farRadius; j++) {
+      if (Math.max(Math.abs(i), Math.abs(j)) <= radius) continue;
+      for (const lot of farLots(i, j)) for (const p of lotParts(lot)) if (p.kind.startsWith('wall:')) count(p.kind);
+    }
+  }
   const cap = (k: PartKind): number => Math.ceil((need.get(k) ?? 0) * 1.3) + 64;
 
   const box = new THREE.BoxGeometry(1, 1, 1);
@@ -796,9 +801,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       for (let j = -farRadius; j <= farRadius; j++) {
         if (Math.max(Math.abs(i), Math.abs(j)) <= radius) continue;
         if (!farLotStands(i, j)) continue;
-        const lot = farLot(i, j);
-        if (all.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
-        draw({ walls, cuts, parts }, lot, true);
+        for (const lot of farLots(i, j)) {
+          if (all.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
+          draw({ walls, cuts, parts }, lot, true);
+        }
       }
     }
 

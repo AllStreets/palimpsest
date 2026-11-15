@@ -21,6 +21,26 @@ import { RENDERED } from './rendered.js';
 export type Scan = 'brick' | 'ironspot' | 'sand' | 'rust' | 'granite' | 'ashlar';
 
 /**
+ * Each scan's split between body and joint in its linear luminance (from
+ * the 2k colour maps): at or past `lo` reads as body, at or past `hi` as
+ * joint. Brick and ironspot mortar is lighter than the brick; the joints of
+ * sandstone, granite tiles and ashlar are darker than the stone, so their
+ * split runs the other way, as does rust, whose dark streaks are the joint.
+ * `refBody` and `refJoint` are each part's typical luminance; `rough` is the
+ * mean of the scan's roughness map, so a finish's roughness is its true mean.
+ */
+export const SCAN_STATS: Record<Scan, { lo: number; hi: number; refBody: number; refJoint: number; rough: number }> = {
+  brick: { lo: 0.13, hi: 0.22, refBody: 0.09, refJoint: 0.26, rough: 0.53 },
+  ironspot: { lo: 0.1, hi: 0.25, refBody: 0.04, refJoint: 0.31, rough: 0.81 },
+  sand: { lo: 0.268, hi: 0.24, refBody: 0.3, refJoint: 0.23, rough: 0.51 },
+  rust: { lo: 0.36, hi: 0.22, refBody: 0.37, refJoint: 0.2, rough: 0.42 },
+  // The window spans the joint's typical luminance to the body's, about their midpoint: a window a hundredth wide
+  // (0.06 to 0.05) missed the midpoint and split the speckled grain into two flat tones.
+  granite: { lo: 0.075, hi: 0.05, refBody: 0.077, refJoint: 0.05, rough: 0.54 },
+  ashlar: { lo: 0.29, hi: 0.235, refBody: 0.35, refJoint: 0.21, rough: 0.51 },
+};
+
+/**
  * A surface. Colours are sRGB hex. `seen` is roughly how the surface reads
  * in daylight, for the palette and contrast checks; it defaults to `body`
  * or `color`.
@@ -186,9 +206,13 @@ const TERRACOTTA = scan('brick', 0xd0d8e2, 0.2, { joint: 0x969ca3, normal: 0.55 
  * sky. The glaze is a blue of real stoneware rather than a white: under the
  * orange dusk key a white surface goes peach, and only a body this far to
  * the blue side lands on a cool grey-blue in the sun and a clear blue in
- * shade, with the dusk sky's violet in its reflections.
+ * shade, with the dusk sky's violet in its reflections. Task 7: the glaze's
+ * red is taken down further (0x4a to 0x3a), the warm band the low sun
+ * pushes hardest, so a face square to the sun stays a cool grey-blue rather
+ * than going lilac, and its sky reflection is a glaze's own (look.ts
+ * GLAZE_ENV), not a mirror's.
  */
-const CERAMIC = scan('ashlar', 0x4a78ae, 0.16, { joint: 0x34414f, normal: 0.12, polish: 1.0, detail: 0.15, weather: 0, courses: { h: 1.2, l: 1.8, joint: 0.7, vary: 0.06, gap: 0.045 }, seen: 0x9fb4c8 });
+const CERAMIC = scan('ashlar', 0x3a73b2, 0.16, { joint: 0x34414f, normal: 0.12, polish: 1.0, detail: 0.15, weather: 0, courses: { h: 1.2, l: 1.8, joint: 0.7, vary: 0.06, gap: 0.045 }, seen: 0x9fb4c8 });
 /** Pale cast stone for the deco shaft: cool grey-buff panels in wide courses, lightly weathered. */
 const CAST_STONE = scan('ashlar', 0xc3c1b9, 0.6, { joint: 0x8f8d86, normal: 0.6, weather: 0.12, courses: { h: 1.2, l: 2.6, joint: 0.5, vary: 0.05 } });
 /** Dark basalt-grey concrete for the ziggurat's sloped faces: board-marked, streaked by rain. */
@@ -560,6 +584,13 @@ export function lookFor(repo: string): Look {
 export interface LookSite {
   repo: string;
   slot: number;
+  /**
+   * A repo removed from the city. Its slot is still its own (no plot is ever
+   * reused), so its district keeps its look in reserve: the neighbours and
+   * the city's counts see it as standing, nothing re-picks, and nobody else
+   * takes the variant it freed. It stands nowhere, so it gets no look back.
+   */
+  gone?: boolean;
 }
 
 function block(slot: number): { x: number; z: number } {
@@ -612,11 +643,17 @@ export const PREFERRED = 9;
  * 3. whether it renders within SEPARATION of its own tower's era below, so
  *    the floors still read as laid in different times;
  * 4. how far short of PREFERRED it renders from them (the margin);
- * 5. how many towers anywhere in the city already use it;
- * 6. its own order of preference, from its name.
+ * 5. in the stone era, how many of its empty neighbouring blocks it would
+ *    leave with no variant at all that renders SEPARATION from every tower
+ *    round them: the next district on the spiral must be able to read
+ *    apart too (a district's look still depends only on the blocks round
+ *    it and the towers placed before it, so a later repo changes nothing);
+ * 6. how many towers anywhere in the city already use it, counting every
+ *    held slot (a removed repo's district keeps its variant: LookSite.gone);
+ * 7. its own order of preference, from its name.
  * The sci-fi era is the exception: its variants are architectural families
  * (FAMILIES), told apart by their massing before their colour, so it ranks
- * by 1, then how many towers anywhere already use the family, then 6, so a
+ * by 1, then how many towers anywhere already use the family, then 7, so a
  * city of six towers shows six families. Pass every repo that holds a slot,
  * connected or not, so a tower keeps its look while a neighbour is off.
  * The colours come from rendered.ts, which is versioned data: see there.
@@ -629,21 +666,41 @@ export function pickLooks(sites: LookSite[]): Map<string, Look> {
     for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return a[k] - b[k];
     return 0;
   };
+  const taken = new Set<string>();
   for (const s of order) {
-    if (out.has(s.repo)) continue;
+    if (taken.has(s.repo)) continue;
+    taken.add(s.repo);
     const at = block(s.slot);
     const near = placed.filter((p) => Math.max(Math.abs(p.at.x - at.x), Math.abs(p.at.z - at.z)) === 1).map((p) => p.look);
+    // The blocks round this one that no district holds yet (the civic plaza's block is never a district's).
+    const empty: Array<{ x: number; z: number }> = [];
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const b = { x: at.x + dx, z: at.z + dz };
+        if ((dx || dz) && (b.x || b.z) && !placed.some((p) => p.at.x === b.x && p.at.z === b.z)) empty.push(b);
+      }
+    }
     const look = {} as Look;
     let below: Variant | null = null;
     for (const era of ERAS) {
       // How far short of `d` a variant falls against each neighbour, summed: zero when it clears them all, and
       // otherwise smaller for the variant that is least alike, so a crowded corner still takes the best it has.
       const short = (v: Variant, d: number): number => near.reduce((sum, l) => sum + Math.max(0, d - renderedDistance(l[era], v)), 0);
+      // The empty blocks round this one that taking `v` would leave with no variant SEPARATION from all round them.
+      const boxedIn = (v: Variant): number =>
+        era !== 'stone'
+          ? 0
+          : empty.filter((b) => {
+              const round = placed.filter((p) => Math.max(Math.abs(p.at.x - b.x), Math.abs(p.at.z - b.z)) === 1).map((p) => p.look[era]);
+              round.push(v);
+              return !VARIANTS[era].some((w) => round.every((n) => renderedDistance(n, w) >= SEPARATION));
+            }).length;
       const rank = (v: Variant, i: number): number[] => [
         near.filter((l) => l[era].id === v.id).length,
         Math.round(short(v, SEPARATION) * 10),
         below && renderedDistance(below, v) < SEPARATION ? 1 : 0,
         Math.round(short(v, PREFERRED) * 10),
+        boxedIn(v),
         placed.filter((p) => p.look[era].id === v.id).length,
         i,
       ];
@@ -654,7 +711,7 @@ export function pickLooks(sites: LookSite[]): Map<string, Look> {
       below = look[era];
     }
     placed.push({ at, look });
-    out.set(s.repo, look);
+    if (!s.gone) out.set(s.repo, look);
   }
   return out;
 }

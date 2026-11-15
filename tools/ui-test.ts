@@ -3025,6 +3025,108 @@ const HUE_SPREAD = 0.02;
 /** A tall tower for the crown-over-foot read: its top at least this high, so its crown stands above the ground haze's scale height. */
 const TALL_TOWER = 120;
 /**
+ * Far architecture (Phase 5 Task 7): the stone's coursing from 1,100 m. The
+ * perf tool's coursing-1100 framing (the longest stone run in the sample, on
+ * the home bearing, level with the run's middle), shot with the far coursing
+ * line drawn and again without it (the debug handle's coursing(on)). Over
+ * the run's piers (the third of its columns with no lit window), each column's luminance down the face
+ * less its own 5-pixel running mean is the fine vertical detail (the floors' window rows, five pixels and more apart here, mostly fall out of it); its RMS
+ * over the mean luminance is the line contrast, which the drawn line must
+ * raise by at least 30%. The autocorrelation of that detail at the drawn
+ * line's spacing (courseGroup in look.ts, from the course height and the
+ * run's own pixels per metre) is logged beside it.
+ */
+async function farChecks(page: Page): Promise<void> {
+  const budget = await homeBudgetNow(page);
+  check(budget.calls < 850 && budget.triangles <= 12e6, `home stays under 850 calls and 12M with the far architecture in (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+  const city = await cityOf(page);
+  const span = (d: District): { y0: number; y1: number; n: number } | null => {
+    const fl = layoutTower(d.tower).floors.filter((f) => f.floor.era === 'stone');
+    return fl.length ? { y0: fl[0].y0, y1: fl[fl.length - 1].y0 + fl[fl.length - 1].h, n: fl.length } : null;
+  };
+  const stone = city.map((d) => ({ d, s: span(d) })).filter((x) => x.s).sort((a, b) => b.s!.n - a.s!.n)[0];
+  const hasToggle = await page.evaluate("typeof window.__palimpsest.coursing === 'function'");
+  if (!stone || !hasToggle) {
+    check(false, `coursing lines are resolvable in coursing-1100 (${stone ? 'no far coursing line to switch' : 'no stone run in the sample'})`);
+    return;
+  }
+  const { d, s } = stone;
+  const ym = (s!.y0 + s!.y1) / 2;
+  const o = d.origin;
+  await setView(page, [o.x + BEARING.x * 1100, ym + 220, o.z + BEARING.z * 1100], [o.x, ym, o.z]);
+  await debug(page, (dd) => dd.precompile());
+  await page.waitForTimeout(2500);
+  const hidden = await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride { display: none !important; }' });
+  await page.waitForTimeout(300);
+  const on = decodePng(await page.screenshot({ path: join(SHOTS, 'coursing-1100-on.png') }));
+  await page.evaluate('window.__palimpsest.coursing(false)');
+  await page.waitForTimeout(400);
+  const off = decodePng(await page.screenshot({ path: join(SHOTS, 'coursing-1100-off.png') }));
+  await page.evaluate('window.__palimpsest.coursing(true)');
+  await hidden.evaluate((e) => (e as HTMLElement).remove());
+  const lo = s!.y0 + (s!.y1 - s!.y0) * 0.1;
+  const hi = s!.y1 - (s!.y1 - s!.y0) * 0.1;
+  const pts = [[o.x, hi, o.z], [o.x, lo, o.z], [o.x - 9, ym, o.z], [o.x + 9, ym, o.z], [o.x, ym, o.z - 9], [o.x, ym, o.z + 9]];
+  const proj = await page.evaluate((list) => list.map((p) => (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest.project(p)), pts);
+  const toPx = (q: number[]): [number, number] => [((q[0] + 1) / 2) * on.width, ((1 - q[1]) / 2) * on.height];
+  const [top, foot, ...sides] = proj.map(toPx);
+  const xs = sides.map((p) => p[0]);
+  const mid = (Math.max(...xs) + Math.min(...xs)) / 2;
+  const half = (Math.max(...xs) - Math.min(...xs)) / 2;
+  const pxPerM = (foot[1] - top[1]) / (hi - lo);
+  // The drawn line's spacing (look.ts courseGroup): the stone kit's course, doubled until lines stand 2.6 px apart.
+  const course = 0.62;
+  let group = 1;
+  while (course * group * pxPerM < 2.6) group *= 2;
+  const period = course * group * pxPerM;
+  const read = (im: typeof on): { contrast: number; corr: number } => {
+    const y0 = Math.max(0, Math.round(top[1]));
+    const y1 = Math.min(im.height - 1, Math.round(foot[1]));
+    let e = 0;
+    let m = 0;
+    let n = 0;
+    let ac = 0;
+    let a0 = 0;
+    const lag = Math.round(period);
+    const lum = (img: typeof on, x: number, y: number): number => {
+      const i = (y * img.width + x) * 4;
+      return 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
+    };
+    // The piers: the third of the face's columns with no lit window in them (the lowest brightest pixel, read on the
+    // frame without the line so both reads take the same columns), where the stone runs floor to floor.
+    const cols: number[] = [];
+    for (let x = Math.max(0, Math.round(mid - half * 0.6)); x <= Math.min(im.width - 1, Math.round(mid + half * 0.6)); x++) cols.push(x);
+    const peak = (x: number): number => {
+      let m = 0;
+      for (let y = y0; y <= y1; y++) m = Math.max(m, lum(off, x, y));
+      return m;
+    };
+    const piers = cols.map((x) => ({ x, p: peak(x) })).sort((p, q) => p.p - q.p).slice(0, Math.max(3, Math.round(cols.length / 3))).map((c) => c.x);
+    for (const x of piers) {
+      const col: number[] = [];
+      for (let y = y0; y <= y1; y++) col.push(lum(im, x, y));
+      const res = col.map((v, k) => {
+        const w = col.slice(Math.max(0, k - 2), k + 3);
+        return v - w.reduce((p, q) => p + q, 0) / w.length;
+      });
+      for (let k = 0; k < res.length; k++) {
+        e += res[k] * res[k];
+        m += col[k];
+        n++;
+        a0 += res[k] * res[k];
+        if (k + lag < res.length) ac += res[k] * res[k + lag];
+      }
+    }
+    return { contrast: n ? Math.sqrt(e / n) / Math.max(1, m / n) : 0, corr: a0 > 0 ? ac / a0 : 0 };
+  };
+  const a = read(on);
+  const b = read(off);
+  console.log(`info  far: coursing-1100 on ${d.repo}: ${pxPerM.toFixed(2)} px/m, a line every ${group} course(s) (${period.toFixed(2)} px); line contrast ${a.contrast.toFixed(4)} drawn, ${b.contrast.toFixed(4)} without; autocorrelation at the spacing ${a.corr.toFixed(3)} drawn, ${b.corr.toFixed(3)} without`);
+  // The autocorrelation is read, not asserted: the floors' window rows share the frame with the courses and set its sign.
+  check(a.contrast >= 1.3 * b.contrast && a.contrast >= 0.012, `coursing lines are resolvable in coursing-1100 (line contrast ${a.contrast.toFixed(4)} against ${b.contrast.toFixed(4)} without, at least 1.3 times and 0.012)`);
+}
+
+/**
  * The crown-over-foot chroma read's mean on 41d045b, from the overview (task-6-rounds/r6 and r7: five runs of this
  * read against that build, 0.802 to 0.845, mean 0.824). Logged beside the graded haze's read, not asserted: the graded
  * haze reads 0.817 to 1.040 over five runs (mean 0.888), so the two overlap run to run (the crowns' top floors change
@@ -3390,7 +3492,8 @@ async function main(): Promise<void> {
     // UI_ONLY=close: a tram crossing 400 m without a pop, and the ride car's lamps without a flare (Phase 5 Task 5).
     // UI_ONLY=people: the personas' checks and the people-follow frame rate on high, then on medium (Phase 5 Task 3).
     // UI_ONLY=haze: the six towers' hue spread in the overview (Phase 5 Task 6).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=far: the stone's coursing read from 1,100 m, and the home guard (Phase 5 Task 7).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3429,6 +3532,8 @@ async function main(): Promise<void> {
         await closeChecks(page);
       } else if (process.env.UI_ONLY === 'haze') {
         await hazeChecks(page);
+      } else if (process.env.UI_ONLY === 'far') {
+        await farChecks(page);
       } else if (process.env.UI_ONLY === 'people') {
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');
@@ -3594,6 +3699,7 @@ async function main(): Promise<void> {
         await trafficChecks(page);
         await closeChecks(page);
         await hazeChecks(page);
+        await farChecks(page);
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');
         await ambientChecks(page);

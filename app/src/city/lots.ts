@@ -550,6 +550,74 @@ export function farLot(i: number, j: number): Lot {
   return lot;
 }
 
+/**
+ * The far ring's skyline (Phase 5 Task 7). One low box per block read from
+ * the overview as an even texture of boxes, the grid showing through the
+ * haze. The ring keeps its one building per block (farLot) and gains a
+ * city's grain: blocks gather into clusters of taller building over a field
+ * a few blocks across (the spine's towers, stepped back by lotParts like the
+ * near city's), and outside them about half the blocks stand a second,
+ * lower building on the half the first leaves free, so the roofline breaks
+ * across a block as well as between blocks. Walls only, like the ring.
+ */
+export function farLots(i: number, j: number): Lot[] {
+  const base = farLot(i, j);
+  const out: Lot[] = [];
+  const r = rng(blockSeed(i, j) + 977);
+  // A smooth field over the blocks, about seven across: where it runs high the ring gathers into a cluster.
+  const field = valueNoise(i / 7.3 + 11.1, j / 7.3 - 4.7) * 0.65 + valueNoise(i / 2.9 - 3.3, j / 2.9 + 8.2) * 0.35;
+  const hood = base.hood;
+  if (field > 0.6 && r() < 0.55 + (field - 0.6) * 1.6) {
+    // A tower of the cluster: an office type, 12 to 34 storeys as the field rises, on the block's own footprint.
+    const a: Archetype = r() < 0.5 ? 'glass' : r() < 0.6 ? 'midcentury' : 'commercial';
+    const s = SECTIONS[a];
+    const [lo, hi] = s.tall ?? s.storeys;
+    const n = Math.round(lo + (hi - lo) * Math.min(1, (field - 0.6) * 2.5) * (0.55 + 0.45 * r()));
+    const w = Math.max(base.w, 30);
+    const d = Math.max(base.d, 30);
+    const tower: Lot = { ...base, archetype: a, w, d, x: i * PITCH + (r() - 0.5) * (BLOCK - w), z: j * PITCH + (r() - 0.5) * (BLOCK - d), h: sectionHeight(a, n) };
+    tower.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w, d, front: [], seed: tower.style[1] }));
+    out.push(onRiverGround(tower.x, tower.z, w + 2 * LOT_REACH, d) ? base : tower);
+  } else {
+    out.push(base);
+  }
+  const first = out[0];
+  if (r() < 0.5) {
+    // A second, lower building on the half of the block the first leaves free.
+    const alongX = r() < 0.5;
+    const room = alongX ? BLOCK - first.w - 4 - Math.abs(first.x - i * PITCH) * 2 : BLOCK - first.d - 4 - Math.abs(first.z - j * PITCH) * 2;
+    if (room >= 14) {
+      const a = pickType(r, hood, 'free');
+      const w2 = alongX ? Math.min(room, 14 + r() * 18) : 18 + r() * 24;
+      const d2 = alongX ? 18 + r() * 24 : Math.min(room, 14 + r() * 18);
+      const side = alongX ? (first.x > i * PITCH ? -1 : 1) : first.z > j * PITCH ? -1 : 1;
+      const x = alongX ? i * PITCH + side * (BLOCK / 2 - w2 / 2 - 1) : i * PITCH + (r() - 0.5) * (BLOCK - w2);
+      const z = alongX ? j * PITCH + (r() - 0.5) * (BLOCK - d2) : j * PITCH + side * (BLOCK / 2 - d2 / 2 - 1);
+      const n = Math.max(1, Math.min(SECTIONS[a].storeys[1], 1 + Math.floor(r() * 5)));
+      const lot: Lot = { ...first, archetype: a, x, z, w: w2, d: d2, h: sectionHeight(a, n), style: [0, r(), first.style[2], r()], index: 1 };
+      lot.shop = packShopfront(shopfrontPlan({ archetype: a, hood, w: w2, d: d2, front: [], seed: lot.style[1] }));
+      const clear = Math.abs(x - first.x) >= (w2 + first.w) / 2 + 2 || Math.abs(z - first.z) >= (d2 + first.d) / 2 + 2;
+      if (clear && !onRiverGround(x, z, w2 + 2 * LOT_REACH, d2)) out.push(lot);
+    }
+  }
+  return out;
+}
+
+/** Smooth value noise in 0..1 over block coordinates (the far ring's clusters). */
+function valueNoise(x: number, y: number): number {
+  const h = (a: number, b: number): number => {
+    const t = Math.sin(a * 127.1 + b * 311.7) * 43758.5453;
+    return t - Math.floor(t);
+  };
+  const i = Math.floor(x);
+  const j = Math.floor(y);
+  const fx = x - i;
+  const fy = y - j;
+  const u = fx * fx * (3 - 2 * fx);
+  const v = fy * fy * (3 - 2 * fy);
+  return (h(i, j) * (1 - u) + h(i + 1, j) * u) * (1 - v) + (h(i, j + 1) * (1 - u) + h(i + 1, j + 1) * u) * v;
+}
+
 function touching(a: Lot, b: Lot): boolean {
   return Math.abs(a.x - b.x) - (a.w + b.w) / 2 < 0.6 && Math.abs(a.z - b.z) - (a.d + b.d) / 2 < 0.6;
 }

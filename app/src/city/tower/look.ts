@@ -8,7 +8,7 @@ import { ANISO_PATCH_OK, patchAnisotropy } from './aniso-patch';
 import type { Centerpiece } from '../scene';
 import { type BuildOptions, buildTower } from './build';
 import type { EraMatKey, TowerMaterials } from './kit';
-import { type Finish, type Glazing, type Look, lookFor, lookKey, type Scan } from './variants';
+import { type Finish, type Glazing, type Look, lookFor, lookKey, SCAN_STATS } from './variants';
 
 /**
  * The tower materials in the browser: the scanned stone, brick and metal
@@ -473,23 +473,46 @@ function stainedMaterial(): THREE.MeshBasicMaterial {
   return new THREE.MeshBasicMaterial({ map: t, color: new THREE.Color(1.4, 1.3, 1.2) });
 }
 
+
 /**
- * Each scan's split between body and joint in its linear luminance (from
- * the 2k colour maps): at or past `lo` reads as body, at or past `hi` as
- * joint. Brick and ironspot mortar is lighter than the brick; the joints of
- * sandstone, granite tiles and ashlar are darker than the stone, so their
- * split runs the other way, as does rust, whose dark streaks are the joint.
- * `refBody` and `refJoint` are each part's typical luminance; `rough` is the
- * mean of the scan's roughness map, so a finish's roughness is its true mean.
+ * The coursing's far line (Task 7): past the distance where the coursed
+ * kit blocks' joints and the shader's joints fall under a pixel, the bed
+ * joints are carried as a line about a pixel wide, every course while the
+ * courses stand at least COURSE_LINE_PX apart on screen and every second,
+ * fourth, ... course beyond (a mip chain of the coursing), so the stone
+ * keeps reading as laid courses to 1,200 m instead of averaging to a flat
+ * tone. 1 draws it, 0 leaves the joints to fade (the debug handle's
+ * coursing(on), for the UI check's before and after).
  */
-const SCAN_STATS: Record<Scan, { lo: number; hi: number; refBody: number; refJoint: number; rough: number }> = {
-  brick: { lo: 0.13, hi: 0.22, refBody: 0.09, refJoint: 0.26, rough: 0.53 },
-  ironspot: { lo: 0.1, hi: 0.25, refBody: 0.04, refJoint: 0.31, rough: 0.81 },
-  sand: { lo: 0.268, hi: 0.24, refBody: 0.3, refJoint: 0.23, rough: 0.51 },
-  rust: { lo: 0.36, hi: 0.22, refBody: 0.37, refJoint: 0.2, rough: 0.42 },
-  granite: { lo: 0.06, hi: 0.05, refBody: 0.077, refJoint: 0.05, rough: 0.54 },
-  ashlar: { lo: 0.29, hi: 0.235, refBody: 0.35, refJoint: 0.21, rough: 0.51 },
-};
+export const COURSE_FAR = { value: 1 };
+/** The least screen spacing, in pixels, between the far coursing's drawn lines. */
+export const COURSE_LINE_PX = 2.6;
+/** How dark the far line is, as a share of the finish's own joint darkening (the kit blocks' joints use KIT_JOINT). */
+const COURSE_LINE_DARK = 0.9;
+/** The coursed kit blocks' joints, as a darkening, for the far line on the Face slot (their joints are geometry near): a sunk bed joint in shadow. */
+const KIT_JOINT = 0.75;
+
+/** The far coursing line in GLSL: a bed joint every `n` courses of height `h`, `y` metres up the face, a pixel `px` metres wide. */
+const COURSE_LINE_GLSL = /* glsl */ `
+float courseGroup(float h, float px) {
+  return exp2(ceil(log2(max(1.0, ${COURSE_LINE_PX.toFixed(2)} * px / max(h, 1e-3)))));
+}
+float courseLine(float y, float h, float px) {
+  float g = h * courseGroup(h, px);
+  float d = abs(fract(y / g + 0.5) - 0.5) * g;
+  return 1.0 - smoothstep(0.5 * px, 1.2 * px, d);
+}
+`;
+
+/**
+ * A full glaze's sky reflection (Task 7). The clear coat already carries a
+ * glaze's own Fresnel (F0 0.04, a fired glaze's index of about 1.5); the
+ * environment weight on top was 4.2, which made the ceramic a mirror of the
+ * orange horizon wherever the low sun stood behind the eye. At 2.4 the
+ * glaze's reflection is twice a polished stone's at grazing and under it
+ * square on, as a glazed tile measures against a honed one.
+ */
+const GLAZE_ENV = 2.4;
 
 /**
  * A scanned masonry or patina set in a variant's colours. The scan's
@@ -520,7 +543,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
   // A full glaze (ceramic) is a mirror of the sky before it is a coloured surface, so it takes more of the sky
   // than a polished stone does.
   const m = f.polish
-    ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: f.polish, clearcoatRoughness: f.polish >= 0.9 ? 0.02 : 0.04, envMapIntensity: f.polish >= 0.9 ? 4.2 : 2.6 })
+    ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: f.polish, clearcoatRoughness: f.polish >= 0.9 ? 0.02 : 0.04, envMapIntensity: f.polish >= 0.9 ? GLAZE_ENV : 2.6 })
     : new THREE.MeshStandardMaterial(params);
   const u = {
     uBody: { value: new THREE.Color(f.body) },
@@ -535,12 +558,13 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
     uGap: { value: f.courses?.gap ?? 0.012 },
     uTexScale: { value: 1 / (f.scale ?? 1) },
     uWorldTile: { value: f.worldTile ?? 0 },
+    uCourseFar: COURSE_FAR,
   };
   m.customProgramCacheKey = () => 'palimpsest-scan';
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, u);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform float uTexScale;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN; varying vec3 vCL; varying vec2 vCS;\nuniform float uTexScale;')
       // Every map of a scan shares one scale, so its units can be enlarged or shrunk per finish.
       .replace(
         '#include <uv_vertex>',
@@ -568,10 +592,13 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
           #endif
           vTFP = (fm * vec4(transformed, 1.0)).xyz;
           vTFN = normalize(mat3(fm) * objectNormal);
+          // A coursed kit block's own frame (x -0.5..0.5 along the course, y 0..1 up it) and its size in metres.
+          vCL = transformed;
+          vCS = vec2(length(fm[0].xyz), length(fm[1].xyz));
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse; uniform float uGap; uniform float uWorldTile; uniform float uTexScale;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
+      .replace('#include <common>', `#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse; uniform float uGap; uniform float uWorldTile; uniform float uTexScale; uniform float uCourseFar;\nvarying vec3 vCL; varying vec2 vCS;\n${COURSE_LINE_GLSL}\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }`)
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
@@ -630,6 +657,23 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
           float bedTone = wHash(vec2(floor(row / 3.0), 11.0)) - 0.5;
           float bed = 1.0 + 0.045 * sin(q.y * 23.0 + hb * 9.0) * (1.0 - smoothstep(0.0, 0.05, aa.y));
           diffuseColor.rgb *= (1.0 + uCourse.w * ((hb - 0.5) * 2.0 * blockFade + bedTone * 1.6)) * bed * (1.0 - uCourse.z * joint);
+          // Far off, where the joint has faded into its footprint, the bed joints carry on as a line a pixel wide,
+          // every course or every 2nd, 4th... (courseGroup), so the wall still reads as laid stone.
+          float px = aa.y / 1.5;
+          float farK = uCourseFar * smoothstep(uGap * 1.5, uGap * 5.0, px);
+          diffuseColor.rgb *= 1.0 - farK * ${COURSE_LINE_DARK.toFixed(2)} * uCourse.z * courseLine(q.y, uCourse.x, px);
+        }
+        if (uWorldTile > 0.0 && vCS.y > 0.0 && vCS.y < 2.0 && abs(vTFN.y) < 0.7) {
+          // A coursed kit block (the Face slot): its joints are geometry near the eye and sub-pixel past a few hundred
+          // metres, where the far line takes them up, from the block's own frame so it falls on the block's own bed.
+          float px = max(length(dFdx(vTFP)), length(dFdy(vTFP)));
+          float farK = uCourseFar * smoothstep(0.03, 0.09, px);
+          float yb = vCL.y * vCS.y;
+          float row = floor((vTFP.y - yb) / vCS.y + 0.5);
+          float n = courseGroup(vCS.y, px);
+          float onLine = 1.0 - step(0.5, mod(row, n));
+          float bed = (1.0 - smoothstep(0.5 * px, 1.2 * px, yb)) * onLine;
+          diffuseColor.rgb *= 1.0 - farK * ${(COURSE_LINE_DARK * KIT_JOINT).toFixed(2)} * bed;
         }
         // Soot and splash darken masonry toward the street, and the lowest floors most; porous cut stone soils deepest.
         diffuseColor.rgb *= 1.0 - (0.2 + 0.3 * uWeather) * exp(-max(vTFP.y - 20.0, 0.0) / 45.0);`,

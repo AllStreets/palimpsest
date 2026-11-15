@@ -636,7 +636,11 @@ const needle: EraBuilder = (k, w, h, f, c) => {
  */
 const arcology: EraBuilder = (k, w, h, f, c) => {
   const half = w / 2;
-  if (c.crown) return crown(k, 'arcology', half, c);
+  if (c.crown) {
+    const shape = crown(k, 'arcology', half, c);
+    if (c.crown.stage === 0) pergola(k, half * CROWNS.arcology.base, c.crown.height);
+    return shape;
+  }
   const over = 0.9;
   const recess = 1.3;
   const n = bays(w, c.variant.pitch ?? 4.6);
@@ -685,6 +689,30 @@ const arcology: EraBuilder = (k, w, h, f, c) => {
   }
   return { cx: 0, cz: 0, half: half + over + (pods ? 2.9 : 0.1), datumHalf: half + 0.35, edge: { cx: 0, cz: 0, half: half + over + 0.02 } };
 };
+
+/**
+ * The arcology's roof pavilion (Task 7): over the glass pavilion on the
+ * crown's sky-garden deck (kits.py crown_arcology: the deck at 0.34 of the
+ * crown's height, the pavilion's roof at 0.66 to 0.70, half 0.62 of the
+ * shaft's half-width), a concrete pergola: four columns at the roof's
+ * corners carrying deep beams out over the deck, and a run of slender
+ * fins across them, so the low sun breaks across the deck in bars and the
+ * pavilion reads as a structure, not a box on a box. All inside the crown.
+ */
+function pergola(k: Kit, b: number, H: number): void {
+  const yRoof = 0.7 * H;
+  const deep = Math.min(0.7, H * 0.06);
+  const yBeam = yRoof + 0.05;
+  const span = b * 1.12;
+  const post = b * 0.6;
+  for (const [x, z] of corners(post, 0)) k.inst('arc:beam', 'scifiTrim', unitBox, M(x, (0.34 * H + yRoof) / 2, z, 0, 0.45, yRoof - 0.34 * H, 0.45));
+  for (const z of [-post, post]) k.inst('arc:beam', 'scifiTrim', unitBox, M(0, yBeam + deep / 2, z, 0, span * 2, deep, 0.4));
+  const fins = Math.max(5, Math.round((span * 2) / 1.5));
+  for (let i = 0; i < fins; i++) {
+    const x = -span + ((i + 0.5) / fins) * span * 2;
+    k.inst('arc:beam', 'scifiTrim', unitBox, M(x, yBeam + deep + 0.2, 0, 0, 0.2, 0.4, post * 2 + 1.6));
+  }
+}
 
 // ---- organic
 
@@ -780,10 +808,22 @@ const cluster: EraBuilder = (k, w, h, f, c) => {
   const gt = c.top ? h - 0.4 : h;
   const n = bays(bh * 2, c.variant.pitch ?? 1.7);
   const p = (bh * 2) / n;
+  // The pod's skin (Task 7): carbon ribs standing proud of the glass at every other mullion, so the low sun breaks
+  // across them and a pod reads as a made object at distance, not a box; slim mullions between; and a lit band at the
+  // head of the glazing, the pod's own line of light under its roof.
+  const head = c.top ? gt : gt - 0.22;
   for (let side = 0; side < 4; side++) {
     const F = M(bx, 0, bz).multiply(face(side, bh));
-    for (let i = 0; i < n; i++) k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-bh + p * (i + 0.5), (0.7 + gt) / 2, -0.02, 0, p, gt - 0.7, 1)), light(PANE_FULL));
-    for (let i = 0; i <= n; i++) k.inst('cl:mullion', 'scifiTrim', unitBox, F.clone().multiply(M(-bh + p * i, (0.7 + gt) / 2, 0.05, 0, 0.07, gt - 0.7, 0.14)));
+    for (let i = 0; i < n; i++) k.pane('pane:scifi', 'scifiWin', F.clone().multiply(M(-bh + p * (i + 0.5), (0.7 + head) / 2, -0.02, 0, p, head - 0.7, 1)), light(PANE_FULL));
+    for (let i = 0; i <= n; i++) {
+      const rib = i % 2 === 0;
+      // One batch for ribs and mullions alike (one draw call, as the mullions were): each instance is its own size.
+      k.inst('cl:rib', 'scifiTrim', unitBox, F.clone().multiply(M(-bh + p * i, (0.7 + gt) / 2, rib ? 0.2 : 0.05, 0, rib ? 0.16 : 0.07, gt - 0.7, rib ? 0.44 : 0.14)));
+    }
+  }
+  if (!c.top) {
+    ring(k, 'lightLine', bx - bh - 0.01, bx + bh + 0.01, bz - bh - 0.01, bz + bh + 0.01, head, head + 0.07, 0.04);
+    ring(k, 'scifiWall', bx - bh, bx + bh, bz - bh, bz + bh, head + 0.07, gt, 0.25);
   }
   if (!c.top) slabBox(k, 'roof', bx - bh, bx + bh, h - 0.25, h, bz - bh, bz + bh);
   claudeAccent(k, f, bh, 0.35 + 0.04, 0.2, 0.1);
@@ -808,6 +848,29 @@ const FAMILY_BUILDERS: Record<Family, EraBuilder> = { deco, ziggurat, needle, ar
  */
 export function crownFloors(run: number): number {
   return run >= 12 ? 5 : run >= 8 ? 4 : run >= 5 ? 3 : run >= 3 ? 2 : 1;
+}
+
+/**
+ * The hero still's measure for a crown: 14 pixels tall at the farthest
+ * sample crown from the hero's eye (about 1,400 m), in the 1,780 pixel tall
+ * still (PERF_VIEWPORT at DPR 2) through the city's 36 degree lens. Under
+ * that a crown is a smudge on the skyline rather than a crown.
+ */
+export const HERO_CROWN = { px: 14, distance: 1400, viewHeight: 1780, fov: 36 } as const;
+/** The least a family crown stands, in metres (about 7.2): HERO_CROWN in the world. */
+export const HERO_CROWN_MIN = (HERO_CROWN.px * 2 * HERO_CROWN.distance * Math.tan((HERO_CROWN.fov * Math.PI) / 360)) / HERO_CROWN.viewHeight;
+
+/**
+ * How many of a sci-fi run's top floors carry its crown, given the run's
+ * floor heights bottom to top: crownFloors' share of the run, and more
+ * floors from the top while the crown stands under HERO_CROWN_MIN, never
+ * more than the run itself.
+ */
+export function crownSpan(heights: ReadonlyArray<number>): number {
+  let n = Math.min(heights.length, crownFloors(heights.length));
+  const tall = (k: number): number => heights.slice(heights.length - k).reduce((a, b) => a + b, 0);
+  while (n < heights.length && tall(n) < HERO_CROWN_MIN - 1e-9) n++;
+  return n;
 }
 
 /** Each crown piece's slot (kits.py) and the tower material it takes. */
