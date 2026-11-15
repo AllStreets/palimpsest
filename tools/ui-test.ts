@@ -2871,6 +2871,9 @@ async function trafficChecks(page: Page): Promise<void> {
   const heads = await callDebug<{ heads: number; drawn: number }>(page, 'd.signalHeads()');
   check(heads.heads > 100 && heads.drawn > 0, `signal heads stand at the junctions (${heads.heads}, ${heads.drawn} near the eye)`);
 }
+/** The tram at 400 m is at least this many of its own pixels at every step of the band, or the read is void. */
+const LOD_PIXELS = 40;
+
 /**
  * The vehicles up close (Phase 5 Task 5): a tram crossing the levels' band
  * 400 m from the eye shows no pop (three frames half a second apart, the
@@ -2917,24 +2920,25 @@ async function closeChecks(page: Page): Promise<void> {
     for (let k = 0; k < 3; k++) {
       const now = await callDebug<Probe | null>(page, `d.vehicle(${JSON.stringify(t.id)})`);
       if (!now) break;
-      await page.waitForTimeout(350);
-      const shown = decodePng(await page.screenshot());
-      await callDebug(page, 'd.vehicleShow(false)');
-      await page.waitForTimeout(250);
-      const bare = decodePng(await page.screenshot());
-      await callDebug(page, 'd.vehicleShow(true)');
-      const b = await boxOf(now, size);
-      let sum = 0;
-      let n = 0;
-      for (let y = Math.max(0, b[1]); y <= Math.min(shown.height - 1, b[3]); y++) for (let x = Math.max(0, b[0]); x <= Math.min(shown.width - 1, b[2]); x++) {
-        const l = lum(shown, x, y);
-        if (Math.abs(l - lum(bare, x, y)) > 0.03) {
-          sum += l;
-          n++;
+      // The tram's own pixels (where the frame changes by more than 0.03 with the vehicles hidden) and their mean,
+      // over four frames with the eye nudged a few centimetres (a tram 400 m off is a hundred pixels under a
+      // screen-door dissolve: each nudge samples the dissolve's pattern afresh, and the four together read it).
+      const own: number[] = [];
+      for (const [dx, dy] of [[0, 0], [0.03, 0], [0, 0.03], [0.03, 0.03]]) {
+        await setView(page, [eye[0] - Math.sin(t.heading) * dx, eye[1] + dy, eye[2] + Math.cos(t.heading) * dx], [t.position[0], t.position[1] + 2, t.position[2]]);
+        const shown = decodePng(await page.screenshot());
+        await callDebug(page, 'd.vehicleShow(false)');
+        await page.waitForTimeout(200);
+        const bare = decodePng(await page.screenshot());
+        await callDebug(page, 'd.vehicleShow(true)');
+        const b = await boxOf(now, size);
+        for (let y = Math.max(0, b[1]); y <= Math.min(shown.height - 1, b[3]); y++) for (let x = Math.max(0, b[0]); x <= Math.min(shown.width - 1, b[2]); x++) {
+          const l = lum(shown, x, y);
+          if (Math.abs(l - lum(bare, x, y)) > 0.03) own.push(l);
         }
       }
-      means.push(n ? sum / n : 0);
-      counts.push(n);
+      means.push(own.length ? own.reduce((a, c) => a + c, 0) / own.length : 0);
+      counts.push(Math.round(own.length / 4));
       dists.push(Math.hypot(now.position[0] - eye[0], now.position[2] - eye[2]));
       if (k === 0) await page.screenshot({ path: join(SHOTS, 'lod-400.png') });
       if (k < 2) await callDebug(page, 'd.vehicleSkip(0.5)');
@@ -2945,7 +2949,7 @@ async function closeChecks(page: Page): Promise<void> {
     const hi = Math.max(...means);
     const diff = lo > 0 ? (hi - lo) / lo : 1;
     console.log(`info  lod-400: the tram at ${dists.map((d) => d.toFixed(0)).join(', ')} m, its own pixels (${counts.join(', ')}) at mean luminance ${means.map((m) => m.toFixed(4)).join(', ')}`);
-    check(means.length === 3 && diff < 0.02, `lod-400 frames differ by under 2% in mean luminance (${(diff * 100).toFixed(2)}%)`);
+    check(means.length === 3 && Math.min(...counts) >= LOD_PIXELS && diff < 0.02, `lod-400 frames differ by under 2% in mean luminance (${(diff * 100).toFixed(2)}% over the tram's own pixels)`);
   }
   await callDebug(page, 'd.vehicleHold(false)');
 
@@ -2982,7 +2986,12 @@ async function closeChecks(page: Page): Promise<void> {
   }
 }
 
-/** A tram's lit windows from home: this many pixels along it over this luminance (and over the frame round it). */
+/**
+ * A tram's lit windows from home: this many pixels along it over this luminance (and over the frame round it).
+ * Task 5's far glow ramp (vehicles.ts FAR_GLOW_NEAR to FAR_GLOW_FROM, 420 to 900 m) dims lit vehicles between those
+ * distances; at the 700 to 900 m this view sees the tram at, the glow is 0.7 to 1.0 of full (0.9 at 800 m), and the
+ * count stood at 105 on high and 152 on medium against this floor after the change.
+ */
 const TRAM_LIT_FLOOR = 0.42;
 const TRAM_LIT_GAIN = 0.08;
 const TRAM_LIT_PIXELS = 12;

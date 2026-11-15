@@ -1462,7 +1462,7 @@ const UNIT = new THREE.BoxGeometry(1, 1, 1);
 const KIT_CODES: Record<number, { part: Part; colour: RGB; surf: Surf; kind?: LampKind; own?: RGB }> = {
   1: { part: 'body', colour: lin('#8e959b'), surf: [0.9, 0.34] },
   2: { part: 'body', colour: lin('#777a7d'), surf: [0.85, 0.42] },
-  3: { part: 'body', colour: lin('#3a4348'), surf: [0.25, 0.32] },
+  3: { part: 'body', colour: lin('#4a555b'), surf: [0.25, 0.3] },
   4: { part: 'body', colour: lin('#1f6b6e'), surf: [0.1, 0.32] },
   5: { part: 'trim', colour: lin('#24262a'), surf: [0.3, 0.7] },
   6: { part: 'glass', colour: [0, 0, 0], surf: [0, 0.05] },
@@ -2323,6 +2323,15 @@ export function lodBlend(dist: number): { near: number; far: number } {
 }
 
 /**
+ * The far level's share in GLSL, of a distance expression: the one smoothstep
+ * the dither and the far glow's ramp use, so the shaders and lodBlend cannot
+ * drift apart (tests: the string names the band's two ends).
+ */
+export function lodFadeGlsl(dist: string): string {
+  return `smoothstep(${VEHICLE_LOD.near.toFixed(1)}, ${VEHICLE_LOD.far.toFixed(1)}, ${dist})`;
+}
+
+/**
  * A vehicle's own variation, from its unit id (`<line>:<k>`, its place on
  * its line): a small stable number the shaders vary the interior by, so the
  * cars that follow each other on a line differ, and a car keeps its own look
@@ -2359,7 +2368,7 @@ function dither(sh: THREE.WebGLProgramParametersWithUniforms, level: 'near' | 'f
         #else
           vec4 lodAt = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
         #endif
-        vLodFade = smoothstep(${VEHICLE_LOD.near.toFixed(1)}, ${VEHICLE_LOD.far.toFixed(1)}, distance(lodAt.xyz, uLodEye));
+        vLodFade = ${lodFadeGlsl('distance(lodAt.xyz, uLodEye)')};
         if (${level === 'near' ? 'vLodFade >= 1.0' : 'vLodFade <= 0.0'}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
       }`,
     );
@@ -2664,16 +2673,22 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
             float ts = (xs - p.x) / d.x;
             vec3 hs = p + d * ts;
             if (ts > 0.0 && ts < t && abs(hs.z) > 0.3 && hs.y > fl + 0.4 && hs.y < fl + 1.1) {
-              float top = smoothstep(fl + 0.96, fl + 1.08, hs.y);
-              c = seatCol * L * (0.28 + 0.5 * top);
+              // The back: shaded toward the floor, lit by the ceiling toward its top, a pale rim along its top edge
+              // where the strip catches it, and its own edge toward the aisle.
+              float up = smoothstep(fl + 0.4, fl + 1.1, hs.y);
+              float rim = 1.0 - smoothstep(0.0, 0.05, fl + 1.1 - hs.y);
+              float aisle = smoothstep(0.3, 0.36, abs(hs.z));
+              c = seatCol * L * (0.18 + 0.4 * up) + L * 0.3 * rim + L * 0.05 * (1.0 - aisle);
               t = ts;
             }
-            // The cushions, seen from above.
+            // The cushions, seen from above: lit by the strip, darker in the fold under the back.
             float tc = (fl + 0.46 - p.y) / d.y;
             if (d.y < 0.0 && tc > 0.0 && tc < t) {
               vec3 hc = p + d * tc;
               if (abs(hc.z) > 0.3) {
-                c = seatCol * L * 0.42;
+                float fold = smoothstep(0.0, 0.25, fract(hc.x / 0.9 + 0.5) * 0.9);
+                float under = 1.0 - smoothstep(0.1, 0.3, abs(abs(hc.z) - hw * 0.5));
+                c = seatCol * L * (0.3 + 0.25 * fold) + L * 0.06 * fold * under;
                 t = tc;
               }
             }
@@ -2766,19 +2781,21 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
               vec3 hd = vLP + d * td;
               float scr = step(abs(hd.z - 0.35), 0.16) * step(abs(hd.x - (uBoxMax.x + 0.45)), 0.12);
               float pip = step(0.82, vgHash(floor(hd.z * 18.0) + floor(hd.x * 18.0) * 7.0)) * step(abs(hd.z), 0.9);
-              inside = vec3(0.006, 0.006, 0.007) + uLight * 0.012 + vec3(0.1, 0.22, 0.3) * scr + vec3(0.5, 0.25, 0.05) * pip * 0.3;
+              inside = vec3(0.012, 0.012, 0.014) + uLight * 0.03 + vec3(0.1, 0.22, 0.3) * scr + vec3(0.5, 0.25, 0.05) * pip * 0.3;
             }
             else {
                 // The door's window into the saloon: dimmed through two panes, its edges soft in a dark surround.
               float wedge = smoothstep(0.22, 0.12, abs(hb.z)) * smoothstep(uBoxMin.y + 1.05, uBoxMin.y + 1.2, hb.y) * smoothstep(uBoxMin.y + 1.75, uBoxMin.y + 1.6, hb.y);
-              inside = mix(uLight * 0.006 * (0.6 + 0.4 * smoothstep(uBoxMin.y, uBoxMax.y, hb.y)), room(vec3(uBoxMax.x - 0.01, hb.y, hb.z), d) * 0.3, wedge);
+              // The bulkhead itself: a dark panel, not black, the saloon's light leaking round the door's edges.
+              float leak = 1.0 - smoothstep(0.0, 0.12, abs(abs(hb.z) - 0.6) + 0.3 * (1.0 - step(hb.y, uBoxMin.y + 2.0)));
+              inside = mix(uLight * (0.012 + 0.02 * smoothstep(uBoxMin.y, uBoxMax.y, hb.y) + 0.03 * leak), room(vec3(uBoxMax.x - 0.01, hb.y, hb.z), d) * 0.3, wedge);
               // A faint lit panel over the door: the cab's own instruments light.
               inside += vec3(0.25, 0.4, 0.5) * 0.05 * step(abs(hb.z + 0.6), 0.25) * step(abs(hb.y - (uBoxMin.y + 1.9)), 0.08);
               // The bulkhead meets the cab's ceiling, floor and sides in shade, not a hard box edge.
               float soft = smoothstep(0.0, 0.35, min(min(hb.y - uBoxMin.y, uBoxMax.y - hb.y), uBoxMax.z - abs(hb.z)));
               inside *= 0.5 + 0.5 * soft;
             }
-            if (tsb > 0.0 && tsb < tb && seat > 0.5) inside = uLight * 0.012 + vec3(0.004);
+            if (tsb > 0.0 && tsb < tb && seat > 0.5) inside = uLight * 0.02 + vec3(0.006);
           }
           vec3 V = normalize(vViewPosition);
           float NdV = clamp(abs(dot(normal, V)), 0.0, 1.0);
@@ -2808,10 +2825,13 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
  * of its glow from home (FAR_GLOW_FROM metres out): the glow is pitched to
  * read through the haze from 850 m (Task 4), and at 400 m that is several
  * times what the near level's glass shows of its room, so the dissolve
- * brightened the car as it crossed the band (the lod-400 check, Task 5).
- * Between the band and FAR_GLOW_FROM the glow rises to its full.
+ * brightened the car as it crossed the band (the lod-400 check, Task 5: 52%
+ * at full glow, 27% at 0.3, 6% at 0.05, and at none the far level fell
+ * under the near by a tenth). At the band the far glazing carries a
+ * thirtieth of its light, what the near level's glass shows of its room
+ * from there; between the band and FAR_GLOW_FROM the glow rises to its full.
  */
-export const FAR_GLOW_NEAR = 0.05;
+export const FAR_GLOW_NEAR = 0.033;
 export const FAR_GLOW_FROM = 900;
 
 function farMaterial(): THREE.MeshStandardMaterial {
@@ -2840,7 +2860,7 @@ function farMaterial(): THREE.MeshStandardMaterial {
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying float vFarDist;\n${LAMP_GLSL}`)
+      .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying float vFarDist;\nfloat farGlowRamp(float d) { return smoothstep(${VEHICLE_LOD.far.toFixed(1)}, ${FAR_GLOW_FROM.toFixed(1)}, d); }\n${LAMP_GLSL}`)
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
@@ -2850,7 +2870,7 @@ function farMaterial(): THREE.MeshStandardMaterial {
           diffuseColor.rgb = vec3(0.0);
         }
         // The glow at the band matches the near level's glass; it rises to its full by FAR_GLOW_FROM (see above).
-        totalEmissiveRadiance += vGlow * mix(${FAR_GLOW_NEAR.toFixed(2)}, 1.0, smoothstep(${VEHICLE_LOD.far.toFixed(1)}, ${FAR_GLOW_FROM.toFixed(1)}, vFarDist));`,
+        totalEmissiveRadiance += vGlow * mix(${FAR_GLOW_NEAR.toFixed(2)}, 1.0, farGlowRamp(vFarDist));`,
       )
       // Lit glazing and lamps are small bright sources: the haze dims them far less than a painted side, so the
       // tram's lit cars on the viaduct and the ferry's lamps read from home.
@@ -2858,7 +2878,7 @@ function farMaterial(): THREE.MeshStandardMaterial {
         '#include <fog_fragment>',
         `vec3 preFog = gl_FragColor.rgb;
         #include <fog_fragment>
-        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.72 * smoothstep(${VEHICLE_LOD.far.toFixed(1)}, ${FAR_GLOW_FROM.toFixed(1)}, vFarDist) * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, preFog, 0.72 * farGlowRamp(vFarDist) * step(0.01, vKind.x + vKind.y + vKind.z + vGlow.r + vGlow.g + vGlow.b));`,
       );
   };
   m.customProgramCacheKey = () => 'palimpsest-vehicle-far';

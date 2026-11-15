@@ -131,7 +131,7 @@ test('a seat stands where a rider sits, in the cars people sit in', () => {
 
 import { extentBlocks, network } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
-import { createVehicles, lodBlend, podVariant, VEHICLE_LOD } from '../app/src/city/vehicles.js';
+import { createVehicles, lodBlend, lodFadeGlsl, podVariant, VEHICLE_LOD } from '../app/src/city/vehicles.js';
 
 test('two pods side by side differ in seats or strip', () => {
   const slots = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
@@ -174,4 +174,15 @@ test('the cross-fade keeps summed opacity within 0.95 to 1.05 across 380 to 420 
   assert.deepEqual(lodBlend(VEHICLE_LOD.near - 1), { near: 1, far: 0 });
   assert.deepEqual(lodBlend(VEHICLE_LOD.far + 1), { near: 0, far: 1 });
   assert.ok(Math.abs(lodBlend(400).near - 0.5) < 1e-6);
+  // The shaders take the same band: the one smoothstep string names both ends, and GLSL's smoothstep over it is
+  // lodBlend's far share.
+  const glsl = lodFadeGlsl('d');
+  assert.equal(glsl, `smoothstep(${VEHICLE_LOD.near.toFixed(1)}, ${VEHICLE_LOD.far.toFixed(1)}, d)`);
+  const m = /^smoothstep\(([\d.]+), ([\d.]+), d\)$/.exec(glsl)!;
+  const [e0, e1] = [Number(m[1]), Number(m[2])];
+  const smoothstep = (d: number): number => {
+    const x = Math.min(Math.max((d - e0) / (e1 - e0), 0), 1);
+    return x * x * (3 - 2 * x);
+  };
+  for (let d = 360; d <= 440; d += 2.5) assert.ok(Math.abs(smoothstep(d) - lodBlend(d).far) < 1e-9, `the shader's share at ${d} m is lodBlend's`);
 });

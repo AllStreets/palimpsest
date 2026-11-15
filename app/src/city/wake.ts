@@ -33,6 +33,14 @@ export const WAKE = {
     { at: 0.62, strength: 0.55 },
     { at: 0.3, strength: 0.3 },
   ],
+  /** The crest's height (its slope's scale in the shader) at the arm's line: a base, and more where the crests are not thinned by distance. */
+  amp: { base: 0.26, crest: 0.22 },
+  /**
+   * The least ridge height the water shows as a crest against its own ripple
+   * (river.ts waterNormal runs about 0.03 of slope): under this the arm is
+   * not there to the eye, and the test counts it as a gap.
+   */
+  visible: 0.025,
 } as const;
 
 /** A smooth value noise in one dimension, in [0, 1], the same curve in GLSL below. */
@@ -57,6 +65,19 @@ export function wakeArm(b: number, t: number): number {
   return WAKE.decay(b) * (0.7 + 0.3 * flow);
 }
 
+/**
+ * The ridge's height `across` metres from the arm's line, b metres astern,
+ * for a boat at `speed` (0 to 1.2 of its service speed) seen with the crests
+ * at full (crestFade 1, near the eye): the shader's cross-section, a smooth
+ * gaussian ridge of the arm's width, scaled by the arm's height. The tests
+ * sample this along the arm; the shader takes its gradient.
+ */
+export function wakeHeight(b: number, across: number, t: number, speed = 1, crestFade = 1): number {
+  const sp = Math.min(Math.max(speed, 0), 1.2);
+  const w = WAKE.width(b);
+  return sp * wakeArm(b, t) * Math.exp(-(across * across) / (w * w)) * (WAKE.amp.base + WAKE.amp.crest * crestFade);
+}
+
 /** The shape in GLSL: wkFlow (the slow wander), wkDecay, wkWidth, wkWander and wkArm, as above. */
 export const WAKE_GLSL = /* glsl */ `
   float wkHash1(float n) { return fract(sin(n * 12.9898 + 4.1414) * 43758.5453); }
@@ -70,4 +91,5 @@ export const WAKE_GLSL = /* glsl */ `
   float wkWidth(float b) { return ${WAKE.width(0).toFixed(2)} + ${(WAKE.width(1) - WAKE.width(0)).toFixed(3)} * b; }
   float wkWander(float b) { return ${WAKE.wander(0).toFixed(2)} + ${(WAKE.wander(1) - WAKE.wander(0)).toFixed(3)} * b; }
   float wkArm(float b, float t) { return wkDecay(b) * (0.7 + 0.3 * wkFlow(b * 0.04 - t * 0.08)); }
+  float wkAmp(float crestFade) { return ${WAKE.amp.base.toFixed(2)} + ${WAKE.amp.crest.toFixed(2)} * crestFade; }
 `;

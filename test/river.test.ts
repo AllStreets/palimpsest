@@ -72,29 +72,33 @@ test('every pier foot is within 0.2 m of the riverbed', () => {
 
 // ---------------------------------------------------------------- the ferries' wake (Phase 5 Task 5)
 
-import { wakeArm, WAKE } from '../app/src/city/wake.js';
+import { wakeArm, wakeHeight, WAKE } from '../app/src/city/wake.js';
 
 test('the wake height along its arm has no gap longer than 0.5 m', () => {
-  // The divergent crest along each arm of the Kelvin wedge, from the bow to where the arm fades: a continuous ridge
-  // whose height decays with distance astern, never broken into dashes. Sampled every 2 cm at several moments; a gap
-  // is any run where the crest falls under a third of its own decayed envelope.
+  // The crest the water draws along each arm of the Kelvin wedge (wake.ts wakeHeight: the shader's own ridge, its
+  // amplitude, width and decay), sampled every 2 cm at the arm's line at several moments, for a ferry at its service
+  // speed seen from near. The arm is where the ridge stands over what the water shows as a crest (WAKE.visible): it
+  // must reach at least 100 m astern, and within it never fall under that for more than 0.5 m (a dash's gap).
   for (const t of [0, 1.7, 4.3, 9.1]) {
+    let reach = 0;
+    for (let b = 0; b <= WAKE.reach; b += 0.02) {
+      if (wakeHeight(b, 0, t) >= WAKE.visible) reach = b;
+    }
+    assert.ok(reach >= 100, `at t ${t} the arm is visible to ${reach.toFixed(1)} m astern`);
     let gap = 0;
     let longest = 0;
-    let peak = 0;
-    for (let b = 0; b <= WAKE.reach; b += 0.02) {
-      const h = wakeArm(b, t);
-      const env = WAKE.decay(b);
-      peak = Math.max(peak, h);
-      if (h < env / 3) gap += 0.02;
+    for (let b = 0; b <= reach; b += 0.02) {
+      if (wakeHeight(b, 0, t) < WAKE.visible) gap += 0.02;
       else gap = 0;
       longest = Math.max(longest, gap);
     }
     assert.ok(longest <= 0.5, `at t ${t} the crest falls away for ${longest.toFixed(2)} m`);
-    assert.ok(peak > 0.5, `the crest stands up near the boat (${peak.toFixed(2)})`);
+    // The ridge is a ridge: highest on the arm's line, down to nothing a few widths across.
+    assert.ok(wakeHeight(40, 0, t) > wakeHeight(40, WAKE.width(40), t) && wakeHeight(40, 4 * WAKE.width(40), t) < WAKE.visible * 0.1);
   }
-  // The envelope decays: half as high at 90 m astern as at the bow, or less.
+  // The envelope decays: half as high at 90 m astern as at the bow, or less; a boat lying still leaves none.
   assert.ok(WAKE.decay(90) <= WAKE.decay(0) * 0.5);
-  // The crest never runs the other way: it is a height, not a slope.
-  for (let b = 0; b <= WAKE.reach; b += 0.5) assert.ok(wakeArm(b, 2.2) >= 0);
+  assert.equal(wakeHeight(20, 0, 1, 0), 0);
+  // The crest's wander never breaks it: wakeArm stays over 0.7 of its envelope, and is never negative.
+  for (let b = 0; b <= WAKE.reach; b += 0.5) assert.ok(wakeArm(b, 2.2) >= 0.7 * WAKE.decay(b) - 1e-9 && wakeArm(b, 2.2) >= 0);
 });

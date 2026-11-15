@@ -227,7 +227,8 @@ async function* closeViews(page: Page, out: string): AsyncGenerator<[string, V3 
     const pod = await callDebug<Probe | null>(page, "d.vehicleStage('pod', [252, 122])");
     if (pod) {
       const side = Math.sign(-(227 - pod.position[0]) * Math.sin(pod.heading) + (123.6 - pod.position[2]) * Math.cos(pod.heading)) || 1;
-      yield ['pod-interior', around(pod.position, pod.heading, 3.0, side * 5.2, pod.position[1] + 1.75), around(pod.position, pod.heading, -0.4, 0, pod.position[1] + 1.1)];
+      // Along the platform past its screen frame (which cut the left of the still at 3 m), looking back into the saloon.
+      yield ['pod-interior', around(pod.position, pod.heading, 5.0, side * 4.6, pod.position[1] + 1.7), around(pod.position, pod.heading, -0.6, 0, pod.position[1] + 1.1)];
     } else console.log('close: no pod stands at its station; pod-interior is skipped');
     // A train standing at a station: its nose (the lead cab car's front, 16 m and a car's half length ahead of the
     // middle car) from 7 m ahead and a little to its right, at the driver's eye.

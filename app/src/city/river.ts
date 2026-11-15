@@ -1167,17 +1167,19 @@ function waterFragment(steps: number): string {
         float w2 = width * width;
         float armD = aa - edge;
         float gauss = exp(-armD * armD / w2);
-        // The crest: the gradient of a smooth ridge across the arm's line, standing up toward the boat.
-        g += side * sign(a) * (-2.0 * armD / w2) * gauss * arm * (0.1 + 0.12 * crestFade);
+        // The crest: the gradient of a smooth ridge across the arm's line (wake.ts wakeHeight), standing up toward
+        // the boat; the dusk sky slides down its back and the dark water up its face, which is how the V is seen.
+        g += side * sign(a) * (-2.0 * armD / w2) * gauss * arm * wkAmp(crestFade);
         // The inner crests, each a ridge the same shape a few widths inside the arm, fainter.
         for (int k = 1; k <= 2; k++) {
           float dIn = aa - (edge - width * 2.4 * float(k));
           float str = k == 1 ? ${WAKE.inner[0].strength.toFixed(2)} : ${WAKE.inner[1].strength.toFixed(2)};
-          g += side * sign(a) * (-2.0 * dIn / w2) * exp(-dIn * dIn / w2) * arm * str * (0.06 + 0.1 * crestFade);
+          g += side * sign(a) * (-2.0 * dIn / w2) * exp(-dIn * dIn / w2) * arm * str * wkAmp(crestFade) * 0.6;
         }
-        // Foam only on the crest's top near the boat, broken up by its own noise.
-        float tip = gauss * smoothstep(80.0, 4.0, b) * crestFade;
-        if (tip > 0.02) foam += tip * arm * 0.45 * smoothstep(0.45, 0.85, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2)));
+        // Foam along the crest's top, thick by the hull and thinning astern, broken up by its own noise: the arm
+        // is a pale line as well as a ridge, so it reads from the quay at dusk.
+        float tip = gauss * smoothstep(130.0, 6.0, b) * (0.5 + 0.5 * crestFade);
+        if (tip > 0.02) foam += tip * arm * 0.7 * smoothstep(0.35, 0.8, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2)));
       }
       // The churn astern of the hull (its stern stands 11 m behind the middle), and white water along its sides.
       float s = u - 10.5;
