@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,7 @@ import { defaultHome } from '../engine/home.js';
 import {
   CLAUDE_RUNTIME_PATHS,
   childEnv,
+  hardlinkRule,
   cliProfile,
   selectedShell,
   registerRunPorts,
@@ -222,6 +223,73 @@ describe('profile text', () => {
     assert.ok(readDeny > lineAt(p, '(allow file-read*'));
     assert.ok(lineAt(p, '(deny file-write*', `(subpath "${ROOT}/repo/.git")`) > allow);
     assert.ok(lineAt(p, '(deny file-read*', `(subpath "${HOME}/.config/gh")`) > lineAt(p, '(allow file-read*'));
+  });
+});
+
+describe('the hardlink rule in every profile (Phase 5 Task 19)', () => {
+  test('hardlinkRule denies every link, then allows one only inside the writable folders', () => {
+    assert.equal(hardlinkRule(['/a/w', '/a/t']), '(deny file-link)\n(allow file-link (subpath "/a/w") (subpath "/a/t"))');
+    assert.equal(hardlinkRule([]), '(deny file-link)');
+  });
+
+  /** The rule sits right after the profile's write allow, so every later write deny (a .git, ctl, a secret) still wins over its allow. */
+  function placed(p: string, writable: string[], laterDenies: string[][]) {
+    const lines = p.split('\n');
+    const deny = lines.indexOf('(deny file-link)');
+    assert.ok(deny >= 0, 'no (deny file-link)');
+    const allow = deny + 1;
+    assert.equal(lines[allow], `(allow file-link ${writable.map((w) => `(subpath "${w}")`).join(' ')})`);
+    assert.ok(deny > lineAt(p, '(allow file-write*', `(subpath "${writable[0]}")`), 'the rule follows the write allow');
+    for (const needles of laterDenies) assert.ok(lineAt(p, ...needles) > allow, needles.join(' '));
+  }
+
+  test('the tool profile carries it for each side', () => {
+    placed(toolProfile(input), ['repo', 'ship', 'tmp', 'home', 'cache'].map((d) => `${ROOT}/${d}`), [
+      ['(deny file-write*', `(subpath "${ROOT}/repo/.git")`],
+      ['(deny file-write*', `(subpath "${ROOT}/ctl")`],
+      ['(deny file-read* file-write*', `(subpath "${HOME}/.ssh")`],
+    ]);
+    placed(toolProfile({ ...input, side: 'base' }), ['base', 'base-tmp', 'base-home', 'base-cache'].map((d) => `${ROOT}/${d}`), [['(deny file-write*', `(subpath "${ROOT}/base/.git")`]]);
+  });
+
+  test('the CLI profile carries it for the repo and for a work dir', () => {
+    const runtime = CLAUDE_RUNTIME_PATHS.map((r) => `${HOME}/${r}`);
+    placed(cliProfile(cliInput), [`${ROOT}/repo`, `${ROOT}/tmp`, `${ROOT}/ctmp`, ...runtime], [
+      ['(deny file-write*', `(subpath "${ROOT}/repo/.git")`],
+      ['(deny file-write*', `(subpath "${HOME}/.claude/projects")`],
+    ]);
+    placed(cliProfile({ ...cliInput, workDir: `${ROOT}/work` }), [`${ROOT}/work`, `${ROOT}/tmp`, `${ROOT}/ctmp`, ...runtime], [['(deny file-write*', `(subpath "${ROOT}/work/.git")`]]);
+  });
+
+  test('the trainer profile carries it for the school and its tmp', () => {
+    placed(trainerProfile({ school: `${DATA}/school`, tmp: `${DATA}/school/tmp`, home: HOME }), [`${DATA}/school`, `${DATA}/school/tmp`], [
+      ['(deny file-write*', `(subpath "${DATA}/school/ctl")`],
+      ['(deny file-read* file-write*', `(subpath "${HOME}/.ssh")`],
+    ]);
+  });
+
+  test('the rule alone stops the escape: on an allow-by-default profile a link from outside the writable folder fails and one inside works', { skip: process.platform !== 'darwin' || !existsSync('/usr/bin/sandbox-exec') }, () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'palimpsest-hardlink-rule-')));
+    try {
+      const w = join(dir, 'w');
+      mkdirSync(w);
+      writeFileSync(join(dir, 'outside.txt'), 'outside\n');
+      writeFileSync(join(w, 'inside.txt'), 'inside\n');
+      const sb = join(dir, 'p.sb');
+      writeFileSync(sb, ['(version 1)', '(allow default)', hardlinkRule([w])].join('\n'));
+      const ln = (from: string, to: string) => spawnSync('/usr/bin/sandbox-exec', ['-f', sb, '/bin/ln', from, to], { encoding: 'utf8' });
+      const out = ln(join(dir, 'outside.txt'), join(w, 'escaped'));
+      assert.notEqual(out.status, 0);
+      assert.match(out.stderr, /Operation not permitted/);
+      assert.ok(!existsSync(join(w, 'escaped')));
+      const inside = ln(join(w, 'inside.txt'), join(w, 'linked'));
+      assert.equal(inside.status, 0, inside.stderr);
+      // a link out of the writable folder is refused too
+      assert.notEqual(ln(join(w, 'inside.txt'), join(dir, 'out-link')).status, 0);
+      assert.ok(!existsSync(join(dir, 'out-link')));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -767,5 +835,113 @@ describe('the trainer profile under sandbox-exec', { skip: !hasSandbox && 'sandb
     const r = await trainer(`'${process.execPath}' -e '${script.replace(/'/g, "'\\''")}'`, { bindPort: port });
     assert.ok(r.stdout.includes(`bound ${port}`), r.stdout + r.stderr);
     assert.ok(r.stdout.includes(`denied ${port + 1}`), r.stdout + r.stderr);
+  });
+});
+
+/*
+ * The hardlink escape (Phase 5 Task 19, ruling 19). Seatbelt checks a link(2)
+ * against both of its paths, so a process may link only a file it may write
+ * into a folder it may write. Every profile gets a rule that says so by name
+ * (hardlinkRule), proved here on each profile by execution.
+ */
+describe('the hardlink escape under sandbox-exec (Phase 5 Task 19)', { skip: !hasSandbox && 'sandbox-exec is not available' }, () => {
+  let t: string;
+  let home: string;
+  let data: string;
+  let runRoot: string;
+  let toolchain: string;
+  let school: string;
+  let schoolTmp: string;
+  let o: ProfileInput;
+
+  beforeEach(() => {
+    t = realpathSync(mkdtempSync(join(tmpdir(), 'palimpsest-hardlink-')));
+    home = join(t, 'home');
+    data = join(home, 'Library', 'Application Support', 'Palimpsest');
+    runRoot = join(data, 'runs', 'run-1');
+    for (const d of ['repo/.git', 'tmp', 'ctmp', 'home', 'cache', 'ctl', 'work']) mkdirSync(join(runRoot, d), { recursive: true });
+    writeFileSync(join(runRoot, 'repo', 'inside.txt'), 'inside\n');
+    writeFileSync(join(runRoot, 'ctl', 'gitconfig'), '');
+    // A toolchain under the home: readable by the tool and CLI profiles, never writable.
+    toolchain = join(home, '.cargo', 'bin');
+    mkdirSync(toolchain, { recursive: true });
+    writeFileSync(join(toolchain, 'readable.txt'), 'readable\n');
+    // A file in the home: readable by the trainer profile (allow default), never writable.
+    writeFileSync(join(home, 'outside.txt'), 'outside\n');
+    school = join(data, 'school');
+    schoolTmp = join(school, 'tmp');
+    mkdirSync(schoolTmp, { recursive: true });
+    writeFileSync(join(school, 'inside.txt'), 'inside\n');
+    process.env.PALIMPSEST_HOME = data;
+    delete process.env.PALIMPSEST_SANDBOX;
+    o = { runRoot, home, dataHome: data, enginePort: 9, proxyPort: 9, toolchains: [toolchain], otherPorts: [] };
+  });
+
+  afterEach(() => {
+    rmSync(t, { recursive: true, force: true });
+  });
+
+  const tool = (cmd: string) =>
+    run(wrap(['/bin/sh', '-c', cmd], 'tool', o), { cwd: join(runRoot, 'repo'), env: childEnv(runRoot, { proxyPort: 9, proxyToken: 't', toolchains: [] }) });
+  const cli = (script: string, workDir?: string) =>
+    run(wrap([process.execPath, '-e', script], 'cli', { ...o, claudeBin: '/usr/bin/true', nodeBin: process.execPath, brokerPort: 9, workDir }), {
+      cwd: join(runRoot, 'repo'),
+      env: { PATH: '/usr/bin:/bin', HOME: home },
+    });
+  const trainer = (cmd: string) => run(wrap(['/bin/sh', '-c', cmd], 'trainer', { school, tmp: schoolTmp, home }), { cwd: schoolTmp, env: { PATH: '/usr/bin:/bin', HOME: schoolTmp, TMPDIR: schoolTmp } });
+  const link = (from: string, to: string) => `try{require('fs').linkSync(${JSON.stringify(from)},${JSON.stringify(to)});console.log('linked ${to}')}catch(e){console.log('denied ${to} '+e.code)}`;
+
+  test("a sandboxed process cannot hard-link a readable file from outside the run into the run's writable folder", async () => {
+    const src = join(toolchain, 'readable.txt');
+    // The tool profile: the toolchain is readable, and the repo, tmp, home and cache are writable.
+    const toolTargets = ['repo', 'tmp', 'home', 'cache'].map((d) => join(runRoot, d, 'escaped'));
+    const r = await tool(`/bin/cat '${src}' && ${toolTargets.map((d) => `/bin/ln '${src}' '${d}'`).join('; ')}; echo done`);
+    assert.match(r.stdout, /^readable\n/, 'the toolchain file is readable: ' + r.stdout + r.stderr);
+    assert.match(r.stdout, /done/);
+    for (const d of toolTargets) assert.ok(!existsSync(d), d);
+
+    // The CLI profile: the toolchain is readable, and the repo, tmp and ctmp are writable; a work dir too for a plan call.
+    const cliTargets = [join(runRoot, 'repo', 'escaped'), join(runRoot, 'tmp', 'escaped'), join(runRoot, 'ctmp', 'escaped')];
+    const c = await cli(`console.log(require('fs').readFileSync(${JSON.stringify(src)},'utf8').trim());` + cliTargets.map((d) => link(src, d)).join(';'));
+    assert.match(c.stdout, /^readable$/m, 'the toolchain file is readable to the CLI: ' + c.stdout + c.stderr);
+    for (const d of cliTargets) {
+      assert.ok(c.stdout.includes(`denied ${d}`), `${d}: ${c.stdout}${c.stderr}`);
+      assert.ok(!existsSync(d), d);
+    }
+    const workTarget = join(runRoot, 'work', 'escaped');
+    const w = await cli(link(src, workTarget), join(runRoot, 'work'));
+    assert.ok(w.stdout.includes(`denied ${workTarget}`), w.stdout + w.stderr);
+    assert.ok(!existsSync(workTarget));
+
+    // The trainer profile: everything outside the credentials is readable, and the school and its tmp are writable.
+    const outside = join(home, 'outside.txt');
+    const trainerTargets = [join(school, 'escaped'), join(schoolTmp, 'escaped')];
+    const tr = await trainer(`/bin/cat '${outside}' && ${trainerTargets.map((d) => `/bin/ln '${outside}' '${d}'`).join('; ')}; echo done`);
+    assert.match(tr.stdout, /^outside\n/, 'the home file is readable to the trainer: ' + tr.stdout + tr.stderr);
+    assert.match(tr.stdout, /done/);
+    for (const d of trainerTargets) assert.ok(!existsSync(d), d);
+  });
+
+  test('a hard link inside the writable folder still works', async () => {
+    const r = await tool(`/bin/ln inside.txt linked.txt && /bin/ln inside.txt '${runRoot}/tmp/linked.txt' && /bin/cat linked.txt`);
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, 'inside\n');
+    assert.equal(lstatSync(join(runRoot, 'repo', 'inside.txt')).nlink, 3);
+
+    const inRepo = join(runRoot, 'repo', 'inside.txt');
+    const c = await cli(link(inRepo, join(runRoot, 'repo', 'cli-linked.txt')));
+    assert.ok(c.stdout.includes(`linked ${join(runRoot, 'repo', 'cli-linked.txt')}`), c.stdout + c.stderr);
+
+    const tr = await trainer(`/bin/ln '${school}/inside.txt' '${schoolTmp}/linked.txt' && /bin/cat '${schoolTmp}/linked.txt'`);
+    assert.equal(tr.code, 0, tr.stderr);
+    assert.equal(tr.stdout, 'inside\n');
+  });
+
+  test('git clones a folder inside the writable folder with its default hardlinks', async () => {
+    const r = await tool(
+      `git init -q src && cd src && echo a > a && git add a && git -c user.name=t -c user.email=t@t commit -qm a && cd .. && git clone -q src dst && /bin/cat dst/a`,
+    );
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, 'a\n');
   });
 });

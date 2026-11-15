@@ -99,7 +99,7 @@ test('the sample stand-in keeps an API key in memory: security never runs, and n
   }
 });
 
-test('a sample engine never keeps a folder override that names his own Claude, Codex or Gemini folders; a test temp folder is kept', async () => {
+test('a sample engine never keeps a folder override that names his own Claude, Codex or Gemini folders, however a symlink spells it; a test temp folder is kept', async () => {
   const { homedir } = await import('node:os');
   const { useSampleFolders, sampleProjectsDir, sampleCodexHome, sampleGeminiHome } = await import('../engine/sample.js');
   const KEYS = ['PALIMPSEST_CLAUDE_PROJECTS', 'PALIMPSEST_CODEX_HOME', 'PALIMPSEST_GEMINI_HOME'] as const;
@@ -114,6 +114,19 @@ test('a sample engine never keeps a folder override that names his own Claude, C
     assert.equal(process.env.PALIMPSEST_CLAUDE_PROJECTS, sampleProjectsDir(dir));
     assert.equal(process.env.PALIMPSEST_CODEX_HOME, sampleCodexHome(dir));
     assert.equal(process.env.PALIMPSEST_GEMINI_HOME, sampleGeminiHome(dir));
+
+    // A symlink spelled differently that leads to his home is resolved first: its real path names his folders.
+    const alias = join(tempDir, 'alias-of-his-home');
+    symlinkSync(homedir(), alias);
+    process.env.PALIMPSEST_CLAUDE_PROJECTS = join(alias, '.claude', 'projects');
+    process.env.PALIMPSEST_CODEX_HOME = join(alias, '.codex');
+    const gemini = join(tempDir, 'gemini-alias');
+    symlinkSync(join(homedir(), '.gemini'), gemini);
+    process.env.PALIMPSEST_GEMINI_HOME = join(gemini, 'tmp');
+    useSampleFolders(dir);
+    assert.equal(process.env.PALIMPSEST_CLAUDE_PROJECTS, sampleProjectsDir(dir), 'a symlink to his home is resolved');
+    assert.equal(process.env.PALIMPSEST_CODEX_HOME, sampleCodexHome(dir));
+    assert.equal(process.env.PALIMPSEST_GEMINI_HOME, sampleGeminiHome(dir), 'a symlink to his folder itself is resolved');
 
     const mine = join(tempDir, 'projects');
     process.env.PALIMPSEST_CLAUDE_PROJECTS = mine;

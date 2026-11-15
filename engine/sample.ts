@@ -6,9 +6,9 @@
  * that marker answers every gh and git call from sampleGh and keeps the usage
  * hook's Claude settings inside the sample home.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import type { RootStyle } from '../shared/types.js';
 import { openDb } from './db.js';
@@ -48,20 +48,45 @@ function hisFolders(): string[] {
   return ['.claude', '.codex', '.gemini'].map((f) => join(homedir(), f));
 }
 
-/** True when `p` names one of his own folders or a path inside one, compared on its text in any letter case (nothing is opened). */
+/**
+ * The real path of `p` as far as it exists: each symlink on the way is
+ * followed, a dangling one too, and the part that does not exist yet is
+ * kept as written. Only metadata is looked up; nothing is opened.
+ */
+function realPathOf(p: string, depth = 0): string {
+  const abs = resolve(p);
+  if (depth > 32) return abs;
+  try {
+    return realpathSync.native(abs);
+  } catch {
+    try {
+      if (lstatSync(abs).isSymbolicLink()) return realPathOf(resolve(dirname(abs), readlinkSync(abs)), depth + 1);
+    } catch {
+      // not there: resolve the parent
+    }
+    const parent = dirname(abs);
+    if (parent === abs) return abs;
+    return join(realPathOf(parent, depth + 1), basename(abs));
+  }
+}
+
+/**
+ * True when `p` names one of his own folders or a path inside one, in any
+ * letter case, compared both as written and by its real path, so a symlink
+ * spelled differently that leads to his folders is caught.
+ */
 function namesHisFolder(p: string): boolean {
-  const abs = resolve(p).toLowerCase();
-  return hisFolders().some((f) => {
-    const root = resolve(f).toLowerCase();
-    return abs === root || abs.startsWith(root + sep);
-  });
+  const spellings = [resolve(p), realPathOf(p)].map((s) => s.toLowerCase());
+  const roots = hisFolders().flatMap((f) => [resolve(f), realPathOf(f)].map((r) => r.toLowerCase()));
+  return spellings.some((abs) => roots.some((root) => abs === root || abs.startsWith(root + sep)));
 }
 
 /**
  * Points every reader of his other folders at the sample home's own: the
  * Claude transcripts the budget scans, and the Codex and Gemini homes
  * Settings reads. A variable already set (a test's or a tool's temp folder)
- * is kept, unless it names his own `.claude`, `.codex` or `.gemini`.
+ * is kept, unless it names his own `.claude`, `.codex` or `.gemini`, by its
+ * text or by its real path.
  */
 export function useSampleFolders(dir: string = home()): void {
   const set = (k: string, v: string) => {

@@ -379,7 +379,7 @@ No agent gets a shell. Claude works through the `claude` CLI with file tools and
 
 The guard refuses, among other things: any push, changing the git remotes or config, rewriting history, deleting a tag or any branch not named `palimpsest/`, the GitHub CLI, `sudo`, `launchctl`, `osascript` and `security`, piping a download into a shell, recursive removal outside the repository, and any command that names a credential file or Claude's configuration. It is one of three layers: a command it misses still runs without credentials, inside the sandbox.
 
-One limit I know of: a process inside the sandbox can hardlink a file it may read into the folder it may write to. The profiles deny writes to the secret paths, but the limit is there, and I'd rather say so.
+A process inside the sandbox can't hardlink a file it may only read into the folder it may write to: every profile allows a hard link only between two paths inside the folders it writes, and a test tries the escape against each profile under `sandbox-exec`.
 
 Every agent's instructions carry the never list: never, without asking, delete a repo, force-push, rewrite history, change repo settings, secrets or visibility, touch billing, or delete branches the city did not create. The engine's own pushes refuse any force flag, and the only branches it ever deletes are its own `palimpsest/` branches.
 
