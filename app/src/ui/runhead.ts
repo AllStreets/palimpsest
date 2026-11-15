@@ -13,17 +13,24 @@ export interface Runhead {
 
 /**
  * The running head, top left, as a book prints its title above the page:
- * the name in italic, then the places, the current one ruled in
- * bronze beneath. Plain links, so Tab and Enter reach them. After them,
- * Find: the command palette (Phase 5), which the head mounts.
+ * the mark at 18 px, the name in italic, then the places, the current one
+ * ruled in bronze beneath. Plain links, so Tab and Enter reach them. After
+ * them, Find: the command palette (Phase 5), which the head mounts.
  */
 export function createRunhead(parent: HTMLElement): Runhead {
   const nav = el('nav', 'runhead');
   nav.setAttribute('aria-label', 'Palimpsest');
+  // The small mark, the P carved in stone, at 18 px before the name (its @2x for Retina).
+  const icon = el('img', 'runhead-icon');
+  icon.src = '/brand/mark-18.png';
+  icon.srcset = '/brand/mark-18.png 1x, /brand/mark-18@2x.png 2x';
+  icon.width = 18;
+  icon.height = 18;
+  icon.alt = '';
   const mark = el('span', 'runhead-mark', 'Palimpsest');
   const links = new Map<Route, HTMLAnchorElement>();
   const count = el('span', 'runhead-count');
-  nav.append(mark);
+  nav.append(icon, mark);
   for (const { route, name: text } of SCREENS) {
     const a = el('a', 'runhead-link', text);
     a.href = routeHref(route);

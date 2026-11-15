@@ -50,7 +50,7 @@ import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
 import { briefChecks, emptyMorningChecks } from './ui-test-brief.js';
 import { dropNoticeChecks, noticeChecks } from './ui-test-notices.js';
-import { everyScreenChecks, freedPlotChecks, reposChecks, screensHarness, settingsChecks, splashChecks } from './ui-test-screens.js';
+import { brandChecks, everyScreenChecks, freedPlotChecks, reposChecks, screensHarness, settingsChecks, splashChecks } from './ui-test-screens.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson } from './people-stage.js';
 import { SAMPLE, sampleGh, seedSample } from './sample.js';
 import { decodePng } from './png.js';
@@ -2894,8 +2894,13 @@ async function main(): Promise<void> {
     // UI_ONLY=autonomy: his autonomy in the brief, Settings, the district page and a job page (Task 31's rounds).
     // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
     // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
+    // UI_ONLY=brand: the splash's mark (above), the running head's mark and the favicon alone (Phase 5 Task 22).
+    const brandOnly = process.env.UI_ONLY === 'brand';
     const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage'].includes(process.env.UI_ONLY ?? '');
-    if (spireOnly && ready) {
+    if (brandOnly && ready) {
+      await brandChecks(page);
+      await everyScreenChecks(page, consoleErrors);
+    } else if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
       if (process.env.UI_ONLY === 'schoolscreen') {
