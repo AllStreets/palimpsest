@@ -472,6 +472,18 @@ export async function splashChecks(browser: Browser): Promise<void> {
       .then(() => true)
       .catch(() => false);
     const text = (await page.locator('#error').textContent()) ?? '';
+    if (when === 'at launch') {
+      const mark = await page
+        .locator('.sheet img.mark')
+        .evaluate((img) => {
+          const el = img as HTMLImageElement;
+          const r = el.getBoundingClientRect();
+          return { loaded: el.complete && el.naturalWidth > 0, w: Math.round(r.width), h: Math.round(r.height), shown: r.width > 0 && getComputedStyle(el).visibility !== 'hidden' };
+        })
+        .catch(() => null);
+      const name = ((await page.locator('.sheet h1.name').textContent().catch(() => '')) ?? '').trim();
+      check(!!mark && mark.loaded && mark.shown && mark.w >= 96 && mark.w === mark.h && name === 'Palimpsest', `the splash shows the mark and the name (${mark ? `${mark.w}x${mark.h}, loaded ${mark.loaded}` : 'no mark'}; "${name}")`);
+    }
     check(shown && /could not open the city/i.test(text) && /window is gone/.test(text), `splash ${when}: a failed open shows the engine-down state with the reason (${text || 'nothing shown'})`);
     check(!(await page.locator('#start').isDisabled()), `splash ${when}: Start the engine works again`);
     check(errors.length === 0, `splash ${when}: no unhandled errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
@@ -479,6 +491,42 @@ export async function splashChecks(browser: Browser): Promise<void> {
   }
 }
 
+
+// ---------------------------------------------------------------- the mark
+
+/**
+ * The mark where the window shows it (Task 22): the running head draws it at
+ * 18 px before the name, and the browser tab's favicon is served as a PNG.
+ */
+export async function brandChecks(page: Page): Promise<void> {
+  const head = await page
+    .locator('.runhead img.runhead-icon')
+    .evaluate((img) => {
+      const el = img as HTMLImageElement;
+      const r = el.getBoundingClientRect();
+      const name = el.nextElementSibling as HTMLElement | null;
+      const nr = name?.getBoundingClientRect();
+      return {
+        loaded: el.complete && el.naturalWidth > 0,
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+        beforeName: !!nr && r.right <= nr.left + 1 && Math.abs((r.top + r.bottom) / 2 - (nr.top + nr.bottom) / 2) < 8,
+        src: el.currentSrc,
+      };
+    })
+    .catch(() => null);
+  check(!!head && head.loaded && head.w === 18 && head.h === 18 && head.beforeName, `the running head draws the mark at 18 px (${head ? `${head.w}x${head.h}, loaded ${head.loaded}, before the name ${head.beforeName}, ${head.src}` : 'no mark'})`);
+  const favicon = (await page.evaluate(async () => {
+    const link = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null;
+    if (!link) return { href: null, status: 0, type: '' };
+    const r = await fetch(link.href);
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    const png = bytes.length > 8 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+    return { href: link.getAttribute('href'), status: r.status, type: r.headers.get('content-type') ?? '', png };
+  })) as { href: string | null; status: number; type: string; png?: boolean };
+  check(favicon.href !== null && favicon.status === 200 && favicon.png === true, `the favicon is served (${favicon.href ?? 'no link'}: ${favicon.status} ${favicon.type})`);
+  await page.screenshot({ path: join(SHOTS, 'brand-runhead.png'), clip: { x: 0, y: 0, width: 520, height: 70 } });
+}
 
 // ---------------------------------------------------------------- every screen by its address
 

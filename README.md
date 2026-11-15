@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="docs/brand/logo.png" alt="The Palimpsest mark: the letter P standing as a tower at dusk, sandstone at its foot, brick floors with one left in primer, a bronze band, glass with lit windows and a titanium crown, on a stepped stone plinth before the city's skyline." width="160" />
+</p>
+
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wordmark-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="docs/brand/wordmark-light.png" />
