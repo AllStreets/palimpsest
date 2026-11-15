@@ -3,7 +3,8 @@
  * per-ecosystem commands, detected in engine/guild/checks.ts).
  *
  * The runner sets the run's egress proxy to stage `install` (the registries
- * of the repo's ecosystems only) before it calls `installDeps`, and back to
+ * of the repo's ecosystems, plus the GitHub HTTPS hosts its own lockfiles
+ * name, see lock-sources.ts) before it calls `installDeps`, and back to
  * `working` after. The install command runs through `execTool()` under the
  * tool profile like any agent command, so the sandbox, not the engine,
  * bounds it.
@@ -13,6 +14,7 @@ import { basename } from 'node:path';
 import type { CheckResult, Repo } from '../../shared/types.js';
 import { execTool } from './broker.js';
 import { hostsFor, type Egress } from './egress.js';
+import { lockSources, refusalText } from './lock-sources.js';
 import type { RunLogLine } from './provider.js';
 
 /** Wall time the install stage may take. */
@@ -50,8 +52,15 @@ export const installDeps: InstallDeps = async (ctx, repo) => {
   if (!command) {
     return { name: 'install', status: 'skipped', detail: 'Nothing to install.', durationMs: 0, logPath: null, testsRun: null };
   }
-  // Only the registries of the ecosystems the repo's lockfiles name; the caller sets the next stage after.
-  ctx.egress?.setStage('install', hostsFor('install', repo.checks?.ecosystems ?? [], null));
+  // A dependency the lockfiles fetch over SSH or git:// can never install here: say which, before the install runs.
+  const sources = lockSources(ctx.dir);
+  if (sources.refused.length) {
+    const detail = `Cannot install: ${refusalText(sources.refused)}.`.slice(0, 4000);
+    ctx.log({ at: new Date().toISOString(), kind: 'engine', text: `[palimpsest] ${detail}` });
+    return { name: 'install', status: 'fail', detail, durationMs: Date.now() - started, logPath: null, testsRun: null };
+  }
+  // Only the registries of the ecosystems the repo's lockfiles name, and the GitHub HTTPS hosts they fetch from; the caller sets the next stage after.
+  ctx.egress?.setStage('install', [...new Set([...hostsFor('install', repo.checks?.ecosystems ?? [], null), ...sources.hosts])]);
   const r = await execTool({ runId: ctx.runId, runRoot: ctx.runRoot, dir: ctx.dir, log: ctx.log, signal: ctx.signal, command, timeoutMs: INSTALL_MS, stage: 'install', side: ctx.side });
   const durationMs = Date.now() - started;
   if (r.refused) return { name: 'install', status: 'fail', detail: `Refused: ${r.refused}`, durationMs, logPath: null, testsRun: null };

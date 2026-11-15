@@ -4,7 +4,7 @@
  * registry is reached.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -127,4 +127,46 @@ test('the install reruns before the after-checks only when the diff touches a ma
   for (const f of ['pnpm-lock.yaml', 'yarn.lock', 'requirements.txt', 'pyproject.toml', 'Cargo.toml', 'Cargo.lock', 'go.mod', 'go.sum']) {
     assert.equal(needsReinstall([f]), true, f);
   }
+});
+
+function lock(dir: string, resolved: string): void {
+  writeFileSync(
+    join(dir, 'package-lock.json'),
+    JSON.stringify({ name: 'x', lockfileVersion: 3, packages: { '': { name: 'x' }, 'node_modules/beagle': { version: '0.1.0', resolved } } }),
+  );
+}
+
+const SHA = 'd72c872ec704565da88e8cf792af1b06a23fd285';
+
+test('a registry-only lockfile opens only the registry', async () => {
+  const stages: Array<{ stage: string; hosts: string[] }> = [];
+  const ctx = context(stages, []);
+  lock(ctx.dir, 'https://registry.npmjs.org/beagle/-/beagle-0.1.0.tgz');
+  const r = await installDeps(ctx, repo(checks({ install: 'npm ci', ecosystems: ['npm'] })));
+  assert.equal(r.status, 'pass');
+  assert.deepEqual(stages, [{ stage: 'install', hosts: ['registry.npmjs.org'] }]);
+});
+
+test('a codeload tarball in the lockfile also opens codeload.github.com, and nothing else', async () => {
+  const stages: Array<{ stage: string; hosts: string[] }> = [];
+  const ctx = context(stages, []);
+  lock(ctx.dir, `https://codeload.github.com/AllStreets/beagle/tar.gz/${SHA}`);
+  const r = await installDeps(ctx, repo(checks({ install: 'npm ci', ecosystems: ['npm'] })));
+  assert.equal(r.status, 'pass');
+  assert.deepEqual(stages, [{ stage: 'install', hosts: ['registry.npmjs.org', 'codeload.github.com'] }]);
+});
+
+test('a git+ssh dependency fails the install with a reason naming it, before anything runs', async () => {
+  const stages: Array<{ stage: string; hosts: string[] }> = [];
+  const lines: RunLogLine[] = [];
+  const ctx = context(stages, lines);
+  lock(ctx.dir, `git+ssh://git@github.com/AllStreets/beagle.git#${SHA}`);
+  const r = await installDeps(ctx, repo(checks({ install: 'npm ci', ecosystems: ['npm'] })));
+  assert.equal(r.status, 'fail');
+  assert.match(r.detail, /beagle/);
+  assert.match(r.detail, /package-lock\.json/);
+  assert.match(r.detail, /SSH/);
+  assert.match(r.detail, /git\+ssh:\/\/git@github\.com\/AllStreets\/beagle\.git/);
+  assert.equal(spawned.length, 0, 'npm never runs');
+  assert.ok(lines.some((l) => /beagle/.test(l.text)), 'the run log says why');
 });
