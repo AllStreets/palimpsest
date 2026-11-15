@@ -44,7 +44,7 @@ import { makeScaffold, type Scaffold } from './scaffold.js';
 import { createMilestones, findTowerPiece, type MilestoneShow, type Milestones, type TowerPiece } from './milestones.js';
 import type { TowerMaterials } from './tower/kit.js';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky.js';
-import { cityExtent, easeHome, easeLimits, fogFrom, opensHome, viewLimits, type EasedHome, type EasedLimits, type ViewLimits } from './view.js';
+import { cityExtent, clearAirFloor, easeHome, easeLimits, fogFrom, opensHome, viewLimits, type EasedHome, type EasedLimits, type ViewLimits } from './view.js';
 
 /** What a click in the city landed on: a district's tower (a floor, or its root), an agent's tower in a quarter, or a firm's plinth. */
 export type PickHit =
@@ -600,21 +600,24 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let limits: ViewLimits = viewLimits(extent, width() / height());
   let eased: EasedLimits = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
   /** The home the haze thins against (its distance and its target), eased with the rest so a growing city never makes it jump. */
-  let easedHome: EasedHome = easeHome({ distance: 0, target: [0, 0, 0] }, { distance: limits.homeDistance, target: limits.home.target }, Infinity);
+  const easedHome: EasedHome = easeHome({ distance: 0, target: [0, 0, 0] }, { distance: limits.homeDistance, target: limits.home.target }, Infinity);
   /** A debug multiplier on the haze (the clear-air still, Decision 5): 1 is the city's own. */
   let hazeScale = 1;
   function relimit(snap: boolean): void {
     limits = viewLimits(extent, width() / height());
     if (snap) {
       eased = { maxDistance: limits.maxDistance, fogDensity: limits.fogDensity, far: limits.far };
-      easedHome = easeHome(easedHome, { distance: limits.homeDistance, target: limits.home.target }, Infinity);
+      easeHome(easedHome, { distance: limits.homeDistance, target: limits.home.target }, Infinity, easedHome);
     }
   }
   const applyLimits = (): void => {
     rig.controls.maxDistance = eased.maxDistance;
     // Flown out past home the haze thins, so the whole city still reads from as far as the camera may go: measured
     // from the eased home, never from a home that just jumped (Task 6).
-    fog.density = fogFrom(eased.fogDensity, easedHome, [camera.position.x, camera.position.y, camera.position.z]) * hazeScale;
+    // A haze thinned on purpose (haze(k), the clear-air still) never drops under the clear-air floor, so the ground's
+    // far edge stays in haze; haze(0) alone means none (the tests' clear-air read).
+    const own = fogFrom(eased.fogDensity, easedHome, camera.position);
+    fog.density = hazeScale === 1 ? own : hazeScale > 0 ? Math.max(own * hazeScale, clearAirFloor(camera.position.distanceTo(rig.controls.target))) : 0;
     if (camera.far !== eased.far) {
       camera.far = eased.far;
       camera.updateProjectionMatrix();
@@ -1580,7 +1583,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       applyInset();
     }
     eased = easeLimits(eased, limits, dt, camera.position.distanceTo(rig.controls.target));
-    easedHome = easeHome(easedHome, { distance: limits.homeDistance, target: limits.home.target }, dt);
+    easeHome(easedHome, { distance: limits.homeDistance, target: limits.home.target }, dt, easedHome);
     rig.update(dt);
     exchange?.update(dt);
     updateConstructions(dt);

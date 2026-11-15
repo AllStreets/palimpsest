@@ -24,8 +24,13 @@ export const CROWN_ALLOWANCE = 12;
 const FOOTPRINT = 40;
 /** Half the width of a crown, a little over a top floor's. */
 const CROWN_HALF = 16;
-/** The haze the city was designed in: thick enough to swallow the horizon into the sky. */
-export const HERO_FOG = 0.00055;
+/**
+ * The haze the city was designed in: thick enough to swallow the horizon
+ * into the sky. 0.00055 until Phase 5 Task 6, which graded the haze by
+ * height and took it down by an eighth (the parked "hazed less" note): at
+ * 900 m the ground is 14% hazed, at 1500 m 40%.
+ */
+export const HERO_FOG = 0.00048;
 /** How far the camera could always fly out over the ambient city; it only ever widens. */
 const MIN_MAX_DISTANCE = 2600;
 /** The far plane never comes in closer than this: the horizon is always haze, never a clipped edge. */
@@ -255,6 +260,20 @@ export function fogFor(density: number, homeDistance: number, cameraDistance: nu
   return Math.max(density * (homeDistance / cameraDistance), horizon);
 }
 
+/** Density times distance that leaves the ground's far edge 98% haze (exponential squared): the least a thinned haze may hold. */
+const CLEAR_HORIZON = 2.0;
+
+/**
+ * The least haze density for an eye `cameraDistance` from the city's home
+ * target when the haze is thinned on purpose (the clear-air still, scene.ts
+ * haze(k)): the ground's edge, 8 km past the eye's distance, stays 98%
+ * haze, so a clear-air still never shows the ground ending in a hard line
+ * against the dome.
+ */
+export function clearAirFloor(cameraDistance: number): number {
+  return CLEAR_HORIZON / (cameraDistance + 8000);
+}
+
 /** The home the haze is measured from: its distance and its target, eased together as the city grows. */
 export interface EasedHome {
   distance: number;
@@ -268,17 +287,36 @@ export interface EasedHome {
  * so no frame measures the eye against a target that moved in a step. A dt
  * of Infinity snaps to the new home (the first placement).
  */
-export function easeHome(cur: EasedHome, to: { homeDistance?: number; distance?: number; target: V3 }, dt: number): EasedHome {
+export function easeHome(cur: EasedHome, to: { homeDistance?: number; distance?: number; target: ArrayLike<number> }, dt: number, out?: EasedHome): EasedHome {
+  // Written into `out` when given (the scene passes its own, so a frame allocates nothing); a fresh one otherwise.
+  const o = out ?? { distance: 0, target: [0, 0, 0] };
   const distance = to.distance ?? to.homeDistance ?? cur.distance;
-  if (!Number.isFinite(dt)) return { distance, target: [to.target[0], to.target[1], to.target[2]] };
+  if (!Number.isFinite(dt)) {
+    o.distance = distance;
+    o.target[0] = to.target[0];
+    o.target[1] = to.target[1];
+    o.target[2] = to.target[2];
+    return o;
+  }
   const k = 1 - Math.exp(-EASE_RATE * dt);
   const step = (a: number, b: number): number => (Math.abs(b - a) <= Math.max(1e-6, Math.abs(b) * 1e-5) ? b : a + (b - a) * k);
-  return { distance: step(cur.distance, distance), target: [step(cur.target[0], to.target[0]), step(cur.target[1], to.target[1]), step(cur.target[2], to.target[2])] };
+  const d = step(cur.distance, distance);
+  const x = step(cur.target[0], to.target[0]);
+  const y = step(cur.target[1], to.target[1]);
+  const z = step(cur.target[2], to.target[2]);
+  o.distance = d;
+  o.target[0] = x;
+  o.target[1] = y;
+  o.target[2] = z;
+  return o;
 }
 
-/** The haze density for an eye at `eye`, measured from the eased home (fogFor against its distance and its target). */
-export function fogFrom(density: number, home: EasedHome, eye: V3): number {
-  return fogFor(density, home.distance, Math.hypot(eye[0] - home.target[0], eye[1] - home.target[1], eye[2] - home.target[2]));
+/** The haze density for an eye at `eye` (anything with x, y, z, or a tuple), measured from the eased home (fogFor against its distance and its target). */
+export function fogFrom(density: number, home: EasedHome, eye: { x: number; y: number; z: number } | V3): number {
+  const ex = Array.isArray(eye) ? eye[0] : eye.x;
+  const ey = Array.isArray(eye) ? eye[1] : eye.y;
+  const ez = Array.isArray(eye) ? eye[2] : eye.z;
+  return fogFor(density, home.distance, Math.hypot(ex - home.target[0], ey - home.target[1], ez - home.target[2]));
 }
 
 /**

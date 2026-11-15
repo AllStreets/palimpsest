@@ -232,6 +232,8 @@ const CLEAR_HAZE = 0.4;
  */
 async function* hazeViews(page: Page, overview: [V3, V3]): AsyncGenerator<[string, V3 | null, V3]> {
   type Tour = { t: number; length: number };
+  // sun-low is the brief's name for the week's poster moment; the tour looks over the city toward the afterglow's side,
+  // and the sun's own band is not in its frame (sun-glow in views() holds the band for judging the cap).
   if (await callDebug<boolean>(page, 'd.tourStart()')) {
     await callDebug(page, 'd.tourHold(true)');
     await page.waitForTimeout(400);

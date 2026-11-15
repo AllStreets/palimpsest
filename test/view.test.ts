@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CROWN_ALLOWANCE, cityExtent, easeHome, easeLimits, fogFor, fogFrom, FOV, HERO_FOG, opensHome, viewLimits, type CityExtent, type EasedHome, type V3 } from '../app/src/city/view.js';
+import { clearAirFloor, CROWN_ALLOWANCE, cityExtent, easeHome, easeLimits, fogFor, fogFrom, FOV, HERO_FOG, opensHome, viewLimits, type CityExtent, type EasedHome, type V3 } from '../app/src/city/view.js';
 import { FLOOR_HEIGHT, ROOT_HEIGHT } from '../shared/tower-layout.js';
 
 // ---------------------------------------------------------------- an independent pinhole camera
@@ -221,6 +221,17 @@ test('fog is measured from the eased home', () => {
   assert.ok(Math.abs(fogFrom(density, cur, eye) - fromGrown) < fromGrown * 1e-3, `after three seconds ${fogFrom(density, cur, eye)} against ${fromGrown}`);
   // Snapping (the first placement) takes the new home whole.
   assert.deepEqual(easeHome(was, grown, Infinity), { distance: grown.distance, target: grown.target });
+});
+
+test("the clear-air floor keeps the ground's far edge in haze from any eye", () => {
+  // The clear-air still thins the haze to 0.4 of home; under the floor the ground's edge, 8 km past the eye, would show
+  // as a hard line against the dome. The floor holds it at 98% haze from home, the overview and the farthest orbit.
+  for (const d of [170, 900, 1500, 2600, 6000]) {
+    const edge = fogAt(clearAirFloor(d), d + 8000);
+    assert.ok(edge >= 0.98 && edge < 0.995, `from ${d} m the ground's edge is ${(edge * 100).toFixed(1)}% haze`);
+  }
+  // And it is a floor, not the haze: thinner than the sample's own from its overview.
+  assert.ok(clearAirFloor(900) < HERO_FOG * 0.5, `${clearAirFloor(900)} under half of HERO_FOG`);
 });
 
 test('easing never pulls in a camera that stands beyond a shrinking limit', () => {

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { BLOOM_THRESHOLD, SUN_BLOOM_MAX } from '../app/src/city/post.js';
-import { SKY_GLSL, skyClear, skyHaze, SUN_DIRECTION } from '../app/src/city/sky.js';
+import * as THREE from 'three';
+
+import { installSkyFog, SKY_GLSL, skyAir, skyClear, skyHaze, SUN_DIRECTION } from '../app/src/city/sky.js';
 
 type V3 = [number, number, number];
 
@@ -63,4 +65,32 @@ test('under the cap the sky is untouched, and the glow still rises toward the su
     assert.ok(c[0] >= last - 1e-9, `the glow dips at ${k}`);
     last = c[0];
   }
+});
+
+test("the haze takes each surface toward the sky's colour at its own height", () => {
+  // At street level the air is the horizon's haze in every bearing, so fogged ground still meets the dome with no seam;
+  // higher up it is the cooler sky above the horizon band, so a wall or a crown does not fade into the same mauve as
+  // the street under it (the one mauve-brown of round 0).
+  const sunAz = Math.atan2(SUN_DIRECTION.z, SUN_DIRECTION.x);
+  const blueOverRed = (c: V3): number => c[2] / c[0];
+  for (let k = 0; k < 12; k++) {
+    const az = sunAz + (k / 12) * Math.PI * 2;
+    const d: V3 = [Math.cos(az), -0.1, Math.sin(az)];
+    const ground = skyAir(d, 0);
+    const haze = skyHaze(d);
+    for (let i = 0; i < 3; i++) assert.ok(Math.abs(ground[i] - haze[i]) < 1e-9, `at bearing ${k} the street's air is the horizon's haze`);
+    let last = blueOverRed(ground);
+    for (const y of [30, 80, 150, 250, 400]) {
+      const c = skyAir(d, y);
+      assert.ok(blueOverRed(c) > last - 1e-9, `at bearing ${k} the air at ${y} m is no warmer than below it`);
+      last = blueOverRed(c);
+      assert.ok(Math.max(...c) <= SUN_BLOOM_MAX + 1e-9, 'the air stays under the cap');
+    }
+    // A crown's air is visibly cooler than the street's, not a shade of the same colour.
+    assert.ok(blueOverRed(skyAir(d, 400)) > blueOverRed(ground) * 1.3, `at bearing ${k} the crown's air ${blueOverRed(skyAir(d, 400)).toFixed(3)} against the street's ${blueOverRed(ground).toFixed(3)}`);
+  }
+  // The fog the GPU draws reads the fragment's own height.
+  installSkyFog();
+  assert.match(THREE.ShaderChunk.fog_fragment, /hazeOver\([^;]*vFogWorld\.y\s*\)/);
+  assert.match(SKY_GLSL, /vec3 skyAir\(vec3 dir, float y\)/);
 });

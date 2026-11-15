@@ -3022,6 +3022,16 @@ async function closeChecks(page: Page): Promise<void> {
  * stills show and by the node tests on sky.ts.
  */
 const HUE_SPREAD = 0.02;
+/** A tall tower for the crown-over-foot read: its top at least this high, so its crown stands above the ground haze's scale height. */
+const TALL_TOWER = 120;
+/**
+ * The crown-over-foot chroma read's mean on 41d045b, from the overview (task-6-rounds/r6 and r7: five runs of this
+ * read against that build, 0.802 to 0.845, mean 0.824). Logged beside the graded haze's read, not asserted: the graded
+ * haze reads 0.817 to 1.040 over five runs (mean 0.888), so the two overlap run to run (the crowns' top floors change
+ * between runs, the feet read the same to four places), and the base's haze added chroma to the crowns (its mauve over
+ * neutral dark glass) where the graded haze leaves them their own, so the ratio does not rise by a margin that holds.
+ */
+const CROWN_FOOT_BASE = 0.824;
 function oklab(r: number, g: number, b: number): [number, number, number] {
   const lin = (c: number): number => {
     c /= 255;
@@ -3106,6 +3116,48 @@ async function hazeChecks(page: Page): Promise<void> {
   const rangeB = Math.max(...medians.map((m) => m.b)) - Math.min(...medians.map((m) => m.b));
   console.log(`info  haze: overview tower medians ${rows.join('; ')}; spread ${spread.toFixed(4)} (a range ${rangeA.toFixed(4)}, b range ${rangeB.toFixed(4)}); in clear air ${clearSpread.toFixed(4)}`);
   check(medians.length >= 6 && medians.every((m) => m.n >= 100) && spread >= HUE_SPREAD, `in overview the hue spread across the six towers is at least ${HUE_SPREAD} in OKLab a and b (median per tower; guard; ${spread.toFixed(4)}, ${clearSpread > 0 ? ((spread / clearSpread) * 100).toFixed(0) : '?'}% of the clear air's)`);
+
+  // The grading, read (not asserted; see CROWN_FOOT_BASE): from the same overview framing, the crown band's OKLab
+  // chroma over the foot band's on each tall tower. The bands are the tower's face at 0.80 to 0.92 of its height and at
+  // 0.10 to 0.24, each the inner 60% of the face's width projected at that height; a band off the frame is not read
+  // (the needle's crown stands above the overview's top edge). Each band's chroma is the median over its darker half
+  // (the wall, not its lit windows).
+  const ratios: string[] = [];
+  let sum = 0;
+  let count = 0;
+  for (const d of city) {
+    const top = layoutTower(d.tower).top;
+    if (top < TALL_TOWER) continue;
+    const o = d.origin;
+    const band = async (lo: number, hi: number): Promise<{ face: number; all: number }> => {
+      const pts = [[o.x, top * hi, o.z], [o.x, top * lo, o.z], [o.x - 9, top * (lo + hi) * 0.5, o.z], [o.x + 9, top * (lo + hi) * 0.5, o.z], [o.x, top * (lo + hi) * 0.5, o.z - 9], [o.x, top * (lo + hi) * 0.5, o.z + 9]];
+      const proj = await page.evaluate((list) => list.map((p) => (window as unknown as { __palimpsest: { project(p: number[]): number[] } }).__palimpsest.project(p)), pts);
+      const [t, b, ...sides] = proj.map(toPx);
+      if (t[1] < 0 || b[1] > img.height) return { face: 0, all: 0 };
+      const xs = sides.map((p) => p[0]);
+      const half = (Math.max(...xs) - Math.min(...xs)) / 2;
+      const mid = (Math.max(...xs) + Math.min(...xs)) / 2;
+      const cs: Array<[number, number]> = [];
+      for (let y = Math.max(0, Math.round(t[1])); y <= Math.min(img.height - 1, Math.round(b[1])); y++) {
+        for (let x = Math.max(0, Math.round(mid - half * 0.6)); x <= Math.min(img.width - 1, Math.round(mid + half * 0.6)); x++) {
+          const i = (y * img.width + x) * 4;
+          const lab = oklab(img.data[i], img.data[i + 1], img.data[i + 2]);
+          cs.push([lab[0], Math.hypot(lab[1], lab[2])]);
+        }
+      }
+      const face = [...cs].sort((p, q) => p[0] - q[0]).slice(0, Math.max(1, cs.length >> 1));
+      return { face: medianOf(face.map((c) => c[1])), all: medianOf(cs.map((c) => c[1])) };
+    };
+    const crown = await band(0.8, 0.92);
+    const foot = await band(0.1, 0.24);
+    if (!(foot.face > 1e-4) || !(crown.face > 1e-4)) continue;
+    const r = crown.face / foot.face;
+    ratios.push(`${d.repo} crown ${crown.face.toFixed(4)} / foot ${foot.face.toFixed(4)} = ${r.toFixed(3)} (with the windows ${(crown.all / foot.all).toFixed(3)})`);
+    sum += r;
+    count++;
+  }
+  const mean = count ? sum / count : 0;
+  console.log(`info  haze: crown over foot chroma from the overview ${ratios.join('; ')}; mean ${mean.toFixed(3)} over ${count} tall towers (base ${CROWN_FOOT_BASE})`);
 }
 
 /**
