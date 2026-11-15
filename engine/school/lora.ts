@@ -937,7 +937,7 @@ export async function trainLora(now: number = Date.now()): Promise<LoraTrainResu
  * The hosts the download's proxy allows, and no others, each exact. With the xet transfer off the Hub
  * still serves a xet-stored file by redirecting to its own bridge, `cas-bridge.xethub.hf.co`.
  */
-export const HF_HOSTS: readonly string[] = ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co', 'cas-bridge.xethub.hf.co'];
+export const HF_HOSTS: readonly string[] = ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co', 'cas-bridge.xethub.hf.co', 'us.aws.cdn.hf.co', 'eu.aws.cdn.hf.co', 'cdn-lfs-eu-1.huggingface.co'];
 const HF_REPO = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 type EgressStarter = (runId: string, log: (line: RunLogLine) => void) => Promise<Egress>;

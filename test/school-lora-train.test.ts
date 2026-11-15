@@ -466,10 +466,10 @@ test('the download env has HF_HUB_DISABLE_XET=1 and an empty HF_TOKEN and its pr
   for (const k of KEYS.filter((k) => k !== 'HF_TOKEN')) assert.equal(env[k], undefined, k);
   assert.ok(env.HF_HOME?.startsWith(paths().school), 'the hub cache is the school, not his');
 
-  assert.deepEqual(HF_HOSTS, ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co', 'cas-bridge.xethub.hf.co']);
+  assert.deepEqual(HF_HOSTS, ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co', 'cas-bridge.xethub.hf.co', 'us.aws.cdn.hf.co', 'eu.aws.cdn.hf.co', 'cdn-lfs-eu-1.huggingface.co']);
   assert.deepEqual(stages, [{ stage: 'install', hosts: HF_HOSTS }]);
   for (const host of HF_HOSTS) assert.ok(hostAllowed(host, stages[0].hosts), host);
-  for (const host of ['pypi.org', 'api.anthropic.com', 'huggingface.co.evil.example', 'hf.co', 'xethub.hf.co', 'evil.cas-bridge.xethub.hf.co', 'cas-bridge.xethub.hf.co.evil.example']) assert.ok(!hostAllowed(host, stages[0].hosts), host);
+  for (const host of ['pypi.org', 'api.anthropic.com', 'huggingface.co.evil.example', 'hf.co', 'xethub.hf.co', 'evil.cas-bridge.xethub.hf.co', 'cas-bridge.xethub.hf.co.evil.example', 'cdn.hf.co', 'evil.us.aws.cdn.hf.co', 'us.aws.cdn.hf.co.evil.example']) assert.ok(!hostAllowed(host, stages[0].hosts), host);
 
   // a second click while it runs starts nothing new
   const twice = downloadBase();
