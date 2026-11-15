@@ -60,7 +60,7 @@ import { getSpawner, type Spawned } from '../exec.js';
 import { onRealDataHome, paths } from '../home.js';
 import { record } from '../ledger.js';
 import { detectChecks } from '../guild/checks.js';
-import { syncMirror } from '../mirror.js';
+import { SYNC_FAILED, syncMirror } from '../mirror.js';
 import { CHECKS_UNKNOWN, checksKnown, getRepo, learnChecks, listRepos, updateRepoMarket } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
@@ -119,8 +119,9 @@ const SELF_CHECK_DIFF_MAX = 20_000;
 export const RUN_EXTRA_MINUTES = 90;
 
 export const STOP_REASON = 'The stop file is set.';
-/** Why a run ended before it cloned: its repo's latest commits could not be fetched (the reason follows). */
-export const SYNC_FAILED = "Could not fetch the repo's latest commits";
+export { SYNC_FAILED };
+/** The longest a bidding round waits for its repo's fetch before it goes on with the mirror as it is. */
+export const BID_SYNC_MS = 20_000;
 /** Inconclusive inspections a job may have in a row before it leaves the board (controller ruling, Task 15). */
 export const MAX_INCONCLUSIVE = 2;
 export const NEEDS_REVIEWER = 'needs a reviewer: too large or no reviewer available';
@@ -193,6 +194,8 @@ export interface SchedulerDeps {
    * run clones the mirror, so neither works on old code. Tests pass a stand-in: no test ever reaches the network.
    */
   sync?: (fullName: string) => Promise<unknown>;
+  /** The longest a bidding round waits for its fetch, so the fetch never eats the bid window. Default BID_SYNC_MS. */
+  bidSyncMs?: number;
   /** The watcher's interval; 0 starts none (tests call watch()). Default WATCH_MS. */
   watchMs?: number;
   /** A run's whole wall time; past it the watcher ends the run `capped`. Default its work cap plus RUN_EXTRA_MINUTES. */
@@ -242,6 +245,7 @@ function defaults(): Config {
     reap: reapRun,
     preflight: defaultPreflight,
     sync: syncMirror,
+    bidSyncMs: BID_SYNC_MS,
     watchMs: WATCH_MS,
   };
 }
@@ -262,6 +266,16 @@ function syncRepo(fullName: string): Promise<unknown> {
 }
 
 let config: Config = defaults();
+
+/** `p`, or a rejection once `ms` have passed (the fetch itself goes on, and the next one waits for it). */
+function withinMs(p: Promise<unknown>, ms: number, fullName: string): Promise<unknown> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the fetch of ${fullName} took over ${Math.round(ms / 1000)} s; bidding goes on with the mirror as it is`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 
 // ---------------------------------------------------------------- storage
 
@@ -1215,11 +1229,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       const key = `${j.id} ${j.bidsCloseAt}`;
       if (collecting.has(key)) continue;
       collecting.add(key);
-      // Plans are made against the repo as it is now: its mirror is fetched first. A fetch that fails is only logged;
-      // the round goes on, and the run fetches again before it clones.
+      // Plans are made against the repo as it is now: its mirror is fetched first, for at most bidSyncMs so the
+      // window stays whole. A fetch that fails or is slow is only logged; the round goes on with the mirror as it is,
+      // and the run fetches again before it clones.
       let fetched = fetching.get(j.repo);
       if (!fetched) {
-        fetched = syncRepo(j.repo).catch((err) => console.warn(`palimpsest: fetching ${j.repo} before bidding failed: ${errText(err)}`));
+        fetched = withinMs(syncRepo(j.repo), config.bidSyncMs, j.repo).catch((err) => console.warn(`palimpsest: fetching ${j.repo} before bidding failed: ${errText(err)}`));
         fetching.set(j.repo, fetched);
       }
       track(fetched.then(() => collectBids(j, now))).catch((err) => console.error(`palimpsest: collecting bids on ${j.id} failed: ${errText(err)}`));
@@ -1239,7 +1254,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     await startRuns(now, eligible);
     // The README audits (Phase 3) start outside the market-on filter, so an on-demand audit on a market-off repo runs.
-    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs, onLive: syncWatcher })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
+    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs, onLive: syncWatcher, sync: syncRepo })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
 
     for (const step of [config.pollPRs, config.watchReverts]) {
       try {

@@ -1472,3 +1472,25 @@ test('a bidding round whose fetch fails still asks for plans', async () => {
   await s.idle();
   assert.equal(planned, 1);
 });
+
+test('a slow fetch before bidding is cut short so the bid window stays whole', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  let planned = 0;
+  useScript({
+    plan: (i) => {
+      planned++;
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  postJob();
+  let release!: () => void;
+  const hung = new Promise<void>((r) => (release = r));
+  const s = createScheduler(deps({ sync: () => hung, bidSyncMs: 30 }).deps);
+  const t0 = Date.now();
+  await s.tick();
+  await until(() => planned === 1, 3000);
+  assert.ok(Date.now() - t0 < 3000, 'the plans did not wait for the fetch');
+  release();
+  await s.idle();
+});
