@@ -212,3 +212,15 @@ test('the profile snippet beside the media counts its own files as used', () => 
     cleanup(dir);
   }
 });
+
+test('a poster counts as used when its clip plays inline as an AVIF', () => {
+  const dir = fixture({ 'ride.avif': animatedAvif(2 * MB), 'ride-poster.webp': 100 * KB, 'ride.mp4': Buffer.alloc(KB) });
+  try {
+    // The AVIF plays inline with its own fallback named elsewhere; the MP4 is not linked.
+    const r = mediaCheck(`<picture><source type="image/avif" srcset="docs/media/ride.avif" /><img src="docs/media/hero.webp" alt="The ride." /></picture>`, dir);
+    assert.ok(!r.problems.some((p) => /ride-poster\.webp/.test(p)), r.problems.join('\n'));
+    assert.ok(r.problems.some((p) => /ride\.mp4/.test(p) && /not used/.test(p)), 'the unlinked MP4 is still unused');
+  } finally {
+    cleanup(dir);
+  }
+});

@@ -51,3 +51,18 @@ test('installCheck reads an old lock that nests dependencies', () => {
   assert.equal(found.length, 1);
   assert.ok(/a > b/.test(found[0]) && /file:\.\.\/b/.test(found[0]), found[0]);
 });
+
+test('installCheck names a lock entry npm linked to a folder outside node_modules', () => {
+  const lock = {
+    lockfileVersion: 3,
+    packages: {
+      '': {},
+      'node_modules/kit': { resolved: '../kit', link: true },
+      'node_modules/nested': { resolved: 'node_modules/a/node_modules/nested', link: true },
+      '../kit': { version: '1.0.0' },
+    },
+  };
+  const found = installCheck({}, lock);
+  assert.ok(found.some((l) => /node_modules\/kit/.test(l) && /\.\.\/kit/.test(l)), found.join('\n'));
+  assert.ok(!found.some((l) => /nested/.test(l)), 'a link inside node_modules is a workspace hoist, not a local folder');
+});

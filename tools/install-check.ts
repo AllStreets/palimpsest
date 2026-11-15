@@ -37,6 +37,9 @@ export function installCheck(pkg: object, lock: object): string[] {
         const v = entry[key];
         if (typeof v === 'string' && LOCAL.test(v)) out.push(`package-lock.json ${path} ${key}: ${v}`);
       }
+      // npm records a file: dependency as a link to a folder, without the prefix: `resolved: "../x", link: true`.
+      const r = entry.resolved;
+      if (entry.link === true && typeof r === 'string' && !LOCAL.test(r) && !/^(node_modules\/|https?:)/.test(r)) out.push(`package-lock.json ${path} link: ${r}`);
     }
   }
   // lockfileVersion 1 (and 2's mirror of it): nested dependencies.

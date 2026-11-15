@@ -247,7 +247,7 @@ async function cutFilm(frames: string, out: string, work: string): Promise<void>
   const posterSrc = join(rise.dir, `f${String(rise.count - 1).padStart(4, '0')}.png`);
   const poster = join(out, 'film-poster.webp');
   for (let q = 86; ; q -= 6) {
-    execFileSync('cwebp', ['-q', String(q), '-m', '6', '-resize', String(FILM.width), String(FILM.height), posterSrc, '-o', poster], { stdio: 'ignore' });
+    execFileSync('cwebp', ['-q', String(q), '-m', '6', '-resize', String(FILM.width), String(FILM.height), posterSrc, '-o', poster], { stdio: ['ignore', 'ignore', 'inherit'] });
     if (size(poster) <= FILM.posterMax) break;
     if (q <= 50) throw new Error(`film: the poster is ${fmt(size(poster))}, over 450 KB`);
   }
@@ -275,7 +275,7 @@ function cutProfile(frames: string, out: string, work: string, repo: string): vo
   const webp = join(out, 'profile.webp');
   for (let q = 62; ; q -= 8) {
     // Keyframes every 15 frames so dark gradients never keep stale blocks.
-    execFileSync('img2webp', ['-loop', '0', '-lossy', '-q', String(q), '-m', '6', '-kmax', '15', '-d', String(Math.round(1000 / 15)), ...pngs, '-o', webp], { stdio: 'ignore' });
+    execFileSync('img2webp', ['-loop', '0', '-lossy', '-q', String(q), '-m', '6', '-kmax', '15', '-d', String(Math.round(1000 / 15)), ...pngs, '-o', webp], { stdio: ['ignore', 'ignore', 'inherit'] });
     if (size(webp) <= PROFILE.maxWebp) break;
     if (q <= 30) throw new Error(`film: profile.webp is ${fmt(size(webp))}, over 4 MB`);
   }

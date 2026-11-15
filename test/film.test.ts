@@ -109,3 +109,10 @@ test('capture.ts and film.ts take their output from outDir, listen on 4788 by de
   const capture = readFileSync(new URL('../tools/capture.ts', import.meta.url), 'utf8');
   assert.ok(!/\.gif`|-card\.(avif|webp)`/.test(capture), 'no GIF or card output');
 });
+
+test('capturePort defaults to 4788 and refuses a bad value, the engine and the dev server', async () => {
+  const { capturePort } = await import('../tools/film.js');
+  assert.equal(capturePort(undefined), 4788);
+  assert.equal(capturePort('4789'), 4789);
+  for (const bad of ['abc', '80', '70000', '4770', '4771']) assert.throws(() => capturePort(bad), /CAPTURE_PORT/, bad);
+});

@@ -65,7 +65,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright';
@@ -79,6 +79,7 @@ import type { District, Quarter } from '../shared/types.js';
 import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { outDir } from './diagrams.js';
+import { capturePort } from './film.js';
 import { BUDGET } from './media-check.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, type FigureProbe, type VehicleProbe } from './people-stage.js';
@@ -90,8 +91,7 @@ const DIST = join(ROOT, 'dist');
 // A temp dir unless CAPTURE_OUT names one; docs/media only with CAPTURE_WRITE_MEDIA=1 (test safety rule 17).
 const MEDIA = outDir(process.env, 'palimpsest-capture-');
 const WRITE_MEDIA = process.env.CAPTURE_WRITE_MEDIA === '1';
-const PORT = Number(process.env.CAPTURE_PORT ?? 4788);
-if (PORT === 4770 || PORT === 4771) throw new Error(`CAPTURE_PORT ${PORT} is the engine's or the dev server's; pick another`);
+const PORT = capturePort(process.env.CAPTURE_PORT ?? '4788');
 /** The sample economy's clock (CAPTURE_ECONOMY=live), ticked on demand by the shots that show it moving. */
 let economy: { tick(ms: number): void; idle(): Promise<void> } | null = null;
 /** The block pitch (lots.ts PITCH), for framing streets. */
@@ -165,15 +165,23 @@ function encode(dir: string, name: string, posterAt = 0.5): void {
 function underBudget(path: string, cap: number, crf: number, step: number, run: (crf: number) => void): number {
   for (let i = 0; ; i++, crf += step) {
     run(crf);
-    if (statSync(path).size <= cap || i === 5) return crf;
+    if (statSync(path).size <= cap) return crf;
+    if (i === 5) {
+      console.warn(`  warning: ${basename(path)} is ${mb(path)} at crf ${crf}, still over its ${(cap / 1024 / 1024).toFixed(0)} MB cap`);
+      return crf;
+    }
   }
 }
 
 /** A 2x PNG as a 1600 x 1000 WebP, its quality stepped down from `quality` until it is within the still budget (450 KB). */
 function stillWebp(png: string, webp: string, quality: number): number {
   for (let q = quality; ; q -= 4) {
-    execFileSync('cwebp', ['-q', String(q), '-m', '6', '-resize', '1600', '1000', png, '-o', webp], { stdio: 'ignore' });
-    if (statSync(webp).size <= BUDGET.still || q <= 60) return q;
+    execFileSync('cwebp', ['-q', String(q), '-m', '6', '-resize', '1600', '1000', png, '-o', webp], { stdio: ['ignore', 'ignore', 'inherit'] });
+    if (statSync(webp).size <= BUDGET.still) return q;
+    if (q <= 60) {
+      console.warn(`  warning: ${basename(webp)} is ${mb(webp)} at q${q}, still over the 450 KB for a still`);
+      return q;
+    }
   }
 }
 

@@ -4,7 +4,7 @@
  *   npm run media:check
  *
  * Every file in docs/media is used by README.md (a clip's poster counts
- * when the clip is linked, and the profile snippet's own files count when
+ * when the clip is linked or its AVIF is played inline, and the profile snippet's own files count when
  * a `.md` beside them names them); every reference into docs/media exists;
  * every image has alt text with no em dash, double hyphen or emoji; each
  * still is at most 450 KB, each inline animation at most 4 MB, each linked
@@ -168,8 +168,8 @@ export function mediaCheck(readme: string, dir: string): MediaCheck {
   for (const md of files.filter((f) => extname(f).toLowerCase() === '.md')) {
     for (const r of parse(readFileSync(join(dir, md), 'utf8')).refs) used.add(r.name);
   }
-  // A poster is used when its clip is linked.
-  for (const r of refs) if (/\.mp4$/i.test(r.name)) used.add(r.name.replace(/\.mp4$/i, '-poster.webp'));
+  // A poster is used when its clip is linked, or played inline as an AVIF (the poster is its fallback).
+  for (const r of refs) if (/\.(mp4|avif)$/i.test(r.name)) used.add(r.name.replace(/\.(mp4|avif)$/i, '-poster.webp'));
 
   for (const f of media) if (!used.has(f)) problems.push(`docs/media/${f} is not used by the README`);
   const missing = new Set<string>();
