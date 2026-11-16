@@ -631,6 +631,45 @@ export function renderedDistance(a: Variant, b: Variant): number {
   return Math.min(high, low);
 }
 
+/** A variant's faces as the city renders them (rendered.ts): the sunlit and shaded, high and low; none for an unmeasured one. */
+function renderedFaces(id: string): Array<[number, number, number]> {
+  const r = RENDERED[id];
+  if (!r) return [];
+  return [r.sun, r.shade, ...(r.sunLow ? [r.sunLow] : []), ...(r.shadeLow ? [r.shadeLow] : [])];
+}
+
+/**
+ * The colour checks read rendered colour (Task 15): how loud a variant reads
+ * in the city, the largest Lab chroma of its rendered faces (Infinity
+ * unmeasured, so an unmeasured variant fails any palette check).
+ */
+export function renderedChroma(id: string): number {
+  const f = renderedFaces(id);
+  return f.length ? Math.max(...f.map((c) => Math.hypot(c[1], c[2]))) : Infinity;
+}
+
+/** How near a variant's rendered faces come to a Lab colour: the least CIE76 distance (0 unmeasured, so it fails any "apart" check). */
+export function renderedFrom(id: string, lab: [number, number, number]): number {
+  const f = renderedFaces(id);
+  return f.length ? Math.min(...f.map((c) => dE(c, lab))) : 0;
+}
+
+/**
+ * A look's material parameters as a short stamp (Task 15): each era's
+ * variant id and every parameter it is built from (finishes, glass, family),
+ * so a pin on a known tower holds what it is made of, not only its name.
+ * FNV-1a over the parameters, eight hex digits.
+ */
+export function lookParams(look: Look): string {
+  let h = 0x811c9dc5;
+  const text = JSON.stringify(ERAS.map((e) => look[e]));
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
 /** Neighbours count as reading apart from across the city at this rendered distance or more. */
 export const SEPARATION = 6;
 

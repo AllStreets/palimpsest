@@ -316,21 +316,26 @@ const PINNED: Record<string, string> = {
   // the duller bronze now renders within SEPARATION of black, so five towers' titanium picks moved: ONEXUS and
   // assay-kit to zinc, quarry and blank-slate to bronze, kumo to black. Deliberate; every other era holds.
   'AllStreets/beagle': 'stone:marble,brick:green-terracotta,glass:blue,titanium:titanium,scifi:deco',
-  'AllStreets/palimpsest': 'stone:dark-granite,brick:salmon,glass:channel,titanium:black,scifi:organic',
-  'AllStreets/teardown': 'stone:pink-granite,brick:terracotta,glass:bronze,titanium:copper,scifi:arcology',
-  'AllStreets/understudy': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:needle',
-  'AllStreets/ONEXUS': 'stone:dark-granite,brick:cream,glass:channel,titanium:zinc,scifi:cluster',
+  'AllStreets/palimpsest': 'stone:limestone,brick:salmon,glass:bronze,titanium:copper,scifi:organic',
+  'AllStreets/teardown': 'stone:dark-granite,brick:cream,glass:channel,titanium:black,scifi:arcology',
+  'AllStreets/understudy': 'stone:pink-granite,brick:ironspot,glass:green,titanium:bronze,scifi:needle',
+  'AllStreets/ONEXUS': 'stone:marble,brick:salmon,glass:black,titanium:zinc,scifi:cluster',
   // Phase 5 Task 7: the stone pick looks one district ahead (pickLooks rule 5), so a corner is never left with no
   // stone that reads apart from both its neighbours: the sample's quarry and kumo met at 5.8 in stone. Deliberate, and
   // stone only: quarry limestone to marble and kumo sandstone to pink granite; Chicago-Open-World limestone to marble
   // (its limestone left the next block on the spiral with no stone apart from both it and ONEXUS's dark granite).
-  'AllStreets/Chicago-Open-World': 'stone:marble,brick:red,glass:green,titanium:bronze,scifi:ziggurat',
-  'tidewater/harbor-ledger': 'stone:pink-granite,brick:green-terracotta,glass:green,titanium:bronze,scifi:ziggurat',
-  'kestrel/fieldnotes': 'stone:marble,brick:salmon,glass:channel,titanium:copper,scifi:organic',
-  'lantern/assay-kit': 'stone:dark-granite,brick:terracotta,glass:bronze,titanium:zinc,scifi:needle',
-  'ferro/quarry': 'stone:marble,brick:red,glass:blue,titanium:bronze,scifi:arcology',
-  'hoshi/kumo': 'stone:pink-granite,brick:cream,glass:channel,titanium:black,scifi:deco',
-  'alder/blank-slate': 'stone:marble,brick:ironspot,glass:green,titanium:bronze,scifi:cluster',
+  // Phase 5 Task 15 (Decision 6): the tables re-measured once in true light (the brief's scrim and the old haze veil
+  // gone), so the rendered colours moved by 5 to 15 L and the picker steered every corner again. Deliberate, for his
+  // approval on the before and after sheet: eleven of the twelve change at least one era; only beagle holds. Of the
+  // three Task 7 changed in stone, Chicago-Open-World goes marble to sandstone, quarry marble to travertine and kumo
+  // pink granite to limestone.
+  'AllStreets/Chicago-Open-World': 'stone:sandstone,brick:red,glass:green,titanium:bronze,scifi:ziggurat',
+  'tidewater/harbor-ledger': 'stone:pink-granite,brick:green-terracotta,glass:black,titanium:zinc,scifi:ziggurat',
+  'kestrel/fieldnotes': 'stone:dark-granite,brick:salmon,glass:bronze,titanium:copper,scifi:organic',
+  'lantern/assay-kit': 'stone:marble,brick:red,glass:green,titanium:bronze,scifi:needle',
+  'ferro/quarry': 'stone:travertine,brick:cream,glass:blue,titanium:black,scifi:arcology',
+  'hoshi/kumo': 'stone:limestone,brick:green-terracotta,glass:channel,titanium:titanium,scifi:deco',
+  'alder/blank-slate': 'stone:marble,brick:salmon,glass:green,titanium:black,scifi:cluster',
 };
 
 test('a re-measure never silently changes the look of a known tower', () => {
@@ -338,6 +343,41 @@ test('a re-measure never silently changes the look of a known tower', () => {
     const looks = pickLooks(names.map((repo, slot) => ({ repo, slot })));
     for (const n of names) assert.equal(lookKey(looks.get(n)!), PINNED[n], `${n} changed look`);
   }
+});
+
+/**
+ * The same twelve looks' material parameters (Task 15): a stamp of every
+ * finish, glass and family each era's variant is built from (variants.ts
+ * lookParams), so a change to what a known tower is made of fails here even
+ * when its variant ids hold, and is accepted on purpose by updating this
+ * list with the re-measure it calls for.
+ */
+const PINNED_PARAMS: Record<string, string> = {
+  'AllStreets/beagle': '3e0b9790',
+  'AllStreets/palimpsest': '43fe5407',
+  'AllStreets/teardown': 'beab9d02',
+  'AllStreets/understudy': '91263941',
+  'AllStreets/ONEXUS': '6d249d61',
+  'AllStreets/Chicago-Open-World': '50762ff3',
+  'tidewater/harbor-ledger': '12a9926a',
+  'kestrel/fieldnotes': '41ac6d30',
+  'lantern/assay-kit': 'f610d130',
+  'ferro/quarry': 'dbb73d8e',
+  'hoshi/kumo': '5d995f25',
+  'alder/blank-slate': 'e2a3fb96',
+};
+
+test('the pins cover the material parameters, not only the look ids', () => {
+  const lookParams = (variants as Record<string, unknown>).lookParams as ((look: ReturnType<typeof lookFor>) => string) | undefined;
+  assert.ok(lookParams, 'variants.ts stamps a look by its parameters');
+  for (const names of [HIS, SAMPLE]) {
+    const looks = pickLooks(names.map((repo, slot) => ({ repo, slot })));
+    for (const n of names) assert.equal(lookParams!(looks.get(n)!), PINNED_PARAMS[n], `${n}: what its look is made of changed`);
+  }
+  // A parameter changed under the same ids moves the stamp.
+  const look = lookFor('AllStreets/beagle');
+  const stone = look.stone;
+  assert.notEqual(lookParams!({ ...look, stone: { ...stone, glass: { ...stone.glass, tint: (stone.glass.tint ?? 0) ^ 1 } } }), lookParams!(look));
 });
 
 test('the sci-fi era is six families, one per variant, each in its own architectural language', () => {
@@ -386,32 +426,37 @@ const dE = (a: number, b: number): number => {
 const DATUM = 0xd9c26e;
 const AMBER = 0xff6a1a;
 
-const faces = (v: (typeof VARIANTS)[Era][number]): Array<[string, Finish]> => [
-  ['wall', v.wall],
-  ['trim', v.trim],
-  ['band', v.band],
-];
+// Task 15: the contrast checks read each variant's colour as the city renders it (rendered.ts: measured through the
+// scene's light, haze and tone mapping), not its declared swatch, which no one sees.
+const R = variants as Record<string, unknown>;
+const renderedFrom = (R.renderedFrom ?? (() => 0)) as (id: string, lab: [number, number, number]) => number;
+const renderedChroma = (R.renderedChroma ?? (() => Infinity)) as (id: string) => number;
 
-test('the bronze datum and the Claude amber stand apart from every variant', () => {
+test('contrast is checked on rendered colour: the bronze datum and the Claude amber stand apart from every variant as rendered', () => {
+  assert.ok(R.renderedFrom && R.renderedChroma, 'variants.ts reads rendered colour for its checks');
   for (const era of ERAS) {
     for (const v of VARIANTS[era]) {
-      for (const [slot, f] of faces(v)) {
-        const s = swatch(f);
-        assert.ok(dE(s, DATUM) >= 18, `${v.id} ${slot} (#${s.toString(16)}) is ${dE(s, DATUM).toFixed(1)} from the datum`);
-        assert.ok(dE(s, AMBER) >= 30, `${v.id} ${slot} (#${s.toString(16)}) is ${dE(s, AMBER).toFixed(1)} from the Claude amber`);
-      }
+      const fromDatum = renderedFrom(v.id, lab(DATUM));
+      const fromAmber = renderedFrom(v.id, lab(AMBER));
+      assert.ok(fromDatum >= 18, `${v.id} renders ${fromDatum.toFixed(1)} from the datum`);
+      assert.ok(fromAmber >= 30, `${v.id} renders ${fromAmber.toFixed(1)} from the Claude amber`);
     }
   }
 });
 
-test('variants stay inside the dusk palette: no candy colours', () => {
+/**
+ * The rendered ceiling. The declared swatches were held to chroma 30; as
+ * rendered in true light the low sun lends every lit face 2 to 7 units more
+ * (the re-measure's own spread, the veil gone), so the same palette reads
+ * to 32 at most. Its loudest variant, the salmon brick, renders at 30.3.
+ */
+const RENDERED_CHROMA_MAX = 32;
+
+test('variants stay inside the dusk palette as rendered: no candy colours', () => {
   for (const era of ERAS) {
     for (const v of VARIANTS[era]) {
-      for (const [slot, f] of faces(v)) {
-        const [, a, b] = lab(swatch(f));
-        const chroma = Math.hypot(a, b);
-        assert.ok(chroma <= 30, `${v.id} ${slot} chroma ${chroma.toFixed(1)} is too loud`);
-      }
+      const chroma = renderedChroma(v.id);
+      assert.ok(chroma <= RENDERED_CHROMA_MAX, `${v.id} renders at chroma ${chroma.toFixed(1)}, too loud`);
     }
   }
 });
