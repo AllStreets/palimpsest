@@ -762,7 +762,6 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
    * compiled off the main thread (compileAsync, with the scene's lights): a
    * new look's material compiled at the swap cost a 116 ms frame (Task 13).
    */
-  const compileTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
   function* compiled(roots: THREE.Object3D[]): Steps<void> {
     // Built at once (before the city shows, or in a quality drop): there are no frames to wait in, so the first draw
     // compiles them, as before.
@@ -772,9 +771,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (all.length === 0) return;
     const holder = new THREE.Group();
     for (const r of all) holder.add(r);
-    // Compiled as the frame draws them: into a render target (the composer's scene pass), so no tone mapping.
+    // Compiled as the frame draws them: into the composer's scene target (no tone mapping), as warmUp() does.
     const was = renderer.getRenderTarget();
-    renderer.setRenderTarget(compileTarget);
+    renderer.setRenderTarget(post.sceneTarget);
     renderer.compileAsync(holder, camera, scene).then(
       () => (done = true),
       () => (done = true),
@@ -1763,6 +1762,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let placed = false;
   let unplacedFrames = 0;
   let warm: boolean | null = null;
+  let warmCap: ReturnType<typeof setTimeout> | undefined;
   function warmUp(): void {
     warm = false;
     const was = renderer.getRenderTarget();
@@ -1775,7 +1775,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     };
     renderer.compileAsync(scene, camera).then(done, done);
     // Never held behind the veil for long: past this the first draw compiles what is left, as before.
-    setTimeout(done, 6000);
+    warmCap = setTimeout(done, 6000);
     renderer.setRenderTarget(was);
   }
   let resolveReady: () => void = () => {};
@@ -2351,6 +2351,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     dispose() {
       // Its waiting rebuilds go with it: the queue is shared, and they would run against what is disposed below.
       cancelRemerges(owner);
+      clearTimeout(warmCap);
       renderer.setAnimationLoop(null);
       observer.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
@@ -2390,7 +2391,6 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       signalHeads.dispose();
       ground.dispose();
       sky.dispose();
-      compileTarget.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     },

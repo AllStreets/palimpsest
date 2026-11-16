@@ -3357,8 +3357,9 @@ export async function firstFrameMs(url: string): Promise<number> {
 }
 
 /**
- * Texture weight and the first frame (Phase 5 Task 14, UI_ONLY=textures):
- * five cold loads, each in a browser of its own, bring the first city frame
+ * Texture weight and the first frame (Phase 5 Task 14, UI_ONLY=textures),
+ * on the sample economy: each tower and quarter built once as the city
+ * opens; five cold loads, each in a browser of its own, bring the first city frame
  * within 4 s of navigation (the median); and at root-close, street-kerb,
  * plaza and tower-close the city with its textures now is within SSIM 0.98
  * of round 0, the same frame drawn from the original textures
@@ -3367,9 +3368,26 @@ export async function firstFrameMs(url: string): Promise<number> {
  * trees hidden, so only the textures differ.
  */
 async function textureChecks(browser: Browser, page: Page): Promise<void> {
+  // The sample economy laid over the city (its firms' quarters), as perf times it.
+  const { seedEconomy } = await import('../engine/market/sample-economy.js');
+  await seedEconomy(Date.now(), { holdSale: true });
+  const url = `http://127.0.0.1:${PORT}/?fixed-quality&debug`;
+  // Each tower and each quarter is built once as the city opens: the firms' names key a quarter's build, so they must
+  // be in before the first build, or every quarter is built again behind it (Task 14).
+  await page.goto(url);
+  await page.waitForFunction('window.__palimpsest?.ready === true', null, { timeout: 60_000 });
+  await page.waitForTimeout(4000);
+  const opened = (await page.evaluate('({ builds: window.__palimpsest.builds, districts: window.__palimpsest.districts, quarters: window.__palimpsest.quarters })')) as {
+    builds: number;
+    districts: number;
+    quarters: number;
+  };
+  check(
+    opened.quarters > 0 && opened.builds === opened.districts + opened.quarters,
+    `each tower and quarter is built once as the city opens (${opened.builds} builds for ${opened.districts} towers and ${opened.quarters} quarters)`,
+  );
   // The harness's own page draws nothing while the loads are timed.
   await page.goto('about:blank');
-  const url = `http://127.0.0.1:${PORT}/?fixed-quality&debug`;
   const times: number[] = [];
   for (let i = 0; i < 5; i++) times.push(await firstFrameMs(url));
   const med = [...times].sort((a, b) => a - b)[2];

@@ -62,17 +62,19 @@ test('CREDITS.md names every texture set and the roots it covers', () => {
   assert.ok(row('brick').includes('Chicago'), 'the brick_* row names the Chicago root');
 });
 
-test('the textures load in the order the home view needs them, the stone, brick and glass first', async () => {
+test('the textures load in the order the home view needs them, the stone, brick, glass and paving first', async () => {
   const { FIRST_SETS, MAPS, TEXTURE_SETS, textureRank } = await import('../app/src/city/materials.js');
   const onDisk = [...new Set(files().map((f) => f.replace(/_(diff|nor|arm)\.jpg$/, '')))].sort();
   assert.deepEqual([...TEXTURE_SETS].sort(), onDisk, 'TEXTURE_SETS lists every set on disk and no other');
   for (const set of TEXTURE_SETS) for (const map of MAPS) assert.ok(files().includes(`${set}_${map}.jpg`), `${set}_${map}.jpg exists`);
-  // The first sets are the stone and the brick, ahead of everything else.
+  // The first sets are the stone, the brick and the paving (the street floor every view shows), ahead of the metals.
   assert.deepEqual([...FIRST_SETS], TEXTURE_SETS.slice(0, FIRST_SETS.length));
-  for (const set of ['sand', 'ashlar', 'granite', 'brick', 'ironspot']) assert.ok(FIRST_SETS.includes(set as never), `${set} is a first set`);
+  for (const set of ['sand', 'ashlar', 'granite', 'brick', 'ironspot', 'pave']) assert.ok(FIRST_SETS.includes(set as never), `${set} is a first set`);
   const last = Math.max(...FIRST_SETS.flatMap((s) => MAPS.map((m) => textureRank(`${s}_${m}.jpg`))));
   for (const f of files().filter((x) => !FIRST_SETS.some((s) => x.startsWith(`${s}_`)))) {
     assert.ok(textureRank(f) > last, `${f} loads after the first sets`);
   }
   assert.ok(textureRank('pave_diff.jpg') < textureRank('metal_diff.jpg'), 'the paving loads before the metals');
+  // The street floor (ground.ts, street.ts) samples the pave set and the granite: the city never shows before they land.
+  for (const f of ['pave_diff.jpg', 'pave_nor.jpg', 'pave_arm.jpg', 'granite_diff.jpg']) assert.ok(textureRank(f) <= last, `${f} is in before the city shows`);
 });

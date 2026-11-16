@@ -20,10 +20,11 @@ export type TextureSet = (typeof TEXTURE_SETS)[number];
 
 /**
  * The sets the city is drawn on: the stone, brick and glass (the glass is
- * drawn in code, from no scan). The city reports ready once these are in
- * (`firstTexturesIn`); the rest land behind the first frame.
+ * drawn in code, from no scan), and the paving of its streets and plazas,
+ * which the first frame shows from every view. The city reports ready once
+ * these are in (`firstTexturesIn`); the metals land behind the first frame.
  */
-export const FIRST_SETS: readonly TextureSet[] = ['sand', 'ashlar', 'granite', 'brick', 'ironspot'];
+export const FIRST_SETS: readonly TextureSet[] = ['sand', 'ashlar', 'granite', 'brick', 'ironspot', 'pave'];
 
 /** The three maps of a set, colour first. */
 export const MAPS = ['diff', 'nor', 'arm'] as const;
@@ -94,7 +95,7 @@ export function texturesSettled(): Promise<void> {
 /**
  * Asks for the first sets (FIRST_SETS) ahead of anything else and resolves
  * once all of them have loaded (or failed): the city is drawn from then on,
- * while the paving and the metals land behind it.
+ * while the metals land behind it.
  */
 export function firstTexturesIn(): Promise<void> {
   const names = FIRST_SETS.flatMap((set) => MAPS.map((map) => [`${set}_${map}.jpg`, map === 'diff'] as const));
