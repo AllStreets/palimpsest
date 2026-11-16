@@ -3,10 +3,10 @@ import { test } from 'node:test';
 
 import { ambientCap } from '../app/src/city/collar.js';
 import { standingLots } from '../app/src/city/lots.js';
-import { occupancy, plazasOf, type RepoState } from '../app/src/city/occupancy.js';
+import { type KnownRepo, occupancy, plazasOf, takeRepoState, type RepoState } from '../app/src/city/occupancy.js';
 import { DISTRICT_PITCH, districtOrigin, QUARTER_COURT } from '../shared/district-layout.js';
 import { agentRootHeight, ROOT_HEIGHT } from '../shared/tower-layout.js';
-import type { District, Quarter } from '../shared/types.js';
+import type { District, Quarter, Repo } from '../shared/types.js';
 
 const PITCH = DISTRICT_PITCH / 3;
 
@@ -178,4 +178,51 @@ test('a freed quarter is filled with the same blocks that stood there before the
   const x = o.x + 100;
   assert.ok(ambientCap(x, o.z, [CIVIC, ...standing]) < agentRootHeight('chicago'));
   assert.equal(ambientCap(x, o.z, [CIVIC, ...freed]), ambientCap(x, o.z, [CIVIC, ...before]));
+});
+
+// ---------------------------------------------------------------- the page's repo state between an event and the refresh (Phase 5 Task 3)
+
+const repo = (fullName: string, slot: number, connected: boolean, status: Repo['status']): Repo => ({ fullName, slot, connected, status }) as unknown as Repo;
+
+test('takeRepoState keeps the done-hold through a repo event until the refresh lands', () => {
+  // A first analysis finishing: repo.analyzed sets the hold (the scaffold stays until the refresh brings the tower).
+  const held: KnownRepo = { ...takeRepoState(undefined, repo('a/one', 3, true, 'ready')), status: 'analyzing', done: true };
+  // A repo event in between (the repo stored as ready) must not drop the scaffold.
+  const after = takeRepoState(held, repo('a/one', 3, true, 'ready'));
+  assert.equal(after.status, 'analyzing');
+  assert.equal(after.done, true);
+  assert.deepEqual(occupancy([after], []).sites, [{ repo: 'a/one', origin: districtOrigin(3) }]);
+  // Turned off, or failed, the hold goes with it.
+  assert.equal(takeRepoState(held, repo('a/one', 3, false, 'ready')).done, undefined);
+  assert.equal(takeRepoState(held, repo('a/one', 3, false, 'ready')).status, 'ready');
+  assert.equal(takeRepoState(held, repo('a/one', 3, true, 'error')).status, 'error');
+  // A fresh analysis starting again keeps its step and is analyzing on its own account.
+  const again = takeRepoState({ ...held, step: 'Reading the tree' }, repo('a/one', 3, true, 'analyzing'));
+  assert.equal(again.status, 'analyzing');
+  assert.equal(again.step, 'Reading the tree');
+  assert.equal(takeRepoState({ ...held, step: 'x' }, repo('a/one', 3, true, 'analyzing'), 'Counting floors').step, 'Counting floors');
+  // Without a hold, the repo is taken as stored, with no step once it is not analyzing.
+  const plain = takeRepoState({ fullName: 'a/one', slot: 3, connected: true, status: 'analyzing', step: 'x' }, repo('a/one', 3, true, 'ready'));
+  assert.deepEqual(plain, { fullName: 'a/one', slot: 3, connected: true, status: 'ready', step: '' });
+});
+
+test('a repo turned off and on again stands its last tower until the refresh lands', () => {
+  const d = district('a/one', 0);
+  const kept = new Map([['a/one', d]]);
+  // Off: nothing stands, kept or not.
+  assert.deepEqual(occupancy([state('a/one', 0, false, 'ready')], [], [], kept).districts, []);
+  // On again, before the refresh lists its tower: the last tower stands again, and no scaffold rises.
+  const on = occupancy([state('a/one', 0, true, 'ready')], [], [], kept);
+  assert.deepEqual(on.districts, [d]);
+  assert.deepEqual(on.sites, []);
+  assert.deepEqual(plazasOf(on), [{ ...districtOrigin(0), rootHeight: ROOT_HEIGHT.gothic }]);
+  // The refresh's own listing wins over the kept one, once, and keeps the city's order.
+  const fresh = { ...d, tower: { ...d.tower, floors: [{} as District['tower']['floors'][number]] } };
+  const both = occupancy([state('a/one', 0, true, 'ready'), state('a/two', 1, true, 'ready')], [district('a/two', 1), fresh], [], kept);
+  assert.deepEqual(both.districts, [district('a/two', 1), fresh]);
+  // A repo analyzing again with a kept tower keeps the tower (no scaffold), as a served one would.
+  assert.deepEqual(occupancy([state('a/one', 0, true, 'analyzing')], [], [], kept).districts, [d]);
+  // A kept tower never stands for a repo the page does not know, or one that failed.
+  assert.deepEqual(occupancy([], [], [], kept).districts, []);
+  assert.deepEqual(occupancy([state('a/one', 0, true, 'error')], [], [], kept).districts, []);
 });

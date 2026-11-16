@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+import type { Floor } from '../../../shared/types.js';
+
 /** A district's or a firm's quarter's name plate: what it says, where it stands, what clicking it does. */
 export interface Plate {
   key: string;
@@ -14,6 +16,63 @@ export interface Plate {
   fade?: { start: number; end: number };
   /** A class on the plate's element besides `plate`. */
   className?: string;
+  /** What hovering the plate says besides its name (a tower's band key). */
+  title?: string;
+}
+
+/** The words stand this far right of the hairline (style.css .plate-name, left: 7px), and keep this clear of the view's edge. */
+const WORDS_OFF = 7;
+const EDGE = 8;
+
+/**
+ * Whether a plate whose hairline stands at `x` sets its words (`words`
+ * pixels wide) left of the hairline: when, set right of it, they would run
+ * past the view's right edge, and set left they still fit.
+ */
+export function plateFlips(x: number, words: number, viewWidth: number): boolean {
+  return x + WORDS_OFF + words > viewWidth - EDGE && x - WORDS_OFF - words >= EDGE;
+}
+
+/** How far above its foot a plate's name stands, top to foot (style.css .plate-name: bottom 15px, 16px type). */
+const NAME_RISE = 32;
+
+/**
+ * Whether a plate with its foot at (`x`, `y`) shows its words (`words` pixels wide, `flip` set left of the hairline)
+ * whole within a `viewWidth` by `viewHeight` view, `margin` pixels in from its edges (Task 15a): a plate whose name would
+ * run off an edge is not shown.
+ */
+export function plateFits(x: number, y: number, words: number, flip: boolean, viewWidth: number, viewHeight: number, margin = 0): boolean {
+  const x0 = flip ? x - WORDS_OFF - words : x + WORDS_OFF;
+  return x0 >= margin && x0 + words <= viewWidth - margin && y - NAME_RISE >= margin && y <= viewHeight - margin;
+}
+
+/** A plate hidden for running off the view shows again only once it fits with this many pixels to spare, so it never flickers at the edge. */
+export const PLATE_FIT_SPARE = 8;
+
+/**
+ * The tower and quarter plates' words on the city (Task 15a review): a dark ground held close to the letters (a
+ * tight shadow and a wider soft one, no colour, no glow), and the second line's ink, lighter than the stylesheet's
+ * --ink-2 so it reads on the haze yet still a step under the name's.
+ */
+export const PLATE_SHADOW = '0 0 2px rgba(10, 9, 12, 0.95), 0 0 5px rgba(10, 9, 12, 0.9), 0 0 10px rgba(10, 9, 12, 0.75), 0 1px 16px rgba(10, 9, 12, 0.55)';
+export const PLATE_SUB_INK = '#ddd6ca';
+
+/** The class a flipped plate wears (style.css sets its words right-aligned left of the hairline). */
+export const PLATE_FLIP = 'plate-flip';
+
+/**
+ * What the lit and dark bands on a tower are, said on its plate: the
+ * inspector's market key (ui/inspector.ts marketKey) in the same words, for
+ * the kinds of floor this tower holds. Empty when it holds none.
+ */
+export function bandKey(floors: readonly Floor[]): string {
+  const states = new Set(floors.map((f) => f.earned?.state).filter(Boolean));
+  if (!states.size) return '';
+  const parts: string[] = [];
+  if (states.has('lit')) parts.push('A lit floor is a change a firm built here that you merged');
+  if (states.has('scar')) parts.push(`${parts.length ? 'a' : 'A'} dark band is a scar, work that failed inspection, kept where it failed`);
+  if (states.has('waiting')) parts.push(`${parts.length ? 'a' : 'A'} floor still unlit waits on your review`);
+  return `${parts.join('; ')}.`;
 }
 
 export interface Plates {
@@ -28,7 +87,13 @@ const STAND_OFF = 26;
 /** Plates fade out between these eye distances, in metres. */
 const FADE_START = 1500;
 const FADE_END = 2300;
-/** Occlusion is tested every few frames: towers move slowly against the eye. */
+/**
+ * Occlusion is tested every few frames: towers move slowly against the eye.
+ * Each frame tests its share of the plates (every OCCLUSION_EVERY-th, in
+ * turn), so each plate is still tested every OCCLUSION_EVERY frames but no
+ * frame casts every plate's ray at once (Task 13: a city-wide instanced
+ * blocker makes each ray costly, and all of them together a hitch).
+ */
 const OCCLUSION_EVERY = 6;
 
 interface Live {
@@ -37,6 +102,13 @@ interface Live {
   name: HTMLSpanElement;
   sub: HTMLSpanElement;
   hidden: boolean;
+  /** The words' width in pixels, measured once they show (0 until then), and whether they stand left of the hairline. */
+  words: number;
+  flipped: boolean;
+  /** Tested for occlusion at least once since it was made. */
+  tested: boolean;
+  /** Hidden for running off the view (plateFits), until it fits with PLATE_FIT_SPARE to spare. */
+  clipped: boolean;
 }
 
 /**
@@ -74,6 +146,17 @@ export function createPlates(
     return out.set(p.origin.x, 0.5, p.origin.z).addScaledVector(toward, STAND_OFF * 0.75).addScaledVector(side, STAND_OFF * 0.75);
   }
 
+  /** The flip as a class for the stylesheet, and inline as well, so the words never clip without the rule. */
+  function setFlip(l: Live, on: boolean): void {
+    l.flipped = on;
+    l.el.classList.toggle(PLATE_FLIP, on);
+    for (const span of [l.name, l.sub]) {
+      span.style.left = on ? 'auto' : '';
+      span.style.right = on ? `${WORDS_OFF}px` : '';
+      span.style.textAlign = on ? 'right' : '';
+    }
+  }
+
   return {
     set(plates) {
       const byKey = new Map(live.map((l) => [l.plate.key, l]));
@@ -91,15 +174,23 @@ export function createPlates(
           name.className = 'plate-name';
           const sub = document.createElement('span');
           sub.className = 'plate-sub';
+          // On the haze (Task 15a review): a close dark ground under the words, and the second line a step nearer the
+          // name's ink, so both read at 4.5:1 against the brightest tenth of the city behind them.
+          name.style.textShadow = PLATE_SHADOW;
+          sub.style.textShadow = PLATE_SHADOW;
+          if (!plate.className) sub.style.color = PLATE_SUB_INK;
           el.append(name, sub);
           layer.appendChild(el);
-          l = { plate, el, name, sub, hidden: false };
+          l = { plate, el, name, sub, hidden: false, words: 0, flipped: false, tested: false, clipped: false };
           const self = l;
           el.addEventListener('click', () => self.plate.onActivate?.());
         }
+        if (l.name.textContent !== plate.name || l.sub.textContent !== plate.sub) l.words = 0;
         l.name.textContent = plate.name;
         l.sub.textContent = plate.sub;
-        l.el.setAttribute('aria-label', `${plate.name}, ${plate.sub}`);
+        l.el.setAttribute('aria-label', `${plate.name}, ${plate.sub}${plate.title ? `. ${plate.title}` : ''}`);
+        if (plate.title) l.el.title = plate.title;
+        else l.el.removeAttribute('title');
         l.el.disabled = !plate.onActivate;
         next.push(l);
       }
@@ -110,9 +201,13 @@ export function createPlates(
     update() {
       const w = host.clientWidth;
       const h = host.clientHeight;
-      const testOcclusion = frame++ % OCCLUSION_EVERY === 0;
-      const targets = testOcclusion ? occluders() : [];
-      for (const l of live) {
+      const turn = frame++ % OCCLUSION_EVERY;
+      // Gathered only in a frame that tests a plate, the first time one does.
+      let targets: THREE.Object3D[] | null = null;
+      for (let i = 0; i < live.length; i++) {
+        const l = live[i];
+        // A plate is tested in its turn, and a new one on its first frame (so it never shows through a tower first).
+        const testOcclusion = i % OCCLUSION_EVERY === turn || !l.tested;
         anchor(l.plate, at);
         const dist = at.distanceTo(camera.position);
         ndc.copy(at).project(camera);
@@ -121,7 +216,9 @@ export function createPlates(
         if (testOcclusion && !behind) {
           raycaster.set(camera.position, ray.copy(at).sub(camera.position).normalize());
           raycaster.far = dist - 2;
+          targets ??= occluders();
           l.hidden = raycaster.intersectObjects(targets, false).length > 0;
+          l.tested = true;
         }
         const show = !behind && !l.hidden && fade > 0.01;
         l.el.style.opacity = show ? fade.toFixed(3) : '0';
@@ -130,6 +227,17 @@ export function createPlates(
         const x = (ndc.x * 0.5 + 0.5) * w;
         const y = (-ndc.y * 0.5 + 0.5) * h;
         l.el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+        // Near the right edge the words stand left of the hairline rather than clipping (plateFlips); measured once.
+        if (!l.words) l.words = Math.max(l.name.offsetWidth, l.sub.offsetWidth);
+        const flip = l.words > 0 && plateFlips(x, l.words, w);
+        if (flip !== l.flipped) setFlip(l, flip);
+        // A plate whose words would still run off the view (its foot past an edge, or its name over the top) waits
+        // until the eye turns to it: a name is shown whole or not at all (Task 15a).
+        l.clipped = l.words > 0 && !plateFits(x, y, l.words, flip, w, h, l.clipped ? PLATE_FIT_SPARE : 0);
+        if (l.clipped) {
+          l.el.style.opacity = '0';
+          l.el.style.visibility = 'hidden';
+        }
       }
     },
     dispose() {

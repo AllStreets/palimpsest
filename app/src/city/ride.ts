@@ -15,7 +15,7 @@
 import * as THREE from 'three';
 
 import { dossierParts, RIDE, rideAt, rideLength, rideNextStop, rideSway, type Dossier, type RideCaption, type RideKey } from '../../../shared/ride.js';
-import type { ScriptPose } from './camera';
+import type { ScriptPose } from './camera.js';
 import { Parts } from './construction.js';
 
 /** One floor of a tower as the ride sees it, in the world: its plan centre, its height band, its half-width and its turn. The root has no id. */
@@ -35,7 +35,8 @@ export interface RideHost {
   camera: THREE.PerspectiveCamera;
   rideTower(key: string): RideFloor[] | null;
   siteHoist(repo: string): { object: THREE.Object3D; height: number; setCar(y: number): void } | null;
-  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  /** Hands the camera to a path; `focus` is the close mode the lens holds while it does (post.ts). */
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void, focus?: 'ride' | 'tour'): void;
   unscript(): void;
   highlightFloor(repo: string, floorId: string | null): void;
   redrawShadows(): void;
@@ -134,6 +135,66 @@ const ORBIT_SWEEP = 0.8;
 
 /** The ride's mark on a floor: the datum's bronze, under the bloom threshold. */
 const MARK_BRONZE = new THREE.Color(0.86, 0.6, 0.34);
+
+/**
+ * The car's light (Phase 5 Task 5), linear RGB: a warm ceiling panel, two
+ * downlights in it, and a small halo under them, added over what is behind
+ * it by its fade, so the brightest lamp and the halo together are what the
+ * glass in front shows. Every one, and the brightest lamp with the halo,
+ * stays under post.ts BLOOM_THRESHOLD: the car reads as a lit room at dusk
+ * with a soft warmth round its lamps, never a flare blown out on its glass.
+ * The glass carries a trace of the light. (Round 2's flare was the sun in
+ * the polished glass, RIDE_GLASS, not this halo.)
+ */
+export const RIDE_LAMPS = {
+  ceiling: [0.62, 0.5, 0.36],
+  downlight: [0.76, 0.6, 0.42],
+  halo: [0.2, 0.13, 0.08],
+  glass: [0.05, 0.039, 0.0275],
+} as const;
+
+/**
+ * The car's laminated glass: a grey-green body, mostly clear, its surface left
+ * a little rough and barely metallic. The low sun's reflection in a polished
+ * pane (roughness 0.05, metalness 0.35) came back many times the bloom
+ * threshold and blew a flare the size of the car across its glass; this keeps
+ * the sun a soft sheen (tests hold roughness at least 0.2, metalness at most 0.1).
+ */
+export const RIDE_GLASS = { roughness: 0.24, metalness: 0.08, opacity: 0.34 } as const;
+
+/** The car's own materials, as buildCar uses them (exported so the tests can hold them to RIDE_LAMPS and RIDE_GLASS). */
+export function carMaterials(): { glass: THREE.MeshStandardMaterial; lamp: THREE.MeshBasicMaterial; downlight: THREE.MeshBasicMaterial; halo: THREE.SpriteMaterial; haloTex: THREE.DataTexture } {
+  const glass = new THREE.MeshStandardMaterial({
+    color: 0x55666a,
+    roughness: RIDE_GLASS.roughness,
+    metalness: RIDE_GLASS.metalness,
+    transparent: true,
+    opacity: RIDE_GLASS.opacity,
+    emissive: new THREE.Color(...RIDE_LAMPS.glass),
+    emissiveIntensity: 1,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const lamp = new THREE.MeshBasicMaterial({ color: new THREE.Color(...RIDE_LAMPS.ceiling) });
+  const downlight = new THREE.MeshBasicMaterial({ color: new THREE.Color(...RIDE_LAMPS.downlight) });
+  // The halo: a soft radial fade added over what is behind it, on a sprite that faces the eye, one layer from any
+  // side (three crossed planes each added their share and their overlap bloomed at the car's corner, round 5).
+  const n = 64;
+  const data = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const qx = ((x + 0.5) / n) * 2 - 1;
+    const qy = ((y + 0.5) / n) * 2 - 1;
+    const r2 = qx * qx + qy * qy;
+    const k = r2 >= 1 ? 0 : (1 - r2) * (1 - r2);
+    const i = (y * n + x) * 4;
+    data[i] = data[i + 1] = data[i + 2] = 255;
+    data[i + 3] = Math.round(k * 255);
+  }
+  const haloTex = new THREE.DataTexture(data, n, n);
+  haloTex.needsUpdate = true;
+  const halo = new THREE.SpriteMaterial({ map: haloTex, color: new THREE.Color(...RIDE_LAMPS.halo), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  return { glass, lamp, downlight, halo, haloTex };
+}
 
 const smooth = (x: number): number => {
   const t = Math.min(1, Math.max(0, x));
@@ -289,23 +350,11 @@ function buildCar(rail: Rail): Rig {
   // Dark bronze paint on the rails and the car's frame, metallic enough to catch the sky along its edges.
   const paint = new THREE.MeshStandardMaterial({ color: 0x4a3e33, roughness: 0.36, metalness: 0.82 });
   const steel = new THREE.MeshStandardMaterial({ color: 0xa3a5a4, roughness: 0.28, metalness: 0.92 });
-  // Laminated glass: a grey-green body, mostly clear, its reflection carrying the sky; a little of the car's own
-  // light comes through it, so the car reads as a lit room at dusk.
-  const glass = new THREE.MeshStandardMaterial({
-    color: 0x55666a,
-    roughness: 0.05,
-    metalness: 0.35,
-    transparent: true,
-    opacity: 0.34,
-    emissive: new THREE.Color(1.0, 0.78, 0.55),
-    emissiveIntensity: 0.05,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
+  // The glass, the ceiling panel, the downlights and the halo (carMaterials, RIDE_LAMPS, RIDE_GLASS).
+  const { glass, lamp, downlight, halo, haloTex } = carMaterials();
   // A honed limestone floor, lit by the ceiling panel over it.
   const floorMat = new THREE.MeshStandardMaterial({ color: 0x8b8073, roughness: 0.7, metalness: 0.02, emissive: new THREE.Color(1.0, 0.8, 0.6), emissiveIntensity: 0.16 });
-  // The car's ceiling: a warm 3000 K panel, under the bloom threshold so it reads as a lit room, not a lamp.
-  const lamp = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.8, 0.58).multiplyScalar(0.92) });
+
   const rope = new THREE.MeshStandardMaterial({ color: 0x1b1c1d, roughness: 0.5, metalness: 0.8 });
 
   // ---------------------------------------------------------------- the rail
@@ -435,6 +484,25 @@ function buildCar(rail: Rail): Rig {
   ceiling.position.y = H - 0.005;
   ceiling.name = 'ride:car-light';
   car.add(ceiling);
+  // Two downlights set in the panel, and the halo a hand under them, in front of the panel from any seat or street.
+  const downGeo = new THREE.CircleGeometry(0.1, 18);
+  for (const s of [-1, 1]) {
+    const d = new THREE.Mesh(downGeo, downlight);
+    d.rotation.x = Math.PI / 2;
+    d.position.set(0, H - 0.012, s * (D / 2 - 0.5));
+    d.name = 'ride:car-downlight';
+    car.add(d);
+  }
+  // A halo under each downlight (none under the panel's middle: a third one over the two put their overlap, with the
+  // downlight behind, over the threshold), 1.4 m across, facing the eye from the street and from the seat.
+  for (const z of [D / 2 - 0.5, -(D / 2 - 0.5)]) {
+    const h = new THREE.Sprite(halo);
+    h.scale.set(1.4, 1.4, 1);
+    h.position.set(0, H - 0.12, z);
+    h.name = 'ride:car-halo';
+    h.renderOrder = 1;
+    car.add(h);
+  }
   group.add(car);
 
   // Two hoist ropes from the crosshead up to the sheave.
@@ -478,7 +546,9 @@ function buildCar(rail: Rail): Rig {
     dispose() {
       group.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
       ropeGeo.dispose();
-      for (const m of [paint, steel, glass, floorMat, lamp, rope]) m.dispose();
+      for (const m of [paint, steel, glass, floorMat, lamp, downlight, halo, rope]) m.dispose();
+      downGeo.dispose();
+      haloTex.dispose();
       group.removeFromParent();
     },
   };
@@ -852,7 +922,8 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
     }
     return { eye, target };
   };
-  city.script(step, (why) => end(why === 'user' ? 'user' : reason));
+  // The lens focuses on the ride's subject while it holds the camera (ruling 16).
+  city.script(step, (why) => end(why === 'user' ? 'user' : reason), 'ride');
 
   const api: Ride = {
     key,

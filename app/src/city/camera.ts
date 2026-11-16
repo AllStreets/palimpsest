@@ -46,12 +46,39 @@ export interface CameraRig {
    * is called, or `path` answers null. `onRelease` is told which: 'user'
    * for a drag or a scroll, 'end' otherwise.
    */
-  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void, focus?: 'ride' | 'tour'): void;
   unscript(): void;
   scripted(): boolean;
+  /** The close mode the scripted path holds the lens in (the ride's, the tour's), or null. */
+  scriptFocus(): 'ride' | 'tour' | null;
   update(dt: number): void;
   setAspect(aspect: number): void;
   dispose(): void;
+}
+
+/** A key pressed in the city, as the home key reads it. */
+export interface HomeKeyEvent {
+  key: string;
+  meta: boolean;
+  ctrl: boolean;
+  alt: boolean;
+  /** A text field, a select or a contenteditable has the focus: the key is the field's. */
+  typing: boolean;
+  /** Something before it already used the key. */
+  prevented: boolean;
+  /** The route on show (only the city flies home). */
+  route: string;
+}
+
+/**
+ * What H (or Home) does: nothing in a text field, on a sheet, with a
+ * modifier or once something used the key; with the inspector open it
+ * closes the inspector first, then flies home.
+ */
+export function homeKey(e: HomeKeyEvent, inspectorOpen: boolean): Array<'close' | 'home'> {
+  if (e.key !== 'h' && e.key !== 'H' && e.key !== 'Home') return [];
+  if (e.meta || e.ctrl || e.alt || e.typing || e.prevented || e.route !== 'city') return [];
+  return inspectorOpen ? ['close', 'home'] : ['home'];
 }
 
 function easeInOutCubic(t: number): number {
@@ -92,7 +119,7 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
     follow = null;
     done?.();
   };
-  let script: { path: (dt: number) => ScriptPose | null; onRelease?: (why: 'user' | 'end') => void } | null = null;
+  let script: { path: (dt: number) => ScriptPose | null; onRelease?: (why: 'user' | 'end') => void; focus: 'ride' | 'tour' | null } | null = null;
   const unscript = (why: 'user' | 'end'): void => {
     if (!script) return;
     const done = script.onRelease;
@@ -144,16 +171,17 @@ export function createCameraRig(dom: HTMLElement, aspect: number): CameraRig {
     },
     unfollow: release,
     following: () => follow !== null,
-    script(path, onRelease) {
+    script(path, onRelease, focus) {
       flight = null;
       release();
       unscript('end');
-      script = { path, onRelease };
+      script = { path, onRelease, focus: focus ?? null };
       // The path holds the camera: the orbit's damping must not carry it on between frames.
       controls.enabled = false;
     },
     unscript: () => unscript('end'),
     scripted: () => script !== null,
+    scriptFocus: () => script?.focus ?? null,
     update(dt) {
       if (script) {
         const p = script.path(dt);

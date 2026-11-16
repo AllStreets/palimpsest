@@ -209,7 +209,9 @@ export function makeClockTower(k: Kit, clock: () => Date, o: ClockTowerOptions):
 
   // ---------------------------------------------------------------- stage 4: the belfry
   const H4 = H - 0.45;
-  core(STAGE[3], STAGE[4], H4);
+  // The bell chamber's core stands back behind the louvres (Phase 5 Task 10: at the faces' depth it filled the
+  // openings and hid the boards, so the belfry read as four slate panels).
+  core(STAGE[3], STAGE[4], H4 - 0.55);
   for (let s = 0; s < 4; s++) {
     const F = face(s, H4);
     const bells = [-1.7, 1.7].map((u): Opening => ({ u, w: 1.9, y0: STAGE[3] + 1.6, y1: STAGE[3] + 5.4, pointed: true, lights: 1 }));

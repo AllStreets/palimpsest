@@ -89,3 +89,24 @@ test('a rebuild lets go of the merged geometry it replaces', () => {
   batch.dispose();
   assert.equal(gone, after.length, 'dispose lets go of every merged geometry');
 });
+
+test('a tower behind the camera is not drawn: its clusters drop out of the merged draw', () => {
+  const ahead = piece(0);
+  ahead.root.position.z = 150;
+  const behind = piece(0);
+  behind.root.position.z = -150;
+  const batch = plainBatch();
+  batch.set([ahead.root, behind.root], (o) => o === ahead.proxy || o === behind.proxy);
+  const cam = new THREE.PerspectiveCamera(50, 1.6, 0.5, 4000);
+  cam.position.set(0, 2, 0);
+  cam.lookAt(0, 2, 100);
+  cam.updateMatrixWorld(true);
+  type C = THREE.Mesh & { clusters?: unknown[]; visibleRanges(c: THREE.Camera): Array<[number, number]> };
+  const meshes = batch.group.children as C[];
+  assert.ok(meshes.length === 2 && meshes.every((m) => Array.isArray(m.clusters)), 'each merged mesh is laid out in clusters');
+  for (const m of meshes) {
+    const drawn = m.visibleRanges(cam).reduce((n, [, k]) => n + k, 0);
+    assert.equal(drawn, m.geometry.index!.count / 2, 'only the tower ahead is drawn');
+  }
+  batch.dispose();
+});

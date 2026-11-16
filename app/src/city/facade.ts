@@ -1,9 +1,12 @@
 import * as THREE from 'three';
 
-import type { Archetype } from './lots';
-import { SECTIONS } from './lots';
-import { texture } from './materials';
-import { NAMES_PER_SET, PALETTES, signRows } from './shopfronts';
+import type { Archetype } from './lots.js';
+import { SECTIONS } from './lots.js';
+import { texture } from './materials.js';
+import { FAR_FORM } from './lod.js';
+import { ROOM, ROOM_GLSL } from './rooms.js';
+import { SUN_DIRECTION } from './sky.js';
+import { CUT, NAMES_PER_SET, PALETTES, signRows, type CornerKind } from './shopfronts.js';
 
 /**
  * The ambient city's facades, one program per building type, drawn from
@@ -27,6 +30,16 @@ import { NAMES_PER_SET, PALETTES, signRows } from './shopfronts';
  * - industrial: brick piers and multi-pane steel windows, or corrugated
  *   siding, roll-up doors at the dock.
  * Roofs (faces pointing up) are gravel, membrane, tar, metal or parking deck.
+ *
+ * Behind every upper window there is a room (Phase 5 Task 2): the view ray
+ * is traced into a box the bay wide and the storey tall, onto its back wall,
+ * a side wall, the ceiling or the floor, with one of eight furniture cards
+ * on the back wall, lit by a ceiling fitting when the window is lit and by
+ * the dusk through the glass when it is not, so no window is a black void.
+ * A wall with its street corners cut (the kit's chamfer_box and round_box)
+ * takes the same program with CUT set: its windows are mapped by arc length
+ * round the corner (rooms.ts cornerU), so they keep their width. The
+ * rooms' and corners' arithmetic lives in rooms.ts, which the tests read.
  */
 
 /** The room trace behind the shop glass runs at high quality; medium keeps the glass, joinery and signs and draws a plain glow. */
@@ -92,7 +105,8 @@ const SCANS: Partial<Record<Archetype, { prefix: string; tile: number; mean: [nu
 
 const v3 = (v: [number, number, number]): string => `vec3(${v.map((x) => x.toFixed(4)).join(', ')})`;
 
-export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
+/** The facade program of a type; with `cut`, the same program for walls with their street corners cut (grid.ts draws those from the kit's cut boxes in their own batch). */
+export function facadeMaterial(arch: Archetype, cut: CornerKind | null = null): THREE.MeshStandardMaterial {
   const scan = SCANS[arch];
   const glassy = arch === 'glass';
   const m = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0, roughness: glassy ? 0.3 : 0.85 });
@@ -105,7 +119,7 @@ export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
   // Low-e glazing is more reflective than bare glass; the extra env weight stands in for its coating.
   m.envMapIntensity = glassy ? 2.6 : arch === 'midcentury' ? 1.6 : 1.0;
   const s = SECTIONS[arch];
-  m.customProgramCacheKey = () => `palimpsest-ambient-${arch}`;
+  m.customProgramCacheKey = () => `palimpsest-ambient-${arch}${cut ? `-${cut}` : ''}`;
   m.onBeforeCompile = (sh) => {
     const mean = scan?.mean ?? [1, 1, 1];
     // The shopfront schemes (shopfronts.ts PALETTES): the joinery and the lit sign of each.
@@ -126,6 +140,16 @@ export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
       SIGN_ROWS: SIGN.rows.toFixed(1),
       SIGN_ASPECT: (SIGN.cellW / SIGN.cellH).toFixed(4),
       NAMES_PER_SET: NAMES_PER_SET.toFixed(1),
+      // A cut wall: 1 chamfered, 2 rounded, and how far in the cut starts (shopfronts.ts CUT, the kit's own fractions).
+      CUT: cut === 'chamfer' ? 1 : cut === 'round' ? 2 : 0,
+      CUT_FRAC: (cut ? CUT[cut] : 0).toFixed(3),
+      ROOM_FAR_HIGH: ROOM.far.high.toFixed(1),
+      ROOM_FAR_MEDIUM: ROOM.far.medium.toFixed(1),
+      ROOM_UNLIT_FAR: ROOM.unlitFar.toFixed(4),
+      // The far form (Task 7): where it starts and where it is whole, metres from the eye, and the low sun's bearing.
+      FAR_FORM_NEAR: FAR_FORM.near.toFixed(1),
+      FAR_FORM_FULL: FAR_FORM.full.toFixed(1),
+      FAR_SUN: `normalize(vec3(${SUN_DIRECTION.x.toFixed(4)}, 0.0, ${SUN_DIRECTION.z.toFixed(4)}))`,
     };
     sh.vertexShader = sh.vertexShader
       .replace(
@@ -149,6 +173,10 @@ export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
         vStyle = aStyle;
         vShop = aShop;
         vec2 wuv = (abs(vWN.x) > 0.5 ? vWP.zy : abs(vWN.z) > 0.5 ? vWP.xy : vWP.xz) / FACADE_TILE;
+        #if CUT == 1
+          // On the chamfer itself the scan runs along the chamfer, not along one axis stretched across it.
+          if (abs(objectNormal.x) > 0.05 && abs(objectNormal.z) > 0.05 && abs(objectNormal.y) < 0.5) wuv = vec2(dot(vWP.xz, normalize(vec2(-vWN.z, vWN.x))), vWP.y) / FACADE_TILE;
+        #endif
         #ifdef USE_MAP
           vMapUv = wuv;
         #endif
@@ -167,7 +195,8 @@ export function facadeMaterial(arch: Archetype): THREE.MeshStandardMaterial {
         uniform vec3 uPalJ[${PALETTES.length}]; uniform vec3 uPalS[${PALETTES.length}];
         uniform sampler2D uSigns; uniform float uRooms;
         float h21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
-        float box1(float x, float a, float b, float e) { return smoothstep(a, a + e, x) * smoothstep(b, b - e, x); }`,
+        float box1(float x, float a, float b, float e) { return smoothstep(a, a + e, x) * smoothstep(b, b - e, x); }
+        ${ROOM_GLSL}`,
       )
       .replace(
         '#include <map_fragment>',
@@ -194,13 +223,57 @@ const FACADE_GLSL = /* glsl */ `
   float vTop = vSeed.y + vSize.y * 0.5;
   float vBase = vSeed.y - vSize.y * 0.5;
   if (an.y < 0.5) {
-    bool onX = an.x > 0.5;
-    float u = onX ? vWP.z : vWP.x;
-    float faceW = onX ? vSize.z : vSize.x;
-    // Along the face from its own corner, so bays sit symmetrically between the corners as built ones do.
-    float lu = u - ((onX ? vSeed.z : vSeed.x) - faceW * 0.5);
-    float face = floor(dot(sign(vWN.xz), vec2(1.0, 2.0)) + 3.0);
-    vec3 tangentView = normalize((viewMatrix * vec4(onX ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0), 0.0)).xyz);
+    // The face's frame: lu along it from its own corner (so bays sit symmetrically between the corners as built
+    // ones do), faceW its width, face its id for the hashes, Tw and Nw its tangent and outward normal in the world.
+    bool onX; float faceW; float lu; float face; vec3 Tw; vec3 Nw;
+    bool corner = false;
+    #if CUT > 0
+      // A wall with its street corners cut: the straight runs are the faces between the cuts, and each cut is a
+      // face of its own, mapped by arc length round it (cornerU), so its windows keep their width.
+      vec2 q = vWP.xz - vSeed.xz;
+      vec2 hs = vSize.xz * 0.5;
+      vec2 cs = vSize.xz * CUT_FRAC;
+      vec2 aq = abs(q);
+      vec2 sg = vec2(q.x < 0.0 ? -1.0 : 1.0, q.y < 0.0 ? -1.0 : 1.0);
+      corner = aq.x > hs.x - cs.x - 0.02 && aq.y > hs.y - cs.y - 0.02;
+      if (corner) {
+        vec2 o = aq - (hs - cs);
+        vec2 tg; vec2 nm;
+        #if CUT == 1
+          faceW = length(cs);
+          lu = faceW * clamp(dot(o - vec2(cs.x, 0.0), vec2(-cs.x, cs.y)) / (faceW * faceW), 0.0, 1.0);
+          tg = normalize(vec2(-cs.x, cs.y));
+          nm = normalize(vec2(cs.y, cs.x));
+        #else
+          float th = clamp(atan(o.y / cs.y, o.x / cs.x), 0.0, 1.5707963);
+          faceW = ellipseArc(cs.x, cs.y, 1.5707963);
+          lu = ellipseArc(cs.x, cs.y, th);
+          tg = normalize(vec2(-cs.x * sin(th), cs.y * cos(th)));
+          nm = normalize(vec2(cos(th) / cs.x, sin(th) / cs.y));
+        #endif
+        Tw = vec3(tg.x * sg.x, 0.0, tg.y * sg.y);
+        Nw = vec3(nm.x * sg.x, 0.0, nm.y * sg.y);
+        face = 6.0 + (sg.x > 0.0 ? 0.0 : 2.0) + (sg.y > 0.0 ? 0.0 : 1.0);
+        onX = true;
+      } else {
+        onX = (hs.x - aq.x) < (hs.y - aq.y);
+        float c0 = onX ? cs.y : cs.x;
+        faceW = (onX ? vSize.z : vSize.x) - 2.0 * c0;
+        lu = (onX ? q.y : q.x) + (onX ? hs.y : hs.x) - c0;
+        face = floor((onX ? sg.x : sg.y * 2.0) + 3.0);
+        Tw = onX ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+        Nw = onX ? vec3(sg.x, 0.0, 0.0) : vec3(0.0, 0.0, sg.y);
+      }
+    #else
+      onX = an.x > 0.5;
+      float u = onX ? vWP.z : vWP.x;
+      faceW = onX ? vSize.z : vSize.x;
+      lu = u - ((onX ? vSeed.z : vSeed.x) - faceW * 0.5);
+      face = floor(dot(sign(vWN.xz), vec2(1.0, 2.0)) + 3.0);
+      Tw = onX ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+      Nw = normalize(vWN);
+    #endif
+    vec3 tangentView = normalize((viewMatrix * vec4(Tw, 0.0)).xyz);
     vec3 wall = diffuseColor.rgb;
     float y = vWP.y;
     float fromTop = vTop - y;
@@ -257,11 +330,12 @@ const FACADE_GLSL = /* glsl */ `
         float cw = faceW / n;
         float bi = floor(lu / cw);
         float bx = fract(lu / cw);
-        float slot = mod(bi, 12.0);
+        // A cut corner's ground bay continues the x front's first bay (shopfronts.ts cornerBay), with no awning.
+        float slot = corner ? 0.0 : mod(bi, 12.0);
         float kinds = onX ? vShop.x : vShop.y;
         float kind = mod(floor(kinds / pow(2.0, slot * 2.0)), 4.0);
         float awnBits = onX ? vShop.z : floor(vShop.z / 4096.0);
-        float awning = mod(floor(awnBits / pow(2.0, slot)), 2.0);
+        float awning = corner ? 0.0 : mod(floor(awnBits / pow(2.0, slot)), 2.0);
         float bid = bi + face * 31.0 + bs * 97.0;
         vec3 joinery = uPalJ[int(palette)];
         vec3 signC = uPalS[int(palette)];
@@ -316,7 +390,7 @@ const FACADE_GLSL = /* glsl */ `
         float midY = (fasciaLo + fasciaHi) * 0.5;
         // Read left to right from the pavement: along the face, the viewer's right runs against lu on two of the
         // four faces, so the name is mirrored there.
-        float rightward = onX ? -sign(vWN.x) : sign(vWN.z);
+        float rightward = sign(Nw.z * Tw.x - Nw.x * Tw.z);
         float su = 0.5 + rightward * (ub - cw * 0.5) / (signH * SIGN_ASPECT);
         float sv = (y - (midY - signH * 0.5)) / signH;
         float onSign = inBay * step(0.0, su) * step(su, 1.0) * step(0.0, sv) * step(sv, 1.0);
@@ -348,10 +422,9 @@ const FACADE_GLSL = /* glsl */ `
           room = lc * level * (0.16 + 0.3 * smoothstep(0.4, top, y)) * (0.85 + 0.3 * h21(vec2(bid, 12.0)));
         } else if (!shutK) {
           vec3 Vv = normalize(cameraPosition - vWP);
-          vec3 Nn = normalize(vWN);
           vec3 rd = -Vv;
-          float dn = max(dot(rd, -Nn), 0.03);
-          vec3 Tt = onX ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+          float dn = max(dot(rd, -Nw), 0.03);
+          vec3 Tt = Tw;
           float du = dot(rd, Tt);
           float dy = rd.y;
           float depth = (lobby ? 9.0 : 5.0) + 3.0 * h21(vec2(bid, 5.0));
@@ -512,9 +585,13 @@ const FACADE_GLSL = /* glsl */ `
       cell = vec2(fract(lu / cw), fract(wy / fh));
       id = vec2(floor(lu / cw) + face * 97.0, floor(wy / fh));
       float floorOn = step(0.22, h21(vec2(id.y, bs * 91.0 + face)));
-      lit = step(1.0 - occupancy, h21(id + bs * 57.0)) * floorOn;
+      // A room runs at least 4.2 m along the face: on narrow bays two windows share one room, lit together.
+      float rw = max(cw, 4.2);
+      float ri = floor(lu / rw);
+      vec2 rid = vec2(ri + face * 97.0, id.y);
+      lit = step(1.0 - occupancy, h21(rid + bs * 57.0)) * floorOn;
       lamp = mix(vec3(1.0, 0.74, 0.45), vec3(0.8, 0.9, 1.0), step(0.68, h21(vec2(bs, id.y))));
-      k = 0.25 + 0.75 * pow(h21(id * 1.7 + bs), 2.0);
+      k = 0.25 + 0.75 * pow(h21(rid * 1.7 + bs), 2.0);
 
       #if ARCH == 1
         // Walk-up: one punched window per bay, a stone lintel over and a sill under, deep reveals.
@@ -656,9 +733,8 @@ const FACADE_GLSL = /* glsl */ `
           float rd = 0.24;
         #endif
         vec3 V = normalize(cameraPosition - vWP);
-        vec3 T = onX ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-        float vn = max(dot(V, normalize(vWN)), 0.08);
-        float vu = dot(V, T) / vn;
+        float vn = max(dot(V, Nw), 0.08);
+        float vu = dot(V, Tw) / vn;
         float vy = V.y / vn;
         float ww = (x1 - x0) * cw;
         float wh = (y1 - y0) * fh;
@@ -685,7 +761,46 @@ const FACADE_GLSL = /* glsl */ `
         float ac = acOn * box1(wx01, 0.28, 0.72, 0.02) * box1(wy01, 0.0, 0.2, 0.02);
         win *= 1.0 - ac;
       #endif
-      totalEmissiveRadiance += win * lit * behind * k * room * shade * glow;
+      // The room behind the glass (ROOM_GLSL): near the eye the view ray is traced into a box the room wide and the
+      // storey tall, onto its back wall with its furniture card, a side wall, the ceiling or the floor, lit by its
+      // fitting or by the dusk through the glass; farther off, the ceiling light falling toward the sill as before,
+      // and an unlit window still holds a little of the dusk. No window is a black void.
+      vec3 roomC = mix(vec3(0.35, 0.4, 0.5) * ROOM_UNLIT_FAR, behind * k * room * glow, lit);
+      float eyeD = distance(cameraPosition, vWP);
+      if (win > 0.001 && eyeD < (uRooms > 0.5 ? ROOM_FAR_HIGH : ROOM_FAR_MEDIUM)) {
+        float D = 3.6 + 1.8 * h21(rid * 1.3 + bs);
+        float ceilH = fh - 0.3;
+        vec3 box = vec3(rw, ceilH, D);
+        vec3 Vr = normalize(cameraPosition - vWP);
+        vec3 rd = -Vr;
+        float dn = max(dot(rd, -Nw), 0.03);
+        float du = dot(rd, Tw);
+        float dy = rd.y;
+        float ur = lu - ri * rw;
+        float yl = cell.y * fh;
+        float tB = D / dn;
+        float tS = du > 0.0 ? (rw - ur) / du : (du < 0.0 ? -ur / du : 1e9);
+        float tC = dy > 0.0 ? (ceilH - yl) / dy : 1e9;
+        float tF = dy < 0.0 ? -yl / dy : 1e9;
+        float t = min(min(tB, tS), min(tC, tF));
+        vec3 P = vec3(ur + du * t, yl + dy * t, dn * t);
+        vec3 paint = roomPaint(floor(h21(rid * 2.1 + bs) * 8.0));
+        vec3 albedo;
+        if (t == tB) {
+          vec4 card = roomCard(floor(h21(rid * 3.7 + bs) * ROOM_CARDS), vec2(P.x - rw * 0.5, P.y), lit);
+          albedo = mix(paint, card.rgb, card.a);
+        } else if (t == tC) {
+          albedo = vec3(0.7, 0.68, 0.65);
+        } else if (t == tF) {
+          float boards = step(0.5, h21(rid * 5.3 + bs));
+          albedo = mix(vec3(0.2, 0.19, 0.18), vec3(0.3, 0.2, 0.12) * (0.85 + 0.15 * step(0.5, fract(P.x / 0.12))), boards);
+        } else {
+          albedo = paint * 0.85;
+        }
+        float rl = roomLight(lit, P, box);
+        roomC = albedo * rl * mix(vec3(0.55, 0.62, 0.78), behind * k * glow, lit);
+      }
+      totalEmissiveRadiance += win * shade * roomC;
       #if ARCH != 4 && ARCH != 6
         // Unlit glass is dark and glossy and gives back the sky.
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.012, 0.014, 0.017), win);
@@ -715,6 +830,24 @@ const FACADE_GLSL = /* glsl */ `
         roughnessFactor = 0.08;
         metalnessFactor = 0.6;
       #endif
+    }
+    {
+      // Far architecture (Phase 5 Task 7). Past a few hundred metres the window grain averages out and the haze takes
+      // most of the difference between a block's faces, so the ambient city read as flat cut-outs and the far ring as an
+      // even texture of boxes. Its form is carried instead, as the eye reads a city at distance: the faces turned from
+      // the low sun fall darker and those turned to it lift, the corner where two faces meet holds a line of shadow a
+      // pixel wide, and the coping at the top of each tier catches the sky in a pale line, each line sized to its pixel.
+      float dEye = distance(cameraPosition, vWP);
+      float farF = smoothstep(FAR_FORM_NEAR, FAR_FORM_FULL, dEye);
+      if (farF > 0.0) {
+        float pxm = max(length(dFdx(vWP)), length(dFdy(vWP)));
+        float facing = dot(Nw, FAR_SUN);
+        diffuseColor.rgb *= mix(1.0 - 0.24 * farF, 1.0 + 0.14 * farF, smoothstep(-0.35, 0.35, facing));
+        float cornerLine = 1.0 - smoothstep(0.5 * pxm, 1.3 * pxm, edge);
+        diffuseColor.rgb *= 1.0 - 0.32 * farF * cornerLine;
+        float cope = 1.0 - smoothstep(0.6 * pxm, 1.6 * pxm, fromTop);
+        diffuseColor.rgb = mix(diffuseColor.rgb, max(diffuseColor.rgb * 1.6, vec3(0.3, 0.31, 0.34)), 0.55 * farF * cope);
+      }
     }
   } else if (vWN.y > 0.5) {
     // Roofs, as each type has them: tar and silver-coated tar on walk-ups, gravel ballast, grey and white

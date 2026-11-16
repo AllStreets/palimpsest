@@ -1,6 +1,6 @@
 import './kit-setup.js';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 
 import * as THREE from 'three';
 
@@ -12,6 +12,7 @@ import { districtOrigin } from '../shared/district-layout.js';
 import type { Floor, Quarter, TowerSpec } from '../shared/types.js';
 import { CAMPANILE, onExchange, CIVIC_LAMPS, EXCHANGE_SLOTS, FOUNTAIN, HALL, JOBS_ROUTE, LAMPS_PER_SLOT, boardLabel, makeExchange, toteBoard } from '../app/src/city/exchange.js';
 import { BLOCK, PITCH, standingLots } from '../app/src/city/lots.js';
+import * as exchangeModule from '../app/src/city/exchange.js';
 import type { JobStatus } from '../shared/types.js';
 
 /** Instances of a named instanced mesh whose colour is lit (an emitter above the bloom threshold). */
@@ -213,6 +214,24 @@ test('the campanile rises well over the hall and stays below the district towers
   ex.dispose();
 });
 
+test('the campanile skips a small new district', () => {
+  // Read through the module, so a build without the rule fails this test alone.
+  const stands = (exchangeModule as unknown as { campanileStands?: (tops: number[]) => boolean }).campanileStands;
+  assert.equal(typeof stands, 'function', 'the exchange says whether its campanile stands');
+  // A new city of one small district: a 107 m campanile would top it, so it does not stand.
+  assert.equal(stands!([]), false, 'no district, no campanile');
+  assert.equal(stands!([42]), false, 'one small new district');
+  assert.equal(stands!([CAMPANILE.top + 19.9]), false, 'a tower short of the campanile plus 20 m');
+  assert.equal(stands!([42, CAMPANILE.top + 20]), true, 'one tower at the campanile plus 20 m');
+  const make = makeExchange as unknown as (q: 'high' | 'medium', o: { campanile?: boolean }) => ReturnType<typeof makeExchange>;
+  const ex = make('medium', { campanile: false });
+  ex.object.updateMatrixWorld(true);
+  const top = new THREE.Box3().setFromObject(ex.object).max.y;
+  assert.ok(top < CAMPANILE.top - 30, `without it the dome is the exchange's top (${top.toFixed(1)} m)`);
+  assert.equal((ex.object.getObjectByName('exchange:hands') as THREE.InstancedMesh).count, 2, "the entrance clock's two hands alone");
+  ex.dispose();
+});
+
 /** Plain materials, one per key, shared by everything built with them (as the city shares its stone across looks). */
 function plainMaterials(): TowerMaterials {
   const made = new Map<string | symbol, THREE.Material>();
@@ -289,4 +308,54 @@ test('the exchange draws in the city-wide batches, under 30 calls over the city 
   withEx.dispose();
   ex.dispose();
   q.dispose();
+});
+
+test('the bid lamps and the lit cards hold their size from the market overview, without more light', async () => {
+  // From about 600 m (the market overview) a 15 cm lamp stood under a pixel and a card about three: the board grows
+  // each to a least size on screen, within its own slot, and lights nothing brighter than before.
+  const ex = (await import('../app/src/city/exchange.js')) as unknown as Record<string, unknown>;
+  const grow = ex.boardGrow as ((h: unknown, d: number, px: number) => [number, number]) | undefined;
+  const lamp = ex.LAMP_HOLD as { size: [number, number]; px: [number, number]; maxX: number } | undefined;
+  const card = ex.CARD_HOLD as { size: [number, number]; px: [number, number]; maxX: number } | undefined;
+  assert.ok(grow && lamp && card, 'the board pieces hold a least size');
+  const view = 890;
+  const pxPerM = (d: number): number => view / (2 * d * Math.tan((36 * Math.PI) / 360));
+  for (const d of [560, 620]) {
+    const [lx, ly] = (grow as unknown as (h: unknown, d: number, px: number, fov: number, lit: boolean) => [number, number])(lamp!, d, view, 36, true);
+    const [cx, cy] = grow!(card!, d, view);
+    // A lit lamp at least 3 device pixels (1.5 CSS pixels at DPR 2) each way.
+    assert.ok(lamp!.size[1] * ly * pxPerM(d) >= 1.5 && lamp!.size[0] * lx * pxPerM(d) >= 1.5, `a lit lamp stands ${(lamp!.size[0] * lx * pxPerM(d)).toFixed(2)} by ${(lamp!.size[1] * ly * pxPerM(d)).toFixed(2)} px at ${d} m`);
+    assert.ok(card!.size[0] * cx * pxPerM(d) >= 3 && card!.size[1] * cy * pxPerM(d) >= 1.6, `a card stands ${(card!.size[0] * cx * pxPerM(d)).toFixed(1)} by ${(card!.size[1] * cy * pxPerM(d)).toFixed(1)} px at ${d} m`);
+    // Within its slot: a lamp no wider than the gap to the next (0.2 m), a card inside its brass frame (1.56 m).
+    assert.ok(lamp!.size[0] * lamp!.maxX <= 0.2 && card!.size[0] * card!.maxX <= 1.56, 'each grows only within its slot');
+  }
+  // Near the eye nothing grows.
+  assert.deepEqual(grow!(lamp!, 30, view), [1, 1]);
+  assert.deepEqual(grow!(card!, 30, view), [1, 1]);
+});
+
+test('setClock allocates no matrices', () => {
+  mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-14T17:00:00') });
+  try {
+    const ex = makeExchange('high');
+    const hands = ex.object.getObjectByName('exchange:hands') as THREE.InstancedMesh;
+    const before = hands.instanceMatrix.array.slice();
+    let made = 0;
+    const clone = THREE.Matrix4.prototype.clone;
+    THREE.Matrix4.prototype.clone = function (this: THREE.Matrix4) {
+      made++;
+      return clone.call(this);
+    };
+    try {
+      // A minute on: every hand turns, and not one matrix is made for it.
+      mock.timers.tick(60_000);
+      ex.update(1 / 60);
+    } finally {
+      THREE.Matrix4.prototype.clone = clone;
+    }
+    assert.notDeepEqual(hands.instanceMatrix.array, before, 'the hands moved with the minute');
+    assert.equal(made, 0, `setClock made ${made} matrices`);
+  } finally {
+    mock.timers.reset();
+  }
 });

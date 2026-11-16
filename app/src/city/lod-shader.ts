@@ -7,7 +7,10 @@
  */
 import * as THREE from 'three';
 
-import { AMBIENT_LOD } from './lod.js';
+import { AMBIENT_LOD, TOWER_LOD } from './lod.js';
+
+/** The view's height in CSS pixels, set by the scene each frame, for pieces that hold a least size on screen (the exchange's tote board). */
+export const VIEW_PX = { value: 900 };
 
 /** The eye the fade measures from: the view camera, set each frame (the shadow pass has its own camera). */
 export const LOD_EYE = { value: new THREE.Vector3() };
@@ -63,5 +66,42 @@ export function lodDepthMaterial(band: { near: number; far: number } = AMBIENT_L
       .replace('#include <project_vertex>', `#include <project_vertex>\n${fadeAt(band.near, band.far)}\nif (vLodFade <= 0.0) ${FOLD}`);
   };
   m.customProgramCacheKey = () => `palimpsest-lod-depth-${band.near}-${band.far}`;
+  return m;
+}
+
+/** Each source material's two level copies for the tower kit's cross-fade, made once and shared by every tower. */
+const towerLevels = new WeakMap<THREE.Material, { near?: THREE.Material; far?: THREE.Material }>();
+
+/**
+ * A tower kit material as the near or the far level of a kit part (lod.ts
+ * TOWER_LOD, Task 15): the source's own shader patch runs first, then the
+ * dissolve, so the part keeps its stone and joins the other level pixel for
+ * pixel across the band. The copy keeps the source's user data, so the
+ * searchlight and lights-out patches it as they find it (they mark what
+ * they have done there). One copy per source and level, shared.
+ */
+export function towerLodMaterial<T extends THREE.Material>(src: T, level: 'near' | 'far'): T {
+  let pair = towerLevels.get(src);
+  if (!pair) towerLevels.set(src, (pair = {}));
+  const have = pair[level];
+  if (have) return have as T;
+  const m = src.clone() as T;
+  m.userData = { ...src.userData };
+  const own = src.customProgramCacheKey === THREE.Material.prototype.customProgramCacheKey ? src.onBeforeCompile.toString() : src.customProgramCacheKey();
+  const prev = src.onBeforeCompile.bind(src);
+  const keep = level === 'near' ? 'lodN < vLodFade' : 'lodN >= vLodFade';
+  const fold = level === 'near' ? 'vLodFade >= 1.0' : 'vLodFade <= 0.0';
+  m.onBeforeCompile = (sh, renderer) => {
+    prev(sh, renderer);
+    sh.uniforms.uLodEye = LOD_EYE;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>\n${VERTEX_PARS}`)
+      .replace('#include <project_vertex>', `#include <project_vertex>\n${fadeAt(TOWER_LOD.near, TOWER_LOD.far)}\nif (${fold}) ${FOLD}`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vLodFade;')
+      .replace('void main() {', `void main() {\n  ${DITHER}\n  if (${keep}) discard;`);
+  };
+  m.customProgramCacheKey = () => `${own}|tower-lod-${level}-${TOWER_LOD.near}-${TOWER_LOD.far}`;
+  pair[level] = m;
   return m;
 }

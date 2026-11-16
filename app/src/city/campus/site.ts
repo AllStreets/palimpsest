@@ -18,6 +18,7 @@ import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { CollarPlaza } from '../collar.js';
+import type { TreeSpot } from '../trees.js';
 
 /** The terrace's height over the street. */
 export const TERRACE = 6;
@@ -35,6 +36,8 @@ const COPING_IN = 109.3;
 /** The stair well cut into the front: half its width between the cheek walls, and how far in it reaches. */
 const WELL_HALF = 7.5;
 const WELL_DEPTH = 16;
+/** The radius of a campus lamp's glass globe (Phase 5 Task 10). */
+export const LAMP_GLOBE = 0.21;
 /** Where the lawns of the two quads lie (local x), and the halls' fronts either side of them (local z). */
 export const FRONT_QUAD = { x0: 12, x1: 68 } as const;
 export const INNER_QUAD = { x0: -76, x1: -20 } as const;
@@ -71,13 +74,14 @@ export const TONE: Record<Kind, THREE.Color> = {
   gravel: new THREE.Color(0.93, 0.9, 0.82),
   lamp: new THREE.Color(1.0, 0.74, 0.44),
   dial: new THREE.Color(1, 1, 1),
-  louvre: new THREE.Color(0.5, 0.42, 0.33),
+  louvre: new THREE.Color(0.6, 0.53, 0.44),
   gilt: new THREE.Color(0.92, 0.72, 0.3),
   yew: new THREE.Color(0.14, 0.3, 0.25),
   copper: new THREE.Color(1, 1, 1),
   paint: new THREE.Color(0.74, 0.71, 0.64),
   brass: new THREE.Color(0.8, 0.6, 0.26),
-  glow: new THREE.Color(0.55, 0.19, 0.035),
+  // The lining: a warm grey lime plaster under the dome's amber lamps (Phase 5 Task 10), not the orange it was.
+  glow: new THREE.Color(0.46, 0.34, 0.22),
   line: new THREE.Color(1, 1, 1),
 };
 
@@ -100,6 +104,36 @@ function hash3(x: number, y: number, z: number): number {
 /** The campus's ground as the ambient city sees it: a square court kept clear of lots and lamps, never paved, no lanterns. */
 export function campusPlaza(origin: { x: number; z: number }): CollarPlaza {
   return { x: origin.x, z: origin.z, court: CAMPUS_HALF, terrace: true };
+}
+
+/**
+ * The campus's trees, in its own frame (x along the axis from the gate,
+ * the terrace's top their ground), as the city plants them (trees.ts): in
+ * each quad two rows of limes down the lawn, standing in from the halls'
+ * walks, every other one stepped off the line, sizes mixed, none on the
+ * axis walk; a columnar hornbeam at each corner of each lawn, so a quad
+ * reads as planted, not scattered; a plane in each forecourt corner by the
+ * gate; and a pair of hornbeams flanking the library's front.
+ */
+export function campusTreeSpots(): TreeSpot[] {
+  const out: TreeSpot[] = [];
+  for (const q of [FRONT_QUAD, INNER_QUAD]) {
+    const cx = (q.x0 + q.x1) / 2;
+    const dx = q.x1 - q.x0;
+    for (const sz of [-1, 1]) {
+      for (let i = 0; i < 4; i++) {
+        const tx = q.x0 + 7 + i * ((dx - 14) / 3);
+        if (Math.abs(tx - cx) < 4) continue;
+        out.push({ x: tx + (i % 2 ? 1.5 : -1.5), y: TERRACE, z: sz * (QUAD_HALF - 9), species: 'linden', size: 0.62 + 0.15 * (((i * 7 + (sz + 1)) % 3) / 2) });
+      }
+      for (const sx of [-1, 1]) out.push({ x: cx + sx * (dx / 2 - 3), y: TERRACE, z: sz * (QUAD_HALF - 3), species: 'hornbeam', size: 1.08 });
+    }
+  }
+  for (const sz of [-1, 1]) {
+    out.push({ x: FRONT_QUAD.x1 + 14, y: TERRACE, z: sz * 22, species: 'plane', size: 0.66 });
+    out.push({ x: -79, y: TERRACE, z: sz * 36, species: 'hornbeam', size: 1.15 });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- pieces
@@ -226,6 +260,55 @@ export function siteAnchors(): SiteAnchors {
  * piers, the lawns, the walks and the quads' diagonals. `detail` (the high
  * tier) adds the bastions' caps and the piers' finials.
  */
+/**
+ * The walks' kerbs (Task 15a): a pale stone edging a little under the gravel, in the walk's own pale stone (the
+ * gravel's lifted scan) at KERB_SHADE of its tone, so a walk's edge is a step, not a line. As dark ashlar at half
+ * its tone the kerbs drew every walk and plot as a hard black outline from above and at eye level; as limestone
+ * (its scan unlifted) still at half the gravel's light (round 2).
+ */
+export const KERB: Kind = 'gravel';
+export const KERB_SHADE = 0.86;
+/** The parapet walk's width, inside the coping. */
+const PARAPET_WALK = 4.0;
+
+/**
+ * The walks on the terrace as their gravel's rectangles in the campus's own frame, [x0, x1, z0, z1] (Task 15a: the
+ * site draws them, and the lawn's shader wears the grass along their edges). The axis from the stair head to the
+ * library, a cross walk between the two ranges, the observatory's walk, a walk along the parapet, and round and
+ * through each quad: a classic college quad, the perimeter walk, the axis through it, no diagonals, the lawn kept
+ * whole in four panels.
+ */
+export function campusWalks(): Array<[number, number, number, number]> {
+  const out: Array<[number, number, number, number]> = [];
+  const walk = (xa: number, xb: number, za: number, zb: number): void => {
+    out.push([Math.min(xa, xb), Math.max(xa, xb), Math.min(za, zb), Math.max(za, zb)]);
+  };
+  const xTop = WALL_FOOT - WELL_DEPTH;
+  const inner = COPING_IN;
+  const wellOut = WELL_HALF + 1.0;
+  walk(-100, xTop + 0.5, -4.5, 4.5);
+  const crossX = (FRONT_QUAD.x0 + INNER_QUAD.x1) / 2;
+  walk(crossX - 3.5, crossX + 3.5, -inner + 3, inner - 3);
+  // The observatory's walk: from its door steps along the back lawn to the cross walk (Task 36).
+  walk(-81, crossX, -91.75, -88.25);
+  const pw = PARAPET_WALK;
+  walk(-inner, inner, inner - pw, inner);
+  walk(-inner, inner, -inner, -inner + pw);
+  walk(-inner, -inner + pw, -inner, inner);
+  walk(inner - pw, inner, -inner, -wellOut);
+  walk(inner - pw, inner, wellOut, inner);
+  for (const q of [FRONT_QUAD, INNER_QUAD]) {
+    const z1 = QUAD_HALF + 4;
+    walk(q.x0 - 4, q.x1 + 4, QUAD_HALF, z1);
+    walk(q.x0 - 4, q.x1 + 4, -z1, -QUAD_HALF);
+    walk(q.x0 - 4, q.x0, -z1, z1);
+    walk(q.x1, q.x1 + 4, -z1, z1);
+    const cx = (q.x0 + q.x1) / 2;
+    walk(cx - 1.8, cx + 1.8, -QUAD_HALF, QUAD_HALF);
+  }
+  return out;
+}
+
 export function buildSite(detail: boolean): THREE.BufferGeometry {
   const T = TERRACE;
   const pieces: THREE.BufferGeometry[] = [];
@@ -294,7 +377,7 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
   add('turf', slab(xTop, inner, T - 1, T, -inner, -wellOut));
   add('turf', slab(xTop, inner, T - 1, T, wellOut, inner));
 
-  // The walks: pale gravel a hand above the lawn, each between dark stone kerbs that stand a little under the gravel
+  // The walks: pale gravel a hand above the lawn, each between pale kerbs (KERB, KERB_SHADE) that stand a little under the gravel
   // (so a walk crossing another covers them). The axis from the stair head to the library, a cross walk between
   // the two ranges, a walk along the parapet, a walk round each quad under the halls' fronts, and the diagonals.
   const top = T + 0.06;
@@ -304,7 +387,7 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     add('gravel', new THREE.BoxGeometry(len, top - (T - 0.2), wid).rotateY(ry).translate(cx, (T - 0.2 + top) / 2, cz));
     for (const s of [-1, 1]) {
       const off = s * (wid / 2 + 0.14);
-      add('ashlar', new THREE.BoxGeometry(len, kerbY - (T - 0.2), 0.3).rotateY(ry).translate(cx + Math.sin(ry) * off, (T - 0.2 + kerbY) / 2, cz + Math.cos(ry) * off), 0.5);
+      add(KERB, new THREE.BoxGeometry(len, kerbY - (T - 0.2), 0.3).rotateY(ry).translate(cx + Math.sin(ry) * off, (T - 0.2 + kerbY) / 2, cz + Math.cos(ry) * off), KERB_SHADE);
     }
   };
   const walk = (xa: number, xb: number, za: number, zb: number): void => {
@@ -315,47 +398,11 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     if (x1 - x0 >= z1 - z0) strip((x0 + x1) / 2, (z0 + z1) / 2, x1 - x0, z1 - z0, 0);
     else strip((x0 + x1) / 2, (z0 + z1) / 2, z1 - z0, x1 - x0, Math.PI / 2);
   };
-  walk(-100, xTop + 0.5, -4.5, 4.5);
+  for (const [wx0, wx1, wz0, wz1] of campusWalks()) walk(wx0, wx1, wz0, wz1);
   const crossX = (FRONT_QUAD.x0 + INNER_QUAD.x1) / 2;
-  walk(crossX - 3.5, crossX + 3.5, -inner + 3, inner - 3);
-  // The observatory's walk: from its door steps along the back lawn to the cross walk (Task 36).
-  walk(-81, crossX, -91.75, -88.25);
-  const pw = 4.0;
-  walk(-inner, inner, inner - pw, inner);
-  walk(-inner, inner, -inner, -inner + pw);
-  walk(-inner, -inner + pw, -inner, inner);
-  walk(inner - pw, inner, -inner, -wellOut);
-  walk(inner - pw, inner, wellOut, inner);
-  for (const q of [FRONT_QUAD, INNER_QUAD]) {
-    const z1 = QUAD_HALF + 4;
-    walk(q.x0 - 4, q.x1 + 4, QUAD_HALF, z1);
-    walk(q.x0 - 4, q.x1 + 4, -z1, -QUAD_HALF);
-    walk(q.x0 - 4, q.x0, -z1, z1);
-    walk(q.x1, q.x1 + 4, -z1, z1);
-    // A classic college quad: the perimeter walk, the axis through it, and one cross walk from hall door to hall
-    // door; no diagonals, the lawn kept whole in four panels.
-    const cx = (q.x0 + q.x1) / 2;
-    const dx = q.x1 - q.x0;
-    walk(cx - 1.8, cx + 1.8, -QUAD_HALF, QUAD_HALF);
-    // Mature trees in two rows down each lawn, standing in from the halls' walks, no two alike; a columnar
-    // tree at each corner of the lawn, a darker species, for the quad to read as planted, not scattered.
-    for (const sz of [-1, 1]) {
-      for (let i = 0; i < 4; i++) {
-        const tx = q.x0 + 7 + i * ((dx - 14) / 3);
-        if (Math.abs(tx - cx) < 4) continue;
-        const seed = Math.round(tx * 7 + sz * 131 + q.x0);
-        tree(tx + (i % 2 ? 1.5 : -1.5), sz * (QUAD_HALF - 9), 0.85 + 0.3 * ((i * 7 + (sz + 1)) % 3) / 2, seed);
-      }
-      for (const sx of [-1, 1]) column(cx + sx * (dx / 2 - 3), sz * (QUAD_HALF - 3), 1.0, Math.round(cx * 3 + sx * 17 + sz * 29));
-    }
-    // Lamps at the quad's corners only.
-    for (const sz of [-1, 1]) for (const lx of [q.x0 - 1.5, q.x1 + 1.5]) lamp(lx, sz * (QUAD_HALF + 5.2));
-  }
-  // Trees in the forecourt corners, a pair of columnar trees flanking the library's front.
-  for (const sz of [-1, 1]) {
-    tree(FRONT_QUAD.x1 + 14, sz * 22, 1.0, 11 + sz);
-    column(-79, sz * 36, 1.1, 17 + sz);
-  }
+  const pw = PARAPET_WALK;
+  // Lamps at the quads' corners only (the quads' trees are the city's: campusTreeSpots, trees.ts).
+  for (const q of [FRONT_QUAD, INNER_QUAD]) for (const sz of [-1, 1]) for (const lx of [q.x0 - 1.5, q.x1 + 1.5]) lamp(lx, sz * (QUAD_HALF + 5.2));
   // Lamps down the axis every second bay, two across the cross walk, every other post along the parapet walk,
   // and a pair at the stair head: half the posts of a first draft, which lit the lawns like a car park.
   for (let x = -76; x <= 84; x += 32) for (const sz of [-1, 1]) lamp(x, sz * 6.2);
@@ -369,134 +416,19 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
   }
   for (const sz of [-1, 1]) lamp(xTop + 1.2, sz * 6.4);
   /**
-   * A tree, no two alike: a flared trunk forking into two limbs, a crown of
-   * six to eight lobes (icosahedra pushed in and out by noise), the whole
-   * leaning a few degrees. Its colour runs from a dark underside to a
-   * sunlit top, each lobe a little lighter or darker than the next and the
-   * edges broken by noise, all in the lawn's own kind.
+   * A lamp: a dark iron post, a collar, a round opal glass globe and a small iron cap over it, in the site's own draw
+   * (Phase 5 Task 10: the globe was a lit box). The globe's kind emits, brightest where it faces the eye and soft to
+   * its rim, so it reads as a lit ball of glass and the bloom round it is round.
    */
-  function tree(x: number, z: number, size: number, seed: number): void {
-    const r = seeded(seed);
-    const k = size * (0.9 + 0.25 * r());
-    const lean = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler((r() - 0.5) * 0.12, r() * Math.PI * 2, (r() - 0.5) * 0.12));
-    const place = new THREE.Matrix4().makeTranslation(x, T, z).multiply(lean);
-    // The trunk, wider at the root, and a fork of two limbs leaning apart.
-    const trunk = new THREE.CylinderGeometry(0.2 * k, 0.46 * k, 3.4 * k, 8).translate(0, 1.7 * k, 0);
-    const limbs = [-1, 1].map((s) =>
-      new THREE.CylinderGeometry(0.1 * k, 0.17 * k, 2.6 * k, 6)
-        .translate(0, 1.3 * k, 0)
-        .rotateZ(s * (0.35 + 0.2 * r()))
-        .rotateY(r() * Math.PI * 2)
-        .translate(0, 3.2 * k, 0),
-    );
-    const wood = mergeGeometries([trunk, ...limbs].map((g) => g.toNonIndexed()), false)!;
-    add('slate', wood.applyMatrix4(place), 0.9);
-    // The crown.
-    const lobes: THREE.BufferGeometry[] = [];
-    const n = 6 + Math.floor(r() * 3);
-    const crownY = 5.4 * k;
-    const values: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 + r() * 0.8;
-      const reach = (0.4 + r() * 1.6) * k;
-      const rad = (1.4 + r() * 1.1) * k;
-      const cy = crownY + (r() * 2.2 - 0.6) * k;
-      // Shared vertices, so the noise moves each point once and the lobe shades smoothly.
-      const g = mergeVertices(new THREE.IcosahedronGeometry(rad, 2));
-      const pos = g.attributes.position as THREE.BufferAttribute;
-      const salt = r() * 100;
-      for (let v = 0; v < pos.count; v++) {
-        const px = pos.getX(v);
-        const py = pos.getY(v);
-        const pz = pos.getZ(v);
-        const len = Math.hypot(px, py, pz) || 1;
-        const d = 1 + (hash3(px * 0.9 + salt, py * 0.9, pz * 0.9) - 0.5) * 0.5;
-        pos.setXYZ(v, (px / len) * rad * d, (py / len) * rad * d * 0.82, (pz / len) * rad * d);
-      }
-      g.translate(Math.cos(a) * reach, cy, Math.sin(a) * reach);
-      lobes.push(g);
-      values.push(0.88 + r() * 0.26);
-    }
-    for (const g of lobes) g.computeVertexNormals();
-    const counts = lobes.map((g) => g.attributes.position.count);
-    const crown = mergeGeometries(lobes, false)!;
-    const lo = crownY - 2.6 * k;
-    const hi = crownY + 3.6 * k;
-    let vi = 0;
-    let lobe = 0;
-    let left = counts[0];
-    const lobeOf = (): number => {
-      while (left <= 0 && lobe < counts.length - 1) left = counts[++lobe];
-      left--;
-      return lobe;
-    };
-    const perVertex = new Float32Array(crown.attributes.position.count);
-    const pp = crown.attributes.position as THREE.BufferAttribute;
-    for (vi = 0; vi < perVertex.length; vi++) {
-      const l = lobeOf();
-      const t = Math.min(1, Math.max(0, (pp.getY(vi) - lo) / (hi - lo)));
-      const up = 0.42 + 0.58 * t * t;
-      perVertex[vi] = up * values[l] * (0.92 + 0.16 * hash3(pp.getX(vi) * 3.1, pp.getY(vi) * 3.1, pp.getZ(vi) * 3.1));
-    }
-    let at = 0;
-    // Leaves are a cooler, deeper green than a mown lawn.
-    add('turf', crown.applyMatrix4(place), 0.8, () => perVertex[at++], new THREE.Color(0.72, 1.0, 0.78));
-  }
-
-  /**
-   * The second species, a columnar tree (a fastigiate oak or a hornbeam
-   * clipped tall): a straight trunk under a tight crown of lobes stacked up a
-   * vertical axis, nearly three times taller than wide, in a deeper, bluer
-   * green than the spreading trees. Built the same way, in the same draw.
-   */
-  function column(x: number, z: number, size: number, seed: number): void {
-    const r = seeded(seed);
-    const k = size * (0.9 + 0.2 * r());
-    const place = new THREE.Matrix4().makeTranslation(x, T, z).multiply(new THREE.Matrix4().makeRotationY(r() * Math.PI * 2));
-    const trunk = new THREE.CylinderGeometry(0.14 * k, 0.3 * k, 2.6 * k, 8).translate(0, 1.3 * k, 0);
-    add('slate', trunk.toNonIndexed().applyMatrix4(place), 0.85);
-    const lobes: THREE.BufferGeometry[] = [];
-    const n = 5;
-    const h0 = 2.2 * k;
-    const h1 = 11.5 * k;
-    for (let i = 0; i < n; i++) {
-      const t = i / (n - 1);
-      const cy = h0 + (h1 - h0) * t + 0.6 * k * (r() - 0.5);
-      // Widest a third of the way up, closing to a point at the top.
-      const rad = (0.9 + 1.4 * Math.sin(Math.PI * Math.min(1, 0.3 + 0.7 * (1 - t))) * (1 - 0.55 * t)) * k;
-      const g = mergeVertices(new THREE.IcosahedronGeometry(rad, 2));
-      const pos = g.attributes.position as THREE.BufferAttribute;
-      const salt = r() * 100;
-      for (let v = 0; v < pos.count; v++) {
-        const px = pos.getX(v);
-        const py = pos.getY(v);
-        const pz = pos.getZ(v);
-        const len = Math.hypot(px, py, pz) || 1;
-        const d = 1 + (hash3(px * 1.3 + salt, py * 1.3, pz * 1.3) - 0.5) * 0.4;
-        pos.setXYZ(v, (px / len) * rad * d, (py / len) * rad * d * 1.5, (pz / len) * rad * d);
-      }
-      g.translate((r() - 0.5) * 0.4 * k, cy, (r() - 0.5) * 0.4 * k);
-      g.computeVertexNormals();
-      lobes.push(g);
-    }
-    const crown = mergeGeometries(lobes, false)!;
-    const pp = crown.attributes.position as THREE.BufferAttribute;
-    const perVertex = new Float32Array(pp.count);
-    for (let vi = 0; vi < pp.count; vi++) {
-      const t = Math.min(1, Math.max(0, (pp.getY(vi) - h0) / (h1 - h0)));
-      perVertex[vi] = (0.55 + 0.45 * t) * (0.88 + 0.24 * hash3(pp.getX(vi) * 2.7, pp.getY(vi) * 2.7, pp.getZ(vi) * 2.7));
-    }
-    let at = 0;
-    add('yew', crown.applyMatrix4(place), 1, () => perVertex[at++]);
-  }
-
-  /** A lamp: a dark post with a warm lit head under a small cap, in the site's own draw (the head's kind emits, pooled round each face's centre on the box's own UVs). */
   function lamp(x: number, z: number): void {
     const h = 3.8;
+    const r = LAMP_GLOBE;
     add('slate', new THREE.CylinderGeometry(0.06, 0.09, h, 7).translate(x, T + h / 2, z), 0.8);
     add('slate', new THREE.CylinderGeometry(0.16, 0.2, 0.3, 7).translate(x, T + 0.15, z), 0.8);
-    add('lamp', new THREE.BoxGeometry(0.42, 0.5, 0.42).translate(x, T + h + 0.25, z));
-    add('slate', new THREE.BoxGeometry(0.54, 0.08, 0.54).translate(x, T + h + 0.54, z), 0.8);
+    add('slate', new THREE.CylinderGeometry(0.1, 0.07, 0.14, 8).translate(x, T + h + 0.07, z), 0.8);
+    add('lamp', new THREE.SphereGeometry(r, 16, 12).translate(x, T + h + 0.12 + r, z));
+    add('slate', new THREE.ConeGeometry(r * 0.95, 0.16, 12, 1, true).translate(x, T + h + 0.12 + 2 * r + 0.02, z), 0.8);
+    add('slate', new THREE.SphereGeometry(0.035, 6, 4).translate(x, T + h + 0.12 + 2 * r + 0.13, z), 0.8);
   }
   // The forecourt before the library's steps (widening the inner quad's walk) and the one inside the gate.
   walk(-82.5, -76, -22, 22);

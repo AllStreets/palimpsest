@@ -1,13 +1,15 @@
 """
 Palimpsest's people, modelled in Blender from code: one clothed, sculpted
-figure (a head with its features, hands, a coat with its seams and folds,
-trousers, shoes) and the variants a crowd wears (four heads of hair, two
-hats, a scarf), written to app/public/kits/figures.glb at two levels.
+figure (a head with its features, hands with their fingers, a coat with its
+seams and folds, trousers, shoes) and the variants a crowd wears (four heads
+of hair, two hats, a scarf), written to app/public/kits/figures.glb at two
+levels, and the skin atlas the close level's face and hands wear, written
+to app/public/kits/figures-skin.webp.
 
 Run headless (never with a UI):
 
     /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
-        --python tools/kits/figures.py -- app/public/kits/figures.glb
+        --python tools/kits/figures.py -- app/public/kits/figures.glb app/public/kits/figures-skin.webp
 
 How it is made. Every part is a signed distance field sculpted from smooth
 blends of ellipsoids and round cones, carved (eye sockets, nostrils, the
@@ -17,18 +19,30 @@ to the part's triangle budget, its normals taken from the field itself.
 Per vertex the script then works out the rig (two bones and a weight, as
 ambient.ts names them), the surface code, the variant part, the coat tail
 measure and a baked ambient occlusion (rays against the rest pose in
-Blender's BVH). Nothing is random without a fixed seed, so the same script
-writes the same file.
+Blender's BVH). At the close level the head and hands carry a uv into the
+skin atlas (a cylinder round the head, a plane over the hand, at one scale),
+and the short, long and bun hair wear shaped cards over their masses: thin
+tapered strips laid along the combing, lifted a millimetre or three, each
+with its own shade. Nothing is random without a fixed seed, so the same
+script writes the same file.
+
+The skin atlas is four tones in quadrants (pale, olive, brown, deep; the
+figure's own tone picks one and the shader keeps its own colour over the
+quadrant's): each the tone's colour with its breakup (mottling, and
+freckles on the paler two) and its pores as pits in the colour (the shader
+reads their height off the luminance), 1024 by 1024 RGB, written lossy at
+the highest quality that fits FIGURES_SKIN_BUDGET.
 
 Frame: three.js, metres, a 1.75 m figure standing at the origin facing +x,
 y up, its left side at -z (ambient.ts JOINT). The GLB is written by a small
 writer below (not the glTF exporter) so the layout is compact and fixed:
 one mesh per level, `figure.hi` and `figure.lo`, each with
 
-    POSITION  float32 x3
+    POSITION  int16 normalized x3 (+1 pad)     KHR_mesh_quantization; the node's scale and translation put them back in metres
     NORMAL    int8 normalized x3 (+1 pad)      KHR_mesh_quantization
-    _SKIN     uint8 x4: bone a, bone b, weight of b (/255), blush (/255)
+    _SKIN     uint8 x4: bone a, bone b, weight of b (/255), blush (/255; a hair card's shade, 128 on the hair mass)
     _SURF     uint8 x4: surface code, variant part, coat tail (/255), occlusion (/255)
+    TEXCOORD_0 uint16 normalized x2 (figure.hi only): the skin atlas uv, 0 off the skin
     indices   uint16
 """
 
@@ -645,24 +659,145 @@ def rig_of(part, P):
     return a, b, w, tail
 
 
+# ---------------------------------------------------------------- the skin's uv and the hair cards
+
+# The atlas's scale: metres of skin per unit of u and of v, the same on the head and the hands.
+UV_M = 0.6
+UV_V = 0.46
+
+
+def skin_uv(name, P):
+    """The close level's uv into the skin atlas: a cylinder round the head (the face at u 0.5), a plane over the hand; zero off the skin."""
+    X, Y, Z = P[:, 0], P[:, 1], P[:, 2]
+    uv = np.zeros((len(P), 2))
+    if name == 'head':
+        uv[:, 0] = np.arctan2(Z, X - CRAN[0][0]) / (2 * math.pi) + 0.5
+        uv[:, 1] = np.clip((Y - 1.40) / UV_V, 0, 1)
+    elif name == 'hand':
+        uv[:, 0] = 0.3 + (X + 0.05) / UV_M
+        uv[:, 1] = 0.1 + (Y - 0.72) / UV_V
+    return np.clip(uv, 0, 1)
+
+
+# Hair cards per style: how many, their length and width, and how the hair is combed.
+CARDS = {'hair_short': (72, 0.042, 0.0078, 'back'), 'hair_long': (80, 0.085, 0.0105, 'down'), 'hair_bun': (60, 0.04, 0.0078, 'bun')}
+CARD_SEGS = 4
+
+
+def project(fn, P, iters=6):
+    """Points pulled onto fn's zero surface along its gradient."""
+    for _ in range(iters):
+        d = fn(P[:, 0], P[:, 1], P[:, 2])
+        g = grad(fn, P)
+        P = P - d[:, None] * g
+    return P
+
+
+def comb(style, P, N):
+    """The combing at each point, in the surface: back from the parting, down the fall, in to the bun."""
+    X, Y, Z = P[:, 0], P[:, 1], P[:, 2]
+    back = np.column_stack([np.full_like(X, -0.6), np.full_like(X, -0.25), np.sign(Z + 0.028) * 0.75])
+    if style == 'back':
+        d = back
+    elif style == 'down':
+        down = np.column_stack([np.zeros_like(X), -np.ones_like(X), np.zeros_like(X)])
+        crown = smoothstep(1.64, 1.7, Y)[:, None]
+        d = down * (1 - crown) + back * crown
+    else:
+        d = v3((-0.105, 1.705, 0))[None, :] - P
+    d = d - (d * N).sum(1, keepdims=True) * N
+    return d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-9)
+
+
+def hair_cards(name, fn, variant):
+    """A style's cards: tapered strips laid along the combing on the hair's surface, lifted a little, each its own shade."""
+    n, length, width, style = CARDS[name]
+    rng = np.random.default_rng(101 + len(name) * 7 + n)
+    c = v3(CRAN[0])
+    nape = 1.6 if name == 'hair_bun' else 1.598
+    dirs = rng.normal(size=(n * 12, 3))
+    dirs[:, 1] = np.abs(dirs[:, 1]) * 0.9 + 0.1
+    dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    starts = c[None, :] + dirs * 0.12
+    if style == 'down':
+        # Half the candidates start round the fall over the nape and shoulders, so the cards run down it.
+        half = len(starts) // 2
+        a = rng.random(half) * math.pi * 1.3 - math.pi * 0.65
+        starts[:half] = np.column_stack([-0.065 - 0.09 * np.cos(a) * 0.6, 1.49 + 0.17 * rng.random(half), 0.09 * np.sin(a)])
+    P = project(fn, starts, 10)
+    d = fn(P[:, 0], P[:, 1], P[:, 2])
+    N = grad(fn, P)
+    radial = P - c[None, :]
+    radial /= np.maximum(np.linalg.norm(radial, axis=1, keepdims=True), 1e-9)
+    grows = hairline(P[:, 0], P[:, 1], P[:, 2], nape) > 0.004
+    if style == 'down':
+        grows = grows | ((P[:, 0] < -0.02) & (P[:, 1] < 1.68) & (P[:, 1] > 1.47))
+    ok = (np.abs(d) < 5e-4) & ((N * radial).sum(1) > 0.35) & (P[:, 0] < 0.07) & (P[:, 1] > 1.44) & grows & (N[:, 1] > -0.5)
+    roots = P[ok]
+    # Spread the cards out: take each root only if no earlier one lies within half a card's length.
+    chosen = []
+    for q in roots:
+        if all(np.linalg.norm(q - r) > length * 0.45 for r in chosen):
+            chosen.append(q)
+        if len(chosen) >= n:
+            break
+    pts = []
+    nrm = []
+    tris = []
+    shade = []
+    ds = length / CARD_SEGS
+    for k, root in enumerate(chosen):
+        Q = root[None, :].copy()
+        own = 0.75 + 0.5 * rng.random()
+        lift0 = 0.0012 + 0.0008 * rng.random()
+        w0 = width * (0.85 + 0.3 * rng.random())
+        shade_k = 0.2 + 0.8 * rng.random()
+        base = len(pts)
+        for sidx in range(CARD_SEGS + 1):
+            t = sidx / CARD_SEGS
+            Nq = grad(fn, Q)
+            D = comb(style, Q, Nq)
+            side = np.cross(Nq[0], D[0])
+            side /= max(np.linalg.norm(side), 1e-9)
+            w = w0 * (0.3 + 0.7 * math.sin(math.pi * t) ** 0.6)
+            lift = lift0 + 0.0022 * t
+            centre = Q[0] + Nq[0] * lift
+            for sgn, tilt in ((-1, -0.3), (1, 0.3)):
+                pts.append(centre + side * sgn * w * 0.5)
+                nn = Nq[0] + side * tilt
+                nrm.append(nn / np.linalg.norm(nn))
+                shade.append(shade_k)
+            if sidx < CARD_SEGS:
+                row = base + sidx * 2
+                tris.append((row, row + 2, row + 1))
+                tris.append((row + 1, row + 2, row + 3))
+                Q = project(fn, Q + D * ds * own, 3)
+    P = np.array(pts)
+    N = np.array(nrm)
+    T = np.array(tris, dtype=np.int64)
+    a, b, w, tail = rig_of('hair', P)
+    print(f'figures: {name} cards {len(chosen)} ({len(T)} triangles)')
+    return {'name': f'{name}_cards', 'variant': PART[variant], 'P': P, 'N': N, 'T': T, 'a': a, 'b': b, 'w': w, 'tail': tail, 'code': np.full(len(P), CODE['hair']), 'blush': np.array(shade), 'uv': np.zeros((len(P), 2))}
+
+
 # ---------------------------------------------------------------- the parts
 
 # name, field, bbox lo, bbox hi, voxel, part kind (rig), variant, triangles near, triangles far, codes
 PARTS = [
     ('head', head_field, (-0.135, 1.41, -0.115), (0.145, 1.8, 0.115), 0.0013, 'head', 'base', 2700, 380),
     ('eyes', eye_field, (0.06, 1.65, -0.05), (0.095, 1.69, 0.05), 0.0007, 'eyes', 'base', 220, 24),
-    ('coat', coat_field, (-0.17, 0.77, -0.24), (0.16, 1.56, 0.24), 0.0024, 'coat', 'base', 2900, 420),
+    ('coat', coat_field, (-0.17, 0.77, -0.24), (0.16, 1.56, 0.24), 0.0024, 'coat', 'base', 2750, 420),
     ('sleeve', sleeve_field, (-0.08, 0.84, 0.13), (0.08, 1.52, 0.3), 0.0022, 'sleeve', 'base', 700, 100),
     ('hand', hand_field, (-0.04, 0.73, 0.18), (0.07, 0.93, 0.25), 0.0008, 'hand', 'base', 650, 60),
-    ('trousers', trouser_field, (-0.14, 0.02, -0.2), (0.14, 1.03, 0.2), 0.0026, 'trousers', 'base', 1700, 240),
+    ('trousers', trouser_field, (-0.14, 0.02, -0.2), (0.14, 1.03, 0.2), 0.0026, 'trousers', 'base', 1600, 240),
     ('shoe', shoe_field, (-0.09, -0.005, 0.03), (0.2, 0.12, 0.16), 0.0013, 'shoe', 'base', 380, 60),
     ('hair_buzz', hair_buzz, (-0.13, 1.56, -0.095), (0.11, 1.79, 0.095), 0.0016, 'hair', 'buzz', 600, 90),
     ('hair_short', hair_short, (-0.135, 1.56, -0.1), (0.115, 1.8, 0.1), 0.0014, 'hair', 'short', 1000, 140),
-    ('hair_long', hair_long, (-0.17, 1.42, -0.12), (0.115, 1.8, 0.12), 0.0016, 'hair', 'long', 1400, 200),
+    ('hair_long', hair_long, (-0.17, 1.42, -0.12), (0.115, 1.8, 0.12), 0.0016, 'hair', 'long', 1300, 200),
     ('hair_bun', hair_bun, (-0.15, 1.56, -0.1), (0.11, 1.79, 0.1), 0.0015, 'hair', 'bun', 1000, 140),
-    ('hat_brim', None, (-0.18, 1.68, -0.17), (0.17, 1.84, 0.17), 0.0018, 'hat', 'hat', 900, 120),
+    ('hat_brim', None, (-0.18, 1.68, -0.17), (0.17, 1.84, 0.17), 0.0018, 'hat', 'hat', 800, 120),
     ('hat_cap', hat_cap, (-0.12, 1.68, -0.1), (0.17, 1.8, 0.1), 0.0016, 'hat', 'cap', 700, 100),
-    ('scarf', scarf_field, (-0.11, 1.22, -0.11), (0.12, 1.54, 0.11), 0.0018, 'scarf', 'scarf', 900, 120),
+    ('scarf', scarf_field, (-0.11, 1.22, -0.11), (0.12, 1.54, 0.11), 0.0018, 'scarf', 'scarf', 800, 120),
 ]
 # Parts made on the right only and mirrored (the meshing covers +z; the left is the same points with z turned).
 MIRROR = {'sleeve', 'hand', 'shoe'}
@@ -750,7 +885,15 @@ def level(made, lod):
             blush = head_blush(Q[:, 0], Q[:, 1], Q[:, 2]) if name == 'head' else np.zeros(len(Q))
             if name == 'hand':
                 blush = 0.35 * smoothstep(WRI[1] - 0.07, WRI[1] - 0.14, Q[:, 1])
-            out.append({'name': name, 'variant': PART[variant], 'P': Q, 'N': N, 'T': U, 'a': a, 'b': b, 'w': w, 'tail': tail, 'code': code, 'blush': blush})
+            # The hair mass sits at the middle shade; its cards spread about it (ambient.ts figureSurface).
+            if name.startswith('hair'):
+                blush = np.full(len(Q), 128 / 255)
+            uv = skin_uv(name, np.column_stack([Q[:, 0], Q[:, 1], np.abs(Q[:, 2])]) if name in MIRROR else Q) if lod == 'hi' else np.zeros((len(Q), 2))
+            out.append({'name': name, 'variant': PART[variant], 'P': Q, 'N': N, 'T': U, 'a': a, 'b': b, 'w': w, 'tail': tail, 'code': code, 'blush': blush, 'uv': uv})
+    if lod == 'hi':
+        for name, fn, kind, variant, tri_hi, tri_lo, o in made:
+            if name in CARDS:
+                out.append(hair_cards(name, fn, variant))
     return out
 
 
@@ -811,7 +954,15 @@ def pack(parts):
     surf = np.concatenate([np.column_stack([p['code'], np.full(len(p['P']), p['variant']), np.round(np.clip(p['tail'], 0, 1) * 255), np.round(np.clip(p['ao'], 0, 1) * 255)]) for p in parts]).astype(np.uint8)
     nrm = np.zeros((len(N), 4), dtype=np.int8)
     nrm[:, :3] = np.round(np.clip(N, -1, 1) * 127).astype(np.int8)
-    return P.astype(f32), nrm, skin, surf, T
+    # Positions quantised to int16 about the mesh's centre: the node's translation and scale put them back in metres.
+    lo = P.min(0)
+    hi = P.max(0)
+    centre = (lo + hi) / 2
+    half = np.maximum((hi - lo) / 2, 1e-6)
+    q = np.zeros((len(P), 4), dtype=np.int16)
+    q[:, :3] = np.round(np.clip((P - centre) / half, -1, 1) * 32767).astype(np.int16)
+    uv = np.round(np.clip(np.concatenate([p['uv'] for p in parts]), 0, 1) * 65535).astype(np.uint16)
+    return q, nrm, skin, surf, T, [float(x) for x in centre], [float(x) for x in half], uv
 
 
 def write_glb(path, meshes):
@@ -839,17 +990,19 @@ def write_glb(path, meshes):
             a['min'], a['max'] = minmax
         accessors.append(a)
         return len(accessors) - 1
-    for name, (P, nrm, skin, surf, T) in meshes.items():
+    for name, (P, nrm, skin, surf, T, centre, half, uv) in meshes.items():
         n = len(P)
         attrs = {
-            'POSITION': add(P, 34962, n, 5126, 'VEC3', minmax=(P.min(0).tolist(), P.max(0).tolist())),
+            'POSITION': add(P, 34962, n, 5122, 'VEC3', normalized=True, stride=8, minmax=(P[:, :3].min(0).tolist(), P[:, :3].max(0).tolist())),
             'NORMAL': add(nrm, 34962, n, 5120, 'VEC3', normalized=True, stride=4),
             '_SKIN': add(skin, 34962, n, 5121, 'VEC4'),
             '_SURF': add(surf, 34962, n, 5121, 'VEC4'),
         }
+        if uv.any():
+            attrs['TEXCOORD_0'] = add(uv, 34962, n, 5123, 'VEC2', normalized=True)
         ind = add(T, 34963, T.size, 5123 if T.dtype == np.uint16 else 5125, 'SCALAR')
         gmeshes.append({'name': name, 'primitives': [{'attributes': attrs, 'indices': ind, 'mode': 4}]})
-        nodes.append({'name': name, 'mesh': len(gmeshes) - 1})
+        nodes.append({'name': name, 'mesh': len(gmeshes) - 1, 'translation': centre, 'scale': half})
     while len(blob) % 4:
         blob.append(0)
     doc = {
@@ -877,10 +1030,151 @@ def write_glb(path, meshes):
     return total
 
 
+# ---------------------------------------------------------------- the skin atlas
+
+SKIN_SIZE = 1024
+SKIN_BUDGET = 262144  # figures.ts FIGURES_SKIN_BUDGET
+
+
+def skin_tone(t):
+    """ambient.ts skinTone, linear RGB."""
+    a = v3((0.72, 0.47, 0.37))
+    b = v3((0.47, 0.27, 0.17))
+    c = v3((0.13, 0.072, 0.045))
+    return a + (b - a) * (t / 0.55) if t < 0.55 else b + (c - b) * ((t - 0.55) / 0.45)
+
+
+def value_noise(rng, size, cells):
+    """Periodic value noise: a lattice of `cells` random values, smoothly interpolated to size by size, in -1 to 1."""
+    lat = rng.random((cells, cells))
+    u = (np.arange(size) / size) * cells
+    i0 = np.floor(u).astype(int) % cells
+    i1 = (i0 + 1) % cells
+    t = u - np.floor(u)
+    t = t * t * (3 - 2 * t)
+    a = lat[np.ix_(i0, i0)] * (1 - t)[:, None] * (1 - t)[None, :] + lat[np.ix_(i1, i0)] * t[:, None] * (1 - t)[None, :]
+    a += lat[np.ix_(i0, i1)] * (1 - t)[:, None] * t[None, :] + lat[np.ix_(i1, i1)] * t[:, None] * t[None, :]
+    return a * 2 - 1
+
+
+def fbm(rng, size, octaves):
+    out = np.zeros((size, size))
+    tot = 0.0
+    for cells, amp in octaves:
+        out += amp * value_noise(rng, size, cells)
+        tot += amp
+    return out / tot
+
+
+def stamp(size, spots):
+    """Soft round spots summed into a periodic field: each (cx, cy, radius, amount) a gaussian of that radius."""
+    f = np.zeros((size, size))
+    for cx, cy, r, amount in spots:
+        win = int(math.ceil(r * 2.2))
+        yy, xx = np.mgrid[-win:win + 1, -win:win + 1]
+        ix = int(round(cx))
+        iy = int(round(cy))
+        dx = xx + ix - cx
+        dy = yy + iy - cy
+        rows = (np.arange(iy - win, iy + win + 1) % size)[:, None]
+        cols = (np.arange(ix - win, ix + win + 1) % size)[None, :]
+        f[rows, cols] += amount * np.exp(-(dx * dx + dy * dy) / (r * r))
+    return f
+
+
+def pores(rng, size, cells, depth):
+    """A jittered grid of pores: each a small round pit; the height map is 1 on the skin and lower in the pits."""
+    step = size / cells
+    spots = []
+    for j in range(cells):
+        for i in range(cells):
+            if rng.random() < 0.12:
+                continue
+            cx = (i + 0.5) * step + (rng.random() - 0.5) * step * 0.8
+            cy = (j + 0.5) * step + (rng.random() - 0.5) * step * 0.8
+            spots.append((cx, cy, step * (0.22 + 0.2 * rng.random()), depth * (0.6 + 0.4 * rng.random())))
+    return np.clip(1.0 - stamp(size, spots), 0, 1)
+
+
+def freckles(rng, size, count):
+    """Freckles: small round spots, gathered a little by a slow noise, 0 (none) to 1 (a full freckle)."""
+    where = fbm(rng, size, [(5, 1.0), (10, 0.5)])
+    spots = []
+    while len(spots) < count:
+        cx = rng.random() * size
+        cy = rng.random() * size
+        if where[int(cy) % size, int(cx) % size] < -0.15 and rng.random() < 0.7:
+            continue
+        spots.append((cx, cy, 1.1 + 1.7 * rng.random() ** 2, 0.45 + 0.5 * rng.random()))
+    return np.clip(stamp(size, spots), 0, 1)
+
+
+def to_srgb(c):
+    c = np.clip(c, 0, 1)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * np.power(c, 1 / 2.4) - 0.055)
+
+
+def skin_quadrant(q, size):
+    """One tone's breakup: its colour with mottling (and freckles on the paler two) in RGB, the pores' height in alpha."""
+    rng = np.random.default_rng(900 + q)
+    t = (q + 0.5) / 4
+    base = skin_tone(t)
+    pale = max(0.0, 1.0 - t * 1.6)
+    # Mottling: broad, soft colour drift, redder in the blotches (cheeks and nose read redder by the blush already).
+    m1 = fbm(rng, size, [(6, 1.0), (12, 0.6), (24, 0.35), (48, 0.2)])
+    m2 = fbm(rng, size, [(10, 1.0), (20, 0.5), (40, 0.3)])
+    lum = 1.0 + 0.07 * m1 + 0.035 * m2
+    red = np.clip(m2, 0, 1) * (0.10 + 0.08 * pale)
+    rgb = np.stack([lum * (1 + red), lum * (1 - 0.35 * red), lum * (1 - 0.55 * red)], -1) * base[None, None, :]
+    # Freckles on the paler tones: small round browner spots, more on the palest.
+    if pale > 0.05:
+        spots = freckles(rng, size, int(260 + 900 * pale)) * (0.5 + 0.4 * pale)
+        freckle = base * v3((0.6, 0.47, 0.4))
+        rgb = rgb * (1 - spots[..., None]) + freckle[None, None, :] * spots[..., None] * lum[..., None]
+    # Pores: pits an eighth darker, with a fine grain between them; the shader reads the height off the colour itself
+    # (its luminance over the tone's), so the atlas needs no alpha plane, which WebP would have to carry lossless.
+    h = pores(rng, size, 96, 0.85) * (0.965 + 0.035 * fbm(rng, size, [(64, 1.0), (128, 0.5)]))
+    h = np.clip(h, 0, 1)
+    rgb = rgb * (0.86 + 0.14 * h)[..., None]
+    out = np.zeros((size, size, 4))
+    out[..., :3] = to_srgb(rgb)
+    out[..., 3] = 1.0
+    return out
+
+
+def skin_atlas(path):
+    """Writes the four-tone skin atlas as a lossy WebP through Blender, at the highest quality that fits the budget."""
+    half = SKIN_SIZE // 2
+    img = np.zeros((SKIN_SIZE, SKIN_SIZE, 4))
+    for q in range(4):
+        row = q // 2
+        col = q % 2
+        img[row * half:(row + 1) * half, col * half:(col + 1) * half] = skin_quadrant(q, half)
+    # Blender's pixels run from the bottom row; the shader reads the atlas unflipped, so the top row goes in last.
+    flat = img[::-1].reshape(-1).astype(np.float32)
+    im = bpy.data.images.new('figures-skin', SKIN_SIZE, SKIN_SIZE, alpha=False)
+    im.colorspace_settings.name = 'sRGB'
+    im.pixels.foreach_set(flat)
+    im.file_format = 'WEBP'
+    size = 0
+    for quality in (97, 95, 93, 91, 89, 86, 82, 78, 74, 70, 66, 62, 58, 54, 50):
+        im.save(filepath=path, quality=quality)
+        import os
+        size = os.path.getsize(path)
+        if size <= SKIN_BUDGET:
+            print(f'figures: skin atlas {size} bytes at quality {quality} -> {path}')
+            break
+    else:
+        raise SystemExit(f'figures: the skin atlas is {size} bytes at quality 50, over {SKIN_BUDGET}')
+
+
 def main():
-    out = sys.argv[sys.argv.index('--') + 1] if '--' in sys.argv else 'figures.glb'
+    args = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
+    out = args[0] if args else 'figures.glb'
+    skin_out = args[1] if len(args) > 1 else out.replace('figures.glb', 'figures-skin.webp')
     for o in list(bpy.data.objects):
         bpy.data.objects.remove(o, do_unlink=True)
+    skin_atlas(skin_out)
     made = build()
     meshes = {}
     for lod in ('hi', 'lo'):

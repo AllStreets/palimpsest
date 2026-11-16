@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { Era } from '../../../../shared/types.js';
+import { FadeLOD, instanceReach } from '../lod.js';
+import { towerLodMaterial } from '../lod-shader.js';
+import { finish } from '../steps.js';
 
 /**
  * The four surfaces every era is built from, filled per repo from its
@@ -416,8 +419,14 @@ export class Kit {
   }
 
   build(): THREE.Group {
+    return finish(this.buildSteps());
+  }
+
+  /** build() a material or a batch at a time: each yield is a point the city may stop at until its next frame (Task 13). */
+  *buildSteps(): Generator<void, THREE.Group, void> {
     const group = new THREE.Group();
     for (const [mat, list] of this.merged) {
+      yield;
       const g = mergeGeometries(list, false);
       for (const piece of list) piece.dispose();
       if (!g) continue;
@@ -430,6 +439,7 @@ export class Kit {
       group.add(mesh);
     }
     for (const [key, b] of this.batches) {
+      yield;
       const mesh = this.instanced(key, b, b.geo);
       if (!b.lo) {
         // Thin repeated parts (mullions, colonnettes, dentils, brackets) may hide once under half a pixel;
@@ -457,11 +467,18 @@ export class Kit {
         m.computeBoundingSphere();
       }
       far.castShadow = false;
-      const lod = new THREE.LOD();
+      // The two levels cross-fade over lod.ts TOWER_LOD (430 to 470 m), each instance by its own distance (Task 15).
+      // At medium both levels are the same far blocks: nothing pops, so they switch as before and draw once.
+      if (b.lo !== b.geo) {
+        mesh.material = towerLodMaterial(mesh.material as THREE.Material, 'near');
+        far.material = towerLodMaterial(far.material as THREE.Material, 'far');
+      }
+      const lod = new FadeLOD();
       lod.name = `tower:${key}:lod`;
       lod.position.copy(centre);
       lod.addLevel(mesh, 0);
       lod.addLevel(far, LOD_FAR);
+      lod.reach = instanceReach([mesh]);
       group.add(lod);
     }
     return group;

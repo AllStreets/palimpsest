@@ -88,7 +88,9 @@ test("a destination renders into the board's columns whole, unclipped, each lett
 function solid(name: Parameters<typeof nearPart>[0]): THREE.Mesh {
   const geos = (['body', 'trim', 'lamp'] as const).map((p) => nearPart(name, p)).filter((g): g is THREE.BufferGeometry => !!g);
   const pos: number[] = [];
-  for (const g of geos) pos.push(...(g.attributes.position.array as Float32Array));
+  // Appended one by one: the near trim runs to hundreds of thousands of floats (the cabins' seats), past what a spread
+  // into push can take on the stack.
+  for (const g of geos) for (const v of g.attributes.position.array as Float32Array) pos.push(v);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.computeVertexNormals();
@@ -125,4 +127,64 @@ test('a seat stands where a rider sits, in the cars people sit in', () => {
     const top = hit.point.y - i.min[1];
     assert.ok(Math.abs(top - height) < 0.08, `${name}: the seat's top stands ${top.toFixed(2)} m over the floor (the rider sits at ${height})`);
   }
+});
+
+// ---------------------------------------------------------------- up close (Phase 5 Task 5)
+
+import { extentBlocks, network } from '../shared/commute.js';
+import { districtOrigin } from '../shared/district-layout.js';
+import { createVehicles, lodBlend, lodFadeGlsl, podVariant, VEHICLE_LOD } from '../app/src/city/vehicles.js';
+
+test('two pods side by side differ in seats or strip', () => {
+  const slots = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
+  const v = createVehicles(network({ blocks: extentBlocks(slots), districts: slots.slice(0, 6) }), 'high');
+  const pods = v.vehicles('pod');
+  assert.ok(pods.length >= 4, `${pods.length} pods`);
+  // The pods of one line in the order they follow each other: each against the next, and the last against the first.
+  const lines = new Map<string, string[]>();
+  for (const p of pods) {
+    const line = p.id.slice(0, p.id.lastIndexOf(':'));
+    lines.set(line, [...(lines.get(line) ?? []), p.id]);
+  }
+  let pairs = 0;
+  for (const ids of lines.values()) {
+    ids.sort((a, b) => Number(a.slice(a.lastIndexOf(':') + 1)) - Number(b.slice(b.lastIndexOf(':') + 1)));
+    for (let k = 0; k < ids.length; k++) {
+      const a = podVariant(ids[k]);
+      const b = podVariant(ids[(k + 1) % ids.length]);
+      if (ids.length < 2) continue;
+      pairs++;
+      assert.ok(a.seat !== b.seat || a.strip !== b.strip, `${ids[k]} and ${ids[(k + 1) % ids.length]} are the same inside (${JSON.stringify(a)})`);
+      for (const x of [a, b]) {
+        assert.ok(x.seat === 0 || x.seat === 1, 'two seat colourways');
+        assert.ok(x.strip === 0 || x.strip === 1, 'two ceiling strips');
+      }
+    }
+  }
+  assert.ok(pairs >= 4, `${pairs} pairs compared`);
+  v.dispose();
+});
+
+test('the cross-fade keeps summed opacity within 0.95 to 1.05 across 380 to 420 m', () => {
+  assert.equal((VEHICLE_LOD.near + VEHICLE_LOD.far) / 2, 400, 'the band is centred on 400 m');
+  for (let d = 380; d <= 420; d += 0.5) {
+    const b = lodBlend(d);
+    assert.ok(b.near >= 0 && b.near <= 1 && b.far >= 0 && b.far <= 1, `at ${d} m the levels' shares are shares`);
+    assert.ok(b.near + b.far >= 0.95 && b.near + b.far <= 1.05, `at ${d} m the levels sum to ${(b.near + b.far).toFixed(3)}`);
+  }
+  // Short of the band the near level alone; past it the far level alone; the middle an even split.
+  assert.deepEqual(lodBlend(VEHICLE_LOD.near - 1), { near: 1, far: 0 });
+  assert.deepEqual(lodBlend(VEHICLE_LOD.far + 1), { near: 0, far: 1 });
+  assert.ok(Math.abs(lodBlend(400).near - 0.5) < 1e-6);
+  // The shaders take the same band: the one smoothstep string names both ends, and GLSL's smoothstep over it is
+  // lodBlend's far share.
+  const glsl = lodFadeGlsl('d');
+  assert.equal(glsl, `smoothstep(${VEHICLE_LOD.near.toFixed(1)}, ${VEHICLE_LOD.far.toFixed(1)}, d)`);
+  const m = /^smoothstep\(([\d.]+), ([\d.]+), d\)$/.exec(glsl)!;
+  const [e0, e1] = [Number(m[1]), Number(m[2])];
+  const smoothstep = (d: number): number => {
+    const x = Math.min(Math.max((d - e0) / (e1 - e0), 0), 1);
+    return x * x * (3 - 2 * x);
+  };
+  for (let d = 360; d <= 440; d += 2.5) assert.ok(Math.abs(smoothstep(d) - lodBlend(d).far) < 1e-9, `the shader's share at ${d} m is lodBlend's`);
 });

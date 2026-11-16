@@ -5,6 +5,8 @@ import * as THREE from 'three';
 
 import { constructionState, ERA_TONE, FLOOD_TINT, floodRadiance, makeConstruction, makeConstructionField, makeHoist, netPanel, netTextures, searchRadiance, workLampRadiance } from '../app/src/city/construction.js';
 import { BLOOM_THRESHOLD, EXPOSURE, FLOOD } from '../app/src/city/post.js';
+import * as searchlightModule from '../app/src/city/searchlight.js';
+import * as constructionModule from '../app/src/city/construction.js';
 import { workProgress } from '../engine/market/runs.js';
 import type { SiteStage, SiteState } from '../shared/types.js';
 
@@ -613,4 +615,41 @@ test('a site stands its crew hoist against the tower, clear of the widest floor 
   run(c, 9);
   assert.equal(c.hoist(), null, 'the hoist is taken down with the site');
   c.dispose();
+});
+
+// ---------------------------------------------------------------- Phase 5 Task 8: the market from home
+
+test('glint strength grows with tower height', () => {
+  // Read through the module, so a build without the term fails this test alone.
+  const sl = searchlightModule as unknown as { searchGlint?: (length: number) => number; SEARCH_GLASS_CAP?: number; SEARCH_GLINT_CAP?: number };
+  assert.equal(typeof sl.searchGlint, 'function', 'the glint has its own strength by the beam\'s length');
+  // A beam from the plaza edge (61 m out, 1.7 m up) to the new floor of a 100 m tower and of a 376 m one.
+  const beam = (top: number): number => Math.hypot(61, top + 2 - 1.72);
+  const short = sl.searchGlint!(beam(100));
+  const tall = sl.searchGlint!(beam(376));
+  assert.ok(short >= 1, `a short tower keeps the glint it had (${short.toFixed(2)})`);
+  assert.ok(tall > short * 2.5, `the 376 m tower's glint is stronger, so it reads from home (${tall.toFixed(2)} against ${short.toFixed(2)})`);
+  for (let L = 60; L < 600; L += 20) assert.ok(sl.searchGlint!(L + 20) >= sl.searchGlint!(L), `never weaker for a longer beam (${L} m)`);
+  // Glazed floors under the beam: the glass's diffuse share and its glint together stay below white.
+  assert.ok(typeof sl.SEARCH_GLASS_CAP === 'number' && typeof sl.SEARCH_GLINT_CAP === 'number', 'the glass has its caps');
+  assert.ok(sl.SEARCH_GLASS_CAP! + sl.SEARCH_GLINT_CAP! < BLOOM_THRESHOLD, `glass under the beam stays under the bloom threshold (${(sl.SEARCH_GLASS_CAP! + sl.SEARCH_GLINT_CAP!).toFixed(2)})`);
+});
+
+test('near beams vary: weathering and primer patches by hash', () => {
+  const patch = (constructionModule as unknown as { steelPatch?: (x: number, y: number, z: number) => { primer: number; weather: number } }).steelPatch;
+  assert.equal(typeof patch, 'function', 'the steel has patches by hash');
+  let primer = 0;
+  let weather = 0;
+  const n = 4000;
+  for (let i = 0; i < n; i++) {
+    const p = patch!(i * 0.731, (i % 37) * 0.41, (i % 53) * 0.67);
+    assert.ok(p.primer >= 0 && p.primer <= 1 && p.weather >= 0 && p.weather <= 1);
+    if (p.primer > 0.5) primer++;
+    if (p.weather > 0.5) weather++;
+  }
+  // Touched-up primer here and there, weathered steel more often; never the whole frame.
+  assert.ok(primer > n * 0.04 && primer < n * 0.3, `primer patches on some members (${primer} of ${n})`);
+  assert.ok(weather > n * 0.1 && weather < n * 0.6, `weathered patches on more (${weather} of ${n})`);
+  // The same place always reads the same: a hash, not a random draw.
+  assert.deepEqual(patch!(3.2, 7.1, -4.4), patch!(3.2, 7.1, -4.4));
 });

@@ -19,7 +19,9 @@ import { campusLife, EMPTY_LIFE, FLICKER, foldLifeEvent, lifeAfter, lifeFromScho
 import { foldSchoolEvent, makeObservatory, OBSERVATORY, SCHOOL_MASTER_ROUTE, schoolAfter, schoolFromView, type ObservatoryState } from '../app/src/city/campus/observatory.js';
 import type { People } from '../app/src/city/people.js';
 import { Kit, PANE_READING } from '../app/src/city/tower/kit.js';
-import { CAMPUS_HALF, campusPlaza, TERRACE } from '../app/src/city/campus/site.js';
+import { READER_POSES } from '../app/src/city/campus/readers.js';
+import { CAMPUS_HALF, campusPlaza, TERRACE, TONE } from '../app/src/city/campus/site.js';
+import { LAYER } from '../app/src/city/lod.js';
 import { PITCH, standingLots } from '../app/src/city/lots.js';
 import type { TowerMaterials } from '../app/src/city/tower/kit.js';
 import { DISTRICT_PITCH, districtOrigin } from '../shared/district-layout.js';
@@ -137,13 +139,13 @@ test('four halls cost the calls of one', () => {
   one.dispose();
 });
 
-test('the whole campus draws in at most 6 calls a pass, at high and at medium', () => {
+test('the whole campus draws in at most 7 calls a pass, at high and at medium', () => {
   for (const quality of ['high', 'medium'] as const) {
     const campus = createCampus({ quality, materials: plainMaterials(), masonry: plain() });
     campus.set(districtOrigin(2));
     // The site with the library's, the tower's and the observatory's masonry, the halls, the panes, the clock's
-    // hands, the dome's shutter and its telescope.
-    assert.ok(drawnMeshes(campus.group) <= 6, `${quality}: the campus draws in ${drawnMeshes(campus.group)} meshes`);
+    // hands, the dome's shutter, its telescope and the library's readers (Phase 5 Task 10).
+    assert.ok(drawnMeshes(campus.group) <= 7, `${quality}: the campus draws in ${drawnMeshes(campus.group)} meshes`);
     assert.ok(drawnTriangles(campus.group) < 300_000, `${quality}: ${drawnTriangles(campus.group).toFixed(0)} triangles a pass`);
     campus.dispose();
   }
@@ -163,7 +165,7 @@ test('a disposed campus lets go of every geometry it made', () => {
   campus.dispose();
   assert.equal(disposed, geometries.size, 'each geometry disposed once');
   // The lamps are in the site's draw: lit heads that cost no call of their own.
-  assert.equal(drawnMeshes(campus.group), 6, 'and the group still names only its six meshes');
+  assert.equal(drawnMeshes(campus.group), 7, 'and the group still names only its seven meshes (the readers the seventh)');
 });
 
 /** A clock tower built in Node: a Kit of plain materials, a plain masonry whose userData carries the dial's emission as the app's does. */
@@ -386,7 +388,7 @@ test('a voyage of 8 lights 8 bays and its pause darkens them', () => {
   });
   assert.equal(litPanes.length, 8, 'eight panes carry the light');
   assert.ok(litPanes.every((j) => (panes!.getColorAt(j, c), c.r <= 0.75)), 'and none is blown out');
-  assert.equal(drawnMeshes(campus.group), 6, 'and the campus still draws in six meshes');
+  assert.equal(drawnMeshes(campus.group), 7, 'and the campus still draws in seven meshes, the readers among them');
   // The voyage pauses for the night (its train pauses): the bays go dark over a few seconds.
   life.apply({ type: 'train.paused', data: { train: { id: 'train-v1', kind: 'voyage', status: 'paused' } } });
   assert.equal(life.state().voyage?.status, 'paused');
@@ -660,4 +662,101 @@ test('events heard while the school is read are folded on top of its answer, so 
   assert.deepEqual(schoolAfter(view as never, [], memory), shut, 'with nothing heard meanwhile, the answer alone');
   const life = lifeAfter(EMPTY_LIFE, view as never, pending);
   assert.deepEqual(life.nets.map((n) => [n.net, n.version]), [['router', 1]], 'the net trained meanwhile is kept');
+});
+
+// ---------------------------------------------------------------- the campus, finished (Phase 5 Task 10)
+
+test('readers take three poses in one draw', () => {
+  const campus = createCampus({ quality: 'high', materials: plainMaterials(), masonry: plain() });
+  campus.set(districtOrigin(2));
+  const found: THREE.InstancedMesh[] = [];
+  campus.group.traverse((o) => {
+    if (o.name === 'campus:readers') found.push(o as THREE.InstancedMesh);
+  });
+  assert.equal(found.length, 1, 'the readers are one mesh');
+  const r = found[0];
+  assert.ok(r.isInstancedMesh, 'one instanced draw for every desk');
+  assert.equal(r.count, 2 * campus.library.bays, `two desks a bay (${r.count} for ${campus.library.bays} bays)`);
+  // Three poses in the one geometry, each vertex naming its own (the desk, -1, is every pose's).
+  const pose = r.geometry.getAttribute('aPose');
+  const kinds = new Set<number>();
+  for (let i = 0; i < pose.count; i++) kinds.add(pose.getX(i));
+  assert.deepEqual([...kinds].sort(), [-1, 0, 1, 2], `the geometry carries the desk and three poses (${[...kinds].join(', ')})`);
+  assert.equal(READER_POSES, 3);
+  const held = new Set(campus.library.readers.poses.filter((p) => p < READER_POSES));
+  assert.deepEqual([...held].sort(), [0, 1, 2], 'the room holds all three poses');
+  assert.ok(campus.library.readers.poses.filter((p) => p < READER_POSES).length >= campus.library.bays, 'a reader at most desks');
+  // The view alone draws them: no shadow, no AO.
+  assert.ok(r.layers.isEnabled(LAYER.view) && !r.layers.isEnabled(LAYER.shadow) && !r.layers.isEnabled(LAYER.ao), 'seen through the glass only');
+  assert.ok(!r.castShadow, 'and they cast no shadow');
+  // Dark bays fold their readers away; a lit bay shows its own, at its level.
+  const reader = r.geometry.getAttribute('aReader');
+  assert.ok(Array.from({ length: r.count }, (_, i) => reader.getY(i)).every((y) => y === 0), 'dark before any voyage');
+  campus.library.set({ bays: [1, 0.5], ends: 1, lantern: 1 });
+  assert.deepEqual([reader.getY(0), reader.getY(1), reader.getY(2), reader.getY(3), reader.getY(4)], [1, 1, 0.5, 0.5, 0], 'the first bay full, the second half, the third dark');
+  // Light: under 2.5k triangles a desk, every pose included.
+  const tris = r.geometry.attributes.position.count / 3;
+  assert.ok(tris < 2500, `a desk and its three poses are ${tris} triangles`);
+  campus.dispose();
+});
+
+test("the slit lining's colour stays within the grey band", () => {
+  // The lining is a warm grey plaster under amber lamplight, not an orange: its tone, encoded as the screen shows
+  // it, keeps a saturation in the grey band and a warm hue, at every height of the dome the lamplight reaches.
+  const hsv = (c: THREE.Color): { h: number; s: number; v: number } => {
+    const e = c.clone().convertLinearToSRGB();
+    const max = Math.max(e.r, e.g, e.b);
+    const min = Math.min(e.r, e.g, e.b);
+    const d = max - min;
+    let h = 0;
+    if (d > 0) h = max === e.r ? ((e.g - e.b) / d) % 6 : max === e.g ? (e.b - e.r) / d + 2 : (e.r - e.g) / d + 4;
+    return { h: (h * 60 + 360) % 360, s: max > 0 ? d / max : 0, v: max };
+  };
+  for (const level of [0.15, 0.5, 1]) {
+    const lit = TONE.glow.clone().multiplyScalar(level);
+    const { h, s } = hsv(lit);
+    assert.ok(s >= 0.08 && s <= 0.36, `at ${level} the lining is a warm grey, saturation ${s.toFixed(2)} in 0.08 to 0.36`);
+    assert.ok(h >= 22 && h <= 48, `and amber, not orange or pink: hue ${h.toFixed(0)} in 22 to 48 degrees`);
+  }
+});
+
+test('the lawn is mown, worn along its walks and edged in pale stone, not outlined in black or mottled teal (Task 15a)', async () => {
+  const { TURF, patchMasonryShader } = (await import('../app/src/city/campus/masonry-shader.js')) as unknown as {
+    TURF: { mottle?: number; stripe?: number; wear?: number; sky: number[] };
+    patchMasonryShader(sh: { vertexShader: string; fragmentShader: string }): void;
+  };
+  const site = (await import('../app/src/city/campus/site.js')) as unknown as { campusWalks?: () => number[][]; KERB?: 'gravel' | 'limestone' | 'ashlar'; KERB_SHADE?: number };
+  // The kerbs read as pale stone edging, not as a black line round every walk and plot (they were ashlar at 0.5).
+  const kerb = TONE[site.KERB ?? 'ashlar'];
+  assert.ok((site.KERB_SHADE ?? 0.5) * Math.min(kerb.r, kerb.g, kerb.b) >= 0.7, `the kerbs' tone ${((site.KERB_SHADE ?? 0.5) * kerb.r).toFixed(2)}`);
+  // A light mottle (the coarse one read as clouds from above), the mower's stripes, and wear along the walks.
+  assert.ok((TURF.mottle ?? 0.42) <= 0.15, `the lawn's coarse mottle ${TURF.mottle ?? 0.42}`);
+  assert.ok((TURF.stripe ?? 0) >= 0.08 && (TURF.stripe ?? 0) <= 0.2, `the mower's stripes ${TURF.stripe}`);
+  assert.ok(typeof site.campusWalks === 'function' && site.campusWalks().length >= 10, 'the walks are known to the lawn');
+  const stub = (inc: string[]): string => inc.map((i) => `#include <${i}>`).join('\n');
+  const sh = { vertexShader: stub(['common', 'begin_vertex']), fragmentShader: stub(['common', 'map_fragment', 'roughnessmap_fragment', 'metalnessmap_fragment', 'normal_fragment_maps', 'emissivemap_fragment']) };
+  patchMasonryShader(sh);
+  assert.ok(sh.fragmentShader.includes('campusWalkGap(lp)') && sh.fragmentShader.includes(`CAMPUS_WALKS = ${site.campusWalks!().length}`), 'the turf wears along every walk');
+  // The sky's fill on the green is a warm grey, not blue: its blue no more than a tenth over its red.
+  assert.ok(TURF.sky[2] <= TURF.sky[0] * 1.1, `the sky fill ${TURF.sky.join(', ')}`);
+});
+
+test('the turf keeps a lifted dusk tone with blades, and the louvres stay open enough to read at 60 m', async () => {
+  const { LOUVRE_PITCH, TURF, patchMasonryShader } = await import('../app/src/city/campus/masonry-shader.js');
+  const { BLOOM_THRESHOLD, EXPOSURE } = await import('../app/src/city/post.js');
+  // The louvres' boards: 30 cm to the course at least (18 cm read as a flat grey at 60 m).
+  assert.ok(LOUVRE_PITCH >= 0.3, `louvre pitch ${LOUVRE_PITCH} m`);
+  // The turf: a lifted albedo floor and a share of the dusk sky's fill, the fill alone far under the bloom threshold
+  // even on the palest straw drift and the brightest blade.
+  assert.ok(TURF.floor >= 0.7, `turf albedo floor ${TURF.floor}`);
+  assert.ok(TURF.skyFill >= 0.15 && TURF.skyFill <= 0.4, `turf sky fill ${TURF.skyFill}`);
+  const brightest = Math.max(TONE.turf.r, TONE.turf.g, TONE.turf.b) * (TURF.floor + TURF.mottle + 0.1) * (1 + TURF.stripe / 2) * 1.45 * 1.08 * 1.12 * Math.max(...TURF.sky) * TURF.skyFill * EXPOSURE;
+  assert.ok(brightest < BLOOM_THRESHOLD * 0.5, `the turf's fill stays well under the threshold (${brightest.toFixed(2)})`);
+  // The patch carries both into the shader: the blades, the fill and the louvres' pitch.
+  const stub = (inc: string[]): string => inc.map((i) => `#include <${i}>`).join('\n');
+  const sh = { vertexShader: stub(['common', 'begin_vertex']), fragmentShader: stub(['common', 'map_fragment', 'roughnessmap_fragment', 'metalnessmap_fragment', 'normal_fragment_maps', 'emissivemap_fragment']) };
+  patchMasonryShader(sh);
+  assert.ok(sh.fragmentShader.includes('float blade = mix(') && sh.fragmentShader.includes('campusKind() == 4'), 'the turf branch draws blades and takes the sky fill');
+  assert.ok(sh.fragmentShader.includes(`${TURF.floor.toFixed(2)} + ${TURF.mottle.toFixed(2)} * a`) && sh.fragmentShader.includes(TURF.skyFill.toFixed(2)), 'with its floor and its fill');
+  assert.ok(sh.fragmentShader.includes(`/ ${LOUVRE_PITCH.toFixed(2)}`), 'and the louvres at their pitch');
 });

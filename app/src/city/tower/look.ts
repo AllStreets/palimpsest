@@ -1,14 +1,15 @@
 import * as THREE from 'three';
 
-import { lightsOutEmitter, OUT_PARS, OUT_UNIFORMS } from '../lightsout.js';
+import { DEAD_EXIT_ODD, DEAD_EXIT_SPILL, DEAD_GLASS, DEAD_LANDING_EVERY, DEAD_STOREY, lightsOutEmitter, OUT_PARS, OUT_UNIFORMS } from '../lightsout.js';
 
 import type { District } from '../../../../shared/types';
 import { materials, texture } from '../materials';
 import { ANISO_PATCH_OK, patchAnisotropy } from './aniso-patch';
 import type { Centerpiece } from '../scene';
-import { type BuildOptions, buildTower } from './build';
+import { type BuildOptions, buildTowerSteps } from './build';
+import { finish, type Steps } from '../steps';
 import type { EraMatKey, TowerMaterials } from './kit';
-import { type Finish, type Glazing, type Look, lookFor, lookKey, type Scan } from './variants';
+import { type Finish, GLAZE_ENV, type Glazing, type Look, lookFor, lookKey, SCAN_STATS } from './variants';
 
 /**
  * The tower materials in the browser: the scanned stone, brick and metal
@@ -40,8 +41,12 @@ function stone(color: number, key: string, normal = 0.9, desat = 0, rough = 1): 
  * walls, strongest at the foot, carrying up the root and gone by the floors.
  */
 function floodlit<T extends THREE.MeshStandardMaterial>(m: T, key: string, strength = 1, desat = 0): T {
-  m.customProgramCacheKey = () => `palimpsest-tower-flood-${key}`;
+  // A metal (metal(), brushed()) carries the sun cap in its own hook, which this one replaces: it is put back below
+  // (userData.sunCap), so a floodlit metal keeps the cap and its program key says so.
+  const capped = m.userData.sunCap === true;
+  m.customProgramCacheKey = () => `palimpsest-tower-flood-${key}${capped ? '-suncap' : ''}`;
   m.onBeforeCompile = (sh) => {
+    if (capped) sh.fragmentShader = sunCapped(sh.fragmentShader);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;')
       .replace(
@@ -87,7 +92,7 @@ function floodlit<T extends THREE.MeshStandardMaterial>(m: T, key: string, stren
 
 /** A scanned metal plate's normal and roughness under a flat tint: cast bronze. */
 function metal(color: number, rough: number, normal: number): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({
+  const m = new THREE.MeshStandardMaterial({
     color,
     metalness: 1,
     roughness: rough,
@@ -95,6 +100,27 @@ function metal(color: number, rough: number, normal: number): THREE.MeshStandard
     roughnessMap: texture('metal_arm.jpg'),
     normalScale: new THREE.Vector2(normal, normal),
   });
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sunCapped(sh.fragmentShader);
+  };
+  m.customProgramCacheKey = () => 'palimpsest-metal-suncap';
+  // Read by floodlit(), which replaces this hook: it applies the cap itself, so wrapping never drops it.
+  m.userData.sunCap = true;
+  return m;
+}
+
+/**
+ * The low sun's specular on the towers' metal (a bronze datum band, a
+ * copper fin, a titanium corner) held to SUN_SPEC after exposure (post.ts
+ * EXPOSURE, 0.85): a lit edge, never a hot line that blooms at a tour stop
+ * or a ride (Phase 5 Task 6's rule: only emitters catch the bloom).
+ */
+const SUN_SPEC = 0.7;
+function sunCapped(frag: string): string {
+  return frag.replace(
+    '#include <lights_fragment_end>',
+    `#include <lights_fragment_end>\nreflectedLight.directSpecular = min(reflectedLight.directSpecular, vec3(${(SUN_SPEC / 0.85).toFixed(4)}));`,
+  );
 }
 
 let grain: { normal: THREE.Texture; rough: THREE.Texture } | null = null;
@@ -189,11 +215,18 @@ function brushed(color: number, rough: number, aniso: number, env: number, verte
   // See aniso-patch.ts: keeps three's anisotropic path from producing NaN pixels.
   if (ANISO_PATCH_OK) {
     // One program for every brushed metal: the patch is the same text, and colour and grain strength are uniforms.
-    m.customProgramCacheKey = () => 'palimpsest-brushed';
+    m.customProgramCacheKey = () => 'palimpsest-brushed-suncap';
     m.onBeforeCompile = (sh) => {
-      sh.fragmentShader = patchAnisotropy(sh.fragmentShader);
+      sh.fragmentShader = sunCapped(patchAnisotropy(sh.fragmentShader));
+    };
+  } else {
+    m.customProgramCacheKey = () => 'palimpsest-brushed-plain-suncap';
+    m.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sunCapped(sh.fragmentShader);
     };
   }
+  // floodlit() would drop the anisotropy patch too, so a brushed metal is never floodlit; the flag keeps the cap if one is.
+  m.userData.sunCap = true;
   return m;
 }
 
@@ -249,13 +282,41 @@ function windowMaterial(glazing: Glazing = { body: 0x000000, tint: 0xffffff, env
   return m;
 }
 
+/** Where an emitter's near cap holds (metres from the eye) and where it has eased back to its own level. */
+export const NEAR_CAP: [number, number] = [260, 700];
+
 /**
- * A window where the power is off (lightsout.ts): the room goes out with
- * it. What is left is a dead building's glass: a film of dust, heaviest at
- * the foot of each pane where the rain leaves it; the ground floor boarded
- * in weathered plywood, and a pane here and there above it; the stair's
- * battery luminaires burning on, one bay off the middle of the two faces
- * that look toward the city, a few of them failed; and an exit sign in the
+ * An emitter that blooms from across the city but not up close: inside
+ * NEAR_CAP's first distance its brightest channel, after the renderer's
+ * exposure (post.ts EXPOSURE, 0.85), is held to `cap` (under the bloom
+ * threshold, 0.97), easing back to its own level by the second.
+ */
+export function nearCap<T extends THREE.MeshBasicMaterial>(m: T, cap: number): T {
+  const peak = Math.max(m.color.r, m.color.g, m.color.b) * 0.85;
+  const k = Math.min(1, cap / peak);
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying float vCapDist;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvCapDist = -mvPosition.z;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vCapDist;')
+      .replace('#include <opaque_fragment>', `outgoingLight *= mix(${k.toFixed(4)}, 1.0, smoothstep(${NEAR_CAP[0].toFixed(1)}, ${NEAR_CAP[1].toFixed(1)}, vCapDist));\n#include <opaque_fragment>`);
+  };
+  m.customProgramCacheKey = () => `near-cap-${k.toFixed(4)}`;
+  m.userData.nearCap = k;
+  return m;
+}
+
+/**
+ * A window where the power is off (lightsout.ts deadPane, the same in JS):
+ * the room goes out with it and nothing behind any pane is lit. What is left
+ * is a dead building's glass: dark glazing under a film of dust, heaviest at
+ * the foot of each pane where the rain leaves it, still glossy enough to hold
+ * the sky, so the tower reads as a building gone dark rather than a block;
+ * the ground floor boarded in weathered plywood, and a pane here and there
+ * above it; and the few emergency exit lights a dead building keeps on its
+ * batteries: one at every fourth landing of the stair, one bay off the
+ * middle of the two faces that look toward the city, and an exit sign in the
  * odd room.
  */
 const DEAD_GLSL = /* glsl */ `
@@ -266,15 +327,16 @@ const DEAD_GLSL = /* glsl */ `
         roomLight *= 1.0 - dOut;
         float ny0 = clamp((ro.y / sz.y) + 0.5, 0.0, 1.0);
         float grime = 0.5 + 0.5 * smoothstep(0.75, 0.0, ny0);
-        vec3 film = vec3(0.08, 0.074, 0.066) * (0.75 + 0.5 * rh(seed * 7.0));
-        diffuseColor.rgb = mix(diffuseColor.rgb, film, dOut * 0.75 * grime);
-        roughnessFactor = mix(roughnessFactor, 0.3 + 0.24 * grime, dOut);
+        vec3 film = vec3(${DEAD_GLASS.r}, ${DEAD_GLASS.g}, ${DEAD_GLASS.b}) * (0.8 + 0.4 * rh(seed * 7.0));
+        diffuseColor.rgb = mix(diffuseColor.rgb, film, dOut * (0.7 + 0.3 * grime));
+        roughnessFactor = mix(roughnessFactor, 0.1 + 0.22 * grime, dOut);
         // The pane's outward normal: the stair shows on the faces turned to the city's home bearing (+x and +z).
         vec2 nrm = normalize(vPaneT.xz);
         float u = dot(vPaneC.xz - oz.xy, vec2(-nrm.y, nrm.x));
         bool toCity = nrm.y > 0.7 || nrm.x > 0.7;
-        bool stair = toCity && abs(u - 3.4) < sz.x * 0.5 && vOutW.y > 6.5;
-        bool boarded = vOutW.y < 6.0 || (!stair && rh(seed * 3.1) < 0.09);
+        bool stair = toCity && abs(u - 3.4) < sz.x * 0.5 && vPaneC.y > 6.0;
+        bool boarded = vPaneC.y < 6.0 || (!stair && rh(seed * 3.1) < 0.09);
+        bool landing = stair && mod(floor(vPaneC.y / ${DEAD_STOREY.toFixed(1)}), ${DEAD_LANDING_EVERY.toFixed(1)}) == 1.0;
         if (boarded) {
           vec2 q = ro.xy + 20.0;
           float sheetId = floor(q.x / 1.22);
@@ -286,16 +348,17 @@ const DEAD_GLSL = /* glsl */ `
           diffuseColor.rgb = mix(diffuseColor.rgb, ply, dOut);
           roughnessFactor = mix(roughnessFactor, 0.93, dOut);
           roomLight = vec3(0.0);
-        } else if (stair) {
-          float alive = step(0.28, rh(seed * 17.0));
-          vec2 c = ro.xy - vec2(0.0, sz.y * 0.22);
-          float spot = exp(-dot(c, c) * 1.6) + 0.18 * exp(-dot(c, c) * 0.12);
-          roomLight += vec3(0.6, 0.78, 0.74) * 0.36 * spot * alive * dOut;
-        } else if (rh(seed * 23.0) < 0.05) {
-          vec2 e = abs(ro.xy - vec2(0.0, sz.y * 0.3)) - vec2(0.2, 0.07);
+        } else if (landing || (!stair && rh(seed * 23.0) < ${DEAD_EXIT_ODD.toFixed(3)})) {
+          // The exit sign over the landing's door, green on its battery, and the faint cold spill it throws on the
+          // stair's wall: a point of light in a dark face, never a lit room.
+          float k = landing ? 1.0 : 0.6;
+          vec2 at = ro.xy - vec2(0.0, sz.y * 0.3);
+          vec2 e = abs(at) - vec2(0.22, 0.08);
           float sign_ = 1.0 - smoothstep(0.0, 0.015, max(e.x, e.y));
-          float spill = exp(-dot(ro.xy - vec2(0.0, sz.y * 0.3), ro.xy - vec2(0.0, sz.y * 0.3)) * 2.2);
-          roomLight += vec3(0.1, 0.8, 0.3) * (0.75 * sign_ + 0.06 * spill) * dOut;
+          // The landing's battery luminaire washes the stairwell behind the pane a cold green-white, so from across the
+          // city a landing still reads as one faint point in the dark face.
+          float spill = exp(-dot(at, at) * 1.4) + 0.5 * exp(-dot(at, at) * 0.12);
+          roomLight += (vec3(0.1, 0.8, 0.3) * 0.8 * sign_ + vec3(0.32, 0.6, 0.5) * ${DEAD_EXIT_SPILL.toFixed(2)} * spill) * k * dOut;
         }
       }
     }
@@ -391,7 +454,7 @@ const ROOM_GLSL = /* glsl */ `
     if (reading) {
       // A library's reading room (campus/library.ts): lamplight pooled low over the desks, brightest at the sill
       // and falling toward the head of the window; a back wall of shelves across the lower third, the books as
-      // narrow spines; desks at sill height with readers' heads and shoulders dark against the light. The warm
+      // narrow spines (the desks and readers are real figures in front of it, campus/readers.ts). The warm
       // channel jitters the lamplight's hue bay by bay; lit is the bay's own level (life.ts), the flicker in it.
       vec2 q = ro.xy + 20.0;
       float up = clamp(ro.y / sz.y + 0.5, 0.0, 1.0);
@@ -404,17 +467,10 @@ const ROOM_GLSL = /* glsl */ `
         float board = step(0.88, fract(q.y / 0.36));
         g *= 0.09 + 0.17 * spine * spine + 0.08 * board;
       }
-      // Desks and readers: a desk top as a dark line at sill height, a reader at every other desk.
-      float slot = floor(q.x / 1.15 + seed * 3.0);
-      float dx = fract(q.x / 1.15 + seed * 3.0);
-      float here = rh(slot * 3.1 + seed * 19.0);
-      if (up > 0.085 && up < 0.125 && here > 0.2) g *= 0.1;
-      float hx = abs(dx - 0.5);
-      bool shoulders = up > 0.125 && up < 0.2 && hx < 0.24;
-      bool head = up >= 0.2 && up < 0.27 && hx < 0.085;
-      if (here > 0.45 && (shoulders || head)) g *= 0.08;
-      // A reading lamp on the desk, a small bright point at the desk's near edge.
-      if (here > 0.6 && up > 0.125 && up < 0.145 && abs(dx - 0.82) < 0.03) g *= 2.4;
+      // The desks and their readers stand in the room itself (campus/readers.ts, Phase 5 Task 10), seen through this
+      // glass; the pane keeps the room behind them: the lamps' pool over the desks low in the window, a little brighter
+      // in the band the desk lamps light.
+      g *= 1.0 + 0.35 * smoothstep(0.04, 0.1, up) * (1.0 - smoothstep(0.16, 0.3, up));
       roomLight = g * lit * 2.4;
       float peakR = max(roomLight.r, max(roomLight.g, roomLight.b));
       roomLight *= 1.0 / (1.0 + 0.45 * peakR);
@@ -473,23 +529,37 @@ function stainedMaterial(): THREE.MeshBasicMaterial {
   return new THREE.MeshBasicMaterial({ map: t, color: new THREE.Color(1.4, 1.3, 1.2) });
 }
 
+
 /**
- * Each scan's split between body and joint in its linear luminance (from
- * the 2k colour maps): at or past `lo` reads as body, at or past `hi` as
- * joint. Brick and ironspot mortar is lighter than the brick; the joints of
- * sandstone, granite tiles and ashlar are darker than the stone, so their
- * split runs the other way, as does rust, whose dark streaks are the joint.
- * `refBody` and `refJoint` are each part's typical luminance; `rough` is the
- * mean of the scan's roughness map, so a finish's roughness is its true mean.
+ * The coursing's far line (Task 7): past the distance where the coursed
+ * kit blocks' joints and the shader's joints fall under a pixel, the bed
+ * joints are carried as a line about a pixel wide, every course while the
+ * courses stand at least COURSE_LINE_PX apart on screen and every second,
+ * fourth, ... course beyond (a mip chain of the coursing), so the stone
+ * keeps reading as laid courses to 1,200 m instead of averaging to a flat
+ * tone. 1 draws it, 0 leaves the joints to fade (the debug handle's
+ * coursing(on), for the UI check's before and after).
  */
-const SCAN_STATS: Record<Scan, { lo: number; hi: number; refBody: number; refJoint: number; rough: number }> = {
-  brick: { lo: 0.13, hi: 0.22, refBody: 0.09, refJoint: 0.26, rough: 0.53 },
-  ironspot: { lo: 0.1, hi: 0.25, refBody: 0.04, refJoint: 0.31, rough: 0.81 },
-  sand: { lo: 0.268, hi: 0.24, refBody: 0.3, refJoint: 0.23, rough: 0.51 },
-  rust: { lo: 0.36, hi: 0.22, refBody: 0.37, refJoint: 0.2, rough: 0.42 },
-  granite: { lo: 0.06, hi: 0.05, refBody: 0.077, refJoint: 0.05, rough: 0.54 },
-  ashlar: { lo: 0.29, hi: 0.235, refBody: 0.35, refJoint: 0.21, rough: 0.51 },
-};
+export const COURSE_FAR = { value: 1 };
+/** The least screen spacing, in pixels, between the far coursing's drawn lines. */
+export const COURSE_LINE_PX = 2.6;
+/** How dark the far line is, as a share of the finish's own joint darkening (the kit blocks' joints use KIT_JOINT). */
+const COURSE_LINE_DARK = 0.9;
+/** The coursed kit blocks' joints, as a darkening, for the far line on the Face slot (their joints are geometry near): a sunk bed joint in shadow. */
+const KIT_JOINT = 0.75;
+
+/** The far coursing line in GLSL: a bed joint every `n` courses of height `h`, `y` metres up the face, a pixel `px` metres wide. */
+const COURSE_LINE_GLSL = /* glsl */ `
+float courseGroup(float h, float px) {
+  return exp2(ceil(log2(max(1.0, ${COURSE_LINE_PX.toFixed(2)} * px / max(h, 1e-3)))));
+}
+float courseLine(float y, float h, float px) {
+  float g = h * courseGroup(h, px);
+  float d = abs(fract(y / g + 0.5) - 0.5) * g;
+  return 1.0 - smoothstep(0.5 * px, 1.2 * px, d);
+}
+`;
+
 
 /**
  * A scanned masonry or patina set in a variant's colours. The scan's
@@ -520,7 +590,7 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
   // A full glaze (ceramic) is a mirror of the sky before it is a coloured surface, so it takes more of the sky
   // than a polished stone does.
   const m = f.polish
-    ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: f.polish, clearcoatRoughness: f.polish >= 0.9 ? 0.02 : 0.04, envMapIntensity: f.polish >= 0.9 ? 4.2 : 2.6 })
+    ? new THREE.MeshPhysicalMaterial({ ...params, clearcoat: f.polish, clearcoatRoughness: f.polish >= 0.9 ? 0.02 : 0.04, envMapIntensity: f.polish >= 0.9 ? GLAZE_ENV : 2.6 })
     : new THREE.MeshStandardMaterial(params);
   const u = {
     uBody: { value: new THREE.Color(f.body) },
@@ -535,12 +605,13 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
     uGap: { value: f.courses?.gap ?? 0.012 },
     uTexScale: { value: 1 / (f.scale ?? 1) },
     uWorldTile: { value: f.worldTile ?? 0 },
+    uCourseFar: COURSE_FAR,
   };
   m.customProgramCacheKey = () => 'palimpsest-scan';
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, u);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform float uTexScale;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN; varying vec3 vCL; varying vec2 vCS;\nuniform float uTexScale;')
       // Every map of a scan shares one scale, so its units can be enlarged or shrunk per finish.
       .replace(
         '#include <uv_vertex>',
@@ -568,10 +639,13 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
           #endif
           vTFP = (fm * vec4(transformed, 1.0)).xyz;
           vTFN = normalize(mat3(fm) * objectNormal);
+          // A coursed kit block's own frame (x -0.5..0.5 along the course, y 0..1 up it) and its size in metres.
+          vCL = transformed;
+          vCS = vec2(length(fm[0].xyz), length(fm[1].xyz));
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse; uniform float uGap; uniform float uWorldTile; uniform float uTexScale;\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }')
+      .replace('#include <common>', `#include <common>\nvarying vec3 vTFP; varying vec3 vTFN;\nuniform vec3 uBody; uniform vec3 uJoint; uniform vec4 uSplit; uniform float uKeep; uniform float uWeather; uniform float uDetail; uniform vec4 uCourse; uniform float uGap; uniform float uWorldTile; uniform float uTexScale; uniform float uCourseFar;\nvarying vec3 vCL; varying vec2 vCS;\n${COURSE_LINE_GLSL}\nfloat wHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\nfloat wNoise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(wHash(i), wHash(i + vec2(1.0, 0.0)), f.x), mix(wHash(i + vec2(0.0, 1.0)), wHash(i + vec2(1.0, 1.0)), f.x), f.y); }`)
       .replace(
         '#include <map_fragment>',
         `#include <map_fragment>
@@ -630,6 +704,23 @@ function scanMaterial(f: Extract<Finish, { kind: 'scan' }>): THREE.MeshStandardM
           float bedTone = wHash(vec2(floor(row / 3.0), 11.0)) - 0.5;
           float bed = 1.0 + 0.045 * sin(q.y * 23.0 + hb * 9.0) * (1.0 - smoothstep(0.0, 0.05, aa.y));
           diffuseColor.rgb *= (1.0 + uCourse.w * ((hb - 0.5) * 2.0 * blockFade + bedTone * 1.6)) * bed * (1.0 - uCourse.z * joint);
+          // Far off, where the joint has faded into its footprint, the bed joints carry on as a line a pixel wide,
+          // every course or every 2nd, 4th... (courseGroup), so the wall still reads as laid stone.
+          float px = aa.y / 1.5;
+          float farK = uCourseFar * smoothstep(uGap * 1.5, uGap * 5.0, px);
+          diffuseColor.rgb *= 1.0 - farK * ${COURSE_LINE_DARK.toFixed(2)} * uCourse.z * courseLine(q.y, uCourse.x, px);
+        }
+        if (uWorldTile > 0.0 && vCS.y > 0.0 && vCS.y < 2.0 && abs(vTFN.y) < 0.7) {
+          // A coursed kit block (the Face slot): its joints are geometry near the eye and sub-pixel past a few hundred
+          // metres, where the far line takes them up, from the block's own frame so it falls on the block's own bed.
+          float px = max(length(dFdx(vTFP)), length(dFdy(vTFP)));
+          float farK = uCourseFar * smoothstep(0.03, 0.09, px);
+          float yb = vCL.y * vCS.y;
+          float row = floor((vTFP.y - yb) / vCS.y + 0.5);
+          float n = courseGroup(vCS.y, px);
+          float onLine = 1.0 - step(0.5, mod(row, n));
+          float bed = (1.0 - smoothstep(0.5 * px, 1.2 * px, yb)) * onLine;
+          diffuseColor.rgb *= 1.0 - farK * ${(COURSE_LINE_DARK * KIT_JOINT).toFixed(2)} * bed;
         }
         // Soot and splash darken masonry toward the street, and the lowest floors most; porous cut stone soils deepest.
         diffuseColor.rgb *= 1.0 - (0.2 + 0.3 * uWeather) * exp(-max(vTFP.y - 20.0, 0.0) / 45.0);`,
@@ -766,7 +857,8 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
     // Neutral white (about 4500 K), at a level that reads as a lit reveal rather than neon.
     lightLine: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.88, 0.93, 1.0).multiplyScalar(1.0) })),
     // Saturated amber, a hue the architecture never uses, so a Claude floor reads apart from any light line.
-    accent: lightsOutEmitter(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) })),
+    // Up close (a tour stop, the ride) held under the bloom threshold, so a roof's line reads as a lit edge, not a hot wire.
+    accent: lightsOutEmitter(nearCap(new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.36, 0.05).multiplyScalar(1.5) }), 0.9)),
     // Cool moonlight blue-white, darker than the neutral light line: a merged floor's slab edge reads as lit
     // from the city's distance without reaching the bloom threshold (0.97), and never as the Claude amber.
     // Dimmed (AUD-C) so the line reads as a lit reveal under the floor's own lit rooms, not a strip in front of them.
@@ -812,7 +904,12 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
 
 /** A district's Palimpsest tower as a city centerpiece: floors pick as themselves, the root picks as the district. */
 export function towerCenterpiece(d: District, quality: 'high' | 'medium', look: Look = lookFor(d.repo), opts: BuildOptions = {}): Centerpiece {
-  const t = buildTower(d.tower, quality, towerMaterials(look), look, opts);
+  return finish(towerCenterpieceSteps(d, quality, look, opts));
+}
+
+/** towerCenterpiece in steps (steps.ts): the tower a floor at a time. */
+export function* towerCenterpieceSteps(d: District, quality: 'high' | 'medium', look: Look = lookFor(d.repo), opts: BuildOptions = {}): Steps<Centerpiece> {
+  const t = yield* buildTowerSteps(d.tower, quality, towerMaterials(look), look, opts);
   const pickables = new Map<THREE.Object3D, string | null>(t.pickables);
   pickables.set(t.rootPick, null);
   return { object: t.group, pickables, dispose: () => t.dispose() };

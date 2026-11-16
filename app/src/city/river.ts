@@ -25,38 +25,31 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { BANKS, BRIDGE_DECK, BRIDGES, PIER_HALF, PIERS, QUAY, RIVER, type Pier } from '../../../shared/commute.js';
 import { LAYER, setLayers } from './lod.js';
-import { materials, texture } from './materials';
+import { materials, texture } from './materials.js';
 import { chunkAt, chunkLod, chunks, waterSettings, type Chunk } from './river-lod.js';
-import { SKY_GLSL, SUN_DIRECTION } from './sky';
+import { SKY_GLSL, SUN_DIRECTION } from './sky.js';
+import { WAKE, WAKE_GLSL } from './wake.js';
 
-/** The water's surface, metres below the quays. */
-export const WATER_Y = -6.2;
+import { BRIDGE_KINDS, pontoonOf, RIVER_BED, STONE_PIERS, WATER_Y } from './river-bed.js';
+export { BRIDGE_KINDS, pontoonOf, RIVER_BED, riverFeet, WATER_Y, type BridgeKind } from './river-bed.js';
 /** The most boats whose wakes the water draws. */
 const WAKES = 4;
-/** The quay walls stand on footings this deep (hidden under the water). */
-const WALL_FOOT = -9;
+const WALL_FOOT = RIVER_BED;
 /** The river runs the length of the ground. */
 const LENGTH = 16000;
 /** The parapet along each quay, on the coping. */
 const PARAPET_H = 0.95;
 const PARAPET_W = 0.55;
 /** The granite coping along each quay's edge, from the wall's face inland: the ground stops where it starts. */
-export const COPING = 2.4;
-/** Quay lamps stand this far back from the wall's face, one every QUAY_LAMP_STEP metres. */
-export const QUAY_LAMP_IN = 3.2;
-export const QUAY_LAMP_STEP = 30;
-/** Quay lamps run this far up and down the river: the length of the detailed city. */
-export const QUAY_LAMP_REACH = 1800;
-/** No quay lamp stands within this of a bridge's centre line or a pier's stair. */
-export const QUAY_LAMP_CLEAR = 18;
+// The coping's width and the quay lamps' spacing are the river's layout (shared/commute.ts), read by the street floor too.
+export { COPING, QUAY_LAMP_CLEAR, QUAY_LAMP_IN, QUAY_LAMP_REACH, QUAY_LAMP_STEP } from '../../../shared/commute.js';
+import { COPING, QUAY_LAMP_CLEAR, QUAY_LAMP_IN, QUAY_LAMP_REACH, QUAY_LAMP_STEP } from '../../../shared/commute.js';
 /** The deck's top: a hair above the street, so the road runs on without a step. */
 const DECK_TOP = 0.08;
 /** Lamp light, as HDR colour: warm metal halide on the quays and bridges, a little whiter than the sodium streets. */
 const LANTERN = new THREE.Color(1.0, 0.74, 0.46).multiplyScalar(2.8);
 
-export type BridgeKind = 'arch' | 'stone' | 'stayed';
-/** Which bridge stands where (z): the steel tied arch upstream, the stone arch on the civic axis, the cable-stayed deck downstream. */
-export const BRIDGE_KINDS: Record<number, BridgeKind> = { [BRIDGES[0]]: 'arch', [BRIDGES[1]]: 'stone', [BRIDGES[2]]: 'stayed' };
+
 
 /** The names on the piers' signs, in PIERS order. Places of the city, not of anyone's data. */
 export const PIER_NAMES = ['Tannery Wharf', 'Ropewalk Stairs', 'Ironworks Pier', 'Lock Street', 'Chandlers Quay', 'Mill Stairs', 'Gasholder Pier', 'Exchange Stairs'];
@@ -599,8 +592,8 @@ function stoneBridge(b: Build, M: RiverMaterials, bz: number, lamps: THREE.Vecto
   const x1 = BANKS.east + 4;
   const half = BRIDGE_DECK / 2;
   const spring = WATER_Y + 1.3;
-  const piers = [RIVER.x - 10.5, RIVER.x + 10.5];
-  const pw = 3;
+  const piers = STONE_PIERS.x;
+  const pw = STONE_PIERS.width;
   const spans: Array<[number, number, number]> = [
     [BANKS.west, piers[0] - pw / 2, 3.3],
     [piers[0] + pw / 2, piers[1] - pw / 2, 3.8],
@@ -958,8 +951,9 @@ function ferryPier(b: Build, M: RiverMaterials, p: Pier, row: number, lamps: THR
   // Pontoon: 28 m by 7 m, off the stairs' landing.
   const gx0 = face + s * (sw + 0.4);
   const pw = 7;
-  const pcx = gx0 + s * (3.2 + pw / 2);
-  const pz = landZ - 3;
+  const pontoon = pontoonOf(p);
+  const pcx = pontoon.x;
+  const pz = pontoon.z;
   const deckY = WATER_Y + 0.85;
   b.tier = 'core';
   b.box(M.hull, pcx, WATER_Y + 0.1, pz, pw, 1.5, PIER_HALF * 2);
@@ -972,10 +966,9 @@ function ferryPier(b: Build, M: RiverMaterials, p: Pier, row: number, lamps: THR
   b.beam(M.steel, [gx0 - s * 0.2, WATER_Y + 0.95, landZ - 0.2], [gx0 + s * 3.4, gy, landZ - 0.2], 1.6, 0.14);
   for (const side of [-0.8, 0.8]) b.beam(M.iron, [gx0 - s * 0.2, WATER_Y + 1.95, landZ - 0.2 + side], [gx0 + s * 3.4, gy + 1.0, landZ - 0.2 + side], 0.05, 0.05);
   // Guide piles at the pontoon's outer edge, through hoops.
-  for (const dz of [-PIER_HALF + 3, PIER_HALF - 3]) {
-    const x = pcx + s * (pw / 2 + 0.55);
-    b.rod(M.steel, [x, WALL_FOOT, pz + dz], [x, deckY + 3.4, pz + dz], 0.34, 10);
-    b.box(M.steel, x - s * 0.35, deckY + 0.3, pz + dz, 0.8, 0.25, 0.9);
+  for (const q of pontoon.piles) {
+    b.rod(M.steel, [q.x, WALL_FOOT, q.z], [q.x, deckY + 3.4, q.z], 0.34, 10);
+    b.box(M.steel, q.x - s * 0.35, deckY + 0.3, q.z, 0.8, 0.25, 0.9);
   }
   // Railings round the pontoon, open on its river edge's boarding gate.
   for (const side of [-1, 1]) b.box(M.iron, pcx, deckY + 1.05, pz + side * (PIER_HALF - 0.1), pw - 0.4, 0.05, 0.05);
@@ -1134,6 +1127,7 @@ function waterFragment(steps: number): string {
     vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
     return mix(mix(wHash(i), wHash(i + vec2(1, 0)), f.x), mix(wHash(i + vec2(0, 1)), wHash(i + vec2(1, 1)), f.x), f.y);
   }
+  ${WAKE_GLSL}
   vec3 wakes(vec2 p, float dist, float vy) {
     vec2 g = vec2(0.0);
     float foam = 0.0;
@@ -1157,42 +1151,44 @@ function waterFragment(steps: number): string {
       if (b < 0.0 || b > 220.0) continue;
       // Outside the wedge (its arms at their widest wander) nothing of the wake reaches: skip the noise there.
       if (aa > 2.4 + 0.394 * b + 3.0 * (1.1 + 0.05 * b) + 3.0) continue;
-      float decay = sp * exp(-b / 90.0);
-      float width = 1.1 + 0.05 * b;
-      float edge0 = 2.4 + 0.354 * b;
-      float wander = 0.3 + 0.02 * b;
-      // Close to the boat the arms stand up: a V that reads behind it, not only the churn in its track.
-      float close = 1.0 + 1.6 * exp(-b / 45.0);
-      // The arms: divergent crests as continuous ridge lines running in across each arm of the 19.5 degree wedge,
-      // their spacing and strength wandering with noise and fading astern and with distance; only the foam breaks up.
-      float band = 2.6 * width;
-      if (b < 150.0 && abs(aa - edge0) < band + wander + width) {
-        // One slow noise steers the arm's line, its ridges' spacing and their strength.
-        float flow = wNoise(vec2(aa * 0.05 + uTime * 0.05, b * 0.04 - uTime * 0.08));
+      float width = wkWidth(b);
+      float edge0 = 2.4 + ${WAKE.tanHalf.toFixed(4)} * b;
+      float wander = wkWander(b);
+      // The arms (wake.ts): each a continuous divergent crest along the 19.5 degree wedge, its height the decayed
+      // envelope with a slow wander (wkArm, never under 0.7 of itself, so it reads as one line from the bow to where
+      // it fades), its line wandering a little about the wedge; two fainter crests run inside it, parallel, as the
+      // divergent train does. Only the foam on the crest breaks up.
+      if (b < ${WAKE.reach.toFixed(1)} && abs(aa - edge0) < width * 7.0 + wander) {
+        float flow = wkFlow(b * 0.04 - uTime * 0.08);
         float edge = edge0 + (flow - 0.5) * wander;
-        float armD = aa - edge;
-        // A broad, one-sided envelope: the ridges reach in from the arm's line toward the track, not out past it.
-        float env = exp(-armD * armD / (band * band)) * smoothstep(width * 1.2, -width * 0.2, armD);
-        // The ridge lines cross the arm at about 35 degrees; their spacing stretches and squeezes slowly.
-        float spacing = 1.0 + 0.35 * (flow - 0.5);
-        float ph = (aa * 0.82 + b * 0.57) * 1.15 / spacing - uTime * 2.0;
+        float arm = sp * wkArm(b, uTime);
+        // Far off and at a glancing view the crests are finer than a pixel: they thin out, the churn's track stays.
         float crestFade = (1.0 - smoothstep(0.5, 1.4, 1.15 * footprint)) * near;
-        float strength = 0.6 + 0.8 * fract(flow * 3.7 + 0.21);
-        float s0 = sin(ph);
-        float c0 = 0.5 + 0.5 * s0;
-        float sharp = mix(3.0, 1.4, smoothstep(10.0, 140.0, b));
-        float dcrest = sharp * pow(c0, sharp - 1.0) * cos(ph) * 0.5;
-        vec2 across = normalize(side * sign(a) * 0.82 - dir * 0.57);
-        g += across * dcrest * env * decay * 0.17 * close * strength * crestFade;
-        // The swell under the arm: the gradient of a smooth ridge.
-        g += side * sign(a) * (-2.0 * armD / (width * width)) * exp(-armD * armD / (width * width)) * decay * 0.1 * close;
-        // Foam only on the ridge tops near the boat, broken up by its own noise.
-        float tip = pow(c0, 6.0) * env * smoothstep(80.0, 4.0, b) * crestFade;
-        if (tip > 0.01) foam += tip * decay * 0.5 * close * smoothstep(0.45, 0.85, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2)));
+        float w2 = width * width;
+        float armD = aa - edge;
+        float gauss = exp(-armD * armD / w2);
+        // The crest: the gradient of a smooth ridge across the arm's line (wake.ts wakeHeight), standing up toward
+        // the boat; the dusk sky slides down its back and the dark water up its face, which is how the V is seen.
+        g += side * sign(a) * (-2.0 * armD / w2) * gauss * arm * wkAmp(crestFade);
+        // The inner crests, each a ridge the same shape a few widths inside the arm, fainter.
+        for (int k = 1; k <= 2; k++) {
+          float dIn = aa - (edge - width * 2.4 * float(k));
+          float str = k == 1 ? ${WAKE.inner[0].strength.toFixed(2)} : ${WAKE.inner[1].strength.toFixed(2)};
+          g += side * sign(a) * (-2.0 * dIn / w2) * exp(-dIn * dIn / w2) * arm * str * wkAmp(crestFade) * 0.6;
+        }
+        // A thin glint along the ridge's line: the sky caught on its face, continuous, a hair wide, thinning astern
+        // with the crest. The arm reads as a line, not a smear; the noise only breathes its thickness.
+        float line = pow(gauss, 6.0) * arm * smoothstep(${WAKE.reach.toFixed(1)}, 20.0, b);
+        float breathe = 0.7 + 0.3 * wNoise(vec2(aa * 0.4, b * 0.25 - uTime * 0.2));
+        foam += line * 0.22 * breathe;
+        // Foam on the crest only near the stern, white where the arm leaves the hull and gone within forty metres.
+        float tip = gauss * smoothstep(42.0, 6.0, b) * (0.5 + 0.5 * crestFade);
+        if (tip > 0.02) foam += tip * arm * 0.6 * (0.45 + 0.55 * smoothstep(0.3, 0.8, wNoise(vec2(aa * 0.9 - uTime * 0.3, b * 0.9 + uTime * 0.2))));
       }
       // The churn astern of the hull (its stern stands 11 m behind the middle), and white water along its sides.
       float s = u - 10.5;
-      float churn = s > -1.0 ? exp(-aa * aa / (2.4 + 0.2 * max(s, 0.0))) * exp(-max(s, 0.0) / (24.0 + 40.0 * sp)) : 0.0;
+      // The propeller wash straight behind the stern: turbulent white water that fades within two boat lengths.
+      float churn = s > -1.0 ? exp(-aa * aa / (2.4 + 0.2 * max(s, 0.0))) * exp(-max(s, 0.0) / (12.0 + 12.0 * sp)) : 0.0;
       float hullW = 3.15 * sqrt(max(0.0, 1.0 - (u / 11.2) * (u / 11.2)));
       float sideF = exp(-pow(aa - hullW - 0.35, 2.0) / 0.35) * smoothstep(-11.6, -9.0, u) * (1.0 - smoothstep(6.0, 12.0, u));
       if (churn + sideF > 0.01) {
@@ -1310,9 +1306,9 @@ function waterFragment(steps: number): string {
     float foam = clamp(wk.z, 0.0, 1.0);
     col = mix(col, skyHaze(vec3(0.0, 1.0, 0.0)) * 0.5 + refl * 0.25 + vec3(0.01, 0.011, 0.012), smoothstep(0.0, 1.0, foam) * 0.75);
 
-    // The same sky-coloured haze the scene's fog draws.
-    float ff = 1.0 - exp(-uFog * uFog * dist * dist);
-    col = mix(col, skyHaze(-V), ff);
+    // The same haze the scene's fog draws (sky.ts hazeOver; the water lies at the ground haze's foot, so its layer is the ground's).
+    float ff = hazeFactor(uFog, dist, 1.0);
+    col = hazeOver(col, -V, ff);
     gl_FragColor = vec4(col, 1.0);
   }`;
 }

@@ -15,6 +15,50 @@ export const RAIL_TRACK = 2.1;
 export const RAIL_R = 16;
 export const POD_BEAM = 1.7;
 
+/**
+ * The elevated rail's cars (vehicles.ts runs them): their bogie centres'
+ * spacing, and the body's half length nose to tail and half width.
+ */
+export const RAIL_CAR = { bogie: 10.6, half: 7.64, width: 1.42 } as const;
+/** The viaduct's trough, from its centre line to the outer faces of its webs (transit.ts TROUGH): the deck a train's body keeps over. */
+export const VIADUCT_HALF = 4.7;
+
+/**
+ * How far a rail car's body reaches from the line's centre on a curve of
+ * radius r (the centre line's), on the inner track (its middle, which the
+ * chord between its bogies pulls inward) and on the outer (its nose and
+ * tail corners, which overhang outward past the bogies).
+ */
+export function railSwing(r: number, track = RAIL_TRACK, car: { bogie: number; half: number; width: number } = RAIL_CAR): { inner: number; outer: number } {
+  const b = car.bogie / 2;
+  const ri = r - track;
+  const ro = r + track;
+  const inner = r - (Math.sqrt(Math.max(0, ri * ri - b * b)) - car.width);
+  const mid = Math.sqrt(Math.max(0, ro * ro - b * b));
+  const outer = Math.hypot(mid + car.width, car.half) - r;
+  return { inner, outer };
+}
+
+/**
+ * The smallest curve the rail cars take inside the viaduct's deck with
+ * their bogie spacing: below it a car's middle (inner track) or its corners
+ * (outer track) hang outside the webs. Five centimetres kept in hand.
+ */
+export const VIADUCT_MIN_RADIUS = ((): number => {
+  const fits = (r: number): boolean => {
+    const s = railSwing(r);
+    return Math.max(s.inner, s.outer) <= VIADUCT_HALF - 0.05;
+  };
+  let lo = RAIL_TRACK + RAIL_CAR.bogie / 2 + 0.01;
+  let hi = 200;
+  for (let k = 0; k < 60; k++) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+})();
+
 /** The tram's contact wire over the rails. */
 export const CONTACT_Y = 5.8;
 

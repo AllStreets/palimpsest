@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CROWN_ALLOWANCE, cityExtent, easeLimits, fogFor, FOV, HERO_FOG, opensHome, viewLimits, type CityExtent, type V3 } from '../app/src/city/view.js';
+import { clearAirFloor, CROWN_ALLOWANCE, cityExtent, easeHome, easeLimits, fogFor, fogFrom, FOV, hazeAt, HERO_FOG, opensHome, viewLimits, type CityExtent, type EasedHome, type V3 } from '../app/src/city/view.js';
 import { FLOOR_HEIGHT, ROOT_HEIGHT } from '../shared/tower-layout.js';
 
 // ---------------------------------------------------------------- an independent pinhole camera
@@ -52,7 +52,7 @@ const extent = (floors: number, radius: number, count: number): CityExtent => ({
   count,
 });
 
-const fogAt = (density: number, d: number): number => 1 - Math.exp(-density * density * d * d);
+const fogAt = (density: number, d: number): number => hazeAt(density, d);
 
 const ASPECTS = [1.6, 1.0, 2.2];
 
@@ -198,6 +198,42 @@ test('easing: the limits move toward a grown city over a second or two, never in
   assert.ok(Math.abs(cur.far - to.far) < 1);
 });
 
+test('fog is measured from the eased home', () => {
+  // The city grows while the eye is flown out past home: the home framing jumps at once (it is only used when asked
+  // for), but the haze thins against the eased home, its distance and its target both, so no frame measures the eye
+  // from a target that moved three hundred metres in a step.
+  const dist = (a: V3, b: V3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const was: EasedHome = { distance: 900, target: [0, 60, 0] };
+  const grown = { distance: 1400, target: [300, 80, 300] as V3 };
+  const eye: V3 = [0.63 * 2600, 420, 0.78 * 2600];
+  const density = HERO_FOG;
+  let cur = easeHome(was, grown, 1 / 60);
+  assert.ok(cur.distance > was.distance && cur.distance < was.distance + 40, `one frame moved the home distance to ${cur.distance}`);
+  assert.ok(cur.target[0] > 0 && cur.target[0] < 25, `one frame moved the home target to x ${cur.target[0]}`);
+  // This frame's fog is the eased home's, and not the grown home's.
+  const fromGrown = fogFor(density, grown.distance, dist(eye, grown.target));
+  assert.equal(fogFrom(density, cur, eye), fogFor(density, cur.distance, dist(eye, cur.target)));
+  assert.notEqual(fogFrom(density, cur, eye), fromGrown);
+  // Nearer the old home's fog than the new one's after one frame; the new one's after three seconds.
+  const fromWas = fogFor(density, was.distance, dist(eye, was.target));
+  assert.ok(Math.abs(fogFrom(density, cur, eye) - fromWas) < Math.abs(fogFrom(density, cur, eye) - fromGrown));
+  for (let i = 0; i < 60 * 3; i++) cur = easeHome(cur, grown, 1 / 60);
+  assert.ok(Math.abs(fogFrom(density, cur, eye) - fromGrown) < fromGrown * 1e-3, `after three seconds ${fogFrom(density, cur, eye)} against ${fromGrown}`);
+  // Snapping (the first placement) takes the new home whole.
+  assert.deepEqual(easeHome(was, grown, Infinity), { distance: grown.distance, target: grown.target });
+});
+
+test("the clear-air floor keeps the ground's far edge in haze from any eye", () => {
+  // The clear-air still thins the haze to 0.4 of home; under the floor the ground's edge, 8 km past the eye, would show
+  // as a hard line against the dome. The floor holds it at 98% haze from home, the overview and the farthest orbit.
+  for (const d of [170, 900, 1500, 2600, 6000]) {
+    const edge = fogAt(clearAirFloor(d), d + 8000);
+    assert.ok(edge >= 0.98 && edge < 0.995, `from ${d} m the ground's edge is ${(edge * 100).toFixed(1)}% haze`);
+  }
+  // And it is a floor, not the haze: thinner than the sample's own from its overview.
+  assert.ok(clearAirFloor(900) < HERO_FOG * 0.5, `${clearAirFloor(900)} under half of HERO_FOG`);
+});
+
 test('easing never pulls in a camera that stands beyond a shrinking limit', () => {
   let cur = { maxDistance: 5200, fogDensity: 0.0003, far: 26000 };
   const to = { maxDistance: 2600, fogDensity: 0.00055, far: 20000 };
@@ -296,4 +332,37 @@ test('the city opens on its home framing at the first placement that has distric
   // Once framed, the city never moves the camera again.
   assert.equal(opensHome(true, 0), false);
   assert.equal(opensHome(true, 6), false);
+});
+
+test('a fresh home, nothing of his standing, opens over the skyline and not down a street', () => {
+  // The screens audit: an empty city opened on a street-level canyon with no focus. Its home looks over the ambient
+  // city's skyline from the hero's height of view instead, at every window shape.
+  for (const aspect of [16 / 10, 4 / 3, 21 / 9]) {
+    const L = viewLimits(cityExtent([]), aspect);
+    const [ex, ey, ez] = L.home.eye;
+    const [tx, ty, tz] = L.home.target;
+    const across = Math.hypot(ex - tx, ez - tz);
+    const pitch = (Math.atan2(ey - ty, across) * 180) / Math.PI;
+    assert.ok(ey >= 150, `${aspect.toFixed(2)}: the eye stands over the roofs (${ey.toFixed(0)} m up)`);
+    assert.ok(across >= 600, `and stands back from the plaza (${across.toFixed(0)} m)`);
+    assert.ok(ty >= 25, `aimed into the skyline, not the street (${ty.toFixed(0)} m)`);
+    assert.ok(pitch > 3 && pitch < 25, `looking a little down over it (${pitch.toFixed(1)} degrees)`);
+    // The ambient city's tallest glass slab, wherever it stands near the plaza, is in frame with sky above it.
+    for (const at of [[0, 0], [250, -150], [-200, 220]] as const) {
+      const p = ndc(L.home.eye, L.home.target, aspect, [at[0], 230, at[1]]);
+      assert.ok(p.z > 0 && p.y < 0.92 && Math.abs(p.x) < 1, `a 230 m crown at (${at.join(', ')}) stands in frame with sky over it (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+    }
+  }
+  // A city with districts keeps its own framing: the empty extent is only the empty city's.
+  const one = cityExtent([{ origin: { x: 0, z: 0 }, tower: { floors: [] } as never }]);
+  assert.notDeepEqual(viewLimits(one, 1.6).home, viewLimits(cityExtent([]), 1.6).home);
+});
+
+test("the haze's falloff: thin through the middle distance, closing past 2 km, and the shader's the same (Task 15a)", async () => {
+  const { HAZE_POWER } = await import('../app/src/city/view.js');
+  const { SKY_GLSL } = await import('../app/src/city/sky.js');
+  assert.ok(hazeAt(HERO_FOG, 900) < 0.05, `at 900 m ${hazeAt(HERO_FOG, 900).toFixed(3)}`);
+  assert.ok(hazeAt(HERO_FOG, 2000) > 0.2 && hazeAt(HERO_FOG, 2000) < 0.4, `at 2 km ${hazeAt(HERO_FOG, 2000).toFixed(3)}`);
+  assert.ok(hazeAt(HERO_FOG, 3000) > 0.6 && hazeAt(HERO_FOG, 3000) < 0.8, `at 3 km ${hazeAt(HERO_FOG, 3000).toFixed(3)}`);
+  assert.match(SKY_GLSL, new RegExp(`float hazeFactor\\(float density, float d, float layer\\) \\{\\s*return 1\\.0 - exp\\(-pow\\(max\\(density \\* d \\* layer, 0\\.0\\), ${HAZE_POWER.toFixed(1).replace('.', '\\.')}\\)\\);`));
 });

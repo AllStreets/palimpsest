@@ -12,10 +12,15 @@
  * it drew in. The pieces' own plain meshes stay where they are, hidden, for
  * framing and the next rebuild. Each merged mesh carries its parts' world
  * spheres (`userData.lodParts`), so the city's level-of-detail pass judges
- * the nearest part, not the whole city's span. Pure three.js: tested in Node.
+ * the nearest part, not the whole city's span. Each merged mesh is laid out
+ * in clusters (batch.ts ClusterMesh), so a pass draws only the clusters its
+ * camera sees, still in one call. Pure three.js: tested in Node.
  */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+import { CLUSTER_SIZE, ClusterMesh, clusterTrianglesSteps } from './batch.js';
+import { finish, type Steps } from './steps.js';
 
 interface Part {
   mat: THREE.Material;
@@ -38,6 +43,8 @@ export interface PlainBatch {
    * drawn for picking). Returns true when anything changed.
    */
   set(roots: THREE.Object3D[], skip?: (o: THREE.Object3D) => boolean): boolean;
+  /** set() in steps: nothing drawn changes until the returned commit runs (true when anything changed). */
+  prepare(roots: THREE.Object3D[], skip?: (o: THREE.Object3D) => boolean): Steps<() => boolean>;
   dispose(): void;
 }
 
@@ -64,6 +71,7 @@ export function plainBatch(): PlainBatch {
   const entries = new Map<THREE.Object3D, Entry>();
   const drawn = new Map<string, THREE.Mesh[]>();
 
+
   function take(root: THREE.Object3D, skip?: (o: THREE.Object3D) => boolean): Entry {
     root.updateMatrixWorld(true);
     const parts = new Map<string, Part[]>();
@@ -85,15 +93,11 @@ export function plainBatch(): PlainBatch {
     return { parts };
   }
 
-  function remerge(key: string): void {
-    for (const m of drawn.get(key) ?? []) {
-      group.remove(m);
-      if (m.userData.ownGeometry) m.geometry.dispose();
-    }
-    drawn.delete(key);
+  /** The merged meshes for one key over these entries, not yet drawn. */
+  function* merge(key: string, from: Map<THREE.Object3D, Entry>): Steps<THREE.Mesh[]> {
     const all: Part[] = [];
-    for (const e of entries.values()) all.push(...(e.parts.get(key) ?? []));
-    if (all.length === 0) return;
+    for (const e of from.values()) all.push(...(e.parts.get(key) ?? []));
+    if (all.length === 0) return [];
     const first = all[0];
     const merged = all.length === 1 ? null : mergeGeometries(all.map((p) => p.geo), false);
     // Pieces whose attributes do not line up draw on their own rather than being lost.
@@ -103,40 +107,73 @@ export function plainBatch(): PlainBatch {
     const meshes: THREE.Mesh[] = [];
     for (const o of out) {
       o.geo.computeBoundingSphere();
-      const mesh = new THREE.Mesh(o.geo, first.mat);
+      // Laid out in clusters, so a close view draws only the towers it sees (batch.ts). A piece drawn on its own is
+      // shared with its tower's taking (`own` false): its clusters reorder only its triangles, which draw the same.
+      yield;
+      const clusters = yield* clusterTrianglesSteps(o.geo);
+      const mesh = new ClusterMesh(o.geo, first.mat, CLUSTER_SIZE, clusters);
       mesh.castShadow = first.cast;
       mesh.receiveShadow = first.receive;
       mesh.name = first.name;
       mesh.userData.ownGeometry = o.own;
       mesh.userData.lodParts = o.spheres;
-      group.add(mesh);
       meshes.push(mesh);
     }
-    drawn.set(key, meshes);
+    return meshes;
+  }
+
+  /**
+   * set() in steps (steps.ts): a root taken, or a material merged, at a
+   * time, with nothing drawn changed until the commit it returns, which
+   * swaps every re-merged material in at once (true when anything changed).
+   */
+  function* prepare(roots: THREE.Object3D[], skip?: (o: THREE.Object3D) => boolean): Steps<() => boolean> {
+    const want = new Set(roots);
+    const dirty = new Set<string>();
+    const next = new Map<THREE.Object3D, Entry>();
+    const gone: Entry[] = [];
+    for (const [root, e] of entries) {
+      if (want.has(root)) next.set(root, e);
+      else {
+        gone.push(e);
+        for (const key of e.parts.keys()) dirty.add(key);
+      }
+    }
+    for (const root of roots) {
+      if (next.has(root)) continue;
+      yield;
+      const e = take(root, skip);
+      next.set(root, e);
+      for (const key of e.parts.keys()) dirty.add(key);
+    }
+    const made = new Map<string, THREE.Mesh[]>();
+    for (const key of dirty) {
+      yield;
+      made.set(key, yield* merge(key, next));
+    }
+    return () => {
+      for (const [key, meshes] of made) {
+        for (const m of drawn.get(key) ?? []) {
+          group.remove(m);
+          if (m.userData.ownGeometry) m.geometry.dispose();
+        }
+        if (meshes.length) drawn.set(key, meshes);
+        else drawn.delete(key);
+        for (const m of meshes) group.add(m);
+      }
+      for (const e of gone) for (const list of e.parts.values()) for (const p of list) p.geo.dispose();
+      entries.clear();
+      for (const [root, e] of next) entries.set(root, e);
+      return dirty.size > 0;
+    };
   }
 
   return {
     group,
     set(roots, skip) {
-      const want = new Set(roots);
-      const dirty = new Set<string>();
-      for (const [root, e] of entries) {
-        if (want.has(root)) continue;
-        for (const [key, list] of e.parts) {
-          dirty.add(key);
-          for (const p of list) p.geo.dispose();
-        }
-        entries.delete(root);
-      }
-      for (const root of roots) {
-        if (entries.has(root)) continue;
-        const e = take(root, skip);
-        entries.set(root, e);
-        for (const key of e.parts.keys()) dirty.add(key);
-      }
-      for (const key of dirty) remerge(key);
-      return dirty.size > 0;
+      return finish(prepare(roots, skip))();
     },
+    prepare,
     dispose() {
       for (const list of drawn.values()) for (const m of list) if (m.userData.ownGeometry) m.geometry.dispose();
       for (const e of entries.values()) for (const list of e.parts.values()) for (const p of list) p.geo.dispose();

@@ -17,9 +17,11 @@ import * as THREE from 'three';
 import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { agentRootHeight } from '../../../shared/tower-layout.js';
 import type { Era, Quarter, RootStyle, TowerSpec } from '../../../shared/types.js';
-import { type BuildOptions, buildTower, type BuiltTower } from './tower/build.js';
+import { type BuildOptions, buildTowerSteps, type BuiltTower } from './tower/build.js';
+import { finish, type Steps } from './steps.js';
 import { flutedShaft, Kit, M, type MatKey, piercedWall, pointedArch, roundArch, type TowerMaterials } from './tower/kit.js';
 import { type Look, lookFor, preference, renderedDistance } from './tower/variants.js';
+import type { TreeSpot } from './trees.js';
 
 export { QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 
@@ -147,6 +149,33 @@ export function quarterShow(q: Quarter, clocks: QuarterClocks = {}): QuarterShow
   return { quarter: { ...q, towers: towers.map((t) => t.spec) }, court: own, plate: q.dark ? 'bankrupt' : 'active', towers, settled };
 }
 
+/** Hires and sales arrive in bursts: a quarter's rebuild waits this long after the last change before it starts (Task 13). */
+export const QUARTER_DEBOUNCE_S = 1.5;
+
+/**
+ * Holds a quarter rebuild until changes stop coming: each touch replaces
+ * the waiting work and restarts the wait, and take() hands it over once
+ * QUARTER_DEBOUNCE_S has passed since the last touch, once. Times in seconds.
+ */
+export function rebuildDebounce<T>(wait = QUARTER_DEBOUNCE_S): { touch(now: number, work: T): void; take(now: number): T | null; clear(): void; waiting(): boolean } {
+  let held: { work: T; at: number } | null = null;
+  return {
+    touch(now, work) {
+      held = { work, at: now + wait };
+    },
+    take(now) {
+      if (!held || now < held.at) return null;
+      const w = held.work;
+      held = null;
+      return w;
+    },
+    clear() {
+      held = null;
+    },
+    waiting: () => held !== null,
+  };
+}
+
 /**
  * What a quarter's build depends on: everything but whether its lights are
  * on, which is a uniform (lightsout.ts). A quarter going dark or relighting
@@ -194,6 +223,11 @@ const STONE: Record<RootStyle, MatKey> = {
  * plinth. Floors pick as themselves under their agent; the plinth as the firm.
  */
 export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks: (t: TowerSpec) => Look, opts: QuarterOptions): QuarterPiece {
+  return finish(quarterCenterpieceSteps(q, quality, looks, opts));
+}
+
+/** quarterCenterpiece in steps (steps.ts): each tower a floor at a time, then the court. */
+export function* quarterCenterpieceSteps(q: Quarter, quality: 'high' | 'medium', looks: (t: TowerSpec) => Look, opts: QuarterOptions): Steps<QuarterPiece> {
   const mats = opts.materials;
   const group = new THREE.Group();
   group.name = `quarter:${q.firmId}`;
@@ -203,14 +237,15 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
   const disposers: Array<() => void> = [];
 
   const plots = new Set<number>();
-  q.towers.forEach((t, i) => {
+  for (let i = 0; i < q.towers.length; i++) {
+    const t = q.towers[i];
     const plot = t.towerIndex ?? i;
     const at = QUARTER_OFFSETS[plot];
-    if (!at) return;
+    if (!at) continue;
     plots.add(plot);
     const look = looks(t);
     // Built lit whatever its state: a dark tower's lights are out by the lights-out uniform (lightsout.ts), so going dark never rebuilds.
-    const built = buildTower(t, quality, mats(look), look, { firmSlots: opts.firmSlots, dark: false } satisfies BuildOptions);
+    const built = yield* buildTowerSteps(t, quality, mats(look), look, { firmSlots: opts.firmSlots, dark: false } satisfies BuildOptions);
     built.group.name = `tower:${t.id}`;
     built.group.position.set(at.x, 0, at.z);
     // A school tower (the collegiate root) is drawn apart, in the university's masonry (school-towers.ts).
@@ -224,7 +259,7 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
     if (t.agentId) agents.set(built.rootPick, t.agentId);
     if (t.agentId) towers.set(t.agentId, built);
     disposers.push(() => built.dispose());
-  });
+  }
 
   // The firm's own court pieces, in its own look and root (a firm all of whose towers were sold keeps its walk and name).
   const firmMats = mats(lookFor(q.firmId));
@@ -235,7 +270,7 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
   plinth(kit, q.root);
   garden(kit, q.root);
   lanternColumn(kit, q.root);
-  const court = kit.build();
+  const court = yield* kit.buildSteps();
   court.name = 'quarter:walks';
   court.userData.spans = spans;
   group.add(court);
@@ -256,10 +291,6 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
   group.add(plinthPick);
   pickables.set(plinthPick, null);
   disposers.push(() => plinthPick.geometry.dispose());
-
-  const trees = plantTrees();
-  group.add(trees.object);
-  disposers.push(trees.dispose);
 
   const letters = inscription(opts.name);
   if (letters) {
@@ -463,13 +494,15 @@ const TREES: Array<[number, number]> = [
   [24, 24],
 ];
 const BASIN = 12;
+/** The planters' soil, where the garth's trees stand. */
+const GARTH_SOIL = 0.56;
 
 /** A raised stone planter under each tree, and the basin in the middle: a stone kerb round still dark water. */
 function garden(k: Kit, root: RootStyle): void {
   const stone = STONE[root];
   for (const [x, z] of TREES) {
     k.box(stone, 3.2, 0.55, 3.2, M(x, 0.275, z));
-    k.box('roof', 2.6, 0.04, 2.6, M(x, 0.56, z));
+    k.box('roof', 2.6, 0.04, 2.6, M(x, GARTH_SOIL, z));
   }
   const h = 0.6;
   for (const side of [-1, 1]) {
@@ -572,148 +605,14 @@ function lanternColumn(k: Kit, root: RootStyle): void {
   k.add('datum', new THREE.ConeGeometry(0.04, spike, 6), M(0, c0 + 0.92 + spike / 2, 0));
 }
 
-let foliage: { leaf: THREE.Material; bark: THREE.Material } | null = null;
-
-/** Value noise in 3D, for the crowns' clumps and the bark's patches. */
-function vnoise(x: number, y: number, z: number): number {
-  const h = (a: number, b: number, c: number): number => {
-    const s = Math.sin(a * 127.1 + b * 311.7 + c * 74.7) * 43758.5453;
-    return s - Math.floor(s);
-  };
-  const xi = Math.floor(x);
-  const yi = Math.floor(y);
-  const zi = Math.floor(z);
-  const f = (t: number): number => t * t * (3 - 2 * t);
-  const u = f(x - xi);
-  const v = f(y - yi);
-  const w = f(z - zi);
-  const l = (a: number, b: number, t: number): number => a + (b - a) * t;
-  return l(
-    l(l(h(xi, yi, zi), h(xi + 1, yi, zi), u), l(h(xi, yi + 1, zi), h(xi + 1, yi + 1, zi), u), v),
-    l(l(h(xi, yi, zi + 1), h(xi + 1, yi, zi + 1), u), l(h(xi, yi + 1, zi + 1), h(xi + 1, yi + 1, zi + 1), u), v),
-    w,
-  );
-}
-
 /**
- * One crown mass of a London plane: a sphere broken into leaf clumps (two
- * octaves of noise pushing it in and out), flatter and darker underneath
- * where the light stops reaching, its normals bent toward the round of the
- * mass so it shades as foliage, not as facets.
+ * The garth's trees as the city plants them (trees.ts, one draw for every
+ * tree in the city): a London plane in each raised planter, standing on its
+ * soil, from the quarter's origin. A garth's planes stand about 11 m, under
+ * the lantern's gallery and clear of the walks.
  */
-function crownMass(): THREE.BufferGeometry {
-  // A smooth indexed sphere (no facets), pushed in and out into leaf clusters by two octaves of noise.
-  const g = new THREE.SphereGeometry(1, 22, 14);
-  const pos = g.attributes.position as THREE.BufferAttribute;
-  const colors = new Float32Array(pos.count * 3);
-  const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const n = vnoise(v.x * 2.2 + 4, v.y * 2.2, v.z * 2.2) * 0.65 + vnoise(v.x * 5.3, v.y * 5.3 + 9, v.z * 5.3) * 0.35;
-    v.multiplyScalar(0.84 + 0.3 * n);
-    if (v.y < 0) v.y *= 0.55;
-    pos.setXYZ(i, v.x, v.y, v.z);
-    // Light on top and on the clusters that stand out, dark in the hollows and underneath.
-    const shade = (0.5 + 0.5 * THREE.MathUtils.smoothstep(v.y, -0.45, 0.85)) * (0.8 + 0.3 * n);
-    colors.set([shade * 0.96, shade, shade * 0.88], i * 3);
-  }
-  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  g.computeVertexNormals();
-  // Normals bent toward the round of the mass, so it shades as a soft volume of leaves.
-  const nrm = g.attributes.normal as THREE.BufferAttribute;
-  const radial = new THREE.Vector3();
-  const nv = new THREE.Vector3();
-  for (let i = 0; i < nrm.count; i++) {
-    radial.fromBufferAttribute(pos, i).normalize();
-    nv.fromBufferAttribute(nrm, i).lerp(radial, 0.45).normalize();
-    nrm.setXYZ(i, nv.x, nv.y, nv.z);
-  }
-  return g;
-}
-
-/** A trunk or limb with the plane's camouflage bark: cream, olive and grey-brown plates where the old bark has shed. */
-function barkedLimb(): THREE.BufferGeometry {
-  const g = new THREE.CylinderGeometry(0.16, 0.3, 1, 12, 8);
-  const pos = g.attributes.position as THREE.BufferAttribute;
-  const colors = new Float32Array(pos.count * 3);
-  const v = new THREE.Vector3();
-  const cream = new THREE.Color(0.68, 0.66, 0.55);
-  const olive = new THREE.Color(0.47, 0.47, 0.37);
-  const brown = new THREE.Color(0.4, 0.35, 0.29);
-  const c = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const a = Math.atan2(v.z, v.x);
-    const n = vnoise(Math.cos(a) * 2.2 + 3, v.y * 3.4, Math.sin(a) * 2.2);
-    const m = vnoise(Math.cos(a) * 4.4, v.y * 7 + 5, Math.sin(a) * 4.4);
-    c.copy(n > 0.6 ? cream : n > 0.4 ? olive : brown).lerp(brown, m * 0.25);
-    colors.set([c.r, c.g, c.b], i * 3);
-  }
-  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  return g;
-}
-
-/** London planes in leaf: a mottled bole forking into two limbs and a broad crown of overlapping clumped masses, instanced. */
-function plantTrees(): { object: THREE.Object3D; dispose(): void } {
-  foliage ??= {
-    leaf: new THREE.MeshStandardMaterial({ color: 0x66744a, roughness: 0.92, metalness: 0, vertexColors: true }),
-    bark: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0, vertexColors: true }),
-  };
-  const trunkGeo = barkedLimb();
-  const crownGeo = crownMass();
-  const MASSES = 18;
-  const trunks = new THREE.InstancedMesh(trunkGeo, foliage.bark, TREES.length * 3);
-  const crowns = new THREE.InstancedMesh(crownGeo, foliage.leaf, TREES.length * MASSES);
-  const m = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const up = new THREE.Vector3(0, 1, 0);
-  const tint = new THREE.Color();
-  TREES.forEach(([x, z], i) => {
-    const a = (i * 2.399) % (Math.PI * 2);
-    const s = 1 + 0.1 * Math.sin(i * 1.7);
-    // The bole to the fork at 3.4 m, then two limbs leaning apart.
-    trunks.setMatrixAt(3 * i, m.compose(new THREE.Vector3(x, 0.55 + 1.45, z), q.identity(), new THREE.Vector3(1, 2.9, 1)));
-    for (const side of [0, 1]) {
-      const lean = side ? 0.42 : -0.38;
-      const dir = new THREE.Vector3(Math.cos(a + side * Math.PI), 0, Math.sin(a + side * Math.PI));
-      const axis = new THREE.Vector3().crossVectors(up, dir).normalize();
-      q.setFromAxisAngle(axis, lean);
-      const tip = new THREE.Vector3(0, 1.4, 0).applyQuaternion(q);
-      trunks.setMatrixAt(3 * i + 1 + side, m.compose(new THREE.Vector3(x + tip.x, 3.45 + tip.y, z + tip.z), q, new THREE.Vector3(0.62, 2.8, 0.62)));
-    }
-    // Three layers of leaf clusters: a broad lower skirt of six, a middle ring of four, and two at the top,
-    // each turned and sized apart, overlapping so the crown reads as one canopy with depth, not a pile of balls.
-    for (let j = 0; j < MASSES; j++) {
-      const layer = j < 8 ? 0 : j < 14 ? 1 : 2;
-      const inLayer = layer === 0 ? j : layer === 1 ? j - 8 : j - 14;
-      const count = [8, 6, 4][layer];
-      const b = a + (inLayer * Math.PI * 2) / count + layer * 0.5 + 0.4 * Math.sin(i * 1.3 + j);
-      const r = [3.1, 2.0, 1.0][layer] + 0.45 * Math.sin(i + j * 2.1);
-      const size = [1.35, 1.45, 1.3][layer] * (1 + 0.18 * Math.cos(i * 0.7 + j * 1.3)) * s;
-      const y = [5.8, 7.0, 8.1][layer] * s + 0.35 * Math.sin(i * 3 + j);
-      q.setFromAxisAngle(up, b * 1.7);
-      crowns.setMatrixAt(MASSES * i + j, m.compose(new THREE.Vector3(x + Math.cos(b) * r, y, z + Math.sin(b) * r), q, new THREE.Vector3(size * 1.1, size * 0.78, size)));
-      // The top layer catches the most sky; the skirt sits in the crown's own shade.
-      const lift = [0.86, 0.96, 1.06][layer];
-      crowns.setColorAt(MASSES * i + j, tint.setRGB((0.92 + 0.08 * Math.sin(i * 1.3 + j * 2.1)) * lift, (0.95 + 0.06 * Math.cos(i + j)) * lift, 0.86 * lift));
-    }
-  });
-  const g = new THREE.Group();
-  g.name = 'quarter:trees';
-  for (const mesh of [trunks, crowns]) {
-    mesh.castShadow = mesh.receiveShadow = true;
-    mesh.computeBoundingSphere();
-    g.add(mesh);
-  }
-  return {
-    object: g,
-    dispose() {
-      trunkGeo.dispose();
-      crownGeo.dispose();
-      trunks.dispose();
-      crowns.dispose();
-    },
-  };
+export function quarterTreeSpots(origin: { x: number; z: number }): TreeSpot[] {
+  return TREES.map(([x, z]) => ({ x: origin.x + x, y: GARTH_SOIL, z: origin.z + z, species: 'plane' as const, size: 0.7 }));
 }
 
 // ---------------------------------------------------------------- the name plinth

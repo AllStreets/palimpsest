@@ -44,9 +44,59 @@ export interface Scaffold {
 let shared: {
   tube: THREE.MeshStandardMaterial;
   board: THREE.MeshStandardMaterial;
+  festoonBoard: THREE.MeshStandardMaterial;
   sheet: THREE.MeshStandardMaterial;
   pour: THREE.MeshStandardMaterial;
 } | null = null;
+
+/** The festoon's bulb: warm tungsten, linear (milestones.ts FESTOON takes it). */
+export const FESTOON_BULB: [number, number, number] = [1.0, 0.5, 0.18];
+
+/**
+ * How bright a board is lit by the bulbs strung by it: each bulb's light
+ * falls off with the square of its distance to the board (held level inside
+ * FESTOON_NEAR), summed over every bulb, times FESTOON_GAIN. Baked once per
+ * board when the scaffold is built; no point light anywhere.
+ */
+const FESTOON_GAIN = 1.5;
+const FESTOON_NEAR = 0.45;
+
+/** A board under a festoon: its baked light (aFestoon, per instance) times the bulb's colour, on its own albedo. */
+function festoonLit(m: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aFestoon;\nvarying float vFestoon;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFestoon = aFestoon;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vFestoon;')
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        totalEmissiveRadiance += vec3(${FESTOON_BULB.map((v) => v.toFixed(3)).join(', ')}) * vFestoon * diffuseColor.rgb;`,
+      );
+  };
+  m.customProgramCacheKey = () => 'scaffold-festoon-board';
+  m.userData.festoon = true;
+  return m;
+}
+
+/** The baked festoon light on a board (its matrix, a unit box stretched along x) from these bulbs. */
+function boardLight(board: THREE.Matrix4, bulbs: ReadonlyArray<THREE.Vector3>): number {
+  const p = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  const sc = new THREE.Vector3();
+  board.decompose(p, q, sc);
+  const ax = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+  const half = sc.x / 2;
+  let e = 0;
+  const c = new THREE.Vector3();
+  for (const b of bulbs) {
+    const t = THREE.MathUtils.clamp(c.copy(b).sub(p).dot(ax), -half, half);
+    const d = c.copy(p).addScaledVector(ax, t).distanceTo(b);
+    e += 1 / Math.max(d, FESTOON_NEAR) ** 2;
+  }
+  return FESTOON_GAIN * e;
+}
 
 export function scaffoldMaterials(): NonNullable<typeof shared> {
   if (shared) return shared;
@@ -54,6 +104,8 @@ export function scaffoldMaterials(): NonNullable<typeof shared> {
     // Galvanised tube: dull zinc, not polished.
     tube: new THREE.MeshStandardMaterial({ color: 0x8f949a, metalness: 0.9, roughness: 0.55 }),
     board: new THREE.MeshStandardMaterial({ color: 0x5e4f3e, roughness: 0.85 }),
+    // The same boards where a festoon hangs: each board's baked light from its strings (aFestoon) added as the bulbs' warm light on the timber.
+    festoonBoard: festoonLit(new THREE.MeshStandardMaterial({ color: 0x5e4f3e, roughness: 0.85 })),
     // Fresh concrete: pale and matte, no sheen to pick up the sky.
     pour: new THREE.MeshStandardMaterial({ color: 0xa49c90, roughness: 0.97, envMapIntensity: 0.35 }),
     // Debris netting: pale, loosely woven, lets the frame show through.
@@ -106,7 +158,7 @@ function liftsOf(stages: ReadonlyArray<ScaffoldStage>, stage: number, deck: bool
   return Math.max(1, Math.ceil((y1 - y0 + (deck ? 1.5 : 0)) / LIFT));
 }
 
-export function makeRecladScaffold(stages: ScaffoldStage[], extraTubes: ReadonlyArray<{ m: THREE.Matrix4; y: number }> = [], deck = true): RecladScaffold {
+export function makeRecladScaffold(stages: ScaffoldStage[], extraTubes: ReadonlyArray<{ m: THREE.Matrix4; y: number }> = [], deck = true, bulbs: ReadonlyArray<THREE.Vector3> = []): RecladScaffold & { festoonPeak: number } {
   const m = scaffoldMaterials();
   const geo = new THREE.BoxGeometry(1, 1, 1);
   let top = 0;
@@ -186,17 +238,27 @@ export function makeRecladScaffold(stages: ScaffoldStage[], extraTubes: Readonly
   const group = new THREE.Group();
   group.name = 'reclad-scaffold';
   const meshes: Array<{ mesh: THREE.InstancedMesh; ys: number[] }> = [];
-  for (const [parts, mat, shadow] of [
-    [tubes, m.tube, true],
-    [boards, m.board, true],
-    [sheets, m.sheet, false],
+  const lit = bulbs.length > 0;
+  let festoonPeak = 0;
+  for (const [parts, mat, shadow, name] of [
+    [tubes, m.tube, true, 'tubes'],
+    [boards, lit ? m.festoonBoard : m.board, true, 'boards'],
+    [sheets, m.sheet, false, 'sheets'],
   ] as const) {
     const sorted = [...parts].sort((a, b) => a.y - b.y);
     const mesh = instanced(
-      geo,
+      name === 'boards' && lit ? geo.clone() : geo,
       mat,
       sorted.map((x) => x.m),
     );
+    mesh.name = `reclad-scaffold:${name}`;
+    if (name === 'boards' && lit) {
+      // The festoon's light on each board, baked once: one term a board from every string by it, no point light.
+      const term = new Float32Array(sorted.map((x) => boardLight(x.m, bulbs)));
+      mesh.geometry.setAttribute('aFestoon', new THREE.InstancedBufferAttribute(term, 1));
+      const albedo = new THREE.Color(0x5e4f3e).r;
+      festoonPeak = Math.max(0, ...term) * FESTOON_BULB[0] * albedo;
+    }
     mesh.castShadow = shadow;
     mesh.count = 0;
     mesh.frustumCulled = false;
@@ -207,6 +269,7 @@ export function makeRecladScaffold(stages: ScaffoldStage[], extraTubes: Readonly
   return {
     object: group,
     height: top,
+    festoonPeak,
     setHeight(h) {
       let changed = false;
       for (const { mesh, ys } of meshes) {
@@ -226,7 +289,10 @@ export function makeRecladScaffold(stages: ScaffoldStage[], extraTubes: Readonly
       return changed;
     },
     dispose() {
-      for (const { mesh } of meshes) mesh.dispose();
+      for (const { mesh } of meshes) {
+        mesh.dispose();
+        if (mesh.geometry !== geo) mesh.geometry.dispose();
+      }
       geo.dispose();
     },
   };
@@ -238,6 +304,8 @@ export const FESTOON_LAMPS = 16;
 /** A scaffold that carries festoon lights: the lamps' places in its own frame, a string to a stage. */
 export interface LitScaffold extends RecladScaffold {
   lamps: THREE.Vector3[];
+  /** The brightest board's festoon light, linear, before exposure (under the bloom threshold). */
+  festoonPeak: number;
 }
 
 /**
@@ -276,7 +344,7 @@ export function makeLitScaffold(stages: ScaffoldStage[], deck = true): LitScaffo
       }
     }
   });
-  const s = makeRecladScaffold(stages, cable, deck);
+  const s = makeRecladScaffold(stages, cable, deck, lamps);
   s.setHeight(Infinity);
   return { ...s, object: s.object, height: s.height, lamps };
 }

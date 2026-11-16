@@ -49,6 +49,7 @@ export function parseGlb(buf: ArrayBuffer): Map<string, THREE.BufferGeometry> {
           case 5126: v = src.getFloat32(o, true); break;
           case 5125: v = src.getUint32(o, true); break;
           case 5123: v = src.getUint16(o, true); if (a.normalized) v /= 65535; break;
+          case 5122: v = src.getInt16(o, true); if (a.normalized) v = Math.max(v / 32767, -1); break;
           case 5121: v = src.getUint8(o); if (a.normalized) v /= 255; break;
           case 5120: v = src.getInt8(o); if (a.normalized) v = Math.max(v / 127, -1); break;
           default: throw new Error(`kits: component type ${a.componentType}`);
@@ -64,6 +65,13 @@ export function parseGlb(buf: ArrayBuffer): Map<string, THREE.BufferGeometry> {
     const prim = g.meshes[node.mesh].primitives[0];
     const geo = new THREE.BufferGeometry();
     const pos = read(prim.attributes.POSITION);
+    // Quantised positions (KHR_mesh_quantization, as figures.py writes them) come back to metres through the node's
+    // scale and translation; a node without them is in metres already.
+    if (node.scale || node.translation) {
+      const s = node.scale ?? [1, 1, 1];
+      const t = node.translation ?? [0, 0, 0];
+      for (let i = 0; i < pos.array.length; i++) pos.array[i] = pos.array[i] * s[i % 3] + t[i % 3];
+    }
     geo.setAttribute('position', new THREE.BufferAttribute(pos.array, 3));
     if (prim.attributes.NORMAL !== undefined) geo.setAttribute('normal', new THREE.BufferAttribute(read(prim.attributes.NORMAL).array, 3));
     else geo.computeVertexNormals();
@@ -79,7 +87,8 @@ export function parseGlb(buf: ArrayBuffer): Map<string, THREE.BufferGeometry> {
       const c = read(index);
       geo.setAttribute(`a${key[1]}${key.slice(2).toLowerCase()}`, new THREE.BufferAttribute(Float32Array.from(c.array), c.size));
     }
-    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(pos.array.length / 3 * 2), 2));
+    // The uvs a mesh carries (the figures' skin), else zeros (the kits are pure geometry).
+    geo.setAttribute('uv', prim.attributes.TEXCOORD_0 !== undefined ? new THREE.BufferAttribute(read(prim.attributes.TEXCOORD_0).array, 2) : new THREE.BufferAttribute(new Float32Array(pos.array.length / 3 * 2), 2));
     if (prim.indices !== undefined) geo.setIndex(new THREE.BufferAttribute(new Uint32Array(read(prim.indices).array), 1));
     geo.computeBoundingBox();
     result.set(node.name, geo);
@@ -88,7 +97,7 @@ export function parseGlb(buf: ArrayBuffer): Map<string, THREE.BufferGeometry> {
 }
 
 interface GltfJson {
-  nodes: Array<{ name: string; mesh?: number }>;
+  nodes: Array<{ name: string; mesh?: number; translation?: number[]; scale?: number[] }>;
   meshes: Array<{ primitives: Array<{ attributes: Record<string, number>; indices?: number }> }>;
   accessors: Array<{ bufferView: number; byteOffset?: number; componentType: number; count: number; type: string; normalized?: boolean }>;
   bufferViews: Array<{ byteOffset?: number; byteLength: number; byteStride?: number }>;
@@ -117,7 +126,7 @@ let fallback = false;
 
 /** Every plain piece the app builds from: what a stand-in must cover when the kits cannot load. */
 const COURSES = ['course_a', 'course_b', 'pier_block', 'band_course'];
-const BOXES = ['water_tank', 'tank_cap', 'tank_stand', 'bulkhead', 'penthouse', 'screen_panel', 'rooftop_unit', 'car', 'bay', 'bay_glass', 'chamfer_box', 'round_box', 'deco_fin', 'org_rib', 'arc_pod'];
+const BOXES = ['water_tank', 'tank_cap', 'tank_stand', 'bulkhead', 'penthouse', 'screen_panel', 'rooftop_unit', 'car', 'bay', 'bay_glass', 'bay_foot', 'bay_roof', 'chamfer_box', 'round_box', 'deco_fin', 'org_rib', 'arc_pod'];
 
 /**
  * Plain stand-ins for every kit piece, for when kits.glb is missing or
@@ -140,6 +149,8 @@ export function registerFallbackKits(): void {
     }
   }
   for (const b of BOXES) if (!pieces.has(b)) pieces.set(b, white(new THREE.BoxGeometry(1, 1, 1)));
+  // The lamp posts: a plain tapered shaft stands in (grid.ts scales it to the lamp's height).
+  for (const l of ['lamp_post', 'lantern_post']) if (!pieces.has(l)) pieces.set(l, white(new THREE.CylinderGeometry(0.09, 0.14, 1, 8)));
 }
 
 /** True when the city is standing on the plain stand-ins (registerFallbackKits) rather than the Blender kits. */

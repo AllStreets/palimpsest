@@ -122,13 +122,22 @@ export function previousWeek(week: string): string {
   return weekOf(dayNoon(week) - 7 * 86_400_000).week;
 }
 
+/** Whether `now` is a Monday before noon, local time: the week has barely begun. */
+export function mondayMorning(now: number): boolean {
+  const d = new Date(now);
+  return d.getDay() === 1 && d.getHours() < 12;
+}
+
 /**
- * Which week T walks at `now`: this week, unless it has fewer stops than a
- * tour needs (a Monday morning, say), then the week before, as the
- * Monday brief offers it. `planned` is the tour of a week, or null.
+ * Which week T walks at `now`: the week before on a Monday morning (this
+ * week's plan is not read), or whenever this week plans fewer stops than a
+ * tour needs (TOUR.minStops), as the Monday brief offers it; this week
+ * otherwise. `planned` is the tour of a week (its stops, the exchange's
+ * ends not counted), or null.
  */
 export function tourWeekFor(now: number, planned: (week: string) => { stops: number } | null): string {
   const week = weekOf(now).week;
+  if (mondayMorning(now)) return previousWeek(week);
   const t = planned(week);
-  return t && t.stops > 0 ? week : previousWeek(week);
+  return t && t.stops >= TOUR.minStops ? week : previousWeek(week);
 }

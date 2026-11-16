@@ -36,6 +36,12 @@ export interface LibraryOptions {
 export const BAY_DARK = 0.04;
 /** The lantern's lights when the room is dark: a night light on the ridge. */
 export const LANTERN_IDLE = 0.3;
+/**
+ * The great gable windows' light when the room is dark (ruling 18 (a), Phase 5 Task 10): the stair and the
+ * porter's lamps behind them, enough that the library's lit gable stands over the roofs from home at its real
+ * height; a sailing voyage lights them to their full level.
+ */
+export const GABLE_IDLE = 0.34;
 
 /**
  * Where the library's lit panes stand, in the Kit's frame (its base applied):
@@ -45,6 +51,8 @@ export const LANTERN_IDLE = 0.3;
  */
 export interface LibraryLights {
   bays: THREE.Vector3[];
+  /** Each bay's frame, in bay order, in the Kit's frame: x along the wall, y up from the terrace, z out of the wall, at the bay's centre line. */
+  bayFrames: THREE.Matrix4[];
   ends: THREE.Vector3[];
   lantern: THREE.Vector3[];
 }
@@ -64,7 +72,7 @@ export function makeLibrary(k: Kit, o: LibraryOptions): LibraryLights {
   const g = new Gothic(k, rng(o.seed ?? 'library'), detail);
   const { length: L, width: W, podium: P, eaves: E, ridge: R, wall: D } = LIBRARY;
   const pitch = Math.atan2(R - E, W / 2);
-  const lights: LibraryLights = { bays: [], ends: [], lantern: [] };
+  const lights: LibraryLights = { bays: [], bayFrames: [], ends: [], lantern: [] };
   /** Where an opening's pane stands (gothic.ts dress), in the Kit's frame. */
   const paneAt = (F: THREE.Matrix4, op: Opening, z = -D - 0.05): THREE.Vector3 => new THREE.Vector3().applyMatrix4(k.base.clone().multiply(F).multiply(M(op.u, (op.y0 + top(op)) / 2, z)));
 
@@ -90,8 +98,12 @@ export function makeLibrary(k: Kit, o: LibraryOptions): LibraryLights {
   const backBays = [-3, 3, -9, 9, -15, 15, -21, 21].map(bayWin);
   g.wall(front, L, plinthH, wallH, D, frontBays);
   g.wall(back, L, plinthH, wallH, D, backBays);
-  for (const op of frontBays) lights.bays.push(paneAt(front, op));
-  for (const op of backBays) lights.bays.push(paneAt(back, op));
+  for (const [F, ops] of [[front, frontBays], [back, backBays]] as const) {
+    for (const op of ops) {
+      lights.bays.push(paneAt(F, op));
+      lights.bayFrames.push(k.base.clone().multiply(F).multiply(M(op.u, 0, 0)));
+    }
+  }
   for (const u of [-18, -12, 12, 18]) g.buttress(front, u, stages, plinthH);
   for (const u of [-18, -12, -6, 0, 6, 12, 18]) g.buttress(back, u, stages, plinthH);
   // Angle buttresses at the corners.
@@ -111,7 +123,7 @@ export function makeLibrary(k: Kit, o: LibraryOptions): LibraryLights {
   // ---------------------------------------------------------------- the gable ends
   for (const side of [1, 3]) {
     const F = libraryFace(side);
-    const great: Opening = { u: 0, w: 6.0, y0: P + 1.7, y1: P + 8.6, pointed: true, lights: 5, transom: P + 5.6, lit: BAY_DARK };
+    const great: Opening = { u: 0, w: 6.0, y0: P + 1.7, y1: P + 8.6, pointed: true, lights: 5, transom: P + 5.6, lit: GABLE_IDLE };
     const flank = (u: number): Opening => ({ u, w: 1.3, y0: P + 1.7, y1: P + 4.6, pointed: true, lights: 1, lit: 0.7 });
     g.wall(F, W - 2 * D, plinthH, wallH, D, [great, flank(-6.3), flank(6.3)]);
     lights.ends.push(paneAt(F, great));

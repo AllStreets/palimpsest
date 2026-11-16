@@ -3,14 +3,58 @@ import * as THREE from 'three';
 /**
  * Physically based materials from Poly Haven scans (CC0, see CREDITS.md),
  * shared by the ground, the district plinths and the towers. Textures load
- * on first use, so a material nobody touches costs nothing.
+ * on first use, so a material nobody touches costs nothing; only the first
+ * sets (FIRST_SETS) are asked for ahead of use, as the city opens.
  */
 
-const loader = new THREE.TextureLoader();
+/**
+ * The scanned sets in app/public/textures, in the order the home view needs
+ * them: the stone (the roots and the stone floors, the ambient city's
+ * commercial fronts, the kerbs), then the brick (the walk-ups and the brick
+ * floors, the dark ironspot floors), then the paving under it all, and last
+ * the metals (brushed steel and the primer, near or on the job sites). Each
+ * set is `<set>_diff.jpg`, `_nor.jpg` and `_arm.jpg`.
+ */
+export const TEXTURE_SETS = ['sand', 'ashlar', 'granite', 'brick', 'ironspot', 'pave', 'metal', 'rust'] as const;
+export type TextureSet = (typeof TEXTURE_SETS)[number];
+
+/**
+ * The sets the city is drawn on: the stone, brick and glass (the glass is
+ * drawn in code, from no scan), and the paving of its streets and plazas,
+ * which the first frame shows from every view. The city reports ready once
+ * these are in (`firstTexturesIn`); the metals land behind the first frame.
+ */
+export const FIRST_SETS: readonly TextureSet[] = ['sand', 'ashlar', 'granite', 'brick', 'ironspot', 'pave'];
+
+/** The three maps of a set, colour first. */
+export const MAPS = ['diff', 'nor', 'arm'] as const;
+
+/** The rank a texture file loads by: its set's place in TEXTURE_SETS, then its map's place in MAPS (a file of no set last). */
+export function textureRank(name: string): number {
+  const m = /^([a-z]+)_([a-z]+)\./.exec(name);
+  const set = m ? TEXTURE_SETS.indexOf(m[1] as TextureSet) : -1;
+  const map = m ? MAPS.indexOf(m[2] as (typeof MAPS)[number]) : -1;
+  return set < 0 || map < 0 ? TEXTURE_SETS.length * MAPS.length : set * MAPS.length + map;
+}
+
+/**
+ * Decoded off the main thread (an ImageBitmap), so the first frame uploads a
+ * decoded image rather than decoding each file in line. Flipped and left
+ * unconverted at decode, as an image element is at upload (flipY, and three's
+ * UNPACK_COLORSPACE_CONVERSION of NONE): the same texels either way.
+ */
+let loader: THREE.ImageBitmapLoader | null = null;
+function bitmaps(): THREE.ImageBitmapLoader {
+  loader ??= new THREE.ImageBitmapLoader().setOptions({ imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  return loader;
+}
 const cache = new Map<string, THREE.Texture>();
+const loaded = new Map<string, Promise<void>>();
 let maxAniso = 8;
 let pending = 0;
 let waiters: Array<() => void> = [];
+const queue: Array<{ name: string; rank: number; start: () => void }> = [];
+let flushing = false;
 
 function settle(): void {
   pending -= 1;
@@ -19,6 +63,37 @@ function settle(): void {
     waiters = [];
     for (const fn of w) fn();
   }
+}
+
+/**
+ * Starts every load asked for in this task, lowest rank first. None waits on
+ * another's arrival: a load's own callback runs on the main thread, which the
+ * city's first build holds for a second or more, so a load that waited for
+ * one to land would not start until the build was done.
+ */
+function pump(): void {
+  if (flushing) return;
+  flushing = true;
+  queueMicrotask(() => {
+    flushing = false;
+    const now = queue.splice(0).sort((a, b) => a.rank - b.rank);
+    for (const q of now) q.start();
+  });
+}
+
+/**
+ * Once a scan is on the GPU its decoded bitmap is let go (Task 15): about
+ * 100 MB of decoded scans were held for nothing after the upload. The
+ * texture keeps the bitmap's size, so nothing that reads its dimensions
+ * changes; it is uploaded once (the city has one renderer, and nothing asks
+ * a scan to upload again).
+ */
+export function releaseOnUpload(t: THREE.Texture): void {
+  t.onUpdate = null;
+  const image = t.image as { width: number; height: number; close?: () => void } | null;
+  if (!image || typeof image.close !== 'function') return;
+  t.image = { width: image.width, height: image.height };
+  image.close();
 }
 
 /** Sets the anisotropy used by every texture loaded from now on. Call once with the renderer. */
@@ -32,20 +107,65 @@ export function texturesSettled(): Promise<void> {
   return new Promise((resolve) => waiters.push(resolve));
 }
 
-/** A repeating texture from app/public/textures, cached by name. Colour maps are sRGB, data maps linear. */
+/**
+ * Asks for the first sets (FIRST_SETS) ahead of anything else and resolves
+ * once all of them have loaded (or failed): the city is drawn from then on,
+ * while the metals land behind it.
+ */
+export function firstTexturesIn(): Promise<void> {
+  const names = FIRST_SETS.flatMap((set) => MAPS.map((map) => [`${set}_${map}.jpg`, map === 'diff'] as const));
+  for (const [name, srgb] of names) texture(name, srgb);
+  return Promise.all(names.map(([name, srgb]) => loaded.get(`${name}:${srgb}`) ?? Promise.resolve())).then(() => undefined);
+}
+
+/**
+ * A repeating texture from app/public/textures, cached by name. Colour maps
+ * are sRGB, data maps linear. It is handed back at once and filled when its
+ * file lands; the files asked for together load in TEXTURE_SETS order.
+ */
 export function texture(name: string, srgb = false): THREE.Texture {
   const key = `${name}:${srgb}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  pending += 1;
-  const t = loader.load(`${import.meta.env.BASE_URL}textures/${name}`, settle, undefined, () => {
-    console.warn(`texture ${name} failed to load`);
-    settle();
-  });
+  const t = new THREE.Texture();
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.anisotropy = maxAniso;
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
   cache.set(key, t);
+  // In Node (the grid's tests) there is no image to load into: the blank texture stands in.
+  if (typeof document === 'undefined') return t;
+  pending += 1;
+  const url = `${(import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'}textures/${name}`;
+  loaded.set(
+    key,
+    new Promise<void>((done) => {
+      const finish = (): void => {
+        settle();
+        done();
+      };
+      queue.push({
+        name,
+        rank: textureRank(name),
+        start: () =>
+          bitmaps().load(
+            url,
+            (image) => {
+              t.image = image;
+              t.flipY = false;
+              t.needsUpdate = true;
+              t.onUpdate = releaseOnUpload;
+              finish();
+            },
+            undefined,
+            () => {
+              console.warn(`texture ${name} failed to load`);
+              finish();
+            },
+          ),
+      });
+      pump();
+    }),
+  );
   return t;
 }
 

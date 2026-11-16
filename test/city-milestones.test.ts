@@ -174,6 +174,14 @@ test('a lit spire has an emissive tip and an unlit one has none', () => {
     assert.ok(ms.lamp.color.r > ms.lamp.color.g * 1.8 && ms.lamp.color.g > ms.lamp.color.b * 2, 'a warm amber, never white');
   }
   assert.ok(peak < BLOOM_THRESHOLD, `the lamp breathes under the bloom threshold (${peak.toFixed(3)})`);
+  // From home the far point stands over the dusk sky as a warm point (Phase 5 Task 10): through the whole breath its
+  // luminance holds well over the amber lamp's, still under the threshold, and it stays warm.
+  for (let t = 0; t <= SPIRE.period; t += 0.25) {
+    ms.update(0.25, t);
+    const c = ms.point.color;
+    const lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+    assert.ok(lum >= 0.72 && lum < BLOOM_THRESHOLD && c.r > c.b * 2, `the far point reads bright and warm at ${t.toFixed(2)} s (luminance ${lum.toFixed(2)})`);
+  }
   assert.ok(low < peak * 0.6, `and breathes (${low.toFixed(2)} to ${peak.toFixed(2)})`);
   assert.equal(ms.shows().get(`skyline:${s.district.id}`)!.lit, true);
 
@@ -372,6 +380,81 @@ test("a lower stage's festoon hangs within its own floor", () => {
   lit.dispose();
 });
 
+test('revival bulbs light the scaffold boards: one baked light term per string, no point lights', () => {
+  const stages = [
+    { halfX: 8, halfZ: 8, y0: 0, y1: 4.6 },
+    { halfX: 7, halfZ: 7, y0: 4.6, y1: 9.2 },
+  ];
+  const lit = makeLitScaffold(stages, true);
+  lit.object.updateMatrixWorld(true);
+  let lights = 0;
+  lit.object.traverse((o) => {
+    if ((o as THREE.Light).isLight) lights++;
+  });
+  assert.equal(lights, 0, 'no point light');
+  const boards = lit.object.getObjectByName('reclad-scaffold:boards') as THREE.InstancedMesh | undefined;
+  assert.ok(boards, 'the boards are their own draw');
+  const term = boards.geometry.getAttribute('aFestoon') as THREE.InstancedBufferAttribute | undefined;
+  assert.ok(term, 'each board carries its baked festoon light');
+  const mat = boards.material as THREE.MeshStandardMaterial;
+  assert.ok(mat.userData.festoon === true && mat.isMeshStandardMaterial, 'lit by a term in its own material, still a lit surface');
+  // Each board's light: strongest on the boards a string hangs under, nothing on a board far from every string.
+  const level: Array<{ y: number; v: number }> = [];
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  for (let i = 0; i < boards.count; i++) {
+    boards.getMatrixAt(i, m);
+    p.setFromMatrixPosition(m);
+    level.push({ y: p.y, v: term.getX(i) });
+  }
+  const max = Math.max(...level.map((x) => x.v));
+  assert.ok(max > 0, 'the boards by a string take its light');
+  // One string a stage, FESTOON_LAMPS bulbs each: each string's mean height.
+  assert.equal(lit.lamps.length, 32, 'one string a stage');
+  const strings = [0, 1].map((k) => lit.lamps.slice(k * 16, k * 16 + 16).reduce((a, l) => a + l.y, 0) / 16);
+  for (const { y, v } of level) {
+    const near = Math.min(...strings.map((s) => Math.abs(s - y)));
+    if (near > 3) assert.ok(v < max * 0.2, `a board ${near.toFixed(1)} m from every string takes little (${v.toFixed(3)} of ${max.toFixed(3)})`);
+  }
+  assert.ok(level.some((x) => x.v > max * 0.6 && Math.min(...strings.map((s) => Math.abs(s - x.y))) < 1.2), 'the boards by each string are lit');
+  // Lit boards stay under the bloom threshold: warm light on timber, never a lamp.
+  const peak = (lit as unknown as { festoonPeak?: number }).festoonPeak ?? Number.NaN;
+  assert.ok(peak > 0.12 && peak * EXPOSURE < BLOOM_THRESHOLD, `the brightest board reads lit and under the threshold (${peak.toFixed(2)})`);
+  lit.dispose();
+});
+
+test("the festoon's flicker reads hashes worked out once in set, the same for the same string", () => {
+  const s = scene();
+  const towers = (id: string): TowerPiece | null => findTowerPiece(id, s.districts, s.quarters);
+  const now = Date.parse('2026-11-12T12:00:00Z');
+  const lay = layoutTower(s.district);
+  const r = revival(s.district.id, lay.floors[lay.floors.length - 1].floor.id, '2026-11-17T09:00:00Z');
+  const make = (): ReturnType<typeof createMilestones> & { festoonHashes?: () => Float32Array } => createMilestones({ quality: 'high', materials: plainMaterials() });
+  const ms = make();
+  assert.equal(typeof ms.festoonHashes, 'function', 'the festoon shows the hashes its flicker reads');
+  ms.set([r], towers, now);
+  const bulbs = lampLevels(ms).length;
+  const first = Array.from(ms.festoonHashes!().slice(0, bulbs * 2));
+  // The same string built again, here and in a fresh city: the same hashes.
+  ms.set([r], towers, now);
+  assert.deepEqual(Array.from(ms.festoonHashes!().slice(0, bulbs * 2)), first, 'set again, the same hashes');
+  const other = make();
+  other.set([r], towers, now);
+  assert.deepEqual(Array.from(other.festoonHashes!().slice(0, bulbs * 2)), first, 'built afresh, the same hashes');
+  // A frame reads them and never works them out: frames leave them as they are, and what the frame shows follows them.
+  ms.update(0.016, 1.0);
+  ms.update(0.016, 2.3);
+  assert.deepEqual(Array.from(ms.festoonHashes!().slice(0, bulbs * 2)), first, 'frames never rewrite them');
+  const h = ms.festoonHashes!();
+  for (let i = 0; i < bulbs; i++) h[i * 2 + 1] = 0;
+  ms.update(0.016, 3.1);
+  const levels = lampLevels(ms);
+  assert.ok(levels.every((x) => Math.abs(x - levels[0]) < 1e-9), `with every second hash set to 0 each bulb reads dead, as the frame read the stored hashes (${levels.slice(0, 4).map((x) => x.toFixed(3)).join(', ')})`);
+  ms.dispose();
+  other.dispose();
+  s.dispose();
+});
+
 function ribbon(towerId: string, floorId: string, firmId = 'f1', until: string | null = null): Milestone {
   return { id: `ribbon:${firmId}:job-8`, kind: 'ribbon', towerId, repo: 'acme/widgets', firmId, agentId: 'a1', floorId, at: '2026-11-10T09:00:00Z', until, lit: true, title: 'The first PR of Quickset', detail: '' };
 }
@@ -448,4 +531,18 @@ test("a floor's milestone reads in quiet words", () => {
   assert.equal(milestoneNote({ ...sky, at: '2026-10-01T09:00:00Z' }, now), 'the skyline, since Oct 1');
   assert.equal(milestoneNote({ ...sky, at: '2026-11-12T09:00:00Z' }, now), 'the skyline, since today');
   assert.equal(milestoneNote(ribbon('x#founding', 'x#f1'), now), 'first PR of Quickset');
+});
+
+test("the spire's far point draws as a round lamp with a hot core, not a square speck (Task 15a)", async () => {
+  const mod = (await import('../app/src/city/milestones.js')) as unknown as { pointDisc?: (n?: number) => THREE.DataTexture };
+  assert.equal(typeof mod.pointDisc, 'function', 'the far point has a disc');
+  const tex = mod.pointDisc!(32);
+  const px = tex.image.data as Uint8Array;
+  const alpha = (x: number, y: number): number => px[(y * 32 + x) * 4 + 3];
+  assert.equal(alpha(16, 16), 255, 'opaque at its core');
+  assert.equal(alpha(0, 0), 0, 'nothing in its corners: round, not square');
+  assert.ok(alpha(16, 3) > 0 && alpha(16, 3) < 200, 'a soft edge');
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials() });
+  assert.ok(ms.point.map && ms.point.transparent && SPIRE.point >= 4, `the point draws its disc at ${SPIRE.point} px`);
+  ms.dispose();
 });

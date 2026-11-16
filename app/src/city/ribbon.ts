@@ -31,7 +31,16 @@ export const RIBBON = {
   /** The sway: its frequency in Hz and its reach in metres. */
   hz: 0.3,
   reach: 0.05,
+  /** The least a strip stands across on screen, in pixels: from home the band still reads as a line. */
+  px: 2,
 } as const;
+
+/**
+ * The sky's fill on the satin, linear: the dusk sky's violet-blue over the
+ * band's shaded side (the sun on the far face), so cloth in shade reads as
+ * coloured cloth in the evening's open shade, never as a dark strap.
+ */
+export const RIBBON_SKY_FILL = new THREE.Color(0.52, 0.5, 0.66).multiplyScalar(2.6);
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -40,6 +49,9 @@ class Sewer {
   nor: number[] = [];
   col: number[] = [];
   sway: number[] = [];
+  /** Each edge vertex's way out across its strip (half the across vector, signed) and the strip's width: the shader widens a far strip to RIBBON.px. */
+  grow: number[] = [];
+  width: number[] = [];
   idx: number[] = [];
   /**
    * A strip along `pts`, `width` wide across `across(i)`, each point's sway
@@ -60,6 +72,8 @@ class Sewer {
         this.nor.push(nr.x, nr.y, nr.z);
         this.col.push(colour.r, colour.g, colour.b);
         this.sway.push(w(i));
+        this.grow.push(x.x * s, x.y * s, x.z * s);
+        this.width.push(wd);
       }
     }
     const segs = closed ? n : n - 1;
@@ -75,6 +89,8 @@ class Sewer {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
     g.setAttribute('sway', new THREE.Float32BufferAttribute(this.sway, 1));
+    g.setAttribute('grow', new THREE.Float32BufferAttribute(this.grow, 3));
+    g.setAttribute('width', new THREE.Float32BufferAttribute(this.width, 1));
     g.setIndex(this.idx);
     g.computeBoundingSphere();
     g.computeBoundingBox();
@@ -176,7 +192,17 @@ function sew(s: Sewer, r: RibbonSpec): void {
  */
 export function clothColour(c: THREE.Color): THREE.Color {
   const hsl = c.getHSL({ h: 0, s: 0, l: 0 });
+  // A copper mark (an orange red, between rose and amber) dyed as copper satin: its hue drawn to copper's orange and
+  // its saturation held up, so in the dusk light it reads copper rather than brown.
+  if (isCopper(c)) return new THREE.Color().setHSL(COPPER_HUE, Math.max(0.68, hsl.s), Math.min(0.5, Math.max(0.42, hsl.l)));
   return new THREE.Color().setHSL(hsl.h, hsl.s, Math.min(0.45, Math.max(0.35, hsl.l)));
+}
+
+/** Copper's hue (HSL), and whether a mark colour is a copper: an orange red, saturated. */
+export const COPPER_HUE = 0.058;
+export function isCopper(c: THREE.Color): boolean {
+  const hsl = c.getHSL({ h: 0, s: 0, l: 0 });
+  return hsl.h > 0.015 && hsl.h < 0.1 && hsl.s > 0.3;
 }
 
 /** The sheen over satin of these colours: their mean, lightened toward white. */
@@ -214,16 +240,32 @@ export function ribbonMaterial(): THREE.MeshPhysicalMaterial & { userData: { tim
   });
   m.name = 'milestone-ribbon';
   const time = { value: 0 };
+  const pixel = { value: 0.001 };
   m.userData.time = time;
+  m.userData.pixel = pixel;
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = time;
+    sh.uniforms.uPixel = pixel;
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute float sway;\nuniform float uTime;')
+      .replace('#include <common>', '#include <common>\nattribute float sway;\nattribute vec3 grow;\nattribute float width;\nuniform float uTime;\nuniform float uPixel;')
       .replace(
         '#include <begin_vertex>',
-        `#include <begin_vertex>\ntransformed += objectNormal * sway * ${RIBBON.reach.toFixed(3)} * sin(6.2831853 * ${RIBBON.hz.toFixed(2)} * uTime + position.x * 0.21 + position.z * 0.17);`,
+        `#include <begin_vertex>
+        transformed += objectNormal * sway * ${RIBBON.reach.toFixed(3)} * sin(6.2831853 * ${RIBBON.hz.toFixed(2)} * uTime + position.x * 0.21 + position.z * 0.17);
+        // Never under RIBBON.px across on screen: a far strip widens about its own line (the cloth itself never changes up close).
+        {
+          vec3 rw = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          float least = distance(rw, cameraPosition) * uPixel * ${RIBBON.px.toFixed(1)};
+          transformed += grow * max(0.0, least - width);
+        }`,
       );
+    sh.fragmentShader = sh.fragmentShader.replace(
+      '#include <lights_fragment_end>',
+      `#include <lights_fragment_end>
+      // The open sky's fill (RIBBON_SKY_FILL), strongest on a face turned up and out, so the shaded side reads as cloth.
+      reflectedLight.indirectDiffuse += vec3(${RIBBON_SKY_FILL.r.toFixed(3)}, ${RIBBON_SKY_FILL.g.toFixed(3)}, ${RIBBON_SKY_FILL.b.toFixed(3)}) * (0.75 + 0.25 * abs(normal.y)) * BRDF_Lambert(material.diffuseColor);`,
+    );
   };
-  m.customProgramCacheKey = () => 'ribbon-sway';
+  m.customProgramCacheKey = () => 'ribbon-sway-fill';
   return m as THREE.MeshPhysicalMaterial & { userData: { time: { value: number } } };
 }
