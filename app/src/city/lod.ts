@@ -99,6 +99,62 @@ export function frustumBlocks(blocks: ReadonlyArray<BlockBox>, mask: Uint8Array,
   return true;
 }
 
+/**
+ * frustumBlocks without the full refill (Task 13): `held` only ever grows
+ * here, by the widened blocks it lacks once the frustum meets one, and those
+ * are marked in `added` ('grow': the copies take just them, at their end).
+ * When it holds well over what the widened set would, or blocks the mask no
+ * longer has, it returns 'shrink' and sets `held` to the widened set, for a
+ * refill that may wait (what the copies hold meanwhile is a superset of
+ * what is seen). A 'grow' and a 'shrink' together say 'both'.
+ */
+export function frustumDelta(
+  blocks: ReadonlyArray<BlockBox>,
+  mask: Uint8Array,
+  frustum: THREE.Frustum,
+  eye: { x: number; y: number; z: number },
+  held: Uint8Array,
+  added: Uint8Array,
+): 'same' | 'grow' | 'shrink' | 'both' {
+  let missing = false;
+  let wide = 0;
+  let have = 0;
+  if (fWide.length < blocks.length) fWide = new Uint8Array(blocks.length);
+  const widened = fWide.subarray(0, blocks.length);
+  widened.fill(0);
+  for (let k = 0; k < blocks.length; k++) {
+    have += held[k];
+    if (!mask[k]) continue;
+    const b = blocks[k];
+    fBox.min.set(b.minX, b.minY, b.minZ);
+    fBox.max.set(b.maxX, b.maxY, b.maxZ);
+    if (!held[k] && frustum.intersectsBox(fBox)) missing = true;
+    const m = Math.max(FRUSTUM_MARGIN, boxDistance(eye, b) * FRUSTUM_TURN);
+    fBox.expandByScalar(m);
+    if (frustum.intersectsBox(fBox)) {
+      widened[k] = 1;
+      wide++;
+    }
+  }
+  let stale = false;
+  for (let k = 0; k < blocks.length && !stale; k++) if (held[k] && !mask[k]) stale = true;
+  added.fill(0);
+  let grew = false;
+  if (missing) {
+    for (let k = 0; k < blocks.length; k++) {
+      if (widened[k] && !held[k]) {
+        added[k] = 1;
+        held[k] = 1;
+        have++;
+        grew = true;
+      }
+    }
+  }
+  const shrink = stale || have > wide * 1.25 + 4;
+  if (shrink) held.set(widened);
+  return grew ? (shrink ? 'both' : 'grow') : shrink ? 'shrink' : 'same';
+}
+
 /** An axis-aligned box: a block with whatever stands on it. */
 export interface BlockBox {
   minX: number;

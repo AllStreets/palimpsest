@@ -55,6 +55,7 @@ import { everyScreenChecks, freedPlotChecks, reposChecks, screensHarness, settin
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, tramFromHome } from './people-stage.js';
 import { SAMPLE, sampleGh, seedSample } from './sample.js';
 import { decodePng } from './png.js';
+import { frameStats } from '../app/src/city/governor.js';
 import { uiPort } from './ui-port.js';
 import { partialMode, verdict } from './ui-verdict.js';
 
@@ -3281,6 +3282,165 @@ async function marketHomeChecks(page: Page): Promise<void> {
 }
 
 /**
+ * No hitches (Phase 5 Task 13, UI_ONLY=hitches): the frame times through the
+ * debug handle's frameLog while the city does what makes it rebuild: a floor
+ * landing on a tower, three hires in one second, a bankruptcy and its tower's
+ * re-clad, a disconnect that frees a plot, and all four during the ride; and
+ * a held follow, and home with the clock running. On each tier no frame may
+ * run over 33 ms (frameStats(...).over33 === 0). After a disconnect every
+ * geometry the freed tower held leaves renderer.info's count. UI_PROFILE=1
+ * also writes a CPU profile of each case to shots/hitch-<tier>-<case>.cpuprofile.
+ */
+type HitchStats = { frames: number; max: number; p99: number; over33: number };
+type Firmish = { id: string; status: string };
+async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: Set<string>; firms: Set<string>; hires: number }): Promise<Record<string, HitchStats>> {
+  const out: Record<string, HitchStats> = {};
+  const { emit } = await import('../engine/events.js');
+  const { layEarnedFloor } = await import('../engine/repos.js');
+  const { agent: agentOf, listAgents, listFirms, retireFirm, sellTower } = await import('../engine/market/firms.js');
+  const { openDb } = await import('../engine/db.js');
+  if (process.env.UI_TRACE === '1' && tier === 'high') page.on('console', (m) => (m.text().startsWith('remerge') ? console.log(`info  ${m.text()}`) : undefined));
+  const cdp = process.env.UI_PROFILE === '1' ? await page.context().newCDPSession(page) : null;
+  if (cdp) await cdp.send('Profiler.enable');
+  const only = process.env.UI_CASES?.split(',');
+  const run = async (name: string, act: () => Promise<void>, ms: number): Promise<HitchStats> => {
+    if (only && !only.includes(name)) {
+      await act();
+      return { frames: 0, max: 0, p99: 0, over33: 0 };
+    }
+    if (cdp) {
+      await cdp.send('Profiler.setSamplingInterval', { interval: 200 });
+      await cdp.send('Profiler.start');
+    }
+    await page.evaluate('window.__palimpsest.frameLog.start(); window.__palimpsest.trace?.(true)');
+    await act();
+    await page.waitForTimeout(ms);
+    const times = (await page.evaluate('window.__palimpsest.frameLog.stop()')) as number[];
+    const tr = ((await page.evaluate('window.__palimpsest.trace?.(false)')) ?? []) as Array<{ update: number; render: number; shadow: boolean; triangles: number }>;
+    if (process.env.UI_TRACE === '1' && tr.length) {
+      const mean = (xs: number[]): string => (xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length)).toFixed(1);
+      const slowAt = times.flatMap((t, i) => (t > 33 ? [i] : []));
+      const near = slowAt.slice(0, 12).map((i) => tr[Math.min(i, tr.length - 1)]).map((x) => `${x.update.toFixed(0)}+${x.render.toFixed(0)}${x.shadow ? 's' : ''}`);
+      console.log(`info  trace ${tier} ${name}: ${tr.length} frames, shadow ${tr.filter((x) => x.shadow).length}, update mean ${mean(tr.map((x) => x.update))} max ${Math.max(...tr.map((x) => x.update)).toFixed(1)}, render mean ${mean(tr.map((x) => x.render))} max ${Math.max(...tr.map((x) => x.render)).toFixed(1)}, tri mean ${(Number(mean(tr.map((x) => x.triangles))) / 1e6).toFixed(2)}M; at slow frames ${near.join(' ')}`);
+    }
+    if (cdp) {
+      const { profile } = (await cdp.send('Profiler.stop')) as { profile: unknown };
+      writeFileSync(join(SHOTS, `hitch-${tier}-${name}.cpuprofile`), JSON.stringify(profile));
+    }
+    const s = frameStats(times);
+    const row = { frames: times.length, max: Math.round(s.max * 10) / 10, p99: Math.round(s.p99 * 10) / 10, over33: s.over33 };
+    out[name] = row;
+    console.log(`info  hitch ${tier} ${name}: ${row.frames} frames, slowest ${row.max} ms, p99 ${row.p99} ms, ${row.over33} over 33 ms`);
+    return row;
+  };
+  const home = await debug(page, (d) => d.limits().home);
+  const toHome = async (): Promise<void> => {
+    await setView(page, home.eye, home.target);
+    await page.waitForTimeout(1500);
+  };
+  const districts = await cityOf(page);
+  const freeRepo = (): District | undefined => districts.find((d) => !spent.repos.has(d.repo) && d.tower.floors.length > 0);
+  const land = (): void => {
+    const d = freeRepo() ?? districts[0];
+    const id = `${d.tower.id}#hitch-${tier}-${Date.now()}`;
+    const floor = layEarnedFloor(d.tower.id, { id, repo: d.repo, kind: 'pr', refs: [], title: 'A floor lands', at: new Date().toISOString(), era: 'glass', size: 'medium', lines: 40, claude: false, founding: false, url: null });
+    emit('floor.laid', { towerId: d.tower.id, floor });
+  };
+  const base = agentOf('grad-qwen25c7-1');
+  const active = (): Firmish[] => (listFirms() as Firmish[]).filter((f) => f.status === 'active');
+  const hire = (): void => {
+    if (!base) return;
+    const db = openDb();
+    const fs = active();
+    const firm = fs[spent.hires % fs.length];
+    const taken = new Set(listAgents(firm.id).filter((a) => !a.retired).map((a) => a.towerIndex));
+    let towerIndex = 0;
+    while (taken.has(towerIndex)) towerIndex += 1;
+    spent.hires += 1;
+    const id = `hitch-hire-${spent.hires}`;
+    const a = { ...base, id, firmId: firm.id, name: id, model: `mlx:${id}`, towerIndex, lineage: { ...base.lineage, at: new Date().toISOString() } };
+    db.prepare('INSERT INTO agents (id, firm_id, json) VALUES (?, ?, ?)').run(id, firm.id, JSON.stringify(a));
+    emit('agent.hired', { agent: a });
+  };
+  const hires = async (): Promise<void> => {
+    for (let i = 0; i < 3; i++) {
+      hire();
+      if (i < 2) await page.waitForTimeout(450);
+    }
+  };
+  // A firm with towers standing goes bankrupt; a beat later its first tower is sold and re-clad in the buyer's root.
+  const reclad = async (): Promise<void> => {
+    const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
+    const actives = new Set(active().map((f) => f.id));
+    const q = qs.find((x) => actives.has(x.firmId) && !spent.firms.has(x.firmId) && x.towers.length > 0);
+    if (!q) {
+      check(false, `a firm with towers is left to go bankrupt on ${tier}`);
+      return;
+    }
+    spent.firms.add(q.firmId);
+    const agents = listAgents(q.firmId).filter((a) => !a.retired);
+    retireFirm(q.firmId, new Date(Date.now() - 60_000));
+    await page.waitForTimeout(2500);
+    const buyer = active().find((f) => f.id !== q.firmId && !spent.firms.has(f.id));
+    if (agents[0] && buyer) sellTower(agents[0].id, buyer.id);
+  };
+  const disconnect = async (): Promise<string | null> => {
+    const d = freeRepo();
+    if (!d) return null;
+    spent.repos.add(d.repo);
+    await page.evaluate((t) => fetch(`/api/repos/${t}/disconnect`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), d.repo);
+    return d.repo;
+  };
+
+  await toHome();
+  await run('home', async () => {}, 6000);
+  await page.evaluate(`window.__palimpsest.follow(${JSON.stringify('dagny-hollis')})`);
+  await page.waitForTimeout(2000);
+  await run('follow', async () => {}, 6000);
+  // Held past a whole judged window of the governor (three seconds' warm-up, then ten): it must not step down.
+  await page.waitForTimeout(6000);
+  await page.evaluate('window.__palimpsest.follow(null)');
+  check((await debug(page, (d) => d.quality())) === tier, `the governor holds ${tier} through a follow held 14 s`);
+  await toHome();
+  await run('floor', async () => land(), 4000);
+  await toHome();
+  await run('hires', hires, 4500);
+  await toHome();
+  // The re-clad's scaffold rises, the floors rebuild behind it and it comes down: its whole run is logged.
+  await run('reclad', reclad, 22_000);
+  await toHome();
+  const before = await debug(page, (d) => (d as unknown as { memory?(): { geometries: number; textures: number } }).memory?.() ?? { geometries: NaN, textures: NaN });
+  let gone: string | null = null;
+  await run('disconnect', async () => {
+    gone = await disconnect();
+  }, 4000);
+  // Once the city's rebuild after it is done (it runs a step a frame), and a moment more for the frame that draws it.
+  await page.waitForFunction(() => (window as unknown as { __palimpsest: { rebuilding(): number } }).__palimpsest.rebuilding?.() === 0, null, { timeout: 20_000 }).catch(() => {});
+  await page.waitForTimeout(500);
+  const after = await debug(page, (d) => (d as unknown as { memory?(): { geometries: number; textures: number } }).memory?.() ?? { geometries: NaN, textures: NaN });
+  check(gone !== null && after.geometries < before.geometries && after.textures <= before.textures, `on ${tier} every geometry the disconnected tower held leaves renderer.info (${gone}: ${before.geometries} to ${after.geometries} geometries, ${before.textures} to ${after.textures} textures)`);
+  const rider = freeRepo();
+  if (rider) {
+    spent.repos.add(rider.repo);
+    await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(rider.repo)})`);
+    await page.waitForTimeout(1500);
+    await run('ride', async () => {
+      land();
+      await page.waitForTimeout(800);
+      await hires();
+      await page.waitForTimeout(800);
+      await reclad();
+      await page.waitForTimeout(800);
+      await disconnect();
+    }, 8000);
+    await page.evaluate('window.__palimpsest.ride(null)');
+  } else check(false, `a tower is left to ride on ${tier}`);
+  for (const [name, s] of Object.entries(out)) check(s.over33 === 0, `on ${tier} no frame runs over 33 ms: ${name} (${s.frames} frames, slowest ${s.max} ms, ${s.over33} over 33 ms)`);
+  await toHome();
+  return out;
+}
+
+/**
  * Batch culling by cluster (Phase 5 Task 12, UI_ONLY=cull): the street and
  * the quarter's court (framed as tools/perf.ts frames them) draw at least a
  * quarter fewer triangles than round 0 did, with the shadow map redrawn;
@@ -3849,8 +4009,9 @@ async function main(): Promise<void> {
     // UI_ONLY=market: the ribbon's shaded side, a lit site's haze from home, and the guards on both tiers (Phase 5 Task 8).
     // UI_ONLY=trees: the crowns' green from above, the home guard and the campus's sub-guard on both tiers (Phase 5 Task 9).
     // UI_ONLY=lens: depth of field off from home and on in the four close views at 58 fps, and the H key (Phase 5 Task 11).
+    // UI_ONLY=hitches: no frame over 33 ms through a floor landing, hires, a re-clad, a disconnect, the ride, a follow and home (Task 13).
     // UI_ONLY=cull: the street and the court draw a quarter fewer triangles than round 0, home no more calls (Phase 5 Task 12).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull'].includes(process.env.UI_ONLY ?? '');
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3902,6 +4063,13 @@ async function main(): Promise<void> {
         await campusChecks(page, 'medium');
         const budget = await homeBudgetNow(page);
         check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `on medium home stays under ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M with the trees (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+      } else if (process.env.UI_ONLY === 'hitches') {
+        const spent = { repos: new Set<string>(), firms: new Set<string>(), hires: 0 };
+        const high = await hitchChecks(page, 'high', spent);
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        const medium = await hitchChecks(page, 'medium', spent);
+        console.log(`info  hitches: ${JSON.stringify({ high, medium })}`);
       } else if (process.env.UI_ONLY === 'cull') {
         await cullChecks(page, 'high');
         await page.evaluate('window.__palimpsest.dropQuality()');

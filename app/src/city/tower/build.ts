@@ -9,6 +9,7 @@ import { addDatum, type DatumPlan } from './datum.js';
 import { bareEdge, crownSpan, earnedLine, ERA_BUILDERS, firmMark, firmMarkColor, type FloorShape, scarFloor, TITANIUM_TWIST } from './eras.js';
 import { bracketGeometry, Kit, M, type MatKey, rng, type TowerMaterials } from './kit.js';
 import { ROOT_BUILDERS, ROOT_TOP_HALF } from './roots.js';
+import { finish, type Steps } from '../steps.js';
 import { type Look, lookFor } from './variants.js';
 
 export type { TowerMaterials } from './kit.js';
@@ -107,6 +108,17 @@ export function buildTower(
   look: Look = lookFor(spec.repo),
   opts: BuildOptions = {},
 ): BuiltTower {
+  return finish(buildTowerSteps(spec, quality, mats, look, opts));
+}
+
+/** buildTower a floor at a time, then a merged material at a time (steps.ts), so a city can build one between frames. */
+export function* buildTowerSteps(
+  spec: TowerSpec,
+  quality: 'high' | 'medium',
+  mats: TowerMaterials,
+  look: Look = lookFor(spec.repo),
+  opts: BuildOptions = {},
+): Steps<BuiltTower> {
   const layout = layoutTower(spec);
   const kit = new Kit(mats);
   const detail = quality === 'high';
@@ -183,7 +195,9 @@ export function buildTower(
   /** The floor below, as built: its plan centre, half-width and height, for the brackets under an overhang. */
   let below: { cx: number; half: number; h: number } | null = null;
   let topPlan = { cx: 0, cz: 0, half: width / 2, ry: 0 };
-  layout.floors.forEach(({ floor, y0, h }, i) => {
+  yield;
+  for (let i = 0; i < layout.floors.length; i++) {
+    const { floor, y0, h } = layout.floors[i];
     kit.tint = yearDrift(spec.repo, floor.era, yearOf(floor.at), firstYear);
     const earned = earnedAt(i);
     const state = stateAt(i);
@@ -262,7 +276,8 @@ export function buildTower(
     }
     if (earned) pendingTaper++;
     else width *= TAPER;
-  });
+    yield;
+  }
 
   kit.base = new THREE.Matrix4();
   kit.tint = new THREE.Color(1, 1, 1);
@@ -278,7 +293,7 @@ export function buildTower(
     kit.base = new THREE.Matrix4();
   }
 
-  const group = kit.build();
+  const group = yield* kit.buildSteps();
   group.add(proxies);
   group.name = `tower:${spec.repo}`;
   return {

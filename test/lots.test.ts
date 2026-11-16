@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import type { CollarPlaza } from '../app/src/city/collar.js';
 import { blockLots, farLot, farLotStands, lotParts, PITCH, RING_REACH, standingLots, towerTones } from '../app/src/city/lots.js';
 import { lookFor } from '../app/src/city/tower/variants.js';
+import * as lots from '../app/src/city/lots.js';
 import { BANKS, BRIDGE_APPROACH, BRIDGE_DECK, BRIDGES, QUAY } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
 
@@ -128,4 +129,18 @@ test('the far ring gathers into clusters and breaks within blocks, off the river
   const lod = (await import('../app/src/city/lod.js')) as unknown as Record<string, unknown>;
   const form = lod.FAR_FORM as { near: number; full: number } | undefined;
   assert.ok(form && form.near >= 300 && form.near < form.full, `FAR_FORM ${JSON.stringify(form)}`);
+});
+
+test('a freed plot fills over 1.2 s', () => {
+  // Its blocks rise from the ground: none of their height at once, all of it at PLOT_FILL_S, never back down.
+  assert.equal(lots.PLOT_FILL_S, 1.2);
+  assert.equal(lots.plotRise(0), 0);
+  assert.equal(lots.plotRise(1.2), 1);
+  assert.equal(lots.plotRise(5), 1);
+  let last = 0;
+  for (let t = 0.05; t < 1.2; t += 0.05) {
+    const k = lots.plotRise(t);
+    assert.ok(k > last && k < 1, `rising at ${t.toFixed(2)} s (${k})`);
+    last = k;
+  }
 });

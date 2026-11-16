@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { Era } from '../../../../shared/types.js';
+import { finish } from '../steps.js';
 
 /**
  * The four surfaces every era is built from, filled per repo from its
@@ -416,8 +417,14 @@ export class Kit {
   }
 
   build(): THREE.Group {
+    return finish(this.buildSteps());
+  }
+
+  /** build() a material or a batch at a time: each yield is a point the city may stop at until its next frame (Task 13). */
+  *buildSteps(): Generator<void, THREE.Group, void> {
     const group = new THREE.Group();
     for (const [mat, list] of this.merged) {
+      yield;
       const g = mergeGeometries(list, false);
       for (const piece of list) piece.dispose();
       if (!g) continue;
@@ -430,6 +437,7 @@ export class Kit {
       group.add(mesh);
     }
     for (const [key, b] of this.batches) {
+      yield;
       const mesh = this.instanced(key, b, b.geo);
       if (!b.lo) {
         // Thin repeated parts (mullions, colonnettes, dentils, brackets) may hide once under half a pixel;

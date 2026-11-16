@@ -22,6 +22,7 @@ import { CONTACT_Y, filleted, miters, offsetLoop, POD_BEAM, RAIL_R, RAIL_TRACK, 
 import { LAYER, setLayers } from './lod.js';
 import { signPlates } from './sign-plates.js';
 import { materials } from './materials';
+import { finish, type Steps } from './steps.js';
 
 /**
  * The transit network as it stands in the city (Task 30): what
@@ -263,6 +264,11 @@ class Build {
     }
   }
   finish(shadows: (m: THREE.Material) => boolean, wireMat: THREE.LineBasicMaterial): TransitChunk[] {
+    return finish(this.finishSteps(shadows, wireMat));
+  }
+
+  /** finish() a chunk's material at a time (steps.ts). */
+  *finishSteps(shadows: (m: THREE.Material) => boolean, wireMat: THREE.LineBasicMaterial): Steps<TransitChunk[]> {
     const out = new Map<string, TransitChunk>();
     const chunkOf = (key: string): TransitChunk => {
       let c = out.get(key);
@@ -281,6 +287,7 @@ class Build {
       const [key, tier] = k.split('|') as [string, Tier];
       const c = chunkOf(key);
       for (const [mat, list] of mats) {
+        yield;
         const geo = mergeGeometries(list, false);
         for (const g of list) g.dispose();
         if (!geo) continue;
@@ -847,7 +854,7 @@ function tramBridge(b: Build, M: TransitMaterials, z: number): void {
 /** The pole rhythm: a pole every 80/3 m along a straight run. */
 const POLE_STEP = 80 / 3;
 
-function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas, names: Set<string>): { poles: number; stops: number } {
+function* buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas, names: Set<string>): Steps<{ poles: number; stops: number }> {
   const corners = net.tram.path.map(([x, , z]) => ({ x, z }));
   // Fine pieces where the tram climbs over the quays to its bridge, 40 m pieces elsewhere.
   const centre = refineNear(subdivide(filleted(corners, TRAM_R), 40), (p) => Math.abs(p.x - RIVER.x) < RIVER.width / 2 + TRAM_DECK.ramp + 6, 2);
@@ -855,6 +862,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   // The reservation: a raised sett bed under both tracks, edged in granite 8 cm proud of the asphalt; over the
   // river it is the bridge's deck slab, and over the quays a solid ramp down to the street.
   for (let i = 0; i < centre.length; i++) {
+    yield;
     const a = centre[i];
     const c = centre[(i + 1) % centre.length];
     const water = (p: V2): boolean => inChannel(p.x, -TRAM_DECK.flat);
@@ -867,6 +875,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   }
   // The tram's own bridges: plate girders from quay wall to quay wall under the deck, railings along both edges.
   for (const sd of sides(corners)) {
+    yield;
     if (!crossesRiver(sd.a, sd.b)) continue;
     tramBridge(b, M, sd.a.z);
   }
@@ -888,6 +897,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   // Poles: centre poles with twin cantilevers on every straight run, on the rhythm; none on a bridge's deck.
   let poles = 0;
   for (const sd of sides(corners)) {
+    yield;
     const f = frameOf(sd.a, sd.b);
     const u0 = f.dir === 'x' ? sd.a.x : sd.a.z;
     const u1 = f.dir === 'x' ? sd.b.x : sd.b.z;
@@ -895,6 +905,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
     const us = [...spanSupports(sd.a, sd.b)];
     if (crossesRiver(sd.a, sd.b)) for (const u of [RIVER.x - 80 / 6, RIVER.x + 80 / 6]) us.push(u);
     for (const u of us) {
+      yield;
       if (Math.abs(u - u0) < TRAM_R + 4 || Math.abs(u - u1) < TRAM_R + 4) continue;
       const p = f.at(u);
       centrePole(b, M, p, f.t, f.n, lift(p));
@@ -903,6 +914,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   }
   // Corner poles: one outside each curve, its pull-offs holding the wires round.
   for (let i = 0; i < corners.length; i++) {
+    yield;
     const p = corners[(i - 1 + corners.length) % corners.length];
     const c = corners[i];
     const q = corners[(i + 1) % corners.length];
@@ -913,6 +925,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
     if (inChannel(at.x, QUAY + 2)) continue;
     b.rod(M.frame, [at.x, 0, at.z], [at.x, 7.6, at.z], 0.15, 10, 0.72);
     for (const side of [-1, 1]) {
+      yield;
       const tr = offsetLoop(filleted([p, c, q], TRAM_R), side * TRAM_TRACK).slice(11 + 5, 11 + 6)[0];
       b.detail(() => b.rod(M.frame, [at.x, 6.9, at.z], [tr.x, CONTACT_Y + 0.15, tr.z], 0.025, 4));
     }
@@ -931,9 +944,11 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   };
   const poleIndex = (p: V2, q: V2): number => Math.floor((Math.abs(q.x - p.x) > Math.abs(q.z - p.z) ? p.x : p.z) / POLE_STEP + 1e-6);
   for (const side of [-1, 1]) {
+    yield;
     const track = subdivide(offsetLoop(filleted(corners, TRAM_R), side * TRAM_TRACK), 7, POLE_STEP / 4);
     const runs = closedRuns(track, () => true);
     for (const run of runs) {
+      yield;
       const contact: V3[] = [];
       const messenger: V3[] = [];
       run.forEach((p, i) => {
@@ -960,6 +975,7 @@ function buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   // Stops: a raised platform and a glazed shelter each side.
   let stops = 0;
   for (const st of net.tram.stops) {
+    yield;
     const f = frameFor(st);
     const name = nameAt(TRAM_NAMES, st.x, st.z, names);
     const uv = signs.add(name, 'Tram', 'tram');
@@ -1074,7 +1090,7 @@ const RIB: Array<[number, number]> = [
 /** The slab's top, from which the rails rise: top of rail at RAIL_Y. */
 const SLAB_TOP = RAIL_Y - 0.55;
 
-function buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas, names: Set<string>): { bents: number; stations: number } {
+function* buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas, names: Set<string>): Steps<{ bents: number; stations: number }> {
   const corners = net.rail.path.map(([x, , z]) => ({ x, z }));
   const centre = filleted(corners, RAIL_R, 8);
   let bents = 0;
@@ -1084,6 +1100,7 @@ function buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
 
   // The deck along the whole loop, cut at every bent: straight runs between supports, the curves in short pieces.
   for (const s of sides(corners)) {
+    yield;
     const f = frameOf(s.a, s.b);
     const u0 = f.dir === 'x' ? s.a.x : s.a.z;
     const u1 = f.dir === 'x' ? s.b.x : s.b.z;
@@ -1092,6 +1109,7 @@ function buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
     // Each span's ends: from the curve's end through every support to the next curve.
     const ends = [u0 + sgn * RAIL_R, ...us, u1 - sgn * RAIL_R];
     for (let i = 1; i < ends.length; i++) {
+      yield;
       const a = f.at(ends[i - 1]);
       const c = f.at(ends[i]);
       const mid = { x: (a.x + c.x) / 2, z: (a.z + c.z) / 2 };
@@ -1102,6 +1120,7 @@ function buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
       railSpan(b, M, a, c);
     }
     for (const u of us) {
+      yield;
       const p = f.at(u);
       const st = stationAt(p);
       bent(b, M, p, f.t, f.n, st ? 7.6 : VIADUCT_HALF + 0.2);
@@ -1110,6 +1129,7 @@ function buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
   }
   // The curves: the trough in short pieces, a bent at each curve's middle.
   for (let i = 0; i < corners.length; i++) {
+    yield;
     const p = corners[(i - 1 + corners.length) % corners.length];
     const c = corners[i];
     const q = corners[(i + 1) % corners.length];
@@ -1125,6 +1145,7 @@ function buildRail(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
 
   // Stations.
   for (const s of stations) {
+    yield;
     const name = nameAt(RAIL_NAMES, s.x, s.z, names);
     railStation(b, M, s, signs.add(name, 'Elevated', 'rail'));
   }
@@ -1339,11 +1360,12 @@ const POD_BOX: Array<[number, number]> = [
   [0.52, 0],
 ];
 
-function buildPods(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas, names: Set<string>): { pylons: number; stations: number } {
+function* buildPods(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas, names: Set<string>): Steps<{ pylons: number; stations: number }> {
   let pylons = 0;
   let stations = 0;
   const top = POD_Y;
   for (const line of net.pods) {
+    yield;
     const a = { x: line.path[0][0], z: line.path[0][2] };
     const c = { x: line.path[1][0], z: line.path[1][2] };
     const f = frameOf(a, c);
@@ -1357,6 +1379,7 @@ function buildPods(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
     const station = (u: number): Stop | undefined => stops.find((s) => Math.abs((f.dir === 'x' ? s.x : s.z) - u) < (s.interchange ? 14 : 18));
     const ends = [u0, ...us, u1];
     for (let i = 1; i < ends.length; i++) {
+      yield;
       const p = f.at(ends[i - 1]);
       const q = f.at(ends[i]);
       const mid = (ends[i - 1] + ends[i]) / 2;
@@ -1374,16 +1397,19 @@ function buildPods(b: Build, M: TransitMaterials, net: Network, signs: SignAtlas
       }
     }
     for (const u of us) {
+      yield;
       if (station(u)) continue;
       podPylon(b, M, f.at(u), f.n, top);
       pylons++;
     }
     // The line's ends: buffer blocks on a last pylon.
     for (const u of [u0, u1]) {
+      yield;
       podPylon(b, M, f.at(u), f.n, top);
       pylons++;
     }
     for (const s of stops) {
+      yield;
       if (s.interchange && line !== net.pods[0]) continue;
       const name = s.interchange ? 'Interchange' : (s.x === 0 || s.z === 0) && Math.abs(s.x) + Math.abs(s.z) < 200 ? 'Exchange' : nameAt(POD_NAMES, s.x, s.z, names);
       podStation(b, M, s, f, signs.add(name, s.interchange ? 'Both lines' : 'Pods', 'pod'));
@@ -1642,6 +1668,8 @@ export interface Transit {
    * a cab rank at each district plaza. Rebuilds only when either changed.
    */
   set(extent: NetworkExtent): boolean;
+  /** set() a stretch at a time (steps.ts): the old network draws until the last step swaps the new one in. */
+  setSteps(extent: NetworkExtent): Steps<boolean>;
   /** Sets each chunk's detail, shadow and AO from the eye. True when the shadow casters changed. */
   update(eye: THREE.Vector3, fogDensity: number): boolean;
   /** The network as laid now, or null before the city has districts. */
@@ -1717,26 +1745,47 @@ export function createTransit(): Transit {
   }
 
   function build(extent: NetworkExtent): void {
-    clear();
-    net = network(extent);
+    finish(buildSteps(extent));
+  }
+
+  /**
+   * The network laid a stretch at a time (steps.ts): the old one keeps
+   * drawing, its signs unchanged, until the last step swaps the new one in
+   * and redraws the sign atlas with it.
+   */
+  function* buildSteps(extent: NetworkExtent): Steps<void> {
+    const nextNet = network(extent);
+    yield;
     const b = new Build();
     const names = new Set<string>();
     // The atlas is rebuilt with the network: every sign's row is assigned afresh.
     (signs as unknown as { rows: unknown[] }).rows = [];
-    const tram = buildTram(b, M, net, signs, names);
-    const rail = buildRail(b, M, net, signs, names);
-    const pods = buildPods(b, M, net, signs, names);
-    for (const r of net.ranks) cabRank(b, M, r, signs.add('Cabs', r.exchange ? 'Exchange' : 'Rank', 'cab'));
+    const tram = yield* buildTram(b, M, nextNet, signs, names);
+    const rail = yield* buildRail(b, M, nextNet, signs, names);
+    const pods = yield* buildPods(b, M, nextNet, signs, names);
+    for (const r of nextNet.ranks) cabRank(b, M, r, signs.add('Cabs', r.exchange ? 'Exchange' : 'Rank', 'cab'));
+    yield;
+    const nextParts = yield* b.finishSteps((m) => !noShadow.has(m), wireMat);
+    yield;
+    const nextFar = farCores(nextParts, wireMat);
+    yield;
+    clear();
+    net = nextNet;
     signs.draw();
     // Drawn again once the app's faces have loaded (the first draw may fall back while they arrive).
     void Promise.all([document.fonts?.load('500 52px Newsreader'), document.fonts?.load('400 24px "IBM Plex Mono"')]).then(() => signs.draw(), () => {});
-    counts = { stops: tram.stops, stations: rail.stations, podStations: pods.stations, ranks: net.ranks.length, poles: tram.poles, bents: rail.bents, pylons: pods.pylons };
-    parts = b.finish((m) => !noShadow.has(m), wireMat);
+    counts = { stops: tram.stops, stations: rail.stations, podStations: pods.stations, ranks: nextNet.ranks.length, poles: tram.poles, bents: rail.bents, pylons: pods.pylons };
+    parts = nextParts;
     for (const c of parts) group.add(c.group);
-    far = farCores(parts, wireMat);
+    far = nextFar;
     for (const f of far) group.add(f.mesh);
     lodAt.set(Infinity, Infinity, Infinity);
+    // Swapped in after the frame's own update: its chunks take their detail from the eye now, or every chunk would
+    // draw (and go to the GPU) whole for a frame.
+    if (Number.isFinite(seenEye.x)) api.update(seenEye, 0);
   }
+  /** The eye the chunks' detail was last set from. */
+  const seenEye = new THREE.Vector3(NaN, NaN, NaN);
 
   /** Draws every chunk not near the eye from the far cores, in as few runs as the near chunks leave. */
   function farRuns(near: boolean[]): void {
@@ -1768,19 +1817,24 @@ export function createTransit(): Transit {
   const frustum = new THREE.Frustum();
   const vp = new THREE.Matrix4();
 
-  return {
+  const api: Transit = {
     group,
     set(extent) {
+      return finish(this.setSteps(extent));
+    },
+    *setSteps(extent) {
       const key = JSON.stringify([extent.blocks, extent.districts.map((d) => [Math.round(d.x), Math.round(d.z)]).sort()]);
       if (key === laid) return false;
-      laid = key;
       const t0 = performance.now();
-      build(extent);
+      yield* buildSteps(extent);
+      // Marked laid only once it stands: a build overtaken half way is laid again by the next.
+      laid = key;
       builds++;
       buildMs = performance.now() - t0;
       return true;
     },
     update(eye, _fog) {
+      seenEye.copy(eye);
       if (eye.distanceToSquared(lodAt) < 25) return false;
       lodAt.copy(eye);
       let shadows = false;
@@ -1842,6 +1896,7 @@ export function createTransit(): Transit {
       signs.texture.dispose();
     },
   };
+  return api;
 }
 
 /** One merged mesh per material (and one for the wires) across every chunk, in chunk order, with each chunk's span. */

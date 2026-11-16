@@ -6,6 +6,7 @@ import * as THREE from 'three';
 
 import { createGrid, type Grid } from '../app/src/city/grid.js';
 import { LAYER } from '../app/src/city/lod.js';
+import { flushRemerges, pendingRemerges, runRemerges } from '../app/src/city/batch.js';
 
 const SUN = new THREE.Vector3(-0.908, 0.3, 0.419).normalize();
 const grid = (): Grid => createGrid('medium', { sun: SUN, half: 320, offset: 800, near: 10, far: 1600 });
@@ -107,10 +108,13 @@ test("the view's copies hold every block the eye sees, nothing far behind it, an
   assertFaithful(g);
   // The batches stay, hidden, as the copies' source and the plates' line of sight.
   assert.ok(g.blockers.every((b) => !b.visible) && g.blockers.some((b) => (b as THREE.InstancedMesh).count > 0));
-  // Turned round where it stands: refilled, and what was ahead is now behind and let go.
+  // Turned round where it stands: what it now sees is drawn at once, and what was ahead, now behind, is let go over
+  // the next frames (the re-merge queue, batch.ts).
   const fills = lod.viewFills;
   const back = eyeAt(200, -150, [0, -1]);
   g.update(back.position, new THREE.Vector3(200, 0, 0), back);
+  assertComplete(g, back);
+  flushRemerges();
   assert.ok(g.lod().viewFills > fills);
   assertComplete(g, back);
   assertNothingBehind(g, back);
@@ -151,5 +155,74 @@ test("a rebuild (a district's plaza laid) refills the view's copies from the new
   assert.notEqual(after.city, before.city, 'the plaza changed what the city holds');
   assertFaithful(g);
   assertComplete(g, cam);
+  g.dispose();
+});
+
+test('a freed plot fills over 1.2 s, its blocks rising from the ground', () => {
+  const g = grid();
+  const cam = eyeAt(0, 600, [0, -1]);
+  cam.position.y = 300;
+  cam.lookAt(0, 0, 0);
+  cam.updateMatrixWorld(true);
+  const plaza = { x: 240, z: 0 };
+  g.setPlazas([plaza]);
+  let now = 0;
+  g.update(cam.position, new THREE.Vector3(0, 0, 0), cam, now);
+  const tallest = (): number => {
+    // The highest top among the view's wall instances standing on the plot.
+    let top = 0;
+    const m = new THREE.Matrix4();
+    const p = new THREE.Vector3();
+    const s = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    for (const { copy } of pairs(g)) {
+      if (!copy.name.startsWith('wall')) continue;
+      for (let j = 0; j < copy.count; j++) {
+        m.fromArray(copy.instanceMatrix.array, j * 16).decompose(p, q, s);
+        if (Math.hypot(p.x - plaza.x, p.z - plaza.z) < 40) top = Math.max(top, p.y + s.y / 2);
+      }
+    }
+    return top;
+  };
+  assert.equal(tallest(), 0, 'the plaza stands clear of buildings');
+  // The plot is given back: its blocks start at the ground and rise over PLOT_FILL_S.
+  g.setPlazas([]);
+  g.update(cam.position, new THREE.Vector3(0, 0, 0), cam, now);
+  const start = tallest();
+  now += 600;
+  g.update(cam.position, new THREE.Vector3(0, 0, 0), cam, now);
+  const mid = tallest();
+  now += 700;
+  g.update(cam.position, new THREE.Vector3(0, 0, 0), cam, now);
+  const end = tallest();
+  assert.ok(end > 10, `the plot is built up again (${end.toFixed(1)} m)`);
+  assert.ok(start < end * 0.05, `at first its blocks stand near the ground (${start.toFixed(1)} of ${end.toFixed(1)} m)`);
+  assert.ok(mid > start && mid < end, `half way they are rising (${mid.toFixed(1)} m)`);
+  assertFaithful(g);
+  g.dispose();
+});
+
+test('a turn of the eye copies only the blocks it newly meets, and lets the rest go a copy a frame', () => {
+  const g = grid();
+  const cam = eyeAt(200, -150, [0, 1]);
+  g.update(cam.position, new THREE.Vector3(200, 0, 0), cam);
+  flushRemerges();
+  const held = g.lod().view;
+  const writes = g.lod().viewWrites;
+  // A quarter turn to the right: new blocks come into view at its edge.
+  const turned = eyeAt(200, -150, [0.7, 0.7]);
+  g.update(turned.position, new THREE.Vector3(200, 0, 0), turned);
+  assertComplete(g, turned);
+  const wrote = g.lod().viewWrites - writes;
+  assert.ok(wrote > 0 && wrote < held, `the turn copied only what it newly met (${wrote} instances, against ${held} held)`);
+  // Turned right round, what is now behind is let go a copy at a time: never every copy in one frame.
+  const back = eyeAt(200, -150, [0, -1]);
+  g.update(back.position, new THREE.Vector3(200, 0, 0), back);
+  assertComplete(g, back);
+  const waiting = pendingRemerges();
+  assert.ok(waiting > 1, `the letting go waits for the frames after, a copy a piece of work (${waiting} waiting)`);
+  for (let frames = 0; pendingRemerges() > 0 && frames < 200; frames++) runRemerges();
+  assertNothingBehind(g, back);
+  assertFaithful(g);
   g.dispose();
 });

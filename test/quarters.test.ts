@@ -1,6 +1,7 @@
 import './kit-setup.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import * as quarterModule from '../app/src/city/quarters.js';
 
 import * as THREE from 'three';
 
@@ -470,4 +471,31 @@ test("from a quarter's court the city's quarter batches draw only the clusters i
   assert.ok(all > 0 && drawn < all * 0.6, `the quarters out of view are not drawn (${((drawn / all) * 100).toFixed(0)}% drawn)`);
   batched.dispose();
   for (const p of pieces) p.dispose();
+});
+
+test('hires in a burst rebatch once', () => {
+  // Three hires in one second: each asks for the quarter's rebuild; it starts once, 1.5 s after the last, with the last.
+  const wait = quarterModule.rebuildDebounce<string>();
+  assert.equal(quarterModule.QUARTER_DEBOUNCE_S, 1.5);
+  const started: string[] = [];
+  const tick = (t: number): void => {
+    const w = wait.take(t);
+    if (w) started.push(w);
+  };
+  wait.touch(0, 'first hire');
+  tick(0.4);
+  wait.touch(0.45, 'second hire');
+  tick(0.9);
+  wait.touch(0.9, 'third hire');
+  for (let t = 1; t < 2.39; t += 1 / 60) tick(t);
+  assert.deepEqual(started, [], 'nothing starts while the burst goes on, nor until 1.5 s after its last');
+  tick(2.41);
+  tick(3);
+  tick(10);
+  assert.deepEqual(started, ['third hire'], 'one rebuild, with the quarters as the last hire left them');
+  // A change that needs no rebuild lets the waiting one go.
+  wait.touch(11, 'a fourth');
+  wait.clear();
+  tick(20);
+  assert.deepEqual(started, ['third hire']);
 });

@@ -51,6 +51,18 @@ export const COURT_LANTERN_REACH = 32;
 /** No lantern stands within this of the court's centre line on its south edge, where the firm's name plinth is. */
 export const COURT_PLINTH_CLEAR = 20;
 
+/**
+ * A plot given back to the city (a repo disconnected, a site struck) fills
+ * with its blocks over PLOT_FILL_S seconds, rising from the ground, rather
+ * than appearing in one frame (Task 13). plotRise is the share of their
+ * height standing `t` seconds after the plot was freed: eased, 0 to 1.
+ */
+export const PLOT_FILL_S = 1.2;
+export function plotRise(t: number): number {
+  const x = Math.min(1, Math.max(0, t / PLOT_FILL_S));
+  return x * x * (3 - 2 * x);
+}
+
 /** A small deterministic generator, seeded per block so adding a district never reshuffles the rest of the city. */
 export function rng(seed: number): () => number {
   let s = seed % 2147483647;

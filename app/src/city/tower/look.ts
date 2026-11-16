@@ -6,7 +6,8 @@ import type { District } from '../../../../shared/types';
 import { materials, texture } from '../materials';
 import { ANISO_PATCH_OK, patchAnisotropy } from './aniso-patch';
 import type { Centerpiece } from '../scene';
-import { type BuildOptions, buildTower } from './build';
+import { type BuildOptions, buildTowerSteps } from './build';
+import { finish, type Steps } from '../steps';
 import type { EraMatKey, TowerMaterials } from './kit';
 import { type Finish, GLAZE_ENV, type Glazing, type Look, lookFor, lookKey, SCAN_STATS } from './variants';
 
@@ -903,7 +904,12 @@ function baseMaterials(): Omit<TowerMaterials, EraMatKey> {
 
 /** A district's Palimpsest tower as a city centerpiece: floors pick as themselves, the root picks as the district. */
 export function towerCenterpiece(d: District, quality: 'high' | 'medium', look: Look = lookFor(d.repo), opts: BuildOptions = {}): Centerpiece {
-  const t = buildTower(d.tower, quality, towerMaterials(look), look, opts);
+  return finish(towerCenterpieceSteps(d, quality, look, opts));
+}
+
+/** towerCenterpiece in steps (steps.ts): the tower a floor at a time. */
+export function* towerCenterpieceSteps(d: District, quality: 'high' | 'medium', look: Look = lookFor(d.repo), opts: BuildOptions = {}): Steps<Centerpiece> {
+  const t = yield* buildTowerSteps(d.tower, quality, towerMaterials(look), look, opts);
   const pickables = new Map<THREE.Object3D, string | null>(t.pickables);
   pickables.set(t.rootPick, null);
   return { object: t.group, pickables, dispose: () => t.dispose() };

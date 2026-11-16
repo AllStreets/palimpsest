@@ -63,7 +63,13 @@ const STAND_OFF = 26;
 /** Plates fade out between these eye distances, in metres. */
 const FADE_START = 1500;
 const FADE_END = 2300;
-/** Occlusion is tested every few frames: towers move slowly against the eye. */
+/**
+ * Occlusion is tested every few frames: towers move slowly against the eye.
+ * Each frame tests its share of the plates (every OCCLUSION_EVERY-th, in
+ * turn), so each plate is still tested every OCCLUSION_EVERY frames but no
+ * frame casts every plate's ray at once (Task 13: a city-wide instanced
+ * blocker makes each ray costly, and all of them together a hitch).
+ */
 const OCCLUSION_EVERY = 6;
 
 interface Live {
@@ -162,9 +168,11 @@ export function createPlates(
     update() {
       const w = host.clientWidth;
       const h = host.clientHeight;
-      const testOcclusion = frame++ % OCCLUSION_EVERY === 0;
-      const targets = testOcclusion ? occluders() : [];
-      for (const l of live) {
+      const turn = frame++ % OCCLUSION_EVERY;
+      const targets = live.length > 0 ? occluders() : [];
+      for (let i = 0; i < live.length; i++) {
+        const l = live[i];
+        const testOcclusion = i % OCCLUSION_EVERY === turn;
         anchor(l.plate, at);
         const dist = at.distanceTo(camera.position);
         ndc.copy(at).project(camera);

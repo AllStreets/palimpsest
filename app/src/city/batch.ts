@@ -28,6 +28,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+import { finish, type Steps } from './steps.js';
+
 export interface Batched {
   group: THREE.Group;
   dispose(): void;
@@ -217,6 +219,98 @@ export class ClusterMesh extends THREE.Mesh {
   }
 }
 
+// ---------------------------------------------------------------- re-merges spread over frames (Task 13)
+/**
+ * The city's rebuilds (a floor landing, a quarter's hires, a re-clad) merge
+ * many pieces at once. Done in the frame that asked, one such merge can
+ * stall it for hundreds of milliseconds. Instead each goes into a queue by
+ * key and the city's loop runs the queue for at most REMERGE_BUDGET_MS of
+ * each frame. A key queued again replaces its waiting work (and goes to the
+ * back of the line), so a burst merges once. A piece of work that returns
+ * true has more to do: it stays first in line and goes on while the frame
+ * has time left, and next frame if not.
+ */
+export const REMERGE_BUDGET_MS = 4;
+
+export interface RemergeQueue {
+  schedule(key: string, work: () => void | boolean): void;
+  /** Runs waiting work until the frame's budget is spent; returns how many pieces ran. */
+  run(): number;
+  pending(): number;
+  /** Runs everything waiting now, whatever it costs (a teardown, or a test that wants the result). */
+  flush(): void;
+  /** The longest single piece of work since last asked, and its key (the perf tools' hitch hunt). */
+  longest(): { key: string; ms: number };
+}
+
+export function remergeQueue(budgetMs = REMERGE_BUDGET_MS, now: () => number = () => performance.now()): RemergeQueue {
+  const queue = new Map<string, () => void | boolean>();
+  const step = (): boolean => {
+    const [key, work] = queue.entries().next().value as [string, () => void | boolean];
+    queue.delete(key);
+    const t0 = now();
+    const more = work() === true;
+    const ms = now() - t0;
+    if (ms > longest.ms) {
+      longest.ms = ms;
+      longest.key = key;
+    }
+    if (more && !queue.has(key)) {
+      // Back to the front: the rest of it comes before anything queued behind it.
+      const rest = [...queue];
+      queue.clear();
+      queue.set(key, work);
+      for (const [k, w] of rest) queue.set(k, w);
+    }
+    return true;
+  };
+  const longest = { key: '', ms: 0 };
+  return {
+    longest: () => {
+      const out = { ...longest };
+      longest.ms = 0;
+      longest.key = '';
+      return out;
+    },
+    schedule(key, work) {
+      queue.delete(key);
+      queue.set(key, work);
+    },
+    run() {
+      const start = now();
+      let ran = 0;
+      while (queue.size > 0 && now() - start < budgetMs) ran += step() ? 1 : 0;
+      return ran;
+    },
+    pending: () => queue.size,
+    flush() {
+      while (queue.size > 0) step();
+    },
+  };
+}
+
+const remerges = remergeQueue();
+/** Queues a re-merge on the city's shared queue (see remergeQueue). */
+export function scheduleRemerge(key: string, work: () => void | boolean): void {
+  remerges.schedule(key, work);
+}
+/** Runs the shared queue for this frame's budget (the city's loop, once a frame). */
+export function runRemerges(): number {
+  return remerges.run();
+}
+/** The longest single re-merge step on the shared queue since last asked. */
+export function longestRemerge(): { key: string; ms: number } {
+  return remerges.longest();
+}
+/** How many re-merges wait on the shared queue. */
+export function pendingRemerges(): number {
+  return remerges.pending();
+}
+/** Runs every waiting re-merge now (tests, and a teardown that must not leave work behind). */
+export function flushRemerges(): void {
+  remerges.flush();
+}
+
 /** A shape's identity by content, so the same part built by two kits batches together. */
 const prints = new WeakMap<THREE.BufferGeometry, string>();
 function fingerprint(g: THREE.BufferGeometry): string {
@@ -317,6 +411,11 @@ function indexed(g: THREE.BufferGeometry): THREE.BufferGeometry {
 
 /** Merges every drawn mesh under `roots` (each already placed in the world) into batches; see above. */
 export function batchPieces(roots: THREE.Object3D[]): Batched {
+  return finish(batchPiecesSteps(roots));
+}
+
+/** batchPieces a root, then a merged batch, at a time (steps.ts). Hidden roots merge as visible ones do. */
+export function* batchPiecesSteps(roots: THREE.Object3D[]): Steps<Batched> {
   const group = new THREE.Group();
   group.name = 'batched';
   const plain = new Map<string, { mat: THREE.Material; cast: boolean; receive: boolean; geos: THREE.BufferGeometry[] }>();
@@ -325,9 +424,10 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
   const meshes: THREE.InstancedMesh[] = [];
 
   for (const root of roots) {
+    yield;
     root.updateMatrixWorld(true);
     const lods = new Map<string, { near: Inst[]; far: Inst[]; distance: number }>();
-    const visit = (o: THREE.Object3D): void => {
+    const visit = function* (o: THREE.Object3D): Steps<void> {
       // Nothing under a hidden object is drawn (a school tower's parts, drawn by their own batch), so none of it merges.
       if (!o.visible && o !== root) return;
       if ((o as THREE.LOD).isLOD) {
@@ -336,7 +436,7 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
         const n = near.object as THREE.InstancedMesh;
         const f = far?.object as THREE.InstancedMesh | undefined;
         if (!n?.isInstancedMesh || !f?.isInstancedMesh) {
-          lod.children.forEach(visit);
+          for (const c of lod.children) yield* visit(c);
           return;
         }
         const key = `${(n.material as THREE.Material).uuid}|${fingerprint(n.geometry)}|${fingerprint(f.geometry)}|${n.castShadow}|${!!n.instanceColor}|${far.distance}`;
@@ -359,6 +459,8 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
             if (!b) plain.set(key, (b = { mat, cast: im.castShadow, receive: im.receiveShadow, geos: [] }));
             b.geos.push(g);
           }
+          // Laying out an instanced part instance by instance is the costly part of a merge: a step of its own.
+          yield;
         } else if ((mesh as THREE.InstancedMesh).isInstancedMesh) {
           const im = mesh as THREE.InstancedMesh;
           const key = `${mat.uuid}|${fingerprint(im.geometry)}|${im.castShadow}|${im.receiveShadow}|${!!im.instanceColor}`;
@@ -373,9 +475,9 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
           b.geos.push(g);
         }
       }
-      o.children.forEach(visit);
+      for (const c of o.children) yield* visit(c);
     };
-    visit(root);
+    yield* visit(root);
 
     // Near and far levels share one centre per root, so the switch follows the quarter, not the city.
     const centre = new THREE.Box3().setFromObject(root, false).getCenter(new THREE.Vector3());
@@ -394,6 +496,7 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
   }
 
   for (const b of plain.values()) {
+    yield;
     const g = b.geos.length === 1 ? b.geos[0] : mergeGeometries(b.geos, false);
     // Pieces whose attributes do not line up are drawn as they were rather than lost.
     const parts = g ? [g] : b.geos;
@@ -409,6 +512,7 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
     }
   }
   for (const list of inst.values()) {
+    yield;
     const m = combine(list);
     meshes.push(m);
     group.add(m);

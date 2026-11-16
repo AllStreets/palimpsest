@@ -128,3 +128,41 @@ test("three's batched draw still reads the private fields ClusterMesh fills", as
   const m = clustered(batchPieces([block(0, 0)]).group)[0] as unknown as Record<string, unknown>;
   for (const name of ['_multiDrawStarts', '_multiDrawCounts', '_multiDrawCount', '_matricesTexture', '_indirectTexture', '_colorsTexture']) assert.ok(name in m, `ClusterMesh carries ${name}`);
 });
+
+test('scheduleRemerge coalesces a key and does at most 4 ms a frame', () => {
+  // A clock each piece of work moves on by a millisecond and a half: four milliseconds hold three pieces.
+  let now = 0;
+  const q = batch.remergeQueue(4, () => now);
+  const ran: string[] = [];
+  const work = (name: string) => () => {
+    now += 1.5;
+    ran.push(name);
+  };
+  q.schedule('a', work('a-old'));
+  for (const k of ['b', 'c', 'd', 'e']) q.schedule(k, work(k));
+  // The same key again replaces its work and runs after what was queued since.
+  q.schedule('a', work('a'));
+  assert.equal(q.pending(), 5);
+  q.run();
+  assert.deepEqual(ran, ['b', 'c', 'd'], 'a frame stops once four milliseconds of work are spent');
+  q.run();
+  assert.deepEqual(ran, ['b', 'c', 'd', 'e', 'a'], 'the next frame takes the rest; the replaced work never runs');
+  assert.equal(q.pending(), 0);
+  // A piece that says it has more to do stays first in line and goes on in the same frame while time is left.
+  let steps = 0;
+  q.schedule('long', () => {
+    now += 1;
+    steps++;
+    return steps < 10;
+  });
+  q.schedule('after', work('after'));
+  q.run();
+  assert.equal(steps, 4, 'a frame runs four steps of a millisecond');
+  q.run();
+  q.run();
+  assert.equal(steps, 10);
+  assert.equal(ran.at(-1), 'after', 'what was queued behind it runs once it is done');
+  // The shared queue the city's loop runs.
+  assert.equal(typeof batch.scheduleRemerge, 'function');
+  assert.equal(typeof batch.runRemerges, 'function');
+});

@@ -17,7 +17,8 @@ import * as THREE from 'three';
 import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { agentRootHeight } from '../../../shared/tower-layout.js';
 import type { Era, Quarter, RootStyle, TowerSpec } from '../../../shared/types.js';
-import { type BuildOptions, buildTower, type BuiltTower } from './tower/build.js';
+import { type BuildOptions, buildTowerSteps, type BuiltTower } from './tower/build.js';
+import { finish, type Steps } from './steps.js';
 import { flutedShaft, Kit, M, type MatKey, piercedWall, pointedArch, roundArch, type TowerMaterials } from './tower/kit.js';
 import { type Look, lookFor, preference, renderedDistance } from './tower/variants.js';
 import type { TreeSpot } from './trees.js';
@@ -148,6 +149,33 @@ export function quarterShow(q: Quarter, clocks: QuarterClocks = {}): QuarterShow
   return { quarter: { ...q, towers: towers.map((t) => t.spec) }, court: own, plate: q.dark ? 'bankrupt' : 'active', towers, settled };
 }
 
+/** Hires and sales arrive in bursts: a quarter's rebuild waits this long after the last change before it starts (Task 13). */
+export const QUARTER_DEBOUNCE_S = 1.5;
+
+/**
+ * Holds a quarter rebuild until changes stop coming: each touch replaces
+ * the waiting work and restarts the wait, and take() hands it over once
+ * QUARTER_DEBOUNCE_S has passed since the last touch, once. Times in seconds.
+ */
+export function rebuildDebounce<T>(wait = QUARTER_DEBOUNCE_S): { touch(now: number, work: T): void; take(now: number): T | null; clear(): void; waiting(): boolean } {
+  let held: { work: T; at: number } | null = null;
+  return {
+    touch(now, work) {
+      held = { work, at: now + wait };
+    },
+    take(now) {
+      if (!held || now < held.at) return null;
+      const w = held.work;
+      held = null;
+      return w;
+    },
+    clear() {
+      held = null;
+    },
+    waiting: () => held !== null,
+  };
+}
+
 /**
  * What a quarter's build depends on: everything but whether its lights are
  * on, which is a uniform (lightsout.ts). A quarter going dark or relighting
@@ -195,6 +223,11 @@ const STONE: Record<RootStyle, MatKey> = {
  * plinth. Floors pick as themselves under their agent; the plinth as the firm.
  */
 export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks: (t: TowerSpec) => Look, opts: QuarterOptions): QuarterPiece {
+  return finish(quarterCenterpieceSteps(q, quality, looks, opts));
+}
+
+/** quarterCenterpiece in steps (steps.ts): each tower a floor at a time, then the court. */
+export function* quarterCenterpieceSteps(q: Quarter, quality: 'high' | 'medium', looks: (t: TowerSpec) => Look, opts: QuarterOptions): Steps<QuarterPiece> {
   const mats = opts.materials;
   const group = new THREE.Group();
   group.name = `quarter:${q.firmId}`;
@@ -204,14 +237,15 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
   const disposers: Array<() => void> = [];
 
   const plots = new Set<number>();
-  q.towers.forEach((t, i) => {
+  for (let i = 0; i < q.towers.length; i++) {
+    const t = q.towers[i];
     const plot = t.towerIndex ?? i;
     const at = QUARTER_OFFSETS[plot];
-    if (!at) return;
+    if (!at) continue;
     plots.add(plot);
     const look = looks(t);
     // Built lit whatever its state: a dark tower's lights are out by the lights-out uniform (lightsout.ts), so going dark never rebuilds.
-    const built = buildTower(t, quality, mats(look), look, { firmSlots: opts.firmSlots, dark: false } satisfies BuildOptions);
+    const built = yield* buildTowerSteps(t, quality, mats(look), look, { firmSlots: opts.firmSlots, dark: false } satisfies BuildOptions);
     built.group.name = `tower:${t.id}`;
     built.group.position.set(at.x, 0, at.z);
     // A school tower (the collegiate root) is drawn apart, in the university's masonry (school-towers.ts).
@@ -225,7 +259,7 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
     if (t.agentId) agents.set(built.rootPick, t.agentId);
     if (t.agentId) towers.set(t.agentId, built);
     disposers.push(() => built.dispose());
-  });
+  }
 
   // The firm's own court pieces, in its own look and root (a firm all of whose towers were sold keeps its walk and name).
   const firmMats = mats(lookFor(q.firmId));
@@ -236,7 +270,7 @@ export function quarterCenterpiece(q: Quarter, quality: 'high' | 'medium', looks
   plinth(kit, q.root);
   garden(kit, q.root);
   lanternColumn(kit, q.root);
-  const court = kit.build();
+  const court = yield* kit.buildSteps();
   court.name = 'quarter:walks';
   court.userData.spans = spans;
   group.add(court);

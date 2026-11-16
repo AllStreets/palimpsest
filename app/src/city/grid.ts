@@ -1,17 +1,18 @@
 import * as THREE from 'three';
 
-import { clusterCulling } from './batch.js';
-import { reserves, type CollarPlaza } from './collar.js';
+import { clusterCulling, scheduleRemerge } from './batch.js';
+import { RESERVE_RADIUS, reserves, type CollarPlaza } from './collar.js';
 import { onExchange } from './exchange.js';
 import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade.js';
 import { kitShared } from './kits.js';
 import { lightsOutEmitter } from './lightsout.js';
-import { AMBIENT_LOD, AO_NEAR, boxDistance, frustumBlocks, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
+import { AMBIENT_LOD, AO_NEAR, boxDistance, frustumBlocks, frustumDelta, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
 import { lodDepthMaterial, lodMaterial, LOD_EYE } from './lod-shader.js';
-import { ARCHETYPES, BLOCK, blockLots, blockSeed, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, farLotStands, farLots, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots.js';
+import { ARCHETYPES, BLOCK, blockLots, blockSeed, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, farLotStands, farLots, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, plotRise, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots.js';
 import { inChannel } from '../../../shared/commute.js';
 import { materials } from './materials.js';
 import { AWNING, STRIPED } from './shopfronts.js';
+import { finish, type Steps } from './steps.js';
 import { ROOF_TREE_RADIUS, roofTree, streetTreeSpots, type TreeSpot } from './trees.js';
 
 export { streetTreeSpots, STREET_TREE_RADIUS } from './trees.js';
@@ -43,6 +44,8 @@ export interface Grid {
   blockers: THREE.Object3D[];
   /** Rebuilds the skyline and lamps around these plazas (the civic plaza at the origin is always kept). */
   setPlazas(plazas: Plaza[]): void;
+  /** setPlazas a row of blocks at a time (steps.ts); the copies keep drawing what they hold until the last step. */
+  setPlazasSteps(plazas: Plaza[]): Steps<void>;
   /** Building bodies standing now, near city and far ring together (tests and debugging). */
   buildings(): number;
   /** The standing lots whose centres lie within `r` of a point, as they are built now (the perf and UI tools' framing). */
@@ -56,9 +59,9 @@ export interface Grid {
    * frustum meets (Task 12). Returns true when what casts into the shadow
    * map changed.
    */
-  update(eye: THREE.Vector3, shadowTarget: THREE.Vector3, camera?: THREE.Camera): boolean;
+  update(eye: THREE.Vector3, shadowTarget: THREE.Vector3, camera?: THREE.Camera, now?: number): boolean;
   /** Instances each pass's copies hold now, the view's among them, and the city-wide set they are taken from (tests and debugging). */
-  lod(): { near: number; shadow: number; ao: number; view: number; city: number; viewFills: number };
+  lod(): { near: number; shadow: number; ao: number; view: number; viewWrites: number; city: number; viewFills: number };
   /** The trees the city plants as it stands now (trees.ts draws them): the street trees and the roof gardens' trees. */
   treeSpots(): TreeSpot[];
   dispose(): void;
@@ -546,6 +549,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
 
   // ------------------------------------------------ the passes' copies
   /** Instances of `sources` copied for the blocks selected, in one mesh of one shape, for one pass. */
+  const squash = new THREE.Matrix4();
+  const scratchM = new THREE.Matrix4();
+  const riseM = new THREE.Matrix4();
   class Copy {
     mesh: THREE.InstancedMesh;
     count = 0;
@@ -553,6 +559,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     /** The source geometry's own instanced attributes (a facade's accent, style and shop), copied with the matrices. */
     private extra: Array<{ name: string; size: number; to: THREE.InstancedBufferAttribute }> = [];
     private follow: boolean;
+    /** Where the rising blocks' instances landed in the last fill: [source, first, end, at], four numbers a run. */
+    private segs: number[] = [];
     constructor(
       geo: THREE.BufferGeometry,
       mat: THREE.Material,
@@ -589,17 +597,41 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       this.mesh.visible = false;
       group.add(this.mesh);
     }
+    /** Instances written by fills and appends, all told (tests: a turn copies only what it newly meets). */
+    writes = 0;
+    private lo = [Infinity, Infinity, Infinity];
+    private hi = [-Infinity, -Infinity, -Infinity];
     fill(selected: Uint8Array): void {
+      if (deferFills) {
+        // Mid-rebuild: taken a copy a step (buildSteps); the selection is copied, as the next frame may move it.
+        const sel = selected.slice();
+        deferFills.push(() => {
+          this.fill(sel);
+          // A freed plot's blocks stand where the rise has got to, from the frame they are drawn in.
+          if (rising) this.rise(riseK);
+        });
+        return;
+      }
+      this.lo = [Infinity, Infinity, Infinity];
+      this.hi = [-Infinity, -Infinity, -Infinity];
+      this.write(selected, 0);
+    }
+    /** Adds the instances of the `added` blocks after those held (none of them held yet). */
+    append(added: Uint8Array): void {
+      this.write(added, this.count);
+    }
+    private write(selected: Uint8Array, from: number): void {
       const dst = this.mesh.instanceMatrix.array as Float32Array;
-      const m = new THREE.Matrix4();
-      const lo = [Infinity, Infinity, Infinity];
-      const hi = [-Infinity, -Infinity, -Infinity];
-      let n = 0;
+      const m = scratchM;
+      const lo = this.lo;
+      const hi = this.hi;
+      let n = from;
       if (this.follow && !this.mesh.instanceColor && this.sources[0].mesh.instanceColor) {
         this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(this.mesh.instanceMatrix.count * 3), 3);
         this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
       }
       const dstC = this.mesh.instanceColor?.array as Float32Array | undefined;
+      if (from === 0) this.segs.length = 0;
       this.sources.forEach((src, s) => {
         const from = src.mesh.instanceMatrix.array as Float32Array;
         const fromC = src.mesh.instanceColor?.array as Float32Array | undefined;
@@ -617,6 +649,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
           hi[2] = Math.max(hi[2], b.maxZ);
           const k0 = r[q + 1];
           const k1 = r[q + 2];
+          if (rising?.[blk]) this.segs.push(s, k0, k1, n);
           if (bake) {
             for (let k = k0; k < k1; k++, n++) m.fromArray(from, k * 16).multiply(bake).toArray(dst, n * 16);
           } else {
@@ -632,21 +665,23 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
           }
         }
       });
+      this.writes += n - from;
       this.count = n;
       this.mesh.count = n;
       this.mesh.visible = n > 0;
+      // Only what was written goes to the GPU: all of it after a fill, the new end after an append.
       const im = this.mesh.instanceMatrix;
-      im.clearUpdateRanges();
-      im.addUpdateRange(0, n * 16);
+      if (from === 0) im.clearUpdateRanges();
+      im.addUpdateRange(from * 16, (n - from) * 16);
       im.needsUpdate = true;
       for (const e of this.extra) {
-        e.to.clearUpdateRanges();
-        e.to.addUpdateRange(0, n * e.size);
+        if (from === 0) e.to.clearUpdateRanges();
+        e.to.addUpdateRange(from * e.size, (n - from) * e.size);
         e.to.needsUpdate = true;
       }
       if (this.mesh.instanceColor) {
-        this.mesh.instanceColor.clearUpdateRanges();
-        this.mesh.instanceColor.addUpdateRange(0, n * 3);
+        if (from === 0) this.mesh.instanceColor.clearUpdateRanges();
+        this.mesh.instanceColor.addUpdateRange(from * 3, (n - from) * 3);
         this.mesh.instanceColor.needsUpdate = true;
       }
       // The copy's bounds are its blocks' boxes, so each pass's camera culls it whole.
@@ -655,6 +690,30 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         this.mesh.boundingBox = bounds;
         this.mesh.boundingSphere = bounds.getBoundingSphere(new THREE.Sphere());
       }
+    }
+    endRise(): void {
+      this.segs.length = 0;
+    }
+    /** Writes the rising blocks' instances at `k` of their height, from the ground up (a freed plot filling). */
+    rise(k: number): void {
+      if (this.segs.length === 0) return;
+      const dst = this.mesh.instanceMatrix.array as Float32Array;
+      const im = this.mesh.instanceMatrix;
+      // Never quite flat: a zero height would leave the shading's normals undefined.
+      squash.makeScale(1, Math.max(k, 0.001), 1);
+      for (let q = 0; q < this.segs.length; q += 4) {
+        const from = this.sources[this.segs[q]].mesh.instanceMatrix.array as Float32Array;
+        const bake = this.bake[this.segs[q]];
+        const k0 = this.segs[q + 1];
+        const k1 = this.segs[q + 2];
+        for (let i = k0, n = this.segs[q + 3]; i < k1; i++, n++) {
+          riseM.fromArray(from, i * 16);
+          if (bake) riseM.multiply(bake);
+          riseM.premultiply(squash).toArray(dst, n * 16);
+        }
+        im.addUpdateRange(this.segs[q + 3] * 16, (k1 - k0) * 16);
+      }
+      im.needsUpdate = true;
     }
     dispose(): void {
       // A view copy's own geometry holds its own instanced buffers but shares the batch's index and vertices (a kit's
@@ -726,6 +785,16 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   });
 
   const near = new Uint8Array(boxes.length);
+  /** The blocks of a plot given back, rising (lots.ts plotRise) since `riseFrom` (ms); null when none is. */
+  let rising: Uint8Array | null = null;
+  let riseFrom = 0;
+  let riseShadowAt = -Infinity;
+  let riseK = 0;
+  /** True while a rebuild is under way across frames: the copies keep drawing what they hold until it is done. */
+  let building = false;
+  /** While set, a copy's fill is queued here rather than done (buildSteps spreads the refill after a rebuild). */
+  let deferFills: Array<() => void> | null = null;
+  const allCopies = (): Copy[] => [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies, ...viewCopies];
   const nearLamps = new Uint8Array(boxes.length);
   const ao = new Uint8Array(boxes.length);
   /** The blocks the view's copies hold, and the AO's (its near blocks, cut to the frustum when the eye is known). */
@@ -746,6 +815,18 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
    */
   const NEAR_STEP = 40;
   const AO_STEP = 120;
+  const added = new Uint8Array(boxes.length);
+  /** Refills these copies to what `held` says when each one's turn comes on the queue (it reads `held` then, not now). */
+  function letGo(copies: Copy[], held: Uint8Array, pass: string): void {
+    copies.forEach((c, k) =>
+      scheduleRemerge(`grid:${pass}:${k}`, () => {
+        // Mid-rebuild there is nothing to let go: the build refills every copy when it is done.
+        if (building) return;
+        c.fill(held);
+        if (pass === 'view') viewFills++;
+      }),
+    );
+  }
   function select(into: Uint8Array, keep: (b: BlockBox) => boolean): boolean {
     let changed = false;
     for (let k = 0; k < boxes.length; k++) {
@@ -757,8 +838,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     }
     return changed;
   }
-  function update(eye: THREE.Vector3, target: THREE.Vector3, force = false, camera?: THREE.Camera): boolean {
+  function update(eye: THREE.Vector3, target: THREE.Vector3, force = false, camera?: THREE.Camera, now = performance.now()): boolean {
     LOD_EYE.value.copy(eye);
+    // Mid-rebuild the batches are half laid: the copies hold on to what they drew until the build is done.
+    if (building) return false;
     let shadowChanged = false;
     if (force || eye.distanceTo(nearEye) > NEAR_STEP) {
       nearEye.copy(eye);
@@ -779,11 +862,25 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     if (camera && clusterCulling()) {
       camera.updateMatrixWorld();
       viewFrustum.setFromProjectionMatrix(viewMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), camera.coordinateSystem, (camera as THREE.Camera & { reversedDepth?: boolean }).reversedDepth);
-      if (frustumBlocks(boxes, used, viewFrustum, eye, viewHeld) || force) {
+      // What the frustum newly meets is copied in at once (only it); what it has left is let go over the frames after,
+      // a copy a piece of work on the re-merge queue (batch.ts), since what the copies hold meanwhile is a superset.
+      if (force) {
+        frustumBlocks(boxes, used, viewFrustum, eye, viewHeld);
         for (const c of viewCopies) c.fill(viewHeld);
         viewFills++;
+      } else {
+        const d = frustumDelta(boxes, used, viewFrustum, eye, viewHeld, added);
+        if (d === 'grow' || d === 'both') for (const c of viewCopies) c.append(added);
+        if (d === 'shrink' || d === 'both') letGo(viewCopies, viewHeld, 'view');
       }
-      if (frustumBlocks(boxes, ao, viewFrustum, eye, aoHeld) || aoMoved) for (const c of aoCopies) c.fill(aoHeld);
+      if (force || aoMoved) {
+        frustumBlocks(boxes, ao, viewFrustum, eye, aoHeld);
+        for (const c of aoCopies) c.fill(aoHeld);
+      } else {
+        const d = frustumDelta(boxes, ao, viewFrustum, eye, aoHeld, added);
+        if (d === 'grow' || d === 'both') for (const c of aoCopies) c.append(added);
+        if (d === 'shrink' || d === 'both') letGo(aoCopies, aoHeld, 'ao');
+      }
     } else {
       // No eye to cut to (a test, or the culling off for a before-and-after): the view draws every block and the AO all it reaches.
       if (force || viewHeld.some((v, k) => v !== used[k])) {
@@ -800,6 +897,23 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       shadowAt.copy(target);
       if (select(shadow, shadowColumn(shadowBox.sun, target, shadowBox)) || force) {
         for (const c of shadowCopies) c.fill(shadow);
+        shadowChanged = true;
+      }
+    }
+    if (rising) {
+      // The rise's clock starts at the first frame drawn after the build; the build's own refill stands them at the ground.
+      if (Number.isNaN(riseFrom) && !Number.isNaN(now)) riseFrom = now;
+      const k = Number.isNaN(riseFrom) ? 0 : plotRise((now - riseFrom) / 1000);
+      riseK = k;
+      for (const c of allCopies()) c.rise(k);
+      if (k >= 1) {
+        rising = null;
+        // Done: no later rise may write over what these instances' places hold by then.
+        for (const c of allCopies()) c.endRise();
+      }
+      // The shadow map follows the rise in steps of a fifth of a second, and once more when it is done.
+      if (k >= 1 || !(now - riseShadowAt <= 200)) {
+        riseShadowAt = now;
         shadowChanged = true;
       }
     }
@@ -839,6 +953,49 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
 
   let plazasNow: Array<{ x: number; z: number }> = [{ x: 0, z: 0 }];
   function build(plazas: Plaza[]): void {
+    finish(buildSteps(plazas));
+  }
+  /**
+   * The ambient city rebuilt round these plazas a row of blocks at a time
+   * (steps.ts), the copies holding what they drew until it is done; then
+   * the blocks of any plot given back rise from the ground (plotRise).
+   */
+  function* buildSteps(plazas: Plaza[]): Steps<void> {
+    const before = plazasNow;
+    building = true;
+    try {
+      yield* layout(plazas);
+    } finally {
+      building = false;
+    }
+    // The plots given back: every block within a plaza's reach that no plaza now holds rises.
+    const freed = before.filter((p) => !plazasNow.some((q) => q.x === p.x && q.z === p.z));
+    if (freed.length && Number.isFinite(nearEye.x)) {
+      const reach = RESERVE_RADIUS + PITCH;
+      rising = new Uint8Array(boxes.length);
+      boxes.forEach((b, k) => {
+        const cx = (b.minX + b.maxX) / 2;
+        const cz = (b.minZ + b.maxZ) / 2;
+        if (used[k] && freed.some((p) => Math.hypot(cx - p.x, cz - p.z) < reach)) rising![k] = 1;
+      });
+      riseFrom = NaN;
+      riseK = 0;
+      riseShadowAt = -Infinity;
+    }
+    // Every copy is refilled from the new build, at the eye and shadow centre last seen: the selections at once,
+    // the copies a few a frame (each copy's fill copies all it holds), their blocks rising if a plot was freed.
+    if (Number.isFinite(nearEye.x)) {
+      deferFills = [];
+      update(nearEye.clone(), shadowAt.clone(), true, lastCamera, NaN);
+      const fills = deferFills;
+      deferFills = null;
+      for (const f of fills) {
+        f();
+        yield;
+      }
+    }
+  }
+  function* layout(plazas: Plaza[]): Steps<void> {
     const all = [{ x: 0, z: 0 }, ...plazas];
     plazasNow = all;
     roofTrees = [];
@@ -888,6 +1045,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         }
         const nearBlock = Math.max(Math.abs(i), Math.abs(j)) <= DETAIL_RADIUS;
         for (const lot of standingLots(i, j, all)) draw({ walls, cuts, parts }, lot, false, nearBlock);
+        yield;
       }
     }
 
@@ -899,6 +1057,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
           if (all.some((p) => reserves(p, lot.x, lot.z, lot.w, lot.d))) continue;
           draw({ walls, cuts, parts }, lot, true);
         }
+        yield;
       }
     }
 
@@ -932,9 +1091,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       }
     });
 
-    for (const b of batches) b.finish();
-    // Every copy is refilled from the new build, at the eye and shadow centre last seen.
-    if (Number.isFinite(nearEye.x)) update(nearEye.clone(), shadowAt.clone(), true, lastCamera);
+    for (const b of batches) {
+      b.finish();
+      yield;
+    }
   }
 
   build([]);
@@ -943,15 +1103,17 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     group,
     blockers: [...Object.values(walls), ...Object.values(cuts)].map((b) => b.mesh),
     setPlazas: build,
-    update: (eye, target, camera) => {
+    setPlazasSteps: buildSteps,
+    update: (eye, target, camera, now) => {
       lastCamera = camera;
-      return update(eye, target, false, camera);
+      return update(eye, target, false, camera, now);
     },
     lod: () => ({
       near: [...nearCopies, ...lampCopies].reduce((n, c) => n + c.count, 0),
       shadow: shadowCopies.reduce((n, c) => n + c.count, 0),
       ao: aoCopies.reduce((n, c) => n + c.count, 0),
       view: viewCopies.reduce((n, c) => n + c.count, 0),
+      viewWrites: viewCopies.reduce((n, c) => n + c.writes, 0),
       city: drawn.reduce((n, b) => n + b.n, 0),
       viewFills,
     }),

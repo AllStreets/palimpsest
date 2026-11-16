@@ -15,7 +15,7 @@ import { boardLabel, type BoardJob, type BoardSlot, JOBS_ROUTE, makeExchange } f
 import { EMPTY_LIFE, foldLifeEvent, lifeAfter, lifeVoyage, type CampusLifeView, type LifeState } from './city/campus/life';
 import { foldSchoolEvent, schoolAfter, type ObservatoryState, type ObservatoryView } from './city/campus/observatory';
 import { type KnownRepo, occupancy, takeRepoState } from './city/occupancy.js';
-import { quarterCenterpiece, quarterLooks } from './city/quarters';
+import { quarterCenterpieceSteps, quarterLooks } from './city/quarters';
 import { createCity, type PickHit } from './city/scene';
 import type { LotSummary } from './city/grid';
 import type { MilestoneShow } from './city/milestones.js';
@@ -24,7 +24,7 @@ import { signalAt } from './city/signals.js';
 import type { AmbientView } from './city/ambient.js';
 import { route, streetLine } from '../../shared/commute.js';
 import type { Trip, TripReason } from '../../shared/types';
-import { COURSE_FAR, towerCenterpiece, towerMaterials } from './city/tower/look';
+import { COURSE_FAR, towerCenterpiece, towerCenterpieceSteps, towerMaterials } from './city/tower/look';
 import { firmMarkColor } from './city/tower/eras';
 import { cleanText } from './ui/board';
 import type { FigureView, PeopleView } from './city/people.js';
@@ -130,6 +130,12 @@ interface DebugHandle {
   stageMilestones(ms: Milestone[] | null): void;
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
+  /** The geometries and textures on the GPU now (renderer.info.memory; the UI test's disconnect check). */
+  memory(): { geometries: number; textures: number };
+  /** Rebuilds waiting to run a step at a time (batch.ts scheduleRemerge), and a quarter rebuild waiting out its debounce. */
+  rebuilding(): number;
+  /** Starts (true) or ends (false) a per-frame trace of the city's own work, returning the last one (perf diagnosis). */
+  trace(on: boolean): ReturnType<ReturnType<typeof createCity>['trace']>;
   /** Batch culling by cluster on or off (Task 12; off draws every batch whole, as before it), for a before-and-after measure. */
   cull(on: boolean): void;
   /** The next frame's draw calls and triangles by subsystem and pass, the shadow map redrawn in it. */
@@ -399,12 +405,12 @@ async function main(): Promise<void> {
   const city = createCity(host, {
     quality,
     autoQuality,
-    makeDistrictCenterpiece: (d) => towerCenterpiece(d, quality, lookOf(d), { firmSlots }),
+    makeDistrictCenterpiece: (d) => towerCenterpieceSteps(d, quality, lookOf(d), { firmSlots }),
     centerpieceKey: (d) => `${lookKey(lookOf(d))}|${quality}|${d.tower.floors.some((f) => f.earned) ? firmsKey : ''}`,
     districtTones: (d) => towerTones(lookOf(d)),
     makeQuarterCenterpiece: (q) => {
       const looks = quarterLooks(q);
-      return quarterCenterpiece(q, quality, (t) => looks.get(t.id) ?? lookFor(t.firmId ?? q.firmId), {
+      return quarterCenterpieceSteps(q, quality, (t) => looks.get(t.id) ?? lookFor(t.firmId ?? q.firmId), {
         name: firmViews.get(q.firmId)?.name ?? q.firmId,
         firmSlots,
         materials: towerMaterials,
@@ -532,6 +538,9 @@ async function main(): Promise<void> {
     project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
+    memory: () => city.memory(),
+    rebuilding: () => city.rebuilding(),
+    trace: (on) => city.trace(on),
     cull: (on) => setClusterCulling(on),
     breakdown: (detail) => city.breakdown(detail),
     visibleShare: (key) => city.visibleShare(key),

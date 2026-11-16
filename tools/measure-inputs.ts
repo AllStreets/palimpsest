@@ -50,7 +50,8 @@ export function towerInputs(): string {
 
 /**
  * What the ambient table depends on: the tones and sections (the section and
- * tone tables of lots.ts), the facade programs, the
+ * tone tables of lots.ts), the facade programs (and the rooms behind their
+ * windows, rooms.ts, whose GLSL the facade program pastes in), the
  * board, the scans and the light. The rest of lots.ts (layout, the plaza-edge
  * rule) chooses where tones go, not how they render, so it is left out.
  */
@@ -62,5 +63,5 @@ export function ambientInputs(): string {
     if (from < 0 || to < 0) throw new Error(`lots.ts: ${start} moved; update tools/measure-inputs.ts`);
     return lots.slice(from, to);
   };
-  return fingerprint([slice('export const SECTIONS', '/** A section'), slice('export const TONES', 'const TONE_BY_ID'), read('app/src/city/facade.ts'), read('app/src/city/ambient-swatches.ts'), read('app/src/city/materials.ts'), light()]);
+  return fingerprint([slice('export const SECTIONS', '/** A section'), slice('export const TONES', 'const TONE_BY_ID'), read('app/src/city/facade.ts'), read('app/src/city/rooms.ts'), read('app/src/city/ambient-swatches.ts'), read('app/src/city/materials.ts'), light()]);
 }

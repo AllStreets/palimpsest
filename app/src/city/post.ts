@@ -45,6 +45,28 @@ function fadeWithDistance(gtao: GTAOPass, camera: THREE.PerspectiveCamera): void
   m.needsUpdate = true;
 }
 
+/**
+ * Past AO_FADE_END the blend above takes none of the AO, yet the AO and its
+ * denoise were worked out for every pixel there (the far ground, the water
+ * and the city to the horizon), which on high was the frame's margin under
+ * 16.7 ms (Task 13). Both passes now leave those pixels as they leave the
+ * sky (discarded, the clear's white: no occlusion), from a quarter past the
+ * fade's end, so every pixel the blend still takes AO for reads the same
+ * neighbours with the same weights (the denoise weighs a neighbour by its
+ * depth along the pixel's normal, so one that far behind counts for nothing).
+ * The frame is unchanged; only the work behind it goes.
+ */
+export const AO_SKIP = AO_FADE_END * 1.25;
+function skipPastFade(gtao: GTAOPass): void {
+  const at = 'vec3 viewPos = getViewPosition(vUv, depth);';
+  const skip = `${at}\n      if (length(viewPos) > ${AO_SKIP.toFixed(1)}) { discard; return; }`;
+  for (const m of [gtao.gtaoMaterial, gtao.pdMaterial]) {
+    if (!m.fragmentShader.includes(at)) throw new Error('GTAOPass: its shaders changed; post.ts skipPastFade needs a new anchor');
+    m.fragmentShader = m.fragmentShader.replace(at, skip);
+    m.needsUpdate = true;
+  }
+}
+
 /** Bloom catches only what is brighter than this in the linear HDR frame: real emitters, never lit paint. */
 export const BLOOM_THRESHOLD = 0.97;
 /** The renderer's exposure (scene.ts), which the threshold is measured after. */
@@ -554,8 +576,9 @@ export function createPost(
   composer.setPixelRatio(ratio);
   composer.setSize(size.x, size.y);
   composer.addPass(new RenderPass(scene, camera));
-  const tap = new DepthTap();
-  composer.addPass(tap);
+  // The depth as the scene drew it, for the lens alone: on medium there is no lens, so nothing taps it.
+  const tap = quality === 'high' ? new DepthTap() : null;
+  if (tap) composer.addPass(tap);
   for (const p of after) composer.addPass(p);
 
   let gtao: GTAOPass | null = null;
@@ -570,13 +593,14 @@ export function createPost(
     // City scale: a metre and a half of reach finds the contact shadow where walls meet pavement.
     gtao.updateGtaoMaterial({ radius: 1.5, distanceExponent: 2, thickness: 3, scale: 1 });
     fadeWithDistance(gtao, camera);
+    skipPastFade(gtao);
     composer.addPass(gtao);
   }
 
   // The lens (high only) after the AO and before the bloom, as glass sits before the sensor: an emitter out of focus
   // spreads to its disc first and blooms as the disc.
   const lens = createLens(quality);
-  const lensPass = quality === 'high' ? new LensPass(tap, camera) : null;
+  const lensPass = tap ? new LensPass(tap, camera) : null;
   if (lensPass) {
     lensPass.enabled = false;
     composer.addPass(lensPass);

@@ -1202,6 +1202,7 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
   hands.castShadow = false;
   hall.add(hands);
   const turn = new THREE.Matrix4();
+  const hand = new THREE.Matrix4();
   const HOUR = M(0, -0.125, 0, 0, 0.16, 1.25, 1);
   const MINUTE = M(0, -0.145, 0.04, 0, 0.1, 1.85, 1);
   let shownMinute = -1;
@@ -1212,9 +1213,10 @@ export function makeExchange(quality: 'high' | 'medium', opts: ExchangeOptions =
     shownMinute = m;
     const minuteA = -(now.getMinutes() / 60) * Math.PI * 2;
     const hourA = -(((now.getHours() % 12) + now.getMinutes() / 60) / 12) * Math.PI * 2;
+    // One scratch matrix for every hand: the minute's turn makes nothing new.
     clocks.forEach((F, i) => {
-      hands.setMatrixAt(2 * i, F.clone().multiply(turn.makeRotationZ(hourA)).multiply(HOUR));
-      hands.setMatrixAt(2 * i + 1, F.clone().multiply(turn.makeRotationZ(minuteA)).multiply(MINUTE));
+      hands.setMatrixAt(2 * i, hand.copy(F).multiply(turn.makeRotationZ(hourA)).multiply(HOUR));
+      hands.setMatrixAt(2 * i + 1, hand.copy(F).multiply(turn.makeRotationZ(minuteA)).multiply(MINUTE));
     });
     hands.instanceMatrix.needsUpdate = true;
     hands.computeBoundingSphere();

@@ -1,6 +1,6 @@
 import './kit-setup.js';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 
 import * as THREE from 'three';
 
@@ -332,4 +332,30 @@ test('the bid lamps and the lit cards hold their size from the market overview, 
   // Near the eye nothing grows.
   assert.deepEqual(grow!(lamp!, 30, view), [1, 1]);
   assert.deepEqual(grow!(card!, 30, view), [1, 1]);
+});
+
+test('setClock allocates no matrices', () => {
+  mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-14T17:00:00') });
+  try {
+    const ex = makeExchange('high');
+    const hands = ex.object.getObjectByName('exchange:hands') as THREE.InstancedMesh;
+    const before = hands.instanceMatrix.array.slice();
+    let made = 0;
+    const clone = THREE.Matrix4.prototype.clone;
+    THREE.Matrix4.prototype.clone = function (this: THREE.Matrix4) {
+      made++;
+      return clone.call(this);
+    };
+    try {
+      // A minute on: every hand turns, and not one matrix is made for it.
+      mock.timers.tick(60_000);
+      ex.update(1 / 60);
+    } finally {
+      THREE.Matrix4.prototype.clone = clone;
+    }
+    assert.notDeepEqual(hands.instanceMatrix.array, before, 'the hands moved with the minute');
+    assert.equal(made, 0, `setClock made ${made} matrices`);
+  } finally {
+    mock.timers.reset();
+  }
 });
