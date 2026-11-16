@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 
+import { clusterCulling } from './batch.js';
 import { reserves, type CollarPlaza } from './collar.js';
 import { onExchange } from './exchange.js';
 import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade.js';
 import { kitShared } from './kits.js';
 import { lightsOutEmitter } from './lightsout.js';
-import { AMBIENT_LOD, AO_NEAR, boxDistance, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
+import { AMBIENT_LOD, AO_NEAR, boxDistance, frustumBlocks, LAYER, setLayers, shadowColumn, type BlockBox } from './lod.js';
 import { lodDepthMaterial, lodMaterial, LOD_EYE } from './lod-shader.js';
 import { ARCHETYPES, BLOCK, blockLots, blockSeed, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, farLotStands, farLots, LAMP_EDGE, LAMP_OFFSETS, lotParts, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, rng, standingLots, type Archetype, type Lot, type PartKind } from './lots.js';
 import { inChannel } from '../../../shared/commute.js';
@@ -50,12 +51,14 @@ export interface Grid {
   board(lots: Lot[]): { group: THREE.Group; dispose(): void };
   /**
    * Follows the eye and the shadow's centre: the roof kit near the eye, the
-   * blocks the AO can still see and the blocks in the sun's shadow column.
-   * Returns true when what casts into the shadow map changed.
+   * blocks the AO can still see and the blocks in the sun's shadow column;
+   * given the eye's camera, the view and the AO hold only the blocks its
+   * frustum meets (Task 12). Returns true when what casts into the shadow
+   * map changed.
    */
-  update(eye: THREE.Vector3, shadowTarget: THREE.Vector3): boolean;
-  /** Instances each pass's copies hold now (tests and debugging). */
-  lod(): { near: number; shadow: number; ao: number };
+  update(eye: THREE.Vector3, shadowTarget: THREE.Vector3, camera?: THREE.Camera): boolean;
+  /** Instances each pass's copies hold now, the view's among them, and the city-wide set they are taken from (tests and debugging). */
+  lod(): { near: number; shadow: number; ao: number; view: number; city: number; viewFills: number };
   /** The trees the city plants as it stands now (trees.ts draws them): the street trees and the roof gardens' trees. */
   treeSpots(): TreeSpot[];
   dispose(): void;
@@ -544,14 +547,33 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     mesh: THREE.InstancedMesh;
     count = 0;
     private bake: Array<THREE.Matrix4 | null>;
+    /** The source geometry's own instanced attributes (a facade's accent, style and shop), copied with the matrices. */
+    private extra: Array<{ name: string; size: number; to: THREE.InstancedBufferAttribute }> = [];
+    private follow: boolean;
     constructor(
       geo: THREE.BufferGeometry,
       mat: THREE.Material,
       readonly sources: Batch[],
       layer: number,
-      opts: { shadow?: boolean; colour?: boolean; bake?: Array<THREE.Matrix4 | null>; name: string },
+      opts: { shadow?: boolean; colour?: boolean; bake?: Array<THREE.Matrix4 | null>; name: string; whole?: boolean },
     ) {
       const cap = Math.max(1, sources.reduce((n, b) => n + b.mesh.instanceMatrix.count, 0));
+      this.follow = !!opts.whole;
+      if (opts.whole) {
+        // The view's copy of one batch, drawn as the batch drew: its geometry shared but for the instanced attributes.
+        const own = new THREE.BufferGeometry();
+        own.setIndex(geo.index);
+        for (const [name, a] of Object.entries(geo.attributes)) {
+          if ((a as THREE.InstancedBufferAttribute).isInstancedBufferAttribute) {
+            const to = new THREE.InstancedBufferAttribute(new Float32Array(cap * a.itemSize), a.itemSize);
+            to.setUsage(THREE.DynamicDrawUsage);
+            own.setAttribute(name, to);
+            this.extra.push({ name, size: a.itemSize, to });
+          } else own.setAttribute(name, a);
+        }
+        for (const g of geo.groups) own.addGroup(g.start, g.count, g.materialIndex);
+        geo = own;
+      }
       this.mesh = new THREE.InstancedMesh(geo, mat, cap);
       this.mesh.name = opts.name;
       this.mesh.count = 0;
@@ -566,11 +588,15 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     }
     fill(selected: Uint8Array): void {
       const dst = this.mesh.instanceMatrix.array as Float32Array;
-      const dstC = this.mesh.instanceColor?.array as Float32Array | undefined;
       const m = new THREE.Matrix4();
       const lo = [Infinity, Infinity, Infinity];
       const hi = [-Infinity, -Infinity, -Infinity];
       let n = 0;
+      if (this.follow && !this.mesh.instanceColor && this.sources[0].mesh.instanceColor) {
+        this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(this.mesh.instanceMatrix.count * 3), 3);
+        this.mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+      }
+      const dstC = this.mesh.instanceColor?.array as Float32Array | undefined;
       this.sources.forEach((src, s) => {
         const from = src.mesh.instanceMatrix.array as Float32Array;
         const fromC = src.mesh.instanceColor?.array as Float32Array | undefined;
@@ -595,6 +621,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
             // A part laid without a colour of its own draws in its material's (white instance colour).
             if (dstC && fromC) dstC.set(fromC.subarray(k0 * 3, k1 * 3), n * 3);
             else if (dstC) dstC.fill(1, n * 3, (n + k1 - k0) * 3);
+            for (const e of this.extra) {
+              const fromE = (src.mesh.geometry.attributes[e.name] as THREE.InstancedBufferAttribute).array as Float32Array;
+              (e.to.array as Float32Array).set(fromE.subarray(k0 * e.size, k1 * e.size), n * e.size);
+            }
             n += k1 - k0;
           }
         }
@@ -606,6 +636,11 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       im.clearUpdateRanges();
       im.addUpdateRange(0, n * 16);
       im.needsUpdate = true;
+      for (const e of this.extra) {
+        e.to.clearUpdateRanges();
+        e.to.addUpdateRange(0, n * e.size);
+        e.to.needsUpdate = true;
+      }
       if (this.mesh.instanceColor) {
         this.mesh.instanceColor.clearUpdateRanges();
         this.mesh.instanceColor.addUpdateRange(0, n * 3);
@@ -619,6 +654,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       }
     }
     dispose(): void {
+      // A view copy's geometry shares the batch's buffers: disposing it would free them; its own go with the city.
       this.mesh.dispose();
     }
   }
@@ -667,10 +703,28 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     new Copy(poleGeo, lod(M.darkMetal, 'near', LAMP_LOD), [poles], 0, { shadow: true, name: 'lamp-pole' }),
     new Copy(lanternGeo, lod(M.darkMetal, 'near', LAMP_LOD), [lanterns], 0, { shadow: true, name: 'lantern-pole' }),
   ];
+  // The view (Task 12): each city-wide batch drawn through a copy of the blocks the eye's frustum meets (lod.ts
+  // frustumBlocks), each block its own cluster with its own box, so a close view draws only what it sees, in the same
+  // call. The batch itself stays, hidden, as the source of every copy and for the name plates' line of sight.
+  const viewCopies = drawn.map((b) => {
+    const c = new Copy(b.mesh.geometry, b.mesh.material as THREE.Material, [b], LAYER.view, { name: b.mesh.name, whole: true });
+    c.mesh.castShadow = false;
+    c.mesh.receiveShadow = b.mesh.receiveShadow;
+    c.mesh.renderOrder = b.mesh.renderOrder;
+    b.mesh.visible = false;
+    return c;
+  });
 
   const near = new Uint8Array(boxes.length);
   const nearLamps = new Uint8Array(boxes.length);
   const ao = new Uint8Array(boxes.length);
+  /** The blocks the view's copies hold, and the AO's (its near blocks, cut to the frustum when the eye is known). */
+  const viewHeld = new Uint8Array(boxes.length);
+  const aoHeld = new Uint8Array(boxes.length);
+  const viewFrustum = new THREE.Frustum();
+  const viewMatrix = new THREE.Matrix4();
+  let viewFills = 0;
+  let lastCamera: THREE.Camera | undefined;
   const shadow = new Uint8Array(boxes.length);
   const nearEye = new THREE.Vector3(Infinity, 0, 0);
   const aoEye = new THREE.Vector3(Infinity, 0, 0);
@@ -693,7 +747,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     }
     return changed;
   }
-  function update(eye: THREE.Vector3, target: THREE.Vector3, force = false): boolean {
+  function update(eye: THREE.Vector3, target: THREE.Vector3, force = false, camera?: THREE.Camera): boolean {
     LOD_EYE.value.copy(eye);
     let shadowChanged = false;
     if (force || eye.distanceTo(nearEye) > NEAR_STEP) {
@@ -707,9 +761,30 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         shadowChanged = true;
       }
     }
+    let aoMoved = false;
     if (force || eye.distanceTo(aoEye) > AO_STEP) {
       aoEye.copy(eye);
-      if (select(ao, (b) => boxDistance(eye, b) < AO_NEAR + AO_STEP) || force) for (const c of aoCopies) c.fill(ao);
+      aoMoved = select(ao, (b) => boxDistance(eye, b) < AO_NEAR + AO_STEP) || force;
+    }
+    if (camera && clusterCulling()) {
+      camera.updateMatrixWorld();
+      viewFrustum.setFromProjectionMatrix(viewMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), camera.coordinateSystem);
+      if (frustumBlocks(boxes, used, viewFrustum, eye, viewHeld) || force) {
+        for (const c of viewCopies) c.fill(viewHeld);
+        viewFills++;
+      }
+      if (frustumBlocks(boxes, ao, viewFrustum, eye, aoHeld) || aoMoved) for (const c of aoCopies) c.fill(aoHeld);
+    } else {
+      // No eye to cut to (a test, or the culling off for a before-and-after): the view draws every block and the AO all it reaches.
+      if (force || viewHeld.some((v, k) => v !== used[k])) {
+        viewHeld.set(used);
+        for (const c of viewCopies) c.fill(viewHeld);
+        viewFills++;
+      }
+      if (aoMoved || aoHeld.some((v, k) => v !== ao[k])) {
+        aoHeld.set(ao);
+        for (const c of aoCopies) c.fill(aoHeld);
+      }
     }
     if (force || !target.equals(shadowAt)) {
       shadowAt.copy(target);
@@ -849,7 +924,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
 
     for (const b of batches) b.finish();
     // Every copy is refilled from the new build, at the eye and shadow centre last seen.
-    if (Number.isFinite(nearEye.x)) update(nearEye.clone(), shadowAt.clone(), true);
+    if (Number.isFinite(nearEye.x)) update(nearEye.clone(), shadowAt.clone(), true, lastCamera);
   }
 
   build([]);
@@ -858,11 +933,17 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     group,
     blockers: [...Object.values(walls), ...Object.values(cuts)].map((b) => b.mesh),
     setPlazas: build,
-    update: (eye, target) => update(eye, target),
+    update: (eye, target, camera) => {
+      lastCamera = camera;
+      return update(eye, target, false, camera);
+    },
     lod: () => ({
       near: [...nearCopies, ...lampCopies].reduce((n, c) => n + c.count, 0),
       shadow: shadowCopies.reduce((n, c) => n + c.count, 0),
       ao: aoCopies.reduce((n, c) => n + c.count, 0),
+      view: viewCopies.reduce((n, c) => n + c.count, 0),
+      city: drawn.reduce((n, b) => n + b.n, 0),
+      viewFills,
     }),
     buildings: () => [...Object.values(walls), ...Object.values(cuts)].reduce((n, b) => n + b.n, 0),
     treeSpots: () => [...streetTrees, ...roofTrees],
@@ -909,7 +990,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       for (const b of [...Object.values(walls), ...Object.values(cuts)]) b.mesh.geometry.dispose();
       for (const m of [...Object.values(facadeMats), ...Object.values(cutMats), leadMat, trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
       for (const b of batches) b.mesh.dispose();
-      for (const c of [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies]) c.dispose();
+      for (const c of [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies, ...viewCopies]) c.dispose();
     },
   };
 }

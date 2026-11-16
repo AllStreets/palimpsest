@@ -61,6 +61,10 @@ let culling = true;
 export function setClusterCulling(on: boolean): void {
   culling = on;
 }
+/** Whether the culling is on (grid.ts reads it for the ambient blocks' view and AO copies). */
+export function clusterCulling(): boolean {
+  return culling;
+}
 
 /**
  * Reorders `g`'s triangles (indexed) cell by cell, cells in x, then z, then y

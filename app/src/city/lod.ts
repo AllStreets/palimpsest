@@ -7,10 +7,11 @@
  *   into simple boxes of the same bulk and tone, and past AMBIENT_LOD.far only
  *   the boxes stand. The fade is per part, so it is a ring, not a seam.
  * - Each pass has its own layers (passLayers): the view, the sun's shadow map
- *   and the AO's normal pass. The city-wide batches draw in the view only;
+ *   and the AO's normal pass. The city-wide batches draw in the view only,
+ *   through copies of the blocks the eye's frustum meets (frustumBlocks);
  *   the shadow map takes copies of the blocks in the sun's shadow column
  *   round the camera's target, and the AO takes copies of the blocks within
- *   AO_NEAR of the eye, where it can still show.
+ *   AO_NEAR of the eye, where it can still show, that the frustum meets.
  * - A tower's thin repeated parts (mullions, fins, colonnettes, dentils) hide
  *   once they are under half a pixel wide (detailHidden); crowns and window
  *   panes never do.
@@ -52,6 +53,46 @@ export function setLayers(o: THREE.Object3D, ...layers: number[]): void {
 export function lodFade(d: number, near: number = AMBIENT_LOD.near, far: number = AMBIENT_LOD.far): number {
   const t = Math.min(1, Math.max(0, (d - near) / (far - near)));
   return t * t * (3 - 2 * t);
+}
+
+/**
+ * The view's blocks (Task 12): the city-wide ambient batches draw in the
+ * view only the blocks (64 m of building in an 80 m cell, their own
+ * clusters) the eye's frustum meets, and the AO only those of its near
+ * blocks. What is held is widened by a margin (FRUSTUM_MARGIN metres, or
+ * FRUSTUM_TURN of the distance past that) so a slow turn or step does not
+ * refill each frame: `held` is refilled to the widened set only when the
+ * frustum meets a block it lacks, or when it holds well over what the
+ * widened set would. Returns true when `held` changed (the copies refill).
+ */
+export const FRUSTUM_MARGIN = 40;
+export const FRUSTUM_TURN = 0.08;
+const fBox = new THREE.Box3();
+export function frustumBlocks(blocks: ReadonlyArray<BlockBox>, mask: Uint8Array, frustum: THREE.Frustum, eye: { x: number; y: number; z: number }, held: Uint8Array): boolean {
+  let missing = false;
+  let wide = 0;
+  let have = 0;
+  const widened = new Uint8Array(blocks.length);
+  for (let k = 0; k < blocks.length; k++) {
+    have += held[k];
+    if (!mask[k]) continue;
+    const b = blocks[k];
+    fBox.min.set(b.minX, b.minY, b.minZ);
+    fBox.max.set(b.maxX, b.maxY, b.maxZ);
+    if (!held[k] && frustum.intersectsBox(fBox)) missing = true;
+    const m = Math.max(FRUSTUM_MARGIN, boxDistance(eye, b) * FRUSTUM_TURN);
+    fBox.expandByScalar(m);
+    if (frustum.intersectsBox(fBox)) {
+      widened[k] = 1;
+      wide++;
+    }
+  }
+  // Held blocks no longer in the mask (the AO's near set moved) count as too many.
+  let stale = false;
+  for (let k = 0; k < blocks.length && !stale; k++) if (held[k] && !mask[k]) stale = true;
+  if (!missing && !stale && have <= wide * 1.25 + 4) return false;
+  held.set(widened);
+  return true;
 }
 
 /** An axis-aligned box: a block with whatever stands on it. */

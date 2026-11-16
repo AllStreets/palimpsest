@@ -1053,6 +1053,8 @@ async function main(): Promise<void> {
       // The tier is Settings' quality, read as the page opens; the governor held still (PERF_GOVERNOR=1 leaves it running).
       await setQuality(tier);
       await open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug');
+      // PERF_NO_CULL=1: the batches' and the blocks' culling off (Task 12), as the city drew before it, for a before.
+      if (process.env.PERF_NO_CULL) await callDebug(page, 'd.cull(false)');
       const stands = await dbg<string>(page, '(d) => d.quality()');
       if (stands !== tier) throw new Error(`perf: the city opened at ${stands}, not ${tier}`);
       const home = await homeBudget(page, tier);
@@ -1128,11 +1130,13 @@ async function main(): Promise<void> {
           seen.push(await dbg<Tally>(page, '(d) => d.stats()'));
           await page.waitForTimeout(250);
         }
+        // And how its frames run while the view and the AO refill as she turns corners (Task 12): six seconds more.
+        const held = frameStats(await frameTimes(page, 6000));
         await callDebug(page, 'd.follow(null)');
         const tri = seen.map((s) => s.triangles);
         const row = { fps: 0, calls: Math.round(seen.reduce((a, s) => a + s.calls, 0) / seen.length), triangles: Math.round(tri.reduce((a, b) => a + b, 0) / tri.length) };
         rows['follow-held'] = row;
-        console.log(`${tier} follow-held over 12 s: mean ${row.calls} calls ${(row.triangles / 1e6).toFixed(2)}M triangles a frame, most ${(Math.max(...tri) / 1e6).toFixed(2)}M`);
+        console.log(`${tier} follow-held over 12 s: mean ${row.calls} calls ${(row.triangles / 1e6).toFixed(2)}M triangles a frame, most ${(Math.max(...tri) / 1e6).toFixed(2)}M; frames over 6 s: slowest ${held.max.toFixed(1)} ms, p99 ${held.p99.toFixed(1)} ms, ${held.over33} over 33 ms`);
       }
       if (only && LENS.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of lensViews(page, only)) {

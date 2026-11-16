@@ -111,3 +111,20 @@ test('calls per batch stay one', () => {
   assert.equal(drawnMeshes(b.group), 2);
   b.dispose();
 });
+
+test("three's batched draw still reads the private fields ClusterMesh fills", async () => {
+  // ClusterMesh (batch.ts) draws through three r187's batched path by its private field names: an upgrade that renames
+  // any of them would draw every batch whole, or nothing, without an error.
+  const { readFileSync } = await import('node:fs');
+  const { createRequire } = await import('node:module');
+  const req = createRequire(import.meta.url);
+  const { dirname } = await import('node:path');
+  const root = `${dirname(dirname(req.resolve('three')))}/`;
+  const renderer = readFileSync(`${root}src/renderers/WebGLRenderer.js`, 'utf8');
+  const programs = readFileSync(`${root}src/renderers/webgl/WebGLPrograms.js`, 'utf8');
+  for (const name of ['isBatchedMesh', '_multiDrawStarts', '_multiDrawCounts', '_multiDrawCount', '_matricesTexture', '_indirectTexture', '_colorsTexture']) {
+    assert.ok(renderer.includes(`object.${name}`) || programs.includes(`object.${name}`), `three still reads object.${name}`);
+  }
+  const m = clustered(batchPieces([block(0, 0)]).group)[0] as unknown as Record<string, unknown>;
+  for (const name of ['_multiDrawStarts', '_multiDrawCounts', '_multiDrawCount', '_matricesTexture', '_indirectTexture', '_colorsTexture']) assert.ok(name in m, `ClusterMesh carries ${name}`);
+});

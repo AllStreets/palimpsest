@@ -11,6 +11,7 @@ import {
   AO_NEAR,
   boxDistance,
   detailHidden,
+  frustumBlocks,
   LAYER,
   lodFade,
   passLayers,
@@ -134,4 +135,55 @@ test("the AO leaves out what it should through its own camera's layers, not thre
   const farChunk = new THREE.Object3D();
   setLayers(farChunk, LAYER.view, LAYER.shadow);
   assert.ok(!farChunk.layers.test(p.ao) && farChunk.layers.test(p.view) && farChunk.layers.test(p.shadow));
+});
+
+// ---------------------------------------------------------------- the view's blocks (Task 12)
+
+function streetEye(dir: [number, number]): THREE.Frustum {
+  const cam = new THREE.PerspectiveCamera(50, 1.7, 0.5, 6000);
+  cam.position.set(0, 1.7, 0);
+  cam.lookAt(dir[0] * 100, 1.7, dir[1] * 100);
+  cam.updateMatrixWorld(true);
+  return new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+}
+
+function city(): { blocks: BlockBox[]; used: Uint8Array } {
+  const blocks: BlockBox[] = [];
+  for (let i = -20; i <= 20; i++) for (let j = -20; j <= 20; j++) blocks.push({ ...block(i * 80, j * 80), maxY: 30 });
+  return { blocks, used: new Uint8Array(blocks.length).fill(1) };
+}
+
+const boxOf = (b: BlockBox): THREE.Box3 => new THREE.Box3(new THREE.Vector3(b.minX, b.minY, b.minZ), new THREE.Vector3(b.maxX, b.maxY, b.maxZ));
+
+test('a block behind the eye is not drawn in the view, and every block the frustum meets is', () => {
+  const { blocks, used } = city();
+  const held = new Uint8Array(blocks.length);
+  const f = streetEye([0, 1]);
+  const eye = new THREE.Vector3(0, 1.7, 0);
+  assert.equal(frustumBlocks(blocks, used, f, eye, held), true, 'the first look fills the view');
+  let n = 0;
+  for (const [k, b] of blocks.entries()) {
+    if (f.intersectsBox(boxOf(b))) assert.equal(held[k], 1, 'a block in the frustum is held');
+    if (b.maxZ < -40) assert.equal(held[k], 0, 'a block well behind the eye is not');
+    n += held[k];
+  }
+  assert.ok(n < blocks.length * 0.5, `looking one way holds under half the city (${n} of ${blocks.length})`);
+});
+
+test("the view's blocks are refilled only when the frustum leaves them, and follow the eye round", () => {
+  const { blocks, used } = city();
+  const held = new Uint8Array(blocks.length);
+  const eye = new THREE.Vector3(0, 1.7, 0);
+  frustumBlocks(blocks, used, streetEye([0, 1]), eye, held);
+  // A turn of under a degree stays inside the margin: nothing to refill.
+  assert.equal(frustumBlocks(blocks, used, streetEye([0.01, 1]), eye, held), false);
+  // Turned round: refilled, and the blocks now in front are held.
+  const back = streetEye([0, -1]);
+  assert.equal(frustumBlocks(blocks, used, back, eye, held), true);
+  for (const [k, b] of blocks.entries()) if (back.intersectsBox(boxOf(b))) assert.equal(held[k], 1);
+  // A mask (the AO's near blocks) narrows it further.
+  const near = new Uint8Array(blocks.length).map((_, k) => (boxDistance(eye, blocks[k]) < 400 ? 1 : 0));
+  const ao = new Uint8Array(blocks.length);
+  frustumBlocks(blocks, near, back, eye, ao);
+  for (let k = 0; k < blocks.length; k++) if (ao[k]) assert.equal(near[k], 1);
 });

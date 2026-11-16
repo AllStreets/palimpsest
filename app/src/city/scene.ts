@@ -1753,7 +1753,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     sky.dome.position.copy(camera.position);
     followShadow();
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
-    if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
+    // And the eye's frustum (Task 12): the view and the AO draw only the blocks it meets.
+    if (grid.update(camera.position, sun.target.position, camera)) sun.shadow.needsUpdate = true;
     if (treesDirty) {
       treesDirty = false;
       // Off the transit's stations, stops and ranks: their platforms, stairs and halls stand on those pavements.
