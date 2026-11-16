@@ -175,6 +175,11 @@ export interface City {
   stats(): { calls: number; triangles: number };
   /** The next frame's draw calls and triangles by subsystem and pass, with the shadow map redrawn in it (debug and tests). */
   breakdown(detail?: boolean): Promise<Breakdown>;
+  /**
+   * An ID pass of one breakdown root (`campus`) against the city from where the camera stands (Phase 5 Task 10):
+   * the share of its own projected area in the frame that the city in front of it leaves visible, 0 to 1.
+   */
+  visibleShare(key: string): Promise<number>;
   /** The river (river.ts): its lanterns, its static draw calls, and whether its water drew since last asked (tests). */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
@@ -643,6 +648,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   };
   applyLimits();
   const toV = (v: number[]): THREE.Vector3 => new THREE.Vector3(v[0], v[1], v[2]);
+  // Before anything of his stands, the camera waits on the empty city's home (view.ts EMPTY_EXTENT): over the
+  // skyline, never down a street. The first placement with districts still opens on the city's own framing.
+  rig.view(toV(limits.home.eye), toV(limits.home.target));
 
   /** Spots the board stands on, cleared like plots. */
   let boardSpots: Array<{ x: number; z: number }> = [];
@@ -1538,6 +1546,60 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   const lastFrame = { calls: 0, triangles: 0 };
   const breakdownWanted: Array<{ detail: boolean; resolve: (b: Breakdown) => void }> = [];
+  const shareWanted: Array<{ key: string; resolve: (share: number) => void }> = [];
+  /**
+   * The ID pass behind visibleShare, at a small size of the frame's shape: the city drawn as it stands (its own
+   * shaders, so every fold, cut and level is honoured) with the root hidden, for its depth; then the root alone in
+   * white against that depth (what is visible), and again on a cleared depth (its projected area in the frame).
+   */
+  function idShare(key: string): number {
+    const roots = breakdownRoots().filter(([k]) => k === key).map(([, o]) => o);
+    if (!roots.length) return 0;
+    const w = 480;
+    const h = Math.max(1, Math.round(w / Math.max(0.2, width() / height())));
+    const rt = new THREE.WebGLRenderTarget(w, h, { depthBuffer: true });
+    const white = new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false });
+    const px = new Uint8Array(w * h * 4);
+    const was = { target: renderer.getRenderTarget(), autoClear: renderer.autoClear, override: scene.overrideMaterial, background: scene.background, colour: renderer.getClearColor(new THREE.Color()), alpha: renderer.getClearAlpha() };
+    const shown = roots.map((o) => o.visible);
+    const count = (): number => {
+      renderer.readRenderTargetPixels(rt, 0, 0, w, h, px);
+      let n = 0;
+      for (let i = 0; i < px.length; i += 4) if (px[i] > 127) n++;
+      return n;
+    };
+    try {
+      renderer.setRenderTarget(rt);
+      renderer.setClearColor(0x000000, 1);
+      renderer.autoClear = false;
+      renderer.clear(true, true, true);
+      roots.forEach((o) => (o.visible = false));
+      renderer.render(scene, camera);
+      roots.forEach((o, i) => (o.visible = shown[i]));
+      // The root alone, white, against the city's depth.
+      const others = scene.children.filter((c) => !roots.includes(c) && c.visible);
+      others.forEach((c) => (c.visible = false));
+      scene.overrideMaterial = white;
+      scene.background = null;
+      renderer.clear(true, false, false);
+      renderer.render(scene, camera);
+      const visible = count();
+      renderer.clear(true, true, true);
+      renderer.render(scene, camera);
+      const projected = count();
+      others.forEach((c) => (c.visible = true));
+      return projected > 0 ? visible / projected : 0;
+    } finally {
+      roots.forEach((o, i) => (o.visible = shown[i]));
+      scene.overrideMaterial = was.override;
+      scene.background = was.background;
+      renderer.autoClear = was.autoClear;
+      renderer.setClearColor(was.colour, was.alpha);
+      renderer.setRenderTarget(was.target);
+      rt.dispose();
+      white.dispose();
+    }
+  }
   const breakdownRoots = (): Array<[string, THREE.Object3D]> => [
     ['ambient', grid.group],
     ['river', river.group],
@@ -1699,6 +1761,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     campus?.update(dt, clock.elapsedTime, camera.position);
     campusLiving?.update(dt, clock.elapsedTime);
     schoolTowers?.update(camera.position);
+    for (const ask of shareWanted.splice(0)) ask.resolve(idShare(ask.key));
     renderer.info.reset();
     if (breakdownWanted.length) {
       sun.shadow.needsUpdate = true;
@@ -1767,6 +1830,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
     breakdown: (detail = false) => new Promise<Breakdown>((resolve) => breakdownWanted.push({ detail, resolve })),
+    visibleShare: (key) => new Promise<number>((resolve) => shareWanted.push({ key, resolve })),
     river: () => ({ lamps: river.lamps.length, ...river.view(camera) }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     ambientLots: (x, z, r) => grid.lots(x, z, r),

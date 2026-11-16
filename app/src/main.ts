@@ -130,6 +130,8 @@ interface DebugHandle {
   stats(): { calls: number; triangles: number };
   /** The next frame's draw calls and triangles by subsystem and pass, the shadow map redrawn in it. */
   breakdown(detail?: boolean): ReturnType<ReturnType<typeof createCity>['breakdown']>;
+  /** The share of a breakdown root's projected area the city leaves visible from where the camera stands (an ID pass; Phase 5 Task 10). */
+  visibleShare(key: 'campus'): Promise<number>;
   /** Frame times as the page draws them: start() begins a log, stop() ends it and returns each frame's time in ms (perf, frameStats). */
   frameLog: { start(): void; stop(): number[] };
   /** The river's lanterns, its static draw calls and whether its water drew since last asked. */
@@ -521,6 +523,7 @@ async function main(): Promise<void> {
     precompile: () => city.precompile(),
     stats: () => city.stats(),
     breakdown: (detail) => city.breakdown(detail),
+    visibleShare: (key) => city.visibleShare(key),
     frameLog: frameLog(),
     river: () => city.river(),
     transit: () => city.transit(),

@@ -954,6 +954,11 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   await setView(page, home.eye, home.target);
   await page.waitForTimeout(1200);
   await page.screenshot({ path: join(SHOTS, 'campus-home.png') });
+  // Ruling 18 (Phase 5 Task 10): from home the city in front of the campus leaves at least 1.5% of its projected area
+  // in sight, by an ID pass of the campus against the city.
+  const share = (await page.evaluate("window.__palimpsest.visibleShare('campus')")) as number;
+  console.log(`info  from home visibleShare('campus') is ${share.toFixed(4)}`);
+  check(share >= 0.015, `visibleShare('campus') is at least 0.015 from home (${share.toFixed(4)})`);
   // And a crop round it, where it lands on the screen from home.
   const px = (await page.evaluate(`window.__palimpsest.project(${JSON.stringify([c.origin.x, 6, c.origin.z])})`)) as number[];
   const sx = ((px[0] + 1) / 2) * VIEWPORT.width;

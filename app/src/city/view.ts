@@ -205,8 +205,20 @@ function fitDistance(pts: V3[], target: V3, dir: V3, aspect: number, top: number
   return hi;
 }
 
+/**
+ * What a fresh home (no repos, nothing standing of his) is framed on: the
+ * ambient city round the civic plaza, its tallest glass slabs (lots.ts, 54
+ * storeys at most) as the crowns, out to the ring of blocks a district's
+ * plot would take. The home framing then looks over the skyline from the
+ * hero's height of view, as a populated home does, instead of down into a
+ * street from the rig's starting place (the screens audit).
+ */
+export const EMPTY_EXTENT: CityExtent = { cx: 0, cz: 0, radius: 320, height: 230, count: 0 };
+
 /** Every limit of the view, for a city of this extent seen through a window of this shape. */
-export function viewLimits(e: CityExtent, aspect: number): ViewLimits {
+export function viewLimits(extent: CityExtent, aspect: number): ViewLimits {
+  // Nothing of his standing: framed on the ambient city's own skyline.
+  const e = extent.count === 0 ? EMPTY_EXTENT : extent;
   const height = Math.max(e.height, 40);
   const pts = hull(e, height);
   // Home: aimed at the height that lets every crown, with sky above, and every plaza in from nearest.

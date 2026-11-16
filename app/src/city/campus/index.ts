@@ -8,11 +8,12 @@
  * What it costs: one masonry draw for the site (the terrace, the walks, the
  * trees, the library, the tower and the observatory's drum and dome merged),
  * one instanced masonry draw for the four halls, one draw of panes (every
- * building's), one of the clock's hands, one of the dome's shutters and one
- * of the telescope, in the view; the two merged masonry draws and the
- * shutters again in the shadow map, and the two merged draws again in the
- * AO's normal pass while the eye is within AO_NEAR. Eleven calls at most on
- * high, nine from home on either tier.
+ * building's), one of the clock's hands, one of the dome's shutters, one
+ * of the telescope and one of the library's readers (Phase 5 Task 10), in
+ * the view; the two merged masonry draws and the shutters again in the
+ * shadow map, and the two merged draws again in the AO's normal pass while
+ * the eye is within AO_NEAR. Twelve calls at most on high, nine from home on
+ * either tier (the trees are the city's, trees.ts).
  */
 import * as THREE from 'three';
 
@@ -21,7 +22,8 @@ import { Kit, PANE_READING, type TowerMaterials } from '../tower/kit.js';
 import { makeClockTower } from './clock.js';
 import { stampBuilt } from './gothic.js';
 import { buildHall, instanceHalls, type Hall } from './halls.js';
-import { BAY_DARK, LANTERN_IDLE, LIBRARY, makeLibrary } from './library.js';
+import { BAY_DARK, GABLE_IDLE, LANTERN_IDLE, LIBRARY, makeLibrary } from './library.js';
+import { makeReaders } from './readers.js';
 import { makeObservatory, type ObservatoryState, type ObservatoryView } from './observatory.js';
 import type { TreeSpot } from '../trees.js';
 import { approachPath, buildSite, campusTreeSpots, FRONT_QUAD, HALL_Z, INNER_QUAD, mergeStamped, siteAnchors, TERRACE, walkGraph } from './site.js';
@@ -77,6 +79,8 @@ export interface Campus {
   library: {
     bays: number;
     panes: ReadonlyArray<number>;
+    /** The readers at its desks (readers.ts): one instanced draw, each desk's pose. */
+    readers: { mesh: THREE.InstancedMesh; poses: ReadonlyArray<number> };
     set(light: LibraryLight): void;
   };
   /** The way from the street up the stair to the gate and onto the forecourt, in the world (people.ts). */
@@ -191,6 +195,10 @@ export function createCampus(opts: CampusOptions): Campus {
   setLayers(tower.hands, LAYER.view);
   group.add(tower.group);
   tower.update();
+  // The readers at the library's desks (readers.ts): one instanced draw, seen through the glass, the view alone.
+  const readers = makeReaders(libraryLights.bayFrames);
+  setLayers(readers.mesh, LAYER.view);
+  group.add(readers.mesh);
   // The telescope stands inside the dome: the view alone draws it. The shutters are part of the dome's silhouette.
   setLayers(observatory.telescope, LAYER.view);
   group.add(observatory.group);
@@ -227,10 +235,12 @@ export function createCampus(opts: CampusOptions): Campus {
     library: {
       bays: bayPanes.length,
       panes: bayPanes,
+      readers: { mesh: readers.mesh, poses: readers.poses },
       set(light) {
         // A lit bay is a reading room's amber, not a blown pane: each at its own level, as the halls' windows are.
         bayPanes.forEach((j, i) => setPane(j, BAY_DARK + (BAY_LIT[i % BAY_LIT.length] - BAY_DARK) * Math.max(0, Math.min(1, light.bays[i] ?? 0))));
-        for (const j of endPanes) setPane(j, BAY_DARK + (0.6 - BAY_DARK) * Math.max(0, Math.min(1, light.ends)));
+        readers.set(light.bays);
+        for (const j of endPanes) setPane(j, GABLE_IDLE + (0.6 - GABLE_IDLE) * Math.max(0, Math.min(1, light.ends)));
         for (const j of lanternPanes) setPane(j, LANTERN_IDLE + (0.82 - LANTERN_IDLE) * Math.max(0, Math.min(1, light.lantern)));
         if (halls.panes.instanceColor) halls.panes.instanceColor.needsUpdate = true;
       },
@@ -270,6 +280,7 @@ export function createCampus(opts: CampusOptions): Campus {
       hall.dispose();
       tower.dispose();
       observatory.dispose();
+      readers.dispose();
       siteGeo.dispose();
       libraryPick.geometry.dispose();
       (libraryPick.material as THREE.Material).dispose();

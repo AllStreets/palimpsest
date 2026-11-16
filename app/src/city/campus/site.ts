@@ -36,6 +36,8 @@ const COPING_IN = 109.3;
 /** The stair well cut into the front: half its width between the cheek walls, and how far in it reaches. */
 const WELL_HALF = 7.5;
 const WELL_DEPTH = 16;
+/** The radius of a campus lamp's glass globe (Phase 5 Task 10). */
+export const LAMP_GLOBE = 0.21;
 /** Where the lawns of the two quads lie (local x), and the halls' fronts either side of them (local z). */
 export const FRONT_QUAD = { x0: 12, x1: 68 } as const;
 export const INNER_QUAD = { x0: -76, x1: -20 } as const;
@@ -72,13 +74,14 @@ export const TONE: Record<Kind, THREE.Color> = {
   gravel: new THREE.Color(0.93, 0.9, 0.82),
   lamp: new THREE.Color(1.0, 0.74, 0.44),
   dial: new THREE.Color(1, 1, 1),
-  louvre: new THREE.Color(0.5, 0.42, 0.33),
+  louvre: new THREE.Color(0.6, 0.53, 0.44),
   gilt: new THREE.Color(0.92, 0.72, 0.3),
   yew: new THREE.Color(0.14, 0.3, 0.25),
   copper: new THREE.Color(1, 1, 1),
   paint: new THREE.Color(0.74, 0.71, 0.64),
   brass: new THREE.Color(0.8, 0.6, 0.26),
-  glow: new THREE.Color(0.55, 0.19, 0.035),
+  // The lining: a warm grey lime plaster under the dome's amber lamps (Phase 5 Task 10), not the orange it was.
+  glow: new THREE.Color(0.46, 0.34, 0.22),
   line: new THREE.Color(1, 1, 1),
 };
 
@@ -384,13 +387,20 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     if (Math.abs(u) > wellOut + 4) lamp(ring, u);
   }
   for (const sz of [-1, 1]) lamp(xTop + 1.2, sz * 6.4);
-  /** A lamp: a dark post with a warm lit head under a small cap, in the site's own draw (the head's kind emits, pooled round each face's centre on the box's own UVs). */
+  /**
+   * A lamp: a dark iron post, a collar, a round opal glass globe and a small iron cap over it, in the site's own draw
+   * (Phase 5 Task 10: the globe was a lit box). The globe's kind emits, brightest where it faces the eye and soft to
+   * its rim, so it reads as a lit ball of glass and the bloom round it is round.
+   */
   function lamp(x: number, z: number): void {
     const h = 3.8;
+    const r = LAMP_GLOBE;
     add('slate', new THREE.CylinderGeometry(0.06, 0.09, h, 7).translate(x, T + h / 2, z), 0.8);
     add('slate', new THREE.CylinderGeometry(0.16, 0.2, 0.3, 7).translate(x, T + 0.15, z), 0.8);
-    add('lamp', new THREE.BoxGeometry(0.42, 0.5, 0.42).translate(x, T + h + 0.25, z));
-    add('slate', new THREE.BoxGeometry(0.54, 0.08, 0.54).translate(x, T + h + 0.54, z), 0.8);
+    add('slate', new THREE.CylinderGeometry(0.1, 0.07, 0.14, 8).translate(x, T + h + 0.07, z), 0.8);
+    add('lamp', new THREE.SphereGeometry(r, 16, 12).translate(x, T + h + 0.12 + r, z));
+    add('slate', new THREE.ConeGeometry(r * 0.95, 0.16, 12, 1, true).translate(x, T + h + 0.12 + 2 * r + 0.02, z), 0.8);
+    add('slate', new THREE.SphereGeometry(0.035, 6, 4).translate(x, T + h + 0.12 + 2 * r + 0.13, z), 0.8);
   }
   // The forecourt before the library's steps (widening the inner quad's walk) and the one inside the gate.
   walk(-82.5, -76, -22, 22);

@@ -129,6 +129,14 @@ export const SPIRE = {
   height: 16,
   anchor: 4.2,
   lamp: [1.0, 0.42, 0.11] as [number, number, number],
+  /**
+   * The far point's colour (Phase 5 Task 10): the lamp's hot core as a lens far off shows it, a warm white with the
+   * amber in it, so from home it stands brighter than the dusk sky behind it (the amber alone read only 21 grey
+   * levels over the afterglow); its luminance stays under the bloom threshold, so it is a point and never a halo.
+   */
+  far: [1.06, 0.78, 0.42] as [number, number, number],
+  /** The least of a breath the far point keeps. */
+  farLow: 0.94,
   breath: [0.5, 1.06] as [number, number],
   /** Seconds per breath. */
   period: 4,
@@ -447,7 +455,7 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
   // The far point: the lit tip as a two pixel lamp at any distance, depth tested, never bloomed.
   const pointGeo = new THREE.BufferGeometry();
   pointGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * 8), 3));
-  const pointMat = new THREE.PointsMaterial({ color: lamp.color.clone(), size: SPIRE.point, sizeAttenuation: false, fog: false });
+  const pointMat = new THREE.PointsMaterial({ color: new THREE.Color(...SPIRE.far), size: SPIRE.point, sizeAttenuation: false, fog: false });
   const points = new THREE.Points(pointGeo, pointMat);
   points.name = 'milestone:tip';
   points.frustumCulled = false;
@@ -693,8 +701,8 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
       const k = SPIRE.breath[0] + (SPIRE.breath[1] - SPIRE.breath[0]) * t;
       lamp.color.setRGB(lr * k, lg * k, lb * k);
       // The far point holds the lamp's light without its low: from across the city a breath to near nothing would read as a fault.
-      const kp = Math.max(k, 0.8);
-      pointMat.color.setRGB(lr * kp, lg * kp, lb * kp);
+      const kp = Math.max(k, SPIRE.farLow) / SPIRE.breath[1];
+      pointMat.color.setRGB(SPIRE.far[0] * kp, SPIRE.far[1] * kp, SPIRE.far[2] * kp);
     },
     shows: () => new Map(shows),
     festoonHashes: () => bulbHash,

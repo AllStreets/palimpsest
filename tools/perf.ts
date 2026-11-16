@@ -417,6 +417,70 @@ async function* treeViews(page: Page, reopen: () => Promise<void>): AsyncGenerat
   yield ['campus-quad', at(-30, 30, 10), at(60, 10, -4)];
 }
 
+/** The campus, finished (Task 10), staged: the perf city stands no campus unless asked for. */
+const CAMPUS = ['campus-home', 'campus-bays', 'campus-lamps', 'observatory-open', 'campus-turf-dusk', 'library-louvres-60m'];
+
+/**
+ * The campus's stills (Task 10), on a campus ensured as treeViews ensures it,
+ * in the campus's own frame (x from the gate toward the library along the
+ * axis, z across it; the library at x 185, the clock tower at (97, -56.5),
+ * the dome at (183, 90)): the city from home, its ID pass logged
+ * (visibleShare); the library's lit bays close with their readers; the lamps
+ * down the axis from the gate; the observatory open with its lining lit; the
+ * front quad's lawn at a low angle in the dusk; and the clock tower's belfry
+ * from 60 m with the library beyond. The voyage's light and the training are
+ * told to the city through the debug handle for their stills, and the
+ * ledger's given back after.
+ */
+async function* campusViews(page: Page, reopen: () => Promise<void>, only: string[] | undefined): AsyncGenerator<[string, V3, V3]> {
+  const want = (n: string): boolean => !only || only.includes(n);
+  (await import('../engine/school/campus.js')).ensureCampus();
+  await reopen();
+  type C = { anchors: Record<'library' | 'gate' | 'clock', number[]> } | null;
+  const c = await dbg<C>(page, '(d) => d.campus()');
+  if (!c) {
+    console.log('campus: no campus stands; its views are skipped');
+    return;
+  }
+  const g = c.anchors.gate;
+  const l = c.anchors.library;
+  const n = Math.hypot(l[0] - g[0], l[2] - g[2]);
+  const ax = [(l[0] - g[0]) / n, (l[2] - g[2]) / n];
+  const at = (x: number, y: number, z: number): V3 => [g[0] + ax[0] * x - ax[1] * z, y, g[2] + ax[1] * x + ax[0] * z];
+  if (want('campus-home')) {
+    const home = await dbg<{ eye: V3; target: V3 }>(page, '(d) => d.limits().home');
+    await settle(page, home.eye, home.target);
+    const share = await dbg<number>(page, "(d) => d.visibleShare('campus')");
+    console.log(`campus-home: visibleShare('campus') ${share.toFixed(4)}`);
+    yield ['campus-home', home.eye, home.target];
+  }
+  // The reading room lit as a voyage lights it: eight bays, as the sample economy's voyage does.
+  type L = { lit: number; voyage: unknown } | null;
+  const life = await dbg<L>(page, '(d) => d.campusLife()');
+  if (!life || life.lit < 6) {
+    const voyage = { id: 'perf-voyage', arena: 'harbor-ledger', repo: null, status: 'sailing', generation: 1, of: 6, runs: { done: 3, of: 48 }, racing: 8, commissionedBy: null, startedAt: '2026-11-12T18:00:00.000Z' };
+    await page.evaluate((v) => (window as unknown as { __palimpsest: { life(s: unknown): void } }).__palimpsest.life({ voyage: v, nets: [], graduates: [] }), voyage);
+  }
+  await page.waitForTimeout(7000);
+  console.log(`campus: ${(await dbg<L>(page, '(d) => d.campusLife()'))?.lit ?? 0} bays lit`);
+  if (want('campus-bays')) yield ['campus-bays', at(147, 9.5, 19), at(178, 10, -1)];
+  if (want('campus-lamps')) yield ['campus-lamps', at(-1, 8.6, 3.2), at(40, 8.4, -2)];
+  if (want('campus-turf-dusk')) yield ['campus-turf-dusk', at(20, 8.4, 34), at(70, 5.2, 8)];
+  if (want('library-louvres-60m')) {
+    const k = c.anchors.clock;
+    const from = at(49.3, 0, -92.9);
+    const d = Math.hypot(from[0] - k[0], from[2] - k[2]);
+    yield ['library-louvres-60m', [k[0] + ((from[0] - k[0]) / d) * 60, k[1] + 36, k[2] + ((from[2] - k[2]) / d) * 60], [k[0], k[1] + 38, k[2]]];
+  }
+  if (want('observatory-open')) {
+    await dbg(page, '(d) => d.school({ training: true, masterTrusted: true, version: 1 })');
+    await page.waitForTimeout(7500);
+    yield ['observatory-open', at(131, 11, 84), at(183, 14, 90)];
+    await dbg(page, '(d) => d.school(null)');
+  }
+  await dbg(page, '(d) => d.life(null)');
+}
+
 /** The market's and the milestones' views (Task 8), staged one by one; an eye of null leaves the camera where the tour holds it. */
 const MARKET = ['dark-tower-home', 'spire-lenses', 'revival-close', 'ribbon-shade', 'tour-stop-roof', 'construction-home', 'beams-near', 'glint-tall', 'glazed-beam-close'];
 
@@ -960,6 +1024,12 @@ async function main(): Promise<void> {
       }
       if (only && MARKET.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of marketViews(page, () => open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug'), only)) {
+          if (!only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
+      }
+      if (only && CAMPUS.some((n) => only.includes(n))) {
+        for await (const [name, eye, target] of campusViews(page, () => open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug'), only)) {
           if (!only.includes(name)) continue;
           await measure(name, eye, target);
         }

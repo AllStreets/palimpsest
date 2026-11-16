@@ -9,6 +9,9 @@
  * so the term is declared before the fragment reaches it.
  */
 
+/** The louvres' boards, metres to the course (Phase 5 Task 10: 18 cm read as a flat grey at 60 m). */
+export const LOUVRE_PITCH = 0.3;
+
 export interface MasonryShader {
   vertexShader: string;
   fragmentShader: string;
@@ -95,12 +98,14 @@ export function patchMasonryShader(sh: MasonryShader): void {
           // A clock dial: the painted face (cream, a chapter ring, roman numerals), the piece's own UVs.
           s = texture2D(uDial, vMapUv);
         } else if (ck == 8) {
-          // Louvres: horizontal slats of weathered timber, 18 cm to the course (the UVs are metres), each dark in
-          // its shadow with a lit edge along its lower lip, the sand scan stretched along the grain.
-          float slat = fract(vMapUv.y / 0.18);
-          float lip = smoothstep(0.8, 0.9, slat) * (1.0 - smoothstep(0.95, 1.0, slat));
+          // Louvres: boards of weathered oak sloping out and down, 30 cm to the course (the UVs are metres; Phase 5
+          // Task 10 opened them from 18 cm so they read at 60 m), each board's face pale where it takes the sky, a deep
+          // dark gap under the board above it, and a bright lip along its top edge; the scan stretched along the grain.
+          float slat = fract(vMapUv.y / ${LOUVRE_PITCH.toFixed(2)});
+          float board = smoothstep(0.04, 0.3, slat);
+          float lip = smoothstep(0.88, 0.95, slat) * (1.0 - smoothstep(0.97, 1.0, slat));
           float grain = texture2D(uSandMap, vMapUv * vec2(0.5, 4.0)).g;
-          s = vec4(vec3((0.5 + 0.5 * grain) * (0.22 + 0.7 * lip)), 1.0);
+          s = vec4(vec3((0.55 + 0.45 * grain) * (0.05 + 0.5 * board + 0.35 * lip)), 1.0);
         } else if (ck == 9) {
           s = vec4(1.0);
         } else if (ck == 10) {
@@ -123,7 +128,19 @@ export function patchMasonryShader(sh: MasonryShader): void {
           float b = texture2D(uSandMap, vMapUv * 0.6).g;
           float f = texture2D(uSandMap, vMapUv * 3.1).g;
           float stripe = 0.91 + 0.09 * step(0.5, fract(vMapUv.x * 2.2));
-          s = vec4(vec3((0.56 + 0.5 * a + 0.32 * b + 0.1 * f) * stripe), 1.0);
+          // The blades (Phase 5 Task 10): the scan drawn out fine along one way and across the other at two scales, so
+          // close to the eye the lawn breaks into blades and their shadows; faded to their mean as they shrink under a
+          // pixel, so it never shimmers from far.
+          vec2 bu = vMapUv * vec2(9.0, 31.0);
+          float blades = texture2D(uSandMap, bu).g * 0.6 + texture2D(uSandMap, vMapUv.yx * vec2(17.0, 47.0)).g * 0.4;
+          float small = smoothstep(0.25, 0.9, length(fwidth(bu)));
+          float blade = mix(0.5 + 1.0 * blades, 1.0, small);
+          // At dusk a lawn is never one green: drier ground goes toward straw, the damp hollows toward a cold blue
+          // green, in broad drifts, and the clover darker in patches.
+          float drift = texture2D(uSandMap, vMapUv * 0.031 + 0.37).g;
+          float damp = smoothstep(0.35, 0.75, texture2D(uSandMap, vMapUv * 0.052 + 0.71).g);
+          vec3 hue = mix(vec3(1.18, 1.04, 0.78), vec3(0.86, 0.98, 1.16), damp) * mix(0.9, 1.08, drift);
+          s = vec4(vec3((0.56 + 0.5 * a + 0.32 * b + 0.1 * f) * stripe * blade) * hue, 1.0);
         }
         diffuseColor *= s;
       }`,
@@ -149,7 +166,13 @@ export function patchMasonryShader(sh: MasonryShader): void {
         else if (ck == 13) r = 0.28;
         else if (ck == 14) r = 0.9;
         else if (ck == 15) r = 0.6;
-        else r = 0.96;
+        else {
+          // Turf: blades are waxy and catch the sky's light at a slant, so a lawn at dusk carries a sheen; the mower's
+          // stripes lay the blades two ways, one band glossier toward the eye than the next, and the blades break it up.
+          float bl = texture2D(uSandMap, vRoughnessMapUv * vec2(9.0, 31.0)).g;
+          float lay = step(0.5, fract(vRoughnessMapUv.x * 2.2));
+          r = mix(0.66, 0.78, lay) + 0.22 * (bl - 0.5);
+        }
         roughnessFactor *= r;
       }`,
     )
@@ -175,7 +198,13 @@ export function patchMasonryShader(sh: MasonryShader): void {
         else if (ck == 3) { mapN = texture2D(uAshNor, vNormalMapUv).xyz; k = 1.1; }
         else if (ck == 5) { mapN = texture2D(uSandNor, vNormalMapUv).xyz; k = 0.25; }
         else if (ck == 2) { mapN = texture2D(normalMap, vNormalMapUv).xyz; k = 0.35; }
-        else if (ck == 6 || ck == 7 || ck == 8 || ck == 9 || ck == 12 || ck == 13 || ck == 14 || ck == 15) { mapN = vec3(0.5, 0.5, 1.0); }
+        else if (ck == 8) {
+          // A louvre board's face slopes out and down, so it looks a little up at the sky; the gap under the board
+          // above looks down at the ground. The slats' light comes from the sky, as a belfry's does at dusk.
+          float slat = fract(vNormalMapUv.y / ${LOUVRE_PITCH.toFixed(2)});
+          mapN = slat < 0.22 ? vec3(0.5, 0.2, 0.9) : vec3(0.5, 0.78, 0.92);
+        }
+        else if (ck == 6 || ck == 7 || ck == 9 || ck == 12 || ck == 13 || ck == 14 || ck == 15) { mapN = vec3(0.5, 0.5, 1.0); }
         else if (ck == 11) { mapN = texture2D(uSandNor, vNormalMapUv * 0.55).xyz; k = 0.22; }
         else { mapN = texture2D(uSandNor, vNormalMapUv * 2.9).xyz; k = 0.3; }
         mapN = mapN * 2.0 - 1.0;
@@ -188,12 +217,20 @@ export function patchMasonryShader(sh: MasonryShader): void {
     .replace(
       '#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
-      // A lamp head is a globe in a square lantern, not a hot square: the light pools round the centre of each face
-      // (the head keeps the box's own 0..1 UVs) and falls off softly toward the frame, which stays a warm rim.
+      // A lamp head is an opal glass globe (site.ts lamp): the bulb's light is strongest through the glass that faces
+      // the eye and softens toward the globe's rim, where the light crosses more glass and leaves it at a slant, so
+      // the globe reads round and the bloom gathers round it as a soft round glow.
       if (campusKind() == 6) {
-        float r = length(vMapUv - 0.5) * 2.0;
-        float globe = 1.0 - smoothstep(0.38, 1.0, r);
-        totalEmissiveRadiance += vColor.rgb * (0.45 + 2.9 * globe * globe);
+        float facing = clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0);
+        float core = facing * facing;
+        totalEmissiveRadiance += vColor.rgb * (0.3 + 0.55 * core + 1.05 * core * core * core);
+      }
+      // The belfry after sunset (ruling 18 (a), Phase 5 Task 10): a lamp hung in the bell chamber shows warm in the gaps
+      // between the louvre boards, so the tower's top stage reads as a lit lantern over the roofs from home, at its
+      // real height; under the bloom threshold, on the dials' own switch.
+      if (campusKind() == 8) {
+        float gap = 1.0 - smoothstep(0.04, 0.24, fract(vMapUv.y / ${LOUVRE_PITCH.toFixed(2)}));
+        totalEmissiveRadiance += vec3(1.0, 0.62, 0.3) * 0.75 * gap * uDialLit;
       }
       // The dials after sunset: opal glass lit from behind, warm, at the exchange's level, under the bloom threshold.
       if (campusKind() == 7) totalEmissiveRadiance += texture2D(uDial, vMapUv).rgb * vec3(1.0, 0.86, 0.62) * (0.62 * uDialLit);
@@ -204,10 +241,14 @@ export function patchMasonryShader(sh: MasonryShader): void {
         // metres round the dome and down from its apex. Its own paint is near black, so the sun through the slit
         // adds nothing: what shows is the lamplight.
         float down = clamp(vMapUv.y / 12.0, 0.0, 1.0);
-        float cloth = 0.9 + 0.2 * texture2D(uSandMap, vMapUv * 0.2).g;
-        // The tone is the lamplight in linear light (an amber that encodes to a deep orange, not peach); the ribs
-        // carry a fraction of it and read dark against the lining.
-        totalEmissiveRadiance += vColor.rgb * (0.15 + 0.85 * down * down) * cloth * uSlitLit;
+        // A lime plaster, trowelled: broad clouds of a shade lighter or darker and a fine sand in it, so the lamplight
+        // shows a surface and not a flat colour.
+        float cloud = texture2D(uSandMap, vMapUv * 0.11).g;
+        float sand = texture2D(uSandMap, vMapUv * 0.9).g;
+        float plaster = 0.7 + 0.42 * cloud * cloud + 0.16 * sand;
+        // The tone is the plaster under the lamplight in linear light (site.ts TONE.glow, a warm grey that the amber
+        // warms without turning orange); the ribs carry a fraction of it and read dark against the lining.
+        totalEmissiveRadiance += vColor.rgb * (0.15 + 0.85 * down * down) * plaster * uSlitLit;
       }
       if (campusKind() == 13) totalEmissiveRadiance += vColor.rgb * (0.9 * uPlateLit);
       // A school tower's lit lines and lamps: the tone is the tower's own emitter colour at its own level.

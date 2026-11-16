@@ -174,6 +174,14 @@ test('a lit spire has an emissive tip and an unlit one has none', () => {
     assert.ok(ms.lamp.color.r > ms.lamp.color.g * 1.8 && ms.lamp.color.g > ms.lamp.color.b * 2, 'a warm amber, never white');
   }
   assert.ok(peak < BLOOM_THRESHOLD, `the lamp breathes under the bloom threshold (${peak.toFixed(3)})`);
+  // From home the far point stands over the dusk sky as a warm point (Phase 5 Task 10): through the whole breath its
+  // luminance holds well over the amber lamp's, still under the threshold, and it stays warm.
+  for (let t = 0; t <= SPIRE.period; t += 0.25) {
+    ms.update(0.25, t);
+    const c = ms.point.color;
+    const lum = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+    assert.ok(lum >= 0.72 && lum < BLOOM_THRESHOLD && c.r > c.b * 2, `the far point reads bright and warm at ${t.toFixed(2)} s (luminance ${lum.toFixed(2)})`);
+  }
   assert.ok(low < peak * 0.6, `and breathes (${low.toFixed(2)} to ${peak.toFixed(2)})`);
   assert.equal(ms.shows().get(`skyline:${s.district.id}`)!.lit, true);
 

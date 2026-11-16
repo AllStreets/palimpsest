@@ -333,3 +333,27 @@ test('the city opens on its home framing at the first placement that has distric
   assert.equal(opensHome(true, 0), false);
   assert.equal(opensHome(true, 6), false);
 });
+
+test('a fresh home, nothing of his standing, opens over the skyline and not down a street', () => {
+  // The screens audit: an empty city opened on a street-level canyon with no focus. Its home looks over the ambient
+  // city's skyline from the hero's height of view instead, at every window shape.
+  for (const aspect of [16 / 10, 4 / 3, 21 / 9]) {
+    const L = viewLimits(cityExtent([]), aspect);
+    const [ex, ey, ez] = L.home.eye;
+    const [tx, ty, tz] = L.home.target;
+    const across = Math.hypot(ex - tx, ez - tz);
+    const pitch = (Math.atan2(ey - ty, across) * 180) / Math.PI;
+    assert.ok(ey >= 150, `${aspect.toFixed(2)}: the eye stands over the roofs (${ey.toFixed(0)} m up)`);
+    assert.ok(across >= 600, `and stands back from the plaza (${across.toFixed(0)} m)`);
+    assert.ok(ty >= 25, `aimed into the skyline, not the street (${ty.toFixed(0)} m)`);
+    assert.ok(pitch > 3 && pitch < 25, `looking a little down over it (${pitch.toFixed(1)} degrees)`);
+    // The ambient city's tallest glass slab, wherever it stands near the plaza, is in frame with sky above it.
+    for (const at of [[0, 0], [250, -150], [-200, 220]] as const) {
+      const p = ndc(L.home.eye, L.home.target, aspect, [at[0], 230, at[1]]);
+      assert.ok(p.z > 0 && p.y < 0.92 && Math.abs(p.x) < 1, `a 230 m crown at (${at.join(', ')}) stands in frame with sky over it (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+    }
+  }
+  // A city with districts keeps its own framing: the empty extent is only the empty city's.
+  const one = cityExtent([{ origin: { x: 0, z: 0 }, tower: { floors: [] } as never }]);
+  assert.notDeepEqual(viewLimits(one, 1.6).home, viewLimits(cityExtent([]), 1.6).home);
+});
