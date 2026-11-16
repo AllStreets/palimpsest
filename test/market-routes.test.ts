@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
-import { afterEach, beforeEach, test } from 'node:test';
+import { after, afterEach, beforeEach, test as nodeTest, type TestContext } from 'node:test';
 
 import { saveAudit } from '../engine/audit/store.js';
 import { api } from '../app/src/api.js';
@@ -33,8 +33,20 @@ import type { Audit, Bid, Inspection, Job, Milestone, Run } from '../shared/type
 import { FULL, HOUR, PNG, addAgent, addFirm, checks, git, makeRepo, makeRun, noReading, postJob, reading, setUp, tearDown, tempDir, write } from './guild-fixtures.js';
 
 const DAY_MS = 24 * 3_600_000;
+/** The most one test may take, generous for a loaded machine: past it the test fails instead of hanging. */
+const TEST_MS = 120_000;
+/** The most the cleanup after a test may take. */
+const HOOK_MS = 60_000;
+/** How long the file may stay alive after its last test before a leaked handle fails it. */
+const LEAK_MS = 15_000;
 let server: StartedServer | null = null;
+let scheduler: ReturnType<typeof createScheduler> | null = null;
 let fakeKc = '';
+
+/** Every test in this file carries the per-test deadline. */
+function test(name: string, fn: (t: TestContext) => Promise<void> | void): void {
+  nodeTest(name, { timeout: TEST_MS }, fn);
+}
 
 beforeEach(() => {
   setUp('routes');
@@ -47,12 +59,30 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  if (server) await server.close();
-  server = null;
-  delete process.env.PALIMPSEST_CODEX_HOME;
-  delete process.env.PALIMPSEST_GEMINI_HOME;
-  setRunner(realRunner);
-  await tearDown();
+  // Each step runs even when the test or an earlier step failed, so nothing a test opened outlives it.
+  try {
+    if (scheduler) await scheduler.stop();
+  } finally {
+    scheduler = null;
+    try {
+      if (server) await server.close();
+    } finally {
+      server = null;
+      delete process.env.PALIMPSEST_CODEX_HOME;
+      delete process.env.PALIMPSEST_GEMINI_HOME;
+      setRunner(realRunner);
+      await tearDown();
+    }
+  }
+}, { timeout: HOOK_MS });
+
+// The safety net: once every test is done, anything still holding the process open (a server left listening, a
+// socket, a timer, a child) is named and the file fails, instead of the run waiting on it for hours.
+after(() => {
+  setTimeout(() => {
+    console.error(`market-routes: still open ${LEAK_MS} ms after the last test: ${process.getActiveResourcesInfo().join(', ')}`);
+    process.exit(1);
+  }, LEAK_MS).unref();
 });
 
 async function start(): Promise<StartedServer> {
@@ -465,12 +495,13 @@ test('kill ends a run', async () => {
   setProvider('ollama', fakeProvider({
     work: async (i) => {
       started = i.runId;
-      await new Promise<void>((resolve) => i.signal.addEventListener('abort', () => resolve(), { once: true }));
+      await new Promise<void>((resolve) => (i.signal.aborted ? resolve() : i.signal.addEventListener('abort', () => resolve(), { once: true })));
       return { summary: 'stopped', usage: { weightedTokens: 0, seconds: 0, usd: 0, credits: 0 }, ended: 'aborted' as const, reason: 'signal' };
     },
   }));
   const skipped = { name: 'install' as const, status: 'skipped' as const, detail: '', durationMs: 0, logPath: null, testsRun: null };
-  const s = createScheduler({
+  // Held where afterEach stops it, so a failure before the kill never leaves the run, its egress proxy and its wait open.
+  const s = (scheduler = createScheduler({
     installDeps: async () => skipped,
     inspect: async (r) => ({ id: `i-${r.id}`, runId: r.id, jobId: r.jobId, repo: r.repo, reviewerAgentId: null, reviewerFirmId: null, checks: [], passed: true, pushable: false, design: null, cost: 0, at: new Date().toISOString() }),
     ship: async (r) => r,
@@ -480,7 +511,7 @@ test('kill ends a run', async () => {
     preflight: async () => null,
     sync: async () => {},
     watchMs: 0,
-  });
+  }));
   await s.tick();
   // Polled against the run's own state with a generous deadline, so a loaded machine never fails it.
   await until(() => !!started);
@@ -900,13 +931,18 @@ test('a request body over 1 MB is refused with 413 before it is buffered', async
   repoOf();
   const big = JSON.stringify({ repo: FULL, title: 'x', body: 'y'.repeat(1024 * 1024 + 10) });
   const s = await start();
+  // Only the headers go: the engine answers on the declared length alone, so the body never has to be sent. Writing
+  // the megabyte raced the engine's close of the connection, and an EPIPE or ECONNRESET that came before the answer
+  // once left this promise pending for hours with the engine still listening. Every way out now settles it.
   const status = await new Promise<number>((resolve, reject) => {
-    const req = httpRequest({ host: '127.0.0.1', port: s.port, path: '/api/jobs', method: 'POST', headers: { host: `127.0.0.1:${s.port}`, 'x-palimpsest': '1', 'content-type': 'application/json' } }, (res) => {
+    const req = httpRequest({ host: '127.0.0.1', port: s.port, path: '/api/jobs', method: 'POST', headers: { host: `127.0.0.1:${s.port}`, 'x-palimpsest': '1', 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(big)) } }, (res) => {
       res.resume();
       resolve(res.statusCode ?? 0);
+      req.destroy();
     });
-    req.on('error', (e) => ((e as NodeJS.ErrnoException).code === 'EPIPE' || (e as NodeJS.ErrnoException).code === 'ECONNRESET' ? undefined : reject(e)));
-    req.end(big);
+    req.on('error', (e) => reject(e));
+    req.on('close', () => reject(new Error('the connection closed before an answer')));
+    req.flushHeaders();
   });
   assert.equal(status, 413);
   assert.equal((await call('POST', '/api/jobs', { repo: FULL, title: 'fine' })).status, 201, 'the engine is still serving');
