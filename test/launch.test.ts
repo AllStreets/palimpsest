@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { launchPlan, namingSentence } from '../tools/launch.js';
+import { launchPlan, DESCRIPTION } from '../tools/launch.js';
 
 const README = `<p align="center"><img src="x.png" alt="logo" /></p>
 
@@ -56,10 +56,12 @@ test('its copy has no em dash, double hyphen in prose or emoji', () => {
   assert.doesNotMatch(prose, /—|--|\p{Extended_Pictographic}/u);
 });
 
-test('the description is the first README sentence that names Palimpsest', () => {
-  assert.equal(namingSentence(README), 'Palimpsest turns that history into a city.');
-  const r = launchPlan({ ...base, readme: 'Opening line. Palimpsest is a thing that does stuff. More.', pkg: GOOD_PKG, lock: GOOD_LOCK });
-  assert.ok(r.lines.join('\n').includes("--description 'Palimpsest is a thing that does stuff.'"));
+test('the description stands on its own and reaches gh repo edit', () => {
+  assert.doesNotMatch(DESCRIPTION, /\b(that|this|it)\b history/i);
+  assert.doesNotMatch(DESCRIPTION, /\u2014|--|\p{Extended_Pictographic}/u);
+  assert.ok(DESCRIPTION.length <= 350);
+  const r = launchPlan({ ...base, pkg: GOOD_PKG, lock: GOOD_LOCK });
+  assert.ok(r.lines.join('\n').includes(`--description '${DESCRIPTION}'`));
 });
 
 test('it never imports child_process and never spawns', () => {

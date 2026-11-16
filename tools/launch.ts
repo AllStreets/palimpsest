@@ -18,26 +18,8 @@ const REPO = 'AllStreets/palimpsest';
 const TAG = 'v1.0.0';
 const TOPICS = ['tauri', 'threejs', 'claude', 'ai-agents', 'macos', 'git-history', 'visualization'];
 
-/** The README's first sentence of prose that names the project: skips HTML, comments, headings, badges and images. */
-export function namingSentence(readme: string, name = 'Palimpsest'): string {
-  const prose: string[] = [];
-  let inComment = false;
-  for (const raw of readme.split('\n')) {
-    const line = raw.trim();
-    if (inComment) {
-      if (line.includes('-->')) inComment = false;
-      continue;
-    }
-    if (line.startsWith('<!--')) {
-      if (!line.includes('-->')) inComment = true;
-      continue;
-    }
-    if (line === '' || line.startsWith('<') || line.startsWith('#') || line.startsWith('![') || line.startsWith('[![')) continue;
-    prose.push(line);
-  }
-  const sentences = prose.join(' ').match(/.*?[.!?](?=\s|$)/g) ?? [];
-  return (sentences.find((s) => s.includes(name)) ?? sentences[0] ?? '').trim();
-}
+/** The repository's one-line description on GitHub: a sentence that stands on its own, shown to him at step 3 before anything runs. */
+export const DESCRIPTION = 'A Mac app that turns your GitHub repos into a living city, where firms of AI agents bid on your issues and build what passes inspection.';
 
 const q = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -62,7 +44,7 @@ export function launchPlan(i: LaunchInput): { ok: boolean; lines: string[] } {
     };
   }
   const notes = join(i.tmp, 'palimpsest-release-notes.md');
-  const description = namingSentence(i.readme);
+  const description = DESCRIPTION;
   const lines: string[] = [
     'Five steps for your word, one at a time. This prints them and runs none of them.',
     '',
