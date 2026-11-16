@@ -37,8 +37,14 @@ export function texture(name: string, srgb = false): THREE.Texture {
   const key = `${name}:${srgb}`;
   const hit = cache.get(key);
   if (hit) return hit;
+  // In Node (the grid's tests) there is no image to load into: a blank texture stands in.
+  if (typeof document === 'undefined') {
+    const blank = new THREE.Texture();
+    cache.set(key, blank);
+    return blank;
+  }
   pending += 1;
-  const t = loader.load(`${import.meta.env.BASE_URL}textures/${name}`, settle, undefined, () => {
+  const t = loader.load(`${(import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'}textures/${name}`, settle, undefined, () => {
     console.warn(`texture ${name} failed to load`);
     settle();
   });

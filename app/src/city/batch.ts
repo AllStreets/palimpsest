@@ -165,31 +165,47 @@ export class ClusterMesh extends THREE.Mesh {
     this._indirectTexture = ids(this.clusters.length);
   }
 
-  /** The index ranges of the clusters `camera` sees, in index order, merged where they touch. */
-  visibleRanges(camera: THREE.Camera): Array<[number, number]> {
-    const out: Array<[number, number]> = [];
-    if (!culling) return this.clusters.length ? [[0, this.geometry.index!.count]] : out;
+  /**
+   * Writes the index ranges of the clusters `camera` sees, in index order and merged where they touch, into
+   * `starts` and `counts` (each start times `scale`), and returns how many: no allocation, for every pass.
+   */
+  private rangesInto(camera: THREE.Camera, starts: Int32Array, counts: Int32Array, scale: number): number {
+    if (!culling) {
+      if (this.clusters.length === 0) return 0;
+      starts[0] = 0;
+      counts[0] = this.geometry.index!.count;
+      return 1;
+    }
     const cam = camera as THREE.Camera & { reversedDepth?: boolean };
     cullMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(this.matrixWorld);
     cullFrustum.setFromProjectionMatrix(cullMatrix, camera.coordinateSystem, cam.reversedDepth);
+    let n = 0;
+    let end = -1;
     for (const c of this.clusters) {
       if (!cullFrustum.intersectsBox(c.box)) continue;
-      const last = out[out.length - 1];
-      if (last && last[0] + last[1] === c.start) last[1] += c.count;
-      else out.push([c.start, c.count]);
+      if (n > 0 && end === c.start) counts[n - 1] += c.count;
+      else {
+        starts[n] = c.start * scale;
+        counts[n] = c.count;
+        n++;
+      }
+      end = c.start + c.count;
     }
-    return out;
+    return n;
+  }
+
+  /** The index ranges of the clusters `camera` sees, in index order, merged where they touch (tests and debugging). */
+  visibleRanges(camera: THREE.Camera): Array<[number, number]> {
+    const starts = new Int32Array(this.clusters.length + 1);
+    const counts = new Int32Array(this.clusters.length + 1);
+    const n = this.rangesInto(camera, starts, counts, 1);
+    return Array.from({ length: n }, (_, i): [number, number] => [starts[i], counts[i]]);
   }
 
   /** Lays out the multi-draw list for a draw seen by `camera`. */
   private drawFor(camera: THREE.Camera): void {
-    const ranges = this.visibleRanges(camera);
     const bytes = (this.geometry.index!.array as Uint16Array | Uint32Array).BYTES_PER_ELEMENT;
-    for (let i = 0; i < ranges.length; i++) {
-      this._multiDrawStarts[i] = ranges[i][0] * bytes;
-      this._multiDrawCounts[i] = ranges[i][1];
-    }
-    this._multiDrawCount = ranges.length;
+    this._multiDrawCount = this.rangesInto(camera, this._multiDrawStarts, this._multiDrawCounts, bytes);
   }
 
   onBeforeRender(_r: THREE.WebGLRenderer, _s: THREE.Scene, camera: THREE.Camera): void {

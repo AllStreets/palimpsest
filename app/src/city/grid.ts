@@ -518,6 +518,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   Object.assign(lenses.mesh, { name: 'lamp-lens' });
   Object.assign(arms.mesh, { name: 'lamp-arm' });
   Object.assign(polesFar.mesh, { name: 'lamp-pole:far' });
+  // Named, so each view copy is known by its batch's name (and the breakdown can tell them apart).
+  Object.assign(bollards.mesh, { name: 'bollard' });
+  Object.assign(bollardLights.mesh, { name: 'bollard-light' });
   for (const b of drawn) {
     // The view draws the city-wide set; the shadow map and the AO draw local copies of it (below).
     setLayers(b.mesh, LAYER.view);
@@ -654,7 +657,14 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       }
     }
     dispose(): void {
-      // A view copy's geometry shares the batch's buffers: disposing it would free them; its own go with the city.
+      // A view copy's own geometry holds its own instanced buffers but shares the batch's index and vertices (a kit's
+      // shared shape among them): those are let go of first, so disposing it frees only its own.
+      if (this.follow) {
+        const own = this.mesh.geometry;
+        own.setIndex(null);
+        for (const name of Object.keys(own.attributes)) if (!this.extra.some((e) => e.name === name)) own.deleteAttribute(name);
+        own.dispose();
+      }
       this.mesh.dispose();
     }
   }
@@ -768,7 +778,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     }
     if (camera && clusterCulling()) {
       camera.updateMatrixWorld();
-      viewFrustum.setFromProjectionMatrix(viewMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), camera.coordinateSystem);
+      viewFrustum.setFromProjectionMatrix(viewMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse), camera.coordinateSystem, (camera as THREE.Camera & { reversedDepth?: boolean }).reversedDepth);
       if (frustumBlocks(boxes, used, viewFrustum, eye, viewHeld) || force) {
         for (const c of viewCopies) c.fill(viewHeld);
         viewFills++;

@@ -68,11 +68,15 @@ export function lodFade(d: number, near: number = AMBIENT_LOD.near, far: number 
 export const FRUSTUM_MARGIN = 40;
 export const FRUSTUM_TURN = 0.08;
 const fBox = new THREE.Box3();
+/** Scratch for the widened set, grown as needed: frustumBlocks runs twice a frame. */
+let fWide = new Uint8Array(0);
 export function frustumBlocks(blocks: ReadonlyArray<BlockBox>, mask: Uint8Array, frustum: THREE.Frustum, eye: { x: number; y: number; z: number }, held: Uint8Array): boolean {
   let missing = false;
   let wide = 0;
   let have = 0;
-  const widened = new Uint8Array(blocks.length);
+  if (fWide.length < blocks.length) fWide = new Uint8Array(blocks.length);
+  const widened = fWide.subarray(0, blocks.length);
+  widened.fill(0);
   for (let k = 0; k < blocks.length; k++) {
     have += held[k];
     if (!mask[k]) continue;
