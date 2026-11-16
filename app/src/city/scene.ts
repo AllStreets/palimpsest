@@ -757,6 +757,33 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
    */
   let syncBuilds = false;
   const spreading = (): boolean => framesAfterLoad >= 3 && !syncBuilds;
+  /**
+   * Waits, a frame at a time, while the programs of what a rebuild built are
+   * compiled off the main thread (compileAsync, with the scene's lights): a
+   * new look's material compiled at the swap cost a 116 ms frame (Task 13).
+   */
+  const compileTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+  function* compiled(roots: THREE.Object3D[]): Steps<void> {
+    // Built at once (before the city shows, or in a quality drop): there are no frames to wait in, so the first draw
+    // compiles them, as before.
+    if (!spreading()) return;
+    let done = false;
+    const all = roots.filter((r) => r.parent === null);
+    if (all.length === 0) return;
+    const holder = new THREE.Group();
+    for (const r of all) holder.add(r);
+    // Compiled as the frame draws them: into a render target (the composer's scene pass), so no tone mapping.
+    const was = renderer.getRenderTarget();
+    renderer.setRenderTarget(compileTarget);
+    renderer.compileAsync(holder, camera, scene).then(
+      () => (done = true),
+      () => (done = true),
+    );
+    renderer.setRenderTarget(was);
+    for (const r of all) holder.remove(r);
+    // At most two seconds of frames (and never forever, should the queue be flushed while it waits).
+    for (let waits = 0; !done && waits < 120; waits++) yield;
+  }
   /** When a rebuild first asked for the shadow map to be redrawn (seconds on the city's clock), or -1. */
   let shadowAsked = -1;
   function askShadow(): void {
@@ -834,6 +861,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     districtGroup.updateMatrixWorld(true);
     for (const c of made) c.piece.object.updateMatrixWorld(true);
     const picks = new Set(made.flatMap(({ piece }) => [...piece.pickables.keys()]));
+    yield* compiled(fresh.map((p) => p.object));
     const commit = yield* towerPlains.prepare(
       made.map(({ piece }) => piece.object),
       (o) => picks.has(o),
@@ -1016,6 +1044,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       schoolTowers = schoolBatch(campusMasonry, opts.campusMaterials.window);
       schoolRoot.add(schoolTowers.group);
     }
+    yield* compiled(fresh.map((p) => p.object));
     const schoolSwap = schoolTowers ? yield* schoolTowers.prepare(schoolTowersIn) : null;
     const swap = yield* rebatchSteps(made.map(({ piece }) => piece.object));
     if (job !== quarterJob) {
@@ -2327,6 +2356,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       signalHeads.dispose();
       ground.dispose();
       sky.dispose();
+      compileTarget.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     },

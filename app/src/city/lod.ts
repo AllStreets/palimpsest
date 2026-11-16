@@ -156,7 +156,7 @@ export function frustumDelta(
 }
 
 /** While the eye moves, the sun's shadow box follows it in steps of this many metres (scene.ts followShadow, Task 13). */
-export const SHADOW_STEP = 16;
+export const SHADOW_STEP = 48;
 /** And comes to rest where the eye stopped once it has stood this long, in seconds. */
 export const SHADOW_REST = 0.2;
 /**

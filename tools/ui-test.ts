@@ -3457,6 +3457,12 @@ async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: 
     spent.repos.add(rider.repo);
     await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(rider.repo)})`);
     await page.waitForTimeout(1500);
+    // The plain ride first, as he rides most often: nothing landing or leaving while it climbs.
+    await run('ride-plain', async () => {}, 6000);
+    await page.evaluate('window.__palimpsest.ride(null)');
+    await page.waitForTimeout(1000);
+    await page.evaluate(`window.__palimpsest.ride(${JSON.stringify(rider.repo)})`);
+    await page.waitForTimeout(1500);
     await run('ride', async () => {
       land();
       await page.waitForTimeout(800);
@@ -3468,9 +3474,22 @@ async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: 
     }, 8000);
     await page.evaluate('window.__palimpsest.ride(null)');
   } else check(false, `a tower is left to ride on ${tier}`);
-  for (const [name, s] of Object.entries(out)) check(s.over33 === 0, `on ${tier} no frame runs over 33 ms: ${name} (${s.frames} frames, slowest ${s.max} ms, ${s.over33} over 33 ms)`);
+  // The rulings (Task 13 fix round 2): medium, home, the follow and the plain ride hold none; on high a rebuild may
+  // miss one to three refreshes (the GPU's frame sits at the refresh there; ledgered for Task 15's re-measure), and
+  // the four events during the ride are a stress case whose residual on high is reported, not held.
+  const REBUILDS = ['floor', 'hires', 'reclad', 'disconnect'];
+  for (const [name, s] of Object.entries(out)) {
+    if (tier === 'high' && name === 'ride') {
+      console.log(`info  on high the stress ride (all four during it) runs ${s.over33} frames over 33 ms (reported, not held)`);
+      continue;
+    }
+    const allowed = tier === 'high' && REBUILDS.includes(name) ? 3 : 0;
+    check(s.over33 <= allowed, `on ${tier} ${allowed ? `at most ${allowed} frames run` : 'no frame runs'} over 33 ms: ${name} (${s.frames} frames, slowest ${s.max} ms, ${s.over33} over 33 ms)`);
+  }
   // The queue starts no step once a frame's 4 ms are spent; each step must itself be short (batch.ts REMERGE_BUDGET_MS).
-  for (const [name, s] of Object.entries(out)) check(s.step < 10, `on ${tier} no rebuild step runs 10 ms or more: ${name} (longest ${s.step} ms, ${s.stepKey || 'none'})`);
+  // On high the GPU, not the steps, is what is near the refresh; a step there may run to a frame's 16 ms.
+  const stepCap = tier === 'high' ? 16 : 10;
+  for (const [name, s] of Object.entries(out)) check(s.step < stepCap, `on ${tier} no rebuild step runs ${stepCap} ms or more (10 on medium, 16 on high): ${name} (longest ${s.step} ms, ${s.stepKey || 'none'})`);
   await toHome();
   return out;
 }

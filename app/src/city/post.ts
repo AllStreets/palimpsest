@@ -57,9 +57,9 @@ function fadeWithDistance(gtao: GTAOPass, camera: THREE.PerspectiveCamera): void
  * The frame is unchanged; only the work behind it goes.
  */
 export const AO_SKIP = AO_FADE_END * 1.25;
-/** The AO's and its denoise's samples (three's defaults), and in the ride with the lens on, half. */
+/** The AO's and its denoise's samples (three's defaults), and while the lens is on, half. */
 export const AO_SAMPLES = 16;
-export const RIDE_AO_SAMPLES = 8;
+export const LENS_AO_SAMPLES = 8;
 const SKIP_AT = 'vec3 viewPos = getViewPosition(vUv, depth);';
 /** A GTAO or denoise fragment shader that leaves pixels past AO_SKIP as it leaves the sky; throws if its anchor moved. */
 export function skipPastFadeShader(src: string): string {
@@ -612,7 +612,6 @@ export function createPost(
     composer.addPass(lensPass);
   }
   let subjectAt: THREE.Vector3 | null = null;
-  let riding = false;
   let aoSamples = AO_SAMPLES;
   let aimed = 0;
   const lensWas = { on: false };
@@ -623,13 +622,13 @@ export function createPost(
   composer.addPass(new OutputPass());
 
   // The lens's shaders compile now, with the city, and not on the first close-up (a compile there costs frames); so do
-  // the AO's ride variants, with half the samples.
+  // the AO's variants for the lens, with half the samples.
   if (lensPass) {
     lensPass.render(renderer, composer.renderTarget2, composer.renderTarget1);
     renderer.setRenderTarget(null);
   }
   if (gtao) {
-    for (const samples of [RIDE_AO_SAMPLES, AO_SAMPLES]) {
+    for (const samples of [LENS_AO_SAMPLES, AO_SAMPLES]) {
       gtao.updateGtaoMaterial({ samples });
       gtao.updatePdMaterial({ samples });
       gtao.render(renderer, composer.renderTarget2, composer.renderTarget1, 0, false);
@@ -641,7 +640,6 @@ export function createPost(
     setFocus(o) {
       lens.set(o);
       subjectAt = o.at ?? null;
-      riding = o.mode === 'ride';
     },
     lens: () => ({ ...lens.state(), focus: aimed }),
     render(dt = 0) {
@@ -667,9 +665,10 @@ export function createPost(
         lensWas.on = st.on;
       }
       if (gtao) {
-        // In the ride, with the lens on, the AO and its denoise take half their samples (Task 13 ruling): there the
-        // tower fills the frame, the AO runs on nearly every pixel and the lens blurs all but the subject.
-        const samples = riding && st.on ? RIDE_AO_SAMPLES : AO_SAMPLES;
+        // While the lens is on (the ride, a follow, a tour stop, the inspector's close view) the AO and its denoise take
+        // half their samples (Task 13 rulings): there the subject is near, the AO runs on nearly every pixel and the lens
+        // blurs all but the subject.
+        const samples = st.on ? LENS_AO_SAMPLES : AO_SAMPLES;
         if (samples !== aoSamples) {
           aoSamples = samples;
           gtao.updateGtaoMaterial({ samples });
