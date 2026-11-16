@@ -33,7 +33,7 @@ import { VIEW_PX } from './lod-shader.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
 import { quarterBuildKey, quarterTreeSpots, type QuarterShow } from './quarters.js';
 import { clearOfTransit, createTrees, type TreeSpot } from './trees.js';
-import { createPost, EXPOSURE, FLICKER } from './post.js';
+import { createPost, EXPOSURE, FLICKER, focusModeFor, type FocusMode, type LensState } from './post.js';
 import { createRiver } from './river.js';
 import { createTransit, type TransitView } from './transit.js';
 import { createVehicles, type Vehicles } from './vehicles.js';
@@ -209,8 +209,12 @@ export interface City {
   /** The crew's hoist on the site at work on a repo's tower, in the world, or null when no crane stands there. */
   siteHoist(repo: string): { object: THREE.Object3D; height: number; setCar(y: number): void } | null;
   /** Hands the camera to a scripted path (the ride) until a drag, a scroll, unscript() or the path's end; see camera.ts. */
-  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void, focus?: 'ride' | 'tour'): void;
   unscript(): void;
+  /** The lens as it stands this frame (post.ts): its close mode, how far on, the subject's distance, the background's blur. */
+  lens(): LensState & { focus: number };
+  /** Holds the lens in a close mode for a still staged without one (tools/perf.ts); undefined gives the camera's own mode back. */
+  lensAs(mode: FocusMode | null | undefined): void;
   /** Something that casts a shadow moved (the ride's car): the cached shadow map is drawn again. */
   redrawShadows(): void;
   /** Glides to an eye and a target. */
@@ -433,6 +437,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(river.group);
 
   let post = createPost(renderer, scene, camera, quality, [river.pass(camera)]);
+  /** A close mode held for a staged still (lensAs), or undefined for the camera's own. */
+  let lensOverride: FocusMode | null | undefined;
   // The tram, the elevated rail, the pods and the cab ranks (transit.ts), laid for the city as it stands.
   const transit = createTransit();
   scene.add(transit.group);
@@ -1762,13 +1768,16 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     campusLiving?.update(dt, clock.elapsedTime);
     schoolTowers?.update(camera.position);
     for (const ask of shareWanted.splice(0)) ask.resolve(idShare(ask.key));
+    // The lens (ruling 16): the close mode the camera is in and how far its subject stands; none from home or the overview.
+    const mode = lensOverride !== undefined ? lensOverride : focusModeFor({ script: rig.scriptFocus(), following: rig.following(), inspecting: insetTarget > 0 });
+    post.setFocus({ mode, distance: camera.position.distanceTo(rig.controls.target), at: rig.controls.target });
     renderer.info.reset();
     if (breakdownWanted.length) {
       sun.shadow.needsUpdate = true;
       const asks = breakdownWanted.splice(0);
       const b = frameBreakdown(renderer, scene, camera, breakdownRoots, () => post.render(), asks.some((a) => a.detail));
       for (const a of asks) a.resolve(b);
-    } else post.render();
+    } else post.render(dt);
     lastFrame.calls = renderer.info.render.calls;
     lastFrame.triangles = renderer.info.render.triangles;
     if (framesAfterLoad >= 0 && ++framesAfterLoad === 3) resolveReady();
@@ -1891,7 +1900,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       }
       return null;
     },
-    script: (path, onRelease) => rig.script(path, onRelease),
+    script: (path, onRelease, focus) => rig.script(path, onRelease, focus),
+    lens: () => post.lens(),
+    lensAs(mode) {
+      lensOverride = mode;
+    },
     unscript: () => rig.unscript(),
     redrawShadows() {
       sun.shadow.needsUpdate = true;

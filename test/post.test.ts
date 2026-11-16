@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { BLOOM_THRESHOLD, SUN_BLOOM_MAX } from '../app/src/city/post.js';
+import { BLOOM_THRESHOLD, cocInfinity, createLens, DOF, focusModeFor, LENS_COMPOSITE_GLSL, LENS_GLSL, SUN_BLOOM_MAX } from '../app/src/city/post.js';
 import * as THREE from 'three';
 
-import { installSkyFog, SKY_GLSL, skyAir, skyClear, skyHaze, SUN_DIRECTION } from '../app/src/city/sky.js';
+import { installSkyFog, SKY_DITHER, SKY_GLSL, skyAir, skyClear, skyHaze, SUN_DIRECTION } from '../app/src/city/sky.js';
 
 type V3 = [number, number, number];
 
@@ -93,4 +93,88 @@ test("the haze takes each surface toward the sky's colour at its own height", ()
   installSkyFog();
   assert.match(THREE.ShaderChunk.fog_fragment, /hazeOver\([^;]*vFogWorld\.y\s*\)/);
   assert.match(SKY_GLSL, /vec3 skyAir\(vec3 dir, float y\)/);
+});
+
+// ---------------------------------------------------------------- the lens (Phase 5 Task 11, ruling 16)
+
+/** Steps a lens for `seconds` in sixtieths. */
+function run(lens: ReturnType<typeof createLens>, seconds: number): number {
+  let a = lens.state().amount;
+  for (let t = 0; t < seconds - 1e-9; t += 1 / 60) a = lens.step(1 / 60).amount;
+  return a;
+}
+
+test('depth of field is off from home, the overview and past 160 m', () => {
+  // From home and the overview the camera holds no close mode: nothing scripted, followed or inspected.
+  assert.equal(focusModeFor({ script: null, following: false, inspecting: false }), null);
+  assert.equal(focusModeFor({ script: 'ride', following: false, inspecting: true }), 'ride');
+  assert.equal(focusModeFor({ script: 'tour', following: false, inspecting: false }), 'tour');
+  assert.equal(focusModeFor({ script: null, following: true, inspecting: true }), 'follow');
+  assert.equal(focusModeFor({ script: null, following: false, inspecting: true }), 'inspect');
+  const lens = createLens('high');
+  for (const distance of [1180, 640]) {
+    lens.set({ mode: null, distance });
+    assert.equal(run(lens, 2), 0, `no mode at ${distance} m is off`);
+    assert.equal(lens.state().on, false);
+  }
+  // Any close mode farther than DOF.reach from its subject is off, and the lens fades to nothing before it.
+  assert.equal(DOF.reach, 160);
+  for (const mode of ['ride', 'follow', 'tour', 'inspect'] as const) {
+    lens.set({ mode, distance: 161 });
+    assert.equal(run(lens, 2), 0, `${mode} past 160 m is off`);
+  }
+  assert.equal(cocInfinity(160), 0);
+  assert.equal(cocInfinity(400), 0);
+  for (let d = 4; d < 160; d += 4) assert.ok(cocInfinity(d) >= cocInfinity(d + 4) - 1e-12, `the aperture closes as the subject recedes (${d} m)`);
+  // Close up the lens is on, with a real background blur.
+  lens.set({ mode: 'ride', distance: 9 });
+  assert.equal(run(lens, 1), 1);
+  assert.ok(lens.state().on);
+  assert.ok(lens.state().blur > 0.003, `the background's blur at 9 m is ${lens.state().blur}`);
+});
+
+test('it is never on at medium', () => {
+  const lens = createLens('medium');
+  for (const mode of ['ride', 'follow', 'tour', 'inspect'] as const) {
+    for (const distance of [2, 9, 40, 120]) {
+      lens.set({ mode, distance });
+      assert.equal(run(lens, 1.5), 0, `${mode} at ${distance} m on medium`);
+      assert.equal(lens.state().on, false);
+      assert.equal(lens.state().blur, 0);
+    }
+  }
+});
+
+test('focus eases over 0.6 s', () => {
+  assert.equal(DOF.ease, 0.6);
+  const lens = createLens('high');
+  lens.set({ mode: 'follow', distance: 12 });
+  const quarter = run(lens, 0.15);
+  const half = run(lens, 0.15);
+  assert.ok(quarter > 0 && quarter < half && half < 1, `on: ${quarter.toFixed(3)} then ${half.toFixed(3)} by 0.3 s`);
+  assert.ok(Math.abs(half - 0.5) < 0.05, `halfway at 0.3 s (${half.toFixed(3)})`);
+  assert.ok(run(lens, 0.25) < 1, 'not there before 0.6 s');
+  assert.equal(run(lens, 0.06), 1, 'there at 0.6 s');
+  // Off again over the same 0.6 s, the focus held where it was while the blur goes.
+  lens.set({ mode: null, distance: 900 });
+  const off = run(lens, 0.3);
+  assert.ok(Math.abs(off - 0.5) < 0.05, `halfway off at 0.3 s (${off.toFixed(3)})`);
+  assert.equal(lens.state().distance, 12, 'the focus holds its subject while it eases off');
+  assert.equal(run(lens, 0.31), 0, 'gone at 0.6 s');
+  // The blur eases with it: never a jump in one frame.
+  lens.set({ mode: 'inspect', distance: 60 });
+  let last = 0;
+  for (let i = 0; i < 40; i++) {
+    const b = lens.step(1 / 60).blur;
+    assert.ok(b - last <= cocInfinity(60) / 12, `frame ${i} steps the blur by ${(b - last).toFixed(5)}`);
+    last = b;
+  }
+});
+
+test("the lens's composite dithers what it blurs, as the sky does, so the dusk gradient does not band again", () => {
+  assert.ok(LENS_COMPOSITE_GLSL.includes(SKY_DITHER.toFixed(6)), 'the composite carries the sky dither');
+  // No GLSL ES 3.0 reserved word as a name (Task 10 lost a round to one).
+  for (const word of ['patch', 'sample', 'input', 'output', 'filter', 'active', 'common', 'partition', 'resource']) {
+    for (const src of LENS_GLSL) assert.doesNotMatch(src, new RegExp(`\\b(float|vec[234]|int)\\s+${word}\\b`), `${word} is not a name`);
+  }
 });

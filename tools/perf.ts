@@ -34,6 +34,10 @@
  * its poster moment, the ride at its first dossier stop, and thin the haze
  * to CLEAR_HAZE of the home value through the debug handle's haze(k); the six
  * look-<repo> views frame each sample tower whole for Decision 6's sheet.
+ * The lens views (Task 11: ride-top, tour-stop, inspector-close, under
+ * PERF_ONLY) hold the ride at its roof, the tour into a stop's dwell and the
+ * inspector's close tower view, each with the depth of field on as its mode
+ * holds it; people-follow holds the lens as following would.
  * Phase two (unless PERF_STATIC) turns the economy's
  * job sites live (four sites) on high and measures the city from home, the
  * overview and the quarters with them, with the quality governor running.
@@ -662,6 +666,86 @@ async function* hazeViews(page: Page, overview: [V3, V3]): AsyncGenerator<[strin
   } else console.log('haze: this build has no haze handle; overview-clear is skipped');
 }
 
+/** The close views of Task 11, with the lens on: the ride at its roof, a tour stop and the inspector's close tower view (people-follow is staged with the people). */
+const LENS = ['ride-top', 'tour-stop', 'inspector-close'];
+
+/** Holds the lens in a close mode for a still staged without one (the follow's figure held); undefined gives the city's own back. A build without the lens skips it. */
+async function lensAs(page: Page, mode: string | null | undefined): Promise<void> {
+  await callDebug(page, `typeof d.lensAs === 'function' && d.lensAs(${mode === undefined ? 'undefined' : JSON.stringify(mode)})`);
+}
+
+/** Says what the lens holds after a still (mode, focus, blur), when the build has one. */
+async function lensLog(page: Page, name: string): Promise<void> {
+  const l = await callDebug<{ mode: string | null; on: boolean; amount: number; distance: number; focus: number; blur: number } | null>(page, "typeof d.lens === 'function' ? d.lens() : null");
+  if (l) console.log(`lens: ${name} ${l.mode ?? 'no mode'}, ${l.on ? 'on' : 'off'} at ${l.amount.toFixed(2)}, subject ${l.distance.toFixed(1)} m, focus ${l.focus.toFixed(1)} m, background blur ${(l.blur * 100).toFixed(3)}% of the height`);
+}
+
+/**
+ * The close views with the lens (Task 11), yielded one by one: the ride up
+ * the tallest tower without a crew held at its roof as tools/capture.ts
+ * shoots ride-top, the week tour held into its first stop's dwell
+ * (tour-stop), and the inspector open on the tallest tower with the eye
+ * 90 m off a floor two thirds up, as the inspector's own fly to a floor
+ * stands (inspector-close). A stage that cannot be reached is skipped and said.
+ */
+async function* lensViews(page: Page, only: string[] | undefined): AsyncGenerator<[string, V3 | null, V3]> {
+  const want = (n: string): boolean => !only || only.includes(n);
+  const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+  const home = await dbg<{ eye: V3; target: V3 }>(page, '(d) => d.limits().home');
+  if (want('ride-top')) {
+    const busy = new Set((await callDebug<Array<{ repo: string }>>(page, 'd.liveSites()')).map((x) => x.repo));
+    const repo = [...city].filter((d) => !busy.has(d.repo)).sort((a, b) => b.tower.floors.length - a.tower.floors.length)[0]?.repo;
+    type Riding = { stops: Array<{ t: number; dwell: number }> };
+    await settle(page, home.eye, home.target);
+    if (repo && (await callDebug<boolean>(page, `d.ride(${JSON.stringify(repo)})`))) {
+      await callDebug(page, 'd.rideHold(true)');
+      await page.waitForTimeout(600);
+      const r = await callDebug<Riding>(page, 'd.riding()');
+      const roof = r.stops[r.stops.length - 1];
+      const t = roof.t + roof.dwell * 0.6;
+      await callDebug(page, `d.rideSeek(${t.toFixed(2)})`);
+      await page.waitForTimeout(1600);
+      await callDebug(page, `d.rideSeek(${t.toFixed(2)})`);
+      console.log(`lens: ride-top on ${repo} at ${t.toFixed(1)} s`);
+      yield ['ride-top', null, [0, 0, 0]];
+      await lensLog(page, 'ride-top');
+      await callDebug(page, 'd.ride(null)');
+      await page.waitForTimeout(1500);
+    } else console.log('lens: no ride to take; ride-top is skipped');
+  }
+  if (want('tour-stop')) {
+    type Tour = { t: number; index: number };
+    if (await callDebug<boolean>(page, 'd.tourStart()')) {
+      await callDebug(page, 'd.tourHold(true)');
+      await page.keyboard.press('Space');
+      await callDebug(page, 'd.tourHold(false)');
+      await page.waitForTimeout(400);
+      await callDebug(page, 'd.tourHold(true)');
+      const tour = await callDebug<Tour>(page, 'd.tour()');
+      await callDebug(page, `d.tourSeek(${(tour.t + 1.2).toFixed(2)})`);
+      await page.waitForTimeout(1600);
+      console.log(`lens: tour-stop at stop ${tour.index} (${tour.t.toFixed(1)} s)`);
+      yield ['tour-stop', null, [0, 0, 0]];
+      await lensLog(page, 'tour-stop');
+      await callDebug(page, 'd.tourHold(false)');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(2500);
+    } else console.log('lens: the week has no tour to walk; tour-stop is skipped');
+  }
+  if (want('inspector-close')) {
+    const tall = [...city].sort((a, b) => layoutTower(b.tower).top - layoutTower(a.tower).top)[0];
+    const y = layoutTower(tall.tower).top * 0.66;
+    await callDebug(page, `d.inspect(${JSON.stringify(tall.repo)})`);
+    await page.waitForTimeout(800);
+    const o = tall.origin;
+    console.log(`lens: inspector-close on ${tall.repo}, a floor at ${y.toFixed(0)} m`);
+    yield ['inspector-close', [o.x + BEARING.x * 84, y + 30, o.z + BEARING.z * 84], [o.x, y, o.z]];
+    await lensLog(page, 'inspector-close');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(800);
+  }
+}
+
 /** The views of Task 5 that stage a vehicle or the ride; an eye of null leaves the camera where the ride holds it. */
 const CLOSE = ['ferry-wake', 'pod-interior', 'train-windscreen', 'lod-400', 'ride-car', 'ride-car-dusk'];
 
@@ -847,7 +931,11 @@ async function* stagedViews(page: Page): AsyncGenerator<[string, V3, V3]> {
     await callDebug(page, 'd.peopleSkip(22)');
     const f = await person(page, 'dagny-hollis');
     if (f) {
+      // The follow camera's framing with the lens as following holds it (Task 11): the figure held, the focus on her.
+      await lensAs(page, 'follow');
       yield ['people-follow', ...followView(f)];
+      await lensLog(page, 'people-follow');
+      await lensAs(page, undefined);
       yield ['people-close', around(f.position, f.heading, 2.6, -3.0, f.position[1] + 1.5), around(f.position, f.heading, -5.5, 6.2, f.position[1] + 0.5)];
       // Her face from 1.8 m: a three-quarter view from her front, on the side the low sun comes from (sky.ts
       // SUN_DIRECTION, toward -x and +z), so the sun lights the face and never blooms behind her; the lantern in her
@@ -1000,6 +1088,12 @@ async function main(): Promise<void> {
       if (!only || PEOPLE.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of stagedViews(page)) {
           if (only && !only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
+      }
+      if (only && LENS.some((n) => only.includes(n))) {
+        for await (const [name, eye, target] of lensViews(page, only)) {
+          if (!only.includes(name)) continue;
           await measure(name, eye, target);
         }
       }

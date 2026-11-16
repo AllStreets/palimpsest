@@ -2820,6 +2820,137 @@ async function peopleChecks(page: Page): Promise<void> {
 }
 
 /** The median frame rate over three seconds through the debug handle's frameLog (Phase 5 ruling 3), after a second's settle. */
+// ---------------------------------------------------------------- the lens and the keys (Phase 5 Task 11)
+
+type LensRead = { mode: string | null; on: boolean; amount: number; distance: number; focus: number; blur: number };
+const lensNow = (page: Page): Promise<LensRead> => callDebug<LensRead>(page, 'd.lens()');
+const lensLine = (l: LensRead): string => `${l.mode ?? 'no mode'}, ${l.amount.toFixed(2)} on, subject ${l.distance.toFixed(1)} m, focus ${l.focus.toFixed(1)} m, blur ${(l.blur * 100).toFixed(3)}%`;
+
+/**
+ * The lens (ruling 16, UI_ONLY=lens): off from home and the overview, on in
+ * the four close modes on high, each holding 58 fps with it on (following
+ * Dagny, the ride up the tallest tower, a tour stop, the inspector's close
+ * tower view); then the home key: with the inspector open H closes it and
+ * flies home, and in a text field H types. On medium the lens never comes on.
+ */
+async function lensChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
+  check((await debug(page, (d) => d.quality())) === tier, `the city stands at ${tier} for the lens`);
+  const fpsFloor = 58;
+  const ds = await cityOf(page);
+  await callDebug(page, 'd.home()');
+  await page.waitForTimeout(2500);
+  const home = await lensNow(page);
+  check(!home.on && home.amount === 0, `the lens is off from home (${lensLine(home)})`);
+  const lim = await debug(page, (d) => d.limits());
+  await setView(page, [lim.home.eye[0] * 0.5, 620, lim.home.eye[2] * 0.5], [0, 0, 0]);
+  await page.waitForTimeout(1200);
+  const over = await lensNow(page);
+  check(!over.on, `the lens is off over the city (${lensLine(over)})`);
+
+  const on = async (what: string, mode: string): Promise<void> => {
+    await page.waitForTimeout(900);
+    const l = await lensNow(page);
+    if (tier === 'medium') {
+      check(!l.on && l.blur === 0, `on medium the lens stays off ${what} (${lensLine(l)})`);
+      return;
+    }
+    check(l.mode === mode && l.on && l.amount === 1 && l.blur > 0, `the lens is on ${what} (${lensLine(l)})`);
+    await page.screenshot({ path: join(SHOTS, `lens-${mode}.png`) });
+    const fps = await medianFps(page);
+    const stats = await debug(page, (d) => d.stats());
+    console.log(`info  lens ${mode} on ${tier}: ${fps.toFixed(1)} fps, ${stats.calls} calls, ${(stats.triangles / 1e6).toFixed(2)}M, the city at ${await debug(page, (d) => d.quality())}`);
+    check(fps >= fpsFloor, `${what} holds ${fpsFloor} fps on high with depth of field on (${fps.toFixed(1)})`);
+    // The same view with the lens held off, for what the lens itself costs. Not while following: two runs that held
+    // the follow past ten seconds stepped the city down with both readings at 59.5 fps or better, so the governor's
+    // window there is filled by its triangle budget (every pass counted), most likely, not by slow frames; the follow is kept
+    // to its measure.
+    if (mode === 'follow') return;
+    await callDebug(page, 'd.lensAs(null)');
+    await page.waitForTimeout(800);
+    const bare = await medianFps(page);
+    await callDebug(page, 'd.lensAs(undefined)');
+    console.log(`info  lens ${mode} on ${tier} held off: ${bare.toFixed(1)} fps`);
+  };
+
+  // Following Dagny on her walk.
+  await callDebug(page, 'd.peopleHold(true)');
+  await sendPerson(page, 'dagny-hollis', [560, -300], [600, 200]);
+  await callDebug(page, 'd.peopleSkip(22)');
+  const f = await person(page, 'dagny-hollis');
+  if (f) {
+    const [eye, target] = followView(f);
+    await setView(page, eye, target);
+    await debug(page, (d) => d.precompile());
+  }
+  await callDebug(page, `d.follow(${JSON.stringify('dagny-hollis')})`);
+  await callDebug(page, 'd.peopleHold(false)');
+  await on('following a figure', 'follow');
+  await callDebug(page, 'd.follow(null)');
+  if ((await debug(page, (d) => d.quality())) !== tier) console.log(`info  the city stepped down while following: ${(await callDebug<string[]>(page, 'd.notices()')).join(' | ')}`);
+
+  // The ride up the tallest tower without a crew, running.
+  const busy = new Set((await callDebug<Array<{ repo: string }>>(page, 'd.liveSites()')).map((x) => x.repo));
+  const rideOn = [...ds].filter((d) => !busy.has(d.repo)).sort((a, b) => b.tower.floors.length - a.tower.floors.length)[0];
+  if (rideOn && (await callDebug<boolean>(page, `d.ride(${JSON.stringify(rideOn.repo)})`))) {
+    await page.waitForTimeout(4000);
+    await on('on the ride', 'ride');
+    await callDebug(page, 'd.ride(null)');
+    await page.waitForTimeout(2000);
+  } else check(false, 'a ride starts for the lens');
+
+  // A tour stop, dwelling.
+  if (await callDebug<boolean>(page, 'd.tourStart()')) {
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(4600);
+    const t = await callDebug<{ dwelling: boolean; index: number }>(page, 'd.tour()');
+    console.log(`info  lens tour at stop ${t.index}, ${t.dwelling ? 'dwelling' : 'gliding'}`);
+    await callDebug(page, 'd.tourHold(true)');
+    await on('at a tour stop', 'tour');
+    await callDebug(page, 'd.tourHold(false)');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(2500);
+  } else check(false, 'the week tour walks for the lens');
+
+  // The inspector's close tower view: a floor two thirds up the tallest tower from 90 m.
+  const tall = [...ds].sort((a, b) => layoutTower(b.tower).top - layoutTower(a.tower).top)[0];
+  const y = layoutTower(tall.tower).top * 0.66;
+  await page.evaluate((repo) => (window as unknown as { __palimpsest: Debug }).__palimpsest.inspect(repo), tall.repo);
+  await page.waitForSelector('.inspector.open', { timeout: 3000 }).catch(() => {});
+  await setView(page, [tall.origin.x + BEARING.x * 84, y + 30, tall.origin.z + BEARING.z * 84], [tall.origin.x, y, tall.origin.z]);
+  await on("in the inspector's close view", 'inspect');
+
+  // In a text field H is the field's: a field over the city takes the letter, the inspector stays open, the camera stays.
+  const cam0 = await debug(page, (d) => d.camera());
+  await page.evaluate(() => {
+    const field = document.createElement('input');
+    field.id = 'lens-check-field';
+    field.style.cssText = 'position:fixed;left:20px;bottom:20px;z-index:99';
+    document.body.append(field);
+    field.focus();
+  });
+  await page.keyboard.press('h');
+  await page.waitForTimeout(1200);
+  const typed = await page.evaluate(() => (document.getElementById('lens-check-field') as HTMLInputElement | null)?.value ?? '');
+  const cam1 = await debug(page, (d) => d.camera());
+  const stayed = Math.hypot(cam1[0] - cam0[0], cam1[1] - cam0[1], cam1[2] - cam0[2]) < 1;
+  check(typed === 'h' && (await page.locator('.inspector.open').count()) === 1 && stayed, `H in a text field types (${JSON.stringify(typed)}), the inspector stays open and the camera stays`);
+  await page.evaluate(() => document.getElementById('lens-check-field')?.remove());
+  await page.locator('#city canvas').focus().catch(() => {});
+
+  // With the inspector open H closes it, then flies home.
+  await page.keyboard.press('h');
+  await page.waitForTimeout(300);
+  const closed = (await page.locator('.inspector.open').count()) === 0;
+  await page.waitForTimeout(2400);
+  const cam2 = await debug(page, (d) => d.camera());
+  const lim2 = await debug(page, (d) => d.limits());
+  const fromHome = Math.hypot(cam2[0] - lim2.home.eye[0], cam2[1] - lim2.home.eye[1], cam2[2] - lim2.home.eye[2]);
+  check(closed && fromHome < 30, `H with the inspector open closes it, then flies home (${closed ? 'closed' : 'still open'}, ${fromHome.toFixed(1)} m from the home eye)`);
+  await page.waitForTimeout(800);
+  const back = await lensNow(page);
+  check(!back.on, `back home the lens is off again (${lensLine(back)})`);
+}
+
 async function medianFps(page: Page): Promise<number> {
   await page.waitForTimeout(1000);
   await callDebug(page, 'd.frameLog.start()');
@@ -3661,7 +3792,8 @@ async function main(): Promise<void> {
     // UI_ONLY=far: the stone's coursing read from 1,100 m, and the home guard (Phase 5 Task 7).
     // UI_ONLY=market: the ribbon's shaded side, a lit site's haze from home, and the guards on both tiers (Phase 5 Task 8).
     // UI_ONLY=trees: the crowns' green from above, the home guard and the campus's sub-guard on both tiers (Phase 5 Task 9).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=lens: depth of field off from home and on in the four close views at 58 fps, and the H key (Phase 5 Task 11).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3713,6 +3845,11 @@ async function main(): Promise<void> {
         await campusChecks(page, 'medium');
         const budget = await homeBudgetNow(page);
         check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `on medium home stays under ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M with the trees (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+      } else if (process.env.UI_ONLY === 'lens') {
+        await lensChecks(page, 'high');
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await lensChecks(page, 'medium');
       } else if (process.env.UI_ONLY === 'people') {
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');

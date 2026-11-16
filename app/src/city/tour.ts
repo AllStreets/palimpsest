@@ -194,7 +194,8 @@ export function tourPose(keys: ReadonlyArray<TourKey>, time: number, still = fal
 /** What the tour needs of the city (scene.ts gives all of it). */
 export interface TourHost {
   camera: THREE.PerspectiveCamera;
-  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  /** Hands the camera to a path; `focus` is the close mode the lens holds while it does (post.ts). */
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void, focus?: 'ride' | 'tour'): void;
   unscript(): void;
   highlightFloor(repo: string, floorId: string | null): void;
   highlightLook(look: { color: THREE.Color; alpha: number } | null): void;
@@ -401,7 +402,8 @@ export function startTour(city: TourHost, keys: TourKey[], opts: TourOptions): T
     } else city.highlightLook(null);
     return { eye, target };
   };
-  city.script(step, (why) => end(why === 'user' ? 'user' : reason));
+  // The lens focuses on the tour's subject while it holds the camera (ruling 16).
+  city.script(step, (why) => end(why === 'user' ? 'user' : reason), 'tour');
 
   const api: TourWalk = {
     stop() {

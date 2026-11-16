@@ -35,7 +35,8 @@ export interface RideHost {
   camera: THREE.PerspectiveCamera;
   rideTower(key: string): RideFloor[] | null;
   siteHoist(repo: string): { object: THREE.Object3D; height: number; setCar(y: number): void } | null;
-  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void): void;
+  /** Hands the camera to a path; `focus` is the close mode the lens holds while it does (post.ts). */
+  script(path: (dt: number) => ScriptPose | null, onRelease?: (why: 'user' | 'end') => void, focus?: 'ride' | 'tour'): void;
   unscript(): void;
   highlightFloor(repo: string, floorId: string | null): void;
   redrawShadows(): void;
@@ -921,7 +922,8 @@ export function startRide(city: RideHost, key: string, plan: RideKey[], opts: Ri
     }
     return { eye, target };
   };
-  city.script(step, (why) => end(why === 'user' ? 'user' : reason));
+  // The lens focuses on the ride's subject while it holds the camera (ruling 16).
+  city.script(step, (why) => end(why === 'user' ? 'user' : reason), 'ride');
 
   const api: Ride = {
     key,

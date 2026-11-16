@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { SUN_BLOOM_MAX } from './post.js';
+import { SKY_DITHER, SUN_BLOOM_MAX } from './post.js';
 
 /** Where the sun sits, just under the horizon: the glow band and the key light both follow it. */
 export const SUN_DIRECTION = new THREE.Vector3(-260, 40, 120).normalize();
@@ -40,8 +40,8 @@ export const HAZE_CHROMA_POW = 3;
  */
 export const AIR_RISE = 2000;
 export const AIR_TOP = 0.2;
-/** The dome's dither, in linear units before tone mapping: a dusk gradient at 8 bits steps into bands without it. */
-export const SKY_DITHER = 0.6 / 255;
+/** The dome's dither (post.ts SKY_DITHER, which the lens's composite lays again over what it blurs). */
+export { SKY_DITHER };
 /** The soft knee's start, as a share of SUN_BLOOM_MAX: under it the sky is untouched. */
 const CAP_KNEE = 0.8;
 

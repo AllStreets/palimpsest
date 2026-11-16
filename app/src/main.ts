@@ -4,7 +4,8 @@ import './ui/style.css';
 import './ui/screens.css';
 
 import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, Tour, TourStop, TowerSpec } from '../../shared/types';
-import { previousWeek, weekOf } from '../../shared/tour';
+import { mondayMorning, tourWeekFor, weekOf } from '../../shared/tour';
+import { homeKey } from './city/camera';
 import { api } from './api';
 import { coalesced } from './coalesce';
 import { bandKey, type Plate } from './city/labels';
@@ -266,6 +267,10 @@ interface DebugHandle {
   riding(): RideState | null;
   /** Holds the ride's clock, or sets it (captures). */
   rideHold(on: boolean): void;
+  /** The lens as it stands (post.ts): its close mode, how far on, the subject's distance, the focus aimed at, the background's blur. */
+  lens(): ReturnType<ReturnType<typeof createCity>['lens']>;
+  /** Holds the lens in a close mode for a staged still; undefined gives the camera's own back (tools/perf.ts). */
+  lensAs(mode: 'ride' | 'follow' | 'tour' | 'inspect' | null | undefined): void;
   rideSeek(t: number): void;
   /** Hides or shows the sites' drawing, to measure what they cost (tests). */
   showSites(on: boolean): void;
@@ -477,6 +482,8 @@ async function main(): Promise<void> {
     },
     riding: () => ride?.state() ?? null,
     rideHold: (on) => ride?.hold(on),
+    lens: () => city.lens(),
+    lensAs: (mode) => city.lensAs(mode),
     rideSeek: (t) => ride?.seek(t),
     showSites: (on) => city.showSites(on),
     exchange() {
@@ -1435,16 +1442,19 @@ async function main(): Promise<void> {
       e.preventDefault();
       toCity();
     }
-    // H (or Home) in the city glides back to the home framing, which grows with the city.
+    // H (or Home) in the city glides back to the home framing, which grows with the city; with the inspector open it
+    // closes the inspector first. In a text field the letter is the field's.
     const typing = e.target instanceof HTMLElement && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName));
-    if ((e.key === 'h' || e.key === 'H' || e.key === 'Home') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city') {
+    const home = homeKey({ key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey, typing, prevented: e.defaultPrevented, route: document.body.dataset.route ?? '' }, !!(inspector.repo || inspector.campus));
+    if (home.length) {
       e.preventDefault();
+      if (home.includes('close')) inspector.close();
       city.home();
     }
     // T in the city walks through the week (Decision 5), any day.
     if ((e.key === 't' || e.key === 'T') && !e.metaKey && !e.ctrlKey && !e.altKey && !typing && !e.defaultPrevented && document.body.dataset.route === 'city') {
       e.preventDefault();
-      // This week, or the week before when this one has too little to walk (a Monday morning): tourWeekFor's rule.
+      // This week, or the week before on a Monday morning or when this one has too little to walk: tourWeekFor's rule.
       void startTour(weekOf(Date.now()).week, true);
     }
     // R rides the lift up the tower open in the inspector, or the selected agent's (Task 35).
@@ -1556,8 +1566,13 @@ async function main(): Promise<void> {
   const beginTour = async (week: string, fallBack: boolean): Promise<boolean> => {
     let tour: Tour | null;
     try {
-      tour = await api.tour(week);
-      if (fallBack && !(tour && tour.stops.some((x) => x.kind !== 'exchange'))) tour = await api.tour(previousWeek(week));
+      if (fallBack) {
+        // tourWeekFor's rule: a Monday morning walks last week without asking for this one's plan.
+        const now = Date.now();
+        const thisWeek = mondayMorning(now) ? null : await api.tour(week);
+        const walk = tourWeekFor(now, () => (thisWeek ? { stops: thisWeek.stops.filter((x) => x.kind !== 'exchange').length } : null));
+        tour = walk === week ? thisWeek : await api.tour(walk);
+      } else tour = await api.tour(week);
     } catch {
       notice.add("The engine did not answer with the week's tour.", { key: 'tour' });
       return false;

@@ -8,6 +8,7 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
+import { homeKey, type HomeKeyEvent } from '../app/src/city/camera.js';
 import { insideAny, sightClear, TOUR_EYE, tourKeys, tourLength, tourPose, type TourFrame } from '../app/src/city/tour.js';
 import { TOUR } from '../shared/market-rules.js';
 import type { Tour, TourStop } from '../shared/types.js';
@@ -144,4 +145,28 @@ test('each stop sees its target past its neighbours', () => {
   assert.equal(sightClear(free[1].eye, free[1].target, towers), false, 'the screen stands in the way of the old eye');
   const keys = tourKeys(tr, frames, EXCHANGE, towers);
   assert.ok(sightClear(keys[1].eye, keys[1].target, towers), 'the eye turns to see round it');
+});
+
+// ---------------------------------------------------------------- the home key (Phase 5 Task 11)
+
+const press = (key: string, over: Partial<HomeKeyEvent> = {}): HomeKeyEvent => ({ key, meta: false, ctrl: false, alt: false, typing: false, prevented: false, route: 'city', ...over });
+
+test('H with the inspector open closes it, then flies home', () => {
+  assert.deepEqual(homeKey(press('h'), true), ['close', 'home']);
+  assert.deepEqual(homeKey(press('H'), true), ['close', 'home']);
+  assert.deepEqual(homeKey(press('Home'), true), ['close', 'home']);
+  // With nothing open it only flies home.
+  assert.deepEqual(homeKey(press('h'), false), ['home']);
+  // Not on a sheet, not with a modifier (Cmd+H hides the app), not when a field already used the key.
+  assert.deepEqual(homeKey(press('h', { route: 'jobs' }), true), []);
+  assert.deepEqual(homeKey(press('h', { meta: true }), true), []);
+  assert.deepEqual(homeKey(press('h', { prevented: true }), false), []);
+  assert.deepEqual(homeKey(press('g'), true), []);
+});
+
+test('H in a text field types', () => {
+  // A search box, the inspector's own fields, a contenteditable: the letter is the field's, and the inspector stays.
+  assert.deepEqual(homeKey(press('h', { typing: true }), true), []);
+  assert.deepEqual(homeKey(press('H', { typing: true }), false), []);
+  assert.deepEqual(homeKey(press('Home', { typing: true }), true), []);
 });

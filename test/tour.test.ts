@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { TOUR } from '../shared/market-rules.js';
-import { tourPlan, tourWeekFor, weekOf, type TourEvent } from '../shared/tour.js';
+import { mondayMorning, tourPlan, tourWeekFor, weekOf, type TourEvent } from '../shared/tour.js';
 
 /** A Wednesday afternoon, local time. */
 const WED = new Date(2026, 10, 11, 15, 0, 0).getTime();
@@ -105,6 +105,26 @@ test('T falls back to the week before when this week has too little to walk', ()
   // Monday morning: this week has just begun.
   const monday = new Date(2026, 10, 9, 8).getTime();
   assert.equal(tourWeekFor(monday, (w) => (w === '2026-11-09' ? null : { stops: 6 })), '2026-11-02');
-  assert.equal(tourWeekFor(monday, () => ({ stops: 6 })), '2026-11-09', 'a week with stops is walked');
+  // From Monday noon a week with stops is walked.
+  assert.equal(tourWeekFor(monday + 4 * 3_600_000, () => ({ stops: 6 })), '2026-11-09', 'a week with stops is walked');
   assert.equal(tourWeekFor(monday + 3 * 86_400_000, (w) => (w === '2026-11-09' ? { stops: 0 } : { stops: 4 })), '2026-11-02');
+  // Fewer than a tour's least stops is too little, on any day.
+  assert.equal(tourWeekFor(monday + 3 * 86_400_000, (w) => (w === '2026-11-09' ? { stops: TOUR.minStops - 1 } : { stops: 4 })), '2026-11-02');
+  assert.equal(tourWeekFor(monday + 3 * 86_400_000, () => ({ stops: TOUR.minStops })), '2026-11-09');
+});
+
+test('T on a Monday morning walks last week', () => {
+  // Before noon on a Monday the week has barely begun: T walks the week before, whatever this one already holds,
+  // and does not wait on this week's plan to say so.
+  let asked = 0;
+  const full = (): { stops: number } => {
+    asked++;
+    return { stops: 6 };
+  };
+  for (const h of [0, 7, 11]) assert.equal(tourWeekFor(new Date(2026, 10, 9, h, 30).getTime(), full), '2026-11-02', `Monday ${h}:30`);
+  assert.equal(asked, 0, "this week's plan is not read on a Monday morning");
+  assert.equal(mondayMorning(new Date(2026, 10, 9, 11, 59).getTime()), true);
+  assert.equal(mondayMorning(new Date(2026, 10, 9, 12, 0).getTime()), false);
+  assert.equal(mondayMorning(new Date(2026, 10, 10, 9, 0).getTime()), false);
+  assert.equal(tourWeekFor(new Date(2026, 10, 9, 12, 0).getTime(), full), '2026-11-09', 'from noon this week is walked');
 });
