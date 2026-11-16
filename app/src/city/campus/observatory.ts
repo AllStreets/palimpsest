@@ -349,7 +349,10 @@ function telescopeGeometry(detail: boolean): THREE.BufferGeometry {
 
   // The main tube, tapering from the eye end to the objective, in cream enamel; the objective cell in brass; a dew
   // shield wider than the tube, dark inside, with a brass lip at its mouth.
-  tube(0.34, 0.44, -3.3, 5.5, 'paint');
+  // (Phase 5 Task 10: the enamel taken down a third and two dark collars added, so against the lit plaster the tube reads
+  // as an instrument and not a pale plain cylinder.)
+  tube(0.34, 0.44, -3.3, 5.5, 'paint', 0.66);
+  for (const z of [-2.3, 4.6]) ring(0.465, z, 0.18, 'paint', 1, ENAMEL);
   ring(0.49, 5.55, 0.3, 'gilt');
   tube(0.52, 0.53, 5.6, 7.4, 'paint', 0.97);
   tube(0.48, 0.49, 5.9, 7.38, 'slate', 0.3);

@@ -719,3 +719,23 @@ test("the slit lining's colour stays within the grey band", () => {
     assert.ok(h >= 22 && h <= 48, `and amber, not orange or pink: hue ${h.toFixed(0)} in 22 to 48 degrees`);
   }
 });
+
+test('the turf keeps a lifted dusk tone with blades, and the louvres stay open enough to read at 60 m', async () => {
+  const { LOUVRE_PITCH, TURF, patchMasonryShader } = await import('../app/src/city/campus/masonry-shader.js');
+  const { BLOOM_THRESHOLD, EXPOSURE } = await import('../app/src/city/post.js');
+  // The louvres' boards: 30 cm to the course at least (18 cm read as a flat grey at 60 m).
+  assert.ok(LOUVRE_PITCH >= 0.3, `louvre pitch ${LOUVRE_PITCH} m`);
+  // The turf: a lifted albedo floor and a share of the dusk sky's fill, the fill alone far under the bloom threshold
+  // even on the palest straw drift and the brightest blade.
+  assert.ok(TURF.floor >= 0.7, `turf albedo floor ${TURF.floor}`);
+  assert.ok(TURF.skyFill >= 0.15 && TURF.skyFill <= 0.4, `turf sky fill ${TURF.skyFill}`);
+  const brightest = Math.max(TONE.turf.r, TONE.turf.g, TONE.turf.b) * (TURF.floor + 0.42 + 0.26 + 0.1) * 1.58 * 1.22 * 1.12 * Math.max(...TURF.sky) * TURF.skyFill * EXPOSURE;
+  assert.ok(brightest < BLOOM_THRESHOLD * 0.5, `the turf's fill stays well under the threshold (${brightest.toFixed(2)})`);
+  // The patch carries both into the shader: the blades, the fill and the louvres' pitch.
+  const stub = (inc: string[]): string => inc.map((i) => `#include <${i}>`).join('\n');
+  const sh = { vertexShader: stub(['common', 'begin_vertex']), fragmentShader: stub(['common', 'map_fragment', 'roughnessmap_fragment', 'metalnessmap_fragment', 'normal_fragment_maps', 'emissivemap_fragment']) };
+  patchMasonryShader(sh);
+  assert.ok(sh.fragmentShader.includes('float blade = mix(') && sh.fragmentShader.includes('campusKind() == 4'), 'the turf branch draws blades and takes the sky fill');
+  assert.ok(sh.fragmentShader.includes(`${TURF.floor.toFixed(2)} + 0.42 * a`) && sh.fragmentShader.includes(TURF.skyFill.toFixed(2)), 'with its floor and its fill');
+  assert.ok(sh.fragmentShader.includes(`/ ${LOUVRE_PITCH.toFixed(2)}`), 'and the louvres at their pitch');
+});

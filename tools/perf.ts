@@ -465,7 +465,7 @@ async function* campusViews(page: Page, reopen: () => Promise<void>, only: strin
   console.log(`campus: ${(await dbg<L>(page, '(d) => d.campusLife()'))?.lit ?? 0} bays lit`);
   if (want('campus-bays')) yield ['campus-bays', at(147, 9.5, 19), at(178, 10, -1)];
   if (want('campus-lamps')) yield ['campus-lamps', at(-1, 8.6, 3.2), at(40, 8.4, -2)];
-  if (want('campus-turf-dusk')) yield ['campus-turf-dusk', at(20, 8.4, 34), at(70, 5.2, 8)];
+  if (want('campus-turf-dusk')) yield ['campus-turf-dusk', at(20, 7.7, 34), at(58, 4.4, 16)];
   if (want('library-louvres-60m')) {
     const k = c.anchors.clock;
     const from = at(49.3, 0, -92.9);

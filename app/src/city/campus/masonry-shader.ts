@@ -12,6 +12,13 @@
 /** The louvres' boards, metres to the course (Phase 5 Task 10: 18 cm read as a flat grey at 60 m). */
 export const LOUVRE_PITCH = 0.3;
 
+/**
+ * The turf at dusk (Phase 5 Task 10 fix round): its albedo floor (the mottle's least, so a lawn in shadow keeps a
+ * lifted green olive), and the sky's fill from above as a share of its own albedo (a lawn in the low sun's shadow
+ * still takes the dusk sky over it; under the bloom threshold by a wide margin).
+ */
+export const TURF = { floor: 0.78, skyFill: 0.26, sky: [0.62, 0.68, 0.86] as [number, number, number] } as const;
+
 export interface MasonryShader {
   vertexShader: string;
   fragmentShader: string;
@@ -30,6 +37,14 @@ export function patchMasonryShader(sh: MasonryShader): void {
       uniform sampler2D uAshMap; uniform sampler2D uAshNor; uniform sampler2D uAshArm;
       uniform sampler2D uDial; uniform float uDialLit; uniform float uSlitLit; uniform float uPlateLit;
       int campusKind() { return int(vKind + 0.5); }
+      float campusHash(vec2 c) { return fract(sin(dot(c, vec2(12.9898, 78.233))) * 43758.5453); }
+      // Smooth value noise, for the lawn's patches and drifts (the sand scan is grain only at those sizes).
+      float campusNoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(campusHash(i), campusHash(i + vec2(1.0, 0.0)), f.x), mix(campusHash(i + vec2(0.0, 1.0)), campusHash(i + vec2(1.0, 1.0)), f.x), f.y);
+      }
       // Copper gone green: how bare the metal is at this point (0 crusted verdigris, 1 brown copper showing),
       // from long streaks down the dome where the rain runs and the standing seams every 1.25 m across, which
       // shed water and keep their metal; the UVs are metres across (x) and along (y).
@@ -128,19 +143,26 @@ export function patchMasonryShader(sh: MasonryShader): void {
           float b = texture2D(uSandMap, vMapUv * 0.6).g;
           float f = texture2D(uSandMap, vMapUv * 3.1).g;
           float stripe = 0.91 + 0.09 * step(0.5, fract(vMapUv.x * 2.2));
-          // The blades (Phase 5 Task 10): the scan drawn out fine along one way and across the other at two scales, so
-          // close to the eye the lawn breaks into blades and their shadows; faded to their mean as they shrink under a
-          // pixel, so it never shimmers from far.
-          vec2 bu = vMapUv * vec2(9.0, 31.0);
-          float blades = texture2D(uSandMap, bu).g * 0.6 + texture2D(uSandMap, vMapUv.yx * vec2(17.0, 47.0)).g * 0.4;
-          float small = smoothstep(0.25, 0.9, length(fwidth(bu)));
-          float blade = mix(0.5 + 1.0 * blades, 1.0, small);
+          // The blades (Phase 5 Task 10): drawn, not scanned (a scan minified to blade size averages to flat): cells a
+          // centre-metre across and five long, each row offset, each blade its own shade, lit toward its tip; faded to
+          // their mean as they shrink under a pixel, so they never shimmer from far.
+          vec2 m = vMapUv * 9.0;
+          vec2 bq = m * vec2(80.0, 18.0);
+          bq.x += 0.5 * floor(bq.y);
+          float bh = campusHash(floor(bq));
+          float tip = fract(bq.y);
+          float blades = (0.35 + 0.65 * bh) * (0.7 + 0.3 * tip) * (1.0 - 0.55 * smoothstep(0.32, 0.5, abs(fract(bq.x) - 0.5)));
+          float small = smoothstep(0.25, 0.8, length(fwidth(bq)));
+          float blade = mix(0.45 + 1.0 * blades, 1.0, small);
+          // Patches a metre or two across: clover darker, thinner grass paler; and a scatter of hand-sized tufts.
+          float clump = campusNoise(m * 0.7 + 3.1) * 0.65 + campusNoise(m * 2.3 + 7.7) * 0.35;
+          float tuft = 0.85 + 0.3 * smoothstep(0.2, 0.85, clump);
           // At dusk a lawn is never one green: drier ground goes toward straw, the damp hollows toward a cold blue
-          // green, in broad drifts, and the clover darker in patches.
-          float drift = texture2D(uSandMap, vMapUv * 0.031 + 0.37).g;
-          float damp = smoothstep(0.35, 0.75, texture2D(uSandMap, vMapUv * 0.052 + 0.71).g);
-          vec3 hue = mix(vec3(1.18, 1.04, 0.78), vec3(0.86, 0.98, 1.16), damp) * mix(0.9, 1.08, drift);
-          s = vec4(vec3((0.56 + 0.5 * a + 0.32 * b + 0.1 * f) * stripe * blade) * hue, 1.0);
+          // green, in drifts ten and twenty metres across.
+          float drift = campusNoise(m * 0.06 + 1.3);
+          float damp = smoothstep(0.3, 0.75, campusNoise(m * 0.1 + 5.9));
+          vec3 hue = mix(vec3(1.2, 1.05, 0.72), vec3(0.88, 0.99, 1.1), damp) * mix(0.86, 1.12, drift);
+          s = vec4(vec3((${TURF.floor.toFixed(2)} + 0.42 * a + 0.26 * b + 0.1 * f) * stripe * blade * tuft) * hue, 1.0);
         }
         diffuseColor *= s;
       }`,
@@ -223,7 +245,14 @@ export function patchMasonryShader(sh: MasonryShader): void {
       if (campusKind() == 6) {
         float facing = clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0);
         float core = facing * facing;
-        totalEmissiveRadiance += vColor.rgb * (0.3 + 0.55 * core + 1.05 * core * core * core);
+        totalEmissiveRadiance += vColor.rgb * (0.3 + 0.5 * core + 0.6 * core * core * core);
+      }
+      // The turf takes the dusk sky's fill from above (TURF): its own albedo times the sky's cool light, so a lawn in the
+      // low sun's shadow keeps its tone, its drifts and its blades instead of going to black; the face turned up takes
+      // all of it.
+      if (campusKind() == 4) {
+        float up = dot(normal, normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz));
+        totalEmissiveRadiance += diffuseColor.rgb * vec3(${TURF.sky.map((v) => v.toFixed(2)).join(', ')}) * ${TURF.skyFill.toFixed(2)} * clamp(0.5 + 0.5 * up, 0.0, 1.0);
       }
       // The belfry after sunset (ruling 18 (a), Phase 5 Task 10): a lamp hung in the bell chamber shows warm in the gaps
       // between the louvre boards, so the tower's top stage reads as a lit lantern over the roofs from home, at its

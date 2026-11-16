@@ -26,7 +26,10 @@ import * as THREE from 'three';
 export const READER_DESK = { y: 3.18, front: -0.68, depth: 0.56, width: 1.15 } as const;
 /** The desk lamp, in the desk's frame: to one side near the glass edge, a hand over the books. */
 const LAMP_AT: P3 = [0.36, 0.34, 0.12];
-/** Where the readers' depth is written: this far out of the wall's face (the pane stands at -0.6, the mullions to -0.415). */
+/**
+ * Where the readers' depth is written: this far out of the wall's face (the pane stands at -0.6, the mullions to -0.415).
+ * Tuned to the library's wall (LIBRARY.wall 0.55) and gothic.ts dress's pane and mullion depths: if those move, move this.
+ */
 export const READER_GLASS_Z = -0.5;
 /** The share of a reader's true depth behind the glass plane kept in its written depth, so it still occludes itself in order. */
 export const READER_DEPTH_KEPT = 0.08;
@@ -42,7 +45,7 @@ type P3 = [number, number, number];
 const SKIN = new THREE.Color(0.42, 0.27, 0.19);
 const HAIR = new THREE.Color(0.06, 0.045, 0.035);
 const PAPER = new THREE.Color(0.8, 0.76, 0.66);
-const COAT = new THREE.Color(0.11, 0.1, 0.1);
+const COAT = new THREE.Color(0.17, 0.155, 0.15);
 const WOOD = new THREE.Color(0.16, 0.09, 0.05);
 /** The lamp shade's lit glass: the one colour over 0.95 red, which the shader takes for the emitter. */
 const LAMP_GLOW = new THREE.Color(1.0, 0.8, 0.5);
@@ -249,7 +252,7 @@ function readerMaterial(): THREE.MeshStandardMaterial {
       .replace(
         '#include <color_vertex>',
         // Each reader's coat a shade of its own, from a navy to a brown: the dark cloth only, not the skin, the paper or the desk.
-        '#include <color_vertex>\n  if (aPose >= 0.0 && vColor.r < 0.12) vColor.rgb *= mix(vec3(0.75, 0.85, 1.35), vec3(1.45, 1.1, 0.75), aReader.z);',
+        '#include <color_vertex>\n  if (aPose >= 0.0 && vColor.r < 0.18 && vColor.r > 0.1) vColor.rgb *= mix(vec3(0.75, 0.85, 1.35), vec3(1.45, 1.1, 0.75), aReader.z);',
       );
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vLamp;\nvarying float vLampFall;\nvarying vec3 vLampDir;')
@@ -261,7 +264,7 @@ function readerMaterial(): THREE.MeshStandardMaterial {
           // bay's level, and the room's light behind leaves a dim warm rim on the back and shoulders.
           diffuseColor.rgb *= 0.25;
           float face = max(dot(normal, vLampDir), 0.0);
-          float rim = pow(1.0 - abs(normal.z), 3.0) * 0.18;
+          float rim = pow(1.0 - abs(normal.z), 2.0) * 0.32;
           totalEmissiveRadiance += vColor.rgb * vec3(1.0, 0.72, 0.42) * vLamp * (0.06 + 2.2 * face * vLampFall + rim);
           if (vColor.r > 0.95) totalEmissiveRadiance += vColor.rgb * 1.1 * vLamp;
         }`,
