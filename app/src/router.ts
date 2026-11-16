@@ -68,6 +68,21 @@ export const SCREENS: ReadonlyArray<{ route: Route; name: string }> = [
 ];
 
 /**
+ * The head item a route is under: a job, run or inspection under Jobs, a firm or agent under
+ * Firms, a repo or README audit under Repos, a net, voyage or graduate under School; every
+ * other route is its own item. The city is current only on the city route.
+ */
+export function currentSection(route: Route): Route {
+  switch (route) {
+    case 'job': case 'run': case 'inspection': return 'jobs';
+    case 'firm': case 'agent': return 'firms';
+    case 'repo': case 'audit': return 'repos';
+    case 'net': case 'voyage': case 'graduate': return 'school';
+    default: return route;
+  }
+}
+
+/**
  * The school's sections (Phase 4 Task 28): `#/school/<section>` opens the school at one
  * (the observatory's dome opens it at the master's card); `#/school/nets/<net>`,
  * `#/school/voyages/<id>` and `#/school/graduates/<id>` open a net, a voyage or a graduate.

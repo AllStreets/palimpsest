@@ -27,8 +27,8 @@ body:not([data-route='city']) .runhead {
 body[data-route='city'] .runhead {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 12px rgba(10, 8, 16, 0.55);
 }
-body[data-route='city'] .runhead-link {
-  color: #e4ddd1;
+body[data-route='city'] .runhead-link:not([aria-current='page']) {
+  color: #cfc7ba;
 }
 body[data-route='city'] .runhead-count {
   color: #cfc7ba;

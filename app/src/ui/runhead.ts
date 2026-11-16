@@ -1,5 +1,5 @@
 import type { Route } from '../router';
-import { routeHref, SCREENS } from '../router';
+import { currentSection, routeHref, SCREENS } from '../router';
 import { el } from './controls';
 import { repoCount } from './repos-words';
 import { createPalette, shortcutLabel } from './palette';
@@ -65,8 +65,9 @@ export function createRunhead(parent: HTMLElement): Runhead {
   return {
     el: nav,
     setRoute(route) {
+      const section = currentSection(route);
       for (const [r, a] of links) {
-        if (r === route) a.setAttribute('aria-current', 'page');
+        if (r === section) a.setAttribute('aria-current', 'page');
         else a.removeAttribute('aria-current');
       }
     },
