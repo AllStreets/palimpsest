@@ -24,7 +24,7 @@ import { createGrid, type LotSummary } from './grid.js';
 import { createGround, makePlinth } from './ground.js';
 import { createPlates, type Plate } from './labels.js';
 import type { Lot } from './lots.js';
-import { configureMaterials, texturesSettled } from './materials.js';
+import { configureMaterials, firstTexturesIn, texturesSettled } from './materials.js';
 import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor, type DropReading } from './governor.js';
 import { setFacadeRooms } from './facade.js';
@@ -177,7 +177,7 @@ export interface City {
   haze(k: number | null): void;
   onPick(fn: (hit: PickHit) => void): void;
   dispose(): void;
-  /** Resolves once textures have loaded and the first frames are on screen. */
+  /** Resolves once the first texture sets (materials.ts FIRST_SETS) have loaded and the first frames are on screen. */
   ready: Promise<void>;
   /** Jumps the camera to an eye and target (tests and debugging). */
   view(eye: THREE.Vector3, target: THREE.Vector3): void;
@@ -1420,6 +1420,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let lastPlazas = '';
   function setPlots(occ: Occupancy): number {
     occNow = occ;
+    placed = true;
     const built = placeDistricts(occ.districts) + placeQuarters(life.set(occ.quarters), true);
     const wants = campanileStands(occ.districts.map((d) => layoutTower(d.tower).top));
     if (wants !== campanile) {
@@ -1750,12 +1751,43 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   }
 
   let framesAfterLoad = -1;
+  /**
+   * The first draw (Task 14). Once the city stands (the first setPlots), its
+   * programs are compiled in parallel off the main thread (compileAsync)
+   * while nothing is drawn behind the veil; drawn at once, the first frame
+   * compiled them one after another on the main thread, two seconds of the
+   * first open. `warm` is null until then, false while compiling, true after.
+   * Nothing is drawn before the city stands either: the ground and the sky
+   * drawn alone first were another 0.6 s of programs compiled in line.
+   */
+  let placed = false;
+  let unplacedFrames = 0;
+  let warm: boolean | null = null;
+  function warmUp(): void {
+    warm = false;
+    const was = renderer.getRenderTarget();
+    // Compiled for the target the frame draws the scene into (the composer's), so the first frame finds them made.
+    renderer.setRenderTarget(post.sceneTarget);
+    const done = (): void => {
+      if (warm) return;
+      river.compile(renderer, camera);
+      warm = true;
+    };
+    renderer.compileAsync(scene, camera).then(done, done);
+    // Never held behind the veil for long: past this the first draw compiles what is left, as before.
+    setTimeout(done, 6000);
+    renderer.setRenderTarget(was);
+  }
   let resolveReady: () => void = () => {};
   const ready = new Promise<void>((resolve) => (resolveReady = resolve));
-  void texturesSettled().then(() => {
-    // The cached shadow map was drawn before the textures arrived (alpha-tested parts included): draw it again.
+  // The city is drawn once the stone, brick and glass are in (materials.ts FIRST_SETS); the paving and the metals land
+  // behind the first frame, in the order home needs them.
+  void firstTexturesIn().then(() => {
+    // The cached shadow map was drawn before the textures arrived (alpha-tested parts included): draw it again, and
+    // again once the last of them is in.
     sun.shadow.needsUpdate = true;
     framesAfterLoad = 0;
+    void texturesSettled().then(() => (sun.shadow.needsUpdate = true));
   });
 
   // ---------------------------------------------------------------- towers by distance (lod.ts)
@@ -2092,6 +2124,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
     // On high the GPU's frame is near the refresh already: the rebuilds take half the CPU budget there.
     runRemerges(quality === 'high' ? REMERGE_BUDGET_MS / 2 : REMERGE_BUDGET_MS);
+    // A city that is never placed (nothing asked for in 3 s of frames) is drawn all the same.
+    if (warm === null && (placed || ++unplacedFrames > 180)) warmUp();
     renderer.info.reset();
     const t1 = traced ? performance.now() : 0;
     const shadowing = sun.shadow.needsUpdate;
@@ -2100,11 +2134,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       const asks = breakdownWanted.splice(0);
       const b = frameBreakdown(renderer, scene, camera, breakdownRoots, () => post.render(), asks.some((a) => a.detail));
       for (const a of asks) a.resolve(b);
-    } else post.render(dt);
+    } else if (warm === true) post.render(dt);
     lastFrame.calls = renderer.info.render.calls;
     lastFrame.triangles = renderer.info.render.triangles;
     if (traced) traced.push({ update: t1 - t0, render: performance.now() - t1, shadow: shadowing, triangles: lastFrame.triangles });
-    if (framesAfterLoad >= 0 && ++framesAfterLoad === 3) resolveReady();
+    if (framesAfterLoad >= 0 && warm === true && ++framesAfterLoad === 3) resolveReady();
   });
 
   return {

@@ -3281,6 +3281,143 @@ async function marketHomeChecks(page: Page): Promise<void> {
   }
 }
 
+/** The perf tool's window (tools/perf.ts PERF_VIEWPORT), where the first frame and the texture stills are taken. */
+const TEXTURE_VIEWPORT = { width: 1512, height: 890, dpr: 2 } as const;
+
+/**
+ * The texture views (Phase 5 Task 14), the nearest named view of each scan,
+ * as tools/perf.ts frames them: the Beaux-Arts root's sandstone from 34 m
+ * (root-close), the brick era's floors of the tower with the longest brick
+ * run from 50 m (tower-close), and that tower's plaza from a walker's eye
+ * 40 m off (plaza).
+ */
+export function textureViews(city: District[]): Array<[string, [number, number, number], [number, number, number]]> {
+  const out: Array<[string, [number, number, number], [number, number, number]]> = [];
+  const beaux = city.find((d) => d.tower.root === 'beauxarts') ?? city[0];
+  const turn = 0.35;
+  const bx = BEARING.x * Math.cos(turn) - BEARING.z * Math.sin(turn);
+  const bz = BEARING.x * Math.sin(turn) + BEARING.z * Math.cos(turn);
+  const rh = layoutTower(beaux.tower).rootHeight;
+  out.push(['root-close', [beaux.origin.x + bx * 34, 3, beaux.origin.z + bz * 34], [beaux.origin.x, rh * 0.38, beaux.origin.z]]);
+  const span = (t: TowerSpec): { y: number; n: number } | null => {
+    const fl = layoutTower(t).floors.filter((f) => f.floor.era === 'brick');
+    return fl.length ? { y: (fl[0].y0 + fl[fl.length - 1].y0 + fl[fl.length - 1].h) / 2, n: fl.length } : null;
+  };
+  const brick = city.map((d) => ({ d, s: span(d.tower) })).filter((x) => x.s).sort((a, b) => b.s!.n - a.s!.n)[0];
+  const d = brick?.d ?? city[0];
+  const y = brick ? brick.s!.y : layoutTower(d.tower).rootHeight + 10;
+  out.push(['tower-close', [d.origin.x + BEARING.x * 50, y + 4, d.origin.z + BEARING.z * 50], [d.origin.x, y, d.origin.z]]);
+  out.push(['plaza', [d.origin.x + BEARING.x * 40, 1.7, d.origin.z + BEARING.z * 40], [d.origin.x, 3, d.origin.z]]);
+  return out;
+}
+
+/** The README street's kerb (tools/perf.ts street-kerb): an eye at 1.6 m on the kerb looking up the street. */
+const STREET_KERB: [string, [number, number, number], [number, number, number]] = ['street-kerb', [196.3, 1.6, -150], [197.5, 0.9, -74]];
+
+/**
+ * One cold load's first city frame (Task 14): a browser of its own (no cache,
+ * no compiled programs), the built app opened at TEXTURE_VIEWPORT, and the
+ * time from navigation to the city reporting ready (its first frames drawn
+ * behind the veil) with its towers in them.
+ */
+export async function firstFrameMs(url: string): Promise<number> {
+  const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
+  try {
+    const page = await browser.newPage({ viewport: { width: TEXTURE_VIEWPORT.width, height: TEXTURE_VIEWPORT.height }, deviceScaleFactor: TEXTURE_VIEWPORT.dpr });
+    // UI_FIRST_FRAME_PROFILE=<file>: a CPU profile of the load and its resources' timings beside it, for finding where the time goes.
+    const profile = process.env.UI_FIRST_FRAME_PROFILE;
+    const cdp = profile ? await page.context().newCDPSession(page) : null;
+    if (cdp) {
+      await cdp.send('Profiler.enable');
+      await cdp.send('Profiler.setSamplingInterval', { interval: 200 });
+      await cdp.send('Profiler.start');
+    }
+    const t0 = Date.now();
+    await page.goto(url);
+    await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 60_000, polling: 'raf' });
+    const ms = Date.now() - t0;
+    if (cdp && profile) {
+      const { profile: p } = await cdp.send('Profiler.stop');
+      writeFileSync(profile, JSON.stringify(p));
+      const res = await page.evaluate(() => [
+        `ready ${performance.now().toFixed(0)}`,
+        ...performance.getEntriesByType('resource').map((e) => `${(e as PerformanceResourceTiming).startTime.toFixed(0)} ${(e as PerformanceResourceTiming).responseEnd.toFixed(0)} ${e.name}`),
+      ]);
+      writeFileSync(`${profile}.resources.txt`, res.join('\n'));
+    }
+    const towers = await page.evaluate(async () => {
+      const b = await (window as unknown as { __palimpsest: { breakdown(): Promise<Record<string, Record<string, { calls: number }>>> } }).__palimpsest.breakdown();
+      return Object.values(b.towers ?? {}).reduce((a, t) => a + t.calls, 0);
+    });
+    if (towers === 0) throw new Error('the city reported ready with no tower drawn');
+    return ms;
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * Texture weight and the first frame (Phase 5 Task 14, UI_ONLY=textures):
+ * five cold loads, each in a browser of its own, bring the first city frame
+ * within 4 s of navigation (the median); and at root-close, street-kerb,
+ * plaza and tower-close the city with its textures now is within SSIM 0.98
+ * of round 0, the same frame drawn from the original textures
+ * (UI_TEXTURE_BASE, the folder they were moved to, served in their place).
+ * Both frames are shot in one run on one city, the streets emptied and the
+ * trees hidden, so only the textures differ.
+ */
+async function textureChecks(browser: Browser, page: Page): Promise<void> {
+  // The harness's own page draws nothing while the loads are timed.
+  await page.goto('about:blank');
+  const url = `http://127.0.0.1:${PORT}/?fixed-quality&debug`;
+  const times: number[] = [];
+  for (let i = 0; i < 5; i++) times.push(await firstFrameMs(url));
+  const med = [...times].sort((a, b) => a - b)[2];
+  check(med <= 4000, `the first city frame comes within 4 s (median of five cold loads ${med} ms: ${times.join(', ')})`);
+
+  const base = process.env.UI_TEXTURE_BASE;
+  if (!base || !existsSync(base)) {
+    check(false, `SSIM against round 0: UI_TEXTURE_BASE names no folder of the original textures (${base ?? 'unset'})`);
+    return;
+  }
+  const { execFileSync } = await import('node:child_process');
+  const { readFileSync } = await import('node:fs');
+  const out = join(SHOTS, 'textures');
+  mkdirSync(out, { recursive: true });
+  const shoot = async (round: 'r0' | 'now'): Promise<string[]> => {
+    const page = await browser.newPage({ viewport: { width: TEXTURE_VIEWPORT.width, height: TEXTURE_VIEWPORT.height }, deviceScaleFactor: TEXTURE_VIEWPORT.dpr });
+    if (round === 'r0') {
+      await page.route('**/textures/*.jpg', (r) => r.fulfill({ body: readFileSync(join(base, new URL(r.request().url()).pathname.split('/').pop()!)), contentType: 'image/jpeg' }));
+    }
+    await page.goto(url);
+    await page.waitForFunction('window.__palimpsest?.ready === true', null, { timeout: 60_000 });
+    await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride, .notices { display: none !important; }' });
+    const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
+    await page.waitForFunction('window.__palimpsest.ambient() !== null', null, { timeout: 30_000 });
+    await page.evaluate('window.__palimpsest.ambientDensity(0)');
+    await page.evaluate('window.__palimpsest.trees(false)');
+    const names: string[] = [];
+    for (const [name, eye, target] of [...textureViews(city), STREET_KERB]) {
+      await setView(page, eye, target);
+      await page.waitForTimeout(600);
+      await page.evaluate('window.__palimpsest.precompile()');
+      await page.waitForTimeout(2500);
+      await page.screenshot({ path: join(out, `${round}-${name}.png`) });
+      names.push(name);
+    }
+    await page.close();
+    return names;
+  };
+  await shoot('r0');
+  const names = await shoot('now');
+  for (const name of ['root-close', 'street-kerb', 'plaza', 'tower-close']) {
+    check(names.includes(name), `${name} is framed`);
+    const said = execFileSync('sh', ['-c', 'ffmpeg -hide_banner -nostats -i "$0" -i "$1" -lavfi ssim -f null - 2>&1', join(out, `r0-${name}.png`), join(out, `now-${name}.png`)], { encoding: 'utf8' });
+    const ssim = Number(/All:([0-9.]+)/.exec(said)?.[1] ?? NaN);
+    check(ssim >= 0.98, `SSIM against round 0 at least 0.98 at ${name} (${ssim.toFixed(4)})`);
+  }
+}
+
 /**
  * No hitches (Phase 5 Task 13, UI_ONLY=hitches): the frame times through the
  * debug handle's frameLog while the city does what makes it rebuild: a floor
@@ -4065,8 +4202,11 @@ async function main(): Promise<void> {
     // UI_ONLY=lens: depth of field off from home and on in the four close views at 58 fps, and the H key (Phase 5 Task 11).
     // UI_ONLY=hitches: no frame over 33 ms through a floor landing, hires, a re-clad, a disconnect, the ride, a follow and home (Task 13).
     // UI_ONLY=cull: the street and the court draw a quarter fewer triangles than round 0, home no more calls (Phase 5 Task 12).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches'].includes(process.env.UI_ONLY ?? '');
-    if (spireOnly && ready) {
+    // UI_ONLY=textures: the first city frame within 4 s over five cold loads, and SSIM 0.98 against the original textures (UI_TEXTURE_BASE) at four views (Task 14).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures'].includes(process.env.UI_ONLY ?? '');
+    if (process.env.UI_ONLY === 'textures' && ready) {
+      await textureChecks(browser, page);
+    } else if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
       if (process.env.UI_ONLY === 'schoolscreen') {

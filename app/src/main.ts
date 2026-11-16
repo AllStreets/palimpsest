@@ -377,12 +377,22 @@ async function main(): Promise<void> {
     firmsKey = key;
     return changed;
   };
+  /**
+   * The firms as the city opens: their names key the quarters' builds
+   * (quarterKey), so the first build has them and the names read after it
+   * (readNames) find nothing changed, rather than building every quarter twice
+   * before the first frame (Task 14).
+   */
+  let firstFirms: FirmView[] = [];
   const [settingsQuality] = await Promise.all([
     api.settings().then(
       (s) => s.quality,
       () => 'high' as const,
     ),
-    api.firms().then(takeFirms, () => false),
+    api.firms().then((firms) => {
+      firstFirms = firms;
+      return takeFirms(firms);
+    }, () => false),
     loadKits().catch((err: unknown) => {
       console.warn('the architecture kits did not load; building from plain stand-ins', err);
       registerFallbackKits();
@@ -783,7 +793,7 @@ async function main(): Promise<void> {
   /** Each firm's quarter as the engine last served it. */
   let servedQuarters: Quarter[] = [];
   /** Each firm as last read: its name, books and agents, for its plate and the name on its plinth. */
-  const firmViews = new Map<string, FirmView>();
+  const firmViews = new Map<string, FirmView>(firstFirms.map((f) => [f.id, f]));
   /** Quarters shown dark by a capture (debug only). */
   const darkened = new Set<string>();
   /** The districts standing now: served towers whose repos are still connected. */

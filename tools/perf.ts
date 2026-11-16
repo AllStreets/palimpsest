@@ -47,7 +47,11 @@
  * with the batches' cluster culling off and on (Task 12) into cull-off/ and
  * cull-on/ (cull-on-again/ the floor; -bare/ without the trees); `npm run
  * perf compare <a> <b>` prints the SSIM of every still
- * two folders share (ffmpeg).
+ * two folders share (ffmpeg). PERF_BARE=1 also shoots each still with the
+ * traffic held and the trees hidden into <out>/bare (ruling 7's compare).
+ * PERF_FIRST_FRAME=5 last times five cold loads, navigation to the first
+ * city frame with its towers (Task 14), into <out>/first-frame.json;
+ * PERF_ONLY=first-frame stops there.
  */
 import './seeded-uuid.js';
 
@@ -67,7 +71,7 @@ import { podVariant } from '../app/src/city/vehicles.js';
 import { around, apart, callDebug, followView, person, runUntil, sendPerson, tramFromHome } from './people-stage.js';
 import { decodePng } from './png.js';
 import { seedSample, sampleGh } from './sample.js';
-import { homeBudget } from './ui-test.js';
+import { firstFrameMs, homeBudget, textureViews } from './ui-test.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -270,6 +274,10 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     ['overview', [cx + BEARING.x * 900, 300, cz + BEARING.z * 900], [cx, 70, cz]],
     ['close-tower', [d0.origin.x + BEARING.x * 120, top * 0.45, d0.origin.z + BEARING.z * 120], [d0.origin.x, top * 0.5, d0.origin.z]],
     ['tower-root', [d0.origin.x + BEARING.x * 75, 6, d0.origin.z + BEARING.z * 75], [d0.origin.x, lay.rootHeight * 0.5, d0.origin.z]],
+    // The texture views (Task 14), each the nearest named view of its scans: the Beaux-Arts root's sandstone from 34 m
+    // (as tools/ui-test.ts frames root-close), the brick era's floors of the tower with the longest brick run from 50 m,
+    // and the paving and kerbs of that tower's plaza from a walker's eye 40 m off.
+    ...textureViews(city),
     ['quarters', [qx + 360, 150, qz + 430], [qx - 10, 30, qz - 30]],
     ['quarter-close', [quick.origin.x + 60, 18, quick.origin.z + 70], [quick.origin.x, 14, quick.origin.z]],
     ['exchange', [30, 12, 82], [0, 24, -6]],
@@ -1049,7 +1057,7 @@ async function main(): Promise<void> {
       await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride { display: none !important; }' });
       await page.waitForTimeout(2500);
     };
-    for (const tier of tiers) {
+    for (const tier of only?.includes('first-frame') ? [] : tiers) {
       // The tier is Settings' quality, read as the page opens; the governor held still (PERF_GOVERNOR=1 leaves it running).
       await setQuality(tier);
       await open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug');
@@ -1064,6 +1072,17 @@ async function main(): Promise<void> {
       const measure = async (name: string, eye: V3 | null, target: V3): Promise<void> => {
         await settle(page, eye, target);
         await page.screenshot({ path: join(out, tier === 'high' ? `${name}.png` : `${name}-${tier}.png`) });
+        if (process.env.PERF_BARE) {
+          // The same frame with the traffic held and the trees hidden (ruling 7's compare): <out>/bare.
+          mkdirSync(join(out, 'bare'), { recursive: true });
+          await callDebug(page, 'd.ambientHold(true)');
+          await callDebug(page, 'd.trees(false)');
+          await page.waitForTimeout(250);
+          await page.screenshot({ path: join(out, 'bare', tier === 'high' ? `${name}.png` : `${name}-${tier}.png`) });
+          await callDebug(page, 'd.trees(true)');
+          await callDebug(page, 'd.ambientHold(false)');
+          await page.waitForTimeout(500);
+        }
         if (process.env.PERF_CULL_AB) {
           // The same frame with the batches' cluster culling off (as before Task 12) and on, a moment apart, the
           // traffic held: <out>/cull-off and <out>/cull-on, for `compare` to read with no run-to-run drift between.
@@ -1224,6 +1243,22 @@ async function main(): Promise<void> {
       console.log(`live home frames over 10 s: mean ${mean.toFixed(2)} ms, slowest ${hitches.max.toFixed(1)} ms, p99 ${hitches.p99.toFixed(1)} ms, ${slow} of ${frames.length} over 20.8 ms, ${hitches.over33} over 33 ms`);
       setMarketExtras({});
       writeFileSync(join(out, 'live.json'), JSON.stringify(live, null, 1));
+    }
+    // PERF_FIRST_FRAME=5: that many cold loads last (Task 14), each in a browser of its own, on high. Last, because a
+    // page opened on the engine changes what the next one shows (on high the whole frame comes out about twice as bright).
+    const loads = Number(process.env.PERF_FIRST_FRAME ?? 0);
+    if (loads > 0) {
+      // The run's own page draws nothing while the loads are timed.
+      await page.goto('about:blank');
+      await setQuality('high');
+      const times: number[] = [];
+      for (let i = 0; i < loads; i++) {
+        const ms = await firstFrameMs(`http://127.0.0.1:${PORT}/?fixed-quality&debug`);
+        times.push(ms);
+        console.log(`first frame, cold load ${i + 1}: ${ms.toFixed(0)} ms`);
+      }
+      console.log(`first frame over ${loads} cold loads: median ${median(times).toFixed(0)} ms (${times.map((t) => t.toFixed(0)).join(', ')})`);
+      writeFileSync(join(out, 'first-frame.json'), JSON.stringify({ times, median: median(times) }, null, 1));
     }
     writeFileSync(join(out, 'perf.json'), JSON.stringify(result, null, 1));
     if (errors.length) console.log(`console errors: ${errors.join(' | ')}`);

@@ -542,6 +542,8 @@ class LensPass extends Pass {
 export interface Post {
   /** Draws the frame; `dt` (seconds) eases the lens. */
   render(dt?: number): void;
+  /** The target the scene is drawn into (the composer's first buffer): programs compiled ahead are compiled for it. */
+  readonly sceneTarget: THREE.WebGLRenderTarget;
   /**
    * The lens's subject this frame (ruling 16): the close mode the camera is
    * in, or null, and how far the subject stands; `at`, where it stands, lets
@@ -637,6 +639,7 @@ export function createPost(
   }
 
   return {
+    sceneTarget: target,
     setFocus(o) {
       lens.set(o);
       subjectAt = o.at ?? null;
