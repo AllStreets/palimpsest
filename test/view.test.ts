@@ -357,3 +357,12 @@ test('a fresh home, nothing of his standing, opens over the skyline and not down
   const one = cityExtent([{ origin: { x: 0, z: 0 }, tower: { floors: [] } as never }]);
   assert.notDeepEqual(viewLimits(one, 1.6).home, viewLimits(cityExtent([]), 1.6).home);
 });
+
+test("the haze's falloff: thin through the middle distance, closing past 2 km, and the shader's the same (Task 15a)", async () => {
+  const { HAZE_POWER } = await import('../app/src/city/view.js');
+  const { SKY_GLSL } = await import('../app/src/city/sky.js');
+  assert.ok(hazeAt(HERO_FOG, 900) < 0.05, `at 900 m ${hazeAt(HERO_FOG, 900).toFixed(3)}`);
+  assert.ok(hazeAt(HERO_FOG, 2000) > 0.2 && hazeAt(HERO_FOG, 2000) < 0.4, `at 2 km ${hazeAt(HERO_FOG, 2000).toFixed(3)}`);
+  assert.ok(hazeAt(HERO_FOG, 3000) > 0.6 && hazeAt(HERO_FOG, 3000) < 0.8, `at 3 km ${hazeAt(HERO_FOG, 3000).toFixed(3)}`);
+  assert.match(SKY_GLSL, new RegExp(`float hazeFactor\\(float density, float d, float layer\\) \\{\\s*return 1\\.0 - exp\\(-pow\\(max\\(density \\* d \\* layer, 0\\.0\\), ${HAZE_POWER.toFixed(1).replace('.', '\\.')}\\)\\);`));
+});

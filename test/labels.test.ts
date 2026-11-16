@@ -11,7 +11,8 @@ import type { Floor } from '../shared/types.js';
 
 const mod = labels as unknown as {
   plateFlips?: (x: number, words: number, viewWidth: number) => boolean;
-  plateFits?: (x: number, y: number, words: number, flip: boolean, viewWidth: number, viewHeight: number) => boolean;
+  plateFits?: (x: number, y: number, words: number, flip: boolean, viewWidth: number, viewHeight: number, margin?: number) => boolean;
+  PLATE_FIT_SPARE?: number;
   bandKey?: (floors: readonly Floor[]) => string;
 };
 
@@ -36,6 +37,10 @@ test('a plate whose name would run off the view is not shown until it fits (Task
   assert.equal(mod.plateFits!(-30, 500, 120, false, 1512, 890), false);
   assert.equal(mod.plateFits!(600, 20, 120, false, 1512, 890), false);
   assert.equal(mod.plateFits!(600, 900, 120, false, 1512, 890), false);
+  // Once hidden it shows again only with PLATE_FIT_SPARE pixels to spare, so a plate at the edge does not flicker.
+  assert.ok((mod.PLATE_FIT_SPARE ?? 0) >= 4);
+  assert.equal(mod.plateFits!(1512 - 7 - 120 - 3, 500, 120, false, 1512, 890), true);
+  assert.equal(mod.plateFits!(1512 - 7 - 120 - 3, 500, 120, false, 1512, 890, mod.PLATE_FIT_SPARE), false);
 });
 
 const floor = (i: number, state?: 'lit' | 'scar' | 'waiting'): Floor => ({
@@ -63,4 +68,14 @@ test("a tower's plate says what its lit and dark bands are, in the inspector's w
     'A lit floor is a change a firm built here that you merged; a dark band is a scar, work that failed inspection, kept where it failed; a floor still unlit waits on your review.',
   );
   assert.equal(mod.bandKey!([floor(2, 'scar')]), 'A dark band is a scar, work that failed inspection, kept where it failed.');
+});
+
+test("the plates' words carry their own dark ground, and the second line an ink lighter than --ink-2 (Task 15a review)", () => {
+  const m = labels as unknown as { PLATE_SHADOW?: string; PLATE_SUB_INK?: string };
+  const lum = (hex: string): number => {
+    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  assert.ok(m.PLATE_SHADOW && /0 0 2px rgba\(10, 9, 12, 0\.9/.test(m.PLATE_SHADOW), 'a tight dark shadow under the letters');
+  assert.ok(m.PLATE_SUB_INK && lum(m.PLATE_SUB_INK) > lum('#b9b1a4') && lum(m.PLATE_SUB_INK) < lum('#f4efe6'), `the second line's ink ${m.PLATE_SUB_INK} sits between --ink-2 and the name's`);
 });

@@ -23,6 +23,9 @@ export const LOUVRE_PITCH = 0.3;
  */
 export const TURF = { floor: 0.98, mottle: 0.12, stripe: 0.13, wear: 1.4, skyFill: 0.22, sky: [0.74, 0.72, 0.8] as [number, number, number] } as const;
 
+/** How far from the eye the lawn's wear along the walks is drawn (Task 15a review): past it the walks' loop is skipped. */
+export const WEAR_FAR = 450;
+
 /** The walks' gravel as GLSL (campusWalks: centre and half size in the campus's frame), for the lawn's wear. */
 const WALKS_GLSL = (() => {
   const w = campusWalks();
@@ -186,7 +189,9 @@ export function patchMasonryShader(sh: MasonryShader): void {
           vec3 hue = mix(vec3(0.95, 1.0, 0.96), vec3(1.12, 1.05, 0.8), drift);
           vec3 g = vec3((${TURF.floor.toFixed(2)} + ${TURF.mottle.toFixed(2)} * a + 0.1 * f) * stripe * blade * tuft) * hue;
           // Worn along the kerbs: thinner grass, straw and then earth showing, broken up by the tufts.
-          float worn = (1.0 - smoothstep(0.0, ${TURF.wear.toFixed(2)}, campusWalkGap(lp))) * (0.55 + 0.45 * clump);
+          // Past WEAR_FAR metres a band 1.4 m wide is under a pixel or two: the walks' loop is skipped there.
+          float wearNear = 1.0 - smoothstep(${(WEAR_FAR * 0.8).toFixed(1)}, ${WEAR_FAR.toFixed(1)}, length(vViewPosition));
+          float worn = wearNear > 0.0 ? wearNear * (1.0 - smoothstep(0.0, ${TURF.wear.toFixed(2)}, campusWalkGap(lp))) * (0.55 + 0.45 * clump) : 0.0;
           g = mix(g, g * vec3(1.45, 1.05, 0.62) * 0.92, worn);
           s = vec4(g, 1.0);
         }

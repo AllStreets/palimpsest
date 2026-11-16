@@ -471,7 +471,7 @@ async function* treeViews(page: Page, reopen: () => Promise<void>): AsyncGenerat
 }
 
 /** The campus, finished (Task 10), staged: the perf city stands no campus unless asked for. */
-const CAMPUS = ['campus-home', 'campus-bays', 'campus-lamps', 'observatory-open', 'campus-turf-dusk', 'library-louvres-60m'];
+const CAMPUS = ['campus-home', 'campus-bays', 'campus-lamps', 'observatory-open', 'campus-turf-dusk', 'library-louvres-60m', 'campus-above'];
 
 /**
  * The campus's stills (Task 10), on a campus ensured as treeViews ensures it,
@@ -519,6 +519,8 @@ async function* campusViews(page: Page, reopen: () => Promise<void>, only: strin
   if (want('campus-bays')) yield ['campus-bays', at(147, 9.5, 19), at(178, 10, -1)];
   if (want('campus-lamps')) yield ['campus-lamps', at(-1, 8.6, 3.2), at(40, 8.4, -2)];
   if (want('campus-turf-dusk')) yield ['campus-turf-dusk', at(20, 7.7, 34), at(58, 4.4, 16)];
+  // The lawn from above (Task 15a review; tools/capture.ts campus-above): its stripes, its walks and their kerbs.
+  if (want('campus-above')) yield ['campus-above', at(40, 110, 30), at(62, 6, -6)];
   if (want('library-louvres-60m')) {
     const k = c.anchors.clock;
     const from = at(49.3, 0, -92.9);
@@ -1179,10 +1181,11 @@ async function main(): Promise<void> {
           await page.waitForFunction(() => ((window as unknown as { __palimpsest: { exchange(): { slots: Array<{ state: string; lamps: number }> } | null } }).__palimpsest.exchange()?.slots ?? []).some((x) => x.state === 'bidding'), null, { timeout: 15_000 }).catch(() => {});
           const board = await dbg<Array<{ state: string; lamps: number }>>(page, '(d) => d.exchange()?.slots ?? []');
           console.log(`exchange-600: ${board.filter((x) => x.state === 'bidding').length} cards lit, ${board.reduce((a, x) => a + x.lamps, 0)} lamps`);
-          // The bidders on their way to the exchange (Task 15a): the people's clock held and moved on until they stand
-          // in the queue at the hall's stair (people.ts queueSpot), as many as are on bid trips, or ten minutes on.
-          type Fig = { stage: string; position: V3; tripId: string | null };
-          const atDoors = (fs: Fig[]): number => fs.filter((f) => f.stage === 'idle' && f.position[0] > -2 && f.position[0] < 30 && f.position[2] > 20 && f.position[2] < 32).length;
+          // The bidders on their way to the exchange (Task 15a): the people's clock held and moved on until every figure
+          // on a live bid trip stands in the queue at the hall's stair (people.ts queueSpot), at most ten minutes on. Only
+          // figures on a bid trip count; a bidder that never arrives stops the run.
+          type Fig = { stage: string; position: V3; tripId: string | null; reason: string | null };
+          const atDoors = (fs: Fig[]): number => fs.filter((f) => f.tripId !== null && f.reason === 'bid' && f.stage === 'idle' && f.position[0] > -2 && f.position[0] < 30 && f.position[2] > 20 && f.position[2] < 32).length;
           const live = (await page.evaluate(() => fetch('/api/live').then((r) => (r.ok ? r.json() : { trips: [] })).catch(() => ({ trips: [] })))) as { trips?: Array<{ reason: string; endedAt: string | null }> };
           const bidding = (live.trips ?? []).filter((t) => t.reason === 'bid' && !t.endedAt).length;
           await callDebug(page, 'd.peopleHold(true)');
@@ -1192,6 +1195,7 @@ async function main(): Promise<void> {
             queued = atDoors(await callDebug<Fig[]>(page, 'd.persons()'));
           }
           console.log(`exchange-600: ${queued} of ${bidding} bidders in the queue at the doors`);
+          if (queued < bidding) throw new Error(`exchange-600: only ${queued} of ${bidding} bidders reached the exchange's queue in ten minutes of the people's clock`);
         }
         await measure(name, eye, target);
         if (name === 'exchange-600') await callDebug(page, 'd.peopleHold(false)');

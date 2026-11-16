@@ -38,12 +38,24 @@ const NAME_RISE = 32;
 
 /**
  * Whether a plate with its foot at (`x`, `y`) shows its words (`words` pixels wide, `flip` set left of the hairline)
- * whole within a `viewWidth` by `viewHeight` view (Task 15a): a plate whose name would run off an edge is not shown.
+ * whole within a `viewWidth` by `viewHeight` view, `margin` pixels in from its edges (Task 15a): a plate whose name would
+ * run off an edge is not shown.
  */
-export function plateFits(x: number, y: number, words: number, flip: boolean, viewWidth: number, viewHeight: number): boolean {
+export function plateFits(x: number, y: number, words: number, flip: boolean, viewWidth: number, viewHeight: number, margin = 0): boolean {
   const x0 = flip ? x - WORDS_OFF - words : x + WORDS_OFF;
-  return x0 >= 0 && x0 + words <= viewWidth && y - NAME_RISE >= 0 && y <= viewHeight;
+  return x0 >= margin && x0 + words <= viewWidth - margin && y - NAME_RISE >= margin && y <= viewHeight - margin;
 }
+
+/** A plate hidden for running off the view shows again only once it fits with this many pixels to spare, so it never flickers at the edge. */
+export const PLATE_FIT_SPARE = 8;
+
+/**
+ * The tower and quarter plates' words on the city (Task 15a review): a dark ground held close to the letters (a
+ * tight shadow and a wider soft one, no colour, no glow), and the second line's ink, lighter than the stylesheet's
+ * --ink-2 so it reads on the haze yet still a step under the name's.
+ */
+export const PLATE_SHADOW = '0 0 2px rgba(10, 9, 12, 0.95), 0 0 5px rgba(10, 9, 12, 0.9), 0 0 10px rgba(10, 9, 12, 0.75), 0 1px 16px rgba(10, 9, 12, 0.55)';
+export const PLATE_SUB_INK = '#ddd6ca';
 
 /** The class a flipped plate wears (style.css sets its words right-aligned left of the hairline). */
 export const PLATE_FLIP = 'plate-flip';
@@ -95,6 +107,8 @@ interface Live {
   flipped: boolean;
   /** Tested for occlusion at least once since it was made. */
   tested: boolean;
+  /** Hidden for running off the view (plateFits), until it fits with PLATE_FIT_SPARE to spare. */
+  clipped: boolean;
 }
 
 /**
@@ -160,9 +174,14 @@ export function createPlates(
           name.className = 'plate-name';
           const sub = document.createElement('span');
           sub.className = 'plate-sub';
+          // On the haze (Task 15a review): a close dark ground under the words, and the second line a step nearer the
+          // name's ink, so both read at 4.5:1 against the brightest tenth of the city behind them.
+          name.style.textShadow = PLATE_SHADOW;
+          sub.style.textShadow = PLATE_SHADOW;
+          if (!plate.className) sub.style.color = PLATE_SUB_INK;
           el.append(name, sub);
           layer.appendChild(el);
-          l = { plate, el, name, sub, hidden: false, words: 0, flipped: false, tested: false };
+          l = { plate, el, name, sub, hidden: false, words: 0, flipped: false, tested: false, clipped: false };
           const self = l;
           el.addEventListener('click', () => self.plate.onActivate?.());
         }
@@ -214,7 +233,8 @@ export function createPlates(
         if (flip !== l.flipped) setFlip(l, flip);
         // A plate whose words would still run off the view (its foot past an edge, or its name over the top) waits
         // until the eye turns to it: a name is shown whole or not at all (Task 15a).
-        if (l.words > 0 && !plateFits(x, y, l.words, flip, w, h)) {
+        l.clipped = l.words > 0 && !plateFits(x, y, l.words, flip, w, h, l.clipped ? PLATE_FIT_SPARE : 0);
+        if (l.clipped) {
           l.el.style.opacity = '0';
           l.el.style.visibility = 'hidden';
         }

@@ -36,7 +36,7 @@ import * as THREE from 'three';
 
 import { BOARD_WAIT_S, CAB_WAIT_S, inChannel, PIERS, SPEED, streetLine, type Network } from '../../../shared/commute.js';
 import { DISTRICT_PITCH } from '../../../shared/district-layout.js';
-import type { Agent, Trip, TripMode } from '../../../shared/types.js';
+import type { Agent, Trip, TripMode, TripReason } from '../../../shared/types.js';
 import { asSkinned, B, bodyOf, Builder, dissolve, FIGURE_CODE, figureGeometry, figureShader, SEATED, SHOULDER_IN, wornTriangles } from './ambient.js';
 import { loadSkin } from './figures.js';
 import type { Plate } from './labels.js';
@@ -87,6 +87,8 @@ export interface FigureView {
   kind: 'agent' | 'walker';
   name: string;
   tripId: string | null;
+  /** Why its trip goes where it does (a bid, a job, an inspection, home, school), or null for a walker or no trip (Task 15a). */
+  reason: TripReason | null;
   /** Whether its trip is still among the live ones (a figure finishes an ended trip on foot). */
   live: boolean;
   leg: number;
@@ -1384,6 +1386,7 @@ export function createPeople(deps: PeopleDeps): People {
         name: f.agent.name,
         // A walker's path is its own, never one of the market's trips.
         tripId: f.kind === 'walker' ? null : (f.trip?.id ?? null),
+        reason: f.kind === 'walker' ? null : (f.trip?.reason ?? null),
         live: f.live,
         leg: f.leg,
         mode: f.trip?.legs[f.leg]?.mode ?? null,

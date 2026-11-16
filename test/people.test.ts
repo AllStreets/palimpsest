@@ -717,3 +717,41 @@ test("the exchange's bidders stand in a queue at the hall's stair, each in a pla
     for (let j = 0; j < i; j++) assert.ok(Math.hypot(p.x - spots[j].x, p.z - spots[j].z) > 0.6, `places ${j} and ${i} apart`);
   }
 });
+
+test('bidders arriving at the exchange take distinct places in the queue, a new trip frees one, and other trips keep their stand (Task 15a)', async () => {
+  const { queueSpot } = (await import('../app/src/city/people.js')) as unknown as { queueSpot: (i: number) => { x: number; z: number; heading: number } };
+  const EXCHANGE = { x: 0, z: 27 };
+  const bid = (agentId: string, from: P, id = `trip-${agentId}`): Trip => ({ ...tripOf(agentId, from, EXCHANGE), id, reason: 'bid' });
+  const a = bid('ana', { x: 0, z: 140 });
+  const b = bid('ben', { x: 60, z: 140 });
+  // An inspector bound for the forecourt's centre (in the fountain) keeps the fountain's stand on the paving off its rim.
+  const c: Trip = { ...tripOf('cal', { x: -60, z: 140 }, { x: FOUNTAIN.x, z: FOUNTAIN.z }), reason: 'inspect' };
+  const t0 = Date.parse(a.startedAt);
+  let now = t0 + 3600_000;
+  const people = createPeople({ vehicles: () => null, net: () => NET, now: () => now });
+  const agents = [agentOf('ana'), agentOf('ben'), agentOf('cal'), agentOf('dee')];
+  people.set([a, b, c], agents);
+  people.update(1);
+  const at = (id: string) => people.figures().find((f) => f.agentId === id)!;
+  const spots = [queueSpot(0), queueSpot(1)];
+  const near = (f: { position: number[] }, q: { x: number; z: number }) => Math.hypot(f.position[0] - q.x, f.position[2] - q.z) < 0.05;
+  const placeOf = (id: string) => spots.findIndex((q) => near(at(id), q));
+  assert.ok(placeOf('ana') >= 0 && placeOf('ben') >= 0, `both bidders stand in the queue (${at('ana').position}, ${at('ben').position})`);
+  assert.notEqual(placeOf('ana'), placeOf('ben'), 'each in a place of its own');
+  assert.equal(at('ana').reason, 'bid');
+  const cal = at('cal');
+  assert.equal(cal.reason, 'inspect');
+  assert.ok(Math.abs(Math.hypot(cal.position[0] - FOUNTAIN.x, cal.position[2] - FOUNTAIN.z) - (FOUNTAIN.radius + 1.8)) < 0.05, `the inspector stands off the basin's rim (${cal.position})`);
+  // Ana's next trip takes her away and frees her place; a new bidder arriving takes it.
+  const freed = placeOf('ana');
+  const away: Trip = { ...tripOf('ana', EXCHANGE, { x: 0, z: 140 }, new Date(now).toISOString()), id: 'trip-ana-2', reason: 'home' };
+  people.set([away, b, c], agents);
+  people.update(1);
+  assert.ok(!near(at('ana'), spots[freed]), 'her new trip moved her out of the queue');
+  const d = bid('dee', { x: 0, z: 140 }, 'trip-dee');
+  now += 3600_000;
+  people.set([away, b, c, { ...d, startedAt: new Date(now - 1800_000).toISOString() }], agents);
+  people.update(1);
+  assert.ok(near(at('dee'), spots[freed]), `the next bidder takes the freed place (${at('dee').position})`);
+  assert.ok(placeOf('ben') !== freed, 'and Ben keeps his');
+});

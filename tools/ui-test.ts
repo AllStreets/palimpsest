@@ -3969,10 +3969,12 @@ function relLum(r: number, g: number, b: number): number {
 }
 
 /**
- * The tower plates read on the haze (Phase 5 Task 15a): at the overview and from home, each shown plate's name stands
- * at least PLATE_CONTRAST to 1 against what is behind it (the frame shot with the words made transparent, so the
- * plate's own shadow counts as the ground it is read on; the 75th percentile of that ground's luminance in the words'
- * box, its brighter parts), and every shown name is whole on screen (the plate-flip path keeps long names in).
+ * The tower plates read on the haze (Phase 5 Task 15a): at the overview and from home, each shown plate's name and
+ * its second line stand at least PLATE_CONTRAST to 1 against what is behind them, and every shown name is whole on
+ * screen (the plate-flip path keeps long names in). The ground is the frame shot with the words made transparent (the
+ * plate's own shadow counts as the ground it is read on); for light words it is the ground's 90th percentile of
+ * luminance in the words' box (its bright tenth, the worst case a reader meets), for dark words the 10th; the words'
+ * colour is blended over that ground by its own alpha before the ratio is taken.
  */
 async function plateChecks(page: Page): Promise<void> {
   const city = await cityOf(page);
@@ -3985,12 +3987,16 @@ async function plateChecks(page: Page): Promise<void> {
   ] as Array<[string, number[], number[]]>) {
     await setView(page, eye, target);
     await page.waitForTimeout(2500);
-    type P = { name: string; x0: number; y0: number; x1: number; y1: number; colour: number[]; flipped: boolean };
+    type Line = { text: string; x0: number; y0: number; x1: number; y1: number; colour: number[] };
+    type P = { name: Line; sub: Line | null; flipped: boolean };
     const plates = (await page.evaluate(`[...document.querySelectorAll('.plates .plate')].filter((p) => p.style.visibility === 'visible' && Number(p.style.opacity) > 0.5 && !p.classList.contains('plate-person')).map((p) => {
-      const n = p.querySelector('.plate-name');
-      const r = n.getBoundingClientRect();
-      const c = getComputedStyle(n).color.match(/[0-9.]+/g).map(Number);
-      return { name: n.textContent, x0: r.left, y0: r.top, x1: r.right, y1: r.bottom, colour: c, flipped: p.classList.contains('plate-flip') };
+      const line = (el) => {
+        if (!el || !el.textContent) return null;
+        const r = el.getBoundingClientRect();
+        const c = getComputedStyle(el).color.match(/[0-9.]+/g).map(Number);
+        return { text: el.textContent, x0: r.left, y0: r.top, x1: r.right, y1: r.bottom, colour: [c[0], c[1], c[2], c.length > 3 ? c[3] : 1] };
+      };
+      return { name: line(p.querySelector('.plate-name')), sub: line(p.querySelector('.plate-sub')), flipped: p.classList.contains('plate-flip') };
     })`)) as P[];
     const hide = await page.addStyleTag({ content: '.runhead { display: none !important; } .plate-name, .plate-sub { color: transparent !important; }' });
     await page.waitForTimeout(300);
@@ -3998,28 +4004,38 @@ async function plateChecks(page: Page): Promise<void> {
     await hide.evaluate((e) => (e as HTMLElement).remove());
     await page.screenshot({ path: join(SHOTS, `plates-${name}.png`) });
     const k = img.width / VIEWPORT.width;
-    const rows: string[] = [];
-    let worst = Infinity;
-    let whole = true;
-    for (const p of plates) {
-      const lums: number[] = [];
-      for (let y = Math.max(0, Math.round(p.y0 * k)); y < Math.min(img.height, Math.round(p.y1 * k)); y++) {
-        for (let x = Math.max(0, Math.round(p.x0 * k)); x < Math.min(img.width, Math.round(p.x1 * k)); x++) {
+    const ratioOf = (l: Line): number => {
+      const px: Array<[number, number, number, number]> = [];
+      for (let y = Math.max(0, Math.round(l.y0 * k)); y < Math.min(img.height, Math.round(l.y1 * k)); y++) {
+        for (let x = Math.max(0, Math.round(l.x0 * k)); x < Math.min(img.width, Math.round(l.x1 * k)); x++) {
           const i = (y * img.width + x) * 4;
-          lums.push(relLum(img.data[i], img.data[i + 1], img.data[i + 2]));
+          px.push([relLum(img.data[i], img.data[i + 1], img.data[i + 2]), img.data[i], img.data[i + 1], img.data[i + 2]]);
         }
       }
-      lums.sort((a, b) => a - b);
-      const ground = lums.length ? lums[Math.floor(lums.length * 0.75)] : 1;
-      const text = relLum(p.colour[0], p.colour[1], p.colour[2]);
-      const ratio = (Math.max(text, ground) + 0.05) / (Math.min(text, ground) + 0.05);
-      worst = Math.min(worst, ratio);
-      const on = p.x0 >= 0 && p.x1 <= VIEWPORT.width && p.y0 >= 0 && p.y1 <= VIEWPORT.height;
+      if (!px.length) return 1;
+      px.sort((p, q) => p[0] - q[0]);
+      const [cr, cg, cb, ca] = l.colour;
+      const light = relLum(cr, cg, cb) > px[px.length >> 1][0];
+      const g = px[Math.min(px.length - 1, Math.floor(px.length * (light ? 0.9 : 0.1)))];
+      const text = relLum(cr * ca + g[1] * (1 - ca), cg * ca + g[2] * (1 - ca), cb * ca + g[3] * (1 - ca));
+      return (Math.max(text, g[0]) + 0.05) / (Math.min(text, g[0]) + 0.05);
+    };
+    const rows: string[] = [];
+    let worstName = Infinity;
+    let worstSub = Infinity;
+    let whole = true;
+    for (const p of plates) {
+      const nr = ratioOf(p.name);
+      const sr = p.sub ? ratioOf(p.sub) : Infinity;
+      worstName = Math.min(worstName, nr);
+      worstSub = Math.min(worstSub, sr);
+      const on = p.name.x0 >= 0 && p.name.x1 <= VIEWPORT.width && p.name.y0 >= 0 && p.name.y1 <= VIEWPORT.height;
       whole &&= on;
-      rows.push(`${p.name} ${ratio.toFixed(2)}${p.flipped ? ' (flipped)' : ''}${on ? '' : ' (off screen)'}`);
+      rows.push(`${p.name.text} ${nr.toFixed(2)}${p.sub ? ` / ${p.sub.text} ${sr.toFixed(2)}` : ''}${p.flipped ? ' (flipped)' : ''}${on ? '' : ' (off screen)'}`);
     }
     console.log(`info  plates at ${name}: ${rows.join('; ')}`);
-    check(plates.length >= 3 && worst >= PLATE_CONTRAST, `at ${name} every shown tower plate's name stands at least ${PLATE_CONTRAST}:1 against the city behind it (${plates.length} plates, the least ${worst.toFixed(2)})`);
+    check(plates.length >= 3 && worstName >= PLATE_CONTRAST, `at ${name} every shown tower plate's name stands at least ${PLATE_CONTRAST}:1 against the bright tenth of the city behind it (${plates.length} plates, the least ${worstName.toFixed(2)})`);
+    check(plates.length >= 3 && worstSub >= PLATE_CONTRAST, `at ${name} every shown tower plate's second line stands at least ${PLATE_CONTRAST}:1 against the bright tenth of the city behind it (the least ${worstSub.toFixed(2)})`);
     check(plates.length >= 3 && whole, `at ${name} every shown tower plate's name is whole on screen`);
   }
 }

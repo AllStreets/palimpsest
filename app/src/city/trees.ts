@@ -633,7 +633,8 @@ function treeMaterial(species: Species, level: TreeLevel, band: THREE.Vector2): 
       .replace('#include <project_vertex>', PROJECT(fold));
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>\nvarying float vLeaf;\nvarying float vTreeFade;\nvarying vec3 vTint;\nvarying float vTreeShade;\n${CUT}`)
-      .replace('void main() {', `void main() {\n  ${DITHER}\n  if (${keep}) discard;`)
+      // The card's own face from the view position's derivatives, taken in uniform flow before any discard (Task 15a).
+      .replace('void main() {', `void main() {\n  ${DITHER}\n  vec3 cardN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));\n  if (${keep}) discard;`)
       .replace(
         '#include <map_fragment>',
         /* glsl */ `
@@ -642,7 +643,6 @@ function treeMaterial(species: Species, level: TreeLevel, band: THREE.Vector2): 
           if (leafTex.a < treeCut(vMapUv)) discard;
           // Up close (LEAF_EDGE_NEAR, LEAF_EDGE_ON, LEAF_EYE_CLEAR): no edge-on card, and the leaves part round the eye.
           float leafD = length(vViewPosition);
-          vec3 cardN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
           bool edgeOn = leafD < ${LEAF_EDGE_NEAR.toFixed(1)} && abs(dot(cardN, vViewPosition / max(leafD, 1e-4))) < ${LEAF_EDGE_ON.toFixed(3)};
           if (edgeOn || leafD < ${LEAF_EYE_CLEAR.toFixed(1)}) discard;
           diffuseColor.rgb *= leafTex.rgb * vTint;
