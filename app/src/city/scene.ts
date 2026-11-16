@@ -47,6 +47,8 @@ import { makeScaffold, type Scaffold } from './scaffold.js';
 import { createMilestones, findTowerPiece, type MilestoneShow, type Milestones, type TowerPiece } from './milestones.js';
 import type { TowerMaterials } from './tower/kit.js';
 import { createSky, HORIZON_FOG, installSkyFog, SUN_DIRECTION } from './sky.js';
+import { createContactShadows } from './contact-shadow.js';
+import { ROOT_TOP_HALF } from './tower/roots.js';
 import { cityExtent, clearAirFloor, easeHome, easeLimits, fogFrom, opensHome, viewLimits, type EasedHome, type EasedLimits, type ViewLimits } from './view.js';
 
 /** What a click in the city landed on: a district's tower (a floor, or its root), an agent's tower in a quarter, or a firm's plinth. */
@@ -455,6 +457,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(ground.group);
   const grid = createGrid(quality, { sun: SUN_DIRECTION, half: SHADOW_HALF, offset: SUN_OFFSET, near: 10, far: 1600 });
   scene.add(grid.group);
+  // The towers past the shadow map's box stand on their own baked contact shadows (Task 15, contact-shadow.ts).
+  const contact = createContactShadows(SUN_DIRECTION, SHADOW_HALF);
+  scene.add(contact.object);
   // The trees (trees.ts): the streets', the roof gardens', the quarters' garths' and the campus's, one draw per
   // species and level for all of them; planted again (once a frame at most) whenever any of those changes.
   const trees = createTrees(quality);
@@ -1429,6 +1434,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     placed = true;
     const built = placeDistricts(occ.districts) + placeQuarters(life.set(occ.quarters), true);
     const wants = campanileStands(occ.districts.map((d) => layoutTower(d.tower).top));
+    contact.set(occ.districts.map((d) => ({ x: d.origin.x, z: d.origin.z, half: ROOT_TOP_HALF[d.tower.root] ?? 14, height: layoutTower(d.tower).top })));
     if (wants !== campanile) {
       campanile = wants;
       buildExchange();
@@ -1754,6 +1760,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
     sun.target.position.copy(shadowAt);
     sun.position.copy(shadowAt).add(sunOffset);
+    contact.follow(shadowAt);
   }
 
   let framesAfterLoad = -1;
@@ -2017,7 +2024,23 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   const clock = new THREE.Clock();
   const dropListeners: Array<(saw: QualityDrop) => void> = [];
   const governor = qualityGovernor({ start: opts.autoQuality === false ? 'medium' : quality });
+  /**
+   * A step down while the lens is on (the ride, a follow, a tour stop, the
+   * inspector's close view) first lets the depth of field ease off over
+   * DOF.ease as it does leaving a close mode, then steps down: medium has no
+   * lens, so stepping down at once would cut the blur off in one frame (Task 15).
+   */
+  let dropWaiting = false;
   function dropQuality(): void {
+    if (quality === 'medium') return;
+    if (post.lens().on) {
+      dropWaiting = true;
+      return;
+    }
+    dropWaiting = false;
+    stepDown();
+  }
+  function stepDown(): void {
     if (quality === 'medium') return;
     // Whatever was being rebuilt at high is built again at medium below, at once: the waiting work is let go.
     // The districts and quarters waiting or under way at high are dropped (they are built again at medium below, at
@@ -2175,8 +2198,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     for (const ask of shareWanted.splice(0)) ask.resolve(idShare(ask.key));
     for (const ask of distanceWanted.splice(0)) ask(distancePass());
     // The lens (ruling 16): the close mode the camera is in and how far its subject stands; none from home or the overview.
-    const mode = lensOverride !== undefined ? lensOverride : focusModeFor({ script: rig.scriptFocus(), following: rig.following(), inspecting: insetTarget > 0 });
+    const mode = dropWaiting ? null : lensOverride !== undefined ? lensOverride : focusModeFor({ script: rig.scriptFocus(), following: rig.following(), inspecting: insetTarget > 0 });
     post.setFocus({ mode, distance: camera.position.distanceTo(rig.controls.target), at: rig.controls.target });
+    // A step down waiting on the lens goes ahead once the lens is off.
+    if (dropWaiting && !post.lens().on) dropQuality();
     // A rebuild waiting out its debounce starts; then the rebuilds take their few milliseconds of this frame (Task 13).
     const due = quarterWait.take(clock.elapsedTime);
     if (due) scheduleRemerge(`${owner}quarters`, stepper(due, () => {}));
@@ -2444,6 +2469,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       rig.dispose();
       post.dispose();
       grid.dispose();
+      contact.dispose();
       trees.dispose();
       river.dispose();
       transit.dispose();

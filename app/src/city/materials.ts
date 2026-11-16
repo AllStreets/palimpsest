@@ -81,6 +81,21 @@ function pump(): void {
   });
 }
 
+/**
+ * Once a scan is on the GPU its decoded bitmap is let go (Task 15): about
+ * 100 MB of decoded scans were held for nothing after the upload. The
+ * texture keeps the bitmap's size, so nothing that reads its dimensions
+ * changes; it is uploaded once (the city has one renderer, and nothing asks
+ * a scan to upload again).
+ */
+export function releaseOnUpload(t: THREE.Texture): void {
+  t.onUpdate = null;
+  const image = t.image as { width: number; height: number; close?: () => void } | null;
+  if (!image || typeof image.close !== 'function') return;
+  t.image = { width: image.width, height: image.height };
+  image.close();
+}
+
 /** Sets the anisotropy used by every texture loaded from now on. Call once with the renderer. */
 export function configureMaterials(renderer: THREE.WebGLRenderer): void {
   maxAniso = renderer.capabilities.getMaxAnisotropy();
@@ -138,6 +153,7 @@ export function texture(name: string, srgb = false): THREE.Texture {
               t.image = image;
               t.flipY = false;
               t.needsUpdate = true;
+              t.onUpdate = releaseOnUpload;
               finish();
             },
             undefined,

@@ -22,6 +22,68 @@ import * as THREE from 'three';
 export const AMBIENT_LOD = { near: 450, far: 600 } as const;
 
 /**
+ * A tower kit part's two levels (tower/kit.ts LOD_FAR, 450 m from the part):
+ * the near level dissolves into the far one across this band, by the same
+ * screen-door pattern as the roof kit, each instance by its own distance
+ * from the eye, so the switch never pops (Task 15).
+ */
+export const TOWER_LOD = { near: 430, far: 470 } as const;
+
+/** The two levels' shares of a part `d` metres from the eye: complementary, so every part draws whole across the band. */
+export function towerLodBlend(d: number): { near: number; far: number } {
+  const far = lodFade(d, TOWER_LOD.near, TOWER_LOD.far);
+  return { near: 1 - far, far };
+}
+
+const lodEye = new THREE.Vector3();
+const lodAt = new THREE.Vector3();
+/**
+ * An LOD of two levels that cross-fade (TOWER_LOD) rather than switch: both
+ * levels stand while any of its instances is inside the band (`reach` is how
+ * far its instances spread round its centre), and the shaders (lod-shader.ts
+ * towerLodMaterial) give each pixel to one of them.
+ */
+export class FadeLOD extends THREE.LOD {
+  /** How far the instances stand from the LOD's centre, at most, in metres. */
+  reach = 0;
+  override update(camera: THREE.Camera): void {
+    const levels = this.levels;
+    // Two levels of one geometry (a kit part at medium) look the same either side: a plain switch, drawn once.
+    const shape = (k: number): THREE.BufferGeometry | undefined => (levels[k]?.object as THREE.Mesh | undefined)?.geometry;
+    if (levels.length < 2 || (shape(0) !== undefined && shape(0) === shape(1))) {
+      super.update(camera);
+      return;
+    }
+    lodEye.setFromMatrixPosition(camera.matrixWorld);
+    lodAt.setFromMatrixPosition(this.matrixWorld);
+    const d = lodEye.distanceTo(lodAt) / ((camera as THREE.PerspectiveCamera).zoom ?? 1);
+    const near = d < TOWER_LOD.far + this.reach;
+    const far = d > TOWER_LOD.near - this.reach;
+    levels[0].object.visible = near;
+    levels[1].object.visible = far;
+    (this as unknown as { _currentLevel: number })._currentLevel = near ? 0 : 1;
+  }
+}
+
+/** The greatest distance of any instance of these meshes (their instance matrices, in the LOD's frame) from the LOD's centre. */
+export function instanceReach(meshes: THREE.InstancedMesh[]): number {
+  // Straight off the matrices' translation columns: it runs inside a rebuild step, once per LOD (Task 13's budget).
+  let r2 = 0;
+  for (const mesh of meshes) {
+    const a = mesh.instanceMatrix.array;
+    const { x, y, z } = mesh.position;
+    for (let i = 0, o = 12; i < mesh.count; i++, o += 16) {
+      const dx = a[o] + x;
+      const dy = a[o + 1] + y;
+      const dz = a[o + 2] + z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > r2) r2 = d2;
+    }
+  }
+  return Math.sqrt(r2);
+}
+
+/**
  * Past this distance from the eye nothing joins the AO pass. GTAO fades out
  * by 1200 m from the eye (post.ts AO_FADE_END, measured as distance, not
  * depth, so the same across the frame): nothing that could show any AO is

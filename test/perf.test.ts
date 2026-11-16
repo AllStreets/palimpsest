@@ -64,3 +64,13 @@ test('the first page and a second are the same light within 3%', () => {
   // Task 14's pair: the high home through the brief's scrim against the same view without it.
   assert.equal(sameLight(62.14, 115.4), false);
 });
+
+test('every named view holds 58 fps on high and on medium: perf names each view under the floor, and a view never measured is under it', async () => {
+  const P = (await import('../tools/perf.js')) as unknown as Record<string, unknown>;
+  const slowViews = P.slowViews as (rows: Record<string, { fps: number }>, floor?: number) => string[];
+  assert.equal(P.FPS_FLOOR, 58);
+  assert.deepEqual(slowViews({ home: { fps: 59.9 }, hero: { fps: 58 } }), []);
+  assert.deepEqual(slowViews({ home: { fps: 59.9 }, ride: { fps: 30 }, 'follow-held': { fps: 0 } }), ['follow-held 0.0', 'ride 30.0']);
+  const medianRate = P.medianRate as (ms: number[]) => number;
+  assert.ok(Math.abs(medianRate([16.7, 16.7, 33.4]) - 1000 / 16.7) < 1e-9);
+});

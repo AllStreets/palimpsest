@@ -2953,6 +2953,65 @@ async function lensChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
   check(!back.on, `back home the lens is off again (${lensLine(back)})`);
 }
 
+/**
+ * A step down in the middle of a ride (Phase 5 Task 15, UI_ONLY=perfpass):
+ * on high the ride runs with the depth of field on; the city steps down to
+ * medium as the governor would; the lens eases off over its own ease (no
+ * frame where its amount falls by more than a quarter, as it never does
+ * leaving a close mode) rather than cut off with the high passes, the city
+ * stands at medium after, and the ride holds 58 fps at medium.
+ */
+async function dropMidRideChecks(page: Page): Promise<void> {
+  check((await debug(page, (d) => d.quality())) === 'high', 'the city stands at high for the step down mid-ride');
+  const ds = await cityOf(page);
+  const busy = new Set((await callDebug<Array<{ repo: string }>>(page, 'd.liveSites()')).map((x) => x.repo));
+  const rideOn = [...ds].filter((d) => !busy.has(d.repo)).sort((a, b) => b.tower.floors.length - a.tower.floors.length)[0];
+  if (!rideOn || !(await callDebug<boolean>(page, `d.ride(${JSON.stringify(rideOn.repo)})`))) {
+    check(false, 'a ride starts for the step down');
+    return;
+  }
+  await page.waitForTimeout(4000);
+  const before = await lensNow(page);
+  check(before.on && before.amount === 1, `the lens is on during the ride before the step down (${lensLine(before)})`);
+  // Each frame's lens amount and quality over three seconds, the step down asked for half a second in.
+  // A string, so the bundler's helpers never reach the page.
+  const run = (await page.evaluate(`new Promise((resolve) => {
+    const d = window.__palimpsest;
+    const rows = [];
+    const t0 = performance.now();
+    let asked = false;
+    function tick() {
+      const t = performance.now() - t0;
+      rows.push({ t, amount: d.lens().amount, quality: d.quality() });
+      if (!asked && t > 500) {
+        asked = true;
+        d.dropQuality();
+      }
+      if (t < 3000) requestAnimationFrame(tick);
+      else resolve(rows);
+    }
+    requestAnimationFrame(tick);
+  })`)) as Array<{ t: number; amount: number; quality: string }>;
+  let step = 0;
+  let longest = 0;
+  for (let i = 1; i < run.length; i++) {
+    step = Math.max(step, run[i - 1].amount - run[i].amount);
+    longest = Math.max(longest, run[i].t - run[i - 1].t);
+  }
+  const at = run.findIndex((r) => r.quality === 'medium');
+  const off = run.findIndex((r) => r.amount === 0);
+  console.log(`info  step down mid-ride: the lens off ${off >= 0 ? (run[off].t - 500).toFixed(0) : '?'} ms after the ask, the city at medium ${at >= 0 ? (run[at].t - 500).toFixed(0) : '?'} ms after, the largest fall in a frame ${step.toFixed(3)}, the longest frame ${longest.toFixed(1)} ms`);
+  check(at >= 0 && (await debug(page, (d) => d.quality())) === 'medium', 'the city stands at medium after the step down mid-ride');
+  check(off >= 0 && step <= 0.25, `the depth of field turns off without a jump (its largest fall in one frame ${step.toFixed(3)}, at most 0.25)`);
+  const after = await lensNow(page);
+  check(!after.on && after.blur === 0, `on medium the lens stays off on the ride (${lensLine(after)})`);
+  const fps = await medianFps(page);
+  console.log(`info  the ride on medium after the step down: ${fps.toFixed(1)} fps`);
+  check(fps >= 58, `the ride holds 58 fps on medium after the step down (${fps.toFixed(1)})`);
+  await callDebug(page, 'd.ride(null)');
+  await page.waitForTimeout(2000);
+}
+
 async function medianFps(page: Page): Promise<number> {
   await page.waitForTimeout(1000);
   await callDebug(page, 'd.frameLog.start()');
@@ -4387,8 +4446,9 @@ async function main(): Promise<void> {
     // UI_ONLY=lens: depth of field off from home and on in the four close views at 58 fps, and the H key (Phase 5 Task 11).
     // UI_ONLY=hitches: no frame over 33 ms through a floor landing, hires, a re-clad, a disconnect, the ride, a follow and home (Task 13).
     // UI_ONLY=cull: the street and the court draw a quarter fewer triangles than round 0, home no more calls (Phase 5 Task 12).
+    // UI_ONLY=perfpass: the home guard on both tiers and a step down to medium in the middle of a ride (Phase 5 Task 15).
     // UI_ONLY=textures: the first city frame within 4 s over five cold loads, and SSIM 0.98 against the original textures (UI_TEXTURE_BASE) at four views (Task 14).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures', 'plates'].includes(process.env.UI_ONLY ?? '');
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures', 'plates', 'perfpass'].includes(process.env.UI_ONLY ?? '');
     if (process.env.UI_ONLY === 'textures' && ready) {
       await textureChecks(browser, page);
     } else if (spireOnly && ready) {
@@ -4458,6 +4518,11 @@ async function main(): Promise<void> {
         await page.evaluate('window.__palimpsest.dropQuality()');
         await page.waitForTimeout(2500);
         await cullChecks(page, 'medium');
+      } else if (process.env.UI_ONLY === 'perfpass') {
+        // Phase 5 Task 15: the home guard on high (guard), a step down in the middle of a ride, the home guard on medium (guard).
+        await homeBudgetChecks(page, 'high');
+        await dropMidRideChecks(page);
+        await homeBudgetChecks(page, 'medium');
       } else if (process.env.UI_ONLY === 'lens') {
         await lensChecks(page, 'high');
         await page.evaluate('window.__palimpsest.dropQuality()');

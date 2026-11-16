@@ -78,3 +78,17 @@ test('the textures load in the order the home view needs them, the stone, brick,
   // The street floor (ground.ts, street.ts) samples the pave set and the granite: the city never shows before they land.
   for (const f of ['pave_diff.jpg', 'pave_nor.jpg', 'pave_arm.jpg', 'granite_diff.jpg']) assert.ok(textureRank(f) <= last, `${f} is in before the city shows`);
 });
+
+test('a decoded scan is let go once it is on the GPU, keeping its size', async () => {
+  const M = (await import('../app/src/city/materials.js')) as unknown as Record<string, unknown>;
+  const release = M.releaseOnUpload as ((t: import('three').Texture) => void) | undefined;
+  assert.ok(release, 'materials.ts lets a scan go after its upload');
+  const { Texture } = await import('three');
+  let closed = 0;
+  const t = new Texture({ width: 2048, height: 1024, close: () => closed++ } as unknown as HTMLImageElement);
+  t.onUpdate = release!;
+  t.onUpdate(t);
+  assert.equal(closed, 1, 'the bitmap is closed');
+  assert.deepEqual(t.image, { width: 2048, height: 1024 });
+  assert.equal(t.onUpdate, null, 'once');
+});

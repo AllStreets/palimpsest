@@ -132,6 +132,24 @@ export async function openTodaysBrief(port: number, fetchImpl: (url: string, ini
   if (!res.ok) throw new Error(`perf: opening today's brief answered ${res.status}`);
 }
 
+/** Every named view's frame rate on each tier, at least (ruling 3, Task 15). */
+export const FPS_FLOOR = 58;
+
+/** The views under the floor, slowest first, as `name fps`. */
+export function slowViews(rows: Record<string, { fps: number }>, floor = FPS_FLOOR): string[] {
+  return Object.entries(rows)
+    .filter(([, r]) => !(r.fps >= floor))
+    .sort((a, b) => a[1].fps - b[1].fps)
+    .map(([n, r]) => `${n} ${r.fps.toFixed(1)}`);
+}
+
+/** The median frame rate of a run of frame times in ms (viewFps's measure, over frames already logged). */
+export function medianRate(ms: readonly number[]): number {
+  const rates = ms.filter((t) => t > 0).map((t) => 1000 / t).sort((a, b) => a - b);
+  const m = rates.length >> 1;
+  return rates.length === 0 ? 0 : rates.length % 2 ? rates[m] : (rates[m - 1] + rates[m]) / 2;
+}
+
 /** The first page opened on the engine and a second are the same light: their mean luma within 3%. */
 export const SAME_LIGHT = 0.03;
 export function sameLight(a: number, b: number): boolean {
@@ -363,6 +381,11 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     // The six pinned looks (Decision 6's sheet, Task 6 round 0; Task 15 completes it): each sample tower's lower
     // floors (the root, the stone and the brick eras and the first glass, where the pinned materials read) from 190 m
     // on the home bearing; a 115 floor needle framed whole was only its haze.
+    // The far towers' contact shadows (Task 15): home pulled back half again along its own line, and a view whose
+    // target (the shadow map's centre) stands 360 m short of the districts on the home side, so the towers stand past
+    // the map's box with only their contact shadows under them.
+    ['wide-home', [home.target[0] + (home.eye[0] - home.target[0]) * 1.5, home.target[1] + (home.eye[1] - home.target[1]) * 1.5, home.target[2] + (home.eye[2] - home.target[2]) * 1.5], home.target],
+    ['far-shadows', [cx + BEARING.x * 820, 330, cz + BEARING.z * 820], [cx + BEARING.x * 360, 0, cz + BEARING.z * 360]],
     ...city.map((d): [string, V3, V3] => {
       const t = Math.min(layoutTower(d.tower).top, 120);
       return [`look-${d.repo.split('/').pop()}`, [d.origin.x + BEARING.x * 190, t * 0.5 + 22, d.origin.z + BEARING.z * 190], [d.origin.x, t * 0.5, d.origin.z]];
@@ -1082,6 +1105,7 @@ async function main(): Promise<void> {
   const live: Record<string, { stats: Tally; breakdown: Breakdown; fps: number }> = {};
   const only = process.env.PERF_ONLY?.split(',');
   let lightFailed = false;
+  let fpsFailed = false;
   const setQuality = (quality: Tier): Promise<Response> =>
     fetch(`http://127.0.0.1:${PORT}/api/settings`, {
       method: 'PATCH',
@@ -1227,7 +1251,8 @@ async function main(): Promise<void> {
         }
         // And how its frames run while the view and the AO refill as she turns corners (Task 12): six seconds more.
         await dbg(page, '(d) => d.trace?.(true)');
-        const held = frameStats(await frameTimes(page, 6000));
+        const heldMs = await frameTimes(page, 6000);
+        const held = frameStats(heldMs);
         // What each of those frames cost the loop itself (Task 13): the update, the passes submitted, and whether the
         // shadow map was redrawn; a slow frame with a cheap loop is the GPU's.
         const tr = ((await dbg(page, '(d) => d.trace?.(false) ?? []')) as Array<{ update: number; render: number; shadow: boolean }>) ?? [];
@@ -1240,7 +1265,8 @@ async function main(): Promise<void> {
         console.log(`${tier} follow-held lens ${JSON.stringify(lensNow)}, eye ${eye.map((v) => v.toFixed(0)).join(',')}`);
         await callDebug(page, 'd.follow(null)');
         const tri = seen.map((s) => s.triangles);
-        const row = { fps: 0, calls: Math.round(seen.reduce((a, s) => a + s.calls, 0) / seen.length), triangles: Math.round(tri.reduce((a, b) => a + b, 0) / tri.length) };
+        // Its frame rate is the six seconds' median (Task 15: it read 0.0 while unmeasured).
+        const row = { fps: medianRate(heldMs), calls: Math.round(seen.reduce((a, s) => a + s.calls, 0) / seen.length), triangles: Math.round(tri.reduce((a, b) => a + b, 0) / tri.length) };
         rows['follow-held'] = row;
         console.log(`${tier} follow-held over 12 s: mean ${row.calls} calls ${(row.triangles / 1e6).toFixed(2)}M triangles a frame, most ${(Math.max(...tri) / 1e6).toFixed(2)}M; frames over 6 s: slowest ${held.max.toFixed(1)} ms, p99 ${held.p99.toFixed(1)} ms, ${held.over33} over 33 ms`);
       }
@@ -1288,6 +1314,9 @@ async function main(): Promise<void> {
         }
       }
       result.tiers[tier] = { home, views: rows };
+      const slow = slowViews(rows);
+      console.log(`${slow.length ? 'FAIL' : 'ok  '}  every named view holds ${FPS_FLOOR} fps on ${tier} (${Object.keys(rows).length} views${slow.length ? `; under: ${slow.join(', ')}` : ''})`);
+      if (slow.length) fpsFailed = true;
     }
     if (!process.env.PERF_STATIC) {
       await setQuality('high');
@@ -1344,7 +1373,7 @@ async function main(): Promise<void> {
     await server.close();
     rmSync(tmp, { recursive: true, force: true });
   }
-  process.exit(lightFailed ? 1 : 0);
+  process.exit(lightFailed || fpsFailed ? 1 : 0);
 }
 
 /**

@@ -561,6 +561,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     /** The source geometry's own instanced attributes (a facade's accent, style and shop), copied with the matrices. */
     private extra: Array<{ name: string; size: number; to: THREE.InstancedBufferAttribute }> = [];
     private follow: boolean;
+    /** When set, only the blocks it marks are ever written, whatever a fill or an append selects. */
+    private only: Uint8Array | null;
     /** Where the rising blocks' instances landed in the last fill: [source, first, end, at], four numbers a run. */
     private segs: number[] = [];
     constructor(
@@ -568,8 +570,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       mat: THREE.Material,
       readonly sources: Batch[],
       layer: number,
-      opts: { shadow?: boolean; colour?: boolean; bake?: Array<THREE.Matrix4 | null>; name: string; whole?: boolean },
+      opts: { shadow?: boolean; colour?: boolean; bake?: Array<THREE.Matrix4 | null>; name: string; whole?: boolean; only?: Uint8Array },
     ) {
+      this.only = opts.only ?? null;
       const cap = Math.max(1, sources.reduce((n, b) => n + b.mesh.instanceMatrix.count, 0));
       this.follow = !!opts.whole;
       if (opts.whole) {
@@ -641,7 +644,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         const r = src.runs;
         for (let q = 0; q < r.length; q += 3) {
           const blk = r[q];
-          if (blk < 0 || !selected[blk]) continue;
+          if (blk < 0 || !selected[blk] || (this.only && !this.only[blk])) continue;
           const b = boxes[blk];
           lo[0] = Math.min(lo[0], b.minX);
           lo[1] = Math.min(lo[1], b.minY);
@@ -754,6 +757,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const farShadow = new Copy(box, plain, casting.map((k) => parts[k]), LAYER.shadow, { shadow: true, bake: casting.map(unitBox), name: 'shadow:far-kit' });
   farShadow.mesh.customDepthMaterial = lodDepthMaterial();
   shadowCopies.push(farShadow);
+  /** The blocks past the near kit's reach from where the AO's blocks were last chosen: the far kit's boxes join the AO there. */
+  const aoFar = new Uint8Array(boxes.length);
   // The AO: everything the view draws city-wide, in the blocks near enough for the AO to show, one copy per shape.
   const aoCopies = [
     new Copy(box, plain, [...wallBatches, parts.glazeLit, parts.glazeDark, parts.planter, parts.deckLight, parts.pole, arms, lenses], LAYER.ao, { name: 'ao:box' }),
@@ -764,6 +769,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     new Copy(kitBay, plain, [parts.bay], LAYER.ao, { name: 'ao:bay' }),
     new Copy(kitBayGlass, plain, [parts.bayGlass, parts.bayLit], LAYER.ao, { name: 'ao:bay-glass' }),
     new Copy(bollardGeo, plain, [bollards, bollardLights], LAYER.ao, { name: 'ao:bollard' }),
+    // The roof kit past its near level (Task 15): its far boxes, so the AO the roofs carry reaches AO_NEAR (1,250 m)
+    // rather than ending where the near kit does; only blocks past the near kit's reach, which the near kit's own
+    // parts (every pass, layer 0) already give the AO.
+    new Copy(box, plain, HEAVY.map((k) => parts[k]), LAYER.ao, { bake: HEAVY.map(unitBox), name: 'ao:far-kit', only: aoFar }),
   ];
   // The near level: the roof kit and the lamp poles and arms, in every pass, for the blocks near the eye.
   const nearCopies = [
@@ -861,6 +870,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     if (force || eye.distanceTo(aoEye) > AO_STEP) {
       aoEye.copy(eye);
       aoMoved = select(ao, (b) => boxDistance(eye, b) < AO_NEAR + AO_STEP) || force;
+      // The far kit's boxes in the AO stand only past the near kit's reach, chosen from the same eye.
+      if (select(aoFar, (b) => boxDistance(eye, b) >= AMBIENT_LOD.far)) aoMoved = true;
     }
     if (camera && clusterCulling()) {
       camera.updateMatrixWorld();

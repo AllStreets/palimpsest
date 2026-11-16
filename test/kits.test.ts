@@ -9,6 +9,7 @@ import { blockLots, lotParts } from '../app/src/city/lots.js';
 import { crownSlots, hasKit, kitShared, parseGlb } from '../app/src/city/kits.js';
 import { buildTower } from '../app/src/city/tower/build.js';
 import { LOD_FAR, type TowerMaterials } from '../app/src/city/tower/kit.js';
+import { towerLodMaterial } from '../app/src/city/lod-shader.js';
 import { FAMILIES, lookFor, VARIANTS } from '../app/src/city/tower/variants.js';
 import type { Floor, TowerSpec } from '../shared/types.js';
 
@@ -103,7 +104,9 @@ test('stone and brick floors are laid in coursed kit blocks, near and far levels
     assert.equal(l.levels[1].distance, LOD_FAR);
     const [near, far] = l.levels.map((x) => x.object as THREE.InstancedMesh);
     assert.equal(near.count, far.count, 'both levels lay the same blocks');
-    assert.ok(near.material === mats.stoneFace || near.material === mats.brickFace, 'coursed blocks take the Face slot');
+    // Each level draws a copy of the Face slot that cross-fades it with the other level (lod.ts TOWER_LOD, Task 15).
+    const face = (m: unknown): boolean => [mats.stoneFace, mats.brickFace].some((f) => m === towerLodMaterial(f as THREE.Material, 'near') || m === towerLodMaterial(f as THREE.Material, 'far'));
+    assert.ok(face(near.material) && face(far.material) && near.material !== far.material, 'coursed blocks take the Face slot, a level copy each');
   }
   t.dispose();
   const m = buildTower(stoneTower(6), 'medium', plain(), lookFor('acme/s'));
@@ -116,6 +119,7 @@ test('stone and brick floors are laid in coursed kit blocks, near and far levels
       const [near, far] = l.levels.map((x) => x.object as THREE.InstancedMesh);
       if (near.geometry !== far.geometry) reliefMedium++;
       assert.ok(near.castShadow && !far.castShadow, 'a far block casts no shadow past LOD_FAR');
+      assert.ok(near.material === far.material, 'at medium the same blocks switch as before, with no cross-fade copy');
     }
     if (o.name.startsWith('tower:course:') && o.name.endsWith(':lo')) courses++;
   });

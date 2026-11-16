@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { Era } from '../../../../shared/types.js';
+import { FadeLOD, instanceReach } from '../lod.js';
+import { towerLodMaterial } from '../lod-shader.js';
 import { finish } from '../steps.js';
 
 /**
@@ -465,11 +467,18 @@ export class Kit {
         m.computeBoundingSphere();
       }
       far.castShadow = false;
-      const lod = new THREE.LOD();
+      // The two levels cross-fade over lod.ts TOWER_LOD (430 to 470 m), each instance by its own distance (Task 15).
+      // At medium both levels are the same far blocks: nothing pops, so they switch as before and draw once.
+      if (b.lo !== b.geo) {
+        mesh.material = towerLodMaterial(mesh.material as THREE.Material, 'near');
+        far.material = towerLodMaterial(far.material as THREE.Material, 'far');
+      }
+      const lod = new FadeLOD();
       lod.name = `tower:${key}:lod`;
       lod.position.copy(centre);
       lod.addLevel(mesh, 0);
       lod.addLevel(far, LOD_FAR);
+      lod.reach = instanceReach([mesh]);
       group.add(lod);
     }
     return group;

@@ -28,6 +28,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+import { FadeLOD, instanceReach } from './lod.js';
 import { finish, type Steps } from './steps.js';
 
 export interface Batched {
@@ -560,13 +561,15 @@ export function* batchPiecesSteps(roots: THREE.Object3D[]): Steps<Batched> {
     const centre = new THREE.Box3().setFromObject(root, false).getCenter(new THREE.Vector3());
     const shift = new THREE.Matrix4().makeTranslation(-centre.x, -centre.y, -centre.z);
     for (const b of lods.values()) {
-      const lod = new THREE.LOD();
+      // The tower kit's levels cross-fade (lod.ts TOWER_LOD): both stand while any instance is inside the band.
+      const lod = new FadeLOD();
       lod.position.copy(centre);
       const near = combine(b.near, shift);
       const far = combine(b.far, shift);
       far.castShadow = false;
       lod.addLevel(near, 0);
       lod.addLevel(far, b.distance);
+      lod.reach = instanceReach([near]);
       meshes.push(near, far);
       group.add(lod);
     }
