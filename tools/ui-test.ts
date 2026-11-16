@@ -3144,6 +3144,56 @@ async function marketHomeChecks(page: Page): Promise<void> {
   }
 }
 
+/**
+ * The trees (Phase 5 Task 9, UI_ONLY=trees): from 80 m over the quick
+ * quarter's garth on the sun's side (trees-from-above, as tools/perf.ts
+ * frames it), the crowns' sunlit half keeps its green: the crowns' pixels
+ * (read against the same frame with the trees hidden), the brighter half of
+ * them, hold a mean saturation above 0.15. And the home guard on this tier
+ * (guard). The campus's sub-guard runs after, on both tiers (campusChecks).
+ */
+async function treesChecks(page: Page): Promise<void> {
+  const hasToggle = await page.evaluate("typeof window.__palimpsest.trees === 'function'");
+  const qs = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Array<{ firmId: string; origin: { x: number; z: number }; towers: unknown[] }>).filter((q) => q.towers.length > 0);
+  const quick = qs.find((q) => q.firmId === 'quickset') ?? qs[0];
+  if (!quick || !hasToggle) {
+    check(false, `trees-from-above crowns keep saturation above 0.15 on the sun side (${quick ? 'no trees toggle to read the crowns against' : 'no quarter stands'})`);
+  } else {
+    const hide = await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride, .notices { display: none !important; }' });
+    const o = quick.origin;
+    await setView(page, [o.x - 64, 80, o.z + 30], [o.x, 2, o.z]);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(2500);
+    const on = decodePng(await page.screenshot({ path: join(SHOTS, 'trees-from-above.png') }));
+    await page.evaluate('window.__palimpsest.trees(false)');
+    await page.waitForTimeout(600);
+    const off = decodePng(await page.screenshot({ path: join(SHOTS, 'trees-from-above-off.png') }));
+    await page.evaluate('window.__palimpsest.trees(true)');
+    await hide.evaluate((e) => (e as HTMLElement).remove()).catch(() => {});
+    const crown: Array<{ lum: number; sat: number }> = [];
+    for (let i = 0; i < on.data.length; i += 4) {
+      const d = Math.abs(on.data[i] - off.data[i]) + Math.abs(on.data[i + 1] - off.data[i + 1]) + Math.abs(on.data[i + 2] - off.data[i + 2]);
+      if (d <= 18) continue;
+      const r = on.data[i] / 255;
+      const g = on.data[i + 1] / 255;
+      const b = on.data[i + 2] / 255;
+      const hi = Math.max(r, g, b);
+      const lo = Math.min(r, g, b);
+      crown.push({ lum: 0.2126 * r + 0.7152 * g + 0.0722 * b, sat: hi > 0 ? (hi - lo) / hi : 0 });
+    }
+    crown.sort((a, b) => a.lum - b.lum);
+    // The sun's side: the brighter half of the crowns' pixels.
+    const lit = crown.slice(Math.floor(crown.length / 2));
+    const sat = lit.reduce((a, p) => a + p.sat, 0) / Math.max(1, lit.length);
+    const counts = await page.evaluate('window.__palimpsest.treeCounts()');
+    console.log(`info  trees-from-above: ${crown.length} crown pixels, the sunlit half's mean saturation ${sat.toFixed(3)}, luminance ${(lit[Math.floor(lit.length / 2)]?.lum ?? 0).toFixed(3)}; trees ${JSON.stringify(counts)}`);
+    check(crown.length > 2000 && sat > 0.15, `trees-from-above crowns keep saturation above 0.15 on the sun side (${sat.toFixed(3)} over ${lit.length} sunlit crown pixels)`);
+  }
+  const budget = await homeBudgetNow(page);
+  const tier = await debug(page, (d) => d.quality());
+  check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `on ${tier} home stays under ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M with the trees (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M, trees ${budget.parts.trees?.calls ?? 0} calls ${((budget.parts.trees?.triangles ?? 0) / 1e3).toFixed(0)}k)`);
+}
+
 async function farChecks(page: Page): Promise<void> {
   const budget = await homeBudgetNow(page);
   check(budget.calls < 850 && budget.triangles <= 12e6, `home stays under 850 calls and 12M with the far architecture in (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
@@ -3605,7 +3655,8 @@ async function main(): Promise<void> {
     // UI_ONLY=haze: the six towers' hue spread in the overview (Phase 5 Task 6).
     // UI_ONLY=far: the stone's coursing read from 1,100 m, and the home guard (Phase 5 Task 7).
     // UI_ONLY=market: the ribbon's shaded side, a lit site's haze from home, and the guards on both tiers (Phase 5 Task 8).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=trees: the crowns' green from above, the home guard and the campus's sub-guard on both tiers (Phase 5 Task 9).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3648,6 +3699,15 @@ async function main(): Promise<void> {
         await farChecks(page);
       } else if (process.env.UI_ONLY === 'market') {
         await marketHomeChecks(page);
+      } else if (process.env.UI_ONLY === 'trees') {
+        // The crowns from above and the home guard on high, the campus's sub-guard on both tiers, the home guard on medium.
+        await treesChecks(page);
+        await campusChecks(page, 'high');
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await campusChecks(page, 'medium');
+        const budget = await homeBudgetNow(page);
+        check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `on medium home stays under ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M with the trees (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
       } else if (process.env.UI_ONLY === 'people') {
         await peopleChecks(page);
         await peopleFpsChecks(page, 'high');

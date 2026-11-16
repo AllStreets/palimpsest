@@ -22,6 +22,8 @@ const bbox = (name: string): THREE.Box3 => {
 
 test('the kit file is small and holds every piece the city asks for', () => {
   assert.ok(statSync(new URL('../app/public/kits/kits.glb', import.meta.url)).size < 1_000_000, 'kits.glb stays under 1 MB');
+  // The trees have their own file and their own cap (tools/kits/trees.py TREES_BUDGET): kits.glb has no room left under its own.
+  assert.ok(statSync(new URL('../app/public/kits/trees.glb', import.meta.url)).size <= 600_000, 'trees.glb stays within its 600 KB');
   const asked = ['course_a', 'course_b', 'pier_block', 'band_course'].flatMap((n) => [`${n}.hi`, `${n}.lo`]);
   asked.push('water_tank', 'tank_cap', 'tank_stand', 'bulkhead', 'penthouse', 'screen_panel', 'rooftop_unit', 'car', 'bay', 'bay_glass', 'bay_foot', 'bay_roof', 'chamfer_box', 'round_box');
   for (const n of asked) assert.ok(hasKit(n), `kit piece ${n}`);

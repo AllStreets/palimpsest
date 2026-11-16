@@ -23,7 +23,8 @@ import { stampBuilt } from './gothic.js';
 import { buildHall, instanceHalls, type Hall } from './halls.js';
 import { BAY_DARK, LANTERN_IDLE, LIBRARY, makeLibrary } from './library.js';
 import { makeObservatory, type ObservatoryState, type ObservatoryView } from './observatory.js';
-import { approachPath, buildSite, FRONT_QUAD, HALL_Z, INNER_QUAD, mergeStamped, siteAnchors, TERRACE, walkGraph } from './site.js';
+import type { TreeSpot } from '../trees.js';
+import { approachPath, buildSite, campusTreeSpots, FRONT_QUAD, HALL_Z, INNER_QUAD, mergeStamped, siteAnchors, TERRACE, walkGraph } from './site.js';
 
 type V3 = [number, number, number];
 
@@ -63,6 +64,8 @@ export interface Campus {
   /** Stands the campus on its plot, turned so the gate faces the city's centre. */
   set(origin: { x: number; z: number }): void;
   origin(): { x: number; z: number } | null;
+  /** The quads' and the forecourt's trees where they stand in the city (trees.ts plants them), or none before set(). */
+  treeSpots(): TreeSpot[];
   anchors(): CampusAnchors;
   /** The school's state as the ledger tells it: the observatory opens while the nets train and lights its plate while the master is trusted. */
   setSchool(s: ObservatoryState): void;
@@ -210,6 +213,14 @@ export function createCampus(opts: CampusOptions): Campus {
       aoSeen = null;
     },
     origin: () => origin,
+    treeSpots() {
+      if (!origin) return [];
+      const v = new THREE.Vector3();
+      return campusTreeSpots().map((t) => {
+        v.set(t.x, t.y, t.z).applyMatrix4(group.matrixWorld);
+        return { ...t, x: v.x, y: v.y, z: v.z };
+      });
+    },
     setSchool: (s) => observatory.setState(s),
     observatory: () => observatory.view(),
     pickables: observatory.pickables,

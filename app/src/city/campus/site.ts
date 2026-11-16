@@ -18,6 +18,7 @@ import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import type { CollarPlaza } from '../collar.js';
+import type { TreeSpot } from '../trees.js';
 
 /** The terrace's height over the street. */
 export const TERRACE = 6;
@@ -100,6 +101,36 @@ function hash3(x: number, y: number, z: number): number {
 /** The campus's ground as the ambient city sees it: a square court kept clear of lots and lamps, never paved, no lanterns. */
 export function campusPlaza(origin: { x: number; z: number }): CollarPlaza {
   return { x: origin.x, z: origin.z, court: CAMPUS_HALF, terrace: true };
+}
+
+/**
+ * The campus's trees, in its own frame (x along the axis from the gate,
+ * the terrace's top their ground), as the city plants them (trees.ts): in
+ * each quad two rows of limes down the lawn, standing in from the halls'
+ * walks, every other one stepped off the line, sizes mixed, none on the
+ * axis walk; a columnar hornbeam at each corner of each lawn, so a quad
+ * reads as planted, not scattered; a plane in each forecourt corner by the
+ * gate; and a pair of hornbeams flanking the library's front.
+ */
+export function campusTreeSpots(): TreeSpot[] {
+  const out: TreeSpot[] = [];
+  for (const q of [FRONT_QUAD, INNER_QUAD]) {
+    const cx = (q.x0 + q.x1) / 2;
+    const dx = q.x1 - q.x0;
+    for (const sz of [-1, 1]) {
+      for (let i = 0; i < 4; i++) {
+        const tx = q.x0 + 7 + i * ((dx - 14) / 3);
+        if (Math.abs(tx - cx) < 4) continue;
+        out.push({ x: tx + (i % 2 ? 1.5 : -1.5), y: TERRACE, z: sz * (QUAD_HALF - 9), species: 'linden', size: 0.62 + 0.15 * (((i * 7 + (sz + 1)) % 3) / 2) });
+      }
+      for (const sx of [-1, 1]) out.push({ x: cx + sx * (dx / 2 - 3), y: TERRACE, z: sz * (QUAD_HALF - 3), species: 'hornbeam', size: 1.08 });
+    }
+  }
+  for (const sz of [-1, 1]) {
+    out.push({ x: FRONT_QUAD.x1 + 14, y: TERRACE, z: sz * 22, species: 'plane', size: 0.66 });
+    out.push({ x: -79, y: TERRACE, z: sz * 36, species: 'hornbeam', size: 1.15 });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- pieces
@@ -337,24 +368,9 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     const cx = (q.x0 + q.x1) / 2;
     const dx = q.x1 - q.x0;
     walk(cx - 1.8, cx + 1.8, -QUAD_HALF, QUAD_HALF);
-    // Mature trees in two rows down each lawn, standing in from the halls' walks, no two alike; a columnar
-    // tree at each corner of the lawn, a darker species, for the quad to read as planted, not scattered.
-    for (const sz of [-1, 1]) {
-      for (let i = 0; i < 4; i++) {
-        const tx = q.x0 + 7 + i * ((dx - 14) / 3);
-        if (Math.abs(tx - cx) < 4) continue;
-        const seed = Math.round(tx * 7 + sz * 131 + q.x0);
-        tree(tx + (i % 2 ? 1.5 : -1.5), sz * (QUAD_HALF - 9), 0.85 + 0.3 * ((i * 7 + (sz + 1)) % 3) / 2, seed);
-      }
-      for (const sx of [-1, 1]) column(cx + sx * (dx / 2 - 3), sz * (QUAD_HALF - 3), 1.0, Math.round(cx * 3 + sx * 17 + sz * 29));
-    }
+    // The quads' trees are the city's (campusTreeSpots, trees.ts).
     // Lamps at the quad's corners only.
     for (const sz of [-1, 1]) for (const lx of [q.x0 - 1.5, q.x1 + 1.5]) lamp(lx, sz * (QUAD_HALF + 5.2));
-  }
-  // Trees in the forecourt corners, a pair of columnar trees flanking the library's front.
-  for (const sz of [-1, 1]) {
-    tree(FRONT_QUAD.x1 + 14, sz * 22, 1.0, 11 + sz);
-    column(-79, sz * 36, 1.1, 17 + sz);
   }
   // Lamps down the axis every second bay, two across the cross walk, every other post along the parapet walk,
   // and a pair at the stair head: half the posts of a first draft, which lit the lawns like a car park.
@@ -368,128 +384,6 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     if (Math.abs(u) > wellOut + 4) lamp(ring, u);
   }
   for (const sz of [-1, 1]) lamp(xTop + 1.2, sz * 6.4);
-  /**
-   * A tree, no two alike: a flared trunk forking into two limbs, a crown of
-   * six to eight lobes (icosahedra pushed in and out by noise), the whole
-   * leaning a few degrees. Its colour runs from a dark underside to a
-   * sunlit top, each lobe a little lighter or darker than the next and the
-   * edges broken by noise, all in the lawn's own kind.
-   */
-  function tree(x: number, z: number, size: number, seed: number): void {
-    const r = seeded(seed);
-    const k = size * (0.9 + 0.25 * r());
-    const lean = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler((r() - 0.5) * 0.12, r() * Math.PI * 2, (r() - 0.5) * 0.12));
-    const place = new THREE.Matrix4().makeTranslation(x, T, z).multiply(lean);
-    // The trunk, wider at the root, and a fork of two limbs leaning apart.
-    const trunk = new THREE.CylinderGeometry(0.2 * k, 0.46 * k, 3.4 * k, 8).translate(0, 1.7 * k, 0);
-    const limbs = [-1, 1].map((s) =>
-      new THREE.CylinderGeometry(0.1 * k, 0.17 * k, 2.6 * k, 6)
-        .translate(0, 1.3 * k, 0)
-        .rotateZ(s * (0.35 + 0.2 * r()))
-        .rotateY(r() * Math.PI * 2)
-        .translate(0, 3.2 * k, 0),
-    );
-    const wood = mergeGeometries([trunk, ...limbs].map((g) => g.toNonIndexed()), false)!;
-    add('slate', wood.applyMatrix4(place), 0.9);
-    // The crown.
-    const lobes: THREE.BufferGeometry[] = [];
-    const n = 6 + Math.floor(r() * 3);
-    const crownY = 5.4 * k;
-    const values: number[] = [];
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 + r() * 0.8;
-      const reach = (0.4 + r() * 1.6) * k;
-      const rad = (1.4 + r() * 1.1) * k;
-      const cy = crownY + (r() * 2.2 - 0.6) * k;
-      // Shared vertices, so the noise moves each point once and the lobe shades smoothly.
-      const g = mergeVertices(new THREE.IcosahedronGeometry(rad, 2));
-      const pos = g.attributes.position as THREE.BufferAttribute;
-      const salt = r() * 100;
-      for (let v = 0; v < pos.count; v++) {
-        const px = pos.getX(v);
-        const py = pos.getY(v);
-        const pz = pos.getZ(v);
-        const len = Math.hypot(px, py, pz) || 1;
-        const d = 1 + (hash3(px * 0.9 + salt, py * 0.9, pz * 0.9) - 0.5) * 0.5;
-        pos.setXYZ(v, (px / len) * rad * d, (py / len) * rad * d * 0.82, (pz / len) * rad * d);
-      }
-      g.translate(Math.cos(a) * reach, cy, Math.sin(a) * reach);
-      lobes.push(g);
-      values.push(0.88 + r() * 0.26);
-    }
-    for (const g of lobes) g.computeVertexNormals();
-    const counts = lobes.map((g) => g.attributes.position.count);
-    const crown = mergeGeometries(lobes, false)!;
-    const lo = crownY - 2.6 * k;
-    const hi = crownY + 3.6 * k;
-    let vi = 0;
-    let lobe = 0;
-    let left = counts[0];
-    const lobeOf = (): number => {
-      while (left <= 0 && lobe < counts.length - 1) left = counts[++lobe];
-      left--;
-      return lobe;
-    };
-    const perVertex = new Float32Array(crown.attributes.position.count);
-    const pp = crown.attributes.position as THREE.BufferAttribute;
-    for (vi = 0; vi < perVertex.length; vi++) {
-      const l = lobeOf();
-      const t = Math.min(1, Math.max(0, (pp.getY(vi) - lo) / (hi - lo)));
-      const up = 0.42 + 0.58 * t * t;
-      perVertex[vi] = up * values[l] * (0.92 + 0.16 * hash3(pp.getX(vi) * 3.1, pp.getY(vi) * 3.1, pp.getZ(vi) * 3.1));
-    }
-    let at = 0;
-    // Leaves are a cooler, deeper green than a mown lawn.
-    add('turf', crown.applyMatrix4(place), 0.8, () => perVertex[at++], new THREE.Color(0.72, 1.0, 0.78));
-  }
-
-  /**
-   * The second species, a columnar tree (a fastigiate oak or a hornbeam
-   * clipped tall): a straight trunk under a tight crown of lobes stacked up a
-   * vertical axis, nearly three times taller than wide, in a deeper, bluer
-   * green than the spreading trees. Built the same way, in the same draw.
-   */
-  function column(x: number, z: number, size: number, seed: number): void {
-    const r = seeded(seed);
-    const k = size * (0.9 + 0.2 * r());
-    const place = new THREE.Matrix4().makeTranslation(x, T, z).multiply(new THREE.Matrix4().makeRotationY(r() * Math.PI * 2));
-    const trunk = new THREE.CylinderGeometry(0.14 * k, 0.3 * k, 2.6 * k, 8).translate(0, 1.3 * k, 0);
-    add('slate', trunk.toNonIndexed().applyMatrix4(place), 0.85);
-    const lobes: THREE.BufferGeometry[] = [];
-    const n = 5;
-    const h0 = 2.2 * k;
-    const h1 = 11.5 * k;
-    for (let i = 0; i < n; i++) {
-      const t = i / (n - 1);
-      const cy = h0 + (h1 - h0) * t + 0.6 * k * (r() - 0.5);
-      // Widest a third of the way up, closing to a point at the top.
-      const rad = (0.9 + 1.4 * Math.sin(Math.PI * Math.min(1, 0.3 + 0.7 * (1 - t))) * (1 - 0.55 * t)) * k;
-      const g = mergeVertices(new THREE.IcosahedronGeometry(rad, 2));
-      const pos = g.attributes.position as THREE.BufferAttribute;
-      const salt = r() * 100;
-      for (let v = 0; v < pos.count; v++) {
-        const px = pos.getX(v);
-        const py = pos.getY(v);
-        const pz = pos.getZ(v);
-        const len = Math.hypot(px, py, pz) || 1;
-        const d = 1 + (hash3(px * 1.3 + salt, py * 1.3, pz * 1.3) - 0.5) * 0.4;
-        pos.setXYZ(v, (px / len) * rad * d, (py / len) * rad * d * 1.5, (pz / len) * rad * d);
-      }
-      g.translate((r() - 0.5) * 0.4 * k, cy, (r() - 0.5) * 0.4 * k);
-      g.computeVertexNormals();
-      lobes.push(g);
-    }
-    const crown = mergeGeometries(lobes, false)!;
-    const pp = crown.attributes.position as THREE.BufferAttribute;
-    const perVertex = new Float32Array(pp.count);
-    for (let vi = 0; vi < pp.count; vi++) {
-      const t = Math.min(1, Math.max(0, (pp.getY(vi) - h0) / (h1 - h0)));
-      perVertex[vi] = (0.55 + 0.45 * t) * (0.88 + 0.24 * hash3(pp.getX(vi) * 2.7, pp.getY(vi) * 2.7, pp.getZ(vi) * 2.7));
-    }
-    let at = 0;
-    add('yew', crown.applyMatrix4(place), 1, () => perVertex[at++]);
-  }
-
   /** A lamp: a dark post with a warm lit head under a small cap, in the site's own draw (the head's kind emits, pooled round each face's centre on the box's own UVs). */
   function lamp(x: number, z: number): void {
     const h = 3.8;

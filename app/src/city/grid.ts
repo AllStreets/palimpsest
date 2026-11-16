@@ -11,7 +11,9 @@ import { ARCHETYPES, BLOCK, blockLots, blockSeed, BOLLARD_RING, BOLLARDS, COURT_
 import { inChannel } from '../../../shared/commute.js';
 import { materials } from './materials.js';
 import { AWNING, STRIPED } from './shopfronts.js';
+import { ROOF_TREE_RADIUS, roofTree, streetTreeSpots, type TreeSpot } from './trees.js';
 
+export { streetTreeSpots, STREET_TREE_RADIUS } from './trees.js';
 export { BLOCK, BOLLARD_RING, BOLLARDS, COURT_LANTERN_INSET, COURT_LANTERN_REACH, COURT_LANTERN_STEP, COURT_PLINTH_CLEAR, LAMP_EDGE, LAMP_OFFSETS, PITCH, PLAZA_LAMP_RING, PLAZA_LAMPS, PLAZA_RADIUS, STREET } from './lots.js';
 
 /** Blocks within this many of the centre (Chebyshev) carry bays and rooftop units; past it they would be sub-pixel. */
@@ -54,8 +56,11 @@ export interface Grid {
   update(eye: THREE.Vector3, shadowTarget: THREE.Vector3): boolean;
   /** Instances each pass's copies hold now (tests and debugging). */
   lod(): { near: number; shadow: number; ao: number };
+  /** The trees the city plants as it stands now (trees.ts draws them): the street trees and the roof gardens' trees. */
+  treeSpots(): TreeSpot[];
   dispose(): void;
 }
+
 
 /** The sun's shadow camera as scene.ts sets it up: the ambient shadow copies carry the blocks inside it. */
 export interface ShadowBox {
@@ -299,7 +304,7 @@ function awningGeometry(): THREE.BufferGeometry {
   return g;
 }
 
-type PartBatches = Record<Exclude<PartKind, `wall:${string}`>, Batch>;
+type PartBatches = Record<Exclude<PartKind, `wall:${string}` | 'tree'>, Batch>;
 
 /** The lamp posts' own two levels: the kit post this near the eye, the square post and box arm beyond (a shorter band than the roof kit's, as a post is slimmer). */
 export const LAMP_LOD = { near: 200, far: 260 } as const;
@@ -343,7 +348,6 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const box = new THREE.BoxGeometry(1, 1, 1);
   const stackGeo = new THREE.CylinderGeometry(0.8, 1, 1, 10);
   const prismGeo = prismGeometry();
-  const treeGeo = new THREE.IcosahedronGeometry(1, 0);
   // The Blender roof and massing kit (kits.py): timber water tanks on braced stands, bulkheads with copings and
   // doors, louvred penthouses, finned plant screens, rooftop units, cars, oriel bays and cut-corner walls.
   // The tank and its roof are authored at radius 0.5 and drawn at the radius-1 scale the cylinders used.
@@ -385,7 +389,6 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   const bayLitMat = bayPaneMaterial(glazeLitMat);
   const bayDarkMat = bayPaneMaterial(glazeDarkMat);
   const planterMat = new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.95 });
-  const treeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, flatShading: true });
   const deckLightMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.3, 2.5) });
   // Awning cloth: matte canvas, seen from under as much as from above, in each front's own colour (instance colour).
   const awningMat = awningMaterial();
@@ -416,7 +419,6 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       glazeLit: new Batch(box, glazeLitMat, capOf('glazeLit'), false),
       glazeDark: new Batch(box, glazeDarkMat, capOf('glazeDark'), false),
       planter: new Batch(box, planterMat, capOf('planter'), false),
-      tree: new Batch(treeGeo, treeMat, capOf('tree'), shadows),
       deckLight: new Batch(box, deckLightMat, capOf('deckLight'), false),
       awning: new Batch(awningGeo, awningMat, capOf('awning'), shadows),
       pole: new Batch(box, M.darkMetal, capOf('pole'), false),
@@ -630,7 +632,6 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     new Copy(kitRound, plain, [cuts.midcentury], LAYER.shadow, { shadow: true, name: 'shadow:round' }),
     new Copy(stackGeo, plain, [parts.chimney], LAYER.shadow, { shadow: true, name: 'shadow:stack' }),
     new Copy(prismGeo, plain, [parts.sawtooth], LAYER.shadow, { shadow: true, name: 'shadow:prism' }),
-    new Copy(treeGeo, plain, [parts.tree], LAYER.shadow, { shadow: true, name: 'shadow:tree' }),
     new Copy(kitBay, plain, [parts.bay], LAYER.shadow, { shadow: true, name: 'shadow:bay' }),
   ];
   // The far boxes of the roof kit cast too, as boxes, where the eye is too far for the kit's own shadow.
@@ -653,7 +654,6 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     new Copy(kitRound, plain, [cuts.midcentury], LAYER.ao, { name: 'ao:round' }),
     new Copy(stackGeo, plain, [parts.chimney], LAYER.ao, { name: 'ao:stack' }),
     new Copy(prismGeo, plain, [parts.sawtooth], LAYER.ao, { name: 'ao:prism' }),
-    new Copy(treeGeo, plain, [parts.tree], LAYER.ao, { name: 'ao:tree' }),
     new Copy(kitBay, plain, [parts.bay], LAYER.ao, { name: 'ao:bay' }),
     new Copy(kitBayGlass, plain, [parts.bayGlass, parts.bayLit], LAYER.ao, { name: 'ao:bay-glass' }),
     new Copy(bollardGeo, plain, [bollards, bollardLights], LAYER.ao, { name: 'ao:bollard' }),
@@ -730,6 +730,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         const b = (p.chamfer ? into.cuts : into.walls)[lot.archetype];
         b.add(p.x, p.y, p.z, p.sx, p.sy, p.sz, p.colour, 0, blk);
         b.dress(lot.accent, lot.style, lot.shop);
+      } else if (p.kind === 'tree') {
+        // A roof garden's tree: planted in the shared trees (trees.ts), from the city's own build only.
+        if (!wallsOnly && into.parts === parts && Math.max(Math.abs(Math.round(lot.x / PITCH)), Math.abs(Math.round(lot.z / PITCH))) <= ROOF_TREE_RADIUS[quality]) roofTrees.push(roofTree(p));
+        continue;
       } else if (!wallsOnly) {
         const kind = p.kind as keyof PartBatches;
         // In the city the roof kit's parts go to both levels: the near kit's source and the far boxes.
@@ -744,11 +748,16 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   };
 
   const lampColor = new THREE.Color();
+  /** The roof gardens' trees and the street trees, as the last build planted them. */
+  let roofTrees: TreeSpot[] = [];
+  let streetTrees: TreeSpot[] = [];
 
   let plazasNow: Array<{ x: number; z: number }> = [{ x: 0, z: 0 }];
   function build(plazas: Plaza[]): void {
     const all = [{ x: 0, z: 0 }, ...plazas];
     plazasNow = all;
+    roofTrees = [];
+    streetTrees = streetTreeSpots(quality, plazas);
     for (const b of batches) b.reset();
     used.fill(0);
     for (const b of boxes) b.maxY = 0;
@@ -856,6 +865,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       ao: aoCopies.reduce((n, c) => n + c.count, 0),
     }),
     buildings: () => [...Object.values(walls), ...Object.values(cuts)].reduce((n, b) => n + b.n, 0),
+    treeSpots: () => [...streetTrees, ...roofTrees],
     lots(x, z, r) {
       const out: LotSummary[] = [];
       const bi = Math.round(x / PITCH);
@@ -895,9 +905,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       };
     },
     dispose() {
-      for (const g of [box, stackGeo, prismGeo, treeGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
+      for (const g of [box, stackGeo, prismGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
       for (const b of [...Object.values(walls), ...Object.values(cuts)]) b.mesh.geometry.dispose();
-      for (const m of [...Object.values(facadeMats), ...Object.values(cutMats), leadMat, trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, treeMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
+      for (const m of [...Object.values(facadeMats), ...Object.values(cutMats), leadMat, trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();
       for (const b of batches) b.mesh.dispose();
       for (const c of [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies]) c.dispose();
     },

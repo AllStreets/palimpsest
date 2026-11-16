@@ -6,6 +6,8 @@ Run headless (never with a UI):
     /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
         --python tools/kits/kits.py -- app/public/kits/kits.glb
 
+It then writes the trees (tools/kits/trees.py) to trees.glb beside it.
+
 Every piece is built from numbers below (no randomness without a fixed seed),
 so the same script always writes the same file. Pieces are authored in the
 three.js frame (x right, y up, z out of the face) and written to Blender as
@@ -1280,6 +1282,11 @@ def main():
     slim_glb(out)
     tris = sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in bpy.context.scene.objects)
     print(f'kits: {len(PIECES)} pieces, {tris} triangles -> {out}')
+    # The trees go in their own file beside it (tools/kits/trees.py; kits.glb has no room under its cap).
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import trees
+    trees.write(os.path.join(os.path.dirname(os.path.abspath(out)), 'trees.glb'))
 
 
 def slim_glb(path):

@@ -31,6 +31,7 @@ import { ambientBoard, type AmbientSwatchPoint } from './city/ambient-swatches';
 import { towerTones } from './city/lots';
 import { loadFigures } from './city/figures';
 import { loadKits, registerFallbackKits } from './city/kits';
+import { loadTrees } from './city/trees';
 import { texturesSettled } from './city/materials';
 import { type Look, lookFor, lookKey, pickLooks, VARIANTS } from './city/tower/variants';
 import type { EngineEvent } from './api';
@@ -103,6 +104,12 @@ interface DebugHandle {
   milestones(): Array<MilestoneShow & { id: string }>;
   /** Hides or shows the ribbons (tests: the band read against the frame without it). */
   ribbons(on: boolean): void;
+  /** Hides or shows every tree (tests: the crowns read against the frame without them). */
+  trees(on: boolean): void;
+  /** The trees as planted: every spot, and how many draw at each level now. */
+  treeCounts(): { spots: number; trees: number; near: number; far: number };
+  /** Where every tree stands (tools/perf.ts frames the street trees from them). */
+  treeSpots(): Array<{ x: number; y: number; z: number; species: string; size: number }>;
   /** The university as it stands (campus/index.ts): its origin and the later buildings' anchors, or null before the engine took the plot. */
   campus(): { origin: { x: number; z: number }; anchors: Record<'library' | 'clock' | 'dome' | 'gate', number[]> } | null;
   /** Holds the campus clock tower at a moment (ms since the epoch), for the clock still; null frees it. */
@@ -363,6 +370,8 @@ async function main(): Promise<void> {
     }),
     // Without the modelled figures the people stand as plain figures; the city is whole either way.
     loadFigures().catch((err: unknown) => console.warn('the figures did not load; the people stand as plain figures', err)),
+    // Without the modelled trees each species stands as a plain crown of cards (trees.ts fallbackTree).
+    loadTrees().catch((err: unknown) => console.warn('the trees did not load; they stand as plain crowns', err)),
   ]);
   /** The quality towers are built at: Settings' choice, until the city steps down by itself. */
   let quality: 'high' | 'medium' = settingsQuality;
@@ -633,6 +642,12 @@ async function main(): Promise<void> {
     peopleLantern: (on) => city.people()?.lantern(on),
     milestones: () => [...city.milestoneShows()].map(([id, m]) => ({ id, ...m })),
     ribbons: (on) => city.showRibbons(on),
+    trees: (on) => city.showTrees(on),
+    treeSpots: () => city.trees().spots,
+    treeCounts() {
+      const t = city.trees();
+      return { spots: t.spots.length, trees: t.trees, near: t.near, far: t.far };
+    },
     campus() {
       const c = city.campus();
       if (!c) return null;

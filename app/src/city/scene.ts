@@ -31,7 +31,8 @@ import { lightsOutTree } from './lightsout.js';
 import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
 import { VIEW_PX } from './lod-shader.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
-import { quarterBuildKey, type QuarterShow } from './quarters.js';
+import { quarterBuildKey, quarterTreeSpots, type QuarterShow } from './quarters.js';
+import { clearOfTransit, createTrees, type TreeSpot } from './trees.js';
 import { createPost, EXPOSURE, FLICKER } from './post.js';
 import { createRiver } from './river.js';
 import { createTransit, type TransitView } from './transit.js';
@@ -249,6 +250,10 @@ export interface City {
   milestoneShows(): Map<string, MilestoneShow>;
   /** Hides or shows the ribbons (tests). */
   showRibbons(on: boolean): void;
+  /** Hides or shows every tree (tests: the crowns read against the frame without them). */
+  showTrees(on: boolean): void;
+  /** The trees as planted (tests and captures): every spot, and how many draw at each level now. */
+  trees(): { spots: TreeSpot[]; trees: number; near: number; far: number };
   /**
    * Stands the university on its plot (GET /api/school/campus, Phase 4
    * Task 34): the terrace, its quads and the four halls, with the ambient
@@ -412,6 +417,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   scene.add(ground.group);
   const grid = createGrid(quality, { sun: SUN_DIRECTION, half: SHADOW_HALF, offset: SUN_OFFSET, near: 10, far: 1600 });
   scene.add(grid.group);
+  // The trees (trees.ts): the streets', the roof gardens', the quarters' garths' and the campus's, one draw per
+  // species and level for all of them; planted again (once a frame at most) whenever any of those changes.
+  const trees = createTrees(quality);
+  scene.add(trees.object);
+  let treesDirty = true;
+  let treeSpots: TreeSpot[] = [];
   // The river, its quays, bridges and piers (river.ts); its water is drawn by a pass straight after the scene.
   const river = createRiver(quality);
   scene.add(river.group);
@@ -595,6 +606,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     campusRoot.add(campus.group);
     campusLiving = campusLife(campus, { people: () => people, quality });
     campusLiving.setState(lifeState);
+    treesDirty = true;
     sun.shadow.needsUpdate = true;
   }
 
@@ -655,6 +667,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       ...(campusOrigin ? [{ x: campusOrigin.x, z: campusOrigin.z, kind: 'court' as const, court: campusPlaza(campusOrigin).court }] : []),
     ];
     ambient?.setPlazas(ambientPlazas);
+    treesDirty = true;
     searchLitTree(grid.group);
     // Towers, scaffolds and the skyline around them may all have changed.
     sun.shadow.needsUpdate = true;
@@ -770,6 +783,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       batchSchoolTowers();
       rebatchQuarters();
     }
+    treesDirty = true;
     return built;
   }
 
@@ -1130,6 +1144,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       // The asphalt darkens with oil under the cab ranks' bays (transit.ts cabRank: three bays of 6.5 m).
       ground.setRanks((transit.network()?.ranks ?? []).map((r) => ({ x: r.x, z: r.z, dir: r.dir, length: 19.5 })));
       layVehicles();
+      treesDirty = true;
     }
     // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
     placeConstructions();
@@ -1540,6 +1555,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     ...centerpieces.map(({ piece }) => ['towers', piece.object] as [string, THREE.Object3D]),
     ...(milestones ? [['milestones', milestones.group] as [string, THREE.Object3D]] : []),
     ['campus', campusRoot],
+    ['trees', trees.object],
     ['schoolTowers', schoolRoot],
     ...[...scaffolds.values()].map((sc) => ['scaffolds', sc.object] as [string, THREE.Object3D]),
   ];
@@ -1584,6 +1600,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       placeMilestones();
     }
     placeCampus();
+    trees.setQuality('medium');
     for (const fn of dropListeners) fn(saw);
   }
   renderer.setAnimationLoop(() => {
@@ -1669,6 +1686,14 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     followShadow();
     // The ambient blocks follow the eye (the roof kit's level, the AO's blocks) and the shadow's centre (its casters).
     if (grid.update(camera.position, sun.target.position)) sun.shadow.needsUpdate = true;
+    if (treesDirty) {
+      treesDirty = false;
+      // Off the transit's stations, stops and ranks: their platforms, stairs and halls stand on those pavements.
+      treeSpots = clearOfTransit([...grid.treeSpots(), ...quarterPieces.flatMap(({ q }) => quarterTreeSpots(q.origin)), ...(campus?.treeSpots() ?? [])], transit.network());
+      trees.place(treeSpots);
+      sun.shadow.needsUpdate = true;
+    }
+    if (trees.update({ time: clock.elapsedTime, eye: camera.position })) sun.shadow.needsUpdate = true;
     ground.update(camera.position);
     if (districtLod()) sun.shadow.needsUpdate = true;
     campus?.update(dt, clock.elapsedTime, camera.position);
@@ -1841,6 +1866,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     },
     milestoneShows: () => milestones?.shows() ?? new Map(),
     showRibbons: (on) => milestones?.ribbons(on),
+    showTrees(on) {
+      trees.object.visible = on;
+      sun.shadow.needsUpdate = true;
+    },
+    trees: () => ({ spots: treeSpots, ...trees.counts() }),
     setCampusClock(ms) {
       campusClockAt = ms;
     },
@@ -1895,6 +1925,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       rig.dispose();
       post.dispose();
       grid.dispose();
+      trees.dispose();
       river.dispose();
       transit.dispose();
       vehicles?.dispose();

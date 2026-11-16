@@ -201,6 +201,48 @@ function task7Views(city: District[]): Array<[string, V3, V3]> {
   return out;
 }
 
+/**
+ * The street trees' still (Task 9): the longest unbroken run of street trees
+ * within 640 m of the centre (no gap over 50 m: one junction), from the far
+ * lane 24 m short of its first tree at 1.7 m, looking 120 m down the run. A city with
+ * no street trees (the base) falls back to the README street's west pavement.
+ */
+async function streetTreesView(page: Page): Promise<[V3, V3]> {
+  type Spot = { x: number; z: number };
+  const spots = await dbg<Spot[]>(page, '(d) => (d.treeSpots ? d.treeSpots() : [])');
+  const lines = new Map<string, number[]>();
+  for (const t of spots) {
+    if (Math.max(Math.abs(t.x), Math.abs(t.z)) > 640) continue;
+    const onX = Math.abs(Math.abs(t.x - Math.round(t.x / 80) * 80) - 34) < 0.01;
+    const onZ = Math.abs(Math.abs(t.z - Math.round(t.z / 80) * 80) - 34) < 0.01;
+    if (onX) lines.set(`x ${t.x}`, [...(lines.get(`x ${t.x}`) ?? []), t.z]);
+    else if (onZ) lines.set(`z ${t.z}`, [...(lines.get(`z ${t.z}`) ?? []), t.x]);
+  }
+  let best: { key: string; from: number; to: number; n: number } | null = null;
+  for (const [key, along] of [...lines].sort((a, b) => a[0].localeCompare(b[0]))) {
+    along.sort((a, b) => a - b);
+    let start = 0;
+    for (let i = 1; i <= along.length; i++) {
+      if (i === along.length || along[i] - along[i - 1] > 50) {
+        const n = i - start;
+        if (!best || n > best.n) best = { key, from: along[start], to: along[i - 1], n };
+        start = i;
+      }
+    }
+  }
+  if (!best || best.n < 4) return [[195.6, 1.7, -136], [196.3, 5.0, -20]];
+  const [axis, at] = best.key.split(' ');
+  const line = Number(at);
+  // The kerb side of the tree line: toward the street's centre (the line stands 34 m off a block's centre, the street 40).
+  const out = line - Math.round(line / 80) * 80 > 0 ? 8 : -8;
+  console.log(`trees-street: ${best.n} trees along ${axis} = ${line} from ${best.from} to ${best.to}`);
+  // Looking 120 m down the run: the camera rig keeps its eye within reach of its target, so a far target lifts the eye.
+  const to = Math.min(best.to, best.from + 120);
+  return axis === 'x'
+    ? [[line + out, 1.7, best.from - 24], [line + out * 0.25, 4.5, to]]
+    : [[best.from - 24, 1.7, line + out], [to, 4.5, line + out * 0.25]];
+}
+
 async function views(page: Page): Promise<Array<[string, V3, V3]>> {
   const city = (await page.evaluate(() => fetch('/api/city').then((r) => r.json()))) as District[];
   const qs = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[]).filter((q) => q.towers.length > 0);
@@ -214,6 +256,7 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
   const qx = (quick.origin.x + other.origin.x + city[0].origin.x) / 3;
   const qz = (quick.origin.z + other.origin.z + city[0].origin.z) / 3;
   const lay = layoutTower(d0.tower);
+  const street = await streetTreesView(page);
   return [
     ['home', home.eye, home.target],
     ['overview', [cx + BEARING.x * 900, 300, cz + BEARING.z * 900], [cx, 70, cz]],
@@ -258,6 +301,12 @@ async function views(page: Page): Promise<Array<[string, V3, V3]>> {
     // hero's own eye turned onto the tallest sci-fi crown (so a crown's height in pixels is the hero's); the Gothic and
     // the pagoda roots from 600 m, 70 m up (over the roofs between); the exchange from the market overview's distance; and one Ionic capital of the Beaux-Arts root from 9 m.
     ...task7Views(city),
+    // The trees (Task 9): down the longest run of street trees (streetTreesView), the lamp side where they stand
+    // between the posts; the quick quarter's garth from 80 m up on the sun's side (sky.ts SUN_DIRECTION, toward -x
+    // and +z), its crowns lit; and the quarter's court from the pavement (tools/capture.ts quarter-court).
+    ['trees-street', ...street],
+    ['trees-from-above', [quick.origin.x - 64, 80, quick.origin.z + 30], [quick.origin.x, 2, quick.origin.z]],
+    ['quarter-court', [quick.origin.x + 30, 1.7, quick.origin.z + 100], [quick.origin.x - 30, 14, quick.origin.z - 40]],
     // The six pinned looks (Decision 6's sheet, Task 6 round 0; Task 15 completes it): each sample tower's lower
     // floors (the root, the stone and the brick eras and the first glass, where the pinned materials read) from 190 m
     // on the home bearing; a 115 floor needle framed whole was only its haze.
@@ -339,6 +388,33 @@ async function* familyViews(page: Page): AsyncGenerator<[string, V3, V3]> {
       yield [name, [o.x + BEARING.x * 120, top + 18, o.z + BEARING.z * 120], [o.x, top - 6, o.z]];
     }
   }
+}
+
+/** The campus's quad (Task 9), staged: the perf city stands no campus unless asked for. */
+const TREES = ['campus-quad'];
+
+/**
+ * The university's front quad (Task 9, tools/ui-test.ts campus-quad): the
+ * perf city has no campus (the engine's own start ensures one; perf seeds
+ * the sample alone), so one is ensured and the page opened again, only
+ * under PERF_ONLY, and it stands for the rest of the run. Framed in the
+ * campus's own frame, across the front quad from over the gate.
+ */
+async function* treeViews(page: Page, reopen: () => Promise<void>): AsyncGenerator<[string, V3, V3]> {
+  (await import('../engine/school/campus.js')).ensureCampus();
+  await reopen();
+  type C = { anchors: Record<'library' | 'gate', number[]> } | null;
+  const c = await dbg<C>(page, '(d) => d.campus()');
+  if (!c) {
+    console.log('trees: no campus stands; campus-quad is skipped');
+    return;
+  }
+  const g = c.anchors.gate;
+  const l = c.anchors.library;
+  const n = Math.hypot(l[0] - g[0], l[2] - g[2]);
+  const ax = [(l[0] - g[0]) / n, (l[2] - g[2]) / n];
+  const at = (x: number, y: number, z: number): V3 => [g[0] + ax[0] * x - ax[1] * z, y, g[2] + ax[1] * x + ax[0] * z];
+  yield ['campus-quad', at(-30, 30, 10), at(60, 10, -4)];
 }
 
 /** The market's and the milestones' views (Task 8), staged one by one; an eye of null leaves the camera where the tour holds it. */
@@ -884,6 +960,12 @@ async function main(): Promise<void> {
       }
       if (only && MARKET.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of marketViews(page, () => open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug'), only)) {
+          if (!only.includes(name)) continue;
+          await measure(name, eye, target);
+        }
+      }
+      if (only && TREES.some((n) => only.includes(n))) {
+        for await (const [name, eye, target] of treeViews(page, () => open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug'))) {
           if (!only.includes(name)) continue;
           await measure(name, eye, target);
         }
