@@ -518,29 +518,40 @@ test('on, off, on during an analysis ends connected (connect reconnects an analy
   assert.equal(city().length, 1);
 });
 
-test('disconnecting during an analysis stays disconnected when the analysis finishes', async () => {
+test('a stopped connect cancels its analysis: no later step runs, no tower is written and the repo is not left analysing', async () => {
   const fullName = 'acme/widgets';
   let release: () => void = () => {};
-  setRunner(gatedRunner(fullName, new Promise<void>((r) => (release = r))));
+  const gated = gatedRunner(fullName, new Promise<void>((r) => (release = r)));
+  const ran: string[] = [];
+  setRunner(async (cmd, args) => {
+    ran.push(`${cmd} ${args.slice(0, 2).join(' ')}`);
+    return gated(cmd, args);
+  });
 
   const slot = (await connect(fullName)).slot;
   disconnect(fullName);
-  // Every step the stopped analysis still reports says the repo is off, so the city raises no scaffold for it.
-  const steps: Array<{ connected: boolean }> = [];
-  const off = subscribe((e) => {
-    if (e.type === 'repo.analyzing') steps.push((e.data as { repo: { connected: boolean } }).repo);
-  });
-  const analyzed = waitForEvent('repo.analyzed');
+  const types: string[] = [];
+  const off = subscribe((e) => types.push(e.type));
+  // The analysis ends by telling the screens what the repo is now: off, and no longer analysing.
+  const settledEvent = waitForEvent('repo.disconnected');
   release();
-  const e = await analyzed;
+  const e = await settledEvent;
   off();
-  assert.equal(listRepos()[0].connected, false, 'the finished analysis must not reconnect the repo');
-  assert.equal((e.data as { repo: { connected: boolean } }).repo.connected, false);
-  assert.ok(steps.length > 0 && steps.every((r) => r.connected === false), `steps after the stop carry connected: false (${steps.length})`);
+  const settledRepo = (e.data as { repo: Repo }).repo;
+  assert.equal(settledRepo.connected, false);
+  assert.notEqual(settledRepo.status, 'analyzing');
+  assert.notEqual(settledRepo.status, 'error', 'a stop is not a failure');
+  assert.equal(rawRepo(fullName).status, settledRepo.status);
+  assert.ok(!types.includes('repo.analyzed'), `the stopped analysis reported ${types.join(', ')}`);
+  assert.ok(!types.includes('repo.analyzing'), 'no step after the stop');
+  assert.deepEqual(ran.filter((c) => !c.startsWith('gh repo view')), [], 'nothing after the stop reached gh or git');
+  assert.equal(loadTower(fullName), null, 'no tower written for a stopped connect');
   assert.deepEqual(city(), []);
-  // The slot stays the repo's: reconnecting returns it to the same plot.
+  // The slot stays the repo's: reconnecting returns it to the same plot, and analyses afresh.
+  const analyzed = waitForEvent('repo.analyzed');
   assert.equal((await connect(fullName)).slot, slot);
-  await waitForEvent('repo.analyzed');
+  await analyzed;
+  assert.equal(listRepos()[0].status, 'ready');
 });
 
 test('connect refuses a malformed owner/name without storing a row or calling gh', async () => {
@@ -880,6 +891,29 @@ test('a failed re-analysis leaves the tower untouched', async () => {
   assert.equal(rawRepo(fullName).joinedAt, joinedAt);
 });
 
+test('a write that fails between the tower and the repo leaves both as they were (forced failure inside the transaction)', async () => {
+  const fullName = 'acme/widgets';
+  setRunner(fixtureRunner(fullName, FOUNDING_COMMITS));
+  await connectAndAnalyze(fullName);
+  const before = loadTower(fullName);
+  const beforeFloors = rawTowerFloors(fullName).length;
+
+  // The tower is written first; the repo's ready write after it is made to fail.
+  openDb().exec(
+    "CREATE TRIGGER fail_ready BEFORE UPDATE ON repos WHEN json_extract(NEW.json, '$.status') = 'ready' BEGIN SELECT RAISE(ABORT, 'forced failure'); END",
+  );
+  try {
+    setRunner(fixtureRunner(fullName, [...FOUNDING_COMMITS, { ...FOUNDING_COMMITS[0], sha: 'f0f0f0f', at: '2026-01-02T00:00:00.000Z' }]));
+    await analyze(fullName);
+  } finally {
+    openDb().exec('DROP TRIGGER fail_ready');
+  }
+  assert.equal(rawRepo(fullName).status, 'error');
+  assert.match(rawRepo(fullName).error ?? '', /forced failure/);
+  assert.equal(rawTowerFloors(fullName).length, beforeFloors, 'the tower write was rolled back with the repo write');
+  assert.deepEqual(loadTower(fullName), before);
+});
+
 test('repo slots migrate into the slots table unchanged', async () => {
   const { nextSlot } = await import('../engine/repos.js');
   const db = openDb();
@@ -1058,4 +1092,60 @@ test('turning the market on with no audit trigger registered warns once and stil
   } finally {
     console.warn = original;
   }
+});
+
+/** A ready repo row that was never detected (checks null), as an analysis before detection existed left it. */
+function undetectedRepo(fullName: string): Repo {
+  const repo = { ...repoMarketDefaults(), fullName, private: false, defaultBranch: 'main', language: null, description: null, connected: true, pushMode: false, root: 'roman', slot: 0, status: 'ready', error: null, connectedAt: '2026-11-01T00:00:00.000Z', analyzedAt: '2026-11-01T00:00:00.000Z', joinedAt: '2026-11-01T00:00:00.000Z' } as Repo;
+  openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(repo.fullName, JSON.stringify(repo));
+  return repo;
+}
+
+test('turning the market on detects the checks of a repo that never had them, from its mirror and without a fetch', async () => {
+  const { checksSettled, getRepo, registerAuditTrigger } = await import('../engine/repos.js');
+  registerAuditTrigger(() => {});
+  const fullName = 'acme/neverread';
+  undetectedRepo(fullName);
+  const calls: string[] = [];
+  const tree = treeRunner(fullName, { 'package.json': JSON.stringify({ scripts: { test: 'node --test', build: 'vite build' }, devDependencies: { vite: '1' } }), 'package-lock.json': '{}' });
+  setRunner(async (cmd, args) => {
+    calls.push(`${cmd} ${args.join(' ')}`);
+    return tree(cmd, args);
+  });
+  const patched = waitForEvent('repo.patched');
+  patchRepo(fullName, { market: true });
+  await patched;
+  await checksSettled();
+  const c = getRepo(fullName)!.checks;
+  assert.equal(c?.install, 'npm ci');
+  assert.deepEqual(c?.ecosystems, ['npm']);
+  assert.equal(c?.test, 'npm test');
+  assert.equal(c?.build, 'npm run build');
+  assert.equal(c?.detected, true);
+  assert.ok(!calls.some((c) => /fetch|clone|^gh /.test(c)), `no network: ${calls.join('; ')}`);
+  registerAuditTrigger(null);
+});
+
+test('turning the market on leaves known checks alone, and a failed detection leaves them null', async () => {
+  const { checksSettled, getRepo, registerAuditTrigger } = await import('../engine/repos.js');
+  registerAuditTrigger(() => {});
+  undetectedRepo('acme/nomirror');
+  let calls = 0;
+  setRunner(async () => {
+    calls++;
+    return { stdout: '', stderr: 'fatal: cannot change to the mirror', code: 128 };
+  });
+  patchRepo('acme/nomirror', { market: true });
+  await checksSettled();
+  assert.equal(getRepo('acme/nomirror')!.checks, null);
+  assert.equal(getRepo('acme/nomirror')!.market, true);
+
+  calls = 0;
+  patchRepo('acme/nomirror', { market: false });
+  patchRepo('acme/nomirror', { checks: { test: 'make test' } });
+  patchRepo('acme/nomirror', { market: true });
+  await checksSettled();
+  assert.equal(calls, 0, 'known checks are not read again');
+  assert.equal(getRepo('acme/nomirror')!.checks?.test, 'make test');
+  registerAuditTrigger(null);
 });

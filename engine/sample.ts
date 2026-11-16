@@ -6,8 +6,9 @@
  * that marker answers every gh and git call from sampleGh and keeps the usage
  * hook's Claude settings inside the sample home.
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import type { RootStyle } from '../shared/types.js';
 import { openDb } from './db.js';
@@ -20,6 +21,16 @@ export const SAMPLE_MARKER = 'sample.json';
 /** True when `dir` (the data home by default) was written by tools/sample.ts. */
 export function isSampleHome(dir: string = home()): boolean {
   return existsSync(join(dir, SAMPLE_MARKER));
+}
+
+/**
+ * Throws "Not a sample home" unless `dir` holds the sample marker. Everything
+ * that writes the sample's story (seedEconomy, its school) or points his
+ * folders at the sample's own (useSampleFolders) calls it first, so none of
+ * it ever lands on a home that is not a sample's.
+ */
+export function assertSampleHome(dir: string = home()): void {
+  if (!isSampleHome(dir)) throw new Error(`Not a sample home: ${dir} has no ${SAMPLE_MARKER}. Seed it with seedSample() (tools/sample.ts) first.`);
 }
 
 /** The stand-in Claude settings file a sample engine's usage hook writes, inside the sample home. */
@@ -42,14 +53,58 @@ export function sampleGeminiHome(dir: string = home()): string {
   return join(dir, 'providers', 'gemini');
 }
 
+/** His own folders a sample engine never reads, whatever a variable says. */
+function hisFolders(): string[] {
+  return ['.claude', '.codex', '.gemini'].map((f) => join(homedir(), f));
+}
+
+/**
+ * The real path of `p` as far as it exists: each symlink on the way is
+ * followed, a dangling one too, and the part that does not exist yet is
+ * kept as written. Only metadata is looked up; nothing is opened.
+ */
+function realPathOf(p: string, depth = 0): string {
+  const abs = resolve(p);
+  if (depth > 32) return abs;
+  try {
+    return realpathSync.native(abs);
+  } catch {
+    try {
+      if (lstatSync(abs).isSymbolicLink()) return realPathOf(resolve(dirname(abs), readlinkSync(abs)), depth + 1);
+    } catch {
+      // not there: resolve the parent
+    }
+    const parent = dirname(abs);
+    if (parent === abs) return abs;
+    return join(realPathOf(parent, depth + 1), basename(abs));
+  }
+}
+
+/**
+ * True when `p` names one of his own folders or a path inside one, in any
+ * letter case, compared both as written and by its real path, so a symlink
+ * spelled differently that leads to his folders is caught.
+ */
+function namesHisFolder(p: string): boolean {
+  const spellings = [resolve(p), realPathOf(p)].map((s) => s.toLowerCase());
+  const roots = hisFolders().flatMap((f) => [resolve(f), realPathOf(f)].map((r) => r.toLowerCase()));
+  return spellings.some((abs) => roots.some((root) => abs === root || abs.startsWith(root + sep)));
+}
+
 /**
  * Points every reader of his other folders at the sample home's own: the
  * Claude transcripts the budget scans, and the Codex and Gemini homes
- * Settings reads. A variable already set (a test's temp folder) is kept.
+ * Settings reads. A variable already set (a test's or a tool's temp folder)
+ * is kept, unless it names his own `.claude`, `.codex` or `.gemini`, by its
+ * text or by its real path. Only on a sample home: anywhere else it throws
+ * and changes nothing, so a folder override is never honoured for a home
+ * that is not a sample's.
  */
 export function useSampleFolders(dir: string = home()): void {
+  assertSampleHome(dir);
   const set = (k: string, v: string) => {
-    if (!process.env[k]) process.env[k] = v;
+    const now = process.env[k];
+    if (!now || namesHisFolder(now)) process.env[k] = v;
   };
   set('PALIMPSEST_CLAUDE_PROJECTS', sampleProjectsDir(dir));
   set('PALIMPSEST_CODEX_HOME', sampleCodexHome(dir));

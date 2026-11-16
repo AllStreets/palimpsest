@@ -347,7 +347,11 @@ async function settingsChecks(page: Page, check: Check, shots: string, keySet: (
     });
     check(fit.wrapped && fit.inside, 'wrapped inside its column');
     check(/^The statusline percentages held, read .* ago\.$/.test(((await claudeP.locator('.prov-state').textContent()) ?? '').trim()), `and the state line says what held and when it was read (${await claudeP.locator('.prov-state').textContent()})`);
-    check((await claudeP.locator('.usage-five .usage-pct').textContent()) === `${SAMPLE_USED.five}%` && (await claudeP.locator('.usage-week .usage-pct').textContent()) === `${SAMPLE_USED.week}%`, 'with the readings still shown under it');
+    // The windows still stand under the trouble line: as they stand now where the engine could read that, else the reading.
+    const usageNow = ((await page.evaluate(() => fetch('/api/usage').then((r) => r.json()))) as { now: { fiveHour: number | null; sevenDay: number | null } | null }).now;
+    const shownFive = await claudeP.locator('.usage-five .usage-pct').textContent();
+    const shownWeek = await claudeP.locator('.usage-week .usage-pct').textContent();
+    check(shownFive === `${usageNow?.fiveHour ?? SAMPLE_USED.five}%` && shownWeek === `${usageNow?.sevenDay ?? SAMPLE_USED.week}%`, `with the windows still shown under it (${shownFive}, ${shownWeek}; the engine says ${usageNow?.fiveHour ?? 'the reading'}, ${usageNow?.sevenDay ?? 'the reading'})`);
     const troubleBox = await trouble.boundingBox();
     const stateBox = await claudeP.locator('.prov-state-line').boundingBox();
     check(!!troubleBox && !!stateBox && troubleBox.y >= stateBox.y + stateBox.height - 1, 'the trouble line stands under the state line, never over the readings');

@@ -216,9 +216,10 @@ test('statements are capped at 40, highest weight first, 300 characters each', (
 });
 
 /** Every file in `dir` with its bytes, for before and after comparisons. */
-function snapshot(dir: string): Record<string, string> {
+/** Every file in `dir` by its bytes; a file named in `unread` (one made unreadable) by its presence only. */
+function snapshot(dir: string, unread: string[] = []): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const f of readdirSync(dir).sort()) out[f] = readFileSync(join(dir, f)).toString('base64');
+  for (const f of readdirSync(dir).sort()) out[f] = unread.includes(f) ? 'present' : readFileSync(join(dir, f)).toString('base64');
   return out;
 }
 
@@ -259,6 +260,37 @@ test('reading a WAL database while Understudy holds it open reads its live data 
     assert.deepEqual(readFileSync(`${path}-wal`), walBytes, 'the WAL is byte for byte as it was');
   } finally {
     live.close();
+  }
+});
+
+test('a WAL left with frames and no -shm (Understudy killed, or its -shm unopenable) is read with its frames, and its files stay as they were', () => {
+  const path = fixture({ wal: true });
+  const live = new DatabaseSync(path);
+  live.exec("pragma wal_autocheckpoint = 0; insert into statements (id, text, aspect, evidence) values ('s9', 'Only in the WAL.', 'look', '[]')");
+  // What a killed Understudy leaves: the database and its WAL with the frame, no shared memory.
+  const left = join(tempDir, 'killed');
+  mkdirSync(left);
+  const copy = join(left, 'understudy.db');
+  writeFileSync(copy, readFileSync(path));
+  writeFileSync(`${copy}-wal`, readFileSync(`${path}-wal`));
+  live.close();
+  process.env.PALIMPSEST_UNDERSTUDY_DB = copy;
+  const before = snapshot(left);
+  assert.deepEqual(Object.keys(before).sort(), ['understudy.db', 'understudy.db-wal']);
+  switchOn();
+  assert.ok(understudyStatements().includes('Only in the WAL.'), 'the frames in the WAL were missed');
+  assert.equal(understudyCounts()?.statements, 3);
+  assert.deepEqual(snapshot(left), before, 'the folder is as it was, byte for byte');
+
+  // The same with a -shm that cannot be opened.
+  writeFileSync(`${copy}-shm`, Buffer.alloc(32 * 1024));
+  chmodSync(`${copy}-shm`, 0o000);
+  try {
+    const withShm = snapshot(left, ['understudy.db-shm']);
+    assert.ok(understudyStatements().includes('Only in the WAL.'), 'an unopenable -shm hid the WAL frames');
+    assert.deepEqual(snapshot(left, ['understudy.db-shm']), withShm);
+  } finally {
+    chmodSync(`${copy}-shm`, 0o644);
   }
 });
 

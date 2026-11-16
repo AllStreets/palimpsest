@@ -19,6 +19,9 @@ Options after `--`:
   --width N              render width in pixels (default 2600)
   --font PATH            letter font (default docs/brand/fonts/Cinzel-800.ttf)
   --save-blend PATH      also save the .blend for inspection
+  --word TEXT            the letters to build (default PALIMPSEST; logo.py builds a P)
+  --datum N              the bronze datum's height as a share of cap height (default 0.022)
+  --scar-letter CH       the letter whose brick floor is left in primer (default M)
 
 Textures are the Poly Haven scans the app already ships (app/public/textures, CC0).
 """
@@ -50,6 +53,8 @@ WIDTH = int(arg('--width', '2600'))
 FONT = os.path.abspath(arg('--font', os.path.join(HERE, 'fonts', 'Cinzel-800.ttf')))
 SAVE_BLEND = arg('--save-blend', '')
 WORD = arg('--word', 'PALIMPSEST')
+DATUM_H = float(arg('--datum', '0.022'))
+SCAR_LETTER = arg('--scar-letter', 'M')
 BUILD_ONLY = '--build-only' in sys.argv
 
 # Letter proportions: Roman capitals drawn taller than the font, like shafts.
@@ -144,11 +149,12 @@ bpy.data.objects.remove(probe)
 # (name, top as a share of cap height, era, outline offset, floors in the run)
 # Each era steps back from the one below it. The datum band sits between brick and glass.
 G = 0.0055 * CAP  # reveal between floors
+DATUM_TOP = 0.49 + DATUM_H
 RUNS = [
     # name, top, era, width scale, depth scale, floors
     ('root', 0.20, 'stone', 1.0, 1.14, 2),
     ('brick', 0.49, 'brick', 0.994, 1.0, 4),
-    ('datum', 0.512, 'bronze', 1.026, 1.24, 1),
+    ('datum', DATUM_TOP, 'bronze', 1.026, 1.24, 1),
     ('glass', 0.80, 'glass', 0.984, 0.9, 5),
     ('crown', 1.00, 'titanium', 0.968, 0.8, 3),
 ]
@@ -273,9 +279,12 @@ def mat_titanium():
     return m
 
 
-def mat_glass(lit_share, window_strength):
-    """Curtain wall: dark reflective glass in a mullion grid, with some windows lit warm."""
-    m, nt, b = principled('glass')
+def mat_glass(lit_share, window_strength, cols_per_unit=128.0, rows_per_unit=None, name='glass'):
+    """Curtain wall: dark reflective glass in a mullion grid, with some windows lit warm.
+
+    `cols_per_unit` is window columns per unit of length along a face; `rows_per_unit` is rows per unit
+    of height (default one row per floor of the wordmark's glass run)."""
+    m, nt, b = principled(name)
     n = nt.nodes
     l = nt.links
     coord = n.new('ShaderNodeTexCoord')
@@ -288,11 +297,11 @@ def mat_glass(lit_share, window_strength):
     l.new(sep.outputs['Y'], along.inputs[1])
     cols = n.new('ShaderNodeMath')
     cols.operation = 'MULTIPLY'
-    cols.inputs[1].default_value = 128.0
+    cols.inputs[1].default_value = cols_per_unit
     l.new(along.outputs['Value'], cols.inputs[0])
     rows = n.new('ShaderNodeMath')
     rows.operation = 'MULTIPLY'
-    rows.inputs[1].default_value = 5.0 / ((0.80 - 0.512) * CAP)  # one row per floor
+    rows.inputs[1].default_value = rows_per_unit if rows_per_unit else 5.0 / ((0.80 - DATUM_TOP) * CAP)  # one row per floor
     l.new(sep.outputs['Z'], rows.inputs[0])
     # Cell ids and fractions.
     def floor_of(sock):
@@ -467,7 +476,7 @@ for name, top, era, width, deep, count in RUNS:
             z0, z1 = lo + 0.0015 * CAP, hi - 0.0015 * CAP
         for i, ob in enumerate(letters(f'{name}{k}', width)):
             slab(ob, z0, z1, depth=DEPTH * deep)
-            scar = (name, k) == SCAR_FLOOR and WORD[i] == 'M'
+            scar = (name, k) == SCAR_FLOOR and WORD[i] == SCAR_LETTER
             ob.data.materials.append(materials['scar' if scar else era])
             pieces.append(ob)
     lo = hi

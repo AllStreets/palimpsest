@@ -41,13 +41,16 @@ import {
   resetRuns,
   settleRuns,
   resumeRepo,
+  resumeJob,
+  MAX_ENGINE_FAILURES,
   run as storedRun,
   sites,
   WATCH_MS,
   type SchedulerDeps,
 } from '../engine/market/runs.js';
+import { emptyChecks } from '../engine/guild/checks.js';
 import { patchSettings } from '../engine/settings.js';
-import { getRepo, updateRepoMarket } from '../engine/repos.js';
+import { CHECKS_UNKNOWN, getRepo, updateRepoMarket } from '../engine/repos.js';
 import { repoMarketDefaults } from '../shared/market-rules.js';
 import type { Agent, Bid, CheckResult, Firm, Inspection, Job, ModelRef, Repo, Run } from '../shared/types.js';
 
@@ -152,7 +155,7 @@ function reading(five = 10): void {
 
 let slot = 0;
 /** A connected repo with the market on, and its bare mirror where syncMirror would put it. */
-function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
+function makeRepo(full = FULL, over: Partial<Repo> = {}, files: Record<string, string> = {}): Repo {
   const repo: Repo = {
     fullName: full,
     private: false,
@@ -170,6 +173,8 @@ function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
     ...repoMarketDefaults(),
     market: true,
     joinedAt: '2026-11-01T00:00:00.000Z',
+    // Known checks, so a run never stops to learn them; a test that wants them unknown passes `checks: null`.
+    checks: { ...emptyChecks(), test: 'true' },
     ...over,
   };
   openDb().prepare('INSERT OR REPLACE INTO repos (full_name, json) VALUES (?, ?)').run(repo.fullName, JSON.stringify(repo));
@@ -178,6 +183,7 @@ function makeRepo(full = FULL, over: Partial<Repo> = {}): Repo {
   git(work, 'init', '-q', '-b', 'main');
   writeFileSync(join(work, 'README.md'), 'widgets\n');
   writeFileSync(join(work, 'src', 'header.ts'), 'export const header = 1;\n');
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(work, name), text);
   git(work, 'add', '.');
   git(work, 'commit', '-q', '-m', 'first');
   git(tempDir, 'clone', '-q', '--bare', work, mirrorDir(full));
@@ -303,6 +309,8 @@ function deps(over: Partial<SchedulerDeps> = {}): { deps: SchedulerDeps; calls: 
       return [];
     },
     preflight: async () => null,
+    // Never the network: a test that wants the mirror fetched passes its own.
+    sync: async () => {},
     watchMs: 0,
     ...over,
   };
@@ -569,7 +577,162 @@ test('a hard stop aborts claude runs and leaves local runs going', async () => {
   assert.equal(job(claudeRun.job.id)?.attempts, 0);
 });
 
-test('a crash while installing moves the job from awarded to failed', async () => {
+for (const ended of ['crashed', 'capped'] as const) {
+  test(`a hard stop whose provider then ends ${ended} is still a kill and spends no attempt`, async () => {
+    const started: WorkInput[] = [];
+    useScript({
+      work: async (i) => {
+        started.push(i);
+        await new Promise<void>((resolve) => i.signal.addEventListener('abort', () => resolve(), { once: true }));
+        // The CLI killed under the hard stop: its stream ends without a result, or a cap fires on the way out.
+        return { summary: '', usage: { weightedTokens: 0, seconds: 1, usd: 0, credits: 0 }, ended, reason: 'the stream ended without a result (exit SIGTERM)' };
+      },
+    });
+    const { job: j } = awarded(makeRepo().fullName, addAgent('c1', 'alpha', 'claude:sonnet'));
+    const s = createScheduler(deps().deps);
+    await s.tick();
+    await until(() => started.length === 1);
+    reading(95);
+    s.watch();
+    await until(() => runsOf(j.id)[0]?.outcome != null);
+    await s.idle();
+    const [r] = runsOf(j.id);
+    assert.equal(r.outcome, 'killed');
+    assert.match(r.endedReason ?? '', /hard/);
+    const after = job(j.id) as Job;
+    assert.equal(after.attempts, 0);
+    assert.equal(after.status, 'open');
+    assert.deepEqual(after.excludedFirms, []);
+  });
+}
+
+test('a provider that says its crash was the engine\'s reopens the job without an attempt', async () => {
+  useScript({
+    work: async () => ({ summary: '', usage: { weightedTokens: 0, seconds: 1, usd: 0, credits: 0 }, ended: 'crashed', reason: 'run not quiet before a tool turn: run processes still alive: 77', spendsAttempt: false }),
+  });
+  const { job: j } = awarded(makeRepo().fullName, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const s = createScheduler(deps().deps);
+  await s.tick();
+  await s.idle();
+  assert.equal(runsOf(j.id)[0].outcome, 'crashed');
+  assert.equal(job(j.id)?.attempts, 0);
+  assert.equal(job(j.id)?.status, 'open');
+  assert.deepEqual(job(j.id)?.excludedFirms, []);
+});
+
+/** Puts an open job back up and awards it to `a`, as a round would. */
+let reawards = 0;
+function reaward(j: Job, a: Agent): Job {
+  const open = openBidding(job(j.id) as Job, NOW);
+  const bid: Bid = {
+    id: `bid-again-${reawards++}-${a.id}`,
+    jobId: j.id,
+    firmId: a.firmId,
+    agentId: a.id,
+    plan: '1. Read. 2. Change the header.',
+    price: 20,
+    confidence: 0.8,
+    calibrated: 0.68,
+    appraisal: null,
+    ev: 20,
+    cost: 3,
+    at: new Date(NOW).toISOString(),
+  };
+  openDb().prepare('INSERT INTO bids (id, job_id, json) VALUES (?, ?, ?)').run(bid.id, bid.jobId, JSON.stringify({ round: open.bidsCloseAt, bid }));
+  record('job.awarded', { jobId: j.id, tier: j.tier, considered: [bid], satOut: [], chosen: bid, why: 'test', at: new Date(NOW).toISOString(), coolOffUntil: null });
+  return transition(open, 'awarded', { awardedBid: bid.id });
+}
+
+test('a job the engine keeps failing on is held with a plain note after three runs in a row, and a resume puts it back', async () => {
+  useScript({});
+  makeRepo();
+  const a = addAgent('c1', 'alpha', 'claude:sonnet');
+  const { job: j } = awarded(FULL, a);
+  const s = createScheduler(
+    deps({ installDeps: async () => ({ name: 'install', status: 'fail', detail: 'npm ci exited 1', durationMs: 5, logPath: null, testsRun: null }) }).deps,
+  );
+  assert.equal(MAX_ENGINE_FAILURES, 3);
+  for (let round = 1; round <= 3; round++) {
+    if (round > 1) reaward(j, a);
+    await s.tick();
+    await s.idle();
+    const after = job(j.id) as Job;
+    assert.equal(runsOf(j.id).length, round);
+    assert.equal(after.attempts, 0);
+    assert.equal(after.engineFailures, round);
+    if (round < 3) assert.equal(after.status, 'open', `round ${round} reposts the job`);
+  }
+  const held = job(j.id) as Job;
+  assert.equal(held.status, 'halted', 'the third engine failure in a row holds the job instead of reposting it');
+  assert.match(held.haltNote ?? '', /3 runs in a row/);
+  assert.match(held.haltNote ?? '', /The install failed: npm ci exited 1/);
+  assert.match(held.haltNote ?? '', /resume/);
+  const note = entries().find((e) => e.kind === 'run.note' && (e.data as { jobId?: string }).jobId === j.id)?.data as { note: string };
+  assert.equal(note.note, held.haltNote, 'his brief reads the same note');
+  // No more rounds: a tick leaves a held job alone.
+  await s.tick();
+  await s.idle();
+  assert.equal(runsOf(j.id).length, 3);
+  assert.equal(job(j.id)?.status, 'halted');
+  const resumed = resumeJob(job(j.id) as Job);
+  assert.equal(resumed.status, 'open');
+  assert.equal(resumed.engineFailures, 0);
+  assert.equal(resumed.haltNote, null);
+});
+
+test('a firm failure between the engine\'s own failures starts the count again', async () => {
+  useScript({});
+  makeRepo();
+  const a = addAgent('c1', 'alpha', 'claude:sonnet');
+  const b = addAgent('b1', 'beta', 'claude:sonnet');
+  const { job: j } = awarded(FULL, a);
+  let installFails = true;
+  let inspectionFails = false;
+  const s = createScheduler(
+    deps({
+      installDeps: async () => (installFails ? { name: 'install', status: 'fail', detail: 'npm ci exited 1', durationMs: 5, logPath: null, testsRun: null } : skipped),
+      inspect: async (r) => inspection(r, !inspectionFails),
+    }).deps,
+  );
+  for (const round of [1, 2]) {
+    if (round > 1) reaward(j, a);
+    await s.tick();
+    await s.idle();
+  }
+  assert.equal(job(j.id)?.engineFailures, 2);
+  // The firm's own failure: its change fails inspection.
+  installFails = false;
+  inspectionFails = true;
+  reaward(j, a);
+  await s.tick();
+  await s.idle();
+  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(j.id)?.engineFailures, 0);
+  assert.equal(job(j.id)?.status, 'open');
+  // The engine fails once more: the count starts again, and the job is reposted.
+  installFails = true;
+  reaward(j, b);
+  await s.tick();
+  await s.idle();
+  assert.equal(job(j.id)?.engineFailures, 1);
+  assert.equal(job(j.id)?.status, 'open');
+});
+
+test('a failed inspection still spends one attempt and excludes the firm', async () => {
+  useScript({});
+  const { job: j } = awarded(makeRepo().fullName, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const s = createScheduler(deps({ inspect: async (r) => inspection(r, false) }).deps);
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(r.outcome, 'failed');
+  const after = job(j.id) as Job;
+  assert.equal(after.attempts, 1);
+  assert.equal(after.status, 'open', 'one attempt left');
+  assert.deepEqual(after.excludedFirms, ['alpha']);
+});
+
+test('a crash while installing reopens the job without spending an attempt', async () => {
   makeRepo();
   const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
   const s = createScheduler(
@@ -584,14 +747,16 @@ test('a crash while installing moves the job from awarded to failed', async () =
   const [r] = runsOf(j.id);
   assert.equal(r.outcome, 'crashed');
   assert.match(r.endedReason ?? '', /npm exploded/);
-  assert.ok(jobMoves(j.id).includes('awarded>failed'));
+  assert.ok(jobMoves(j.id).includes('awarded>open'));
+  assert.ok(!jobMoves(j.id).includes('awarded>failed'), 'the engine\'s own crash is no failure of the job');
   assert.ok(!jobMoves(j.id).includes('awarded>running'));
   const after = job(j.id) as Job;
-  assert.equal(after.attempts, 1);
-  assert.equal(after.status, 'open', 'one attempt left, so it returns to the board');
+  assert.equal(after.attempts, 0, 'no attempt spent');
+  assert.equal(after.status, 'open');
+  assert.deepEqual(after.excludedFirms, []);
 });
 
-test('an install failure fails the run without a scar', async () => {
+test('an install failure crashes the run without a scar and spends no attempt', async () => {
   makeRepo();
   const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
   const ctxs: RunContext[] = [];
@@ -606,7 +771,7 @@ test('an install failure fails the run without a scar', async () => {
   await s.tick();
   await s.idle();
   const [r] = runsOf(j.id);
-  // Ruling (fix round 1): an install failure is crashed, spends the attempt, and never counts against the firm.
+  // An install failure is crashed and never counts against the firm; it is the engine's or the repo's, so no attempt is spent.
   assert.equal(r.outcome, 'crashed');
   assert.equal(r.scar, false);
   assert.match(r.endedReason ?? '', /install/);
@@ -619,7 +784,8 @@ test('an install failure fails the run without a scar', async () => {
   assert.equal(check.check.status, 'fail');
   const lastSite = evOf('site.changed').map((e) => (e.site as { stage: string }).stage).at(-1);
   assert.equal(lastSite, 'teardown');
-  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(j.id)?.attempts, 0);
+  assert.equal(job(j.id)?.status, 'open');
   assert.equal(entries().filter((e) => e.kind === 'floor.scarred').length, 0);
 });
 
@@ -647,6 +813,77 @@ test('the runner hands the baseline its signal and the install its egress', asyn
   assert.equal(baselines[0].sha, r.baseSha);
   assert.equal(baselines[0].signal, ctxs[0].signal);
   assert.equal(typeof ctxs[0].egress?.setStage, 'function');
+});
+
+test('a repo whose checks were never read learns them from the run\'s clone, and its install opens only the npm registry', async () => {
+  makeRepo(FULL, { checks: null }, {
+    'package.json': JSON.stringify({ scripts: { test: 'node --test', build: 'vite build' }, devDependencies: { vite: '1' } }),
+    'package-lock.json': '{}',
+  });
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  const seen: Array<Repo> = [];
+  const s = createScheduler(
+    deps({
+      installDeps: async (_ctx, repo) => {
+        seen.push(repo);
+        return { ...skipped, status: 'pass', detail: 'npm ci' };
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(seen.length, 1, 'the install ran');
+  assert.equal(seen[0].checks?.install, 'npm ci');
+  assert.deepEqual(seen[0].checks?.ecosystems, ['npm']);
+  assert.equal(getRepo(FULL)!.checks?.build, 'npm run build', 'the repo keeps what the run learned');
+  assert.equal(getRepo(FULL)!.halted, null);
+  const log = readFileSync(join(paths().runs, r.id, 'log.jsonl'), 'utf8');
+  assert.match(log, /stage install: registry\.npmjs\.org/);
+  assert.doesNotMatch(log, /stage install: nothing allowed/);
+  assert.notEqual(r.endedReason, `${CHECKS_UNKNOWN}.`);
+});
+
+test('a run on a repo where no build or test command can be found does not start blind: the job returns to the board and the repo says why', async () => {
+  makeRepo(FULL, { checks: null });
+  const { job: j } = awarded(FULL, addAgent('c1', 'alpha', 'claude:sonnet'));
+  let installs = 0;
+  let worked = 0;
+  useScript({
+    work: async (i) => {
+      worked++;
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(
+    deps({
+      installDeps: async () => {
+        installs++;
+        return skipped;
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(installs, 0, 'nothing was installed');
+  assert.equal(worked, 0, 'no agent worked');
+  assert.equal(r.outcome, 'crashed');
+  assert.equal(r.endedReason, `${CHECKS_UNKNOWN}.`);
+  assert.match(r.endedReason ?? '', /build and test commands are not known yet/);
+  const after = job(j.id)!;
+  assert.equal(after.status, 'open', 'back on the board');
+  assert.equal(after.attempts, 0, 'no attempt spent');
+  assert.deepEqual(after.excludedFirms, []);
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0, 'not the firm\'s failure');
+  const repo = getRepo(FULL)!;
+  assert.equal(repo.halted?.reason, CHECKS_UNKNOWN);
+  assert.ok(entries().some((e) => e.kind === 'repo.halted' && (e.data as { reason: string }).reason === CHECKS_UNKNOWN));
+  // Halted, the repo opens no bidding until he resumes it.
+  await s.tick();
+  await s.idle();
+  assert.equal(job(j.id)?.status, 'open');
+  assert.equal(runsOf(j.id).length, 1);
 });
 
 test('the real inspection is the default: a third failed inspection halts the repo, and its run still ends failed with a scar', async () => {
@@ -929,9 +1166,11 @@ test('interrupted runs crash at startup and reopen their jobs', async () => {
   assert.equal(storedRun(preparing.r.id)?.outcome, 'crashed');
   assert.equal(storedRun(waiting.r.id)?.outcome, null, 'a run waiting on its PR is not live');
   assert.equal(job(working.j.id)?.status, 'open');
-  assert.equal(job(working.j.id)?.attempts, 1);
+  // The engine stopping under a run is the engine's failure: no attempt spent.
+  assert.equal(job(working.j.id)?.attempts, 0);
   assert.equal(job(preparing.j.id)?.status, 'open');
-  assert.ok(jobMoves(preparing.j.id).includes('awarded>failed'));
+  assert.equal(job(preparing.j.id)?.attempts, 0);
+  assert.ok(jobMoves(preparing.j.id).includes('awarded>open'));
   assert.equal(job(waiting.j.id)?.status, 'waiting');
 });
 
@@ -1091,7 +1330,7 @@ test('a stage that hangs past the run wall deadline is ended by the watcher', as
   const [r] = runsOf(j.id);
   assert.equal(r.outcome, 'capped');
   assert.match(r.endedReason ?? '', /wall deadline/);
-  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(j.id)?.attempts, 0, 'the agent had finished: the hang was not its, so no attempt is spent');
   assert.deepEqual(job(j.id)?.excludedFirms, [], 'the agent had finished: the hang was not its');
   assert.equal(treasury(clock).concurrency.claude, 0);
 });
@@ -1182,7 +1421,8 @@ test('a city failure after the work is not blamed on the agent', async () => {
   const [r] = runsOf(j.id);
   assert.equal(r.outcome, 'crashed');
   assert.match(r.endedReason ?? '', /still alive/);
-  assert.equal(job(j.id)?.attempts, 1);
+  assert.equal(job(j.id)?.attempts, 0, 'a reap failure is the engine\'s: no attempt spent');
+  assert.equal(job(j.id)?.status, 'open');
   assert.deepEqual(job(j.id)?.excludedFirms, []);
 });
 
@@ -1287,4 +1527,145 @@ test('proposed jobs never bid', async () => {
   assert.equal(runsOf(p.id).length, 0);
   assert.equal(evOf('bid.placed').length, 0);
   assert.deepEqual(jobMoves(p.id), []);
+});
+
+// ---------------------------------------------------------------- the mirror is fetched first
+
+/** Adds a commit to the repo's working source (the stand-in for GitHub), not to its mirror; returns its sha. */
+function pushUpstream(full: string, name: string, text: string): string {
+  const work = join(tempDir, 'work', full.replace('/', '__'));
+  writeFileSync(join(work, name), text);
+  git(work, 'add', '.');
+  git(work, 'commit', '-q', '-m', `add ${name}`);
+  return git(work, 'rev-parse', 'HEAD');
+}
+
+/** A sync that fetches the temp working source into the temp mirror, as syncMirror would fetch GitHub. */
+function fetchingSync(calls: string[]) {
+  return async (full: string) => {
+    calls.push(full);
+    git(tempDir, `--git-dir=${mirrorDir(full)}`, 'fetch', '-q', join(tempDir, 'work', full.replace('/', '__')), '+refs/heads/*:refs/heads/*');
+  };
+}
+
+test('a run fetches the repo\'s latest commits before it clones, so it works on the current code', async () => {
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('a1', 'alpha', 'claude:sonnet'));
+  const head = pushUpstream(FULL, 'NEW.md', 'named in the issue\n');
+  const synced: string[] = [];
+  let sawNew = false;
+  useScript({
+    work: async (i) => {
+      sawNew = existsSync(join(i.dir, 'NEW.md'));
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(deps({ sync: fetchingSync(synced) }).deps);
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.deepEqual(synced, [FULL]);
+  assert.equal(r.baseSha, head, 'the clone starts at the newest commit');
+  assert.ok(sawNew, 'the agent sees the file the newest commit added');
+});
+
+test('a run whose fetch fails goes back on the board with no attempt spent and no firm blamed', async () => {
+  makeRepo();
+  const { job: j } = awarded(FULL, addAgent('a1', 'alpha', 'claude:sonnet'));
+  let worked = 0;
+  useScript({
+    work: async (i) => {
+      worked++;
+      return fakeDefaults.work(i);
+    },
+  });
+  const s = createScheduler(
+    deps({
+      sync: async () => {
+        throw new Error('Could not resolve host: github.com');
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  const [r] = runsOf(j.id);
+  assert.equal(worked, 0, 'no agent worked');
+  assert.equal(r.outcome, 'crashed');
+  assert.equal(r.endedReason, "Could not fetch the repo's latest commits: Could not resolve host: github.com");
+  assert.equal(r.dir, null, 'nothing was cloned');
+  const after = job(j.id)!;
+  assert.equal(after.status, 'open', 'back on the board');
+  assert.equal(after.attempts, 0, 'no attempt spent');
+  assert.deepEqual(after.excludedFirms, []);
+  assert.equal(resolvedBids().filter((x) => x.jobId === j.id).length, 0, 'not the firm\'s failure');
+  assert.equal(getRepo(FULL)?.halted ?? null, null, 'a network error never halts the repo');
+});
+
+test('a bidding round fetches the repo\'s latest commits before the plans are asked for', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  const order: string[] = [];
+  useScript({
+    plan: (i) => {
+      order.push('plan');
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  const posted = postJob();
+  const s = createScheduler(
+    deps({
+      sync: async (full) => {
+        order.push(`sync ${full}`);
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  assert.equal(job(posted.id)?.status, 'bidding');
+  assert.deepEqual(order, [`sync ${FULL}`, 'plan']);
+});
+
+test('a bidding round whose fetch fails still asks for plans', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  let planned = 0;
+  useScript({
+    plan: (i) => {
+      planned++;
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  postJob();
+  const s = createScheduler(
+    deps({
+      sync: async () => {
+        throw new Error('offline');
+      },
+    }).deps,
+  );
+  await s.tick();
+  await s.idle();
+  assert.equal(planned, 1);
+});
+
+test('a slow fetch before bidding is cut short so the bid window stays whole', async () => {
+  makeRepo();
+  addAgent('a1', 'alpha', 'claude:sonnet');
+  let planned = 0;
+  useScript({
+    plan: (i) => {
+      planned++;
+      return { ...fakeDefaults.plan(i), price: 10, confidence: 0.8 };
+    },
+  });
+  postJob();
+  let release!: () => void;
+  const hung = new Promise<void>((r) => (release = r));
+  const s = createScheduler(deps({ sync: () => hung, bidSyncMs: 30 }).deps);
+  const t0 = Date.now();
+  await s.tick();
+  await until(() => planned === 1, 3000);
+  assert.ok(Date.now() - t0 < 3000, 'the plans did not wait for the fetch');
+  release();
+  await s.idle();
 });

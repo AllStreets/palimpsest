@@ -63,13 +63,24 @@ export function engineGitEnvFor(runRoot: string): Record<string, string> {
 
 type GitResult = { stdout: string; stderr: string; code: number };
 
-function git(args: string[], cwd: string, runRoot: string, extraEnv: Record<string, string> = {}): Promise<GitResult> {
+/** What a git call ended by the caller's signal throws. */
+const STOPPED = 'The run was stopped while its clone was made.';
+
+function git(args: string[], cwd: string, runRoot: string, extraEnv: Record<string, string> = {}, signal?: AbortSignal): Promise<GitResult> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error(STOPPED));
+      return;
+    }
     execFile(
       'git',
       [...ENGINE_GIT_FLAGS, ...args],
-      { cwd, env: { ...engineGitEnvFor(runRoot), ...extraEnv }, timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_BUFFER, encoding: 'utf8' },
+      { cwd, env: { ...engineGitEnvFor(runRoot), ...extraEnv }, timeout: GIT_TIMEOUT_MS, maxBuffer: MAX_BUFFER, encoding: 'utf8', ...(signal ? { signal } : {}) },
       (err, stdout, stderr) => {
+        if (signal?.aborted) {
+          reject(new Error(STOPPED));
+          return;
+        }
         if (err && typeof (err as NodeJS.ErrnoException).code === 'string') {
           reject(err);
           return;
@@ -81,8 +92,8 @@ function git(args: string[], cwd: string, runRoot: string, extraEnv: Record<stri
   });
 }
 
-async function gitOk(args: string[], cwd: string, runRoot: string, extraEnv?: Record<string, string>): Promise<string> {
-  const r = await git(args, cwd, runRoot, extraEnv);
+async function gitOk(args: string[], cwd: string, runRoot: string, extraEnv?: Record<string, string>, signal?: AbortSignal): Promise<string> {
+  const r = await git(args, cwd, runRoot, extraEnv, signal);
   if (r.code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim() || r.stdout.trim()}`);
   return r.stdout;
 }
@@ -191,9 +202,13 @@ async function engineGitOk(dir: string, args: string[], extraEnv?: Record<string
  * Creates `<home>/runs/<runId>/{repo,tmp,home,cache,ctl}`, clones the
  * repo's mirror into `repo` on the default branch without hardlinks,
  * branches, points the fetch URL at GitHub and the push URL nowhere, and
- * records the clone's `.git/config` hash.
+ * records the clone's `.git/config` hash. `opts.signal` (the run's) ends the
+ * git under way and rejects: a stopped run clones nothing more, and no hash
+ * is recorded for a half-made clone.
  */
-export async function createRunDir(repo: Repo, runId: string, branch: string): Promise<{ runRoot: string; dir: string; baseSha: string }> {
+export async function createRunDir(repo: Repo, runId: string, branch: string, opts: { signal?: AbortSignal } = {}): Promise<{ runRoot: string; dir: string; baseSha: string }> {
+  const { signal } = opts;
+  if (signal?.aborted) throw new Error(STOPPED);
   const runRoot = join(paths().runs, runId);
   const dir = join(runRoot, 'repo');
   if (existsSync(dir)) throw new Error(`run dir already exists: ${dir}`);
@@ -205,10 +220,11 @@ export async function createRunDir(repo: Repo, runId: string, branch: string): P
     chmodSync(f, 0o444);
   }
 
-  await gitOk(['clone', '--quiet', '--local', '--no-hardlinks', '--branch', repo.defaultBranch, mirrorDir(repo.fullName), dir], runRoot, runRoot);
-  await gitOk(['checkout', '--quiet', '-b', branch], dir, runRoot);
-  await gitOk(['remote', 'set-url', 'origin', `https://github.com/${repo.fullName}.git`], dir, runRoot);
-  await gitOk(['remote', 'set-url', '--push', 'origin', PUSH_URL], dir, runRoot);
+  await gitOk(['clone', '--quiet', '--local', '--no-hardlinks', '--branch', repo.defaultBranch, mirrorDir(repo.fullName), dir], runRoot, runRoot, undefined, signal);
+  await gitOk(['checkout', '--quiet', '-b', branch], dir, runRoot, undefined, signal);
+  await gitOk(['remote', 'set-url', 'origin', `https://github.com/${repo.fullName}.git`], dir, runRoot, undefined, signal);
+  await gitOk(['remote', 'set-url', '--push', 'origin', PUSH_URL], dir, runRoot, undefined, signal);
+  if (signal?.aborted) throw new Error(STOPPED);
   recordGitConfig(dir);
   const baseSha = (await engineGit(dir, ['rev-parse', 'HEAD'])).stdout.trim();
   return { runRoot, dir, baseSha };

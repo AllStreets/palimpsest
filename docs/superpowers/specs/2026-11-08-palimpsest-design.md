@@ -256,6 +256,11 @@ Name Palimpsest. Palimpsest tower direction, crane and sparks. Tauri app. Logo a
 
 Datum line; eras driven by ability for earned floors and by timeline for history; credits as calibrated plan usage; half of each five-hour window by default with back-off; concurrency two Claude plus one local; seeded firms; award by expected value; reputation from pass rate, calibration and durability; three-strike self-halt; extra never-without-asking items; `sandbox-exec` sandbox; 95% over 50 for autonomy; `gh` CLI for GitHub; SQLite; the phase order.
 
+Deviations at v1 (Phase 5, approved by Connor):
+
+- WebGPU (6.6): v1 stays on WebGL2, because every custom shader would have to be rewritten in three's node language for a renderer the city does not need to hold its frame rate.
+- Day and night (6.6): v1 is dusk only, and the parked clear-air daytime still becomes a clear-air dusk still.
+
 ## 17. Settled after the builder check (my calls unless marked)
 
 - **What counts as merged.** Push mode on a repo: the city merges to main by itself once every gate passes; no per-push approval. PR mode: the engine polls GitHub (`gh`) for the PR's fate. Merged by him = merged. Closed without merge = failed (no scar, since it is his call, but it trains triage and the master net). While a PR waits, its floor shows as cured but unlit, with the crane parked. Earned autonomy (9.4) governs two things: whether the city may post its own proposals as jobs without asking, and whether it may merge its own PRs in PR-mode repos for that kind of work. The brief's pending items are PRs and proposals waiting on him, not pushes.

@@ -29,7 +29,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import { calibrated as calibrate, expectedValue } from '../../shared/market-rules.js';
+import { calibrated as calibrate, expectedValue, roundOpen } from '../../shared/market-rules.js';
 import type { Agent, Bid, FloorSize, Job, Repo, Tier } from '../../shared/types.js';
 import { openDb } from '../db.js';
 import { emit } from '../events.js';
@@ -344,6 +344,9 @@ async function bidOnce(cur: Job, round: string, a: Agent, now: number): Promise<
   // The job may have been awarded, withdrawn or reopened while the call ran; a late bid is not entered.
   const still = storedJob(cur.id);
   if (!still || still.status !== 'bidding' || still.bidsCloseAt !== round) return null;
+  // Nor is an answer that lands after the round closed, though no tick has awarded the job yet:
+  // the round is open only before its close (roundOpen), here as in the sample.
+  if (!roundOpen(still, clock())) return sitOut(cur, round, a, 'the plan answered after bidding closed', clock());
 
   const price = tidy(clamp(median(answers.map((x) => x.price)), MIN_PRICE, Math.max(MIN_PRICE, cur.value)));
   const confidence = tidy(clamp(median(answers.map((x) => x.confidence)), MIN_CONFIDENCE, MAX_CONFIDENCE));
@@ -477,7 +480,7 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     const others = ranked.filter((b) => b !== chosen);
     if (others.length) parts.push(`Also considered: ${others.map(describe).join('; ')}.`);
   } else {
-    parts.push(bids.length ? `No bid had a positive expected value, so the job goes back on the board.` : `No bids came in, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.`);
+    parts.push(bids.length ? `No bid had a positive expected value, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.` : `No bids came in, so the job goes back on the board and opens again after ${BID_COOL_OFF_MS / 60_000} minutes.`);
     if (bids.length) parts.push(`Considered: ${ranked.map(describe).join('; ')}.`);
   }
   if (satOut.length) parts.push(`Sat out: ${satOut.map((s) => `${nameOf(s.agentId)} (${s.reason})`).join('; ')}.`);
@@ -492,8 +495,9 @@ export function award(j: Job, now: number = Date.now()): Bid | null {
     chosen,
     why,
     at: new Date(now).toISOString(),
-    // Nobody eligible, or everyone sat out: wait before the next round.
-    coolOffUntil: bids.length === 0 ? new Date(now + BID_COOL_OFF_MS).toISOString() : null,
+    // No award (nobody eligible, everyone sat out, or no bid worth its price): wait before the next
+    // round, since the same firms would bid the same again and each Claude bid spends his plan.
+    coolOffUntil: chosen ? null : new Date(now + BID_COOL_OFF_MS).toISOString(),
     // Decision 14: the appraisals the award weighed, and whether they changed the choice (its later rows are then partly its own).
     ...(school ? { appraisals: Object.fromEntries(school.map((w) => [w.bid.id, w.bid.appraisal])) } : {}),
     ...(moved ? { appraiserMoved: true } : {}),

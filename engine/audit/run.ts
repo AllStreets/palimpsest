@@ -31,6 +31,7 @@ import { emit } from '../events.js';
 import { openDb } from '../db.js';
 import { paths } from '../home.js';
 import { record } from '../ledger.js';
+import { SYNC_FAILED, syncMirror } from '../mirror.js';
 import { getRepo, registerAuditTrigger, updateRepoMarket } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { interactiveActive } from '../usage.js';
@@ -97,13 +98,15 @@ export interface StartOptions {
   now: () => number;
   /** Why no agent run may start, or null (the scheduler's preflight). */
   preflight: () => Promise<string | null>;
-  quiet?: (runRoot: string) => Promise<void>;
+  quiet?: (runRoot: string) => Promise<unknown>;
   reap?: (runRoot: string) => Promise<number[]>;
   installDeps?: InstallDeps;
   /** The installed Ollama models (default: the last `ollama list` the engine took). */
   installed?: string[];
   /** The whole wall time of an audit; past it the watcher ends it `capped`. Default the session cap plus RUN_EXTRA_MINUTES. */
   wallMs?: number;
+  /** Fetches the repo's latest commits into its mirror before the audit clones it (default syncMirror). */
+  sync?: (fullName: string) => Promise<unknown>;
   /** Called when an audit becomes live and when it leaves (the scheduler arms its watcher on it). */
   onLive?: () => void;
 }
@@ -456,7 +459,15 @@ async function lifecycle(st: LiveAudit, o: StartOptions): Promise<Audit> {
   const checks = checkCommands(st.repo.checks);
   try {
     checkpoint(st);
-    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.audit.id, `palimpsest/${st.audit.id}`));
+    // The audit reads the clone of the local mirror, so the mirror first gets the repo's latest commits. A fetch that
+    // fails (the network, GitHub) ends the audit crashed with the reason; the repo is left as it was.
+    try {
+      await guarded(st, (o.sync ?? syncMirror)(st.repo.fullName));
+    } catch (err) {
+      if (err instanceof Killed) throw err;
+      return end(st, 'crashed', `${SYNC_FAILED}: ${errText(err)}`, o.now());
+    }
+    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.audit.id, `palimpsest/${st.audit.id}`, { signal: st.lease.signal }));
     st.egress = await guarded(st, startEgress(st.audit.id, log));
     if (st.model.startsWith('claude:')) {
       st.broker = await guarded(st, startBroker(st.audit.id, { runRoot: st.runRoot, dir, log, signal: st.lease.signal, stage: () => st.toolStage, allowedCommands: checks }));

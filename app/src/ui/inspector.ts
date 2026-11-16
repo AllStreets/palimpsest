@@ -115,6 +115,21 @@ export function earnedRow(f: Floor, names: MarketNames): EarnedRow {
   };
 }
 
+/**
+ * Under the market's heading, what its bands mean on the tower outside, for
+ * the kinds of floor this tower holds: lit floors merged, dark bands scars,
+ * unlit ones waiting on his review. Empty when it holds none.
+ */
+export function marketKey(floors: readonly Floor[]): string {
+  const states = new Set(floors.map((f) => f.earned?.state).filter(Boolean));
+  if (!states.size) return '';
+  const parts: string[] = [];
+  if (states.has('lit')) parts.push('A lit floor is a change a firm built here that you merged');
+  if (states.has('scar')) parts.push(`${parts.length ? 'a' : 'A'} dark band is a scar, work that failed inspection, kept where it failed`);
+  if (states.has('waiting')) parts.push(`${parts.length ? 'a' : 'A'} floor still unlit waits on your review`);
+  return `${parts.join('; ')}.`;
+}
+
 /** One line of the inspector's list, top to bottom. */
 export type InspectorEntry =
   | { type: 'heading'; text: string; count: number; market: boolean }
@@ -394,6 +409,13 @@ export function floorList(tower: TowerSpec, opts: FloorListOptions): { list: HTM
       role(eh, 'presentation');
       eh.append(el('span', 'insp-era-name', e.text), el('span', 'insp-era-count', plural(e.count, 'floor')));
       list.append(eh);
+      // What the lit and dark bands mean on the tower outside, said once under the market's heading.
+      const key = e.market ? marketKey(tower.floors.slice(tower.datumIndex)) : '';
+      if (key) {
+        const k = el('li', 'insp-market-key', key);
+        role(k, 'presentation');
+        list.append(k);
+      }
     } else if (e.type === 'floor') {
       list.append(e.floor.founding ? row(e.floor, e.n) : earnedFloorRow(e.floor, e.n));
     }

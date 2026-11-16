@@ -62,4 +62,4 @@ The README's hero, stills and clips in `docs/media/` are captured from the app i
 
 ## Libraries
 
-The school's races, breeding and intervals come from [Beagle](https://github.com/AllStreets/beagle) (MIT), imported as a library by `engine/school/beagle.ts`. Until its library pull request is merged, `package.json` pins it by full commit sha to a local bare copy of that branch at `.superpowers/beagle-local/beagle.git` in the main Palimpsest checkout (ignored by git, so every worktree installs from the same copy); the pin moves to `github:AllStreets/beagle#<merged sha>` once it is merged.
+The school's races, breeding and intervals come from [Beagle](https://github.com/AllStreets/beagle) (MIT), imported as a library by `engine/school/beagle.ts`. Its library pull request is merged, and `package.json` pins it by full commit sha as the HTTPS tarball `https://codeload.github.com/AllStreets/beagle/tar.gz/d72c872ec704565da88e8cf792af1b06a23fd285`, the merge commit on Beagle's main, so a fresh clone installs it from GitHub without SSH access.

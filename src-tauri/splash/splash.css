@@ -43,6 +43,15 @@ body {
   transform: translateX(-50%);
 }
 
+/* The mark: the P standing as a tower at dusk, drawn at 128 pt from its 256 px image, above the name. */
+.mark {
+  display: block;
+  width: 128px;
+  height: 128px;
+  margin-bottom: 26px;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.35));
+}
+
 .name {
   font: italic 400 56px/1 var(--serif);
   letter-spacing: -0.01em;

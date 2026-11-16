@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="docs/brand/logo.png" alt="The Palimpsest mark: the letter P standing as a tower at dusk, sandstone at its foot, brick floors with one left in primer, a bronze band, glass with lit windows and a titanium crown, on a stepped stone plinth before the city's skyline." width="160" />
+</p>
+
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wordmark-dark.png" />
     <source media="(prefers-color-scheme: light)" srcset="docs/brand/wordmark-light.png" />
@@ -7,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="phase 4" src="https://img.shields.io/badge/phase_4-the_school-b98a5e?style=flat-square&labelColor=17130f" />
+  <img alt="version 1.0" src="https://img.shields.io/badge/version-1.0-b98a5e?style=flat-square&labelColor=17130f" />
   <img alt="three.js" src="https://img.shields.io/badge/three.js-r187-6e6457?style=flat-square&labelColor=17130f" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-6e6457?style=flat-square&labelColor=17130f" />
   <img alt="engine" src="https://img.shields.io/badge/engine-Node_22_%C2%B7_SQLite-6e6457?style=flat-square&labelColor=17130f" />
@@ -18,17 +22,24 @@
   <img src="docs/media/hero.webp" alt="The sample city at dusk from above the rooftops, in a violet haze. Six towers rise from lit plazas over the low blocks and streets. Left of centre the inspection guild's searchlights climb the Gothic tower to the new floor at its top, under a crane, and a second crane stands on the tower behind it. The tallest tower stands on the right against a violet sky." width="100%" />
 </p>
 
+<!-- The film's length below is the brief's. Task 28 sets the real length once the film is cut, and Task 33 changes only the link target if the film is uploaded to GitHub. -->
+<p align="center">
+  <a href="docs/media/film.mp4"><img src="docs/media/film-poster.webp" alt="The launch film's poster: the sample city at dusk." width="100%" /></a>
+</p>
+
+<p align="center"><sub>The launch film, 80 seconds, silent. Click to play.</sub></p>
+
 <p align="center">
   <a href="docs/media/flyover.mp4"><picture>
     <source type="image/avif" srcset="docs/media/flyover.avif" />
-    <img src="docs/media/flyover.gif" alt="A slow flight in an arc around the sample city at dusk. The towers slide past each other while the low sun drifts behind them, the guild's searchlights stand on one tower and a crane on another." width="100%" />
+    <img src="docs/media/flyover-poster.webp" alt="A slow flight in an arc around the sample city at dusk. The towers slide past each other while the low sun drifts behind them, the guild's searchlights stand on one tower and a crane on another." width="100%" />
   </picture></a>
 </p>
 
 <p align="center">
   <a href="docs/media/rise.mp4"><picture>
     <source type="image/avif" srcset="docs/media/rise.avif" />
-    <img src="docs/media/rise.gif" alt="The camera rises up the tallest tower while circling it slowly: past its Beaux-Arts root, up through brick and stone floors, glass and titanium, and stops at the bronze datum band near the top." width="100%" />
+    <img src="docs/media/rise-poster.webp" alt="The camera rises up the tallest tower while circling it slowly: past its Beaux-Arts root, up through brick and stone floors, glass and titanium, and stops at the bronze datum band near the top." width="100%" />
   </picture></a>
 </p>
 
@@ -66,7 +77,7 @@ The bronze band is the datum line. It marks the height where the repo joined the
 
 <img src="docs/media/market-overview.webp" alt="The sample city at dusk with the market at work. On the left the inspection guild's searchlights rise round the Gothic tower, and behind it a crane stands on a tower under construction. In the middle the exchange's dome and clock tower are lit, the elevated railway runs between the plazas, and towers stand on lit plazas across the city." />
 
-Phase 2 adds the market. It is off until I switch it on for a repo, one repo at a time.
+The market is off until I switch it on for a repo, one repo at a time.
 
 Once a repo is on the market, an issue I label `palimpsest` becomes a job. `palimpsest:low` and `palimpsest:high` set its tier, and the tier sets what the job is worth: 20, 60 or 150 credits. A credit is a tenth of a percent of my five-hour Claude window, so prices are in the same units as the plan the work runs on.
 
@@ -80,6 +91,14 @@ How a job moves:
 6. In PR mode, the default, a pass opens a pull request. The frame cures into a floor and waits, dark, until I merge. Then the windows light, the crane climbs down, the firm is paid its bid, and the issue is labelled `palimpsest:done` with a comment.
 
 A failure strikes the frame onto a scar floor and leaves a work lamp burning. The firm eats what it spent. A job gets two attempts, and after the second failure the issue is labelled `palimpsest:failed` and left to me.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/diagram-floor-dark.webp" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/media/diagram-floor-light.webp" />
+  <img src="docs/media/diagram-floor-light.webp" alt="How a job becomes a floor. A job moves along one line from proposed to merged; beneath it, every way off the line the code allows, back to open, to failed, halted, withdrawn or closed. Under the line, the run stages each job state holds, then the inspection checks, the two ways a pass ships, and the floor each ending leaves." width="100%" />
+</picture>
+
+That is the whole path. The drawing is made from the engine's own lists of job states, run stages and checks, so it can't show a state the code doesn't have.
 
 <p align="center">
   <a href="docs/media/construction.mp4"><img src="docs/media/construction-poster.webp" alt="The top of a tower high over the city in haze, a tower crane standing on it. The inspection guild's searchlights wash the new steel frame in white light under the crane's hook, with the crew's hoist mast beside the tower." width="100%" /></a>
@@ -144,7 +163,7 @@ Ride up, or R with a tower open in the inspector, takes a glass lift up the outs
 
 ## What the city reads
 
-Phase 3 has the city read two things: my repos' READMEs against their code, and my mornings.
+The city also reads two things: my repos' READMEs against their code, and my mornings.
 
 ### The morning brief
 
@@ -214,17 +233,25 @@ The ride also stops at a few of the floors earned in the market: the newest, the
 
 <img src="docs/media/campus-quad.webp" alt="The university's front quad at dusk from above the gate: four lawns cut by lit walks with students crossing them, collegiate gothic halls of red brick under slate roofs on either side, the clock tower with its lit dial on the left, and the library's lit gable and pointed windows at the far end, with the city's towers behind." />
 
-Phase 4 opens a university. It teaches the city from what actually happened in it: it breeds agents on arenas built from my own repos, teaches a small local coder on work that passed and survived, trains five small nets and a master net on the ledger, and asks my permission, one kind of work and one repo at a time, before the city does anything on its own.
+The city has a university. It teaches the city from what actually happened in it: it breeds agents on arenas built from my own repos, teaches a small local coder on work that passed and survived, trains five small nets and a master net on the ledger, and asks my permission, one kind of work and one repo at a time, before the city does anything on its own.
 
 The school is off until I switch it on in Settings. While it is off nothing is built, nothing sails, nothing trains, no net touches an award or the brief, and the city never acts by itself. Turning it off stops a train that is running. It also cuts off a graduate in the middle of a market job: that job goes back to the board without costing its firm an attempt, and no graduate is served again until the school is back on.
 
 Everything it trains is shown with a held-out score, a 95% interval and how many rows it was scored on. A net with too little to learn from says so, and says why, instead of showing a number.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/diagram-school-dark.webp" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/media/diagram-school-light.webp" />
+  <img src="docs/media/diagram-school-light.webp" alt="How the school learns, and when the city may act. The ledger becomes rows, the rows train five nets, and the nets feed the master, which guesses whether I would approve. Its guess is written before each of my decisions; when it has agreed with me on 95% of my last 50 decisions of a kind, the city asks in my brief, and only my answer grants it. Under a grant the city acts only while the master is trusted and sure; an undo suspends the grant and a revert revokes it. Below, an arena from one of my repos feeds a voyage and a LoRA, each raced on sealed tasks, and a winner graduates to the roster." width="100%" />
+</picture>
+
+The top half is the nets and the master, and the bottom half is the arenas, the voyages and the coder. Each part has its own section below.
+
 ### The university
 
 <img src="docs/media/campus-home.webp" alt="The sample city from the app's home view in a violet dusk haze, its towers rising from lit plazas. At the lower left, on its own block, the university: red brick halls with slate roofs round green lawns and the small clock tower between them." />
 
-The university stands on its own plot in the district spiral, on a terrace six metres above the street. It took the next free plot the first time the Phase 4 engine started, so nothing that was already standing moved. Behind the gate are two quads of collegiate gothic halls, a library and a clock tower, and an observatory dome at the back corner, where the master net lives.
+The university stands on its own plot in the district spiral, on a terrace six metres above the street. It took the next free plot the first time an engine with the school started, so nothing that was already standing moved. Behind the gate are two quads of collegiate gothic halls, a library and a clock tower, and an observatory dome at the back corner, where the master net lives.
 
 <img src="docs/media/campus-clock.webp" alt="The university's red brick clock tower at dusk, with pinnacles at its corners, a limestone parapet and two white clock faces, one of them lit from within. Slate-roofed halls with dormers stand at its foot beside the lawn and its lamps." />
 
@@ -347,6 +374,8 @@ The app opens on the city. Each district has a small plate with the repo's name 
 
 Clicking a tower opens the inspector. It lists every floor with the change behind it. Clicking a floor flies the camera to it and outlines it on the tower. The arrow keys and Enter do the same from the keyboard.
 
+Cmd+K, or Find in the running head, opens one search over everything the city holds: districts, firms, agents, jobs, the screens, the school's nets, voyages, graduates and grants, and what the brief has waiting. Enter goes there.
+
 <img src="docs/media/repos.webp" alt="The Repos screen over the left half of the window. Each connected repo has its connect switch, description, status and floor count, Market and Push mode switches, and a choice of five roots. One repo is halted after a city merge was reverted, with Resume. The city stays visible on the right." />
 
 Repos lists what your GitHub CLI can see. Nothing is connected until you turn it on. Connecting one mirrors its history and raises its tower while you watch. You can pick its root, and each connected repo has its own Market and Push mode switches, both off until you turn them on. A repo's own page sets its label, the commands inspection runs and the routes the design check shoots. It also shows the network its jobs may reach, which follows from the repo's ecosystems and is not set by hand.
@@ -371,6 +400,12 @@ The city also stops itself. Three failed inspections in a row on a repo, or any 
 
 ## The sandbox, the broker and the never list
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/diagram-sandbox-dark.webp" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/media/diagram-sandbox-light.webp" />
+  <img src="docs/media/diagram-sandbox-light.webp" alt="The path of one command, left to right through five layers: the never list in every agent's instructions; the claude process under its own sandbox profile, with no shell; the broker, which checks the guard and lists what it refuses; the tool profile, which writes only the run's folders and cannot read credentials; and the run's proxy, which allows the package registries while installing, those and the model provider while working, and nothing while the checks run." width="100%" />
+</picture>
+
 Every run gets a fresh clone of the repo's mirror on its own branch, made without hardlinks, with a push URL that is invalid on purpose. No agent process has GitHub credentials, and the engine is the only thing that ever pushes.
 
 Every agent process runs under a `sandbox-exec` profile that denies by default. The commands an agent runs (its installs, its tests, anything it asks the broker for) can write only inside the run's own folders, and can't read your SSH keys, GitHub CLI config, keychains or Claude's configuration. The `claude` process has a profile of its own: it finds its own login, but can't write Claude's settings. The repo's `.git` folder is read-only to everything an agent runs. Each run has its own network proxy, which allows only what the stage needs: the package registries for the install, those and the model provider while the agent works, and nothing at all while the checks run.
@@ -379,13 +414,13 @@ No agent gets a shell. Claude works through the `claude` CLI with file tools and
 
 The guard refuses, among other things: any push, changing the git remotes or config, rewriting history, deleting a tag or any branch not named `palimpsest/`, the GitHub CLI, `sudo`, `launchctl`, `osascript` and `security`, piping a download into a shell, recursive removal outside the repository, and any command that names a credential file or Claude's configuration. It is one of three layers: a command it misses still runs without credentials, inside the sandbox.
 
-One limit I know of: a process inside the sandbox can hardlink a file it may read into the folder it may write to. The profiles deny writes to the secret paths, but the limit is there, and I'd rather say so.
+A process inside the sandbox can't hardlink a file it may only read into the folder it may write to: every profile allows a hard link only between two paths inside the folders it writes, and a test tries the escape against each profile under `sandbox-exec`.
 
 Every agent's instructions carry the never list: never, without asking, delete a repo, force-push, rewrite history, change repo settings, secrets or visibility, touch billing, or delete branches the city did not create. The engine's own pushes refuse any force flag, and the only branches it ever deletes are its own `palimpsest/` branches.
 
 ## Where it stands
 
-I'm building it in five phases. Phase 1, the standing city, is done. Phase 2, the market, Phase 3, the reading, and Phase 4, the school, are built and tested against the sample city, the sample market and the sample school. Their first runs on my own repos come next. The first real audit has not run yet, and neither has anything in the school.
+I built it in five phases: the standing city, the market, the reading, the school, and polish and launch. All five are built and tested against the sample city, the sample market and the sample school.
 
 What works now:
 
@@ -399,39 +434,79 @@ What works now:
 - The school: arenas from planted bugs and past changes, voyages through Beagle, the LoRA and graduation on a sealed race, the five nets and the master with held-out scores and intervals, the training gate, and earned autonomy with its asks, grants, suspensions and revocations.
 - The university on its terrace, with its halls, library, clock tower and observatory, the students, and the collegiate root under a graduate's tower.
 - The city in three.js, with its river and bridges, trams, elevated rail, maglev pods, ferries and cabs, ambient traffic and crowds, and the agents as people you can follow.
-- The inspector and the brief, job, run, inspection, audit, firms, firm, agent, school, net, voyage, graduate, treasury, repos, district and settings screens.
+- The inspector, Cmd+K, and the brief, job, run, inspection, audit, firms, firm, agent, school, net, voyage, graduate, treasury, repos, district and settings screens.
 - Reading live Claude plan usage through a statusline hook, and the usage Codex and Gemini report of their own, if you have them.
-- A native Mac app, built with Tauri, in `src-tauri/`. It opens on a splash while it looks for the engine. If the engine isn't running, it offers to start it. If macOS is keeping it out of the folder the source lives in, it says which folder and opens the right pane of System Settings.
+- A native Mac app, built with Tauri, in `src-tauri/`, with its own icon. It opens on a splash while it looks for the engine. If the engine isn't running, it offers to start it. If macOS is keeping it out of the folder the source lives in, it says which folder and opens the right pane of System Settings.
+- The sample city in one command, and the four diagrams and the film in this README, each made by a script in `tools/`.
 
-There are 1,767 tests: 1,734 in Node for the engine, the market, the school and the city, 22 in Python for the trainer (`npm run test:trainer`), and 11 for the app shell. An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city, the sample market and the sample school, through every screen.
+<!-- The Node count is from a full npm test run on this branch (1,843, 2 of them skipped). The Python and app shell counts are counted from the source, not run. Task 29 sets all three from a full run of each suite. -->
+There are 1,878 tests: 1,843 in Node for the engine, the market, the school and the city (`npm test`), 22 in Python for the trainer (`npm run test:trainer`), and 13 for the app shell (`cargo test` in `src-tauri/`). An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city, the sample market and the sample school, through every screen.
 
-Everything in the market and school pictures comes from that sample. It runs through the market's and the school's own code, with stand-ins for GitHub, the models and the trainer. Every score in the school pictures, such as the appraiser's Brier of 0.14 or the graduate beating its base by 0.14, is the sample's, made up to show what the screens do with real numbers.
+The sample runs through the market's and the school's own code, with stand-ins for GitHub, the models and the trainer. Every score in the school pictures, such as the appraiser's Brier of 0.14 or the graduate beating its base by 0.14, is the sample's, made up to show what the screens do with real numbers.
+
+### What has run for real
+
+One real job has gone the whole way. I labelled a small issue in this repo, and Oskar Kiln of Kiln Brothers, an agent on `qwen3-coder:30b-a3b` in Ollama on my Mac, won the bidding, passed inspection and opened [pull request #4](https://github.com/AllStreets/palimpsest/pull/4). I merged it, and the engine lit the floor and paid the firm.
+
+That is the only real run so far. The first real README audit hasn't run yet, and the school hasn't trained on anything real yet. Still to run:
+
+- a README audit on one of my repos;
+- the school's first night: the trainer, the gate and the nets on my ledger;
+- a first arena, voyage and coder on one of my repos.
+
+Their numbers will go here once they have run.
 
 ### The school, honestly
 
-The school is built and tested on the sample, and none of it has run on my own work yet. The first real night (the trainer on this Mac, the gate, the nets trained on my own ledger) and the first real arena, voyage and coder on one of my repos are waiting for my go-ahead. Their numbers will go here once they have run, whatever they turn out to be.
+What I already know is that there is very little to learn from. The one real job above is the market's whole record on my repos so far, and every net needs 30 rows to train on and 10 to test on. So every net is thin, and nothing can be asked or granted yet. My repos have very few merged pull requests between them, far fewer than the 100 examples a coder needs, which is why my own surviving commits count as verified work. Taste has nothing from Understudy yet either.
 
-What I already know is that there is very little to learn from. When I last looked, on 12 November, my ledger had no bid, no inspection, no brief action and no merge in it, because the market is still off on every repo. So every net would read 0 of 40 labels, the master would make no guess, and nothing would be asked or granted. My repos have about 11 merged pull requests between them against the 100 examples a coder needs, which is why my own surviving commits count as verified work. Understudy has 37 taste statements and no answered pairs yet, so Taste has nothing from it either.
-
-That means the school will spend its first months saying it has nothing to show, and the screens are built to say exactly that, with the reason, rather than look busy. The arenas and voyages on a repo whose market is on are what can run first. The nets come as the market and the brief build up a ledger, and autonomy, if it ever comes, comes after that.
+Until then the school's screens say what they lack and why, as below, and the arenas and voyages on a repo whose market is on are what can run first.
 
 <img src="docs/media/school-empty.webp" alt="The School screen on a fresh home with no repos: the school is off and none of the nets is trusted. Each net reads no score: thin, 0 labels, and a sentence saying why, such as 0 of 40 labels, no bid has been run: the market is off on every repo, or no city merge has had 30 days yet. No chart is drawn anywhere. The empty city stands on the right." />
 
 That is the school on a fresh home: every net thin with its cause, no arena, no voyage and no graduate, and no chart anywhere.
 
-Two more things wait on me. The school needs a few library fixes in Beagle, which are ready as a branch for a pull request on Beagle that I haven't opened or merged yet. Until I do, the dependency points at a bare copy of that branch at `.superpowers/beagle-local/beagle.git` in my own Palimpsest checkout, by its full commit sha, so a fresh clone of Palimpsest anywhere else won't install. And the base model for the coder, about 4.3 GB, downloads only when I click Download in Settings.
+The school needed a few library fixes in Beagle. I merged them on Beagle's main, and the dependency is pinned to that merge commit on GitHub by its full sha, so a fresh clone of Palimpsest installs anywhere. One more thing waits on me: the base model for the coder, about 4.3 GB, downloads only when I click Download in Settings.
 
-Designed, and not built yet:
+### Where it differs from the design
 
-- Phase 5, polish and launch: a performance pass, and the README's diagrams.
+Two things in [the design](docs/superpowers/specs/2026-11-08-palimpsest-design.md) changed for version 1, and section 16 there records both:
 
-The full design is in [`docs/superpowers/specs/2026-11-08-palimpsest-design.md`](docs/superpowers/specs/2026-11-08-palimpsest-design.md).
+- The design asked for a WebGPU renderer where the Mac has one. The city stays on WebGL2, because every custom shader would have to be rewritten in three.js's node language for a renderer the city doesn't need to hold its frame rate.
+- The design welcomed a day and night cycle if it held the bar. It is always dusk.
+
+## How fast it is
+
+<!-- Task 29 fills this section from perf-final.json: a short table of each named view's frame rate on the high and medium tiers, with the window size it was measured at. No number goes here before that file exists. -->
+
+I measure the city with `npm run perf` on the sample city, in Chromium on the GPU at my Mac's full window size and twice its density, on two quality tiers, high and medium. For each view it takes the median frame rate over three seconds with the city's clock running, and counts the draw calls and triangles.
+
+## Try it on the sample city
+
+You need macOS and Node 22.13 or later. Nothing of yours is connected, and nothing reaches GitHub or a model.
+
+```sh
+git clone https://github.com/AllStreets/palimpsest ~/code/palimpsest
+cd ~/code/palimpsest
+npm install
+npm run sample
+```
+
+It prints `The sample city is at http://127.0.0.1:4790`. Open that in a browser. It builds the UI the first time, writes the sample city, its market and its school into `sample-home/` in the folder you run it from, and runs an engine on that folder with the job board moving. Ctrl+C stops it. Each run starts the sample again from nothing, and it refuses any folder that has files in it and isn't a sample, including your real Palimpsest folder. `PALIMPSEST_SAMPLE_HOME` puts it somewhere else.
 
 ## Run it
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/diagram-machine-dark.webp" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/media/diagram-machine-light.webp" />
+  <img src="docs/media/diagram-machine-light.webp" alt="What runs where. The app's window and any browser reach the engine at 127.0.0.1:4770. The engine is a launchd user agent with its data folder: SQLite and the ledger, the mirrors and the runs. It starts the claude CLI, the agents' commands, the trainer and a graduate's mlx_lm.server, each under sandbox-exec, and alone calls Ollama on 11434 and gh. No child reaches the engine or Ollama. Only the run's proxy and gh leave the Mac." width="100%" />
+</picture>
+
+That is what runs on your Mac once it is installed.
+
 You need macOS, Node 22.13 or later, Rust for the app, and the [GitHub CLI](https://cli.github.com) logged in with `gh auth login`. For the market you also need [Claude Code](https://claude.com/claude-code) installed and logged in, or [Ollama](https://ollama.com) with a model the local firms use, or both.
 
-Clone it somewhere outside Downloads, Documents and Desktop, such as `~/code`. macOS privacy settings guard those three folders, and they can stop the app from starting the engine from there. If that happens, the app tells you which folder it is and opens the right pane of System Settings.
+Clone it somewhere outside Downloads, Documents and Desktop, such as `~/code`. macOS privacy settings guard those three folders, and they can stop the app from starting the engine from there. If that happens, the app tells you which folder it is and opens the right pane of System Settings. If you already cloned it to try the sample, it is in the right place, and only the last two lines are new.
 
 ```sh
 git clone https://github.com/AllStreets/palimpsest ~/code/palimpsest
@@ -440,6 +515,8 @@ npm install
 node bin/palimpsest.mjs engine install
 npm run app
 ```
+
+<!-- Task 33 keeps the sentence that matches npm run install:check. While it fails, put this line here: "A fresh clone will not install yet: the school's Beagle dependency points at a copy on my Mac until its pull request is merged." While it passes, as now, there is no sentence here. Before choosing, re-run npm run install:check on main, and check the Beagle sentence in The school, honestly, and the plain npm install in Try it on the sample city and in Run it against that result. -->
 
 `engine install` sets the engine up as a launchd user agent, so it keeps running when the window is closed. It serves the city at http://127.0.0.1:4770, which also works in a browser. `node bin/palimpsest.mjs engine status` tells you whether it's up, and `engine uninstall` removes it.
 
@@ -463,16 +540,6 @@ Until then the school says the trainer is not set up on this Mac, and nothing tr
 
 Your data lives in `~/Library/Application Support/Palimpsest`. Set `PALIMPSEST_HOME` to put it somewhere else. An engine on another folder leaves your Claude settings alone, unless you also set `PALIMPSEST_CLAUDE_SETTINGS` to the settings file the usage hook should use.
 
-To look around without connecting anything of yours, write the sample city into a folder of its own. Then run a second engine on that folder, on its own port, beside the one you installed:
-
-```sh
-npx tsx tools/sample.ts /tmp/palimpsest-sample
-npm run build
-PALIMPSEST_HOME=/tmp/palimpsest-sample PALIMPSEST_PORT=4790 npm run engine
-```
-
-The sample city is then at http://127.0.0.1:4790. The folder is marked as a sample, so that engine answers from a stand-in for GitHub and keeps the usage hook inside the folder. It never calls GitHub or changes your Claude settings. Ctrl+C stops that engine and leaves yours running.
-
 ## Privacy
 
 Palimpsest runs entirely on your Mac. There's no account to make.
@@ -491,9 +558,9 @@ Plan usage comes from a statusline hook you install yourself. Claude Code alread
 
 ## How the pictures were made
 
-Every image and clip in this README was captured from the app by [`tools/capture.ts`](tools/capture.ts). It starts a separate engine on its own port with a temporary data folder, and fills it with the sample city from [`tools/sample.ts`](tools/sample.ts) and the sample market from [`engine/market/sample-economy.ts`](engine/market/sample-economy.ts). That is six made-up repos with histories from nine years down to none, and eight days of made-up market history on them: six firms, their jobs, bids, runs, inspections and books, README audits and the jobs proposed from them, the city's milestones and a morning brief. On top of that is a sample school: its arenas, a voyage sailing and one finished, nets with versions, scores and intervals, my decisions and the master's guesses, a grant, a suspension, a revocation and an open ask, and one graduate. GitHub, the models and the trainer are answered by stand-ins, so nothing real is read, run or trained. The empty school is shot on a second, fresh data folder with nothing in it. The UI tests use the same sample.
+Every image and clip in this README was captured from the app by [`tools/capture.ts`](tools/capture.ts). It starts a separate engine on its own port with a temporary data folder, and fills it with the sample city from [`tools/sample.ts`](tools/sample.ts) and the sample market from [`engine/market/sample-economy.ts`](engine/market/sample-economy.ts). That is six made-up repos with histories from nine years down to none, and eight days of made-up market history on them: six firms, their jobs, bids, runs, inspections and books, README audits and the jobs proposed from them, the city's milestones and a morning brief. On top of that is a sample school: its arenas, a voyage sailing and one finished, nets with versions, scores and intervals, my decisions and the master's guesses, a grant, a suspension, a revocation and an open ask, and one graduate. GitHub, the models and the trainer are answered by stand-ins, so nothing real is read, run or trained. The empty school is shot on a second, fresh data folder with nothing in it. The UI tests and `npm run sample` use the same sample.
 
-The capture opens the built UI in Chromium on the GPU, at twice the window's density. It sets the camera itself for every frame and waits for that frame to render before taking it. For the clips it also holds the city's clock still between frames and moves it on by exactly one frame each time, so the traffic, the people, the sparks, the library's lights and the observatory's shutters move at their real pace however long a frame takes to save. Nothing is screen-recorded, so no frame is dropped or repeated. ffmpeg turns the frames into MP4s and animated AVIFs.
+The capture opens the built UI in Chromium on the GPU, at twice the window's density. It sets the camera itself for every frame and waits for that frame to render before taking it. For the clips it also holds the city's clock still between frames and moves it on by exactly one frame each time, so everything moves at its real pace however long a frame takes to save. Nothing is screen-recorded, so no frame is dropped or repeated. ffmpeg turns the frames into MP4s and animated AVIFs.
 
 ```sh
 npm run build
@@ -501,8 +568,25 @@ npx tsx tools/capture.ts          # everything in this README
 npx tsx tools/capture.ts rise     # just one
 ```
 
-The wordmark and the app icon are rendered in Blender from [`docs/brand/wordmark.py`](docs/brand/wordmark.py) and [`docs/brand/logo.py`](docs/brand/logo.py). The letters are cut into floors the same way the towers are, and use the same scanned stone, brick and rust textures as the app.
+The film is cut by [`tools/film.ts`](tools/film.ts) from the same frame-by-frame captures, at 1600 by 1000 and 30 frames a second, with no sound. Its title cards are set in Newsreader on the city's dusk ink, one line each for two seconds. It is held to 9.5 MB so it fits as a GitHub attachment.
+
+The four diagrams are drawn by [`tools/diagrams.ts`](tools/diagrams.ts) in the app's own type, once for a light page and once for a dark one. Every label in them comes from the lists in [`tools/diagrams/data.ts`](tools/diagrams/data.ts), which are checked against the engine's own types and constants, so a job state or an inspection check the code gains and the diagrams don't name fails the type check.
+
+```sh
+npm run film
+npm run diagrams
+```
+
+The capture, the film and the diagrams each write into a fresh temporary folder unless `CAPTURE_WRITE_MEDIA=1` is set, and only then into `docs/media`.
+
+`npm run media:check` holds this README to a budget. Every file in `docs/media` has to be used here and every file named here has to exist. Every image needs alt text. A still is at most 450 KB, an inline animation at most 4 MB, a linked clip at most 9 MB and the film at most 9.5 MB. What a browser fetches when this page opens is at most 25 MB, and `docs/media` is at most 45 MB in all.
+
+The mark, the wordmark and the app icon are rendered in Blender from [`docs/brand/logo.py`](docs/brand/logo.py), [`docs/brand/wordmark.py`](docs/brand/wordmark.py) and [`docs/brand/icons.py`](docs/brand/icons.py). The letters are cut into floors the same way the towers are, and use the same scanned stone, brick and rust textures as the app.
 
 ## Credits
 
 The stone, brick, metal, paving and rust textures are CC0 scans from [Poly Haven](https://polyhaven.com). The interface is set in [Newsreader](https://fonts.google.com/specimen/Newsreader) and [IBM Plex](https://github.com/IBM/plex), and the wordmark in [Cinzel](https://github.com/NDISCOVER/Cinzel) by Natanael Gama, all under the SIL Open Font License. Everything else, including the people, the vehicles and the exchange, is written for Palimpsest. [CREDITS.md](CREDITS.md) lists every asset, its author and where it's used.
+
+## License
+
+Palimpsest is under the [MIT License](LICENSE).

@@ -186,3 +186,14 @@ test('the inspector lists the live voyage', () => {
   assert.equal(unhired.rows[0].title, 'mlx:grad-qwen25c7-1');
   assert.equal(unhired.rows[0].href, null);
 });
+
+test('the market heading says what the lit and dark bands on a tower mean, for the kinds it holds', async () => {
+  const { marketKey } = await import('../app/src/ui/inspector.js');
+  const lit = earnedFloor('acme/site#job-job-1', 'lit');
+  const scar = earnedFloor('acme/site#scar-run-9', 'scar');
+  const waiting = earnedFloor('acme/site#job-job-2', 'waiting');
+  assert.equal(marketKey([lit, lit, scar]), 'A lit floor is a change a firm built here that you merged; a dark band is a scar, work that failed inspection, kept where it failed.');
+  assert.equal(marketKey([lit]), 'A lit floor is a change a firm built here that you merged.');
+  assert.equal(marketKey([waiting, lit]), 'A lit floor is a change a firm built here that you merged; a floor still unlit waits on your review.');
+  assert.equal(marketKey([]), '');
+});

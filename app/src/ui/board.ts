@@ -5,6 +5,7 @@
  * clean-up every piece of text from GitHub passes before it is shown.
  */
 import type { Agent, Bid, FirmView, Job, JobStatus, Repo, RunProgress, RunStage } from '../../../shared/types.js';
+import { creditsText } from '../../../shared/market-rules.js';
 
 export type SectionKey = 'proposed' | 'bidding' | 'running' | 'waiting' | 'done' | 'failed' | 'halted';
 
@@ -14,6 +15,23 @@ export interface Section {
   jobs: Job[];
   /** Repos whose market is halted (the halted section only). */
   repos: Repo[];
+}
+
+/** Where the board's jobs come from, said once at the foot of the board above the form that posts one. */
+export const BOARD_SOURCES =
+  'Jobs come from issues labelled palimpsest on a repo with its market on, from the city’s own proposals and README audits, or from you, below.';
+
+/**
+ * A section's count, as the rows under it show it: the jobs when each has
+ * its own row; the rows first when some stand grouped (the city's same
+ * proposal on several repos, one audit's proposals), so "3 jobs" never
+ * stands over one row; the halted repos before their jobs.
+ */
+export function sectionCount(s: Pick<Section, 'key' | 'jobs' | 'repos'>, rows: number): string {
+  const of = (n: number, one: string): string => count(n, one, `${one}s`);
+  if (s.key === 'halted' && s.repos.length) return `${of(s.repos.length, 'repo')}${s.jobs.length ? `, ${of(s.jobs.length, 'job')}` : ''}`;
+  const n = s.jobs.length + s.repos.length;
+  return rows < n ? `${of(rows, 'row')}, ${of(n, 'job')}` : of(n, 'job');
 }
 
 export const SECTION_TITLES: Record<SectionKey, string> = {
@@ -154,9 +172,9 @@ export function bidOrder(bids: Bid[]): Bid[] {
   return [...bids].sort((a, b) => b.ev - a.ev || a.price - b.price || b.calibrated - a.calibrated || a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
 }
 
-/** Credits: whole numbers bare, anything else to the cent. */
+/** Credits, as every screen sets them (shared/market-rules creditsText). */
 export function money(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(2);
+  return creditsText(n);
 }
 
 /** A chance as a whole percent, or "no record" when the city has none. */
@@ -168,8 +186,14 @@ export function pct(x: number | null | undefined): string {
 
 /** Control characters (newlines and tabs are folded with the other whitespace). */
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
-/** Characters that hide or reorder text: zero widths, bidi marks, overrides and isolates, the Arabic letter mark, the soft hyphen, the Mongolian vowel separator, the grapheme joiner, word joiners and the byte order mark. */
-export const HIDDEN = /[\u00AD\u034F\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
+/**
+ * Characters that hide or reorder text: every code point Unicode marks
+ * Default_Ignorable_Code_Point (zero widths, joiners, the soft hyphen, the
+ * byte order mark, variation selectors, Hangul fillers, the tag characters
+ * that can carry a whole hidden message) and every bidi control (marks,
+ * embeddings, overrides and isolates).
+ */
+export const HIDDEN = /[\p{Default_Ignorable_Code_Point}\p{Bidi_Control}]/gu;
 
 /**
  * Text written on GitHub (titles, bodies) is untrusted: it is only ever set

@@ -209,6 +209,30 @@ test('maxMs caps a child by wall clock', async () => {
   assert.ok(Date.now() - start < 3000);
 });
 
+test('maxMs must be a finite whole number of milliseconds a timer can hold: anything else is refused before the child starts', () => {
+  for (const maxMs of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, 2 ** 31]) {
+    assert.throws(() => realSpawner('/bin/sh', ['-c', 'exit 0'], { maxMs }), /maxMs/, `maxMs ${maxMs} was taken`);
+  }
+  // Zero and the largest timer delay are taken.
+  for (const maxMs of [0, 2 ** 31 - 1]) {
+    const child = realSpawner('/bin/sh', ['-c', 'exit 0'], { maxMs });
+    child.kill('SIGKILL');
+  }
+});
+
+test('timeoutSignal SIGKILL kills a group member that ignores SIGTERM and holds none of the pipes', async () => {
+  // Under a TERM the shell would die, the pipes close and the group would no longer be provably ours, so the member
+  // that ignored the TERM would never get the KILL. A KILL at the limit reaches every member at once.
+  const child = realSpawner('/bin/sh', ['-c', '( trap "" TERM; exec /bin/sleep 30 ) </dev/null >/dev/null 2>&1 & echo $!; sleep 30'], { maxMs: 300, timeoutSignal: 'SIGKILL' });
+  const it = child.lines[Symbol.asyncIterator]();
+  const bg = Number((await it.next()).value?.line);
+  assert.ok(bg > 1);
+  const done = await child.done;
+  assert.equal(done.timedOut, true);
+  assert.equal(done.signal, 'SIGKILL');
+  assert.ok(await until(() => !alive(bg)), 'the member that ignored SIGTERM outlived the limit');
+});
+
 test('the line queue is bounded and marks what it dropped', async () => {
   const child = realSpawner('/bin/sh', ['-c', 'i=0; while [ $i -lt 20 ]; do echo $i; i=$((i+1)); done'], { maxBufferedLines: 5 });
   await child.done;

@@ -154,7 +154,7 @@ test('only engine/school/beagle.ts imports Beagle, by a specifier tsc cannot fol
   assert.deepEqual(offenders, [], 'no literal import of beagle anywhere');
   assert.match(readFileSync(join(ROOT, 'engine', 'school', 'beagle.ts'), 'utf8'), /'beagle\/' \+ /);
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
-  assert.match(pkg.dependencies.beagle, /#[0-9a-f]{40}$/, 'pinned to a full commit sha, never a branch or tag');
+  assert.match(pkg.dependencies.beagle, /\/tar\.gz\/[0-9a-f]{40}$/, 'pinned to a full commit sha, never a branch or tag');
 });
 
 test('tsc does not check Beagle\'s sources', async () => {

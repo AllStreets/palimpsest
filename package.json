@@ -14,12 +14,17 @@
     "build": "vite build",
     "ui-test": "node --no-warnings --import tsx tools/ui-test.ts",
     "perf": "node --no-warnings --import tsx tools/perf.ts",
+    "sample": "node --no-warnings --import tsx tools/sample-run.ts",
+    "diagrams": "node --no-warnings --import tsx tools/diagrams.ts",
+    "film": "node --no-warnings --import tsx tools/film.ts",
+    "media:check": "node --no-warnings --import tsx tools/media-check.ts",
+    "install:check": "node --no-warnings --import tsx tools/install-check.ts",
     "app": "vite build && tauri build",
     "trainer:setup": "uv venv --python cpython-3.12-macos-aarch64-none trainer/.venv && uv pip install --python trainer/.venv/bin/python -r trainer/requirements.txt && trainer/.venv/bin/python -c \"import platform, sys; sys.exit(0 if platform.machine() == 'arm64' else 'the trainer is not arm64')\"",
     "test:trainer": "node --no-warnings --import tsx tools/test-trainer.ts"
   },
   "dependencies": {
-    "beagle": "git+file:///Users/connorevans/Downloads/palimpsest/.superpowers/beagle-local/beagle.git#76c2cbe2415711c0e46c64cdd4e445668c564949",
+    "beagle": "https://codeload.github.com/AllStreets/beagle/tar.gz/d72c872ec704565da88e8cf792af1b06a23fd285",
     "three": "^0.187.0",
     "tsx": "^4.23.15"
   },

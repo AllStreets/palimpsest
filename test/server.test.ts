@@ -625,3 +625,20 @@ test('a request from another site\'s page is refused; the engine\'s own page and
     }
   });
 });
+
+test('GET /api/usage carries the windows as they stand now, the brief\'s own figure', async () => {
+  const { planNow } = await import('../engine/market/budget.js');
+  // The treasury reads a transcripts folder; as the budget tests do, the run says it is a test so the guard lets it.
+  const was = process.env.PALIMPSEST_TEST_PROJECTS;
+  process.env.PALIMPSEST_TEST_PROJECTS = '1';
+  try {
+    await withServer(async (server) => {
+      const body = (await (await fetch(url(server, '/api/usage'))).json()) as { now: { fiveHour: number | null; sevenDay: number | null } | null };
+      assert.ok(body.now, 'the windows are read');
+      assert.deepEqual(body.now, planNow());
+    });
+  } finally {
+    if (was === undefined) delete process.env.PALIMPSEST_TEST_PROJECTS;
+    else process.env.PALIMPSEST_TEST_PROJECTS = was;
+  }
+});

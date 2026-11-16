@@ -1523,7 +1523,7 @@ async function main(): Promise<void> {
   const applyRoute = (to: Route, place: Place): void => {
     const route = SCREENS.has(to) && (place.id !== null || !['job', 'run', 'inspection', 'firm', 'agent', 'repo', 'audit', 'net', 'voyage', 'graduate'].includes(to)) ? to : 'city';
     document.body.dataset.route = route;
-    runhead.setRoute(route === 'job' || route === 'run' || route === 'inspection' ? 'jobs' : route === 'firm' || route === 'agent' ? 'firms' : route === 'repo' || route === 'audit' ? 'repos' : SCHOOL_ROUTES.has(route as Route) ? 'school' : route);
+    runhead.setRoute(route as Route);
     if (route !== 'city') {
       inspector.close();
       // A sheet opened over the city ends a ride or a tour under way.

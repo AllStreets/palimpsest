@@ -6,7 +6,7 @@
  * drawn as, and an agent's workflow and lineage in words.
  */
 import { localDay as dayOf } from '../../../shared/day.js';
-import { BANKRUPT_HOURS } from '../../../shared/market-rules.js';
+import { BANKRUPT_HOURS, creditsFixed } from '../../../shared/market-rules.js';
 import type { Agent, BookRow, FirmRound, Quarter, WorkflowShape } from '../../../shared/types.js';
 import { cleanText, money } from './board.js';
 
@@ -25,10 +25,9 @@ export function shortDate(at: string): string {
   return Number.isNaN(d.getTime()) ? '' : `${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}`;
 }
 
-/** A sum of credits as the books set it: two places, a thousands comma, a true minus. */
+/** A sum of credits in a column of the books: two places so the points align, the comma and minus of every other credit (creditsFixed). */
 export function figure(n: number): string {
-  const [i, d] = Math.abs(n).toFixed(2).split('.');
-  return `${n < 0 ? '−' : ''}${i.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${d}`;
+  return creditsFixed(n);
 }
 
 /** Whole hours (rounded up) before a firm below zero since `negativeSince` is bankrupt; null when it is not below zero. */

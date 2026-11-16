@@ -29,6 +29,13 @@
  * attempt (ruling 16). The proxy and the broker close, the run root is
  * reaped and the lease released on every end.
  *
+ * Attempts: only the firm's own failure spends one of a job's attempts (its
+ * change fails inspection, it changes nothing, it reaches a cap or its
+ * deadline while working, or its provider ends without finishing). A run
+ * the engine itself ends (a fetch, an install, a reap, the city's git, an
+ * engine restart, a kill or the hard stop) returns its job to the board
+ * with the attempt refunded and no firm excluded.
+ *
  * Model output (the bid's plan, the agent's own diff in a self-check) goes
  * back into prompts only as quoted data (quote.ts).
  */
@@ -59,7 +66,9 @@ import { emit } from '../events.js';
 import { getSpawner, type Spawned } from '../exec.js';
 import { onRealDataHome, paths } from '../home.js';
 import { record } from '../ledger.js';
-import { getRepo, listRepos, updateRepoMarket } from '../repos.js';
+import { detectChecks } from '../guild/checks.js';
+import { SYNC_FAILED, syncMirror } from '../mirror.js';
+import { CHECKS_UNKNOWN, checksKnown, getRepo, learnChecks, listRepos, updateRepoMarket } from '../repos.js';
 import { getSettings } from '../settings.js';
 import { chargesItself } from './anthropic-api.js';
 import { award, bidById, collectBids, firmExamples, openBidding } from './bids.js';
@@ -117,9 +126,19 @@ const SELF_CHECK_DIFF_MAX = 20_000;
 export const RUN_EXTRA_MINUTES = 90;
 
 export const STOP_REASON = 'The stop file is set.';
+export { SYNC_FAILED };
+/** The longest a bidding round waits for its repo's fetch before it goes on with the mirror as it is. */
+export const BID_SYNC_MS = 20_000;
 /** Inconclusive inspections a job may have in a row before it leaves the board (controller ruling, Task 15). */
 export const MAX_INCONCLUSIVE = 2;
 export const NEEDS_REVIEWER = 'needs a reviewer: too large or no reviewer available';
+/** Runs of one job in a row the engine itself may end before the job is held instead of reposted (each round costs bids). */
+export const MAX_ENGINE_FAILURES = 3;
+/** The hold note for a job the engine keeps failing on, for his brief and the job page. */
+export function engineFailureNote(count: number, reason: string): string {
+  const last = reason.replace(/\s+/g, ' ').trim().slice(0, 300);
+  return `held: the city itself failed this job ${count} runs in a row, last with "${last}". Fix the cause, then resume it.`;
+}
 export const SHUTDOWN_REASON = 'The engine is shutting down.';
 export const INTERRUPTED_RUN = 'The engine stopped during the run.';
 export const HELPER_MISSING =
@@ -179,11 +198,18 @@ export interface SchedulerDeps {
   /** The last local day already seen (the newest daily report's day after a restart), so the day that ended while the engine was down still gets its daily call. */
   lastDay?: string | null;
   /** Kills the run's strays and confirms none is left (default runQuiet). */
-  quiet?: (runRoot: string) => Promise<void>;
+  quiet?: (runRoot: string) => Promise<unknown>;
   /** Kills whatever of the run is left at its end (default reapRun). */
   reap?: (runRoot: string) => Promise<number[]>;
   /** Why no agent run may start, or null (default: the sandbox membership helper must build). */
   preflight?: () => Promise<string | null>;
+  /**
+   * Fetches the repo's latest commits into its local mirror (default syncMirror), before a bidding round and before a
+   * run clones the mirror, so neither works on old code. Tests pass a stand-in: no test ever reaches the network.
+   */
+  sync?: (fullName: string) => Promise<unknown>;
+  /** The longest a bidding round waits for its fetch, so the fetch never eats the bid window. Default BID_SYNC_MS. */
+  bidSyncMs?: number;
   /** The watcher's interval; 0 starts none (tests call watch()). Default WATCH_MS. */
   watchMs?: number;
   /** A run's whole wall time; past it the watcher ends the run `capped`. Default its work cap plus RUN_EXTRA_MINUTES. */
@@ -232,11 +258,38 @@ function defaults(): Config {
     quiet: runQuiet,
     reap: reapRun,
     preflight: defaultPreflight,
+    sync: syncMirror,
+    bidSyncMs: BID_SYNC_MS,
     watchMs: WATCH_MS,
   };
 }
 
+/** The mirror fetch under way per repo: a second one waits for the first, so two fetches never race on its refs. */
+const syncing = new Map<string, Promise<unknown>>();
+
+/** Fetches `fullName`'s latest commits into its mirror, one fetch per repo at a time. */
+function syncRepo(fullName: string): Promise<unknown> {
+  const before = syncing.get(fullName) ?? Promise.resolve();
+  const p = before.catch(() => {}).then(() => config.sync(fullName));
+  const kept = p.finally(() => {
+    if (syncing.get(fullName) === kept) syncing.delete(fullName);
+  });
+  kept.catch(() => {});
+  syncing.set(fullName, kept);
+  return p;
+}
+
 let config: Config = defaults();
+
+/** `p`, or a rejection once `ms` have passed (the fetch itself goes on, and the next one waits for it). */
+function withinMs(p: Promise<unknown>, ms: number, fullName: string): Promise<unknown> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the fetch of ${fullName} took over ${Math.round(ms / 1000)} s; bidding goes on with the mirror as it is`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 
 // ---------------------------------------------------------------- storage
 
@@ -487,8 +540,16 @@ function syncWatcher(): void {
 
 // ---------------------------------------------------------------- jobs
 
-/** Moves the run's job as its end says, when the job still belongs to this run. */
-function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'fail', exclude: boolean, summary?: string): void {
+/**
+ * Moves the run's job as its end says, when the job still belongs to this
+ * run. `reopen` puts it back on the board (a kill, an inconclusive
+ * inspection); `engine` does too, for a run the engine itself ended, and
+ * counts it: the MAX_ENGINE_FAILURES-th such run in a row holds the job
+ * (halted, with a note naming the failure) instead of reposting it, since
+ * every round costs bids. `fail` is the firm's failure: it spends an attempt
+ * and clears that count.
+ */
+function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'engine' | 'fail', exclude: boolean, summary?: string): void {
   const r = st.run;
   const cur = storedJob(r.jobId);
   if (!cur || cur.runId !== r.id || !LIVE_JOB.includes(cur.status)) return;
@@ -498,8 +559,19 @@ function settleJob(st: LiveRun | { run: Run }, how: 'reopen' | 'fail', exclude: 
       transition(cur, 'open', reopen);
       return;
     }
+    if (how === 'engine') {
+      const count = (cur.engineFailures ?? 0) + 1;
+      if (count < MAX_ENGINE_FAILURES) {
+        transition(cur, 'open', { ...reopen, engineFailures: count });
+        return;
+      }
+      const note = engineFailureNote(count, r.endedReason ?? 'no reason given');
+      transition(cur, 'halted', { ...reopen, engineFailures: count, haltNote: note });
+      record('run.note', { runId: r.id, jobId: r.jobId, repo: r.repo, note, engineFailures: count, at: new Date().toISOString() });
+      return;
+    }
     const excludedFirms = exclude && !cur.excludedFirms.includes(r.firmId) ? [...cur.excludedFirms, r.firmId] : cur.excludedFirms;
-    const failed = transition(cur, 'failed', { excludedFirms }, summary ? { summary } : {});
+    const failed = transition(cur, 'failed', { excludedFirms, engineFailures: 0 }, summary ? { summary } : {});
     if (failed.attempts < MAX_ATTEMPTS) {
       const open = transition(failed, 'open', reopen);
       // The repo was halted while this run finished (its own third failed inspection): the job waits halted too.
@@ -531,7 +603,7 @@ function checkpoint(st: LiveRun): void {
   if (st.lease.signal.aborted) throw new Killed(reasonOf(st));
 }
 
-function end(st: LiveRun, outcome: RunOutcome, reason: string | null, o: { job: 'reopen' | 'fail' | 'none'; exclude?: boolean; scar?: boolean; summary?: string }): Run {
+function end(st: LiveRun, outcome: RunOutcome, reason: string | null, o: { job: 'reopen' | 'engine' | 'fail' | 'none'; exclude?: boolean; scar?: boolean; summary?: string }): Run {
   st.run = { ...st.run, outcome, endedReason: reason, endedAt: iso(), stage: 'done', scar: !!o.scar, summary: st.summary };
   saveRun(st.run);
   record('run.ended', { runId: st.run.id, jobId: st.run.jobId, outcome, reason, summary: st.summary, run: st.run });
@@ -695,12 +767,32 @@ function wallMsOf(a: Agent): number {
 async function lifecycle(st: LiveRun): Promise<Run> {
   const log = logTo(st);
   let phase: 'before' | 'work' | 'after' = 'before';
-  const ecosystems = st.repo.checks?.ecosystems ?? [];
+  let ecosystems = st.repo.checks?.ecosystems ?? [];
   try {
     boundary(st, 'preparing');
-    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch));
+    // The clone comes from the local mirror, so the mirror first gets the repo's latest commits: a run on old code
+    // cannot find what the issue names. A fetch that fails (the network, GitHub) is nobody's fault: the job goes back
+    // on the board with no attempt spent, no firm blamed and the repo not halted.
+    try {
+      await guarded(st, syncRepo(st.repo.fullName));
+    } catch (err) {
+      if (err instanceof Killed) throw err;
+      return end(st, 'crashed', `${SYNC_FAILED}: ${errText(err)}`, { job: 'engine' });
+    }
+    const { dir, baseSha } = await guarded(st, createRunDir(st.repo, st.run.id, st.run.branch, { signal: st.lease.signal }));
     st.run = { ...st.run, dir, baseSha };
     saveRun(st.run);
+    // Checks never read (or naming no command) are read now from the run's own clone, before the baseline and the install need them.
+    if (!checksKnown(st.repo.checks)) {
+      st.repo = learnChecks(st.repo.fullName, detectChecks(dir)) ?? st.repo;
+      ecosystems = st.repo.checks?.ecosystems ?? [];
+      if (checksKnown(st.repo.checks)) engineLog(st, '[palimpsest] the repo\'s checks were not known; they were read from its files');
+    }
+    // Never a run blind: with nothing to install or check, the job goes back on the board and the repo halts with the reason.
+    if (!checksKnown(st.repo.checks)) {
+      haltRepo(st.repo.fullName, CHECKS_UNKNOWN, iso(), { exceptRun: st.run.id });
+      return end(st, 'crashed', `${CHECKS_UNKNOWN}.`, { job: 'reopen' });
+    }
     st.egress = await guarded(st, startEgress(st.run.id, log));
     if (st.agent.model.startsWith('claude:')) {
       st.broker = await guarded(st, startBroker(st.run.id, { runRoot: st.runRoot, dir, log, signal: st.lease.signal, stage: () => st.toolStage }));
@@ -714,8 +806,8 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     const install = await guarded(st, config.installDeps(ctx, st.repo));
     record('check.done', { runId: st.run.id, jobId: st.run.jobId, check: install });
     checkpoint(st);
-    // An install failure is the repo's or the city's, never the firm's: crashed, an attempt spent, no reputation hit.
-    if (install.status === 'fail') return end(st, 'crashed', `The install failed: ${install.detail}`, { job: 'fail' });
+    // An install failure is the repo's or the city's, never the firm's: crashed, the job back on the board, no attempt spent.
+    if (install.status === 'fail') return end(st, 'crashed', `The install failed: ${install.detail}`, { job: 'engine' });
 
     phase = 'work';
     checkpoint(st);
@@ -732,7 +824,7 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     if (out.ended === 'capped') return end(st, 'capped', out.reason ?? 'The run reached a cap.', { job: 'fail', exclude: true });
     if (out.ended === 'crashed' || out.ended === 'aborted') {
       const reason = out.reason ?? (out.ended === 'aborted' ? 'The provider stopped on its own.' : 'The provider crashed.');
-      if (out.spendsAttempt === false) return end(st, 'crashed', reason, { job: 'reopen' });
+      if (out.spendsAttempt === false) return end(st, 'crashed', reason, { job: 'engine' });
       return end(st, 'crashed', reason, { job: 'fail', exclude: true });
     }
 
@@ -799,12 +891,15 @@ async function lifecycle(st: LiveRun): Promise<Run> {
     setStage(st, st.run.stage === 'done' ? 'done' : 'waiting');
     return st.run;
   } catch (err) {
-    // Past its wall deadline the run is capped: an attempt spent, the firm excluded only if it was still working.
-    if (st.deadlineHit) return end(st, 'capped', reasonOf(st), { job: 'fail', exclude: phase === 'work' });
+    // Past its wall deadline the run is capped. While the agent worked it is the firm's (an attempt spent, the firm
+    // excluded); a stage of the city's that hung past it is the engine's (no attempt spent).
+    if (st.deadlineHit) return end(st, 'capped', reasonOf(st), phase === 'work' ? { job: 'fail', exclude: true } : { job: 'engine' });
     if (st.lease.signal.aborted || err instanceof Killed) return end(st, 'killed', reasonOf(st), { job: 'reopen' });
     const msg = err instanceof Error ? err.message : String(err);
-    // A crash while the agent worked is the agent's; one before or after it, or in the city's own step, is the city's.
-    return end(st, 'crashed', msg, { job: 'fail', exclude: phase === 'work' && !(err instanceof CityError) });
+    // A crash while the agent worked is the agent's; one before or after it, or in the city's own step, is the
+    // engine's, and the job goes back on the board with no attempt spent.
+    if (phase === 'work' && !(err instanceof CityError)) return end(st, 'crashed', msg, { job: 'fail', exclude: true });
+    return end(st, 'crashed', msg, { job: 'engine' });
   } finally {
     for (const close of [() => st.broker?.close(), () => st.egress?.close()]) {
       try {
@@ -980,8 +1075,8 @@ export function updateRun(id: string, patch: Partial<Omit<Run, 'id' | 'jobId'>>)
 
 /**
  * At engine start: runs left in a live stage by the last engine can never
- * finish. Each ends `crashed`, and its job fails one attempt and returns to
- * the board if it has one left (ruling 16).
+ * finish. Each ends `crashed`, and its job returns to the board: the engine
+ * stopping under a run is the engine's failure, so no attempt is spent.
  */
 export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Promise<number[]> } = {}): Promise<Run[]> {
   const reap = opts.reap ?? reapRun;
@@ -993,7 +1088,7 @@ export async function failInterruptedRuns(opts: { reap?: (runRoot: string) => Pr
     record('run.ended', { runId: r.id, jobId: r.jobId, outcome: 'crashed', reason: INTERRUPTED_RUN, summary: r.summary ?? null, run: ended });
     emit('run.ended', { runId: r.id, outcome: 'crashed', reason: INTERRUPTED_RUN });
     sendHome(ended);
-    settleJob({ run: ended }, 'fail', false);
+    settleJob({ run: ended }, 'engine', false);
     // Whatever the run left running (a daemon that outlived the engine) is killed before its files go.
     const runRoot = join(paths().runs, r.id);
     try {
@@ -1042,7 +1137,7 @@ export function haltRepo(fullName: string, reason: string, at: string = new Date
  */
 export function resumeJob(j: Job): Job {
   if (j.haltedFrom === 'waiting') return transition(j, 'waiting');
-  return transition(j, 'open', { runId: null, awardedBid: null, bidsCloseAt: null, inconclusive: 0, haltNote: null });
+  return transition(j, 'open', { runId: null, awardedBid: null, bidsCloseAt: null, inconclusive: 0, engineFailures: 0, haltNote: null });
 }
 
 /**
@@ -1164,12 +1259,21 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
       }
     }
 
+    const fetching = new Map<string, Promise<unknown>>();
     for (const j of listJobs({ status: 'bidding' })) {
       if (!eligible.has(j.repo)) continue;
       const key = `${j.id} ${j.bidsCloseAt}`;
       if (collecting.has(key)) continue;
       collecting.add(key);
-      track(collectBids(j, now)).catch((err) => console.error(`palimpsest: collecting bids on ${j.id} failed: ${errText(err)}`));
+      // Plans are made against the repo as it is now: its mirror is fetched first, for at most bidSyncMs so the
+      // window stays whole. A fetch that fails or is slow is only logged; the round goes on with the mirror as it is,
+      // and the run fetches again before it clones.
+      let fetched = fetching.get(j.repo);
+      if (!fetched) {
+        fetched = withinMs(syncRepo(j.repo), config.bidSyncMs, j.repo).catch((err) => console.warn(`palimpsest: fetching ${j.repo} before bidding failed: ${errText(err)}`));
+        fetching.set(j.repo, fetched);
+      }
+      track(fetched.then(() => collectBids(j, now))).catch((err) => console.error(`palimpsest: collecting bids on ${j.id} failed: ${errText(err)}`));
     }
 
     for (const j of listJobs({ status: 'bidding' })) {
@@ -1186,7 +1290,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     await startRuns(now, eligible);
     // The README audits (Phase 3) start outside the market-on filter, so an on-demand audit on a market-off repo runs.
-    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs, onLive: syncWatcher })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
+    track(startQueuedAudit({ now: config.now, preflight: config.preflight, quiet: config.quiet, reap: config.reap, installDeps: config.installDeps, wallMs: config.runWallMs, onLive: syncWatcher, sync: syncRepo })).catch((err) => console.error(`palimpsest: the audit did not start: ${errText(err)}`));
 
     for (const step of [config.pollPRs, config.watchReverts]) {
       try {
@@ -1325,5 +1429,6 @@ export function resetRuns(): void {
   if (caffeinate) caffeinate.kill('SIGTERM');
   caffeinate = null;
   preflightOk = null;
+  syncing.clear();
   config = defaults();
 }

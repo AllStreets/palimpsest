@@ -449,7 +449,8 @@ test('run detail, log, diff and inspection never carry a home path or a raw secr
 });
 
 test('kill ends a run', async () => {
-  const repo = repoOf();
+  // A run never starts blind, so this repo names a command.
+  const repo = makeRepo(checks({ test: 'true' }), { 'README.md': 'widgets\n', 'src/header.ts': 'export const header = 1;\n' });
   void repo;
   const a = addAgent('l1', 'gamma', 'ollama:qwen3');
   const posted = postJob(['**']);
@@ -477,6 +478,7 @@ test('kill ends a run', async () => {
     quiet: async () => {},
     reap: async () => [],
     preflight: async () => null,
+    sync: async () => {},
     watchMs: 0,
   });
   await s.tick();
@@ -898,13 +900,26 @@ test('a request body over 1 MB is refused with 413 before it is buffered', async
   repoOf();
   const big = JSON.stringify({ repo: FULL, title: 'x', body: 'y'.repeat(1024 * 1024 + 10) });
   const s = await start();
+  // Only the head and a first slice are sent; the rest waits on the answer. Writing the whole body first
+  // raced the server's close: under load an EPIPE could come before the 413 was read, and nothing settled.
   const status = await new Promise<number>((resolve, reject) => {
-    const req = httpRequest({ host: '127.0.0.1', port: s.port, path: '/api/jobs', method: 'POST', headers: { host: `127.0.0.1:${s.port}`, 'x-palimpsest': '1', 'content-type': 'application/json' } }, (res) => {
-      res.resume();
-      resolve(res.statusCode ?? 0);
+    let answered = false;
+    const req = httpRequest(
+      { host: '127.0.0.1', port: s.port, path: '/api/jobs', method: 'POST', headers: { host: `127.0.0.1:${s.port}`, 'x-palimpsest': '1', 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(big)) } },
+      (res) => {
+        answered = true;
+        res.resume();
+        resolve(res.statusCode ?? 0);
+        req.destroy();
+      },
+    );
+    req.on('error', (e) => {
+      if (!answered) reject(e);
     });
-    req.on('error', (e) => ((e as NodeJS.ErrnoException).code === 'EPIPE' || (e as NodeJS.ErrnoException).code === 'ECONNRESET' ? undefined : reject(e)));
-    req.end(big);
+    req.on('close', () => {
+      if (!answered) reject(new Error('the connection closed with no answer'));
+    });
+    req.write(big.slice(0, 64 * 1024));
   });
   assert.equal(status, 413);
   assert.equal((await call('POST', '/api/jobs', { repo: FULL, title: 'fine' })).status, 201, 'the engine is still serving');

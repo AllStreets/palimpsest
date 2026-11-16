@@ -53,6 +53,36 @@ const PATH_OF: Record<Route, string> = {
 };
 
 /**
+ * The screens the running head lists and the command palette offers, in the head's order (Phase 5):
+ * one list, so a screen added here reaches both.
+ */
+export const SCREENS: ReadonlyArray<{ route: Route; name: string }> = [
+  { route: 'city', name: 'City' },
+  { route: 'brief', name: 'Brief' },
+  { route: 'jobs', name: 'Jobs' },
+  { route: 'firms', name: 'Firms' },
+  { route: 'school', name: 'School' },
+  { route: 'treasury', name: 'Treasury' },
+  { route: 'repos', name: 'Repos' },
+  { route: 'settings', name: 'Settings' },
+];
+
+/**
+ * The head item a route is under: a job, run or inspection under Jobs, a firm or agent under
+ * Firms, a repo or README audit under Repos, a net, voyage or graduate under School; every
+ * other route is its own item. The city is current only on the city route.
+ */
+export function currentSection(route: Route): Route {
+  switch (route) {
+    case 'job': case 'run': case 'inspection': return 'jobs';
+    case 'firm': case 'agent': return 'firms';
+    case 'repo': case 'audit': return 'repos';
+    case 'net': case 'voyage': case 'graduate': return 'school';
+    default: return route;
+  }
+}
+
+/**
  * The school's sections (Phase 4 Task 28): `#/school/<section>` opens the school at one
  * (the observatory's dome opens it at the master's card); `#/school/nets/<net>`,
  * `#/school/voyages/<id>` and `#/school/graduates/<id>` open a net, a voyage or a graduate.

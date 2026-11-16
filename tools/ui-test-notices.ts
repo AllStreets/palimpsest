@@ -1,10 +1,11 @@
 /**
- * The notice stack (Phase 3 Task 12): a short column hanging from the
- * running head, each notice its own ruled line with its own Dismiss, a keyed
- * notice replacing its earlier words, the column fading and recalled by its
- * mark (and announced again through role=status), every path by keyboard,
- * and the column standing clear of an open sheet. Driven through the debug
- * handle's say(), as the city's own notices are made.
+ * The notice stack (Phase 3 Task 12, moved in Phase 5 Task 17): a short
+ * column at the lower left of the city, each notice its own ruled line on an
+ * ink plate with its own Dismiss, two lines at most and whole on hover and
+ * focus, a keyed notice replacing its earlier words, the column fading and
+ * recalled by its mark (and announced again through role=status), every path
+ * by keyboard, and the column standing clear of an open sheet. Driven through
+ * the debug handle's say(), as the city's own notices are made.
  */
 import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
@@ -121,6 +122,8 @@ const TOWER = 'That tower is not standing in the city just now.';
 const AUDIT_1 = 'An audit of harbor-ledger is reading its README.';
 const AUDIT_2 = 'The audit of harbor-ledger found 3 claims missing.';
 const TOUR = 'Not enough happened this week for a walk through it.';
+const LONG =
+  'The audit of harbor-ledger could not finish: the session reached its credit cap of 40 credits while it was still reading the docs folder, so the claims it had checked so far are kept as read and the rest wait for the next audit, which you can ask for from the district page whenever you like.';
 
 export async function noticeChecks(page: Page, check: Check, shots: string): Promise<void> {
   await go(page, '#/');
@@ -136,24 +139,28 @@ export async function noticeChecks(page: Page, check: Check, shots: string): Pro
   check((await lines(page)).join('|') === [TOWER, AUDIT_1, KITS].join('|'), `three notices stand newest first, each its own line (${(await lines(page)).length})`);
   check((await page.locator('.city-notice-line .city-notice-dismiss').count()) === 3, 'each with its own Dismiss');
   const geo = await page.evaluate(() => {
-    const head = document.querySelector('.runhead')!.getBoundingClientRect();
-    const link = document.querySelector('.runhead-link')!.getBoundingClientRect();
+    const box = document.querySelector('.city-notice')!.getBoundingClientRect();
+    const mark = document.querySelector('.city-notice-recall')!.getBoundingClientRect();
     const rows = [...document.querySelectorAll('.city-notice-line')].map((li) => {
       const b = li.getBoundingClientRect();
-      const ruled = getComputedStyle(li).borderLeftWidth;
-      return { top: b.top, bottom: b.bottom, left: b.left, oneLine: (li.querySelector('p') as HTMLElement).getBoundingClientRect().height < 24, ruled };
+      const p = li.querySelector('p') as HTMLElement;
+      const lh = parseFloat(getComputedStyle(p).lineHeight);
+      return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, lines: Math.round(p.getBoundingClientRect().height / lh), ruled: getComputedStyle(li).borderLeftWidth, plate: getComputedStyle(li).backgroundColor };
     });
-    return { head, link, rows };
+    return { box: { left: box.left, bottom: box.bottom }, mark: { top: mark.top, left: mark.left }, rows, w: innerWidth, h: innerHeight };
   });
-  check(Math.abs(geo.rows[0].bottom - geo.link.bottom) < 8 && geo.rows[0].left > geo.link.right, 'the newest stands on the running head’s own line, at its end');
-  check(geo.rows.every((r, i) => i === 0 || (r.top >= geo.rows[i - 1].bottom && Math.abs(r.left - geo.rows[0].left) < 1)), 'the older ones hang beneath it in one column');
-  check(geo.rows.every((r) => r.oneLine && r.ruled === '2px'), 'every notice is one ruled line');
+  check(Math.abs(geo.box.left - 44) < 2 && geo.h - geo.box.bottom < 60 && geo.rows[0].top > geo.h / 2, `the column stands at the lower left of the city (left ${geo.box.left.toFixed(0)}, ${(geo.h - geo.box.bottom).toFixed(0)} px off the foot)`);
+  check(geo.rows.every((r, i) => i === 0 || (r.top >= geo.rows[i - 1].bottom && Math.abs(r.left - geo.rows[0].left) < 1)) && geo.mark.top >= geo.rows[geo.rows.length - 1].bottom, 'newest first in one column, the mark beneath it');
+  check(geo.rows.every((r) => r.lines >= 1 && r.lines <= 2 && r.ruled === '2px'), `every notice is a ruled line of two lines at most (${geo.rows.map((r) => r.lines).join(', ')})`);
+  check(geo.rows.every((r) => r.plate === 'rgba(18, 16, 24, 0.82)'), `each stands on an ink plate at 0.82 (${geo.rows[0]?.plate})`);
   check(Math.abs(((await head.boundingBox())?.height ?? 0) - headBefore) < 1, 'and the running head itself does not grow over the city');
   check(await within(page, 1000, async () => (await status(page)) === TOWER), 'the newest is announced through role=status');
   check(/That tower is not standing/.test(await said(page)) && /kits did not load/.test(await said(page)), 'the debug handle still returns the joined text');
   await page.waitForTimeout(400);
+  const vp = page.viewportSize() ?? { width: 1600, height: 940 };
+  const corner = { x: 0, y: vp.height - 300, width: 1000, height: 300 };
   await page.screenshot({ path: join(shots, 'notices-three.png') });
-  await page.screenshot({ path: join(shots, 'notices-three-crop.png'), clip: { x: 0, y: 0, width: 1600, height: 140 } });
+  await page.screenshot({ path: join(shots, 'notices-three-crop.png'), clip: corner });
 
   // ------------------------------------------------------------ a keyed notice replaces its earlier words
   await say(page, AUDIT_2, 'audit:harbor-ledger');
@@ -201,7 +208,7 @@ export async function noticeChecks(page: Page, check: Check, shots: string): Pro
   check(ratio >= 4.5, `and every line reads at 4.5:1 or better over it (${ratio.toFixed(1)}:1)`);
   await page.waitForTimeout(400);
   await page.screenshot({ path: join(shots, 'notices-recalled.png') });
-  await page.screenshot({ path: join(shots, 'notices-recalled-crop.png'), clip: { x: 0, y: 0, width: 1600, height: 140 } });
+  await page.screenshot({ path: join(shots, 'notices-recalled-crop.png'), clip: corner });
   await page.locator('#city canvas').focus();
   check(await within(page, 9000, async () => (await said(page)) === ''), 'away from the column it fades after a few seconds');
   check(await recall.isVisible(), 'and the mark stays to recall it');
@@ -214,21 +221,41 @@ export async function noticeChecks(page: Page, check: Check, shots: string): Pro
   await page.waitForTimeout(400);
   const beside = await page.evaluate(() => {
     const sheet = document.querySelector('.sheet.treasury')!.getBoundingClientRect();
-    const head = document.querySelector('.runhead-link')!.getBoundingClientRect();
     const box = document.querySelector('.city-notice')!.getBoundingClientRect();
     const rows = [...document.querySelectorAll('.city-notice-line, .city-notice-recall')].map((e) => e.getBoundingClientRect());
-    return { sheetRight: sheet.right, left: Math.min(box.left, ...rows.map((r) => r.left)), right: Math.max(...rows.map((r) => r.right)), firstBottom: rows[0].bottom, headBottom: head.bottom, vw: innerWidth };
+    return { sheetRight: sheet.right, left: Math.min(box.left, ...rows.map((r) => r.left)), right: Math.max(...rows.map((r) => r.right)), top: rows[0].top, bottom: box.bottom, vw: innerWidth, vh: innerHeight };
   });
   check(beside.left >= beside.sheetRight, `with the treasury open the column stands right of the sheet’s edge (${beside.left.toFixed(0)} against ${beside.sheetRight.toFixed(0)})`);
   check(beside.right <= beside.vw, `and inside the window (${beside.right.toFixed(0)})`);
-  check(Math.abs(beside.firstBottom - beside.headBottom) < 8, 'on the running head’s line');
+  check(beside.vh - beside.bottom < 60 && beside.top > beside.vh / 2, 'at the lower left of the city it leaves');
   await page.screenshot({ path: join(shots, 'notices-beside-sheet.png') });
   await page.locator('.city-notice-dismiss').first().focus();
   await page.keyboard.press('Escape');
   check((await page.evaluate(() => document.body.dataset.route)) === 'treasury' && (await focused(page)) === 'city-notice-recall', 'Escape in the column folds it and leaves the sheet open');
   await page.keyboard.press('Escape');
   await within(page, 3000, async () => (await page.evaluate(() => document.body.dataset.route)) === 'city');
-  check(await within(page, 1500, async () => (await page.locator('.city-notice').evaluate((b) => (b as HTMLElement).dataset.beside === undefined))), 'and with the sheet closed it returns to the head’s end');
+  check(
+    await within(page, 1500, async () => (await page.locator('.city-notice').evaluate((b) => (b as HTMLElement).dataset.beside === undefined && Math.abs(b.getBoundingClientRect().left - 44) < 2))),
+    'and with the sheet closed it returns to the lower left corner',
+  );
+
+  // ------------------------------------------------------------ a long notice: two lines, then cut; whole on hover and on focus
+  await say(page, LONG, 'long');
+  const longLine = page.locator('.city-notice-line[data-key="long"]');
+  const shape = (): Promise<{ lines: number; cut: boolean }> =>
+    longLine.locator('p').evaluate((p) => ({ lines: Math.round(p.getBoundingClientRect().height / parseFloat(getComputedStyle(p).lineHeight)), cut: p.scrollHeight > p.clientHeight + 1 }));
+  await page.mouse.move(vp.width - 40, 40);
+  const folded = await shape();
+  check(folded.lines === 2 && folded.cut && (await longLine.locator('p').textContent()) === LONG, `a long notice wraps to two lines and is cut there, its words whole in the page (${folded.lines} lines)`);
+  await longLine.hover();
+  const hovered = await shape();
+  check(hovered.lines > 2 && !hovered.cut, `under the pointer it shows whole (${hovered.lines} lines)`);
+  await page.screenshot({ path: join(shots, 'notices-long-hover.png'), clip: corner });
+  await page.mouse.move(vp.width - 40, 40);
+  await longLine.locator('.city-notice-dismiss').focus();
+  const focusedShape = await shape();
+  check(focusedShape.lines > 2 && !focusedShape.cut, `and while its Dismiss has the keyboard (${focusedShape.lines} lines)`);
+  await longLine.locator('.city-notice-dismiss').press('Enter');
   await clear(page);
 }
 

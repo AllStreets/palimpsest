@@ -1,19 +1,31 @@
 /**
  * The city's notices: what it did by itself (stood on plain blocks without
  * the kits, stepped down in quality), what a key could not do just now, and
- * the quiet lines of the morning. They stand in a short column that hangs
- * from the running head's end, newest on the head's own line, each its own
- * ruled line with its own Dismiss. The column fades after a few seconds; a
- * small bronze mark before it, at the head's end, stays to recall it. While a sheet is
- * open the column stands to the sheet's right, never over it.
+ * the quiet lines of the morning. They stand in a short column at the lower
+ * left of the city, newest first, each its own ruled line on an ink plate
+ * with its own Dismiss; a long line wraps to two and is cut there, and shows
+ * whole under the pointer or the keyboard. The column fades after a few
+ * seconds; a small bronze mark beneath it stays to recall it. While a sheet
+ * is open the column stands to the sheet's right, never over it.
  */
 
+/** The plate under every line: ink at 0.82, so the words keep 4.5:1 even over a white lit facade. */
+export const NOTICE_PLATE = { rgb: [18, 16, 24] as const, alpha: 0.82, css: 'rgba(18, 16, 24, 0.82)' };
+/** The dimmest words on the plate (the older lines and the Dismisses). */
+export const NOTICE_WORDS: readonly [number, number, number] = [207, 199, 186];
+/** How many lines a notice wraps to before it is cut, until it is hovered or focused. */
+export const NOTICE_LINES = 2;
 /** How long the column stands before it fades. */
 export const NOTICE_MS = 6000;
 /** How many notices the column keeps. */
 export const NOTICES_KEPT = 3;
 /** The space between an open sheet's edge and the column beside it. */
 const BESIDE_GAP = 28;
+
+/** The words on the mark that recalls the faded column: how many notices it holds. */
+export function recallText(n: number): string {
+  return n > 0 ? `${n} ${n === 1 ? 'notice' : 'notices'}` : '';
+}
 
 export interface Kept {
   /** The notice's key: the one it was given, or its own words. */
@@ -72,6 +84,9 @@ export function createNotices(parent: HTMLElement): Notices {
   const box = doc.createElement('div');
   box.className = 'city-notice';
   box.hidden = true;
+  box.style.setProperty('--notice-plate', NOTICE_PLATE.css);
+  box.style.setProperty('--notice-words', `rgb(${NOTICE_WORDS.join(', ')})`);
+  box.style.setProperty('--notice-lines', String(NOTICE_LINES));
   const list = doc.createElement('ul');
   list.className = 'city-notice-list';
   list.id = `city-notices-${++ids}`;
@@ -79,7 +94,7 @@ export function createNotices(parent: HTMLElement): Notices {
   const recall = doc.createElement('button');
   recall.type = 'button';
   recall.className = 'city-notice-recall';
-  recall.textContent = 'Notice';
+  recall.textContent = '';
   recall.title = 'Show the last notices again';
   recall.setAttribute('aria-controls', list.id);
   recall.setAttribute('aria-expanded', 'false');
@@ -87,8 +102,8 @@ export function createNotices(parent: HTMLElement): Notices {
   const said = doc.createElement('p');
   said.className = 'city-notice-said';
   said.setAttribute('role', 'status');
-  // The mark first, at a fixed place after the head's last link; the column follows it.
-  box.append(recall, list, said);
+  // The column, then the mark beneath it at the corner, where it stays when the column fades.
+  box.append(list, recall, said);
   parent.append(box);
 
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -127,9 +142,10 @@ export function createNotices(parent: HTMLElement): Notices {
       const p = doc.createElement('p');
       p.id = `${list.id}-${++ids}`;
       p.textContent = n.text;
-      // A pointer hint only, for a line cut short: the words are in the page whole, for a screen reader as for search.
+      // A line cut at two shows whole under the pointer or the keyboard (the stylesheet lifts the cut); the
+      // words are in the page whole besides, for a screen reader as for search, and a hint carries them too.
       li.addEventListener('pointerenter', () => {
-        if (p.scrollWidth > p.clientWidth) p.title = n.text;
+        if (p.scrollHeight > p.clientHeight + 1 || p.scrollWidth > p.clientWidth + 1) p.title = n.text;
         else p.removeAttribute('title');
       });
       const close = doc.createElement('button');
@@ -142,6 +158,7 @@ export function createNotices(parent: HTMLElement): Notices {
       return li;
     });
     list.replaceChildren(...lines);
+    recall.textContent = recallText(lines.length);
     box.hidden = lines.length === 0;
     if (box.hidden) fade();
   };

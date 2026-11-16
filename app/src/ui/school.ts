@@ -27,10 +27,12 @@ import {
   intervalText,
   kindLabel,
   loraLine,
+  NET_BIAS,
   NET_LABEL,
   NET_LEARNS,
   netLine,
-  netRowLine,
+  SCORE_KEY,
+  untrainedWhen,
   sealedLine,
   signed,
   STATUS_WORD,
@@ -334,27 +336,24 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
       ['c-plate', 'Against its baseline'],
       ['c-n', 'Labels'],
     ]);
-    for (const n of v.nets) t.append(netRow(n));
+    for (const n of v.nets) t.append(netRow(n, v));
     sec.append(t);
-    sec.append(
-      el(
-        'p',
-        'jobs-key',
-        'Each net is scored on rows it never trained on, with a 95% interval seeded the same way every night, and is trusted only when the whole interval of its difference from the baseline lies below zero. Brier is the squared error of a probability; smaller is better. A thin net has too few labels to train on, and says what it waits for.',
-      ),
-    );
+    // What the scores mean, said before the ledger that shows them, so the first number read is not jargon.
+    t.before(el('p', 'jobs-key school-score-key', SCORE_KEY));
     return sec;
   }
 
-  function netRow(n: NetCard): HTMLElement {
+  function netRow(n: NetCard, v: SchoolView): HTMLElement {
     const r = row('net-row', { net: n.net, status: n.status });
     const name = cell('c-name');
     const a = el('a', 'net-name', NET_LABEL[n.net] ?? n.net);
     a.href = placeHref('net', n.net);
     const line = el('div', 'net-name-line');
     line.append(a, el('span', `net-status s-${n.status}`, STATUS_WORD[n.status]));
-    name.append(line, el('p', 'net-learns', `Learns ${NET_LEARNS[n.net] ?? ''}.`), el('p', 'net-line', netRowLine(n)));
+    name.append(line, el('p', 'net-learns', `Learns ${NET_LEARNS[n.net] ?? ''}.`), el('p', 'net-line', untrainedWhen(n, v.settings, v.gate.light)));
     if (n.selfSelected) name.append(el('p', 'net-self', 'Partly self-selected: since the appraiser began moving awards, its rows are the bids it chose.'));
+    const bias = NET_BIAS[n.net];
+    if (bias) name.append(el('p', 'net-self net-bias', bias));
     r.append(name);
     const cur = n.current;
     if (cur) {
@@ -850,7 +849,7 @@ export function createSchool(parent: HTMLElement, opts: { listen(fn: (e: EngineE
       ]);
       title.textContent = label;
       const c = d ?? card;
-      sub.textContent = c ? `${netLine(c)} It learns ${NET_LEARNS[c.net]}.${c.selfSelected ? ' Its rows are partly self-selected: since the appraiser began moving awards, they are the bids it chose.' : ''}` : '';
+      sub.textContent = c ? `${netLine(c)} It learns ${NET_LEARNS[c.net]}.${c.selfSelected ? ' Its rows are partly self-selected: since the appraiser began moving awards, they are the bids it chose.' : ''}${NET_BIAS[c.net] ? ` ${NET_BIAS[c.net]}` : ''}` : '';
       if (d) slots.page(JSON.stringify(d), () => netPage(d));
       else if (card && !trouble.hidden) slots.page('', () => null);
       else if (card) slots.page(JSON.stringify(['card', card]), () => netPage({ ...card, versions: [] }));

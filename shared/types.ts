@@ -203,6 +203,8 @@ export interface Job {
   haltedFrom: JobStatus | null;
   /** Inspections of this job in a row that no reviewer could read (Task 15); the third halts the job. */
   inconclusive?: number;
+  /** Runs of this job in a row that the engine itself ended (no firm failure between); the third holds the job. */
+  engineFailures?: number;
   /** Why the job was halted on its own, for his daily brief; cleared on resume. */
   haltNote?: string | null;
   /** The audit finding this job was proposed from (source `proposal`). */
@@ -340,6 +342,8 @@ export interface CheckResult {
   concerns?: string[];
   /** Review and design: the reviewer's or the judge's own notes. */
   notes?: string;
+  /** A failed check that never ran to an answer (refused by the guard, or out of time): it says nothing about the repo, so no baseline keeps it. */
+  inconclusive?: 'refused' | 'timed out';
 }
 
 export interface Inspection {

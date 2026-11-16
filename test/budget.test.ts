@@ -749,3 +749,16 @@ test('creditEntries(runId) lists one run\'s credits rows, oldest first', () => {
   assert.equal(creditEntries('voyage-9')[0].kind, 'school');
   assert.deepEqual(creditEntries('nothing'), []);
 });
+
+test('the plan as it stands now is the one figure Settings and the brief both show', async () => {
+  const { planNow } = await import('../engine/market/budget.js');
+  const { windowNowPct } = await import('../shared/market-rules.js');
+  reading({ five: 44, seven: 21, fiveResets: Math.floor((NOW + 4 * HOUR) / 1000) });
+  spend({ weighted: 36_000, at: NOW + MIN });
+  const t = treasury(NOW + 10 * MIN);
+  const now = planNow(NOW + 10 * MIN);
+  assert.ok(t.fiveHour.estimatedPct > 44.5, 'the city spent since the reading');
+  assert.equal(now.fiveHour, windowNowPct(t.fiveHour));
+  assert.equal(now.fiveHour, 45, 'not the reading alone');
+  assert.equal(now.sevenDay, windowNowPct(t.sevenDay));
+});

@@ -303,6 +303,7 @@ test('a day the engine was down across midnight is reported at the next start, a
     },
     pollJobs: async () => [],
     preflight: async () => null,
+    sync: async () => {},
     watchMs: 0,
     daily: async (day) => {
       asked.push(day);

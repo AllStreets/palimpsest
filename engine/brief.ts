@@ -16,7 +16,7 @@
  * No `seen` rows. Every text goes through `plain()`, which redacts.
  */
 import { localDay } from '../shared/day.js';
-import { MAX_ATTEMPTS } from '../shared/market-rules.js';
+import { creditsText, MAX_ATTEMPTS, windowNowPct } from '../shared/market-rules.js';
 import type { RawRow } from '../shared/net-features.js';
 import { AGREE, WORK_KINDS } from '../shared/school-rules.js';
 import type { Audit, Brief, BriefAction, BriefItem, BriefItemKind, Grant, Job, Milestone, Repo, Run, Tier, Tour, WorkKind } from '../shared/types.js';
@@ -205,7 +205,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
         kind: 'merged',
         repo,
         title,
-        text: chosen ? `Merged, and ${firm(chosen.firmId)} was paid ${num(chosen.price)} credits.` : 'Merged.',
+        text: chosen ? `Merged, and ${firm(chosen.firmId)} was paid ${creditsText(chosen.price)} credits.` : 'Merged.',
         at: e.at,
         refs: { jobId: d.id, ...(j?.runId ? { runId: j.runId } : {}), ...(j?.floorId ? { floorId: j.floorId } : {}), ...(chosen ? { firmId: chosen.firmId } : {}) },
         actions: ['fly', 'diff', 'dismiss'],
@@ -405,7 +405,7 @@ function gather(since: string, now: number, given: BriefOptions): { drafts: Draf
   const daily = near(t.fiveHour) || t.todayCapPct !== null;
   if (daily || near(t.sevenDay)) {
     const w = daily ? t.fiveHour : t.sevenDay;
-    const pct = num(Math.max(w.estimatedPct, w.usedPct ?? 0));
+    const pct = windowNowPct(w) ?? 0;
     drafts.push({
       id: 'usage',
       kind: 'usage',
@@ -533,7 +533,7 @@ function lead(items: BriefItem[], n: ReturnType<typeof numbers>, since: string, 
     : items.length
       ? `Nothing merged or failed ${sinceWords(since, today)}, and ${plural(items.length, 'line')} below ${items.length === 1 ? 'waits' : 'wait'} on you.`
       : `Nothing waits on you this morning.`;
-  const second = n.all > 0 ? `The city spent ${num(n.all)} credits on model calls${n.audit > 0 ? `, ${num(n.audit)} of them on README audits` : ''}.` : 'The city made no model calls.';
+  const second = n.all > 0 ? `The city spent ${creditsText(n.all)} credits on model calls${n.audit > 0 ? `, ${creditsText(n.audit)} of them on README audits` : ''}.` : 'The city made no model calls.';
   return `${first} ${second}`;
 }
 

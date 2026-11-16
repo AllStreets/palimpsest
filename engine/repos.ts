@@ -8,7 +8,7 @@ import { detectChecksInMirror, emptyChecks } from './guild/checks.js';
 import { foundingFloors } from './history.js';
 import { districtOrigin } from './layout.js';
 import { record } from './ledger.js';
-import { readLog, syncMirror } from './mirror.js';
+import { mirrorDir, readLog, syncMirror } from './mirror.js';
 
 const ROOTS: RootStyle[] = ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago'];
 
@@ -318,6 +318,18 @@ function settled(fullName: string): void {
   running.delete(fullName);
 }
 
+/** Thrown inside an analysis whose repo was turned off: it stops at the next step and writes nothing more. */
+class AnalysisStopped extends Error {
+  constructor() {
+    super('The analysis was stopped: the repo was disconnected.');
+  }
+}
+
+/** Stops the analysis when its repo has been turned off since it started (a stopped connect). */
+function stillWanted(fullName: string): void {
+  if (loadRepo(fullName)?.connected === false) throw new AnalysisStopped();
+}
+
 async function runAnalysis(fullName: string): Promise<void> {
   try {
     let repo = loadRepo(fullName);
@@ -329,17 +341,23 @@ async function runAnalysis(fullName: string): Promise<void> {
     const joinedAt = repo.joinedAt ?? new Date().toISOString();
 
     // Each step event carries the repo as stored now, so a toggle changed mid-analysis is never reported stale.
+    // Between steps the repo is read again: once it has been turned off, the analysis stops there.
+    stillWanted(fullName);
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'mirror' });
     const meta = await repoMeta(fullName);
+    stillWanted(fullName);
     // Re-read before each write: the toggles (connected, pushMode, root) may have changed while gh ran.
     repo = saveRepo({ ...(loadRepo(fullName) ?? repo), ...meta });
     const dir = await syncMirror(fullName);
+    stillWanted(fullName);
 
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'log' });
     const commits = await readLog(dir, repo.defaultBranch);
+    stillWanted(fullName);
 
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'prs' });
     const prs = await mergedPRs(fullName);
+    stillWanted(fullName);
 
     emit('repo.analyzing', { repo: loadRepo(fullName) ?? repo, step: 'floors' });
     const floors = foundingFloors(fullName, commits, prs, { until: joinedAt });
@@ -353,6 +371,7 @@ async function runAnalysis(fullName: string): Promise<void> {
     } catch {
       detected = null;
     }
+    stillWanted(fullName);
 
     const tower: TowerSpec = {
       id: `${fullName}#founding`,
@@ -393,6 +412,10 @@ async function runAnalysis(fullName: string): Promise<void> {
     // Phase 3 ruling 6: a repo analysed with its market already on is audited once, by itself.
     queueAutoAudit(repo);
   } catch (err) {
+    if (err instanceof AnalysisStopped) {
+      stoppedAnalysis(fullName);
+      return;
+    }
     const message = err instanceof GhError ? err.message : readableMessage(err);
     // Guarded: loadRepo/saveRepo/emit/record can themselves throw (a closed
     // db handle, a bad write), and this is already the error path. Letting
@@ -409,6 +432,23 @@ async function runAnalysis(fullName: string): Promise<void> {
     } catch (innerErr) {
       console.error(`analyze(${fullName}): failed to record error state '${message}':`, innerErr);
     }
+  }
+}
+
+/**
+ * The end of an analysis stopped by a disconnect: the repo is left as it
+ * stood before (ready on the tower it had, else idle), never analysing and
+ * never in error, and the screens are told so with the repo as it now is.
+ */
+function stoppedAnalysis(fullName: string): void {
+  try {
+    settled(fullName);
+    const repo = loadRepo(fullName);
+    if (!repo) return;
+    const updated = saveRepo({ ...repo, status: loadFoundingTower(fullName) ? 'ready' : 'idle', error: null });
+    emit('repo.disconnected', { repo: updated });
+  } catch (err) {
+    console.error(`analyze(${fullName}): failed to settle a stopped analysis:`, err);
   }
 }
 
@@ -554,7 +594,77 @@ export function patchRepo(fullName: string, p: RepoPatch): Repo {
   if (checksPatch) proposeHarnessIfNeeded(updated);
   // The market turned on for the first time on a ready repo: its one automatic audit (Phase 3 ruling 6).
   if (p.market === true && !repo.market) queueAutoAudit(updated);
+  // A repo whose checks were never read learns them now, before any job of its needs them.
+  if (p.market === true && !checksKnown(updated.checks)) trackChecks(ensureChecks(fullName));
   return updated;
+}
+
+// ---------------------------------------------------------------- knowing the checks
+
+/** What the owner reads, on the run and the repo, when a run has no command it could install or check with. */
+export const CHECKS_UNKNOWN = "This repo's build and test commands are not known yet: none could be read from its files, so set them under Checks";
+
+/** True when `c` names at least one command a run can install or check with; a run never starts blind without one. */
+export function checksKnown(c: RepoChecks | null): boolean {
+  return !!c && [c.install, c.test, c.typecheck, c.lint, c.build].some((x) => typeof x === 'string' && x.trim() !== '');
+}
+
+/**
+ * Stores freshly detected checks for `fullName` over the stored ones (his own
+ * are kept, as at analysis) and emits `repo.patched`. Baselines go when a
+ * command changed. Returns the repo as stored, or null when it is gone.
+ */
+export function learnChecks(fullName: string, detected: RepoChecks): Repo | null {
+  const current = loadRepo(fullName);
+  if (!current) return null;
+  const checks = mergeDetected(current.checks, detected);
+  if (!commandsChanged(current.checks, checks)) return current;
+  const db = openDb();
+  db.exec('BEGIN');
+  let repo: Repo;
+  try {
+    clearBaselines(fullName);
+    repo = saveRepo({ ...(loadRepo(fullName) ?? current), checks });
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  emit('repo.patched', { repo });
+  return repo;
+}
+
+/**
+ * Detects `fullName`'s checks from its mirror as it stands (no fetch: only
+ * git reads of the default branch) when the stored ones name no command.
+ * A git failure (no mirror yet) keeps what was stored. Resolves with the
+ * repo as stored.
+ */
+export async function ensureChecks(fullName: string): Promise<Repo | null> {
+  const repo = loadRepo(fullName);
+  if (!repo || checksKnown(repo.checks)) return repo;
+  let detected: RepoChecks;
+  try {
+    detected = await detectChecksInMirror(mirrorDir(fullName), repo.defaultBranch);
+  } catch {
+    return loadRepo(fullName);
+  }
+  return learnChecks(fullName, detected);
+}
+
+/** Detections started by a patch, so a test (or a shutdown) can wait on them. */
+const detecting = new Set<Promise<unknown>>();
+
+function trackChecks(p: Promise<unknown>): void {
+  const tracked = p
+    .catch((err) => console.warn(`palimpsest: detecting the checks failed: ${err instanceof Error ? err.message : String(err)}`))
+    .finally(() => detecting.delete(tracked));
+  detecting.add(tracked);
+}
+
+/** Resolves once no detection started by a patch is running. */
+export async function checksSettled(): Promise<void> {
+  while (detecting.size > 0) await Promise.allSettled([...detecting]);
 }
 
 /**

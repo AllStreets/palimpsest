@@ -350,7 +350,8 @@ describe('work', () => {
     assert.equal(env.LOGNAME, userInfo().username);
     for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']) assert.equal(env[k], undefined, k);
     assert.ok(!Object.values(env).some((v) => v.includes('sk-ant-test') || v.includes('auth-test')));
-    assert.equal(env.MCP_TOOL_TIMEOUT, '900000');
+    // The longest command (15 minutes) plus room for the broker to stop it and answer.
+    assert.equal(env.MCP_TOOL_TIMEOUT, '1020000');
     assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
     assert.equal(env.NO_PROXY, '127.0.0.1,localhost');
     // claude has its own temp dir, ctmp, which no tool child can write (Task 11)
@@ -547,6 +548,27 @@ describe('work', () => {
     assert.ok(logs.some((l) => l.kind === 'stderr' && l.text.includes('Segmentation fault')));
   });
 
+  test('a work run, which passes no --json-schema, may not list StructuredOutput', async () => {
+    const { calls } = fake([init({ tools: [...WORK_TOOLS, 'StructuredOutput'] }), ...happyWork().slice(1)], { hang: true });
+    const out = await provider().p.work(workInput({ runId: 'run-structured' }).input);
+    assert.ok(!claudeArgs(calls[0]).includes('--json-schema'));
+    assert.equal(out.ended, 'crashed');
+    assert.equal(out.reason, 'unexpected tools');
+    assert.ok(calls[0].kills.includes('SIGTERM'));
+  });
+
+  test('a work run may list built-in plugins but not one from elsewhere', async () => {
+    const builtin = { name: 'cc-plugin-privacy', path: 'builtin', source: 'cc-plugin-privacy@builtin' };
+    fake([init({ plugins: [builtin] }), ...happyWork().slice(1)]);
+    const ok = await provider().p.work(workInput({ runId: 'run-builtin' }).input);
+    assert.equal(ok.ended, 'finished');
+    const { calls } = fake([init({ plugins: [builtin, { name: 'p', path: '/x', source: 'p@local' }] }), ...happyWork().slice(1)], { hang: true });
+    const out = await provider().p.work(workInput({ runId: 'run-foreign-plugin' }).input);
+    assert.equal(out.ended, 'crashed');
+    assert.equal(out.reason, 'unexpected plugins');
+    assert.ok(calls[0].kills.includes('SIGTERM'));
+  });
+
   test('init without a tools or mcp_servers list crashes the run', async () => {
     for (const drop of ['tools', 'mcp_servers']) {
       const bad = init();
@@ -653,6 +675,39 @@ describe('work', () => {
     assert.equal(out.ended, 'crashed');
     assert.match(out.reason ?? '', /still alive/);
     assert.ok(calls[0].kills.includes('SIGTERM'));
+    // A process the reaper cannot clear is the engine's failure, never the firm's: no attempt spent.
+    assert.equal(out.spendsAttempt, false);
+  });
+
+  test('a leftover process found before a tool turn is reaped with a note, and the run goes on', async () => {
+    fake(happyWork());
+    let n = 0;
+    const { p } = provider({
+      quiet: async () => {
+        n += 1;
+        return n === 2 ? [4242, 4243] : [];
+      },
+    });
+    const { input, logs } = workInput();
+    const out = await p.work(input);
+    assert.equal(out.ended, 'finished');
+    assert.ok(
+      logs.some((l) => l.kind === 'engine' && /left running/.test(l.text) && /4242, 4243/.test(l.text) && /tool turn/.test(l.text)),
+      logs.map((l) => l.text).join('\n'),
+    );
+  });
+
+  test('a run that cannot be made quiet before claude starts is the engine\'s failure', async () => {
+    fake(happyWork());
+    const { p } = provider({
+      quiet: async () => {
+        throw new Error('run processes still alive: 77');
+      },
+    });
+    const { input } = workInput();
+    const out = await p.work(input);
+    assert.equal(out.ended, 'crashed');
+    assert.equal(out.spendsAttempt, false);
   });
 
   test('a run without its broker or proxy crashes before claude starts', async () => {
@@ -790,6 +845,30 @@ describe('plan and review', () => {
       assert.equal(reaps.length, 1);
       assert.ok(reaps[0].existed);
       assert.ok(!existsSync(root));
+    }
+  });
+
+  test('a schema call may list StructuredOutput and the CLI\'s built-in plugins (claude 2.1.319)', async () => {
+    const builtins = ['cc-plugin-agents-md', 'cc-plugin-telemetry', 'cc-plugin-privacy', 'cc-plugin-plugin-authoring'].map((name) => ({ name, path: 'builtin', source: `${name}@builtin` }));
+    const { calls } = fake([callInit({ tools: ['StructuredOutput'], plugins: builtins }), result({ structured_output: { plan: 'p', price: 10, confidence: 0.5 } })]);
+    const out = await provider().p.plan(planInput, new AbortController().signal);
+    assert.equal(out.plan, 'p');
+    assert.ok(claudeArgs(calls[0]).includes('--json-schema'));
+  });
+
+  test('a schema call whose init lists a plugin not built in, or a tool past StructuredOutput, crashes', async () => {
+    const agentsMd = { name: 'cc-plugin-agents-md', path: 'builtin', source: 'cc-plugin-agents-md@builtin' };
+    for (const bad of [
+      { plugins: [agentsMd, { name: 'his-plugin', path: '/Users/x/.claude/plugins/his-plugin', source: 'his-plugin@market' }] },
+      { plugins: [{ name: 'fake', path: 'builtin', source: 'fake@market' }] },
+      { plugins: [{ name: 'fake', path: '/x/builtin', source: 'fake@builtin' }] },
+      { plugins: ['cc-plugin-agents-md'] },
+      { tools: ['StructuredOutput', 'Bash'] },
+      { tools: ['StructuredOutput', 'Mystery'] },
+    ]) {
+      const { calls } = fake([callInit(bad), result({ structured_output: { plan: 'p', price: 10, confidence: 0.5 } })], { hang: true });
+      await assert.rejects(provider().p.plan(planInput, new AbortController().signal), /unexpected (plugins|tools)/, JSON.stringify(bad));
+      assert.ok(calls[0].kills.includes('SIGTERM'));
     }
   });
 

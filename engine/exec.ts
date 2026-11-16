@@ -108,8 +108,14 @@ export type SpawnOpts = {
   stdin?: string;
   /** Start from an empty environment plus `env`, inheriting nothing from the engine. */
   clearEnv?: boolean;
-  /** Wall-clock cap: past it the group gets SIGTERM (then SIGKILL) and done reports `timedOut`. */
+  /** Wall-clock cap: past it the group gets `timeoutSignal` (a SIGTERM is followed by a SIGKILL) and done reports `timedOut`. */
   maxMs?: number;
+  /**
+   * What the group gets at `maxMs` (default SIGTERM). SIGKILL reaches every
+   * member at once while the group is still provably ours, so a member that
+   * ignores SIGTERM cannot outlive the leader and escape the escalation.
+   */
+  timeoutSignal?: 'SIGTERM' | 'SIGKILL';
   /** How long after a SIGTERM from `kill` the group gets SIGKILL. Default KILL_GRACE_MS; the trainer gets GATE.killGraceMs to write its last step. */
   killGraceMs?: number;
   /** Lines held for a slow reader before newer ones are dropped (with a marker). Default MAX_BUFFERED_LINES. */
@@ -146,6 +152,8 @@ export const NEVER_INHERITED = [
 
 /** How long after a SIGTERM the spawner sends SIGKILL to the group, and how long done waits for the pipes after the leader exits. */
 export const KILL_GRACE_MS = 2000;
+/** The longest delay a timer holds (2^31 - 1 ms, about 24.8 days): past it Node fires at once. */
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 /** Default bound on lines held for a slow reader. */
 export const MAX_BUFFERED_LINES = 10_000;
 /** A line longer than this is cut and emitted in pieces. */
@@ -257,6 +265,10 @@ function lineQueue(limit: number) {
 export const realSpawner: Spawner = (cmd, args, opts) => {
   const refused = refusedInTests(cmd, args);
   if (refused) throw new Error(`${describeCommand(cmd, args)} refused in tests (${refused}): install a fake spawner`);
+  // A timer fires at once for NaN, a negative or anything past its range, which would end the child as it starts.
+  if (opts.maxMs !== undefined && !(Number.isInteger(opts.maxMs) && opts.maxMs >= 0 && opts.maxMs <= MAX_TIMER_MS)) {
+    throw new RangeError(`maxMs must be a whole number of milliseconds from 0 to ${MAX_TIMER_MS}, not ${opts.maxMs}`);
+  }
 
   const queue = lineQueue(Math.max(1, opts.maxBufferedLines ?? MAX_BUFFERED_LINES));
   const child = spawn(cmd, args, {
@@ -356,10 +368,10 @@ export const realSpawner: Spawner = (cmd, args, opts) => {
   });
 
   if (opts.maxMs !== undefined && pid !== null) {
-    later(Math.max(0, opts.maxMs), () => {
+    later(opts.maxMs, () => {
       if (settled) return;
       timedOut = true;
-      kill('SIGTERM');
+      kill(opts.timeoutSignal ?? 'SIGTERM');
     });
   }
 

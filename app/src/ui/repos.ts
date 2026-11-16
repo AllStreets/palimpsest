@@ -19,6 +19,7 @@ import {
 } from './controls';
 import { ROOT_NAMES } from './inspector';
 import { coalesce } from './pages';
+import { forgetPushWhy } from './repos-words';
 
 const ROOTS: RootStyle[] = ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago'];
 
@@ -201,6 +202,7 @@ export function createRepos(
   }
 
   function onEvent(e: EngineEvent): void {
+    forgetPushWhy(pushWhy, e);
     if (e.type === 'engine.reconnected') {
       // The stream was down, so events may have been missed: take the engine's record as it is now.
       void Promise.all([loadStored(), loadProposals()]).then(render);

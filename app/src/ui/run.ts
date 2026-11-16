@@ -3,7 +3,7 @@ import { api, ApiError, type EngineEvent } from '../api';
 import { placeHref } from '../router';
 import { cleanText, githubUrl, LIVE_STAGES, money } from './board';
 import { ago, button, el, plural, textButton } from './controls';
-import { blockRanges, clock, type DiffFile, type Entry, parseDiff, Transcript, verdict } from './detail';
+import { blockRanges, blockText, clock, creditsNote, type DiffFile, type Entry, parseDiff, Transcript, verdict } from './detail';
 import { coalesce, detailSheet, keyedSlot, namesOf, outLink, pageLink, refusal, secHead, setTrail } from './pages';
 import './market.css';
 
@@ -237,15 +237,24 @@ function diffFile(f: DiffFile, open: boolean, root: HTMLElement): HTMLElement {
     const from = Number(b.dataset.from);
     const to = Number(b.dataset.to);
     b.style.height = '';
+    b.replaceChildren();
     for (let i = from; i < to; i++) b.append(diffRow(f.lines[i]));
     filled.add(b);
+  };
+  // A block not drawn keeps its lines as text, hidden until found: find in the page reaches every row, and the
+  // block is drawn as the search lands on it.
+  const findable = (b: HTMLElement): HTMLElement => {
+    const t = el('div', 'diff-find', blockText(f.lines, Number(b.dataset.from), Number(b.dataset.to)));
+    t.setAttribute('hidden', 'until-found');
+    t.addEventListener('beforematch', () => requestAnimationFrame(() => fill(b)));
+    return t;
   };
   const empty = (b: HTMLElement): void => {
     if (!filled.has(b)) return;
     // A folded file measures nothing: it keeps the height it last had.
     const h = b.offsetHeight;
     if (h) b.style.height = `${h}px`;
-    b.replaceChildren();
+    b.replaceChildren(findable(b));
     filled.delete(b);
   };
   let io: IntersectionObserver | null = null;
@@ -265,6 +274,7 @@ function diffFile(f: DiffFile, open: boolean, root: HTMLElement): HTMLElement {
       b.dataset.from = String(from);
       b.dataset.to = String(to);
       b.style.height = `${(to - from) * DIFF_ROW_PX}px`;
+      b.append(findable(b));
       body.append(b);
       io.observe(b);
     }
@@ -592,10 +602,11 @@ export function createRunPage(parent: HTMLElement, opts: { listen(fn: (e: Engine
       fill.style.width = `${Math.min(100, (spent / bid.price) * 100)}%`;
       bar.append(fill);
       credits.append(bar);
-      credits.title = spent > bid.price ? 'Over its bid: the firm pays the difference from its own books.' : 'What the work has cost so far. The firm is paid its price only if the change merges.';
     }
     figs.append(credits);
     sec.append(figs);
+    // What the credits mean, in the page under the figures rather than in a tooltip.
+    sec.append(el('p', 'run-credits-note', creditsNote(spent, bid ? bid.price : null)));
     return sec;
   }
 

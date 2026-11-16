@@ -136,7 +136,7 @@ const realTestCheck: TestCheck = async (repo, sha, signal) => {
   }
   let egress: Egress | null = null;
   try {
-    const { dir } = await createRunDir(repo, runId, `palimpsest/verify-${sha.slice(0, 12)}`);
+    const { dir } = await createRunDir(repo, runId, `palimpsest/verify-${sha.slice(0, 12)}`, { signal });
     const co = await engineGit(dir, ['checkout', '--quiet', '--detach', sha]);
     if (co.code !== 0) return null;
     egress = await startEgress(runId, log);

@@ -80,7 +80,7 @@ export async function schoolChecks(page: Page, check: Check, shots: string): Pro
         check(/^(Brier|Error) \d\.\d\d$/.test(score.trim()) && /\d\.\d\d to \d\.\d\d, \d+ rows/.test(((await row.locator('.net-ci').textContent()) ?? '').trim()), `${n.net} shows its score with the interval and n (${score.trim()}; ${((await row.locator('.net-ci').textContent()) ?? '').trim()})`);
         check((await row.locator('svg.ciplate').count()) === 1, `${n.net} draws its interval against the baseline as a plate`);
       } else {
-        check(n.status === 'thin' ? new RegExp(`\\b${n.labels} of ${n.needs}\\b`).test(line) && line.endsWith('.') && (!n.cause || line.includes(n.cause)) : /not trained|weights|beat its baseline/.test(line), `${n.net} says why it has no score (${line})`);
+        check(n.status === 'thin' ? new RegExp(`\\b${n.labels} of ${n.needs}\\b`).test(line) && line.endsWith('.') && (!n.cause || line.includes(n.cause)) : /not trained|weights|beat its baseline|enough to train/.test(line), `${n.net} says why it has no score (${line})`);
         check((await row.locator('svg').count()) === 0, `${n.net} draws no plate`);
       }
       check(line.length > 0 && !/undefined|null|NaN/.test(line), `${n.net}'s line reads (${line})`);
@@ -91,6 +91,9 @@ export async function schoolChecks(page: Page, check: Check, shots: string): Pro
       check(!!n.cause && line.includes(n.cause) && line.endsWith('.'), `the thin ${n.net} names its cause (${line})`);
     }
     check((await sheet.locator('.net-row[data-net="appraiser-pass"] .net-self').count()) === (view.nets.find((n) => n.net === 'appraiser-pass')?.selfSelected ? 1 : 0), 'the appraiser says when its rows are partly self-selected');
+    // The cost head's rows leave out the runs that hit their credit cap, and it says so (Phase 5 Task 17).
+    const bias = (await sheet.locator('.net-row[data-net="appraiser-cost"] .net-bias').textContent().catch(() => null)) ?? '';
+    check(/credit cap/.test(bias) && /reads costs low/.test(bias) && (await sheet.locator('.net-bias').count()) === 1, `the cost head discloses its bias from the capped runs it leaves out (${bias.slice(0, 60)})`);
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(shots, 'school.png') });
 
@@ -477,7 +480,8 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
       check(await within(page, 8000, async () => (await btn.count()) === 1 && (await btn.textContent()) === 'Build an arena'), `${onRepo.fullName}'s district page offers Build an arena`);
       check(await within(page, 4000, async () => (await btn.getAttribute('aria-disabled')) === null), `enabled on a market-on repo with a test command (${((await sec.locator('.darena-why').textContent()) ?? '').trim() || 'no reason'})`);
       check((await sec.locator('.darena-kind[role="radio"]').count()) === 2, 'with its two kinds, planted bugs and past changes');
-      check((await page.locator('.sheet.district .district-autonomy .grant-entry').count()) === now.grants.filter((g) => g.repo === onRepo.fullName).length, 'its pairs are listed on its page');
+      // The block draws after the page's own school read lands: waited for, as the arena button above is.
+      check(await within(page, 8000, async () => (await page.locator('.sheet.district .district-autonomy .grant-entry').count()) === now.grants.filter((g) => g.repo === onRepo.fullName).length), 'its pairs are listed on its page');
       await page.locator('.sheet.district .district-autonomy').evaluate((s) => {
         const body = s.closest('.sheet-body') as HTMLElement;
         body.scrollTop += s.getBoundingClientRect().top - body.getBoundingClientRect().top - 24;

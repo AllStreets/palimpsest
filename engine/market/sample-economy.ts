@@ -47,7 +47,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CREDIT_PCT, localCredits } from '../../shared/credits.js';
-import { calibrated as calibrate, expectedValue, proposalKey, TIER_VALUE } from '../../shared/market-rules.js';
+import { calibrated as calibrate, creditsText, expectedValue, proposalKey, roundOpen, TIER_VALUE } from '../../shared/market-rules.js';
 import { silhouetteFor } from '../../shared/silhouette.js';
 import type {
   Agent,
@@ -101,7 +101,7 @@ import { paths } from '../home.js';
 import { districtOrigin, quarterOrigin } from '../layout.js';
 import { query, record } from '../ledger.js';
 import { analysesSettled, earnedFloors, getRepo, holdAuditTrigger, listRepos, nextSlot, updateEarnedFloor, updateRepoMarket } from '../repos.js';
-import { SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, sampleReading, SAMPLE_TREES, useSampleFolders } from '../sample.js';
+import { assertSampleHome, SAMPLE, SAMPLE_INSTALLED, SAMPLE_ISSUES, sampleCodexHome, sampleGeminiHome, sampleGh, samplePRs, sampleProjectsDir, sampleReading, SAMPLE_TREES, useSampleFolders } from '../sample.js';
 import { award, bidList, eligibleAgents, NO_SLOT, openBidding } from './bids.js';
 import { getSettings } from '../settings.js';
 import { storedCalibration } from '../usage.js';
@@ -566,8 +566,14 @@ class Pipeline {
     return this.pick(STYLE[a.firmId]?.plans ?? STYLE.quickset.plans).replace(/\{file\}/g, file).replace(/\{test\}/g, testFor(file)).replace(/\{what\}/g, what);
   }
 
-  /** One agent's bid, charged to its firm and recorded as bid.placed. */
-  bid(j: Job, a: Agent, price: number, confidence: number, plan: string = this.plan(a, j)): Bid {
+  /**
+   * One agent's bid, charged to its firm and recorded as bid.placed. A bid
+   * outside the job's current round (after its close, or on a job no longer
+   * bidding) is refused before anything is charged.
+   */
+  bid(j: Job, a: Agent, price: number, confidence: number, plan: string = this.plan(a, j), now: number = Date.now()): Bid {
+    const round = storedJob(j.id);
+    if (!roundOpen(round, now)) throw new Error(`sample economy: ${a.id}'s bid on ${j.title} is outside its round (${round?.status ?? 'gone'}, closing ${round?.bidsCloseAt ?? 'never'})`);
     const cost = modelCost(a.model).bid * (a.workflow.shape === 'vote' ? a.workflow.n ?? 3 : 1);
     const charged = charge({ runId: null, firmId: a.firmId, model: a.model, kind: 'bid', usage: usageOf(a.model, cost), unattended: false, at: Date.now(), minCredits: cost });
     const rep = reputation(a.firmId);
@@ -1311,6 +1317,8 @@ function writeProviderFixtures(now: number): void {
  * installed its own runner.
  */
 export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: boolean } = {}): Promise<void> {
+  // Only ever on a home seedSample() marked (Phase 5 ruling 13): never his real one, never a plain test home.
+  assertSampleHome();
   for (const s of SAMPLE) if (!getRepo(s.fullName)) throw new Error(`seedEconomy runs on top of seedSample(): ${s.fullName} is missing`);
   // gh and git go to the stand-in from here, so an analysis still running finishes on it too.
   const own = getRunner() === realRunner;
@@ -2063,6 +2071,7 @@ function ask(kind: WorkKind, repo: string, rate: Interval, at: number): Grant {
  *   one paused on battery after a resume that reset its optimiser.
  */
 function seedSchool(now: number, start: number, q: Queue): void {
+  assertSampleHome();
   const at = (day: number) => start + Math.round(day * DAY);
   const ago = (ms: number) => now - ms;
 
@@ -3144,7 +3153,7 @@ export function sampleOllamaUsage(now: number = Date.now()): ProviderUsage {
     windows: [],
     tokens: null,
     spendUsd: null,
-    detail: `${SAMPLE_INSTALLED.length} models installed; local credits ${since(midnight.getTime())} today, ${since(now - 7 * DAY)} this week`,
+    detail: `${SAMPLE_INSTALLED.length} models installed; local credits ${creditsText(since(midnight.getTime()))} today, ${creditsText(since(now - 7 * DAY))} this week`,
     models: [...SAMPLE_INSTALLED],
     host: getSettings().ollamaHost,
   };
@@ -3380,16 +3389,16 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
   const bp = new Pipeline(rng('sample-board'));
   const sits = rng('sample-board-sit');
   const lastAnswer = new Map<string, number>();
-  /** Rounds this clock opened, whose window runs in script time; a round seeded before it closes once everyone has answered. */
-  const opened = new Set<string>();
+  // A round, whether this clock opened it (its window in script time) or the seed did, is awarded once everyone
+  // has answered or its close has passed, whichever comes first; no answer ever lands after the close, so the
+  // board never reads "closing" while bids still come in.
   const board = (): void => {
     const now = opts.now();
     const market = new Set(listRepos().filter((r) => r.connected && r.market && !r.halted).map((r) => r.fullName));
     const windowMs = getSettings().bidWindowSec * 1000;
     for (const j of listJobs({ status: 'open' })) {
       if (!market.has(j.repo)) continue;
-      const next = openBidding(j, now - windowMs + windowMs / opts.speed);
-      if (next.status === 'bidding') opened.add(`${next.id} ${next.bidsCloseAt}`);
+      openBidding(j, now - windowMs + windowMs / opts.speed);
     }
     for (const j of listJobs({ status: 'bidding' })) {
       if (!market.has(j.repo) || !j.bidsCloseAt) continue;
@@ -3397,9 +3406,8 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
       const answered = new Set([...bids.map((b) => b.agentId), ...satOut.map((x) => x.agentId)]);
       const waiting = eligibleAgents(j).filter((a) => !answered.has(a.id));
       const round = `${j.id} ${j.bidsCloseAt}`;
-      if (waiting.length === 0 || (opened.has(round) && now >= Date.parse(j.bidsCloseAt))) {
+      if (waiting.length === 0 || !roundOpen(j, now)) {
         award(j, now);
-        opened.delete(round);
         lastAnswer.delete(round);
         continue;
       }
@@ -3409,7 +3417,7 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
       if (a.model.startsWith('ollama:') && sits() < 0.3) bp.satOut(j, a, NO_SLOT);
       else {
         const q = bp.quote(a, j);
-        bp.bid(j, a, q.price, q.confidence);
+        bp.bid(j, a, q.price, q.confidence, undefined, now);
       }
     }
   };

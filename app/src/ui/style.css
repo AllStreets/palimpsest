@@ -51,6 +51,12 @@
   overflow: hidden;
 }
 
+/* A plate whose foot stands under an open sheet steps aside whole (plate-guard.ts), so none shows half past the
+   paper's edge; it outranks the opacity and visibility the city sets on the plate each frame. */
+.plate[data-under-sheet] {
+  visibility: hidden !important;
+}
+
 /* The button sits at the plate's foot on the pavement; the hairline and the name stand above it. */
 .plate {
   all: unset;
@@ -69,14 +75,15 @@
   bottom: 0;
   width: 1px;
   height: 30px;
-  background: linear-gradient(to top, rgba(236, 230, 218, 0.15), rgba(236, 230, 218, 0.55));
+  background: linear-gradient(to top, rgba(236, 230, 218, 0.2), rgba(236, 230, 218, 0.7));
 }
 .plate-name,
 .plate-sub {
   position: absolute;
   left: 7px;
   white-space: nowrap;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 0.9);
+  /* A close dark edge and a wide soft halo, so the words hold over haze, lit glass and the bright sky alike. */
+  text-shadow: 0 0 1px rgba(0, 0, 0, 0.95), 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 10px rgba(8, 7, 12, 0.8), 0 0 22px rgba(8, 7, 12, 0.5);
   pointer-events: auto;
   cursor: pointer;
 }
@@ -90,9 +97,9 @@
 .plate-sub {
   bottom: 0;
   font-family: var(--sans);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1;
-  color: var(--ink-2);
+  color: #d6cec1;
 }
 .plate:disabled .plate-name,
 .plate:disabled .plate-sub {
@@ -273,6 +280,12 @@
   font-style: italic;
   font-size: 17px;
   color: var(--ink);
+}
+.insp-market-key {
+  margin: 8px 28px 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
 }
 .insp-era-count {
   font-size: 12px;
@@ -457,20 +470,26 @@
 
 /* ---------------------------------------------------------------- the city's own notices */
 
-/* What the city did by itself, and what a key could not do just now: a short column hanging from the end of
-   the running head, newest on the head's own line, each notice its own line ruled in bronze with its own
-   Dismiss. The column fades after a few seconds; the small mark before it recalls it. The list is one line
-   tall and the older lines hang below it, so the head itself never grows over the city. */
+/* What the city did by itself, and what a key could not do just now: a short column at the lower left of the
+   city, newest first, each notice its own line ruled in bronze on an ink plate (--notice-plate, 0.82, set from
+   notices.ts) with its own Dismiss. A long notice wraps to two lines and is cut there; under the pointer or
+   the keyboard it shows whole. The column fades after a few seconds; the small mark beneath it recalls it.
+   The column stands in the running head's tree but out of its line, so the head never grows over the city. */
 .city-notice {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 14px;
+  position: fixed;
+  left: var(--gutter, 44px);
+  bottom: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
   min-width: 0;
-  margin-left: 6px;
+  max-width: min(44vw, 600px);
   font-family: var(--sans);
   font-size: 12.5px;
-  line-height: 1.3;
-  color: var(--ink-2);
+  line-height: 1.4;
+  color: #e4ddd1;
+  text-shadow: none;
 }
 .city-notice[hidden] {
   display: none;
@@ -478,11 +497,11 @@
 .city-notice-list {
   display: flex;
   flex-direction: column;
-  /* Each backing hugs its own words rather than the widest line's. */
+  /* Each plate hugs its own words rather than the widest line's. */
   align-items: flex-start;
   gap: 5px;
   min-width: 0;
-  height: calc(1.3em + 4px);
+  max-width: 100%;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -500,46 +519,50 @@
   align-items: baseline;
   gap: 12px;
   min-width: 0;
-  padding: 2px 9px 2px 10px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 3px 9px 3px 10px;
   border-left: 2px solid var(--bronze);
-  /* Its own backing, so the words keep 4.5:1 over a lit facade or the bright sky behind the head. */
-  background: rgba(18, 16, 24, 0.8);
+  /* Its own ink plate, so the words keep 4.5:1 over a lit facade or the bright sky. */
+  background: var(--notice-plate, rgba(18, 16, 24, 0.82));
 }
 /* The older lines step back a shade, so the newest reads first. */
 .city-notice-line + .city-notice-line {
-  color: var(--ink-3);
+  color: var(--notice-words, #cfc7ba);
   border-left-color: rgba(185, 140, 90, 0.55);
 }
-body[data-route='city'] .city-notice-line + .city-notice-line,
-.city-notice[data-beside] .city-notice-line + .city-notice-line {
-  color: #cfc7ba;
-}
+/* Two lines, then cut with an ellipsis; whole under the pointer and while its Dismiss has the keyboard. */
 .city-notice-line p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--notice-lines, 2);
   min-width: 0;
   margin: 0;
-  max-width: min(44vw, 560px);
   overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+.city-notice-line:hover p,
+.city-notice-line:focus-within p {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 .city-notice-dismiss,
 .city-notice-recall {
   all: unset;
+  flex: none;
   cursor: pointer;
   font-size: 11.5px;
   letter-spacing: 0.02em;
-  color: var(--ink-3);
-}
-body[data-route='city'] .city-notice-dismiss,
-body[data-route='city'] .city-notice-recall,
-.city-notice[data-beside] .city-notice-dismiss,
-.city-notice[data-beside] .city-notice-recall {
-  color: #cfc7ba;
+  color: var(--notice-words, #cfc7ba);
 }
 .city-notice-recall {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
+  padding: 2px 8px 2px 0;
+  /* Readable over a lit facade too, though it carries no plate of its own. */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 10px rgba(10, 8, 16, 0.6);
 }
 .city-notice-recall::before {
   content: '';
@@ -553,20 +576,13 @@ body[data-route='city'] .city-notice-recall,
   outline: 1px solid var(--ink-2);
   outline-offset: 3px;
 }
-/* Beside an open sheet, over the city's own colours rather than the paper, the quieter greys lift a step.
-   The column stands past the sheet's right edge (its own width, set from the sheet), on
-   the head's line, and its lines are cut to the room left there, so no part of it ever draws over the sheet. */
+/* Beside an open sheet the column stands past the sheet's right edge (its own width, set from the sheet), still
+   at the lower left of what the city shows, and its lines wrap to the room left there, never over the sheet. */
 .city-notice[data-beside] {
-  position: fixed;
-  top: 24px;
   left: var(--sheet-width);
-  max-width: calc(100vw - var(--sheet-width) - var(--gutter, 44px));
-  margin-left: 0;
+  max-width: min(44vw, calc(100vw - var(--sheet-width) - var(--gutter, 44px)));
 }
-.city-notice[data-beside] .city-notice-line p {
-  max-width: max(40px, calc(100vw - var(--sheet-width) - var(--gutter, 44px) - 140px));
-}
-/* Last, so hover outranks every lifted grey above. */
+/* Last, so hover outranks every grey above. */
 body .city-notice .city-notice-dismiss:hover,
 body .city-notice .city-notice-recall:hover {
   color: var(--ink);
