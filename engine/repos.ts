@@ -8,7 +8,7 @@ import { detectChecksInMirror, emptyChecks } from './guild/checks.js';
 import { foundingFloors } from './history.js';
 import { districtOrigin } from './layout.js';
 import { record } from './ledger.js';
-import { readLog, syncMirror } from './mirror.js';
+import { mirrorDir, readLog, syncMirror } from './mirror.js';
 
 const ROOTS: RootStyle[] = ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago'];
 
@@ -594,7 +594,77 @@ export function patchRepo(fullName: string, p: RepoPatch): Repo {
   if (checksPatch) proposeHarnessIfNeeded(updated);
   // The market turned on for the first time on a ready repo: its one automatic audit (Phase 3 ruling 6).
   if (p.market === true && !repo.market) queueAutoAudit(updated);
+  // A repo whose checks were never read learns them now, before any job of its needs them.
+  if (p.market === true && !checksKnown(updated.checks)) trackChecks(ensureChecks(fullName));
   return updated;
+}
+
+// ---------------------------------------------------------------- knowing the checks
+
+/** What the owner reads, on the run and the repo, when a run has no command it could install or check with. */
+export const CHECKS_UNKNOWN = "This repo's build and test commands are not known yet: none could be read from its files, so set them under Checks";
+
+/** True when `c` names at least one command a run can install or check with; a run never starts blind without one. */
+export function checksKnown(c: RepoChecks | null): boolean {
+  return !!c && [c.install, c.test, c.typecheck, c.lint, c.build].some((x) => typeof x === 'string' && x.trim() !== '');
+}
+
+/**
+ * Stores freshly detected checks for `fullName` over the stored ones (his own
+ * are kept, as at analysis) and emits `repo.patched`. Baselines go when a
+ * command changed. Returns the repo as stored, or null when it is gone.
+ */
+export function learnChecks(fullName: string, detected: RepoChecks): Repo | null {
+  const current = loadRepo(fullName);
+  if (!current) return null;
+  const checks = mergeDetected(current.checks, detected);
+  if (!commandsChanged(current.checks, checks)) return current;
+  const db = openDb();
+  db.exec('BEGIN');
+  let repo: Repo;
+  try {
+    clearBaselines(fullName);
+    repo = saveRepo({ ...(loadRepo(fullName) ?? current), checks });
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  emit('repo.patched', { repo });
+  return repo;
+}
+
+/**
+ * Detects `fullName`'s checks from its mirror as it stands (no fetch: only
+ * git reads of the default branch) when the stored ones name no command.
+ * A git failure (no mirror yet) keeps what was stored. Resolves with the
+ * repo as stored.
+ */
+export async function ensureChecks(fullName: string): Promise<Repo | null> {
+  const repo = loadRepo(fullName);
+  if (!repo || checksKnown(repo.checks)) return repo;
+  let detected: RepoChecks;
+  try {
+    detected = await detectChecksInMirror(mirrorDir(fullName), repo.defaultBranch);
+  } catch {
+    return loadRepo(fullName);
+  }
+  return learnChecks(fullName, detected);
+}
+
+/** Detections started by a patch, so a test (or a shutdown) can wait on them. */
+const detecting = new Set<Promise<unknown>>();
+
+function trackChecks(p: Promise<unknown>): void {
+  const tracked = p
+    .catch((err) => console.warn(`palimpsest: detecting the checks failed: ${err instanceof Error ? err.message : String(err)}`))
+    .finally(() => detecting.delete(tracked));
+  detecting.add(tracked);
+}
+
+/** Resolves once no detection started by a patch is running. */
+export async function checksSettled(): Promise<void> {
+  while (detecting.size > 0) await Promise.allSettled([...detecting]);
 }
 
 /**

@@ -320,3 +320,12 @@ test('a column of credits keeps two places, with the same comma and true minus',
   assert.equal(creditsFixed(-0.001), '0.00');
   assert.equal(creditsFixed(59.999), '60.00');
 });
+
+test('TIER_LABELS with custom base label', () => {
+  assert.deepEqual(TIER_LABELS('city'), ['city', 'city:low', 'city:high']);
+});
+
+test('TIER_VALUE gives low < normal < high', () => {
+  assert.ok(TIER_VALUE.low < TIER_VALUE.normal);
+  assert.ok(TIER_VALUE.normal < TIER_VALUE.high);
+});

@@ -203,6 +203,8 @@ export interface Job {
   haltedFrom: JobStatus | null;
   /** Inspections of this job in a row that no reviewer could read (Task 15); the third halts the job. */
   inconclusive?: number;
+  /** Runs of this job in a row that the engine itself ended (no firm failure between); the third holds the job. */
+  engineFailures?: number;
   /** Why the job was halted on its own, for his daily brief; cleared on resume. */
   haltNote?: string | null;
   /** The audit finding this job was proposed from (source `proposal`). */

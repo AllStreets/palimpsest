@@ -24,7 +24,7 @@
     "test:trainer": "node --no-warnings --import tsx tools/test-trainer.ts"
   },
   "dependencies": {
-    "beagle": "git+file:///Users/connorevans/Downloads/palimpsest/.superpowers/beagle-local/beagle.git#76c2cbe2415711c0e46c64cdd4e445668c564949",
+    "beagle": "https://codeload.github.com/AllStreets/beagle/tar.gz/d72c872ec704565da88e8cf792af1b06a23fd285",
     "three": "^0.187.0",
     "tsx": "^4.23.15"
   },

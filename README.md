@@ -466,7 +466,7 @@ Until then the school's screens say what they lack and why, as below, and the ar
 
 That is the school on a fresh home: every net thin with its cause, no arena, no voyage and no graduate, and no chart anywhere.
 
-The school needed a few library fixes in Beagle. They went in as a pull request on Beagle, which I merged, and Palimpsest installs Beagle from GitHub at that merge. The base model for the coder, about 4.3 GB, downloads only when you click Download in Settings.
+The school needed a few library fixes in Beagle. I merged them on Beagle's main, and the dependency is pinned to that merge commit on GitHub by its full sha, so a fresh clone of Palimpsest installs anywhere. One more thing waits on me: the base model for the coder, about 4.3 GB, downloads only when I click Download in Settings.
 
 ### Where it differs from the design
 
