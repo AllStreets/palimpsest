@@ -178,3 +178,17 @@ test("the lens's composite dithers what it blurs, as the sky does, so the dusk g
     for (const src of LENS_GLSL) assert.doesNotMatch(src, new RegExp(`\\b(float|vec[234]|int)\\s+${word}\\b`), `${word} is not a name`);
   }
 });
+
+test("the AO and its denoise leave every pixel past the fade's end as they leave the sky", async () => {
+  const { GTAOShader } = await import('three/addons/shaders/GTAOShader.js');
+  const { PoissonDenoiseShader } = await import('three/addons/shaders/PoissonDenoiseShader.js');
+  const { AO_FADE_END, AO_SKIP, skipPastFadeShader } = await import('../app/src/city/post.js');
+  assert.ok(AO_SKIP > AO_FADE_END, 'only past where the blend takes none of the AO');
+  for (const src of [GTAOShader.fragmentShader, PoissonDenoiseShader.fragmentShader]) {
+    const out = skipPastFadeShader(src);
+    const at = out.indexOf('vec3 viewPos = getViewPosition(vUv, depth);');
+    const skip = out.indexOf(`if (length(viewPos) > ${AO_SKIP.toFixed(1)}) { discard; return; }`);
+    assert.ok(at >= 0 && skip > at, 'the skip follows the view position, before any sampling');
+  }
+  assert.throws(() => skipPastFadeShader('void main() {}'), /needs a new anchor/, 'a three upgrade that moves the anchor says so');
+});

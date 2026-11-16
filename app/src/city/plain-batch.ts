@@ -19,7 +19,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-import { ClusterMesh } from './batch.js';
+import { CLUSTER_SIZE, ClusterMesh, clusterTrianglesSteps } from './batch.js';
 import { finish, type Steps } from './steps.js';
 
 interface Part {
@@ -71,6 +71,7 @@ export function plainBatch(): PlainBatch {
   const entries = new Map<THREE.Object3D, Entry>();
   const drawn = new Map<string, THREE.Mesh[]>();
 
+
   function take(root: THREE.Object3D, skip?: (o: THREE.Object3D) => boolean): Entry {
     root.updateMatrixWorld(true);
     const parts = new Map<string, Part[]>();
@@ -93,7 +94,7 @@ export function plainBatch(): PlainBatch {
   }
 
   /** The merged meshes for one key over these entries, not yet drawn. */
-  function merge(key: string, from: Map<THREE.Object3D, Entry>): THREE.Mesh[] {
+  function* merge(key: string, from: Map<THREE.Object3D, Entry>): Steps<THREE.Mesh[]> {
     const all: Part[] = [];
     for (const e of from.values()) all.push(...(e.parts.get(key) ?? []));
     if (all.length === 0) return [];
@@ -108,7 +109,9 @@ export function plainBatch(): PlainBatch {
       o.geo.computeBoundingSphere();
       // Laid out in clusters, so a close view draws only the towers it sees (batch.ts). A piece drawn on its own is
       // shared with its tower's taking (`own` false): its clusters reorder only its triangles, which draw the same.
-      const mesh = new ClusterMesh(o.geo, first.mat);
+      yield;
+      const clusters = yield* clusterTrianglesSteps(o.geo);
+      const mesh = new ClusterMesh(o.geo, first.mat, CLUSTER_SIZE, clusters);
       mesh.castShadow = first.cast;
       mesh.receiveShadow = first.receive;
       mesh.name = first.name;
@@ -146,7 +149,7 @@ export function plainBatch(): PlainBatch {
     const made = new Map<string, THREE.Mesh[]>();
     for (const key of dirty) {
       yield;
-      made.set(key, merge(key, next));
+      made.set(key, yield* merge(key, next));
     }
     return () => {
       for (const [key, meshes] of made) {

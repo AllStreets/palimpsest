@@ -3291,7 +3291,7 @@ async function marketHomeChecks(page: Page): Promise<void> {
  * geometry the freed tower held leaves renderer.info's count. UI_PROFILE=1
  * also writes a CPU profile of each case to shots/hitch-<tier>-<case>.cpuprofile.
  */
-type HitchStats = { frames: number; max: number; p99: number; over33: number };
+type HitchStats = { frames: number; max: number; p99: number; over33: number; step: number; stepKey: string };
 type Firmish = { id: string; status: string };
 async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: Set<string>; firms: Set<string>; hires: number }): Promise<Record<string, HitchStats>> {
   const out: Record<string, HitchStats> = {};
@@ -3306,13 +3306,13 @@ async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: 
   const run = async (name: string, act: () => Promise<void>, ms: number): Promise<HitchStats> => {
     if (only && !only.includes(name)) {
       await act();
-      return { frames: 0, max: 0, p99: 0, over33: 0 };
+      return { frames: 0, max: 0, p99: 0, over33: 0, step: 0, stepKey: '' };
     }
     if (cdp) {
       await cdp.send('Profiler.setSamplingInterval', { interval: 200 });
       await cdp.send('Profiler.start');
     }
-    await page.evaluate('window.__palimpsest.frameLog.start(); window.__palimpsest.trace?.(true)');
+    await page.evaluate('window.__palimpsest.longestStep?.(); window.__palimpsest.frameLog.start(); window.__palimpsest.trace?.(true)');
     await act();
     await page.waitForTimeout(ms);
     const times = (await page.evaluate('window.__palimpsest.frameLog.stop()')) as number[];
@@ -3328,9 +3328,10 @@ async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: 
       writeFileSync(join(SHOTS, `hitch-${tier}-${name}.cpuprofile`), JSON.stringify(profile));
     }
     const s = frameStats(times);
-    const row = { frames: times.length, max: Math.round(s.max * 10) / 10, p99: Math.round(s.p99 * 10) / 10, over33: s.over33 };
+    const step = ((await page.evaluate('window.__palimpsest.longestStep?.()')) ?? { key: '', ms: 0 }) as { key: string; ms: number };
+    const row = { frames: times.length, max: Math.round(s.max * 10) / 10, p99: Math.round(s.p99 * 10) / 10, over33: s.over33, step: Math.round(step.ms * 10) / 10, stepKey: step.key };
     out[name] = row;
-    console.log(`info  hitch ${tier} ${name}: ${row.frames} frames, slowest ${row.max} ms, p99 ${row.p99} ms, ${row.over33} over 33 ms`);
+    console.log(`info  hitch ${tier} ${name}: ${row.frames} frames, slowest ${row.max} ms, p99 ${row.p99} ms, ${row.over33} over 33 ms; longest rebuild step ${row.step} ms (${row.stepKey || 'none'})`);
     return row;
   };
   const home = await debug(page, (d) => d.limits().home);
@@ -3395,6 +3396,16 @@ async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: 
   await toHome();
   await run('home', async () => {}, 6000);
   await page.evaluate(`window.__palimpsest.follow(${JSON.stringify('dagny-hollis')})`);
+  // Logged once the eye has come in to her and settled (the flight in from home is a far, cheap view: measured over it,
+  // the follow read 0 here while tools/perf.ts, which follows from a close view, read dozens of frames over 33 ms).
+  await page
+    .waitForFunction(() => {
+      const d = (window as unknown as { __palimpsest: { camera(): number[]; person(id: string): { position: number[] } | null } }).__palimpsest;
+      const p = d.person('dagny-hollis');
+      const c = d.camera();
+      return !!p && Math.hypot(c[0] - p.position[0], c[2] - p.position[2]) < 60;
+    }, null, { timeout: 15_000 })
+    .catch(() => {});
   await page.waitForTimeout(2000);
   await run('follow', async () => {}, 6000);
   // Held past a whole judged window of the governor (three seconds' warm-up, then ten): it must not step down.
@@ -3402,7 +3413,29 @@ async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: 
   await page.evaluate('window.__palimpsest.follow(null)');
   check((await debug(page, (d) => d.quality())) === tier, `the governor holds ${tier} through a follow held 14 s`);
   await toHome();
+  // While the landed floor's tower is rebuilt (a step a frame), its plate keeps saying what is drawn: it never counts
+  // the new floor before the tower carrying it stands.
+  const landing = freeRepo() ?? districts[0];
+  const mismatches: string[] = [];
+  let watching = true;
+  const watch = (async () => {
+    while (watching) {
+      const seen = (await page.evaluate((repo) => {
+        const d = (window as unknown as { __palimpsest: { drawnFloors?(r: string): number } }).__palimpsest;
+        const name = repo.split('/')[1];
+        const plate = [...document.querySelectorAll('.plate')].find((e) => e.querySelector('.plate-name')?.textContent === name);
+        const sub = plate?.querySelector('.plate-sub')?.textContent ?? '';
+        const m = /(\d+) floors?/.exec(sub);
+        return { drawn: d.drawnFloors?.(repo) ?? NaN, plate: m ? Number(m[1]) : NaN };
+      }, landing.repo)) as { drawn: number; plate: number };
+      if (seen.drawn >= 0 && seen.plate !== seen.drawn) mismatches.push(`${seen.plate} on the plate, ${seen.drawn} drawn`);
+      await page.waitForTimeout(30);
+    }
+  })();
   await run('floor', async () => land(), 4000);
+  watching = false;
+  await watch;
+  check(mismatches.length === 0, `on ${tier} the landed floor's plate counts only the floors drawn (${mismatches.slice(0, 3).join('; ') || 'always'})`);
   await toHome();
   await run('hires', hires, 4500);
   await toHome();
@@ -3436,6 +3469,8 @@ async function hitchChecks(page: Page, tier: 'high' | 'medium', spent: { repos: 
     await page.evaluate('window.__palimpsest.ride(null)');
   } else check(false, `a tower is left to ride on ${tier}`);
   for (const [name, s] of Object.entries(out)) check(s.over33 === 0, `on ${tier} no frame runs over 33 ms: ${name} (${s.frames} frames, slowest ${s.max} ms, ${s.over33} over 33 ms)`);
+  // The queue starts no step once a frame's 4 ms are spent; each step must itself be short (batch.ts REMERGE_BUDGET_MS).
+  for (const [name, s] of Object.entries(out)) check(s.step < 10, `on ${tier} no rebuild step runs 10 ms or more: ${name} (longest ${s.step} ms, ${s.stepKey || 'none'})`);
   await toHome();
   return out;
 }

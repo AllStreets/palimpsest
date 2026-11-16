@@ -1131,7 +1131,18 @@ async function main(): Promise<void> {
           await page.waitForTimeout(250);
         }
         // And how its frames run while the view and the AO refill as she turns corners (Task 12): six seconds more.
+        await dbg(page, '(d) => d.trace?.(true)');
         const held = frameStats(await frameTimes(page, 6000));
+        // What each of those frames cost the loop itself (Task 13): the update, the passes submitted, and whether the
+        // shadow map was redrawn; a slow frame with a cheap loop is the GPU's.
+        const tr = ((await dbg(page, '(d) => d.trace?.(false) ?? []')) as Array<{ update: number; render: number; shadow: boolean }>) ?? [];
+        if (tr.length) {
+          const mean = (xs: number[]): string => (xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(1);
+          console.log(`${tier} follow-held loop: ${tr.length} frames, shadow redrawn in ${tr.filter((x) => x.shadow).length}, update mean ${mean(tr.map((x) => x.update))} ms, passes mean ${mean(tr.map((x) => x.render))} ms`);
+        }
+        const lensNow = await dbg<unknown>(page, "(d) => typeof d.lens === 'function' ? d.lens() : null");
+        const eye = await dbg<number[]>(page, '(d) => d.camera()');
+        console.log(`${tier} follow-held lens ${JSON.stringify(lensNow)}, eye ${eye.map((v) => v.toFixed(0)).join(',')}`);
         await callDebug(page, 'd.follow(null)');
         const tri = seen.map((s) => s.triangles);
         const row = { fps: 0, calls: Math.round(seen.reduce((a, s) => a + s.calls, 0) / seen.length), triangles: Math.round(tri.reduce((a, b) => a + b, 0) / tri.length) };

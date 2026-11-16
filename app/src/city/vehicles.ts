@@ -8,6 +8,7 @@ import { hasKit, kitShared } from './kits.js';
 import { LOD_EYE } from './lod-shader.js';
 import { CONTACT_Y, filleted, offsetLoop, POD_BEAM, RAIL_CAR, RAIL_R, RAIL_TRACK, TRAM_R, TRAM_TRACK } from './lines.js';
 import { greenIn, greenLeft, SIGNAL, signalAt, type Axis, type SignalJunction, type Signals } from './signals.js';
+import { finish, type Steps } from './steps.js';
 
 /**
  * The city's transit vehicles (Task 31): trams on the loop, elevated trains
@@ -693,19 +694,26 @@ function service(kind: Service['kind'], id: string, track: Track, line: Line | n
 
 /** The vehicles on every line, timetabled, and the cabs at their ranks. */
 function makeFleet(net: Network): Fleet {
+  return finish(makeFleetSteps(net));
+}
+
+/** makeFleet a service at a time (steps.ts): each line's motion plan is a step of its own. */
+function* makeFleetSteps(net: Network): Steps<Fleet> {
   const services: Service[] = [];
   // Trams both ways round the loop, one every 700 m or so; the opposite way half a headway out of step.
-  tramTracks(net).forEach((track, d) => {
+  for (const [d, track] of tramTracks(net).entries()) {
     const calls = net.tram.stops.map((st) => ({ s: track.project(st), x: st.x, z: st.z }));
     const n = Math.max(2, Math.round(track.length / 700));
     services.push(service('tram', `tram:${d ? 'rev' : 'fwd'}`, track, net.tram, calls, { speed: SPEED.tram, accel: 1.1, decel: 1.2, lateral: 0.9, dwell: 20 }, n, d * 0.5, null));
-  });
-  railTracks(net).forEach((track, d) => {
+    yield;
+  }
+  for (const [d, track] of railTracks(net).entries()) {
     const calls = net.rail.stops.map((st) => ({ s: track.project(st), x: st.x, z: st.z }));
     const n = Math.max(2, Math.round(track.length / 1500));
     services.push(service('rail', `rail:${d ? 'rev' : 'fwd'}`, track, net.rail, calls, { speed: SPEED.rail, accel: 0.9, decel: 1.0, lateral: 1.0, dwell: 20 }, n, d * 0.5, null));
-  });
-  net.pods.forEach((line, i) => {
+    yield;
+  }
+  for (const [i, line] of net.pods.entries()) {
     const lap = podLap(line);
     const a = xz(line.path[0]);
     const b = xz(line.path[line.path.length - 1]);
@@ -723,7 +731,8 @@ function makeFleet(net: Network): Fleet {
       }
     }
     services.push(service('pod', `pod:${i}`, lap.track, line, calls, { speed: SPEED.pod, accel: 1.3, decel: 1.4, lateral: 1.2, dwell: 15 }, 3, i * 0.31, t));
-  });
+    yield;
+  }
   const ferry = ferryLap();
   services.push(
     service(
@@ -3012,6 +3021,8 @@ export interface Vehicles {
    * retired, so their riders board again.
    */
   relay(net: Network): void;
+  /** relay in steps (steps.ts), the fleet laid a line at a time and swapped in at the last step. */
+  relaySteps(net: Network): Steps<void>;
   /** The quality the city draws at (the governor's step down reaches the vehicles: no headlamp pools at medium). */
   setQuality(q: 'high' | 'medium'): void;
   /** Every vehicle of a kind. */
@@ -3742,9 +3753,14 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
 
   /** Lays the fleet on a network laid again, keeping the clock and every cab's errand at a rank that still stands. */
   function relay(next: Network): void {
+    finish(relaySteps(next));
+  }
+  /** relay a line at a time (steps.ts): the fleet as it runs keeps running until the new one is laid, then takes its clock. */
+  function* relaySteps(next: Network): Steps<void> {
+    const made = yield* makeFleetSteps(next);
     const time = fleet.time;
     const old = fleet;
-    fleet = makeFleet(next);
+    fleet = made;
     fleet.time = time;
     net = next;
     key = netKey(next);
@@ -3803,6 +3819,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     board,
     summonCab,
     relay,
+    relaySteps,
     setQuality(q) {
       quality = q;
     },

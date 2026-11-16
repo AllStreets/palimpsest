@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { clusterCulling, scheduleRemerge } from './batch.js';
+import { cancelRemerges, clusterCulling, remergeOwner, scheduleRemerge } from './batch.js';
 import { RESERVE_RADIUS, reserves, type CollarPlaza } from './collar.js';
 import { onExchange } from './exchange.js';
 import { facadeMaterial, roofboxMaterial, trimMaterial } from './facade.js';
@@ -44,6 +44,8 @@ export interface Grid {
   blockers: THREE.Object3D[];
   /** Rebuilds the skyline and lamps around these plazas (the civic plaza at the origin is always kept). */
   setPlazas(plazas: Plaza[]): void;
+  /** True while a rebuild is under way or a freed plot's blocks are still rising. */
+  rising(): boolean;
   /** setPlazas a row of blocks at a time (steps.ts); the copies keep drawing what they hold until the last step. */
   setPlazasSteps(plazas: Plaza[]): Steps<void>;
   /** Building bodies standing now, near city and far ring together (tests and debugging). */
@@ -603,10 +605,10 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
     private hi = [-Infinity, -Infinity, -Infinity];
     fill(selected: Uint8Array): void {
       if (deferFills) {
-        // Mid-rebuild: taken a copy a step (buildSteps); the selection is copied, as the next frame may move it.
-        const sel = selected.slice();
+        // Mid-rebuild: taken a copy a step (buildSteps). The selection is read when the fill runs, not now: the frames
+        // between may add the blocks the eye newly meets to it, and a snapshot would drop them.
         deferFills.push(() => {
-          this.fill(sel);
+          this.fill(selected);
           // A freed plot's blocks stand where the rise has got to, from the frame they are drawn in.
           if (rising) this.rise(riseK);
         });
@@ -788,12 +790,13 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   /** The blocks of a plot given back, rising (lots.ts plotRise) since `riseFrom` (ms); null when none is. */
   let rising: Uint8Array | null = null;
   let riseFrom = 0;
-  let riseShadowAt = -Infinity;
   let riseK = 0;
   /** True while a rebuild is under way across frames: the copies keep drawing what they hold until it is done. */
   let building = false;
   /** While set, a copy's fill is queued here rather than done (buildSteps spreads the refill after a rebuild). */
   let deferFills: Array<() => void> | null = null;
+  /** This grid's own keys on the city's re-merge queue (batch.ts), cancelled when it is disposed. */
+  const owner = remergeOwner('grid');
   const allCopies = (): Copy[] => [...shadowCopies, ...aoCopies, ...nearCopies, ...lampCopies, ...viewCopies];
   const nearLamps = new Uint8Array(boxes.length);
   const ao = new Uint8Array(boxes.length);
@@ -819,7 +822,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   /** Refills these copies to what `held` says when each one's turn comes on the queue (it reads `held` then, not now). */
   function letGo(copies: Copy[], held: Uint8Array, pass: string): void {
     copies.forEach((c, k) =>
-      scheduleRemerge(`grid:${pass}:${k}`, () => {
+      scheduleRemerge(`${owner}${pass}:${k}`, () => {
         // Mid-rebuild there is nothing to let go: the build refills every copy when it is done.
         if (building) return;
         c.fill(held);
@@ -911,11 +914,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         // Done: no later rise may write over what these instances' places hold by then.
         for (const c of allCopies()) c.endRise();
       }
-      // The shadow map follows the rise in steps of a fifth of a second, and once more when it is done.
-      if (k >= 1 || !(now - riseShadowAt <= 200)) {
-        riseShadowAt = now;
-        shadowChanged = true;
-      }
+      // The shadow map is redrawn once, when the blocks stand: a redraw a few times a second during the rise cost a
+      // frame each on high (Task 13), and the rising blocks' shadows are the least of what is seen of them.
+      if (k >= 1) shadowChanged = true;
     }
     return shadowChanged;
   }
@@ -952,6 +953,8 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
   let streetTrees: TreeSpot[] = [];
 
   let plazasNow: Array<{ x: number; z: number }> = [{ x: 0, z: 0 }];
+  /** The plazas the copies were last filled for: a rebuild overtaken half way never sets it, so the next one sees what was drawn. */
+  let drawnPlazas: Array<{ x: number; z: number }> = plazasNow;
   function build(plazas: Plaza[]): void {
     finish(buildSteps(plazas));
   }
@@ -961,7 +964,12 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
    * the blocks of any plot given back rise from the ground (plotRise).
    */
   function* buildSteps(plazas: Plaza[]): Steps<void> {
-    const before = plazasNow;
+    const before = drawnPlazas;
+    // A rise still under way from an earlier rebuild ends here: its positions are into the batches about to be laid again.
+    if (rising) {
+      rising = null;
+      for (const c of allCopies()) c.endRise();
+    }
     building = true;
     try {
       yield* layout(plazas);
@@ -980,7 +988,6 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
       });
       riseFrom = NaN;
       riseK = 0;
-      riseShadowAt = -Infinity;
     }
     // Every copy is refilled from the new build, at the eye and shadow centre last seen: the selections at once,
     // the copies a few a frame (each copy's fill copies all it holds), their blocks rising if a plot was freed.
@@ -994,6 +1001,7 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         yield;
       }
     }
+    drawnPlazas = plazasNow;
   }
   function* layout(plazas: Plaza[]): Steps<void> {
     const all = [{ x: 0, z: 0 }, ...plazas];
@@ -1157,7 +1165,9 @@ export function createGrid(quality: 'high' | 'medium', shadowBox: ShadowBox): Gr
         },
       };
     },
+    rising: () => rising !== null || building,
     dispose() {
+      cancelRemerges(owner);
       for (const g of [box, stackGeo, prismGeo, poleFarGeo, bollardGeo, kitTank, kitCap, ...proxyGeos]) g.dispose();
       for (const b of [...Object.values(walls), ...Object.values(cuts)]) b.mesh.geometry.dispose();
       for (const m of [...Object.values(facadeMats), ...Object.values(cutMats), leadMat, trimMat, roofboxMat, kitMasonry, kitMetal, kitPaint, kitBayMat, bayLitMat, bayDarkMat, tankMat, sawMat, glazeLitMat, glazeDarkMat, planterMat, deckLightMat, lensMat, plain, farShadow.mesh.customDepthMaterial!, ...lodMats]) m.dispose();

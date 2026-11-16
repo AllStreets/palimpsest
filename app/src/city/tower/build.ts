@@ -130,7 +130,7 @@ export function* buildTowerSteps(
   // An agent's tower stands on its firm's root at the agent scale: the same vernacular, smaller in every dimension.
   const rootScale = spec.kind === 'agent' ? AGENT_ROOT_SCALE : 1;
   kit.base = M(0, 0, 0, 0, rootScale, rootScale, rootScale);
-  ROOT_BUILDERS[spec.root](kit, detail, rng(spec.id));
+  yield* ROOT_BUILDERS[spec.root](kit, detail, rng(spec.id));
   kit.base = new THREE.Matrix4();
   const rootTopHalf = ROOT_TOP_HALF[spec.root] * rootScale;
 

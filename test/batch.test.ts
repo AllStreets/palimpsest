@@ -166,3 +166,51 @@ test('scheduleRemerge coalesces a key and does at most 4 ms a frame', () => {
   assert.equal(typeof batch.scheduleRemerge, 'function');
   assert.equal(typeof batch.runRemerges, 'function');
 });
+
+test("a disposed owner's waiting work is cancelled, and no other owner's", () => {
+  const a = batch.remergeOwner('grid');
+  const b = batch.remergeOwner('grid');
+  assert.notEqual(a, b, 'each owner has its own key prefix');
+  let ran = 0;
+  batch.scheduleRemerge(`${a}view:0`, () => {
+    ran++;
+  });
+  batch.scheduleRemerge(`${a}view:1`, () => {
+    ran++;
+  });
+  batch.scheduleRemerge(`${b}view:0`, () => {
+    ran += 10;
+  });
+  assert.equal(batch.cancelRemerges(a), 2);
+  batch.flushRemerges();
+  assert.equal(ran, 10, "only the other owner's work ran");
+});
+
+test('a rebuild asked for again while it is under way goes on, and starts again only for a new target', () => {
+  const t = batch.rebuildTarget();
+  assert.equal(t.same('floors 3'), false, 'nothing is under way');
+  t.start('floors 3');
+  assert.equal(t.same('floors 3'), true, 'the same change again: leave the rebuild in flight to finish');
+  assert.equal(t.same('floors 4'), false, 'a new change starts it again');
+  t.start('floors 4');
+  t.end('floors 3');
+  assert.equal(t.same('floors 4'), true, "an overtaken job's end leaves the new one's target alone");
+  t.end('floors 4');
+  assert.equal(t.same('floors 4'), false, 'once it stands, a request is weighed against what is drawn');
+});
+
+test('a frame does not start a step it cannot fit, once a step like it has run long', () => {
+  let now = 0;
+  const q = batch.remergeQueue(4, () => now);
+  let steps = 0;
+  // Each step of this work costs 3 ms: one fits a frame's 4 ms, two do not.
+  q.schedule('build', () => {
+    now += 3;
+    steps++;
+    return steps < 6;
+  });
+  q.run();
+  assert.equal(steps, 1, 'the first step runs');
+  q.run();
+  assert.equal(steps, 2, 'and the next frame one more, not a second that would overrun the budget');
+});

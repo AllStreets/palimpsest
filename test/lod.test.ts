@@ -12,6 +12,9 @@ import {
   boxDistance,
   detailHidden,
   frustumBlocks,
+  SHADOW_REST,
+  SHADOW_STEP,
+  shadowBoxMoves,
   LAYER,
   lodFade,
   passLayers,
@@ -186,4 +189,16 @@ test("the view's blocks are refilled only when the frustum leaves them, and foll
   const ao = new Uint8Array(blocks.length);
   frustumBlocks(blocks, near, back, eye, ao);
   for (let k = 0; k < blocks.length; k++) if (ao[k]) assert.equal(near[k], 1);
+});
+
+test('the shadow box follows a moving eye in steps and comes to rest exactly where it stopped', () => {
+  // The first frame always draws the map (no box yet).
+  assert.equal(shadowBoxMoves(NaN, 0), true);
+  // Moving: under a step, the map is not redrawn; past a step it is, at once.
+  assert.equal(shadowBoxMoves(3, 0), false);
+  assert.equal(shadowBoxMoves(SHADOW_STEP - 0.1, 0.1), false);
+  assert.equal(shadowBoxMoves(SHADOW_STEP + 0.1, 0), true);
+  // Stopped for SHADOW_REST: it lands on the eye's own centre, however near.
+  assert.equal(shadowBoxMoves(0.5, SHADOW_REST), true);
+  assert.equal(shadowBoxMoves(0, 5), false, 'already there: nothing to redraw');
 });

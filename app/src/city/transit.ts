@@ -676,6 +676,15 @@ class SignAtlas {
   canvas = document.createElement('canvas');
   texture: THREE.CanvasTexture;
   private rows: Array<{ text: string; small: string; style: SignStyle }> = [];
+  /** The rows of a network being laid (begin), installed only at its swap (install): the old signs draw until then. */
+  private pending: Array<{ text: string; small: string; style: SignStyle }> | null = null;
+  begin(): void {
+    this.pending = [];
+  }
+  install(): void {
+    if (this.pending) this.rows = this.pending;
+    this.pending = null;
+  }
   constructor() {
     this.canvas.width = SIGN_W * SIGN_COLS;
     this.canvas.height = SIGN_H * SIGN_ROWS;
@@ -685,8 +694,9 @@ class SignAtlas {
   }
   /** The UV rectangle [u0, v0, u1, v1] of a new sign. */
   add(text: string, small: string, style: SignStyle): [number, number, number, number] {
-    const i = this.rows.length % (SIGN_COLS * SIGN_ROWS);
-    this.rows.push({ text, small, style });
+    const into = this.pending ?? this.rows;
+    const i = into.length % (SIGN_COLS * SIGN_ROWS);
+    into.push({ text, small, style });
     const col = i % SIGN_COLS;
     const row = Math.floor(i / SIGN_COLS);
     const u0 = col / SIGN_COLS;
@@ -880,11 +890,15 @@ function* buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtla
     tramBridge(b, M, sd.a.z);
   }
   // The rails, grooved in the bed: two per track, their heads 7 cm wide and polished.
-  b.detail(() => {
+  {
+    const was = b.tier;
+    b.tier = 'detail';
     for (const side of [-1, 1]) {
+      yield;
       for (const g of [-GAUGE / 2, GAUGE / 2]) {
         const line = offsetLoop(centre, side * TRAM_TRACK + g);
         for (let i = 0; i < line.length; i++) {
+          yield;
           const p = line[i];
           const q = line[(i + 1) % line.length];
           b.beam(M.railSteel, [p.x, 0.092 + lift(p), p.z], [q.x, 0.092 + lift(q), q.z], 0.07, 0.012);
@@ -892,7 +906,8 @@ function* buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtla
         }
       }
     }
-  });
+    b.tier = was;
+  }
 
   // Poles: centre poles with twin cantilevers on every straight run, on the rhythm; none on a bridge's deck.
   let poles = 0;
@@ -929,10 +944,13 @@ function* buildTram(b: Build, M: TransitMaterials, net: Network, signs: SignAtla
       const tr = offsetLoop(filleted([p, c, q], TRAM_R), side * TRAM_TRACK).slice(11 + 5, 11 + 6)[0];
       b.detail(() => b.rod(M.frame, [at.x, 6.9, at.z], [tr.x, CONTACT_Y + 0.15, tr.z], 0.025, 4));
     }
-    b.detail(() => {
+    {
+    const was = b.tier;
+    b.tier = 'detail';
       b.rod(M.frame, [at.x, 0, at.z], [at.x, 0.5, at.z], 0.24, 10);
       b.rod(M.frame, [at.x, 7.6, at.z], [at.x, 7.85, at.z], 0.08, 8, 0.4);
-    });
+      b.tier = was;
+  }
     poles++;
   }
 
@@ -1391,9 +1409,12 @@ function* buildPods(b: Build, M: TransitMaterials, net: Network, signs: SignAtla
         // The lit line along each beam's outer face, and the running rails.
         const o = Math.sign(s) * 0.6;
         b.beam(M.lampCool, at3({ x: off(p).x + f.n.x * o, z: off(p).z + f.n.z * o }, top - 0.32), at3({ x: off(q).x + f.n.x * o, z: off(q).z + f.n.z * o }, top - 0.32), 0.03, 0.05);
-        b.detail(() => {
+        {
+    const was = b.tier;
+    b.tier = 'detail';
           for (const g of [-0.45, 0.45]) b.beam(M.railSteel, at3({ x: off(p).x + f.n.x * g, z: off(p).z + f.n.z * g }, top + 0.04), at3({ x: off(q).x + f.n.x * g, z: off(q).z + f.n.z * g }, top + 0.04), 0.14, 0.1);
-        });
+          b.tier = was;
+  }
       }
     }
     for (const u of us) {
@@ -1759,7 +1780,7 @@ export function createTransit(): Transit {
     const b = new Build();
     const names = new Set<string>();
     // The atlas is rebuilt with the network: every sign's row is assigned afresh.
-    (signs as unknown as { rows: unknown[] }).rows = [];
+    signs.begin();
     const tram = yield* buildTram(b, M, nextNet, signs, names);
     const rail = yield* buildRail(b, M, nextNet, signs, names);
     const pods = yield* buildPods(b, M, nextNet, signs, names);
@@ -1771,6 +1792,7 @@ export function createTransit(): Transit {
     yield;
     clear();
     net = nextNet;
+    signs.install();
     signs.draw();
     // Drawn again once the app's faces have loaded (the first draw may fall back while they arrive).
     void Promise.all([document.fonts?.load('500 52px Newsreader'), document.fonts?.load('400 24px "IBM Plex Mono"')]).then(() => signs.draw(), () => {});

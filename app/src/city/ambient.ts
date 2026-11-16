@@ -9,6 +9,7 @@ import { LAMP_EDGE, LAMP_OFFSETS, PITCH } from './lots.js';
 import { HEADLAMP } from './post.js';
 import { SIGNAL, signalJunction, signalPhase, signalsOf, type SignalJunction, type Signals } from './signals.js';
 import { streetFloor } from './street.js';
+import { finish, type Steps } from './steps.js';
 
 /**
  * The city's ambient life (Task 32): unlabelled traffic on the street grid
@@ -2415,8 +2416,12 @@ export interface Ambient {
   setQuality(q: 'high' | 'medium'): void;
   /** The plazas, courts and sites standing now: no car's lane crosses one and no pavement walker enters a court or a site. */
   setPlazas(plazas: readonly AmbientPlaza[]): void;
+  /** setPlazas in steps (steps.ts): the traffic and the crowd run on what stands until the new streets are installed. */
+  setPlazasSteps(plazas: readonly AmbientPlaza[]): Steps<void>;
   /** The network laid again (its extent grown): the streets inside its loop. */
   relay(net: Network): void;
+  /** relay in steps (steps.ts). */
+  relaySteps(net: Network): Steps<void>;
   /** Where the trams are now (scene.ts reads them off the transit vehicles): cars wait for one at its crossings. */
   setTrams(at: ReadonlyArray<V2>): void;
   /**
@@ -2530,6 +2535,10 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
    * Shuffled once, so the quality keeps the first of them.
    */
   function layParked(): void {
+    finish(layParkedSteps());
+  }
+  /** layParked a street at a time (steps.ts); the parked cars standing now stay until the last step. */
+  function* layParkedSteps(): Steps<void> {
     const r = mulberry(seed * 4241 + 29);
     const inner = railHalf(net.blocks) + 2 * STREET_PITCH;
     const reach = inner + 3 * STREET_PITCH;
@@ -2553,6 +2562,7 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
     // Past the walkers' pavements a car may stand with two wheels up on the kerb.
     const walked = tramHalf(net.blocks);
     for (let a = -reach; a <= reach + 1e-6; a += STREET_PITCH) {
+      yield;
       for (let b = -reach; b + STREET_PITCH <= reach + 1e-6; b += STREET_PITCH) {
         for (const along of ['x', 'z'] as Axis[]) {
           // The run from b to b + 80 along `along`, on the street at `a`.
@@ -2644,18 +2654,30 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
    * the rest go, and the streets refill out of sight (drift).
    */
   function lay(keep = false): void {
+    finish(laySteps(keep));
+  }
+  /**
+   * lay in steps (steps.ts): the roads and the walkway worked out off to the
+   * side, then installed together in one step, then the parked cars. The
+   * traffic and the crowd run on what stands until each is installed.
+   */
+  function* laySteps(keep = false): Steps<void> {
+    const r = mulberry(seed * 7919 + 17);
+    const nextRoads = layRoads(net, plazas, r);
+    yield;
+    const nextWalk = layWalkway(net, plazas, nextRoads);
+    yield;
     // The junctions are laid afresh: none of the old ones may linger as keys.
     inRoad.clear();
     const oldCars = keep ? cars : [];
     const oldPeople = keep ? people : [];
-    const r = mulberry(seed * 7919 + 17);
-    roads = layRoads(net, plazas, r);
+    roads = nextRoads;
     signalled = signalsOf(
       [...roads.junctions.values()].flatMap((j) => (j.signal ? [j.signal] : [])),
       () => time + signalShift,
     );
     layStreams(r);
-    walk = layWalkway(net, plazas, roads);
+    walk = nextWalk;
     posts = [];
     for (const p of plazas) {
       if (p.kind !== 'district' && p.kind !== 'civic') continue;
@@ -2666,7 +2688,8 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       if (p.kind === 'civic') for (const l of CIVIC_LAMPS) posts.push({ x: p.x + l.x, z: p.z + l.z });
     }
     layLamps();
-    layParked();
+    yield;
+    yield* layParkedSteps();
     if (!keep) {
       populate();
       return;
@@ -3903,11 +3926,14 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       refill = true;
     },
     setPlazas(p) {
+      finish(this.setPlazasSteps(p));
+    },
+    *setPlazasSteps(p) {
       const next = [...p];
       if (!next.some((x) => x.kind === 'civic')) next.unshift({ x: 0, z: 0, kind: 'civic' });
       if (JSON.stringify(next) === JSON.stringify(plazas)) return;
       plazas = next;
-      lay(true);
+      yield* laySteps(true);
     },
     setTrams(at) {
       env.trams = at;
@@ -3940,9 +3966,12 @@ export function createAmbient(net0: Network, quality0: 'high' | 'medium', opts: 
       signalShift = t - time;
     },
     relay(n) {
+      finish(this.relaySteps(n));
+    },
+    *relaySteps(n) {
       if (n.blocks === net.blocks && JSON.stringify(n.ranks) === JSON.stringify(net.ranks)) return;
       net = n;
-      lay(true);
+      yield* laySteps(true);
     },
     cars: () =>
       cars.map((c) => {

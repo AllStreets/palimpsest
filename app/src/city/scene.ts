@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { QUARTER_COURT, QUARTER_OFFSETS } from '../../../shared/district-layout.js';
 import { FLOOR_HEIGHT, layoutTower } from '../../../shared/tower-layout.js';
 import type { District, Era, Milestone, Quarter, SiteStage, SiteState } from '../../../shared/types.js';
-import { batchPiecesSteps, flushRemerges, longestRemerge, pendingRemerges, runRemerges, scheduleRemerge, type Batched } from './batch.js';
+import { REMERGE_BUDGET_MS, batchPiecesSteps, cancelRemerges, flushRemerges, longestRemerge, pendingRemerges, rebuildTarget, remergeOwner, runRemerges, scheduleRemerge, type Batched } from './batch.js';
 import { finish, stepper, type Steps } from './steps.js';
 import { plainBatch } from './plain-batch.js';
 import { schoolBatch, type SchoolBatch } from './school-towers.js';
@@ -29,7 +29,7 @@ import { plazasOf, type Occupancy, type SiteSpot } from './occupancy.js';
 import { qualityGovernor, type DropReading } from './governor.js';
 import { setFacadeRooms } from './facade.js';
 import { lightsOutTree } from './lightsout.js';
-import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers } from './lod.js';
+import { AO_NEAR, detailHidden, LAYER, passLayers, setLayers, shadowBoxMoves } from './lod.js';
 import { VIEW_PX } from './lod-shader.js';
 import { quarterLife, type QuarterEvent } from './quarter-life.js';
 import { quarterBuildKey, quarterTreeSpots, rebuildDebounce, type QuarterShow } from './quarters.js';
@@ -71,10 +71,8 @@ export interface Centerpiece {
   dispose?(): void;
 }
 
-/** While the eye moves, the sun's shadow box follows it in steps of this many metres (followShadow). */
-export const SHADOW_STEP = 16;
-/** And comes to rest where the eye stopped once it has stood this long, in seconds. */
-export const SHADOW_REST = 0.2;
+/** The longest a rebuild's shadow redraw waits for the rest of the rebuild, in seconds (askShadow). */
+export const SHADOW_COALESCE_S = 0.6;
 /** A factory may build at once or in steps (steps.ts), so the city can build a tower between frames. */
 export type CenterpieceFactory = (d: District) => Centerpiece | Steps<Centerpiece>;
 export type QuarterFactory = (q: Quarter) => Centerpiece | Steps<Centerpiece>;
@@ -189,6 +187,12 @@ export interface City {
   memory(): { geometries: number; textures: number };
   /** Rebuilds still under way or waiting (the re-merge queue and the quarters' debounce): 0 once the city stands as asked. */
   rebuilding(): number;
+  /** Runs `fn` once the districts and quarters stand as last asked (at once if nothing is being rebuilt); the latest only. */
+  whenBuilt(fn: () => void): void;
+  /** The longest single rebuild step since last asked, and its key (the UI test's hitch hunt). */
+  longestStep(): { key: string; ms: number };
+  /** How many floors the tower drawn for a repo now has (its floors' picks), or -1 when none is drawn. */
+  drawnFloors(repo: string): number;
   /** Starts (true) or ends (false) a per-frame trace of the loop's own work, returning what the last one recorded (debug). */
   trace(on: boolean): Array<{ update: number; render: number; shadow: boolean; triangles: number }>;
   /** The next frame's draw calls and triangles by subsystem and pass, with the shadow map redrawn in it (debug and tests). */
@@ -468,17 +472,24 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   /** Whether the cabs have been given the traffic to queue behind. */
   let trafficSet = false;
   /** The network laid on this extent, and the vehicles, the traffic and the crowd laid again on it, a step at a time. */
-  function* transitSteps(extent: { blocks: ReturnType<typeof extentBlocks>; districts: Array<{ x: number; z: number }> }): Steps<void> {
+  function* transitSteps(extent: { blocks: ReturnType<typeof extentBlocks>; districts: Array<{ x: number; z: number }> }, target: string): Steps<void> {
+    try {
+      yield* transitLay(extent);
+    } finally {
+      transitTarget.end(target);
+    }
+  }
+  function* transitLay(extent: { blocks: ReturnType<typeof extentBlocks>; districts: Array<{ x: number; z: number }> }): Steps<void> {
     if (!(yield* transit.setSteps(extent))) return;
-    sun.shadow.needsUpdate = true;
+    askShadow();
     // The asphalt darkens with oil under the cab ranks' bays (transit.ts cabRank: three bays of 6.5 m).
     ground.setRanks((transit.network()?.ranks ?? []).map((r) => ({ x: r.x, z: r.z, dir: r.dir, length: 19.5 })));
     yield;
     const net = transit.network();
     if (vehicles && ambient && net) {
-      vehicles.relay(net);
+      yield* vehicles.relaySteps(net);
       yield;
-      ambient.relay(net);
+      yield* ambient.relaySteps(net);
     } else layVehicles();
     treesDirty = true;
   }
@@ -573,8 +584,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     exchange.setStopped(stopped);
     scene.add(exchange.object);
     sunNeedsUpdate();
+    exchangeRev++;
     rebatchQuarters();
   }
+  /** Bumped when the exchange is rebuilt: a quarters' batch merged from its old statics is merged again at its swap. */
+  let exchangeRev = 0;
 
   // ---------------------------------------------------------------- districts
   const districtGroup = new THREE.Group();
@@ -704,7 +718,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     // Once the city is showing, the ambient blocks are laid a row at a time over the next frames (Task 13) and the
     // rest follows when they are done; a freed plot's blocks then rise from the ground (grid.ts).
     if (spreading()) {
-      scheduleRemerge('plazas', stepper(plazaSteps(plazas, occ), () => {}));
+      scheduleRemerge(`${owner}plazas`, stepper(plazaSteps(plazas, occ), () => {}));
       return;
     }
     grid.setPlazas(plazas);
@@ -728,12 +742,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       ...boardSpots.map((b) => ({ x: b.x, z: b.z, kind: 'site' as const })),
       ...(campusOrigin ? [{ x: campusOrigin.x, z: campusOrigin.z, kind: 'court' as const, court: campusPlaza(campusOrigin).court }] : []),
     ];
-    ambient?.setPlazas(ambientPlazas);
+    if (ambient) yield* ambient.setPlazasSteps(ambientPlazas);
     yield;
     treesDirty = true;
     searchLitTree(grid.group);
     // Towers, scaffolds and the skyline around them may all have changed.
-    sun.shadow.needsUpdate = true;
+    askShadow();
   }
 
   /**
@@ -743,6 +757,35 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
    */
   let syncBuilds = false;
   const spreading = (): boolean => framesAfterLoad >= 3 && !syncBuilds;
+  /** When a rebuild first asked for the shadow map to be redrawn (seconds on the city's clock), or -1. */
+  let shadowAsked = -1;
+  function askShadow(): void {
+    if (!spreading()) {
+      sun.shadow.needsUpdate = true;
+      return;
+    }
+    if (shadowAsked < 0) shadowAsked = clock.elapsedTime;
+  }
+  /** This city's own keys on the re-merge queue (batch.ts): cancelled on dispose, never another city's. */
+  const owner = remergeOwner('city');
+  /** What the districts, the quarters and the network are being rebuilt toward, while a rebuild is in flight. */
+  const districtTarget = rebuildTarget();
+  const quarterTarget = rebuildTarget();
+  const transitTarget = rebuildTarget();
+  /**
+   * What waits for the city to stand as last asked (main.ts: the plates and
+   * the inspector, so what he sees and clicks follows what is drawn, not
+   * what is still being built). The latest only; run at once when nothing
+   * is being rebuilt.
+   */
+  let builtWaiter: (() => void) | null = null;
+  const structureBuilding = (): boolean => districtTarget.busy() || quarterTarget.busy() || quarterWait.waiting();
+  function settle(): void {
+    if (!builtWaiter || structureBuilding()) return;
+    const fn = builtWaiter;
+    builtWaiter = null;
+    fn();
+  }
   /** Bumped whenever a pending rebuild is overtaken, so a job that is no longer wanted never commits. */
   let districtJob = 0;
   function placeDistricts(districts: District[]): number {
@@ -759,16 +802,22 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       // Nothing to build: the districts' data (their floors' states) moves on in place.
       centerpieces = wanted.map((w) => ({ ...w.kept!, d: w.d }));
       districtJob++;
+      cancelRemerges(`${owner}districts`);
+      districtTarget.end(districtTarget.current() ?? '');
       return 0;
     }
+    // The same change again while it is being built (refreshes come in bursts): the rebuild in flight goes on.
+    const target = wanted.map((w) => w.key).join('\n');
+    if (spreading() && districtTarget.same(target)) return built;
     const job = ++districtJob;
-    const steps = districtSteps(wanted, job);
-    if (spreading()) scheduleRemerge('districts', stepper(steps, () => {}));
+    districtTarget.start(target);
+    const steps = districtSteps(wanted, job, target);
+    if (spreading()) scheduleRemerge(`${owner}districts`, stepper(steps, () => {}));
     else finish(steps);
     return built;
   }
   /** Builds the changed towers and re-merges their plain meshes a step at a time, then swaps them all in at once. */
-  function* districtSteps(wanted: Array<{ d: District; key: string; kept: (typeof centerpieces)[number] | null }>, job: number): Steps<void> {
+  function* districtSteps(wanted: Array<{ d: District; key: string; kept: (typeof centerpieces)[number] | null }>, job: number, target: string): Steps<void> {
     const made: Array<(typeof centerpieces)[number]> = [];
     const fresh: Centerpiece[] = [];
     for (const w of wanted) {
@@ -792,6 +841,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (job !== districtJob) {
       // Overtaken: a later placement builds what is wanted now. What this one built never drew.
       for (const p of fresh) p.dispose?.();
+      districtTarget.end(target);
       return;
     }
     const keep = new Set(made.map((c) => c.piece));
@@ -805,25 +855,32 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     commit();
     lodRevision++;
     if (highlighted) applyHighlight();
-    afterSwap();
+    // Its tower stands: a scaffold kept for it comes down in the same frame.
+    placeSites(sitesStanding(occNow));
+    afterSwap([...fresh.map((p) => p.object), towerPlains.group]);
+    // What he sees and clicks follows in the same frame as the swap.
+    districtTarget.end(target);
+    settle();
     yield;
     afterSwapLater();
   }
   /** What follows any rebuild once it stands: the sites move onto new roofs, the searchlights and the dust find it, the shadow is redrawn. */
   /** In the frame of the swap: what draws the new pieces as the old drew (the searchlights' streak, a dark tower's dust). */
-  function afterSwap(): void {
-    searchLitTree(districtGroup);
-    searchLitTree(schoolRoot);
-    lightsOutTree(districtGroup);
-    lightsOutTree(schoolRoot);
-    sun.shadow.needsUpdate = true;
+  function afterSwap(roots: THREE.Object3D[]): void {
+    // Only what was swapped in: the materials of what already stood were given the searchlights' streak and the dust
+    // when it was swapped in itself (walking the whole district group is a frame's worth of work on its own).
+    for (const r of roots) {
+      searchLitTree(r);
+      lightsOutTree(r);
+    }
+    askShadow();
   }
   /** A frame later: the sites onto the new roofs, the skyline's milestones, the trees round the courts. */
   function afterSwapLater(): void {
     placeConstructions();
     placeMilestones();
     treesDirty = true;
-    sun.shadow.needsUpdate = true;
+    askShadow();
   }
 
   /**
@@ -845,6 +902,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
    */
   function* rebatchSteps(pieces: THREE.Object3D[]): Steps<() => void> {
     const roots = [...pieces, ...(exchange?.statics ?? [])];
+    const rev = exchangeRev;
     districtGroup.updateMatrixWorld(true);
     exchange?.object.updateMatrixWorld(true);
     for (const r of roots) r.visible = false;
@@ -860,6 +918,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
         districtGroup.add(next.group);
       }
       lodRevision++;
+      // The exchange was rebuilt while this batch was merged from its old statics (the campanile came or went): merged
+      // again now, at once, from the pieces just swapped in (rare: only when a district crosses the campanile's height).
+      if (rev !== exchangeRev) finish(rebatchSteps(pieces))();
     };
   }
 
@@ -910,21 +971,29 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       quarterPieces = wanted.map((w) => ({ ...w.kept!, q: w.q }));
       quarterJob++;
       quarterWait.clear();
+      cancelRemerges(`${owner}quarters`);
+      quarterTarget.end(quarterTarget.current() ?? '');
       return 0;
     }
+    // The same change again, waiting or under way: left to finish (the debounce is not restarted for a repeat).
+    const target = wanted.map((w) => w.key).join('\n');
+    if (spreading() && quarterTarget.same(target)) return built;
     const job = ++quarterJob;
-    const steps = quarterSteps(wanted, job);
+    quarterTarget.start(target);
+    // A newer change: whatever was under way is let go before it does any more work.
+    cancelRemerges(`${owner}quarters`);
+    const steps = quarterSteps(wanted, job, target);
     if (!spreading()) {
       quarterWait.clear();
       finish(steps);
     } else if (debounce) quarterWait.touch(clock.elapsedTime, steps);
     else {
       quarterWait.clear();
-      scheduleRemerge('quarters', stepper(steps, () => {}));
+      scheduleRemerge(`${owner}quarters`, stepper(steps, () => {}));
     }
     return built;
   }
-  function* quarterSteps(wanted: Array<{ q: Quarter; key: string; kept: (typeof quarterPieces)[number] | null }>, job: number): Steps<void> {
+  function* quarterSteps(wanted: Array<{ q: Quarter; key: string; kept: (typeof quarterPieces)[number] | null }>, job: number, target: string): Steps<void> {
     const made: Array<(typeof quarterPieces)[number]> = [];
     const fresh: Centerpiece[] = [];
     for (const w of wanted) {
@@ -939,12 +1008,19 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       fresh.push(piece);
       made.push({ firmId: w.q.firmId, key: w.key, piece, q: w.q });
     }
-    // The school's towers are drawn by their own batch (school-towers.ts): kept out of the quarters' merge.
-    const school = fresh.flatMap((p) => p.object.children.filter((c) => c.userData.school === true));
-    for (const t of school) t.visible = false;
+    // The school's towers are drawn by their own batch (school-towers.ts), taken and merged off screen first: taking a
+    // tower hides its parts, so the quarters' merge after leaves them out, and both batches swap in the same frame.
+    const schoolTowersIn = made.flatMap(({ piece }) => piece.object.children.filter((c) => c.userData.school === true));
+    if (!schoolTowers && schoolTowersIn.length && opts.campusMaterials) {
+      campusMasonry ??= masonryMaterial();
+      schoolTowers = schoolBatch(campusMasonry, opts.campusMaterials.window);
+      schoolRoot.add(schoolTowers.group);
+    }
+    const schoolSwap = schoolTowers ? yield* schoolTowers.prepare(schoolTowersIn) : null;
     const swap = yield* rebatchSteps(made.map(({ piece }) => piece.object));
     if (job !== quarterJob) {
       for (const p of fresh) p.dispose?.();
+      quarterTarget.end(target);
       return;
     }
     const keep = new Set(made.map((c) => c.piece));
@@ -954,11 +1030,13 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       piece.dispose?.();
     }
     for (const p of fresh) districtGroup.add(p.object);
-    for (const t of school) t.visible = true;
     quarterPieces = made;
-    batchSchoolTowers();
+    if (schoolSwap?.()) askShadow();
     swap();
-    afterSwap();
+    afterSwap([...fresh.map((p) => p.object), ...(quarterBatch ? [quarterBatch.group] : []), schoolRoot]);
+    // What he sees and clicks follows in the same frame as the swap.
+    quarterTarget.end(target);
+    settle();
     yield;
     afterSwapLater();
   }
@@ -1026,6 +1104,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     }
   }
 
+  /**
+   * The scaffolds that stand: every site, and a scaffold whose repo's tower
+   * is being built and not yet swapped in (a scaffold leaves only when its
+   * tower lands).
+   */
+  function sitesStanding(occ: Occupancy): Site[] {
+    const waiting = occ.districts.filter((d) => scaffolds.has(d.repo) && !pieceOf(d.repo) && !occ.sites.some((s) => s.repo === d.repo));
+    return [...occ.sites, ...waiting.map((d) => ({ repo: d.repo, origin: d.origin }) as Site)];
+  }
   function placeSites(sites: Site[]): void {
     const next = new Map<string, Scaffold>();
     for (const s of sites) {
@@ -1311,15 +1398,21 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       buildExchange();
     }
     reframe(occ);
-    placeSites(occ.sites);
+    placeSites(sitesStanding(occ));
     // The network grows with the city: its loops enclose every district, quarter and site, a rank at each plaza.
     // The campus too: the loop's street must run outside its terrace, never across it.
     const standing = [...occ.districts.map((d) => d.origin), ...occ.quarters.map((q) => q.origin), ...occ.sites.map((s) => s.origin), ...(campusOrigin ? [campusOrigin] : [])];
     if (standing.length) {
-      const steps = transitSteps({ blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) });
-      // Once the city is showing, the network is laid a stretch at a time over the next frames (Task 13).
-      if (spreading()) scheduleRemerge('transit', stepper(steps, () => {}));
-      else finish(steps);
+      const extent = { blocks: extentBlocks(standing), districts: occ.districts.map((d) => d.origin) };
+      const target = JSON.stringify(extent);
+      // Once the city is showing, the network is laid a stretch at a time over the next frames (Task 13); the same
+      // extent asked for again while it is being laid leaves that build to finish.
+      if (!(spreading() && transitTarget.same(target))) {
+        transitTarget.start(target);
+        const steps = transitSteps(extent, target);
+        if (spreading()) scheduleRemerge(`${owner}transit`, stepper(steps, () => {}));
+        else finish(steps);
+      }
     }
     // A tower rebuilt (a floor laid, a restyle) may have a new roof: the sites move onto it.
     placeConstructions();
@@ -1336,7 +1429,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     if (key !== lastPlazas) {
       lastPlazas = key;
       updatePlazas(occ);
-    } else sun.shadow.needsUpdate = true;
+    } else askShadow();
     return built;
   }
 
@@ -1619,7 +1712,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     // eye moves (a follow, the ride) the box follows it in steps of SHADOW_STEP rather than every texel, so the map is
     // not redrawn every frame (Task 13): on whole texels a shadow falls exactly where it did, and only the box's far
     // edge, SHADOW_HALF away, lags by under a step. Once the eye stops, the box comes to rest exactly where it would have.
-    if (!snapped.equals(shadowAt) && (!(snapped.distanceTo(shadowAt) <= SHADOW_STEP) || stillFor >= SHADOW_REST)) {
+    if (!snapped.equals(shadowAt) && shadowBoxMoves(snapped.distanceTo(shadowAt), stillFor)) {
       shadowAt.copy(snapped);
       sun.shadow.needsUpdate = true;
     }
@@ -1803,9 +1896,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   function dropQuality(): void {
     if (quality === 'medium') return;
     // Whatever was being rebuilt at high is built again at medium below, at once: the waiting work is let go.
+    // The districts and quarters waiting or under way at high are dropped (they are built again at medium below, at
+    // once); the ambient blocks and the network, which the drop does not rebuild, are finished now.
     districtJob++;
     quarterJob++;
     quarterWait.clear();
+    cancelRemerges(`${owner}districts`);
+    cancelRemerges(`${owner}quarters`);
+    districtTarget.end(districtTarget.current() ?? '');
+    quarterTarget.end(quarterTarget.current() ?? '');
     flushRemerges();
     // What it saw: the window the governor judged, or the last second of frames for a drop asked for by hand.
     const reading = governor.saw ?? governor.reading() ?? { fps: 0, triangles: lastFrame.triangles };
@@ -1941,7 +2040,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       // Off the transit's stations, stops and ranks: their platforms, stairs and halls stand on those pavements.
       treeSpots = clearOfTransit([...grid.treeSpots(), ...quarterPieces.flatMap(({ q }) => quarterTreeSpots(q.origin)), ...(campus?.treeSpots() ?? [])], transit.network());
       trees.place(treeSpots);
-      sun.shadow.needsUpdate = true;
+      askShadow();
     }
     if (trees.update({ time: clock.elapsedTime, eye: camera.position })) sun.shadow.needsUpdate = true;
     ground.update(camera.position);
@@ -1955,8 +2054,15 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     post.setFocus({ mode, distance: camera.position.distanceTo(rig.controls.target), at: rig.controls.target });
     // A rebuild waiting out its debounce starts; then the rebuilds take their few milliseconds of this frame (Task 13).
     const due = quarterWait.take(clock.elapsedTime);
-    if (due) scheduleRemerge('quarters', stepper(due, () => {}));
-    runRemerges();
+    if (due) scheduleRemerge(`${owner}quarters`, stepper(due, () => {}));
+    // A rebuild's shadow redraw waits until the rebuilds stand (or SHADOW_COALESCE_S at most): on high one redraw of
+    // the 4096 map costs a frame, and a disconnect asked for five of them over a second (Task 13).
+    if (shadowAsked >= 0 && (pendingRemerges() === 0 || clock.elapsedTime - shadowAsked > SHADOW_COALESCE_S)) {
+      shadowAsked = -1;
+      sun.shadow.needsUpdate = true;
+    }
+    // On high the GPU's frame is near the refresh already: the rebuilds take half the CPU budget there.
+    runRemerges(quality === 'high' ? REMERGE_BUDGET_MS / 2 : REMERGE_BUDGET_MS);
     renderer.info.reset();
     const t1 = traced ? performance.now() : 0;
     const shadowing = sun.shadow.needsUpdate;
@@ -2028,13 +2134,20 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     view: (eye, target) => rig.view(eye, target),
     stats: () => ({ ...lastFrame }),
     trace(on) {
-      // The longest single rebuild step since the trace began, for the perf tools' hitch hunt.
-      if (traced) console.log(`remerge longest ${JSON.stringify(longestRemerge())}`);
       const out = traced ?? [];
       traced = on ? [] : null;
       return out;
     },
-    rebuilding: () => pendingRemerges() + (quarterWait.waiting() ? 1 : 0),
+    rebuilding: () => pendingRemerges() + (quarterWait.waiting() ? 1 : 0) + (grid.rising() ? 1 : 0),
+    longestStep: () => longestRemerge(),
+    drawnFloors(repo) {
+      const piece = pieceOf(repo);
+      return piece ? [...piece.pickables.values()].filter((v) => v !== null).length : -1;
+    },
+    whenBuilt(fn) {
+      builtWaiter = fn;
+      settle();
+    },
     memory: () => ({ geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures }),
     breakdown: (detail = false) => new Promise<Breakdown>((resolve) => breakdownWanted.push({ detail, resolve })),
     visibleShare: (key) => new Promise<number>((resolve) => shareWanted.push({ key, resolve })),
@@ -2173,6 +2286,8 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       dropListeners.push(fn);
     },
     dispose() {
+      // Its waiting rebuilds go with it: the queue is shared, and they would run against what is disposed below.
+      cancelRemerges(owner);
       renderer.setAnimationLoop(null);
       observer.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);

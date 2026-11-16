@@ -155,6 +155,20 @@ export function frustumDelta(
   return grew ? (shrink ? 'both' : 'grow') : shrink ? 'shrink' : 'same';
 }
 
+/** While the eye moves, the sun's shadow box follows it in steps of this many metres (scene.ts followShadow, Task 13). */
+export const SHADOW_STEP = 16;
+/** And comes to rest where the eye stopped once it has stood this long, in seconds. */
+export const SHADOW_REST = 0.2;
+/**
+ * Whether the shadow box moves to the eye's texel-snapped centre this frame
+ * (and the shadow map is redrawn): `from` is how far that centre is from the
+ * box's (NaN before the first frame), `still` how long the eye has stood.
+ */
+export function shadowBoxMoves(from: number, still: number): boolean {
+  if (from === 0) return false;
+  return !(from <= SHADOW_STEP) || still >= SHADOW_REST;
+}
+
 /** An axis-aligned box: a block with whatever stands on it. */
 export interface BlockBox {
   minX: number;

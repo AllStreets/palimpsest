@@ -81,6 +81,8 @@ interface Live {
   /** The words' width in pixels, measured once they show (0 until then), and whether they stand left of the hairline. */
   words: number;
   flipped: boolean;
+  /** Tested for occlusion at least once since it was made. */
+  tested: boolean;
 }
 
 /**
@@ -148,7 +150,7 @@ export function createPlates(
           sub.className = 'plate-sub';
           el.append(name, sub);
           layer.appendChild(el);
-          l = { plate, el, name, sub, hidden: false, words: 0, flipped: false };
+          l = { plate, el, name, sub, hidden: false, words: 0, flipped: false, tested: false };
           const self = l;
           el.addEventListener('click', () => self.plate.onActivate?.());
         }
@@ -169,10 +171,12 @@ export function createPlates(
       const w = host.clientWidth;
       const h = host.clientHeight;
       const turn = frame++ % OCCLUSION_EVERY;
-      const targets = live.length > 0 ? occluders() : [];
+      // Gathered only in a frame that tests a plate, the first time one does.
+      let targets: THREE.Object3D[] | null = null;
       for (let i = 0; i < live.length; i++) {
         const l = live[i];
-        const testOcclusion = i % OCCLUSION_EVERY === turn;
+        // A plate is tested in its turn, and a new one on its first frame (so it never shows through a tower first).
+        const testOcclusion = i % OCCLUSION_EVERY === turn || !l.tested;
         anchor(l.plate, at);
         const dist = at.distanceTo(camera.position);
         ndc.copy(at).project(camera);
@@ -181,7 +185,9 @@ export function createPlates(
         if (testOcclusion && !behind) {
           raycaster.set(camera.position, ray.copy(at).sub(camera.position).normalize());
           raycaster.far = dist - 2;
+          targets ??= occluders();
           l.hidden = raycaster.intersectObjects(targets, false).length > 0;
+          l.tested = true;
         }
         const show = !behind && !l.hidden && fade > 0.01;
         l.el.style.opacity = show ? fade.toFixed(3) : '0';

@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 import { ROOT_HEIGHT } from '../../../../shared/tower-layout.js';
 import type { RootStyle } from '../../../../shared/types.js';
+import type { Steps } from '../steps.js';
 import {
   face,
   flutedShaft,
@@ -26,7 +27,8 @@ import {
 } from './kit.js';
 
 /** Builds a root in the kit's frame, from the ground up to exactly ROOT_HEIGHT[style]. */
-export type RootBuilder = (k: Kit, detail: boolean, rand: () => number) => void;
+/** A root built a stretch at a time (steps.ts): each of its top-level pieces a step. */
+export type RootBuilder = (k: Kit, detail: boolean, rand: () => number) => Steps<void>;
 
 /** Half-width of each root's roof, where the first floor (26 m across) stands and the datum wraps an empty tower. */
 export const ROOT_TOP_HALF: Record<RootStyle, number> = {
@@ -276,19 +278,28 @@ export function ionicFace(x: number, top: number, far = false): THREE.BufferGeom
  * windows, a giant order of fluted Ionic columns before a lit hall, an
  * entablature with dentils, an attic and a balustrade.
  */
-const beauxarts: RootBuilder = (k, detail, rand) => {
+const beauxarts: RootBuilder = function* (k, detail, rand) {
   const H = ROOT_HEIGHT.beauxarts;
+  yield;
   const FOOT = 34;
+  yield;
   const a = FOOT / 2;
+  yield;
   let y = steps(k, 'sand', [42, 40, 38], 0.45);
+  yield;
 
   // Rusticated base with arched windows.
   const baseH = 7;
+  yield;
   const depth = 1.0;
+  yield;
   const arches: Opening[] = [-12, -6, 0, 6, 12].map((u) => ({ u, w: 2.4, y0: 0.9, ys: 4.4, ring: 0.62 }));
+  yield;
   // The building behind the openings stops short of the glass, which sits just inside the wall.
   const baseCore = 2 * (a - 0.14 - depth - 0.1);
+  yield;
   k.box('slab', baseCore, baseH, baseCore, M(0, y + baseH / 2, 0));
+  yield;
   for (let side = 0; side < 4; side++) {
     wall(k, 'sand', side, a - 0.14, y, baseH, depth, arches);
     rusticate(k, 'sand', side, a - 0.14, y, baseH, 0.88, 0.14, arches);
@@ -299,15 +310,20 @@ const beauxarts: RootBuilder = (k, detail, rand) => {
     }
   }
   y += baseH;
+  yield;
 
   // Band course: the stylobate of the order.
   k.add('sand', squareSweep(a, [[-3.2, y], [0.2, y], [0.35, y + 0.15], [0.35, y + 0.75], [0.2, y + 1.1], [-3.2, y + 1.1]]));
+  yield;
   y += 1.1;
+  yield;
 
   // The hall behind the colonnade: a recessed wall with tall windows.
   const order = 13.0; // base + shaft + capital
   const core = FOOT - 5;
+  yield;
   k.box('sand', core, order + 0.1, core, M(0, y + order / 2, 0));
+  yield;
   for (let side = 0; side < 4; side++) {
     const F = face(side, core / 2);
     for (let i = 0; i < 6; i++) {
@@ -322,19 +338,27 @@ const beauxarts: RootBuilder = (k, detail, rand) => {
 
   // Giant order: Attic base, fluted shaft with entasis, Ionic capital with volutes. Columns share the corners.
   const ring = a - 1.25;
+  yield;
   const per = 9;
+  yield;
   const pitch = (ring * 2) / per;
+  yield;
   const baseG = (): THREE.BufferGeometry =>
     lathe([[0, 0], [1.05, 0], [1.05, 0.18], [1.0, 0.2], [1.02, 0.3], [0.95, 0.38], [0.88, 0.42], [0.92, 0.5], [0.86, 0.58], [0, 0.58]], detail ? 32 : 16);
   const shaftH = 11.6;
+  yield;
   const shaftG = (): THREE.BufferGeometry => (detail ? flutedShaft(0.82, shaftH, 24) : new THREE.CylinderGeometry(0.7, 0.82, shaftH, 16).translate(0, shaftH / 2, 0));
+  yield;
   const echinusG = (): THREE.BufferGeometry =>
     lathe([[0, 0], [0.74, 0], [0.8, 0.1], [0.74, 0.16], [0.9, 0.3], [1.0, 0.48], [0, 0.48]], detail ? 32 : 16);
   const abacusG = (): THREE.BufferGeometry => new THREE.BoxGeometry(2.3, 0.34, 2.3);
+  yield;
   // One face of the capital: its two volutes, the canalis between them under the abacus, and each volute's half of
   // the bolster running back to the capital's middle, where the other face's half meets it.
   const voluteG = (): THREE.BufferGeometry => ionicFace(VOLUTE_X, order - 0.34);
+  yield;
   const voluteFarG = (): THREE.BufferGeometry => ionicFace(VOLUTE_X, order - 0.34, true);
+  yield;
   for (let side = 0; side < 4; side++) {
     for (let i = 0; i < per; i++) {
       const u = -ring + pitch * i;
@@ -352,10 +376,13 @@ const beauxarts: RootBuilder = (k, detail, rand) => {
     }
   }
   y += order;
+  yield;
 
   // Entablature: two-fascia architrave, plain frieze, dentils, corona and cyma.
   const e0 = y;
+  yield;
   k.add('sand', squareSweep(ring, [[-1.6, e0], [0.9, e0], [0.9, e0 + 0.5], [1.0, e0 + 0.55], [1.0, e0 + 1.0], [1.12, e0 + 1.1], [0.95, e0 + 1.18], [0.95, e0 + 2.0], [-1.6, e0 + 2.0]]));
+  yield;
   if (detail) {
     const dentilG = (): THREE.BufferGeometry => new THREE.BoxGeometry(0.22, 0.3, 0.32);
     for (let side = 0; side < 4; side++) {
@@ -365,20 +392,28 @@ const beauxarts: RootBuilder = (k, detail, rand) => {
     }
   }
   k.add('sand', squareSweep(ring, [[-1.6, e0 + 2.0], [1.13, e0 + 2.0], [1.13, e0 + 2.34], [1.6, e0 + 2.42], [1.62, e0 + 2.75], [1.75, e0 + 2.85], [1.72, e0 + 3.0], [-1.6, e0 + 3.0]]));
+  yield;
   y = e0 + 3.0;
+  yield;
 
   // Attic: a plain storey with small square lights over the column bays.
   const atticTop = H - 2.0;
+  yield;
   const atticHalf = a - 1.6;
+  yield;
   k.box('sand', atticHalf * 2, atticTop - y, atticHalf * 2, M(0, (y + atticTop) / 2, 0));
+  yield;
   for (let side = 0; side < 4; side++) {
     const F = face(side, atticHalf);
     for (let i = 0; i < 6; i++) pane(k, F, -11.25 + i * 4.5, (y + atticTop) / 2, 1.5, 1.1, 0.02, warmLight(rand, PANE_SILL, 0.6));
   }
   k.add('sand', squareSweep(atticHalf, [[-0.3, atticTop - 0.5], [0.0, atticTop - 0.5], [0.25, atticTop - 0.25], [0.3, atticTop], [-0.3, atticTop]]));
+  yield;
   balustrade(k, 'sand', atticHalf, atticTop, detail, 'beaux');
+  yield;
   // The shaft's footing on the roof, so the first floor stands on stone.
   k.box('sand', ROOT_TOP_HALF.beauxarts * 2, H - atticTop, ROOT_TOP_HALF.beauxarts * 2, M(0, (atticTop + H) / 2, 0));
+  yield;
 };
 
 // ---------------------------------------------------------------- Roman
@@ -387,17 +422,27 @@ const beauxarts: RootBuilder = (k, detail, rand) => {
  * Roman: a travertine podium of two superimposed arcades framed by engaged
  * Tuscan half-columns and pilasters, lit loggias behind, and an attic.
  */
-const roman: RootBuilder = (k, detail, rand) => {
+const roman: RootBuilder = function* (k, detail, rand) {
   const H = ROOT_HEIGHT.roman;
+  yield;
   const FOOT = 36;
+  yield;
   const a = FOOT / 2;
+  yield;
   let y = steps(k, 'travertine', [42, 40, 38], 0.45);
+  yield;
   const bays = 7;
+  yield;
   const pitch = FOOT / bays;
+  yield;
   const us = Array.from({ length: bays }, (_, i) => -a + pitch * (i + 0.5));
+  yield;
   const depth = 1.4;
+  yield;
   const loggia = 3.4;
+  yield;
   const inner = a - depth - loggia;
+  yield;
 
   const arcade = (y0: number, h: number, arch: Omit<Opening, 'u'>, order: 'column' | 'pilaster'): void => {
     k.box('travertine', inner * 2, h, inner * 2, M(0, y0 + h / 2, 0));
@@ -436,28 +481,42 @@ const roman: RootBuilder = (k, detail, rand) => {
       }
     }
   };
+  yield;
 
   const h1 = 9.6;
+  yield;
   arcade(y, h1, { w: 3.1, y0: 0.02, ys: 6.0 }, 'column');
+  yield;
   y += h1;
+  yield;
   // Entablature between the storeys.
   k.add('travertine', squareSweep(a, [[-1, y], [0.25, y], [0.25, y + 0.55], [0.15, y + 0.6], [0.15, y + 1.0], [0.55, y + 1.15], [0.6, y + 1.45], [-1, y + 1.45]]));
+  yield;
   y += 1.45;
+  yield;
   const h2 = 7.2;
+  yield;
   arcade(y, h2, { w: 2.6, y0: 0.9, ys: 4.4 }, 'pilaster');
+  yield;
   y += h2;
+  yield;
   k.add('travertine', squareSweep(a, [[-1, y], [0.2, y], [0.2, y + 0.45], [0.5, y + 0.6], [0.55, y + 0.9], [-1, y + 0.9]]));
+  yield;
   y += 0.9;
+  yield;
 
   // Attic: solid, with small square lights and pilaster strips over the piers.
   const atticHalf = ROOT_TOP_HALF.roman;
+  yield;
   k.box('travertine', atticHalf * 2, H - y, atticHalf * 2, M(0, (y + H) / 2, 0));
+  yield;
   for (let side = 0; side < 4; side++) {
     const F = face(side, atticHalf);
     for (const u of us) pane(k, F, u, y + (H - y) * 0.45, 1.3, 0.9, 0.02, warmLight(rand, PANE_SILL, 0.5));
     for (let i = 1; i < bays; i++) k.box('travertine', 0.8, H - y - 0.5, 0.12, F.clone().multiply(M(-a + pitch * i, y + (H - y - 0.5) / 2, 0.06)));
   }
   k.add('travertine', squareSweep(atticHalf, [[-0.3, H - 0.5], [0.0, H - 0.5], [0.3, H - 0.3], [0.32, H], [-0.3, H]]));
+  yield;
 };
 
 // ---------------------------------------------------------------- Gothic
@@ -467,28 +526,44 @@ const roman: RootBuilder = (k, detail, rand) => {
  * pinnacles, a rose window over a pointed portal on the two fronts, a
  * pierced parapet, and a set-back clerestory with corner turrets.
  */
-const gothic: RootBuilder = (k, detail, rand) => {
+const gothic: RootBuilder = function* (k, detail, rand) {
   const H = ROOT_HEIGHT.gothic;
+  yield;
   const FOOT = 34;
+  yield;
   const a = FOOT / 2;
+  yield;
   let y = steps(k, 'gothic', [42, 40, 38], 0.45);
+  yield;
   // Base course with a chamfered weathering.
   k.add('gothic', squareSweep(a, [[-1, y], [0.45, y], [0.45, y + 0.7], [0.0, y + 1.1], [-1, y + 1.1]]));
+  yield;
   y += 1.1;
+  yield;
 
   const bodyH = 21.6;
+  yield;
   const depth = 1.1;
+  yield;
   k.box('slab', FOOT - 2 * depth - 0.2, bodyH, FOOT - 2 * depth - 0.2, M(0, y + bodyH / 2, 0));
+  yield;
   const lancet = (u: number): Opening => ({ u, w: 2.1, y0: 2.4, ys: 14.0, pointed: true });
+  yield;
   const frontLancets = [-14.0, -8.5, 8.5, 14.0].map(lancet);
+  yield;
   const sideLancets = [-13.6, -6.8, 0, 6.8, 13.6].map(lancet);
+  yield;
   const portal: Opening = { u: 0, w: 4.6, y0: 0.02, ys: 5.4, pointed: true };
+  yield;
   const roseY = 14.6;
+  yield;
   const roseR = 3.9;
+  yield;
   const rose: THREE.Vector2[] = Array.from({ length: 40 }, (_, i) => {
     const t = (i / 40) * Math.PI * 2;
     return new THREE.Vector2(Math.cos(t) * roseR, roseY + Math.sin(t) * roseR);
   });
+  yield;
 
   for (let side = 0; side < 4; side++) {
     const front = side % 2 === 0;
@@ -544,10 +619,13 @@ const gothic: RootBuilder = (k, detail, rand) => {
     buttress(k, C, 0, y, bodyH, detail);
   }
   y += bodyH;
+  yield;
 
   // Pierced parapet over a corbel table.
   k.add('gothic', squareSweep(a, [[-1, y], [0.0, y], [0.3, y + 0.3], [0.3, y + 0.6], [-1, y + 0.6]]));
+  yield;
   const pTop = y + 0.6 + 1.3;
+  yield;
   for (let side = 0; side < 4; side++) {
     const L = side % 2 === 0 ? FOOT + 0.6 : FOOT + 0.6 - 0.7;
     const n = Math.floor(L / 1.4);
@@ -561,15 +639,23 @@ const gothic: RootBuilder = (k, detail, rand) => {
     k.add('gothic', piercedWall(L, 1.3, 0.35, holes), face(side, a + 0.3).multiply(M(0, y + 0.6, -0.35)));
   }
   k.add('gothic', squareSweep(a + 0.3, [[-0.4, pTop], [0.06, pTop], [0.06, pTop + 0.18], [-0.4, pTop + 0.18]]));
+  yield;
 
   // Clerestory: a set-back storey of smaller lancets, octagonal turrets at the corners.
   const cHalf = ROOT_TOP_HALF.gothic;
+  yield;
   const cTop = H;
+  yield;
   const cBase = y;
+  yield;
   const cH = cTop - cBase - 1.0;
+  yield;
   const cDepth = 0.6;
+  yield;
   k.box('slab', cHalf * 2 - 2 * cDepth - 0.1, cTop - cBase, cHalf * 2 - 2 * cDepth - 0.1, M(0, (cBase + cTop) / 2, 0));
+  yield;
   const small = [-9.6, -4.8, 0, 4.8, 9.6].map((u): Opening => ({ u, w: 1.5, y0: 1.2, ys: 5.0, pointed: true }));
+  yield;
   for (let side = 0; side < 4; side++) {
     wall(k, 'gothic', side, cHalf, cBase, cH, cDepth, small);
     const F = face(side, cHalf);
@@ -579,6 +665,7 @@ const gothic: RootBuilder = (k, detail, rand) => {
     }
   }
   k.add('gothic', squareSweep(cHalf, [[-0.5, cTop - 1.0], [0.0, cTop - 1.0], [0.25, cTop - 0.75], [0.25, cTop], [-0.5, cTop]]));
+  yield;
   for (let c = 0; c < 4; c++) {
     const C = M(0, 0, 0, (c * Math.PI) / 2 + Math.PI / 4).multiply(M(0, 0, cHalf * Math.SQRT2));
     const turret = new THREE.CylinderGeometry(1.25, 1.35, cTop - 2.6 - cBase, 8);
@@ -626,18 +713,23 @@ function buttress(k: Kit, F: THREE.Matrix4, u: number, y0: number, h: number, de
  * clay tile with upturned corners, bracket sets under each eave and a
  * balcony with a railing where the tower begins.
  */
-const pagoda: RootBuilder = (k, detail, rand) => {
+const pagoda: RootBuilder = function* (k, detail, rand) {
   const H = ROOT_HEIGHT.pagoda;
+  yield;
   // Ishigaki: a battered dressed-granite platform with a cut-stone kerb.
   const platH = 4.4;
+  yield;
   k.add('granite', frustum(44, platH, 44, 40.5 / 44), M(0, platH / 2, 0));
+  yield;
   k.box('granite', 40.8, 0.35, 40.8, M(0, platH + 0.175, 0));
+  yield;
   // Steps up the middle of the front and back.
   for (const side of [0, 2]) {
     const F = face(side, 20.2);
     for (let s = 0; s < 8; s++) k.box('granite', 8, (s + 1) * 0.6, 0.55, F.clone().multiply(M(0, ((s + 1) * 0.6) / 2, 2.2 - s * 0.55 + 0.28 - 0.0)));
   }
   const y = platH + 0.35;
+  yield;
 
   const storey = (half: number, y0: number, h: number, prefix: string): void => {
     k.box('plaster', half * 2, h, half * 2, M(0, y0 + h / 2, 0));
@@ -667,21 +759,32 @@ const pagoda: RootBuilder = (k, detail, rand) => {
     }
     k.add('timber', squareSweep(half, [[-0.2, y0 + h], [0.3, y0 + h], [0.3, y0 + h + 1.1], [-0.2, y0 + h + 1.1]]), undefined, false);
   };
+  yield;
 
   // Lower storey and its eave.
   const h1 = 7.6;
+  yield;
   storey(16, y, h1, 'pag1');
+  yield;
   eave(k, { hIn: 14.4, yIn: 15.0, hOut: 21.6, yOut: 12.1, lift: 1.5, detail });
+  yield;
   // Upper storey and its eave.
   const y2 = 15.0;
+  yield;
   const h2 = 6.6;
+  yield;
   storey(14.5, y2, h2, 'pag2');
+  yield;
   eave(k, { hIn: 13.2, yIn: 24.4, hOut: 18.8, yOut: 22.1, lift: 1.25, detail });
+  yield;
 
   // Balcony where the tower begins: deck, railing, and the plastered footing of the shaft.
   const top = ROOT_TOP_HALF.pagoda;
+  yield;
   k.box('timber', (top + 1.6) * 2, 0.35, (top + 1.6) * 2, M(0, 24.4 + 0.175, 0));
+  yield;
   k.box('plaster', top * 2, H - 24.4, top * 2, M(0, (24.4 + H) / 2, 0));
+  yield;
   for (let side = 0; side < 4; side++) {
     const F = face(side, top);
     for (let i = 0; i < 7; i++) pane(k, F, -top + (top * 2 / 7) * (i + 0.5), 24.75 + (H - 24.75) / 2, 2.6, H - 24.75 - 0.6, 0.03, warmLight(rand, PANE_SHOJI, 0.85));
@@ -690,7 +793,9 @@ const pagoda: RootBuilder = (k, detail, rand) => {
     for (let i = 0; i <= 14; i++) k.inst('pag:rail', 'timber', unitBox, R.clone().multiply(M(-top - 1.45 + ((top + 1.45) * 2 / 14) * i, 24.75 + 0.55, 0, 0, 0.24, 1.1, 0.24)));
   }
   k.add('timber', squareSweep(top + 1.45, [[-0.1, 25.9], [0.1, 25.9], [0.1, 26.1], [-0.1, 26.1]]), undefined, false);
+  yield;
   k.add('timber', squareSweep(top, [[-0.1, H - 0.4], [0.18, H - 0.4], [0.18, H], [-0.1, H]]), undefined, false);
+  yield;
 };
 
 interface EaveSpec {
@@ -820,22 +925,35 @@ function eave(k: Kit, e: EaveSpec): void {
  * tall round-arched entrance under voussoirs, then two storeys of Chicago
  * windows between piers, a heavy cornice on modillions and a parapet.
  */
-const chicago: RootBuilder = (k, detail, rand) => {
+const chicago: RootBuilder = function* (k, detail, rand) {
   const H = ROOT_HEIGHT.chicago;
+  yield;
   const FOOT = 36;
+  yield;
   const a = FOOT / 2;
+  yield;
   let y = steps(k, 'granite', [42, 40], 0.45);
+  yield;
   k.box('granite', FOOT + 0.8, 0.7, FOOT + 0.8, M(0, y + 0.35, 0));
+  yield;
   y += 0.7;
+  yield;
 
   // Rusticated base: arched windows all round, the grand entrance on the two fronts.
   const baseH = 8.6;
+  yield;
   const depth = 1.3;
+  yield;
   const grand: Opening = { u: 0, w: 7.0, y0: 0.02, ys: 4.6, ring: 1.2 };
+  yield;
   const side5 = [-14, -7, 0, 7, 14].map((u): Opening => ({ u, w: 2.8, y0: 1.2, ys: 4.6, ring: 0.75 }));
+  yield;
   const front4 = [-14, -8.2, 8.2, 14].map((u): Opening => ({ u, w: 2.8, y0: 1.2, ys: 4.6, ring: 0.75 }));
+  yield;
   const baseCore = 2 * (a - 0.2 - depth - 0.1);
+  yield;
   k.box('slab', baseCore, baseH, baseCore, M(0, y + baseH / 2, 0));
+  yield;
   for (let side = 0; side < 4; side++) {
     const front = side % 2 === 0;
     const openings = front ? [...front4, grand] : side5;
@@ -850,18 +968,27 @@ const chicago: RootBuilder = (k, detail, rand) => {
     }
   }
   y += baseH;
+  yield;
 
   // String course.
   k.add('limestone', squareSweep(a, [[-1, y], [0.1, y], [0.25, y + 0.2], [0.25, y + 0.6], [0.1, y + 0.8], [-1, y + 0.8]]));
+  yield;
   y += 0.8;
+  yield;
 
   // Two storeys of Chicago windows between piers.
   const upperH = 11.6;
+  yield;
   const recess = 0.5;
+  yield;
   const bays = 6;
+  yield;
   const pitch = FOOT / bays;
+  yield;
   k.box('slab', FOOT - 2 * recess, upperH, FOOT - 2 * recess, M(0, y + upperH / 2, 0));
+  yield;
   const storeyH = upperH / 2;
+  yield;
   for (let side = 0; side < 4; side++) {
     const F = face(side, a);
     for (let i = 0; i <= bays; i++) {
@@ -892,10 +1019,13 @@ const chicago: RootBuilder = (k, detail, rand) => {
     }
   }
   y += upperH;
+  yield;
 
   // Cornice on modillions, then a parapet.
   const c0 = y;
+  yield;
   k.add('limestone', squareSweep(a, [[-1, c0], [0.35, c0], [0.35, c0 + 0.5], [0.55, c0 + 0.6], [0.55, c0 + 0.9], [-1, c0 + 0.9]]));
+  yield;
   if (detail) {
     const mod = (): THREE.BufferGeometry => new THREE.BoxGeometry(0.35, 0.42, 1.0);
     for (let side = 0; side < 4; side++) {
@@ -905,8 +1035,11 @@ const chicago: RootBuilder = (k, detail, rand) => {
     }
   }
   k.add('limestone', squareSweep(a, [[-1, c0 + 1.32], [1.6, c0 + 1.32], [1.6, c0 + 1.72], [1.75, c0 + 1.82], [1.7, c0 + 2.0], [-1, c0 + 2.0]]));
+  yield;
   k.box('limestone', FOOT - 0.9, H - c0 - 2.0, FOOT - 0.9, M(0, (c0 + 2.0 + H) / 2, 0));
+  yield;
   k.add('limestone', squareSweep(a - 0.45, [[-0.5, H - 0.25], [0.12, H - 0.25], [0.12, H], [-0.5, H]]));
+  yield;
 };
 
 // ---------------------------------------------------------------- Collegiate
@@ -935,24 +1068,34 @@ const arcTop = (o: Opening): number => o.ys + o.w * Math.sin(Math.PI / 3);
  * slopes. Built in the Kit's brick and limestone slots, which a school
  * tower draws in the campus's own masonry (school-towers.ts).
  */
-const collegiate: RootBuilder = (k, detail, rand) => {
+const collegiate: RootBuilder = function* (k, detail, rand) {
   const H = ROOT_HEIGHT.collegiate;
+  yield;
   const FOOT = 32;
+  yield;
   const a = FOOT / 2;
+  yield;
   /** Brick fired in different years: each piece a few percent lighter or darker. */
   const brick = (f: () => void): void => {
     k.tint.setScalar(0.97 + 0.06 * rand());
     f();
     k.tint.setScalar(1);
   };
+  yield;
   const GROUND = steps(k, 'limestone', [38, 36], 0.45);
+  yield;
   // Where the stone meets the ground it is damp and dark: a weathered base course round the lowest step.
   k.tint.setRGB(0.6, 0.58, 0.56);
+  yield;
   k.add('limestone', squareSweep(19.0, [[-0.6, 0], [0.03, 0], [0.03, 0.26], [-0.6, 0.26]]));
+  yield;
   k.tint.setScalar(1);
+  yield;
   let y = GROUND;
+  yield;
   /** A window's light: a lamplit room behind glass that still mirrors the dusk, or a dark one. */
   const glow = (on = 0.72): THREE.Color => (rand() < on ? paneData(0.26 + 0.3 * rand(), 1, PANE_SASH) : paneData(0.03, 1, PANE_SASH));
+  yield;
   /**
    * Real glazing in an opening on the face frame F: the pane set a jamb's depth into the reveal (not at its back),
    * in a dark steel frame with a transom bar and lead cames, so the glass has depth, a frame and bars.
@@ -966,33 +1109,55 @@ const collegiate: RootBuilder = (k, detail, rand) => {
     k.inst('col:bar', 'steel', unitBox, F.clone().multiply(M(u, y + y0 + h * 0.56, z + 0.02, 0, w, 0.05, 0.05)));
     for (let i = 1; i <= cames; i++) k.inst('col:came', 'steel', unitBox, F.clone().multiply(M(u - w / 2 + (w * i) / (cames + 1), mid, z + 0.02, 0, 0.035, h, 0.04)));
   };
+  yield;
   const plinthH = 1.1;
+  yield;
   k.add('limestone', squareSweep(a, [[-1, y], [0.5, y], [0.5, y + plinthH - 0.3], [0.1, y + plinthH], [-1, y + plinthH]]));
+  yield;
   y += plinthH;
+  yield;
 
   const depth = 0.9;
+  yield;
   const g1 = 8.0;
+  yield;
   const stringH = 0.5;
+  yield;
   const g2 = 6.6;
+  yield;
   const bodyH = g1 + stringH + g2;
+  yield;
   k.box('slab', FOOT - 2 * depth - 0.2, bodyH, FOOT - 2 * depth - 0.2, M(0, y + bodyH / 2, 0));
+  yield;
 
   const door: Opening = { u: 0, w: 3.4, y0: 0.02, ys: 3.4, pointed: true };
+  yield;
   const lower = (u: number): Opening => ({ u, w: 2.0, y0: 1.5, ys: 4.7, pointed: true });
+  yield;
   const frontLower = [-11, -5.8, 5.8, 11].map(lower);
+  yield;
   const sideLower = [-11, -5.5, 0, 5.5, 11].map(lower);
+  yield;
   const upperY0 = g1 + stringH + 1.2;
+  yield;
   const upperY1 = upperY0 + 3.3;
+  yield;
   const upperW = 2.3;
+  yield;
   const frontUpper = [-11, -5.8, 0, 5.8, 11];
+  yield;
   const sideUpper = [-11, -5.5, 0, 5.5, 11];
+  yield;
   const course = 0.9;
+  yield;
   const courses = Math.round(bodyH / course);
+  yield;
   /** Rain off a sill has run down the brick under it, darkest under the drip. */
   const stain = (F: THREE.Matrix4, u: number, sillY: number, w: number): void => {
     const run = Math.min(sillY - 0.3, 1.0 + 0.9 * rand());
     k.stain('brickWall', w * (0.8 + 0.25 * rand()), run, F.clone().multiply(M(u + (rand() - 0.5) * 0.2, y + sillY - 0.18 - run / 2, 0.012)), 0.4 + 0.2 * rand());
   };
+  yield;
 
   for (let side = 0; side < 4; side++) {
     const front = side % 2 === 0;
@@ -1121,9 +1286,13 @@ const collegiate: RootBuilder = (k, detail, rand) => {
 
   // The string course between the storeys, and the cornice over the upper one, on corbels at high quality.
   const s0 = y + g1;
+  yield;
   k.add('limestone', squareSweep(a, [[-1, s0], [0.12, s0], [0.3, s0 + 0.12], [0.3, s0 + 0.38], [0.06, s0 + stringH], [-1, s0 + stringH]]));
+  yield;
   const c0 = y + bodyH;
+  yield;
   k.add('limestone', squareSweep(a, [[-1, c0], [0.12, c0], [0.12, c0 + 0.2], [0.36, c0 + 0.3], [0.4, c0 + 0.5], [0.54, c0 + 0.58], [0.54, c0 + 0.72], [-1, c0 + 0.72]]));
+  yield;
   if (detail) {
     const corbel = (): THREE.BufferGeometry => new THREE.BoxGeometry(0.3, 0.34, 0.42);
     for (let side = 0; side < 4; side++) {
@@ -1135,9 +1304,13 @@ const collegiate: RootBuilder = (k, detail, rand) => {
 
   // The parapet: brick under a weathered limestone coping, a pinnacle at each corner.
   const p0 = c0 + 0.72;
+  yield;
   brick(() => k.add('brickWall', squareSweep(a, [[-0.55, p0], [0.12, p0], [0.12, p0 + 1.0], [-0.55, p0 + 1.0]])));
+  yield;
   const p1 = p0 + 1.0;
+  yield;
   k.add('limestone', squareSweep(a, [[-0.6, p1], [0.26, p1], [0.3, p1 + 0.08], [0.0, p1 + 0.24], [-0.6, p1 + 0.24]]));
+  yield;
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
       k.box('limestone', 1.1, 2.0, 1.1, M(sx * (a - 0.55), p0 + 1.0, sz * (a - 0.55)));
@@ -1147,11 +1320,17 @@ const collegiate: RootBuilder = (k, detail, rand) => {
 
   // The roof behind the parapet: slate slopes rising to the footing the tower stands on, chimney stacks through them.
   const r0 = p0 + 0.08;
+  yield;
   const rH = 3.3;
+  yield;
   k.add('roofTile', frustum(FOOT - 1.2, rH, FOOT - 1.2, (ROOT_TOP_HALF.collegiate * 2 + 0.4) / (FOOT - 1.2)), M(0, r0 + rH / 2, 0), false);
+  yield;
   const footHalf = ROOT_TOP_HALF.collegiate;
+  yield;
   brick(() => k.box('brickWall', footHalf * 2, H - r0, footHalf * 2, M(0, (r0 + H) / 2, 0)));
+  yield;
   k.add('limestone', squareSweep(footHalf, [[-0.3, H - 0.6], [0.2, H - 0.6], [0.2, H - 0.5], [0.08, H], [-0.3, H]]));
+  yield;
   for (const sx of [-1, 1]) {
     for (const z of [-5, 5]) {
       brick(() => k.box('brickWall', 1.6, 3.1, 1.2, M(sx * 14.3, r0 + 0.6 + 1.55, z)));

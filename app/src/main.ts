@@ -134,6 +134,10 @@ interface DebugHandle {
   memory(): { geometries: number; textures: number };
   /** Rebuilds waiting to run a step at a time (batch.ts scheduleRemerge), and a quarter rebuild waiting out its debounce. */
   rebuilding(): number;
+  /** How many floors the tower drawn for a repo now has, or -1 (the UI test: the plates follow what is drawn). */
+  drawnFloors(repo: string): number;
+  /** The longest single rebuild step since last asked (the UI test: no step may stall a frame). */
+  longestStep(): { key: string; ms: number };
   /** Starts (true) or ends (false) a per-frame trace of the city's own work, returning the last one (perf diagnosis). */
   trace(on: boolean): ReturnType<ReturnType<typeof createCity>['trace']>;
   /** Batch culling by cluster on or off (Task 12; off draws every batch whole, as before it), for a before-and-after measure. */
@@ -540,6 +544,8 @@ async function main(): Promise<void> {
     stats: () => city.stats(),
     memory: () => city.memory(),
     rebuilding: () => city.rebuilding(),
+    drawnFloors: (repo) => city.drawnFloors(repo),
+    longestStep: () => city.longestStep(),
     trace: (on) => city.trace(on),
     cull: (on) => setClusterCulling(on),
     breakdown: (detail) => city.breakdown(detail),
@@ -1264,8 +1270,15 @@ async function main(): Promise<void> {
     // going re-picks no other tower and frees its variant for nobody else.
     for (const [repo, slot] of sites) sited.set(repo, slot);
     looks = pickLooks([...sited].map(([repo, slot]) => ({ repo, slot, ...(sites.has(repo) ? {} : { gone: true }) })));
-    districts = occ.districts;
     debug.builds += city.setPlots(occ);
+    // Once the city stands as asked (a rebuild runs a step a frame, Task 13): what he sees and clicks (the plates, the
+    // inspector, the districts a click opens) follows what is drawn, never a tower still being built.
+    city.whenBuilt(() => shown(occ));
+  }
+
+  /** The plates, the inspector and the district list for the occupancy now drawn. */
+  function shown(occ: ReturnType<typeof occupancy>): void {
+    districts = occ.districts;
     debug.districts = occ.districts.length;
     debug.sites = occ.sites.length;
     debug.quarters = occ.quarters.length;

@@ -74,6 +74,12 @@ export function clusterCulling(): boolean {
  * index order.
  */
 export function clusterTriangles(g: THREE.BufferGeometry, size = CLUSTER_SIZE): Cluster[] {
+  return finish(clusterTrianglesSteps(g, size));
+}
+
+/** Triangles sorted into cells and laid out per step (steps.ts): a step every CLUSTER_STEP triangles. */
+const CLUSTER_STEP = 30_000;
+export function* clusterTrianglesSteps(g: THREE.BufferGeometry, size = CLUSTER_SIZE): Steps<Cluster[]> {
   const index = g.index!;
   const idx = index.array as Uint16Array | Uint32Array;
   const pos = g.attributes.position as THREE.BufferAttribute;
@@ -81,6 +87,7 @@ export function clusterTriangles(g: THREE.BufferGeometry, size = CLUSTER_SIZE): 
   const cells = new Map<number, number[]>();
   const coords = new Map<number, [number, number, number]>();
   for (let t = 0; t < tris; t++) {
+    if (t > 0 && t % CLUSTER_STEP === 0) yield;
     const a = idx[t * 3];
     const b = idx[t * 3 + 1];
     const c = idx[t * 3 + 2];
@@ -104,7 +111,13 @@ export function clusterTriangles(g: THREE.BufferGeometry, size = CLUSTER_SIZE): 
   const clusters: Cluster[] = [];
   const v = new THREE.Vector3();
   let k = 0;
+  let laid = 0;
   for (const key of keys) {
+    if (laid > CLUSTER_STEP) {
+      laid = 0;
+      yield;
+    }
+    laid += cells.get(key)!.length;
     const start = k;
     const box = new THREE.Box3();
     for (const t of cells.get(key)!) {
@@ -158,9 +171,10 @@ export class ClusterMesh extends THREE.Mesh {
   _indirectTexture: THREE.DataTexture;
   _colorsTexture = null;
 
-  constructor(geometry: THREE.BufferGeometry, material: THREE.Material, size = CLUSTER_SIZE) {
+  /** `clusters` when the geometry was already laid out (clusterTrianglesSteps, a batch built a step at a time). */
+  constructor(geometry: THREE.BufferGeometry, material: THREE.Material, size = CLUSTER_SIZE, clusters?: Cluster[]) {
     super(geometry, material);
-    this.clusters = clusterTriangles(geometry, size);
+    this.clusters = clusters ?? clusterTriangles(geometry, size);
     this._multiDrawStarts = new Int32Array(this.clusters.length);
     this._multiDrawCounts = new Int32Array(this.clusters.length);
     this._matricesTexture = identity();
@@ -228,19 +242,25 @@ export class ClusterMesh extends THREE.Mesh {
  * each frame. A key queued again replaces its waiting work (and goes to the
  * back of the line), so a burst merges once. A piece of work that returns
  * true has more to do: it stays first in line and goes on while the frame
- * has time left, and next frame if not.
+ * has time left, and next frame if not. The budget is checked before each
+ * step: no step starts once 4 ms are spent, so a frame's share is 4 ms plus
+ * at most one step, and the builders yield often enough to keep that small.
+ * Keys are scoped by owner (`remergeOwner`), so a city or a grid that is
+ * disposed takes its own waiting work with it (cancelRemerges).
  */
 export const REMERGE_BUDGET_MS = 4;
 
 export interface RemergeQueue {
   schedule(key: string, work: () => void | boolean): void;
-  /** Runs waiting work until the frame's budget is spent; returns how many pieces ran. */
-  run(): number;
+  /** Runs waiting work until the frame's budget is spent (the queue's own, or `budget` ms); returns how many pieces ran. */
+  run(budget?: number): number;
   pending(): number;
   /** Runs everything waiting now, whatever it costs (a teardown, or a test that wants the result). */
   flush(): void;
   /** The longest single piece of work since last asked, and its key (the perf tools' hitch hunt). */
   longest(): { key: string; ms: number };
+  /** Drops every waiting piece of work whose key starts with `prefix` (an owner's, when it is disposed). */
+  cancel(prefix: string): number;
 }
 
 export function remergeQueue(budgetMs = REMERGE_BUDGET_MS, now: () => number = () => performance.now()): RemergeQueue {
@@ -251,6 +271,9 @@ export function remergeQueue(budgetMs = REMERGE_BUDGET_MS, now: () => number = (
     const t0 = now();
     const more = work() === true;
     const ms = now() - t0;
+    // What a step of this work has lately cost, eased toward each new step (a frame does not start one it cannot fit).
+    cost.set(key, Math.max(ms, (cost.get(key) ?? 0) * 0.7));
+    if (!more) cost.delete(key);
     if (ms > longest.ms) {
       longest.ms = ms;
       longest.key = key;
@@ -265,6 +288,7 @@ export function remergeQueue(budgetMs = REMERGE_BUDGET_MS, now: () => number = (
     return true;
   };
   const longest = { key: '', ms: 0 };
+  const cost = new Map<string, number>();
   return {
     longest: () => {
       const out = { ...longest };
@@ -276,13 +300,30 @@ export function remergeQueue(budgetMs = REMERGE_BUDGET_MS, now: () => number = (
       queue.delete(key);
       queue.set(key, work);
     },
-    run() {
+    run(budget = budgetMs) {
       const start = now();
       let ran = 0;
-      while (queue.size > 0 && now() - start < budgetMs) ran += step() ? 1 : 0;
+      // The first step always runs (nothing waits for ever); after it, a step starts only if what such a step has
+      // lately cost still fits in what is left of the budget.
+      while (queue.size > 0) {
+        const spent = now() - start;
+        if (spent >= budget) break;
+        const next = queue.keys().next().value as string;
+        if (ran > 0 && spent + (cost.get(next) ?? 0) > budget) break;
+        ran += step() ? 1 : 0;
+      }
       return ran;
     },
     pending: () => queue.size,
+    cancel(prefix) {
+      let n = 0;
+      for (const k of [...queue.keys()]) {
+        if (!k.startsWith(prefix)) continue;
+        queue.delete(k);
+        n++;
+      }
+      return n;
+    },
     flush() {
       while (queue.size > 0) step();
     },
@@ -295,8 +336,37 @@ export function scheduleRemerge(key: string, work: () => void | boolean): void {
   remerges.schedule(key, work);
 }
 /** Runs the shared queue for this frame's budget (the city's loop, once a frame). */
-export function runRemerges(): number {
-  return remerges.run();
+export function runRemerges(budget?: number): number {
+  return remerges.run(budget);
+}
+/** Drops the waiting re-merges whose keys start with `prefix` (an owner disposed, or work no longer wanted). */
+export function cancelRemerges(prefix: string): number {
+  return remerges.cancel(prefix);
+}
+/**
+ * The target a rebuild in flight is building toward (Task 13): a request
+ * for the same target leaves it to finish rather than starting it again
+ * (refreshes come in bursts, each repeating the change still being built).
+ */
+export function rebuildTarget(): { same(key: string): boolean; start(key: string): void; end(key: string): void; busy(): boolean; current(): string | null } {
+  let current: string | null = null;
+  return {
+    same: (key) => current === key,
+    busy: () => current !== null,
+    current: () => current,
+    start(key) {
+      current = key;
+    },
+    end(key) {
+      if (current === key) current = null;
+    },
+  };
+}
+let owners = 0;
+/** A key prefix of its own for each owner of queued work (a city, a grid), so its jobs never collide with another's. */
+export function remergeOwner(kind: string): string {
+  owners++;
+  return `${kind}#${owners}:`;
 }
 /** The longest single re-merge step on the shared queue since last asked. */
 export function longestRemerge(): { key: string; ms: number } {
@@ -331,10 +401,15 @@ const EXPAND_LIMIT = 24000;
 
 /** Each instance of `im` as its own geometry in world space, its instance colour multiplied into its vertex colours. */
 function expand(im: THREE.InstancedMesh, world: THREE.Matrix4): THREE.BufferGeometry[] {
+  return finish(expandSteps(im, world));
+}
+/** expand a few dozen instances a step (steps.ts). */
+function* expandSteps(im: THREE.InstancedMesh, world: THREE.Matrix4): Steps<THREE.BufferGeometry[]> {
   const out: THREE.BufferGeometry[] = [];
   const m = new THREE.Matrix4();
   const c = new THREE.Color();
   for (let i = 0; i < im.count; i++) {
+    if (i > 0 && i % 48 === 0) yield;
     im.getMatrixAt(i, m);
     const g = im.geometry.clone().applyMatrix4(m.premultiply(world));
     if (im.instanceColor) {
@@ -423,6 +498,7 @@ export function* batchPiecesSteps(roots: THREE.Object3D[]): Steps<Batched> {
   const owned: THREE.BufferGeometry[] = [];
   const meshes: THREE.InstancedMesh[] = [];
 
+  let plainSeen = 0;
   for (const root of roots) {
     yield;
     root.updateMatrixWorld(true);
@@ -453,7 +529,7 @@ export function* batchPiecesSteps(roots: THREE.Object3D[]): Steps<Batched> {
         const mat = mesh.material as THREE.Material;
         if ((mesh as THREE.InstancedMesh).isInstancedMesh && expandable(mesh as THREE.InstancedMesh)) {
           const im = mesh as THREE.InstancedMesh;
-          for (const g of expand(im, im.matrixWorld).map(indexed)) {
+          for (const g of (yield* expandSteps(im, im.matrixWorld)).map(indexed)) {
             const key = `${mat.uuid}|${im.castShadow}|${im.receiveShadow}|${attrs(g)}`;
             let b = plain.get(key);
             if (!b) plain.set(key, (b = { mat, cast: im.castShadow, receive: im.receiveShadow, geos: [] }));
@@ -468,6 +544,7 @@ export function* batchPiecesSteps(roots: THREE.Object3D[]): Steps<Batched> {
           if (!l) inst.set(key, (l = []));
           l.push({ mesh: im, world: im.matrixWorld.clone() });
         } else {
+          if (++plainSeen % 12 === 0) yield;
           const g = indexed(mesh.geometry.clone().applyMatrix4(mesh.matrixWorld));
           const key = `${mat.uuid}|${mesh.castShadow}|${mesh.receiveShadow}|${attrs(g)}`;
           let b = plain.get(key);
@@ -504,8 +581,10 @@ export function* batchPiecesSteps(roots: THREE.Object3D[]): Steps<Batched> {
     for (const part of parts) {
       part.computeBoundingSphere();
       owned.push(part);
-      // Laid out in clusters, so a close view draws only what it sees (above).
-      const mesh = new ClusterMesh(part, b.mat);
+      // Laid out in clusters, so a close view draws only what it sees (above), a step at a time.
+      yield;
+      const clusters = yield* clusterTrianglesSteps(part);
+      const mesh = new ClusterMesh(part, b.mat, CLUSTER_SIZE, clusters);
       mesh.castShadow = b.cast;
       mesh.receiveShadow = b.receive;
       group.add(mesh);

@@ -1,12 +1,15 @@
 import './kit-setup.js';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { beforeEach, test } from 'node:test';
 
 import * as THREE from 'three';
 
 import { createGrid, type Grid } from '../app/src/city/grid.js';
 import { LAYER } from '../app/src/city/lod.js';
 import { flushRemerges, pendingRemerges, runRemerges } from '../app/src/city/batch.js';
+
+// Each test starts with the city's queue empty: an earlier test's grid can leave work on it.
+beforeEach(() => flushRemerges());
 
 const SUN = new THREE.Vector3(-0.908, 0.3, 0.419).normalize();
 const grid = (): Grid => createGrid('medium', { sun: SUN, half: 320, offset: 800, near: 10, far: 1600 });
@@ -225,4 +228,76 @@ test('a turn of the eye copies only the blocks it newly meets, and lets the rest
   assertNothingBehind(g, back);
   assertFaithful(g);
   g.dispose();
+});
+
+test('a rebuild spread over frames keeps every block the eye meets while its copies refill', () => {
+  const plazas = [{ x: 240, z: 240, rootHeight: 30 }];
+  const ahead = eyeAt(200, -150, [0, 1]);
+  const target = new THREE.Vector3(200, 0, 0);
+  // How many steps the rebuild takes: its last few dozen are the copies' refills, a copy a step.
+  const probe = grid();
+  probe.update(ahead.position, target, ahead);
+  let n = 0;
+  const counting = probe.setPlazasSteps(plazas);
+  while (!counting.next().done) n++;
+  probe.dispose();
+  const g = grid();
+  g.update(ahead.position, target, ahead);
+  const steps = g.setPlazasSteps(plazas);
+  // Half way through the view's refills the eye turns: what it now meets must be drawn when the refills are done.
+  for (let i = 0; i < n - 30; i++) steps.next();
+  const turned = eyeAt(200, -150, [0.8, 0.6]);
+  g.update(turned.position, target, turned);
+  for (let r = steps.next(); !r.done; r = steps.next()) g.update(turned.position, target, turned);
+  g.update(turned.position, target, turned);
+  assertComplete(g, turned);
+  assertFaithful(g);
+  g.dispose();
+});
+
+test('a plot freed by a rebuild that was overtaken half way still rises', () => {
+  const g = grid();
+  const cam = eyeAt(0, 600, [0, -1]);
+  cam.position.y = 300;
+  cam.lookAt(0, 0, 0);
+  cam.updateMatrixWorld(true);
+  const plaza = { x: 240, z: 0 };
+  const other = { x: -240, z: 0 };
+  g.setPlazas([plaza]);
+  g.update(cam.position, new THREE.Vector3(0, 0, 0), cam, 0);
+  // The plot is given back, but a second change overtakes that rebuild half way: the plot must still rise.
+  const first = g.setPlazasSteps([]);
+  for (let i = 0; i < 40; i++) first.next();
+  const second = g.setPlazasSteps([other]);
+  for (let r = second.next(); !r.done; r = second.next());
+  g.update(cam.position, new THREE.Vector3(0, 0, 0), cam, 0);
+  let top = 0;
+  const m = new THREE.Matrix4();
+  const p = new THREE.Vector3();
+  const s = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  let any = 0;
+  for (const { copy } of pairs(g)) {
+    if (!copy.name.startsWith('wall')) continue;
+    for (let j = 0; j < copy.count; j++) {
+      m.fromArray(copy.instanceMatrix.array, j * 16).decompose(p, q, s);
+      if (Math.hypot(p.x - plaza.x, p.z - plaza.z) < 40) {
+        any++;
+        top = Math.max(top, p.y + s.y / 2);
+      }
+    }
+  }
+  assert.ok(any > 0, 'the freed plot is built on');
+  assert.ok(top < 1, `its blocks start at the ground (${top.toFixed(1)} m)`);
+  g.dispose();
+});
+
+test("a disposed grid leaves none of its work on the city's queue", () => {
+  const g = grid();
+  g.update(eyeAt(200, -150, [0, 1]).position, new THREE.Vector3(200, 0, 0), eyeAt(200, -150, [0, 1]));
+  const back = eyeAt(200, -150, [0, -1]);
+  g.update(back.position, new THREE.Vector3(200, 0, 0), back);
+  assert.ok(pendingRemerges() > 0, 'letting go of what is behind waits on the queue');
+  g.dispose();
+  assert.equal(pendingRemerges(), 0, 'and goes with the grid');
 });
