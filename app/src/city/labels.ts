@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import type { Floor } from '../../../shared/types.js';
+import { marketKey } from '../ui/inspector.js';
 
 /** A district's or a firm's quarter's name plate: what it says, where it stands, what clicking it does. */
 export interface Plate {
@@ -49,31 +50,14 @@ export function plateFits(x: number, y: number, words: number, flip: boolean, vi
 /** A plate hidden for running off the view shows again only once it fits with this many pixels to spare, so it never flickers at the edge. */
 export const PLATE_FIT_SPARE = 8;
 
-/**
- * The tower and quarter plates' words on the city (Task 15a review): a dark ground held close to the letters (a
- * tight shadow and a wider soft one, no colour, no glow), and the second line's ink, lighter than the stylesheet's
- * --ink-2 so it reads on the haze yet still a step under the name's.
- */
-export const PLATE_SHADOW = '0 0 2px rgba(10, 9, 12, 0.95), 0 0 5px rgba(10, 9, 12, 0.9), 0 0 10px rgba(10, 9, 12, 0.75), 0 1px 16px rgba(10, 9, 12, 0.55)';
-export const PLATE_SUB_INK = '#ddd6ca';
-
 /** The class a flipped plate wears (style.css sets its words right-aligned left of the hairline). */
 export const PLATE_FLIP = 'plate-flip';
 
 /**
  * What the lit and dark bands on a tower are, said on its plate: the
- * inspector's market key (ui/inspector.ts marketKey) in the same words, for
- * the kinds of floor this tower holds. Empty when it holds none.
+ * inspector's market key, one source for the words (Task 26).
  */
-export function bandKey(floors: readonly Floor[]): string {
-  const states = new Set(floors.map((f) => f.earned?.state).filter(Boolean));
-  if (!states.size) return '';
-  const parts: string[] = [];
-  if (states.has('lit')) parts.push('A lit floor is a change a firm built here that you merged');
-  if (states.has('scar')) parts.push(`${parts.length ? 'a' : 'A'} dark band is a scar, work that failed inspection, kept where it failed`);
-  if (states.has('waiting')) parts.push(`${parts.length ? 'a' : 'A'} floor still unlit waits on your review`);
-  return `${parts.join('; ')}.`;
-}
+export const bandKey: (floors: readonly Floor[]) => string = marketKey;
 
 export interface Plates {
   set(plates: Plate[]): void;
@@ -150,11 +134,6 @@ export function createPlates(
   function setFlip(l: Live, on: boolean): void {
     l.flipped = on;
     l.el.classList.toggle(PLATE_FLIP, on);
-    for (const span of [l.name, l.sub]) {
-      span.style.left = on ? 'auto' : '';
-      span.style.right = on ? `${WORDS_OFF}px` : '';
-      span.style.textAlign = on ? 'right' : '';
-    }
   }
 
   return {
@@ -174,11 +153,6 @@ export function createPlates(
           name.className = 'plate-name';
           const sub = document.createElement('span');
           sub.className = 'plate-sub';
-          // On the haze (Task 15a review): a close dark ground under the words, and the second line a step nearer the
-          // name's ink, so both read at 4.5:1 against the brightest tenth of the city behind them.
-          name.style.textShadow = PLATE_SHADOW;
-          sub.style.textShadow = PLATE_SHADOW;
-          if (!plate.className) sub.style.color = PLATE_SUB_INK;
           el.append(name, sub);
           layer.appendChild(el);
           l = { plate, el, name, sub, hidden: false, words: 0, flipped: false, tested: false, clipped: false };

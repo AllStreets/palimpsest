@@ -56,6 +56,8 @@ const MIME: Record<string, string> = {
 };
 
 const HEARTBEAT_MS = 15_000;
+/** How long a close waits for a request still in flight before its connection is cut. */
+const CLOSE_GRACE_MS = 1_000;
 
 /** The Vite dev server's port: its page calls the engine through the dev proxy. */
 const DEV_PORT = 4771;
@@ -682,6 +684,10 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Starte
         noteSseClients(0);
         stopSample();
         server.close(() => resolveClose());
+        // Idle keep-alive sockets go now; a connection still mid-request gets a second, then goes too, so a
+        // client that never finishes its request can never hold the close open.
+        server.closeIdleConnections();
+        setTimeout(() => server.closeAllConnections(), CLOSE_GRACE_MS).unref();
       }),
   };
 }

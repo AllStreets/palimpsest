@@ -82,8 +82,9 @@
   position: absolute;
   left: 7px;
   white-space: nowrap;
-  /* A close dark edge and a wide soft halo, so the words hold over haze, lit glass and the bright sky alike. */
-  text-shadow: 0 0 1px rgba(0, 0, 0, 0.95), 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 10px rgba(8, 7, 12, 0.8), 0 0 22px rgba(8, 7, 12, 0.5);
+  /* On the haze (Task 15a review): a dark ground held close to the letters, a tight shadow and a wider soft one, no
+     colour and no glow, so the words read at 4.5:1 against the brightest tenth of the city behind them. */
+  text-shadow: 0 0 2px rgba(10, 9, 12, 0.95), 0 0 5px rgba(10, 9, 12, 0.9), 0 0 10px rgba(10, 9, 12, 0.75), 0 1px 16px rgba(10, 9, 12, 0.55);
   pointer-events: auto;
   cursor: pointer;
 }
@@ -99,7 +100,15 @@
   font-family: var(--sans);
   font-size: 12px;
   line-height: 1;
-  color: #d6cec1;
+  /* Lighter than --ink-2 so it reads on the haze, yet a step under the name's ink (Task 15a review). */
+  color: #ddd6ca;
+}
+/* A plate set left of its hairline, near the view's right edge (labels.ts PLATE_FLIP): its words end at the hairline. */
+.plate.plate-flip .plate-name,
+.plate.plate-flip .plate-sub {
+  left: auto;
+  right: 7px;
+  text-align: right;
 }
 .plate:disabled .plate-name,
 .plate:disabled .plate-sub {
@@ -134,6 +143,7 @@
   bottom: auto;
   top: -18px;
   font-size: 11px;
+  color: #d6cec1;
   max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;

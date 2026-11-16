@@ -4,6 +4,7 @@
  * tower's plate says what its lit and dark bands are.
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import * as labels from '../app/src/city/labels.js';
@@ -71,11 +72,30 @@ test("a tower's plate says what its lit and dark bands are, in the inspector's w
 });
 
 test("the plates' words carry their own dark ground, and the second line an ink lighter than --ink-2 (Task 15a review)", () => {
-  const m = labels as unknown as { PLATE_SHADOW?: string; PLATE_SUB_INK?: string };
+  // One source since the Task 26 merge: the stylesheet, not inline styles set by labels.ts.
+  const css = readFileSync(new URL('../app/src/ui/style.css', import.meta.url), 'utf8');
+  const rule = (selector: string): string => {
+    const i = css.indexOf(`${selector} {`);
+    assert.ok(i >= 0, `style.css has ${selector}`);
+    return css.slice(i, css.indexOf('}', i + 1));
+  };
   const lum = (hex: string): number => {
     const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   };
-  assert.ok(m.PLATE_SHADOW && /0 0 2px rgba\(10, 9, 12, 0\.9/.test(m.PLATE_SHADOW), 'a tight dark shadow under the letters');
-  assert.ok(m.PLATE_SUB_INK && lum(m.PLATE_SUB_INK) > lum('#b9b1a4') && lum(m.PLATE_SUB_INK) < lum('#f4efe6'), `the second line's ink ${m.PLATE_SUB_INK} sits between --ink-2 and the name's`);
+  assert.match(rule('.plate-name,\n.plate-sub'), /text-shadow: 0 0 2px rgba\(10, 9, 12, 0\.9/, 'a tight dark shadow under the letters');
+  const ink = /color: (#[0-9a-f]{6})/.exec(rule('}\n.plate-sub'))?.[1] ?? '';
+  assert.ok(lum(ink) > lum('#b9b1a4') && lum(ink) < lum('#f4efe6'), `the second line's ink ${ink} sits between --ink-2 and the name's`);
+  assert.doesNotMatch(readFileSync(new URL('../app/src/city/labels.ts', import.meta.url), 'utf8'), /style\.(textShadow|color)\s*=/, 'labels.ts sets no plate ink of its own');
+});
+
+test('a flipped plate sets its words right-aligned left of its hairline in style.css', () => {
+  const css = readFileSync(new URL('../app/src/ui/style.css', import.meta.url), 'utf8');
+  const i = css.indexOf('.plate.plate-flip .plate-name,\n.plate.plate-flip .plate-sub {');
+  assert.ok(i >= 0, 'style.css has the plate-flip rule');
+  const body = css.slice(i, css.indexOf('}', i));
+  assert.match(body, /left: auto;/);
+  assert.match(body, /right: 7px;/);
+  assert.match(body, /text-align: right;/);
+  assert.equal(labels.PLATE_FLIP, 'plate-flip');
 });
