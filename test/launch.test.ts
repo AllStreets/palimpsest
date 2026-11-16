@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { firstSentence, launchPlan } from '../tools/launch.js';
+import { launchPlan, namingSentence } from '../tools/launch.js';
 
 const README = `<p align="center"><img src="x.png" alt="logo" /></p>
 
@@ -14,6 +14,8 @@ const README = `<p align="center"><img src="x.png" alt="logo" /></p>
 # Palimpsest
 
 I work across a lot of repos, and their history is mostly invisible. A commit log is a list.
+
+Palimpsest turns that history into a city. Each repo becomes a district.
 
 Second paragraph.
 `;
@@ -54,10 +56,10 @@ test('its copy has no em dash, double hyphen in prose or emoji', () => {
   assert.doesNotMatch(prose, /—|--|\p{Extended_Pictographic}/u);
 });
 
-test('the description comes from the README first sentence', () => {
-  assert.equal(firstSentence(README), 'I work across a lot of repos, and their history is mostly invisible.');
-  const r = launchPlan({ ...base, readme: 'Tiny tool that does a thing. More.', pkg: GOOD_PKG, lock: GOOD_LOCK });
-  assert.ok(r.lines.join('\n').includes("--description 'Tiny tool that does a thing.'"));
+test('the description is the first README sentence that names Palimpsest', () => {
+  assert.equal(namingSentence(README), 'Palimpsest turns that history into a city.');
+  const r = launchPlan({ ...base, readme: 'Opening line. Palimpsest is a thing that does stuff. More.', pkg: GOOD_PKG, lock: GOOD_LOCK });
+  assert.ok(r.lines.join('\n').includes("--description 'Palimpsest is a thing that does stuff.'"));
 });
 
 test('it never imports child_process and never spawns', () => {

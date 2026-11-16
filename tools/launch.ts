@@ -18,9 +18,9 @@ const REPO = 'AllStreets/palimpsest';
 const TAG = 'v1.0.0';
 const TOPICS = ['tauri', 'threejs', 'claude', 'ai-agents', 'macos', 'git-history', 'visualization'];
 
-/** The README's first sentence of prose: skips HTML, comments, headings, badges and images. */
-export function firstSentence(readme: string): string {
-  const para: string[] = [];
+/** The README's first sentence of prose that names the project: skips HTML, comments, headings, badges and images. */
+export function namingSentence(readme: string, name = 'Palimpsest'): string {
+  const prose: string[] = [];
   let inComment = false;
   for (const raw of readme.split('\n')) {
     const line = raw.trim();
@@ -32,15 +32,11 @@ export function firstSentence(readme: string): string {
       if (!line.includes('-->')) inComment = true;
       continue;
     }
-    if (line === '' || line.startsWith('<') || line.startsWith('#') || line.startsWith('![') || line.startsWith('[![')) {
-      if (para.length) break;
-      continue;
-    }
-    para.push(line);
+    if (line === '' || line.startsWith('<') || line.startsWith('#') || line.startsWith('![') || line.startsWith('[![')) continue;
+    prose.push(line);
   }
-  const text = para.join(' ');
-  const m = text.match(/^.*?[.!?](?=\s|$)/);
-  return (m ? m[0] : text).trim();
+  const sentences = prose.join(' ').match(/.*?[.!?](?=\s|$)/g) ?? [];
+  return (sentences.find((s) => s.includes(name)) ?? sentences[0] ?? '').trim();
 }
 
 const q = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -66,7 +62,7 @@ export function launchPlan(i: LaunchInput): { ok: boolean; lines: string[] } {
     };
   }
   const notes = join(i.tmp, 'palimpsest-release-notes.md');
-  const description = firstSentence(i.readme);
+  const description = namingSentence(i.readme);
   const lines: string[] = [
     'Five steps for your word, one at a time. This prints them and runs none of them.',
     '',
