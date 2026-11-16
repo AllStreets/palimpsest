@@ -108,6 +108,43 @@ export function perfTiers(raw: string | undefined): Tier[] {
  * the 1512 by 982 built-in display, "UI looks like"), at its backing scale 2.
  */
 export const PERF_VIEWPORT = { width: 1512, height: 890, dpr: 2 } as const;
+
+/**
+ * Why the page does not stand on the city for a still, or null when it
+ * does: a route drawn over it, or a sheet's scrim open. The day's first
+ * open goes to the brief (main.ts), and its scrim darkens the whole frame
+ * from 0.7 at the left to 0.18 at the right even with the sheet itself
+ * hidden: every high still before the brightness debug was shot through it.
+ */
+export function cityStands(o: { hash: string; openScrims: number }): string | null {
+  if (o.hash !== '' && o.hash !== '#' && o.hash !== '#/') return `the page stands on ${o.hash}, not the city`;
+  if (o.openScrims > 0) return `${o.openScrims} scrim${o.openScrims === 1 ? '' : 's'} open over the city`;
+  return null;
+}
+
+/**
+ * Opens today's brief on perf's engine before its first page, as the UI
+ * test does: the day's first open is then spent, so every page, the first
+ * included, opens on the city and not on the brief over it.
+ */
+export async function openTodaysBrief(port: number, fetchImpl: (url: string, init?: RequestInit) => Promise<Response> = fetch): Promise<void> {
+  const res = await fetchImpl(`http://127.0.0.1:${port}/api/brief/open`, { method: 'POST', headers: { 'x-palimpsest': '1' } });
+  if (!res.ok) throw new Error(`perf: opening today's brief answered ${res.status}`);
+}
+
+/** The first page opened on the engine and a second are the same light: their mean luma within 3%. */
+export const SAME_LIGHT = 0.03;
+export function sameLight(a: number, b: number): boolean {
+  return Math.abs(a - b) <= SAME_LIGHT * Math.max(a, b);
+}
+
+/** Mean Rec. 709 luma of a screenshot, 0 to 255. */
+function meanLuma(png: Buffer): number {
+  const { data } = decodePng(png);
+  let s = 0;
+  for (let i = 0; i < data.length; i += 4) s += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+  return s / (data.length / 4);
+}
 /**
  * The sample's fixed date: every run seeds the same history, so the same windows are lit. PERF_SEED_AT=now seeds
  * it at the run's start instead, for the stills of what lasts only days after it happens (Task 8: the revival's
@@ -1034,10 +1071,15 @@ async function main(): Promise<void> {
   setRunner(sampleGh());
   const { startServer } = await import('../engine/server.js');
   const server = await startServer({ port: PORT, claudeSettingsPath });
+  // The day's first open goes to the brief, drawn over a scrim that darkens the whole frame: spent here, as the UI
+  // test does, so the first page opens on the city like every later one (the brightness debug: every high still
+  // before it was the first page's, shot through that scrim).
+  await openTodaysBrief(PORT);
   const browser = await chromium.launch({ args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist'] });
   const result: { viewport: typeof PERF_VIEWPORT; tiers: Partial<Record<Tier, { home: Budget; views: Record<string, ViewRow> }>> } = { viewport: PERF_VIEWPORT, tiers: {} };
   const live: Record<string, { stats: Tally; breakdown: Breakdown; fps: number }> = {};
   const only = process.env.PERF_ONLY?.split(',');
+  let lightFailed = false;
   const setQuality = (quality: Tier): Promise<Response> =>
     fetch(`http://127.0.0.1:${PORT}/api/settings`, {
       method: 'PATCH',
@@ -1053,9 +1095,12 @@ async function main(): Promise<void> {
     const open = async (q: string): Promise<void> => {
       await page.goto(`http://127.0.0.1:${PORT}/?${q}`);
       await page.waitForFunction(() => (window as unknown as { __palimpsest?: { ready: boolean } }).__palimpsest?.ready === true, null, { timeout: 60_000 });
-      // The stills are of the city: no running head, no plates, and not the morning's brief sheet over the left half.
+      // The stills are of the city: no running head, no plates, and no brief sheet (today's is opened before the first page).
       await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride { display: none !important; }' });
       await page.waitForTimeout(2500);
+      // Never a still with a route or a scrim over the city.
+      const why = cityStands(await page.evaluate(() => ({ hash: location.hash, openScrims: document.querySelectorAll('.scrim.open:not([hidden])').length })));
+      if (why) throw new Error(`perf: ${why}`);
     };
     for (const tier of only?.includes('first-frame') ? [] : tiers) {
       // The tier is Settings' quality, read as the page opens; the governor held still (PERF_GOVERNOR=1 leaves it running).
@@ -1065,6 +1110,19 @@ async function main(): Promise<void> {
       if (process.env.PERF_NO_CULL) await callDebug(page, 'd.cull(false)');
       const stands = await dbg<string>(page, '(d) => d.quality()');
       if (stands !== tier) throw new Error(`perf: the city opened at ${stands}, not ${tier}`);
+      if (tier === tiers[0]) {
+        // The first page opened on the engine and a second, from home: the same light within 3% (the brightness debug).
+        const home = await dbg<{ eye: V3; target: V3 }>(page, '(d) => d.limits().home');
+        const luma: number[] = [];
+        for (const second of [false, true]) {
+          if (second) await open(process.env.PERF_GOVERNOR ? 'debug' : 'fixed-quality&debug');
+          await settle(page, home.eye, home.target);
+          luma.push(meanLuma(await page.screenshot()));
+        }
+        const same = sameLight(luma[0], luma[1]);
+        console.log(`${same ? 'ok  ' : 'FAIL'}  ${tier} home on the engine's first page and a second are the same light within ${SAME_LIGHT * 100}% (mean luma ${luma[0].toFixed(2)} and ${luma[1].toFixed(2)})`);
+        if (!same) lightFailed = true;
+      }
       const home = await homeBudget(page, tier);
       const top = Object.entries(home.parts).sort((x, y) => y[1].triangles - x[1].triangles).slice(0, 4);
       console.log(`${tier} home budget, the shadow map redrawn: ${home.calls} calls, ${(home.triangles / 1e6).toFixed(2)}M triangles (${top.map(([k, t]) => `${k} ${(t.triangles / 1e6).toFixed(2)}M/${t.calls}`).join(', ')})`);
@@ -1244,8 +1302,9 @@ async function main(): Promise<void> {
       setMarketExtras({});
       writeFileSync(join(out, 'live.json'), JSON.stringify(live, null, 1));
     }
-    // PERF_FIRST_FRAME=5: that many cold loads last (Task 14), each in a browser of its own, on high. Last, because a
-    // page opened on the engine changes what the next one shows (on high the whole frame comes out about twice as bright).
+    // PERF_FIRST_FRAME=5: that many cold loads last (Task 14), each in a browser of its own, on high. (Task 14 put them
+    // last because a load before the tiers spent the day's first open, the brief over its scrim, and so brightened the
+    // stills; today's brief is now opened before any page, so every load and still opens on the city.)
     const loads = Number(process.env.PERF_FIRST_FRAME ?? 0);
     if (loads > 0) {
       // The run's own page draws nothing while the loads are timed.
@@ -1267,7 +1326,7 @@ async function main(): Promise<void> {
     await server.close();
     rmSync(tmp, { recursive: true, force: true });
   }
-  process.exit(0);
+  process.exit(lightFailed ? 1 : 0);
 }
 
 /**
