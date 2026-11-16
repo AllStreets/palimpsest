@@ -3281,6 +3281,62 @@ async function marketHomeChecks(page: Page): Promise<void> {
 }
 
 /**
+ * Batch culling by cluster (Phase 5 Task 12, UI_ONLY=cull): the street and
+ * the quarter's court (framed as tools/perf.ts frames them) draw at least a
+ * quarter fewer triangles than round 0 did, with the shadow map redrawn;
+ * round 0 is the same frame with the culling off (cull(false) draws every
+ * batch whole, as the city drew before the task). From home the calls are
+ * not higher than round 0's, and the home guard holds.
+ */
+async function cullChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
+  type T = { calls: number; triangles: number; batches: number };
+  const frame = async (): Promise<T> => {
+    const b = (await page.evaluate('window.__palimpsest.breakdown()')) as Record<string, Record<string, { calls: number; triangles: number }>>;
+    let calls = 0;
+    let triangles = 0;
+    let batches = 0;
+    for (const [k, p] of Object.entries(b)) {
+      for (const t of Object.values(p)) {
+        calls += t.calls;
+        triangles += t.triangles;
+        if (k === 'towers' || k === 'quarters') batches += t.triangles;
+      }
+    }
+    return { calls, triangles, batches };
+  };
+  const both = async (): Promise<{ off: T; on: T }> => {
+    await page.evaluate('window.__palimpsest.cull(false)');
+    await page.waitForTimeout(400);
+    const off = await frame();
+    await page.evaluate('window.__palimpsest.cull(true)');
+    await page.waitForTimeout(400);
+    return { off, on: await frame() };
+  };
+  const mill = (t: T): string => `${t.calls} calls ${(t.triangles / 1e6).toFixed(2)}M`;
+  const hide = await page.addStyleTag({ content: '.runhead, .plates, .sheet.brief, .ride, .notices { display: none !important; }' });
+  if (tier === 'high') {
+    const qs = ((await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Array<{ firmId: string; origin: { x: number; z: number }; towers: unknown[] }>).filter((q) => q.towers.length > 0);
+    const quick = qs.find((q) => q.firmId === 'quickset') ?? qs[0];
+    const views: Array<[string, number[], number[]]> = [['street', [195.4, 1.62, -145], [207, 1.45, -30]]];
+    if (quick) views.push(['quarter-court', [quick.origin.x + 30, 1.7, quick.origin.z + 100], [quick.origin.x - 30, 14, quick.origin.z - 40]]);
+    else check(false, 'quarter-court draws a quarter fewer triangles than round 0 (no quarter stands)');
+    for (const [name, eye, target] of views) {
+      await setView(page, eye, target);
+      await page.waitForTimeout(1500);
+      const { off, on } = await both();
+      console.log(`info  ${name}: the towers' and the quarters' own triangles ${(off.batches / 1e6).toFixed(2)}M to ${(on.batches / 1e6).toFixed(2)}M (${((1 - on.batches / off.batches) * 100).toFixed(0)}% fewer)`);
+      check(on.triangles <= off.triangles * 0.75 && on.calls <= off.calls, `${name} draws at least 25% fewer triangles than round 0 on high (${mill(off)} to ${mill(on)}, ${((1 - on.triangles / off.triangles) * 100).toFixed(0)}% fewer)`);
+    }
+  }
+  const home = await debug(page, (d) => d.limits().home);
+  await setView(page, home.eye, home.target);
+  await page.waitForTimeout(1500);
+  const { off, on } = await both();
+  check(on.calls <= off.calls && on.calls < HOME_CALLS && on.triangles <= HOME_TRIANGLES, `on ${tier} home calls are not higher than round 0 and the home guard holds (${mill(off)} to ${mill(on)})`);
+  await hide.evaluate((e) => (e as HTMLElement).remove()).catch(() => {});
+}
+
+/**
  * The trees (Phase 5 Task 9, UI_ONLY=trees): from 80 m over the quick
  * quarter's garth on the sun's side (trees-from-above, as tools/perf.ts
  * frames it), the crowns' sunlit half keeps its green: the crowns' pixels
@@ -3793,7 +3849,8 @@ async function main(): Promise<void> {
     // UI_ONLY=market: the ribbon's shaded side, a lit site's haze from home, and the guards on both tiers (Phase 5 Task 8).
     // UI_ONLY=trees: the crowns' green from above, the home guard and the campus's sub-guard on both tiers (Phase 5 Task 9).
     // UI_ONLY=lens: depth of field off from home and on in the four close views at 58 fps, and the H key (Phase 5 Task 11).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens'].includes(process.env.UI_ONLY ?? '');
+    // UI_ONLY=cull: the street and the court draw a quarter fewer triangles than round 0, home no more calls (Phase 5 Task 12).
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull'].includes(process.env.UI_ONLY ?? '');
     if (spireOnly && ready) {
       await measureFps(page);
       await earnedChecks(page);
@@ -3845,6 +3902,11 @@ async function main(): Promise<void> {
         await campusChecks(page, 'medium');
         const budget = await homeBudgetNow(page);
         check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `on medium home stays under ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M with the trees (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
+      } else if (process.env.UI_ONLY === 'cull') {
+        await cullChecks(page, 'high');
+        await page.evaluate('window.__palimpsest.dropQuality()');
+        await page.waitForTimeout(2500);
+        await cullChecks(page, 'medium');
       } else if (process.env.UI_ONLY === 'lens') {
         await lensChecks(page, 'high');
         await page.evaluate('window.__palimpsest.dropQuality()');

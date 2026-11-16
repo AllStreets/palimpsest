@@ -43,7 +43,11 @@
  * overview and the quarters with them, with the quality governor running.
  * Writes <out>/<view>.png (high) and <out>/<view>-medium.png, <out>/perf.json
  * ({ viewport, tiers: { high: { home, views }, medium } }), <out>/live.json
- * for phase two, and prints a table.
+ * for phase two, and prints a table. PERF_CULL_AB=1 also shoots each view
+ * with the batches' cluster culling off and on (Task 12) into cull-off/ and
+ * cull-on/ (cull-on-again/ the floor; -bare/ without the trees); `npm run
+ * perf compare <a> <b>` prints the SSIM of every still
+ * two folders share (ffmpeg).
  */
 import './seeded-uuid.js';
 
@@ -1058,6 +1062,29 @@ async function main(): Promise<void> {
       const measure = async (name: string, eye: V3 | null, target: V3): Promise<void> => {
         await settle(page, eye, target);
         await page.screenshot({ path: join(out, tier === 'high' ? `${name}.png` : `${name}-${tier}.png`) });
+        if (process.env.PERF_CULL_AB) {
+          // The same frame with the batches' cluster culling off (as before Task 12) and on, a moment apart, the
+          // traffic held: <out>/cull-off and <out>/cull-on, for `compare` to read with no run-to-run drift between.
+          // cull-on-again is the floor: the same frame shot twice with nothing changed but the wind in the trees and
+          // the clock; the -bare folders take the trees out of the frame (their sway is most of what moves).
+          const file = tier === 'high' ? `${name}.png` : `${name}-${tier}.png`;
+          const shoot = async (dir: string, on: boolean): Promise<void> => {
+            mkdirSync(join(out, dir), { recursive: true });
+            await callDebug(page, `d.cull(${on})`);
+            await page.waitForTimeout(250);
+            await page.screenshot({ path: join(out, dir, file) });
+          };
+          await callDebug(page, 'd.ambientHold(true)');
+          await shoot('cull-off', false);
+          await shoot('cull-on', true);
+          await shoot('cull-on-again', true);
+          await callDebug(page, 'd.trees(false)');
+          await shoot('cull-off-bare', false);
+          await shoot('cull-on-bare', true);
+          await callDebug(page, 'd.trees(true)');
+          await callDebug(page, 'd.ambientHold(false)');
+          await page.waitForTimeout(500);
+        }
         const breakdown = await breakdownOf(page, !!process.env.PERF_DETAIL);
         const f = await viewFps(page);
         const stats = await dbg<Tally>(page, '(d) => d.stats()');
@@ -1090,6 +1117,22 @@ async function main(): Promise<void> {
           if (only && !only.includes(name)) continue;
           await measure(name, eye, target);
         }
+      }
+      if (!only || only.includes('people-follow')) {
+        // A follow held (Task 12): what the governor reads each frame (all passes, the shadow map redrawn as the eye
+        // moves), sampled over twelve seconds of a live follow, against its triangle budget.
+        await callDebug(page, `d.follow(${JSON.stringify('dagny-hollis')})`);
+        await page.waitForTimeout(2000);
+        const seen: Tally[] = [];
+        for (let i = 0; i < 48; i++) {
+          seen.push(await dbg<Tally>(page, '(d) => d.stats()'));
+          await page.waitForTimeout(250);
+        }
+        await callDebug(page, 'd.follow(null)');
+        const tri = seen.map((s) => s.triangles);
+        const row = { fps: 0, calls: Math.round(seen.reduce((a, s) => a + s.calls, 0) / seen.length), triangles: Math.round(tri.reduce((a, b) => a + b, 0) / tri.length) };
+        rows['follow-held'] = row;
+        console.log(`${tier} follow-held over 12 s: mean ${row.calls} calls ${(row.triangles / 1e6).toFixed(2)}M triangles a frame, most ${(Math.max(...tri) / 1e6).toFixed(2)}M`);
       }
       if (only && LENS.some((n) => only.includes(n))) {
         for await (const [name, eye, target] of lensViews(page, only)) {
@@ -1177,8 +1220,36 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
+/**
+ * The look before and after (`npm run perf compare <before dir> <after dir>`): the SSIM of every still the two
+ * runs share, through ffmpeg's ssim filter, printed one a line with the lowest last; exits 1 when any is under
+ * PERF_SSIM_MIN (0.99 by default).
+ */
+async function compare(before: string, after: string): Promise<void> {
+  const { readdirSync, existsSync } = await import('node:fs');
+  const { execFileSync } = await import('node:child_process');
+  const min = Number(process.env.PERF_SSIM_MIN ?? 0.99);
+  const rows: Array<[string, number]> = [];
+  for (const f of readdirSync(before).filter((x) => x.endsWith('.png')).sort()) {
+    if (!existsSync(join(after, f))) continue;
+    // ffmpeg writes its ssim line to stderr: folded into stdout to be read.
+    const said = execFileSync('sh', ['-c', 'ffmpeg -hide_banner -nostats -i "$0" -i "$1" -lavfi ssim -f null - 2>&1', join(before, f), join(after, f)], { encoding: 'utf8' });
+    const m = /All:([0-9.]+)/.exec(said);
+    rows.push([f, m ? Number(m[1]) : NaN]);
+  }
+  for (const [f, s] of rows) console.log(`${s.toFixed(4)}  ${f}${s < min || !Number.isFinite(s) ? '  under' : ''}`);
+  const low = rows.reduce((a, r) => Math.min(a, r[1]), Infinity);
+  console.log(`${rows.length} stills, lowest SSIM ${low.toFixed(4)} (at least ${min} wanted)`);
+  process.exit(rows.length > 0 && low >= min ? 0 : 1);
+}
+
 // Run as a script only: the tests import the port, the tiers and the viewport without starting a run.
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href && process.argv[2] === 'compare') {
+  compare(resolve(process.argv[3]), resolve(process.argv[4])).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+} else if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch((err) => {
     console.error(err);
     process.exit(1);

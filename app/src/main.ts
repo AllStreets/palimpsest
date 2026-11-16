@@ -5,6 +5,7 @@ import './ui/screens.css';
 
 import type { Agent, District, FirmView, Job, Milestone, Quarter, Repo, SiteState, Tour, TourStop, TowerSpec } from '../../shared/types';
 import { mondayMorning, tourWeekFor, weekOf } from '../../shared/tour';
+import { setClusterCulling } from './city/batch';
 import { homeKey } from './city/camera';
 import { api } from './api';
 import { coalesced } from './coalesce';
@@ -129,6 +130,8 @@ interface DebugHandle {
   stageMilestones(ms: Milestone[] | null): void;
   precompile(): Promise<void>;
   stats(): { calls: number; triangles: number };
+  /** Batch culling by cluster on or off (Task 12; off draws every batch whole, as before it), for a before-and-after measure. */
+  cull(on: boolean): void;
   /** The next frame's draw calls and triangles by subsystem and pass, the shadow map redrawn in it. */
   breakdown(detail?: boolean): ReturnType<ReturnType<typeof createCity>['breakdown']>;
   /** The share of a breakdown root's projected area the city leaves visible from where the camera stands (an ID pass; Phase 5 Task 10). */
@@ -529,6 +532,7 @@ async function main(): Promise<void> {
     project: (p) => new THREE.Vector3(p[0], p[1], p[2]).project(city.camera).toArray(),
     precompile: () => city.precompile(),
     stats: () => city.stats(),
+    cull: (on) => setClusterCulling(on),
     breakdown: (detail) => city.breakdown(detail),
     visibleShare: (key) => city.visibleShare(key),
     frameLog: frameLog(),

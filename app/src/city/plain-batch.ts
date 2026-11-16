@@ -12,10 +12,14 @@
  * it drew in. The pieces' own plain meshes stay where they are, hidden, for
  * framing and the next rebuild. Each merged mesh carries its parts' world
  * spheres (`userData.lodParts`), so the city's level-of-detail pass judges
- * the nearest part, not the whole city's span. Pure three.js: tested in Node.
+ * the nearest part, not the whole city's span. Each merged mesh is laid out
+ * in clusters (batch.ts ClusterMesh), so a pass draws only the clusters its
+ * camera sees, still in one call. Pure three.js: tested in Node.
  */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+import { ClusterMesh } from './batch.js';
 
 interface Part {
   mat: THREE.Material;
@@ -103,7 +107,9 @@ export function plainBatch(): PlainBatch {
     const meshes: THREE.Mesh[] = [];
     for (const o of out) {
       o.geo.computeBoundingSphere();
-      const mesh = new THREE.Mesh(o.geo, first.mat);
+      // Laid out in clusters, so a close view draws only the towers it sees (batch.ts). A piece drawn on its own is
+      // shared with its tower's taking (`own` false): its clusters reorder only its triangles, which draw the same.
+      const mesh = new ClusterMesh(o.geo, first.mat);
       mesh.castShadow = first.cast;
       mesh.receiveShadow = first.receive;
       mesh.name = first.name;

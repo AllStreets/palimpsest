@@ -439,3 +439,35 @@ test("the court's lantern stands over every agent root and under the lowest dist
     piece.dispose();
   }
 });
+
+test("from a quarter's court the city's quarter batches draw only the clusters in view", () => {
+  const materials = cityMaterials();
+  const pieces = [6, 7, 8, 9, 10, 11].map((slot, k) => {
+    const firmId = `firm-${k}`;
+    const q: Quarter = { firmId, slot, origin: districtOrigin(slot), root: 'chicago', dark: false, towers: [0, 1, 2, 3].map((i) => tower(`${firmId}-${i}`, firmId, 'chicago', 'plain', 6, i)) };
+    const looks = quarterLooks(q);
+    const piece = quarterCenterpiece(q, 'high', (t) => looks.get(t.id)!, { name: q.firmId, materials });
+    piece.object.position.set(q.origin.x, 0, q.origin.z);
+    return piece;
+  });
+  const batched = batchPieces(pieces.map((p) => p.object));
+  // From the pavement of the first quarter's court, looking across it (as tools/perf.ts frames quarter-court).
+  const o = districtOrigin(6);
+  const cam = new THREE.PerspectiveCamera(50, 1.7, 0.5, 6000);
+  cam.position.set(o.x + 30, 1.7, o.z + 100);
+  cam.lookAt(o.x - 30, 14, o.z - 40);
+  cam.updateMatrixWorld(true);
+  type C = THREE.Mesh & { clusters?: unknown[]; visibleRanges(c: THREE.Camera): Array<[number, number]> };
+  let all = 0;
+  let drawn = 0;
+  batched.group.traverse((x) => {
+    const m = x as C;
+    if (!m.isMesh || (m as unknown as THREE.InstancedMesh).isInstancedMesh) return;
+    assert.ok(Array.isArray(m.clusters), 'every merged mesh is laid out in clusters');
+    all += m.geometry.index!.count;
+    drawn += m.visibleRanges(cam).reduce((n, [, k]) => n + k, 0);
+  });
+  assert.ok(all > 0 && drawn < all * 0.6, `the quarters out of view are not drawn (${((drawn / all) * 100).toFixed(0)}% drawn)`);
+  batched.dispose();
+  for (const p of pieces) p.dispose();
+});

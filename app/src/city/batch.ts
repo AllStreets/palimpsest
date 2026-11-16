@@ -16,6 +16,8 @@
  * - A part with a near and a far level (Kit.instLod) joins the same shape
  *   in the same material within its own root, under one LOD centred on that
  *   root, so the switch still follows each quarter rather than the city.
+ * - Each merged plain batch is laid out in clusters (ClusterMesh, below), so
+ *   a close view draws only the clusters it sees.
  *
  * Every world position and every instance matrix comes out as it went in,
  * so the shaders (which read world positions and instance matrices) draw
@@ -29,6 +31,170 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 export interface Batched {
   group: THREE.Group;
   dispose(): void;
+}
+
+// ---------------------------------------------------------------- clusters (Task 12)
+/**
+ * A merged batch spans the city, so the renderer's own frustum test (one
+ * sphere a mesh) never culls it. Its triangles are laid out instead cell by
+ * cell (cubes of CLUSTER_SIZE, by each triangle's centre), each cell a
+ * cluster with its own bounds, and each pass draws only the clusters its own
+ * camera sees (the view, the shadow map's sun, the AO's normal pass): the
+ * visible clusters' index ranges, merged where they touch, go to the GPU in
+ * one multi-draw, so a batch stays one draw call however many clusters it
+ * holds. The draw goes through three.js's batched path (as BatchedMesh's
+ * does) with every batch matrix the identity, so every vertex lands exactly
+ * where it did.
+ */
+export const CLUSTER_SIZE = 64;
+
+export interface Cluster {
+  /** The cluster's first index and its index count. */
+  start: number;
+  count: number;
+  /** Its triangles' bounds, in the mesh's own frame. */
+  box: THREE.Box3;
+}
+
+/** Off for a before-and-after measure (the debug handle's cull(false)): every batch draws whole, as before Task 12. */
+let culling = true;
+export function setClusterCulling(on: boolean): void {
+  culling = on;
+}
+
+/**
+ * Reorders `g`'s triangles (indexed) cell by cell, cells in x, then z, then y
+ * order so neighbours lie near in the index, and returns the clusters in
+ * index order.
+ */
+export function clusterTriangles(g: THREE.BufferGeometry, size = CLUSTER_SIZE): Cluster[] {
+  const index = g.index!;
+  const idx = index.array as Uint16Array | Uint32Array;
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const tris = idx.length / 3;
+  const cells = new Map<number, number[]>();
+  const coords = new Map<number, [number, number, number]>();
+  for (let t = 0; t < tris; t++) {
+    const a = idx[t * 3];
+    const b = idx[t * 3 + 1];
+    const c = idx[t * 3 + 2];
+    const ix = Math.floor((pos.getX(a) + pos.getX(b) + pos.getX(c)) / 3 / size);
+    const iy = Math.floor((pos.getY(a) + pos.getY(b) + pos.getY(c)) / 3 / size);
+    const iz = Math.floor((pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3 / size);
+    const key = ((ix + 1024) * 2048 + (iz + 1024)) * 2048 + (iy + 1024);
+    let list = cells.get(key);
+    if (!list) {
+      cells.set(key, (list = []));
+      coords.set(key, [ix, iz, iy]);
+    }
+    list.push(t);
+  }
+  const keys = [...cells.keys()].sort((p, q) => {
+    const a = coords.get(p)!;
+    const b = coords.get(q)!;
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  });
+  const out = new (idx.constructor as Uint32ArrayConstructor)(idx.length);
+  const clusters: Cluster[] = [];
+  const v = new THREE.Vector3();
+  let k = 0;
+  for (const key of keys) {
+    const start = k;
+    const box = new THREE.Box3();
+    for (const t of cells.get(key)!) {
+      for (let j = 0; j < 3; j++) {
+        const vi = idx[t * 3 + j];
+        out[k++] = vi;
+        box.expandByPoint(v.fromBufferAttribute(pos, vi));
+      }
+    }
+    clusters.push({ start, count: k - start, box });
+  }
+  g.setIndex(new THREE.BufferAttribute(out, 1));
+  return clusters;
+}
+
+/** Every batch matrix the identity: one, read for every draw. */
+let identityTexture: THREE.DataTexture | null = null;
+function identity(): THREE.DataTexture {
+  if (!identityTexture) {
+    identityTexture = new THREE.DataTexture(new Float32Array(new THREE.Matrix4().elements), 4, 1, THREE.RGBAFormat, THREE.FloatType);
+    identityTexture.needsUpdate = true;
+  }
+  return identityTexture;
+}
+/** Every draw's batch id 0 (the identity), for up to the square of its side draws; shared and grown as needed. */
+let idsTexture: THREE.DataTexture | null = null;
+function ids(n: number): THREE.DataTexture {
+  if (!idsTexture || idsTexture.image.width * idsTexture.image.width < n) {
+    const side = Math.max(16, Math.ceil(Math.sqrt(n)));
+    idsTexture = new THREE.DataTexture(new Uint32Array(side * side), side, side, THREE.RedIntegerFormat, THREE.UnsignedIntType);
+    idsTexture.needsUpdate = true;
+  }
+  return idsTexture;
+}
+
+const cullMatrix = new THREE.Matrix4();
+const cullFrustum = new THREE.Frustum();
+
+/**
+ * A merged batch laid out in clusters (see above). It draws through the
+ * renderer's batched path: `isBatchedMesh` asks for it, and the fields below
+ * are the ones that path reads.
+ */
+export class ClusterMesh extends THREE.Mesh {
+  readonly isBatchedMesh = true;
+  readonly clusters: Cluster[];
+  _multiDrawStarts: Int32Array;
+  _multiDrawCounts: Int32Array;
+  _multiDrawCount = 0;
+  _matricesTexture: THREE.DataTexture;
+  _indirectTexture: THREE.DataTexture;
+  _colorsTexture = null;
+
+  constructor(geometry: THREE.BufferGeometry, material: THREE.Material, size = CLUSTER_SIZE) {
+    super(geometry, material);
+    this.clusters = clusterTriangles(geometry, size);
+    this._multiDrawStarts = new Int32Array(this.clusters.length);
+    this._multiDrawCounts = new Int32Array(this.clusters.length);
+    this._matricesTexture = identity();
+    this._indirectTexture = ids(this.clusters.length);
+  }
+
+  /** The index ranges of the clusters `camera` sees, in index order, merged where they touch. */
+  visibleRanges(camera: THREE.Camera): Array<[number, number]> {
+    const out: Array<[number, number]> = [];
+    if (!culling) return this.clusters.length ? [[0, this.geometry.index!.count]] : out;
+    const cam = camera as THREE.Camera & { reversedDepth?: boolean };
+    cullMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(this.matrixWorld);
+    cullFrustum.setFromProjectionMatrix(cullMatrix, camera.coordinateSystem, cam.reversedDepth);
+    for (const c of this.clusters) {
+      if (!cullFrustum.intersectsBox(c.box)) continue;
+      const last = out[out.length - 1];
+      if (last && last[0] + last[1] === c.start) last[1] += c.count;
+      else out.push([c.start, c.count]);
+    }
+    return out;
+  }
+
+  /** Lays out the multi-draw list for a draw seen by `camera`. */
+  private drawFor(camera: THREE.Camera): void {
+    const ranges = this.visibleRanges(camera);
+    const bytes = (this.geometry.index!.array as Uint16Array | Uint32Array).BYTES_PER_ELEMENT;
+    for (let i = 0; i < ranges.length; i++) {
+      this._multiDrawStarts[i] = ranges[i][0] * bytes;
+      this._multiDrawCounts[i] = ranges[i][1];
+    }
+    this._multiDrawCount = ranges.length;
+  }
+
+  onBeforeRender(_r: THREE.WebGLRenderer, _s: THREE.Scene, camera: THREE.Camera): void {
+    this.drawFor(camera);
+  }
+
+  onBeforeShadow(_r: THREE.WebGLRenderer, _s: THREE.Scene, _c: THREE.Camera, shadowCamera: THREE.Camera): void {
+    this.drawFor(shadowCamera);
+  }
 }
 
 /** A shape's identity by content, so the same part built by two kits batches together. */
@@ -215,7 +381,8 @@ export function batchPieces(roots: THREE.Object3D[]): Batched {
     for (const part of parts) {
       part.computeBoundingSphere();
       owned.push(part);
-      const mesh = new THREE.Mesh(part, b.mat);
+      // Laid out in clusters, so a close view draws only what it sees (above).
+      const mesh = new ClusterMesh(part, b.mat);
       mesh.castShadow = b.cast;
       mesh.receiveShadow = b.receive;
       group.add(mesh);
