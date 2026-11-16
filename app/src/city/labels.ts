@@ -33,6 +33,18 @@ export function plateFlips(x: number, words: number, viewWidth: number): boolean
   return x + WORDS_OFF + words > viewWidth - EDGE && x - WORDS_OFF - words >= EDGE;
 }
 
+/** How far above its foot a plate's name stands, top to foot (style.css .plate-name: bottom 15px, 16px type). */
+const NAME_RISE = 32;
+
+/**
+ * Whether a plate with its foot at (`x`, `y`) shows its words (`words` pixels wide, `flip` set left of the hairline)
+ * whole within a `viewWidth` by `viewHeight` view (Task 15a): a plate whose name would run off an edge is not shown.
+ */
+export function plateFits(x: number, y: number, words: number, flip: boolean, viewWidth: number, viewHeight: number): boolean {
+  const x0 = flip ? x - WORDS_OFF - words : x + WORDS_OFF;
+  return x0 >= 0 && x0 + words <= viewWidth && y - NAME_RISE >= 0 && y <= viewHeight;
+}
+
 /** The class a flipped plate wears (style.css sets its words right-aligned left of the hairline). */
 export const PLATE_FLIP = 'plate-flip';
 
@@ -200,6 +212,12 @@ export function createPlates(
         if (!l.words) l.words = Math.max(l.name.offsetWidth, l.sub.offsetWidth);
         const flip = l.words > 0 && plateFlips(x, l.words, w);
         if (flip !== l.flipped) setFlip(l, flip);
+        // A plate whose words would still run off the view (its foot past an edge, or its name over the top) waits
+        // until the eye turns to it: a name is shown whole or not at all (Task 15a).
+        if (l.words > 0 && !plateFits(x, y, l.words, flip, w, h)) {
+          l.el.style.opacity = '0';
+          l.el.style.visibility = 'hidden';
+        }
       }
     },
     dispose() {

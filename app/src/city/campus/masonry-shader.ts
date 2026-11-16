@@ -9,15 +9,26 @@
  * so the term is declared before the fragment reaches it.
  */
 
+import { campusWalks } from './site.js';
+
 /** The louvres' boards, metres to the course (Phase 5 Task 10: 18 cm read as a flat grey at 60 m). */
 export const LOUVRE_PITCH = 0.3;
 
 /**
- * The turf at dusk (Phase 5 Task 10 fix round): its albedo floor (the mottle's least, so a lawn in shadow keeps a
- * lifted green olive), and the sky's fill from above as a share of its own albedo (a lawn in the low sun's shadow
- * still takes the dusk sky over it; under the bloom threshold by a wide margin).
+ * The turf at dusk. Its albedo floor (the least of its tone, so a lawn in shadow keeps a lifted green olive) and a
+ * light `mottle` of the sand scan (Phase 5 Task 15a: the coarse mottle read as clouds from above); the mower's
+ * `stripe`, a band lighter and a band darker two metres wide; the grass worn toward straw and earth within `wear`
+ * metres of a walk's edge; and the sky's fill from above as a share of its own albedo, the sky's colour taken toward a
+ * warm grey (Task 15a: the blue fill on the green read teal), under the bloom threshold by a wide margin.
  */
-export const TURF = { floor: 0.78, skyFill: 0.26, sky: [0.62, 0.68, 0.86] as [number, number, number] } as const;
+export const TURF = { floor: 0.98, mottle: 0.12, stripe: 0.13, wear: 1.4, skyFill: 0.22, sky: [0.74, 0.72, 0.8] as [number, number, number] } as const;
+
+/** The walks' gravel as GLSL (campusWalks: centre and half size in the campus's frame), for the lawn's wear. */
+const WALKS_GLSL = (() => {
+  const w = campusWalks();
+  const v = w.map(([x0, x1, z0, z1]) => `vec4(${((x0 + x1) / 2).toFixed(2)}, ${((z0 + z1) / 2).toFixed(2)}, ${((x1 - x0) / 2 + 0.3).toFixed(2)}, ${((z1 - z0) / 2 + 0.3).toFixed(2)})`);
+  return `const int CAMPUS_WALKS = ${w.length};\n      const vec4 CAMPUS_WALK[${w.length}] = vec4[${w.length}](${v.join(', ')});`;
+})();
 
 export interface MasonryShader {
   vertexShader: string;
@@ -37,6 +48,16 @@ export function patchMasonryShader(sh: MasonryShader): void {
       uniform sampler2D uAshMap; uniform sampler2D uAshNor; uniform sampler2D uAshArm;
       uniform sampler2D uDial; uniform float uDialLit; uniform float uSlitLit; uniform float uPlateLit;
       int campusKind() { return int(vKind + 0.5); }
+      ${WALKS_GLSL}
+      // How far a point of the terrace (the campus's frame, metres) stands from the nearest walk's kerb.
+      float campusWalkGap(vec2 p) {
+        float d = 1e4;
+        for (int i = 0; i < CAMPUS_WALKS; i++) {
+          vec2 q = max(abs(p - CAMPUS_WALK[i].xy) - CAMPUS_WALK[i].zw, 0.0);
+          d = min(d, length(q));
+        }
+        return d;
+      }
       float campusHash(vec2 c) { return fract(sin(dot(c, vec2(12.9898, 78.233))) * 43758.5453); }
       // Smooth value noise, for the lawn's patches and drifts (the sand scan is grain only at those sizes).
       float campusNoise(vec2 p) {
@@ -138,15 +159,18 @@ export function patchMasonryShader(sh: MasonryShader): void {
           // A bare emitter (a school tower's lit lines and lamps): black paint, its tone is its light.
           s = vec4(0.0, 0.0, 0.0, 1.0);
         } else {
-          // Turf: a mown lawn, mottled by the sand scan at a coarse tile and a finer one, with the mower's stripes.
+          // Turf (Phase 5 Task 15a): a mown lawn. The scan's grain at a fine scale and only a trace at a coarse one (the
+          // coarse mottle read as clouds from above); the mower's stripes, two metres a band, one lighter and one darker,
+          // soft at their edges; the grass worn thin toward straw and bare earth along the walks' kerbs.
+          vec2 lp = vMapUv * 9.0;
           float a = texture2D(uSandMap, vMapUv * 0.13).g;
-          float b = texture2D(uSandMap, vMapUv * 0.6).g;
           float f = texture2D(uSandMap, vMapUv * 3.1).g;
-          float stripe = 0.91 + 0.09 * step(0.5, fract(vMapUv.x * 2.2));
+          float band = fract(lp.x / 4.0);
+          float stripe = 1.0 + ${TURF.stripe.toFixed(2)} * (smoothstep(0.02, 0.1, band) * (1.0 - smoothstep(0.52, 0.6, band)) - 0.5);
           // The blades (Phase 5 Task 10): drawn, not scanned (a scan minified to blade size averages to flat): cells a
           // centre-metre across and five long, each row offset, each blade its own shade, lit toward its tip; faded to
           // their mean as they shrink under a pixel, so they never shimmer from far.
-          vec2 m = vMapUv * 9.0;
+          vec2 m = lp;
           vec2 bq = m * vec2(80.0, 18.0);
           bq.x += 0.5 * floor(bq.y);
           float bh = campusHash(floor(bq));
@@ -154,15 +178,17 @@ export function patchMasonryShader(sh: MasonryShader): void {
           float blades = (0.35 + 0.65 * bh) * (0.7 + 0.3 * tip) * (1.0 - 0.55 * smoothstep(0.32, 0.5, abs(fract(bq.x) - 0.5)));
           float small = smoothstep(0.25, 0.8, length(fwidth(bq)));
           float blade = mix(0.45 + 1.0 * blades, 1.0, small);
-          // Patches a metre or two across: clover darker, thinner grass paler; and a scatter of hand-sized tufts.
+          // Hand-sized tufts and a little clover, a metre or two across, under the stripes.
           float clump = campusNoise(m * 0.7 + 3.1) * 0.65 + campusNoise(m * 2.3 + 7.7) * 0.35;
-          float tuft = 0.85 + 0.3 * smoothstep(0.2, 0.85, clump);
-          // At dusk a lawn is never one green: drier ground goes toward straw, the damp hollows toward a cold blue
-          // green, in drifts ten and twenty metres across.
-          float drift = campusNoise(m * 0.06 + 1.3);
-          float damp = smoothstep(0.3, 0.75, campusNoise(m * 0.1 + 5.9));
-          vec3 hue = mix(vec3(1.2, 1.05, 0.72), vec3(0.88, 0.99, 1.1), damp) * mix(0.86, 1.12, drift);
-          s = vec4(vec3((${TURF.floor.toFixed(2)} + 0.42 * a + 0.26 * b + 0.1 * f) * stripe * blade * tuft) * hue, 1.0);
+          float tuft = 0.92 + 0.16 * smoothstep(0.2, 0.85, clump);
+          // A lawn is never one green: drier ground toward straw in drifts twenty metres across, never toward blue.
+          float drift = campusNoise(m * 0.05 + 1.3);
+          vec3 hue = mix(vec3(0.95, 1.0, 0.96), vec3(1.12, 1.05, 0.8), drift);
+          vec3 g = vec3((${TURF.floor.toFixed(2)} + ${TURF.mottle.toFixed(2)} * a + 0.1 * f) * stripe * blade * tuft) * hue;
+          // Worn along the kerbs: thinner grass, straw and then earth showing, broken up by the tufts.
+          float worn = (1.0 - smoothstep(0.0, ${TURF.wear.toFixed(2)}, campusWalkGap(lp))) * (0.55 + 0.45 * clump);
+          g = mix(g, g * vec3(1.45, 1.05, 0.62) * 0.92, worn);
+          s = vec4(g, 1.0);
         }
         diffuseColor *= s;
       }`,
@@ -192,7 +218,7 @@ export function patchMasonryShader(sh: MasonryShader): void {
           // Turf: blades are waxy and catch the sky's light at a slant, so a lawn at dusk carries a sheen; the mower's
           // stripes lay the blades two ways, one band glossier toward the eye than the next, and the blades break it up.
           float bl = texture2D(uSandMap, vRoughnessMapUv * vec2(9.0, 31.0)).g;
-          float lay = step(0.5, fract(vRoughnessMapUv.x * 2.2));
+          float lay = step(0.5, fract(vRoughnessMapUv.x * 2.25));
           r = mix(0.66, 0.78, lay) + 0.22 * (bl - 0.5);
         }
         roughnessFactor *= r;

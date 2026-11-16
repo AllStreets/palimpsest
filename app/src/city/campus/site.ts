@@ -260,6 +260,55 @@ export function siteAnchors(): SiteAnchors {
  * piers, the lawns, the walks and the quads' diagonals. `detail` (the high
  * tier) adds the bastions' caps and the piers' finials.
  */
+/**
+ * The walks' kerbs (Task 15a): a pale stone edging a little under the gravel, in the walk's own pale stone (the
+ * gravel's lifted scan) at KERB_SHADE of its tone, so a walk's edge is a step, not a line. As dark ashlar at half
+ * its tone the kerbs drew every walk and plot as a hard black outline from above and at eye level; as limestone
+ * (its scan unlifted) still at half the gravel's light (round 2).
+ */
+export const KERB: Kind = 'gravel';
+export const KERB_SHADE = 0.86;
+/** The parapet walk's width, inside the coping. */
+const PARAPET_WALK = 4.0;
+
+/**
+ * The walks on the terrace as their gravel's rectangles in the campus's own frame, [x0, x1, z0, z1] (Task 15a: the
+ * site draws them, and the lawn's shader wears the grass along their edges). The axis from the stair head to the
+ * library, a cross walk between the two ranges, the observatory's walk, a walk along the parapet, and round and
+ * through each quad: a classic college quad, the perimeter walk, the axis through it, no diagonals, the lawn kept
+ * whole in four panels.
+ */
+export function campusWalks(): Array<[number, number, number, number]> {
+  const out: Array<[number, number, number, number]> = [];
+  const walk = (xa: number, xb: number, za: number, zb: number): void => {
+    out.push([Math.min(xa, xb), Math.max(xa, xb), Math.min(za, zb), Math.max(za, zb)]);
+  };
+  const xTop = WALL_FOOT - WELL_DEPTH;
+  const inner = COPING_IN;
+  const wellOut = WELL_HALF + 1.0;
+  walk(-100, xTop + 0.5, -4.5, 4.5);
+  const crossX = (FRONT_QUAD.x0 + INNER_QUAD.x1) / 2;
+  walk(crossX - 3.5, crossX + 3.5, -inner + 3, inner - 3);
+  // The observatory's walk: from its door steps along the back lawn to the cross walk (Task 36).
+  walk(-81, crossX, -91.75, -88.25);
+  const pw = PARAPET_WALK;
+  walk(-inner, inner, inner - pw, inner);
+  walk(-inner, inner, -inner, -inner + pw);
+  walk(-inner, -inner + pw, -inner, inner);
+  walk(inner - pw, inner, -inner, -wellOut);
+  walk(inner - pw, inner, wellOut, inner);
+  for (const q of [FRONT_QUAD, INNER_QUAD]) {
+    const z1 = QUAD_HALF + 4;
+    walk(q.x0 - 4, q.x1 + 4, QUAD_HALF, z1);
+    walk(q.x0 - 4, q.x1 + 4, -z1, -QUAD_HALF);
+    walk(q.x0 - 4, q.x0, -z1, z1);
+    walk(q.x1, q.x1 + 4, -z1, z1);
+    const cx = (q.x0 + q.x1) / 2;
+    walk(cx - 1.8, cx + 1.8, -QUAD_HALF, QUAD_HALF);
+  }
+  return out;
+}
+
 export function buildSite(detail: boolean): THREE.BufferGeometry {
   const T = TERRACE;
   const pieces: THREE.BufferGeometry[] = [];
@@ -328,7 +377,7 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
   add('turf', slab(xTop, inner, T - 1, T, -inner, -wellOut));
   add('turf', slab(xTop, inner, T - 1, T, wellOut, inner));
 
-  // The walks: pale gravel a hand above the lawn, each between dark stone kerbs that stand a little under the gravel
+  // The walks: pale gravel a hand above the lawn, each between pale kerbs (KERB, KERB_SHADE) that stand a little under the gravel
   // (so a walk crossing another covers them). The axis from the stair head to the library, a cross walk between
   // the two ranges, a walk along the parapet, a walk round each quad under the halls' fronts, and the diagonals.
   const top = T + 0.06;
@@ -338,7 +387,7 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     add('gravel', new THREE.BoxGeometry(len, top - (T - 0.2), wid).rotateY(ry).translate(cx, (T - 0.2 + top) / 2, cz));
     for (const s of [-1, 1]) {
       const off = s * (wid / 2 + 0.14);
-      add('ashlar', new THREE.BoxGeometry(len, kerbY - (T - 0.2), 0.3).rotateY(ry).translate(cx + Math.sin(ry) * off, (T - 0.2 + kerbY) / 2, cz + Math.cos(ry) * off), 0.5);
+      add(KERB, new THREE.BoxGeometry(len, kerbY - (T - 0.2), 0.3).rotateY(ry).translate(cx + Math.sin(ry) * off, (T - 0.2 + kerbY) / 2, cz + Math.cos(ry) * off), KERB_SHADE);
     }
   };
   const walk = (xa: number, xb: number, za: number, zb: number): void => {
@@ -349,32 +398,11 @@ export function buildSite(detail: boolean): THREE.BufferGeometry {
     if (x1 - x0 >= z1 - z0) strip((x0 + x1) / 2, (z0 + z1) / 2, x1 - x0, z1 - z0, 0);
     else strip((x0 + x1) / 2, (z0 + z1) / 2, z1 - z0, x1 - x0, Math.PI / 2);
   };
-  walk(-100, xTop + 0.5, -4.5, 4.5);
+  for (const [wx0, wx1, wz0, wz1] of campusWalks()) walk(wx0, wx1, wz0, wz1);
   const crossX = (FRONT_QUAD.x0 + INNER_QUAD.x1) / 2;
-  walk(crossX - 3.5, crossX + 3.5, -inner + 3, inner - 3);
-  // The observatory's walk: from its door steps along the back lawn to the cross walk (Task 36).
-  walk(-81, crossX, -91.75, -88.25);
-  const pw = 4.0;
-  walk(-inner, inner, inner - pw, inner);
-  walk(-inner, inner, -inner, -inner + pw);
-  walk(-inner, -inner + pw, -inner, inner);
-  walk(inner - pw, inner, -inner, -wellOut);
-  walk(inner - pw, inner, wellOut, inner);
-  for (const q of [FRONT_QUAD, INNER_QUAD]) {
-    const z1 = QUAD_HALF + 4;
-    walk(q.x0 - 4, q.x1 + 4, QUAD_HALF, z1);
-    walk(q.x0 - 4, q.x1 + 4, -z1, -QUAD_HALF);
-    walk(q.x0 - 4, q.x0, -z1, z1);
-    walk(q.x1, q.x1 + 4, -z1, z1);
-    // A classic college quad: the perimeter walk, the axis through it, and one cross walk from hall door to hall
-    // door; no diagonals, the lawn kept whole in four panels.
-    const cx = (q.x0 + q.x1) / 2;
-    const dx = q.x1 - q.x0;
-    walk(cx - 1.8, cx + 1.8, -QUAD_HALF, QUAD_HALF);
-    // The quads' trees are the city's (campusTreeSpots, trees.ts).
-    // Lamps at the quad's corners only.
-    for (const sz of [-1, 1]) for (const lx of [q.x0 - 1.5, q.x1 + 1.5]) lamp(lx, sz * (QUAD_HALF + 5.2));
-  }
+  const pw = PARAPET_WALK;
+  // Lamps at the quads' corners only (the quads' trees are the city's: campusTreeSpots, trees.ts).
+  for (const q of [FRONT_QUAD, INNER_QUAD]) for (const sz of [-1, 1]) for (const lx of [q.x0 - 1.5, q.x1 + 1.5]) lamp(lx, sz * (QUAD_HALF + 5.2));
   // Lamps down the axis every second bay, two across the cross walk, every other post along the parapet walk,
   // and a pair at the stair head: half the posts of a first draft, which lit the lawns like a car park.
   for (let x = -76; x <= 84; x += 32) for (const sz of [-1, 1]) lamp(x, sz * 6.2);

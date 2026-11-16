@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { SKY_DITHER, SUN_BLOOM_MAX } from './post.js';
+import { HAZE_POWER } from './view.js';
 
 /** Where the sun sits, just under the horizon: the glow band and the key light both follow it. */
 export const SUN_DIRECTION = new THREE.Vector3(-260, 40, 120).normalize();
@@ -23,15 +24,19 @@ export const HAZE_FLOOR = 0.3;
  * into the sky behind it. Close to the eye the scattered light is a lit air:
  * that colour with HAZE_NEAR_CHROMA of its chroma, lifted by HAZE_NEAR_LIFT
  * (the low haze over a city is lit from above by the bright western sky, so
- * the middle distance lightens and loses contrast rather than sinking into
- * the dark eastern horizon), a little cool; the full colour arrives with the
- * fog factor's HAZE_CHROMA_POW power, so fogged ground meets the dome with
- * no seam. A building a few hundred metres off loses contrast to the air,
- * never its hue: no one mauve-brown over the whole city.
+ * the middle distance lightens rather than sinking into the dark eastern
+ * horizon), a little cool; the full colour arrives with the fog factor's
+ * HAZE_CHROMA_POW power, so fogged ground meets the dome with no seam. A
+ * building a few hundred metres off loses contrast to the air, never its
+ * hue: no one mauve-brown over the whole city. Task 15a, on true stills
+ * (Task 6 graded through the brief's scrim): the near air lifted 1.5 times
+ * and greyed to 0.4 of its chroma was brighter than the horizon itself and
+ * laid a milky pink-white veil over the middle city; it now stands under the
+ * horizon's light (0.85) and keeps most of its hue (0.75).
  */
-export const HAZE_NEAR_CHROMA = 0.4;
+export const HAZE_NEAR_CHROMA = 0.75;
 export const HAZE_NEAR_TINT: [number, number, number] = [0.96, 0.98, 1.06];
-export const HAZE_NEAR_LIFT = 1.5;
+export const HAZE_NEAR_LIFT = 0.85;
 export const HAZE_CHROMA_POW = 3;
 /**
  * skyAir's altitude: a surface y metres up fades toward the sky at elevation
@@ -124,6 +129,10 @@ export const SKY_GLSL = /* glsl */ `
     return mix(col, mix(near, far, pow(f, ${HAZE_CHROMA_POW.toFixed(2)})), f);
   }
   vec3 hazeOver(vec3 col, vec3 dir, float f) { return hazeOver(col, dir, f, 0.0); }
+  // The haze's share over d metres at this density and height layer (view.ts hazeAt, HAZE_POWER).
+  float hazeFactor(float density, float d, float layer) {
+    return 1.0 - exp(-pow(max(density * d * layer, 0.0), ${HAZE_POWER.toFixed(1)}));
+  }
   // The ground haze's share of the density at height y (sky.ts HAZE_HEIGHT, HAZE_FLOOR).
   float hazeLayer(float y) {
     return ${HAZE_FLOOR.toFixed(3)} + ${(1 - HAZE_FLOOR).toFixed(3)} * exp(-max(y, 0.0) / ${HAZE_HEIGHT.toFixed(1)});
@@ -150,7 +159,7 @@ const FRAGMENT = /* glsl */ `
  * Replaces three's fog with fog whose colour is the sky's haze in the
  * direction of each fragment, so distant ground and buildings dissolve into
  * exactly the sky behind them at every bearing (one flat fog colour leaves a
- * seam wherever the sky is brighter). Density stays exponential squared.
+ * seam wherever the sky is brighter). Its falloff is view.ts hazeAt's.
  * Call before any material compiles.
  */
 export function installSkyFog(): void {
@@ -181,8 +190,7 @@ export function installSkyFog(): void {
   #ifdef USE_FOG
     #ifdef FOG_EXP2
       // Graded by height: the density the fragment is seen through falls with its own height (a ground haze).
-      float fogLayer = hazeLayer(vFogWorld.y);
-      float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth * fogLayer * fogLayer );
+      float fogFactor = hazeFactor( fogDensity, vFogDepth, hazeLayer(vFogWorld.y) );
     #else
       float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
     #endif

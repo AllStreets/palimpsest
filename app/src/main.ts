@@ -146,6 +146,8 @@ interface DebugHandle {
   breakdown(detail?: boolean): ReturnType<ReturnType<typeof createCity>['breakdown']>;
   /** The share of a breakdown root's projected area the city leaves visible from where the camera stands (an ID pass; Phase 5 Task 10). */
   visibleShare(key: 'campus'): Promise<number>;
+  /** Each pixel's distance from the eye in metres, row-major from the top at a small size (0 for sky; Phase 5 Task 15a). */
+  distances(): ReturnType<ReturnType<typeof createCity>['distances']>;
   /** Frame times as the page draws them: start() begins a log, stop() ends it and returns each frame's time in ms (perf, frameStats). */
   frameLog: { start(): void; stop(): number[] };
   /** The river's lanterns, its static draw calls and whether its water drew since last asked. */
@@ -560,6 +562,7 @@ async function main(): Promise<void> {
     cull: (on) => setClusterCulling(on),
     breakdown: (detail) => city.breakdown(detail),
     visibleShare: (key) => city.visibleShare(key),
+    distances: () => city.distances(),
     frameLog: frameLog(),
     river: () => city.river(),
     transit: () => city.transit(),

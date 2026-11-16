@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { clearAirFloor, CROWN_ALLOWANCE, cityExtent, easeHome, easeLimits, fogFor, fogFrom, FOV, HERO_FOG, opensHome, viewLimits, type CityExtent, type EasedHome, type V3 } from '../app/src/city/view.js';
+import { clearAirFloor, CROWN_ALLOWANCE, cityExtent, easeHome, easeLimits, fogFor, fogFrom, FOV, hazeAt, HERO_FOG, opensHome, viewLimits, type CityExtent, type EasedHome, type V3 } from '../app/src/city/view.js';
 import { FLOOR_HEIGHT, ROOT_HEIGHT } from '../shared/tower-layout.js';
 
 // ---------------------------------------------------------------- an independent pinhole camera
@@ -52,7 +52,7 @@ const extent = (floors: number, radius: number, count: number): CityExtent => ({
   count,
 });
 
-const fogAt = (density: number, d: number): number => 1 - Math.exp(-density * density * d * d);
+const fogAt = (density: number, d: number): number => hazeAt(density, d);
 
 const ASPECTS = [1.6, 1.0, 2.2];
 

@@ -720,6 +720,27 @@ test("the slit lining's colour stays within the grey band", () => {
   }
 });
 
+test('the lawn is mown, worn along its walks and edged in pale stone, not outlined in black or mottled teal (Task 15a)', async () => {
+  const { TURF, patchMasonryShader } = (await import('../app/src/city/campus/masonry-shader.js')) as unknown as {
+    TURF: { mottle?: number; stripe?: number; wear?: number; sky: number[] };
+    patchMasonryShader(sh: { vertexShader: string; fragmentShader: string }): void;
+  };
+  const site = (await import('../app/src/city/campus/site.js')) as unknown as { campusWalks?: () => number[][]; KERB?: 'gravel' | 'limestone' | 'ashlar'; KERB_SHADE?: number };
+  // The kerbs read as pale stone edging, not as a black line round every walk and plot (they were ashlar at 0.5).
+  const kerb = TONE[site.KERB ?? 'ashlar'];
+  assert.ok((site.KERB_SHADE ?? 0.5) * Math.min(kerb.r, kerb.g, kerb.b) >= 0.7, `the kerbs' tone ${((site.KERB_SHADE ?? 0.5) * kerb.r).toFixed(2)}`);
+  // A light mottle (the coarse one read as clouds from above), the mower's stripes, and wear along the walks.
+  assert.ok((TURF.mottle ?? 0.42) <= 0.15, `the lawn's coarse mottle ${TURF.mottle ?? 0.42}`);
+  assert.ok((TURF.stripe ?? 0) >= 0.08 && (TURF.stripe ?? 0) <= 0.2, `the mower's stripes ${TURF.stripe}`);
+  assert.ok(typeof site.campusWalks === 'function' && site.campusWalks().length >= 10, 'the walks are known to the lawn');
+  const stub = (inc: string[]): string => inc.map((i) => `#include <${i}>`).join('\n');
+  const sh = { vertexShader: stub(['common', 'begin_vertex']), fragmentShader: stub(['common', 'map_fragment', 'roughnessmap_fragment', 'metalnessmap_fragment', 'normal_fragment_maps', 'emissivemap_fragment']) };
+  patchMasonryShader(sh);
+  assert.ok(sh.fragmentShader.includes('campusWalkGap(lp)') && sh.fragmentShader.includes(`CAMPUS_WALKS = ${site.campusWalks!().length}`), 'the turf wears along every walk');
+  // The sky's fill on the green is a warm grey, not blue: its blue no more than a tenth over its red.
+  assert.ok(TURF.sky[2] <= TURF.sky[0] * 1.1, `the sky fill ${TURF.sky.join(', ')}`);
+});
+
 test('the turf keeps a lifted dusk tone with blades, and the louvres stay open enough to read at 60 m', async () => {
   const { LOUVRE_PITCH, TURF, patchMasonryShader } = await import('../app/src/city/campus/masonry-shader.js');
   const { BLOOM_THRESHOLD, EXPOSURE } = await import('../app/src/city/post.js');
@@ -729,13 +750,13 @@ test('the turf keeps a lifted dusk tone with blades, and the louvres stay open e
   // even on the palest straw drift and the brightest blade.
   assert.ok(TURF.floor >= 0.7, `turf albedo floor ${TURF.floor}`);
   assert.ok(TURF.skyFill >= 0.15 && TURF.skyFill <= 0.4, `turf sky fill ${TURF.skyFill}`);
-  const brightest = Math.max(TONE.turf.r, TONE.turf.g, TONE.turf.b) * (TURF.floor + 0.42 + 0.26 + 0.1) * 1.58 * 1.22 * 1.12 * Math.max(...TURF.sky) * TURF.skyFill * EXPOSURE;
+  const brightest = Math.max(TONE.turf.r, TONE.turf.g, TONE.turf.b) * (TURF.floor + TURF.mottle + 0.1) * (1 + TURF.stripe / 2) * 1.45 * 1.08 * 1.12 * Math.max(...TURF.sky) * TURF.skyFill * EXPOSURE;
   assert.ok(brightest < BLOOM_THRESHOLD * 0.5, `the turf's fill stays well under the threshold (${brightest.toFixed(2)})`);
   // The patch carries both into the shader: the blades, the fill and the louvres' pitch.
   const stub = (inc: string[]): string => inc.map((i) => `#include <${i}>`).join('\n');
   const sh = { vertexShader: stub(['common', 'begin_vertex']), fragmentShader: stub(['common', 'map_fragment', 'roughnessmap_fragment', 'metalnessmap_fragment', 'normal_fragment_maps', 'emissivemap_fragment']) };
   patchMasonryShader(sh);
   assert.ok(sh.fragmentShader.includes('float blade = mix(') && sh.fragmentShader.includes('campusKind() == 4'), 'the turf branch draws blades and takes the sky fill');
-  assert.ok(sh.fragmentShader.includes(`${TURF.floor.toFixed(2)} + 0.42 * a`) && sh.fragmentShader.includes(TURF.skyFill.toFixed(2)), 'with its floor and its fill');
+  assert.ok(sh.fragmentShader.includes(`${TURF.floor.toFixed(2)} + ${TURF.mottle.toFixed(2)} * a`) && sh.fragmentShader.includes(TURF.skyFill.toFixed(2)), 'with its floor and its fill');
   assert.ok(sh.fragmentShader.includes(`/ ${LOUVRE_PITCH.toFixed(2)}`), 'and the louvres at their pitch');
 });

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { DEAD_EXIT_ODD, DEAD_GLASS, DEAD_LANDING_EVERY, DEAD_STOREY, lightsOutEmitter, OUT_PARS, OUT_UNIFORMS } from '../lightsout.js';
+import { DEAD_EXIT_ODD, DEAD_EXIT_SPILL, DEAD_GLASS, DEAD_LANDING_EVERY, DEAD_STOREY, lightsOutEmitter, OUT_PARS, OUT_UNIFORMS } from '../lightsout.js';
 
 import type { District } from '../../../../shared/types';
 import { materials, texture } from '../materials';
@@ -358,7 +358,7 @@ const DEAD_GLSL = /* glsl */ `
           // The landing's battery luminaire washes the stairwell behind the pane a cold green-white, so from across the
           // city a landing still reads as one faint point in the dark face.
           float spill = exp(-dot(at, at) * 1.4) + 0.5 * exp(-dot(at, at) * 0.12);
-          roomLight += (vec3(0.1, 0.8, 0.3) * 0.8 * sign_ + vec3(0.32, 0.6, 0.5) * 0.16 * spill) * k * dOut;
+          roomLight += (vec3(0.1, 0.8, 0.3) * 0.8 * sign_ + vec3(0.32, 0.6, 0.5) * ${DEAD_EXIT_SPILL.toFixed(2)} * spill) * k * dOut;
         }
       }
     }

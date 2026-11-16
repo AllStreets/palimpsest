@@ -140,9 +140,12 @@ export const SPIRE = {
   breath: [0.5, 1.06] as [number, number],
   /** Seconds per breath. */
   period: 4,
-  /** The far point's size in pixels, and the least any lit lens stands across on screen. */
-  point: 3.5,
-  lens: 2,
+  /**
+   * The far point's size in pixels, and the least any lit lens stands across on screen. Task 15a: a round point with a
+   * hot core and a soft edge (pointDisc), not a 3.5 pixel square, which read from home as a notched speck.
+   */
+  point: 5,
+  lens: 2.4,
 } as const;
 
 /**
@@ -296,6 +299,29 @@ function stayKit(k: Kit): void {
       rod(k, 'galvanised', foot, new THREE.Vector3(Math.cos(a) * 0.12, y - 0.12, Math.sin(a) * 0.12), 0.024);
     }
   }
+}
+
+/**
+ * The far point's disc (Task 15a): opaque in its core (the inner third of its radius), falling off smoothly to its
+ * rim, so a point a few pixels across draws round, with the lamp's hot core at its centre.
+ */
+export function pointDisc(n = 32): THREE.DataTexture {
+  const px = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const r = Math.hypot((x + 0.5) / n - 0.5, (y + 0.5) / n - 0.5) * 2;
+      const t = Math.min(1, Math.max(0, (1 - r) / (1 - 0.34)));
+      const i = (y * n + x) * 4;
+      px[i] = px[i + 1] = px[i + 2] = 255;
+      px[i + 3] = Math.round(255 * t * t * (3 - 2 * t));
+    }
+  }
+  const tex = new THREE.DataTexture(px, n, n, THREE.RGBAFormat);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
 }
 
 /** One lamp: a unit lens, scaled to each spot. */
@@ -452,10 +478,11 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
   const finials = parts(m, opts.quality, finialKit).map((p) => new Draw(p.geo, p.mat, 'finial', true, group));
   const sleeves = parts(m, opts.quality, sleeveKit).map((p) => new Draw(p.geo, p.mat, 'sleeve', true, group));
 
-  // The far point: the lit tip as a two pixel lamp at any distance, depth tested, never bloomed.
+  // The far point: the lit tip as a small round lamp at any distance (its disc: a hot core, a soft edge), depth tested,
+  // never bloomed.
   const pointGeo = new THREE.BufferGeometry();
   pointGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3 * 8), 3));
-  const pointMat = new THREE.PointsMaterial({ color: new THREE.Color(...SPIRE.far), size: SPIRE.point, sizeAttenuation: false, fog: false });
+  const pointMat = new THREE.PointsMaterial({ color: new THREE.Color(...SPIRE.far), size: SPIRE.point, sizeAttenuation: false, fog: false, map: pointDisc(), transparent: true, depthWrite: false, alphaTest: 0.02 });
   const points = new THREE.Points(pointGeo, pointMat);
   points.name = 'milestone:tip';
   points.frustumCulled = false;
@@ -722,6 +749,7 @@ export function createMilestones(opts: { quality: 'high' | 'medium'; materials: 
       lamp.dispose();
       darkLamp.dispose();
       pointGeo.dispose();
+      pointMat.map?.dispose();
       pointMat.dispose();
       group.removeFromParent();
     },

@@ -532,3 +532,17 @@ test("a floor's milestone reads in quiet words", () => {
   assert.equal(milestoneNote({ ...sky, at: '2026-11-12T09:00:00Z' }, now), 'the skyline, since today');
   assert.equal(milestoneNote(ribbon('x#founding', 'x#f1'), now), 'first PR of Quickset');
 });
+
+test("the spire's far point draws as a round lamp with a hot core, not a square speck (Task 15a)", async () => {
+  const mod = (await import('../app/src/city/milestones.js')) as unknown as { pointDisc?: (n?: number) => THREE.DataTexture };
+  assert.equal(typeof mod.pointDisc, 'function', 'the far point has a disc');
+  const tex = mod.pointDisc!(32);
+  const px = tex.image.data as Uint8Array;
+  const alpha = (x: number, y: number): number => px[(y * 32 + x) * 4 + 3];
+  assert.equal(alpha(16, 16), 255, 'opaque at its core');
+  assert.equal(alpha(0, 0), 0, 'nothing in its corners: round, not square');
+  assert.ok(alpha(16, 3) > 0 && alpha(16, 3) < 200, 'a soft edge');
+  const ms = createMilestones({ quality: 'high', materials: plainMaterials() });
+  assert.ok(ms.point.map && ms.point.transparent && SPIRE.point >= 4, `the point draws its disc at ${SPIRE.point} px`);
+  ms.dispose();
+});

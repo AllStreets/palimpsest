@@ -104,6 +104,11 @@ export const DEAD_GLASS = new THREE.Color(0.034, 0.032, 0.03);
 /** The storey height the stair's landings are counted in, and every how many storeys a landing keeps its exit light. */
 export const DEAD_STOREY = 4.2;
 export const DEAD_LANDING_EVERY = 4;
+/**
+ * The landing's battery luminaire washing its stairwell pane, as a share of its cold green-white (Task 15a: at 0.16
+ * the landings were under a pixel's worth of light from home and the dark tower read as a block with none).
+ */
+export const DEAD_EXIT_SPILL = 0.4;
 /** About one pane in fifty off the stair keeps an exit sign burning on its battery. */
 export const DEAD_EXIT_ODD = 0.02;
 

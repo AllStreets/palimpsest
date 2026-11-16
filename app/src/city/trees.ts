@@ -86,6 +86,16 @@ export const LEAF_SKY_MAX = 0.18;
 export const LEAF_ALBEDO_MAX = 0.55;
 /** How much of the sun comes through a leaf seen against it (its translucency), before the cap. */
 export const LEAF_TRANSLUCENCY = 0.55;
+/**
+ * Leaf cards up close (Task 15a). A card seen edge on is a streak and its straight edge a line, so within
+ * LEAF_EDGE_NEAR metres a card turned past LEAF_EDGE_ON (the cosine between its face and the line of sight) is not
+ * drawn, the leaves round it filling in; and within LEAF_EYE_CLEAR metres of the eye the leaves part, so an eye at
+ * a tree's foot looks out under and through the crown, not from inside it. Both are cut, not dithered: a dither
+ * this close left a scatter of single dark pixels over the sky (round 1).
+ */
+export const LEAF_EDGE_NEAR = 14;
+export const LEAF_EDGE_ON = 0.22;
+export const LEAF_EYE_CLEAR = 4.5;
 
 /** The sun's term off a leaf of colour `albedo` (one channel, linear), as the shader works it out: Lambert, translucency and sheen, then the cap. */
 export function leafSunTerm(o: { sun: number; ndl: number; back: number; sheen: number; albedo: number }): number {
@@ -630,6 +640,11 @@ function treeMaterial(species: Species, level: TreeLevel, band: THREE.Vector2): 
         if (vLeaf > 0.5) {
           vec4 leafTex = texture2D(map, vMapUv);
           if (leafTex.a < treeCut(vMapUv)) discard;
+          // Up close (LEAF_EDGE_NEAR, LEAF_EDGE_ON, LEAF_EYE_CLEAR): no edge-on card, and the leaves part round the eye.
+          float leafD = length(vViewPosition);
+          vec3 cardN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
+          bool edgeOn = leafD < ${LEAF_EDGE_NEAR.toFixed(1)} && abs(dot(cardN, vViewPosition / max(leafD, 1e-4))) < ${LEAF_EDGE_ON.toFixed(3)};
+          if (edgeOn || leafD < ${LEAF_EYE_CLEAR.toFixed(1)}) discard;
           diffuseColor.rgb *= leafTex.rgb * vTint;
         } else {
           // Bark: its own tone (the vertex colour), mottled along and round the branch.

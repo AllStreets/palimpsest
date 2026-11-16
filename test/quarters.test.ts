@@ -9,6 +9,7 @@ import { batchPieces, drawnMeshes } from '../app/src/city/batch.js';
 import { ambientCap, COURT_APRON } from '../app/src/city/collar.js';
 import { standingLots } from '../app/src/city/lots.js';
 import { occupancy, plazasOf } from '../app/src/city/occupancy.js';
+import { readFileSync } from 'node:fs';
 import { lightsOutAt, quarterZones } from '../app/src/city/lightsout.js';
 import * as lightsoutModule from '../app/src/city/lightsout.js';
 import { agentLook, DARKEN_S, LANTERN_GLASS, LANTERN_TOP, quarterBuildKey, quarterCenterpiece, quarterLooks, quarterShow, QUARTER_OFFSETS, RECLAD } from '../app/src/city/quarters.js';
@@ -498,4 +499,15 @@ test('hires in a burst rebatch once', () => {
   wait.clear();
   tick(20);
   assert.deepEqual(started, ['third hire']);
+});
+
+test("a dead tower's landings wash their stairwell panes enough to read from home, and stay under the bloom (Task 15a)", async () => {
+  const lo = lightsoutModule as unknown as { DEAD_EXIT_SPILL?: number };
+  const { BLOOM_THRESHOLD, EXPOSURE } = await import('../app/src/city/post.js');
+  assert.ok((lo.DEAD_EXIT_SPILL ?? 0.16) >= 0.4, `the landing's spill ${lo.DEAD_EXIT_SPILL ?? 0.16}`);
+  // The brightest a landing's pane draws (its sign's green over the spill's peak), after the exposure.
+  const peak = (0.8 * 0.8 + 0.6 * (lo.DEAD_EXIT_SPILL ?? 0) * 1.5) * EXPOSURE;
+  assert.ok(peak < BLOOM_THRESHOLD, `a landing's light ${peak.toFixed(2)} stays under the bloom threshold`);
+  const look = readFileSync(new URL('../app/src/city/tower/look.ts', import.meta.url), 'utf8');
+  assert.match(look, /DEAD_EXIT_SPILL\.toFixed/, 'the shader draws the landings at that spill');
 });

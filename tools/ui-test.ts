@@ -154,6 +154,7 @@ interface Debug {
   camera(): number[];
   limits(): Limits;
   precompile(): Promise<void>;
+  distances(): Promise<{ width: number; height: number; metres: number[] }>;
   stats(): { calls: number; triangles: number };
   plots(): { plazas: number; buildings: number };
   quality(): 'high' | 'medium';
@@ -3874,6 +3875,155 @@ const medianOf = (xs: number[]): number => {
   return s.length === 0 ? 0 : s.length % 2 ? s[s.length >> 1] : (s[(s.length >> 1) - 1] + s[s.length >> 1]) / 2;
 };
 
+/** The haze's mid-distance band (Phase 5 Task 15a): the pixels whose surface stands this far from the eye, in metres. */
+export const HAZE_BAND: [number, number] = [300, 900];
+/** Round 0's band read (mean luma and RMS contrast, luma's standard deviation over its mean) at the overview and from home. */
+export const HAZE_BAND_BASE = { overview: { mean: 68.15, contrast: 0.485 }, home: { mean: 76.7, contrast: 0.425 } };
+/** The re-graded haze keeps at least this times round 0's RMS contrast in the band. */
+export const HAZE_BAND_GAIN = 1.5;
+/**
+ * The band's mean luma (0 to 255) stays under this: above it the middle city reads as a milky veil (round 0 read 68 at
+ * the overview and 77 from home; the same band in clear air 53 and 57).
+ */
+export const HAZE_BAND_LUMA = 62;
+/**
+ * Where HAZE_BAND_GAIN is past what clear air itself gives (the overview: its band starts 300 m out, where the haze
+ * was always thin, and clear air holds 1.47 times round 0's contrast), the floor is this share of the clear air's
+ * contrast read in the same run: the haze takes no more than 7% of the band's contrast there.
+ */
+export const HAZE_BAND_CLEAR_SHARE = 0.93;
+
+/**
+ * Mean luma, its standard deviation (0 to 255) and RMS contrast (the deviation over the mean) of a frame's pixels whose
+ * surface stands within HAZE_BAND of the eye, read through the debug handle's distance pass; the plates and the
+ * running head hidden. A veil of lit air adds the same light to every pixel: the mean rises and the RMS contrast falls.
+ */
+export async function hazeBand(page: Page, shot?: string): Promise<{ mean: number; sd: number; contrast: number; n: number }> {
+  const hidden = await page.addStyleTag({ content: '.runhead, .plates { display: none !important; }' });
+  await page.waitForTimeout(300);
+  const img = decodePng(await page.screenshot(shot ? { path: shot } : {}));
+  await hidden.evaluate((e) => (e as HTMLElement).remove());
+  const dist = (await page.evaluate('window.__palimpsest.distances()')) as { width: number; height: number; metres: number[] };
+  let n = 0;
+  let sum = 0;
+  let sq = 0;
+  for (let y = 0; y < img.height; y++) {
+    const dy = Math.min(dist.height - 1, Math.floor((y * dist.height) / img.height));
+    for (let x = 0; x < img.width; x++) {
+      const m = dist.metres[dy * dist.width + Math.min(dist.width - 1, Math.floor((x * dist.width) / img.width))];
+      if (m < HAZE_BAND[0] || m > HAZE_BAND[1]) continue;
+      const i = (y * img.width + x) * 4;
+      const l = 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
+      n++;
+      sum += l;
+      sq += l * l;
+    }
+  }
+  const mean = n ? sum / n : 0;
+  const sd = n ? Math.sqrt(Math.max(0, sq / n - mean * mean)) : 0;
+  return { mean, sd, contrast: mean > 0 ? sd / mean : 0, n };
+}
+
+/**
+ * The haze keeps its buildings (Phase 5 Task 15a): in the mid-distance band at the overview and from home the RMS
+ * contrast is at least HAZE_BAND_GAIN times round 0's and the mean luma under HAZE_BAND_LUMA (no milky veil). The
+ * same band in clear air (haze(0)) is read for the ceiling, not asserted.
+ */
+async function hazeBandChecks(page: Page): Promise<void> {
+  const city = await cityOf(page);
+  const cx = city.reduce((a, d) => a + d.origin.x, 0) / city.length;
+  const cz = city.reduce((a, d) => a + d.origin.z, 0) / city.length;
+  const home = await debug(page, (d) => d.limits().home);
+  for (const [name, eye, target] of [
+    ['overview', [cx + BEARING.x * 900, 300, cz + BEARING.z * 900], [cx, 70, cz]],
+    ['home', home.eye, home.target],
+  ] as Array<['overview' | 'home', number[], number[]]>) {
+    await setView(page, eye, target);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(2500);
+    const b = await hazeBand(page, join(SHOTS, `haze-band-${name}.png`));
+    await page.evaluate('window.__palimpsest.haze(0)');
+    await page.waitForTimeout(600);
+    const c = await hazeBand(page, join(SHOTS, `haze-band-${name}-clear.png`));
+    await page.evaluate('window.__palimpsest.haze(null)');
+    await page.waitForTimeout(600);
+    const base = HAZE_BAND_BASE[name];
+    const floor = Math.min(base.contrast * HAZE_BAND_GAIN, c.contrast * HAZE_BAND_CLEAR_SHARE);
+    const fog = await debug(page, (d) => d.limits().fogDensity);
+    console.log(`info  haze band ${HAZE_BAND[0]} to ${HAZE_BAND[1]} m at ${name} (home fog density ${fog.toFixed(6)}): mean luma ${b.mean.toFixed(2)}, deviation ${b.sd.toFixed(2)}, RMS contrast ${b.contrast.toFixed(3)} over ${b.n} px; clear air ${c.mean.toFixed(2)}, ${c.sd.toFixed(2)}, ${c.contrast.toFixed(3)}; round 0 ${base.mean.toFixed(2)}, ${base.contrast.toFixed(3)}`);
+    check(b.n > 10_000 && b.contrast >= floor, `at ${name} the mid-distance band's RMS contrast is at least ${HAZE_BAND_GAIN} times round 0's, or ${HAZE_BAND_CLEAR_SHARE} of the clear air's where that is less (${b.contrast.toFixed(3)} against ${floor.toFixed(3)}; ${(b.contrast / base.contrast).toFixed(2)} times round 0's)`);
+    check(b.n > 10_000 && b.mean <= HAZE_BAND_LUMA, `at ${name} the mid-distance band's mean luma is at most ${HAZE_BAND_LUMA} (${b.mean.toFixed(2)})`);
+  }
+}
+
+/** A plate's words against the city behind them (Phase 5 Task 15a): the WCAG ratio for body text. */
+export const PLATE_CONTRAST = 4.5;
+
+/** WCAG relative luminance of an sRGB colour, 0 to 255 a channel. */
+function relLum(r: number, g: number, b: number): number {
+  const c = (v: number): number => {
+    v /= 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * c(r) + 0.7152 * c(g) + 0.0722 * c(b);
+}
+
+/**
+ * The tower plates read on the haze (Phase 5 Task 15a): at the overview and from home, each shown plate's name stands
+ * at least PLATE_CONTRAST to 1 against what is behind it (the frame shot with the words made transparent, so the
+ * plate's own shadow counts as the ground it is read on; the 75th percentile of that ground's luminance in the words'
+ * box, its brighter parts), and every shown name is whole on screen (the plate-flip path keeps long names in).
+ */
+async function plateChecks(page: Page): Promise<void> {
+  const city = await cityOf(page);
+  const cx = city.reduce((a, d) => a + d.origin.x, 0) / city.length;
+  const cz = city.reduce((a, d) => a + d.origin.z, 0) / city.length;
+  const home = await debug(page, (d) => d.limits().home);
+  for (const [name, eye, target] of [
+    ['overview', [cx + BEARING.x * 900, 300, cz + BEARING.z * 900], [cx, 70, cz]],
+    ['home', home.eye, home.target],
+  ] as Array<[string, number[], number[]]>) {
+    await setView(page, eye, target);
+    await page.waitForTimeout(2500);
+    type P = { name: string; x0: number; y0: number; x1: number; y1: number; colour: number[]; flipped: boolean };
+    const plates = (await page.evaluate(`[...document.querySelectorAll('.plates .plate')].filter((p) => p.style.visibility === 'visible' && Number(p.style.opacity) > 0.5 && !p.classList.contains('plate-person')).map((p) => {
+      const n = p.querySelector('.plate-name');
+      const r = n.getBoundingClientRect();
+      const c = getComputedStyle(n).color.match(/[0-9.]+/g).map(Number);
+      return { name: n.textContent, x0: r.left, y0: r.top, x1: r.right, y1: r.bottom, colour: c, flipped: p.classList.contains('plate-flip') };
+    })`)) as P[];
+    const hide = await page.addStyleTag({ content: '.runhead { display: none !important; } .plate-name, .plate-sub { color: transparent !important; }' });
+    await page.waitForTimeout(300);
+    const img = decodePng(await page.screenshot({ path: join(SHOTS, `plates-${name}-ground.png`) }));
+    await hide.evaluate((e) => (e as HTMLElement).remove());
+    await page.screenshot({ path: join(SHOTS, `plates-${name}.png`) });
+    const k = img.width / VIEWPORT.width;
+    const rows: string[] = [];
+    let worst = Infinity;
+    let whole = true;
+    for (const p of plates) {
+      const lums: number[] = [];
+      for (let y = Math.max(0, Math.round(p.y0 * k)); y < Math.min(img.height, Math.round(p.y1 * k)); y++) {
+        for (let x = Math.max(0, Math.round(p.x0 * k)); x < Math.min(img.width, Math.round(p.x1 * k)); x++) {
+          const i = (y * img.width + x) * 4;
+          lums.push(relLum(img.data[i], img.data[i + 1], img.data[i + 2]));
+        }
+      }
+      lums.sort((a, b) => a - b);
+      const ground = lums.length ? lums[Math.floor(lums.length * 0.75)] : 1;
+      const text = relLum(p.colour[0], p.colour[1], p.colour[2]);
+      const ratio = (Math.max(text, ground) + 0.05) / (Math.min(text, ground) + 0.05);
+      worst = Math.min(worst, ratio);
+      const on = p.x0 >= 0 && p.x1 <= VIEWPORT.width && p.y0 >= 0 && p.y1 <= VIEWPORT.height;
+      whole &&= on;
+      rows.push(`${p.name} ${ratio.toFixed(2)}${p.flipped ? ' (flipped)' : ''}${on ? '' : ' (off screen)'}`);
+    }
+    console.log(`info  plates at ${name}: ${rows.join('; ')}`);
+    check(plates.length >= 3 && worst >= PLATE_CONTRAST, `at ${name} every shown tower plate's name stands at least ${PLATE_CONTRAST}:1 against the city behind it (${plates.length} plates, the least ${worst.toFixed(2)})`);
+    check(plates.length >= 3 && whole, `at ${name} every shown tower plate's name is whole on screen`);
+  }
+}
+
 async function hazeChecks(page: Page): Promise<void> {
   const city = await cityOf(page);
   const cx = city.reduce((a, d) => a + d.origin.x, 0) / city.length;
@@ -4213,7 +4363,8 @@ async function main(): Promise<void> {
     // UI_ONLY=traffic: the tram from home, a persona cab at a red light and the signal heads (Phase 5 Task 4).
     // UI_ONLY=close: a tram crossing 400 m without a pop, and the ride car's lamps without a flare (Phase 5 Task 5).
     // UI_ONLY=people: the personas' checks and the people-follow frame rate on high, then on medium (Phase 5 Task 3).
-    // UI_ONLY=haze: the six towers' hue spread in the overview (Phase 5 Task 6).
+    // UI_ONLY=haze: the mid-distance band's contrast and luma, the plates on the haze (Phase 5 Task 15a), and the six towers' hue spread in the overview (Phase 5 Task 6).
+    // UI_ONLY=plates: the tower plates' contrast on the haze and whole on screen, at the overview and from home (Phase 5 Task 15a).
     // UI_ONLY=far: the stone's coursing read from 1,100 m, and the home guard (Phase 5 Task 7).
     // UI_ONLY=market: the ribbon's shaded side, a lit site's haze from home, and the guards on both tiers (Phase 5 Task 8).
     // UI_ONLY=trees: the crowns' green from above, the home guard and the campus's sub-guard on both tiers (Phase 5 Task 9).
@@ -4221,7 +4372,7 @@ async function main(): Promise<void> {
     // UI_ONLY=hitches: no frame over 33 ms through a floor landing, hires, a re-clad, a disconnect, the ride, a follow and home (Task 13).
     // UI_ONLY=cull: the street and the court draw a quarter fewer triangles than round 0, home no more calls (Phase 5 Task 12).
     // UI_ONLY=textures: the first city frame within 4 s over five cold loads, and SSIM 0.98 against the original textures (UI_TEXTURE_BASE) at four views (Task 14).
-    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures'].includes(process.env.UI_ONLY ?? '');
+    const spireOnly = ['spire', 'revival', 'ribbon', 'tour', 'dossier', 'budget', 'campus', 'school', 'schoolscreen', 'autonomy', 'schoolsettings', 'lineage', 'street', 'people', 'traffic', 'close', 'haze', 'far', 'market', 'trees', 'lens', 'cull', 'hitches', 'textures', 'plates'].includes(process.env.UI_ONLY ?? '');
     if (process.env.UI_ONLY === 'textures' && ready) {
       await textureChecks(browser, page);
     } else if (spireOnly && ready) {
@@ -4260,7 +4411,11 @@ async function main(): Promise<void> {
         await trafficChecks(page);
       } else if (process.env.UI_ONLY === 'close') {
         await closeChecks(page);
+      } else if (process.env.UI_ONLY === 'plates') {
+        await plateChecks(page);
       } else if (process.env.UI_ONLY === 'haze') {
+        await hazeBandChecks(page);
+        await plateChecks(page);
         await hazeChecks(page);
       } else if (process.env.UI_ONLY === 'far') {
         await farChecks(page);
@@ -4456,6 +4611,8 @@ async function main(): Promise<void> {
         await vehicleChecks(page);
         await trafficChecks(page);
         await closeChecks(page);
+        await hazeBandChecks(page);
+        await plateChecks(page);
         await hazeChecks(page);
         await farChecks(page);
         await peopleChecks(page);

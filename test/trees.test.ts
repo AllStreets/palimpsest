@@ -168,6 +168,22 @@ test('the sun term stays under LEAF_SUN_MAX', () => {
   trees.dispose();
 });
 
+test('leaf cards up close: an edge-on card thins out and the leaves part round the eye (Task 15a)', async () => {
+  const mod = (await import('../app/src/city/trees.js')) as unknown as { LEAF_EDGE_NEAR?: number; LEAF_EDGE_ON?: number; LEAF_EYE_CLEAR?: number };
+  // Within 10 m no card shows its edge or a streak: the edge-on fade reaches past 10 m, and an eye at a tree's foot
+  // (the street still's, 1.6 m up under a street tree) looks out through a clearing at least two metres deep.
+  assert.ok((mod.LEAF_EDGE_NEAR ?? 0) >= 10, `edge-on cards thin out within ${mod.LEAF_EDGE_NEAR} m`);
+  assert.ok((mod.LEAF_EDGE_ON ?? 0) > 0.1 && (mod.LEAF_EDGE_ON ?? 1) < 0.5, `a card is cut past ${mod.LEAF_EDGE_ON}`);
+  assert.ok((mod.LEAF_EYE_CLEAR ?? 0) >= 3, `the leaves part ${mod.LEAF_EYE_CLEAR} m round the eye`);
+  const trees = createTrees('high');
+  trees.place(ring(3, 10));
+  const mat = (trees.object.children[0] as THREE.InstancedMesh).material as THREE.MeshStandardMaterial;
+  const sh = { uniforms: {}, vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader } as unknown as THREE.WebGLProgramParametersWithUniforms;
+  mat.onBeforeCompile(sh, undefined as unknown as THREE.WebGLRenderer);
+  assert.ok(sh.fragmentShader.includes('cross(dFdx(vViewPosition), dFdy(vViewPosition))') && sh.fragmentShader.includes(`leafD < ${mod.LEAF_EYE_CLEAR!.toFixed(1)}`), 'the leaf shader cuts edge-on cards and clears the eye');
+  trees.dispose();
+});
+
 test('the wind sways a crown under 5 cm and never moves the root', () => {
   let most = 0;
   for (let t = 0; t < 60; t += 0.07)

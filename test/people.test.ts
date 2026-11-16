@@ -702,3 +702,18 @@ test('a ferry rider waits on the pontoon at its deck, not up on the quay', () =>
   people.dispose();
   v.dispose();
 });
+
+test("the exchange's bidders stand in a queue at the hall's stair, each in a place of its own (Task 15a)", async () => {
+  const mod = (await import('../app/src/city/people.js')) as unknown as { queueSpot?: (i: number) => { x: number; z: number; heading: number } };
+  const { FOUNTAIN } = await import('../app/src/city/exchange.js');
+  assert.equal(typeof mod.queueSpot, 'function', 'the bidders have places in a queue');
+  const spots = Array.from({ length: 16 }, (_, i) => mod.queueSpot!(i));
+  for (let i = 0; i < spots.length; i++) {
+    const p = spots[i];
+    // On the forecourt between the stair's foot (z 21) and the fountain's basin, facing the doors (toward -z).
+    assert.ok(p.z > 21 && Math.hypot(p.x - FOUNTAIN.x, p.z - FOUNTAIN.z) > FOUNTAIN.radius + 1, `place ${i} at (${p.x.toFixed(2)}, ${p.z.toFixed(2)})`);
+    assert.ok(Math.abs(p.heading + Math.PI / 2) < 1e-9, `place ${i} faces the doors`);
+    // No two bidders stand on one another.
+    for (let j = 0; j < i; j++) assert.ok(Math.hypot(p.x - spots[j].x, p.z - spots[j].z) > 0.6, `places ${j} and ${i} apart`);
+  }
+});

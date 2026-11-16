@@ -1179,8 +1179,22 @@ async function main(): Promise<void> {
           await page.waitForFunction(() => ((window as unknown as { __palimpsest: { exchange(): { slots: Array<{ state: string; lamps: number }> } | null } }).__palimpsest.exchange()?.slots ?? []).some((x) => x.state === 'bidding'), null, { timeout: 15_000 }).catch(() => {});
           const board = await dbg<Array<{ state: string; lamps: number }>>(page, '(d) => d.exchange()?.slots ?? []');
           console.log(`exchange-600: ${board.filter((x) => x.state === 'bidding').length} cards lit, ${board.reduce((a, x) => a + x.lamps, 0)} lamps`);
+          // The bidders on their way to the exchange (Task 15a): the people's clock held and moved on until they stand
+          // in the queue at the hall's stair (people.ts queueSpot), as many as are on bid trips, or ten minutes on.
+          type Fig = { stage: string; position: V3; tripId: string | null };
+          const atDoors = (fs: Fig[]): number => fs.filter((f) => f.stage === 'idle' && f.position[0] > -2 && f.position[0] < 30 && f.position[2] > 20 && f.position[2] < 32).length;
+          const live = (await page.evaluate(() => fetch('/api/live').then((r) => (r.ok ? r.json() : { trips: [] })).catch(() => ({ trips: [] })))) as { trips?: Array<{ reason: string; endedAt: string | null }> };
+          const bidding = (live.trips ?? []).filter((t) => t.reason === 'bid' && !t.endedAt).length;
+          await callDebug(page, 'd.peopleHold(true)');
+          let queued = atDoors(await callDebug<Fig[]>(page, 'd.persons()'));
+          for (let t = 0; t < 600 && queued < bidding; t += 20) {
+            await callDebug(page, 'd.peopleSkip(20)');
+            queued = atDoors(await callDebug<Fig[]>(page, 'd.persons()'));
+          }
+          console.log(`exchange-600: ${queued} of ${bidding} bidders in the queue at the doors`);
         }
         await measure(name, eye, target);
+        if (name === 'exchange-600') await callDebug(page, 'd.peopleHold(false)');
       }
       const TRANSIT = ['junction-signal', 'tram-home', 'viaduct-corner'];
       if (!only || TRANSIT.some((n) => only.includes(n))) {

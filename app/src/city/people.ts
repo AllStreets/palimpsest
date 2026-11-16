@@ -252,6 +252,8 @@ interface Figure {
   y: number;
   z: number;
   heading: number;
+  /** Its place in the bidders' queue at the exchange while it stands there (queueSpot), or -1. */
+  queue: number;
   phase: number;
   walking: number;
   sit: number;
@@ -337,6 +339,26 @@ const groundY = (x: number, z: number): number => Math.max(inChannel(x, 2) ? 0.0
 
 /** How far right of a street's centre line a walker keeps: the middle of the pavement (ambient.ts PAVE). */
 const PAVEMENT = 6.0;
+
+/**
+ * The bidders' queue at the exchange (Task 15a): the engine sends every
+ * bidder to one point on the forecourt (trips.ts EXCHANGE), where they stood
+ * on one another and read as one figure or none. Each stands instead in a
+ * line along the foot of the hall's grand stair (its foot at z 21), from the
+ * stair's centre toward the east cheek, GAP apart (a queue's spacing, so that
+ * from the market overview each figure's lantern stands apart), a hand's sway
+ * back and forth, facing the doors; past DEPTH places a second line forms
+ * behind the first. Only real bidders stand in it: a figure is there while
+ * its bid trip has arrived and no newer trip has moved it.
+ */
+export const EXCHANGE_QUEUE = { foot: 22.6, from: 1.2, gap: 1.5, depth: 12, behind: 1.6 } as const;
+export function queueSpot(i: number): { x: number; z: number; heading: number } {
+  const n = Math.max(0, Math.floor(i));
+  const row = Math.floor(n / EXCHANGE_QUEUE.depth);
+  const k = n % EXCHANGE_QUEUE.depth;
+  const sway = (((k * 7 + row * 3) % 5) - 2) * 0.12;
+  return { x: EXCHANGE_QUEUE.from + k * EXCHANGE_QUEUE.gap + (row % 2) * EXCHANGE_QUEUE.gap * 0.5, z: EXCHANGE_QUEUE.foot + row * EXCHANGE_QUEUE.behind + sway, heading: -Math.PI / 2 };
+}
 
 /**
  * Where a figure stands for a trip's end: the point itself, unless it lies
@@ -876,6 +898,7 @@ export function createPeople(deps: PeopleDeps): People {
       path: [],
       spot: [0, 0, 0],
       spotHeading: 0,
+      queue: -1,
       crossings: [],
       nextCrossing: 0,
       late: 0,
@@ -923,7 +946,22 @@ export function createPeople(deps: PeopleDeps): People {
     const t = f.trip;
     f.stage = 'idle';
     f.ride = null;
+    f.queue = -1;
     if (!t) return;
+    if (t.reason === 'bid') {
+      // A bidder at the exchange joins the queue at the hall's stair, in the first place free (queueSpot).
+      const taken = new Set<number>();
+      for (const o of figures.values()) if (o !== f && o.stage === 'idle' && o.queue >= 0) taken.add(o.queue);
+      let i = 0;
+      while (taken.has(i)) i++;
+      const q = queueSpot(i);
+      f.queue = i;
+      f.x = q.x;
+      f.z = q.z;
+      f.y = groundY(f.x, f.z);
+      f.heading = q.heading;
+      return;
+    }
     const last = t.legs[t.legs.length - 1] as Leg | undefined;
     if (last?.exact) {
       // An exact leg ends where its path does, at the path's own height (the campus's forecourt).
@@ -937,6 +975,7 @@ export function createPeople(deps: PeopleDeps): People {
   /** Sets a figure up for the leg it is on: walking, or waiting where its vehicle will call. */
   function enterLeg(f: Figure): void {
     const trip = f.trip!;
+    f.queue = -1;
     if (f.leg >= trip.legs.length) return arrive(f);
     const leg = trip.legs[f.leg] as Leg;
     f.ride = null;

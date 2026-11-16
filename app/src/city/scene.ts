@@ -202,6 +202,11 @@ export interface City {
    * the share of its own projected area in the frame that the city in front of it leaves visible, 0 to 1.
    */
   visibleShare(key: string): Promise<number>;
+  /**
+   * How far from the eye each pixel's surface stands (Phase 5 Task 15a), at a small size of the frame's shape:
+   * row-major from the top, in metres to DISTANCE_STEP, 0 where only sky stands (the haze's mid-distance band read).
+   */
+  distances(): Promise<{ width: number; height: number; metres: number[] }>;
   /** The river (river.ts): its lanterns, its static draw calls, and whether its water drew since last asked (tests). */
   river(): { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   /** Plazas the ground paves (the civic plaza included) and ambient buildings standing (tests and debugging). */
@@ -367,6 +372,8 @@ export function plinthCenterpiece(): Centerpiece {
 }
 
 const SHADOW_HALF = 320;
+/** The distance pass's step in metres (one 8-bit level): it reads 0 to 2,550 m, the haze's mid band well inside. */
+const DISTANCE_STEP = 10;
 /** The sun's shadow camera stands this far up the sun's direction from the shadow's centre. */
 const SUN_OFFSET = 800;
 /** Below this eye height the skyline hides name plates behind it. */
@@ -1877,6 +1884,62 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
   let traced: Array<{ update: number; render: number; shadow: boolean; triangles: number }> | null = null;
   const breakdownWanted: Array<{ detail: boolean; resolve: (b: Breakdown) => void }> = [];
   const shareWanted: Array<{ key: string; resolve: (share: number) => void }> = [];
+  const distanceWanted: Array<(d: { width: number; height: number; metres: number[] }) => void> = [];
+  /**
+   * The distance pass behind distances(): the city drawn with one material that writes each surface's distance from
+   * the eye (instances and batches placed as drawn; a shader's own displacement is not honoured), the sky left out.
+   */
+  function distancePass(): { width: number; height: number; metres: number[] } {
+    const w = 480;
+    const h = Math.max(1, Math.round(w / Math.max(0.2, width() / height())));
+    const rt = new THREE.WebGLRenderTarget(w, h, { depthBuffer: true });
+    const mat = new THREE.ShaderMaterial({
+      toneMapped: false,
+      fog: false,
+      side: THREE.DoubleSide,
+      vertexShader: `
+        #include <common>
+        #include <batching_pars_vertex>
+        varying float vDist;
+        void main() {
+          #include <batching_vertex>
+          #include <begin_vertex>
+          #include <project_vertex>
+          vDist = length(mvPosition.xyz);
+        }`,
+      fragmentShader: `
+        varying float vDist;
+        void main() { gl_FragColor = vec4(min(vDist / ${(255 * DISTANCE_STEP).toFixed(1)}, 1.0), 1.0, 0.0, 1.0); }`,
+    });
+    const px = new Uint8Array(w * h * 4);
+    const was = { target: renderer.getRenderTarget(), override: scene.overrideMaterial, background: scene.background, colour: renderer.getClearColor(new THREE.Color()), alpha: renderer.getClearAlpha(), dome: sky.dome.visible };
+    try {
+      renderer.setRenderTarget(rt);
+      renderer.setClearColor(0x000000, 0);
+      sky.dome.visible = false;
+      scene.overrideMaterial = mat;
+      scene.background = null;
+      renderer.clear(true, true, true);
+      renderer.render(scene, camera);
+      renderer.readRenderTargetPixels(rt, 0, 0, w, h, px);
+    } finally {
+      sky.dome.visible = was.dome;
+      scene.overrideMaterial = was.override;
+      scene.background = was.background;
+      renderer.setClearColor(was.colour, was.alpha);
+      renderer.setRenderTarget(was.target);
+      rt.dispose();
+      mat.dispose();
+    }
+    const metres = new Array<number>(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = ((h - 1 - y) * w + x) * 4;
+        metres[y * w + x] = px[i + 1] > 127 ? Math.max(1, px[i]) * DISTANCE_STEP : 0;
+      }
+    }
+    return { width: w, height: h, metres };
+  }
   /**
    * The ID pass behind visibleShare, at a small size of the frame's shape: the city drawn as it stands (its own
    * shaders, so every fold, cut and level is honoured) with the root hidden, for its depth; then the root alone in
@@ -2110,6 +2173,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     campusLiving?.update(dt, clock.elapsedTime);
     schoolTowers?.update(camera.position);
     for (const ask of shareWanted.splice(0)) ask.resolve(idShare(ask.key));
+    for (const ask of distanceWanted.splice(0)) ask(distancePass());
     // The lens (ruling 16): the close mode the camera is in and how far its subject stands; none from home or the overview.
     const mode = lensOverride !== undefined ? lensOverride : focusModeFor({ script: rig.scriptFocus(), following: rig.following(), inspecting: insetTarget > 0 });
     post.setFocus({ mode, distance: camera.position.distanceTo(rig.controls.target), at: rig.controls.target });
@@ -2214,6 +2278,7 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     memory: () => ({ geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures }),
     breakdown: (detail = false) => new Promise<Breakdown>((resolve) => breakdownWanted.push({ detail, resolve })),
     visibleShare: (key) => new Promise<number>((resolve) => shareWanted.push({ key, resolve })),
+    distances: () => new Promise((resolve) => distanceWanted.push(resolve)),
     river: () => ({ lamps: river.lamps.length, ...river.view(camera) }),
     plots: () => ({ plazas: ground.plazas(), buildings: grid.buildings() }),
     ambientLots: (x, z, r) => grid.lots(x, z, r),
