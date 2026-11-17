@@ -218,6 +218,23 @@ function pageFps(page: Page): Promise<number> {
   })`) as Promise<number>;
 }
 
+/** pageFps's read with its frames: the frame rate over three seconds, how many frames took over 20 ms and the slowest. */
+async function pageFrames(page: Page): Promise<{ fps: number; frames: number; over20: number; slowest: number }> {
+  const r = (await page.evaluate(`new Promise((resolve) => {
+    const out = [];
+    const t0 = performance.now();
+    let last = t0;
+    function tick(now) {
+      out.push(now - last);
+      last = now;
+      if (now - t0 < 3000) requestAnimationFrame(tick);
+      else resolve({ out, ms: now - t0 });
+    }
+    requestAnimationFrame(tick);
+  })`)) as { out: number[]; ms: number };
+  return { fps: (r.out.length * 1000) / r.ms, frames: r.out.length, over20: r.out.filter((t) => t > 20).length, slowest: Math.max(...r.out) };
+}
+
 /**
  * Steady-state frame rate: every shader is compiled first (renderer.compile
  * through the debug handle) and the view settles, so a first-sight compile
@@ -1663,10 +1680,17 @@ async function constructionChecks(page: Page): Promise<void> {
     check(last > (held?.beams ?? 0), 'the frame rose over the strip');
     await debug(page, (x) => (x as unknown as { home(): void }).home());
     await page.waitForTimeout(2500);
+    // Read as the overview it is held to was read (measureFps settled()): every program compiled and the view settled,
+    // and here also the strip's last floor built and swapped (Task 13 spreads a rebuild over frames; what a rebuild
+    // costs a frame is the hitch harness's to judge, UI_ONLY=hitches). The frames are kept, so a slow read names them.
+    await debug(page, (x) => x.precompile());
+    const stood = await page.waitForFunction('window.__palimpsest.rebuilding() === 0', null, { timeout: 15_000 }).then(() => true).catch(() => false);
+    await page.waitForTimeout(1500);
     const home = await debug(page, (x) => x.stats());
-    const homeFps = await pageFps(page);
-    console.log(`info  city from home with live sites: ${homeFps.toFixed(0)} fps, ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
-    check(homeFps >= overviewFps - 5, `the city from home holds its frame rate with live sites (${homeFps.toFixed(0)} fps)`);
+    const run = await pageFrames(page);
+    const homeFps = run.fps;
+    console.log(`info  city from home with live sites: ${homeFps.toFixed(0)} fps (${run.over20} of ${run.frames} frames over 20 ms, the slowest ${run.slowest.toFixed(1)} ms; ${stood ? 'nothing rebuilding' : 'still rebuilding'}), ${home.calls} draw calls, ${(home.triangles / 1e6).toFixed(2)}M triangles`);
+    check(homeFps >= overviewFps - 5, `the city from home holds its frame rate with live sites (${homeFps.toFixed(0)} fps; ${run.over20} frames over 20 ms, the slowest ${run.slowest.toFixed(1)} ms)`);
     // What the sites cost from home: every site is drawn in a few batches, so all of them together add under 60 calls.
     // Both sides are measured the same way (homeBudget: the shadow map redrawn, every pass counted), so a shadow
     // redraw or a level-of-detail step in one single frame and not the other can never read as the sites' cost.
