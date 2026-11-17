@@ -46,6 +46,7 @@ import { detailChecks } from './ui-test-detail.js';
 import { firmChecks } from './ui-test-firms.js';
 import { installKeychainStandIn, marketChecks } from './ui-test-market.js';
 import { treasuryChecks } from './ui-test-treasury.js';
+import { HAZE_VEIL_LUMA, hazeVeil } from './haze-veil.js';
 import { autonomyChecks, lineageChecks, schoolChecks, schoolEmptyChecks, schoolSettingsChecks } from './ui-test-school.js';
 import { jobBoardChecks } from './ui-test-jobs.js';
 import { auditChecks } from './ui-test-audit.js';
@@ -3202,7 +3203,8 @@ async function closeChecks(page: Page): Promise<void> {
     // The moving tram heading furthest from the low sun (toward -x and +z), so the sun's bloom stays out of the frame.
     const sunward = (v: Probe): number => Math.cos(v.heading) * -0.908 + Math.sin(v.heading) * 0.419;
     const all = await callDebug<Probe[]>(page, "d.vehicleKinds('tram')");
-    const eyeFor = (v: Probe): number[] => [v.position[0] - Math.cos(v.heading) * 399 - Math.sin(v.heading) * 14, v.position[1] + 45, v.position[2] - Math.sin(v.heading) * 399 + Math.cos(v.heading) * 14];
+    /** The eye 399 m back from the tram along `look` (its heading unless staged), 14 m aside and 45 m up. */
+    const eyeFor = (v: Probe, look: number = v.heading): number[] => [v.position[0] - Math.cos(look) * 399 - Math.sin(look) * 14, v.position[1] + 45, v.position[2] - Math.sin(look) * 399 + Math.cos(look) * 14];
     const boxOf = async (now: Probe, img: { width: number; height: number }): Promise<[number, number, number, number]> => {
       const ends: number[][] = [];
       for (const s of [-15, 15]) {
@@ -3233,15 +3235,40 @@ async function closeChecks(page: Page): Promise<void> {
     // the eye and the first choice (or round the eye itself), and a tram behind a block has no pixels to read.
     const moving = all.filter((v) => v.speed > 2).sort((a, b) => sunward(a) - sunward(b));
     let t = moving[0] ?? all[0];
+    let look = t.heading;
     let hidden = 0;
     for (const v of moving) {
       t = v;
+      look = v.heading;
       await debug(page, (d) => d.precompile());
       if ((await ownPixels(v, eyeFor(v))).length >= LOD_PIXELS) break;
       hidden++;
     }
     console.log(`info  lod-400: ${hidden} of ${moving.length} moving trams passed over, hidden from their eye`);
-    const eye = eyeFor(t);
+    // None seen (the blocks round the plots a full run frees and takes can hide every tram the traffic has out): a tram
+    // is staged at a stop on its line (d.vehicleStage, as the transit checks stage theirs) and read from the first of
+    // eight bearings round it, the sun's side last, that sees it. So the read never waits on the traffic.
+    if (moving.length === 0 || hidden === moving.length) {
+      const nears = (moving.length ? moving : all).map((v) => [v.position[0], v.position[2]]);
+      let seen = false;
+      for (const near of nears) {
+        const staged = await callDebug<Probe | null>(page, `d.vehicleStage('tram', ${JSON.stringify(near)})`);
+        if (!staged) continue;
+        const bearings = Array.from({ length: 8 }, (_, k) => staged.heading + (k * Math.PI) / 4).sort((a, b) => (Math.cos(a) * -0.908 + Math.sin(a) * 0.419) - (Math.cos(b) * -0.908 + Math.sin(b) * 0.419));
+        for (const b of bearings) {
+          await debug(page, (d) => d.precompile());
+          if ((await ownPixels(staged, eyeFor(staged, b))).length >= LOD_PIXELS) {
+            t = staged;
+            look = b;
+            seen = true;
+            break;
+          }
+        }
+        if (seen) break;
+      }
+      console.log(`info  lod-400: ${seen ? `a tram staged at a stop (${t.id}), read from bearing ${((look * 180) / Math.PI).toFixed(0)} degrees` : 'no staged tram seen either'}`);
+    }
+    const eye = eyeFor(t, look);
     await setView(page, eye, [t.position[0], t.position[1] + 2, t.position[2]]);
     await debug(page, (d) => d.precompile());
     await page.waitForTimeout(1200);
@@ -3266,7 +3293,7 @@ async function closeChecks(page: Page): Promise<void> {
       await page.waitForTimeout(200);
       const own: Array<[number, number]> = [];
       for (const [dx, dy] of [[0, 0], [0.03, 0], [0.06, 0], [0.09, 0], [0, 0.03], [0.03, 0.03], [0.06, 0.03], [0.09, 0.03]]) {
-        await setView(page, [eye[0] - Math.sin(t.heading) * dx, eye[1] + dy, eye[2] + Math.cos(t.heading) * dx], [t.position[0], t.position[1] + 2, t.position[2]]);
+        await setView(page, [eye[0] - Math.sin(look) * dx, eye[1] + dy, eye[2] + Math.cos(look) * dx], [t.position[0], t.position[1] + 2, t.position[2]]);
         const shown = decodePng(await page.screenshot());
         if (shot && dx === 0 && dy === 0) await page.screenshot({ path: join(SHOTS, shot) });
         await callDebug(page, 'd.vehicleShow(false)');
@@ -4111,8 +4138,9 @@ export const HAZE_BAND_BASE = { overview: { mean: 68.15, contrast: 0.485 }, home
 /** The re-graded haze keeps at least this times round 0's RMS contrast in the band. */
 export const HAZE_BAND_GAIN = 1.5;
 /**
- * The band's mean luma (0 to 255) stays under this: above it the middle city reads as a milky veil (round 0 read 68 at
- * the overview and 77 from home; the same band in clear air 53 and 57).
+ * Task 15a's ceiling on the band's mean luma (0 to 255), reported beside the veil: round 0 read 68 at the overview and
+ * 77 from home, the same band in clear air 53 and 57. The check itself is the veil over clear air (tools/haze-veil.ts),
+ * since Task 15's looks lit the city brighter and clear air alone now reads over 62 from home.
  */
 export const HAZE_BAND_LUMA = 62;
 /**
@@ -4155,8 +4183,8 @@ export async function hazeBand(page: Page, shot?: string): Promise<{ mean: numbe
 
 /**
  * The haze keeps its buildings (Phase 5 Task 15a): in the mid-distance band at the overview and from home the RMS
- * contrast is at least HAZE_BAND_GAIN times round 0's and the mean luma under HAZE_BAND_LUMA (no milky veil). The
- * same band in clear air (haze(0)) is read for the ceiling, not asserted.
+ * contrast is at least HAZE_BAND_GAIN times round 0's and the haze adds at most HAZE_VEIL_LUMA over clear air (no milky veil). The
+ * same band in clear air (haze(0)) is the floor's and the veil's reference.
  */
 async function hazeBandChecks(page: Page): Promise<void> {
   const city = await cityOf(page);
@@ -4181,7 +4209,9 @@ async function hazeBandChecks(page: Page): Promise<void> {
     const fog = await debug(page, (d) => d.limits().fogDensity);
     console.log(`info  haze band ${HAZE_BAND[0]} to ${HAZE_BAND[1]} m at ${name} (home fog density ${fog.toFixed(6)}): mean luma ${b.mean.toFixed(2)}, deviation ${b.sd.toFixed(2)}, RMS contrast ${b.contrast.toFixed(3)} over ${b.n} px; clear air ${c.mean.toFixed(2)}, ${c.sd.toFixed(2)}, ${c.contrast.toFixed(3)}; round 0 ${base.mean.toFixed(2)}, ${base.contrast.toFixed(3)}`);
     check(b.n > 10_000 && b.contrast >= floor, `at ${name} the mid-distance band's RMS contrast is at least ${HAZE_BAND_GAIN} times round 0's, or ${HAZE_BAND_CLEAR_SHARE} of the clear air's where that is less (${b.contrast.toFixed(3)} against ${floor.toFixed(3)}; ${(b.contrast / base.contrast).toFixed(2)} times round 0's)`);
-    check(b.n > 10_000 && b.mean <= HAZE_BAND_LUMA, `at ${name} the mid-distance band's mean luma is at most ${HAZE_BAND_LUMA} (${b.mean.toFixed(2)})`);
+    // A veil of lit air adds the same light to every pixel: the haze's share is the band's luma over clear air's.
+    const v = hazeVeil(b, c);
+    check(b.n > 10_000 && v.holds, `at ${name} the haze adds at most ${HAZE_VEIL_LUMA} to the mid-distance band's mean luma over clear air (${v.veil.toFixed(2)}: ${b.mean.toFixed(2)} against ${c.mean.toFixed(2)}; Task 15a's absolute ${HAZE_BAND_LUMA} for reference)`);
   }
 }
 
