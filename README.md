@@ -22,12 +22,11 @@
   <img src="docs/media/hero.webp" alt="The sample city at dusk from above the rooftops, in a violet haze. Five towers stand on lit plazas over the low blocks. Left of centre the inspection guild's searchlights climb the Gothic tower to a crane at its top, and a second crane stands on the tower behind it. The tallest tower stands on the right with a lamp at the tip of its mast, and the university's red brick halls and green lawns lie in the foreground." width="100%" />
 </p>
 
-<!-- The film's length below is the brief's. Task 28 sets the real length once the film is cut, and Task 33 changes only the link target if the film is uploaded to GitHub. -->
 <p align="center">
-  <a href="docs/media/film.mp4"><img src="docs/media/film-poster.webp" alt="The launch film's poster: the sample city at dusk." width="100%" /></a>
+  <a href="docs/media/film.mp4"><img src="docs/media/film-poster.webp" alt="The launch film's poster, its last frame: the sample city's skyline at dusk under a violet sky. Five towers stand on lit plazas over the low blocks. Left of centre the inspection guild's searchlights climb the Gothic tower to a crane at its top, the domed exchange and its clock tower stand between the towers, the tallest tower rises on the right, and the university's lawns and brick halls lie along the foot of the frame." width="100%" /></a>
 </p>
 
-<p align="center"><sub>The launch film, 80 seconds, silent. Click to play.</sub></p>
+<p align="center"><sub>The launch film, 83 seconds, silent. Click to play.</sub></p>
 
 <p align="center">
   <a href="docs/media/flyover.mp4"><picture>

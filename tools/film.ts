@@ -12,10 +12,10 @@
  * +faststart, two-pass to at most 9.5 MB, silent, in the ruled order with a
  * title card (Newsreader 40 px on the dusk ink, sentence case, one line,
  * 2 s with 0.5 s fades) before each part; film.mp4 and film-poster.webp
- * (at most 450 KB). The profile clip: an 11 s seamless loop of the
- * flyover's arc at 800 by 500, profile.avif (at most 3 MB) and
- * profile.webp (at most 4 MB), with the HTML for his profile README in
- * profile.md beside them.
+ * (at most 450 KB), the poster the skyline it closes on. The profile clip:
+ * an 11 s seamless loop of the flyover's arc, there and back, at 800 by 500,
+ * profile.avif (at most 3 MB) and profile.webp (at most 4 MB), with the HTML
+ * for his profile README in profile.md beside them.
  *
  * The capture it runs serves the sample on CAPTURE_PORT (4788 on the
  * screens track), never the engine's 4770 or the dev server's 4771. Nothing
@@ -47,23 +47,37 @@ export const FILM_PLAN: Segment[] = [
   { title: 'The city at dusk' },
   { clip: 'hero-rise', from: 0, seconds: 8 },
   { title: 'A job becomes a floor' },
-  { clip: 'construction', from: 4, seconds: 10 },
+  // The frame going up in sparks under the crane; the guild's searchlights wash it white from 11 s.
+  { clip: 'construction', from: 0.5, seconds: 10 },
   { title: 'The ride up a tower' },
-  { clip: 'ride', from: 0, seconds: 9 },
+  // The last of the dossier's stops (its card already up), then the car tops out and the camera stands off over the roof.
+  { clip: 'ride', from: 13.75, seconds: 8.6 },
   { title: 'On the way to work' },
-  { clip: 'commute', from: 0, seconds: 8 },
+  // The platform as the tram comes in: the commute's one part where the street, not a figure, fills the frame.
+  { clip: 'commute', from: 4, seconds: 6 },
   { title: 'The morning brief and the README audit' },
   { still: 'brief', seconds: 4 },
   { still: 'audit', seconds: 4 },
   { title: 'The school' },
-  { clip: 'voyage', from: 0, seconds: 7 },
-  { clip: 'observatory', from: 0, seconds: 6 },
+  { clip: 'voyage', from: 1, seconds: 7 },
+  { clip: 'observatory', from: 1, seconds: 6 },
   { title: 'The week in review' },
-  { clip: 'week', from: 0, seconds: 10 },
-  { clip: 'flyover', from: 0, seconds: 7 },
+  // Two stops of the walk with no low sun in the frame and the flight between them, cut as the next flight sets off.
+  { clip: 'week', from: 8.5, seconds: 8.4 },
+  // The close: the flyover's second half, easing to a stop on the skyline.
+  { clip: 'flyover', from: 7, seconds: 7 },
 ];
 
-export const PROFILE = { clip: 'flyover', seconds: 11, blend: 1, width: 800, height: 500, maxAvif: 3 * MB, maxWebp: 4 * MB } as const;
+export const PROFILE = { clip: 'profile-loop', seconds: 11, blend: 1, width: 800, height: 500, maxAvif: 3 * MB, maxWebp: 4 * MB } as const;
+
+/**
+ * Where along the flyover's arc (0 its start, 1 its end) the profile loop's camera stands `s` seconds in: from `from`
+ * out to the end and back over `period` seconds, at rest at each end. It repeats every `period`, so the take's last
+ * second (period to period + 1) stands where its first did and the loop's dissolve blends no two framings.
+ */
+export function profileLoopArc(s: number, period: number = PROFILE.seconds, from = 0.35): number {
+  return from + (1 - from) * Math.sin((Math.PI * s) / period) ** 2;
+}
 
 export function filmSeconds(plan: Segment[]): number {
   return plan.reduce((s, x) => s + ('title' in x ? TITLE_SECONDS : x.seconds), 0);
@@ -75,11 +89,13 @@ export function filmSeconds(plan: Segment[]): number {
  * economy's clock, the clips that tick it last.
  */
 export function filmShots(): string[] {
-  return ['brief', 'audit-page', 'voyage', 'observatory', 'ride', 'week', 'flyover', 'hero-rise', 'construction-clip', 'commute'];
+  return ['brief', 'audit-page', 'voyage', 'observatory', 'ride', 'week', 'flyover', 'profile-loop', 'hero-rise', 'construction-clip', 'commute'];
 }
 
+/** The words fade in and out on the dusk ink, never through black: the ground holds for the card's 2 s. */
 export function titleFilter(): string {
-  return `fade=t=in:st=0:d=${FADE_SECONDS},fade=t=out:st=${TITLE_SECONDS - FADE_SECONDS}:d=${FADE_SECONDS},format=yuv420p`;
+  const ink = `0x${TITLE_COLOURS.ground.slice(1)}`;
+  return `fade=t=in:st=0:d=${FADE_SECONDS}:color=${ink},fade=t=out:st=${TITLE_SECONDS - FADE_SECONDS}:d=${FADE_SECONDS}:color=${ink},format=yuv420p`;
 }
 
 const SCALE = `fps=${FILM.fps},scale=${FILM.width}:${FILM.height}:flags=lanczos,format=yuv420p`;
@@ -118,7 +134,7 @@ export function loopFilter(seconds: number, blend: number, input = '[0:v]'): str
   return `${input}split[a][b];[a]trim=start=${blend}:end=${seconds + blend},setpts=PTS-STARTPTS[main];[b]trim=start=0:end=${blend},setpts=PTS-STARTPTS[head];[main][head]xfade=transition=fade:duration=${blend}:offset=${seconds - blend},format=yuv420p[out]`;
 }
 
-export const PROFILE_ALT = 'A slow flight round the Palimpsest sample city at dusk: towers on lit plazas slide past each other while the low sun drifts behind them.';
+export const PROFILE_ALT = "A slow flight along the Palimpsest sample city's skyline at dusk and back again: its tall towers on lit plazas slide past one another over the lit streets and the university's brick halls.";
 
 /** The HTML for his profile README: the loop, linking the repo. */
 export function profileSnippet(repo: string): string {
@@ -161,7 +177,7 @@ function clipSource(frames: string, name: string): { dir: string; fps: number; c
 function captureFrames(work: string, port: number): string {
   const frames = join(work, 'frames');
   mkdirSync(frames, { recursive: true });
-  const env: NodeJS.ProcessEnv = { ...process.env, CAPTURE_FRAMES: frames, CAPTURE_OUT: join(work, 'capture'), CAPTURE_PORT: String(port), CAPTURE_ECONOMY: 'live', RIDE_ONLY: 'clip' };
+  const env: NodeJS.ProcessEnv = { ...process.env, CAPTURE_FRAMES: frames, CAPTURE_OUT: join(work, 'capture'), CAPTURE_PORT: String(port), CAPTURE_ECONOMY: 'live', RIDE_ONLY: 'clip', WEEK_FPS: process.env.WEEK_FPS ?? String(FILM.fps) };
   delete env.CAPTURE_WRITE_MEDIA;
   const r = spawnSync(process.execPath, ['--no-warnings', '--import', 'tsx', join(ROOT, 'tools', 'capture.ts'), ...filmShots()], { stdio: 'inherit', env, cwd: ROOT });
   if (r.status !== 0) throw new Error(`film: the capture failed (exit ${r.status})`);
@@ -242,9 +258,10 @@ async function cutFilm(frames: string, out: string, work: string): Promise<void>
     headroom -= 0.08;
   }
 
-  // The poster: the city at dusk, the hero rise's last frame.
-  const rise = clipSource(frames, 'hero-rise');
-  const posterSrc = join(rise.dir, `f${String(rise.count - 1).padStart(4, '0')}.png`);
+  // The poster: the skyline the film closes on, the flyover's last frame (the README's hero, just above it, is the
+  // hero rise's last frame).
+  const close = clipSource(frames, 'flyover');
+  const posterSrc = join(close.dir, `f${String(close.count - 1).padStart(4, '0')}.png`);
   const poster = join(out, 'film-poster.webp');
   for (let q = 86; ; q -= 6) {
     execFileSync('cwebp', ['-q', String(q), '-m', '6', '-resize', String(FILM.width), String(FILM.height), posterSrc, '-o', poster], { stdio: ['ignore', 'ignore', 'inherit'] });
@@ -264,7 +281,8 @@ function cutProfile(frames: string, out: string, work: string, repo: string): vo
 
   const avif = join(out, 'profile.avif');
   for (let crf = 34; ; crf += 4) {
-    ff(['-i', loop, '-vf', 'fps=24', '-c:v', 'libsvtav1', '-preset', '4', '-crf', String(crf), '-g', '96', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]);
+    // At the loop's own 30 fps: 24 dropped every fifth frame, a judder on a camera that never stops moving.
+    ff(['-i', loop, '-vf', 'fps=30', '-c:v', 'libsvtav1', '-preset', '4', '-crf', String(crf), '-g', '120', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]);
     if (size(avif) <= PROFILE.maxAvif) break;
     if (crf >= 54) throw new Error(`film: profile.avif is ${fmt(size(avif))}, over 3 MB`);
   }

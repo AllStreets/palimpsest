@@ -15,6 +15,7 @@ import {
   filmSeconds,
   filmShots,
   loopFilter,
+  profileLoopArc,
   passArgs,
   profileSnippet,
   segmentArgs,
@@ -41,8 +42,8 @@ test('each title card is one line in sentence case with no em dash, double hyphe
   }
 });
 
-test('a title fades in and out over its 2 s', () => {
-  assert.equal(titleFilter(), 'fade=t=in:st=0:d=0.5,fade=t=out:st=1.5:d=0.5,format=yuv420p');
+test('a title fades in and out over its 2 s, on the dusk ink rather than through black', () => {
+  assert.equal(titleFilter(), 'fade=t=in:st=0:d=0.5:color=0x0a0b0f,fade=t=out:st=1.5:d=0.5:color=0x0a0b0f,format=yuv420p');
 });
 
 test('a clip segment starts at its frame and is cut to its length at 1600 by 1000 and 30 fps', () => {
@@ -73,13 +74,24 @@ test('the film is two-pass H.264 yuv420p with +faststart, silent, sized under 9.
 });
 
 test('the profile clip is a 10 to 12 s seamless loop of the flyover at 800 by 500', () => {
-  assert.equal(PROFILE.clip, 'flyover');
+  // Its own take of the flyover's arc, there and back, so the camera at the tail stands where it stood at the head.
+  assert.equal(PROFILE.clip, 'profile-loop');
   assert.ok(PROFILE.seconds >= 10 && PROFILE.seconds <= 12);
   assert.deepEqual([PROFILE.width, PROFILE.height], [800, 500]);
   assert.equal(PROFILE.maxAvif, 3 * 1024 * 1024);
   assert.equal(PROFILE.maxWebp, 4 * 1024 * 1024);
   // The last second blends into the first: the tail is the head's lead-in, so frame L meets frame 0.
   assert.equal(loopFilter(11, 1), '[0:v]split[a][b];[a]trim=start=1:end=12,setpts=PTS-STARTPTS[main];[b]trim=start=0:end=1,setpts=PTS-STARTPTS[head];[main][head]xfade=transition=fade:duration=1:offset=10,format=yuv420p[out]');
+});
+
+test("the profile loop's camera stands at its tail where it stood at its head, at rest at each end of the arc", () => {
+  const period = PROFILE.seconds;
+  for (const s of [0, 0.25, 0.5, 0.75, 1]) assert.ok(Math.abs(profileLoopArc(s + period, period) - profileLoopArc(s, period)) < 1e-9, `${s} s`);
+  assert.ok(Math.abs(profileLoopArc(0, period) - 0.35) < 1e-9);
+  assert.ok(Math.abs(profileLoopArc(period / 2, period) - 1) < 1e-9);
+  // At rest where it turns: a frame's step there is far smaller than mid-arc.
+  const step = (s: number): number => Math.abs(profileLoopArc(s + 1 / 30, period) - profileLoopArc(s, period));
+  assert.ok(step(0) < step(period / 4) / 20 && step(period / 2) < step(period / 4) / 20);
 });
 
 test('the profile snippet links the repo with the AVIF and its WebP fallback, alt text in the house style', () => {
@@ -93,7 +105,7 @@ test('the profile snippet links the repo with the AVIF and its WebP fallback, al
 
 test('the film asks the capture tool for every clip and still it cuts, in an order that leaves the clock for last', () => {
   const shots = filmShots();
-  for (const n of ['brief', 'audit-page', 'voyage', 'observatory', 'ride', 'week', 'flyover', 'hero-rise', 'construction-clip', 'commute']) assert.ok(shots.includes(n), n);
+  for (const n of ['brief', 'audit-page', 'voyage', 'observatory', 'ride', 'week', 'flyover', 'profile-loop', 'hero-rise', 'construction-clip', 'commute']) assert.ok(shots.includes(n), n);
   // The shots that tick the economy's clock come after the stills that show the board as it stands.
   assert.ok(shots.indexOf('construction-clip') > shots.indexOf('brief') && shots.indexOf('construction-clip') > shots.indexOf('audit-page'));
 });

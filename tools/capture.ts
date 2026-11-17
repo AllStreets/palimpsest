@@ -43,6 +43,8 @@
  * the clock's speed, the kumo audit ending and its proposals appearing on the
  * board; the audit page's still is audit-page, written as audit.webp),
  * hero-rise (a clip for the film: up from the street to the hero framing),
+ * profile-loop (frames only, for the film tool's profile clip: the flyover's
+ * arc there and back, so its tail stands where its head did),
  * week-poster (the week's poster, framed off the sun), overview-clear (the
  * overview in clear air, where the build has the haze control), street and
  * people-follow (the life and people stills on their own), and diagrams
@@ -82,7 +84,7 @@ import type { District, Quarter } from '../shared/types.js';
 import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { outDir } from './diagrams.js';
-import { capturePort } from './film.js';
+import { PROFILE, capturePort, profileLoopArc } from './film.js';
 import { seededWeek } from './seeded-week.js';
 import { BUDGET } from './media-check.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
@@ -134,6 +136,8 @@ interface Shot {
   at(t: number): { eye: V3; target: V3 };
   /** Where in the clip its poster is taken, 0 to 1 (default the middle). */
   posterAt?: number;
+  /** Frames for the film tool only (CAPTURE_FRAMES): no mp4, avif or poster of its own. */
+  framesOnly?: boolean;
 }
 
 // ---------------------------------------------------------------- encoding
@@ -238,13 +242,23 @@ async function record(page: Page, shot: Shot): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), `palimpsest-${shot.name}-`));
   const n = Math.round(shot.seconds * FPS);
   console.log(`${shot.name}: ${n} frames`);
-  for (let i = 0; i < n; i++) {
-    const { eye, target } = shot.at(n === 1 ? 0 : i / (n - 1));
-    await frame(page, eye, target);
-    await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
-    if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
+  // On the virtual clock, as film() is: a frame takes a second or more to shoot, and on the page's own clock the
+  // crane's slew, the searchlights and the traffic jumped that far between frames.
+  const clock = await virtualClock(page);
+  try {
+    for (let i = 0; i < n; i++) {
+      const { eye, target } = shot.at(n === 1 ? 0 : i / (n - 1));
+      await page.evaluate(([e, t]) => {
+        (window as unknown as { __palimpsest: { view(e: number[], t: number[]): void } }).__palimpsest.view(e, t);
+      }, [eye, target] as [V3, V3]);
+      await clock.tick(1 / FPS);
+      await page.screenshot({ path: join(dir, `f${String(i).padStart(4, '0')}.png`) });
+      if (i % 60 === 0) process.stdout.write(`  ${i}/${n}\r`);
+    }
+  } finally {
+    await clock.off();
   }
-  encode(dir, shot.name, shot.posterAt);
+  if (!shot.framesOnly) encode(dir, shot.name, shot.posterAt);
   keepFrames(dir, shot.name);
 }
 
@@ -2238,6 +2252,34 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
           const r = lerp(FLY.r0, FLY.r1, k);
           const eye: V3 = [FLY.cx + Math.cos(a) * r, lerp(FLY.y0, FLY.y1, k), FLY.cz + Math.sin(a) * r];
           const target: V3 = [FLY.cx, lerp(FLY.ty0, FLY.ty1, k), FLY.cz];
+          return { eye, target };
+        },
+      });
+    },
+
+    async 'profile-loop'(page) {
+      // The profile clip's loop (Phase 5 ruling 10): the flyover's arc from a third of the way along to its end and
+      // back, eased to a stop at each end, over PROFILE_LOOP_PERIOD seconds (11), then one more second along the
+      // same path. The camera at 11 + s stands where it stood at s, so the film tool's one-second dissolve from the
+      // tail into the head blends only what moved on the city's clock, never two framings.
+      await chrome(page, false);
+      const period = Number(process.env.PROFILE_LOOP_PERIOD ?? PROFILE.seconds);
+      const seconds = period + 1;
+      const from = Number(process.env.PROFILE_LOOP_FROM ?? 0.35);
+      await record(page, {
+        name: 'profile-loop',
+        seconds,
+        framesOnly: true,
+        at(t) {
+          // record() hands t as frame / (frames - 1): back to seconds on the frame grid, so frame 11 * FPS + j stands
+          // exactly where frame j did.
+          const s = (t * (Math.round(seconds * FPS) - 1)) / FPS;
+          const k = profileLoopArc(s, period, from);
+          const e = easeSine(k);
+          const a = lerp(FLY.a0, FLY.a1, e);
+          const r = lerp(FLY.r0, FLY.r1, e);
+          const eye: V3 = [FLY.cx + Math.cos(a) * r, lerp(FLY.y0, FLY.y1, e), FLY.cz + Math.sin(a) * r];
+          const target: V3 = [FLY.cx, lerp(FLY.ty0, FLY.ty1, e), FLY.cz];
           return { eye, target };
         },
       });
