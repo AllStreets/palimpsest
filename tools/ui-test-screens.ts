@@ -48,6 +48,7 @@ interface Debug {
   districts: number;
   sites: number;
   plots(): { plazas: number; buildings: number };
+  rebuilding(): number;
 }
 
 function debug<T>(page: Page, read: (d: Debug) => T): Promise<T> {
@@ -233,14 +234,36 @@ export async function reposChecks(page: Page): Promise<void> {
 const post = (page: Page, path: string): Promise<unknown> =>
   page.evaluate((p) => fetch(p, { method: 'POST', headers: { 'x-palimpsest': '1' } }).then((r) => r.json()), path);
 
-const plotsNow = (page: Page): Promise<{ plazas: number; buildings: number; sites: number; districts: number }> =>
-  debug(page, (d) => ({ ...d.plots(), sites: d.sites, districts: d.districts }));
+type Plots = { plazas: number; buildings: number; sites: number; districts: number };
 
-/** Waits until the page's plots match `want`, or gives up after `timeoutMs`. */
-async function waitPlots(page: Page, want: (p: { plazas: number; buildings: number; sites: number; districts: number }) => boolean, timeoutMs = 8000): Promise<boolean> {
+const plotsNow = (page: Page): Promise<Plots> => debug(page, (d) => ({ ...d.plots(), sites: d.sites, districts: d.districts }));
+
+/** How long a rebuild may take to stand: the quarters' debounce, the plazas laid a block at a time, a freed plot's rise. */
+const REBUILT_MS = 20_000;
+
+/**
+ * The plots once the city stands as last asked (Task 13): a change is built off screen a step at a time and swapped in,
+ * and the ambient blocks are laid again in place a block at a time, so their count read mid-rebuild is neither the old
+ * city's nor the new one's. Read only when nothing is being rebuilt (debug.rebuilding() is 0), or null if it never was.
+ */
+async function standingPlots(page: Page, timeoutMs = REBUILT_MS): Promise<Plots | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (want(await plotsNow(page))) return true;
+    if ((await debug(page, (d) => d.rebuilding())) === 0) {
+      const p = await plotsNow(page);
+      if ((await debug(page, (d) => d.rebuilding())) === 0) return p;
+    }
+    await page.waitForTimeout(50);
+  }
+  return null;
+}
+
+/** Waits until the city stands with plots matching `want` (nothing left rebuilding), or gives up after `timeoutMs`. */
+async function waitPlots(page: Page, want: (p: Plots) => boolean, timeoutMs = REBUILT_MS): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const p = await standingPlots(page, deadline - Date.now());
+    if (p && want(p)) return true;
     await page.waitForTimeout(50);
   }
   return false;
@@ -262,17 +285,21 @@ const repoRow = async (page: Page, fullName: string): Promise<Repo | undefined> 
  * ambient blocks, live; reconnecting clears the plot again.
  */
 export async function freedPlotChecks(page: Page): Promise<void> {
-  const base = await plotsNow(page);
+  // Each count is read with the city standing: the checks before this one (the Repos screen's disconnect) leave a
+  // rebuild in flight, and a count taken in its middle is no baseline.
+  const base = await standingPlots(page);
+  check(base !== null, 'the city stands, nothing rebuilding, before the freed-plot checks');
+  if (!base) return;
 
   // A connect stopped while it analyzes: the scaffold comes down and stays down while the analysis runs on.
   const stopped = 'orrery/star-catalogue';
   const { slot } = (await post(page, `/api/repos/${stopped}/connect`)) as Repo;
-  const raised = await waitPlots(page, (p) => p.sites === base.sites + 1 && p.plazas === base.plazas + 1, 5000);
+  const raised = await waitPlots(page, (p) => p.sites === base.sites + 1 && p.plazas === base.plazas + 1);
   check(raised, 'connecting raises a scaffold on a paved plot');
   await plotView(page, slot);
   await page.screenshot({ path: join(SHOTS, 'plot-stopped-before.png') });
   await post(page, `/api/repos/${stopped}/disconnect`);
-  const cleared = await waitPlots(page, (p) => p.sites === base.sites && p.plazas === base.plazas, 3000);
+  const cleared = await waitPlots(page, (p) => p.sites === base.sites && p.plazas === base.plazas);
   let worst = await plotsNow(page);
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline && (await repoRow(page, stopped))?.status === 'analyzing') {
@@ -280,8 +307,7 @@ export async function freedPlotChecks(page: Page): Promise<void> {
     if (now.sites > worst.sites || now.plazas > worst.plazas) worst = now;
     await page.waitForTimeout(40);
   }
-  await page.waitForTimeout(800);
-  const after = await plotsNow(page);
+  const after = (await standingPlots(page)) ?? (await plotsNow(page));
   if (after.sites > worst.sites || after.plazas > worst.plazas) worst = after;
   const row = await repoRow(page, stopped);
   check(row?.connected === false && row.status !== 'analyzing', `the stopped connect finished its analysis and stays off (${row?.connected}, ${row?.status})`);
@@ -300,12 +326,12 @@ export async function freedPlotChecks(page: Page): Promise<void> {
     check(false, `${target} stands before the disconnect check`);
     return;
   }
-  const withIt = await plotsNow(page);
+  const withIt = (await standingPlots(page)) ?? (await plotsNow(page));
   await plotView(page, d.index);
   await page.screenshot({ path: join(SHOTS, 'plot-district-before.png') });
   await post(page, `/api/repos/${target}/disconnect`);
   const freed = await waitPlots(page, (p) => p.plazas === withIt.plazas - 1 && p.districts === withIt.districts - 1);
-  const without = await plotsNow(page);
+  const without = (await standingPlots(page)) ?? (await plotsNow(page));
   check(freed, `disconnecting a district removes its plaza (${withIt.plazas} then ${without.plazas})`);
   check(without.buildings > withIt.buildings, `and fills its plot with ambient blocks (${withIt.buildings} then ${without.buildings} buildings)`);
   await plotView(page, d.index);
@@ -313,7 +339,7 @@ export async function freedPlotChecks(page: Page): Promise<void> {
 
   // Reconnecting clears the plot again: the tower it kept returns to the same place.
   await post(page, `/api/repos/${target}/connect`);
-  const back = await waitPlots(page, (p) => p.plazas === withIt.plazas && p.districts === withIt.districts && p.buildings === withIt.buildings, 15_000);
+  const back = await waitPlots(page, (p) => p.plazas === withIt.plazas && p.districts === withIt.districts && p.buildings === withIt.buildings);
   check(back, 'reconnecting clears the plot for the district again, with the same blocks round it');
   const returned = (await cityOf(page)).find((x) => x.repo === target);
   check(returned?.index === d.index, `and the district returns to its slot (${returned?.index} of ${d.index})`);
