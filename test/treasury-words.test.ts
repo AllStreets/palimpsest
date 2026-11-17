@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { runsHoldingSlots } from '../shared/market-rules.js';
 import { calibrationLine, pauseWords, reportBlocks, resetWords, runningWords, spendFigure } from '../app/src/ui/treasury-words.js';
 
 const H = 3_600_000;
@@ -94,13 +95,16 @@ test('the report reads into headings, paragraphs, notes and tables, as text', ()
   assert.ok(last.kind === 'para' && last.inline.every((s) => !s.text.includes('<')), 'tags are taken out, never markup');
 });
 
-test('the Running row counts the runs under way, as the board does, and names the slots the runner holds apart', () => {
-  const slots = { claude: 0, local: 0, api: 0, claudeMax: 2, localMax: 1 };
-  const three = runningWords({ total: 3, claude: 2, local: 1, api: 0 }, slots);
-  assert.equal(three.runs, '3 runs under way: Claude 2, local 1.');
-  assert.equal(three.slots, 'Slots the runner holds: Claude 0 of 2, local 0 of 1, API 0.');
-  const one = runningWords({ total: 1, claude: 0, local: 0, api: 1 }, { ...slots, api: 1 });
-  assert.equal(one.runs, '1 run under way: API 1.');
-  assert.equal(one.slots, 'Slots the runner holds: Claude 0 of 2, local 0 of 1, API 1.');
-  assert.equal(runningWords({ total: 0, claude: 0, local: 0, api: 0 }, slots).runs, 'No run under way.');
+test('the Running row never says runs are under way while the slot line says none are held', () => {
+  const none = { claude: 0, local: 0, api: 0, claudeMax: 2, localMax: 1 };
+  // Runs on the books with no lease behind them (the sample economy's): no run is at work, and the line says so once.
+  const sample = runningWords({ total: 2, claude: 2, local: 0, api: 0 }, none);
+  assert.equal(sample.runs, 'No run under way.');
+  assert.equal(sample.slots, 'Slots the runner holds: Claude 0 of 2, local 0 of 1, API 0.');
+  // Real runs hold their slots: the counts agree by pool.
+  const real = runningWords({ total: 3, claude: 2, local: 1, api: 0 }, { ...none, claude: 2, local: 1 });
+  assert.equal(real.runs, '3 runs under way: Claude 2, local 1.');
+  assert.equal(real.slots, 'Slots the runner holds: Claude 2 of 2, local 1 of 1, API 0.');
+  assert.deepEqual(runsHoldingSlots({ total: 3, claude: 2, local: 1, api: 0 }, { ...none, claude: 1, local: 1 }), { total: 2, claude: 1, local: 1, api: 0 });
+  assert.equal(runningWords({ total: 1, claude: 0, local: 0, api: 1 }, { ...none, api: 1 }).runs, '1 run under way: API 1.');
 });
