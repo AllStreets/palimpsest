@@ -9,6 +9,7 @@ import { cornerLength, cornerU, ROOM, ROOM_GLSL, roomCard, roomLight, roomOf, wa
 import { kitShared } from '../app/src/city/kits.js';
 import { SECTIONS } from '../app/src/city/lots.js';
 import { CUT } from '../app/src/city/shopfronts.js';
+import { BLOOM_THRESHOLD, EXPOSURE } from '../app/src/city/post.js';
 
 // The ambient facades at street level (Phase 5 Task 2): windows round a cut corner keep their width, and every
 // window shows a room.
@@ -195,4 +196,28 @@ test('a room trace never steps behind the glass: every plane distance in the fac
   for (const [, name, expr] of decls) {
     assert.match(expr.trim(), /^max\(.*, 0\.0\)$/s, `${name} = ${expr.slice(0, 50)}... may be negative`);
   }
+});
+
+test('a room never lights past the dusk at its glass: the light has a ceiling wherever the trace lands, under the bloom threshold', () => {
+  // The final review's campus-quad still (I2): a glass block's upper room, seen on a near-level ray from the quad's
+  // eye 30 m up, took the ceiling plane behind the ray (the fault the navy debug fixed in the trace). The point stood
+  // far behind the glass, the unlit room's dusk term exp(-z * 0.35) overflowed, and the floor's whole band of windows
+  // burned white with the bloom over the library's gable. The trace now never steps behind the glass; the light term
+  // holds its own ceiling too, so no landing point, however the trace finds it, lights a room past the glass.
+  const box = { width: 3.2, ceiling: 3.3, depth: 4.5 };
+  const atGlass = roomLight(false, [1.6, 1.5, 0], box);
+  for (const z of [-0.5, -10, -1e3, -1e5]) {
+    const behind = roomLight(false, [1.6, 1.5, z], box);
+    assert.ok(Number.isFinite(behind) && behind <= atGlass + 1e-9, `a point ${-z} m behind the glass lights no brighter than the glass (${behind} against ${atGlass.toFixed(3)})`);
+  }
+  for (const z of [0, 1, box.depth, 1e3]) assert.ok(roomLight(false, [1.6, 1.5, z], box) <= atGlass + 1e-9, `nor any point in the room (${z} m in)`);
+  // The brightest an unlit room can be after exposure: the palest wall (the ceiling's 0.7) at the glass, in the dusk's
+  // own tint (its bluest channel, 0.78): under the bloom threshold, so no unlit window band blooms.
+  assert.ok(0.7 * atGlass * 0.78 * EXPOSURE < BLOOM_THRESHOLD, `an unlit room stays under the bloom threshold (${(0.7 * atGlass * 0.78 * EXPOSURE).toFixed(3)})`);
+  // Both shader terms of the dusk through the glass hold the depth at zero or more: ROOM_GLSL's roomLight and the shop's.
+  assert.match(ROOM_GLSL, /float rz = clamp\(P\.z, 0\.0, box\.z\);[\s\S]*exp\(-rz \* 0\.35\)[\s\S]*\(1\.0 - rz \/ box\.z\)/, 'roomLight in ROOM_GLSL holds its depth inside the room');
+  assert.doesNotMatch(ROOM_GLSL, /exp\(-P\.z/, 'and reads no unheld depth');
+  const shop = [...FACADE_GLSL.matchAll(/room \*= exp\(([^;]+)\)/g)];
+  assert.equal(shop.length, 1, "the shop's room fades with its depth once");
+  assert.match(shop[0][1], /^-max\(P\.z, 0\.0\) \*/, `the shop's fade holds its depth at or above zero (${shop[0][1]})`);
 });

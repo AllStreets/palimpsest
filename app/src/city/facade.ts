@@ -537,7 +537,8 @@ export const FACADE_GLSL = /* glsl */ `
           } else {
             room = lc * vec3(0.34, 0.3, 0.26) * (0.12 + 0.45 * hgt);
           }
-          room *= exp(-P.z * (cafe ? 0.11 : 0.07)) * level;
+          // The depth held at zero or more, so the fade never turns to a gain behind the glass (roomLight in rooms.ts).
+          room *= exp(-max(P.z, 0.0) * (cafe ? 0.11 : 0.07)) * level;
           float peak = max(room.r, max(room.g, room.b));
           room *= 1.0 / (1.0 + 0.5 * peak);
         }

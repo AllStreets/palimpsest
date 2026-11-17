@@ -944,6 +944,9 @@ const CAMPUS_HOME_TRIANGLES = 900_000;
  * is at now, while the whole city keeps its guard. On high it is shot from
  * home, across the front quad from the gate, and close on a hall's porch.
  */
+/** The share of the campus quad's frame that may read white (all three channels at 250 or more): a few lit glints, never a band. */
+const QUAD_WHITE_SHARE = 0.0005;
+
 async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
   check((await debug(page, (d) => d.quality())) === tier, `the city stands at ${tier} for the campus checks`);
   const c = await debug(page, (d) => d.campus());
@@ -1002,7 +1005,15 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
   // Across the front quad from over the gate, the two halls either side and the inner quad beyond.
   await setView(page, at(-30, 30, 10), at(60, 10, -4));
   await page.waitForTimeout(1500);
-  await page.screenshot({ path: join(SHOTS, 'campus-quad.png') });
+  // No band burns white behind the library (the final review's I2): the quad's eye stands 30 m up, level with the
+  // upper floors of the glass blocks behind, where a room trace landing behind the glass once lit a floor's band past
+  // the bloom threshold. The sun is out of this frame, so nothing in it may read as white.
+  const quad = decodePng(await page.screenshot({ path: join(SHOTS, 'campus-quad.png') }));
+  let white = 0;
+  for (let i = 0; i < quad.data.length; i += 4) if (quad.data[i] >= 250 && quad.data[i + 1] >= 250 && quad.data[i + 2] >= 250) white++;
+  const whiteShare = white / (quad.width * quad.height);
+  console.log(`info  campus-quad: ${white} white pixels (${(whiteShare * 100).toFixed(4)}% of the frame)`);
+  check(whiteShare < QUAD_WHITE_SHARE, `the front quad from the gate shows no band burnt white (${(whiteShare * 100).toFixed(4)}% of the frame white, under ${QUAD_WHITE_SHARE * 100}%)`);
   // Close on the south hall's porch from the lawn.
   await setView(page, at(92, 8, 36), at(66, 11, 54));
   await page.waitForTimeout(1500);

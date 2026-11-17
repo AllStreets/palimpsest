@@ -91,7 +91,10 @@ export function roomLight(lit: boolean, P: [number, number, number], box: { widt
   const dy = P[1] - (box.ceiling - 0.05);
   const dz = P[2] - box.depth * 0.45;
   const on = 1.7 / (1 + 0.22 * (dx * dx + dy * dy + dz * dz));
-  const off = 0.3 * (0.6 * Math.exp(-P[2] * 0.35) + 0.12 * (1 - P[2] / box.depth) + 0.3);
+  // The dusk is read at the depth held inside the room: a point the trace finds behind the glass (or past the back
+  // wall) is lit as the glass is, never brighter (the final review's campus-quad band: exp of a negative depth burned white).
+  const z = Math.min(Math.max(P[2], 0), box.depth);
+  const off = 0.3 * (0.6 * Math.exp(-z * 0.35) + 0.12 * (1 - z / box.depth) + 0.3);
   return lit ? on : off;
 }
 
@@ -217,7 +220,9 @@ export const ROOM_GLSL = /* glsl */ `
   float roomLight(float lit, vec3 P, vec3 box) {
     vec3 d = P - vec3(box.x * 0.5, box.y - 0.05, box.z * 0.45);
     float on = 1.7 / (1.0 + 0.22 * dot(d, d));
-    float off = 0.3 * (0.6 * exp(-P.z * 0.35) + 0.12 * (1.0 - P.z / box.z) + 0.3);
+    // The depth held inside the room, so no landing point behind the glass lights past it (roomLight above).
+    float rz = clamp(P.z, 0.0, box.z);
+    float off = 0.3 * (0.6 * exp(-rz * 0.35) + 0.12 * (1.0 - rz / box.z) + 0.3);
     return mix(off, on, lit);
   }
   // A furniture card on the back wall: p in metres from the card's foot at the wall's middle; rgb and its cover.
