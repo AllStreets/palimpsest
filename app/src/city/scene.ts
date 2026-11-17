@@ -764,11 +764,10 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
 
   /**
    * Whether a rebuild may be spread over frames (Task 13): once the city has
-   * shown its first frames. Before that, and while a quality drop rebuilds
-   * everything, it is built at once.
+   * shown its first frames; before that it is built at once. A quality drop
+   * spreads its rebuild too (Task 15).
    */
-  let syncBuilds = false;
-  const spreading = (): boolean => framesAfterLoad >= 3 && !syncBuilds;
+  const spreading = (): boolean => framesAfterLoad >= 3;
   /**
    * Waits, a frame at a time, while the programs of what a rebuild built are
    * compiled off the main thread (compileAsync, with the scene's lights): a
@@ -2040,8 +2039,11 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     dropWaiting = false;
     stepDown();
   }
+  /** Set by a step down for the rest of its frame: the queue it filled waits for the next. */
+  let steppedThisFrame = false;
   function stepDown(): void {
     if (quality === 'medium') return;
+    steppedThisFrame = true;
     // Whatever was being rebuilt at high is built again at medium below, at once: the waiting work is let go.
     // The districts and quarters waiting or under way at high are dropped (they are built again at medium below, at
     // once); the ambient blocks and the network, which the drop does not rebuild, are finished now.
@@ -2062,10 +2064,12 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     renderer.setSize(width(), height());
     post.dispose();
     river.setQuality('medium');
-    vehicles?.setQuality('medium');
-    ambient?.setQuality('medium');
-    people?.setQuality('medium');
-    setFacadeRooms(false);
+    // The traffic, the streets' life and the facades' rooms step down on the queue, a frame each (Task 15): the rooms'
+    // programs recompile on the frame after, and all of it in the step's own frame ran it past 100 ms.
+    scheduleRemerge(`${owner}drop:vehicles`, () => vehicles?.setQuality('medium'));
+    scheduleRemerge(`${owner}drop:ambient`, () => ambient?.setQuality('medium'));
+    scheduleRemerge(`${owner}drop:people`, () => people?.setQuality('medium'));
+    scheduleRemerge(`${owner}drop:rooms`, () => setFacadeRooms(false));
     post = createPost(renderer, scene, camera, 'medium', [river.pass(camera)]);
     shadowSize = 2048;
     texel = (SHADOW_HALF * 2) / shadowSize;
@@ -2073,29 +2077,33 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
     sun.shadow.map = null;
     sun.shadow.mapSize.set(shadowSize, shadowSize);
     sun.shadow.needsUpdate = true;
-    buildExchange();
-    for (const { c } of constructions.values()) c.dispose();
-    constructions.clear();
-    rows.clear();
-    scene.remove(field.group);
-    field.dispose();
-    field = makeConstructionField('medium');
-    scene.add(field.group);
-    placeConstructions();
-    if (milestones && opts.milestoneMaterials) {
-      milestones.dispose();
-      milestones = createMilestones({ quality: 'medium', materials: opts.milestoneMaterials, firmColour: opts.firmColour });
-      scene.add(milestones.group);
-      placeMilestones();
-    }
-    placeCampus();
+    // The exchange keeps the build it has (Task 15): rebuilt here it was a fifth of a second in one frame, and its
+    // few draws at high are not what stepped the city down. It is built at medium the next time it is rebuilt.
+    // The rest is rebuilt at medium a piece a frame on the city's queue (Task 15): done all at once, the job sites,
+    // the milestones, the campus and every tower (the listeners' rebuild) were one frame of about a second in the
+    // middle of a ride.
+    // What stood at high draws until its medium build stands in its place.
+    scheduleRemerge(`${owner}drop:sites`, () => {
+      for (const { c } of constructions.values()) c.dispose();
+      constructions.clear();
+      rows.clear();
+      scene.remove(field.group);
+      field.dispose();
+      field = makeConstructionField('medium');
+      scene.add(field.group);
+      placeConstructions();
+    });
+    scheduleRemerge(`${owner}drop:milestones`, () => {
+      if (milestones && opts.milestoneMaterials) {
+        milestones.dispose();
+        milestones = createMilestones({ quality: 'medium', materials: opts.milestoneMaterials, firmColour: opts.firmColour });
+        scene.add(milestones.group);
+        placeMilestones();
+      }
+    });
+    scheduleRemerge(`${owner}drop:campus`, () => placeCampus());
     trees.setQuality('medium');
-    syncBuilds = true;
-    try {
-      for (const fn of dropListeners) fn(saw);
-    } finally {
-      syncBuilds = false;
-    }
+    for (const fn of dropListeners) fn(saw);
   }
   renderer.setAnimationLoop(() => {
     const t0 = traced ? performance.now() : 0;
@@ -2212,7 +2220,9 @@ export function createCity(canvasHost: HTMLElement, opts: CityOptions): City {
       sun.shadow.needsUpdate = true;
     }
     // On high the GPU's frame is near the refresh already: the rebuilds take half the CPU budget there.
-    runRemerges(quality === 'high' ? REMERGE_BUDGET_MS / 2 : REMERGE_BUDGET_MS);
+    // The frame a step down lands in has done its share: what it queued starts on the next (Task 15).
+    if (steppedThisFrame) steppedThisFrame = false;
+    else runRemerges(quality === 'high' ? REMERGE_BUDGET_MS / 2 : REMERGE_BUDGET_MS);
     // A city that is never placed (nothing asked for in 3 s of frames) is drawn all the same.
     if (warm === null && (placed || ++unplacedFrames > 180)) warmUp();
     renderer.info.reset();

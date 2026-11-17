@@ -143,6 +143,11 @@ export function slowViews(rows: Record<string, { fps: number }>, floor = FPS_FLO
     .map(([n, r]) => `${n} ${r.fps.toFixed(1)}`);
 }
 
+/** The views asked for that a run has no row for (first-frame is not a view). */
+export function missingViews(expected: readonly string[], rows: Record<string, unknown>): string[] {
+  return expected.filter((n) => n !== 'first-frame' && !(n in rows));
+}
+
 /** The median frame rate of a run of frame times in ms (viewFps's measure, over frames already logged). */
 export function medianRate(ms: readonly number[]): number {
   const rates = ms.filter((t) => t > 0).map((t) => 1000 / t).sort((a, b) => a - b);
@@ -1268,6 +1273,8 @@ async function main(): Promise<void> {
         // Its frame rate is the six seconds' median (Task 15: it read 0.0 while unmeasured).
         const row = { fps: medianRate(heldMs), calls: Math.round(seen.reduce((a, s) => a + s.calls, 0) / seen.length), triangles: Math.round(tri.reduce((a, b) => a + b, 0) / tri.length) };
         rows['follow-held'] = row;
+        // The row in the form every view's is printed in, so the tables read its frame rate as they read the others'.
+        console.log(`${tier} follow-held: ${row.fps.toFixed(1)} fps, steady ${row.calls} calls ${(row.triangles / 1e6).toFixed(2)}M; with the shadow redrawn ${row.calls} calls ${(row.triangles / 1e6).toFixed(2)}M`);
         console.log(`${tier} follow-held over 12 s: mean ${row.calls} calls ${(row.triangles / 1e6).toFixed(2)}M triangles a frame, most ${(Math.max(...tri) / 1e6).toFixed(2)}M; frames over 6 s: slowest ${held.max.toFixed(1)} ms, p99 ${held.p99.toFixed(1)} ms, ${held.over33} over 33 ms`);
       }
       if (only && LENS.some((n) => only.includes(n))) {
@@ -1314,6 +1321,13 @@ async function main(): Promise<void> {
         }
       }
       result.tiers[tier] = { home, views: rows };
+      // Every view this run was asked for must have been measured (Task 15 review): a view that fails to stage is a FAIL,
+      // never a silent gap. With no PERF_ONLY, the default views; the staged ones run only by name (BY_NAME).
+      const expected = only ?? [...(await views(page)).map(([n]) => n), ...TRANSIT, ...PEOPLE, 'follow-held', ...CLOSE, ...HAZE];
+      const missing = missingViews(expected, rows);
+      console.log(`views on ${tier}: ${expected.join(', ')}`);
+      console.log(`${missing.length ? 'FAIL' : 'ok  '}  every view asked for on ${tier} was measured${missing.length ? `; missing: ${missing.join(', ')}` : ''}`);
+      if (missing.length) fpsFailed = true;
       const slow = slowViews(rows);
       console.log(`${slow.length ? 'FAIL' : 'ok  '}  every named view holds ${FPS_FLOOR} fps on ${tier} (${Object.keys(rows).length} views${slow.length ? `; under: ${slow.join(', ')}` : ''})`);
       if (slow.length) fpsFailed = true;

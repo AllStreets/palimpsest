@@ -445,12 +445,12 @@ test('contrast is checked on rendered colour: the bronze datum and the Claude am
 });
 
 /**
- * The rendered ceiling. The declared swatches were held to chroma 30; as
- * rendered in true light the low sun lends every lit face 2 to 7 units more
- * (the re-measure's own spread, the veil gone), so the same palette reads
- * to 32 at most. Its loudest variant, the salmon brick, renders at 30.3.
+ * The rendered ceiling. The declared swatches were held to chroma 30; the
+ * loudest variant as rendered in true light, the salmon brick, reads 30.3,
+ * so the ceiling is that measured maximum with under a point to spare, and
+ * any variant made louder than the palette is now fails.
  */
-const RENDERED_CHROMA_MAX = 32;
+const RENDERED_CHROMA_MAX = 31;
 
 test('variants stay inside the dusk palette as rendered: no candy colours', () => {
   for (const era of ERAS) {
