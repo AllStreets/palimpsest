@@ -1398,15 +1398,19 @@ class Kit {
   /**
    * Every part in one geometry for the far level: the glazing as its lit
    * room's colour (the `glow` attribute), the lamps by kind, the rest as
-   * painted.
+   * painted, the body's faces marked (`coat`) to wear its clear coat, and
+   * the glazing's (`pane`: glass, the windows' sill and head, a driver's cab)
+   * to show the sky as the near level's glass does.
    */
-  merged(glow: RGB): THREE.BufferGeometry {
+  merged(glow: RGB, win: Interior): THREE.BufferGeometry {
     const pos: number[] = [];
     const nor: number[] = [];
     const col: number[] = [];
     const surf: number[] = [];
     const kind: number[] = [];
     const gl: number[] = [];
+    const coat: number[] = [];
+    const pane: number[] = [];
     for (const p of PARTS) {
       const d = this.data.get(p)!;
       const n = d.pos.length / 3;
@@ -1423,6 +1427,9 @@ class Kit {
           gl.push(0, 0, 0);
         }
         kind.push(d.kind[i * 3], d.kind[i * 3 + 1], d.kind[i * 3 + 2]);
+        coat.push(p === 'body' ? 1 : 0);
+        if (p === 'glass') pane.push(1, win.sill, win.head, win.driver ? 1 : 0);
+        else pane.push(0, 0, 0, 0);
       }
     }
     const g = new THREE.BufferGeometry();
@@ -1432,6 +1439,8 @@ class Kit {
     g.setAttribute('surf', new THREE.Float32BufferAttribute(surf, 2));
     g.setAttribute('lampKind', new THREE.Float32BufferAttribute(kind, 3));
     g.setAttribute('glow', new THREE.Float32BufferAttribute(gl, 3));
+    g.setAttribute('coat', new THREE.Float32BufferAttribute(coat, 1));
+    g.setAttribute('pane', new THREE.Float32BufferAttribute(pane, 4));
     g.computeBoundingSphere();
     return g;
   }
@@ -2392,14 +2401,24 @@ export function podVariant(id: string): { seat: 0 | 1; strip: 0 | 1 } {
 }
 
 /**
+ * Metres added to every car's distance from the eye where the levels are
+ * chosen (the dither, the far glow and the near/far split). Always 0 in the
+ * app; the lod-400 check sets it to dissolve a tram that stands still through
+ * the band, so its frames differ by the levels alone and not by the tram
+ * moving over the ground behind it (vehicles.lodShift).
+ */
+export const VEHICLE_LOD_SHIFT = { value: 0 };
+
+/**
  * Each instance measures its own distance from the eye (lod-shader.ts's
  * LOD_EYE), and the near and far levels keep the complementary halves of a
  * screen-door pattern across the band, so the switch never pops.
  */
 function dither(sh: THREE.WebGLProgramParametersWithUniforms, level: 'near' | 'far'): void {
   sh.uniforms.uLodEye = LOD_EYE;
+  sh.uniforms.uLodShift = VEHICLE_LOD_SHIFT;
   sh.vertexShader = sh.vertexShader
-    .replace('#include <common>', '#include <common>\nuniform vec3 uLodEye;\nvarying float vLodFade;')
+    .replace('#include <common>', '#include <common>\nuniform vec3 uLodEye;\nuniform float uLodShift;\nvarying float vLodFade;')
     .replace(
       '#include <project_vertex>',
       `#include <project_vertex>
@@ -2409,7 +2428,7 @@ function dither(sh: THREE.WebGLProgramParametersWithUniforms, level: 'near' | 'f
         #else
           vec4 lodAt = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
         #endif
-        vLodFade = ${lodFadeGlsl('distance(lodAt.xyz, uLodEye)')};
+        vLodFade = ${lodFadeGlsl('distance(lodAt.xyz, uLodEye) + uLodShift')};
         if (${level === 'near' ? 'vLodFade >= 1.0' : 'vLodFade <= 0.0'}) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
       }`,
     );
@@ -2551,8 +2570,16 @@ function lampMaterial(): THREE.MeshBasicMaterial {
   return m;
 }
 
+/**
+ * The body's clear coat, which both levels wear: the far level without it
+ * lost the sky's sheen off the painted body and drew a tram 13.5% darker
+ * than its near level at 400 m, so the dissolve dimmed the car as it crossed
+ * the band (the lod-400 check, Task 26 pass 2).
+ */
+export const BODY_COAT = { clearcoat: 0.55, clearcoatRoughness: 0.14 } as const;
+
 function bodyMaterial(): THREE.MeshPhysicalMaterial {
-  const m = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.4, metalness: 0, clearcoat: 0.55, clearcoatRoughness: 0.14, envMapIntensity: 1.0 });
+  const m = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.4, metalness: 0, ...BODY_COAT, envMapIntensity: 1.0 });
   m.name = 'vehicle-body';
   m.onBeforeCompile = (sh) => {
     dither(sh, 'near');
@@ -2589,6 +2616,31 @@ function trimMaterial(): THREE.MeshStandardMaterial {
   m.customProgramCacheKey = () => 'palimpsest-vehicle-trim';
   return m;
 }
+
+/**
+ * The dusk sky in a pane of glazing, as both levels draw it: `nL` the face's
+ * normal in the car's frame, `n` and `V` the view-space normal and view
+ * direction, `y` the fragment's height in the car's frame and `win` the
+ * windows' sill, head and whether a driver's cab sits behind a windscreen.
+ * The far level without it drew its glazing as dark as its painted end, so a
+ * tram 400 m off seen from behind dimmed through the dissolve as its
+ * windscreen's band of sky went out (the lod-400 check, Task 26 pass 2).
+ */
+const GLASS_SKY_GLSL = /* glsl */ `
+  vec3 glassSky(vec3 nL, vec3 n, vec3 V, float y, vec3 win) {
+    float NdV = clamp(abs(dot(n, V)), 0.0, 1.0);
+    float F = 0.04 + 0.96 * pow(1.0 - NdV, 5.0);
+    // A band from the warm horizon up to the violet zenith, the street dark below, strongest at a glancing view, so
+    // the glass reads as glass and its curve shows.
+    vec3 Rw = inverseTransformDirection(reflect(-V, n), viewMatrix);
+    vec3 sky = mix(vec3(0.95, 0.56, 0.42), vec3(0.24, 0.2, 0.38), smoothstep(0.02, 0.55, Rw.y));
+    vec3 refl = mix(vec3(0.02, 0.018, 0.02), sky * 0.55, smoothstep(-0.06, 0.05, Rw.y));
+    // On a windscreen the sky lies across its upper third as a warm-to-violet band.
+    float front = smoothstep(0.5, 0.8, abs(nL.x));
+    float upper = smoothstep(win.x + 0.55 * (win.y - win.x), win.y - 0.05, y);
+    vec3 band = mix(vec3(1.0, 0.58, 0.4), vec3(0.42, 0.32, 0.62), smoothstep(win.y - 0.45, win.y - 0.05, y));
+    return refl * (0.05 + 0.9 * F) + band * 0.22 * front * upper * win.z;
+  }`;
 
 /**
  * Glazing over a lit saloon. The ray from the eye through each fragment is
@@ -2664,7 +2716,7 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
         uniform float uSeats;
         uniform float uCrowd;
         uniform float uDriver;
-        uniform float uLines;
+        uniform float uLines;${GLASS_SKY_GLSL}
         float vgHash(float n) { return fract(sin(n * 12.9898 + 4.1414) * 43758.5453); }
         float pillarAt(float x) {
           if (uWin.w <= 0.0) return 0.0;
@@ -2850,16 +2902,8 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
           float NdV = clamp(abs(dot(normal, V)), 0.0, 1.0);
           float F = 0.04 + 0.96 * pow(1.0 - NdV, 5.0);
           totalEmissiveRadiance += inside * mask * (1.0 - F);
-          // The dusk sky in the glass: a band from the warm horizon up to the violet zenith, the street dark below,
-          // strongest at a glancing view, so the glass reads as glass and its curve shows.
-          vec3 Rw = inverseTransformDirection(reflect(-V, normalize(normal)), viewMatrix);
-          vec3 sky = mix(vec3(0.95, 0.56, 0.42), vec3(0.24, 0.2, 0.38), smoothstep(0.02, 0.55, Rw.y));
-          vec3 refl = mix(vec3(0.02, 0.018, 0.02), sky * 0.55, smoothstep(-0.06, 0.05, Rw.y));
-          // On a windscreen the sky lies across its upper third as a warm-to-violet band.
-          float front = smoothstep(0.5, 0.8, abs(nL.x));
-          float upper = smoothstep(uWin.x + 0.55 * (uWin.y - uWin.x), uWin.y - 0.05, vLP.y);
-          vec3 band = mix(vec3(1.0, 0.58, 0.4), vec3(0.42, 0.32, 0.62), smoothstep(uWin.y - 0.45, uWin.y - 0.05, vLP.y));
-          totalEmissiveRadiance += refl * (0.05 + 0.9 * F) * mask + band * 0.22 * front * upper * mask * uDriver;
+          // The dusk sky in the glass, and a windscreen's band of it (GLASS_SKY_GLSL, the far level's too).
+          totalEmissiveRadiance += glassSky(nL, normalize(normal), V, vLP.y, vec3(uWin.x, uWin.y, uDriver)) * mask;
           diffuseColor.rgb = mix(vec3(0.012), diffuseColor.rgb, mask);
         }`,
       );
@@ -2883,17 +2927,21 @@ function glassMaterial(i: Interior): THREE.MeshStandardMaterial {
 export const FAR_GLOW_NEAR = 0.033;
 export const FAR_GLOW_FROM = 900;
 
-function farMaterial(): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0 });
+function farMaterial(): THREE.MeshPhysicalMaterial {
+  // The body's faces wear its clear coat (BODY_COAT, by the `coat` attribute); the trim, glazing and lamps none.
+  const m = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.4, metalness: 0, ...BODY_COAT });
   m.name = 'vehicle-far';
   m.onBeforeCompile = (sh) => {
     dither(sh, 'far');
     surfaced(sh);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 glow;\nattribute vec3 lampKind;\nattribute float aLead;\nattribute float aBrake;\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;\nvarying float vFarDist;')
+      .replace('#include <common>', '#include <common>\nattribute vec3 glow;\nattribute vec3 lampKind;\nattribute float aLead;\nattribute float aBrake;\nattribute float coat;\nattribute vec4 pane;\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying vec3 vLampP;\nvarying float vFarDist;\nvarying float vCoat;\nvarying vec4 vPane;\nvarying vec3 vLN;')
       .replace(
         '#include <begin_vertex>',
         `#include <begin_vertex>
+        vCoat = coat;
+        vPane = pane;
+        vLN = objectNormal;
         vGlow = glow;
         vKind = lampKind;
         vLead = aLead;
@@ -2905,11 +2953,12 @@ function farMaterial(): THREE.MeshStandardMaterial {
           #else
             vec4 farAt = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
           #endif
-          vFarDist = distance(farAt.xyz, uLodEye);
+          vFarDist = distance(farAt.xyz, uLodEye) + uLodShift;
         }`,
       );
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying float vFarDist;\nfloat farGlowRamp(float d) { return smoothstep(${VEHICLE_LOD.far.toFixed(1)}, ${FAR_GLOW_FROM.toFixed(1)}, d); }\n${LAMP_GLSL}`)
+      .replace('#include <lights_physical_fragment>', '#include <lights_physical_fragment>\nmaterial.clearcoat *= vCoat;')
+      .replace('#include <common>', `#include <common>\nvarying vec3 vGlow;\nvarying vec3 vKind;\nvarying float vLead;\nvarying float vBrake;\nvarying float vFarDist;\nvarying float vCoat;\nvarying vec4 vPane;\nvarying vec3 vLN;${GLASS_SKY_GLSL}\nfloat farGlowRamp(float d) { return smoothstep(${VEHICLE_LOD.far.toFixed(1)}, ${FAR_GLOW_FROM.toFixed(1)}, d); }\n${LAMP_GLSL}`)
       .replace(
         '#include <emissivemap_fragment>',
         `#include <emissivemap_fragment>
@@ -2918,6 +2967,8 @@ function farMaterial(): THREE.MeshStandardMaterial {
           totalEmissiveRadiance += min(lampShow(vKind, own, vLead, vBrake), vec3(${FAR_EMIT_MAX.toFixed(3)}));
           diffuseColor.rgb = vec3(0.0);
         }
+        // The glazing shows the sky as the near level's glass does (GLASS_SKY_GLSL).
+        if (vPane.x > 0.5) totalEmissiveRadiance += glassSky(normalize(vLN), normal, normalize(vViewPosition), vLampP.y, vPane.yzw);
         // The glow at the band matches the near level's glass; it rises to its full by FAR_GLOW_FROM (see above).
         totalEmissiveRadiance += vGlow * mix(${FAR_GLOW_NEAR.toFixed(2)}, 1.0, farGlowRamp(vFarDist));`,
       )
@@ -3034,6 +3085,8 @@ export interface Vehicles {
   hold(on: boolean): void;
   /** Moves the clock on by `seconds` at once, held or not (tests and captures). */
   skip(seconds: number): void;
+  /** Adds `metres` to every car's distance where its level is chosen (VEHICLE_LOD_SHIFT; the lod-400 check), and draws. */
+  lodShift(metres: number): void;
   /**
    * Moves the clock on until a vehicle of the kind (other than a cab) has
    * just come to a stand at a stop, the one nearest `near` if given, and
@@ -3174,7 +3227,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
       near.push(mesh);
       group.add(mesh);
     }
-    const fg = farKit.merged(spec.glow);
+    const fg = farKit.merged(spec.glow, spec.interior);
     drawnGeos.push(fg);
     const fl = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
     const fb = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
@@ -3232,7 +3285,7 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     e.set(roll, -yaw, pitch, 'YZX');
     q.setFromEuler(e);
     m4.compose(pos, q, one);
-    const dist = pos.distanceTo(eyeAt);
+    const dist = pos.distanceTo(eyeAt) + VEHICLE_LOD_SHIFT.value;
     const ld = lead > 0 ? 1 : 0;
     if (dist < VEHICLE_LOD.far && d.nearCount < d.near[0].instanceMatrix.count) {
       const i = d.nearCount++;
@@ -3881,6 +3934,10 @@ export function createVehicles(net: Network, quality: 'high' | 'medium'): Vehicl
     skip(seconds) {
       fleet.time += seconds;
       advanceCabs();
+      draw();
+    },
+    lodShift(metres) {
+      VEHICLE_LOD_SHIFT.value = metres;
       draw();
     },
     stage(kind, near) {

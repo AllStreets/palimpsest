@@ -133,7 +133,7 @@ test('a seat stands where a rider sits, in the cars people sit in', () => {
 
 import { extentBlocks, network } from '../shared/commute.js';
 import { districtOrigin } from '../shared/district-layout.js';
-import { createVehicles, lodBlend, lodFadeGlsl, podVariant, VEHICLE_LOD } from '../app/src/city/vehicles.js';
+import { createVehicles, lodBlend, lodFadeGlsl, podVariant, VEHICLE_LOD, VEHICLE_LOD_SHIFT } from '../app/src/city/vehicles.js';
 
 test('two pods side by side differ in seats or strip', () => {
   const slots = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
@@ -187,4 +187,74 @@ test('the cross-fade keeps summed opacity within 0.95 to 1.05 across 380 to 420 
     return x * x * (3 - 2 * x);
   };
   for (let d = 360; d <= 440; d += 2.5) assert.ok(Math.abs(smoothstep(d) - lodBlend(d).far) < 1e-9, `the shader's share at ${d} m is lodBlend's`);
+});
+
+test("the lod-400 check's level shift is 0 in the app and moves only the levels", () => {
+  assert.equal(VEHICLE_LOD_SHIFT.value, 0, 'the app chooses levels at the true distance');
+  const slots = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
+  const v = createVehicles(network({ blocks: extentBlocks(slots), districts: slots.slice(0, 6) }), 'high');
+  const cam = new THREE.PerspectiveCamera();
+  v.update(0, new THREE.Vector3(0, 40, 0));
+  const base = v.view(cam);
+  assert.ok(base.near > 0, `${base.near} cars at the near level`);
+  // Shifted a long way out every car is drawn at the far level only, and a long way in at the near only.
+  v.lodShift(1e6);
+  const out = v.view(cam);
+  assert.equal(out.near, 0, 'no car near when shifted out');
+  assert.ok(out.far >= base.near, `${out.far} cars far`);
+  v.lodShift(-1e6);
+  const inn = v.view(cam);
+  assert.equal(inn.far, 0, 'no car far when shifted in');
+  // Back at 0 the levels are what they were.
+  v.lodShift(0);
+  assert.equal(VEHICLE_LOD_SHIFT.value, 0);
+  const back = v.view(cam);
+  assert.deepEqual([back.near, back.far], [base.near, base.far]);
+  v.dispose();
+});
+
+test("the far level wears the body's clear coat on the body's faces alone and shows the sky in its glazing, as the near level does", () => {
+  const slots = Array.from({ length: 11 }, (_, i) => districtOrigin(i));
+  const v = createVehicles(network({ blocks: extentBlocks(slots), districts: slots.slice(0, 6) }), 'high');
+  const mesh = (n: string): THREE.InstancedMesh => {
+    const m = v.group.getObjectByName(n);
+    assert.ok(m, n);
+    return m as THREE.InstancedMesh;
+  };
+  for (const name of ['tram', 'cab', 'pod'] as const) {
+    const body = mesh(`vehicles:${name}:body`);
+    const far = mesh(`vehicles:${name}:far`);
+    const bm = body.material as THREE.MeshPhysicalMaterial;
+    const fm = far.material as THREE.MeshPhysicalMaterial;
+    // Without the coat the far tram read 13.5% darker than its near level at 400 m (Task 26 pass 2).
+    assert.ok(fm.clearcoat > 0, `${name}: the far level has a clear coat`);
+    assert.equal(fm.clearcoat, bm.clearcoat, `${name}: the same coat as the body's`);
+    assert.equal(fm.clearcoatRoughness, bm.clearcoatRoughness, `${name}: as glossy as the body's`);
+    const coat = far.geometry.getAttribute('coat');
+    assert.ok(coat, `${name}: the far geometry marks its coated faces`);
+    // The far level is its own lighter build: its painted body coated, its glazing, trim and lamps not.
+    let marked = 0;
+    for (let i = 0; i < coat.count; i++) {
+      assert.ok(coat.getX(i) === 0 || coat.getX(i) === 1, `${name}: a face is coated or not`);
+      marked += coat.getX(i);
+    }
+    assert.ok(marked > 0 && marked < coat.count, `${name}: ${marked} of ${coat.count} far vertices coated`);
+    const glow = far.geometry.getAttribute('glow');
+    for (let i = 0; i < coat.count; i++) if (glow.getX(i) + glow.getY(i) + glow.getZ(i) > 0) assert.equal(coat.getX(i), 0, `${name}: the glazing wears no coat`);
+    // The far glazing shows the sky as the near glass does: marked as glass, with the windows' sill and head and the
+    // driver's cab of its model, so its windscreen's band lies where the near level's does.
+    const pane = far.geometry.getAttribute('pane');
+    assert.ok(pane, `${name}: the far geometry marks its glazing`);
+    const win = interiorOf(name);
+    let panes = 0;
+    for (let i = 0; i < pane.count; i++) {
+      const glass = glow.getX(i) + glow.getY(i) + glow.getZ(i) > 0;
+      assert.equal(pane.getX(i), glass ? 1 : 0, `${name}: vertex ${i} is glass exactly when it glows`);
+      if (!glass) continue;
+      panes++;
+      assert.deepEqual([pane.getY(i), pane.getZ(i), pane.getW(i)].map((x) => Math.round(x * 1e4) / 1e4), [win.sill, win.head, win.driver ? 1 : 0].map((x) => Math.round(x * 1e4) / 1e4));
+    }
+    assert.ok(panes > 0, `${name}: ${panes} far glazing vertices`);
+  }
+  v.dispose();
 });

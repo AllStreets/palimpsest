@@ -56,6 +56,7 @@ import { apart, around as aroundPerson, callDebug, followView, person, runUntil,
 import { SAMPLE, sampleGh, seedSample } from './sample.js';
 import { decodePng } from './png.js';
 import { frameStats } from '../app/src/city/governor.js';
+import { VEHICLE_LOD } from '../app/src/city/vehicles.js';
 import { uiPort } from './ui-port.js';
 import { partialMode, verdict } from './ui-verdict.js';
 
@@ -3159,53 +3160,68 @@ async function closeChecks(page: Page): Promise<void> {
     await setView(page, eye, [t.position[0], t.position[1] + 2, t.position[2]]);
     await debug(page, (d) => d.precompile());
     await page.waitForTimeout(1200);
-    // Everything but the vehicles' clock held, the tram stepped half a second at a time through 400 m, and the frame
-    // round its three places (its ends projected, a small margin) read at each step: only the tram changes in it.
+    // Everything held, the tram among them, and the tram dissolved through the band where it stands: the levels'
+    // distance is shifted (d.vehicleLodShift) so the tram reads as at 399 m (the near level 54% of the dissolve), 405 m
+    // and 411 m (86% far), the steps half a second of its run once took. Only the levels change between the frames:
+    // the same tram, the same pixels, the same ground and blocks behind it. (Stepping the tram itself through the band
+    // moved it six metres a step, its lamps and end shifting a pixel against the dither, which mixed the move into the
+    // read. Held still, the read showed the far level 13.5% darker than the near: no clear coat on its body and no sky
+    // in its glazing. Both levels now share them, BODY_COAT and GLASS_SKY_GLSL, Task 26 pass 2.)
     await callDebug(page, 'd.ambientHold(true)');
     await callDebug(page, 'd.peopleHold(true)');
-    // At each step the tram's own pixels (the frame with the vehicles shown against the same frame with them hidden)
-    // and their mean luminance: what the tram itself draws, whatever lies behind it, as the levels dissolve.
-    const means: number[] = [];
-    const dists: number[] = [];
-    const counts: number[] = [];
-    for (let k = 0; k < 3; k++) {
-      const now = await callDebug<Probe | null>(page, `d.vehicle(${JSON.stringify(t.id)})`);
-      if (!now) break;
-      // The tram's own pixels (where the frame changes by more than 0.03 with the vehicles hidden) and their mean,
-      // over eight frames with the eye nudged a few centimetres (a tram 400 m off is a hundred pixels under a
-      // screen-door dissolve: each nudge samples the dissolve's pattern afresh, and the eight together read it).
+    const now = await callDebug<Probe | null>(page, `d.vehicle(${JSON.stringify(t.id)})`);
+    const at = now ? Math.hypot(now.position[0] - eye[0], now.position[1] - eye[1], now.position[2] - eye[2]) : 0;
+    /**
+     * The tram's own pixels (where the frame changes by more than 0.03 with the vehicles hidden) and their mean
+     * luminance, over eight frames with the eye nudged a few centimetres (a tram 400 m off is a hundred pixels under
+     * a screen-door dissolve: each nudge samples the dissolve's pattern afresh, and the eight together read it).
+     */
+    const readAt = async (reads: number, shot?: string): Promise<{ mean: number; count: number }> => {
+      await callDebug(page, `d.vehicleLodShift(${reads - at})`);
+      await page.waitForTimeout(200);
       const own: Array<[number, number]> = [];
       for (const [dx, dy] of [[0, 0], [0.03, 0], [0.06, 0], [0.09, 0], [0, 0.03], [0.03, 0.03], [0.06, 0.03], [0.09, 0.03]]) {
         await setView(page, [eye[0] - Math.sin(t.heading) * dx, eye[1] + dy, eye[2] + Math.cos(t.heading) * dx], [t.position[0], t.position[1] + 2, t.position[2]]);
         const shown = decodePng(await page.screenshot());
+        if (shot && dx === 0 && dy === 0) await page.screenshot({ path: join(SHOTS, shot) });
         await callDebug(page, 'd.vehicleShow(false)');
         await page.waitForTimeout(200);
         const bare = decodePng(await page.screenshot());
         await callDebug(page, 'd.vehicleShow(true)');
-        const b = await boxOf(now, size);
+        const b = await boxOf(now!, size);
         for (let y = Math.max(0, b[1]); y <= Math.min(shown.height - 1, b[3]); y++) for (let x = Math.max(0, b[0]); x <= Math.min(shown.width - 1, b[2]); x++) {
           const l = lum(shown, x, y);
           const d = Math.abs(l - lum(bare, x, y));
           if (d > 0.03) own.push([l, d]);
         }
       }
-      means.push(own.length ? own.reduce((a, [l]) => a + l, 0) / own.length : 0);
-      counts.push(Math.round(own.length / 8));
-      dists.push(Math.hypot(now.position[0] - eye[0], now.position[2] - eye[2]));
-      if (k === 0) await page.screenshot({ path: join(SHOTS, 'lod-400.png') });
-      if (k < 2) await callDebug(page, 'd.vehicleSkip(0.5)');
+      return { mean: own.length ? own.reduce((a, [l]) => a + l, 0) / own.length : 0, count: Math.round(own.length / 8) };
+    };
+    const dists = [399, 405, 411];
+    const means: number[] = [];
+    const counts: number[] = [];
+    let ends: Array<{ mean: number; count: number }> = [];
+    if (now) {
+      for (const [k, reads] of dists.entries()) {
+        const r = await readAt(reads, ['lod-400.png', 'lod-400-band.png', 'lod-400-far.png'][k]);
+        means.push(r.mean);
+        counts.push(r.count);
+      }
+      // Each level alone, the near at 379 m and the far at 419 m (its glow still at the band's): the gap the dissolve
+      // crosses, reported so a failing read says whether the levels or the read moved.
+      ends = [await readAt(VEHICLE_LOD.near - 1, 'lod-400-near-level.png'), await readAt(VEHICLE_LOD.far - 1, 'lod-400-far-level.png')];
     }
+    await callDebug(page, 'd.vehicleLodShift(0)');
     await callDebug(page, 'd.ambientHold(false)');
     await callDebug(page, 'd.peopleHold(false)');
-    // The pop's signature is the step from the near-led frame (399 m, the near level 54% of the dissolve) to the
-    // far-led one (411 m, 86% far): that is what must stay under 2%. The middle frame is reported with them; a
-    // hundred-pixel tram under the dissolve reads it 2 to 3% off either neighbour from run to run with no trend,
-    // the read's own floor, not the levels'.
+    // The pop's signature is the step from the near-led frame (399 m) to the far-led one (411 m): that is what must
+    // stay under 2%. The middle frame is reported with them.
     const lo = Math.min(...means);
     const hi = Math.max(...means);
     const spread = lo > 0 ? (hi - lo) / lo : 1;
     const diff = means.length === 3 && means[0] > 0 ? Math.abs(means[2] - means[0]) / means[0] : 1;
-    console.log(`info  lod-400: the tram at ${dists.map((d) => d.toFixed(0)).join(', ')} m, its own pixels (${counts.join(', ')}) at mean luminance ${means.map((m) => m.toFixed(4)).join(', ')} (spread ${(spread * 100).toFixed(2)}%)`);
+    const gap = ends.length === 2 && ends[0].mean > 0 ? (ends[1].mean - ends[0].mean) / ends[0].mean : NaN;
+    console.log(`info  lod-400: the tram standing ${at.toFixed(0)} m off, read as at ${dists.join(', ')} m: its own pixels (${counts.join(', ')}) at mean luminance ${means.map((m) => m.toFixed(4)).join(', ')} (spread ${(spread * 100).toFixed(2)}%); the near level alone ${ends[0]?.mean.toFixed(4) ?? '?'} (${ends[0]?.count ?? '?'} px), the far alone ${ends[1]?.mean.toFixed(4) ?? '?'} (${ends[1]?.count ?? '?'} px), ${(gap * 100).toFixed(2)}% apart`);
     check(means.length === 3 && Math.min(...counts) >= LOD_PIXELS && diff < 0.02, `lod-400 frames differ by under 2% in mean luminance (${(diff * 100).toFixed(2)}% from the near-led frame to the far-led one, over the tram's own pixels)`);
   }
   await callDebug(page, 'd.vehicleHold(false)');

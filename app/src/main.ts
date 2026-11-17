@@ -159,6 +159,7 @@ interface DebugHandle {
   /** Holds or releases the vehicles' clock, or moves it on (captures and tests). */
   vehicleHold(on: boolean): void;
   vehicleSkip(seconds: number): void;
+  vehicleLodShift(metres: number): void;
   /** Moves the clock on until a vehicle of the kind stands at a stop (the one nearest `near`): where it stands and which way it faces. */
   vehicleStage(kind: 'tram' | 'rail' | 'pod' | 'ferry', near?: number[]): VehicleProbe | null;
   /** Rides a synthetic trip from one point to another: each leg's vehicle (a cab summoned for a cab leg), and when it boards and alights. */
@@ -588,6 +589,7 @@ async function main(): Promise<void> {
     },
     vehicleHold: (on) => city.vehicles()?.hold(on),
     vehicleSkip: (s) => city.vehicles()?.skip(s),
+    vehicleLodShift: (m) => city.vehicles()?.lodShift(m),
     vehicleStage(kind, near) {
       const r = city.vehicles()?.stage(kind, near ? { x: near[0], z: near[1] } : undefined);
       return r ? probe(r) : null;
