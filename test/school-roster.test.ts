@@ -11,7 +11,11 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { openDb } from '../engine/db.js';
 import { subscribe, type Event } from '../engine/events.js';
 import { entries, query } from '../engine/ledger.js';
-import { hire, ROSTER, rosterSeeds } from '../engine/market/firms.js';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { hire, NEVER_LINE, ROSTER, rosterSeeds } from '../engine/market/firms.js';
 import { verifyReplay } from '../engine/market/replay.js';
 import { balances, replayBalances } from '../engine/market/treasury.js';
 import { getSettings, patchSettings } from '../engine/settings.js';
@@ -26,6 +30,7 @@ import type { Genome } from '../shared/types.js';
 const NOW = Date.parse('2026-11-12T09:00:00.000Z');
 const DAY = 24 * HOUR;
 const REPO = 'acme/widgets';
+const PERSONAS = join(dirname(fileURLToPath(import.meta.url)), '..', 'engine', 'market', 'personas');
 
 let events: Event[] = [];
 let unsubscribe: () => void = () => {};
@@ -102,7 +107,7 @@ test('a school-bred champion appears on the roster with origin school', () => {
   assert.deepEqual(a.lineage.parents, ['mid']);
   assert.equal(a.lineage.generation, 3);
   assert.equal(a.model, LOCAL);
-  assert.equal(a.instructions.trim(), championBody('g-sharp').instructions);
+  assert.ok(a.instructions.startsWith(championBody('g-sharp').instructions), a.instructions);
   assert.equal(a.firmId, 'quill');
   assert.ok(a.tools.length > 0, 'hired into the market, it gets the market\'s tools');
   const hired = query({ kind: ['agent.hired'] }).map((e) => (e.data as { agent: { id: string } }).agent.id);
@@ -110,6 +115,29 @@ test('a school-bred champion appears on the roster with origin school', () => {
   // the graduate comes next, then the hand-written roster
   assert.equal(hire('quill', new Date(NOW))?.id, 'grad-7');
   assert.equal(hire('quill', new Date(NOW))?.id, ROSTER[0].id);
+});
+
+test("every hired agent's instructions carry the never list, a bred champion's and a graduate's too", () => {
+  uninstall = installRoster({ trusted: () => true, graduates: () => [graduate('grad-7')] });
+  firmWith('quill', 300);
+  addAgent('seed-1', 'quill', LOCAL, { capability: 'glass', bidsOn: ['low'], maxTurns: 25 });
+  readyArena('arena-1', REPO);
+  bredVoyage({ id: 'v-1', arena: 'arena-1', repo: REPO, starter: 'seed-1', genome: 'g-sharp', endedAt: new Date(NOW - DAY).toISOString() });
+
+  const bred = hire('quill', new Date(NOW));
+  const grad = hire('quill', new Date(NOW));
+  const roster = hire('quill', new Date(NOW));
+  assert.deepEqual([bred?.id, grad?.id, roster?.id], ['bred-g-sharp', 'grad-7', ROSTER[0].id]);
+  for (const a of [bred, grad, roster]) {
+    const lines = (a?.instructions ?? '').split('\n').filter((l) => l.trim() === NEVER_LINE);
+    assert.equal(lines.length, 1, `${a?.id}: ${a?.instructions}`);
+  }
+  // the champion keeps its own instructions first, word for word
+  assert.ok(bred?.instructions.startsWith(championBody('g-sharp').instructions), String(bred?.instructions));
+  // every seeded persona carries the same line, so the never list is one list
+  for (const f of readdirSync(PERSONAS).filter((n) => n.endsWith('.md'))) {
+    assert.ok(readFileSync(join(PERSONAS, f), 'utf8').split('\n').some((l) => l.trim() === NEVER_LINE), f);
+  }
 });
 
 test('with nothing installed the roster is the hand-written one', () => {

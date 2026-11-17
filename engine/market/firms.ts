@@ -128,6 +128,21 @@ export const SEED_FIRMS: FirmSeed[] = [
   },
 ];
 
+/** The never list, as every seeded persona words it (spec 9). */
+export const NEVER_LINE =
+  'Never without asking: delete a repo, force-push, rewrite history, change repo settings, secrets or visibility, touch billing, delete branches the city did not create.';
+
+/**
+ * An agent's instructions with the never list in them: a seeded persona
+ * already carries it and is left as it is; a school agent's instructions
+ * (a bred champion's from Beagle, a graduate's) get it appended, so every
+ * agent the market runs is told it.
+ */
+export function withNeverList(body: string): string {
+  if (body.split('\n').some((l) => l.trim() === NEVER_LINE)) return body;
+  return `${body.trimEnd()}\n\n## What I will not do without asking\n\n${NEVER_LINE}\n`;
+}
+
 /** Specialists a firm can hire in Phase 2 (ruling 6); the school breeds them in Phase 4. Each is hired at most once. */
 export const ROSTER: RosterSeed[] = [
   { id: 'dagny-hollis', name: 'Dagny Hollis', specialty: 'tests', model: 'claude:haiku', capability: 'titanium', bidsOn: ['low', 'normal'], examples: 4, maxTurns: 40, workflow: { shape: 'self-check' } },
@@ -283,7 +298,7 @@ function makeAgent(
     model,
     persona: persona.line,
     temperament,
-    instructions: persona.body,
+    instructions: withNeverList(persona.body),
     tools: [...AGENT_TOOLS],
     workflow: { ...workflow },
     memory: { examples: seed.examples },

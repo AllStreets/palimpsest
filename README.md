@@ -61,7 +61,7 @@ Everything in these pictures is the real app, rendered by its own engine. The re
 
 A tower is read from the ground up.
 
-The root is real architecture. Each repo gets one of five: a Beaux-Arts colonnade, Roman arcades, a Gothic front with buttresses and a rose window, a Kyoto pagoda base, or Chicago rusticated limestone. Above it, every floor is one change. When I connect a repo, the engine reads its merged pull requests. Where there were none, it clusters commits into meaningful changes, so a repo with 2,000 commits doesn't become a 2,000 floor needle. It caps at 120 floors.
+The root is real architecture. Each repo gets one of five: a Beaux-Arts colonnade, Roman arcades, a Gothic front with buttresses and a rose window, a Kyoto pagoda base, or Chicago rusticated limestone. Above it, every floor is one change. When I connect a repo, the engine reads its merged pull requests. Where there were none, it clusters commits into meaningful changes, so a repo with 2,000 commits doesn't become a 2,000 floor needle. The founding history caps at 120 floors.
 
 The floors are built in eras taken from the repo's own timeline. Its first months are stone, then brick, then steel and glass, titanium, and something closer to science fiction near the present. Floors whose commits were co-authored by Claude are marked as such.
 
@@ -316,7 +316,7 @@ The school trains five small nets, each with one job it can be scored on:
 
 The master net takes their outputs and predicts one thing: would I approve this? Where a small net has little data of its own it also learns from the master, but the master never learns from its own predictions, and every held-out row is a real one.
 
-The nets retrain at night from the ledger, and a net with no new labels is left alone. Each is scored on the newest fifth of its rows, which it never trained on, with a Brier score and a 95% interval, against a baseline: the base rate, or for the appraiser, the firm's own pass rate. A net is trusted only when it beats its baseline by an interval that stays clear of zero. Until a net has 30 rows to train on and 10 to test on, it shows how many labels it has and what it is waiting for.
+The nets retrain at night from the ledger, and a net with no new labels is left alone. Each is scored on the newest fifth of its rows, which it never trained on, with a Brier score (for the appraiser's cost, its mean error in credits) and a 95% interval, against a baseline: the base rate, or for the appraiser, the firm's own pass rate. A net is trusted only when it beats its baseline by an interval that stays clear of zero. Until a net has 30 rows to train on and 10 to test on, it shows how many labels it has and what it is waiting for.
 
 <img src="docs/media/school-net.webp" alt="The appraiser's page: its trusted line with the Brier score, interval, rows and baseline, then a plot of six versions, each a point with its interval as a whisker, the line through them in bronze and the baseline dashed, and below it every version with its score, its difference from the baseline and how long it took to train." />
 
@@ -360,7 +360,7 @@ Training runs only when all of this holds:
 - for a LoRA, a voyage or an arena build, it has been idle for 15 minutes, no thermal or performance warning is recorded, and 20 GB of disk is free;
 - and no local job of the market's is running or waiting. Real work always comes first.
 
-Train now in Settings skips the window and the idle wait for three hours, but never the power, the thermals or the disk. The gate is read every 30 seconds while anything trains, races or builds an arena. When it fails, that work is stopped within 30 seconds. A train resumes from its last checkpoint the next time the gate holds, and an arena build goes on with the candidates it hasn't graded yet. Only one of them runs at a time: an arena build waits for a train or a voyage, and they wait for it. A resumed LoRA restarts its optimiser, and its card says so.
+Train now in Settings skips the window and the idle wait for three hours, but never the power, the thermals or the disk. The gate is read every 30 seconds while anything trains, races or builds an arena, and when a reading fails, that work is stopped. A train resumes from its last checkpoint the next time the gate holds, and an arena build goes on with the candidates it hasn't graded yet. Only one of them runs at a time: an arena build is refused while a train or a voyage runs, and they wait for a build. A resumed LoRA restarts its optimiser, and its card says so.
 
 Local training and racing are charged as local credits by the minute and the model's size, and never touch my Claude windows. The school's only Claude use is the voyage designer: at most 30 credits a day, 3% of a window, in one of the city's Claude slots, waiting while I'm using Claude myself, and counted in the night cap.
 
@@ -439,8 +439,8 @@ What works now:
 - A native Mac app, built with Tauri, in `src-tauri/`, with its own icon. It opens on a splash while it looks for the engine. If the engine isn't running, it offers to start it. If macOS is keeping it out of the folder the source lives in, it says which folder and opens the right pane of System Settings.
 - The sample city in one command, and the four diagrams and the film in this README, each made by a script in `tools/`.
 
-<!-- The Node count is from a full npm test run on this branch (1,843, 2 of them skipped). The Python and app shell counts are counted from the source, not run. Task 29 sets all three from a full run of each suite. -->
-There are 1,878 tests: 1,843 in Node for the engine, the market, the school and the city (`npm test`), 22 in Python for the trainer (`npm run test:trainer`), and 13 for the app shell (`cargo test` in `src-tauri/`). An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city, the sample market and the sample school, through every screen.
+<!-- Each count is from a full run of its suite: npm test (2 of the Node tests skip unless PALIMPSEST_REAL_SECURITY_TEST=1, since they run the real security tool), npm run test:trainer on the trainer's venv, and cargo test in src-tauri. Recount all three if a suite changes. -->
+There are 2,085 tests: 2,050 in Node for the engine, the market, the school and the city (`npm test`), 22 in Python for the trainer (`npm run test:trainer`), and 13 for the app shell (`cargo test` in `src-tauri/`). An end to end UI test (`npm run ui-test`) also drives the built city in Chromium against the sample city, the sample market and the sample school, through every screen.
 
 The sample runs through the market's and the school's own code, with stand-ins for GitHub, the models and the trainer. Every score in the school pictures, such as the appraiser's Brier of 0.14 or the graduate beating its base by 0.14, is the sample's, made up to show what the screens do with real numbers.
 
@@ -477,9 +477,23 @@ Two things in [the design](docs/superpowers/specs/2026-11-08-palimpsest-design.m
 
 ## How fast it is
 
-<!-- Task 29 fills this section from perf-final.json: a short table of each named view's frame rate on the high and medium tiers, with the window size it was measured at. No number goes here before that file exists. -->
+<!-- From the final perf run of the sample city on the GPU at 1512 by 890, density 2. Re-run npm run perf and update these rows if the city changes. -->
 
 I measure the city with `npm run perf` on the sample city, in Chromium on the GPU at my Mac's full window size and twice its density, on two quality tiers, high and medium. For each view it takes the median frame rate over three seconds with the city's clock running, and counts the draw calls and triangles.
+
+| View | High | Medium |
+|---|---|---|
+| Home | 59.9 fps, 621 draw calls, 8.4M triangles | 59.9 fps, 509 draw calls, 5.2M triangles |
+| Overview | 59.9 fps, 832 draw calls, 9.8M triangles | 59.9 fps, 561 draw calls, 5.6M triangles |
+| Hero | 59.9 fps, 942 draw calls, 10.0M triangles | 59.9 fps, 611 draw calls, 5.6M triangles |
+| One tower close | 59.9 fps, 518 draw calls, 6.4M triangles | 59.9 fps, 422 draw calls, 3.8M triangles |
+| The exchange | 59.9 fps, 653 draw calls, 7.0M triangles | 59.9 fps, 509 draw calls, 4.2M triangles |
+| A street | 59.9 fps, 672 draw calls, 7.9M triangles | 59.9 fps, 489 draw calls, 4.2M triangles |
+| The river | 59.9 fps, 600 draw calls, 6.0M triangles | 59.9 fps, 454 draw calls, 3.6M triangles |
+| The university | 59.9 fps, 633 draw calls, 8.7M triangles | 59.9 fps, 523 draw calls, 5.5M triangles |
+| The lift ride | 59.9 fps, 651 draw calls, 7.7M triangles | 59.9 fps, 478 draw calls, 4.0M triangles |
+
+That was at 1512 by 890, the visible window of my MacBook's built-in display, at density 2. 59.9 is as fast as the 60 Hz display goes, and every other view the run measures holds it too on both tiers, though following an agent on high still misses a frame now and then. No view on high draws more than 942 calls or 10.6 million triangles. The first frame of the city takes about three and a half seconds.
 
 ## Try it on the sample city
 
@@ -544,7 +558,7 @@ Your data lives in `~/Library/Application Support/Palimpsest`. Set `PALIMPSEST_H
 
 Palimpsest runs entirely on your Mac. There's no account to make.
 
-With the market off, the only network calls it makes are `gh` and `git` calls to GitHub, for the repos you connect. Nothing is connected by default. With the market on for a repo, it also reads that repo's labelled issues, pushes its own branches, opens pull requests and labels and comments on the issues it worked on, and the agents reach the model provider and the package registries their stage allows.
+With the market off, the only network calls it makes by itself are `gh` and `git` calls to GitHub, for the repos you connect. Nothing is connected by default. With the market on for a repo, it also reads that repo's labelled issues, pushes its own branches, opens pull requests and labels and comments on the issues it worked on, and the agents reach the model provider and the package registries their stage allows.
 
 It never reads your Claude, Codex or Gemini logins and never offers a Claude login, and it keeps no GitHub token of its own. Settings shows Codex and Gemini usage from those CLIs' own logs, read only. Claude agents run through your own installed, unmodified `claude` CLI on your own login, which finds its login itself. Every agent process starts from an empty environment, so an API key in your shell never reaches it, and a call stops unless the CLI reports it isn't using one. Ollama runs locally and is reached only on loopback.
 
