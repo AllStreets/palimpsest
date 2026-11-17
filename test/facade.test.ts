@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 import * as THREE from 'three';
 
+import { FACADE_GLSL } from '../app/src/city/facade.js';
 import { cornerLength, cornerU, ROOM, ROOM_GLSL, roomCard, roomLight, roomOf, walkupWindows, type Corner } from '../app/src/city/rooms.js';
 import { kitShared } from '../app/src/city/kits.js';
 import { SECTIONS } from '../app/src/city/lots.js';
@@ -181,5 +182,17 @@ test('walkupWindows places the windows the shader draws, bay by bay and floor by
     assert.ok(Math.abs(w.u1 - w.u0 - 0.38 * cw) < 1e-6, 'a window is 38% of its bay');
     assert.ok(w.y0 >= s.ground && w.y1 <= h - s.parapet + 1e-6, 'above the shopfront and under the parapet');
     assert.ok(Math.abs(w.y1 - w.y0 - 0.58 * s.floor) < 1e-6, 'and 58% of its storey tall');
+  }
+});
+
+test('a room trace never steps behind the glass: every plane distance in the facade program is held at or above zero', () => {
+  // The navy debug: the shop's trace ran for the fascia over the glass too, above the room's ceiling, where the ceiling
+  // lies behind the view ray. On a near-level ray its distance was a huge negative number, the point it gave stood a
+  // hundred kilometres behind the glass, the room's light there overflowed (exp) and inf times nought drew NaN, which
+  // the bloom spread into a rectangle the page showed through (#090b12), on high only (medium skips the trace).
+  const decls = [...FACADE_GLSL.matchAll(/float (t[SCF]) = ([^;]+);/g)];
+  assert.equal(decls.length, 6, 'two traces (the shop and the upper rooms), each with a side wall, a ceiling and a floor');
+  for (const [, name, expr] of decls) {
+    assert.match(expr.trim(), /^max\(.*, 0\.0\)$/s, `${name} = ${expr.slice(0, 50)}... may be negative`);
   }
 });

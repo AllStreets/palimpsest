@@ -2557,6 +2557,86 @@ async function windowChecks(page: Page): Promise<void> {
   );
 }
 
+// ---------------------------------------------------------------- no frame shows the page through the city (the navy debug)
+
+/**
+ * The page's own background (app/index.html), and the colour it is swapped to while a view is scanned: a pixel the
+ * page shows through the canvas (the canvas drawn transparent, a NaN) reads as the swap, which no city pixel is, so a
+ * dark pixel of the city's own that happens to equal #090b12 is never counted.
+ */
+const PAGE_BACKGROUND = '#090b12';
+const PAGE_SWAP: [number, number, number] = [255, 0, 255];
+/** The junction the Task 27 stills drew a navy rectangle over, every time, on high (tools/capture.ts life). */
+const JUNCTION_VIEW: [[number, number, number], [number, number, number]] = [[366.5, 4.5, -90], [358, 0.5, -126]];
+/** The other named views at a person's height (tools/capture.ts, tools/perf.ts and this file's own). */
+const STREET_LEVEL_VIEWS: Array<[string, [number, number, number], [number, number, number]]> = [
+  ['street', [188.5, 1.65, -128], [203, 3.2, -20]],
+  ['stop', [435.5, 1.6, -20], [442, 1.3, 4]],
+  ['exchange-fountain', [14, 2.2, 68], [0, 5, 40]],
+  ['perf street', [195.4, 1.62, -145], [207, 1.45, -30]],
+  ['street-kerb', STREET_KERB_VIEW[0], STREET_KERB_VIEW[1]],
+  ['street-junction', [193.5, 1.8, -127], [204, 0.2, -116]],
+  ['street-windows', STREET_WINDOWS_VIEW[0], STREET_WINDOWS_VIEW[1]],
+  ['shop-close', [198.0, 1.6, -108.5], [191.95, 1.9, -110.5]],
+  ['city-street', [118, 2.2, 52], [118, 14, -260]],
+];
+/** The orbit's lowest look (camera.ts maxPolarAngle 0.495 pi): no view looks nearer level than 0.9 degrees down. */
+const LEVELEST = Math.PI * 0.005;
+
+/**
+ * The junction at a mid-century shop's fascia height (4.4 m, over its ceiling at 3.95 m and under the cornice at
+ * 4.8 m), pitched so the horizon lies a tenth of a pixel under a row's centre: that row's rays rise by a hair, the
+ * case the navy rectangle needed. The stills hit it by chance at their own sizes; this hits it at any size.
+ */
+function fasciaLevelView(rows: number): [[number, number, number], [number, number, number]] {
+  const half = rows / 2;
+  const tanHalf = Math.tan(THREE.MathUtils.degToRad(18));
+  const above = Math.ceil((Math.tan(LEVELEST) / tanHalf) * half) + 0.4;
+  const eye: [number, number, number] = [366.5, 4.4, -90];
+  const along = Math.hypot(358 - eye[0], -126 - eye[2]);
+  return [eye, [358, eye[1] - along * (above / half) * tanHalf, -126]];
+}
+
+/** How many pixels of the page's screenshot are the page itself, its background swapped for the scan. */
+async function pagePixels(page: Page): Promise<number> {
+  const swap = await page.addStyleTag({ content: `html, body, #city { background: rgb(${PAGE_SWAP.join(', ')}) !important; }` });
+  const img = decodePng(await page.screenshot());
+  await swap.evaluate((el) => (el as Element).remove());
+  const [r, g, b] = PAGE_SWAP;
+  let n = 0;
+  for (let i = 0; i < img.data.length; i += 4) if (img.data[i] === r && img.data[i + 1] === g && img.data[i + 2] === b) n++;
+  return n;
+}
+
+/**
+ * The navy rectangle (the navy debug, after Task 27): on high, a shop's room
+ * trace took the ceiling's distance for a fascia pixel above the ceiling, a
+ * huge negative distance on a near-level ray, and the room's light overflowed
+ * to NaN; the bloom spread the pixel into a rectangle the page (#090b12)
+ * showed through. The junction view on high shows no pixel of the page, and
+ * nor does any named street-level view or the junction at a fascia's height.
+ */
+async function navyChecks(page: Page): Promise<void> {
+  const tier = await debug(page, (d) => d.quality());
+  const scan = async (name: string, eye: number[], target: number[]): Promise<number> => {
+    await setView(page, eye, target);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(600);
+    const n = await pagePixels(page);
+    if (n > 0) await page.screenshot({ path: join(SHOTS, `navy-${name.replace(/ /g, '-')}.png`) });
+    return n;
+  };
+  const j = await scan('junction', JUNCTION_VIEW[0], JUNCTION_VIEW[1]);
+  check(tier === 'high' && j === 0, `the junction view on ${tier} shows no pixel of the page's background ${PAGE_BACKGROUND} (${j})`);
+  const rows = (await page.evaluate('Math.round(document.querySelector("#city canvas").height)')) as number;
+  const hit: string[] = [];
+  for (const [name, eye, target] of [...STREET_LEVEL_VIEWS, ['junction at a fascia', ...fasciaLevelView(rows)] as [string, [number, number, number], [number, number, number]]]) {
+    const n = await scan(name, eye, target);
+    if (n > 0) hit.push(`${name} ${n}`);
+  }
+  check(hit.length === 0, `no named street-level view on ${tier} shows a pixel of the page's background (${hit.length ? hit.join(', ') : `${STREET_LEVEL_VIEWS.length + 1} views clean`})`);
+}
+
 async function riverChecks(page: Page): Promise<void> {
   type RV = { lamps: number; meshes: number; triangles: number; drewWater: boolean; steps: number; colourScale: number };
   type R = { river(): RV };
@@ -4521,7 +4601,7 @@ async function main(): Promise<void> {
     // UI_ONLY=schoolsettings: the school's settings and its spend in the treasury (Task 32's rounds).
     // UI_ONLY=lineage: a school agent's own page, the graduate and a bred specialist (Task 33's rounds).
     // UI_ONLY=brand: the splash's mark (above), the running head's mark and the favicon alone (Phase 5 Task 22).
-    // UI_ONLY=street: the street floor's and the street facades' checks alone (Phase 5 Tasks 1 and 2's rounds).
+    // UI_ONLY=street: the street floor's and the street facades' checks alone (Phase 5 Tasks 1 and 2's rounds), and the navy debug's scan.
     // UI_ONLY=traffic: the tram from home, a persona cab at a red light and the signal heads (Phase 5 Task 4).
     // UI_ONLY=close: a tram crossing 400 m without a pop, and the ride car's lamps without a flare (Phase 5 Task 5).
     // UI_ONLY=people: the personas' checks and the people-follow frame rate on high, then on medium (Phase 5 Task 3).
@@ -4574,6 +4654,7 @@ async function main(): Promise<void> {
       } else if (process.env.UI_ONLY === 'street') {
         await streetChecks(page);
         await windowChecks(page);
+        await navyChecks(page);
       } else if (process.env.UI_ONLY === 'traffic') {
         await trafficChecks(page);
       } else if (process.env.UI_ONLY === 'close') {
@@ -4783,6 +4864,7 @@ async function main(): Promise<void> {
         await vehicleChecks(page);
         await trafficChecks(page);
         await closeChecks(page);
+        await navyChecks(page);
         await hazeBandChecks(page);
         await plateChecks(page);
         await hazeChecks(page);

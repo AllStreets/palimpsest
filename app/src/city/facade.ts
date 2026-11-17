@@ -225,7 +225,7 @@ export function facadeMaterial(arch: Archetype, cut: CornerKind | null = null): 
   return m;
 }
 
-const FACADE_GLSL = /* glsl */ `
+export const FACADE_GLSL = /* glsl */ `
   vec3 an = abs(vWN);
   float bs = vStyle.y;
   float variant = fract(vStyle.w);
@@ -442,9 +442,12 @@ const FACADE_GLSL = /* glsl */ `
           float tB = depth / dn;
           // The room runs on behind the piers to either side (a shop is wider than its window), so an oblique view
           // lands on the back wall and its goods rather than on a side wall a metre in.
-          float tS = du > 0.0 ? (cw * 2.0 - ub) / du : (du < 0.0 ? (-cw - ub) / du : 1e9);
-          float tC = dy > 0.0 ? (ceilH - y) / dy : 1e9;
-          float tF = dy < 0.0 ? (0.02 - y) / dy : 1e9;
+          // Each plane only where it lies ahead of the ray: the trace runs for the fascia over the glass too, above the
+          // ceiling, where the ceiling lies behind; on a near-level ray its distance was a huge negative number and the
+          // room's light there overflowed to NaN, which the bloom spread into a rectangle of the page (the navy debug).
+          float tS = max(du > 0.0 ? (cw * 2.0 - ub) / du : (du < 0.0 ? (-cw - ub) / du : 1e9), 0.0);
+          float tC = max(dy > 0.0 ? (ceilH - y) / dy : 1e9, 0.0);
+          float tF = max(dy < 0.0 ? (0.02 - y) / dy : 1e9, 0.0);
           float t = min(min(tB, tS), min(tC, tF));
           vec3 P = vec3(ub + du * t, y + dy * t, dn * t);
           float hgt = clamp(P.y / ceilH, 0.0, 1.0);
@@ -792,9 +795,10 @@ const FACADE_GLSL = /* glsl */ `
         float ur = lu - ri * rw;
         float yl = cell.y * fh;
         float tB = D / dn;
-        float tS = du > 0.0 ? (rw - ur) / du : (du < 0.0 ? -ur / du : 1e9);
-        float tC = dy > 0.0 ? (ceilH - yl) / dy : 1e9;
-        float tF = dy < 0.0 ? -yl / dy : 1e9;
+        // Each plane only where it lies ahead of the ray, as in the shop's trace (a window's head can stand above the room's ceiling).
+        float tS = max(du > 0.0 ? (rw - ur) / du : (du < 0.0 ? -ur / du : 1e9), 0.0);
+        float tC = max(dy > 0.0 ? (ceilH - yl) / dy : 1e9, 0.0);
+        float tF = max(dy < 0.0 ? -yl / dy : 1e9, 0.0);
         float t = min(min(tB, tS), min(tC, tF));
         vec3 P = vec3(ur + du * t, yl + dy * t, dn * t);
         vec3 paint = roomPaint(floor(h21(rid * 2.1 + bs) * 8.0));
