@@ -502,7 +502,6 @@ export interface Round {
 }
 
 /** A chance as the award states it: two places at most, trailing zeros dropped. */
-const dec = (x: number): string => String(Math.round(x * 100) / 100);
 
 function isBid(x: unknown): x is Bid {
   const b = x as Bid;
@@ -543,15 +542,21 @@ export function awardRounds(ledger: LedgerRow[], names: Names, value: number, un
   return rounds;
 }
 
+/**
+ * The award as prose a first-timer can follow (audit 2026-11-17): who won at what price, what the expected
+ * value is made of, who does the work, and why the next best lost, a cheaper bid included.
+ */
 function awardProse(chosen: Bid | null, bids: Bid[], names: Names, worth: number, current: boolean): string {
   if (!chosen) return bids.length ? 'No bid was worth taking at its price, so the job went back on the board.' : 'No firm bid in this round, so the job went back on the board.';
   const firm = names.firm(chosen.firmId);
-  const chance = dec(chosen.calibrated) === dec(chosen.confidence) ? `calibrated ${dec(chosen.calibrated)}, as stated` : `calibrated ${dec(chosen.calibrated)} against a stated ${dec(chosen.confidence)}`;
-  const parts = [`${firm} won at ${money(chosen.price)} credits: ${chance}, an expected value of ${money(chosen.ev)} on a ${worth} credit job.`];
+  // In the table's own units, percentages, so the prose and the columns read alike.
+  const stated = pct(chosen.calibrated) === pct(chosen.confidence) ? '(as it stated)' : `(it stated ${pct(chosen.confidence)}; its record trims that)`;
+  const parts = [`${firm} won at ${money(chosen.price)} credits, an expected value of ${money(chosen.ev)}: the ${worth} credit job, times the ${pct(chosen.calibrated)} chance the city gives its work of passing ${stated}, less the ${money(chosen.price)} it asked.`];
   parts.push(`${names.agent(chosen.agentId)} ${current ? 'does' : 'did'} the work.`);
   const next = bids.find((b) => b.id !== chosen.id);
-  if (next) parts.push(`Next best was ${names.firm(next.firmId)} at ${money(next.price)} credits (expected value ${money(next.ev)}).`);
-  else parts.push('It was the only bid.');
+  if (!next) parts.push('It was the only bid.');
+  else if (next.price < chosen.price) parts.push(`${names.firm(next.firmId)} asked less, ${money(next.price)} credits, but at a ${pct(next.calibrated)} chance its expected value came to only ${money(next.ev)}, so it lost.`);
+  else parts.push(`Next best was ${names.firm(next.firmId)} at ${money(next.price)} credits, an expected value of ${money(next.ev)}.`);
   return parts.join(' ');
 }
 

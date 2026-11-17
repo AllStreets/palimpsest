@@ -709,6 +709,26 @@ body[data-route='inspection'] {
 .detail-sec .jobs-key {
   margin-top: 10px;
 }
+/* The market's terms, glossed above the bids: each term in the ink of the column head, its meaning after it, a line each. */
+.bid-terms {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 10px;
+  row-gap: 2px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.bid-terms dt {
+  color: var(--ink);
+}
+.bid-terms dd {
+  margin: 0;
+}
+abbr.bid-term {
+  text-decoration: underline dotted var(--ink-3);
+  text-underline-offset: 3px;
+  cursor: help;
+}
 
 /* ---------------------------------------------------------------- the issue */
 

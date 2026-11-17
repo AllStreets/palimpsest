@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { APPRAISER_ESTIMATE, estimateCellTip, estimateHeaderTip, estimateSource, FIRM_ESTIMATE } from '../app/src/ui/bid-words.js';
+import { APPRAISER_ESTIMATE, BID_TERMS, estimateCellTip, estimateHeaderTip, estimateSource, FIRM_ESTIMATE } from '../app/src/ui/bid-words.js';
 
 test("the firm's estimate keeps Phase 2's words, and the appraiser's says it is the school's", () => {
   assert.equal(FIRM_ESTIMATE, "How often this firm's work of this size has passed");
@@ -18,4 +18,16 @@ test("the firm's estimate keeps Phase 2's words, and the appraiser's says it is 
   assert.equal(estimateCellTip({ appraisal: 0.6, appraisalSource: 'appraiser' }), APPRAISER_ESTIMATE);
   assert.equal(estimateCellTip({ appraisal: 0.6 }), FIRM_ESTIMATE);
   assert.equal(estimateCellTip({ appraisal: null, appraisalSource: 'firm' }), 'No estimate yet');
+});
+
+test("the market's terms are glossed where the bids are read, in plain words (audit 2026-11-17)", () => {
+  const terms = new Map(BID_TERMS.map((t) => [t.term, t]));
+  assert.deepEqual([...terms.keys()], ['Price', 'Stated', 'Calibrated', 'EV']);
+  assert.match(terms.get('Stated')!.means, /how sure the firm said it was/i);
+  assert.match(terms.get('Calibrated')!.means, /trimmed/);
+  assert.equal(terms.get('EV')!.name, 'expected value');
+  assert.match(terms.get('EV')!.means, /worth, times the calibrated chance, less the price/);
+  assert.match(terms.get('EV')!.means, /highest wins/);
+  assert.match(terms.get('EV')!.means, /cheaper bid can lose/);
+  for (const t of BID_TERMS) assert.doesNotMatch(t.means, /\u2014|\u2013|--/);
 });

@@ -12,6 +12,7 @@ import { longDate } from './story';
 import { masterGuessLine, netsOnJob } from './school-words';
 import './market.css';
 import { clock } from './time-words';
+import { BID_TERMS } from './bid-words';
 
 export interface JobPage {
   show(id: string): void;
@@ -532,17 +533,24 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     t.append(cols);
     const thead = el('thead');
     const hr = el('tr');
-    for (const [text, cls, tip] of [
-      ['Firm', 'c-firm', ''],
-      ['Agent', 'c-agent', ''],
-      ['Price', 'c-num', 'What the firm asked, in credits'],
-      ['Stated', 'c-num', 'How sure the firm said it was that the work would pass'],
-      ['Calibrated', 'c-num', "The stated chance, trimmed by how far the firm's past bids overclaimed"],
-      ['EV', 'c-num', 'Expected value: the job’s worth times the calibrated chance, less the price'],
-    ] as Array<[string, string, string]>) {
-      const th = el('th', cls, text);
+    // Each term's head carries its definition on hover, in the words of the line above the table (BID_TERMS).
+    const means = new Map(BID_TERMS.map((t) => [t.term, t]));
+    for (const [text, cls] of [
+      ['Firm', 'c-firm'],
+      ['Agent', 'c-agent'],
+      ['Price', 'c-num'],
+      ['Stated', 'c-num'],
+      ['Calibrated', 'c-num'],
+      ['EV', 'c-num'],
+    ] as Array<[string, string]>) {
+      const th = el('th', cls);
       th.scope = 'col';
-      if (tip) th.title = tip;
+      const t = means.get(text);
+      if (t) {
+        const term = el('abbr', 'bid-term', text);
+        term.title = `${t.name.charAt(0).toUpperCase()}${t.name.slice(1)}: ${t.means}.`;
+        th.append(term);
+      } else th.textContent = text;
       hr.append(th);
     }
     thead.append(hr);
@@ -566,6 +574,16 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     }
     t.append(thead, tbody);
     return t;
+  }
+
+  /** The market's terms in one plain line above the bids: Stated, Calibrated and EV, each with what it means. */
+  function bidTerms(): HTMLElement {
+    const dl = el('dl', 'jobs-key bid-terms');
+    for (const t of BID_TERMS.filter((x) => x.term !== 'Price')) {
+      const dt = el('dt', '', t.term === 'EV' ? 'EV, expected value' : t.term);
+      dl.append(dt, el('dd', '', `${t.means}.`));
+    }
+    return dl;
   }
 
   function satOutList(list: Array<{ agentId: string; firmId: string | null; reason: string }>): HTMLElement | null {
@@ -606,7 +624,7 @@ export function createJobPage(parent: HTMLElement, opts: JobPageOptions): JobPag
     const rounds = awardRounds(d.ledger, names, j.value, ['awarded', 'running', 'inspecting', 'shipping'].includes(j.status));
     const live = j.status === 'bidding';
     sec.append(secHead('Bids', live ? el('span', 'job-clock', closesIn(j.bidsCloseAt, Date.now())) : rounds.length > 1 ? `${rounds.length} rounds` : ''));
-    sec.append(el('p', 'jobs-key', 'The job goes to the bid with the highest expected value: what the job is worth, times the chance it passes as the city reckons it from the firm’s record, less the price. A firm that claimed more than its record shows is trimmed to its calibrated chance.'));
+    sec.append(bidTerms());
     for (const r of rounds) sec.append(roundBlock(r, rounds.length + (live ? 1 : 0), j));
     if (live) {
       const box = el('div', 'job-round live');
