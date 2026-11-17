@@ -3839,15 +3839,30 @@ async function treesChecks(page: Page): Promise<void> {
   check(budget.calls < HOME_CALLS && budget.triangles <= HOME_TRIANGLES, `on ${tier} home stays under ${HOME_CALLS} calls and ${HOME_TRIANGLES / 1e6}M with the trees (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M, trees ${budget.parts.trees?.calls ?? 0} calls ${((budget.parts.trees?.triangles ?? 0) / 1e3).toFixed(0)}k)`);
 }
 
+/** A tower's run of stone floors: its lowest and highest y and its floor count, or null. */
+function stoneSpan(d: District): { y0: number; y1: number; n: number } | null {
+  const fl = layoutTower(d.tower).floors.filter((f) => f.floor.era === 'stone');
+  return fl.length ? { y0: fl[0].y0, y1: fl[fl.length - 1].y0 + fl[fl.length - 1].h, n: fl.length } : null;
+}
+/** The repo with the longest stone run in a city, or null. */
+function longestStoneRun(city: District[]): string | null {
+  return city.map((d) => ({ d, s: stoneSpan(d) })).filter((x) => x.s).sort((a, b) => b.s!.n - a.s!.n)[0]?.d.repo ?? null;
+}
+/**
+ * The sample's longest stone run as the city opened (set in main()): the coursing read is held to that tower. The
+ * checks before farChecks in a full run change the towers (a failed inspection's scar, laid floors), and the longest
+ * run read then can be another tower, whose piers already carry a strong pattern without the line.
+ */
+let stoneRunAtOpen: string | null = null;
+
 async function farChecks(page: Page): Promise<void> {
   const budget = await homeBudgetNow(page);
   check(budget.calls < 850 && budget.triangles <= 12e6, `home stays under 850 calls and 12M with the far architecture in (guard; ${budget.calls} calls, ${(budget.triangles / 1e6).toFixed(2)}M)`);
   const city = await cityOf(page);
-  const span = (d: District): { y0: number; y1: number; n: number } | null => {
-    const fl = layoutTower(d.tower).floors.filter((f) => f.floor.era === 'stone');
-    return fl.length ? { y0: fl[0].y0, y1: fl[fl.length - 1].y0 + fl[fl.length - 1].h, n: fl.length } : null;
-  };
-  const stone = city.map((d) => ({ d, s: span(d) })).filter((x) => x.s).sort((a, b) => b.s!.n - a.s!.n)[0];
+  const span = stoneSpan;
+  const subject = city.find((d) => d.repo === stoneRunAtOpen && span(d)) ?? city.find((d) => d.repo === longestStoneRun(city));
+  const stone = subject ? { d: subject, s: span(subject) } : undefined;
+  console.log(`info  far: the longest stone run at the city's open ${stoneRunAtOpen ?? 'unread'}, now ${longestStoneRun(city) ?? 'none'} (${city.map((d) => `${d.repo} ${span(d)?.n ?? 0}`).join(', ')})`);
   const hasToggle = await page.evaluate("typeof window.__palimpsest.coursing === 'function'");
   if (!stone || !hasToggle) {
     check(false, `coursing lines are resolvable in coursing-1100 (${stone ? 'no far coursing line to switch' : 'no stone run in the sample'})`);
@@ -4444,6 +4459,7 @@ async function main(): Promise<void> {
       .then(() => true)
       .catch(() => false);
     check(ready, 'city reports ready');
+    if (ready) stoneRunAtOpen = longestStoneRun(await cityOf(page));
     // The ambient life at full density throughout, whatever the hour: every budget is measured at its worst.
     if (ready) await fullDensity(page);
     await page.waitForTimeout(3000);
