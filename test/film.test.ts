@@ -122,7 +122,10 @@ test('capture.ts walks the week its history was seeded in, never the week the ru
   const capture = readFileSync(new URL('../tools/capture.ts', import.meta.url), 'utf8');
   // A bare tourStart() names the week of the day the capture runs; from the Monday after the seed that week is empty.
   assert.ok(!/tourStart\(\)/.test(capture), 'no bare tourStart()');
-  assert.ok(/tourStart\(\$\{JSON\.stringify\(await seededWeek\(page\)\)\}\)/.test(capture), 'the tour starts on the seeded week');
+  assert.ok(/tourStart\(\$\{JSON\.stringify\(await seededWeek\(page, seededAt\)\)\}\)/.test(capture), 'the tour starts on the seeded week');
+  const uiTest = readFileSync(new URL('../tools/ui-test.ts', import.meta.url), 'utf8');
+  assert.ok(!/tourStart\(\)/.test(uiTest), 'ui-test has no bare tourStart()');
+  assert.ok(!/fetch\('\/api\/tour'\)/.test(uiTest), 'ui-test plans the seeded week, not the current one');
 });
 
 test("a bare capture.ts writes the palette with the README's media", async () => {
