@@ -662,10 +662,35 @@ a.repo-name:focus-visible {
   font-size: 12.5px;
   color: var(--ink-2);
 }
+/* The tower's root, set in the switches' columns: its name and what it is on one line, the five styles beneath. */
 .repo-root {
+  display: grid;
+  grid-template-columns: 34px 72px minmax(0, 1fr);
+  grid-template-areas:
+    '. label note'
+    '. pick pick';
+  column-gap: 10px;
+  row-gap: 2px;
+  align-items: center;
+  width: 100%;
+}
+.repo-root .repo-root-text {
+  display: contents;
+  cursor: default;
+}
+.repo-root .repo-ctl-label {
+  grid-area: label;
+}
+.repo-root .repo-root-note {
+  grid-area: note;
+  font-size: 12px;
+}
+.repo-root-pick {
+  grid-area: pick;
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-left: -6px;
 }
 .root-picker {
   display: flex;

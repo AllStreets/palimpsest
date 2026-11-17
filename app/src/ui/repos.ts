@@ -19,7 +19,7 @@ import {
 } from './controls';
 import { ROOT_NAMES } from './inspector';
 import { coalesce } from './pages';
-import { forgetPushWhy } from './repos-words';
+import { forgetPushWhy, ROOT_LABEL, ROOT_NOTE, rootChoiceName } from './repos-words';
 
 const ROOTS: RootStyle[] = ['beauxarts', 'roman', 'gothic', 'pagoda', 'chicago'];
 
@@ -394,18 +394,26 @@ export function createRepos(
     if (row.controls) return row.controls;
     const c = el('div', 'repo-controls');
 
+    // The root, said in plain words (audit 2026-11-17): what it is, and that choosing one changes the tower.
     const rootWrap = el('div', 'repo-root');
-    const rootLabel = el('span', 'repo-ctl-label', 'Root');
+    const rootId = `root-${row.fullName.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+    const rootText = el('span', 'repo-push-text repo-root-text');
+    const rootLabel = el('span', 'repo-ctl-label', ROOT_LABEL);
+    rootLabel.id = `${rootId}-label`;
+    const rootNote = el('span', 'repo-push-note repo-root-note', ROOT_NOTE);
+    rootNote.id = `${rootId}-note`;
+    rootText.append(rootLabel, rootNote);
     const group = el('div', 'root-picker');
     group.setAttribute('role', 'radiogroup');
-    group.setAttribute('aria-label', `Root style for ${row.fullName}`);
+    group.setAttribute('aria-labelledby', rootLabel.id);
+    group.setAttribute('aria-describedby', rootNote.id);
     for (const r of ROOTS) {
       const b = el('button', 'root-choice');
       b.type = 'button';
       b.setAttribute('role', 'radio');
       b.dataset.root = r;
-      b.title = ROOT_NAMES[r];
-      b.setAttribute('aria-label', ROOT_NAMES[r]);
+      b.title = rootChoiceName(ROOT_NAMES[r]);
+      b.setAttribute('aria-label', rootChoiceName(ROOT_NAMES[r]));
       b.innerHTML = icon(r);
       b.addEventListener('click', () => choose(b));
       group.append(b);
@@ -418,7 +426,9 @@ export function createRepos(
       row.rootSync?.set(r);
     };
     rovingRadios(group, choose);
-    rootWrap.append(rootLabel, group, rootName);
+    const rootPick = el('div', 'repo-root-pick');
+    rootPick.append(group, rootName);
+    rootWrap.append(rootText, rootPick);
 
     const switches = el('div', 'repo-switches');
     const marketWrap = el('div', 'repo-market');

@@ -29,3 +29,16 @@ export function forgetPushWhy(why: Map<string, string>, e: { type: string; data:
 export function repoCount(n: number): { text: string; shown: boolean } {
   return n > 0 ? { text: String(n), shown: true } : { text: '0', shown: false };
 }
+
+// ---------------------------------------------------------------- the root (audit 2026-11-17)
+
+/** The Root control's label, beside Market and Push mode. */
+export const ROOT_LABEL = 'Tower root';
+
+/** Under it, what a root is and what choosing one does. */
+export const ROOT_NOTE = "the base style of this repo's tower, the storeys its floors rise from; choosing one rebuilds the tower in it";
+
+/** One glyph's accessible name and hover title: "Beaux-Arts root". */
+export function rootChoiceName(styleName: string): string {
+  return `${styleName} root`;
+}

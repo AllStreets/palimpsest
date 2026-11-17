@@ -194,6 +194,16 @@ export async function reposChecks(page: Page): Promise<void> {
 
   // Root style: pick another root, the tower is restyled.
   const target = SAMPLE[0].fullName;
+  // Said in plain words (audit 2026-11-17): the group is named and described, and every glyph has a name of its own.
+  const rootGroup = page.locator(`${rowSel(target)} .root-picker`);
+  const rootSaid = await rootGroup.evaluate((g) => ({
+    label: document.getElementById(g.getAttribute('aria-labelledby') ?? '')?.textContent ?? '',
+    note: document.getElementById(g.getAttribute('aria-describedby') ?? '')?.textContent ?? '',
+    names: [...g.querySelectorAll('[role="radio"]')].map((b) => b.getAttribute('aria-label') ?? ''),
+  }));
+  check(rootSaid.label === 'Tower root' && /base style of this repo's tower/.test(rootSaid.note) && /rebuilds the tower/.test(rootSaid.note), `the Root control says what a root is and that it changes the tower (${rootSaid.label}: ${rootSaid.note})`);
+  check(rootSaid.names.length === 5 && rootSaid.names.every((n) => / root$/.test(n)), `each root glyph has an accessible name (${rootSaid.names.join(', ')})`);
+  check(await page.locator(`${rowSel(target)} .repo-root-note`).isVisible(), 'and the words stand on the screen, not only for a screen reader');
   await page.locator(`${rowSel(target)} [role="radio"][data-root="pagoda"]`).click();
   const restyled = await page
     .waitForFunction(
