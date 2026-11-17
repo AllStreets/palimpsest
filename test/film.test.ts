@@ -116,3 +116,20 @@ test('capturePort defaults to 4788 and refuses a bad value, the engine and the d
   assert.equal(capturePort('4789'), 4789);
   for (const bad of ['abc', '80', '70000', '4770', '4771']) assert.throws(() => capturePort(bad), /CAPTURE_PORT/, bad);
 });
+
+test('capture.ts walks the week its history was seeded in, never the week the run is made in', async () => {
+  const { readFileSync } = await import('node:fs');
+  const capture = readFileSync(new URL('../tools/capture.ts', import.meta.url), 'utf8');
+  // A bare tourStart() names the week of the day the capture runs; from the Monday after the seed that week is empty.
+  assert.ok(!/tourStart\(\)/.test(capture), 'no bare tourStart()');
+  assert.ok(/tourStart\(\$\{JSON\.stringify\(await seededWeek\(page\)\)\}\)/.test(capture), 'the tour starts on the seeded week');
+});
+
+test("a bare capture.ts writes the palette with the README's media", async () => {
+  const { readFileSync } = await import('node:fs');
+  const capture = readFileSync(new URL('../tools/capture.ts', import.meta.url), 'utf8');
+  const shots = /const README_SHOTS = \[([^\]]*)\]/.exec(capture)?.[1] ?? '';
+  assert.ok(/'palette'/.test(shots), 'palette is in README_SHOTS');
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  assert.ok(readme.includes('docs/media/palette.webp'), 'the README shows palette.webp');
+});

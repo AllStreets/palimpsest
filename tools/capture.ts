@@ -78,6 +78,7 @@ import { SUN_DIRECTION } from '../app/src/city/sky.js';
 import { FAMILIES, VARIANTS } from '../app/src/city/tower/variants.js';
 import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
+import { previousWeek, weekOf } from '../shared/tour.js';
 import type { District, Quarter } from '../shared/types.js';
 import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
@@ -97,6 +98,8 @@ const WRITE_MEDIA = process.env.CAPTURE_WRITE_MEDIA === '1';
 const PORT = capturePort(process.env.CAPTURE_PORT ?? '4788');
 /** The sample economy's clock (CAPTURE_ECONOMY=live), ticked on demand by the shots that show it moving. */
 let economy: { tick(ms: number): void; idle(): Promise<void> } | null = null;
+/** When the sample's history was seeded: its week is the one the tour walks (seededWeek). */
+let seededAt = Date.now();
 /** The block pitch (lots.ts PITCH), for framing streets. */
 const PITCH_M = 80;
 const FFMPEG = existsSync('/opt/homebrew/bin/ffmpeg') ? '/opt/homebrew/bin/ffmpeg' : 'ffmpeg';
@@ -144,17 +147,25 @@ function mb(path: string): string {
 }
 
 /**
- * From 2x PNG frames: a 1600x1000 H.264 MP4, an animated AVIF at 1280x800
+ * The README's share of the 45 MB docs/media holds (ruling 8): with the film
+ * (9.5 MB), the profile loop and about sixty stills beside them, a linked
+ * clip is held to 2.5 MB and an inline one to 1.5 MB, well under their own caps.
+ */
+const README_LINKED = 2.5 * 1024 * 1024;
+const README_INLINE = 1.5 * 1024 * 1024;
+
+/**
+ * From 2x PNG frames: a 1280x800 H.264 MP4, an animated AVIF at 960x600
  * for the README to play inline, and a poster from the clip itself as the
  * AVIF's fallback (Phase 5 dropped the GIF and the profile card: the
- * profile clip is tools/film.ts's).
+ * profile clip is tools/film.ts's, and the film cuts from the kept frames).
  */
 function encode(dir: string, name: string, posterAt = 0.5): void {
   const input = ['-framerate', String(FPS), '-i', join(dir, 'f%04d.png')];
   const mp4 = join(MEDIA, `${name}.mp4`);
-  const c = underBudget(mp4, BUDGET.linkedMp4, 21, 2, (crf) => ff([...input, '-vf', 'scale=1600:1000:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]));
+  const c = underBudget(mp4, Math.min(BUDGET.linkedMp4, README_LINKED), 24, 2, (crf) => ff([...input, '-vf', 'scale=1280:800:flags=lanczos', '-c:v', 'libx264', '-preset', 'slow', '-tune', 'film', '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]));
   const avif = join(MEDIA, `${name}.avif`);
-  const a = underBudget(avif, BUDGET.inlineAnimation, 30, 3, (crf) => ff([...input, '-vf', 'scale=1280:800:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', String(crf), '-g', '120', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]));
+  const a = underBudget(avif, Math.min(BUDGET.inlineAnimation, README_INLINE), 34, 3, (crf) => ff([...input, '-vf', 'fps=24,scale=960:600:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', String(crf), '-g', '96', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]));
   console.log(`  ${name}: mp4 ${mb(mp4)} (crf ${c}), avif ${mb(avif)} (crf ${a})`);
   writePoster(dir, name, posterAt);
 }
@@ -247,11 +258,11 @@ function encodeClip(dir: string, name: string, inline: boolean, posterAt?: numbe
   const input = ['-framerate', String(fps), '-i', join(dir, 'f%04d.png')];
   const mp4 = join(MEDIA, `${name}.mp4`);
   const tuning = mp4Opts.film ? ['-preset', 'veryslow', '-tune', 'film'] : ['-preset', 'slow'];
-  const c = underBudget(mp4, BUDGET.linkedMp4, mp4Opts.crf, 2, (crf) => ff([...input, '-vf', `scale=${mp4Opts.size}:flags=lanczos`, '-c:v', 'libx264', ...tuning, '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]));
+  const c = underBudget(mp4, Math.min(BUDGET.linkedMp4, README_LINKED), mp4Opts.crf, 2, (crf) => ff([...input, '-vf', `scale=${mp4Opts.size}:flags=lanczos`, '-c:v', 'libx264', ...tuning, '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', mp4]));
   let line = `  ${name}: mp4 ${mb(mp4)} (crf ${c})`;
   if (inline) {
     const avif = join(MEDIA, `${name}.avif`);
-    const a = underBudget(avif, BUDGET.inlineAnimation, 36, 3, (crf) => ff([...input, '-vf', 'fps=24,scale=800:500:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', String(crf), '-g', '96', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]));
+    const a = underBudget(avif, Math.min(BUDGET.inlineAnimation, README_INLINE), 36, 3, (crf) => ff([...input, '-vf', 'fps=24,scale=800:500:flags=lanczos', '-c:v', 'libsvtav1', '-preset', '4', '-crf', String(crf), '-g', '96', '-pix_fmt', 'yuv420p', '-f', 'avif', '-loop', '0', avif]));
     line += `, avif ${mb(avif)} (crf ${a})`;
   }
   console.log(line);
@@ -446,11 +457,11 @@ async function campusFrame(page: Page): Promise<(x: number, y: number, z: number
 }
 
 /** Scrolls an open sheet so `sel` stands at the top of its body, for a shot. */
-async function toSheetTop(page: Page, sel: string): Promise<void> {
-  await page.locator(sel).first().evaluate((sec) => {
+async function toSheetTop(page: Page, sel: string, margin = 16): Promise<void> {
+  await page.locator(sel).first().evaluate((sec, m) => {
     const body = sec.closest('.sheet-body') as HTMLElement;
-    body.scrollTop += sec.getBoundingClientRect().top - body.getBoundingClientRect().top - 16;
-  });
+    body.scrollTop += sec.getBoundingClientRect().top - body.getBoundingClientRect().top - m;
+  }, margin);
   await page.waitForTimeout(500);
 }
 
@@ -464,6 +475,20 @@ async function withEnv(key: string, value: string, fn: () => Promise<void>): Pro
     if (was === undefined) delete process.env[key];
     else process.env[key] = was;
   }
+}
+
+/**
+ * The week the seeded history falls in: the seed's own week, or the one before when that holds more of the tour
+ * (seeded early in a week, as on a Monday, the history is last week's). Not the week the run is made in.
+ */
+async function seededWeek(page: Page): Promise<string> {
+  const stops = async (week: string): Promise<number> => {
+    const t = (await page.evaluate((w) => fetch(`/api/tour?week=${w}`).then((r) => (r.ok ? r.json() : null)), week)) as { stops?: unknown[] } | null;
+    return t?.stops?.length ?? 0;
+  };
+  const week = weekOf(seededAt).week;
+  const before = previousWeek(week);
+  return (await stops(week)) >= (await stops(before)) ? week : before;
 }
 
 /** True when the low sun stands in (or at the edge of) the frame the camera holds now, so its bloom would be in the shot. */
@@ -494,6 +519,18 @@ async function withSpire(page: Page, name: string, v: { eye: V3; target: V3 }): 
     eye = lerp3(v.target, eye, 1.06);
   }
   if (pulled) console.log(`  ${name}: pulled back ${pulled} steps so the spire stands in the frame`);
+  return { eye, target: v.target };
+}
+
+/** A framing pulled back along its line, 4% at a time, until `tip` projects inside the frame below its top margin. */
+async function fitTip(page: Page, v: { eye: V3; target: V3 }, tip: V3): Promise<{ eye: V3; target: V3 }> {
+  let eye = v.eye;
+  for (let i = 0; i < 20; i++) {
+    await frame(page, eye, v.target);
+    const [x, y, z] = (await page.evaluate(`window.__palimpsest.project(${JSON.stringify(tip)})`)) as number[];
+    if (z < 1 && Math.abs(x) < 0.92 && y < 0.9) break;
+    eye = lerp3(v.target, eye, 1.04);
+  }
   return { eye, target: v.target };
 }
 
@@ -548,11 +585,14 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       if (want('hall')) await shot('campus-hall', at(92, 8, 36), at(66, 11, 54));
       if (want('terrace')) await shot('campus-terrace', at(-44, 5, -34), at(-10, 7, -2));
       if (want('library')) await shot('campus-library', at(104, 18, 8), at(181, 20, -1));
-      // The clock tower with its dials lit: the campus clock held at ten past ten at night, then freed.
+      // The clock tower at dusk on the campus's own clock (Phase 5: held at ten past ten at night, the lit dial's bloom
+      // stood over the tower as a white disc).
       if (want('clock')) {
-        await page.evaluate(`window.__palimpsest.campusClock(${new Date(2026, 10, 12, 22, 10).getTime()})`);
-        await shot('campus-clock', at(28, 10, 2), at(97, 27, -56));
-        await page.evaluate('window.__palimpsest.campusClock(null)');
+        // From the far side of the quad, with the low sun behind the camera (Phase 5: from the gate side its bloom stood
+        // over the tower as a white disc).
+        const target = at(97, 27, -56);
+        const eye = at(150, 12, 2);
+        await shot('campus-clock', eye, target);
       }
       if (want('above')) await shot('campus-above', at(40, 110, 30), at(62, 6, -6));
       // The observatory shut (a thin master), then open with the nets training and the master trusted (Task 36).
@@ -688,7 +728,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     async 'agent-graduate'(page) {
       // Ada Quarry's page, the sample's graduate: where it came from, its sealed race against its base.
       await openHash(page, '#/agents/grad-qwen25c7-1', '.sheet.agentpage .agent-school[data-school="graduate"]');
-      await toSheetTop(page, '.sheet.agentpage .agent-lineage');
+      // Flush with the sheet's head: with a margin, the last line of the section above showed as a cut sliver under it.
+      await toSheetTop(page, '.sheet.agentpage .agent-lineage', 0);
       await lean(page, 'agent-graduate', true);
       await openHash(page, '#/', 'body[data-route="city"]');
     },
@@ -956,8 +997,9 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // The week tour (Phase 3 Task 17): the camera's walk through the economy's week, exchange to exchange, its
       // captions at the lower left. Forty-five seconds: the walk's ninety on the virtual clock at twice its pace,
       // encoded as lean as the ride (an mp4, and the avif the README plays inline).
-      await chrome(page, true);
-      const ok = (await page.evaluate('window.__palimpsest.tourStart()')) as boolean;
+      // The running head and the plates stand aside (Phase 5: no chrome over the city); the captions are the walk's own.
+      await chrome(page, false);
+      const ok = (await page.evaluate(`window.__palimpsest.tourStart(${JSON.stringify(await seededWeek(page))})`)) as boolean;
       if (!ok) throw new Error('the week has no tour to walk');
       await page.evaluate('window.__palimpsest.tourHold(true)');
       const tour = (await page.evaluate('window.__palimpsest.tour()')) as { length: number };
@@ -991,8 +1033,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     async 'week-poster'(page) {
       // The week's poster (Phase 5): a stop on the tour framed off the sun, so the low sun's bloom stays out of it, at
       // the moment off the sun nearest WEEK_POSTER (0.45 of the walk).
-      await chrome(page, true);
-      if (!((await page.evaluate('window.__palimpsest.tourStart()')) as boolean)) throw new Error('the week has no tour to walk');
+      await chrome(page, false);
+      if (!((await page.evaluate(`window.__palimpsest.tourStart(${JSON.stringify(await seededWeek(page))})`)) as boolean)) throw new Error('the week has no tour to walk');
       await page.evaluate('window.__palimpsest.tourHold(true)');
       const { length } = (await page.evaluate('window.__palimpsest.tour()')) as { length: number };
       const want = Number(process.env.WEEK_POSTER ?? 0.45) * length;
@@ -1290,13 +1332,17 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         await still(page, name, eye, target);
         console.log(`  ${name}: ${JSON.stringify(await call('d.ambient()'))}`);
       };
-      await shot('street', [[195.4, 1.62, -145], [207, 1.45, -30]]);
+      // A person's height on the pavement, clear of the street trees and the shopfront canopies (Phase 5 audit: the eye
+      // stood in a tree), looking down the street to the Beaux-Arts root and its tower.
+      await shot('street', [[188.5, 1.65, -128], [203, 3.2, -20]]);
       if (want('junction')) {
         // The junction near the plaza with the most cars standing at its lines, seen from a corner above the kerb.
         const q = await call<Array<{ x: number; z: number; held: number }>>('d.ambientQueues([280, -120], 130)');
         const j = q[0] ?? { x: 280, z: -120, held: 0 };
         console.log(`  junction ${j.x},${j.z} with ${j.held} held`);
-        await shot('junction', [[j.x + 6.5, 4.5, j.z + 30], [j.x - 2, 0.5, j.z - 6]]);
+        // Over the road's own line, not the corner: an eye inside a corner block drew the block's back faces as a blank
+        // (Phase 5 audit: a flat navy rectangle over three quarters of the frame).
+        await shot('junction', [[j.x + 3, 5, j.z + 34], [j.x - 2, 0.5, j.z - 4]]);
       }
       await shot('stop', [[435.5, 1.6, -20], [442, 1.3, 4]]);
       await shot('rooftop', [[287, 64, -430], [276, 0, -150]]);
@@ -1848,22 +1894,33 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async 'market-overview'(page) {
-      // The market at work (CAPTURE_ECONOMY=live): the city with the harbour tower's crane up, a tram passing, the
-      // exchange lit, and the firms' lens, cantilever and needle towers on the skyline. MARKET_VIEW='[[eye],[target]]'
-      // overrides the framing; the positions it is framed on are logged.
-      await page.waitForFunction('window.__palimpsest.liveSites().some((s) => s.stage === "framing")', null, { timeout: 15_000 }).catch(() => {});
-      const quarters = (await page.evaluate(() => fetch('/api/quarters').then((x) => x.json()))) as Quarter[];
-      const crowns = quarters.flatMap((q) => q.towers.filter((t) => t.agentId && !t.dark && t.silhouette && t.silhouette !== 'plain').map((t) => `${t.silhouette} ${t.agentId} at ${Math.round(q.origin.x + QUARTER_OFFSETS_CAPTURE[t.towerIndex ?? 0].x)},${Math.round(q.origin.z + QUARTER_OFFSETS_CAPTURE[t.towerIndex ?? 0].z)}`));
-      console.log(`  crowns: ${crowns.join(' | ')}`);
-      const sites = (await page.evaluate('window.__palimpsest.liveSites()')) as Array<{ repo: string; stage: string }>;
-      console.log(`  sites: ${sites.map((s) => `${s.repo} ${s.stage}`).join(', ')}`);
+      // The market at work (CAPTURE_ECONOMY=live), at the exchange: the tote board over the portico with a card lit for
+      // each job taking bids and a lamp under it for each bid, the bidders queued at the foot of the stair, the fountain
+      // and the forecourt's lamps. From the old 600 m the board and the queue read as lantern points (Phase 5 audit), so
+      // it stands about 100 m off. MARKET_VIEW='[[eye],[target]]' overrides the framing.
+      await page.waitForFunction(() => ((window as unknown as { __palimpsest: { exchange(): { slots: Array<{ state: string }> } | null } }).__palimpsest.exchange()?.slots ?? []).some((x) => x.state === 'bidding'), null, { timeout: 15_000 }).catch(() => {});
+      const board = await callDebug<Array<{ state: string; lamps: number }>>(page, 'd.exchange()?.slots ?? []');
+      console.log(`  market-overview: ${board.filter((x) => x.state === 'bidding').length} cards lit, ${board.reduce((a, x) => a + x.lamps, 0)} lamps`);
+      // The bidders on their way: the people's clock moved on until every figure on a live bid trip stands in the queue
+      // at the hall's stair (as tools/perf.ts stages exchange-600), at most ten minutes on.
+      type Fig = { stage: string; position: V3; tripId: string | null; reason: string | null };
+      const atDoors = (fs: Fig[]): number => fs.filter((f) => f.tripId !== null && f.reason === 'bid' && f.stage === 'idle' && f.position[0] > -2 && f.position[0] < 30 && f.position[2] > 20 && f.position[2] < 32).length;
+      const live = (await page.evaluate(() => fetch('/api/live').then((r) => (r.ok ? r.json() : { trips: [] })).catch(() => ({ trips: [] })))) as { trips?: Array<{ reason: string; endedAt: string | null }> };
+      const bidding = (live.trips ?? []).filter((t) => t.reason === 'bid' && !t.endedAt).length;
+      await callDebug(page, 'd.peopleHold(true)');
+      let queued = atDoors(await callDebug<Fig[]>(page, 'd.persons()'));
+      for (let t = 0; t < 600 && queued < bidding; t += 20) {
+        await callDebug(page, 'd.peopleSkip(20)');
+        queued = atDoors(await callDebug<Fig[]>(page, 'd.persons()'));
+      }
+      console.log(`  market-overview: ${queued} of ${bidding} bidders in the queue at the doors`);
       const [eye, target] = (process.env.MARKET_VIEW ? JSON.parse(process.env.MARKET_VIEW) : MARKET_VIEW_DEFAULT) as [V3, V3];
-      // A tram where the frame crosses its loop, moving.
-      const near = (process.env.MARKET_TRAM ? JSON.parse(process.env.MARKET_TRAM) : MARKET_TRAM_DEFAULT) as number[];
-      const passing = await callDebug<boolean>(page, `d.vehicleSeek([{ kind: 'tram', near: ${JSON.stringify(near)}, radius: 40, moving: 4 }], 4000)`);
-      if (!passing) console.log('  no tram passing where the frame looks for one');
       await chrome(page, false);
-      await still(page, 'market-overview', eye, target);
+      try {
+        await still(page, 'market-overview', eye, target);
+      } finally {
+        await callDebug(page, 'd.peopleHold(false)');
+      }
     },
 
     async screens(page) {
@@ -1944,7 +2001,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       const [cx, cz] = s.centre;
       const top = s.top;
       const seconds = Number(process.env.CONSTRUCTION_SECONDS ?? 40);
-      // From the plaza's city side (the lifecycle's bearing), drifting a little round the site as it works.
+      // From the plaza's city side (the lifecycle's bearing), drifting a little round the site as it works. The poster is
+      // taken while the frame goes up (0.2): later, the guild's searchlights wash the frame white.
       const a0 = Math.atan2(0.78, 0.63);
       const span = Number(process.env.CONSTRUCTION_SPAN ?? 0.5);
       const r = Number(process.env.CONSTRUCTION_RADIUS ?? 110);
@@ -1960,7 +2018,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
           return { eye: [cx + Math.cos(a) * r, top + 10, cz + Math.sin(a) * r], target: [cx, top + 16, cz] };
         },
         false,
-        Number(process.env.CONSTRUCTION_POSTER ?? 0.4),
+        Number(process.env.CONSTRUCTION_POSTER ?? 0.2),
       );
     },
 
@@ -2076,8 +2134,15 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     async stills(page) {
       await chrome(page, false);
       // One whole tower, root to crown: the pagoda, lit by the low sun, the rest of the skyline behind it.
+      // Pulled back along its line until its crown stands inside the frame (Phase 5: the crown was cut at the top edge);
+      // the tallest tower behind it may run out of the top. The job sites stand aside for it: a live inspection's
+      // searchlight glint on the Gothic tower burnt out a corner of the frame.
       const k = pagoda.origin;
-      await still(page, 'tower', [k.x - 480, 30, k.z + 120], [k.x, pagodaLay.top * 0.5, k.z]);
+      const whole = await fitTip(page, { eye: [k.x - 480, 30, k.z + 120], target: [k.x, pagodaLay.top * 0.5, k.z] }, [k.x, pagodaLay.top + 6, k.z]);
+      await page.evaluate('window.__palimpsest.showSites(false)');
+      await page.waitForTimeout(600);
+      await still(page, 'tower', whole.eye, whole.target);
+      await page.evaluate('window.__palimpsest.showSites(true)');
       const o = gothic.origin;
       await still(page, 'root', [o.x - 58, 6, o.z + 66], [o.x, gothicLay.rootHeight * 0.55, o.z]);
       const t = tall.origin;
@@ -2217,11 +2282,10 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
 /** What a bare `tools/capture.ts` writes: the README's media. */
 // street and people-follow stay out unless the controller agrees (Phase 5 ruling 17); the audit clip runs on its own
 // clock, so its place in the order moves nothing the others show.
-const README_SHOTS = ['hero', 'stills', 'overview', 'overview-clear', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'brief', 'audit-page', 'district-audit', 'job-scope', 'school-screens', 'campus', 'graduate-tower', 'voyage', 'observatory', 'spire', 'revival', 'ribbon', 'ride-dossier', 'ride', 'week', 'week-poster', 'flyover', 'rise', 'construction-clip', 'audit', 'commute', 'diagrams', 'school-empty'];
+const README_SHOTS = ['hero', 'stills', 'overview', 'palette', 'market-overview', 'inspector', 'repos', 'settings', 'screens', 'brief', 'audit-page', 'district-audit', 'job-scope', 'school-screens', 'campus', 'graduate-tower', 'voyage', 'observatory', 'spire', 'revival', 'ribbon', 'ride-dossier', 'ride', 'week', 'week-poster', 'flyover', 'rise', 'construction-clip', 'audit', 'commute', 'diagrams', 'school-empty'];
 
-/** The market overview's framing and where it looks for a passing tram (MARKET_VIEW and MARKET_TRAM override). */
-const MARKET_VIEW_DEFAULT: [V3, V3] = [[620, 190, 560], [60, 60, -40]];
-const MARKET_TRAM_DEFAULT = [600, -150];
+/** The market overview's framing: the exchange's front from about 100 m, the board, the stair and the forecourt (MARKET_VIEW overrides). */
+const MARKET_VIEW_DEFAULT: [V3, V3] = [[64, 32, 124], [4, 20, 10]];
 
 /** Framings tuned by eye in the quality rounds (see the probe shot), on the sample city; followCity fits them to the city served. */
 let HERO: { eye: V3; target: V3 } = { eye: [700, 70, 700], target: [0, 170, 80] };
@@ -2263,7 +2327,7 @@ async function main(): Promise<void> {
   if (readme) {
     process.env.CAPTURE_ECONOMY ??= 'live';
     process.env.RIDE_ONLY ??= 'clip';
-    process.env.CAMPUS_ONLY ??= 'home,quad,clock,observatory-open';
+    process.env.CAMPUS_ONLY ??= 'home,quad,clock';
   }
   // The eight diagram images are drawn by tools/diagrams.ts, into the same place as everything else.
   if (wanted.includes('diagrams')) {
@@ -2287,7 +2351,8 @@ async function main(): Promise<void> {
   mkdirSync(MEDIA, { recursive: true });
 
   // CAPTURE_CITY=tall seeds the same repos in a working developer's shape (four short towers, two at the cap), for probes.
-  await seedSample(Date.now(), process.env.CAPTURE_CITY === 'tall' ? SAMPLE_TALL : SAMPLE);
+  seededAt = Date.now();
+  await seedSample(seededAt, process.env.CAPTURE_CITY === 'tall' ? SAMPLE_TALL : SAMPLE);
   // CAPTURE_CITY=small leaves one tower of 8 floors, for the view's framing rounds.
   if (process.env.CAPTURE_CITY === 'small') await shrinkSample();
   // CAPTURE_ECONOMY=1: the sample economy on top, its firms' floors standing above every datum.
@@ -2305,7 +2370,7 @@ async function main(): Promise<void> {
       throw new Error(`capture: the transcripts folder ${projects ?? '(unset)'} is not inside the temp home ${tmp}; refusing to run`);
     }
     // CAPTURE_HOLD_SALE=1: Lodestar's dark tower is not sold in the history, so the `dark` shot sees it dark and then sold live.
-    await seedEconomy(Date.now(), { holdSale: !!process.env.CAPTURE_HOLD_SALE });
+    await seedEconomy(seededAt, { holdSale: !!process.env.CAPTURE_HOLD_SALE });
   }
   // Every gh and git call goes to the sample's stand-in: the Repos screen lists only fictional repos.
   const { setRunner } = await import('../engine/exec.js');
