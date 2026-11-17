@@ -881,7 +881,7 @@ export function createJobs(parent: HTMLElement, opts: { listen(fn: (e: EngineEve
 
     const count = (k: string) => sections.find((s) => s.key === k)?.jobs.length ?? 0;
     const taking = sections.find((s) => s.key === 'bidding')?.jobs.filter((j) => j.status === 'bidding').length ?? 0;
-    // Running counts the runs under way, as the treasury and the run pages do; an awarded job with no run yet is starting.
+    // Running counts the runs under way on the books, as the run pages do; an awarded job with no run yet is starting.
     const atWork = sections.find((s) => s.key === 'running')?.jobs ?? [];
     const running = atWork.filter((j) => !!j.runId).length;
     const starting = atWork.length - running;

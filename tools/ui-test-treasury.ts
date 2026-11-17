@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import type { Page } from 'playwright';
 
 import { SAMPLE_USED } from '../engine/sample.js';
-import { LIVE_JOB_STATUSES } from '../shared/market-rules.js';
+import { LIVE_JOB_STATUSES, runsHoldingSlots } from '../shared/market-rules.js';
 import type { Job, TreasuryView } from '../shared/types.js';
 
 type Check = (ok: boolean, what: string) => void;
@@ -112,7 +112,12 @@ export async function treasuryChecks(page: Page, check: Check, shots: string): P
     const onBoard = jobsNow.filter((j) => LIVE_JOB_STATUSES.includes(j.status) && !!j.runId).length;
     const runsLine = (await runningRow.locator('.now-runs').textContent()) ?? '';
     const said = Number((/^(\d+) runs? under way/.exec(runsLine) ?? [])[1] ?? (/^No run/.test(runsLine) ? 0 : -1));
-    check(onBoard > 0 && said === onBoard, `Running counts the same runs the job board counts (${said} against ${onBoard} on the board: ${runsLine})`);
+    // The books count the board's runs; the Running row counts only those that hold a slot (490ebce), so its runs
+    // line and its slots line agree. The sample's runs hold no lease, so here it reads "No run under way."
+    const tRun = await api<TreasuryView>(page, '/api/treasury');
+    const held = runsHoldingSlots(tRun.underWay, tRun.concurrency);
+    check(onBoard > 0 && tRun.underWay.total === onBoard, `the treasury's books count the same runs the job board counts (${tRun.underWay.total} against ${onBoard} on the board)`);
+    check(said === held.total, `Running counts the runs that hold a slot (${said} against ${held.total} held: ${runsLine})`);
     check(/^Slots the runner holds: Claude \d+ of \d+, local \d+ of \d+, API \d+\.$/.test(((await runningRow.locator('.now-slots-held').textContent()) ?? '').trim()), `and names the slots the runner holds apart (${await runningRow.locator('.now-slots-held').textContent()})`);
 
     // Spend by firm and by model, and the balances; every row opens to its credits entries.
