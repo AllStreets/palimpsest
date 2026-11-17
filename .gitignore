@@ -1,6 +1,6 @@
 .superpowers/
 .playwright-mcp/
-node_modules/
+node_modules
 dist/
 target/
 .DS_Store
