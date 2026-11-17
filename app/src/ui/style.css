@@ -776,9 +776,17 @@ body[data-riding] .runhead {
   line-height: 1.5;
   color: var(--ink);
 }
-/* A scar's verdict in the primer's oxide red, as the inspector says it. */
-.ride-dossier-body[data-verdict='fail'] .ride-dossier-line {
-  color: #e09078;
+/* A scar's verdict in the ink, as every other fact on the caption, after the inspection page's failed square
+   (market.css .verdict-mark.fail): the one coloured thing on the frame is the mark, never the words. */
+.ride-dossier-body[data-verdict='fail'] .ride-dossier-line::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  box-sizing: border-box;
+  margin-right: 9px;
+  border: 1.5px solid var(--err);
+  background: linear-gradient(to top right, transparent calc(50% - 0.9px), var(--err) calc(50% - 0.6px), var(--err) calc(50% + 0.6px), transparent calc(50% + 0.9px));
 }
 .ride-dossier-plan {
   margin: 4px 0 0;
