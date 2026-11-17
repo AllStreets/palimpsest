@@ -65,6 +65,7 @@ import type { Page } from 'playwright';
 
 import { QUARTER_OFFSETS } from '../shared/district-layout.js';
 import { layoutTower } from '../shared/tower-layout.js';
+import { weekOf } from '../shared/tour.js';
 import type { District, Era, Quarter, Repo, SiteState, TowerSpec } from '../shared/types.js';
 import { frameStats } from '../app/src/city/governor.js';
 import { podVariant } from '../app/src/city/vehicles.js';
@@ -174,6 +175,11 @@ function meanLuma(png: Buffer): number {
  * lights, the ribbon, a dark tower before its sale).
  */
 const SEED_AT = process.env.PERF_SEED_AT === 'now' ? Date.now() : Date.parse('2026-11-10T17:30:00Z');
+/**
+ * The week the seeded history falls in: the tour walks it (tourStart names it), not the week of the day the run is
+ * made, which past the seed's Sunday has nothing in it and skipped sun-low, tour-stop-roof and tour-stop.
+ */
+const SEED_WEEK = weekOf(SEED_AT).week;
 const BEARING = { x: 0.63, z: 0.78 };
 
 type V3 = [number, number, number];
@@ -624,7 +630,7 @@ async function* marketViews(page: Page, reopen: () => Promise<void>, only: strin
   }
   if (want('tour-stop-roof')) {
     type Tour = { t: number; length: number; index: number; dwelling: boolean };
-    if (await callDebug<boolean>(page, 'd.tourStart()')) {
+    if (await callDebug<boolean>(page, `d.tourStart(${JSON.stringify(SEED_WEEK)})`)) {
       await callDebug(page, 'd.tourHold(true)');
       // The first stop past the exchange: on to its dwell.
       await page.keyboard.press('Space');
@@ -700,7 +706,7 @@ async function* hazeViews(page: Page, overview: [V3, V3]): AsyncGenerator<[strin
   type Tour = { t: number; length: number };
   // sun-low is the brief's name for the week's poster moment; the tour looks over the city toward the afterglow's side,
   // and the sun's own band is not in its frame (sun-glow in views() holds the band for judging the cap).
-  if (await callDebug<boolean>(page, 'd.tourStart()')) {
+  if (await callDebug<boolean>(page, `d.tourStart(${JSON.stringify(SEED_WEEK)})`)) {
     await callDebug(page, 'd.tourHold(true)');
     await page.waitForTimeout(400);
     const tour = await callDebug<Tour>(page, 'd.tour()');
@@ -794,7 +800,7 @@ async function* lensViews(page: Page, only: string[] | undefined): AsyncGenerato
   }
   if (want('tour-stop')) {
     type Tour = { t: number; index: number };
-    if (await callDebug<boolean>(page, 'd.tourStart()')) {
+    if (await callDebug<boolean>(page, `d.tourStart(${JSON.stringify(SEED_WEEK)})`)) {
       await callDebug(page, 'd.tourHold(true)');
       await page.keyboard.press('Space');
       await callDebug(page, 'd.tourHold(false)');
