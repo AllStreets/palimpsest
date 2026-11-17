@@ -455,8 +455,18 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     // A move the engine refuses keeps its sentence under the row. He takes the suspended pair back; meanwhile it is
     // granted again where this window cannot hear (the row and its ledger entry written, no event), so his Grant it
     // again meets the engine's refusal.
+    // The revoke reads the school again twice over (the move's own changed() and its autonomy event): both land before
+    // the grant is written behind the page's back, or a late read shows it granted and takes the Grant it again move
+    // away before it is clicked (a full run on phase-5, 2026-11-17: the click waited 30 s on a detached button).
+    let lastSchoolRead = Date.now();
+    const onSchoolRead = (r: { url(): string }): void => {
+      if (new URL(r.url()).pathname === '/api/school') lastSchoolRead = Date.now();
+    };
+    page.on('response', onSchoolRead);
     await srow.locator('[data-move="revoke"]').click();
     check(await within(page, 8000, async () => (await srow.getAttribute('data-state')) === 'revoked'), 'Take it back on the suspended pair revokes it');
+    await within(page, 8000, async () => Date.now() - lastSchoolRead > 1000);
+    page.off('response', onSchoolRead);
     {
       const row = openDb().prepare('SELECT json FROM grants WHERE kind = ? AND repo = ?').get(kind, harbor) as { json: string };
       const g = { ...(JSON.parse(row.json) as Grant), state: 'granted' as const, at: new Date().toISOString(), by: 'him' as const, reason: null, quietUntil: null };
