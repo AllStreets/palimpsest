@@ -644,11 +644,34 @@ export function wrap(argv: string[], kind: 'tool' | 'cli' | 'trainer', o: Profil
 /* Toolchains and the child environment                                */
 /* ------------------------------------------------------------------ */
 
-/** Toolchain roots under `home` that exist (ruling 9), in a fixed order. */
-export function detectToolchains(home: string = homedir()): string[] {
-  return ['.nvm', '.cargo/bin', '.rustup', 'go/bin', '.pyenv', '.local/bin']
+/**
+ * The install root of the node the engine runs on (`<root>/bin/node`), or
+ * null when it is too broad to open: the filesystem root, the home itself or
+ * any folder above the home.
+ */
+export function nodeRoot(execPath: string = process.execPath, home: string = homedir()): string | null {
+  const bin = dirname(realish(execPath));
+  const root = basename(bin) === 'bin' ? dirname(bin) : bin;
+  const h = realish(home);
+  if (root === '/' || root === h || h.startsWith(root + '/')) return null;
+  return root;
+}
+
+/**
+ * Toolchain roots under `home` that exist (ruling 9), in a fixed order, and
+ * then the engine's own node wherever it lives: the file tools run that node
+ * under the profile, so a node from Volta, fnm, asdf or a home other than the
+ * one it was installed under is read and run like a toolchain. It is added
+ * only when no toolchain or system path already holds it.
+ */
+export function detectToolchains(home: string = homedir(), execPath: string = process.execPath): string[] {
+  const found = ['.nvm', '.cargo/bin', '.rustup', 'go/bin', '.pyenv', '.local/bin']
     .map((p) => join(home, p))
     .filter((p) => existsSync(p));
+  const root = nodeRoot(execPath, home);
+  const holds = (t: string): boolean => root !== null && (root === realish(t) || root.startsWith(realish(t) + '/'));
+  if (root && !found.some(holds) && !SYSTEM_READ.some(holds)) found.push(root);
+  return found;
 }
 
 /** The bin directories to put on PATH for the detected toolchains. */
@@ -672,6 +695,9 @@ function toolchainBins(toolchains: string[]): string[] {
       bins.push(join(t, 'shims'), join(t, 'bin'));
     } else if (t.endsWith('/.rustup')) {
       // rustup's proxies live in ~/.cargo/bin
+    } else if (t === nodeRoot()) {
+      // the engine's own node, where it lives outside the toolchains named above
+      bins.push(dirname(realish(process.execPath)));
     } else {
       bins.push(t);
     }
