@@ -948,7 +948,7 @@ async function main(): Promise<void> {
   }
 
   // ---------------------------------------------------------------- milestones (Phase 3 Task 14)
-  /** The milestones standing now, by id: read once, then kept by milestone.reached. */
+  /** The milestones standing now, by id: read once, then kept by milestone.reached and milestone.changed. */
   const milestoneRows = new Map<string, Milestone>();
   const standingNow = (m: Milestone): boolean => m.until === null || Date.parse(m.until) > Date.now();
   function showMilestones(): void {
@@ -1404,7 +1404,7 @@ async function main(): Promise<void> {
   );
   api.events((e) => {
     // A milestone reached or patched (the spire passed on, a finial moved) stands at once.
-    if (e.type === 'milestone.reached') {
+    if (e.type === 'milestone.reached' || e.type === 'milestone.changed') {
       const m = (e.data as { milestone?: Milestone } | null)?.milestone;
       if (m?.id) {
         milestoneRows.set(m.id, m);

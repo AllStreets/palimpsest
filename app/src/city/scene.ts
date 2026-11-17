@@ -282,7 +282,7 @@ export interface City {
    * and its true top. Null when no such tower stands.
    */
   towerPiece(towerId: string): TowerPiece | null;
-  /** The engine's milestones (GET /api/milestones?active=1, then milestone.reached): the spire and the finial stand on their towers. */
+  /** The engine's milestones (GET /api/milestones?active=1, then milestone.reached and milestone.changed): the spire and the finial stand on their towers. */
   setMilestones(ms: ReadonlyArray<Milestone>): void;
   /** Each milestone as it shows now, by id (tests and captures). */
   milestoneShows(): Map<string, MilestoneShow>;

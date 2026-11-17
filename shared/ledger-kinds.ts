@@ -56,6 +56,8 @@ export const LEDGER_KINDS = [
   'brief.opened',
   'brief.action',
   'milestone.reached',
+  // Phase 5 Task 32: a reached milestone's row patched (the spire passed on, a ribbon's or lights' end moved).
+  'milestone.changed',
   // Phase 4: the school, its arenas, voyages and training, the nets, his decisions and earned autonomy
   'school.enabled',
   'arena.built',

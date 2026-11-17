@@ -11,8 +11,8 @@
  *
  * Every reach writes the `milestones` row, records `milestone.reached
  * { milestone }` once by id and emits it; a patch writes the row and records
- * and emits the patched row again, so replay rebuilds the table from the
- * ledger. Milestones are never counted or scored: each is shown in the city,
+ * and emits `milestone.changed { milestone }` with the patched row, so the
+ * ledger reaches each milestone once and replay rebuilds the table from it. Milestones are never counted or scored: each is shown in the city,
  * in the brief the morning it happens, and on its floor's row. Backfilled
  * once from the towers at engine start.
  *
@@ -52,12 +52,13 @@ function clean(m: Milestone): Milestone {
   return { ...m, title: plain(m.title, 120), detail: plain(m.detail, 300) };
 }
 
-function write(m: Milestone): void {
+/** Upserts the row and records `kind` with it: `milestone.reached` from a reach, `milestone.changed` from a patch. */
+function write(m: Milestone, kind: 'milestone.reached' | 'milestone.changed'): void {
   openDb()
     .prepare('INSERT INTO milestones (id, kind, tower_id, at, until, json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, tower_id = excluded.tower_id, at = excluded.at, until = excluded.until, json = excluded.json')
     .run(m.id, m.kind, m.towerId, m.at, m.until, JSON.stringify(m));
-  record('milestone.reached', { milestone: m });
-  emit('milestone.reached', { milestone: m });
+  record(kind, { milestone: m });
+  emit(kind, { milestone: m });
 }
 
 /** Reaches `m` once: a row of its id already written is left as it is. */
@@ -65,17 +66,17 @@ function reach(m: Milestone): Milestone {
   const had = loadRow(m.id);
   if (had) return had;
   const row = clean(m);
-  write(row);
+  write(row, 'milestone.reached');
   return row;
 }
 
-/** Writes `p` onto the row `id`, when it changes something, and emits the patched row again. */
+/** Writes `p` onto the row `id`, when it changes something, and records and emits the patched row as `milestone.changed`. */
 function patch(id: string, p: Partial<Milestone>): Milestone | null {
   const cur = loadRow(id);
   if (!cur) return null;
   const next = clean({ ...cur, ...p, id });
   if (JSON.stringify(next) === JSON.stringify(cur)) return cur;
-  write(next);
+  write(next, 'milestone.changed');
   return next;
 }
 

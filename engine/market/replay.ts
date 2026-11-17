@@ -28,8 +28,8 @@
  *   hold the whole audit; `audit.stage { auditId, status, waitingReason? }`
  *   moves one in flight; a `job.proposed` whose job names its finding writes
  *   the job id onto that finding's proposal, as proposeFromAudit does after
- *   the end. Milestones: `milestone.reached { milestone }`, idempotent by
- *   id. `brief.opened` and `brief.action` carry no table.
+ *   the end. Milestones: `milestone.reached { milestone }` and
+ *   `milestone.changed { milestone }` each set the row whole, by id. `brief.opened` and `brief.action` carry no table.
  * - the school (Phase 4): an entry that changes a school row carries that
  *   row whole, as `job.changed` carries its job. `net.trained { version }`
  *   adds a version; `net.promoted { net, version }` makes it the one current
@@ -553,7 +553,8 @@ export function apply(s: MarketState, e: LedgerEntry): MarketState {
     case 'brief.action':
       // His mornings are recorded for Triage; no table holds them.
       return s;
-    case 'milestone.reached': {
+    case 'milestone.reached':
+    case 'milestone.changed': {
       const m = d.milestone as Milestone | undefined;
       if (m?.id) s.milestones[m.id] = clone(m);
       return s;
