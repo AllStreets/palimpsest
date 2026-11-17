@@ -184,9 +184,11 @@ export async function briefChecks(page: Page, check: Check, shots: string): Prom
       check(((await waiting.locator('.brief-handled-head').textContent()) ?? '').trim() === 'Handled today' && (await waiting.locator('.brief-handled-head').isVisible()), 'under its own quiet heading');
       const order = await waiting.locator('.brief-item').evaluateAll((els) => els.map((e) => !!e.closest('.brief-handled')));
       check(order.indexOf(true) === -1 || order.slice(order.indexOf(true)).every(Boolean), `every row that waits comes before every handled one (${JSON.stringify(order)})`);
+      // No named helper inside the page function: tsx names it with __name, which the page does not have.
       const sizes = await waiting.evaluate((w) => {
-        const px = (sel: string) => parseFloat(getComputedStyle(w.querySelector(sel)!).fontSize);
-        return { open: w.querySelector('.brief-list:not(.brief-handled) .brief-head') ? px('.brief-list:not(.brief-handled) .brief-head') : 99, handled: px('.brief-handled .brief-head') };
+        const open = w.querySelector('.brief-list:not(.brief-handled) .brief-head');
+        const handled = w.querySelector('.brief-handled .brief-head');
+        return { open: open ? parseFloat(getComputedStyle(open).fontSize) : 99, handled: handled ? parseFloat(getComputedStyle(handled).fontSize) : NaN };
       });
       check(sizes.handled < sizes.open, `and set smaller than the rows that wait (${sizes.handled} against ${sizes.open})`);
     }
