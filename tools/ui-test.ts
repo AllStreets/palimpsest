@@ -3115,15 +3115,7 @@ async function closeChecks(page: Page): Promise<void> {
     // The moving tram heading furthest from the low sun (toward -x and +z), so the sun's bloom stays out of the frame.
     const sunward = (v: Probe): number => Math.cos(v.heading) * -0.908 + Math.sin(v.heading) * 0.419;
     const all = await callDebug<Probe[]>(page, "d.vehicleKinds('tram')");
-    const t = all.filter((v) => v.speed > 2).sort((a, b) => sunward(a) - sunward(b))[0] ?? all[0];
-    const eye = [t.position[0] - Math.cos(t.heading) * 399 - Math.sin(t.heading) * 14, t.position[1] + 45, t.position[2] - Math.sin(t.heading) * 399 + Math.cos(t.heading) * 14];
-    await setView(page, eye, [t.position[0], t.position[1] + 2, t.position[2]]);
-    await debug(page, (d) => d.precompile());
-    await page.waitForTimeout(1200);
-    // Everything but the vehicles' clock held, the tram stepped half a second at a time through 400 m, and the frame
-    // round its three places (its ends projected, a small margin) read at each step: only the tram changes in it.
-    await callDebug(page, 'd.ambientHold(true)');
-    await callDebug(page, 'd.peopleHold(true)');
+    const eyeFor = (v: Probe): number[] => [v.position[0] - Math.cos(v.heading) * 399 - Math.sin(v.heading) * 14, v.position[1] + 45, v.position[2] - Math.sin(v.heading) * 399 + Math.cos(v.heading) * 14];
     const boxOf = async (now: Probe, img: { width: number; height: number }): Promise<[number, number, number, number]> => {
       const ends: number[][] = [];
       for (const s of [-15, 15]) {
@@ -3133,6 +3125,43 @@ async function closeChecks(page: Page): Promise<void> {
       return [Math.floor(Math.min(ends[0][0], ends[1][0])) - 4, Math.floor(Math.min(ends[0][1], ends[1][1])) - 5, Math.ceil(Math.max(ends[0][0], ends[1][0])) + 4, Math.ceil(Math.max(ends[0][1], ends[1][1])) + 5];
     };
     const size = page.viewportSize() ?? VIEWPORT;
+    /** The tram's own pixels from an eye: where the frame changes by more than 0.03 with the vehicles hidden, in its box. */
+    const ownPixels = async (now: Probe, at: number[]): Promise<Array<[number, number]>> => {
+      await setView(page, at, [now.position[0], now.position[1] + 2, now.position[2]]);
+      const shown = decodePng(await page.screenshot());
+      await callDebug(page, 'd.vehicleShow(false)');
+      await page.waitForTimeout(200);
+      const bare = decodePng(await page.screenshot());
+      await callDebug(page, 'd.vehicleShow(true)');
+      const b = await boxOf(now, size);
+      const own: Array<[number, number]> = [];
+      for (let y = Math.max(0, b[1]); y <= Math.min(shown.height - 1, b[3]); y++) for (let x = Math.max(0, b[0]); x <= Math.min(shown.width - 1, b[2]); x++) {
+        const l = lum(shown, x, y);
+        const d = Math.abs(l - lum(bare, x, y));
+        if (d > 0.03) own.push([l, d]);
+      }
+      return own;
+    };
+    // The tram is one the eye can see: the blocks round a plot freed or taken earlier in a full run can stand between
+    // the eye and the first choice (or round the eye itself), and a tram behind a block has no pixels to read.
+    const moving = all.filter((v) => v.speed > 2).sort((a, b) => sunward(a) - sunward(b));
+    let t = moving[0] ?? all[0];
+    let hidden = 0;
+    for (const v of moving) {
+      t = v;
+      await debug(page, (d) => d.precompile());
+      if ((await ownPixels(v, eyeFor(v))).length >= LOD_PIXELS) break;
+      hidden++;
+    }
+    console.log(`info  lod-400: ${hidden} of ${moving.length} moving trams passed over, hidden from their eye`);
+    const eye = eyeFor(t);
+    await setView(page, eye, [t.position[0], t.position[1] + 2, t.position[2]]);
+    await debug(page, (d) => d.precompile());
+    await page.waitForTimeout(1200);
+    // Everything but the vehicles' clock held, the tram stepped half a second at a time through 400 m, and the frame
+    // round its three places (its ends projected, a small margin) read at each step: only the tram changes in it.
+    await callDebug(page, 'd.ambientHold(true)');
+    await callDebug(page, 'd.peopleHold(true)');
     // At each step the tram's own pixels (the frame with the vehicles shown against the same frame with them hidden)
     // and their mean luminance: what the tram itself draws, whatever lies behind it, as the levels dissolve.
     const means: number[] = [];
