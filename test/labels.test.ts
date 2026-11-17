@@ -99,3 +99,19 @@ test('a flipped plate sets its words right-aligned left of its hairline in style
   assert.match(body, /text-align: right;/);
   assert.equal(labels.PLATE_FLIP, 'plate-flip');
 });
+
+test('two plates whose words collide after a flip: the later one waits while they overlap', () => {
+  const fn = (labels as unknown as { platesToHide?: (p: Array<{ x: number; y: number; words: number; flip: boolean }>) => Set<number> }).platesToHide;
+  assert.equal(typeof fn, 'function');
+  // Sparrow & Co flipped left of its hairline at the right edge, the other plate right of its own just left of it: they overlap.
+  const a = { x: 1300, y: 400, words: 140, flip: false };
+  const b = { x: 1440, y: 410, words: 120, flip: true };
+  assert.deepEqual([...fn!([a, b])], [1], 'the later plate is hidden, the earlier stays');
+  assert.deepEqual([...fn!([b, a])], [1]);
+  // Clear of each other, or a hidden plate that collides with nothing shown: nothing hidden.
+  assert.deepEqual([...fn!([a, { ...b, y: 520 }])], []);
+  assert.deepEqual([...fn!([a, { x: 700, y: 410, words: 120, flip: false }])], []);
+  // A hidden plate does not hide a third that only touches it.
+  const c = { x: 1440, y: 440, words: 60, flip: true };
+  assert.deepEqual([...fn!([a, b, c])], [1], 'c overlaps only b, which is hidden, so c stays');
+});

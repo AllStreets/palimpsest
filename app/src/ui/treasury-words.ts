@@ -6,6 +6,7 @@
  * nodes only (its tables included).
  */
 import type { TreasuryView } from '../../../shared/types.js';
+import { runsHoldingSlots } from '../../../shared/market-rules.js';
 import { githubUrl } from './board.js';
 import { inline, type Inline } from './detail.js';
 import { figure } from './story.js';
@@ -16,13 +17,15 @@ const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
 const grouped = (n: number): string => Math.round(n).toLocaleString('en-US');
 
 /**
- * The Now block's Running row. `runs` counts the runs under way on the books,
- * the same runs the job board and the run pages show; `slots` says what the
- * runner holds for them, which the sample economy's runs never take.
+ * The Now block's Running row. A run holds the slot its lease took, so `runs`
+ * counts the runs the runner holds slots for and `slots` says the same slots
+ * by pool: the two lines come from one count and cannot disagree. Runs on the
+ * books with no lease (the sample economy's) are not at work.
  */
 export function runningWords(u: TreasuryView['underWay'], c: TreasuryView['concurrency']): { runs: string; slots: string } {
-  const by = [u.claude && `Claude ${u.claude}`, u.local && `local ${u.local}`, u.api && `API ${u.api}`].filter(Boolean).join(', ');
-  const runs = u.total === 0 ? 'No run under way.' : `${u.total} ${u.total === 1 ? 'run' : 'runs'} under way: ${by}.`;
+  const w = runsHoldingSlots(u, c);
+  const by = [w.claude && `Claude ${w.claude}`, w.local && `local ${w.local}`, w.api && `API ${w.api}`].filter(Boolean).join(', ');
+  const runs = w.total === 0 ? 'No run under way.' : `${w.total} ${w.total === 1 ? 'run' : 'runs'} under way: ${by}.`;
   const slots = `Slots the runner holds: Claude ${c.claude} of ${c.claudeMax}, local ${c.local} of ${c.localMax}, API ${c.api}.`;
   return { runs, slots };
 }

@@ -78,12 +78,12 @@ import { SUN_DIRECTION } from '../app/src/city/sky.js';
 import { FAMILIES, VARIANTS } from '../app/src/city/tower/variants.js';
 import { cityExtent, viewLimits, type CityExtent } from '../app/src/city/view.js';
 import { layoutTower } from '../shared/tower-layout.js';
-import { previousWeek, weekOf } from '../shared/tour.js';
 import type { District, Quarter } from '../shared/types.js';
 import { QUARTER_OFFSETS as QUARTER_OFFSETS_CAPTURE } from '../shared/district-layout.js';
 import { boardFrame, boardTowers, boardViews } from './agent-board.js';
 import { outDir } from './diagrams.js';
 import { capturePort } from './film.js';
+import { seededWeek } from './seeded-week.js';
 import { BUDGET } from './media-check.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, type FigureProbe, type VehicleProbe } from './people-stage.js';
@@ -475,20 +475,6 @@ async function withEnv(key: string, value: string, fn: () => Promise<void>): Pro
     if (was === undefined) delete process.env[key];
     else process.env[key] = was;
   }
-}
-
-/**
- * The week the seeded history falls in: the seed's own week, or the one before when that holds more of the tour
- * (seeded early in a week, as on a Monday, the history is last week's). Not the week the run is made in.
- */
-async function seededWeek(page: Page): Promise<string> {
-  const stops = async (week: string): Promise<number> => {
-    const t = (await page.evaluate((w) => fetch(`/api/tour?week=${w}`).then((r) => (r.ok ? r.json() : null)), week)) as { stops?: unknown[] } | null;
-    return t?.stops?.length ?? 0;
-  };
-  const week = weekOf(seededAt).week;
-  const before = previousWeek(week);
-  return (await stops(week)) >= (await stops(before)) ? week : before;
 }
 
 /** True when the low sun stands in (or at the edge of) the frame the camera holds now, so its bloom would be in the shot. */
@@ -999,7 +985,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // encoded as lean as the ride (an mp4, and the avif the README plays inline).
       // The running head and the plates stand aside (Phase 5: no chrome over the city); the captions are the walk's own.
       await chrome(page, false);
-      const ok = (await page.evaluate(`window.__palimpsest.tourStart(${JSON.stringify(await seededWeek(page))})`)) as boolean;
+      const ok = (await page.evaluate(`window.__palimpsest.tourStart(${JSON.stringify(await seededWeek(page, seededAt))})`)) as boolean;
       if (!ok) throw new Error('the week has no tour to walk');
       await page.evaluate('window.__palimpsest.tourHold(true)');
       const tour = (await page.evaluate('window.__palimpsest.tour()')) as { length: number };
@@ -1034,7 +1020,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // The week's poster (Phase 5): a stop on the tour framed off the sun, so the low sun's bloom stays out of it, at
       // the moment off the sun nearest WEEK_POSTER (0.45 of the walk).
       await chrome(page, false);
-      if (!((await page.evaluate(`window.__palimpsest.tourStart(${JSON.stringify(await seededWeek(page))})`)) as boolean)) throw new Error('the week has no tour to walk');
+      if (!((await page.evaluate(`window.__palimpsest.tourStart(${JSON.stringify(await seededWeek(page, seededAt))})`)) as boolean)) throw new Error('the week has no tour to walk');
       await page.evaluate('window.__palimpsest.tourHold(true)');
       const { length } = (await page.evaluate('window.__palimpsest.tour()')) as { length: number };
       const want = Number(process.env.WEEK_POSTER ?? 0.45) * length;

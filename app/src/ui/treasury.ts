@@ -348,7 +348,7 @@ export function createTreasury(parent: HTMLElement, opts: { listen(fn: (e: Engin
     const sec = el('section', 'treasury-now');
     sec.append(secHead('Now'));
     const c = v.concurrency;
-    // The runs under way, counted as the board and the run pages count them; the slots the runner holds, apart.
+    // The runs the runner holds slots for, and the slots it holds, read from one count.
     const words = runningWords(v.underWay, c);
     const conc = el('span', 'now-runs', words.runs);
     const slotsLine = el('span', 'now-note now-slots-held', words.slots);

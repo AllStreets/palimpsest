@@ -57,6 +57,7 @@ import { SAMPLE, sampleGh, seedSample } from './sample.js';
 import { decodePng } from './png.js';
 import { frameStats } from '../app/src/city/governor.js';
 import { VEHICLE_LOD } from '../app/src/city/vehicles.js';
+import { seededWeek } from './seeded-week.js';
 import { uiPort } from './ui-port.js';
 import { partialMode, verdict } from './ui-verdict.js';
 
@@ -643,10 +644,14 @@ async function ribbonChecks(page: Page): Promise<void> {
  * tour-open.png (the exchange, the walk's first caption) and tour-stop.png
  * (a stop mid-tour with its caption). Runs with the economy seeded.
  */
+/** When the run seeded its history: the week the tour walks is that one, not the week of the day the run is made. */
+const SEEDED_AT = Date.now();
+
 async function tourChecks(page: Page): Promise<void> {
+  const week = await seededWeek(page, SEEDED_AT);
   type TS = { t: number; length: number; index: number; caption: string | null; dwelling: boolean };
   const tourOf = (): Promise<TS | null> => page.evaluate('window.__palimpsest.tour()') as Promise<TS | null>;
-  const planned = (await page.evaluate(() => fetch('/api/tour').then((r) => r.json()))) as { stops: Array<{ kind: string; title: string; glide: number; dwell: number }>; seconds: number } | null;
+  const planned = (await page.evaluate((w) => fetch(`/api/tour?week=${w}`).then((r) => r.json()), week)) as { stops: Array<{ kind: string; title: string; glide: number; dwell: number }>; seconds: number } | null;
   check(!!planned && planned.stops.length >= 4, `the economy's week has a tour (${planned ? planned.stops.length - 2 : 0} stops, ${planned?.seconds ?? 0} s)`);
   if (!planned) return;
   await setView(page, (await debug(page, (d) => d.limits().home)).eye, (await debug(page, (d) => d.limits().home)).target);
@@ -733,7 +738,7 @@ async function tourChecks(page: Page): Promise<void> {
   await page.keyboard.press('t');
   await page.waitForFunction('window.__palimpsest.tour() !== null', null, { timeout: 8000 }).catch(() => {});
   await page.evaluate('window.__palimpsest.tourSeek(30)');
-  const again = (await page.evaluate('window.__palimpsest.tourStart()')) as boolean;
+  const again = (await page.evaluate(`window.__palimpsest.tourStart(${JSON.stringify(week)})`)) as boolean;
   await page.waitForTimeout(400);
   const restarted = await tourOf();
   check(again && !!restarted && restarted.t < 10 && !/Not enough happened/.test(await notice()), `walking the week during a walk starts it afresh (${again}, t ${restarted?.t.toFixed(1) ?? 'none'})`);
@@ -742,7 +747,7 @@ async function tourChecks(page: Page): Promise<void> {
 
   // Reduced motion: the walk cuts, so the eye stands still through what would be a glide.
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.evaluate('window.__palimpsest.tourStart()');
+  await page.evaluate(`window.__palimpsest.tourStart(${JSON.stringify(week)})`);
   await page.waitForFunction('window.__palimpsest.tour() !== null', null, { timeout: 8000 }).catch(() => {});
   await page.evaluate('window.__palimpsest.tourHold(true)');
   const s1 = planned.stops[0].glide + planned.stops[0].dwell;
@@ -3006,7 +3011,7 @@ async function lensChecks(page: Page, tier: 'high' | 'medium'): Promise<void> {
   } else check(false, 'a ride starts for the lens');
 
   // A tour stop, dwelling.
-  if (await callDebug<boolean>(page, 'd.tourStart()')) {
+  if (await callDebug<boolean>(page, `d.tourStart(${JSON.stringify(await seededWeek(page, SEEDED_AT))})`)) {
     await page.keyboard.press('Space');
     await page.waitForTimeout(4600);
     const t = await callDebug<{ dwelling: boolean; index: number }>(page, 'd.tour()');

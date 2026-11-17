@@ -419,6 +419,20 @@ export function runsUnderWay(runs: Array<Pick<Run, 'model' | 'endedAt' | 'jobId'
   return out;
 }
 
+/**
+ * The runs under way that hold a slot: a run holds the slot its lease took,
+ * so the runs the runner really works on are the slots it holds, pool by
+ * pool, never more than the runs on the books. Runs on the books with no
+ * lease behind them (the sample economy's) are not at work. The treasury's
+ * runs line and its slots line both read this one count.
+ */
+export function runsHoldingSlots(u: RunsUnderWay, held: { claude: number; local: number; api: number }): RunsUnderWay {
+  const claude = Math.min(u.claude, held.claude);
+  const local = Math.min(u.local, held.local);
+  const api = Math.min(u.api, held.api);
+  return { total: claude + local + api, claude, local, api };
+}
+
 /** A model reference by shape: a provider, a colon and a name (an Ollama name may carry a tag: `qwen2.5-coder:7b`). */
 export const AUDIT_MODEL_SHAPE = /^(?:claude|ollama|anthropic|mlx):(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/;
 /** The range the audit's credit cap may take. */
