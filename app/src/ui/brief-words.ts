@@ -14,6 +14,7 @@ import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant, WorkKind } fro
 import { cleanText } from './board.js';
 import type { Names } from './detail.js';
 import { clock } from './time-words.js';
+import { briefHandled } from '../../../shared/brief-rules.js';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -305,4 +306,14 @@ export function grantMoves(g: Grant, where: 'settings' | 'district'): GrantMove[
     case 'declined':
       return [];
   }
+}
+
+// ---------------------------------------------------------------- Waiting on you (audit 2026-11-17)
+
+/** The quieter group under Waiting on you: rows he already settled today. */
+export const HANDLED_HEAD = 'Handled today';
+
+/** Waiting on you split in two: what still needs a click, in order, then what he settled (posted, dismissed...). */
+export function waitingGroups(items: BriefItem[]): { open: BriefItem[]; handled: BriefItem[] } {
+  return { open: items.filter((i) => !briefHandled(i)), handled: items.filter((i) => briefHandled(i)) };
 }

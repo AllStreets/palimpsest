@@ -20,7 +20,7 @@ import { placeHref, routeHref } from '../router';
 import { evidenceRef, tierPicker, verdictOf } from './audit';
 import { leadOf, VERDICT_MEANING } from './audit-words';
 import { cleanText } from './board';
-import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantState, itemSentence, kindWords, sinceLine, usageLine } from './brief-words';
+import { actedLine, actionLabel, briefTitle, capBounds, dateline, emptyMorning, grantState, HANDLED_HEAD, itemSentence, kindWords, sinceLine, usageLine, waitingGroups } from './brief-words';
 import { agreementLine } from './school-words';
 import { WORK_KINDS } from '../../../shared/school-rules';
 import { createSheet, el, textButton } from './controls';
@@ -106,6 +106,14 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
     sheet.body.append(box);
     secs.set(k, { box, list, key });
   }
+  // Under Waiting on you, what he already settled today stands apart and quieter, after what still needs a click.
+  const handledHead = el('h3', 'brief-handled-head', HANDLED_HEAD);
+  handledHead.id = 'brief-handled-head';
+  const handledList = el('ol', 'brief-list brief-handled');
+  handledList.setAttribute('aria-labelledby', handledHead.id);
+  handledHead.hidden = true;
+  handledList.hidden = true;
+  secs.get('waiting')!.box.append(handledHead, handledList);
 
   let brief: Brief | null = null;
   /** Whether this window made the day's first open (it keeps that, though the engine now says otherwise). */
@@ -507,6 +515,33 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
 
   // ---------------------------------------------------------------- the page
 
+  /** Sets a list's rows to `items`, reusing each row whose item and state are unchanged, and keeping focus in a row redrawn. */
+  function fill(into: HTMLElement, items: BriefItem[], now: number, seen: Set<string>): void {
+    const b = brief!;
+    const want: HTMLElement[] = [];
+    for (const item of items) {
+      seen.add(item.id);
+      const key = JSON.stringify([item, busy.has(item.id), errors.get(item.id), quiet.get(item.id), whyOpen.has(item.id), whyOf.get(item.id) === 'reading', tierOpen.has(item.id), item.kind === 'usage' && capOpen, b.usage.todayCapPct, settings, names.firm(item.refs.firmId ?? '')]);
+      const had = rows.get(item.id);
+      if (had && had.key === key) {
+        want.push(had.el);
+        continue;
+      }
+      const focused = had?.el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+      const next = row(item, now);
+      if (had) had.el.replaceWith(next);
+      rows.set(item.id, { key, el: next });
+      want.push(next);
+      if (focused && !focusNext) {
+        const action = focused.dataset.action;
+        const again = action ? next.querySelector<HTMLElement>(`.brief-act[data-action="${action}"]`) : null;
+        (again ?? next.querySelector<HTMLElement>('.brief-acted') ?? next.querySelector<HTMLElement>('.brief-act'))?.focus({ preventScroll: true });
+      }
+    }
+    const cur = [...into.children];
+    if (cur.length !== want.length || cur.some((c, i) => c !== want[i])) into.replaceChildren(...want);
+  }
+
   function render(): void {
     if (!sheet.shown || !brief) return;
     const b = brief;
@@ -532,28 +567,15 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       const due = list.some((i) => i.kind === 'audit-due');
       s.key.hidden = !due;
       if (due) s.key.textContent = 'An audit reads a fresh clone of the repo in a sandbox and proposes jobs for what its README promises and its code does not do. Nothing runs until you post one.';
-      const want: HTMLElement[] = [];
-      for (const item of list) {
-        seen.add(item.id);
-        const key = JSON.stringify([item, busy.has(item.id), errors.get(item.id), quiet.get(item.id), whyOpen.has(item.id), whyOf.get(item.id) === 'reading', tierOpen.has(item.id), item.kind === 'usage' && capOpen, b.usage.todayCapPct, settings, names.firm(item.refs.firmId ?? '')]);
-        const had = rows.get(item.id);
-        if (had && had.key === key) {
-          want.push(had.el);
-          continue;
-        }
-        const focused = had?.el.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
-        const next = row(item, now);
-        if (had) had.el.replaceWith(next);
-        rows.set(item.id, { key, el: next });
-        want.push(next);
-        if (focused && !focusNext) {
-          const action = focused.dataset.action;
-          const again = action ? next.querySelector<HTMLElement>(`.brief-act[data-action="${action}"]`) : null;
-          (again ?? next.querySelector<HTMLElement>('.brief-acted') ?? next.querySelector<HTMLElement>('.brief-act'))?.focus({ preventScroll: true });
-        }
-      }
-      const cur = [...s.list.children];
-      if (cur.length !== want.length || cur.some((c, i) => c !== want[i])) s.list.replaceChildren(...want);
+      // Waiting on you: the rows that need a click, then what he settled today in a quieter list of its own.
+      if (k === 'waiting') {
+        const { open, handled } = waitingGroups(list);
+        s.list.hidden = open.length === 0;
+        handledHead.hidden = handled.length === 0;
+        handledList.hidden = handled.length === 0;
+        fill(s.list, open, now, seen);
+        fill(handledList, handled, now, seen);
+      } else fill(s.list, list, now, seen);
     }
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
     if (focusNext) {
@@ -585,6 +607,7 @@ export function createBrief(parent: HTMLElement, opts: BriefOptions): BriefScree
       errors.clear();
       rows.clear();
       for (const s of secs.values()) s.list.replaceChildren();
+      handledList.replaceChildren();
     },
     prime(b, first) {
       brief = b;

@@ -667,7 +667,10 @@ test("today's brief holds every item kind", async () => {
     assert.match(items.find((i) => i.kind === 'audit')!.text, /14 claims read/);
     assert.match(items.find((i) => i.kind === 'audit-due')!.title, /was never audited/);
     assert.ok(b.tour && b.tour.stops >= 2, 'the Monday brief offers last week');
-    assert.match(b.lead, /README audits/, `the lead counts the audit's spend: ${b.lead}`);
+    // The lead carries at most three counts (audit 2026-11-17): what waits, what merged, what the city spent.
+    assert.match(b.lead, /^\d+ things wait on you/, b.lead);
+    assert.match(b.lead, /The city spent [\d,.]+ credits\.$/, b.lead);
+    assert.ok((b.lead.match(/\d+(?:[.,]\d+)*/g) ?? []).length <= 3, `at most three counts: ${b.lead}`);
     assert.equal(query({ kind: 'brief.opened' }).length, 7, 'six seeded mornings and this one');
     assert.equal(briefData(MONDAY).firstOpen, false);
   });

@@ -4880,6 +4880,32 @@ a.brief-act {
   outline: 1px solid var(--focus);
   outline-offset: 3px;
 }
+/* Handled today: what he already settled sits after what waits, smaller and quieter, so the waiting rows are the list. */
+.brief-list[hidden],
+.brief-handled-head[hidden] {
+  display: none;
+}
+.brief-handled-head {
+  margin-top: 26px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--sans);
+  font-weight: 400;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.brief-handled .brief-item {
+  padding: 9px 0 8px;
+}
+.brief-handled .brief-head {
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+.brief-handled .brief-line {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
 /* What he dismissed steps back: still in its place, read once more if he wants it. */
 .brief-item[data-acted='dismiss'] .brief-head,
 .brief-item[data-acted='dismiss'] .brief-sentence {
