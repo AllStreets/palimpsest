@@ -113,11 +113,11 @@ Each agent has a tower in its firm's quarter, and how it works shapes the top. C
 
 ### The screens
 
-<img src="docs/media/jobs.webp" alt="The Job board over the left half of the window: two proposals from the harbor-ledger README audit, each with the README's own words, Accept, a tier and Dismiss, and a harness job proposed for assay-kit. Below them the bidding: a job with a row of lamps for the agents who answered, closing, and a table of bids by firm and agent with price, confidence, the city's estimate and expected value. The city stays visible on the right." />
+<img src="docs/media/jobs.webp" alt="The Job board over the left half of the window: two proposals from the harbor-ledger README audit, each with the README's own words, Accept, a tier and Dismiss, and a harness job proposed for assay-kit. Below them the bidding, under a line saying what a bid's expected value is made of: a job with a row of lamps for the agents who answered, closing, and a table of bids by firm and agent with price, confidence, the city's estimate and expected value. The city stays visible on the right." />
 
 The job board shows every job by state. Each round of bidding lists its bids with the price, the stated confidence, the city's own estimate and the expected value, and says who sat it out and why.
 
-<img src="docs/media/job.webp" alt="A running job's page: the issue Berth schedule puts arrivals after midnight UTC on the previous day, worked on by Priya Rao of Quickset in a sandboxed copy of the repo, with Kill the run, the issue text, its scope and what counts as done, and the award said in plain words with the bids below." />
+<img src="docs/media/job.webp" alt="A running job's page: the issue Berth schedule puts arrivals after midnight UTC on the previous day, worked on by Priya Rao of Quickset in a sandboxed copy of the repo, with Kill the run, the issue text, its scope and what counts as done, then a short key to Stated, Calibrated and expected value, and the award said in plain words: Quickset won at 27.97 credits, and why the next best bid lost." />
 
 A job's page has the issue, its scope and what counts as done, the award said in plain words, and a trail of every step from the ledger. A running job can be killed from here. Its work is thrown away and the job goes back on the board without spending an attempt.
 
@@ -135,7 +135,7 @@ An inspection report lists each check with what it found and how long it took, t
 
 The firms page lists the firms by pass rate, calibration and durability, which is the share of their merges never reverted. An agent's page shows its design as the genome reads it (model, tools, workflow shape and memory examples), its lineage, its persona in full and its tower floor by floor.
 
-<img src="docs/media/treasury.webp" alt="The Treasury screen: the five-hour window at 44% and the seven-day window at 21%, each a rule marking the plan's use, the city's share, its cap and the 90% hard stop, then what is running now, the night cap, the API switch, the school's training and keep-awake." />
+<img src="docs/media/treasury.webp" alt="The Treasury screen: the five-hour window at 45%, resetting at 18:39 as Settings says, and the seven-day window at 21%, each a rule marking the plan's use, the city's share, its cap and the 90% hard stop, then what is running now, no run under way, the night cap, the API switch, the school's training and keep-awake." />
 
 The treasury shows my plan against what the city has spent of it, the caps, what is running, and every firm's books. The daily reports are read here too.
 
@@ -166,7 +166,7 @@ The city also reads two things: my repos' READMEs against their code, and my mor
 
 ### The morning brief
 
-<img src="docs/media/brief.webp" alt="The brief for Tuesday 17 November over the left half of the window: a sentence on everything since yesterday, then Waiting on you, with a harness job proposed for assay-kit, a pull request waiting for review, a halted repo and the jobs proposed from a README audit, each a ruled row with its actions as plain text, such as Post as a job, Change the tier, Dismiss, Resume and Ask why. The city stays visible on the right." />
+<img src="docs/media/brief.webp" alt="The brief for Tuesday 17 November over the left half of the window: a lead sentence, 6 things wait on you, 10 merged since yesterday and what the city spent, with the five-hour window at 45% under it, then Waiting on you: a harness job proposed for assay-kit, the two jobs proposed from harbor-ledger's README audit, a pull request waiting for review, the halted fieldnotes and the city's ask to act on its own README proposals, each a ruled row with its actions as plain text, such as Post as a job, Change the tier, Dismiss, Resume and Ask why. The city stays visible on the right." />
 
 The first time I open the app on a day when something happened or is waiting on me, the brief opens before the city. Standing advice, such as a repo that has never been audited, does not open it by itself. On a morning with nothing new, the city opens instead with one quiet line saying so. The brief is always one click away in the running head.
 
@@ -174,7 +174,7 @@ It is made from the ledger since the last day I opened it, and from what stands 
 
 ### The README against the code
 
-<img src="docs/media/audit.webp" alt="The audit page for the sample harbor-ledger repo, headed The README against the code: a lead sentence, Of 14 claims in the README, 8 are real, 2 partial, 3 missing and 1 broken, then each claim with its verdict as a word and a small shape, whether it is tested, its evidence as a file and line, and the job proposed from it, with Accept at 150 credits and Dismiss." />
+<img src="docs/media/audit.webp" alt="The audit page for the sample harbor-ledger repo, headed The README against the code: a lead sentence, Of 14 claims in the README, 8 are real, 2 partial, 3 missing and 1 broken, and one finding unverified, then each claim with its verdict as a word and a small shape, whether it is tested, its evidence as a file and line, and the job proposed from it, with Accept at 150 credits and Dismiss." />
 
 An audit reads a repo's README, and the Markdown under its `docs/` folder, and checks each claim against the code. Each claim gets one of five verdicts:
 
@@ -198,7 +198,7 @@ It is one agent's reading of a README, and it is verified only as far as the fil
 
 Each gap the audit verifies can become a proposed job: missing, stubbed and broken claims, and partial ones where it can name what's missing. A proposal comes with the claim, the evidence, a scope and what counts as done. It waits on the job board and in the brief until I post it as a job, change its scope or tier first, or dismiss it. Nothing bids on it and nothing reaches GitHub until I post it. A claim I dismissed is not proposed again by itself, as long as the next audit words the claim the same way, and one whose job merged is proposed again only if the next audit still finds it missing or broken.
 
-<img src="docs/media/job-scope.webp" alt="A proposed job's page, Export invoices as UBL e-invoices: why the city proposes it, with the README's claim on line 15, its verdict, missing, and the PDF renderer cited as the only invoice output; what to build; the scope as two globs and what counts as done as two lines, each with a place to add one; and the tier, set at high for 150 credits." />
+<img src="docs/media/job-scope.webp" alt="A proposed job's page, Export invoices as UBL e-invoices: why the city proposes it, with the README's claim on line 15, its verdict, missing, and the PDF renderer cited as the only invoice output; what to build; the scope as two globs and what counts as done as two lines, each with a place to add one; the tier, set at high for 150 credits; and a short key to how bids are read, with no round yet." />
 
 <p align="center">
   <a href="docs/media/audit.mp4"><img src="docs/media/audit-poster.webp" alt="The Job board once the kumo audit has ended: the two proposals from harbor-ledger's README audit, then kumo's two, Drop station readings stamped in the future and Export the last hour of tiles as an animated GIF, each with Accept, a tier and Dismiss. The city stays visible on the right." width="100%" /></a>
@@ -233,13 +233,13 @@ T in the city, or Walk through the week in Monday's brief, walks the camera from
 
 ### What's inside a floor
 
-<img src="docs/media/ride-dossier.webp" alt="The glass lift held beside a floor that failed inspection, high on a tower at dusk. The caption at the lower left names the change, Tally counter resets when the app goes to the background, by Corin Hale of Lodestar, and under it, set small, the files and lines it changed, the inspection's verdict and the agent's plan." />
+<img src="docs/media/ride-dossier.webp" alt="The glass lift held beside a floor that failed inspection, high on a tower at dusk. The caption at the lower left names the change, Tally counter resets when the app goes to the background, by Corin Hale of Lodestar, and under it, set small after the inspection's small failed square, the files and lines it changed, the verdict, Failed: review, and the agent's plan." />
 
 The ride also stops at a few of the floors earned in the market: the newest, the scars, and any floor a proposal built. Under the caption it shows what is inside the floor: how many files and lines the change touched, the inspection's verdict, the agent's plan, and for a proposal's floor, the README claim it came from.
 
 ## The school
 
-<img src="docs/media/campus-quad.webp" alt="The university's front quad at dusk from above the gate: four lawns cut by lit walks with students crossing them, collegiate gothic halls of red brick under slate roofs on either side, the clock tower with its lit dial on the left, and the library's lit gable and pointed windows at the far end, with the city's towers behind." />
+<img src="docs/media/campus-quad.webp" alt="The university's front quad at dusk from above the gate: four lawns cut by lit walks with students crossing them, collegiate gothic halls of red brick under slate roofs on either side, the clock tower with its two lit dials on the left, and at the far end the library's gable with its great pointed window and the pointed bays either side lit warm, with the city's towers and a dark glass block behind it." />
 
 The city has a university. It teaches the city from what actually happened in it: it breeds agents on arenas built from my own repos, teaches a small local coder on work that passed and survived, trains five small nets and a master net on the ledger, and asks my permission, one kind of work and one repo at a time, before the city does anything on its own.
 
@@ -340,7 +340,7 @@ The observatory is shut and dark between trainings. Whenever the nets train, tru
 
 ### Earned autonomy
 
-<img src="docs/media/brief-autonomy.webp" alt="The brief for Tuesday 17 November with the city's ask at the top: may the city accept its own README proposals on tidewater/harbor-ledger on its own? The master has agreed with me on 48 of the last 50 README gap proposals, and on its last 10 there, with Let the city do this on its own here, Not yet and Ask why. Below it, the overnight items: a reverted merge that halted fieldnotes, a failed run, the README audit, and merges with what each firm was paid." />
+<img src="docs/media/brief-autonomy.webp" alt="The brief for Tuesday 17 November with the city's ask at the top: may the city accept its own README proposals on tidewater/harbor-ledger on its own? The master has agreed with me on 48 of the last 50 README gap proposals, and on its last 10 there, with Let the city do this on its own here, Not yet and Ask why. Below it, set quieter under Handled today, the two README proposals already posted as a job or dismissed; then Overnight: merges with what each firm was paid, and the README audit of harbor-ledger." />
 
 The master's guess on each decision is written down before I make it: when a job is proposed, or when a pull request opens. Only my own decisions count. A proposal I post or dismiss and a pull request I merge or close are decisions, and a revert counts as a no. The city's own acts never count, and a guess the master didn't make counts against it.
 
@@ -348,7 +348,7 @@ There are six kinds of work: harness proposals, README gap proposals, and low, n
 
 Under a grant, the city acts only when every check holds at that moment: the school is on, the grant stands, the master is current and trusted and predicts I'd approve at 0.9 or more, and the agreement still holds. Before a merge it reads the repo again for a revert. A merge is `gh pr merge --merge` on the pull request's exact head, never with `--admin`, `--auto` or `--delete-branch`. Anything it can't check is a no.
 
-<img src="docs/media/autonomy-settings.webp" alt="The Autonomy section of Settings: four pairs of a kind of work and a repo. README gap proposals on harbor-ledger asked yesterday, low-tier merges on kumo suspended because the master agreed on only 44 of the last 50, normal-tier merges on quarry taken back and quiet until 16 December, and normal-tier merges on fieldnotes revoked by a revert. Each shows the master's agreement on that kind and the moves it allows." />
+<img src="docs/media/autonomy-settings.webp" alt="The Autonomy section of Settings: four pairs of a kind of work and a repo. README gap proposals on harbor-ledger asked today, low-tier merges on kumo suspended because the master agreed on only 44 of the last 50, normal-tier merges on quarry taken back and quiet until 17 December, and normal-tier merges on fieldnotes revoked by a revert. Each shows the master's agreement on that kind and the moves it allows." />
 
 Taking it back:
 
@@ -386,11 +386,11 @@ Cmd+K, or Find in the running head, opens one search over everything the city ho
 
 <img src="docs/media/palette.webp" alt="Find over the city, opened with Cmd+K and harb typed: 12 of 38 matches, each with its kind on the left, such as Job, District, Voyage, Grant and Brief, its title, and where it stands, such as merged, 115 floors, 22 lit, or Waiting in the brief. Esc closes it." />
 
-<img src="docs/media/repos.webp" alt="The Repos screen over the left half of the window. Each connected repo has its connect switch, description, status and floor count, Market and Push mode switches, and a choice of five roots. One repo is halted after a city merge was reverted, with Resume, and another has a harness job proposed. The city stays visible on the right." />
+<img src="docs/media/repos.webp" alt="The Repos screen over the left half of the window. Each connected repo has its connect switch, description, status and floor count, Market and Push mode switches, and its Tower root, a row of five glyphs with a note that the root is the base style of the tower and that choosing one rebuilds it. One repo is halted after a city merge was reverted, with Resume, and another has a harness job proposed. The city stays visible on the right." />
 
 Repos lists what your GitHub CLI can see. Nothing is connected until you turn it on. Connecting one mirrors its history and raises its tower while you watch. You can pick its root, and each connected repo has its own Market and Push mode switches, both off until you turn them on. A repo's own page sets its label, the commands inspection runs and the routes the design check shoots. It also shows the network its jobs may reach, which follows from the repo's ecosystems and is not set by hand.
 
-<img src="docs/media/settings.webp" alt="The Settings screen's providers: Claude through Claude Code, with the five-hour window at 45% and the week at 21% and the usage hook installed; the Anthropic API off, with no key stored and a five dollar daily cap; and Ollama reachable on loopback with its installed models." />
+<img src="docs/media/settings.webp" alt="The Settings screen's providers: Claude through Claude Code, with the five-hour window at 45%, resetting at 18:39, and the week at 21%, a line saying the brief and the treasury show the same figures, and the usage hook installed; the Anthropic API off, with no key stored and a five dollar daily cap; and Ollama reachable on loopback with its installed models." />
 
 Settings shows your Claude plan usage from the statusline hook, the caps the city keeps to, the providers the firms can use and a switch that stops the city. It also has the school's switch, its training window and its Claude allowance, every autonomy grant, and a quality setting for older Macs.
 

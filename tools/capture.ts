@@ -101,6 +101,15 @@ const WRITE_MEDIA = process.env.CAPTURE_WRITE_MEDIA === '1';
 const PORT = capturePort(process.env.CAPTURE_PORT ?? '4788');
 /** The sample economy's clock (CAPTURE_ECONOMY=live), ticked on demand by the shots that show it moving. */
 let economy: { tick(ms: number): void; idle(): Promise<void> } | null = null;
+/**
+ * The moment the screens' usage reading is taken (final review I1): Settings and the treasury write the same reading,
+ * so their five-hour figure and reset time agree to the minute however far apart in the run they are shot.
+ */
+let readingAt: number | null = null;
+async function freshReading(): Promise<void> {
+  const { sampleReading } = await import('../engine/market/sample-economy.js');
+  sampleReading((readingAt ??= Date.now()));
+}
 /** When the sample's history was seeded: its week is the one the tour walks (seededWeek). */
 let seededAt = Date.now();
 /** The block pitch (lots.ts PITCH), for framing streets. */
@@ -1987,9 +1996,8 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async treasury(page) {
-      // A fresh reading of the sample plan (34% and 21%), so the meters read as they do in use.
-      const { sampleReading } = await import('../engine/market/sample-economy.js');
-      sampleReading(Date.now());
+      // A fresh reading of the sample plan, so the meters read as they do in use: the one reading Settings shows too.
+      await freshReading();
       await openHash(page, '#/treasury', '.sheet.treasury .meter');
       await shoot(page, 'treasury');
       await openHash(page, '#/', 'body[data-route="city"]');
@@ -2241,6 +2249,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     async settings(page) {
       await chrome(page, true);
       await frame(page, SCREENS.eye, SCREENS.target);
+      await freshReading();
       await openScreen(page, 'settings', '.sheet.settings .usage-five');
       // Installed, as it is once you use it: the hook writes only to this run's temp claude settings file.
       await page.locator('.hook-install').click();
