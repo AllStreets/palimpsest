@@ -47,6 +47,29 @@ export function plateFits(x: number, y: number, words: number, flip: boolean, vi
   return x0 >= margin && x0 + words <= viewWidth - margin && y - NAME_RISE >= margin && y <= viewHeight - margin;
 }
 
+/** The room kept between two plates' boxes, in pixels. */
+const PLATE_GAP = 2;
+
+/**
+ * Which of the shown plates (given in priority order, the first wins) to hide
+ * while their words collide: each plate's box runs from its words' edge (right
+ * of the hairline, or left of it once flipped) and from NAME_RISE above its
+ * foot down to the foot. A plate hides when it overlaps an earlier plate that
+ * stays; a hidden plate hides nothing. Returns the indices to hide.
+ */
+export function platesToHide(plates: ReadonlyArray<{ x: number; y: number; words: number; flip: boolean }>): Set<number> {
+  const hide = new Set<number>();
+  const kept: Array<{ x0: number; x1: number; y0: number; y1: number }> = [];
+  plates.forEach((p, i) => {
+    const x0 = p.flip ? p.x - WORDS_OFF - p.words : p.x + WORDS_OFF;
+    const box = { x0, x1: x0 + p.words, y0: p.y - NAME_RISE, y1: p.y };
+    const hit = kept.some((k) => box.x0 < k.x1 + PLATE_GAP && k.x0 < box.x1 + PLATE_GAP && box.y0 < k.y1 + PLATE_GAP && k.y0 < box.y1 + PLATE_GAP);
+    if (hit) hide.add(i);
+    else kept.push(box);
+  });
+  return hide;
+}
+
 /** A plate hidden for running off the view shows again only once it fits with this many pixels to spare, so it never flickers at the edge. */
 export const PLATE_FIT_SPARE = 8;
 
@@ -178,6 +201,7 @@ export function createPlates(
       const turn = frame++ % OCCLUSION_EVERY;
       // Gathered only in a frame that tests a plate, the first time one does.
       let targets: THREE.Object3D[] | null = null;
+      const shown: Array<{ l: Live; x: number; y: number; words: number; flip: boolean }> = [];
       for (let i = 0; i < live.length; i++) {
         const l = live[i];
         // A plate is tested in its turn, and a new one on its first frame (so it never shows through a tower first).
@@ -211,8 +235,17 @@ export function createPlates(
         if (l.clipped) {
           l.el.style.opacity = '0';
           l.el.style.visibility = 'hidden';
+        } else if (l.words > 0) {
+          shown.push({ l, x, y, words: l.words, flip });
         }
       }
+      // Two plates whose words collide (a flip at the right edge can bring one over another): the later waits while they do.
+      const hide = platesToHide(shown);
+      shown.forEach((s, i) => {
+        if (!hide.has(i)) return;
+        s.l.el.style.opacity = '0';
+        s.l.el.style.visibility = 'hidden';
+      });
     },
     dispose() {
       layer.remove();
