@@ -123,7 +123,7 @@ export async function readLog(dir: string, branch: string): Promise<Commit[]> {
     // ref. That's the same empty-repo case when the mirror has no refs at
     // all (a repo with zero commits can't have a branch ref either), but it
     // is a real error when the repo has commits under some other ref and
-    // `branch` is simply wrong (e.g. a renamed default branch) — that must
+    // `branch` is simply wrong (e.g. a renamed default branch); that must
     // not be swallowed as "empty". Disambiguate by checking whether any ref
     // exists at all.
     if (/unknown revision/.test(result.stderr)) {

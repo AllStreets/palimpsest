@@ -172,8 +172,8 @@ export function hookScript(previousCommand: string | null): string {
  * Installs the usage hook into the real Claude Code settings file (or
  * `claudeSettingsPath`, for tests). Idempotent: if the file's current
  * `statusLine` already points at our hook script, this only rewrites the
- * script (so it picks up any path changes) and re-affirms `hookInstalled`
- * — it does not take a new backup or touch `Settings.previousStatusLine`,
+ * script (so it picks up any path changes) and re-affirms `hookInstalled`;
+ * it does not take a new backup or touch `Settings.previousStatusLine`,
  * since a fresh backup at that point would just capture our own installed
  * state and overwrite the real original. Otherwise it backs the file up
  * byte for byte to `<usage>/settings.json.bak`, saves the current
