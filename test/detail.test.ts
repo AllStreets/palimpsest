@@ -195,7 +195,7 @@ test('the issue body reads as markdown blocks, without the scope and the checkli
     '- src/schedule/**',
     '- test/schedule/**',
     '',
-    '- [ ] Arrivals land in the harbour day',
+    '- [ ] Arrivals land in the harbor day',
     '- [x] A test covers it',
   ].join('\n');
   const blocks = issueBlocks(body);

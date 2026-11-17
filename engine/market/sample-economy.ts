@@ -402,7 +402,7 @@ const c = (agent: string): Attempt => ({ agent, end: 'closed' });
  * afford to hire. Days 6.0 to 6.003 are that board.
  */
 const HISTORY: Story[] = [
-  // He left the first harbour PR until the next morning, so assay-kit's large first floor held the skyline for a few hours (Task 9: a mast that was lit once).
+  // He left the first harbor PR until the next morning, so assay-kit's large first floor held the skyline for a few hours (Task 9: a mast that was lit once).
   { day: 0.2, repo: 'H', tier: 'normal', title: 'Customs forms: prefill the IMO number from the vessel record', by: [m('priya-rao')], mergeDay: 0.9 },
   { day: 0.25, repo: 'A', tier: 'high', title: 'LIMS bridge times out on batches over 500 samples', by: [m('corin-hale')] },
   { day: 0.3, repo: 'K', tier: 'low', title: 'Add a /healthz endpoint for the Pi watchdog', by: [m('wren-sparrow')] },
@@ -472,7 +472,7 @@ const HISTORY: Story[] = [
   { day: 6.6, repo: 'Q', tier: 'low', title: 'Benchmarks: add a bench for 10k row inserts', by: [m('teodor-vane')] },
   { day: 6.7, repo: 'Q', tier: 'low', title: 'Add property tests for the identifier quoting', by: [m('dagny-hollis')] },
   { day: 6.9, repo: 'A', tier: 'high', title: "Chain of custody: sign each transfer with the operator's key", by: [m('hal-meridian')] },
-  { day: 7.0, repo: 'H', tier: 'normal', title: 'Harbour map: berth labels overlap at low zoom', by: [m('ola-bergstrom')] },
+  { day: 7.0, repo: 'H', tier: 'normal', title: 'Harbor map: berth labels overlap at low zoom', by: [m('ola-bergstrom')] },
   // Merged by the city last night under its merge:normal grant on quarry, which he revoked by hand this morning (Task 29).
   { day: 7.1, repo: 'Q', tier: 'normal', title: 'Query builder: quote identifiers that clash with SQL keywords', by: [m('oskar-kiln')], city: 'merge:normal' },
   { day: 7.2, repo: 'A', tier: 'low', title: 'Sample intake: trim spaces from pasted lot numbers', by: [m('mack-quickset')] },
@@ -485,7 +485,7 @@ const HISTORY_DAYS = 8;
 
 /**
  * The school's graduate in the sample, in the engine's shape (lora.ts `graduate()`, Task 27): qwen2.5-coder 7b
- * fine-tuned on his verified work, graduated on a sealed race on the harbour's arena. Hired through the school's
+ * fine-tuned on his verified work, graduated on a sealed race on the harbor's arena. Hired through the school's
  * roster (roster.ts `schoolRoster()`) and makeAgent, it is `grad-qwen25c7-1`, named Ada Quarry. Its LoRA's record
  * (an id lora.ts accepts) is written by finishSchool().
  */
@@ -965,9 +965,9 @@ function priyaLog(jobId: string, base: string, startedAt: number): RunLogLine[] 
     ['tool', 'read_file package.json'],
     ['tool', 'glob src/schedule/**'],
     ['tool', 'read_file src/schedule/days.ts'],
-    ['assistant', 'dayOf() slices the ISO string, so it always buckets by the UTC date. The harbour zone lives in src/config/harbour.ts.'],
+    ['assistant', 'dayOf() slices the ISO string, so it always buckets by the UTC date. The harbor zone lives in src/config/harbor.ts.'],
     ['tool', 'grep "timeZone" src'],
-    ['tool', 'read_file src/config/harbour.ts'],
+    ['tool', 'read_file src/config/harbor.ts'],
     ['tool', 'read_file test/schedule/days.test.ts'],
     ['assistant', 'There is already a helper, localDate(zone, instant), in src/time/zones.ts. I will use it rather than add another.'],
     ['tool', 'read_file src/time/zones.ts'],
@@ -998,7 +998,7 @@ function priyaLog(jobId: string, base: string, startedAt: number): RunLogLine[] 
     ['refused', 'read_file ~/.npmrc: refused, outside the run'],
     ['assistant', 'I do not need the registry config; the install already ran. Moving on.'],
     ['tool', 'grep "dayOf(" src'],
-    ['assistant', 'Two other callers: the invoice period and the pilot board. Both want the harbour day too, so the fix is right for them. Checking the pilot board tests.'],
+    ['assistant', 'Two other callers: the invoice period and the pilot board. Both want the harbor day too, so the fix is right for them. Checking the pilot board tests.'],
     ['tool', 'read_file src/pilots/board.ts'],
     ['tool', 'run npm test -- test/pilots'],
     ['tool', 'tests 31, pass 31, fail 0'],
@@ -1008,7 +1008,7 @@ function priyaLog(jobId: string, base: string, startedAt: number): RunLogLine[] 
     ['assistant', 'The full suite passes. Checking that the fixture from the issue imports cleanly.'],
     ['tool', 'read_file fixtures/arrivals-dst.csv'],
     ['tool', 'run node scripts/import-arrivals.mjs fixtures/arrivals-dst.csv --dry-run'],
-    ['tool', '63 arrivals, 4 between 00:00 and 01:00 UTC, all in the harbour day'],
+    ['tool', '63 arrivals, 4 between 00:00 and 01:00 UTC, all in the harbor day'],
     ['assistant', 'Updating the comment on dayOf() so the next reader knows why it takes a zone.'],
     ['tool', 'edit_file src/schedule/days.ts'],
     ['tool', 'run npm test -- test/schedule'],
@@ -1025,7 +1025,7 @@ const PRIYA_MORE: Array<[RunLogLine['kind'], string]> = [
   ['assistant', 'Reading my diff against both boxes in the issue.'],
   ['tool', 'run git diff --stat'],
   ['tool', '3 files changed, 41 insertions, 9 deletions'],
-  ['result', 'Arrivals now land in the harbour\'s own day: dayOf() takes the zone and uses localDate(). Tests cover 00:00 to 01:00 UTC on both sides of the March clock change.'],
+  ['result', 'Arrivals now land in the harbor\'s own day: dayOf() takes the zone and uses localDate(). Tests cover 00:00 to 01:00 UTC on both sides of the March clock change.'],
 ];
 
 const PRIYA_PATCH = `diff --git a/src/schedule/days.ts b/src/schedule/days.ts
@@ -1033,7 +1033,7 @@ const PRIYA_PATCH = `diff --git a/src/schedule/days.ts b/src/schedule/days.ts
 +++ b/src/schedule/days.ts
 @@ -1,9 +1,13 @@
 -import type { Arrival } from './types.js';
-+import { harbour } from '../config/harbour.js';
++import { harbor } from '../config/harbor.js';
 +import { localDate } from '../time/zones.js';
 +import type { Arrival } from './types.js';
 
@@ -1041,10 +1041,10 @@ const PRIYA_PATCH = `diff --git a/src/schedule/days.ts b/src/schedule/days.ts
 -export function dayOf(arrival: Arrival): string {
 -  return arrival.at.toISOString().slice(0, 10);
 +/**
-+ * The schedule column an arrival belongs to: the harbour's own calendar day,
++ * The schedule column an arrival belongs to: the harbor's own calendar day,
 + * not the UTC one, so a 00:40 UTC arrival in Lisbon lands on its local date.
 + */
-+export function dayOf(arrival: Arrival, zone: string = harbour.timeZone): string {
++export function dayOf(arrival: Arrival, zone: string = harbor.timeZone): string {
 +  return localDate(zone, arrival.at);
  }
 diff --git a/test/schedule/days.test.ts b/test/schedule/days.test.ts
@@ -1052,11 +1052,11 @@ diff --git a/test/schedule/days.test.ts b/test/schedule/days.test.ts
 +++ b/test/schedule/days.test.ts
 @@ -30,3 +30,21 @@ test('arrivals group by day', () => {
 +
-+test('an arrival just after midnight UTC stays on the harbour day', () => {
++test('an arrival just after midnight UTC stays on the harbor day', () => {
 +  assert.equal(dayOf(arrival('2027-03-12T00:40:00Z')), '2027-03-12');
 +});
 +
-+test('the clock change moves the harbour day, not the UTC one', () => {
++test('the clock change moves the harbor day, not the UTC one', () => {
 +  assert.equal(dayOf(arrival('2027-03-28T00:30:00Z')), '2027-03-28');
 +  assert.equal(dayOf(arrival('2027-03-29T00:30:00Z')), '2027-03-29');
 +});
@@ -1295,7 +1295,7 @@ function writeProviderFixtures(now: number): void {
       },
     }),
   );
-  const file = join(dir, 'rollout-sample-harbour-notes.jsonl');
+  const file = join(dir, 'rollout-sample-harbor-notes.jsonl');
   writeFileSync(file, lines.join('\n') + '\n');
   const at = new Date(now - 15 * MIN);
   utimesSync(file, at, at);
@@ -1323,7 +1323,7 @@ export async function seedEconomy(now: number = Date.now(), opts: { holdSale?: b
   // gh and git go to the stand-in from here, so an analysis still running finishes on it too.
   const own = getRunner() === realRunner;
   if (own) setRunner(sampleGh());
-  // An analysis still running (ui-test reconnects the harbour just before it seeds) would queue the repo's
+  // An analysis still running (ui-test reconnects the harbor just before it seeds) would queue the repo's
   // automatic audit when it ends, beside the scripted ones. The trigger is held before it is waited for and
   // until the history is written, so the audits are the script's alone.
   const releaseTrigger = holdAuditTrigger();
@@ -1656,12 +1656,12 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
     for (const check of p.checks(halRun, null).filter((x) => x.name === 'test')) p.checkDone(halRun, check);
   });
 
-  // harbour #214, then #221 and #219 as the maintainers label them.
+  // harbor #214, then #221 and #219 as the maintainers label them.
   q.push(ago(46 * MIN), () => post(REPO.H, [214]));
   q.push(ago(46 * MIN) + 20_000, () => {
     const j = openBidding(byIssue(214), Date.now());
     bidFixed(j, [
-      ['priya-rao', 'Bucket arrivals with the existing localDate() helper and the harbour zone from config instead of slicing the ISO string in src/schedule/days.ts. Failing test first for 00:40 UTC on 12 March, then the March clock change. Run the schedule tests, then the full suite, typecheck and lint.'],
+      ['priya-rao', 'Bucket arrivals with the existing localDate() helper and the harbor zone from config instead of slicing the ISO string in src/schedule/days.ts. Failing test first for 00:40 UTC on 12 March, then the March clock change. Run the schedule tests, then the full suite, typecheck and lint.'],
       ['ines-ashlar'],
       ['bruno-kiln'],
     ]);
@@ -1670,12 +1670,12 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
   q.push(ago(46 * MIN) + 3 * MIN, () => {
     const j = byIssue(214);
     const bid = award(j, Date.parse(j.bidsCloseAt!) + 1000);
-    if (bid?.agentId !== 'priya-rao') throw new Error(`sample economy: harbour #214 went to ${bid?.agentId}`);
+    if (bid?.agentId !== 'priya-rao') throw new Error(`sample economy: harbor #214 went to ${bid?.agentId}`);
   });
   q.push(ago(40 * MIN), () => {
     const j = byIssue(214);
     const free = listRuns().filter((x) => x.repo === REPO.H && x.outcome === null && x.stage !== 'waiting');
-    if (free.length) throw new Error('sample economy: the harbour site is still busy');
+    if (free.length) throw new Error('sample economy: the harbor site is still busy');
     priyaRun = p.begin(j, awardedBid(j));
     writeLog(priyaRun.id, priyaLog(j.id, sha(`${REPO.H}@main@${priyaRun.startedAt}`), Date.now()));
   });
@@ -1711,7 +1711,7 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
     if (bid?.agentId !== 'oskar-kiln') throw new Error(`sample economy: quarry #33 went to ${bid?.agentId}`);
   });
 
-  // kumo #61 and harbour #219: windows still open, one firm sitting out.
+  // kumo #61 and harbor #219: windows still open, one firm sitting out.
   q.push(ago(6 * MIN), () => post(REPO.K, [61]));
   q.push(ago(90_000), () => {
     const j = openBidding(byIssue(219), Date.now());
@@ -1751,7 +1751,7 @@ function scheduleBoard(now: number, p: Pipeline, q: Queue): void {
  */
 export const SAMPLE_TRAINER: TrainerStatus = { ready: true, reason: null, python: null, arch: 'arm64', mlx: PINS.mlx, mlxLm: PINS.mlxLm, pinned: true };
 
-/** The planted arena on the harbour (48 tasks) and the past arena on kumo (22 tasks). */
+/** The planted arena on the harbor (48 tasks) and the past arena on kumo (22 tasks). */
 const PLANTED = 'arena-harbor-ledger-1';
 const PAST = 'arena-kumo-1';
 const PLANTED_TASKS = { breeding: 18, race: 15, sealed: 15 };
@@ -2058,10 +2058,10 @@ function ask(kind: WorkKind, repo: string, rate: Interval, at: number): Grant {
  *   merge:normal on fieldnotes, revoked by his revert; merge:low on
  *   assay-kit, under which it merged last night, revoked by him this morning
  *   and quiet for 30 days; and tonight's open ask, `propose:readme-gap` on
- *   the harbour.
- * - Arenas: planted on the harbour (48 tasks; three sealed uses: a race cut
+ *   the harbor.
+ * - Arenas: planted on the harbor (48 tasks; three sealed uses: a race cut
  *   short, a finished voyage's claim, the graduation) and past on kumo (22).
- * - Voyages: one finished with a champion claim; one sailing on the harbour
+ * - Voyages: one finished with a champion claim; one sailing on the harbor
  *   since the night before last, generation 2 of 4 and 137 of 480 runs, its
  *   two parents on their way to the campus (economyClock ends it); one
  *   commissioned by Quickset on kumo's arena, queued.
@@ -2184,7 +2184,7 @@ function seedSchool(now: number, start: number, q: Queue): void {
   const spread = (kind: WorkKind, count: number, from: number, to: number, repos: string[], misses: ReadonlySet<number>, approve: (k: number) => boolean) => {
     for (let k = 0; k < count; k++) decide(n++, kind, repos[k % repos.length], approve(k), at(from + ((to - from) * k) / Math.max(1, count - 1)), !misses.has(k));
   };
-  // README proposals: 48 of 50, eligible; the harbour's last ten all agreed.
+  // README proposals: 48 of 50, eligible; the harbor's last ten all agreed.
   spread('propose:readme-gap', 50, 1.06, 7.6, [REPO.H, REPO.H, REPO.K, REPO.H, REPO.H, REPO.A], new Set([5, 17]), (k) => k % 9 !== 4);
   // Low-tier merges: fifty agreed before the kumo ask, forty more while the city merged there on its own, then ten
   // in the last evening with six misses, which bring the window to 44 of 50 and the kumo grant down.
@@ -2220,7 +2220,7 @@ function seedSchool(now: number, start: number, q: Queue): void {
     const job = listJobs({ repo: REPO.K }).at(-1);
     await withSchoolOn(() => mayAct('merge:low', REPO.K, job?.id ?? 'none', Date.now()));
   });
-  // Last night's tick asked about the harbour's README proposals; the ask waits in his brief.
+  // Last night's tick asked about the harbor's README proposals; the ask waits in his brief.
   q.push(ago(7 * HOUR), () => askNow('propose:readme-gap', REPO.H));
   // This morning he took quarry's merge:normal back by hand: quiet for 30 days.
   q.push(ago(5 * HOUR), () => void revoke('merge:normal', REPO.Q, 'him', null, Date.now()));
@@ -2282,7 +2282,7 @@ function seedSchool(now: number, start: number, q: Queue): void {
   });
 
   // ---- tonight's voyage on the planted arena: sailing since the night before last, generation 2 under way again
-  const sailing: VoyagePlan = { id: `v-${iso(ago(2 * DAY)).slice(0, 10)}-${sha('school sailing voyage').slice(0, 6)}`, arena: PLANTED, repo: REPO.H, label: 'Harbour', startedAt: ago(2 * DAY) };
+  const sailing: VoyagePlan = { id: `v-${iso(ago(2 * DAY)).slice(0, 10)}-${sha('school sailing voyage').slice(0, 6)}`, arena: PLANTED, repo: REPO.H, label: 'Harbor', startedAt: ago(2 * DAY) };
   let s1: TrainState;
   q.push(ago(2 * DAY), () => {
     s1 = running(TRAIN.sailing1, 'voyage', Date.now());
@@ -2537,7 +2537,7 @@ function schoolSteps(at: (sec: number, run: () => void) => void, now: () => numb
   const v0 = storedVoyages().find((v) => v.status === 'sailing');
   if (!v0) return;
   const id = v0.id;
-  const label = v0.scores.find((x) => x.generation === 2)?.name.split(' ')[0] ?? 'Harbour';
+  const label = v0.scores.find((x) => x.generation === 2)?.name.split(' ')[0] ?? 'Harbor';
   const plan: VoyagePlan = { id, arena: v0.arena, repo: v0.repo ?? REPO.H, label, startedAt: Date.parse(v0.startedAt) };
   const current = () => storedVoyages().find((v) => v.id === id && v.status === 'sailing') ?? null;
   for (const [sec, g, runs] of [[200, 3, 180], [400, 4, 300]] as const) {
@@ -2580,13 +2580,13 @@ interface SampleClaim {
 }
 
 /**
- * The harbour's fourteen claims: eight real, two partial, three missing and
+ * The harbor's fourteen claims: eight real, two partial, three missing and
  * one broken (the UTC day that issue #214 is fixing right now). One
  * finding cites a mailer that is not in the tree. Four proposals.
  */
 const HARBOR_CLAIMS: SampleClaim[] = [
   {
-    claim: "The schedule groups arrivals by the harbour's calendar day",
+    claim: "The schedule groups arrivals by the harbor's calendar day",
     verdict: 'BROKEN',
     tested: true,
     evidence: [
@@ -2594,10 +2594,10 @@ const HARBOR_CLAIMS: SampleClaim[] = [
       ['test/schedule/days.test.ts', 30, 'the one day test uses noon arrivals and passes either way'],
     ],
     proposal: {
-      title: "Group arrivals by the harbour's day, not the UTC date",
-      body: 'dayOf() in src/schedule/days.ts takes the UTC date from the ISO string. Take the harbour zone from src/config/harbour.ts, bucket with localDate() from src/time/zones.ts, and cover 00:00 to 01:00 UTC on both sides of the March clock change.',
+      title: "Group arrivals by the harbor's day, not the UTC date",
+      body: 'dayOf() in src/schedule/days.ts takes the UTC date from the ISO string. Take the harbor zone from src/config/harbor.ts, bucket with localDate() from src/time/zones.ts, and cover 00:00 to 01:00 UTC on both sides of the March clock change.',
       scope: ['src/schedule/**', 'test/schedule/**'],
-      acceptance: ['An arrival at 00:40 UTC on 12 March is on the 12th in the harbour zone', 'The schedule tests cover both sides of the March clock change'],
+      acceptance: ['An arrival at 00:40 UTC on 12 March is on the 12th in the harbor zone', 'The schedule tests cover both sides of the March clock change'],
       tier: 'normal',
     },
   },
@@ -2620,7 +2620,7 @@ const HARBOR_CLAIMS: SampleClaim[] = [
     ],
   },
   {
-    claim: "Invoices render to PDF with the harbour's letterhead",
+    claim: "Invoices render to PDF with the harbor's letterhead",
     verdict: 'REAL',
     tested: true,
     evidence: [
@@ -2651,7 +2651,7 @@ const HARBOR_CLAIMS: SampleClaim[] = [
     ],
   },
   {
-    claim: 'Berth conflicts are emailed to the harbour master',
+    claim: 'Berth conflicts are emailed to the harbor master',
     verdict: 'MISSING',
     tested: false,
     unverified: true,
@@ -2916,7 +2916,7 @@ let liveKumoAudit: string | null = null;
 
 /**
  * The four audits (Task 9): quarry's ran out of credits the morning the
- * market opened; assay-kit's found no README three days ago; the harbour's
+ * market opened; assay-kit's found no README three days ago; the harbor's
  * ran yesterday morning and proposed four jobs, two of which he answered
  * that evening (scheduleBriefs); kumo's is reading as the board stands, and
  * the clock ends it.
@@ -2946,7 +2946,7 @@ function scheduleAudits(now: number, start: number, q: Queue): void {
     finishAudit(ids[REPO.A], [], 2.1);
   });
 
-  // The harbour, yesterday morning, on his click from the district page.
+  // The harbor, yesterday morning, on his click from the district page.
   queue(localTime(now, 1, 9, 0), REPO.H, 'demand');
   q.push(localTime(now, 1, 9, 1), () => auditPrepares(q, ids[REPO.H], Date.now(), REPO.H));
   q.push(localTime(now, 1, 9, 19), () => {
@@ -3078,7 +3078,7 @@ function scheduleYesterday(now: number, y: Pipeline, q: Queue): void {
     });
   });
 
-  // The harbour proposal he accepted last night opened for bids a moment ago (the board's clock would have, on the next tick).
+  // The harbor proposal he accepted last night opened for bids a moment ago (the board's clock would have, on the next tick).
   q.push(ago(50_000), () => {
     const accepted = listJobs({ repo: REPO.H, source: 'proposal', status: 'open' })[0];
     if (!accepted) throw new Error('sample economy: no accepted proposal to open for bids');
@@ -3091,7 +3091,7 @@ function scheduleYesterday(now: number, y: Pipeline, q: Queue): void {
  * His mornings (Decision 8): the brief opened at 06:40 on each of the last
  * six days, through openBrief itself, so each `brief.opened` lists what
  * that morning showed; three days ago he set today's limit to 30% from the
- * brief; last night he accepted the harbour's XML feed proposal and
+ * brief; last night he accepted the harbor's XML feed proposal and
  * dismissed the schedule one (issue #214 already has it). His reading is
  * rewritten for each morning and restored at the end (seedEconomy).
  */
@@ -3109,8 +3109,8 @@ function scheduleBriefs(now: number, q: Queue): void {
     const items = briefItems(openBrief(Date.now())).filter((i) => i.kind === 'proposal' && i.repo === REPO.H && i.actions.includes('accept'));
     const byTitle = (re: RegExp) => items.find((i) => re.test(i.title));
     const feed = byTitle(/XML feed/);
-    const day = byTitle(/harbour's day/);
-    if (!feed || !day) throw new Error("sample economy: the harbour's proposals are not in the brief");
+    const day = byTitle(/harbor's day/);
+    if (!feed || !day) throw new Error("sample economy: the harbor's proposals are not in the brief");
     actOn(feed.id, 'accept', {}, Date.now());
     actOn(day.id, 'dismiss', {}, Date.now() + 40_000);
   });
@@ -3242,10 +3242,10 @@ export function economyClock(opts: { now: () => number; speed: number; fail?: st
       t += 220;
       at(t, () => {
         const r = fresh(runId)!;
-        const harbour = r.repo === REPO.H;
-        const files = harbour ? ['src/schedule/days.ts', 'test/schedule/days.test.ts', 'src/pilots/board.ts'] : ['src/row/from_row.rs', 'tests/join_null.rs'];
-        const summary = harbour ? (PRIYA_MORE.at(-1)?.[1] ?? 'Done.') : 'Option<T> decodes from the value, not the declared type; tests/join_null.rs runs without #[ignore].';
-        const next = p.finishWork(r, { files, lines: harbour ? 50 : 38, credits: harbour ? 6.8 : 4.2, summary, patch: harbour ? PRIYA_PATCH : undefined });
+        const harbor = r.repo === REPO.H;
+        const files = harbor ? ['src/schedule/days.ts', 'test/schedule/days.test.ts', 'src/pilots/board.ts'] : ['src/row/from_row.rs', 'tests/join_null.rs'];
+        const summary = harbor ? (PRIYA_MORE.at(-1)?.[1] ?? 'Done.') : 'Option<T> decodes from the value, not the declared type; tests/join_null.rs runs without #[ignore].';
+        const next = p.finishWork(r, { files, lines: harbor ? 50 : 38, credits: harbor ? 6.8 : 4.2, summary, patch: harbor ? PRIYA_PATCH : undefined });
         site(next, 'inspecting', 0.8);
       });
       stage = 'inspecting';

@@ -466,15 +466,15 @@ test("AgentDetail.school for a bred specialist carries its voyage without the ge
   seedFirms(['qwen2.5-coder:7b', 'qwen3-coder:30b-a3b-q4_K_M', 'gpt-oss:20b', 'llama3.1:8b']);
   const locals = (await call('GET', '/api/firms')).json.flatMap((f: { agents: Array<{ id: string; model: string }> }) => f.agents).filter((a: { model: string }) => a.model.startsWith('ollama:')).slice(0, 2);
   assert.equal(locals.length, 2);
-  const body = { id: 'g2-1', name: 'Harbour 2.1', model: 'ollama:qwen2.5-coder:7b', instructions: 'Fix the bug.\n', tools: ['read', 'edit'], workflow: { shape: 'single' }, memory: { examples: 2 } };
+  const body = { id: 'g2-1', name: 'Harbor 2.1', model: 'ollama:qwen2.5-coder:7b', instructions: 'Fix the bug.\n', tools: ['read', 'edit'], workflow: { shape: 'single' }, memory: { examples: 2 } };
   const v: VoyageView = {
     id: 'v-bred-1', arena: 'arena-x', status: 'done', generation: 2, of: 2, runs: { done: 10, of: 10 }, commissionedBy: 'quickset',
     scores: [
       ...locals.map((a: { id: string }) => ({ genome: a.id, name: a.id, generation: 1, mean: 0.4, lo: 0.3, hi: 0.5, parents: [] })),
-      { genome: 'g2-1', name: 'Harbour 2.1', generation: 2, mean: 0.6, lo: 0.5, hi: 0.7, parents: locals.map((a: { id: string }) => a.id) },
+      { genome: 'g2-1', name: 'Harbor 2.1', generation: 2, mean: 0.6, lo: 0.5, hi: 0.7, parents: locals.map((a: { id: string }) => a.id) },
     ],
     promoted: [], sealed: { value: 0.58, lo: 0.46, hi: 0.7, n: 15 }, credits: 3, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
-    champion: { genome: 'g2-1', name: 'Harbour 2.1', model: 'ollama:qwen2.5-coder:7b', generation: 2, parents: locals.map((a: { id: string }) => a.id), body: body as never },
+    champion: { genome: 'g2-1', name: 'Harbor 2.1', model: 'ollama:qwen2.5-coder:7b', generation: 2, parents: locals.map((a: { id: string }) => a.id), body: body as never },
     vsLocal: locals.map((a: { id: string }) => ({ agent: a.id, name: a.id, diff: 0.2, lo: 0.1, hi: 0.3 })), claim: true,
   };
   openDb().prepare('INSERT INTO voyages (id, json) VALUES (?, ?)').run(v.id, JSON.stringify(v));

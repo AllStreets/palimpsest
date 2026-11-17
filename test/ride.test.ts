@@ -8,8 +8,8 @@ import type { Bid, Floor, InspectionView, Job, RunView, SiteState, TowerSpec } f
 
 function floor(i: number, p: Partial<Floor> = {}): Floor {
   return {
-    id: `acme/harbour#${i}`,
-    repo: 'acme/harbour',
+    id: `acme/harbor#${i}`,
+    repo: 'acme/harbor',
     kind: 'commits',
     refs: [`abc${String(i).padStart(4, '0')}`],
     title: `Change ${i}`,
@@ -25,7 +25,7 @@ function floor(i: number, p: Partial<Floor> = {}): Floor {
 }
 
 function tower(floors: Floor[], datumIndex = floors.length, kind: TowerSpec['kind'] = 'founding'): TowerSpec {
-  return { id: 'acme/harbour', repo: 'acme/harbour', kind, root: 'beauxarts', floors, datumIndex };
+  return { id: 'acme/harbor', repo: 'acme/harbor', kind, root: 'beauxarts', floors, datumIndex };
 }
 
 const earned = (state: 'lit' | 'scar' | 'waiting') => ({ jobId: 'job-1', runId: 'run-1', agentId: 'priya-rao', firmId: 'quickset', state, reverted: false });
@@ -55,7 +55,7 @@ test('ridePlan slows at the datum and dwells on scars and Claude floors', () => 
   const spec = tower(floors, 20);
   const lay = layoutTower(spec);
   const names = { agents: new Map([['priya-rao', 'Priya Rao']]), firms: new Map([['quickset', 'Quickset']]) };
-  const keys = ridePlan(lay, floors, { live: null, names, name: 'harbour', root: 'Beaux-Arts root' });
+  const keys = ridePlan(lay, floors, { live: null, names, name: 'harbor', root: 'Beaux-Arts root' });
 
   // Times and heights only climb.
   for (let i = 1; i < keys.length; i++) {
@@ -117,7 +117,7 @@ test('ridePlan slows at the datum and dwells on scars and Claude floors', () => 
 test('a live site ends the ride at the work with its caption', () => {
   const floors = Array.from({ length: 12 }, (_, i) => floor(i));
   const lay = layoutTower(tower(floors));
-  const live: SiteState = { repo: 'acme/harbour', runId: 'run-9', jobId: 'job-9', agentId: 'priya-rao', firmId: 'quickset', stage: 'framing', progress: 0.4, size: 'medium', since: '2026-11-10T18:00:00.000Z' };
+  const live: SiteState = { repo: 'acme/harbor', runId: 'run-9', jobId: 'job-9', agentId: 'priya-rao', firmId: 'quickset', stage: 'framing', progress: 0.4, size: 'medium', since: '2026-11-10T18:00:00.000Z' };
   const keys = ridePlan(lay, floors, { live, names: { agents: new Map([['priya-rao', 'Priya Rao']]), firms: new Map([['quickset', 'Quickset']]) } });
   const last = keys[keys.length - 1];
   assert.equal(last.caption?.mark, 'live');
@@ -134,7 +134,7 @@ test('a live site ends the ride at the work with its caption', () => {
 test('a root-only tower rides the root and the roof', () => {
   const spec = tower([]);
   const lay = layoutTower(spec);
-  const keys = ridePlan(lay, [], { live: null, root: 'Beaux-Arts root', name: 'harbour' });
+  const keys = ridePlan(lay, [], { live: null, root: 'Beaux-Arts root', name: 'harbor' });
   assert.equal(keys.length, 2, 'two stops: the street and the roof');
   assert.ok(keys[0].y < 2);
   assert.equal(keys[0].caption?.title, 'Beaux-Arts root');
@@ -188,7 +188,7 @@ test('skipping goes to the next stop', () => {
 
 // ---------------------------------------------------------------- the floor dossier (Phase 3 Task 18)
 
-const job = (p: Partial<Job> = {}): Job => ({ id: 'job-1', repo: 'acme/harbour', source: 'issue', title: 'Uploads lose their place', status: 'merged', ...p }) as unknown as Job;
+const job = (p: Partial<Job> = {}): Job => ({ id: 'job-1', repo: 'acme/harbor', source: 'issue', title: 'Uploads lose their place', status: 'merged', ...p }) as unknown as Job;
 const run = (p: Partial<RunView> = {}): RunView => ({ id: 'run-1', jobId: 'job-1', bidId: 'bid-1', progress: { toolCalls: 9, filesChanged: 4, testsRun: 2, turns: 6, weightedTokens: 1000, credits: 12, refusals: 0 }, summary: null, ...p }) as unknown as RunView;
 const bid = (p: Partial<Bid> = {}): Bid => ({ id: 'bid-1', jobId: 'job-1', plan: 'Add the missing retry to the uploader.', ...p }) as unknown as Bid;
 const inspection = (p: Partial<InspectionView> = {}): InspectionView => ({ id: 'insp-1', runId: 'run-1', passed: true, pushable: true, checks: [], inconclusive: null, ...p }) as unknown as InspectionView;

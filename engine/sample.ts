@@ -139,7 +139,7 @@ export interface SampleRepo {
 export const SAMPLE: SampleRepo[] = [
   {
     fullName: 'tidewater/harbor-ledger',
-    description: 'Berth schedules, manifests and port fees for a small harbour',
+    description: 'Berth schedules, manifests and port fees for a small harbor',
     language: 'TypeScript',
     root: 'beauxarts',
     slot: 0,
@@ -149,7 +149,7 @@ export const SAMPLE: SampleRepo[] = [
     prShare: 0.3,
     claudeShare: 0.35,
     authors: ['Ines Varga', 'Tomas Reyes', 'Hal Okafor', 'Mira Holt'],
-    topics: ['berth schedule', 'manifest export', 'port fees', 'tide tables', 'pilot bookings', 'invoice PDF', 'harbour map', 'crew roster', 'customs forms', 'audit log', 'sync worker', 'search index'],
+    topics: ['berth schedule', 'manifest export', 'port fees', 'tide tables', 'pilot bookings', 'invoice PDF', 'harbor map', 'crew roster', 'customs forms', 'audit log', 'sync worker', 'search index'],
   },
   {
     fullName: 'kestrel/fieldnotes',
@@ -238,21 +238,21 @@ export const SAMPLE_UNREADABLE = 'marlow/locked-vault';
 /** Harbor ledger's README: the fourteen claims the sample audit reads, as a maintainer would write them. */
 const HARBOR_README = `# Harbor ledger
 
-Berth schedules, manifests and port fees for a small harbour. One Vite app,
-one SQLite file, run by the harbour office on a Mac mini in the back room.
+Berth schedules, manifests and port fees for a small harbor. One Vite app,
+one SQLite file, run by the harbor office on a Mac mini in the back room.
 
 ## What it does
 
-- The schedule groups arrivals by the harbour's calendar day, so a ship that
+- The schedule groups arrivals by the harbor's calendar day, so a ship that
   docks at ten past midnight is on the right page.
 - Manifest export writes a CSV with every column customs asks for, in the
   order they ask for it.
 - Port fees are computed from the published tariff, with the weekend
   surcharge applied on Saturdays and Sundays.
-- Invoices render to PDF with the harbour's letterhead.
+- Invoices render to PDF with the harbor's letterhead.
 - Invoices can also be sent as e-invoices in the UBL format.
 - Pilot bookings warn when two pilots are booked for one tide.
-- Berth conflicts are emailed to the harbour master as soon as they appear.
+- Berth conflicts are emailed to the harbor master as soon as they appear.
 - The crew roster imports the agency's CSV, rank column included.
 - Customs forms prefill the IMO number from the vessel record.
 - Arrivals can be imported from the port authority's XML feed.
@@ -461,7 +461,7 @@ export interface SampleIssue {
 
 /**
  * The eight open issues the sample repos carry a market label on, as their
- * maintainers wrote them. Three are on the harbour repo. Every one is
+ * maintainers wrote them. Three are on the harbor repo. Every one is
  * fictional; seedEconomy posts them through the real pollJobs.
  */
 export const SAMPLE_ISSUES: SampleIssue[] = [
@@ -473,17 +473,17 @@ export const SAMPLE_ISSUES: SampleIssue[] = [
     author: 'ines-varga',
     updatedAt: '2026-11-08T08:12:00Z',
     body: [
-      'Ships that arrive between 00:00 and 01:00 UTC show up in the previous day\'s column of the berth schedule. The harbour office works in Lisbon time, so the *Maren Dahl* (00:40 UTC on the 12th) sat under the 11th all last week and the night shift missed her.',
+      'Ships that arrive between 00:00 and 01:00 UTC show up in the previous day\'s column of the berth schedule. The harbor office works in Lisbon time, so the *Maren Dahl* (00:40 UTC on the 12th) sat under the 11th all last week and the night shift missed her.',
       '',
       'To see it: import `fixtures/arrivals-dst.csv` and open the schedule for 12 March.',
       '',
-      'We bucket by `arrival.toISOString().slice(0, 10)` in `src/schedule/days.ts`. It should be the harbour\'s own day.',
+      'We bucket by `arrival.toISOString().slice(0, 10)` in `src/schedule/days.ts`. It should be the harbor\'s own day.',
       '',
       'Scope:',
       '- src/schedule/**',
       '- test/schedule/**',
       '',
-      '- [ ] Arrivals land in the harbour\'s local day, not the UTC day',
+      '- [ ] Arrivals land in the harbor\'s local day, not the UTC day',
       '- [ ] A test covers 00:00 to 01:00 UTC on both sides of the March clock change',
     ].join('\n'),
   },
@@ -513,7 +513,7 @@ export const SAMPLE_ISSUES: SampleIssue[] = [
     author: 'mira-holt',
     updatedAt: '2026-11-10T07:05:00Z',
     body: [
-      'The auditors want pilotage shown as its own line on the port fee invoice, with the pilot\'s hours and the rate that applied, instead of being folded into "harbour dues". It has to match the tariff table in `src/fees/tariff.ts` to the cent, including the night supplement.',
+      'The auditors want pilotage shown as its own line on the port fee invoice, with the pilot\'s hours and the rate that applied, instead of being folded into "harbor dues". It has to match the tariff table in `src/fees/tariff.ts` to the cent, including the night supplement.',
       '',
       'Old invoices must render exactly as they did; only invoices issued after this change get the new line. There is a snapshot test per invoice template; please add one rather than updating the old ones.',
       '',

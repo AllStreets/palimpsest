@@ -194,7 +194,7 @@ test('the economy seeds every job status and replays clean', async () => {
 
   const proposed = jobs.filter((j) => j.status === 'proposed');
   assert.deepEqual(proposed.filter((j) => j.source === 'harness').map((j) => j.repo), ['lantern/assay-kit'], 'one harness job on the repo with tests and no build');
-  assert.deepEqual(proposed.filter((j) => j.source === 'proposal').map((j) => j.repo), [H, H], "two of the harbour audit's proposals still wait for his click");
+  assert.deepEqual(proposed.filter((j) => j.source === 'proposal').map((j) => j.repo), [H, H], "two of the harbor audit's proposals still wait for his click");
 
   // The board's issue jobs are the stand-in's eight issues.
   const issueJobs = jobs.filter((j) => j.source === 'issue');
@@ -431,7 +431,7 @@ test('the economy seeds four audits and their proposals and replays clean', asyn
   assert.equal(audits.length, 4);
   const of = (repo: string) => audits.find((a) => a.repo === repo)!;
 
-  // The harbour audit: 14 claims, every verdict but STUBBED, one finding unverified, four proposals.
+  // The harbor audit: 14 claims, every verdict but STUBBED, one finding unverified, four proposals.
   const harbor = of(H);
   assert.equal(harbor.status, 'done');
   assert.equal(harbor.trigger, 'demand');
@@ -500,7 +500,7 @@ test('the economy seeds four audits and their proposals and replays clean', asyn
   // Milestones, reached by the market's own rules as the floors went up.
   const milestones = listMilestones(NOW);
   const skyline = milestones.filter((m) => m.kind === 'skyline');
-  assert.deepEqual(skyline.filter((m) => m.lit).map((m) => m.towerId), [`${H}#founding`], 'the lit spire stands on the harbour tower');
+  assert.deepEqual(skyline.filter((m) => m.lit).map((m) => m.towerId), [`${H}#founding`], 'the lit spire stands on the harbor tower');
   assert.ok(skyline.some((m) => !m.lit && m.towerId === 'lantern/assay-kit#founding'), 'assay-kit held the spire first and keeps its mast unlit');
   assert.deepEqual(milestones.filter((m) => m.kind === 'founding-skyline').map((m) => [m.towerId, m.lit]), [[`${H}#founding`, false]], 'the founding skyline is the unlit finial');
   const revival = milestones.find((m) => m.kind === 'revival')!;
@@ -524,7 +524,7 @@ test('the economy seeds four audits and their proposals and replays clean', asyn
 });
 
 test('a reconnect still analysing when the economy is seeded, as in ui-test, leaves the four scripted audits', async () => {
-  // ui-test's reconnectChecks disconnects the harbour and connects it again, and earnedChecks seeds at once:
+  // ui-test's reconnectChecks disconnects the harbor and connects it again, and earnedChecks seeds at once:
   // that analysis must not end inside the history, where the market is on, and queue an audit of its own.
   // Its market starts on, so the analysis would queue that audit even if it ended before the history began.
   await seedSample(NOW);
@@ -551,7 +551,7 @@ test('a reconnect still analysing when the economy is seeded on the real runner 
 test('a seed that throws while it writes the history releases the hold on the automatic audit', async () => {
   const { queueAudit } = await import('../engine/audit/run.js');
   await seedSample(NOW);
-  // An audit already waiting on the harbour stops the history at its scripted audit.
+  // An audit already waiting on the harbor stops the history at its scripted audit.
   queueAudit(getRepo(H)!, 'demand', NOW - 9 * 86_400_000);
   await assert.rejects(seedEconomy(NOW), /already has an audit waiting or under way/);
   setMarket(K, false);
@@ -717,7 +717,7 @@ test('the sample stand-in never calls the network', async () => {
   assert.equal(spawns, 0, 'no process spawned');
   assert.equal(fetches, 0, 'nothing fetched');
 
-  // The stand-in itself: issues per label, eight in all and three on the harbour repo.
+  // The stand-in itself: issues per label, eight in all and three on the harbor repo.
   const gh = sampleGh();
   const list = async (repo: string, label: string) =>
     (JSON.parse((await gh('gh', ['issue', 'list', '-R', repo, '--label', label, '--state', 'open', '--json', 'number'])).stdout) as Array<{ number: number }>).map((i) => i.number);

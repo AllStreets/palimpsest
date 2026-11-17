@@ -63,7 +63,7 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
 
     // ------------------------------------------------------------ the running job's page
     const running = jobs.find((j) => j.status === 'running' && j.repo === 'tidewater/harbor-ledger');
-    check(!!running?.runId, `the economy has the harbour job running (${running?.title ?? 'none'})`);
+    check(!!running?.runId, `the economy has the harbor job running (${running?.title ?? 'none'})`);
     if (!running?.runId) return;
     const rd = await api<JobDetail>(page, `/api/jobs/${running.id}`);
     await go(page, `#/jobs/${running.id}`);

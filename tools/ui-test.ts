@@ -405,7 +405,7 @@ type SpireShow = { id: string; kind: string; towerId: string; lit: boolean; y: n
 
 /**
  * The skyline on the sample economy (engine/market/sample-economy.ts):
- * the harbour tower holds the lit spire and the founding skyline both, so
+ * the harbor tower holds the lit spire and the founding skyline both, so
  * its mast is lit and wears the bronze sleeve; assay-kit held the spire
  * first and keeps its mast dark. Each stands on its tower's true top. Shots:
  * spire.png close at dusk, finial.png (the finial staged on assay-kit's
@@ -425,7 +425,7 @@ async function spireChecks(page: Page): Promise<void> {
   const ds = await cityOf(page);
   const qs = (await page.evaluate(() => fetch('/api/quarters').then((r) => r.json()))) as Quarter[];
   const specs = [...ds.map((d) => d.tower), ...qs.flatMap((q) => q.towers)];
-  // The founding skyline is the tallest tower by total height: the harbour tower on the seeded economy alone (its sleeve on the lit mast),
+  // The founding skyline is the tallest tower by total height: the harbor tower on the seeded economy alone (its sleeve on the lit mast),
   // or whichever tower earlier checks raised past it in the full run.
   const tallest = specs.reduce((a, b) => (layoutTower(b).top > layoutTower(a).top ? b : a));
   // The lit spire: the greatest earned height above its datum among towers with a lit earned floor (ruling 11; a holder keeps a tie).
@@ -444,13 +444,13 @@ async function spireChecks(page: Page): Promise<void> {
     check(Math.abs(m.y - top) < 0.05, `the spire on ${m.towerId} stands on its true top (${m.y.toFixed(2)} against ${top.toFixed(2)} m)`);
   }
   if (!lit[0]) return;
-  const harbour = ds.find((x) => x.tower.id === lit[0].towerId);
-  if (!harbour) {
+  const harbor = ds.find((x) => x.tower.id === lit[0].towerId);
+  if (!harbor) {
     check(false, `the lit spire's tower is a district tower for the close shot (${lit[0].towerId})`);
     return;
   }
   const s = lit[0];
-  const foot = [harbour.origin.x, s.y, harbour.origin.z];
+  const foot = [harbor.origin.x, s.y, harbor.origin.z];
 
   // Close, at dusk: the mast from a little below its lamp, the roof and its stays in frame, the city beyond.
   await setView(page, [foot[0] - s.height * 1.15, s.y + s.height * 0.55, foot[2] + s.height * 1.55], [foot[0], s.y + s.height * 0.5, foot[2]]);
@@ -688,7 +688,7 @@ async function tourChecks(page: Page): Promise<void> {
     const cam = await debug(page, (d) => d.camera());
     const step = Math.hypot(cam[0] - last[0], cam[1] - last[1], cam[2] - last[2]);
     steps.push(step);
-    // Two stops one floor apart on the same tower stand one floor height apart (3.6 m on the harbour), which the
+    // Two stops one floor apart on the same tower stand one floor height apart (3.6 m on the harbor), which the
     // week puts back to back on some days; a camera that did not go to the stop stays where it was (0 m).
     if (step > 1) moved++;
     last = cam;
@@ -766,7 +766,7 @@ async function tourChecks(page: Page): Promise<void> {
 }
 
 /**
- * The floor dossier on the ride (Phase 3 Task 18): riding the harbour tower,
+ * The floor dossier on the ride (Phase 3 Task 18): riding the harbor tower,
  * an earned floor's stop carries its dossier under the caption (the change
  * in numbers, the plan, the verdict) and a founding floor's stop none; a
  * floor a README proposal built quotes the claim. Shots: ride-dossier.png,
@@ -794,11 +794,11 @@ async function dossierChecks(page: Page): Promise<void> {
     await page.waitForTimeout(3000);
   };
   const r = await ride('tidewater/harbor-ledger');
-  check(!!r, 'the harbour tower\'s lift runs');
+  check(!!r, 'the harbor tower\'s lift runs');
   if (!r) return;
   const withDossier = r.stops.filter((s) => s.dossier);
   check(withDossier.length >= 1 && withDossier.every((s) => Math.abs(s.dwell - 2.4) < 1e-6), `the ride waits 2.4 s at each floor with a dossier (${withDossier.length} of them)`);
-  console.log(`info  the harbour ride: ${r.length.toFixed(1)} s, ${withDossier.length} dossier stops`);
+  console.log(`info  the harbor ride: ${r.length.toFixed(1)} s, ${withDossier.length} dossier stops`);
   check(r.length <= 60, `the dossiers never make the ride a crawl (${r.length.toFixed(1)} s)`);
   const d = withDossier[withDossier.length - 1];
   if (d) {
@@ -865,7 +865,7 @@ async function dossierChecks(page: Page): Promise<void> {
   const built = jobs.find((j) => j.source === 'proposal' && ds.some((x) => x.repo === j.repo && x.tower.floors.some((f) => f.earned?.jobId === j.id)));
   const repo = built?.repo ?? 'tidewater/harbor-ledger';
   const floorId = built ? ds.find((x) => x.repo === built.repo)!.tower.floors.find((f) => f.earned?.jobId === built.id)!.id : (d?.floorId ?? null);
-  console.log(`info  the README claim: ${built ? `a proposal floor on ${repo}` : 'staged on the harbour tower'}`);
+  console.log(`info  the README claim: ${built ? `a proposal floor on ${repo}` : 'staged on the harbor tower'}`);
   if (!floorId) return;
   if (!built) await page.evaluate(([f, c]) => (window as unknown as { __palimpsest: { stageDossier(f: string, p: { claim: string }): boolean } }).__palimpsest.stageDossier(f, { claim: c }), [floorId, 'Tide tables are cached per port and refreshed at local midnight'] as [string, string]);
   const pr = await ride(repo);
@@ -1033,7 +1033,7 @@ async function campusChecks(page: Page, tier: 'high' | 'medium'): Promise<void> 
 
 /**
  * The campus's life (Task 37), on the sample economy: the voyage sailing on
- * the harbour's arena lights eight reading-room bays of the library (one per
+ * the harbor's arena lights eight reading-room bays of the library (one per
  * genome racing), the students walk the quads unlabelled, a parent sent to
  * the university walks in through the gate, the inspector on the library
  * lists the voyage, and the campus keeps its budget with all of it on. The

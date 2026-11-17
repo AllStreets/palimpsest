@@ -99,7 +99,7 @@ function berths(): string {
     ['T1', 'Tanker, hose 2', 'Tejo Spirit', 90],
   ] as const;
   const grid = cells.map(([b, what, ship, pct]) => `<div class="berth"><h3>Berth ${b}</h3><p>${what}</p><div class="ship">${ship}</div><p>12 Mar, Lisbon time</p><div class="meter"><i style="width:${pct}%"></i></div></div>`).join('');
-  return page(`<h1>Berths today</h1><div class="grid">${grid}</div><p class="foot">Thursday 12 March, night shift. Times are the harbour's own day.</p>`, 'Berths');
+  return page(`<h1>Berths today</h1><div class="grid">${grid}</div><p class="foot">Thursday 12 March, night shift. Times are the harbor's own day.</p>`, 'Berths');
 }
 
 async function main(): Promise<void> {

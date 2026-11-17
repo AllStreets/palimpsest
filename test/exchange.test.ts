@@ -192,7 +192,7 @@ test('the exchange draws its columns and lamps instanced and its stone in few ba
 });
 
 test("a slot's card carries only the repo's short name and the issue number, never a path or a token", () => {
-  assert.equal(boardLabel({ repo: 'marlow/harbour-ledger', issue: 14 }), 'harbour-ledger #14');
+  assert.equal(boardLabel({ repo: 'marlow/harbor-ledger', issue: 14 }), 'harbor-ledger #14');
   assert.equal(boardLabel({ repo: 'marlow/kumo', issue: null }), 'kumo');
   // A name is cut to what fits a card, and anything outside a repo name's characters is dropped.
   const odd = boardLabel({ repo: 'x/ghp_abcdefghijklmnopqrstuvwxyz0123456789/Users/connor/.ssh', issue: 3 });
