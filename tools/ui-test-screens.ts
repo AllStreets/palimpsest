@@ -598,11 +598,52 @@ export async function everyScreenChecks(page: Page, errors: string[]): Promise<v
     const fresh = errors.slice(before);
     check(shown && fresh.length === 0, `the ${name} screen opens at ${hash} with no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
   }
+  // The running head lights one place on every screen, whatever the pointer last touched.
+  await navLightingChecks(page);
   // The command palette (Phase 5), over the city and over a screen.
   await paletteChecks(page, errors);
   await page.evaluate(() => {
     location.hash = '#/';
   });
+}
+
+// ---------------------------------------------------------------- the running head's lighting
+
+/** Each head link's route, its drawn colour and whether it is the current place. */
+export async function headColours(page: Page): Promise<Array<{ route: string; color: string; current: boolean }>> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLAnchorElement>('.runhead-link')].map((a) => ({
+      route: a.dataset.route ?? '',
+      color: getComputedStyle(a).color,
+      current: a.getAttribute('aria-current') === 'page',
+    })),
+  );
+}
+
+/**
+ * The lit place is the current one alone (audit 2026-11-17): every idle link draws in one colour and only the
+ * aria-current link differs. Taken the way the stills reached each screen: City clicked from the head, the pointer
+ * left resting on it, then each screen opened by its address (as the palette, a plate or a brief row would).
+ */
+export async function navLightingChecks(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    location.hash = '#/brief';
+  });
+  await page.waitForSelector('body[data-route="brief"]', { timeout: 8000 });
+  await page.locator('.runhead a[data-route="city"]').click();
+  await page.waitForSelector('body[data-route="city"]', { timeout: 8000 });
+  for (const route of ['brief', 'jobs', 'school', 'treasury', 'settings', 'firms', 'repos']) {
+    await page.evaluate((r) => {
+      location.hash = `#/${r}`;
+    }, route);
+    await page.waitForSelector(`body[data-route="${route}"]`, { timeout: 8000 });
+    const links = await headColours(page);
+    const current = links.filter((l) => l.current);
+    const idle = new Set(links.filter((l) => !l.current).map((l) => l.color));
+    const ok = current.length === 1 && current[0].route === route && idle.size === 1 && !idle.has(current[0].color);
+    check(ok, `on ${route} with the pointer resting on City, every idle head link draws in one colour and only ${route} differs${ok ? '' : `: ${JSON.stringify(links)}`}`);
+  }
+  await page.mouse.move(VIEWPORT.width / 2, VIEWPORT.height - 40);
 }
 
 // ---------------------------------------------------------------- the command palette (Phase 5)

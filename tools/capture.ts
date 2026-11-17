@@ -421,6 +421,8 @@ async function toCity(page: Page): Promise<void> {
 /** Opens a screen from the running head, as a click would, and waits for it to settle. */
 async function openScreen(page: Page, route: 'city' | 'repos' | 'settings', ready: string): Promise<void> {
   await page.locator(`.runhead a[data-route="${route}"]`).click();
+  // The pointer leaves the head, so no still shows a link under it marked by the hover's rule.
+  await page.mouse.move(VIEWPORT.width / 2, VIEWPORT.height - 4);
   await page.waitForSelector(ready, { timeout: 10_000 });
   await page.waitForTimeout(1200);
 }

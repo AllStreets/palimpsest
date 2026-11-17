@@ -57,8 +57,18 @@ body[data-route='city'] .runhead-count {
   text-decoration: none;
   padding: 4px 0 6px;
 }
-.runhead-link:hover {
-  color: var(--ink);
+/*
+ * Hover rules a faint line under the word and leaves its colour alone: the ink is the current place's alone, so a
+ * pointer left resting on City after a click never reads as City being the place (audit 2026-11-17).
+ */
+.runhead-link:not([aria-current='page']):hover::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--ink-3);
 }
 .runhead-link[aria-current='page'] {
   color: var(--ink);
