@@ -11,7 +11,7 @@ import { workProgress } from '../engine/market/runs.js';
 import type { SiteStage, SiteState } from '../shared/types.js';
 
 const site = (stage: SiteStage, progress: number): SiteState => ({
-  repo: 'acme/harbour',
+  repo: 'acme/harbor',
   runId: 'run-1',
   jobId: 'job-1',
   agentId: 'priya-rao',

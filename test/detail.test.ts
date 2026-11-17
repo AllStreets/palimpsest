@@ -195,7 +195,7 @@ test('the issue body reads as markdown blocks, without the scope and the checkli
     '- src/schedule/**',
     '- test/schedule/**',
     '',
-    '- [ ] Arrivals land in the harbour day',
+    '- [ ] Arrivals land in the harbor day',
     '- [x] A test covers it',
   ].join('\n');
   const blocks = issueBlocks(body);
@@ -244,9 +244,15 @@ test('the award reads as prose: who won, at what price, the calibrated chance ag
     },
   ];
   const [round] = awardRounds(ledger, names, 60);
-  assert.equal(round.prose, 'Ashlar & Vane won at 38 credits: calibrated 0.71 against a stated 0.8, an expected value of 4.60 on a 60 credit job. Ines Ashlar does the work. Next best was Quickset at 30 credits (expected value 3.10).');
+  // Glossed where it is read (audit 2026-11-17): what the expected value is made of, and why a cheaper bid lost.
+  assert.equal(round.prose, 'Ashlar & Vane won at 38 credits, an expected value of 4.60: the 60 credit job, times the 71% chance the city gives its work of passing (it stated 80%; its record trims that), less the 38 it asked. Ines Ashlar does the work. Quickset asked less, 30 credits, but at a 60% chance its expected value came to only 3.10, so it lost.');
   assert.deepEqual(round.bids.map((b) => b.id), ['b1', 'b2']);
   assert.deepEqual(round.satOut, [{ agentId: 'wren-sparrow', firmId: null, reason: 'no slot before the window closed' }]);
+  // As stated, and a dearer runner-up: the first-timer's case, Quickset at 27.97 against Lodestar at 40.06 on a 60 credit job.
+  const quick = bid('q1', 'quickset', 'priya-rao', 27.97, 0.7, 0.7, 14.03);
+  const dear = bid('l1', 'lodestar', 'hal-meridian', 40.06, 0.8, 0.78, 6.74);
+  const [plain] = awardRounds([{ id: 4, at: '2026-11-10T10:02:00Z', kind: 'job.awarded', data: { jobId: 'job-1', considered: [quick, dear], chosen: quick, satOut: [] } }], names, 60);
+  assert.equal(plain.prose, 'Quickset won at 27.97 credits, an expected value of 14.03: the 60 credit job, times the 70% chance the city gives its work of passing (as it stated), less the 27.97 it asked. Priya Rao does the work. Next best was Lodestar at 40.06 credits, an expected value of 6.74.');
   // A round that drew nothing says so.
   const [none] = awardRounds([{ id: 9, at: '2026-11-10T11:00:00Z', kind: 'job.awarded', data: { jobId: 'job-1', considered: [], chosen: null, why: 'no bids', satOut: [] } }], names, 60);
   assert.equal(none.prose, 'No firm bid in this round, so the job went back on the board.');

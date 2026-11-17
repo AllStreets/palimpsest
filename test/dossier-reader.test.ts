@@ -13,8 +13,8 @@ import type { Floor, JobDetail, TowerSpec } from '../shared/types.js';
 
 function floor(i: number, earned = true, state: 'lit' | 'scar' = 'lit'): Floor {
   return {
-    id: `acme/harbour#${i}`,
-    repo: 'acme/harbour',
+    id: `acme/harbor#${i}`,
+    repo: 'acme/harbor',
     kind: 'pr',
     refs: [],
     title: `Change ${i}`,
@@ -31,7 +31,7 @@ function floor(i: number, earned = true, state: 'lit' | 'scar' = 'lit'): Floor {
 
 function spec(n: number, scars: number[] = []): TowerSpec {
   const floors = [floor(0, false), ...Array.from({ length: n }, (_, i) => floor(i + 1, true, scars.includes(i + 1) ? 'scar' : 'lit'))];
-  return { id: 'acme/harbour#founding', repo: 'acme/harbour', kind: 'founding', root: 'beauxarts', floors, datumIndex: 1 };
+  return { id: 'acme/harbor#founding', repo: 'acme/harbor', kind: 'founding', root: 'beauxarts', floors, datumIndex: 1 };
 }
 
 function detail(i: number, plan = 'Add the retry.'): JobDetail {
@@ -109,7 +109,7 @@ test('never more than three reads at once, city-wide, across towers', async () =
   const f = fakeApi();
   const r = reader(f.api);
   void r.read(spec(9, [2, 3, 5]));
-  void r.read({ ...spec(9), id: 'other#founding', repo: 'acme/other', floors: spec(9).floors.map((x) => ({ ...x, id: x.id.replace('harbour', 'other'), earned: x.earned ? { ...x.earned, jobId: `${x.earned.jobId}0` } : undefined })) });
+  void r.read({ ...spec(9), id: 'other#founding', repo: 'acme/other', floors: spec(9).floors.map((x) => ({ ...x, id: x.id.replace('harbor', 'other'), earned: x.earned ? { ...x.earned, jobId: `${x.earned.jobId}0` } : undefined })) });
   await f.openAll();
   assert.ok(f.asked.length >= 6, `both towers were read (${f.asked.length})`);
   assert.ok(f.peak() <= 3, `at most three at once (${f.peak()})`);

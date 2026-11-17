@@ -34,3 +34,10 @@ test('no stylesheet rule lifts a head link by route alone, so only the current o
   const css = readFileSync(new URL('../app/src/ui/screens.css', import.meta.url), 'utf8');
   assert.doesNotMatch(css, /data-route='city'\]\s+\.runhead-link\s*\{/);
 });
+
+test('hovering a head link never draws it in the current place\'s colour, so a pointer resting on City does not light it', () => {
+  const css = readFileSync(new URL('../app/src/ui/screens.css', import.meta.url), 'utf8');
+  for (const m of css.matchAll(/([^{}]*\.runhead-link[^{}]*:hover[^{}]*)\{([^}]*)\}/g)) {
+    assert.doesNotMatch(m[2], /(^|[\s;])color\s*:/, `${m[1].trim()} sets a colour`);
+  }
+});

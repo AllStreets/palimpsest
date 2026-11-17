@@ -720,7 +720,7 @@ Book-like language as before; every score is a number with its interval and n; e
 
 **Interfaces:**
 - Produces: `renderGrants(grants, agreements, opts: { repo?; onGrant; onDecline; onRevoke; onRegrant })`: one ruled row per pair with its state ("asked on Tuesday", "granted 3 November, 6 merges since", "revoked by a revert on 8 November", "you took it back; quiet until 2 December", "suspended: you undid an accepted proposal") and its one action; Settings lists every pair and lets him re-grant a revoked one; the district page's "Build an arena" is disabled with the reason on a market-off repo.
-- [ ] **Step 1: Write the failing tests:** unit labels; UI (shots `autonomy-settings.png`, `district-autonomy.png`, `brief-autonomy.png`, `job-school.png`): the harbour ask grants from the brief and shows in Settings and on the district page live; Take it back revokes and shows the quiet date; Settings re-grants it; the suspended row names his undo; a job page shows the master's guess or the abstention's reason; "Build an arena" on a market-off repo is disabled with the reason; keyboard reaches every action; no console errors.
+- [ ] **Step 1: Write the failing tests:** unit labels; UI (shots `autonomy-settings.png`, `district-autonomy.png`, `brief-autonomy.png`, `job-school.png`): the harbor ask grants from the brief and shows in Settings and on the district page live; Take it back revokes and shows the quiet date; Settings re-grants it; the suspended row names his undo; a job page shows the master's guess or the abstention's reason; "Build an arena" on a market-off repo is disabled with the reason; keyboard reaches every action; no console errors.
 - [ ] **Step 2:** Run; expect FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run; expect PASS.

@@ -6,6 +6,7 @@ import { el } from './controls';
 import { CHECK_WORDS, checkSummary, cleanLog, duration, inspectionTitle, redactLog, verdict } from './detail';
 import { coalesce, detailSheet, keyedSlot, namesOf, pageLink, secHead, setTrail, statusMark } from './pages';
 import './market.css';
+import { clock } from './time-words';
 
 export interface InspectionPage {
   show(id: string): void;
@@ -295,7 +296,7 @@ export function createInspectionPage(parent: HTMLElement, opts: { listen(fn: (e:
     }
     const run = job?.runs.find((r) => r.id === i.runId);
     const when = new Date(i.at);
-    const date = Number.isNaN(when.getTime()) ? '' : ` on ${when.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${when.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+    const date = Number.isNaN(when.getTime()) ? '' : ` on ${when.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${clock(when)}`;
     sheet.sub.textContent = `${cleanText(j?.title ?? '', 160) || 'The change'}${run ? `, the work of ${names.agent(run.agentId)} of ${names.firm(run.firmId)}` : ''}, inspected${date}.`;
     slots.checks(JSON.stringify([i.id, i.checks, [...openLogs]]), () => checksSection(i));
     slots.review(JSON.stringify([i.id, i.checks.find((c) => c.name === 'review'), i.reviewerAgentId, names.agent(i.reviewerAgentId ?? '')]), () => reviewSection(i));

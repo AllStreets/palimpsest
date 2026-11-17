@@ -36,3 +36,13 @@ test('the Repos count keeps its room when there is nothing to count, so the head
   assert.deepEqual(repoCount(0), { text: '0', shown: false });
   assert.deepEqual(repoCount(-1), { text: '0', shown: false });
 });
+
+test('the Root control says in plain words what a root is and that choosing one changes the tower (audit 2026-11-17)', async () => {
+  const { ROOT_LABEL, ROOT_NOTE, rootChoiceName } = await import('../app/src/ui/repos-words.js');
+  assert.equal(ROOT_LABEL, 'Tower root');
+  assert.match(ROOT_NOTE, /base style of this repo's tower/);
+  assert.match(ROOT_NOTE, /choosing one rebuilds the tower/i);
+  // Each glyph's accessible name says what it is; the radio's checked state says which is chosen.
+  assert.equal(rootChoiceName('Beaux-Arts'), 'Beaux-Arts root');
+  assert.equal(rootChoiceName('Chicago school'), 'Chicago school root');
+});

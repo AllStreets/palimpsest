@@ -16,7 +16,7 @@
  *
  * Shots: hero, stills (tower, root, datum), overview, inspector, repos,
  * settings, flyover, rise, probe, swatches, families, fidelity, river, transit, vehicles, life (the ambient traffic and crowd),
- * ride (the lift up the harbour tower, datum to roof), week (week.mp4: the week tour, forty-five
+ * ride (the lift up the harbor tower, datum to roof), week (week.mp4: the week tour, forty-five
  * seconds; CAPTURE_ECONOMY=1), market-overview, screens (jobs, job,
  * run-log, inspection, firms, agent, treasury, each also a shot of its own),
  * construction-clip (construction.mp4: forty seconds of the economy's clock,
@@ -89,6 +89,7 @@ import { seededWeek } from './seeded-week.js';
 import { BUDGET } from './media-check.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, type FigureProbe, type VehicleProbe } from './people-stage.js';
+import { paneFraming } from './pane-framing.js';
 import { decodePng, labOf } from './png.js';
 import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sample.js';
 
@@ -435,6 +436,8 @@ async function toCity(page: Page): Promise<void> {
 /** Opens a screen from the running head, as a click would, and waits for it to settle. */
 async function openScreen(page: Page, route: 'city' | 'repos' | 'settings', ready: string): Promise<void> {
   await page.locator(`.runhead a[data-route="${route}"]`).click();
+  // The pointer leaves the head, so no still shows a link under it marked by the hover's rule.
+  await page.mouse.move(VIEWPORT.width / 2, VIEWPORT.height - 4);
   await page.waitForSelector(ready, { timeout: 10_000 });
   await page.waitForTimeout(1200);
 }
@@ -450,11 +453,11 @@ async function openHash(page: Page, hash: string, ready: string): Promise<void> 
   await page.waitForTimeout(hash === '#/' ? 800 : 1800);
 }
 
-/** The economy's running harbour job, the one the job and run stills show. */
-async function runningHarbour(page: Page): Promise<{ id: string; runId: string }> {
+/** The economy's running harbor job, the one the job and run stills show. */
+async function runningHarbor(page: Page): Promise<{ id: string; runId: string }> {
   const jobs = (await page.evaluate(() => fetch('/api/jobs').then((r) => r.json()))) as Array<{ id: string; status: string; repo: string; runId: string | null }>;
   const j = jobs.find((x) => x.status === 'running' && x.repo === 'tidewater/harbor-ledger');
-  if (!j?.runId) throw new Error('the economy has no running harbour job');
+  if (!j?.runId) throw new Error('the economy has no running harbor job');
   return { id: j.id, runId: j.runId };
 }
 
@@ -718,7 +721,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async 'brief-autonomy'(page) {
-      // The brief with the city's ask: the master agreed often enough on README gap proposals for the harbour.
+      // The brief with the city's ask: the master agreed often enough on README gap proposals for the harbor.
       await openHash(page, '#/brief', '.sheet.brief .brief-item[data-item^="autonomy:"]');
       await toSheetTop(page, '.sheet.brief .brief-item[data-item^="autonomy:"]');
       await lean(page, 'brief-autonomy', true);
@@ -735,7 +738,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async ride(page) {
-      // The ride up the outside of a tower (Task 35): the harbour tower from its datum to the roof, the car on its rail
+      // The ride up the outside of a tower (Task 35): the harbor tower from its datum to the roof, the car on its rail
       // and the captions at the lower left. Stills at street level, at the datum and over the roof (RIDE_ONLY='street,mid,top,clip').
       const only = process.env.RIDE_ONLY?.split(',');
       const want = (k: string): boolean => !only || only.includes(k);
@@ -833,11 +836,11 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async 'audit-page'(page) {
-      // The harbour README audit's own page: the claims, each verdict with its evidence at file and line, the proposals.
+      // The harbor README audit's own page: the claims, each verdict with its evidence at file and line, the proposals.
       // Written as audit.webp; the shot named audit is the clip of the kumo audit ending.
       const audits = (await page.evaluate(() => fetch('/api/audits?repo=tidewater%2Fharbor-ledger').then((r) => r.json()))) as Array<{ id: string; status: string }>;
       const done = audits.find((a) => a.status === 'done');
-      if (!done) throw new Error('the economy has no finished harbour audit');
+      if (!done) throw new Error('the economy has no finished harbor audit');
       await openHash(page, `#/audits/${done.id}`, '.sheet.auditpage .claim');
       await page.waitForTimeout(600);
       await lean(page, 'audit', true);
@@ -845,7 +848,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async 'district-audit'(page) {
-      // The harbour district's page at its README audit (Phase 3 Task 12): the lead with its counts, then each claim
+      // The harbor district's page at its README audit (Phase 3 Task 12): the lead with its counts, then each claim
       // with its verdict, its evidence at file and line, and the job proposed from it with its state.
       await openHash(page, `#/repos/${tall.repo}`, '.sheet.district .district-audit .audit-claims .claim');
       await page.locator('.sheet.district .district-audit').first().evaluate((sec) => sec.scrollIntoView({ block: 'start' }));
@@ -859,10 +862,10 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // and the scope it may touch, which can be edited while it is proposed.
       const audits = (await page.evaluate(() => fetch('/api/audits?repo=tidewater%2Fharbor-ledger').then((r) => r.json()))) as Array<{ id: string; status: string }>;
       const done = audits.find((a) => a.status === 'done');
-      if (!done) throw new Error('the economy has no finished harbour audit');
+      if (!done) throw new Error('the economy has no finished harbor audit');
       const view = (await page.evaluate((id) => fetch(`/api/audits/${id}`).then((r) => r.json()), done.id)) as { proposals: Array<{ id: string; title: string; status: string }> };
       const job = view.proposals.find((j) => j.status === 'proposed' && /UBL/.test(j.title)) ?? view.proposals.find((j) => j.status === 'proposed');
-      if (!job) throw new Error('the harbour audit has no proposal waiting');
+      if (!job) throw new Error('the harbor audit has no proposal waiting');
       await openHash(page, `#/jobs/${job.id}`, '.sheet.jobpage .job-why');
       await toSheetTop(page, '.sheet.jobpage .job-why').catch(() => {});
       await lean(page, 'job-scope', true);
@@ -971,7 +974,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // taken at the first moment, at that stop or the next, with the sun out of the frame (Phase 5: framed off the sun).
       const dossierStops = r.stops.filter((x) => x.dossier);
       const first = Math.min(dossierStops.length - 1, Number(process.env.RIDE_DOSSIER_STOP ?? 0));
-      if (first < 0) throw new Error('the harbour ride has no dossier stop');
+      if (first < 0) throw new Error('the harbor ride has no dossier stop');
       const order = [...dossierStops.slice(first), ...dossierStops.slice(0, first)];
       let at = order[0].t + 0.8;
       seek: for (const stop of order) {
@@ -1527,7 +1530,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async earned(page) {
-      // The market's floors over the datum (CAPTURE_ECONOMY=1): the harbour tower's earned run and its scar, the
+      // The market's floors over the datum (CAPTURE_ECONOMY=1): the harbor tower's earned run and its scar, the
       // kumo tower's waiting floor at the top, the ledge from above, and the inspector's list for each.
       await chrome(page, false);
       const shotsOf = (d: District, tag: string): Array<[string, V3, V3]> => {
@@ -1546,9 +1549,9 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
         ];
       };
       const kumo = pagoda;
-      for (const [name, eye, target] of [...shotsOf(tall, 'harbour'), ...shotsOf(kumo, 'kumo')]) await still(page, name, eye, target);
+      for (const [name, eye, target] of [...shotsOf(tall, 'harbor'), ...shotsOf(kumo, 'kumo')]) await still(page, name, eye, target);
       await chrome(page, true);
-      for (const [d, tag] of [[tall, 'harbour'], [kumo, 'kumo']] as const) {
+      for (const [d, tag] of [[tall, 'harbor'], [kumo, 'kumo']] as const) {
         await page.evaluate((r) => (window as unknown as { __palimpsest: { inspect(r: string): void } }).__palimpsest.inspect(r), d.repo);
         await page.waitForSelector('.inspector.open', { timeout: 5000 });
         await page.waitForTimeout(3500);
@@ -1805,7 +1808,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       // The rest of a run's life on its site (CAPTURE_ECONOMY=live, Task 27), every step a real event of the economy's
       // clock: the guild's searchlights sweeping a finished frame while its inspection runs (assay-kit), that
       // inspection failing (the clock is told to fail it) so the site is struck onto its scar and a work lamp is left
-      // burning, then the harbour run's frame curing into its floor, the PR merging, the windows lighting row by row and
+      // burning, then the harbor run's frame curing into its floor, the PR merging, the windows lighting row by row and
       // the crane climbing down. LIFECYCLE_ONLY=inspection stops after the searchlights.
       type SV = { stage: string; progress: number; crane: number[]; top: number; floorHeight: number; centre: number[]; searchlights: Array<{ at: number[]; end: number[] }>; frameFade: number; strike: number; dismantle: number; windows: number | null; workLamp: number[] | null; floor: string | null; busy: boolean; panes: number; era: string | null };
       type Dbg = { liveSites(): Array<{ repo: string; stage: string }>; site(r: string): SV | null; home(): void };
@@ -1861,7 +1864,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
       await still(page, 'scar-far', [cx + B[0] * 260 + 40, top * 0.7 + 20, cz + B[1] * 260 - 30], [cx, top - 4, cz]);
       if (!work) return;
 
-      // The harbour run: inspected and passed at 370 script seconds, so its frame cures into the floor and its PR waits.
+      // The harbor run: inspected and passed at 370 script seconds, so its frame cures into the floor and its PR waits.
       const h = (await view(work))!;
       const [hx, hz] = h.centre;
       const ht = h.top;
@@ -1924,7 +1927,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async screens(page) {
-      // The market's screens (CAPTURE_ECONOMY=live), each over the city as it opens: the job board, the harbour job
+      // The market's screens (CAPTURE_ECONOMY=live), each over the city as it opens: the job board, the harbor job
       // that is running, its run's live transcript, the scarred job's inspection report, the firms, Dagny Hollis's
       // agent page and the treasury. Taken before any clip ticks the economy's clock on.
       const table = this as unknown as Record<string, (p: Page) => Promise<void>>;
@@ -1938,7 +1941,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async job(page) {
-      const running = await runningHarbour(page);
+      const running = await runningHarbor(page);
       await openHash(page, `#/jobs/${running.id}`, '.jobpage .job-award');
       await shoot(page, 'job');
       await openHash(page, '#/', 'body[data-route="city"]');
@@ -1946,7 +1949,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
 
     async 'run-log'(page) {
       // The live run's first view: its stage, its figures and the transcript's tail together.
-      const running = await runningHarbour(page);
+      const running = await runningHarbor(page);
       await openHash(page, `#/runs/${running.runId}`, '.runpage .run-log .log-row');
       await page.waitForTimeout(800);
       await shoot(page, 'run-log');
@@ -1990,7 +1993,7 @@ function shots(city: District[]): Record<string, (page: Page) => Promise<void>> 
     },
 
     async 'construction-clip'(page) {
-      // Forty seconds of the economy's clock at speed 20 (CAPTURE_ECONOMY=live), one tick a frame: the harbour run's
+      // Forty seconds of the economy's clock at speed 20 (CAPTURE_ECONOMY=live), one tick a frame: the harbor run's
       // crane over a frame going up in sparks, the guild's searchlights on the finished frame, the frame curing into
       // its floor, the merge, the windows lighting and the crane climbing down. Written as construction.mp4.
       type SV = { stage: string; crane: number[]; top: number; floorHeight: number; centre: number[] };
@@ -2318,7 +2321,10 @@ const MARKET_VIEW_DEFAULT: [V3, V3] = [[64, 32, 124], [4, 20, 10]];
 /** Framings tuned by eye in the quality rounds (see the probe shot), on the sample city; followCity fits them to the city served. */
 let HERO: { eye: V3; target: V3 } = { eye: [700, 70, 700], target: [0, 170, 80] };
 let OVERVIEW: { eye: V3; target: V3 } = { eye: [540, 380, 960], target: [-40, 70, 0] };
-const SCREENS: { eye: V3; target: V3 } = { eye: [-700, 90, 520], target: [160, 150, -200] };
+/** Behind an open sheet: the whole skyline set in the pane right of the sheet (pane-framing.ts); followCity derives it. */
+let SCREENS: { eye: V3; target: V3 } = { eye: [-700, 90, 520], target: [160, 150, -200] };
+/** How much farther back than home the screens' framing stands, so the skyline's breadth fits the pane. */
+const SCREENS_BACK = Number(process.env.SCREENS_BACK ?? 1.35);
 let FLY = { cx: 0, cz: 80, a0: 0.42, a1: 1.12, r0: 980, r1: 840, y0: 110, y1: 72, ty0: 175, ty1: 160 };
 
 /** The sample city the framings above were tuned on: six districts round (-40, 80), the tallest of 92 floors. */
@@ -2336,6 +2342,9 @@ function followCity(city: District[]): void {
   const e = cityExtent(city);
   const lim = viewLimits(e, aspect);
   OVERVIEW = lim.home;
+  // The sheets stand clamp(600px, 47vw, 760px) wide on the left (screens.css --sheet-w): the city shows right of them.
+  const sheetW = Math.min(760, Math.max(600, 0.47 * VIEWPORT.width));
+  SCREENS = paneFraming(lim.home, sheetW / VIEWPORT.width, 1, 36, aspect, SCREENS_BACK);
   // Low and looking up, the hero is bound by the tallest crown as much as by the city's breadth.
   const k = Math.max(lim.homeDistance / viewLimits(TUNED_ON, aspect).homeDistance, e.height / TUNED_ON.height);
   const at = (p: V3): V3 => [e.cx + k * (p[0] - TUNED_ON.cx), k * p[1], e.cz + k * (p[2] - TUNED_ON.cz)];

@@ -5,8 +5,12 @@
  * plate `data-under-sheet`, and the stylesheet steps it aside whole; a plate
  * whose foot stands past the edge shows whole, since its words run right,
  * away from the sheet. The plates are the city's own; the guard only reads
- * where each stands and sets one attribute.
+ * where each stands and sets one attribute, and tells the plates where the
+ * pane right of the sheet begins (setPlatePane), so their flip and their
+ * collision pass keep inside what shows.
  */
+
+import { setPlatePane } from '../city/labels.js';
 
 /** For each plate's foot (its x on the screen), whether it stands under a sheet whose right edge is at `sheetRight`; none when no sheet is open. */
 export function underSheet(feet: readonly number[], sheetRight: number | null): boolean[] {
@@ -33,9 +37,12 @@ export function guardPlates(doc: Document): void {
     raf = win.requestAnimationFrame(look);
     if (!open || frame++ % EVERY !== 0) return;
     const all = plates();
+    const edge = open.getBoundingClientRect().right;
+    // The city's plates keep their flip and their fit inside the pane right of the sheet (labels.ts).
+    setPlatePane(edge);
     const under = underSheet(
       all.map((p) => p.getBoundingClientRect().left),
-      open.getBoundingClientRect().right,
+      edge,
     );
     all.forEach((p, i) => {
       if (under[i]) p.dataset.underSheet = '';
@@ -50,6 +57,7 @@ export function guardPlates(doc: Document): void {
     } else if (!open && raf !== null) {
       win.cancelAnimationFrame(raf);
       raf = null;
+      setPlatePane(0);
       for (const p of plates()) delete p.dataset.underSheet;
     }
   };

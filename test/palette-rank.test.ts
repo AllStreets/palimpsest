@@ -24,7 +24,7 @@ test('a match is graded prefix, word start, substring, fuzzy, none', () => {
 
 test('the fuzzy match is light: scattered letters across a long name do not count', () => {
   assert.equal(matchTier('hr', 'harbor-ledger'), 1, 'two letters close together');
-  assert.equal(matchTier('hdr', 'the harbour of a distant republic reborn'), 0, 'letters strewn over a long name');
+  assert.equal(matchTier('hdr', 'the harbor of a distant republic reborn'), 0, 'letters strewn over a long name');
   assert.equal(matchTier('x', 'harbor-ledger'), 0, 'one letter only matches as a prefix, word start or substring');
 });
 
@@ -56,8 +56,8 @@ test('other words an entry answers to match, but never above its own name', () =
   const list = [entry('repo', 'acme/ledger', ['ledger', 'acme']), entry('firm', 'Ledgerwrights')];
   assert.deepEqual(names(rank('ledg', list, [], KINDS)), ['Ledgerwrights', 'acme/ledger'], 'a prefix of the name beats a prefix of a key, whatever the kind order');
   assert.deepEqual(names(rank('acme', list, [], KINDS)), ['acme/ledger']);
-  const jobs = [entry('job', 'Harbour map', ['harbor-ledger']), entry('job', 'Add tests', ['harbor-ledger']), entry('repo', 'tidewater/harbor-ledger', ['harbor-ledger', 'tidewater'])];
-  assert.deepEqual(names(rank('har', jobs, [], KINDS)), ['Harbour map', 'tidewater/harbor-ledger', 'Add tests'], 'a job found only by its repo sits below the district itself, which a word of its own name answers for');
+  const jobs = [entry('job', 'Harbor map', ['harbor-ledger']), entry('job', 'Add tests', ['harbor-ledger']), entry('repo', 'tidewater/harbor-ledger', ['harbor-ledger', 'tidewater'])];
+  assert.deepEqual(names(rank('har', jobs, [], KINDS)), ['Harbor map', 'tidewater/harbor-ledger', 'Add tests'], 'a job found only by its repo sits below the district itself, which a word of its own name answers for');
 });
 
 test('on an empty query the most recent picks come first, newest first, then everything by kind in its source\'s order', () => {

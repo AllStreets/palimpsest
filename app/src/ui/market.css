@@ -709,6 +709,26 @@ body[data-route='inspection'] {
 .detail-sec .jobs-key {
   margin-top: 10px;
 }
+/* The market's terms, glossed above the bids: each term in the ink of the column head, its meaning after it, a line each. */
+.bid-terms {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 10px;
+  row-gap: 2px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.bid-terms dt {
+  color: var(--ink);
+}
+.bid-terms dd {
+  margin: 0;
+}
+abbr.bid-term {
+  text-decoration: underline dotted var(--ink-3);
+  text-underline-offset: 3px;
+  cursor: help;
+}
 
 /* ---------------------------------------------------------------- the issue */
 
@@ -4879,6 +4899,32 @@ a.brief-act {
 .brief-acted:focus-visible {
   outline: 1px solid var(--focus);
   outline-offset: 3px;
+}
+/* Handled today: what he already settled sits after what waits, smaller and quieter, so the waiting rows are the list. */
+.brief-list[hidden],
+.brief-handled-head[hidden] {
+  display: none;
+}
+.brief-handled-head {
+  margin-top: 26px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--sans);
+  font-weight: 400;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.brief-handled .brief-item {
+  padding: 9px 0 8px;
+}
+.brief-handled .brief-head {
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+.brief-handled .brief-line {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--ink-3);
 }
 /* What he dismissed steps back: still in its place, read once more if he wants it. */
 .brief-item[data-acted='dismiss'] .brief-head,

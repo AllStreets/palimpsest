@@ -19,7 +19,7 @@ export function settingsWindow(now: number | null | undefined, reading: UsageWin
   return { pct, since: Math.max(0, pct - read) };
 }
 
-/** The window as one line of the page: "45% used, 1 point of it by the city since your last reading; resets at 11:31 AM." */
+/** The window as one line of the page: "45% used, 1 point of it by the city since your last reading; resets at 11:31." */
 export function windowSentence(w: { pct: number; since: number }, reset: string): string {
   const since = w.since > 0 ? `, ${w.since} ${w.since === 1 ? 'point' : 'points'} of it by the city since your last reading` : '';
   return `${w.pct}% used${since}${reset ? `; ${reset}` : ''}.`;

@@ -194,6 +194,16 @@ export async function reposChecks(page: Page): Promise<void> {
 
   // Root style: pick another root, the tower is restyled.
   const target = SAMPLE[0].fullName;
+  // Said in plain words (audit 2026-11-17): the group is named and described, and every glyph has a name of its own.
+  const rootGroup = page.locator(`${rowSel(target)} .root-picker`);
+  const rootSaid = await rootGroup.evaluate((g) => ({
+    label: document.getElementById(g.getAttribute('aria-labelledby') ?? '')?.textContent ?? '',
+    note: document.getElementById(g.getAttribute('aria-describedby') ?? '')?.textContent ?? '',
+    names: [...g.querySelectorAll('[role="radio"]')].map((b) => b.getAttribute('aria-label') ?? ''),
+  }));
+  check(rootSaid.label === 'Tower root' && /base style of this repo's tower/.test(rootSaid.note) && /rebuilds the tower/.test(rootSaid.note), `the Root control says what a root is and that it changes the tower (${rootSaid.label}: ${rootSaid.note})`);
+  check(rootSaid.names.length === 5 && rootSaid.names.every((n) => / root$/.test(n)), `each root glyph has an accessible name (${rootSaid.names.join(', ')})`);
+  check(await page.locator(`${rowSel(target)} .repo-root-note`).isVisible(), 'and the words stand on the screen, not only for a screen reader');
   await page.locator(`${rowSel(target)} [role="radio"][data-root="pagoda"]`).click();
   const restyled = await page
     .waitForFunction(
@@ -372,7 +382,7 @@ export async function settingsChecks(page: Page, claudeSettingsPath: string): Pr
   check(five === want.five && week === want.week && week === '18%', `usage shows each window as it stands now, as the brief does (${five}, ${week}; the engine says ${want.five}, ${want.week})`);
   check(await page.locator('.usage-stale').isVisible(), 'an old reading carries the stale warning');
   check(/reset/i.test((await page.locator('.usage-five').textContent()) ?? ''), 'each window shows when it resets');
-  check(/window reset/.test((await page.locator('.usage-five .usage-reset').textContent()) ?? ''), 'a reset already past reads as past');
+  check(/^reset at \d\d:\d\d, after the last reading$/.test((await page.locator('.usage-five .usage-reset').textContent()) ?? ''), 'a reset already past reads as past');
   await page.screenshot({ path: join(SHOTS, 'settings.png') });
   await page.screenshot({ path: join(SHOTS, 'settings-full.png'), fullPage: false });
 
@@ -598,11 +608,52 @@ export async function everyScreenChecks(page: Page, errors: string[]): Promise<v
     const fresh = errors.slice(before);
     check(shown && fresh.length === 0, `the ${name} screen opens at ${hash} with no console error${fresh.length ? `: ${fresh.join(' | ')}` : ''}`);
   }
+  // The running head lights one place on every screen, whatever the pointer last touched.
+  await navLightingChecks(page);
   // The command palette (Phase 5), over the city and over a screen.
   await paletteChecks(page, errors);
   await page.evaluate(() => {
     location.hash = '#/';
   });
+}
+
+// ---------------------------------------------------------------- the running head's lighting
+
+/** Each head link's route, its drawn colour and whether it is the current place. */
+export async function headColours(page: Page): Promise<Array<{ route: string; color: string; current: boolean }>> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll<HTMLAnchorElement>('.runhead-link')].map((a) => ({
+      route: a.dataset.route ?? '',
+      color: getComputedStyle(a).color,
+      current: a.getAttribute('aria-current') === 'page',
+    })),
+  );
+}
+
+/**
+ * The lit place is the current one alone (audit 2026-11-17): every idle link draws in one colour and only the
+ * aria-current link differs. Taken the way the stills reached each screen: City clicked from the head, the pointer
+ * left resting on it, then each screen opened by its address (as the palette, a plate or a brief row would).
+ */
+export async function navLightingChecks(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    location.hash = '#/brief';
+  });
+  await page.waitForSelector('body[data-route="brief"]', { timeout: 8000 });
+  await page.locator('.runhead a[data-route="city"]').click();
+  await page.waitForSelector('body[data-route="city"]', { timeout: 8000 });
+  for (const route of ['brief', 'jobs', 'school', 'treasury', 'settings', 'firms', 'repos']) {
+    await page.evaluate((r) => {
+      location.hash = `#/${r}`;
+    }, route);
+    await page.waitForSelector(`body[data-route="${route}"]`, { timeout: 8000 });
+    const links = await headColours(page);
+    const current = links.filter((l) => l.current);
+    const idle = new Set(links.filter((l) => !l.current).map((l) => l.color));
+    const ok = current.length === 1 && current[0].route === route && idle.size === 1 && !idle.has(current[0].color);
+    check(ok, `on ${route} with the pointer resting on City, every idle head link draws in one colour and only ${route} differs${ok ? '' : `: ${JSON.stringify(links)}`}`);
+  }
+  await page.mouse.move(VIEWPORT.width / 2, VIEWPORT.height - 40);
 }
 
 // ---------------------------------------------------------------- the command palette (Phase 5)

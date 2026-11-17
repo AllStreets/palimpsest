@@ -14,8 +14,8 @@ test('Settings shows a window as it stands now, the figure the brief shows, not 
 });
 
 test('a window reads as a sentence on the page, not a tile', () => {
-  assert.equal(windowSentence({ pct: 45, since: 1 }, 'resets at 11:31 AM'), '45% used, 1 point of it by the city since your last reading; resets at 11:31 AM.');
-  assert.equal(windowSentence({ pct: 21, since: 0 }, 'resets Thu, Nov 19, 1:11 PM'), '21% used; resets Thu, Nov 19, 1:11 PM.');
+  assert.equal(windowSentence({ pct: 45, since: 1 }, 'resets at 11:31'), '45% used, 1 point of it by the city since your last reading; resets at 11:31.');
+  assert.equal(windowSentence({ pct: 21, since: 0 }, 'resets Thursday at 13:11'), '21% used; resets Thursday at 13:11.');
   assert.equal(windowSentence({ pct: 50, since: 3 }, ''), '50% used, 3 points of it by the city since your last reading.');
 });
 

@@ -9,6 +9,7 @@ import { AGREE, LORA, NET_MIN, SEALED_USES, SURVIVE_DAYS } from '../../../shared
 import type { Agreement, GateState, Grant, Interval, JobSchool, NetCard, NetName, Prediction, TrainKind, TrainState, VoyageView, WorkKind } from '../../../shared/types.js';
 import { ago, plural } from './controls.js';
 import { shortDate } from './story.js';
+import { clock } from './time-words.js';
 
 /** Labels a net needs before it reports anything: the training rows plus the held-out ones (ruling 11). */
 const NEEDS = NET_MIN.train + NET_MIN.heldOut;
@@ -136,12 +137,9 @@ export function netLine(card: NetCard): string {
 
 // ---------------------------------------------------------------- the gate
 
-/** "01:00" as "1:00"; "23:30" stays. */
-const hour = (hhmm: string): string => hhmm.replace(/^0(\d)/, '$1');
-const hm = (iso: string): string => {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-};
+/** A window's edge as Settings stores it, "01:00", "23:30": already the app's clock (time-words.ts). */
+const hour = (hhmm: string): string => hhmm;
+const hm = (iso: string): string => clock(iso);
 
 /**
  * "Training waits: on battery." or "Training may run: on power in Low Power
@@ -283,7 +281,7 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 /** "12 November at 18:30", in local time. */
 const writtenAt = (iso: string): string => {
   const d = new Date(iso);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]} at ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} at ${clock(d)}`;
 };
 
 /**
@@ -318,10 +316,9 @@ export function trainNowHeld(g: GateState): string | null {
   return g.power === 'battery' ? 'on battery' : 'could not read the power source';
 }
 
-/** "until 4:10": when "Train now" ends, in local time. */
+/** "until 04:10": when "Train now" ends, in local time. */
 export function untilLine(iso: string): string {
-  const d = new Date(iso);
-  return `until ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `until ${clock(iso)}`;
 }
 
 /** Said beside the Low Power switch only when the Mac is in Low Power on AC, which is when it matters. */

@@ -13,6 +13,8 @@ import { AGREE, isBeagle, WORK_KINDS } from '../../../shared/school-rules.js';
 import type { Brief, BriefAction, BriefItem, BudgetWindow, Grant, WorkKind } from '../../../shared/types.js';
 import { cleanText } from './board.js';
 import type { Names } from './detail.js';
+import { clock } from './time-words.js';
+import { briefHandled } from '../../../shared/brief-rules.js';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -58,11 +60,8 @@ export function briefTitle(day: string): string {
   return `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
 }
 
-/** A clock time as he reads it: 9:14, 18:30. */
-export function clock(ms: number): string {
-  const d = new Date(ms);
-  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
+/** A clock time as the whole app writes it: 09:14, 18:30 (time-words.ts). */
+export { clock };
 
 const localDay = (ms: number): string => {
   const d = new Date(ms);
@@ -307,4 +306,14 @@ export function grantMoves(g: Grant, where: 'settings' | 'district'): GrantMove[
     case 'declined':
       return [];
   }
+}
+
+// ---------------------------------------------------------------- Waiting on you (audit 2026-11-17)
+
+/** The quieter group under Waiting on you: rows he already settled today. */
+export const HANDLED_HEAD = 'Handled today';
+
+/** Waiting on you split in two: what still needs a click, in order, then what he settled (posted, dismissed...). */
+export function waitingGroups(items: BriefItem[]): { open: BriefItem[]; handled: BriefItem[] } {
+  return { open: items.filter((i) => !briefHandled(i)), handled: items.filter((i) => briefHandled(i)) };
 }

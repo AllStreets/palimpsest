@@ -1,7 +1,7 @@
 /**
  * The README audit's screens (Phase 3 Task 10), run by tools/ui-test.ts on
  * its own engine (port UI_PORT, default 4779, a temp home) once the sample economy is
- * seeded: the audit on the harbour's district page with its proposals, the
+ * seeded: the audit on the harbor's district page with its proposals, the
  * audit's own page, "Audit the README" on assay-kit, the kumo audit the
  * economy's clock ends (runs held, so the construction checks after these
  * find the sites where the seed left them), its proposals on the board, a
@@ -23,7 +23,7 @@ import type { AuditView, Job } from '../shared/types.js';
 type Check = (ok: boolean, what: string) => void;
 
 const SIZE = { width: 1600, height: 1000 };
-const HARBOUR = 'tidewater/harbor-ledger';
+const HARBOR = 'tidewater/harbor-ledger';
 const ASSAY = 'lantern/assay-kit';
 const KUMO = 'hoshi/kumo';
 
@@ -63,18 +63,18 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
       (window as unknown as { __noReload: boolean }).__noReload = true;
     });
 
-    // ------------------------------------------------------------ the harbour's district page
-    const harbourAudit = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(HARBOUR)}`)).find((a) => a.status === 'done');
-    check(!!harbourAudit, 'the harbour has a done audit');
-    if (!harbourAudit) return refusals;
-    const view = await api<AuditView>(page, `/api/audits/${harbourAudit.id}`);
+    // ------------------------------------------------------------ the harbor's district page
+    const harborAudit = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(HARBOR)}`)).find((a) => a.status === 'done');
+    check(!!harborAudit, 'the harbor has a done audit');
+    if (!harborAudit) return refusals;
+    const view = await api<AuditView>(page, `/api/audits/${harborAudit.id}`);
     const byTitle = (re: RegExp): Job | undefined => view.proposals.find((j) => re.test(j.title));
     const ubl = byTitle(/UBL/);
     const reason = byTitle(/reason on fee override/);
-    const schedule = byTitle(/harbour's day/);
-    check(!!ubl && !!reason && !!schedule, 'the harbour audit proposed the UBL, override reason and schedule jobs');
+    const schedule = byTitle(/harbor's day/);
+    check(!!ubl && !!reason && !!schedule, 'the harbor audit proposed the UBL, override reason and schedule jobs');
 
-    await go(page, `#/repos/${HARBOUR}`);
+    await go(page, `#/repos/${HARBOR}`);
     const sheet = page.locator('.sheet.district');
     const sec = sheet.locator('.district-audit');
     const shown = await within(page, 8000, async () => (await sec.locator('.audit-claims .claim').count()) === 14);
@@ -91,7 +91,7 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     const words = await sec.locator('.claim .verdict-word').allTextContents();
     check(words.length === 14 && words.every((w) => /^(real|partial|missing|stubbed|broken)$/.test(w)), 'and its word');
     const href = (await sec.locator('a.claim-evidence').first().getAttribute('href')) ?? '';
-    check(new RegExp(`^https://github\\.com/${HARBOUR}/blob/${harbourAudit.baseSha}/[\\w/.%-]+#L\\d+$`).test(href), `evidence links to GitHub at the audited commit (${href})`);
+    check(new RegExp(`^https://github\\.com/${HARBOR}/blob/${harborAudit.baseSha}/[\\w/.%-]+#L\\d+$`).test(href), `evidence links to GitHub at the audited commit (${href})`);
     check((await sec.locator('a.claim-evidence').evaluateAll((as) => as.every((a) => (a as HTMLAnchorElement).target === '_blank' && /noopener/.test((a as HTMLAnchorElement).rel)))), 'and leaves the app safely');
     const props = sec.locator('.claim-proposal');
     const states = await props.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.state).sort());
@@ -126,18 +126,18 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     // Propose again: the dismissed proposal is back, waiting on him.
     await dismissedRow.locator('.prop-again').click();
     check(
-      await within(page, 4000, async () => (await api<Job[]>(page, `/api/jobs?status=proposed&repo=${encodeURIComponent(HARBOUR)}`)).some((j) => j.key === schedule?.key)),
+      await within(page, 4000, async () => (await api<Job[]>(page, `/api/jobs?status=proposed&repo=${encodeURIComponent(HARBOR)}`)).some((j) => j.key === schedule?.key)),
       'Propose again puts the dismissed proposal back on the board',
     );
     check(await within(page, 4000, async () => (await props.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.state))).filter((s) => s === 'proposed').length === 2), 'and its row waits on him again');
 
     // ------------------------------------------------------------ the audit's own page
     await sec.locator('a.audit-page-link').first().click();
-    const onPage = await within(page, 5000, async () => (await page.evaluate(() => location.hash)) === `#/audits/${harbourAudit.id}` && (await page.locator('.sheet.auditpage .claim').count()) === 14);
+    const onPage = await within(page, 5000, async () => (await page.evaluate(() => location.hash)) === `#/audits/${harborAudit.id}` && (await page.locator('.sheet.auditpage .claim').count()) === 14);
     check(onPage, 'the audit opens on its own page with its claims');
     const trail = (await page.locator('.sheet.auditpage .detail-trail > *:not(.detail-trail-sep)').allTextContents()).map((t) => t.trim());
     check(trail.length === 3 && trail[0] === 'Repos' && trail[1] === 'harbor-ledger' && /^audit of \d+ \w+ \d{4}$/.test(trail[2]), `its trail reads Repos, the repo, the audit's date (${trail.join(' / ')})`);
-    check((await page.locator('.sheet.auditpage .detail-trail a').nth(1).getAttribute('href')) === `#/repos/${HARBOUR}`, 'and leads back to the district');
+    check((await page.locator('.sheet.auditpage .detail-trail a').nth(1).getAttribute('href')) === `#/repos/${HARBOR}`, 'and leads back to the district');
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(shots, 'audit.png') });
 
@@ -161,9 +161,9 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     await go(page, '#/jobs');
     check(await within(page, 6000, async () => (await page.locator('.sec-proposed').count()) === 1), 'the board opens with its proposals');
     check(await within(page, 4000, async () => (await page.locator(`.sec-bidding .job-row[data-job="${reason?.id}"]`).count()) === 1), 'the accepted proposal stands under Bidding');
-    const harbourGroup = page.locator(`.sec-proposed .audit-group[data-repo="${HARBOUR}"]`);
-    check((await harbourGroup.count()) === 1 && (await harbourGroup.locator('.prop-line').count()) === 2, `the harbour's proposals stand under its audit (${await harbourGroup.locator('.prop-line').count()})`);
-    check(/^Invoices can also be sent/.test(((await harbourGroup.locator(`.prop-line[data-job="${ubl?.id}"] .prop-claim-text`).textContent()) ?? '').trim()), 'each with the claim behind it');
+    const harborGroup = page.locator(`.sec-proposed .audit-group[data-repo="${HARBOR}"]`);
+    check((await harborGroup.count()) === 1 && (await harborGroup.locator('.prop-line').count()) === 2, `the harbor's proposals stand under its audit (${await harborGroup.locator('.prop-line').count()})`);
+    check(/^Invoices can also be sent/.test(((await harborGroup.locator(`.prop-line[data-job="${ubl?.id}"] .prop-claim-text`).textContent()) ?? '').trim()), 'each with the claim behind it');
     const kumoBefore = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(KUMO)}`))[0];
     check(kumoBefore?.status === 'reading', `the kumo audit is reading (${kumoBefore?.status})`);
     // Stop on the reading audit: the engine has no live session behind the sample's, and its refusal shows in place.
@@ -194,7 +194,7 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     check(await within(page, 10_000, async () => (await kumoGroup.locator('.prop-line').count()) === 2), `and they appear on the board under its heading (${await kumoGroup.locator('.prop-line').count()})`);
     const kumoHead = ((await kumoGroup.locator('.audit-group-head').textContent({ timeout: 3000 }).catch(() => '')) ?? '').trim();
     check(/README audit/.test(kumoHead), `the heading names the audit (${kumoHead})`);
-    // Its own page carries the marks the harbour's has not: stubbed and partial among them.
+    // Its own page carries the marks the harbor's has not: stubbed and partial among them.
     const kumoAudit = (await api<AuditRow[]>(page, `/api/audits?repo=${encodeURIComponent(KUMO)}`))[0];
     await go(page, `#/audits/${kumoAudit?.id}`);
     check(await within(page, 5000, async () => (await page.locator('.sheet.auditpage .claim').count()) === kumoAudit?.findings.length), 'the kumo audit opens on its own page');
@@ -228,7 +228,7 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     check(/Invoices can also be sent as e-invoices in the UBL format/.test((await why.locator('.why-claim').textContent()) ?? ''), 'with the claim');
     check(((await why.locator('.verdict-word').textContent()) ?? '') === 'missing', 'the verdict');
     const ev = (await why.locator('a.claim-evidence').first().getAttribute('href')) ?? '';
-    check(new RegExp(`^https://github\\.com/${HARBOUR}/blob/${harbourAudit.baseSha}/`).test(ev), `and the evidence, linked at the audited commit (${ev})`);
+    check(new RegExp(`^https://github\\.com/${HARBOR}/blob/${harborAudit.baseSha}/`).test(ev), `and the evidence, linked at the audited commit (${ev})`);
 
     const add = jp.locator('.term-add[data-list="scope"]');
     check(await within(page, 3000, async () => (await add.count()) === 1), 'its scope can be edited while it is proposed');
@@ -299,13 +299,13 @@ export async function auditChecks(page: Page, check: Check, shots: string): Prom
     check(await within(page, 5000, async () => (await jp.locator('.job-globs').count()) === 1 && (await jp.locator('.job-globs .term-input, .term-add, .terms-save').count()) === 0), 'a running job’s scope is read only');
 
     // Propose again weighs every job on the key in the repo, not only the audit's own: a newer one from another audit holds it.
-    const again = (await api<Job[]>(page, `/api/jobs?status=proposed&repo=${encodeURIComponent(HARBOUR)}`)).find((j) => j.key === schedule?.key);
+    const again = (await api<Job[]>(page, `/api/jobs?status=proposed&repo=${encodeURIComponent(HARBOR)}`)).find((j) => j.key === schedule?.key);
     check(!!again, 'the schedule proposal is proposed again');
     if (again) {
       await page.evaluate((id) => fetch(`/api/jobs/${id}/dismiss`, { method: 'POST', headers: { 'x-palimpsest': '1' } }), again.id);
       const { postProposal } = await import('../engine/market/jobs.js');
-      const other = postProposal({ repo: HARBOUR, title: again.title, body: 'Another audit found it too.', scope: again.scope, acceptance: again.acceptance, tier: again.tier, key: again.key!, source: 'proposal', proposal: { auditId: 'audit-elsewhere', findingId: 'f1' } });
-      await go(page, `#/repos/${HARBOUR}`);
+      const other = postProposal({ repo: HARBOR, title: again.title, body: 'Another audit found it too.', scope: again.scope, acceptance: again.acceptance, tier: again.tier, key: again.key!, source: 'proposal', proposal: { auditId: 'audit-elsewhere', findingId: 'f1' } });
+      await go(page, `#/repos/${HARBOR}`);
       const row = sheet.locator(`.district-audit .claim-proposal[data-job="${again.id}"]`);
       check(await within(page, 6000, async () => (await row.getAttribute('data-state')) === 'withdrawn'), 'the dismissed proposal stands dismissed on the district page');
       check((await row.locator('.prop-again').count()) === 0, 'and offers no Propose again while a newer job holds its key');

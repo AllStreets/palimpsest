@@ -5,14 +5,14 @@
  * the daily report's Markdown read into blocks the page builds from text
  * nodes only (its tables included).
  */
-import type { TreasuryView } from '../../../shared/types.js';
-import { runsHoldingSlots } from '../../../shared/market-rules.js';
+import type { BudgetWindow, TreasuryView } from '../../../shared/types.js';
+import { runsHoldingSlots, windowNowPct } from '../../../shared/market-rules.js';
+import { resetWords } from './time-words.js';
 import { githubUrl } from './board.js';
 import { inline, type Inline } from './detail.js';
 import { figure } from './story.js';
 
 const HOUR = 3_600_000;
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 const grouped = (n: number): string => Math.round(n).toLocaleString('en-US');
 
@@ -75,18 +75,17 @@ export function pauseWords(paused: TreasuryView['paused'], reading: TreasuryView
   }
 }
 
-const hm = (d: Date): string => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+export { resetWords };
 
-/** When a window resets, from its `resetsAt` in seconds: "resets at 17:20", "resets tomorrow at 09:05", "resets Friday at 09:00". */
-export function resetWords(resetsAt: number | null, now: number): string {
-  if (resetsAt === null) return 'no reset time on record';
-  const at = new Date(resetsAt * 1000);
-  if (at.getTime() <= now) return `reset at ${hm(at)}, after the last reading`;
-  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((day(at) - day(new Date(now))) / (24 * HOUR));
-  if (days === 0) return `resets at ${hm(at)}`;
-  if (days === 1) return `resets tomorrow at ${hm(at)}`;
-  return `resets ${WEEKDAYS[at.getDay()]} at ${hm(at)}`;
+/**
+ * A window's headline figure on the treasury: the same windowNowPct the brief and Settings show (audit
+ * 2026-11-17), so one plan reads one number; unread when nothing has read it, or it reset since the reading.
+ */
+export function meterFigure(w: Pick<BudgetWindow, 'usedPct' | 'estimatedPct' | 'resetsAt'>, now: number): { text: string; note: string; unread: boolean } {
+  if (w.resetsAt !== null && w.resetsAt * 1000 <= now) return { text: 'unread', note: 'It reset after your last reading, and nothing has read it since.', unread: true };
+  const pct = windowNowPct(w);
+  if (pct === null) return { text: 'unread', note: 'No reading of this window yet.', unread: true };
+  return { text: `${pct}%`, note: w.usedPct === null ? 'used now, by the city’s own count' : 'used now', unread: false };
 }
 
 /** A spend figure: two decimals with a thousands comma, and nothing set as a quiet dot. */

@@ -42,6 +42,7 @@ import {
 } from './school-words';
 import { longDate, shortDate } from './story';
 import './market.css';
+import { clock } from './time-words';
 
 export type SchoolRoute = Extract<Route, 'school' | 'net' | 'voyage' | 'graduate'>;
 
@@ -59,10 +60,7 @@ const SECTION_TITLE: Record<(typeof SCHOOL_SECTIONS)[number], string> = {
   training: 'Training',
 };
 
-const hm = (iso: string): string => {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-};
+const hm = (iso: string): string => clock(iso);
 const when = (iso: string): string => `${shortDate(iso)} ${hm(iso)}`;
 const repoShort = (full: string): string => cleanText(full.split('/')[1] ?? full, 60);
 /** Seconds as a clerk would note them: "41 s", "12 min", "2 h 10 min". */

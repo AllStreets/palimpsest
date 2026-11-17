@@ -63,7 +63,7 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
 
     // ------------------------------------------------------------ the running job's page
     const running = jobs.find((j) => j.status === 'running' && j.repo === 'tidewater/harbor-ledger');
-    check(!!running?.runId, `the economy has the harbour job running (${running?.title ?? 'none'})`);
+    check(!!running?.runId, `the economy has the harbor job running (${running?.title ?? 'none'})`);
     if (!running?.runId) return;
     const rd = await api<JobDetail>(page, `/api/jobs/${running.id}`);
     await go(page, `#/jobs/${running.id}`);
@@ -73,7 +73,12 @@ export async function detailChecks(page: Page, check: Check, shots: string): Pro
     const winner = rd.award?.chosen;
     const prose = (await page.locator('.jobpage .job-award').first().textContent()) ?? '';
     check(!!winner && prose.startsWith(`${firmName(winner.firmId)} won at `) && prose.includes(`${agentName(winner.agentId)} does the work`), `the award reads as prose naming the winner (${prose.slice(0, 90)})`);
-    check(/calibrated [\d.]+/.test(prose) && /expected value of [\d.]+/.test(prose), 'and gives the calibrated chance and the expected value');
+    check(/the \d+% chance the city gives/.test(prose) && /expected value of [\d.]+: the \d+ credit job, times/.test(prose), 'and says what the expected value is made of');
+    // The market's terms are glossed at the point of use (audit 2026-11-17): a line above the bids, and each head's own definition.
+    const terms = await page.locator('.jobpage .bid-terms dt').allTextContents();
+    check(JSON.stringify(terms) === JSON.stringify(['Stated', 'Calibrated', 'EV, expected value']), `the bids carry a plain line glossing Stated, Calibrated and EV (${terms.join(', ')})`);
+    const termHeads = await page.locator('.jobpage .job-bids th abbr.bid-term').evaluateAll((els) => els.map((e) => [e.textContent, (e as HTMLElement).title]));
+    check(termHeads.length === 4 && termHeads.every(([, t]) => (t ?? '').length > 20), `each term's column head defines it on hover (${termHeads.map(([h]) => h).join(', ')})`);
     check((await page.locator('.jobpage .md-code').count()) >= 1 && (await page.locator('.jobpage .job-glob').count()) === running.scope.length, 'the issue renders as markdown, with its scope listed');
     check((await page.locator('.jobpage .job-checklist li').count()) === running.acceptance.length, 'the acceptance reads as a checklist');
     check((await page.locator('.jobpage .job-kill').count()) === 1, 'a running job offers Kill');

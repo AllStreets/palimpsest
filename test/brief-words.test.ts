@@ -93,13 +93,13 @@ test('a recommendation to audit names the repo alone: when it connected is not t
 
 test('what he did with an item, and when, in quiet words', () => {
   const at = new Date(2026, 10, 12, 9, 14).toISOString();
-  assert.equal(actedLine(item({ kind: 'proposal', acted: { action: 'accept', at } })), 'Posted as a job, 9:14');
-  assert.equal(actedLine(item({ acted: { action: 'dismiss', at } })), 'Dismissed, 9:14');
-  assert.equal(actedLine(item({ kind: 'failed', acted: { action: 'retry', at } })), 'Posted again, 9:14');
-  assert.equal(actedLine(item({ kind: 'halt', acted: { action: 'resume', at } })), 'Resumed, 9:14');
-  assert.equal(actedLine(item({ kind: 'proposal', tier: 'low', acted: { action: 'tier', at } })), 'Tier set to low, 9:14');
-  assert.equal(actedLine(item({ kind: 'audit-due', acted: { action: 'audit', at } })), 'Audit queued, 9:14');
-  assert.equal(actedLine(item({ kind: 'usage', acted: { action: 'cap', at } }), 60), "Today's limit set to 60% by you, 9:14");
+  assert.equal(actedLine(item({ kind: 'proposal', acted: { action: 'accept', at } })), 'Posted as a job, 09:14');
+  assert.equal(actedLine(item({ acted: { action: 'dismiss', at } })), 'Dismissed, 09:14');
+  assert.equal(actedLine(item({ kind: 'failed', acted: { action: 'retry', at } })), 'Posted again, 09:14');
+  assert.equal(actedLine(item({ kind: 'halt', acted: { action: 'resume', at } })), 'Resumed, 09:14');
+  assert.equal(actedLine(item({ kind: 'proposal', tier: 'low', acted: { action: 'tier', at } })), 'Tier set to low, 09:14');
+  assert.equal(actedLine(item({ kind: 'audit-due', acted: { action: 'audit', at } })), 'Audit queued, 09:14');
+  assert.equal(actedLine(item({ kind: 'usage', acted: { action: 'cap', at } }), 60), "Today's limit set to 60% by you, 09:14");
   // Looking is not acting: Ask why, the diff, the floor and the PR leave no line.
   for (const a of ['why', 'diff', 'fly', 'open-pr'] as BriefAction[]) assert.equal(actedLine(item({ acted: { action: a, at } })), '', a);
   assert.equal(actedLine(item({})), '');
@@ -122,9 +122,9 @@ test('today\'s limit may rise to five points under the hard stop, never below fi
 
 test('the line under the title says the window, and whether this is the day\'s first look', () => {
   const since = new Date(2026, 10, 11, 6, 40).toISOString();
-  assert.equal(sinceLine(since, '2026-11-12', true), 'Since yesterday at 6:40.');
-  assert.equal(sinceLine(since, '2026-11-12', false), 'Since yesterday at 6:40. You have opened it once already today.');
-  assert.equal(sinceLine(new Date(2026, 10, 9, 6, 40).toISOString(), '2026-11-12', true), 'Since Monday at 6:40.');
+  assert.equal(sinceLine(since, '2026-11-12', true), 'Since yesterday at 06:40.');
+  assert.equal(sinceLine(since, '2026-11-12', false), 'Since yesterday at 06:40. You have opened it once already today.');
+  assert.equal(sinceLine(new Date(2026, 10, 9, 6, 40).toISOString(), '2026-11-12', true), 'Since Monday at 06:40.');
 });
 
 // ---------------------------------------------------------------- autonomy (Phase 4 Task 31)
@@ -189,7 +189,21 @@ test('a kind of work is said in words, never as its code', () => {
 
 test('his answer to an ask, and his taking back, in quiet words', () => {
   const at = new Date(2026, 10, 12, 9, 14).toISOString();
-  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'grant', at } })), 'Granted, 9:14');
-  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'decline', at } })), 'Not yet; quiet for 30 days, 9:14');
-  assert.equal(actedLine(item({ kind: 'acted', acted: { action: 'revoke', at } })), 'Taken back, 9:14');
+  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'grant', at } })), 'Granted, 09:14');
+  assert.equal(actedLine(item({ kind: 'autonomy', acted: { action: 'decline', at } })), 'Not yet; quiet for 30 days, 09:14');
+  assert.equal(actedLine(item({ kind: 'acted', acted: { action: 'revoke', at } })), 'Taken back, 09:14');
+});
+
+test('Waiting on you sets what needs a click first, then what he handled today, apart and quieter (audit 2026-11-17)', async () => {
+  const { waitingGroups, HANDLED_HEAD } = await import('../app/src/ui/brief-words.js');
+  const at = new Date(2026, 10, 11, 18, 30).toISOString();
+  const posted = item({ id: 'p1', kind: 'proposal', acted: { action: 'accept', at } });
+  const open = item({ id: 'p2', kind: 'proposal', actions: ['accept', 'tier', 'dismiss'] });
+  const tiered = item({ id: 'p3', kind: 'proposal', actions: ['accept', 'tier', 'dismiss'], acted: { action: 'tier', at } });
+  const dismissed = item({ id: 'f1', kind: 'pr', acted: { action: 'dismiss', at } });
+  const pr = item({ id: 'pr1', kind: 'pr', actions: ['open-pr', 'why'] });
+  const g = waitingGroups([posted, open, tiered, dismissed, pr]);
+  assert.deepEqual(g.open.map((i) => i.id), ['p2', 'p3', 'pr1'], 'a tier changed still waits for the post');
+  assert.deepEqual(g.handled.map((i) => i.id), ['p1', 'f1']);
+  assert.equal(HANDLED_HEAD, 'Handled today');
 });

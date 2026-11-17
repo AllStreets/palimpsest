@@ -334,7 +334,7 @@ async function tabbable(page: Page, scope: string): Promise<{ all: boolean; n: n
 
 /**
  * Autonomy in the four places he already looks, on the economy: the
- * harbour's open ask granted from the brief shows granted in Settings and
+ * harbor's open ask granted from the brief shows granted in Settings and
  * on the district page live (a second window holds the district page); Take
  * it back in Settings revokes it with its quiet date; Settings grants it
  * again; a suspension for his undo names it; the district's "Build an
@@ -355,9 +355,9 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
   const { suspend } = await import('../engine/school/autonomy.js');
   const { holdTrain } = await import('../engine/school/trainer.js');
   const { arenaRefusal, RACE_REFUSAL } = await import('../shared/school-rules.js');
-  const harbour = 'tidewater/harbor-ledger';
+  const harbor = 'tidewater/harbor-ledger';
   const kind = 'propose:readme-gap';
-  const pairSel = (root: string) => `${root} .grant-entry[data-kind="${kind}"][data-repo="${harbour}"]`;
+  const pairSel = (root: string) => `${root} .grant-entry[data-kind="${kind}"][data-repo="${harbor}"]`;
   const second = await page.context().browser()!.newPage({ viewport: SIZE });
   const errors2: string[] = [];
   second.on('console', (m) => {
@@ -366,21 +366,21 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
   second.on('pageerror', (e) => errors2.push(String(e)));
   try {
     const view = await api<SchoolView>(page, '/api/school');
-    const ask = view.grants.find((g) => g.kind === kind && g.repo === harbour);
-    check(ask?.state === 'asked', `the economy holds the harbour's open ask for README gap proposals (${ask?.state ?? 'none'})`);
+    const ask = view.grants.find((g) => g.kind === kind && g.repo === harbor);
+    check(ask?.state === 'asked', `the economy holds the harbor's open ask for README gap proposals (${ask?.state ?? 'none'})`);
     check(view.settings.enabled, 'the school is on in the economy');
 
-    // ------------------------------------------------------------ a second window on the harbour's district page
+    // ------------------------------------------------------------ a second window on the harbor's district page
     await second.goto(`${new URL(page.url()).origin}/#/repos/tidewater/harbor-ledger`);
     const district2 = second.locator('.sheet.district');
-    check(await within(second, 15_000, async () => (await second.locator(pairSel('.sheet.district')).count()) === 1), 'the harbour’s district page lists its ask');
+    check(await within(second, 15_000, async () => (await second.locator(pairSel('.sheet.district')).count()) === 1), 'the harbor’s district page lists its ask');
     check((await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'asked' && /^asked (today|yesterday)$/.test(((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()), `as asked (${((await second.locator(`${pairSel('.sheet.district')} .grant-entry-state`).textContent()) ?? '').trim()})`);
     check((await district2.locator('.district-note').count()) === 0, 'the Phase 3 note is gone');
 
     // ------------------------------------------------------------ the brief: the ask, granted by the keyboard
     await go(page, '#/brief');
     const brief = page.locator('.sheet.brief');
-    const itemId = `autonomy:${kind}:${harbour}`;
+    const itemId = `autonomy:${kind}:${harbor}`;
     const row = brief.locator(`.brief-item[data-item="${itemId}"]`);
     check(await within(page, 8000, async () => (await row.count()) === 1), 'the brief holds the ask, waiting on him');
     const sentence = ((await row.locator('.brief-sentence').textContent()) ?? '').trim();
@@ -408,7 +408,7 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     const now = await api<SchoolView>(page, '/api/school');
     check(await within(page, 8000, async () => (await settings.locator('.grant-entry').count()) === now.grants.length), `Settings lists every pair (${await settings.locator('.grant-entry').count()} of ${now.grants.length})`);
     const srow = page.locator(pairSel('.sheet.settings'));
-    check((await srow.getAttribute('data-state')) === 'granted', 'the harbour’s pair reads granted in Settings');
+    check((await srow.getAttribute('data-state')) === 'granted', 'the harbor’s pair reads granted in Settings');
     check((await srow.locator('.grant-entry-repo').getAttribute('href')) === '#/repos/tidewater/harbor-ledger', 'its repo links to the district page');
     check(/^\d\.\d\d$/.test(((await srow.locator('.grant-entry-rate').textContent()) ?? '').trim()) && /^\d+ of \d+$/.test(((await srow.locator('.grant-entry-of').textContent()) ?? '').trim()), `with the master's agreement on the kind (${((await srow.locator('.grant-entry-fig').textContent()) ?? '').trim()})`);
     check(((await srow.locator('.grant-entry-where').textContent()) ?? '').trim() === 'on all repos', 'Settings labels it the kind’s, on all repos');
@@ -416,7 +416,7 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
       const fig = second.locator(`${pairSel('.sheet.district')} .grant-entry-fig`);
       const where = ((await fig.locator('.grant-entry-where').textContent().catch(() => '')) ?? '').trim();
       const of = ((await fig.locator('.grant-entry-of').textContent().catch(() => '')) ?? '').trim();
-      const own = (await api<SchoolView>(page, '/api/school')).grantAgreements.find((a) => a.kind === kind && a.repo === harbour);
+      const own = (await api<SchoolView>(page, '/api/school')).grantAgreements.find((a) => a.kind === kind && a.repo === harbor);
       check(where === 'on this repo' && !!own && of === `${own.repoAgreed} of ${own.repoRows}`, `the district page shows the repo's own agreement, labelled (${of} ${where}; engine ${own?.repoAgreed} of ${own?.repoRows})`);
     }
     const kumo = now.grants.find((g) => g.state === 'suspended');
@@ -433,7 +433,7 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     await page.keyboard.press('Enter');
     const quiet = dayMonth(Date.now() + 30 * 86_400_000);
     check(await within(page, 8000, async () => ((await srow.locator('.grant-entry-state').textContent()) ?? '').trim() === `you took it back; quiet until ${quiet}`), `Take it back revokes it and shows the quiet date (${((await srow.locator('.grant-entry-state').textContent()) ?? '').trim()})`);
-    check((await page.evaluate(() => document.activeElement?.closest('[data-pair]')?.getAttribute('data-pair') ?? '')) === `${kind} ${harbour}`, 'focus stays on the pair after the move');
+    check((await page.evaluate(() => document.activeElement?.closest('[data-pair]')?.getAttribute('data-pair') ?? '')) === `${kind} ${harbor}`, 'focus stays on the pair after the move');
     check(await within(second, 8000, async () => (await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'revoked'), 'the district page shows it taken back, live');
     check((await second.locator(`${pairSel('.sheet.district')} [data-move]`).count()) === 0 && (await second.locator(`${pairSel('.sheet.district')} .grant-entry-to`).getAttribute('href')) === '#/settings', 'and there sends him to Settings to grant it again');
     check(await keyFocus(page, `${pairSel('.sheet.settings')} [data-move="regrant"]`), 'Grant it again takes the keyboard’s focus, visibly');
@@ -442,7 +442,7 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     check(await within(second, 8000, async () => (await second.locator(pairSel('.sheet.district')).getAttribute('data-state')) === 'granted'), 'and the district page follows, live');
 
     // His undo of an accepted proposal suspends the pair (decisions.ts's hook, UNDO_REASON): the row names it.
-    suspend(kind, harbour, 'he undid it', Date.now());
+    suspend(kind, harbor, 'he undid it', Date.now());
     check(await within(page, 8000, async () => ((await srow.locator('.grant-entry-state').textContent()) ?? '').trim() === 'suspended: you undid an accepted proposal'), `the suspended row names his undo (${((await srow.locator('.grant-entry-state').textContent()) ?? '').trim()})`);
     check((await srow.locator('[data-move]').allTextContents()).join() === 'Take it back', 'and offers to take it back');
     await page.locator('.sheet.settings .sheet-body').evaluate((b) => {
@@ -458,14 +458,14 @@ export async function autonomyChecks(page: Page, check: Check, shots: string): P
     await srow.locator('[data-move="revoke"]').click();
     check(await within(page, 8000, async () => (await srow.getAttribute('data-state')) === 'revoked'), 'Take it back on the suspended pair revokes it');
     {
-      const row = openDb().prepare('SELECT json FROM grants WHERE kind = ? AND repo = ?').get(kind, harbour) as { json: string };
+      const row = openDb().prepare('SELECT json FROM grants WHERE kind = ? AND repo = ?').get(kind, harbor) as { json: string };
       const g = { ...(JSON.parse(row.json) as Grant), state: 'granted' as const, at: new Date().toISOString(), by: 'him' as const, reason: null, quietUntil: null };
-      openDb().prepare('UPDATE grants SET state = ?, at = ?, json = ? WHERE kind = ? AND repo = ?').run(g.state, g.at, JSON.stringify(g), kind, harbour);
-      record('autonomy.granted', { kind, repo: harbour, fromSettings: true, grant: g, at: g.at });
+      openDb().prepare('UPDATE grants SET state = ?, at = ?, json = ? WHERE kind = ? AND repo = ?').run(g.state, g.at, JSON.stringify(g), kind, harbor);
+      record('autonomy.granted', { kind, repo: harbor, fromSettings: true, grant: g, at: g.at });
     }
     await srow.locator('[data-move="regrant"]').click();
     const refused = srow.locator('.grant-entry-error');
-    check(await within(page, 8000, async () => ((await refused.textContent().catch(() => '')) ?? '').trim() === `Grant it again refused: ${kind} on ${harbour} is already granted.`), `the engine's refusal stands under the row in its own words (${((await refused.textContent().catch(() => '')) ?? '').trim()})`);
+    check(await within(page, 8000, async () => ((await refused.textContent().catch(() => '')) ?? '').trim() === `Grant it again refused: ${kind} on ${harbor} is already granted.`), `the engine's refusal stands under the row in its own words (${((await refused.textContent().catch(() => '')) ?? '').trim()})`);
     check((await refused.getAttribute('role')) === 'alert', 'and is announced');
     check(await within(page, 8000, async () => (await srow.getAttribute('data-state')) === 'granted'), 'and the row reads the pair as the engine has it');
 
@@ -835,7 +835,7 @@ export async function lineageChecks(page: Page, check: Check, shots: string): Pr
     const locals = firms.flatMap((f) => f.agents).filter((a) => a.lineage.origin === 'seeded' && a.model.startsWith('ollama:')).slice(0, 2);
     const arena = view.arenas.find((a) => a.kind === 'planted') ?? view.arenas[0];
     const now = Date.now();
-    const genome = 'ui-harbour-2-1';
+    const genome = 'ui-harbor-2-1';
     const v: VoyageView = {
       id: bredVoyage,
       arena: arena.id,
@@ -847,7 +847,7 @@ export async function lineageChecks(page: Page, check: Check, shots: string): Pr
       commissionedBy: 'quickset',
       scores: [
         ...locals.map((a) => ({ genome: a.id, name: a.name, generation: 1, mean: 0.41, lo: 0.32, hi: 0.5, parents: [] as string[] })),
-        { genome, name: 'Harbour 2.1', generation: 2, mean: 0.62, lo: 0.53, hi: 0.71, parents: locals.map((a) => a.id) },
+        { genome, name: 'Harbor 2.1', generation: 2, mean: 0.62, lo: 0.53, hi: 0.71, parents: locals.map((a) => a.id) },
       ],
       promoted: [{ child: genome, parent: locals[0].id, diff: 0.21, lo: 0.12, hi: 0.3 }],
       sealed: { value: 0.58, lo: 0.46, hi: 0.7, n: 15 },
@@ -856,7 +856,7 @@ export async function lineageChecks(page: Page, check: Check, shots: string): Pr
       endedAt: new Date(now - 86_400_000).toISOString(),
       reason: null,
       pausedAt: null,
-      champion: { genome, name: 'Harbour 2.1', model: locals[0].model, generation: 2, parents: locals.map((a) => a.id), body: { id: genome, name: 'Harbour 2.1', model: locals[0].model, instructions: 'Read the failing test first; change the least code that makes it pass.\n', tools: ['read', 'edit', 'run'], workflow: { shape: 'single' }, memory: { examples: 2 } } },
+      champion: { genome, name: 'Harbor 2.1', model: locals[0].model, generation: 2, parents: locals.map((a) => a.id), body: { id: genome, name: 'Harbor 2.1', model: locals[0].model, instructions: 'Read the failing test first; change the least code that makes it pass.\n', tools: ['read', 'edit', 'run'], workflow: { shape: 'single' }, memory: { examples: 2 } } },
       vsLocal: locals.map((a, i) => ({ agent: a.id, name: a.name, diff: 0.19 - 0.03 * i, lo: 0.11 - 0.03 * i, hi: 0.27 - 0.03 * i })),
       claim: true,
       notCompared: 'Claude agents are never raced.',
@@ -870,7 +870,7 @@ export async function lineageChecks(page: Page, check: Check, shots: string): Pr
     if (bredAgent) {
       await go(page, `#/agents/${bredAgent}`);
       const bred = sheet.locator('.agent-school[data-school="bred"]');
-      check(await within(page, 8000, async () => (await sheet.locator('.sheet-title').textContent()) === 'Harbour 2.1' && (await bred.count()) === 1), 'the bred specialist’s page has where it came from');
+      check(await within(page, 8000, async () => (await sheet.locator('.sheet-title').textContent()) === 'Harbor 2.1' && (await bred.count()) === 1), 'the bred specialist’s page has where it came from');
       const links = bred.locator('.agent-school-parents a.agent-school-parent');
       const hrefs = await links.evaluateAll((as) => as.map((a) => a.getAttribute('href')));
       check(hrefs.length === 2 && locals.every((a) => hrefs.includes(`#/agents/${a.id}`)), `it links its two parents (${hrefs.join(', ')})`);
