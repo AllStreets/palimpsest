@@ -74,3 +74,9 @@ test('every named view holds 58 fps on high and on medium: perf names each view 
   const medianRate = P.medianRate as (ms: number[]) => number;
   assert.ok(Math.abs(medianRate([16.7, 16.7, 33.4]) - 1000 / 16.7) < 1e-9);
 });
+
+test('a view asked for and not measured is named, never a silent gap', async () => {
+  const P = (await import('../tools/perf.js')) as unknown as Record<string, unknown>;
+  const missingViews = P.missingViews as (expected: string[], rows: Record<string, unknown>) => string[];
+  assert.deepEqual(missingViews(['home', 'sun-low', 'tour-stop', 'first-frame'], { home: {}, 'tour-stop': {} }), ['sun-low']);
+});

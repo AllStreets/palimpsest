@@ -3002,6 +3002,7 @@ async function dropMidRideChecks(page: Page): Promise<void> {
   const off = run.findIndex((r) => r.amount === 0);
   console.log(`info  step down mid-ride: the lens off ${off >= 0 ? (run[off].t - 500).toFixed(0) : '?'} ms after the ask, the city at medium ${at >= 0 ? (run[at].t - 500).toFixed(0) : '?'} ms after, the largest fall in a frame ${step.toFixed(3)}, the longest frame ${longest.toFixed(1)} ms`);
   check(at >= 0 && (await debug(page, (d) => d.quality())) === 'medium', 'the city stands at medium after the step down mid-ride');
+  check(longest <= 100, `no frame runs over 100 ms through the step down mid-ride, high to medium (longest ${longest.toFixed(1)} ms)`);
   check(off >= 0 && step <= 0.25, `the depth of field turns off without a jump (its largest fall in one frame ${step.toFixed(3)}, at most 0.25)`);
   const after = await lensNow(page);
   check(!after.on && after.blur === 0, `on medium the lens stays off on the ride (${lensLine(after)})`);
