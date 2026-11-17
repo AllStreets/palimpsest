@@ -115,3 +115,28 @@ test('two plates whose words collide after a flip: the later one waits while the
   const c = { x: 1440, y: 440, words: 60, flip: true };
   assert.deepEqual([...fn!([a, b, c])], [1], 'c overlaps only b, which is hidden, so c stays');
 });
+
+test('behind a sheet the plates keep to the pane: the flip and the fit use the pane, not the window (audit 2026-11-17)', () => {
+  const { placeInPane } = labels as unknown as {
+    placeInPane: (x: number, y: number, words: number, pane: { left: number; right: number; height: number }, margin?: number) => { flip: boolean; fits: boolean };
+  };
+  assert.equal(typeof placeInPane, 'function');
+  const pane = { left: 752, right: 1600, height: 1000 };
+  // Sparrow & Co near the window's right edge flips left of its hairline and stays whole.
+  assert.deepEqual(placeInPane(1520, 500, 130, pane), { flip: true, fits: true });
+  // Just right of the sheet's edge, a plate whose flipped words would run under the sheet does not flip; it shows right.
+  assert.deepEqual(placeInPane(800, 500, 120, pane), { flip: false, fits: true });
+  // Its foot under the sheet: not in the pane, so not shown (and never in the collision pass).
+  assert.equal(placeInPane(700, 500, 120, pane).fits, false);
+  // Narrow pane: neither side fits, so the plate waits rather than run under the sheet or off the window.
+  assert.equal(placeInPane(820, 500, 200, { left: 760, right: 980, height: 1000 }).fits, false);
+  // With no sheet the pane is the window, as before.
+  assert.deepEqual(placeInPane(1440, 500, 120, { left: 0, right: 1512, height: 890 }), { flip: true, fits: true });
+});
+
+test('the plates read the pane the screens set, and the guard sets it to the open sheet\'s right edge', () => {
+  const src = readFileSync(new URL('../app/src/city/labels.ts', import.meta.url), 'utf8');
+  assert.match(src, /export function setPlatePane\(/);
+  const guard = readFileSync(new URL('../app/src/ui/plate-guard.ts', import.meta.url), 'utf8');
+  assert.match(guard, /setPlatePane\(/);
+});

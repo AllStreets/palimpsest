@@ -47,6 +47,28 @@ export function plateFits(x: number, y: number, words: number, flip: boolean, vi
   return x0 >= margin && x0 + words <= viewWidth - margin && y - NAME_RISE >= margin && y <= viewHeight - margin;
 }
 
+/**
+ * The part of the window the city shows through: the whole window, or right of an open sheet's edge (audit
+ * 2026-11-17). The screens set its left edge (plate-guard.ts); the plates keep their flip and their fit inside it.
+ */
+let paneLeft = 0;
+
+/** Sets the visible pane's left edge in pixels: an open sheet's right edge, or 0 when no sheet is open. */
+export function setPlatePane(left: number): void {
+  paneLeft = Number.isFinite(left) && left > 0 ? left : 0;
+}
+
+/**
+ * Where a plate with its foot at (`x`, `y`) sets its words within the pane, and whether they stand whole inside
+ * it: the flip and the fit measured from the pane's left edge to its right, not the window's.
+ */
+export function placeInPane(x: number, y: number, words: number, pane: { left: number; right: number; height: number }, margin = 0): { flip: boolean; fits: boolean } {
+  const width = Math.max(0, pane.right - pane.left);
+  const at = x - pane.left;
+  const flip = plateFlips(at, words, width);
+  return { flip, fits: at >= 0 && plateFits(at, y, words, flip, width, pane.height, margin) };
+}
+
 /** The room kept between two plates' boxes, in pixels. */
 const PLATE_GAP = 2;
 
@@ -227,11 +249,13 @@ export function createPlates(
         l.el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
         // Near the right edge the words stand left of the hairline rather than clipping (plateFlips); measured once.
         if (!l.words) l.words = Math.max(l.name.offsetWidth, l.sub.offsetWidth);
-        const flip = l.words > 0 && plateFlips(x, l.words, w);
+        // Behind a sheet the view is the pane right of it: the flip and the fit keep the words inside it.
+        const placed = l.words > 0 ? placeInPane(x, y, l.words, { left: Math.min(paneLeft, w), right: w, height: h }, l.clipped ? PLATE_FIT_SPARE : 0) : null;
+        const flip = placed?.flip ?? false;
         if (flip !== l.flipped) setFlip(l, flip);
         // A plate whose words would still run off the view (its foot past an edge, or its name over the top) waits
         // until the eye turns to it: a name is shown whole or not at all (Task 15a).
-        l.clipped = l.words > 0 && !plateFits(x, y, l.words, flip, w, h, l.clipped ? PLATE_FIT_SPARE : 0);
+        l.clipped = placed !== null && !placed.fits;
         if (l.clipped) {
           l.el.style.opacity = '0';
           l.el.style.visibility = 'hidden';

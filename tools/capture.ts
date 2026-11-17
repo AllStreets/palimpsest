@@ -87,6 +87,7 @@ import { seededWeek } from './seeded-week.js';
 import { BUDGET } from './media-check.js';
 import { ambientInputs, towerInputs } from './measure-inputs.js';
 import { apart, around as aroundPerson, callDebug, followView, person, runUntil, sendPerson, type FigureProbe, type VehicleProbe } from './people-stage.js';
+import { paneFraming } from './pane-framing.js';
 import { decodePng, labOf } from './png.js';
 import { SAMPLE, SAMPLE_TALL, sampleGh, seedSample, shrinkSample } from './sample.js';
 
@@ -2278,7 +2279,10 @@ const MARKET_VIEW_DEFAULT: [V3, V3] = [[64, 32, 124], [4, 20, 10]];
 /** Framings tuned by eye in the quality rounds (see the probe shot), on the sample city; followCity fits them to the city served. */
 let HERO: { eye: V3; target: V3 } = { eye: [700, 70, 700], target: [0, 170, 80] };
 let OVERVIEW: { eye: V3; target: V3 } = { eye: [540, 380, 960], target: [-40, 70, 0] };
-const SCREENS: { eye: V3; target: V3 } = { eye: [-700, 90, 520], target: [160, 150, -200] };
+/** Behind an open sheet: the whole skyline set in the pane right of the sheet (pane-framing.ts); followCity derives it. */
+let SCREENS: { eye: V3; target: V3 } = { eye: [-700, 90, 520], target: [160, 150, -200] };
+/** How much farther back than home the screens' framing stands, so the skyline's breadth fits the pane. */
+const SCREENS_BACK = Number(process.env.SCREENS_BACK ?? 1.35);
 let FLY = { cx: 0, cz: 80, a0: 0.42, a1: 1.12, r0: 980, r1: 840, y0: 110, y1: 72, ty0: 175, ty1: 160 };
 
 /** The sample city the framings above were tuned on: six districts round (-40, 80), the tallest of 92 floors. */
@@ -2296,6 +2300,9 @@ function followCity(city: District[]): void {
   const e = cityExtent(city);
   const lim = viewLimits(e, aspect);
   OVERVIEW = lim.home;
+  // The sheets stand clamp(600px, 47vw, 760px) wide on the left (screens.css --sheet-w): the city shows right of them.
+  const sheetW = Math.min(760, Math.max(600, 0.47 * VIEWPORT.width));
+  SCREENS = paneFraming(lim.home, sheetW / VIEWPORT.width, 1, 36, aspect, SCREENS_BACK);
   // Low and looking up, the hero is bound by the tallest crown as much as by the city's breadth.
   const k = Math.max(lim.homeDistance / viewLimits(TUNED_ON, aspect).homeDistance, e.height / TUNED_ON.height);
   const at = (p: V3): V3 => [e.cx + k * (p[0] - TUNED_ON.cx), k * p[1], e.cz + k * (p[2] - TUNED_ON.cz)];
